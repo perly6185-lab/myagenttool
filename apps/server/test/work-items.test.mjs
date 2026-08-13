@@ -9,7 +9,9 @@ import { sameProjectPath } from "../src/services/projects.mjs";
 import {
   backfillWorkItemTerminalOwnership,
   createWorkItemService,
+  evaluateMyTemplateGovernance,
   extractAcceptanceCriteriaFromBody,
+  matchPublishedMyTemplate,
   taskTraceStage,
 } from "../src/services/work-items.mjs";
 import { backfillWorkItemFollowUpContext } from "../src/services/work-item-follow-up.mjs";
@@ -30,6 +32,7 @@ function harness({
   issueApplicationApprovalGrant,
   onWorkItemChanged,
   claimTaskMaterialDraft,
+  inspectTaskMaterialDraft,
   resolveClaimedTaskMaterial,
 } = {}) {
   let counter = 0;
@@ -69,6 +72,7 @@ function harness({
     issueApplicationApprovalGrant,
     onWorkItemChanged,
     claimTaskMaterialDraft,
+    inspectTaskMaterialDraft,
     resolveClaimedTaskMaterial,
   });
   return { state, events, alerts, service };
@@ -1134,6 +1138,28 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   assert.equal(resolved.resolution.note, "Handled");
 });
 
+test("AI clarification is exposed as input work instead of an approval", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Clarify scope" }, ACTOR_A).body.workItem;
+  state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "ar_question" }];
+  state.autoRuns = [{
+    id: "ar_question",
+    status: "needs_input",
+    phase: "waiting_for_input",
+    createdAt: "2026-07-24T00:30:00.000Z",
+    decision: { path: "clarify", clarifyingQuestions: ["Include archived projects?"] },
+  }];
+
+  const attention = service.listAttention({}, ACTOR_A).body;
+  const input = attention.items.find((row) => row.workItemId === item.id && row.kind === "execution_input");
+  assert.ok(input);
+  assert.deepEqual(input.details.questions, ["Include archived projects?"]);
+  assert.equal(attention.items.some((row) => row.kind === "execution_approval"), false);
+  const detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body;
+  assert.equal(detail.observability.nextAction, "answer_ai");
+  assert.equal(detail.workItem.executionState, "claimed");
+});
+
 test("attention leases expire and batch claims fail atomically on contention", () => {
   let currentTime = "2026-07-24T00:00:00.000Z";
   const { service, state } = harness({ clock: () => currentTime });
@@ -2057,6 +2083,855 @@ test("AI issue assistance returns an editable draft without creating work", () =
   assert.equal(service.suggestWorkItemDraft({
     projectId: "prj_b", title: "Foreign", body: "",
   }, ACTOR_A).status, 404);
+});
+
+test("AI issue assistance uses attached business documents to select a template and draft business acceptance", () => {
+  const { service, state } = harness({
+    inspectTaskMaterialDraft: () => ({
+      status: 200,
+      body: { draft: {
+        id: "draft_device", projectId: "prj_a", revision: 2,
+        assets: [{ originalName: "气体腐蚀试验箱设备技术协议.pdf", mimeType: "application/pdf", hash: "sha256:device" }],
+      } },
+    }),
+  });
+  state.routineDefinitions = [{
+    id: "rtd_device", familyId: "family_device", projectId: "managed_templates", ownerTeamId: "team_a",
+    templateScope: "team", state: "published", version: 2, name: "设备技术协议生成采购清单",
+    description: "根据设备技术协议生成采购清单", triggerDocumentTypes: ["other_reference"],
+    templateContract: {
+      inputFormats: ["pdf"], outputFileName: "采购清单.xlsx",
+      outputColumns: ["序号", "产品名称", "规格型号", "数量"],
+      uncertainFields: ["报价单价", "报价总价"],
+    },
+    steps: [
+      { kind: "extract", label: "读取设备技术协议 PDF", configuration: { inputSummary: "设备技术协议 PDF" } },
+      { kind: "generate", label: "生成采购清单 Excel", configuration: { expectedOutput: "采购清单 Excel" } },
+    ],
+  }];
+
+  const result = service.suggestWorkItemDraft({
+    projectId: "prj_a", title: "帮我把这个设备协议整理成采购表",
+    materialDraftId: "draft_device", materialDraftRevision: 2,
+  }, ACTOR_A);
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.draft.templateMatch.state, "matched");
+  assert.equal(result.body.draft.templateMatch.selected.definitionId, "rtd_device");
+  assert.match(result.body.draft.templateMatch.selected.reasons.join(" "), /PDF/);
+  assert.deepEqual(result.body.draft.acceptanceCriteria, [
+    "生成并可正常打开采购清单.xlsx",
+    "结果保留模版约定的 4 个字段，字段名称和顺序一致",
+    "输入材料中能够确认的信息已准确写入结果",
+    "报价单价、报价总价无法确认时保持空白，不得猜测",
+  ]);
+  assert.doesNotMatch(result.body.draft.verificationSop.join(" "), /代码|Pull Request|类型检查/);
+});
+
+test("learned template routing prioritizes the requested result and refuses weak matches", () => {
+  const quotation = {
+    id: "rtd_quote", familyId: "family_quote", projectId: "prj_a", state: "published", version: 2,
+    name: "客户询价报价", description: "根据客户询价生成报价单", triggerDocumentTypes: ["inquiry"],
+    steps: [{ kind: "generate", label: "生成报价单", configuration: { output: "报价单 Excel" } }],
+  };
+  const summary = {
+    id: "rtd_summary", familyId: "family_summary", projectId: "prj_a", state: "published", version: 1,
+    name: "询价汇总", description: "整理询价内容", triggerDocumentTypes: ["inquiry"],
+    steps: [{ kind: "generate", label: "生成询价汇总表", configuration: { output: "询价汇总表" } }],
+  };
+  const matched = matchPublishedMyTemplate({
+    definitions: [quotation, summary],
+    projectId: "prj_a",
+    intent: "根据客户询价生成报价单 Excel",
+  });
+  assert.equal(matched.state, "matched");
+  assert.deepEqual(matched.decision, { kind: "auto_apply", confidence: "high", reason: "explicit_result_match" });
+  assert.equal(matched.selected.definitionId, "rtd_quote");
+  assert.match(matched.selected.reasons.join(" "), /期望结果/);
+
+  const deviceChecklist = {
+    id: "rtd_device_checklist", familyId: "family_device_checklist", projectId: "prj_a",
+    templateScope: "team", state: "published", version: 1,
+    name: "设备技术协议生成采购清单", description: "收到：设备技术协议 PDF\n得到：采购清单 Excel",
+    triggerDocumentTypes: ["other_reference"],
+    templateContract: { inputFormats: ["pdf"] },
+    steps: [
+      { kind: "extract", label: "读取设备技术协议 PDF", configuration: { inputSummary: "设备技术协议 PDF" } },
+      { kind: "generate", label: "生成采购清单 Excel", configuration: { expectedOutput: "采购清单 Excel" } },
+    ],
+  };
+  const dominantMatchIgnoresIncidentalOutputWords = matchPublishedMyTemplate({
+    definitions: [deviceChecklist, quotation],
+    projectId: "prj_a",
+    intent: "根据设备技术协议生成采购清单 Excel，报价单价和报价总价无法确认时留空，不要猜测。",
+  });
+  assert.equal(dominantMatchIgnoresIncidentalOutputWords.state, "matched");
+  assert.equal(dominantMatchIgnoresIncidentalOutputWords.selected.definitionId, "rtd_device_checklist");
+  assert.equal(dominantMatchIgnoresIncidentalOutputWords.decision.reason, "strong_template_match");
+
+  const naturalBusinessPhrase = matchPublishedMyTemplate({
+    definitions: [deviceChecklist, quotation],
+    projectId: "prj_a",
+    intent: "帮我把这个设备协议整理成采购表",
+    attachments: [{ originalName: "气体腐蚀试验箱.pdf", mimeType: "application/pdf" }],
+  });
+  assert.equal(naturalBusinessPhrase.state, "matched");
+  assert.equal(naturalBusinessPhrase.selected.definitionId, "rtd_device_checklist");
+  assert.equal(naturalBusinessPhrase.decision.confidence, "high");
+  assert.match(naturalBusinessPhrase.selected.reasons.join(" "), /PDF/);
+
+  const teamScoped = matchPublishedMyTemplate({
+    definitions: [{ ...quotation, projectId: "managed_template_project", templateScope: "team" }],
+    projectId: "prj_a",
+    intent: "根据客户询价生成报价单 Excel",
+  });
+  assert.equal(teamScoped.state, "matched");
+  assert.equal(teamScoped.selected.definitionId, "rtd_quote");
+
+  const legacySingleCaseTemplate = matchPublishedMyTemplate({
+    definitions: [{ ...quotation, templateScope: "team", templateMaturity: "trial" }],
+    projectId: "prj_a",
+    intent: "根据客户询价生成报价单 Excel",
+  });
+  assert.equal(legacySingleCaseTemplate.state, "matched", "one confirmed case can auto-match without a trial gate");
+  assert.equal(legacySingleCaseTemplate.decision.kind, "auto_apply");
+
+  const crossLanguage = matchPublishedMyTemplate({
+    definitions: [{
+      ...quotation,
+      name: "Inquiry to quotation",
+      steps: [{ key: "quotation_generation", kind: "generate", label: "Prepare quotation", configuration: {} }],
+    }],
+    projectId: "prj_a",
+    intent: "根据客户询价生成报价单",
+  });
+  assert.equal(crossLanguage.state, "matched");
+  assert.equal(crossLanguage.selected.definitionId, "rtd_quote");
+  assert.match(crossLanguage.selected.reasons.join(" "), /期望结果/);
+
+  const ambiguous = matchPublishedMyTemplate({
+    definitions: [quotation, summary],
+    projectId: "prj_a",
+    intent: "根据询价生成报价单 Excel 或询价汇总表",
+  });
+  assert.equal(ambiguous.state, "ambiguous");
+  assert.equal(ambiguous.selected, null);
+  assert.equal(ambiguous.clarification.kind, "desired_output");
+  assert.deepEqual(new Set(ambiguous.clarification.options.map((option) => option.label)), new Set(["报价单 Excel", "询价汇总表"]));
+
+  const learnedConflict = matchPublishedMyTemplate({
+    definitions: [quotation, summary],
+    routingFeedback: [
+      { intentTerms: ["询价"], selectedFamilyId: "family_quote", selectedOutput: "报价单 Excel" },
+      { intentTerms: ["询价"], selectedFamilyId: "family_summary", selectedOutput: "询价汇总表" },
+    ],
+    projectId: "prj_a",
+    intent: "处理这份客户询价",
+  });
+  assert.equal(learnedConflict.state, "ambiguous");
+  assert.deepEqual(learnedConflict.decision, {
+    kind: "confirm_output", confidence: "low", reason: "learned_preference_conflict",
+  });
+  assert.equal(learnedConflict.clarification.reason, "learned_preference_conflict");
+  assert.match(learnedConflict.clarification.message, /以前.*不同结果/);
+  assert.deepEqual(new Set(learnedConflict.clarification.learnedChoices.map((choice) => choice.label)),
+    new Set(["报价单 Excel", "询价汇总表"]));
+
+  const confirmedConflictChoice = matchPublishedMyTemplate({
+    definitions: [quotation, summary],
+    routingFeedback: [
+      { intentTerms: ["询价"], selectedFamilyId: "family_quote", rejectedFamilyId: "family_summary", selectedOutput: "报价单 Excel" },
+      { intentTerms: ["询价"], selectedFamilyId: "family_summary", rejectedFamilyId: "family_quote", selectedOutput: "询价汇总表" },
+      { kind: "confirmation", intentTerms: ["询价"], selectedFamilyId: "family_quote", rejectedFamilyId: null, selectedOutput: "报价单 Excel" },
+    ],
+    projectId: "prj_a",
+    intent: "处理这份客户询价",
+  });
+  assert.equal(confirmedConflictChoice.state, "matched");
+  assert.equal(confirmedConflictChoice.selected.definitionId, "rtd_quote");
+  assert.equal(confirmedConflictChoice.decision.reason, "consistent_learned_preference");
+
+  const explicitWinsOverLearningConflict = matchPublishedMyTemplate({
+    definitions: [quotation, summary],
+    routingFeedback: [
+      { intentTerms: ["询价"], selectedFamilyId: "family_quote", selectedOutput: "报价单 Excel" },
+      { intentTerms: ["询价"], selectedFamilyId: "family_summary", selectedOutput: "询价汇总表" },
+    ],
+    projectId: "prj_a",
+    intent: "处理客户询价并生成报价单 Excel",
+  });
+  assert.equal(explicitWinsOverLearningConflict.state, "matched");
+  assert.equal(explicitWinsOverLearningConflict.selected.definitionId, "rtd_quote");
+  assert.equal(explicitWinsOverLearningConflict.decision.reason, "explicit_result_match");
+
+  const sameResult = matchPublishedMyTemplate({
+    definitions: [quotation, { ...quotation, id: "rtd_quote_backup", familyId: "family_quote_backup", name: "备用报价流程" }],
+    projectId: "prj_a",
+    intent: "根据客户询价生成报价单 Excel",
+  });
+  assert.equal(sameResult.state, "matched", "users are not asked to distinguish templates that produce the same result");
+
+  const contractMatched = matchPublishedMyTemplate({
+    definitions: [{
+      id: "rtd_purchase_list",
+      familyId: "family_purchase_list",
+      projectId: "managed_template_project",
+      templateScope: "team",
+      state: "published",
+      version: 1,
+      name: "设备技术协议生成采购清单",
+      description: "收到：设备技术协议 PDF\n得到：采购清单 Excel",
+      triggerDocumentTypes: ["other_reference"],
+      steps: [
+        { kind: "extract", label: "读取并理解设备技术协议 PDF", configuration: { inputSummary: "设备技术协议 PDF" } },
+        { kind: "generate", label: "生成采购清单 Excel", configuration: { expectedOutput: "采购清单 Excel" } },
+      ],
+    }],
+    projectId: "prj_a",
+    intent: "请根据这两份设备技术协议生成采购清单",
+  });
+  assert.equal(contractMatched.state, "matched");
+  assert.equal(contractMatched.selected.definitionId, "rtd_purchase_list");
+  assert.match(contractMatched.selected.reasons.join(" "), /输入材料/);
+
+  const missing = matchPublishedMyTemplate({
+    definitions: [quotation, summary],
+    projectId: "prj_a",
+    intent: "帮我处理一下这个文件",
+  });
+  assert.equal(missing.state, "missing");
+  assert.deepEqual(missing.decision, { kind: "no_match", confidence: "low", reason: "insufficient_evidence" });
+});
+
+test("result feedback conservatively governs template matching and can recover", () => {
+  const rows = (outcomes) => outcomes.map((outcome, index) => ({
+    familyId: "family_quote", outcome, updatedAt: `2026-08-11T00:0${index}:00.000Z`,
+  }));
+  const oneWrong = evaluateMyTemplateGovernance({
+    familyId: "family_quote", outcomeFeedback: rows(["wrong_result"]),
+  });
+  assert.equal(oneWrong.state, "learning", "one bad result never penalizes or pauses a template");
+  assert.equal(oneWrong.autoMatchAllowed, true);
+
+  const qualityOnly = evaluateMyTemplateGovernance({
+    familyId: "family_quote", outcomeFeedback: rows(["needs_quality_adjustment", "needs_quality_adjustment", "needs_quality_adjustment"]),
+  });
+  assert.equal(qualityOnly.matchingFeedbackCount, 0, "content quality is not a routing failure");
+  assert.equal(qualityOnly.state, "learning");
+
+  const watchFeedback = rows(["wrong_result", "met_expectations", "wrong_result"]);
+  const watch = evaluateMyTemplateGovernance({ familyId: "family_quote", outcomeFeedback: watchFeedback });
+  assert.equal(watch.state, "watch");
+  assert.equal(watch.scoreAdjustment, -3);
+  assert.equal(watch.requiresConfirmation, true);
+
+  const definition = {
+    id: "rtd_quote", familyId: "family_quote", projectId: "prj_a", state: "published", version: 2,
+    name: "客户询价报价", description: "根据客户询价生成报价单", triggerDocumentTypes: ["inquiry"],
+    steps: [{ kind: "generate", label: "生成报价单", configuration: { output: "报价单 Excel" } }],
+  };
+  const watchedMatch = matchPublishedMyTemplate({
+    definitions: [definition], outcomeFeedback: watchFeedback, projectId: "prj_a", intent: "根据询价生成报价单 Excel",
+  });
+  assert.equal(watchedMatch.state, "ambiguous");
+  assert.equal(watchedMatch.decision.reason, "outcome_feedback_watch");
+  assert.equal(watchedMatch.candidates[0].governance.state, "watch");
+
+  const pausedFeedback = rows(["wrong_result", "met_expectations", "wrong_result", "met_expectations", "wrong_result"]);
+  const pausedMatch = matchPublishedMyTemplate({
+    definitions: [definition], outcomeFeedback: pausedFeedback, projectId: "prj_a", intent: "根据询价生成报价单 Excel",
+  });
+  assert.equal(pausedMatch.state, "ambiguous", "a paused automatic match remains available for explicit use");
+  assert.equal(pausedMatch.decision.reason, "outcome_feedback_paused");
+  assert.equal(pausedMatch.candidates[0].governance.autoMatchAllowed, false);
+
+  const recovered = evaluateMyTemplateGovernance({
+    familyId: "family_quote",
+    outcomeFeedback: rows(["wrong_result", "wrong_result", "wrong_result", ...Array(5).fill("met_expectations")]),
+  });
+  assert.equal(recovered.autoMatchAllowed, true);
+  assert.equal(recovered.requiresConfirmation, false);
+
+  const intervention = {
+    id: "mtgi_resume", familyId: "family_quote", action: "resume_observation",
+    feedbackIds: pausedFeedback.map((entry, index) => ({ ...entry, id: `feedback_${index}` })).map((entry) => entry.id),
+    reason: "user_reviewed_governance_details", createdAt: "2026-08-11T01:00:00.000Z", createdBy: "usr_a",
+  };
+  const identifiablePausedFeedback = pausedFeedback.map((entry, index) => ({ ...entry, id: `feedback_${index}` }));
+  const manuallyResumed = evaluateMyTemplateGovernance({
+    familyId: "family_quote", outcomeFeedback: identifiablePausedFeedback, interventions: [intervention],
+  });
+  assert.equal(manuallyResumed.state, "watch");
+  assert.equal(manuallyResumed.manualObservation, true);
+  assert.equal(manuallyResumed.historicalFeedbackCount, 5);
+  assert.equal(manuallyResumed.matchingFeedbackCount, 0);
+  const resumedMatch = matchPublishedMyTemplate({
+    definitions: [definition], outcomeFeedback: identifiablePausedFeedback,
+    governanceInterventions: [intervention], projectId: "prj_a", intent: "根据询价生成报价单 Excel",
+  });
+  assert.equal(resumedMatch.state, "ambiguous", "manual observation requires confirmation before using the template again");
+  assert.equal(resumedMatch.decision.reason, "manual_resume_observation");
+  const repeatedFailure = evaluateMyTemplateGovernance({
+    familyId: "family_quote",
+    outcomeFeedback: [
+      ...identifiablePausedFeedback,
+      ...rows(["wrong_result", "met_expectations", "wrong_result", "met_expectations", "wrong_result"])
+        .map((entry, index) => ({ ...entry, id: `new_feedback_${index}` })),
+    ],
+    interventions: [intervention],
+  });
+  assert.equal(repeatedFailure.state, "paused", "new failures can trigger governance again after a manual reset");
+});
+
+test("a new local Issue automatically pins a strong template match without a client-side template choice", () => {
+  const { service, state } = harness();
+  state.routineDefinitions = [{
+    id: "rtd_quote", familyId: "family_quote", projectId: "prj_a", ownerTeamId: "team_a",
+    state: "published", version: 3, name: "客户询价报价", description: "根据询价生成报价单",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [{ key: "output", kind: "generate", label: "生成报价单", required: true,
+      configuration: { output: "报价单 Excel" } }],
+  }];
+
+  const result = service.createWorkItem({
+    projectId: "prj_a",
+    title: "根据客户询价生成报价单 Excel",
+    body: "使用客户发来的询价资料，最后交付报价单。",
+  }, ACTOR_A);
+
+  assert.equal(result.status, 201);
+  assert.equal(result.body.workItem.myTemplateBinding.definitionId, "rtd_quote");
+  assert.equal(result.body.workItem.myTemplateBinding.version, 3);
+  assert.deepEqual(result.body.workItem.myTemplateBinding.snapshot.steps.map((step) => step.key), ["output"]);
+});
+
+test("a governed template is not silently pinned when outcome feedback requires confirmation", () => {
+  const { service, state } = harness();
+  state.routineDefinitions = [{
+    id: "rtd_governed", familyId: "family_governed", projectId: "prj_a", ownerTeamId: "team_a",
+    state: "published", version: 1, name: "客户询价报价", description: "根据询价生成报价单",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [{ key: "output", kind: "generate", label: "生成报价单", required: true,
+      configuration: { output: "报价单 Excel" } }],
+  }];
+  state.myTemplateOutcomeFeedback = ["wrong_result", "met_expectations", "wrong_result"].map((outcome, index) => ({
+    id: `mtof_governed_${index}`, ownerTeamId: "team_a", projectId: "prj_a",
+    familyId: "family_governed", workItemId: `lwi_old_${index}`, outcome,
+    createdAt: `2026-08-11T00:0${index}:00.000Z`, updatedAt: `2026-08-11T00:0${index}:00.000Z`,
+  }));
+
+  const suggestion = service.suggestWorkItemDraft({
+    projectId: "prj_a", title: "根据客户询价生成报价单 Excel",
+  }, ACTOR_A);
+  assert.equal(suggestion.body.draft.templateMatch.state, "ambiguous");
+  assert.equal(suggestion.body.draft.templateMatch.decision.reason, "outcome_feedback_watch");
+
+  const created = service.createWorkItem({
+    projectId: "prj_a", title: "根据客户询价生成报价单 Excel",
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.myTemplateBinding, undefined);
+});
+
+test("a local Issue pins the selected learned-template version and server-owned snapshot", () => {
+  const { service, state } = harness();
+  state.routineDefinitions = [{
+    id: "rtd_quote", familyId: "family_quote", projectId: "prj_a", ownerTeamId: "team_a",
+    state: "published", version: 2, name: "客户询价报价", description: "根据询价生成报价单",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [{ key: "output", kind: "generate", label: "生成报价单", required: true,
+      configuration: { output: "报价单 Excel" } }],
+  }];
+  const result = service.createWorkItem({
+    projectId: "prj_a",
+    title: "根据客户询价生成报价单",
+    myTemplateBinding: {
+      definitionId: "rtd_quote",
+      familyId: "family_quote",
+      version: 2,
+      matchReasons: ["期望结果与报价单一致"],
+    },
+  }, ACTOR_A);
+  assert.equal(result.status, 201);
+  assert.deepEqual(result.body.workItem.myTemplateBinding, {
+    schemaVersion: 1,
+    definitionId: "rtd_quote",
+    familyId: "family_quote",
+    version: 2,
+    name: "客户询价报价",
+    expectedOutput: "报价单 Excel",
+    matchReasons: ["期望结果与报价单一致"],
+    snapshot: {
+      name: "客户询价报价",
+      description: "根据询价生成报价单",
+      expectedOutput: "报价单 Excel",
+      steps: [{ key: "output", kind: "generate", label: "生成报价单", required: true }],
+    },
+    snapshotHash: result.body.workItem.myTemplateBinding.snapshotHash,
+    matchedAt: "2026-07-24T00:00:00.000Z",
+  });
+  assert.equal(result.body.workItem.myTemplateBinding.snapshotHash.length, 64);
+
+  const ordinary = service.createWorkItem({
+    projectId: "prj_a",
+    title: "先记录，稍后交给 AI",
+  }, ACTOR_A).body.workItem;
+  const boundLater = service.updateWorkItem({
+    workItemId: ordinary.id,
+    expectedRevision: ordinary.revision,
+    myTemplateBinding: {
+      definitionId: "rtd_quote",
+      familyId: "family_quote",
+      version: 2,
+      matchReasons: ["首次交给 AI 时自动匹配"],
+    },
+  }, ACTOR_A);
+  assert.equal(boundLater.status, 200);
+  assert.equal(boundLater.body.workItem.myTemplateBinding.definitionId, "rtd_quote");
+  assert.equal(boundLater.body.workItem.myTemplateBinding.version, 2);
+  state.workItems.find((item) => item.id === ordinary.id).executionBindings = [{
+    kind: "auto_run", targetId: "aur_template_started", createdAt: "2026-07-24T00:01:00.000Z",
+  }];
+  assert.equal(service.updateWorkItem({
+    workItemId: ordinary.id,
+    expectedRevision: boundLater.body.workItem.revision,
+    myTemplateBinding: {
+      definitionId: "rtd_quote",
+      familyId: "family_quote",
+      version: 2,
+      matchReasons: ["尝试覆盖"],
+    },
+  }, ACTOR_A).body.error, "work_item_my_template_binding_immutable");
+});
+
+test("correcting an unstarted task result teaches later similar Issues while preserving executed bindings", () => {
+  const { service, state } = harness();
+  state.routineDefinitions = [
+    {
+      id: "rtd_quote", familyId: "family_quote", projectId: "prj_a", ownerTeamId: "team_a",
+      state: "published", version: 1, name: "报价处理", description: "处理客户询价",
+      triggerDocumentTypes: ["inquiry"],
+      steps: [{ key: "quote", kind: "generate", label: "生成报价单", required: true, configuration: { output: "报价单 Excel" } }],
+    },
+    {
+      id: "rtd_summary", familyId: "family_summary", projectId: "prj_a", ownerTeamId: "team_a",
+      state: "published", version: 1, name: "询价汇总", description: "汇总客户询价",
+      triggerDocumentTypes: ["inquiry"],
+      steps: [{ key: "summary", kind: "generate", label: "生成询价汇总", required: true, configuration: { output: "询价汇总表" } }],
+    },
+  ];
+  const original = service.createWorkItem({
+    projectId: "prj_a",
+    title: "处理新的客户询价",
+    body: "请根据收到的客户询价继续处理。",
+    myTemplateBinding: {
+      definitionId: "rtd_quote", familyId: "family_quote", version: 1,
+      matchReasons: ["系统最初判断需要报价单"],
+    },
+  }, ACTOR_A).body.workItem;
+
+  const corrected = service.updateWorkItem({
+    workItemId: original.id,
+    expectedRevision: original.revision,
+    myTemplateBinding: {
+      definitionId: "rtd_summary", familyId: "family_summary", version: 1,
+      matchReasons: ["你确认这次需要询价汇总表"],
+    },
+  }, ACTOR_A);
+  assert.equal(corrected.status, 200);
+  assert.equal(corrected.body.workItem.myTemplateBinding.definitionId, "rtd_summary");
+  assert.equal(state.myTemplateRoutingFeedback.length, 1);
+  assert.deepEqual(state.myTemplateRoutingFeedback[0].intentTerms, ["询价"]);
+  assert.equal(state.myTemplateRoutingFeedback[0].rejectedFamilyId, "family_quote");
+  assert.equal(state.myTemplateRoutingFeedback[0].selectedFamilyId, "family_summary");
+  assert.ok(state.workItemActivities.some((activity) =>
+    activity.workItemId === original.id && activity.action === "my_template_match_corrected"));
+
+  const later = service.createWorkItem({
+    projectId: "prj_a",
+    title: "处理另一份客户询价",
+    body: "请根据收到的客户询价继续处理。",
+  }, ACTOR_A).body.workItem;
+  assert.equal(later.myTemplateBinding.definitionId, "rtd_summary");
+  assert.match(later.myTemplateBinding.matchReasons.join(" "), /之前.*纠正/);
+
+  const listed = service.listMyTemplateRoutingFeedback({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.count, 1);
+  assert.equal(listed.body.feedback[0].workItem.localRef, original.localRef);
+  assert.equal(listed.body.feedback[0].selectedOutput, "询价汇总表");
+  assert.equal(service.listMyTemplateRoutingFeedback({}, ACTOR_B).body.count, 0);
+  assert.equal(service.removeMyTemplateRoutingFeedback({
+    feedbackId: listed.body.feedback[0].id,
+  }, ACTOR_B).status, 404);
+
+  const removed = service.removeMyTemplateRoutingFeedback({
+    feedbackId: listed.body.feedback[0].id,
+  }, ACTOR_A);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.affectsFutureMatchesOnly, true);
+  assert.equal(state.myTemplateRoutingFeedback.length, 0);
+  assert.equal(state.workItems.find((item) => item.id === later.id).myTemplateBinding.definitionId, "rtd_summary");
+  assert.ok(state.workItemActivities.some((activity) =>
+    activity.workItemId === original.id && activity.action === "my_template_learning_removed"));
+
+  const confirmed = service.createWorkItem({
+    projectId: "prj_a",
+    title: "处理第三份客户询价",
+    body: "请根据收到的客户询价继续处理。",
+    myTemplateBinding: {
+      definitionId: "rtd_summary", familyId: "family_summary", version: 1,
+      matchReasons: ["你确认这次需要“询价汇总表”"],
+      userConfirmedResult: true,
+    },
+  }, ACTOR_A).body.workItem;
+  assert.equal(state.myTemplateRoutingFeedback.length, 1);
+  assert.equal(state.myTemplateRoutingFeedback[0].kind, "confirmation");
+  assert.equal(state.myTemplateRoutingFeedback[0].rejectedOutput, null);
+  assert.equal(state.myTemplateRoutingFeedback[0].selectedOutput, "询价汇总表");
+  assert.ok(state.workItemActivities.some((activity) =>
+    activity.workItemId === confirmed.id && activity.action === "my_template_match_confirmed"));
+});
+
+test("learned choice management exposes only actionable result conflicts", () => {
+  const { service, state } = harness();
+  state.myTemplateRoutingFeedback = [
+    { id: "mtf_quote", ownerTeamId: "team_a", projectId: "prj_a", workItemId: "missing_quote", intentTerms: ["询价"], selectedOutput: "报价单 Excel", rejectedOutput: "询价汇总表", createdAt: "2026-08-11T00:00:00.000Z" },
+    { id: "mtf_summary", ownerTeamId: "team_a", projectId: "prj_a", workItemId: "missing_summary", intentTerms: ["询价"], selectedOutput: "询价汇总表", rejectedOutput: "报价单 Excel", createdAt: "2026-08-11T00:01:00.000Z" },
+  ];
+  const conflicted = service.listMyTemplateRoutingFeedback({ projectId: "prj_a" }, ACTOR_A).body.feedback;
+  assert.ok(conflicted.every((feedback) => feedback.state === "conflict"));
+  assert.deepEqual(new Set(conflicted[0].conflictingOutputs), new Set(["报价单 Excel", "询价汇总表"]));
+
+  state.myTemplateRoutingFeedback.push(
+    { ...state.myTemplateRoutingFeedback[0], id: "mtf_quote_2" },
+    { ...state.myTemplateRoutingFeedback[0], id: "mtf_quote_3" },
+  );
+  const established = service.listMyTemplateRoutingFeedback({ projectId: "prj_a" }, ACTOR_A).body.feedback;
+  assert.ok(established.every((feedback) => feedback.state === "active"));
+});
+
+test("completed template tasks record result effectiveness without treating technical failures as matching feedback", () => {
+  const { service, state } = harness();
+  state.routineDefinitions = [{
+    id: "rtd_outcome", familyId: "family_outcome", projectId: "prj_a", ownerTeamId: "team_a",
+    state: "published", version: 1, name: "询价摘要", description: "生成询价摘要",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [{ key: "summary", kind: "generate", label: "生成摘要", required: true, configuration: { output: "询价摘要" } }],
+  }];
+  const item = service.createWorkItem({
+    projectId: "prj_a", title: "生成客户询价摘要",
+    myTemplateBinding: {
+      definitionId: "rtd_outcome", familyId: "family_outcome", version: 1,
+      matchReasons: ["期望结果一致"],
+    },
+  }, ACTOR_A).body.workItem;
+  assert.equal(service.recordMyTemplateOutcomeFeedback({
+    workItemId: item.id, outcome: "met_expectations",
+  }, ACTOR_A).body.error, "work_item_result_feedback_requires_completion");
+
+  state.workItems.find((candidate) => candidate.id === item.id).status = "done";
+  const positive = service.recordMyTemplateOutcomeFeedback({
+    workItemId: item.id, outcome: "met_expectations",
+  }, ACTOR_A);
+  assert.equal(positive.status, 200);
+  assert.equal(positive.body.feedback.outcome, "met_expectations");
+  assert.equal(positive.body.workItem.myTemplateOutcomeFeedback.outcome, "met_expectations");
+  assert.equal(state.myTemplateOutcomeFeedback.length, 1);
+  assert.equal(service.recordMyTemplateOutcomeFeedback({
+    workItemId: item.id, outcome: "met_expectations",
+  }, ACTOR_A).body.replayed, true);
+  assert.equal(state.myTemplateOutcomeFeedback.length, 1);
+
+  const changed = service.recordMyTemplateOutcomeFeedback({
+    workItemId: item.id, outcome: "wrong_result", note: "需要的是报价单",
+  }, ACTOR_A);
+  assert.equal(changed.body.feedback.revision, 2);
+  assert.equal(changed.body.feedback.outcome, "wrong_result");
+  const summary = service.listMyTemplateOutcomeFeedback({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(summary.body.count, 1);
+  assert.deepEqual(summary.body.summaries[0], {
+    familyId: "family_outcome", total: 1, metExpectations: 0, wrongResult: 1,
+    needsQualityAdjustment: 0, state: "needs_attention",
+    governance: {
+      state: "learning", windowSize: 1, matchingFeedbackCount: 1, metExpectations: 0,
+      wrongResult: 1, needsQualityAdjustment: 0, wrongResultRate: 1,
+      autoMatchAllowed: true, requiresConfirmation: false, scoreAdjustment: 0,
+      manualObservation: false, historicalFeedbackCount: 0, latestIntervention: null,
+      reason: "insufficient_outcome_feedback",
+    },
+  });
+  assert.equal(service.listMyTemplateOutcomeFeedback({}, ACTOR_B).body.count, 0);
+  assert.ok(state.workItemActivities.some((activity) =>
+    activity.workItemId === item.id
+    && activity.action === "my_template_outcome_feedback_recorded"
+    && activity.details.matchingSignal === "negative"
+    && activity.details.technicalFailure === false));
+});
+
+test("a completed ordinary task seeds a new learning My template without rebinding or auto-enabling it", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "整理客户回访表",
+    inputAssets: [{
+      id: "asset_input", path: "客户回访.xlsx", family: "spreadsheet", terminalId: "dev_local",
+      hash: "hash-input", version: "v1", capabilities: [], readiness: { state: "ready", reason: "available" },
+    }],
+  }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((item) => item.id === created.id);
+  stored.status = "done";
+
+  const missingEvidence = service.previewMyTemplateDraft({ workItemId: created.id }, ACTOR_A);
+  assert.equal(missingEvidence.body.eligible, false);
+  assert.deepEqual(missingEvidence.body.reasons, ["task_result_evidence_required"]);
+
+  stored.outputAssets = [{
+    id: "asset_output", path: "客户回访汇总.xlsx", family: "spreadsheet", terminalId: "dev_local",
+    hash: "hash-output", version: "v1",
+  }];
+  const preview = service.previewMyTemplateDraft({ workItemId: created.id }, ACTOR_A);
+  assert.equal(preview.body.eligible, true);
+  assert.equal(preview.body.suggestion.typicalInput, "客户回访.xlsx");
+  assert.equal(preview.body.suggestion.expectedOutput, "客户回访汇总.xlsx");
+  assert.equal(service.previewMyTemplateDraft({ workItemId: created.id }, ACTOR_B).status, 404);
+  assert.equal(service.createMyTemplateDraft({
+    workItemId: created.id, expectedRevision: created.revision, confirm: false,
+  }, ACTOR_A).body.error, "my_template_draft_confirmation_required");
+
+  const saved = service.createMyTemplateDraft({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    confirm: true,
+    name: "客户回访汇总",
+    typicalInput: "客户回访表",
+    expectedOutput: "客户回访汇总表",
+    idempotencyKey: "save-template-1",
+  }, ACTOR_A);
+  assert.equal(saved.status, 201);
+  assert.equal(saved.body.draft.state, "needs_review");
+  assert.equal(saved.body.draft.caseCount, 1);
+  assert.equal(saved.body.draft.casesRequired, 1);
+  assert.equal(saved.body.workItem.myTemplateBinding, undefined);
+  assert.equal(saved.body.workItem.revision, created.revision, "saving a template does not rewrite the source task");
+  assert.equal(state.myTemplateDrafts.length, 1);
+  assert.equal(state.myTemplateLearningCases.length, 1);
+  assert.equal(state.myTemplateLearningCases[0].snapshot.outputAssets[0].path, "客户回访汇总.xlsx");
+  assert.equal(Object.hasOwn(state.myTemplateLearningCases[0].snapshot, "body"), false);
+
+  const replay = service.createMyTemplateDraft({
+    workItemId: created.id, expectedRevision: 999, confirm: true, name: "重复提交",
+  }, ACTOR_A);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.draft.id, saved.body.draft.id);
+  assert.equal(state.myTemplateDrafts.length, 1);
+  assert.equal(service.listMyTemplateDrafts({}, ACTOR_A).body.count, 1);
+  assert.equal(service.listMyTemplateDrafts({}, ACTOR_B).body.count, 0);
+});
+
+test("a task that used an existing My template cannot seed a duplicate new template", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "已有模版任务" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((candidate) => candidate.id === item.id);
+  stored.status = "done";
+  stored.outputAssets = [{ id: "result", path: "result.pdf" }];
+  stored.myTemplateBinding = { definitionId: "definition", familyId: "family", version: 1 };
+  const preview = service.previewMyTemplateDraft({ workItemId: item.id }, ACTOR_A);
+  assert.equal(preview.body.eligible, false);
+  assert.ok(preview.body.reasons.includes("task_already_used_my_template"));
+  assert.equal(service.createMyTemplateDraft({
+    workItemId: item.id, expectedRevision: item.revision, confirm: true,
+  }, ACTOR_A).body.error, "work_item_not_eligible_for_my_template");
+});
+
+test("learning My templates recommend similar completed tasks and add only user-confirmed cases", () => {
+  const { service, state } = harness();
+  const makeCompleted = ({ title, input, output, projectId = "prj_a", actor = ACTOR_A }) => {
+    const created = service.createWorkItem({
+      projectId,
+      title,
+      inputAssets: [{
+        id: `input-${title}`, path: input, family: "spreadsheet", terminalId: "dev_local",
+        capabilities: [], readiness: { state: "ready", reason: "available" },
+      }],
+    }, actor).body.workItem;
+    const stored = state.workItems.find((item) => item.id === created.id);
+    stored.status = "done";
+    stored.outputAssets = [{ id: `output-${title}`, path: output, family: "spreadsheet" }];
+    return stored;
+  };
+  const origin = makeCompleted({ title: "客户回访汇总", input: "客户回访-七月.xlsx", output: "客户回访汇总-七月.xlsx" });
+  const saved = service.createMyTemplateDraft({
+    workItemId: origin.id, expectedRevision: origin.revision, confirm: true,
+    name: "客户回访汇总", typicalInput: "客户回访表", expectedOutput: "客户回访汇总表.xlsx",
+  }, ACTOR_A).body.draft;
+  const august = makeCompleted({ title: "客户回访汇总 八月", input: "客户回访-八月.xlsx", output: "客户回访汇总-八月.xlsx" });
+  const september = makeCompleted({ title: "客户回访汇总 九月", input: "客户回访-九月.xlsx", output: "客户回访汇总-九月.xlsx" });
+  makeCompleted({ title: "合同风险审查", input: "采购合同.docx", output: "合同风险报告.pdf" });
+  makeCompleted({ title: "客户回访汇总 外部团队", input: "客户回访.xlsx", output: "客户回访汇总.xlsx", projectId: "prj_b", actor: ACTOR_B });
+
+  const suggestions = service.listSimilarMyTemplateWorkItems({ draftId: saved.id }, ACTOR_A);
+  assert.equal(suggestions.status, 200);
+  assert.equal(suggestions.body.cases.length, 1);
+  assert.deepEqual(suggestions.body.suggestions.map((entry) => entry.workItem.id).sort(), [august.id, september.id].sort());
+  assert.ok(suggestions.body.suggestions.every((entry) => entry.reasons.includes("交付结果相似")));
+  assert.equal(service.listSimilarMyTemplateWorkItems({ draftId: saved.id }, ACTOR_B).status, 404);
+  assert.equal(service.addMyTemplateLearningCase({
+    draftId: saved.id, workItemId: august.id,
+    expectedDraftRevision: saved.revision, expectedWorkItemRevision: august.revision, confirm: false,
+  }, ACTOR_A).body.error, "my_template_learning_case_confirmation_required");
+
+  const second = service.addMyTemplateLearningCase({
+    draftId: saved.id, workItemId: august.id,
+    expectedDraftRevision: saved.revision, expectedWorkItemRevision: august.revision, confirm: true,
+  }, ACTOR_A);
+  assert.equal(second.status, 201);
+  assert.equal(second.body.draft.caseCount, 2);
+  assert.equal(second.body.draft.state, "needs_review");
+  assert.equal(second.body.readyForReview, true);
+  assert.equal(state.workItems.find((item) => item.id === august.id).myTemplateBinding, undefined);
+  assert.equal(service.addMyTemplateLearningCase({
+    draftId: saved.id, workItemId: september.id,
+    expectedDraftRevision: saved.revision, expectedWorkItemRevision: september.revision, confirm: true,
+  }, ACTOR_A).body.error, "my_template_draft_revision_conflict");
+
+  const replay = service.addMyTemplateLearningCase({
+    draftId: saved.id, workItemId: august.id,
+    expectedDraftRevision: 999, expectedWorkItemRevision: 999, confirm: true,
+  }, ACTOR_A);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  const third = service.addMyTemplateLearningCase({
+    draftId: saved.id, workItemId: september.id,
+    expectedDraftRevision: second.body.draft.revision, expectedWorkItemRevision: september.revision, confirm: true,
+  }, ACTOR_A);
+  assert.equal(third.status, 201);
+  assert.equal(third.body.draft.caseCount, 3);
+  assert.equal(third.body.draft.state, "needs_review");
+  assert.equal(third.body.readyForReview, true);
+  assert.equal(service.listSimilarMyTemplateWorkItems({ draftId: saved.id }, ACTOR_A).body.cases.length, 3);
+  assert.ok(state.workItemActivities.some((activity) =>
+    activity.workItemId === september.id
+    && activity.action === "my_template_learning_case_added"
+      && activity.details.participatesInMatching === false));
+});
+
+test("one confirmed task case can be reviewed, corrected, and explicitly enabled for future matching", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "整理客户回访表",
+    inputAssets: [{
+      id: "activation-input", path: "客户回访.xlsx", family: "spreadsheet", terminalId: "dev_local",
+      capabilities: [], readiness: { state: "ready", reason: "available" },
+    }],
+  }, ACTOR_A).body.workItem;
+  const sourceItem = state.workItems.find((item) => item.id === created.id);
+  sourceItem.status = "done";
+  sourceItem.outputAssets = [{ id: "activation-output", path: "客户回访汇总.xlsx", family: "spreadsheet" }];
+  const saved = service.createMyTemplateDraft({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    confirm: true,
+    name: "客户回访汇总",
+    typicalInput: "客户回访表",
+    expectedOutput: "客户回访汇总表",
+  }, ACTOR_A).body.draft;
+
+  assert.equal(saved.state, "needs_review");
+  assert.equal(saved.casesRequired, 1);
+  const review = service.reviewMyTemplateDraft({ draftId: saved.id }, ACTOR_A);
+  assert.equal(review.status, 200);
+  assert.equal(review.body.readiness.canEnable, true);
+  assert.equal(review.body.readiness.confidence, "initial");
+  assert.equal(review.body.cases.length, 1);
+  assert.equal(review.body.futureBehavior.participatesInMatching, false);
+  assert.equal(service.reviewMyTemplateDraft({ draftId: saved.id }, ACTOR_B).status, 404);
+  assert.equal(service.activateMyTemplateDraft({
+    draftId: saved.id, expectedDraftRevision: saved.revision, confirm: false,
+  }, ACTOR_A).body.error, "my_template_activation_confirmation_required");
+
+  const activated = service.activateMyTemplateDraft({
+    draftId: saved.id,
+    expectedDraftRevision: saved.revision,
+    confirm: true,
+    name: "客户回访分析",
+    typicalInput: "客户回访表或回访记录",
+    expectedOutput: "客户回访汇总表",
+  }, ACTOR_A);
+  assert.equal(activated.status, 201);
+  assert.equal(activated.body.draft.state, "ready");
+  assert.equal(activated.body.draft.name, "客户回访分析");
+  assert.equal(activated.body.review.futureBehavior.participatesInMatching, true);
+  assert.equal(activated.body.definition.state, "published");
+  assert.equal(activated.body.definition.origin.draftId, saved.id);
+  assert.equal(state.routineDefinitions.length, 1);
+  assert.equal(sourceItem.myTemplateBinding, undefined, "activation never rewrites the historical source task");
+  const suggested = service.suggestWorkItemDraft({
+    projectId: "prj_a",
+    title: "客户回访分析",
+    body: "请根据新的客户回访记录生成客户回访汇总表",
+  }, ACTOR_A);
+  assert.equal(activated.body.definition.templateMaturity, "stable");
+  assert.equal(suggested.body.draft.templateMatch.state, "matched");
+  assert.equal(suggested.body.draft.templateMatch.selected.definitionId, activated.body.definition.id);
+  const replay = service.activateMyTemplateDraft({
+    draftId: saved.id, expectedDraftRevision: 999, confirm: true,
+  }, ACTOR_A);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(state.routineDefinitions.length, 1);
+  assert.ok(state.workItemActivities.some((activity) =>
+    activity.workItemId === sourceItem.id
+    && activity.action === "my_template_activated"
+    && activity.details.participatesInMatching === true));
+});
+
+test("governance details identify source tasks and a confirmed manual resume preserves history", () => {
+  const { service, state } = harness();
+  state.routineDefinitions = [{
+    id: "rtd_resume", familyId: "family_resume", projectId: "prj_a", ownerTeamId: "team_a",
+    state: "published", version: 1, name: "询价报价", description: "生成报价",
+    triggerDocumentTypes: ["inquiry"], steps: [],
+  }];
+  state.workItems = [0, 1, 2, 3, 4].map((index) => ({
+    id: `lwi_resume_${index}`, localRef: `LOC-${index}`, title: `历史报价 ${index}`,
+    ownerTeamId: "team_a", projectId: "prj_a", status: "done",
+  }));
+  state.myTemplateOutcomeFeedback = ["wrong_result", "met_expectations", "wrong_result", "met_expectations", "wrong_result"]
+    .map((outcome, index) => ({
+      id: `mtof_resume_${index}`, ownerTeamId: "team_a", projectId: "prj_a",
+      familyId: "family_resume", definitionId: "rtd_resume", workItemId: `lwi_resume_${index}`,
+      version: 1, outcome, note: "", createdAt: `2026-08-11T00:0${index}:00.000Z`, updatedAt: `2026-08-11T00:0${index}:00.000Z`,
+    }));
+
+  const before = service.listMyTemplateOutcomeFeedback({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(before.body.summaries[0].governance.state, "paused");
+  assert.equal(before.body.feedback[0].workItem.localRef, "LOC-0");
+  assert.equal(before.body.feedback.find((entry) => entry.outcome === "wrong_result").governanceImpact, "negative");
+  assert.equal(service.resumeMyTemplateGovernanceObservation({
+    familyId: "family_resume", projectId: "prj_a", confirm: false,
+  }, ACTOR_A).status, 400);
+  assert.equal(service.resumeMyTemplateGovernanceObservation({
+    familyId: "family_resume", projectId: "prj_a", confirm: true,
+  }, ACTOR_B).status, 404);
+
+  const resumed = service.resumeMyTemplateGovernanceObservation({
+    familyId: "family_resume", projectId: "prj_a", confirm: true,
+  }, ACTOR_A);
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.intervention.priorState, "paused");
+  assert.equal(resumed.body.governance.state, "watch");
+  assert.equal(resumed.body.governance.manualObservation, true);
+  assert.equal(state.myTemplateGovernanceInterventions.length, 1);
+
+  const after = service.listMyTemplateOutcomeFeedback({ projectId: "prj_a" }, ACTOR_A);
+  assert.ok(after.body.feedback.every((entry) => entry.governanceImpact === "historical_baseline"));
+  assert.equal(after.body.summaries[0].governance.matchingFeedbackCount, 0);
+  assert.equal(service.resumeMyTemplateGovernanceObservation({
+    familyId: "family_resume", projectId: "prj_a", confirm: true,
+  }, ACTOR_A).status, 409, "a second reset is not silently accumulated");
 });
 
 test("linked alert retries are ownership checked", () => {

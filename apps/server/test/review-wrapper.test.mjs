@@ -195,6 +195,35 @@ test("codex wrapper binds delivery review to the recorded base commit", () => {
   assert.equal(captured.args[11], "--json");
 });
 
+test("codex wrapper uses structured inspection instructions for Office binary changes", () => {
+  const officeWorkdir = realpathSync(mkdtempSync(join(tmpdir(), "review-wrapper-office-")));
+  spawnSync("git", ["init"], { cwd: officeWorkdir, encoding: "utf8" });
+  spawnSync("git", ["config", "user.email", "tests@example.com"], { cwd: officeWorkdir, encoding: "utf8" });
+  spawnSync("git", ["config", "user.name", "Tests"], { cwd: officeWorkdir, encoding: "utf8" });
+  writeFileSync(join(officeWorkdir, "README.md"), "base\n");
+  spawnSync("git", ["add", "README.md"], { cwd: officeWorkdir, encoding: "utf8" });
+  spawnSync("git", ["commit", "-m", "base"], { cwd: officeWorkdir, encoding: "utf8" });
+  const base = spawnSync("git", ["rev-parse", "HEAD"], { cwd: officeWorkdir, encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(officeWorkdir, "result.xlsx"), Buffer.from("PK\u0003\u0004test"));
+  spawnSync("git", ["add", "result.xlsx"], { cwd: officeWorkdir, encoding: "utf8" });
+
+  const capture = join(workdir, "office-capture.json");
+  const stub = writeCodexStub(capture, JSON.stringify({ summary: "Office content checked.", findings: [] }));
+  const res = runWrapper(codexWrapper, [
+    "--mode", "diff-review", "--cwd", officeWorkdir, "--codex-cli", stub,
+    "--base-ref", base, "--instruction", "Validate the delivered spreadsheet.",
+  ], { STUB_CAPTURE: capture });
+
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const captured = JSON.parse(readFileSync(capture, "utf8"));
+  assert.deepEqual(captured.args.slice(0, 5), ["exec", "--sandbox", "read-only", "--ephemeral", "--json"]);
+  assert.match(captured.prompt, new RegExp(base));
+  assert.match(captured.prompt, /Never infer its text.*from git's binary diff/i);
+  assert.match(captured.prompt, /unzip.*decoding XML as UTF-8/i);
+  assert.match(captured.prompt, /internal tma_<id>-- storage prefix.*must not be required or exposed/i);
+  assert.match(captured.prompt, /Additional reviewer instruction: Validate the delivered spreadsheet/);
+});
+
 test("codex wrapper normalizes native review findings", () => {
   const capture = join(workdir, "native-capture.json");
   const native = JSON.stringify({

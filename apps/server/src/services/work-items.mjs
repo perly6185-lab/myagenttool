@@ -5,7 +5,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { normalizeLocalIssueRoutineBinding } from "@myagenttool/protocol/business-routine";
+import { businessRoutineSchemaVersion, normalizeLocalIssueRoutineBinding } from "@myagenttool/protocol/business-routine";
 import { actorCanAccessProject, findUser, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { listDevices } from "../runtime/device.mjs";
 import { homeWorkbenchReadModel } from "../read-models/home-workbench.mjs";
@@ -98,6 +98,404 @@ export function defaultVerificationSop({ title = "", body = "" } = {}) {
     "Review the independent code-review conclusion and confirm that no delivery-blocking issue remains.",
     "Confirm that the change stays within the task goal and understand the impact and risk of applying it or creating a pull request.",
   ];
+}
+
+const TEMPLATE_TRIGGER_TERMS = Object.freeze({
+  inquiry: ["询价", "报价", "inquiry", "rfq", "quotation", "quote"],
+  quotation: ["报价", "quotation", "quote"],
+  order: ["订单", "order"],
+  contract_review: ["合同", "审查", "contract", "review"],
+  purchase_request: ["采购", "purchase", "procurement"],
+  customer_complaint: ["投诉", "客诉", "complaint"],
+  weekly_report: ["周报", "weekly report"],
+  project_acceptance: ["验收", "acceptance"],
+  other_reference: ["技术协议", "设备协议", "技术规格书", "技术要求书", "reference"],
+});
+
+const TEMPLATE_OUTPUT_TERMS = Object.freeze({
+  quotation: ["报价", "报价单", "quotation", "quote", "commercial offer"],
+  order: ["订单", "order"],
+  contract_review: ["合同审查", "合同审核", "contract review"],
+  purchase_request: ["采购申请", "purchase request", "procurement request"],
+  customer_complaint: ["投诉处理", "客诉处理", "complaint response"],
+  weekly_report: ["周报", "weekly report"],
+  project_acceptance: ["验收报告", "acceptance report"],
+  procurement_list: ["采购清单", "采购表", "采购明细表", "采购明细", "设备清单", "采购用excel"],
+});
+
+function compactMatchText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/采购明细表|采购明细|采购用(?:的)?excel|采购表|设备清单/giu, "采购清单")
+    .replace(/设备协议|技术规格书|技术要求书/giu, "设备技术协议")
+    .replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function normalizedDocumentFormat(value) {
+  const format = String(value ?? "").trim().toLowerCase().replace(/^\./, "");
+  if (["xls", "excel", "spreadsheet"].includes(format)) return "xlsx";
+  if (["doc", "word"].includes(format)) return "docx";
+  if (["ppt", "powerpoint"].includes(format)) return "pptx";
+  if (format === "jpeg") return "jpg";
+  return format;
+}
+
+function attachmentFormat(asset) {
+  const fileNameMatch = String(asset?.originalName ?? "").match(/\.([^.]+)$/u);
+  if (fileNameMatch) return normalizedDocumentFormat(fileNameMatch[1]);
+  const mime = String(asset?.mimeType ?? "").toLowerCase();
+  if (mime.includes("pdf")) return "pdf";
+  if (mime.includes("spreadsheet") || mime.includes("excel")) return "xlsx";
+  if (mime.includes("wordprocessing") || mime.includes("word")) return "docx";
+  if (mime.includes("presentation") || mime.includes("powerpoint")) return "pptx";
+  if (mime.startsWith("image/")) return normalizedDocumentFormat(mime.slice(6));
+  return "";
+}
+
+function definitionTemplateContract(definition) {
+  return definition?.templateContract
+    ?? (definition?.steps ?? []).find((step) => step.kind === "generate")?.configuration?.templateContract
+    ?? null;
+}
+
+function textSimilarity(left, right) {
+  const units = (value) => {
+    const normalized = compactMatchText(value);
+    if (!normalized) return new Set();
+    if (normalized.length < 2) return new Set([normalized]);
+    return new Set(Array.from({ length: normalized.length - 1 }, (_, index) => normalized.slice(index, index + 2)));
+  };
+  const leftUnits = units(left);
+  const rightUnits = units(right);
+  if (!leftUnits.size || !rightUnits.size) return 0;
+  let intersection = 0;
+  for (const unit of leftUnits) if (rightUnits.has(unit)) intersection += 1;
+  return intersection / (leftUnits.size + rightUnits.size - intersection);
+}
+
+const TEMPLATE_ROUTING_VOCABULARY = [...new Set([
+  ...Object.values(TEMPLATE_TRIGGER_TERMS).flat(),
+  ...Object.values(TEMPLATE_OUTPUT_TERMS).flat(),
+])];
+
+function templateRoutingTerms(intent) {
+  const normalizedIntent = compactMatchText(intent);
+  return TEMPLATE_ROUTING_VOCABULARY
+    .filter((term) => normalizedIntent.includes(compactMatchText(term)))
+    .map(compactMatchText)
+    .filter((term, index, terms) => terms.indexOf(term) === index);
+}
+
+function templateConfigurationStrings(configuration, depth = 0) {
+  if (!configuration || typeof configuration !== "object" || depth > 4) return [];
+  return Object.values(configuration).flatMap((value) => {
+    if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+    if (Array.isArray(value)) return value.flatMap((item) =>
+      typeof item === "string" && item.trim()
+        ? [item.trim()]
+        : item && typeof item === "object" ? templateConfigurationStrings(item, depth + 1) : []);
+    return value && typeof value === "object" ? templateConfigurationStrings(value, depth + 1) : [];
+  });
+}
+
+function intentIncludesTemplateSignal(normalizedIntent, signal) {
+  const normalized = compactMatchText(signal);
+  const withoutFormat = normalized.replace(/(?:pdf|xlsx?|excel|docx?|word|pptx?|powerpoint|png|jpe?g|webp|文件)$/giu, "");
+  return [normalized, withoutFormat].some((candidate) => candidate.length >= 2 && normalizedIntent.includes(candidate));
+}
+
+function templateConfiguredOutput(configuration) {
+  if (!configuration || typeof configuration !== "object") return null;
+  for (const key of ["output", "expectedOutput", "result", "outputName", "fileName", "format"]) {
+    const value = configuration[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function learnedTemplateOutput(definition) {
+  const outputs = (definition.steps ?? [])
+    .filter((step) => ["generate", "create_issue", "ledger_upsert"].includes(step.kind))
+    .flatMap((step) => [templateConfiguredOutput(step.configuration) ?? step.label])
+    .filter(Boolean);
+  return [...new Set(outputs)].join("、") || "按已确认步骤完成处理";
+}
+
+const MY_TEMPLATE_GOVERNANCE_WINDOW = 10;
+
+function latestMyTemplateGovernanceIntervention(interventions, familyId) {
+  return interventions
+    .filter((entry) => entry?.familyId === familyId && entry.action === "resume_observation")
+    .sort((left, right) => String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? "")))[0] ?? null;
+}
+
+/**
+ * Outcome governance is deliberately conservative: one bad result never
+ * disables a template, content-quality feedback is not treated as a routing
+ * error, and editing an earlier response immediately recalculates the state.
+ */
+export function evaluateMyTemplateGovernance({ outcomeFeedback = [], interventions = [], familyId = "" } = {}) {
+  const latestIntervention = latestMyTemplateGovernanceIntervention(interventions, familyId);
+  const historicalFeedbackIds = new Set(latestIntervention?.feedbackIds ?? []);
+  const recent = outcomeFeedback
+    .filter((entry) => entry?.familyId === familyId && !historicalFeedbackIds.has(entry.id))
+    .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "")
+      .localeCompare(String(left.updatedAt ?? left.createdAt ?? "")))
+    .slice(0, MY_TEMPLATE_GOVERNANCE_WINDOW);
+  const metExpectations = recent.filter((entry) => entry.outcome === "met_expectations").length;
+  const wrongResult = recent.filter((entry) => entry.outcome === "wrong_result").length;
+  const needsQualityAdjustment = recent.filter((entry) => entry.outcome === "needs_quality_adjustment").length;
+  const matchingFeedbackCount = metExpectations + wrongResult;
+  const wrongResultRate = matchingFeedbackCount ? wrongResult / matchingFeedbackCount : 0;
+  const paused = matchingFeedbackCount >= 5 && wrongResult >= 3 && wrongResultRate >= 0.6;
+  const watch = !paused && matchingFeedbackCount >= 3 && wrongResult >= 2 && wrongResultRate >= 0.4;
+  const trusted = !paused && !watch && metExpectations >= 3 && wrongResultRate <= 0.25;
+  const manualObservation = Boolean(latestIntervention) && !paused && !watch && !trusted;
+  const state = paused ? "paused" : (watch || manualObservation) ? "watch" : trusted ? "trusted" : "learning";
+  return {
+    state,
+    windowSize: recent.length,
+    matchingFeedbackCount,
+    metExpectations,
+    wrongResult,
+    needsQualityAdjustment,
+    wrongResultRate: Number(wrongResultRate.toFixed(4)),
+    autoMatchAllowed: !paused,
+    requiresConfirmation: paused || watch || manualObservation,
+    scoreAdjustment: watch || manualObservation ? -3 : 0,
+    manualObservation,
+    historicalFeedbackCount: historicalFeedbackIds.size,
+    latestIntervention: latestIntervention ? {
+      id: latestIntervention.id,
+      action: latestIntervention.action,
+      reason: latestIntervention.reason,
+      createdAt: latestIntervention.createdAt,
+      createdBy: latestIntervention.createdBy,
+    } : null,
+    reason: paused ? "repeated_wrong_result_feedback"
+      : watch ? "elevated_wrong_result_feedback"
+        : manualObservation ? "manual_resume_observation"
+        : trusted ? "consistent_expected_results" : "insufficient_outcome_feedback",
+  };
+}
+
+/**
+ * Deterministic first-stage router for learned local templates. It deliberately
+ * returns no match when only weak evidence exists; the caller can always create
+ * an ordinary Issue instead of forcing a template.
+ */
+export function matchPublishedMyTemplate({
+  definitions = [], routingFeedback = [], outcomeFeedback = [], governanceInterventions = [], projectId = "", intent = "", attachments = [],
+} = {}) {
+  const attachmentNames = attachments.map((asset) => asset?.originalName).filter(Boolean).join("\n");
+  const normalizedIntent = compactMatchText(`${intent}\n${attachmentNames}`);
+  if (!normalizedIntent) return {
+    state: "missing", candidates: [], selected: null,
+    decision: { kind: "no_match", confidence: "low", reason: "empty_intent" },
+  };
+  const currentRoutingTerms = templateRoutingTerms(intent);
+  const explicitlyRequestsKnownOutput = definitions.some((definition) => {
+    const output = learnedTemplateOutput(definition);
+    if (intentIncludesTemplateSignal(normalizedIntent, output)) return true;
+    return Object.values(TEMPLATE_OUTPUT_TERMS).some((terms) =>
+      terms.some((term) => compactMatchText(output).includes(compactMatchText(term)))
+      && terms.some((term) => normalizedIntent.includes(compactMatchText(term))));
+  });
+  const relevantRoutingFeedback = explicitlyRequestsKnownOutput ? [] : routingFeedback.filter((feedback) =>
+    (feedback.intentTerms ?? []).some((term) => currentRoutingTerms.includes(term)));
+  const learnedChoiceCounts = [...relevantRoutingFeedback.reduce((counts, feedback) => {
+    const key = compactMatchText(feedback.selectedOutput);
+    if (!key) return counts;
+    const current = counts.get(key) ?? { label: feedback.selectedOutput, count: 0, familyIds: new Set() };
+    current.count += feedback.kind === "confirmation" ? 2 : 1;
+    current.familyIds.add(feedback.selectedFamilyId);
+    counts.set(key, current);
+    return counts;
+  }, new Map()).values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+  const learnedPreferenceConflict = learnedChoiceCounts.length > 1
+    && learnedChoiceCounts[0].count - learnedChoiceCounts[1].count <= 1;
+  const conflictingFamilyIds = new Set(learnedPreferenceConflict
+    ? learnedChoiceCounts.flatMap((choice) => [...choice.familyIds])
+    : []);
+  const scoredCandidates = definitions
+    .filter((definition) => definition?.state === "published"
+      && (definition?.projectId === projectId || definition?.templateScope === "team"))
+    .map((definition) => {
+      let score = 0;
+      const reasons = [];
+      const name = compactMatchText(definition.name);
+      if (name.length >= 2 && normalizedIntent.includes(name)) {
+        score += 10;
+        reasons.push(`任务目标明确提到“${definition.name}”`);
+      }
+      const output = learnedTemplateOutput(definition);
+      const outputSignals = (definition.steps ?? [])
+        .filter((step) => ["generate", "create_issue", "ledger_upsert"].includes(step.kind))
+        .flatMap((step) => [step.key, step.label, ...templateConfigurationStrings(step.configuration)]);
+      for (const signal of outputSignals) {
+        const normalized = compactMatchText(signal);
+        if (normalized.length < 2 || !intentIncludesTemplateSignal(normalizedIntent, signal)) continue;
+        score += 6;
+        if (!reasons.some((reason) => reason.startsWith("期望结果"))) reasons.push(`期望结果与“${signal}”一致`);
+      }
+      const outputSemantics = Object.entries(TEMPLATE_OUTPUT_TERMS).find(([, terms]) =>
+        outputSignals.some((signal) => terms.some((term) => compactMatchText(signal).includes(compactMatchText(term)))));
+      const matchedOutputTerm = outputSemantics?.[1].find((term) => normalizedIntent.includes(compactMatchText(term)));
+      if (matchedOutputTerm && !reasons.some((reason) => reason.startsWith("期望结果"))) {
+        score += 6;
+        reasons.push(`期望结果与“${matchedOutputTerm}”一致`);
+      }
+      const triggerTerms = (definition.triggerDocumentTypes ?? [])
+        .flatMap((type) => TEMPLATE_TRIGGER_TERMS[type] ?? [String(type)]);
+      const matchedTrigger = triggerTerms.find((term) => normalizedIntent.includes(compactMatchText(term)));
+      if (matchedTrigger) {
+        score += 3;
+        reasons.push(`输入或目标包含“${matchedTrigger}”`);
+      }
+      const inputSignals = (definition.steps ?? [])
+        .filter((step) => ["extract", "retrieve"].includes(step.kind))
+        .flatMap((step) => typeof step.configuration?.inputSummary === "string"
+          ? [step.label, step.configuration.inputSummary]
+          : []);
+      const matchedInputSignal = inputSignals.find((signal) => intentIncludesTemplateSignal(normalizedIntent, signal));
+      if (matchedInputSignal) {
+        score += 4;
+        reasons.push(`输入材料与“${matchedInputSignal}”一致`);
+      }
+      const configuredFormats = definitionTemplateContract(definition)?.inputFormats ?? [];
+      const acceptedFormats = (Array.isArray(configuredFormats) ? configuredFormats : [configuredFormats])
+        .map(normalizedDocumentFormat)
+        .filter(Boolean);
+      const providedFormats = [...new Set(attachments.map(attachmentFormat).filter(Boolean))];
+      const matchedFormat = providedFormats.find((format) => acceptedFormats.includes(format));
+      if (matchedFormat) {
+        score += 5;
+        reasons.push(`附件格式与模版需要的 ${matchedFormat.toUpperCase()} 一致`);
+      }
+      const description = compactMatchText(definition.description);
+      if (description.length >= 4 && normalizedIntent.includes(description)) score += 4;
+      if (!explicitlyRequestsKnownOutput && currentRoutingTerms.length) {
+        const correctionScore = relevantRoutingFeedback.reduce((total, feedback) => {
+          if (feedback.selectedFamilyId === definition.familyId) return total + 3;
+          if (feedback.rejectedFamilyId === definition.familyId) return total - 3;
+          return total;
+        }, 0);
+        const boundedCorrectionScore = Math.max(-6, Math.min(6, correctionScore));
+        score += boundedCorrectionScore;
+        if (boundedCorrectionScore > 0) reasons.push("参考了你之前对相似任务的纠正");
+      }
+      const governance = evaluateMyTemplateGovernance({
+        outcomeFeedback, interventions: governanceInterventions, familyId: definition.familyId,
+      });
+      const rawScore = score;
+      score += governance.scoreAdjustment;
+      if (governance.state === "watch") reasons.push("近期匹配反馈偏低，使用前需要你确认");
+      if (governance.state === "paused") reasons.push("近期多次反馈结果类型不对，已暂停自动匹配");
+      return {
+        templateId: definition.familyId,
+        definitionId: definition.id,
+        version: definition.version,
+        name: definition.name,
+        description: definition.description,
+        expectedOutput: output,
+        steps: (definition.steps ?? []).map((step) => step.label).filter(Boolean),
+        rawScore,
+        score,
+        reasons,
+        governance,
+        templateMaturity: definition.templateMaturity ?? "stable",
+      };
+    });
+  const candidates = scoredCandidates
+    .filter((candidate) => candidate.governance.state !== "paused"
+      && (candidate.rawScore >= 5 || conflictingFamilyIds.has(candidate.templateId)))
+    .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
+    .slice(0, 3);
+  const pausedCandidates = scoredCandidates
+    .filter((candidate) => candidate.governance.state === "paused" && candidate.rawScore >= 5)
+    .sort((left, right) => right.rawScore - left.rawScore || left.name.localeCompare(right.name))
+    .slice(0, 3);
+  if (!candidates.length) return {
+    state: pausedCandidates.length ? "ambiguous" : "missing",
+    candidates: pausedCandidates,
+    selected: null,
+    decision: pausedCandidates.length
+      ? { kind: "confirm_output", confidence: "low", reason: "outcome_feedback_paused" }
+      : { kind: "no_match", confidence: "low", reason: "insufficient_evidence" },
+    ...(pausedCandidates.length ? {
+      clarification: {
+        kind: "desired_output",
+        question: "仍要按这个模版处理吗？",
+        reason: "outcome_feedback_paused",
+        message: "这个模版近期多次得到错误的结果类型，系统已停止自动套用。你仍可确认本次使用。",
+        options: [...new Map(pausedCandidates.map((candidate) => [
+          compactMatchText(candidate.expectedOutput),
+          { definitionId: candidate.definitionId, label: candidate.expectedOutput },
+        ])).values()],
+      },
+    } : {}),
+  };
+  const explicitlyRequestedOutputs = candidates.filter((candidate) => {
+    const directMatch = intentIncludesTemplateSignal(normalizedIntent, candidate.expectedOutput);
+    const semanticMatch = Object.values(TEMPLATE_OUTPUT_TERMS).some((terms) =>
+      terms.some((term) => compactMatchText(candidate.expectedOutput).includes(compactMatchText(term)))
+      && terms.some((term) => normalizedIntent.includes(compactMatchText(term))));
+    return directMatch || semanticMatch;
+  });
+  const explicitOutputConflict = new Set(
+    explicitlyRequestedOutputs.map((candidate) => compactMatchText(candidate.expectedOutput)),
+  ).size > 1;
+  const closeCandidates = candidates.length > 1 && candidates[0].score - candidates[1].score < 3;
+  const scoreGap = candidates.length > 1 ? candidates[0].score - candidates[1].score : candidates[0].score;
+  const dominantCandidate = candidates.length === 1
+    || (scoreGap >= 6 && candidates[0].score >= Math.max(10, candidates[1].score * 2));
+  const explicitlyOffersAlternatives = /(?:或(?:者)?|二选一|either\b|\bor\b)/iu.test(String(intent));
+  const actionableExplicitOutputConflict = explicitOutputConflict
+    && (!dominantCandidate || explicitlyOffersAlternatives);
+  const conflictingCandidateOutputs = new Set(candidates
+    .filter((candidate) => conflictingFamilyIds.has(candidate.templateId))
+    .map((candidate) => compactMatchText(candidate.expectedOutput)));
+  const hasActionableLearnedConflict = learnedPreferenceConflict && conflictingCandidateOutputs.size > 1;
+  const governanceNeedsConfirmation = candidates[0]?.governance.requiresConfirmation === true;
+  const manualObservationConfirmation = candidates[0]?.governance.manualObservation === true;
+  const ambiguous = governanceNeedsConfirmation || actionableExplicitOutputConflict || hasActionableLearnedConflict || (closeCandidates
+    && compactMatchText(candidates[0].expectedOutput) !== compactMatchText(candidates[1].expectedOutput));
+  const decisionReason = manualObservationConfirmation ? "manual_resume_observation"
+    : governanceNeedsConfirmation ? "outcome_feedback_watch"
+    : actionableExplicitOutputConflict ? "explicit_output_conflict"
+    : hasActionableLearnedConflict ? "learned_preference_conflict"
+      : ambiguous ? "close_different_results"
+        : explicitlyRequestedOutputs.length === 1 ? "explicit_result_match"
+          : relevantRoutingFeedback.length ? "consistent_learned_preference"
+            : "strong_template_match";
+  const confidence = ambiguous ? "low"
+    : (explicitlyRequestedOutputs.length === 1 || (candidates[0].score >= 9 && scoreGap >= 3)) ? "high" : "medium";
+  return {
+    state: ambiguous ? "ambiguous" : "matched",
+    candidates,
+    selected: ambiguous ? null : candidates[0],
+    decision: { kind: ambiguous ? "confirm_output" : "auto_apply", confidence, reason: decisionReason },
+    ...(ambiguous ? {
+      clarification: {
+        kind: "desired_output",
+        question: "这次你希望最终得到什么？",
+        reason: decisionReason,
+        ...(manualObservationConfirmation ? {
+          message: "这个模版由你恢复到观察期，本次确认结果后才会使用。",
+        } : governanceNeedsConfirmation ? {
+          message: "这个模版近期出现过多次结果类型不符，本次先由你确认结果。",
+        } : {}),
+        ...(hasActionableLearnedConflict ? {
+          message: "你以前对此类任务选择过不同结果，请确认这次需要什么。",
+          learnedChoices: learnedChoiceCounts.map(({ label, count }) => ({ label, count })),
+        } : {}),
+        options: [...new Map(candidates.map((candidate) => [
+          compactMatchText(candidate.expectedOutput),
+          { definitionId: candidate.definitionId, label: candidate.expectedOutput },
+        ])).values()],
+      },
+    } : {}),
+  };
 }
 
 export function taskTraceStage(type, source = "issue") {
@@ -280,6 +678,20 @@ function validateDraft(input, { partial = false } = {}) {
     const { schemaVersion, ...binding } = normalized.value;
     Object.assign(value, binding, { routineBindingSchemaVersion: schemaVersion });
   }
+  if (Object.hasOwn(input, "myTemplateBinding")) {
+    const binding = input.myTemplateBinding;
+    const definitionId = String(binding?.definitionId ?? "").trim();
+    const familyId = String(binding?.familyId ?? "").trim();
+    const version = Number(binding?.version);
+    const matchReasons = strings(binding?.matchReasons ?? [], { limit: 10, maxLength: 500 });
+    if (!definitionId || !familyId || !Number.isInteger(version) || version < 1 || !matchReasons) {
+      return { error: "invalid_work_item_my_template_binding" };
+    }
+    value.myTemplateBinding = {
+      definitionId, familyId, version, matchReasons,
+      userConfirmedResult: binding?.userConfirmedResult === true,
+    };
+  }
   return { value };
 }
 
@@ -331,12 +743,27 @@ export function createWorkItemService({
   issueApplicationApprovalGrant = null,
   onWorkItemChanged = () => {},
   claimTaskMaterialDraft = null,
+  inspectTaskMaterialDraft = null,
   resolveClaimedTaskMaterial = null,
   store,
 }) {
+  state.myTemplateRoutingFeedback ??= [];
+  state.myTemplateOutcomeFeedback ??= [];
+  state.myTemplateGovernanceInterventions ??= [];
+  state.myTemplateDrafts ??= [];
+  state.myTemplateLearningCases ??= [];
+  state.routineDefinitions ??= [];
   const runTx = makeRunTx({ store, persistStateSoon });
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const actorUser = (actor) => actor?.userId ?? LOCAL_USER_ID;
+  const taskDraftsNeedingSingleCaseMigration = state.myTemplateDrafts.filter((draft) =>
+    draft.casesRequired !== 1 || (draft.state === "learning" && Number(draft.caseCount ?? 0) >= 1));
+  if (taskDraftsNeedingSingleCaseMigration.length) runTx(() => {
+    for (const draft of taskDraftsNeedingSingleCaseMigration) {
+      draft.casesRequired = 1;
+      if (draft.state === "learning" && Number(draft.caseCount ?? 0) >= 1) draft.state = "needs_review";
+    }
+  });
   const legacyContractCandidates = (state.workItems ?? []).filter((item) =>
     !item.executionContractSnapshot && item.executionContractConfirmedAt
     && (item.acceptanceCriteria ?? []).length && (item.verificationSop ?? []).length);
@@ -373,6 +800,42 @@ export function createWorkItemService({
     } catch {
       // Outcome projection is best-effort and must never roll back the Issue mutation.
     }
+  };
+  const materializeMyTemplateBinding = (requested, projectId, actor, timestamp = now()) => {
+    const definition = (state.routineDefinitions ?? []).find((row) =>
+      row.id === requested.definitionId
+      && row.familyId === requested.familyId
+      && row.version === requested.version
+      && (row.projectId === projectId || row.templateScope === "team")
+      && row.ownerTeamId === actorTeam(actor)
+      && row.state === "published");
+    if (!definition) return { error: "work_item_my_template_not_available" };
+    const snapshot = {
+      name: definition.name,
+      description: definition.description,
+      expectedOutput: learnedTemplateOutput(definition),
+      ...(definition.templateContract ? { templateContract: definition.templateContract } : {}),
+      steps: (definition.steps ?? []).map((step) => ({
+        key: step.key,
+        kind: step.kind,
+        label: step.label,
+        required: Boolean(step.required),
+      })),
+    };
+    return {
+      value: {
+        schemaVersion: 1,
+        definitionId: definition.id,
+        familyId: definition.familyId,
+        version: definition.version,
+        name: definition.name,
+        expectedOutput: snapshot.expectedOutput,
+        matchReasons: requested.matchReasons,
+        snapshot,
+        snapshotHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+        matchedAt: timestamp,
+      },
+    };
   };
   const localTerminalId = () => listDevices(state)[0]?.id ?? null;
   const localAssetResourceClasses = (terminalId) => {
@@ -648,6 +1111,184 @@ export function createWorkItemService({
     };
   }
 
+  function myTemplateDraftView(draft) {
+    if (!draft) return null;
+    return {
+      id: draft.id,
+      projectId: draft.projectId,
+      name: draft.name,
+      typicalInput: draft.typicalInput,
+      expectedOutput: draft.expectedOutput,
+      applicability: draft.applicability,
+      steps: [...(draft.steps ?? [])],
+      state: draft.state,
+      caseCount: draft.caseCount,
+      casesRequired: draft.casesRequired,
+      revision: draft.revision,
+      origin: { ...draft.origin },
+      activation: draft.activation ? { ...draft.activation } : null,
+      createdAt: draft.createdAt,
+      updatedAt: draft.updatedAt,
+    };
+  }
+
+  function taskTemplateDraftFor(item, actor) {
+    return state.myTemplateDrafts.find((draft) =>
+      draft.ownerTeamId === actorTeam(actor)
+      && draft.projectId === item.projectId
+      && draft.origin?.workItemId === item.id) ?? null;
+  }
+
+  function latestTaskDelivery(item) {
+    const runIds = new Set((item.executionBindings ?? [])
+      .filter((binding) => binding.kind === "auto_run" && binding.targetId)
+      .map((binding) => binding.targetId));
+    const run = (state.autoRuns ?? [])
+      .filter((candidate) => runIds.has(candidate.id))
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))[0] ?? null;
+    return { run, report: run?.deliveryReport ?? null };
+  }
+
+  function taskTemplateDraftPreview(item, actor) {
+    const existing = taskTemplateDraftFor(item, actor);
+    if (existing) return { eligible: true, alreadySaved: true, draft: myTemplateDraftView(existing), reasons: [] };
+
+    const reasons = [];
+    if (item.status !== "done") reasons.push("task_not_completed");
+    if (item.myTemplateBinding) reasons.push("task_already_used_my_template");
+    const { report } = latestTaskDelivery(item);
+    const passedVerification = (item.verificationRecords ?? []).some((record) => record.status === "passed");
+    const passedAcceptance = (item.acceptanceResults ?? []).some((result) => result.status === "passed");
+    const hasResultEvidence = Boolean(
+      (item.outputAssets ?? []).length
+      || report?.summary
+      || report?.changedFiles?.length
+      || item.lastProgressSummary
+      || passedVerification
+      || passedAcceptance,
+    );
+    if (!hasResultEvidence) reasons.push("task_result_evidence_required");
+
+    const fileLabel = (asset) => String(asset.originalName ?? asset.path ?? "").replaceAll("\\", "/").split("/").pop();
+    const inputLabels = [...new Set((item.inputAssets ?? []).map(fileLabel).filter(Boolean))];
+    const outputLabels = [...new Set([
+      ...(item.outputAssets ?? []).map(fileLabel),
+      ...(report?.changedFiles ?? []).map((path) => String(path).replaceAll("\\", "/").split("/").pop()),
+    ].filter(Boolean))];
+    const typicalInput = inputLabels.length
+      ? inputLabels.slice(0, 5).join("、")
+      : `与“${String(item.title ?? "这项工作").slice(0, 120)}”类似的任务说明和材料`;
+    const expectedOutput = outputLabels.length
+      ? outputLabels.slice(0, 5).join("、")
+      : String(report?.summary ?? item.lastProgressSummary ?? "得到符合任务目标并通过检查的结果").trim().slice(0, 1_000);
+    const observedSteps = [...new Set((item.assetOperations ?? [])
+      .map((operation) => String(operation.summary ?? operation.capability ?? "").trim().slice(0, 1_000))
+      .filter(Boolean))];
+    const steps = (observedSteps.length ? observedSteps : [
+      `理解并检查${typicalInput}`,
+      "按任务目标完成处理",
+      `检查并交付${expectedOutput}`,
+    ]).slice(0, 12);
+    return {
+      eligible: reasons.length === 0,
+      alreadySaved: false,
+      reasons,
+      draft: null,
+      suggestion: {
+        name: String(item.title ?? "新的我的模版").trim().slice(0, 200),
+        typicalInput: typicalInput.slice(0, 1_000),
+        expectedOutput: expectedOutput.slice(0, 1_000),
+        applicability: `当收到${typicalInput.slice(0, 500)}，并希望得到${expectedOutput.slice(0, 500)}时`,
+        steps,
+      },
+      evidence: {
+        inputCount: item.inputAssets?.length ?? 0,
+        outputCount: item.outputAssets?.length ?? 0,
+        passedVerification,
+        passedAcceptance,
+        hasDeliveryReport: Boolean(report?.summary || report?.changedFiles?.length),
+      },
+    };
+  }
+
+  function taskTemplateLearningSnapshot(item) {
+    const boundedAssetRef = (asset) => ({
+      id: asset.id ?? null,
+      name: asset.originalName ?? String(asset.path ?? "").replaceAll("\\", "/").split("/").pop() ?? null,
+      path: asset.path ?? null,
+      family: asset.family ?? null,
+      hash: asset.hash ?? null,
+      version: asset.version ?? null,
+      terminalId: asset.terminalId ?? null,
+    });
+    const { report } = latestTaskDelivery(item);
+    const snapshot = {
+      schemaVersion: 1,
+      workItemId: item.id,
+      workItemRevision: item.revision,
+      taskTitle: String(item.title ?? "").slice(0, 300),
+      inputAssets: (item.inputAssets ?? []).slice(0, 100).map(boundedAssetRef),
+      outputAssets: (item.outputAssets ?? []).slice(0, 100).map(boundedAssetRef),
+      resultSummary: String(report?.summary ?? item.lastProgressSummary ?? "").slice(0, 2_000),
+      changedFiles: strings(report?.changedFiles ?? [], { limit: 100, maxLength: 1_000 }) ?? [],
+      acceptanceCriteria: strings(item.acceptanceCriteria ?? [], { limit: 30, maxLength: 2_000 }) ?? [],
+      acceptanceResults: (item.acceptanceResults ?? []).slice(0, 100).map((result) => ({
+        criterion: String(result.criterion ?? "").slice(0, 2_000),
+        status: result.status,
+      })),
+      verificationEvidence: (item.verificationRecords ?? []).slice(-30).map((record) => ({
+        kind: record.kind,
+        status: record.status,
+        summary: String(record.summary ?? "").slice(0, 1_000),
+      })),
+    };
+    return {
+      snapshot,
+      snapshotHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+    };
+  }
+
+  function similarTaskCandidate(draft, item, actor) {
+    if (item.ownerTeamId !== actorTeam(actor) || item.projectId !== draft.projectId) return null;
+    if ((draft.learningCaseIds ?? []).some((caseId) => state.myTemplateLearningCases
+      .some((entry) => entry.id === caseId && entry.workItemId === item.id))) return null;
+    if (state.myTemplateLearningCases.some((entry) =>
+      entry.ownerTeamId === actorTeam(actor) && entry.workItemId === item.id)) return null;
+    if (item.status !== "done" || item.myTemplateBinding) return null;
+    const preview = taskTemplateDraftPreview(item, actor);
+    if (!preview.eligible || !preview.suggestion) return null;
+
+    const titleScore = textSimilarity(draft.name, item.title);
+    const inputScore = textSimilarity(draft.typicalInput, preview.suggestion.typicalInput);
+    const outputScore = textSimilarity(draft.expectedOutput, preview.suggestion.expectedOutput);
+    const draftOutputExtension = String(draft.expectedOutput).toLowerCase().match(/\.[a-z0-9]{1,8}\b/)?.[0] ?? null;
+    const candidateOutputExtension = String(preview.suggestion.expectedOutput).toLowerCase().match(/\.[a-z0-9]{1,8}\b/)?.[0] ?? null;
+    const sameOutputFormat = Boolean(draftOutputExtension && draftOutputExtension === candidateOutputExtension);
+    if (outputScore < 0.12 && !sameOutputFormat) return null;
+    const score = Math.min(1, titleScore * 0.35 + inputScore * 0.25 + outputScore * 0.4 + (sameOutputFormat ? 0.08 : 0));
+    if (score < 0.22) return null;
+    const reasons = [];
+    if (outputScore >= 0.2) reasons.push("交付结果相似");
+    if (inputScore >= 0.2) reasons.push("输入材料相似");
+    if (titleScore >= 0.2) reasons.push("任务目标相似");
+    if (sameOutputFormat) reasons.push("输出格式一致");
+    return {
+      workItem: {
+        id: item.id,
+        localRef: item.localRef ?? null,
+        title: item.title,
+        completedAt: item.completedAt ?? item.updatedAt ?? null,
+        revision: item.revision,
+      },
+      similarity: Number(score.toFixed(4)),
+      confidence: score >= 0.55 ? "high" : score >= 0.35 ? "medium" : "low",
+      reasons,
+      typicalInput: preview.suggestion.typicalInput,
+      expectedOutput: preview.suggestion.expectedOutput,
+      evidence: preview.evidence,
+    };
+  }
+
   function workItemView(item, actor) {
     const { createIdempotencyKey: _createIdempotencyKey, ...publicItem } = item;
     const bodyAcceptanceCriteria = (item.acceptanceCriteria ?? []).length
@@ -669,6 +1310,8 @@ export function createWorkItemService({
     const completedSubIssues = subIssues.filter(
       (candidate) => candidate.status === "done" || candidate.state === "closed",
     ).length;
+    const templateOutcomeFeedback = state.myTemplateOutcomeFeedback.find((feedback) =>
+      feedback.ownerTeamId === actorTeam(actor) && feedback.workItemId === item.id) ?? null;
     return {
       ...publicItem,
       acceptanceCriteria: visibleAcceptanceCriteria,
@@ -697,6 +1340,18 @@ export function createWorkItemService({
       executionContractGate: executionContractGate(item),
       reviewContract: frozenReviewContract,
       reviewEvidence: reviewEvidence(item, frozenReviewContract),
+      myTemplateOutcomeFeedback: templateOutcomeFeedback ? {
+        id: templateOutcomeFeedback.id,
+        outcome: templateOutcomeFeedback.outcome,
+        note: templateOutcomeFeedback.note,
+        definitionId: templateOutcomeFeedback.definitionId,
+        familyId: templateOutcomeFeedback.familyId,
+        version: templateOutcomeFeedback.version,
+        revision: templateOutcomeFeedback.revision,
+        createdAt: templateOutcomeFeedback.createdAt,
+        updatedAt: templateOutcomeFeedback.updatedAt,
+      } : null,
+      myTemplateDraft: myTemplateDraftView(taskTemplateDraftFor(item, actor)),
       parent: parent ? {
         id: parent.id, localRef: parent.localRef, title: parent.title,
         status: parent.status, state: parent.state,
@@ -832,11 +1487,17 @@ export function createWorkItemService({
       });
       const runBinding = [...(item.executionBindings ?? [])].reverse().find((bindingRow) => bindingRow.kind === "auto_run");
       const run = runBinding ? (state.autoRuns ?? []).find((candidate) => candidate.id === runBinding.targetId) : null;
-      if (run && ["awaiting_approval", "needs_input"].includes(run.status)) rows.push({
+      if (run?.status === "awaiting_approval") rows.push({
         id: `execution_approval:${item.id}:${run.id}`, kind: "execution_approval", severity: "high",
         workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
         title: item.title, createdAt: run.updatedAt ?? run.createdAt ?? item.updatedAt,
         details: { autoRunId: run.id, status: run.status },
+      });
+      if (run?.status === "needs_input" && run.decision?.path === "clarify" && !run.clarifyAnswer) rows.push({
+        id: `execution_input:${item.id}:${run.id}`, kind: "execution_input", severity: "high",
+        workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
+        title: item.title, createdAt: run.updatedAt ?? run.createdAt ?? item.updatedAt,
+        details: { autoRunId: run.id, status: run.status, questions: run.decision?.clarifyingQuestions ?? [] },
       });
       const failed = (item.verificationRecords ?? []).find((record) => record.status === "failed");
       if (failed) rows.push({
@@ -1570,8 +2231,10 @@ export function createWorkItemService({
         ? latestRun?.decision?.rationale ?? routeSignals[path]
         : routeSignals[path],
     }));
-    const nextAction = attention.some((row) => row.kind === "execution_approval")
-      ? "review_approval"
+    const nextAction = attention.some((row) => row.kind === "execution_input")
+      ? "answer_ai"
+      : attention.some((row) => row.kind === "execution_approval")
+        ? "review_approval"
       : attention.some((row) => row.kind === "github_conflict")
         ? "resolve_sync_conflict"
         : executionState(item) === "failed"
@@ -1698,34 +2361,892 @@ export function createWorkItemService({
       : /initiative|epic|项目|计划/.test(lower) ? "initiative"
         : /feature|新增|支持|能力/.test(lower) ? "feature" : "task";
     const extractedCriteria = extractAcceptanceCriteriaFromBody(body);
-    const acceptanceCriteria = extractedCriteria.length ? extractedCriteria : [
-      `The requested outcome for “${title}” is demonstrably complete.`,
-      "Automated verification covers the primary success path.",
-      ...(type === "bug" ? ["A regression test reproduces the prior failure and passes after the fix."] : []),
-    ];
+    let materialDraft = null;
+    const materialDraftId = String(input.materialDraftId ?? "").trim();
+    if (materialDraftId) {
+      if (typeof inspectTaskMaterialDraft !== "function") {
+        return { ok: false, status: 503, body: { error: "task_material_service_unavailable" } };
+      }
+      const inspected = inspectTaskMaterialDraft({ projectId, draftId: materialDraftId }, actor);
+      if (inspected.status !== 200) return { ok: false, status: inspected.status, body: inspected.body };
+      materialDraft = inspected.body.draft;
+      const expectedRevision = Number(input.materialDraftRevision);
+      if (Number.isInteger(expectedRevision) && expectedRevision !== materialDraft.revision) {
+        return { ok: false, status: 409, body: { error: "task_material_revision_conflict", currentRevision: materialDraft.revision } };
+      }
+    }
+    const attachments = materialDraft?.assets ?? [];
+    const attachmentNames = attachments.map((asset) => asset.originalName).filter(Boolean).join("\n");
+    const templateMatch = matchPublishedMyTemplate({
+      definitions: (state.routineDefinitions ?? []).filter((definition) => definition.ownerTeamId === actorTeam(actor)),
+      routingFeedback: state.myTemplateRoutingFeedback.filter((feedback) =>
+        feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+      outcomeFeedback: state.myTemplateOutcomeFeedback.filter((feedback) =>
+        feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+      governanceInterventions: state.myTemplateGovernanceInterventions.filter((entry) =>
+        entry.ownerTeamId === actorTeam(actor) && entry.projectId === projectId),
+      projectId,
+      intent: `${title}\n${body}`,
+      attachments,
+    });
+    const selectedDefinition = templateMatch.selected
+      ? (state.routineDefinitions ?? []).find((definition) => definition.id === templateMatch.selected.definitionId)
+      : null;
+    const templateContract = definitionTemplateContract(selectedDefinition);
+    const expectedOutput = templateMatch.selected?.expectedOutput ?? "工作结果";
+    const outputFileName = templateContract?.outputFileName || expectedOutput;
+    const outputColumns = (templateContract?.outputColumns ?? []).filter(Boolean);
+    const uncertainFields = (templateContract?.uncertainFields ?? []).filter(Boolean);
+    const chinese = /[\u3400-\u9fff]/.test(`${title}${body}${attachmentNames}`);
+    const businessLike = attachments.length > 0 || templateMatch.state !== "missing";
+    const templateAcceptance = selectedDefinition ? [
+      `生成并可正常打开${outputFileName}`,
+      ...(outputColumns.length ? [`结果保留模版约定的 ${outputColumns.length} 个字段，字段名称和顺序一致`] : []),
+      "输入材料中能够确认的信息已准确写入结果",
+      ...(uncertainFields.length ? [`${uncertainFields.join("、")}无法确认时保持空白，不得猜测`] : []),
+    ] : [];
+    const acceptanceCriteria = extractedCriteria.length ? extractedCriteria
+      : templateAcceptance.length ? templateAcceptance
+        : businessLike && chinese ? [
+          `已生成可查看、可继续使用的${expectedOutput}`,
+          "结果中的关键信息与输入文件一致，无法确认的内容没有被猜测填充",
+        ] : [
+          `The requested outcome for “${title}” is demonstrably complete.`,
+          "Automated verification covers the primary success path.",
+          ...(type === "bug" ? ["A regression test reproduces the prior failure and passes after the fix."] : []),
+        ];
+    const verificationSop = businessLike && chinese ? [
+      `打开${outputFileName}，确认文件可正常查看且格式完整`,
+      "对照输入材料抽查关键信息，确认名称、规格、数量等内容准确",
+      ...(uncertainFields.length ? [`检查${uncertainFields.join("、")}；原文没有依据时应保持空白`] : []),
+      "确认系统只处理任务中的安全副本，原始文件未被修改",
+    ] : defaultVerificationSop({ title, body });
     return {
       ok: true, status: 200, body: {
         draft: {
           title, body: body || `Implement ${title} with a user-visible result and documented verification.`,
           type, priority: /urgent|critical|p0|紧急|严重/.test(lower) ? "p0" : "p2",
           acceptanceCriteria,
-          verificationSop: defaultVerificationSop({ title, body }),
+          verificationSop,
           executionContractSource: extractedCriteria.length ? "body_extracted" : "assisted",
           suggestedRoute: type === "initiative" ? "decompose" : body.length < 40 ? "clarify" : "develop",
+          templateMatch,
           risks: [
-            ...(!body ? ["The problem statement needs more context."] : []),
-            "Confirm affected users and rollback expectations before execution.",
+            ...(businessLike && chinese
+              ? ["系统只处理任务中的安全副本，不会修改原始文件。"]
+              : [...(!body ? ["The problem statement needs more context."] : []), "Confirm affected users and rollback expectations before execution."]),
           ],
           evidence: {
             generator: "heuristic",
             policyVersion: "local-work-item-draft-v1",
             modelVersion: null,
-            inputDigest: createHash("sha256").update(JSON.stringify({ projectId, title, body })).digest("hex"),
+            inputDigest: createHash("sha256").update(JSON.stringify({
+              projectId, title, body, attachments: attachments.map((asset) => ({ name: asset.originalName, hash: asset.hash })),
+            })).digest("hex"),
             confidence: body.length >= 120 ? 0.78 : body.length >= 40 ? 0.65 : 0.45,
           },
         },
       },
     };
+  }
+
+  function listMyTemplateRoutingFeedback({ projectId = null } = {}, actor = null) {
+    const selectedProjectId = projectId ? String(projectId) : null;
+    if (selectedProjectId && !actorCanAccessProject(state, actor, selectedProjectId)) return notFound();
+    const ownerTeamId = actorTeam(actor);
+    const ownedFeedback = state.myTemplateRoutingFeedback.filter((entry) => entry.ownerTeamId === ownerTeamId
+      && (!selectedProjectId || entry.projectId === selectedProjectId));
+    const conflictFor = (entry) => {
+      const related = ownedFeedback.filter((candidate) => candidate.projectId === entry.projectId
+        && (candidate.intentTerms ?? []).some((term) => (entry.intentTerms ?? []).includes(term)));
+      const choices = [...related.reduce((counts, candidate) => {
+        const key = compactMatchText(candidate.selectedOutput);
+        if (!key) return counts;
+        const current = counts.get(key) ?? { label: candidate.selectedOutput, count: 0 };
+        current.count += candidate.kind === "confirmation" ? 2 : 1;
+        counts.set(key, current);
+        return counts;
+      }, new Map()).values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+      const conflict = choices.length > 1 && choices[0].count - choices[1].count <= 1;
+      return { state: conflict ? "conflict" : "active", conflictingOutputs: conflict ? choices.map((choice) => choice.label) : [] };
+    };
+    const feedback = ownedFeedback
+      .map((entry) => {
+        const workItem = (state.workItems ?? []).find((item) => item.id === entry.workItemId
+          && item.ownerTeamId === ownerTeamId);
+        return {
+          id: entry.id,
+          projectId: entry.projectId,
+          workItemId: entry.workItemId,
+          workItem: workItem ? { id: workItem.id, localRef: workItem.localRef, title: workItem.title } : null,
+          intentTerms: [...(entry.intentTerms ?? [])],
+          rejectedOutput: entry.rejectedOutput,
+          selectedOutput: entry.selectedOutput,
+          reason: entry.reason,
+          createdAt: entry.createdAt,
+          ...conflictFor(entry),
+        };
+      });
+    return { ok: true, status: 200, body: { feedback, count: feedback.length } };
+  }
+
+  function removeMyTemplateRoutingFeedback({ feedbackId } = {}, actor = null) {
+    const ownerTeamId = actorTeam(actor);
+    const index = state.myTemplateRoutingFeedback.findIndex((entry) =>
+      entry.id === String(feedbackId ?? "") && entry.ownerTeamId === ownerTeamId);
+    if (index < 0) return notFound();
+    const feedback = state.myTemplateRoutingFeedback[index];
+    runTx(() => {
+      state.myTemplateRoutingFeedback.splice(index, 1);
+      const workItem = (state.workItems ?? []).find((item) => item.id === feedback.workItemId
+        && item.ownerTeamId === ownerTeamId);
+      if (workItem) {
+        recordActivity(workItem, actor, "my_template_learning_removed", {
+          feedbackId: feedback.id,
+          selectedOutput: feedback.selectedOutput,
+          rejectedOutput: feedback.rejectedOutput,
+          affectsFutureMatchesOnly: true,
+        });
+      }
+      appendEvent({
+        invocationId: null,
+        type: "my_template_learning_removed",
+        level: "info",
+        message: "A learned My template routing preference was removed.",
+        data: { feedbackId: feedback.id, projectId: feedback.projectId, actorTeamId: ownerTeamId },
+      });
+    });
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        removed: {
+          id: feedback.id,
+          projectId: feedback.projectId,
+          selectedOutput: feedback.selectedOutput,
+          rejectedOutput: feedback.rejectedOutput,
+        },
+        affectsFutureMatchesOnly: true,
+      },
+    };
+  }
+
+  function previewMyTemplateDraft({ workItemId } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    return { ok: true, status: 200, body: taskTemplateDraftPreview(item, actor) };
+  }
+
+  function listMyTemplateDrafts({ projectId = null } = {}, actor = null) {
+    const selectedProjectId = projectId ? String(projectId) : null;
+    if (selectedProjectId && !actorCanAccessProject(state, actor, selectedProjectId)) return notFound();
+    const drafts = state.myTemplateDrafts
+      .filter((draft) => draft.ownerTeamId === actorTeam(actor)
+        && actorCanAccessProject(state, actor, draft.projectId)
+        && (!selectedProjectId || draft.projectId === selectedProjectId))
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
+      .map(myTemplateDraftView);
+    return { ok: true, status: 200, body: { drafts, count: drafts.length } };
+  }
+
+  function findOwnMyTemplateDraft(draftId, actor) {
+    const draft = state.myTemplateDrafts.find((entry) =>
+      entry.id === String(draftId)
+      && entry.ownerTeamId === actorTeam(actor)
+      && actorCanAccessProject(state, actor, entry.projectId));
+    return draft ?? null;
+  }
+
+  function myTemplateLearningCaseView(entry, actor) {
+    const item = (state.workItems ?? []).find((candidate) =>
+      candidate.id === entry.workItemId
+      && candidate.ownerTeamId === actorTeam(actor)
+      && candidate.projectId === entry.projectId);
+    const inputNames = (entry.snapshot?.inputAssets ?? []).map((asset) => asset.name).filter(Boolean);
+    const outputNames = [
+      ...(entry.snapshot?.outputAssets ?? []).map((asset) => asset.name),
+      ...(entry.snapshot?.changedFiles ?? []).map((path) => String(path).replaceAll("\\", "/").split("/").pop()),
+    ].filter(Boolean);
+    return {
+      id: entry.id,
+      workItem: item ? {
+        id: item.id,
+        localRef: item.localRef ?? null,
+        title: item.title,
+        completedAt: item.completedAt ?? item.updatedAt ?? null,
+      } : {
+        id: entry.workItemId,
+        localRef: null,
+        title: entry.snapshot?.taskTitle ?? "原任务已不可用",
+        completedAt: null,
+      },
+      typicalInput: entry.extracted?.typicalInput ?? (inputNames.join("、") || "任务说明和相关材料"),
+      expectedOutput: entry.extracted?.expectedOutput
+        ?? (outputNames.join("、") || entry.snapshot?.resultSummary || "已确认的任务结果"),
+      similarity: entry.similarity ?? null,
+      createdAt: entry.createdAt,
+    };
+  }
+
+  function myTemplateDraftReview(draft, actor) {
+    const cases = (draft.learningCaseIds ?? [])
+      .map((caseId) => state.myTemplateLearningCases.find((entry) =>
+        entry.id === caseId && entry.ownerTeamId === actorTeam(actor) && entry.projectId === draft.projectId))
+      .filter(Boolean)
+      .map((entry) => myTemplateLearningCaseView(entry, actor));
+    const inputExamples = [...new Set(cases.map((entry) => entry.typicalInput).filter(Boolean))];
+    const outputExamples = [...new Set(cases.map((entry) => entry.expectedOutput).filter(Boolean))];
+    const confidence = cases.length >= 3 ? "high" : cases.length >= 2 ? "medium" : "initial";
+    return {
+      draft: myTemplateDraftView(draft),
+      cases,
+      learnedResult: {
+        taskGoal: draft.name,
+        typicalInput: draft.typicalInput,
+        useWhen: draft.applicability,
+        expectedOutput: draft.expectedOutput,
+        steps: [...(draft.steps ?? [])],
+        inputExamples,
+        outputExamples,
+      },
+      readiness: {
+        canEnable: draft.state === "needs_review" && cases.length >= 1,
+        confidence,
+        caseCount: cases.length,
+        message: cases.length === 1
+          ? "已具备一个成功案例，可以启用；系统会继续根据后续任务结果校正匹配。"
+          : `已用 ${cases.length} 个成功案例交叉验证，可以启用。`,
+      },
+      futureBehavior: {
+        participatesInMatching: draft.state === "ready",
+        affectsExistingTasks: false,
+        requiresExplicitConfirmation: draft.state !== "ready",
+      },
+    };
+  }
+
+  function reviewMyTemplateDraft({ draftId } = {}, actor = null) {
+    const draft = findOwnMyTemplateDraft(draftId, actor);
+    if (!draft) return { ok: false, status: 404, body: { error: "my_template_draft_not_found" } };
+    return { ok: true, status: 200, body: myTemplateDraftReview(draft, actor) };
+  }
+
+  function listSimilarMyTemplateWorkItems({ draftId } = {}, actor = null) {
+    const draft = findOwnMyTemplateDraft(draftId, actor);
+    if (!draft) return { ok: false, status: 404, body: { error: "my_template_draft_not_found" } };
+    const cases = (draft.learningCaseIds ?? [])
+      .map((caseId) => state.myTemplateLearningCases.find((entry) =>
+        entry.id === caseId && entry.ownerTeamId === actorTeam(actor) && entry.projectId === draft.projectId))
+      .filter(Boolean)
+      .map((entry) => myTemplateLearningCaseView(entry, actor));
+    const suggestions = draft.state === "ready" || draft.state === "rejected" ? [] : (state.workItems ?? [])
+      .map((item) => similarTaskCandidate(draft, item, actor))
+      .filter(Boolean)
+      .sort((left, right) => right.similarity - left.similarity
+        || String(right.workItem.completedAt ?? "").localeCompare(String(left.workItem.completedAt ?? "")))
+      .slice(0, 20);
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        draft: myTemplateDraftView(draft), cases, suggestions, count: suggestions.length,
+        review: myTemplateDraftReview(draft, actor),
+      },
+    };
+  }
+
+  function addMyTemplateLearningCase({
+    draftId, workItemId, expectedDraftRevision, expectedWorkItemRevision, confirm = false,
+  } = {}, actor = null) {
+    const draft = findOwnMyTemplateDraft(draftId, actor);
+    if (!draft) return { ok: false, status: 404, body: { error: "my_template_draft_not_found" } };
+    const existingCase = state.myTemplateLearningCases.find((entry) =>
+      entry.ownerTeamId === actorTeam(actor) && entry.draftId === draft.id && entry.workItemId === String(workItemId));
+    if (existingCase) {
+      return {
+        ok: true, status: 200,
+        body: { draft: myTemplateDraftView(draft), learningCase: myTemplateLearningCaseView(existingCase, actor), replayed: true },
+      };
+    }
+    if (!["learning", "needs_review"].includes(draft.state)) {
+      return { ok: false, status: 409, body: { error: "my_template_draft_not_learning", state: draft.state } };
+    }
+    if (!Number.isInteger(expectedDraftRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_draft_revision_required" } };
+    }
+    if (expectedDraftRevision !== draft.revision) {
+      return { ok: false, status: 409, body: { error: "my_template_draft_revision_conflict", currentRevision: draft.revision } };
+    }
+    if (confirm !== true) {
+      return { ok: false, status: 400, body: { error: "my_template_learning_case_confirmation_required" } };
+    }
+    const item = findOwn(workItemId, actor);
+    if (!item || item.projectId !== draft.projectId) return notFound();
+    if (!Number.isInteger(expectedWorkItemRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedWorkItemRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const usedBy = state.myTemplateLearningCases.find((entry) =>
+      entry.ownerTeamId === actorTeam(actor) && entry.workItemId === item.id && entry.draftId !== draft.id);
+    if (usedBy) {
+      return { ok: false, status: 409, body: { error: "work_item_already_used_as_my_template_case", draftId: usedBy.draftId } };
+    }
+    const candidate = similarTaskCandidate(draft, item, actor);
+    if (!candidate) {
+      return { ok: false, status: 409, body: { error: "work_item_not_similar_to_my_template" } };
+    }
+    const { snapshot, snapshotHash } = taskTemplateLearningSnapshot(item);
+    const timestamp = now();
+    const learningCase = {
+      id: nextId("mtlc"),
+      ownerTeamId: actorTeam(actor),
+      projectId: draft.projectId,
+      draftId: draft.id,
+      workItemId: item.id,
+      workItemRevision: item.revision,
+      snapshot,
+      snapshotHash,
+      extracted: { typicalInput: candidate.typicalInput, expectedOutput: candidate.expectedOutput },
+      similarity: {
+        score: candidate.similarity,
+        confidence: candidate.confidence,
+        reasons: [...candidate.reasons],
+      },
+      resultConfirmed: true,
+      createdBy: actorUser(actor),
+      createdAt: timestamp,
+    };
+    runTx(() => {
+      state.myTemplateLearningCases.unshift(learningCase);
+      draft.learningCaseIds = [...(draft.learningCaseIds ?? []), learningCase.id];
+      draft.caseCount = draft.learningCaseIds.length;
+      draft.state = draft.caseCount >= draft.casesRequired ? "needs_review" : "learning";
+      draft.revision += 1;
+      draft.updatedBy = actorUser(actor);
+      draft.updatedAt = timestamp;
+      state.myTemplateLearningCases = state.myTemplateLearningCases.slice(0, 5_000);
+      recordActivity(item, actor, "my_template_learning_case_added", {
+        draftId: draft.id,
+        learningCaseId: learningCase.id,
+        similarity: learningCase.similarity,
+        caseCount: draft.caseCount,
+        state: draft.state,
+        affectsOriginalTask: false,
+        participatesInMatching: false,
+      });
+      appendEvent({
+        invocationId: null,
+        type: "my_template_learning_case_added",
+        level: "info",
+        message: "A user-confirmed similar task was added to a learning My template.",
+        data: {
+          draftId: draft.id,
+          workItemId: item.id,
+          learningCaseId: learningCase.id,
+          caseCount: draft.caseCount,
+          state: draft.state,
+          actorTeamId: actorTeam(actor),
+        },
+      });
+    });
+    return {
+      ok: true,
+      status: 201,
+      body: {
+        draft: myTemplateDraftView(draft),
+        learningCase: myTemplateLearningCaseView(learningCase, actor),
+        readyForReview: draft.state === "needs_review",
+        replayed: false,
+      },
+    };
+  }
+
+  function activateMyTemplateDraft({
+    draftId, expectedDraftRevision, confirm = false, name, typicalInput, expectedOutput,
+  } = {}, actor = null) {
+    const draft = findOwnMyTemplateDraft(draftId, actor);
+    if (!draft) return { ok: false, status: 404, body: { error: "my_template_draft_not_found" } };
+    if (draft.state === "ready" && draft.activation?.definitionId) {
+      const definition = state.routineDefinitions.find((entry) =>
+        entry.id === draft.activation.definitionId
+        && entry.ownerTeamId === actorTeam(actor)
+        && entry.projectId === draft.projectId
+        && entry.state === "published");
+      if (!definition) {
+        return { ok: false, status: 409, body: { error: "my_template_activation_definition_missing" } };
+      }
+      return {
+        ok: true, status: 200,
+        body: { draft: myTemplateDraftView(draft), definition, review: myTemplateDraftReview(draft, actor), replayed: true },
+      };
+    }
+    if (!Number.isInteger(expectedDraftRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_draft_revision_required" } };
+    }
+    if (expectedDraftRevision !== draft.revision) {
+      return { ok: false, status: 409, body: { error: "my_template_draft_revision_conflict", currentRevision: draft.revision } };
+    }
+    if (confirm !== true) {
+      return { ok: false, status: 400, body: { error: "my_template_activation_confirmation_required" } };
+    }
+    const review = myTemplateDraftReview(draft, actor);
+    if (!review.readiness.canEnable) {
+      return {
+        ok: false, status: 409,
+        body: { error: "my_template_draft_not_ready_for_activation", state: draft.state, caseCount: review.readiness.caseCount },
+      };
+    }
+    const normalizedName = String(name ?? draft.name).trim().slice(0, 200);
+    const normalizedInput = String(typicalInput ?? draft.typicalInput).trim().slice(0, 1_000);
+    const normalizedOutput = String(expectedOutput ?? draft.expectedOutput).trim().slice(0, 1_000);
+    if (!normalizedName || !normalizedInput || !normalizedOutput) {
+      return { ok: false, status: 400, body: { error: "my_template_activation_fields_required" } };
+    }
+    const familySignature = createHash("sha256").update(JSON.stringify({
+      name: compactMatchText(normalizedName),
+      input: compactMatchText(normalizedInput),
+      output: compactMatchText(normalizedOutput),
+    })).digest("hex");
+    const duplicate = state.routineDefinitions.find((entry) =>
+      entry.ownerTeamId === actorTeam(actor)
+      && entry.projectId === draft.projectId
+      && entry.state === "published"
+      && entry.myTemplateSignature === familySignature);
+    if (duplicate) {
+      return {
+        ok: false, status: 409,
+        body: { error: "equivalent_my_template_already_enabled", definitionId: duplicate.id, familyId: duplicate.familyId },
+      };
+    }
+    const timestamp = now();
+    const definitionId = nextId("rtd");
+    const originStepLabels = (draft.steps ?? []).map((step) => String(step).trim()).filter(Boolean);
+    const definition = {
+      id: definitionId,
+      familyId: definitionId,
+      schemaVersion: businessRoutineSchemaVersion,
+      ownerTeamId: actorTeam(actor),
+      projectId: draft.projectId,
+      sourceId: `my-template-draft:${draft.id}`,
+      name: normalizedName,
+      description: `当收到${normalizedInput}，并希望得到${normalizedOutput}时使用。`,
+      version: 1,
+      state: "published",
+      templateScope: "team",
+      templateMaturity: "stable",
+      discoveryCandidateId: null,
+      historicalCaseIds: [],
+      triggerDocumentTypes: ["unknown"],
+      steps: [
+        {
+          key: "understand_input", kind: "extract",
+          label: (originStepLabels[0] ?? `理解并检查${normalizedInput}`).slice(0, 200),
+          required: true, dependsOn: [], evidenceRefs: [], configuration: {},
+        },
+        {
+          key: "produce_result", kind: "generate",
+          label: `生成${normalizedOutput}`.slice(0, 200),
+          required: true, dependsOn: ["understand_input"], evidenceRefs: [],
+          configuration: { expectedOutput: normalizedOutput },
+        },
+        {
+          key: "verify_result", kind: "human_approval",
+          label: (originStepLabels.at(-1) ?? `检查并交付${normalizedOutput}`).slice(0, 200),
+          required: true, dependsOn: ["produce_result"], evidenceRefs: [], configuration: {},
+        },
+      ],
+      evidenceRefs: [],
+      evidenceFingerprints: {},
+      confidence: review.readiness.confidence === "high" ? 0.9 : review.readiness.confidence === "medium" ? 0.75 : 0.6,
+      supersedesId: null,
+      supersededById: null,
+      myTemplateSignature: familySignature,
+      myTemplateLearningCaseIds: [...(draft.learningCaseIds ?? [])],
+      origin: { kind: "my_template_draft", draftId: draft.id, workItemId: draft.origin?.workItemId ?? null },
+      idempotencyKey: `my-template-activation:v1:${draft.id}`,
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy: actorUser(actor),
+      updatedBy: actorUser(actor),
+    };
+    const sourceItem = (state.workItems ?? []).find((item) =>
+      item.id === draft.origin?.workItemId && item.ownerTeamId === actorTeam(actor) && item.projectId === draft.projectId);
+    runTx(() => {
+      state.routineDefinitions.push(definition);
+      draft.name = normalizedName;
+      draft.typicalInput = normalizedInput;
+      draft.expectedOutput = normalizedOutput;
+      draft.applicability = definition.description.replace(/。$/, "");
+      draft.familySignature = familySignature;
+      draft.state = "ready";
+      draft.activation = {
+        definitionId: definition.id,
+        familyId: definition.familyId,
+        version: definition.version,
+        confirmedAt: timestamp,
+        confirmedBy: actorUser(actor),
+      };
+      draft.revision += 1;
+      draft.updatedBy = actorUser(actor);
+      draft.updatedAt = timestamp;
+      if (sourceItem) recordActivity(sourceItem, actor, "my_template_activated", {
+        draftId: draft.id,
+        definitionId: definition.id,
+        familyId: definition.familyId,
+        version: definition.version,
+        affectsExistingTasks: false,
+        participatesInMatching: true,
+      });
+      appendEvent({
+        invocationId: null,
+        type: "my_template_activated",
+        level: "info",
+        message: "A reviewed task-learned My template was enabled for future matching.",
+        data: {
+          draftId: draft.id, definitionId: definition.id, projectId: draft.projectId,
+          caseCount: draft.caseCount, actorTeamId: actorTeam(actor), affectsExistingTasks: false,
+        },
+      });
+    });
+    return {
+      ok: true, status: 201,
+      body: { draft: myTemplateDraftView(draft), definition, review: myTemplateDraftReview(draft, actor), replayed: false },
+    };
+  }
+
+  function createMyTemplateDraft({
+    workItemId, expectedRevision, confirm = false, name, typicalInput, expectedOutput, idempotencyKey = null,
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const existing = taskTemplateDraftFor(item, actor);
+    if (existing) {
+      return {
+        ok: true, status: 200,
+        body: { draft: myTemplateDraftView(existing), workItem: workItemView(item, actor), replayed: true },
+      };
+    }
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (confirm !== true) {
+      return { ok: false, status: 400, body: { error: "my_template_draft_confirmation_required" } };
+    }
+    const preview = taskTemplateDraftPreview(item, actor);
+    if (!preview.eligible) {
+      return { ok: false, status: 409, body: { error: "work_item_not_eligible_for_my_template", reasons: preview.reasons } };
+    }
+    const normalizedName = String(name ?? preview.suggestion.name).trim().slice(0, 200);
+    const normalizedInput = String(typicalInput ?? preview.suggestion.typicalInput).trim().slice(0, 1_000);
+    const normalizedOutput = String(expectedOutput ?? preview.suggestion.expectedOutput).trim().slice(0, 1_000);
+    if (!normalizedName || !normalizedInput || !normalizedOutput) {
+      return { ok: false, status: 400, body: { error: "my_template_draft_fields_required" } };
+    }
+    const timestamp = now();
+    const { snapshot, snapshotHash } = taskTemplateLearningSnapshot(item);
+    const familySignature = createHash("sha256").update(JSON.stringify({
+      name: compactMatchText(normalizedName),
+      input: compactMatchText(normalizedInput),
+      output: compactMatchText(normalizedOutput),
+    })).digest("hex");
+    const draftId = nextId("mtd");
+    const learningCase = {
+      id: nextId("mtlc"),
+      ownerTeamId: actorTeam(actor),
+      projectId: item.projectId,
+      draftId,
+      workItemId: item.id,
+      workItemRevision: item.revision,
+      snapshot,
+      snapshotHash,
+      extracted: { typicalInput: normalizedInput, expectedOutput: normalizedOutput },
+      similarity: null,
+      resultConfirmed: true,
+      createdBy: actorUser(actor),
+      createdAt: timestamp,
+    };
+    const draft = {
+      id: draftId,
+      ownerTeamId: actorTeam(actor),
+      projectId: item.projectId,
+      name: normalizedName,
+      typicalInput: normalizedInput,
+      expectedOutput: normalizedOutput,
+      applicability: `当收到${normalizedInput.slice(0, 500)}，并希望得到${normalizedOutput.slice(0, 500)}时`,
+      steps: [...preview.suggestion.steps],
+      state: "needs_review",
+      caseCount: 1,
+      casesRequired: 1,
+      familySignature,
+      origin: { kind: "work_item", workItemId: item.id, localRef: item.localRef ?? null, title: item.title },
+      learningCaseIds: [learningCase.id],
+      createIdempotencyKey: idempotencyKey ? String(idempotencyKey).slice(0, 200) : null,
+      revision: 1,
+      createdBy: actorUser(actor),
+      updatedBy: actorUser(actor),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    runTx(() => {
+      state.myTemplateDrafts.unshift(draft);
+      state.myTemplateLearningCases.unshift(learningCase);
+      state.myTemplateDrafts = state.myTemplateDrafts.slice(0, 2_000);
+      state.myTemplateLearningCases = state.myTemplateLearningCases.slice(0, 5_000);
+      recordActivity(item, actor, "my_template_draft_created", {
+        draftId: draft.id,
+        learningCaseId: learningCase.id,
+        state: draft.state,
+        affectsOriginalTask: false,
+        participatesInMatching: false,
+      });
+      appendEvent({
+        invocationId: null,
+        type: "my_template_draft_created",
+        level: "info",
+        message: "A completed ordinary task was saved as a learning My template.",
+        data: { draftId: draft.id, workItemId: item.id, projectId: item.projectId, actorTeamId: actorTeam(actor) },
+      });
+    });
+    return {
+      ok: true, status: 201,
+      body: { draft: myTemplateDraftView(draft), workItem: workItemView(item, actor), replayed: false },
+    };
+  }
+
+  function listMyTemplateOutcomeFeedback({ projectId = null } = {}, actor = null) {
+    const selectedProjectId = projectId ? String(projectId) : null;
+    if (selectedProjectId && !actorCanAccessProject(state, actor, selectedProjectId)) return notFound();
+    const ownerTeamId = actorTeam(actor);
+    const interventions = state.myTemplateGovernanceInterventions.filter((entry) =>
+      entry.ownerTeamId === ownerTeamId && (!selectedProjectId || entry.projectId === selectedProjectId));
+    const feedback = state.myTemplateOutcomeFeedback
+      .filter((entry) => entry.ownerTeamId === ownerTeamId
+        && (!selectedProjectId || entry.projectId === selectedProjectId))
+      .map((entry) => ({
+        id: entry.id,
+        projectId: entry.projectId,
+        workItemId: entry.workItemId,
+        definitionId: entry.definitionId,
+        familyId: entry.familyId,
+        version: entry.version,
+        outcome: entry.outcome,
+        note: entry.note,
+        workItem: (() => {
+          const item = (state.workItems ?? []).find((candidate) =>
+            candidate.id === entry.workItemId && candidate.ownerTeamId === ownerTeamId);
+          return item ? { id: item.id, localRef: item.localRef, title: item.title, status: item.status } : null;
+        })(),
+        governanceImpact: (() => {
+          const latestIntervention = latestMyTemplateGovernanceIntervention(interventions, entry.familyId);
+          if ((latestIntervention?.feedbackIds ?? []).includes(entry.id)) return "historical_baseline";
+          if (entry.outcome === "wrong_result") return "negative";
+          if (entry.outcome === "met_expectations") return "positive";
+          return "quality_neutral";
+        })(),
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+      }));
+    const summaries = [...feedback.reduce((groups, entry) => {
+      const current = groups.get(entry.familyId) ?? {
+        familyId: entry.familyId,
+        total: 0,
+        metExpectations: 0,
+        wrongResult: 0,
+        needsQualityAdjustment: 0,
+      };
+      current.total += 1;
+      if (entry.outcome === "met_expectations") current.metExpectations += 1;
+      if (entry.outcome === "wrong_result") current.wrongResult += 1;
+      if (entry.outcome === "needs_quality_adjustment") current.needsQualityAdjustment += 1;
+      groups.set(entry.familyId, current);
+      return groups;
+    }, new Map()).values()].map((summary) => ({
+      ...summary,
+      state: summary.wrongResult > 0 ? "needs_attention"
+        : summary.metExpectations >= 3 ? "stable"
+          : summary.needsQualityAdjustment > 0 ? "quality_adjustment" : "learning",
+      governance: evaluateMyTemplateGovernance({
+        outcomeFeedback: feedback, interventions, familyId: summary.familyId,
+      }),
+    }));
+    return { ok: true, status: 200, body: { feedback, summaries, count: feedback.length } };
+  }
+
+  function resumeMyTemplateGovernanceObservation({ familyId, projectId, confirm = false } = {}, actor = null) {
+    const normalizedFamilyId = String(familyId ?? "");
+    const normalizedProjectId = String(projectId ?? "");
+    if (!normalizedFamilyId || !normalizedProjectId || !actorCanAccessProject(state, actor, normalizedProjectId)) {
+      return notFound();
+    }
+    const ownerTeamId = actorTeam(actor);
+    const definition = (state.routineDefinitions ?? []).find((entry) =>
+      entry.familyId === normalizedFamilyId
+      && entry.projectId === normalizedProjectId
+      && entry.ownerTeamId === ownerTeamId
+      && entry.state === "published");
+    if (!definition) return notFound();
+    if (confirm !== true) {
+      return { ok: false, status: 400, body: { error: "my_template_governance_resume_confirmation_required" } };
+    }
+    const ownedFeedback = state.myTemplateOutcomeFeedback.filter((entry) =>
+      entry.ownerTeamId === ownerTeamId
+      && entry.projectId === normalizedProjectId
+      && entry.familyId === normalizedFamilyId);
+    const ownedInterventions = state.myTemplateGovernanceInterventions.filter((entry) =>
+      entry.ownerTeamId === ownerTeamId && entry.projectId === normalizedProjectId);
+    const current = evaluateMyTemplateGovernance({
+      outcomeFeedback: ownedFeedback, interventions: ownedInterventions, familyId: normalizedFamilyId,
+    });
+    if (current.state !== "paused") {
+      return { ok: false, status: 409, body: { error: "my_template_governance_resume_not_needed", governance: current } };
+    }
+    const timestamp = now();
+    const intervention = {
+      id: nextId("mtgi"),
+      ownerTeamId,
+      projectId: normalizedProjectId,
+      familyId: normalizedFamilyId,
+      definitionId: definition.id,
+      action: "resume_observation",
+      reason: "user_reviewed_governance_details",
+      feedbackIds: ownedFeedback.map((entry) => entry.id),
+      priorState: current.state,
+      createdBy: actorUser(actor),
+      createdAt: timestamp,
+    };
+    runTx(() => {
+      state.myTemplateGovernanceInterventions.unshift(intervention);
+      state.myTemplateGovernanceInterventions = state.myTemplateGovernanceInterventions.slice(0, 1_000);
+      appendEvent({
+        invocationId: null,
+        type: "my_template_governance_resumed",
+        level: "warning",
+        message: "My template automatic matching was manually returned to observation.",
+        data: {
+          interventionId: intervention.id,
+          projectId: normalizedProjectId,
+          familyId: normalizedFamilyId,
+          priorState: current.state,
+          historicalFeedbackCount: intervention.feedbackIds.length,
+          actorTeamId: ownerTeamId,
+          actorUserId: actorUser(actor),
+        },
+      });
+    });
+    const governance = evaluateMyTemplateGovernance({
+      outcomeFeedback: ownedFeedback,
+      interventions: [intervention, ...ownedInterventions],
+      familyId: normalizedFamilyId,
+    });
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        intervention: {
+          id: intervention.id,
+          familyId: intervention.familyId,
+          projectId: intervention.projectId,
+          action: intervention.action,
+          priorState: intervention.priorState,
+          historicalFeedbackCount: intervention.feedbackIds.length,
+          createdAt: intervention.createdAt,
+        },
+        governance,
+      },
+    };
+  }
+
+  function recordMyTemplateOutcomeFeedback({ workItemId, outcome, note = "" } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!item.myTemplateBinding) {
+      return { ok: false, status: 409, body: { error: "work_item_my_template_not_used" } };
+    }
+    if (item.status !== "done") {
+      return { ok: false, status: 409, body: { error: "work_item_result_feedback_requires_completion" } };
+    }
+    const normalizedOutcome = String(outcome ?? "");
+    if (!["met_expectations", "wrong_result", "needs_quality_adjustment"].includes(normalizedOutcome)) {
+      return { ok: false, status: 400, body: { error: "invalid_my_template_outcome_feedback" } };
+    }
+    const normalizedNote = String(note ?? "").trim().slice(0, 1_000);
+    const timestamp = now();
+    let feedback = state.myTemplateOutcomeFeedback.find((entry) =>
+      entry.ownerTeamId === actorTeam(actor) && entry.workItemId === item.id);
+    if (feedback && feedback.outcome === normalizedOutcome && feedback.note === normalizedNote) {
+      return { ok: true, status: 200, body: { feedback: workItemView(item, actor).myTemplateOutcomeFeedback, workItem: workItemView(item, actor), replayed: true } };
+    }
+    const governanceBefore = evaluateMyTemplateGovernance({
+      outcomeFeedback: state.myTemplateOutcomeFeedback.filter((entry) =>
+        entry.ownerTeamId === actorTeam(actor) && entry.projectId === item.projectId),
+      interventions: state.myTemplateGovernanceInterventions.filter((entry) =>
+        entry.ownerTeamId === actorTeam(actor) && entry.projectId === item.projectId),
+      familyId: item.myTemplateBinding.familyId,
+    });
+    runTx(() => {
+      if (feedback) {
+        feedback.outcome = normalizedOutcome;
+        feedback.note = normalizedNote;
+        feedback.revision += 1;
+        feedback.updatedAt = timestamp;
+        feedback.updatedBy = actorUser(actor);
+      } else {
+        feedback = {
+          id: nextId("mtof"),
+          ownerTeamId: actorTeam(actor),
+          projectId: item.projectId,
+          workItemId: item.id,
+          definitionId: item.myTemplateBinding.definitionId,
+          familyId: item.myTemplateBinding.familyId,
+          version: item.myTemplateBinding.version,
+          snapshotHash: item.myTemplateBinding.snapshotHash,
+          outcome: normalizedOutcome,
+          note: normalizedNote,
+          source: "user",
+          revision: 1,
+          createdBy: actorUser(actor),
+          updatedBy: actorUser(actor),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        state.myTemplateOutcomeFeedback.unshift(feedback);
+        state.myTemplateOutcomeFeedback = state.myTemplateOutcomeFeedback.slice(0, 1_000);
+      }
+      recordActivity(item, actor, "my_template_outcome_feedback_recorded", {
+        feedbackId: feedback.id,
+        outcome: feedback.outcome,
+        matchingSignal: feedback.outcome === "wrong_result" ? "negative"
+          : feedback.outcome === "met_expectations" ? "positive" : "neutral",
+        technicalFailure: false,
+      });
+      const governanceAfter = evaluateMyTemplateGovernance({
+        outcomeFeedback: state.myTemplateOutcomeFeedback.filter((entry) =>
+          entry.ownerTeamId === actorTeam(actor) && entry.projectId === item.projectId),
+        interventions: state.myTemplateGovernanceInterventions.filter((entry) =>
+          entry.ownerTeamId === actorTeam(actor) && entry.projectId === item.projectId),
+        familyId: item.myTemplateBinding.familyId,
+      });
+      if (governanceBefore.state !== governanceAfter.state) {
+        recordActivity(item, actor, "my_template_governance_changed", {
+          familyId: item.myTemplateBinding.familyId,
+          from: governanceBefore.state,
+          to: governanceAfter.state,
+          reason: governanceAfter.reason,
+          autoMatchAllowed: governanceAfter.autoMatchAllowed,
+          matchingFeedbackCount: governanceAfter.matchingFeedbackCount,
+          wrongResultRate: governanceAfter.wrongResultRate,
+        });
+      }
+    });
+    notifyWorkItemChanged(item, actor, "my_template_outcome_feedback_recorded");
+    const view = workItemView(item, actor);
+    return { ok: true, status: 200, body: { feedback: view.myTemplateOutcomeFeedback, workItem: view, replayed: false } };
   }
 
   function prepareExecutionContract({ workItemId, expectedRevision, confirm = true, draftOverride = null } = {}, actor = null) {
@@ -2167,6 +3688,35 @@ export function createWorkItemService({
     }
     const validated = validateDraft(input);
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    if (!validated.value.myTemplateBinding && !hasRoutineInput) {
+      const automaticMatch = matchPublishedMyTemplate({
+        definitions: (state.routineDefinitions ?? []).filter(
+          (definition) => definition.ownerTeamId === actorTeam(actor),
+        ),
+        routingFeedback: state.myTemplateRoutingFeedback.filter((feedback) =>
+          feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+        outcomeFeedback: state.myTemplateOutcomeFeedback.filter((feedback) =>
+          feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+        governanceInterventions: state.myTemplateGovernanceInterventions.filter((entry) =>
+          entry.ownerTeamId === actorTeam(actor) && entry.projectId === projectId),
+        projectId,
+        intent: `${validated.value.title}\n${validated.value.body ?? ""}`,
+      });
+      if (automaticMatch.state === "matched" && automaticMatch.selected) {
+        validated.value.myTemplateBinding = {
+          definitionId: automaticMatch.selected.definitionId,
+          familyId: automaticMatch.selected.templateId,
+          version: automaticMatch.selected.version,
+          matchReasons: automaticMatch.selected.reasons,
+        };
+      }
+    }
+    const templateResultConfirmed = validated.value.myTemplateBinding?.userConfirmedResult === true;
+    if (validated.value.myTemplateBinding) {
+      const materialized = materializeMyTemplateBinding(validated.value.myTemplateBinding, projectId, actor);
+      if (materialized.error) return { ok: false, status: 409, body: { error: materialized.error } };
+      validated.value.myTemplateBinding = materialized.value;
+    }
     const followUp = resolveFollowUpContext(validated.value, actor, { input });
     if (followUp.error) return { ok: false, status: 400, body: { error: followUp.error } };
     Object.assign(validated.value, followUp.value);
@@ -2305,6 +3855,33 @@ export function createWorkItemService({
           businessCaseId: workItem.businessCaseId,
         } : {}),
       });
+      if (templateResultConfirmed && workItem.myTemplateBinding) {
+        const feedback = {
+          id: nextId("mtf"),
+          kind: "confirmation",
+          ownerTeamId: actorTeam(actor),
+          projectId: workItem.projectId,
+          workItemId: workItem.id,
+          intentTerms: templateRoutingTerms(`${workItem.title}\n${workItem.body ?? ""}`),
+          rejectedDefinitionId: null,
+          rejectedFamilyId: null,
+          rejectedVersion: null,
+          rejectedOutput: null,
+          selectedDefinitionId: workItem.myTemplateBinding.definitionId,
+          selectedFamilyId: workItem.myTemplateBinding.familyId,
+          selectedVersion: workItem.myTemplateBinding.version,
+          selectedOutput: workItem.myTemplateBinding.expectedOutput,
+          reason: "user_confirmed_desired_output",
+          createdBy: actorUser(actor),
+          createdAt: timestamp,
+        };
+        state.myTemplateRoutingFeedback.unshift(feedback);
+        state.myTemplateRoutingFeedback = state.myTemplateRoutingFeedback.slice(0, 1_000);
+        recordActivity(workItem, actor, "my_template_match_confirmed", {
+          feedbackId: feedback.id,
+          selectedOutput: feedback.selectedOutput,
+        });
+      }
       applyPlanningAutomation(workItem, actor);
       appendEvent({
         invocationId: null,
@@ -2341,6 +3918,10 @@ export function createWorkItemService({
       || ROUTINE_BINDING_FIELDS.some((field) => Object.hasOwn(changes, field))) {
       return { ok: false, status: 409, body: { error: "work_item_routine_binding_immutable" } };
     }
+    if (Object.hasOwn(changes, "myTemplateBinding")
+      && (item.executionBindings ?? []).length) {
+      return { ok: false, status: 409, body: { error: "work_item_my_template_binding_immutable" } };
+    }
     if (Object.hasOwn(changes, "terminalId")) {
       return {
         ok: false,
@@ -2373,6 +3954,64 @@ export function createWorkItemService({
       return { ok: false, status: 409, body: { error: "asset_terminal_mismatch", terminalId: item.terminalId } };
     }
     const timestamp = now();
+    const previousTemplateBinding = item.myTemplateBinding ?? null;
+    const templateResultConfirmed = validated.value.myTemplateBinding?.userConfirmedResult === true;
+    if (validated.value.myTemplateBinding) {
+      const materialized = materializeMyTemplateBinding(
+        validated.value.myTemplateBinding,
+        validated.value.projectId ?? item.projectId,
+        actor,
+        timestamp,
+      );
+      if (materialized.error) return { ok: false, status: 409, body: { error: materialized.error } };
+      validated.value.myTemplateBinding = materialized.value;
+    }
+    const templateCorrection = previousTemplateBinding
+      && validated.value.myTemplateBinding
+      && (previousTemplateBinding.familyId !== validated.value.myTemplateBinding.familyId
+        || previousTemplateBinding.version !== validated.value.myTemplateBinding.version)
+      ? {
+          id: nextId("mtf"),
+          ownerTeamId: actorTeam(actor),
+          projectId: item.projectId,
+          workItemId: item.id,
+          intentTerms: templateRoutingTerms(`${item.title}\n${item.body ?? ""}`),
+          rejectedDefinitionId: previousTemplateBinding.definitionId,
+          rejectedFamilyId: previousTemplateBinding.familyId,
+          rejectedVersion: previousTemplateBinding.version,
+          rejectedOutput: previousTemplateBinding.expectedOutput,
+          selectedDefinitionId: validated.value.myTemplateBinding.definitionId,
+          selectedFamilyId: validated.value.myTemplateBinding.familyId,
+          selectedVersion: validated.value.myTemplateBinding.version,
+          selectedOutput: validated.value.myTemplateBinding.expectedOutput,
+          reason: validated.value.myTemplateBinding.matchReasons.at(-1) ?? "user_corrected_desired_output",
+          createdBy: actorUser(actor),
+          createdAt: timestamp,
+        }
+      : null;
+    const templateConfirmation = !previousTemplateBinding
+      && validated.value.myTemplateBinding
+      && templateResultConfirmed
+      ? {
+          id: nextId("mtf"),
+          kind: "confirmation",
+          ownerTeamId: actorTeam(actor),
+          projectId: item.projectId,
+          workItemId: item.id,
+          intentTerms: templateRoutingTerms(`${item.title}\n${item.body ?? ""}`),
+          rejectedDefinitionId: null,
+          rejectedFamilyId: null,
+          rejectedVersion: null,
+          rejectedOutput: null,
+          selectedDefinitionId: validated.value.myTemplateBinding.definitionId,
+          selectedFamilyId: validated.value.myTemplateBinding.familyId,
+          selectedVersion: validated.value.myTemplateBinding.version,
+          selectedOutput: validated.value.myTemplateBinding.expectedOutput,
+          reason: "user_confirmed_desired_output",
+          createdBy: actorUser(actor),
+          createdAt: timestamp,
+        }
+      : null;
     const contractInputChanged = Object.hasOwn(changes, "acceptanceCriteria")
       || Object.hasOwn(changes, "verificationSop")
       || (Object.hasOwn(changes, "body") && !(item.acceptanceCriteria ?? []).length);
@@ -2477,6 +4116,31 @@ export function createWorkItemService({
         ])),
         ...(followUpContextChanged ? { followUpContextChanged: true } : {}),
       });
+      if (templateCorrection) {
+        state.myTemplateRoutingFeedback.unshift(templateCorrection);
+        state.myTemplateRoutingFeedback = state.myTemplateRoutingFeedback.slice(0, 1_000);
+        recordActivity(item, actor, "my_template_match_corrected", {
+          feedbackId: templateCorrection.id,
+          from: {
+            definitionId: templateCorrection.rejectedDefinitionId,
+            version: templateCorrection.rejectedVersion,
+            expectedOutput: templateCorrection.rejectedOutput,
+          },
+          to: {
+            definitionId: templateCorrection.selectedDefinitionId,
+            version: templateCorrection.selectedVersion,
+            expectedOutput: templateCorrection.selectedOutput,
+          },
+        });
+      }
+      if (templateConfirmation) {
+        state.myTemplateRoutingFeedback.unshift(templateConfirmation);
+        state.myTemplateRoutingFeedback = state.myTemplateRoutingFeedback.slice(0, 1_000);
+        recordActivity(item, actor, "my_template_match_confirmed", {
+          feedbackId: templateConfirmation.id,
+          selectedOutput: templateConfirmation.selectedOutput,
+        });
+      }
       applyPlanningAutomation(item, actor);
       appendEvent({
         invocationId: null,
@@ -4111,7 +5775,7 @@ export function createWorkItemService({
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
-    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, prepareExecutionContract, retryWorkItemAlert,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, retryWorkItemAlert,
     startApplicationExecution, requestApplicationExecutionApproval,
     applyLocalSchedulePlan,
     applyLocalScheduleRollover,

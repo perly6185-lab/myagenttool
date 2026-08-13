@@ -158,6 +158,36 @@ test("Auto-run approval review ignores the fixed safety wrapper and inspects the
   assert.equal(hook.brokerRequest.decision, "allow");
 });
 
+test("Auto-run template wording about output format does not pause a safe shell command", () => {
+  const invocation = {
+    id: "inv_auto_template_format",
+    input: { task: "Preserve the confirmed output format and filename pattern." },
+    options: { approvalMode: "auto", metadata: { worktreeId: "wtr_1" } },
+  };
+  const state = {
+    autoRuns: [{
+      id: "aur_template_format",
+      invocationId: invocation.id,
+      issueBody: "Generate the purchase checklist and preserve the confirmed output format.",
+    }],
+    codexSessions: [],
+    codexHookEvents: [],
+    codexApprovalBrokerRequests: [],
+    events: [],
+    refusals: [],
+  };
+  const codex = codexFor(state, makeClock(), (id) => id === invocation.id ? invocation : null);
+  const hook = codex.recordCodexHookEvent({
+    invocationId: invocation.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Run git status --short --untracked-files=no",
+  });
+
+  assert.equal(hook.brokerRequest.status, "approved");
+  assert.equal(hook.brokerRequest.decision, "allow");
+});
+
 test("Codex full access reuses the approved high-risk launch instead of prompting twice", () => {
   const invocation = {
     id: "inv_full_approved",

@@ -23,7 +23,7 @@ import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-r
 import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
 import { assetCapabilityMatrix, deriveAssetRuntimeReadiness, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
 import { AssetPreviewError, readAssetPreview } from "../services/asset-preview.mjs";
-import { revealAssetInFileManager } from "../services/asset-reveal.mjs";
+import { openAssetInSystemApplication, revealAssetInFileManager } from "../services/asset-reveal.mjs";
 
 const IMAGE_MIME = {
   ".png": "image/png",
@@ -1036,6 +1036,28 @@ export async function handleProjectRoutes({
     return true;
   }
 
+  const assetOpenMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-open$/);
+  if (assetOpenMatch && req.method === "POST") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetOpenMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const body = await readJson(req);
+    const worktreeId = String(body.worktreeId ?? "").trim();
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const result = await openAssetInSystemApplication({ projectRoot: root, relativePath: body.path });
+      sendJson(res, 200, result);
+    } catch (error) {
+      const code = error?.code ?? "asset_open_failed";
+      const status = code === "ENOENT" ? 404
+        : code === "asset_path_outside_project" || code === "invalid_asset_path" || code === "asset_not_file" ? 400 : 500;
+      sendJson(res, status, { error: code, message: "The file could not be opened with the system application." });
+    }
+    return true;
+  }
+
   const assetPreviewMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-preview$/);
   if (assetPreviewMatch && req.method === "GET") {
     const project = state.projects.find((item) => item.id === decodeURIComponent(assetPreviewMatch[1]));
@@ -1052,7 +1074,7 @@ export async function handleProjectRoutes({
       res.setHeader("Cache-Control", "private, no-store");
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
-      if (preview.family === "markdown") {
+      if (preview.family === "markdown" || preview.family === "text") {
         sendJson(res, 200, {
           path: preview.path, family: preview.family, text: preview.text,
           size: preview.size, truncated: false,

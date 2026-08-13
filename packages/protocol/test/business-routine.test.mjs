@@ -20,6 +20,11 @@ import {
 test("business routine vocabulary keeps document type separate from contextual role", () => {
   assert.equal(businessRoutineSchemaVersion, 1);
   assert.ok(businessDocumentTypes.includes("quotation"));
+  assert.ok(businessDocumentTypes.includes("contract_review"));
+  assert.ok(businessDocumentTypes.includes("purchase_request"));
+  assert.ok(businessDocumentTypes.includes("customer_complaint"));
+  assert.ok(businessDocumentTypes.includes("weekly_report"));
+  assert.ok(businessDocumentTypes.includes("project_acceptance"));
   assert.ok(businessFieldKeys.includes("unit_price"));
   assert.ok(businessFieldKeys.includes("tax_rate"));
   assert.ok(businessFieldKeys.includes("delivery_terms"));

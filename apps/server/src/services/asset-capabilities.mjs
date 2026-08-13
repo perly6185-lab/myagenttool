@@ -13,6 +13,7 @@ const FAMILY_BY_EXTENSION = Object.freeze({
   ".docx": "word", ".xlsx": "excel", ".pptx": "powerpoint",
   ".pdf": "pdf",
   ".md": "markdown", ".mdx": "markdown",
+  ".txt": "text", ".csv": "text", ".json": "text",
   ".dxf": "cad_dxf", ".dwg": "cad_dwg",
   ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image",
   ".webp": "image", ".avif": "image", ".svg": "image",
@@ -28,6 +29,7 @@ const MIME_BY_EXTENSION = Object.freeze({
   ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".pdf": "application/pdf",
   ".md": "text/markdown", ".mdx": "text/mdx",
+  ".txt": "text/plain", ".csv": "text/csv", ".json": "application/json",
   ".dxf": "image/vnd.dxf", ".dwg": "image/vnd.dwg",
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
   ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
@@ -44,6 +46,7 @@ const MATRIX = Object.freeze({
   powerpoint: ["discover", "preview", "inspect", "create", "edit", "render", "compare", "export", "open_external", "attach_evidence"],
   pdf: ["discover", "preview", "inspect", "open_external", "attach_evidence"],
   markdown: ["discover", "preview", "inspect", "create", "edit", "transform", "render", "compare", "export", "open_external", "attach_evidence"],
+  text: ["discover", "preview", "inspect", "create", "edit", "compare", "export", "open_external", "attach_evidence"],
   cad_dxf: ["discover", "preview", "inspect", "render", "open_external", "attach_evidence"],
   cad_dwg: ["discover", "preview", "inspect", "render", "open_external", "attach_evidence"],
   image: ["discover", "preview", "inspect", "compare", "open_external", "attach_evidence"],
@@ -53,7 +56,7 @@ const MATRIX = Object.freeze({
 });
 
 const DEFAULT_RUNTIME_READINESS = Object.freeze({
-  canvas: true, word: true, excel: true, powerpoint: true, pdf: true, markdown: true,
+  canvas: true, word: true, excel: true, powerpoint: true, pdf: true, markdown: true, text: true,
   cad_dxf: true, cad_dwg: false, image: true, audio: true, video: true, unknown: true,
 });
 

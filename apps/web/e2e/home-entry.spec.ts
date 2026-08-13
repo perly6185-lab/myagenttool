@@ -40,6 +40,107 @@ const EMPTY_HOME_WORKBENCH = {
   items: [],
 };
 
+const POPULATED_HOME_ITEMS = [
+  {
+    id: "task-customer",
+    localRef: "TASK-101",
+    projectId: "project-1",
+    title: "回复客户并确认交付范围",
+    body: "",
+    type: "task",
+    status: "ready",
+    priority: "p1",
+    state: "open",
+    labels: [],
+    assigneeIds: ["usr_local"],
+    requesterRelation: "customer",
+    requesterName: "示例客户",
+    requesterOrganization: null,
+    requesterUserId: null,
+    intakeChannel: "manual",
+    externalReference: null,
+    waitingOn: "me",
+    commitmentDate: null,
+    nextFollowUpAt: null,
+    lastProgressAt: null,
+    lastProgressSummary: null,
+    acceptanceCriteria: [],
+    dueDate: "2026-08-06",
+    plannedDate: "2026-08-06",
+    milestone: "",
+    estimatePoints: 0,
+    revision: 1,
+    archivedAt: null,
+    updatedAt: "2026-08-06T01:00:00.000Z",
+  },
+  {
+    id: "task-ai",
+    localRef: "TASK-102",
+    projectId: "project-1",
+    title: "整理本周反馈摘要",
+    body: "",
+    type: "task",
+    status: "in_progress",
+    priority: "p2",
+    state: "open",
+    labels: [],
+    assigneeIds: ["usr_local"],
+    requesterRelation: "self",
+    requesterName: null,
+    requesterOrganization: null,
+    requesterUserId: null,
+    intakeChannel: "manual",
+    externalReference: null,
+    waitingOn: "ai",
+    commitmentDate: null,
+    nextFollowUpAt: null,
+    lastProgressAt: null,
+    lastProgressSummary: null,
+    acceptanceCriteria: [],
+    dueDate: "2026-08-06",
+    plannedDate: "2026-08-06",
+    milestone: "",
+    estimatePoints: 0,
+    revision: 1,
+    archivedAt: null,
+    updatedAt: "2026-08-06T01:30:00.000Z",
+  },
+];
+
+const POPULATED_HOME_WORKBENCH = {
+  ...EMPTY_HOME_WORKBENCH,
+  summary: {
+    ...EMPTY_HOME_WORKBENCH.summary,
+    total: 2,
+    needsAttention: 1,
+    waitingMe: 1,
+    dueToday: 2,
+    byRelation: { boss: 0, manager: 0, customer: 1, child: 0, colleague: 0, self: 1, unknown: 0 },
+    byWaitingOn: { me: 1, requester: 0, internal: 0, ai: 1, none: 0 },
+  },
+  items: [
+    {
+      workItemId: "task-customer", localRef: "TASK-101", title: "回复客户并确认交付范围", projectId: "project-1",
+      revision: 1, priority: "p1", assignees: [{ id: "usr_local", name: "我" }],
+      requester: { relation: "customer", name: "示例客户", organization: null },
+      planningStatus: "ready", executionState: "unclaimed", waitingOn: "me", executionKind: null, executionUpdatedAt: null,
+      attentionReason: "user_action_required", secondaryReasons: [], needsAttention: true,
+      dueDate: "2026-08-06", plannedDate: "2026-08-06", commitmentDate: null, nextFollowUpAt: null, report: null,
+      nextAction: { kind: "open_issue", label: "open_issue", targetId: "task-customer", section: "task" }, ai: null,
+    },
+    {
+      workItemId: "task-ai", localRef: "TASK-102", title: "整理本周反馈摘要", projectId: "project-1",
+      revision: 1, priority: "p2", assignees: [{ id: "usr_local", name: "我" }],
+      requester: { relation: "self", name: null, organization: null },
+      planningStatus: "in_progress", executionState: "running", waitingOn: "ai", executionKind: "auto_run", executionUpdatedAt: "2026-08-06T01:30:00.000Z",
+      attentionReason: "ai_running", secondaryReasons: [], needsAttention: false, userStatus: "ai_working",
+      dueDate: "2026-08-06", plannedDate: "2026-08-06", commitmentDate: null, nextFollowUpAt: null, report: null,
+      nextAction: { kind: "open_run", label: "open_run", targetId: "run-ai", section: "invocations" },
+      ai: { autoRunId: "auto-ai", invocationId: "run-ai", agentId: "agent-1", agentName: "Local runner", status: "running", updatedAt: "2026-08-06T01:30:00.000Z" },
+    },
+  ],
+};
+
 function dashboardFallback(pathname: string) {
   if (pathname === "/api/work-items/home-workbench") return EMPTY_HOME_WORKBENCH;
   if (pathname === "/api/work-items") return { workItems: [], count: 0, hasMore: false, nextCursor: null };
@@ -76,22 +177,47 @@ async function mockReadyHome(page: Page, locale: "en-US" | "zh-CN") {
 }
 
 for (const fixture of [
-  { name: "desktop-en", locale: "en-US" as const, viewport: { width: 1366, height: 768 }, task: "Create a task", run: "Generate execution plan", details: "Add completion criteria or references" },
-  { name: "desktop-zh", locale: "zh-CN" as const, viewport: { width: 1366, height: 768 }, task: "创建一个任务", run: "生成执行方案", details: "补充完成标准或参考资料" },
-  { name: "mobile-zh", locale: "zh-CN" as const, viewport: { width: 390, height: 844 }, task: "创建一个任务", run: "生成执行方案", details: "补充完成标准或参考资料" },
+  { name: "desktop-en", locale: "en-US" as const, viewport: { width: 1366, height: 768 }, task: "Create a task", run: "Let AI handle it", details: "More options" },
+  { name: "desktop-zh", locale: "zh-CN" as const, viewport: { width: 1366, height: 768 }, task: "创建一个任务", run: "交给 AI", details: "更多选项" },
+  { name: "mobile-zh", locale: "zh-CN" as const, viewport: { width: 390, height: 844 }, task: "创建一个任务", run: "交给 AI", details: "更多选项" },
 ]) {
   test(`keeps the ${fixture.name} tracked-task composer usable without horizontal overflow`, async ({ page }, testInfo) => {
     await page.setViewportSize(fixture.viewport);
     await mockReadyHome(page, fixture.locale);
     await page.goto("/?section=dashboard");
 
+    if (fixture.viewport.width < 640) {
+      const briefBox = await page.getByTestId("daily-coordination-brief").boundingBox();
+      const boardBox = await page.getByTestId("daily-work-board").boundingBox();
+      const composerBox = await page.getByTestId("home-task-composer-inline").boundingBox();
+      expect(briefBox).not.toBeNull();
+      expect(boardBox).not.toBeNull();
+      expect(composerBox).not.toBeNull();
+      expect(briefBox!.y).toBeLessThan(boardBox!.y);
+      expect(composerBox!.y).toBeLessThan(boardBox!.y);
+      await page.getByRole("button", { name: fixture.locale === "zh-CN" ? "展开任务创建" : "Expand task creation" }).click();
+    }
+
     const input = page.getByRole("textbox", { name: fixture.task });
     const action = page.getByRole("button", { name: fixture.run });
     await expect(input).toBeVisible({ timeout: 15_000 });
     await expect(action).toBeVisible();
+    await expect(page.getByTestId("home-task-composer").getByText("Example project", { exact: true })).toBeVisible();
+    await expect(page.getByText(fixture.locale === "zh-CN"
+      ? "调度范围：所有项目"
+      : "Schedule scope: All projects")).toBeVisible();
     await expect(action).toBeDisabled();
     await input.fill(fixture.locale === "zh-CN" ? "整理客户反馈并输出建议" : "Summarize customer feedback and recommend next steps");
     await expect(action).toBeEnabled();
+    const taskOnlyAction = page.getByRole("button", { name: fixture.locale === "zh-CN" ? "仅保存" : "Save only", exact: true });
+    const [taskOnlyBox, aiActionBox] = await Promise.all([taskOnlyAction.boundingBox(), action.boundingBox()]);
+    expect(taskOnlyBox).not.toBeNull();
+    expect(aiActionBox).not.toBeNull();
+    const actionsAreSeparated = taskOnlyBox!.x + taskOnlyBox!.width <= aiActionBox!.x
+      || aiActionBox!.x + aiActionBox!.width <= taskOnlyBox!.x
+      || taskOnlyBox!.y + taskOnlyBox!.height <= aiActionBox!.y
+      || aiActionBox!.y + aiActionBox!.height <= taskOnlyBox!.y;
+    expect(actionsAreSeparated).toBe(true);
 
     await page.screenshot({ path: testInfo.outputPath(`${fixture.name}.png`), fullPage: true });
 
@@ -103,6 +229,11 @@ for (const fixture of [
     await details.locator("summary").click();
     await expect(page.getByText(fixture.locale === "zh-CN" ? "完成标准（可选）" : "Definition of done (optional)")).toBeVisible();
 
+    if (fixture.viewport.width < 1024) {
+      await expect(page.getByTestId("my-work-empty-state")).toBeVisible();
+      await expect(page.getByTestId("my-date-navigation")).toHaveCount(0);
+    }
+
     const width = await page.evaluate(() => ({
       viewport: window.innerWidth,
       content: document.documentElement.scrollWidth,
@@ -110,6 +241,95 @@ for (const fixture of [
     expect(width.content).toBeLessThanOrEqual(width.viewport);
   });
 }
+
+test("keeps a populated mobile schedule ahead of the collapsed creator", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.clock.setFixedTime(new Date("2026-08-06T12:00:00+08:00"));
+  await page.route("**/api/**", (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/state") return route.fulfill({ json: READY_STATE });
+    if (pathname === "/api/work-items/home-workbench") return route.fulfill({ json: POPULATED_HOME_WORKBENCH });
+    if (pathname === "/api/work-items") return route.fulfill({ json: { workItems: POPULATED_HOME_ITEMS, count: 2, hasMore: false, nextCursor: null } });
+    return fulfillDashboardFallback(route);
+  });
+  await page.addInitScript(() => {
+    window.localStorage.setItem("myagenttool-ui", JSON.stringify({
+      version: 1,
+      state: { section: "dashboard", locale: "zh-CN", selectedAgentId: "agent-1", selectedProjectId: "project-1" },
+    }));
+  });
+
+  await page.goto("/?section=dashboard");
+
+  await expect(page.getByRole("tab", { name: /^我的安排 2$/ })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: /TASK-101 · 回复客户并确认交付范围/ })).toBeVisible();
+  const dateNavigation = page.getByTestId("my-date-navigation");
+  await expect(page.getByRole("button", { name: "快速创建任务" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "展开任务创建" })).toBeVisible();
+  const boardBox = await page.getByTestId("daily-work-board").boundingBox();
+  const composerBox = await page.getByTestId("home-task-composer-inline").boundingBox();
+  expect(boardBox).not.toBeNull();
+  expect(composerBox).not.toBeNull();
+  expect(composerBox!.y).toBeLessThan(boardBox!.y);
+  await page.evaluate(() => {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    const main = document.querySelector("main");
+    if (main) main.scrollTop = 0;
+  });
+  await page.screenshot({ path: testInfo.outputPath("mobile-populated-schedule.png"), fullPage: true });
+
+  await page.getByTestId("my-date-columns").evaluate((container) => {
+    const target = container.querySelector<HTMLElement>('[data-testid="other-completion-column"]');
+    container.scrollTo({ left: target?.offsetLeft ?? container.scrollWidth });
+    container.dispatchEvent(new Event("scroll"));
+  });
+  await expect(dateNavigation.getByRole("button", { name: "稍后 / 未排期" })).toHaveAttribute("aria-pressed", "true");
+  await dateNavigation.getByRole("button", { name: "今天" }).click();
+  await expect(dateNavigation.getByRole("button", { name: "今天" })).toHaveAttribute("aria-pressed", "true");
+
+  await page.getByRole("tab", { name: /^AI 执行 1$/ }).click();
+  await expect(page.getByRole("button", { name: /TASK-102 整理本周反馈摘要/ })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("mobile-populated-ai.png"), fullPage: true });
+});
+
+test("keeps the desktop brief and task creation together above the full-width schedule", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.clock.setFixedTime(new Date("2026-08-06T12:00:00+08:00"));
+  await page.route("**/api/**", (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === "/api/state") return route.fulfill({ json: READY_STATE });
+    if (pathname === "/api/work-items/home-workbench") return route.fulfill({ json: POPULATED_HOME_WORKBENCH });
+    if (pathname === "/api/work-items") return route.fulfill({ json: { workItems: POPULATED_HOME_ITEMS, count: 2, hasMore: false, nextCursor: null } });
+    return fulfillDashboardFallback(route);
+  });
+  await page.addInitScript(() => {
+    window.localStorage.setItem("myagenttool-ui", JSON.stringify({
+      version: 1,
+      state: { section: "dashboard", locale: "zh-CN", selectedAgentId: "agent-1", selectedProjectId: "project-1" },
+    }));
+  });
+
+  await page.goto("/?section=dashboard");
+  await expect(page.getByRole("tab", { name: /^我的安排 2$/ })).toBeVisible({ timeout: 15_000 });
+  const createColumn = page.getByTestId("home-create-column");
+  const [briefBox, createBox, boardBox, composerBox] = await Promise.all([
+    page.getByTestId("daily-coordination-brief").boundingBox(),
+    createColumn.boundingBox(),
+    page.getByTestId("daily-work-board").boundingBox(),
+    page.getByTestId("home-task-composer-inline").boundingBox(),
+  ]);
+  expect(briefBox).not.toBeNull();
+  expect(createBox).not.toBeNull();
+  expect(boardBox).not.toBeNull();
+  expect(composerBox).not.toBeNull();
+  expect(briefBox!.x + briefBox!.width).toBeLessThanOrEqual(createBox!.x);
+  expect(Math.abs(briefBox!.y - composerBox!.y)).toBeLessThanOrEqual(2);
+  expect(boardBox!.y).toBeGreaterThanOrEqual(Math.max(briefBox!.y + briefBox!.height, composerBox!.y + composerBox!.height));
+  await expect(page.getByText("调度范围：所有项目")).toBeVisible();
+  await expect(page.getByTestId("home-task-composer").getByText("Example project", { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("desktop-populated-schedule.png"), fullPage: true });
+});
 
 test("creates a Home task, reviews its plan, then schedules AI from simple details", async ({ page }) => {
   let createdPayload: Record<string, unknown> | null = null;
@@ -198,7 +418,7 @@ test("creates a Home task, reviews its plan, then schedules AI from simple detai
   await page.goto("/?section=dashboard");
 
   await page.getByRole("textbox", { name: "Create a task" }).fill("Prepare the weekly customer update");
-  await page.getByRole("button", { name: "Create task only" }).click();
+  await page.getByRole("button", { name: "Save only" }).click();
 
   await expect(page.getByText("Task created and added to your boards.")).toBeVisible();
   expect(createdPayload).toEqual(expect.objectContaining({
@@ -441,8 +661,8 @@ const HOME_ACTION_MATRIX = [
     state: "idle",
     expectedState: "idle",
     status: null,
-    en: "Generate execution plan",
-    zh: "生成执行方案",
+    en: "Let AI handle it",
+    zh: "交给 AI",
     destination: null,
   },
   {
@@ -465,16 +685,16 @@ const HOME_ACTION_MATRIX = [
     state: "terminal-failed",
     expectedState: "idle",
     status: "failed",
-    en: "Generate execution plan",
-    zh: "生成执行方案",
+    en: "Let AI handle it",
+    zh: "交给 AI",
     destination: null,
   },
   {
     state: "terminal-succeeded",
     expectedState: "idle",
     status: "succeeded",
-    en: "Generate execution plan",
-    zh: "生成执行方案",
+    en: "Let AI handle it",
+    zh: "交给 AI",
     destination: null,
   },
 ] as const;

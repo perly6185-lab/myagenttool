@@ -52,6 +52,18 @@ export async function handleWorkItemRoutes({
   updateAttention,
   githubSyncDiagnostics,
   suggestWorkItemDraft,
+  listMyTemplateRoutingFeedback,
+  removeMyTemplateRoutingFeedback,
+  previewMyTemplateDraft,
+  listMyTemplateDrafts,
+  reviewMyTemplateDraft,
+  listSimilarMyTemplateWorkItems,
+  createMyTemplateDraft,
+  addMyTemplateLearningCase,
+  activateMyTemplateDraft,
+  listMyTemplateOutcomeFeedback,
+  recordMyTemplateOutcomeFeedback,
+  resumeMyTemplateGovernanceObservation,
   prepareExecutionContract,
   retryWorkItemAlert,
   inspectArticleImport,
@@ -271,6 +283,120 @@ export async function handleWorkItemRoutes({
 
   if (url.pathname === "/api/work-items/assist/draft" && req.method === "POST") {
     const result = suggestWorkItemDraft(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/my-template-learning" && req.method === "GET") {
+    const result = listMyTemplateRoutingFeedback({
+      projectId: url.searchParams.get("projectId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateLearningMatch = url.pathname.match(/^\/api\/work-items\/my-template-learning\/([^/]+)$/);
+  if (myTemplateLearningMatch && req.method === "DELETE") {
+    const result = removeMyTemplateRoutingFeedback({
+      feedbackId: decodeURIComponent(myTemplateLearningMatch[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/my-template-outcomes" && req.method === "GET") {
+    const result = listMyTemplateOutcomeFeedback({
+      projectId: url.searchParams.get("projectId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/my-template-drafts" && req.method === "GET") {
+    const result = listMyTemplateDrafts({ projectId: url.searchParams.get("projectId") }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const similarMyTemplateWorkItemsMatch = url.pathname.match(
+    /^\/api\/work-items\/my-template-drafts\/([^/]+)\/similar-work-items$/,
+  );
+  if (similarMyTemplateWorkItemsMatch && req.method === "GET") {
+    const result = listSimilarMyTemplateWorkItems({
+      draftId: decodeURIComponent(similarMyTemplateWorkItemsMatch[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateDraftReviewMatch = url.pathname.match(
+    /^\/api\/work-items\/my-template-drafts\/([^/]+)\/review$/,
+  );
+  if (myTemplateDraftReviewMatch && req.method === "GET") {
+    const result = reviewMyTemplateDraft({
+      draftId: decodeURIComponent(myTemplateDraftReviewMatch[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateDraftActivationMatch = url.pathname.match(
+    /^\/api\/work-items\/my-template-drafts\/([^/]+)\/activate$/,
+  );
+  if (myTemplateDraftActivationMatch && req.method === "POST") {
+    const result = activateMyTemplateDraft({
+      draftId: decodeURIComponent(myTemplateDraftActivationMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateLearningCasesMatch = url.pathname.match(
+    /^\/api\/work-items\/my-template-drafts\/([^/]+)\/cases$/,
+  );
+  if (myTemplateLearningCasesMatch && req.method === "POST") {
+    const result = addMyTemplateLearningCase({
+      draftId: decodeURIComponent(myTemplateLearningCasesMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateDraftMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/my-template-draft$/);
+  if (myTemplateDraftMatch && req.method === "GET") {
+    const result = previewMyTemplateDraft({ workItemId: decodeURIComponent(myTemplateDraftMatch[1]) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (myTemplateDraftMatch && req.method === "POST") {
+    const result = createMyTemplateDraft({
+      workItemId: decodeURIComponent(myTemplateDraftMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateGovernanceResumeMatch = url.pathname.match(
+    /^\/api\/work-items\/my-template-governance\/([^/]+)\/resume-observation$/,
+  );
+  if (myTemplateGovernanceResumeMatch && req.method === "POST") {
+    const result = resumeMyTemplateGovernanceObservation({
+      familyId: decodeURIComponent(myTemplateGovernanceResumeMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateOutcomeMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/my-template-outcome-feedback$/);
+  if (myTemplateOutcomeMatch && req.method === "POST") {
+    const result = recordMyTemplateOutcomeFeedback({
+      workItemId: decodeURIComponent(myTemplateOutcomeMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }

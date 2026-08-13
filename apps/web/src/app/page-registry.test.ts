@@ -8,19 +8,21 @@ describe("page ownership registry (#1505)", () => {
     expect(new Set(PAGE_REGISTRY.map((page) => page.key)).size).toBe(SECTION_KEYS.length);
   });
 
-  it("keeps the ordinary shell to four stable destinations", () => {
+  it("keeps the ordinary shell focused while exposing My templates as a first-class destination", () => {
     expect(ENTRY_SECTIONS.map((page) => page.key)).toEqual([
       "dashboard",
       "task",
+      "workflowMemory",
       "projects",
       "me",
     ]);
   });
 
   it("keeps contextual work reachable without promoting it to global navigation", () => {
-    for (const key of ["workBoard", "externalWork", "planning", "workspace", "documents", "workflowMemory", "canvas"] as const) {
+    for (const key of ["workBoard", "externalWork", "planning", "workspace", "documents", "canvas"] as const) {
       expect(pageRegistration(key)).toMatchObject({ surface: "entry", visibility: "contextual" });
     }
+    expect(pageRegistration("workflowMemory")).toMatchObject({ surface: "entry", visibility: "primary" });
   });
 
   it("assigns configuration to Settings and execution records to Trace", () => {

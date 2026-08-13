@@ -17,8 +17,8 @@ describe("My settings information architecture", () => {
   it("also exposes low-frequency automation and governance pages", () => {
     expect(MY_SETTINGS_SECTION_KEYS).toEqual(expect.arrayContaining([
       "autoRuns",
-      "workflowMemory",
       "approvals",
     ]));
+    expect(MY_SETTINGS_SECTION_KEYS).not.toContain("workflowMemory");
   });
 });

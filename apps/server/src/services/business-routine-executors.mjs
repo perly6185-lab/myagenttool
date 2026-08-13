@@ -15,9 +15,16 @@ import {
 import { createHash } from "node:crypto";
 import { extname, isAbsolute, relative, resolve } from "node:path";
 
+import {
+  inspectOfficeTemplateBuffer,
+  renderOfficeTemplateBuffer,
+} from "./office-template-fidelity.mjs";
+
 const WINDOWS_ABSOLUTE_RE = /^[a-zA-Z]:[\\/]/;
 const MAX_TEMPLATE_BYTES = 64 * 1_024;
+const MAX_OFFICE_TEMPLATE_BYTES = 10 * 1_024 * 1_024;
 const MAX_DRAFT_BYTES = 128 * 1_024;
+const MAX_OFFICE_DRAFT_BYTES = 12 * 1_024 * 1_024;
 const MAX_TEMPLATE_PLACEHOLDERS = 20;
 const UNSAFE_MARKDOWN_TEMPLATE_RE =
   /<\/?[a-z][^>]*>|javascript\s*:|on[a-z]+\s*=|!\[[^\]]*\]\(\s*https?:/i;
@@ -92,7 +99,8 @@ function writeExclusiveFile(target, content) {
       0o600,
     );
     created = true;
-    writeFileSync(handle, content, { encoding: "utf8" });
+    if (Buffer.isBuffer(content)) writeFileSync(handle, content);
+    else writeFileSync(handle, content, { encoding: "utf8" });
     fsyncSync(handle);
   } catch (error) {
     if (handle != null) {
@@ -176,28 +184,37 @@ export function inspectLocalQuotationTemplate({
     if (![".md", ".docx", ".xlsx"].includes(extension)) {
       return { ok: false, error: "routine_template_format_not_supported" };
     }
-    if (extension !== ".md") {
-      return {
-        ok: false,
-        error: "routine_template_preservation_unavailable",
-        format: extension.slice(1),
-      };
-    }
     if (sourceReadMode !== "supported_text") {
       return { ok: false, error: "routine_template_content_access_not_authorized" };
     }
-    if (template.stats.size > MAX_TEMPLATE_BYTES) {
+    const isOffice = extension === ".docx" || extension === ".xlsx";
+    if (template.stats.size > (isOffice ? MAX_OFFICE_TEMPLATE_BYTES : MAX_TEMPLATE_BYTES)) {
       return { ok: false, error: "routine_template_too_large" };
     }
-    const content = readFileSync(template.actual, "utf8");
+    const content = isOffice
+      ? readFileSync(template.actual)
+      : readFileSync(template.actual, "utf8");
     const currentFingerprint = artifactFingerprint(
       template.normalized,
       template.stats,
-      content,
+      isOffice ? "" : content,
       sourceReadMode,
     );
     if (expectedFingerprint && currentFingerprint !== expectedFingerprint) {
       return { ok: false, error: "routine_template_drifted" };
+    }
+    if (isOffice) {
+      const inspection = inspectOfficeTemplateBuffer({
+        buffer: content,
+        format: extension.slice(1),
+      });
+      return inspection.ok
+        ? {
+            ...inspection,
+            fingerprint: currentFingerprint,
+            templateRelativePath: template.normalized,
+          }
+        : inspection;
     }
     if (!content.trim()
       || content.includes("\0")
@@ -236,6 +253,7 @@ export function quotationDraftRelativePath({
   routineVersion,
   executionSuffix,
   draftRevision = null,
+  format = "markdown",
 } = {}) {
   const normalizedOutputDirectory = relativePath(outputDirectory);
   const normalizedSource = sourceRelativePath && sourceRelativePath !== "."
@@ -250,8 +268,9 @@ export function quotationDraftRelativePath({
   const revision = draftRevision == null
     ? null
     : Math.max(1, Number.parseInt(draftRevision, 10) || 1);
+  const extension = format === "docx" ? "docx" : format === "xlsx" ? "xlsx" : "md";
   return [normalizedSource, normalizedOutputDirectory,
-    `quotation-${slug}-r${version}${revision ? `-d${revision}` : ""}-${suffix}.md`]
+    `quotation-${slug}-r${version}${revision ? `-d${revision}` : ""}-${suffix}.${extension}`]
     .filter(Boolean)
     .join("/");
 }
@@ -277,6 +296,12 @@ export function writeLocalQuotationDraft({
   try {
     const { projectRoot, sourceRoot } = sourceRoots(projectPath, sourceRelativePath);
     const outputRoot = currentContainedDirectory(sourceRoot, normalizedOutputDirectory);
+    let officeTemplate = null;
+    let outputFormat = "markdown";
+    if (templateRelativePath) {
+      const extension = extname(templateRelativePath).toLowerCase();
+      if (extension === ".docx" || extension === ".xlsx") outputFormat = extension.slice(1);
+    }
     const plannedRelativePath = quotationDraftRelativePath({
       sourceRelativePath,
       outputDirectory,
@@ -284,6 +309,7 @@ export function writeLocalQuotationDraft({
       routineVersion,
       executionSuffix,
       draftRevision,
+      format: outputFormat,
     });
     const filename = plannedRelativePath?.split("/").at(-1);
     if (!filename) return { ok: false, error: "routine_output_directory_invalid" };
@@ -326,7 +352,17 @@ export function writeLocalQuotationDraft({
           missingFields: missingPlaceholders.slice(0, 20),
         };
       }
-      body = template.content.replace(PLACEHOLDER_RE, (_match, key) => markdownValue(fields[key]));
+      if (outputFormat === "markdown") {
+        body = template.content.replace(PLACEHOLDER_RE, (_match, key) => markdownValue(fields[key]));
+      } else {
+        const templateFile = containedSourceFile(sourceRoot, templateRelativePath);
+        officeTemplate = renderOfficeTemplateBuffer({
+          buffer: readFileSync(templateFile.actual),
+          format: outputFormat,
+          fields,
+        });
+        if (!officeTemplate.ok) return officeTemplate;
+      }
     } else {
       body = [
         "# Quotation Draft",
@@ -336,7 +372,7 @@ export function writeLocalQuotationDraft({
         ...rows,
       ].join("\n");
     }
-    const content = [
+    const content = officeTemplate?.buffer ?? [
       "> Draft only — review and approval are required before registration or delivery.",
       "",
       body.trim(),
@@ -346,7 +382,8 @@ export function writeLocalQuotationDraft({
       ...boundedEvidence.map((path) => `- ${path}`),
       "",
     ].join("\n");
-    if (Buffer.byteLength(content, "utf8") > MAX_DRAFT_BYTES) {
+    if ((Buffer.isBuffer(content) ? content.length : Buffer.byteLength(content, "utf8"))
+      > (officeTemplate ? MAX_OFFICE_DRAFT_BYTES : MAX_DRAFT_BYTES)) {
       return { ok: false, error: "routine_output_too_large" };
     }
     if (existsSync(target)) {
@@ -356,7 +393,10 @@ export function writeLocalQuotationDraft({
       if (linkStats.isSymbolicLink() || !stats.isFile() || !containedPath(outputRoot, actualTarget)) {
         return { ok: false, error: "routine_output_conflict" };
       }
-      if (readFileSync(target, "utf8") !== content) {
+      const existing = Buffer.isBuffer(content)
+        ? readFileSync(target)
+        : readFileSync(target, "utf8");
+      if (Buffer.isBuffer(content) ? !existing.equals(content) : existing !== content) {
         return { ok: false, error: "routine_output_conflict" };
       }
     } else {
@@ -365,7 +405,63 @@ export function writeLocalQuotationDraft({
     return {
       ok: true,
       relativePath: relative(projectRoot, target).replaceAll("\\", "/"),
-      preview: content.slice(0, 8_000),
+      preview: officeTemplate
+        ? JSON.stringify(officeTemplate.preview, null, 2).slice(0, 8_000)
+        : content.slice(0, 8_000),
+    };
+  } catch (error) {
+    const code = String(error?.message ?? "");
+    if (code.startsWith("routine_")) return { ok: false, error: code };
+    if (error?.code === "EEXIST") return { ok: false, error: "routine_output_conflict" };
+    return { ok: false, error: "routine_output_write_failed" };
+  }
+}
+
+export function copyLocalLearnedTemplateOutput({
+  projectPath,
+  sourceRelativePath = "",
+  templateRelativePath,
+  outputDirectory = "runs/template-outputs",
+  outputFileName = null,
+  businessKey,
+  executionSuffix,
+} = {}) {
+  const normalizedOutputDirectory = relativePath(outputDirectory);
+  if (!normalizedOutputDirectory) return { ok: false, error: "routine_output_directory_invalid" };
+  try {
+    const { projectRoot, sourceRoot } = sourceRoots(projectPath, sourceRelativePath);
+    const template = containedSourceFile(sourceRoot, templateRelativePath);
+    const extension = extname(template.normalized).toLowerCase();
+    if (![".xlsx", ".docx", ".pptx", ".pdf", ".md", ".txt"].includes(extension)) {
+      return { ok: false, error: "routine_template_format_not_supported" };
+    }
+    const requestedName = String(outputFileName ?? template.normalized.split("/").at(-1) ?? "工作结果")
+      .split(/[\\/]/).at(-1) ?? "工作结果";
+    const requestedStem = requestedName.replace(/\.[^.]+$/, "");
+    const suffix = /^[a-f0-9]{8}$/.test(String(executionSuffix ?? ""))
+      ? executionSuffix
+      : "execution";
+    const filename = `${safeFilenamePart(requestedStem)}-${safeFilenamePart(businessKey)}-${suffix}${extension}`;
+    const outputRoot = currentContainedDirectory(sourceRoot, normalizedOutputDirectory);
+    const target = resolve(outputRoot, filename);
+    if (!containedPath(outputRoot, target)) return { ok: false, error: "routine_output_path_outside_source" };
+    const content = readFileSync(template.actual);
+    if (content.length > MAX_OFFICE_DRAFT_BYTES) return { ok: false, error: "routine_output_too_large" };
+    if (existsSync(target)) {
+      const linkStats = lstatSync(target);
+      const stats = statSync(target);
+      const actualTarget = realpathSync(target);
+      if (linkStats.isSymbolicLink() || !stats.isFile() || !containedPath(outputRoot, actualTarget)) {
+        return { ok: false, error: "routine_output_conflict" };
+      }
+      if (!readFileSync(actualTarget).equals(content)) return { ok: false, error: "routine_output_conflict" };
+    } else {
+      writeExclusiveFile(target, content);
+    }
+    return {
+      ok: true,
+      relativePath: relative(projectRoot, target).replaceAll("\\", "/"),
+      preview: `Created from the confirmed output sample: ${template.normalized}`,
     };
   } catch (error) {
     const code = String(error?.message ?? "");

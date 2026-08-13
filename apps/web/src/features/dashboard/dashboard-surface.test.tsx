@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   applyLocalScheduleUrgent: vi.fn(),
   request: vi.fn(),
   autoRunReadiness: vi.fn(),
+  sessionRole: "operator" as "owner" | "admin" | "operator" | "viewer",
 }));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: mocks.useConsoleState }));
 vi.mock("@/data/use-console-actions", () => ({
@@ -49,9 +50,13 @@ vi.mock("@/lib/api-client", async (importOriginal) => ({
   request: mocks.request,
 }));
 vi.mock("@/features/invocations/run-transcript", () => ({ RunTranscriptSection: () => null }));
+vi.mock("@/hooks/use-session-user", () => ({
+  useSessionUser: () => ({ id: "usr_test", role: mocks.sessionRole }),
+}));
 
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
+  mocks.sessionRole = "operator";
   useUiStore.setState({
     section: "dashboard",
     selectedInvocationId: null,
@@ -158,7 +163,35 @@ describe("DashboardView surfaces (#927)", () => {
 
     render(<DashboardView surface="overview" />);
 
-    expect((await screen.findByRole("combobox", { name: "Current project" }) as HTMLSelectElement).value).toBe("project-current");
+    fireEvent.click(await screen.findByText("More options"));
+    expect((await screen.findByRole("combobox", { name: "New task project" }) as HTMLSelectElement).value).toBe("project-current");
+    expect(screen.getAllByText("Current customer").length).toBeGreaterThan(0);
+  });
+
+  it("turns Home into a clear read-only schedule for viewers", async () => {
+    setup();
+    mocks.sessionRole = "viewer";
+    mocks.getLocalSchedulePreview.mockResolvedValue({
+      planRevision: "0123456789abcdef01234567",
+      days: [{ date: "2026-07-31", capacity: 1, items: [{ workItemId: "work-1", previousPlannedDate: null }] }],
+      attention: [],
+      unscheduled: [],
+    });
+    mocks.getLocalScheduleUrgent.mockResolvedValue({
+      urgentRevision: "0123456789abcdef01234567",
+      insertions: [{ workItemId: "urgent-1", targetDate: "2026-07-31", requiresPinnedConfirmation: false }],
+      displacements: [],
+      confirmationRequired: [],
+      unscheduled: [],
+    });
+
+    render(<DashboardView surface="overview" />);
+
+    expect(await screen.findByText("You can view tasks and schedules. Ask an administrator for permission to create tasks or hand work to AI.")).toBeTruthy();
+    expect(screen.getByTestId("home-task-composer-read-only")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Create a task" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Apply suggested plan" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Insert urgent work" })).toBeNull();
   });
 
   it("prioritizes incomplete setup before task entry and removes the temporary run entry", async () => {
@@ -171,10 +204,56 @@ describe("DashboardView surfaces (#927)", () => {
     const brief = await screen.findByTestId("daily-coordination-brief");
     const createLayout = await screen.findByTestId("daily-brief-create-layout");
     expect(within(createLayout).getByTestId("home-task-composer-inline")).toBeTruthy();
-    expect(createLayout.className).toContain("lg:grid-cols-[minmax(0,1.45fr)_minmax(340px,0.9fr)]");
-    expect(brief.parentElement?.parentElement).toBe(createLayout);
+    expect(createLayout.className).toContain("lg:grid-cols-2");
+    const scheduleColumn = screen.getByTestId("home-schedule-column");
+    const createColumn = screen.getByTestId("home-create-column");
+    expect(scheduleColumn.contains(brief)).toBe(true);
+    expect(scheduleColumn.contains(screen.getByTestId("daily-work-board"))).toBe(true);
+    expect(createColumn.contains(screen.getByTestId("home-task-composer-inline"))).toBe(true);
+    expect(createColumn.className).not.toContain("sticky");
+    expect(screen.getByTestId("daily-work-board").parentElement?.className).toContain("lg:col-span-2");
     expect(screen.queryByText("Advanced: run AI without adding a tracked task")).toBeNull();
     expect(screen.queryByRole("navigation", { name: "Task journey" })).toBeNull();
+  });
+
+  it("does not let a late rollover preview cover a task the user has started composing", async () => {
+    let releaseRollover!: (value: unknown) => void;
+    mocks.getLocalScheduleRollover.mockReturnValue(new Promise((resolve) => {
+      releaseRollover = resolve;
+    }));
+    mocks.useConsoleState.mockReturnValue({
+      data: {
+        currentProjectId: "project-1",
+        projects: [{ id: "project-1", name: "Customer work", defaultAgentId: "agent-1" }],
+        worktrees: [], events: [], invocations: [],
+        agents: [{ id: "agent-1", name: "Codex", status: "enabled", health: { status: "healthy" } }],
+        device: { status: "online" },
+      },
+    });
+    mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
+
+    render(<DashboardView surface="overview" />);
+    const composer = await screen.findByRole("textbox", { name: "Create a task" });
+    fireEvent.focus(composer);
+    fireEvent.input(composer, { target: { value: "Prepare a quotation" } });
+    releaseRollover({
+      generatedAt: "2026-07-31T04:00:00.000Z",
+      rolloverRevision: "0123456789abcdef01234567",
+      terminalId: "dev-local",
+      sourceDate: "2026-07-30",
+      targetDate: "2026-07-31",
+      moves: [{
+        workItemId: "late-rollover", localRef: "LOCAL-LATE", title: "Old unfinished task", status: "ready",
+        sourceDate: "2026-07-30", targetDate: "2026-07-31", expectedRevision: 1,
+        runningContextPreserved: false, previousPlanSource: "auto_plan", reason: "unfinished_from_previous_local_day",
+      }],
+      confirmationRequired: [],
+      unscheduled: [],
+    });
+
+    await waitFor(() => expect(mocks.getLocalScheduleRollover).toHaveBeenCalled());
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(screen.queryByRole("dialog", { name: "Unfinished work from yesterday" })).toBeNull();
   });
 
   it("keeps concurrent task events isolated even when both tasks use the same Agent", () => {

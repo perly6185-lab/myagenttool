@@ -61,6 +61,58 @@ test("home workbench projects canonical AI and approval navigation", () => {
   });
 });
 
+test("home workbench presents AI clarification as a direct answer, never an approval", () => {
+  const result = model([item({
+    executionBindings: [{ kind: "auto_run", targetId: "aur_question", createdAt: NOW }],
+  })], {
+    autoRuns: [{
+      id: "aur_question",
+      status: "needs_input",
+      phase: "waiting_for_input",
+      updatedAt: NOW,
+      decision: {
+        path: "clarify",
+        clarifyingQuestions: ["Should the report include archived projects?"],
+        suggestedActions: [{ id: "include", label: "Include archived projects" }],
+      },
+    }],
+  });
+
+  const row = result.items[0];
+  assert.equal(row.executionState, "claimed");
+  assert.equal(row.attentionReason, "ai_needs_input");
+  assert.equal(row.secondaryReasons.includes("approval_required"), false);
+  assert.deepEqual(row.nextAction, {
+    kind: "answer_ai", label: "answer_ai", targetId: "lwi_1", section: "task",
+  });
+  assert.equal(row.userAction.kind, "answer_question");
+  assert.equal(row.userAction.instruction, "Should the report include archived projects?");
+  assert.equal(row.userAction.resumeAfterAction, true);
+  assert.equal(result.summary.approvals, 0);
+});
+
+test("home workbench identifies the concrete prerequisite that blocks a task", () => {
+  const dependency = item({ id: "foundation", localRef: "LOCAL-7", title: "Finish data model", waitingOn: "none" });
+  const blocked = item({
+    id: "delivery",
+    localRef: "LOCAL-8",
+    title: "Build dashboard",
+    status: "blocked",
+    waitingOn: "none",
+    dependencyIds: [dependency.id],
+  });
+  const result = model([dependency, blocked]);
+  const row = result.items.find((candidate) => candidate.workItemId === blocked.id);
+
+  assert.equal(row.attentionReason, "dependency_blocked");
+  assert.equal(row.needsAttention, true);
+  assert.equal(row.userAction.kind, "resolve_dependency");
+  assert.deepEqual(row.userAction.dependency, {
+    id: dependency.id, localRef: dependency.localRef, title: dependency.title,
+  });
+  assert.deepEqual(row.userAction.target, { section: "task", id: dependency.id });
+});
+
 test("home workbench projects an Issue-bound article import as managed execution", () => {
   const result = model([item({
     id: "article-import",

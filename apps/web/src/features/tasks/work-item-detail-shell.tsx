@@ -22,6 +22,7 @@ export function WorkItemDetailShell() {
   const navigate = usePageNavigation();
   const setWorkItemSection = useUiStore((state) => state.setSelectedWorkItemSection);
   const closeWorkItem = useUiStore((state) => state.closeWorkItem);
+  const openWorkItem = useUiStore((state) => state.openWorkItem);
   const setComposerDraftTask = useUiStore((state) => state.setComposerDraftTask);
   const [dirty, setDirty] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -76,6 +77,7 @@ export function WorkItemDetailShell() {
                     closeWorkItem();
                     navigate("dashboard");
                   }}
+                  onOpenWorkItem={(id) => openWorkItem(id)}
                 />
               </>
             ) : (

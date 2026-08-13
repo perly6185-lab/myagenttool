@@ -4,6 +4,7 @@ import { classifyAsset } from "./asset-capabilities.mjs";
 import { resolvePdfByteRange } from "./pdf-document-read.mjs";
 
 const MAX_MARKDOWN_BYTES = 1024 * 1024;
+const MAX_TEXT_BYTES = 1024 * 1024;
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 4 * 1024 * 1024 * 1024;
@@ -16,7 +17,7 @@ export class AssetPreviewError extends Error {
 export function readAssetPreview({ projectPath, relativeFile, range = null }) {
   const { target, path } = confinedRegularFile(projectPath, relativeFile);
   const classification = classifyAsset(path);
-  if (!["markdown", "image", "audio", "video"].includes(classification.family)) {
+  if (!["markdown", "text", "image", "audio", "video"].includes(classification.family)) {
     throw new AssetPreviewError("asset_preview_unsupported", "This asset does not use the generic preview endpoint.");
   }
   if (classification.mimeType === "image/svg+xml") {
@@ -27,6 +28,7 @@ export function readAssetPreview({ projectPath, relativeFile, range = null }) {
     descriptor = openSync(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const stat = fstatSync(descriptor);
     const limit = classification.family === "markdown" ? MAX_MARKDOWN_BYTES
+      : classification.family === "text" ? MAX_TEXT_BYTES
       : classification.family === "image" ? MAX_IMAGE_BYTES
         : classification.family === "audio" ? MAX_AUDIO_BYTES : MAX_VIDEO_BYTES;
     if (stat.size > limit) throw new AssetPreviewError("asset_preview_too_large", "Asset exceeds the local preview limit.");
@@ -39,7 +41,7 @@ export function readAssetPreview({ projectPath, relativeFile, range = null }) {
     return {
       bytes, size: stat.size, start: 0, end: Math.max(0, stat.size - 1),
       ...classification, path, partial: false,
-      ...(classification.family === "markdown" ? { text: bytes.toString("utf8") } : {}),
+      ...(["markdown", "text"].includes(classification.family) ? { text: bytes.toString("utf8") } : {}),
     };
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);

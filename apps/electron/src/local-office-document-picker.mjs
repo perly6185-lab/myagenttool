@@ -43,7 +43,7 @@ export function registerWorkflowSourceFolderPicker({ ipcMain, dialog, getWindow 
   ipcMain.removeHandler("workflow-memory:pick-source-folder");
   ipcMain.handle("workflow-memory:pick-source-folder", async () => {
     const result = await dialog.showOpenDialog(getWindow(), {
-      title: "Choose requirement and delivery folder",
+      title: "选择授权工作目录",
       properties: ["openDirectory"],
     });
     if (result.canceled || !result.filePaths[0]) return null;

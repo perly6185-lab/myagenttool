@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { startVerificationProcessGuardian } from "../runtime/verification-process-guardian.mjs";
@@ -75,6 +75,7 @@ function unique(values) {
 export function resolveAutoRunVerificationPlan({
   verifyCommandName = null,
   changedPaths = [],
+  repositoryRoot = null,
   env = process.env,
 } = {}) {
   const configured = resolveAutoRunVerifyCommandFor({ verifyCommandName, env });
@@ -89,6 +90,7 @@ export function resolveAutoRunVerificationPlan({
     path.startsWith("apps/web/")
     && /\.(?:test|spec)\.(?:tsx?|jsx?)$/.test(path));
   const commands = [];
+  const capabilities = verificationRepositoryCapabilities(repositoryRoot);
 
   // Documentation-only changes should not fan out the repository's entire test
   // matrix. Besides being disproportionate, two concurrent Auto-runs can make
@@ -99,7 +101,7 @@ export function resolveAutoRunVerificationPlan({
     path === "README.md"
     || path.startsWith("docs/")
     || path.endsWith(".md"));
-  if (docsOnly) {
+  if (docsOnly && capabilities.docsCheck) {
     commands.push([
       "pwsh",
       "-NoProfile",
@@ -111,7 +113,7 @@ export function resolveAutoRunVerificationPlan({
   }
 
   if (nodeTests.length) commands.push(["node", "--test", ...nodeTests]);
-  if (webTests.length) {
+  if (webTests.length && capabilities.pnpmWorkspace) {
     // `pnpm --filter` runs the script with apps/web as cwd, so Vitest needs
     // package-relative paths; repository-relative paths make it miss the target
     // and fall back to the entire Web suite.
@@ -126,17 +128,43 @@ export function resolveAutoRunVerificationPlan({
   }
 
   const typecheckFilters = [];
-  if (paths.some((path) => path.startsWith("packages/protocol/"))) typecheckFilters.push("@myagenttool/protocol");
-  if (paths.some((path) => path.startsWith("apps/server/"))) typecheckFilters.push("@myagenttool/server");
-  if (paths.some((path) => path.startsWith("apps/web/"))) typecheckFilters.push("@myagenttool/web");
+  if (capabilities.pnpmWorkspace && paths.some((path) => path.startsWith("packages/protocol/"))) typecheckFilters.push("@myagenttool/protocol");
+  if (capabilities.pnpmWorkspace && paths.some((path) => path.startsWith("apps/server/"))) typecheckFilters.push("@myagenttool/server");
+  if (capabilities.pnpmWorkspace && paths.some((path) => path.startsWith("apps/web/"))) typecheckFilters.push("@myagenttool/web");
   for (const filter of typecheckFilters) {
     commands.push(["pnpm", "--filter", filter, "typecheck"]);
   }
 
   // A branch without discoverable targeted tests still receives a real,
   // platform-owned gate. This is intentionally slower than inventing a pass.
-  if (!commands.length) commands.push(["pnpm", "test:ci"]);
+  if (!commands.length && capabilities.testCi) commands.push(["pnpm", "test:ci"]);
   return commands;
+}
+
+export function verificationRepositoryCapabilities(repositoryRoot = null) {
+  // Callers that only need deterministic command classification can omit a
+  // repository root. Runtime callers always provide the actual worktree so a
+  // business-document folder never inherits assumptions from this source repo.
+  if (!repositoryRoot) {
+    return { packageManifest: true, pnpmWorkspace: true, docsCheck: true, testCi: true };
+  }
+  const packagePath = join(repositoryRoot, "package.json");
+  const packageManifest = existsSync(packagePath);
+  let testCi = false;
+  if (packageManifest) {
+    try {
+      const manifest = JSON.parse(readFileSync(packagePath, "utf8"));
+      testCi = typeof manifest?.scripts?.["test:ci"] === "string" && Boolean(manifest.scripts["test:ci"].trim());
+    } catch {
+      testCi = false;
+    }
+  }
+  return {
+    packageManifest,
+    pnpmWorkspace: packageManifest && existsSync(join(repositoryRoot, "pnpm-workspace.yaml")),
+    docsCheck: existsSync(join(repositoryRoot, "tools", "docs", "check-markdown-links.ps1")),
+    testCi,
+  };
 }
 
 export function autoRunVerificationTimeoutMs(env = process.env) {
@@ -217,6 +245,7 @@ export async function runWorktreeVerification({
       resolveResult({
         passed: false,
         verified: true,
+        repairable: verificationFailureIsRepairable({ command: label, summary: diagnostic }),
         exitCode: code,
         command: label,
         summary: `\`${label}\` failed (exit ${code}).${tail ? ` Output:\n${tail}` : ""}`,
@@ -297,6 +326,7 @@ export async function runWorktreeVerificationPlan({ cwd, commands, timeoutMs = 9
       return {
         passed: false,
         verified: true,
+        repairable: result.repairable,
         commands: results.map((item) => item.command),
         exitCode: result.exitCode,
         summary: results.map((item) => item.summary).join("\n"),
@@ -310,6 +340,19 @@ export async function runWorktreeVerificationPlan({ cwd, commands, timeoutMs = 9
     exitCode: 0,
     summary: results.map((item) => item.summary).join("\n"),
   };
+}
+
+export function verificationFailureIsRepairable({ command = "", summary = "" } = {}) {
+  const diagnostic = `${command}\n${summary}`;
+  return ![
+    /ERR_PNPM_NO_PKG_MANIFEST/i,
+    /No package\.json found/i,
+    /is not recognized as the name of a script file/i,
+    /cannot find (?:the )?(?:file|path|module)/i,
+    /ENOENT/i,
+    /command not found/i,
+    /not recognized as an internal or external command/i,
+  ].some((pattern) => pattern.test(diagnostic));
 }
 
 function abortedVerification(label) {

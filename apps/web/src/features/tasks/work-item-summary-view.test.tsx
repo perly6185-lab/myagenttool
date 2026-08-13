@@ -9,6 +9,10 @@ const mocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
   updateWorkItem: vi.fn(),
   suggestWorkItemDraft: vi.fn(),
+  listMyTemplateDefinitions: vi.fn(),
+  recordMyTemplateOutcomeFeedback: vi.fn(),
+  previewMyTemplateDraft: vi.fn(),
+  createMyTemplateDraft: vi.fn(),
   listWorkItemComments: vi.fn(),
   createWorkItemComment: vi.fn(),
   recordWorkItemProgress: vi.fn(),
@@ -45,6 +49,10 @@ vi.mock("@/data/use-console-actions", () => ({
     getWorkItem: mocks.getWorkItem,
     updateWorkItem: mocks.updateWorkItem,
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
+    listMyTemplateDefinitions: mocks.listMyTemplateDefinitions,
+    recordMyTemplateOutcomeFeedback: mocks.recordMyTemplateOutcomeFeedback,
+    previewMyTemplateDraft: mocks.previewMyTemplateDraft,
+    createMyTemplateDraft: mocks.createMyTemplateDraft,
     listWorkItemComments: mocks.listWorkItemComments,
     createWorkItemComment: mocks.createWorkItemComment,
     recordWorkItemProgress: mocks.recordWorkItemProgress,
@@ -137,6 +145,146 @@ afterEach(() => {
 });
 
 describe("work item summary presentation", () => {
+  it("explains the automatically matched My template without asking the user to choose it", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        myTemplateBinding: {
+          schemaVersion: 1,
+          definitionId: "rtd_quote",
+          familyId: "family_quote",
+          version: 2,
+          name: "Customer quotation",
+          expectedOutput: "Quotation workbook",
+          matchReasons: ["The requested result matches a quotation workbook"],
+          snapshot: {
+            name: "Customer quotation",
+            description: "Turn an inquiry into a checked quotation.",
+            expectedOutput: "Quotation workbook",
+            steps: [
+              { key: "extract", kind: "extract", label: "Extract inquiry items", required: true },
+              { key: "generate", kind: "generate", label: "Generate quotation", required: true },
+            ],
+          },
+          snapshotHash: "abc123",
+          matchedAt: "2026-08-05T00:00:00.000Z",
+        },
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const template = await screen.findByTestId("work-item-template-binding");
+    expect(template.textContent).toContain("How this task will produce its result");
+    expect(template.textContent).toContain("Selected from the result");
+    expect(template.textContent).toContain("Customer quotation");
+    expect(template.textContent).toContain("Quotation workbook");
+    expect(template.textContent).toContain("The requested result matches a quotation workbook");
+    expect(screen.queryByRole("combobox", { name: /template/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Wrong result" })).toBeNull();
+
+    fireEvent.click(within(template).getByText("View processing steps"));
+    expect(template.textContent).toContain("Extract inquiry items");
+    expect(template.textContent).toContain("Generate quotation");
+  });
+
+  it("lets an ordinary user correct an unstarted task by choosing the desired result", async () => {
+    const original = item({
+      status: "backlog",
+      executionState: "unclaimed",
+      plannedDate: null,
+      waitingOn: "none",
+      myTemplateBinding: {
+        schemaVersion: 1,
+        definitionId: "rtd_quote",
+        familyId: "family_quote",
+        version: 1,
+        name: "Customer quotation",
+        expectedOutput: "Quotation workbook",
+        matchReasons: ["The task looked like a quotation"],
+        snapshot: {
+          name: "Customer quotation",
+          description: "Prepare a quotation",
+          expectedOutput: "Quotation workbook",
+          steps: [{ key: "quote", kind: "generate", label: "Generate quotation", required: true }],
+        },
+        snapshotHash: "quote-hash",
+        matchedAt: "2026-08-05T00:00:00.000Z",
+      },
+    });
+    const summaryDefinition = {
+      id: "rtd_summary", familyId: "family_summary", projectId: "prj_1", sourceId: "src_1",
+      name: "Inquiry summary", description: "Summarize inquiries", version: 2, state: "published",
+      historicalCaseIds: [], triggerDocumentTypes: ["inquiry"],
+      steps: [{ key: "summary", kind: "generate", label: "Generate summary", required: true, dependsOn: [], evidenceRefs: [], configuration: { output: "Inquiry summary" } }],
+    };
+    const corrected = item({
+      ...original,
+      revision: 3,
+      myTemplateBinding: {
+        schemaVersion: 1,
+        definitionId: "rtd_summary",
+        familyId: "family_summary",
+        version: 2,
+        name: "Inquiry summary",
+        expectedOutput: "Inquiry summary",
+        matchReasons: ["You corrected the desired result to “Inquiry summary”"],
+        snapshot: {
+          name: "Inquiry summary",
+          description: "Summarize inquiries",
+          expectedOutput: "Inquiry summary",
+          steps: [{ key: "summary", kind: "generate", label: "Generate summary", required: true }],
+        },
+        snapshotHash: "summary-hash",
+        matchedAt: "2026-08-05T00:01:00.000Z",
+      },
+    });
+    mocks.getWorkItem.mockResolvedValue({ workItem: original });
+    mocks.listMyTemplateDefinitions.mockResolvedValue({ routineDefinitions: [summaryDefinition] });
+    mocks.updateWorkItem.mockResolvedValue({ workItem: corrected });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Wrong result" }));
+    expect(await screen.findByRole("region", { name: "Correct the result" })).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: /template/i })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Inquiry summary" }));
+
+    await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", {
+      expectedRevision: 2,
+      myTemplateBinding: {
+        definitionId: "rtd_summary",
+        familyId: "family_summary",
+        version: 2,
+        matchReasons: ["You corrected the desired result to “Inquiry summary”"],
+      },
+    }));
+    expect(await screen.findByText(/correction will help with similar tasks later/i)).toBeTruthy();
+    expect(screen.getByTestId("work-item-template-binding").textContent).toContain("Inquiry summary");
+  });
+
+  it("explains when a task match used a previously corrected choice", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        myTemplateBinding: {
+          schemaVersion: 1,
+          definitionId: "rtd_summary",
+          familyId: "family_summary",
+          version: 2,
+          name: "Inquiry summary",
+          expectedOutput: "Inquiry summary",
+          matchReasons: ["参考了你之前对相似任务的纠正"],
+          snapshot: { name: "Inquiry summary", description: "Summarize inquiries", expectedOutput: "Inquiry summary", steps: [] },
+          snapshotHash: "summary-hash",
+          matchedAt: "2026-08-05T00:01:00.000Z",
+        },
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const template = await screen.findByTestId("work-item-template-binding");
+    expect(template.textContent).toContain("Learned from your correction");
+    expect(template.textContent).toContain("similar to one you corrected before");
+    expect(template.textContent).toContain("My templates under Learned choices");
+  });
+
   it("turns a completed result into a reusable task or follow-up draft", async () => {
     const onCreateTaskDraft = vi.fn();
     mocks.getWorkItem.mockResolvedValue({
@@ -154,6 +302,87 @@ describe("work item summary presentation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Create follow-up" }));
     expect(onCreateTaskDraft).toHaveBeenLastCalledWith(expect.stringContaining("Follow up on “Prepare customer update”"));
+  });
+
+  it("saves a completed ordinary task as a new learning My template after confirming the extracted result", async () => {
+    const completed = item({
+      state: "closed",
+      status: "done",
+      executionState: "completed",
+      lastProgressSummary: "The customer update was delivered.",
+      outputAssets: [{
+        id: "output-1", path: "customer-update.docx", family: "document", terminalId: "dev_local",
+        hash: "output-hash", version: "v1", capabilities: [], readiness: { state: "ready", reason: "completed" },
+      }],
+    });
+    const draft = {
+      id: "mtd_1", projectId: "prj_1", name: "Customer update", typicalInput: "Customer notes",
+      expectedOutput: "Customer update document", applicability: "When customer notes need an update",
+      steps: ["Read notes", "Prepare update", "Check result"], state: "needs_review" as const,
+      caseCount: 1, casesRequired: 1, revision: 1,
+      origin: { kind: "work_item" as const, workItemId: "lwi_1", localRef: "LOCAL-1", title: "Prepare customer update" },
+      createdAt: "2026-08-05T00:00:00.000Z", updatedAt: "2026-08-05T00:00:00.000Z",
+    };
+    mocks.getWorkItem.mockResolvedValue({ workItem: completed });
+    mocks.previewMyTemplateDraft.mockResolvedValue({
+      eligible: true, alreadySaved: false, reasons: [], draft: null,
+      suggestion: {
+        name: "Customer update", typicalInput: "Customer notes", expectedOutput: "Customer update document",
+        applicability: "When customer notes need an update", steps: draft.steps,
+      },
+      evidence: { inputCount: 0, outputCount: 1, passedVerification: true, passedAcceptance: true, hasDeliveryReport: true },
+    });
+    mocks.createMyTemplateDraft.mockResolvedValue({ workItem: item({ ...completed, myTemplateDraft: draft }), draft });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Save as My template" }));
+    expect(await screen.findByRole("heading", { name: "Save as a new My template" })).toBeTruthy();
+    expect(screen.getByDisplayValue("Customer update")).toBeTruthy();
+    expect(screen.getByText(/One case is enough to review and enable/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and save template" }));
+
+    await waitFor(() => expect(mocks.createMyTemplateDraft).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
+      expectedRevision: 2,
+      confirm: true,
+      name: "Customer update",
+      typicalInput: "Customer notes",
+      expectedOutput: "Customer update document",
+    })));
+    expect(await screen.findByText("Saved for review and activation")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save as My template" })).toBeNull();
+  });
+
+  it("records whether a completed My template result met expectations without conflating technical failures", async () => {
+    const completedTemplate = item({
+      state: "closed",
+      status: "done",
+      executionState: "completed",
+      myTemplateBinding: {
+        schemaVersion: 1, definitionId: "rtd_summary", familyId: "family_summary", version: 2,
+        name: "Inquiry summary", expectedOutput: "Inquiry summary", matchReasons: ["Expected result matched"],
+        snapshot: { name: "Inquiry summary", description: "Summarize inquiries", expectedOutput: "Inquiry summary", steps: [] },
+        snapshotHash: "summary-hash", matchedAt: "2026-08-05T00:00:00.000Z",
+      },
+    });
+    const positiveFeedback = {
+      id: "mtof_1", outcome: "met_expectations" as const, note: "",
+      definitionId: "rtd_summary", familyId: "family_summary", version: 2, revision: 1,
+      createdAt: "2026-08-05T01:00:00.000Z", updatedAt: "2026-08-05T01:00:00.000Z",
+    };
+    mocks.getWorkItem.mockResolvedValue({ workItem: completedTemplate });
+    mocks.recordMyTemplateOutcomeFeedback.mockResolvedValue({
+      workItem: item({ ...completedTemplate, myTemplateOutcomeFeedback: positiveFeedback }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const feedback = await screen.findByLabelText("Did this result meet your expectations?");
+    expect(feedback.textContent).toContain("run failures are not treated as template problems");
+    fireEvent.click(within(feedback).getByRole("button", { name: "Met expectations" }));
+    await waitFor(() => expect(mocks.recordMyTemplateOutcomeFeedback).toHaveBeenCalledWith("lwi_1", {
+      outcome: "met_expectations",
+    }));
+    expect(await within(feedback).findByText("Feedback recorded")).toBeTruthy();
+    expect(within(feedback).getByText("Met expectations")).toBeTruthy();
   });
 
   it("presents an Issue-bound article import as a completed managed execution", async () => {
@@ -708,7 +937,20 @@ describe("work item summary presentation", () => {
     });
     mocks.getWorkItem.mockResolvedValue({ workItem: unplanned });
     mocks.suggestWorkItemDraft.mockResolvedValue({
-      draft: { acceptanceCriteria: ["Customer-ready summary"], verificationSop: ["Review the customer-facing result"] },
+      draft: {
+        acceptanceCriteria: ["Customer-ready summary"],
+        verificationSop: ["Review the customer-facing result"],
+        templateMatch: {
+          state: "matched",
+          candidates: [],
+          selected: {
+            definitionId: "rtd_update",
+            templateId: "family_update",
+            version: 3,
+            reasons: ["Expected result matches customer update"],
+          },
+        },
+      },
     });
     const prepared = item({
       status: "backlog", executionState: "unclaimed", plannedDate: null,
@@ -726,6 +968,12 @@ describe("work item summary presentation", () => {
       expectedRevision: unplanned.revision,
       acceptanceCriteria: ["Customer-ready summary"],
       verificationSop: ["Review the customer-facing result"],
+      myTemplateBinding: {
+        definitionId: "rtd_update",
+        familyId: "family_update",
+        version: 3,
+        matchReasons: ["Expected result matches customer update"],
+      },
     }));
     expect(await screen.findByText(/execution plan is ready/i)).toBeTruthy();
     expect(mocks.updateWorkItem).toHaveBeenCalledTimes(1);
@@ -742,6 +990,68 @@ describe("work item summary presentation", () => {
     expect(await screen.findByText(/set to automatic/i)).toBeTruthy();
   });
 
+  it("asks an existing local Issue for its desired result instead of exposing template choices", async () => {
+    const unplanned = item({
+      status: "backlog",
+      executionState: "unclaimed",
+      plannedDate: null,
+      acceptanceCriteria: [],
+      verificationSop: [],
+      executionContractGate: { ready: false, missing: ["acceptance_criteria", "verification_sop", "confirmation"], source: null, confirmedAt: null },
+    });
+    mocks.getWorkItem.mockResolvedValue({ workItem: unplanned });
+    mocks.suggestWorkItemDraft.mockResolvedValue({
+      draft: {
+        acceptanceCriteria: ["The selected result is complete"],
+        verificationSop: ["Open and verify the selected result"],
+        templateMatch: {
+          state: "ambiguous",
+          selected: null,
+          clarification: { reason: "learned_preference_conflict" },
+          candidates: [
+            {
+              templateId: "family_quote", definitionId: "rtd_quote", version: 2,
+              name: "Customer quotation", expectedOutput: "Quotation workbook",
+              reasons: ["The inquiry may produce a quotation"],
+            },
+            {
+              templateId: "family_summary", definitionId: "rtd_summary", version: 1,
+              name: "Inquiry summary", expectedOutput: "Inquiry summary",
+              reasons: ["The inquiry may produce a summary"],
+            },
+          ],
+        },
+      },
+    });
+    mocks.updateWorkItem.mockResolvedValue({
+      workItem: item({
+        revision: 3,
+        acceptanceCriteria: ["The selected result is complete"],
+        verificationSop: ["Open and verify the selected result"],
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Let AI start" }));
+    expect(await screen.findByRole("region", { name: "What result do you want this time?" })).toBeTruthy();
+    expect(screen.getAllByText(/previously chose different results/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/system does not guess/).length).toBeGreaterThan(0);
+    expect(mocks.updateWorkItem).not.toHaveBeenCalled();
+    expect(screen.queryByRole("combobox", { name: /template/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Quotation workbook" }));
+    await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
+      acceptanceCriteria: ["The selected result is complete"],
+      verificationSop: ["Open and verify the selected result"],
+      myTemplateBinding: expect.objectContaining({
+        definitionId: "rtd_quote",
+        familyId: "family_quote",
+        version: 2,
+        userConfirmedResult: true,
+      }),
+    })));
+  });
+
   it("answers AI clarification from the task and resumes the same run", async () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({ executionState: "awaiting_approval", waitingOn: "me" }),
@@ -756,6 +1066,7 @@ describe("work item summary presentation", () => {
             decidedBy: "agent",
             confidence: 0.8,
             clarifyingQuestions: ["Should an invalid timezone fall back to UTC or stop scheduling?"],
+            suggestedActions: [{ id: "utc", label: "Fall back to UTC", description: "Fall back to UTC and record a warning." }],
           },
         },
       },
@@ -764,6 +1075,10 @@ describe("work item summary presentation", () => {
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     expect(await screen.findByText("AI needs your decision before continuing")).toBeTruthy();
+    expect(screen.getByText(/AI needs your answer: Should an invalid timezone/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Answer AI" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Use suggestion: Fall back to UTC" }));
+    expect((screen.getByPlaceholderText(/Answer the questions above/) as HTMLTextAreaElement).value).toBe("Fall back to UTC and record a warning.");
     fireEvent.change(screen.getByPlaceholderText(/Answer the questions above/), { target: { value: "Fall back to UTC and record a warning." } });
     fireEvent.click(screen.getByRole("button", { name: "Submit and continue" }));
 
@@ -771,6 +1086,30 @@ describe("work item summary presentation", () => {
       answers: "Fall back to UTC and record a warning.",
     }));
     expect(await screen.findByText(/continue in the same task run/i)).toBeTruthy();
+  });
+
+  it("names the prerequisite and opens it directly instead of showing technical blocker details", async () => {
+    const onOpenWorkItem = vi.fn();
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        status: "blocked",
+        executionState: "unclaimed",
+        waitingOn: "internal",
+        blockedBy: [{
+          id: "lwi_foundation",
+          localRef: "LOCAL-7",
+          title: "Finish the data model",
+          status: "in_progress",
+          state: "open",
+          resolved: false,
+        }],
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onOpenWorkItem={onOpenWorkItem} />);
+
+    expect(await screen.findByText("Waiting for LOCAL-7 · Finish the data model to finish.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "View prerequisite" }));
+    expect(onOpenWorkItem).toHaveBeenCalledWith("lwi_foundation");
   });
 
   it("lets the user stop an AI run while it is waiting for clarification", async () => {
@@ -964,7 +1303,7 @@ describe("work item summary presentation", () => {
     });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    expect(await screen.findByText("Result passed Codex review and automated verification")).toBeTruthy();
+    expect(await screen.findByText("Result passed automated review and verification")).toBeTruthy();
     expect(screen.getByText("Result risk: Low")).toBeTruthy();
     expect(screen.getAllByText(/1 product file, 1 test file, 1 documentation or configuration file/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Create a pull request for later merge/).length).toBeGreaterThan(0);

@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "playwright/test";
+import { expect, test, type Page } from "playwright/test";
 
 let apiBase = "";
 let root = "";
@@ -36,6 +36,14 @@ async function call(path: string, options: { method?: string; body?: unknown } =
     throw new Error(`${options.method ?? "GET"} ${path}: ${response.status} ${JSON.stringify(body)}`);
   }
   return body;
+}
+
+async function openAdvancedWorkflowMemory(page: Page) {
+  await expect(page.getByRole("heading", { name: "我的模板", exact: true }).last()).toBeVisible();
+  await page.getByRole("button", { name: /查看和管理|继续完成/ }).first().click();
+  await expect(page.getByRole("heading", { name: "创建我的模板", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "需要调整" }).click();
+  await expect(page.getByRole("heading", { name: "教 AI 做你的日常工作", exact: true })).toBeVisible();
 }
 
 test.beforeAll(async () => {
@@ -487,6 +495,9 @@ test.beforeAll(async () => {
     ));
   }
   expect(materialized.map((row) => row.workItem.id)).toHaveLength(10);
+  const persistedSource = state.workflowSources.find((item: { id: string }) => item.id === source.id);
+  if (!persistedSource) throw new Error("pilot workflow source unavailable");
+  persistedSource.purpose = "template_learning";
   primaryWorkItemTitle = materialized[0].workItem.title;
   primaryWorkItemId = materialized[0].workItem.id;
 });
@@ -530,7 +541,8 @@ test("auto-prepares authorized pilot cases in the governed mobile workbench", as
     }));
   });
   await page.goto(`/?section=workflowMemory&api=${encodeURIComponent(apiBase)}`);
-  await expect(page.getByRole("heading", { name: "交付记忆", exact: true }).last()).toBeVisible();
+  await openAdvancedWorkflowMemory(page);
+  await page.getByText("历史案例和更多设置", { exact: true }).click();
   await page.getByRole("button", { name: "打开试运行工作台" }).click();
   const workbench = page.getByRole("dialog", { name: "正式试运行" });
   await expect(workbench).toBeVisible();
@@ -563,6 +575,8 @@ test("corrects, shadow-evaluates, publishes, and rolls back one learned workflow
   });
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto(`/?section=workflowMemory&api=${encodeURIComponent(apiBase)}`);
+  await openAdvancedWorkflowMemory(page);
+  await page.getByText("历史案例和更多设置", { exact: true }).click();
   await expect(page.getByRole("heading", { name: "岗位助手" })).toBeVisible();
 
   const correctedSuggestion = page.locator('[data-testid^="adaptive-suggestion-"]')
@@ -627,6 +641,8 @@ test("turns a recognized daily-work file into one confirmed local Issue", async 
     }));
   });
   await page.goto(`/?section=workflowMemory&api=${encodeURIComponent(apiBase)}`);
+  await openAdvancedWorkflowMemory(page);
+  await page.getByText("历史案例和更多设置", { exact: true }).click();
   await expect(page.getByRole("heading", { name: "岗位助手" })).toBeVisible();
   const suggestion = page.locator('[data-testid^="adaptive-suggestion-"]')
     .filter({ hasText: adaptiveFileName });
@@ -695,7 +711,7 @@ test("shows the ten-case batch and binds one completed UI journey to pilot evide
   }
   await inputs.getByRole("button", { name: "Confirm details" }).click();
   await dailyWork.getByRole("button", { name: "Generate quotation draft" }).click();
-  await dailyWork.getByRole("button", { name: "Approve and continue" }).click();
+  await dailyWork.getByRole("button", { name: "Review result" }).click();
   const approval = page.getByRole("dialog", { name: "Review the quotation" });
   await expect(approval.getByText(/quotation-RFQ-PILOT-001/).first()).toBeVisible();
   await approval.getByRole("button", { name: "Approve and continue" }).click();

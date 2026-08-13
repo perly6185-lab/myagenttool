@@ -73,6 +73,21 @@ test("persistence restores active control-plane records across runtime restart",
     first.state.sshTargets.push({ id: "ssh_1", name: "Persisted SSH target" });
     first.state.sshConnectionTests.push({ id: "ssh_test_1", targetId: "ssh_1", status: "succeeded" });
     first.state.ledgerEntries.push({ id: "led_1", amount: "1.00", sourceRecordId: "usage_1" });
+    first.state.myTemplateGovernanceInterventions.push({
+      id: "mtgi_1", ownerTeamId: "team_local", projectId: first.defaultProject.id,
+      familyId: "family_1", definitionId: "definition_1", action: "resume_observation",
+      reason: "user_reviewed_governance_details", feedbackIds: ["mtof_1"], priorState: "paused",
+      createdBy: "usr_local", createdAt: now(),
+    });
+    first.state.myTemplateDrafts.push({
+      id: "mtd_1", ownerTeamId: "team_local", projectId: first.defaultProject.id,
+      name: "任务沉淀模版", state: "learning", caseCount: 1, casesRequired: 3,
+      origin: { kind: "work_item", workItemId: "lwi_1" }, createdAt: now(), updatedAt: now(),
+    });
+    first.state.myTemplateLearningCases.push({
+      id: "mtlc_1", ownerTeamId: "team_local", projectId: first.defaultProject.id,
+      draftId: "mtd_1", workItemId: "lwi_1", snapshotHash: "snapshot-1", createdAt: now(),
+    });
     first.state.retentionSettings.logsDays = 99;
 
     createPersistenceRuntime({
@@ -112,6 +127,9 @@ test("persistence restores active control-plane records across runtime restart",
     assert(second.state.sshTargets.some((item) => item.id === "ssh_1"), "SSH targets should restore");
     assert(second.state.sshConnectionTests.some((item) => item.id === "ssh_test_1"), "SSH connection tests should restore");
     assert(second.state.ledgerEntries.some((item) => item.id === "led_1"), "ledger entries should restore");
+    assert.equal(second.state.myTemplateGovernanceInterventions[0]?.id, "mtgi_1", "template governance intervention should restore");
+    assert.equal(second.state.myTemplateDrafts[0]?.id, "mtd_1", "task-seeded template draft should restore");
+    assert.equal(second.state.myTemplateLearningCases[0]?.id, "mtlc_1", "task-seeded learning case should restore");
     assert.equal(second.state.retentionSettings.logsDays, 99);
   } finally {
     rmSync(root, { recursive: true, force: true });

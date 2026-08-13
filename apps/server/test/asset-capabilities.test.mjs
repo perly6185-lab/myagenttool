@@ -13,7 +13,7 @@ import {
 
 test("publishes explicit support without promising CAD, media editing", () => {
   const matrix = assetCapabilityMatrix();
-  for (const family of ["canvas", "word", "excel", "powerpoint", "markdown", "cad_dxf", "cad_dwg", "image", "audio", "video", "unknown"]) {
+  for (const family of ["canvas", "word", "excel", "powerpoint", "markdown", "text", "cad_dxf", "cad_dwg", "image", "audio", "video", "unknown"]) {
     assert.ok(matrix[family]);
   }
   assert.equal(matrix.cad_dxf.capabilities.includes("edit"), false);
@@ -28,6 +28,7 @@ test("classifies representative formats and gates DWG on its local runtime", () 
   assert.equal(classifyAsset("deck.PPTX").family, "powerpoint");
   assert.equal(classifyAsset("clip.mp4").family, "video");
   assert.equal(classifyAsset("episode.mp3").family, "audio");
+  assert.equal(classifyAsset("records.csv").family, "text");
   assert.equal(classifyAsset("thing.bin").family, "unknown");
   assert.deepEqual(resolveAssetCapabilities("drawing.dwg").readiness, {
     state: "waiting_capability", reason: "dwg_preview_runtime_required",

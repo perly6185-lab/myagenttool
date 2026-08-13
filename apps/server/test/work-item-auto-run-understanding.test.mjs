@@ -1,7 +1,47 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createWorkItemAutoRunUnderstandingService } from "../src/services/work-item-auto-run-understanding.mjs";
+import {
+  createWorkItemAutoRunUnderstandingService,
+  workItemTemplateInstructions,
+} from "../src/services/work-item-auto-run-understanding.mjs";
+
+test("formats a pinned My template as frozen run instructions", () => {
+  const instructions = workItemTemplateInstructions({
+    myTemplateBinding: {
+      name: "客户询价报价",
+      version: 2,
+      expectedOutput: "报价单 Excel",
+      snapshot: {
+        templateContract: {
+          inputSummary: "设备技术协议 PDF",
+          outputFileName: "采购清单.xlsx",
+          outputColumns: ["品牌/厂家", "型号", "报价单价"],
+          fieldMappings: [
+            { column: "型号", source: "设备型号", confidence: "supported" },
+            { column: "报价单价", source: "报价单价", confidence: "needs_confirmation" },
+          ],
+          uncertainFields: ["报价单价"],
+        },
+        steps: [
+          { key: "extract", label: "提取询价项目" },
+          { key: "generate", label: "生成报价单" },
+        ],
+      },
+    },
+  });
+  assert.match(instructions, /客户询价报价 v2/);
+  assert.match(instructions, /Expected output: 报价单 Excel/);
+  assert.match(instructions, /1\. 提取询价项目/);
+  assert.match(instructions, /2\. 生成报价单/);
+  assert.match(instructions, /Typical input: 设备技术协议 PDF/);
+  assert.match(instructions, /品牌\/厂家 \| 型号 \| 报价单价/);
+  assert.match(instructions, /Do not invent values.*报价单价/);
+  assert.match(instructions, /compare every output column name and Unicode text value exactly/);
+  assert.match(instructions, /user-visible original filename/);
+  assert.match(instructions, /documented deliverables\/output directory/);
+  assert.equal(workItemTemplateInstructions({}), "");
+});
 
 function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce = false } = {}) {
   const workItem = {

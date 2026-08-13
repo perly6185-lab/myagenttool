@@ -65,7 +65,7 @@ export function Topbar() {
         <p className="hidden truncate text-xs text-muted-foreground sm:block">{current ? t(current.blurbKey) : null}</p>
       </div>
       <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-        <ProjectSwitcher />
+        {section !== "workflowMemory" ? <ProjectSwitcher /> : null}
         <Suspense fallback={<span className="size-11" aria-hidden="true" />}>
           <NotificationCenter />
         </Suspense>

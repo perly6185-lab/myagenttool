@@ -116,7 +116,10 @@ export function createWorkflowArtifactProcessor({
         state: readiness.state === "ready" ? "ready" : "unavailable",
         providerId: readiness.providerId ?? null,
         reason: readiness.reason ?? null,
-        localOnly: true,
+        localOnly: readiness.localOnly !== false,
+        requiresCloudConsent: Boolean(readiness.requiresCloudConsent),
+        local: readiness.local ?? null,
+        cloudFallback: readiness.cloudFallback ?? null,
         supportedExtensions: readiness.supportedExtensions
           ?? [...OCR_EXTENSIONS].map((extension) => `.${extension}`),
       },
@@ -127,6 +130,7 @@ export function createWorkflowArtifactProcessor({
     artifactId,
     expectedRevision,
     confirmed,
+    allowCloudOcr = false,
   } = {}, actor = null) {
     if (confirmed !== true) {
       return { status: 400, body: { error: "workflow_ocr_confirmation_required" } };
@@ -211,6 +215,7 @@ export function createWorkflowArtifactProcessor({
         const result = await recognize({
           path: target,
           signal: controller.signal,
+          cloudAllowed: allowCloudOcr === true,
           onProgress: (progress) => {
             action.progress = {
               completedPages: progress.completedPages,
@@ -263,7 +268,7 @@ export function createWorkflowArtifactProcessor({
             providerId: result.providerId,
             providerVersion: result.providerVersion,
             inputKind: result.inputKind === "image" ? "image" : "pdf",
-            localOnly: true,
+            localOnly: result.localOnly !== false,
             completedAt: now(),
             averageConfidence: Number((
               result.pages.reduce((sum, page) => sum + page.confidence, 0)
@@ -287,7 +292,9 @@ export function createWorkflowArtifactProcessor({
             invocationId: null,
             type: "workflow_artifact_ocr_completed",
             level: "info",
-            message: "A scanned PDF was recognized by a local OCR provider.",
+            message: result.localOnly === false
+              ? "A scanned document was recognized by the Codex vision fallback."
+              : "A scanned document was recognized by a local OCR provider.",
             data: {
               artifactId: artifact.id,
               sourceId: source.id,
@@ -302,8 +309,14 @@ export function createWorkflowArtifactProcessor({
         return errorResult(Object.assign(error instanceof Error ? error : new Error(String(error)), {
           status: Number(error?.status) || (
             error?.code === "workflow_ocr_timeout" ? 504
+              : error?.code === "workflow_codex_ocr_timeout" ? 504
               : error?.code === "workflow_ocr_cancelled" ? 409
-              : error?.code === "workflow_ocr_provider_unavailable" ? 409
+              : [
+                  "workflow_ocr_provider_unavailable",
+                  "workflow_ocr_cloud_confirmation_required",
+                  "workflow_codex_ocr_unavailable",
+                  "workflow_codex_ocr_not_authenticated",
+                ].includes(error?.code) ? 409
                 : 422
           ),
         }));

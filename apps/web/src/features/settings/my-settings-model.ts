@@ -15,7 +15,7 @@ export interface MySettingsCategory {
 export const MY_SETTINGS_CATEGORIES: readonly MySettingsCategory[] = [
   { key: "execution", sections: ["devices", "agents", "agentSkills", "discovery", "tools"] },
   { key: "connections", sections: ["applications", "integrations", "channels"] },
-  { key: "automation", sections: ["automation", "routines", "autoRuns", "workflowMemory"] },
+  { key: "automation", sections: ["automation", "routines", "autoRuns"] },
   { key: "governance", sections: ["approvals", "audit"] },
   { key: "resources", sections: ["economics"] },
   { key: "diagnostics", sections: ["invocations", "evidence", "review", "compare", "evalTrend"] },
@@ -35,7 +35,6 @@ const SETTINGS_SEARCH_ALIASES: Partial<Record<SectionKey, readonly string[]>> = 
   automation: ["schedule", "trigger", "rule", "排期", "触发器", "规则"],
   routines: ["recurring", "cron", "periodic", "定时", "周期", "例行"],
   autoRuns: ["autopilot", "execution", "自动执行", "自主运行"],
-  workflowMemory: ["preference", "delivery memory", "偏好", "交付经验", "记忆"],
   approvals: ["decision", "permission", "review queue", "决策", "权限", "待确认"],
   audit: ["history", "compliance", "log", "历史", "合规", "日志"],
   economics: ["budget", "cost", "usage", "token", "预算", "费用", "用量"],

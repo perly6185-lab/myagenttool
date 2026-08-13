@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Bot,
+  BrainCircuit,
   CalendarDays,
   CheckCircle2,
   ChevronDown,
@@ -24,16 +25,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { OfficeDocumentFrame } from "@/components/common/office-document-frame";
-import { Textarea } from "@/components/ui/input";
+import { Input, Textarea } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { useSessionUser } from "@/hooks/use-session-user";
 import { type SectionKey, type WorkItemSection } from "@/store/ui-store";
 import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item-progress-dialog";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
+import { myTemplateExpectedOutput } from "@/features/workflow-memory/my-template-model";
+import type { BusinessRoutineDefinition } from "@/lib/api-client";
 import type { LocalWorkItem, LocalWorkItemAutoRun, LocalWorkItemObservability, WorkItemComment, WorkItemExecutionKind, WorkItemExecutionState, WorkItemOutcomeFile } from "./task-view-types";
 import { deriveWorkItemUserStatus, type WorkItemUserStatus } from "./work-item-user-status";
 import {
@@ -53,6 +57,43 @@ import {
 } from "./work-item-delivery-preview-model";
 
 export { deriveWorkItemUserStatus } from "./work-item-user-status";
+
+type TaskTemplateCandidate = {
+  templateId: string;
+  definitionId: string;
+  version: number;
+  name: string;
+  expectedOutput: string;
+  reasons: string[];
+};
+
+type PendingTemplateClarification = {
+  acceptanceCriteria: string[];
+  verificationSop: string[];
+  candidates: TaskTemplateCandidate[];
+  reason?: string;
+};
+
+type MyTemplateDraftPreview = {
+  eligible: boolean;
+  alreadySaved: boolean;
+  reasons: string[];
+  draft: LocalWorkItem["myTemplateDraft"];
+  suggestion?: {
+    name: string;
+    typicalInput: string;
+    expectedOutput: string;
+    applicability: string;
+    steps: string[];
+  };
+  evidence?: {
+    inputCount: number;
+    outputCount: number;
+    passedVerification: boolean;
+    passedAcceptance: boolean;
+    hasDeliveryReport: boolean;
+  };
+};
 
 type SummaryCopy = {
   loading: string;
@@ -252,7 +293,7 @@ const COPY: Record<"zh" | "en", SummaryCopy> = {
       waiting: "任务正在等待相关人员回复，建议按约定时间跟进。",
       needs_action: "任务需要你的判断或补充信息后才能继续。",
       ready_for_review: "AI 已完成当前工作，请确认结果是否符合预期。",
-      blocked: "任务当前无法继续，需要先处理阻塞原因。",
+      blocked: "任务当前无法继续。先处理下方显示的前置任务，或更新阻塞进展。",
       completed: "任务已经完成，可以查看最终结果和汇报。",
     },
     action: {
@@ -262,7 +303,7 @@ const COPY: Record<"zh" | "en", SummaryCopy> = {
       waiting: "记录跟进",
       needs_action: "查看原因并处理",
       ready_for_review: "审核结果",
-      blocked: "查看阻塞原因",
+      blocked: "更新阻塞进展",
       completed: "查看结果",
     },
     goal: "任务目标",
@@ -409,11 +450,11 @@ const COPY: Record<"zh" | "en", SummaryCopy> = {
     reviewDecisionHint: "结果符合任务目标就确认完成；如果不符合，告诉 AI 需要改什么，它会继续在同一任务中处理。",
     completionFailed: "暂时无法完成任务。请核对未通过的完成标准或稍后重试。",
     deliveryReviewRequired: "此任务包含待交付的代码变更，需要先完成技术审查。",
-    aiReviewTitle: "Codex 复核结论",
-    aiReviewPending: "Codex 正在独立检查这次代码交付，完成后会在这里给出结论。",
+    aiReviewTitle: "自动复核结论",
+    aiReviewPending: "系统正在独立检查本次结果，完成后会在这里给出结论。",
     aiReviewApproved: "审查通过，可以由你确认交付。",
     aiReviewChanges: "审查发现需要修复的问题，暂不建议接受交付。",
-    aiReviewUnavailable: "自动审查暂时不可用，系统会在本地 Codex 就绪后重试。",
+    aiReviewUnavailable: "自动复核暂时不可用，系统会在检查能力就绪后重试。",
     aiReviewNoFindings: "未发现阻止交付的问题。",
     sendAiReviewBack: "交回 AI 修复",
     verificationEvidence: "系统如何验证",
@@ -817,15 +858,15 @@ function deriveDeliveryDecision({
       headline: language === "zh" ? "这份结果暂不建议接受" : "Do not accept this result yet",
       checks: verifiedFail
         ? language === "zh" ? "自动验证未通过，当前结果存在明确失败项。" : "Automated verification failed, so the result has a confirmed problem."
-        : language === "zh" ? "Codex 复核发现需要修复的问题。" : "Codex review found issues that need to be fixed.",
-      recommendation: language === "zh" ? "点击“让 AI 继续修改”，说明期望或直接采用 Codex 的修复意见。" : "Choose Ask AI to revise and describe the expected result or use the Codex findings.",
+        : language === "zh" ? "自动复核发现需要处理的问题。" : "Automated review found issues that need to be fixed.",
+      recommendation: language === "zh" ? "点击“让 AI 继续修改”，说明期望或直接采用复核建议。" : "Choose Ask AI to revise and describe the expected result or use the review findings.",
       confirmEffect, confirmRisk, revisionEffect, revisionRisk,
     };
   }
   if (reviewWaiting) {
     return {
       state: "waiting", risk: "unknown", scope,
-      headline: language === "zh" ? "代码已交付，Codex 仍在复核" : "Code delivered; Codex review is still running",
+      headline: language === "zh" ? "结果已生成，系统仍在复核" : "Result delivered; automated review is still running",
       checks: verifiedPass
         ? language === "zh" ? "自动验证已通过，独立代码复核尚未结束。" : "Automated verification passed; independent code review is still in progress."
         : language === "zh" ? "独立代码复核尚未结束，暂不能判断是否适合接受。" : "Independent code review has not finished, so acceptance is not yet recommended.",
@@ -849,7 +890,7 @@ function deriveDeliveryDecision({
   if (reviewVerdict === "approved" && verifiedPass) {
     return {
       state: "ready", risk: "low", scope,
-      headline: language === "zh" ? "结果已通过 Codex 复核和自动验证" : "Result passed Codex review and automated verification",
+      headline: language === "zh" ? "结果已通过自动复核和验证" : "Result passed automated review and verification",
       checks: language === "zh" ? "未发现阻止交付的问题，自动检查也已通过；这降低了代码缺陷风险，但不等于业务表现已由人工确认。" : "No delivery-blocking issue was found and automated checks passed. This lowers code risk but does not replace a user-visible behavior check.",
       recommendation: language === "zh" ? "如果功能表现符合你的预期，可以确认交付；拿不准时先让 AI 补充说明或继续修改。" : "Confirm delivery if the behavior matches your expectation; otherwise ask AI for clarification or revisions.",
       confirmEffect, confirmRisk, revisionEffect, revisionRisk,
@@ -858,7 +899,7 @@ function deriveDeliveryDecision({
   return {
     state: "caution", risk: "medium", scope,
     headline: reviewVerdict === "approved"
-      ? language === "zh" ? "Codex 已复核通过，但自动验证证据不足" : "Codex approved the change, but automated verification is incomplete"
+      ? language === "zh" ? "自动复核已通过，但验证证据不足" : "Automated review approved the change, but verification is incomplete"
       : language === "zh" ? "AI 已交付结果，但审核证据还不完整" : "AI delivered a result, but review evidence is incomplete",
     checks: verification?.verified === false
       ? language === "zh" ? "系统未配置或未执行可复现的自动验证，不能仅凭“AI 已完成”判断功能可用。" : "No reproducible automated verification ran, so AI completion alone does not prove the behavior works."
@@ -1047,6 +1088,7 @@ export function WorkItemSummaryView({
   onDirtyChange,
   onCompletedChange,
   onCreateTaskDraft,
+  onOpenWorkItem,
 }: {
   workItemId: string;
   onOpenExpert: (section?: WorkItemSection) => void;
@@ -1055,10 +1097,13 @@ export function WorkItemSummaryView({
   onDirtyChange?: (dirty: boolean) => void;
   onCompletedChange?: (completed: boolean | null) => void;
   onCreateTaskDraft?: (draft: string) => void;
+  onOpenWorkItem?: (workItemId: string) => void;
 }) {
   const { i18n } = useAppTranslation();
   const language = i18n.language.startsWith("zh") ? "zh" : "en";
   const copy = COPY[language];
+  const sessionUser = useSessionUser();
+  const canOperate = sessionUser?.role !== "viewer";
   const { data: consoleState } = useConsoleState();
   const [item, setItem] = useState<LocalWorkItem | null>(null);
   const [observability, setObservability] = useState<LocalWorkItemObservability | null>(null);
@@ -1087,6 +1132,21 @@ export function WorkItemSummaryView({
   const [discussionOpen, setDiscussionOpen] = useState(false);
   const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingTemplateClarification, setPendingTemplateClarification] = useState<PendingTemplateClarification | null>(null);
+  const [templateCorrectionOpen, setTemplateCorrectionOpen] = useState(false);
+  const [templateCorrectionOptions, setTemplateCorrectionOptions] = useState<BusinessRoutineDefinition[]>([]);
+  const [templateCorrectionPending, setTemplateCorrectionPending] = useState(false);
+  const [templateCorrectionError, setTemplateCorrectionError] = useState<string | null>(null);
+  const [templateOutcomePending, setTemplateOutcomePending] = useState(false);
+  const [templateOutcomeError, setTemplateOutcomeError] = useState<string | null>(null);
+  const [templateOutcomeEditing, setTemplateOutcomeEditing] = useState(false);
+  const [templateDraftOpen, setTemplateDraftOpen] = useState(false);
+  const [templateDraftPreview, setTemplateDraftPreview] = useState<MyTemplateDraftPreview | null>(null);
+  const [templateDraftName, setTemplateDraftName] = useState("");
+  const [templateDraftInput, setTemplateDraftInput] = useState("");
+  const [templateDraftOutput, setTemplateDraftOutput] = useState("");
+  const [templateDraftPending, setTemplateDraftPending] = useState(false);
+  const [templateDraftError, setTemplateDraftError] = useState<string | null>(null);
   const [changeRequestOpen, setChangeRequestOpen] = useState(false);
   const [changeRequest, setChangeRequest] = useState("");
   const [feedbackMode, setFeedbackMode] = useState<"revision" | "follow_up">("revision");
@@ -1134,6 +1194,14 @@ export function WorkItemSummaryView({
     setDiscussionOpen(false);
     setActionPending(null);
     setActionError(null);
+    setPendingTemplateClarification(null);
+    setTemplateCorrectionOpen(false);
+    setTemplateCorrectionOptions([]);
+    setTemplateCorrectionPending(false);
+    setTemplateCorrectionError(null);
+    setTemplateOutcomePending(false);
+    setTemplateOutcomeError(null);
+    setTemplateOutcomeEditing(false);
     setChangeRequestOpen(false);
     setChangeRequest("");
     setFeedbackMode("revision");
@@ -1270,17 +1338,39 @@ export function WorkItemSummaryView({
       ? 1
       : 0;
   const startEligible = ["not_started", "scheduled"].includes(status) && !hasBoundAutoRun && !observability?.latestRun;
+  const canCorrectMyTemplate = Boolean(item.myTemplateBinding && startEligible && canOperate);
+  const learnedTemplateMatch = Boolean(item.myTemplateBinding?.matchReasons.some((reason) =>
+    /纠正|corrected|correction/i.test(reason)));
   const canStartAi = startEligible && readiness?.ready === true;
   const readinessBlocked = startEligible && readiness?.ready === false;
   const readinessChecking = startEligible && readiness == null;
   const readinessWarnings = readiness?.checks.filter((check) => check.status === "warn") ?? [];
-  const primaryUsesProgress = ["not_started", "scheduled", "ai_working", "waiting"].includes(status) && !startEligible;
+  const primaryUsesProgress = (["not_started", "scheduled", "ai_working", "waiting"].includes(status)
+    || (status === "needs_action" && item.waitingOn === "me" && !["failed", "awaiting_approval"].includes(item.executionState ?? ""))
+    || (status === "blocked" && !observability?.latestRun)) && !startEligible;
   const retryableRun = failed && observability?.latestRun
     && ["failed", "blocked"].includes(observability.latestRun.status)
     ? observability.latestRun
     : null;
   const phaseDescription = aiPhaseDescription(observability?.latestRun?.phase, language);
   const understandingContext = observability?.latestRun?.understandingContext ?? null;
+  const pendingClarification = observability?.latestRun?.status === "needs_input"
+    && observability.latestRun.decision?.path === "clarify"
+    && !observability.latestRun.clarifyAnswer;
+  const clarificationSectionId = `work-item-human-action-${item.id}`;
+  const firstClarificationQuestion = observability?.latestRun?.decision?.clarifyingQuestions?.find(Boolean) ?? null;
+  const unresolvedDependency = item.blockedBy?.find((dependency) => !dependency.resolved) ?? null;
+  const primaryGuidance = pendingClarification
+    ? canOperate
+      ? firstClarificationQuestion
+        ? (language === "zh" ? `AI 需要你回答：${firstClarificationQuestion}` : `AI needs your answer: ${firstClarificationQuestion}`)
+        : (language === "zh" ? "AI 需要你补充信息，收到回答后会继续同一次执行。" : "AI needs more information and will continue the same run after your answer.")
+      : (language === "zh" ? "AI 正在等待有操作权限的成员回答，你无需操作。" : "AI is waiting for a member with permission. You do not need to act.")
+    : unresolvedDependency
+      ? (language === "zh"
+          ? `正在等待 ${unresolvedDependency.localRef} · ${unresolvedDependency.title} 完成。`
+          : `Waiting for ${unresolvedDependency.localRef} · ${unresolvedDependency.title} to finish.`)
+      : phaseDescription ?? copy.next[status];
   const resultSectionId = `work-item-result-${item.id}`;
   const acceptancePassed = reviewAcceptanceCriteria.filter((criterion) =>
     (item.reviewEvidence ?? item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed")).length;
@@ -1589,15 +1679,64 @@ export function WorkItemSummaryView({
     setActionError(null);
     try {
       const assisted = await api.suggestWorkItemDraft({ projectId: item.projectId, title: item.title, body: item.body }) as {
-        draft: { acceptanceCriteria: string[]; verificationSop: string[] };
+        draft: {
+          acceptanceCriteria: string[];
+          verificationSop: string[];
+          templateMatch?: {
+            state: "matched" | "ambiguous" | "missing";
+            candidates: TaskTemplateCandidate[];
+            selected: TaskTemplateCandidate | null;
+            clarification?: { reason?: string };
+          };
+        };
       };
       if (!assisted.draft.acceptanceCriteria?.length || !assisted.draft.verificationSop?.length) {
         throw new Error("execution_plan_incomplete");
+      }
+      if (assisted.draft.templateMatch?.state === "ambiguous") {
+        setPendingTemplateClarification({
+          acceptanceCriteria: assisted.draft.acceptanceCriteria,
+          verificationSop: assisted.draft.verificationSop,
+          candidates: assisted.draft.templateMatch.candidates,
+          reason: assisted.draft.templateMatch.clarification?.reason,
+        });
+        const learnedConflict = assisted.draft.templateMatch.clarification?.reason === "learned_preference_conflict";
+        const governancePaused = assisted.draft.templateMatch.clarification?.reason === "outcome_feedback_paused";
+        const governanceWatch = assisted.draft.templateMatch.clarification?.reason === "outcome_feedback_watch";
+        const manualObservation = assisted.draft.templateMatch.clarification?.reason === "manual_resume_observation";
+        setSyncNotice(manualObservation
+          ? (language === "zh"
+              ? "你已将这个模板恢复到观察期。本次确认后才会使用，积累新的成功结果后才恢复自动套用。"
+              : "You returned this template to observation. Confirm it for now; automatic use resumes after new successful results.")
+          : governancePaused
+          ? (language === "zh"
+              ? "这个模板近期多次产生错误结果类型，已暂停自动套用。你仍可确认本次使用。"
+              : "This template repeatedly produced the wrong result type, so automatic matching is paused. You can still confirm it for this task.")
+          : governanceWatch
+            ? (language === "zh"
+                ? "这个模板近期出现过多次结果类型不符，系统已降低推荐优先级。本次确认后才会使用。"
+                : "This template recently produced several wrong result types. It will be used only after you confirm.")
+            : learnedConflict
+          ? (language === "zh"
+              ? "你以前对此类任务选择过不同结果。请确认这次想得到什么，系统不会擅自猜测。"
+              : "You previously chose different results for this kind of task. Confirm this result so the system does not guess.")
+          : (language === "zh"
+              ? "系统找到了多种可能结果。请只确认这次想得到什么，不需要选择模板。"
+              : "Several results may fit. Confirm only the result you want; you do not need to choose a template."));
+        return;
       }
       const prepared = await api.updateWorkItem(item.id, {
         expectedRevision: item.revision,
         acceptanceCriteria: assisted.draft.acceptanceCriteria,
         verificationSop: assisted.draft.verificationSop,
+        ...(assisted.draft.templateMatch?.state === "matched" && assisted.draft.templateMatch.selected ? {
+          myTemplateBinding: {
+            definitionId: assisted.draft.templateMatch.selected.definitionId,
+            familyId: assisted.draft.templateMatch.selected.templateId,
+            version: assisted.draft.templateMatch.selected.version,
+            matchReasons: assisted.draft.templateMatch.selected.reasons,
+          },
+        } : {}),
       }) as { workItem: LocalWorkItem };
       setItem(prepared.workItem);
       setSyncNotice(language === "zh"
@@ -1606,6 +1745,156 @@ export function WorkItemSummaryView({
     } catch {
       setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
     } finally {
+      setActionPending(null);
+    }
+  };
+  const choosePendingTemplateResult = async (candidate: TaskTemplateCandidate) => {
+    if (actionPending || !pendingTemplateClarification) return;
+    setActionPending("start");
+    setActionError(null);
+    try {
+      const confirmation = language === "zh"
+        ? `你确认这次需要“${candidate.expectedOutput}”`
+        : `You confirmed the desired result is “${candidate.expectedOutput}”`;
+      const prepared = await api.updateWorkItem(item.id, {
+        expectedRevision: item.revision,
+        acceptanceCriteria: pendingTemplateClarification.acceptanceCriteria,
+        verificationSop: pendingTemplateClarification.verificationSop,
+        myTemplateBinding: {
+          definitionId: candidate.definitionId,
+          familyId: candidate.templateId,
+          version: candidate.version,
+          matchReasons: [...candidate.reasons, confirmation],
+          userConfirmedResult: true,
+        },
+      }) as { workItem: LocalWorkItem };
+      setItem(prepared.workItem);
+      setPendingTemplateClarification(null);
+      setSyncNotice(language === "zh"
+        ? `已确认最终得到“${candidate.expectedOutput}”。请核对执行方案，再选择“让 AI 开始”。`
+        : `The desired result is “${candidate.expectedOutput}”. Review the plan, then choose Let AI start.`);
+    } catch {
+      setActionError(language === "zh" ? "处理结果暂时无法确认，请重试。" : "The desired result could not be confirmed. Try again.");
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const openTemplateCorrection = async () => {
+    if (!canCorrectMyTemplate || templateCorrectionPending) return;
+    setTemplateCorrectionOpen(true);
+    setTemplateCorrectionPending(true);
+    setTemplateCorrectionError(null);
+    try {
+      const response = await api.listMyTemplateDefinitions() as { routineDefinitions: BusinessRoutineDefinition[] };
+      const choices = [...(response.routineDefinitions ?? [])]
+        .filter((definition) => definition.projectId === item.projectId && definition.state === "published")
+        .sort((left, right) => right.version - left.version);
+      const byOutput = new Map<string, BusinessRoutineDefinition>();
+      for (const definition of choices) {
+        const output = myTemplateExpectedOutput(definition);
+        if (output === item.myTemplateBinding?.expectedOutput || byOutput.has(output)) continue;
+        byOutput.set(output, definition);
+      }
+      setTemplateCorrectionOptions([...byOutput.values()]);
+    } catch {
+      setTemplateCorrectionError(language === "zh" ? "暂时无法读取其他处理结果，请重试。" : "Other results could not be loaded. Try again.");
+    } finally {
+      setTemplateCorrectionPending(false);
+    }
+  };
+  const recordTemplateOutcome = async (outcome: "met_expectations" | "wrong_result" | "needs_quality_adjustment") => {
+    if (templateOutcomePending) return;
+    setTemplateOutcomePending(true);
+    setTemplateOutcomeError(null);
+    try {
+      const response = await api.recordMyTemplateOutcomeFeedback(item.id, { outcome }) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setTemplateOutcomeEditing(false);
+      setSyncNotice(language === "zh"
+        ? "已记录这次实际结果，将用于评估这套处理方法。"
+        : "This real result was recorded and will be used to evaluate the way of working.");
+    } catch {
+      setTemplateOutcomeError(language === "zh" ? "暂时无法记录结果反馈，请重试。" : "The result feedback could not be recorded. Try again.");
+    } finally {
+      setTemplateOutcomePending(false);
+    }
+  };
+  const openTemplateDraft = async () => {
+    if (templateDraftPending) return;
+    setTemplateDraftOpen(true);
+    setTemplateDraftPending(true);
+    setTemplateDraftError(null);
+    setTemplateDraftPreview(null);
+    try {
+      const preview = await api.previewMyTemplateDraft(item.id) as MyTemplateDraftPreview;
+      setTemplateDraftPreview(preview);
+      if (preview.suggestion) {
+        setTemplateDraftName(preview.suggestion.name);
+        setTemplateDraftInput(preview.suggestion.typicalInput);
+        setTemplateDraftOutput(preview.suggestion.expectedOutput);
+      }
+    } catch {
+      setTemplateDraftError(language === "zh" ? "暂时无法整理这次任务，请稍后重试。" : "This task could not be prepared yet. Try again later.");
+    } finally {
+      setTemplateDraftPending(false);
+    }
+  };
+  const saveTemplateDraft = async () => {
+    if (templateDraftPending || !templateDraftPreview?.eligible) return;
+    setTemplateDraftPending(true);
+    setTemplateDraftError(null);
+    try {
+      const response = await api.createMyTemplateDraft(item.id, {
+        expectedRevision: item.revision,
+        confirm: true,
+        name: templateDraftName.trim(),
+        typicalInput: templateDraftInput.trim(),
+        expectedOutput: templateDraftOutput.trim(),
+        idempotencyKey: `work-item:${item.id}:my-template-draft`,
+      }) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setTemplateDraftOpen(false);
+      setSyncNotice(language === "zh"
+        ? "已保存为新的“我的模板”，目前处于学习中；不会改变原任务，也不会立即自动套用。"
+        : "Saved as a new learning My template. The original task is unchanged and it will not be applied automatically yet.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "my-template-draft", workItemId: item.id } }));
+    } catch {
+      setTemplateDraftError(language === "zh" ? "暂时无法保存为我的模板，请稍后重试。" : "The My template could not be saved. Try again later.");
+    } finally {
+      setTemplateDraftPending(false);
+    }
+  };
+  const correctTemplateResult = async (definition: BusinessRoutineDefinition) => {
+    if (!canCorrectMyTemplate || templateCorrectionPending || actionPending) return;
+    const expectedOutput = myTemplateExpectedOutput(definition);
+    setTemplateCorrectionPending(true);
+    setActionPending("start");
+    setTemplateCorrectionError(null);
+    try {
+      const response = await api.updateWorkItem(item.id, {
+        expectedRevision: item.revision,
+        myTemplateBinding: {
+          definitionId: definition.id,
+          familyId: definition.familyId,
+          version: definition.version,
+          matchReasons: [language === "zh"
+            ? `你纠正了处理结果，这次需要“${expectedOutput}”`
+            : `You corrected the desired result to “${expectedOutput}”`],
+        },
+      }) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setTemplateCorrectionOpen(false);
+      setTemplateCorrectionOptions([]);
+      setSyncNotice(language === "zh"
+        ? `已改为得到“${expectedOutput}”。这次纠正会帮助以后判断相似任务。`
+        : `The result is now “${expectedOutput}”. This correction will help with similar tasks later.`);
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-template-corrected", workItemId: item.id } }));
+    } catch {
+      setTemplateCorrectionError(language === "zh"
+        ? "暂时无法更改处理结果。若 AI 已经开始，本次处理方式将保持不变。"
+        : "The result could not be changed. If AI has started, this task's way of working remains fixed.");
+    } finally {
+      setTemplateCorrectionPending(false);
       setActionPending(null);
     }
   };
@@ -1849,6 +2138,21 @@ export function WorkItemSummaryView({
     }
   };
   const runPrimaryAction = () => {
+    if (pendingTemplateClarification) {
+      document.getElementById("task-template-result-question")?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      return;
+    }
+    if (pendingClarification) {
+      document.getElementById(clarificationSectionId)?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      if (canOperate) window.requestAnimationFrame(() => document.getElementById(`${clarificationSectionId}-answer`)?.focus());
+      return;
+    }
+    if (unresolvedDependency) {
+      if (onOpenWorkItem) onOpenWorkItem(unresolvedDependency.id);
+      else if (onOpenTaskCenter) onOpenTaskCenter();
+      else onOpenExpert("overview");
+      return;
+    }
     if (retryableRun) {
       setRetryError(null);
       setRetryOpen(true);
@@ -1946,7 +2250,7 @@ export function WorkItemSummaryView({
           <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground"><CircleDot className="size-4" aria-hidden /></span>
           <div className="min-w-0 flex-1">
             <h4 id={`work-item-next-${item.id}`} className="text-sm font-semibold">{copy.progress}</h4>
-            <p className="mt-1 text-sm leading-relaxed text-foreground/90">{phaseDescription ?? copy.next[status]}</p>
+            <p className="mt-1 text-sm leading-relaxed text-foreground/90">{primaryGuidance}</p>
             {item.lastProgressSummary ? <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{copy.lastProgress}: {item.lastProgressSummary}</p> : null}
             <Button
               className="mt-3 w-full sm:w-auto"
@@ -1955,7 +2259,11 @@ export function WorkItemSummaryView({
               aria-controls={status === "ready_for_review" ? resultSectionId : undefined}
               onClick={runPrimaryAction}
             >
-              {retryableRun
+              {pendingClarification
+                ? canOperate ? language === "zh" ? "回答 AI" : "Answer AI" : language === "zh" ? "查看问题" : "View question"
+                : unresolvedDependency
+                  ? language === "zh" ? "查看前置任务" : "View prerequisite"
+                : retryableRun
                 ? copy.retryAi
                 : startEligible
                   ? actionPending === "start" ? copy.startingAi : readinessChecking ? copy.readinessChecking : copy.startAi
@@ -2015,7 +2323,7 @@ export function WorkItemSummaryView({
       {observability?.latestRun?.status === "needs_input"
         && observability.latestRun.decision?.path === "clarify"
         && !observability.latestRun.clarifyAnswer ? (
-          <section className="rounded-xl border border-warning/35 bg-warning/[0.055] p-4" aria-label={language === "zh" ? "AI 等待你确认" : "AI is waiting for your answer"}>
+          <section id={clarificationSectionId} className="rounded-xl border border-warning/35 bg-warning/[0.055] p-4" aria-label={language === "zh" ? "AI 等待你确认" : "AI is waiting for your answer"}>
             <div className="flex items-start gap-3">
               <MessageSquare className="mt-0.5 size-5 shrink-0 text-warning" aria-hidden />
               <div className="min-w-0 flex-1">
@@ -2028,24 +2336,42 @@ export function WorkItemSummaryView({
                     ))}
                   </ol>
                 ) : null}
-                <Textarea
-                  className="mt-3"
-                  rows={3}
-                  value={clarifyAnswer}
-                  placeholder={language === "zh" ? "直接回答上面的问题，也可以说明采用 AI 建议" : "Answer the questions above, or say that AI should use its recommendation"}
-                  onChange={(event) => setClarifyAnswer(event.target.value)}
-                />
-                {clarifyError ? <p className="mt-2 text-sm text-destructive" role="alert">{clarifyError}</p> : null}
-                <div className="mt-3 flex flex-wrap justify-between gap-2">
-                  <Button variant="secondary" disabled={clarifyPending || clarifyStopPending} onClick={() => void stopAiClarification()}>
-                    {clarifyStopPending ? <RefreshCw className="animate-spin" aria-hidden /> : <X aria-hidden />}
-                    {clarifyStopPending ? language === "zh" ? "正在停止" : "Stopping" : language === "zh" ? "停止 AI" : "Stop AI"}
-                  </Button>
-                  <Button disabled={!clarifyAnswer.trim() || clarifyPending || clarifyStopPending} onClick={() => void answerAiClarification()}>
-                    {clarifyPending ? <RefreshCw className="animate-spin" aria-hidden /> : <ArrowRight aria-hidden />}
-                    {clarifyPending ? language === "zh" ? "正在提交" : "Submitting" : language === "zh" ? "提交并让 AI 继续" : "Submit and continue"}
-                  </Button>
-                </div>
+                {canOperate ? (
+                  <>
+                    {observability.latestRun.decision.suggestedActions?.length ? (
+                      <div className="mt-3 flex flex-wrap gap-2" aria-label={language === "zh" ? "AI 建议" : "AI suggestions"}>
+                        {observability.latestRun.decision.suggestedActions.map((suggestion) => (
+                          <Button key={suggestion.id} size="sm" variant="secondary" onClick={() => setClarifyAnswer(suggestion.description ?? suggestion.label)}>
+                            {language === "zh" ? "采用建议：" : "Use suggestion: "}{suggestion.label}
+                          </Button>
+                        ))}
+                      </div>
+                    ) : null}
+                    <Textarea
+                      id={`${clarificationSectionId}-answer`}
+                      className="mt-3"
+                      rows={3}
+                      value={clarifyAnswer}
+                      placeholder={language === "zh" ? "直接回答上面的问题，也可以说明采用 AI 建议" : "Answer the questions above, or say that AI should use its recommendation"}
+                      onChange={(event) => setClarifyAnswer(event.target.value)}
+                    />
+                    {clarifyError ? <p className="mt-2 text-sm text-destructive" role="alert">{clarifyError}</p> : null}
+                    <div className="mt-3 flex flex-wrap justify-between gap-2">
+                      <Button variant="secondary" disabled={clarifyPending || clarifyStopPending} onClick={() => void stopAiClarification()}>
+                        {clarifyStopPending ? <RefreshCw className="animate-spin" aria-hidden /> : <X aria-hidden />}
+                        {clarifyStopPending ? language === "zh" ? "正在停止" : "Stopping" : language === "zh" ? "停止 AI" : "Stop AI"}
+                      </Button>
+                      <Button disabled={!clarifyAnswer.trim() || clarifyPending || clarifyStopPending} onClick={() => void answerAiClarification()}>
+                        {clarifyPending ? <RefreshCw className="animate-spin" aria-hidden /> : <ArrowRight aria-hidden />}
+                        {clarifyPending ? language === "zh" ? "正在提交" : "Submitting" : language === "zh" ? "提交并让 AI 继续" : "Submit and continue"}
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-3 rounded-lg bg-background/70 px-3 py-2 text-sm text-muted-foreground">
+                    {language === "zh" ? "你的账号只能查看。请联系任务负责人或管理员回答，AI 会在收到答案后自动继续。" : "Your account is view-only. Ask the task owner or an administrator to answer; AI will continue automatically afterward."}
+                  </p>
+                )}
               </div>
             </div>
           </section>
@@ -2083,6 +2409,24 @@ export function WorkItemSummaryView({
         </div>
       ) : null}
 
+      {pendingTemplateClarification ? (
+        <section id="task-template-result-question" className="rounded-xl border border-warning/40 bg-warning/[0.06] p-4" aria-label={language === "zh" ? "这次你希望最终得到什么？" : "What result do you want this time?"}>
+          <h4 className="text-sm font-semibold">{language === "zh" ? "这次你希望最终得到什么？" : "What result do you want this time?"}</h4>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {pendingTemplateClarification.reason === "learned_preference_conflict"
+              ? (language === "zh" ? "你以前对此类任务选择过不同结果。请选择本次结果，系统不会擅自猜测。" : "You previously chose different results for this kind of task. Choose this result so the system does not guess.")
+              : (language === "zh" ? "选择结果即可，系统会自动采用对应的处理方法。" : "Choose the result only. The appropriate way of working will be applied automatically.")}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {[...new Map(pendingTemplateClarification.candidates.map((candidate) => [candidate.expectedOutput, candidate])).values()].map((candidate) => (
+              <Button key={candidate.definitionId} size="sm" variant="secondary" disabled={actionPending !== null} onClick={() => { void choosePendingTemplateResult(candidate); }}>
+                {candidate.expectedOutput}
+              </Button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {status === "completed" ? (
         <section className="rounded-xl border border-success/35 bg-success/[0.06] p-4" aria-label={copy.completedTitle} role="status">
           <div className="flex items-start gap-3">
@@ -2099,10 +2443,49 @@ export function WorkItemSummaryView({
                 {onCreateTaskDraft ? <Button size="sm" variant="secondary" onClick={() => onCreateTaskDraft(language === "zh"
                   ? `基于“${item.title}”的结果继续：${resultSummary ?? "请说明下一步目标"}`
                   : `Follow up on “${item.title}”: ${resultSummary ?? "describe the next outcome"}`)}>{copy.createFollowUp}</Button> : null}
+                {!item.myTemplateBinding && canOperate ? item.myTemplateDraft ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-md border border-primary/25 bg-primary/[0.05] px-3 py-1.5 text-sm font-medium text-primary">
+                    <BrainCircuit className="size-4" aria-hidden />
+                    {language === "zh" ? "已保存，等待检查并启用" : "Saved for review and activation"}
+                  </span>
+                ) : (
+                  <Button size="sm" variant="secondary" disabled={templateDraftPending} onClick={() => { void openTemplateDraft(); }}>
+                    <BrainCircuit aria-hidden />
+                    {language === "zh" ? "保存为我的模板" : "Save as My template"}
+                  </Button>
+                ) : null}
                 {onOpenTaskCenter ? <Button size="sm" variant="secondary" onClick={onOpenTaskCenter}>{copy.taskCenter}</Button> : null}
               </div>
             </div>
           </div>
+          {item.myTemplateBinding && item.status === "done" ? (
+            <div className="mt-4 rounded-lg border border-primary/25 bg-background/75 p-3" aria-label={language === "zh" ? "这次结果符合预期吗？" : "Did this result meet your expectations?"}>
+              <h5 className="text-sm font-semibold">{language === "zh" ? "这次结果符合预期吗？" : "Did this result meet your expectations?"}</h5>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {language === "zh" ? "只评价实际结果。电脑离线、权限或运行失败不会被算成模板问题。" : "Rate only the actual result. Offline computers, permissions, and run failures are not treated as template problems."}
+              </p>
+              {item.myTemplateOutcomeFeedback && !templateOutcomeEditing ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Badge tone={item.myTemplateOutcomeFeedback.outcome === "met_expectations" ? "success" : item.myTemplateOutcomeFeedback.outcome === "wrong_result" ? "danger" : "warning"}>
+                    {item.myTemplateOutcomeFeedback.outcome === "met_expectations"
+                      ? (language === "zh" ? "符合预期" : "Met expectations")
+                      : item.myTemplateOutcomeFeedback.outcome === "wrong_result"
+                        ? (language === "zh" ? "结果类型不对" : "Wrong result type")
+                        : (language === "zh" ? "内容需要调整" : "Content needs adjustment")}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">{language === "zh" ? "反馈已记录" : "Feedback recorded"}</span>
+                  <Button size="sm" variant="ghost" onClick={() => setTemplateOutcomeEditing(true)}>{language === "zh" ? "修改反馈" : "Change feedback"}</Button>
+                </div>
+              ) : (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" disabled={templateOutcomePending} onClick={() => { void recordTemplateOutcome("met_expectations"); }}><CheckCircle2 />{language === "zh" ? "符合预期" : "Met expectations"}</Button>
+                  <Button size="sm" variant="secondary" disabled={templateOutcomePending} onClick={() => { void recordTemplateOutcome("wrong_result"); }}>{language === "zh" ? "结果类型不对" : "Wrong result type"}</Button>
+                  <Button size="sm" variant="secondary" disabled={templateOutcomePending} onClick={() => { void recordTemplateOutcome("needs_quality_adjustment"); }}>{language === "zh" ? "内容需要调整" : "Content needs adjustment"}</Button>
+                </div>
+              )}
+              {templateOutcomeError ? <p className="mt-2 text-sm text-destructive" role="alert">{templateOutcomeError}</p> : null}
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -2367,6 +2750,92 @@ export function WorkItemSummaryView({
         </section>
       </div>
 
+      {item.myTemplateBinding ? (
+        <section
+          className="rounded-xl border border-primary/30 bg-primary/[0.035] p-4"
+          aria-labelledby={`work-item-template-${item.id}`}
+          data-testid="work-item-template-binding"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Bot className="size-4 text-primary" aria-hidden />
+                <h4 id={`work-item-template-${item.id}`} className="text-sm font-semibold">
+                  {language === "zh" ? "这次会怎样得到结果" : "How this task will produce its result"}
+                </h4>
+                <Badge tone="success">{learnedTemplateMatch
+                  ? (language === "zh" ? "参考了你的纠正" : "Learned from your correction")
+                  : (language === "zh" ? "已按结果自动采用" : "Selected from the result")}</Badge>
+              </div>
+              <p className="mt-2 text-sm font-medium">
+                {language === "zh" ? "预计得到：" : "Expected result: "}{item.myTemplateBinding.expectedOutput}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {language === "zh" ? "来自我的模板：" : "From My templates: "}{item.myTemplateBinding.name}
+              </p>
+            </div>
+            {canCorrectMyTemplate && !templateCorrectionOpen ? (
+              <Button size="sm" variant="ghost" disabled={templateCorrectionPending} onClick={() => { void openTemplateCorrection(); }}>
+                {language === "zh" ? "结果不对" : "Wrong result"}
+              </Button>
+            ) : null}
+          </div>
+          {learnedTemplateMatch ? (
+            <p className="mt-3 rounded-lg border border-primary/20 bg-background/70 p-2.5 text-xs leading-relaxed text-muted-foreground">
+              {language === "zh"
+                ? "系统发现这项任务与之前由你纠正过的任务相似，因此优先采用这个结果。你可以在“我的模板”中的“系统记住的选择”查看或撤销。"
+                : "This task looks similar to one you corrected before, so that result was preferred. You can review or remove the preference in My templates under Learned choices."}
+            </p>
+          ) : null}
+          {item.myTemplateBinding.matchReasons.length ? (
+            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+              {language === "zh" ? "使用原因：" : "Why it was used: "}
+              {item.myTemplateBinding.matchReasons.join(language === "zh" ? "；" : "; ")}
+            </p>
+          ) : null}
+          {templateCorrectionOpen ? (
+            <section className="mt-3 rounded-lg border border-warning/35 bg-background/80 p-3" aria-label={language === "zh" ? "纠正处理结果" : "Correct the result"}>
+              <h5 className="text-sm font-semibold">{language === "zh" ? "这次实际想得到什么？" : "What do you actually want this time?"}</h5>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {language === "zh" ? "选择结果即可。只会调整尚未开始的当前任务，并帮助以后判断相似任务。" : "Choose the result only. This changes only the unstarted task and helps with similar tasks later."}
+              </p>
+              {templateCorrectionPending && !templateCorrectionOptions.length ? (
+                <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground"><RefreshCw className="size-4 animate-spin" aria-hidden />{language === "zh" ? "正在查找可用结果…" : "Finding available results…"}</p>
+              ) : templateCorrectionOptions.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {templateCorrectionOptions.map((definition) => (
+                    <Button key={definition.id} size="sm" variant="secondary" disabled={templateCorrectionPending} onClick={() => { void correctTemplateResult(definition); }}>
+                      {myTemplateExpectedOutput(definition)}
+                    </Button>
+                  ))}
+                </div>
+              ) : !templateCorrectionError ? (
+                <p className="mt-3 text-sm text-muted-foreground">{language === "zh" ? "还没有其他可用结果，可以先到“我的模板”继续完善。" : "No other result is available yet. Add one in My templates first."}</p>
+              ) : null}
+              {templateCorrectionError ? <p className="mt-3 text-sm text-destructive" role="alert">{templateCorrectionError}</p> : null}
+              <Button className="mt-3" size="sm" variant="ghost" disabled={templateCorrectionPending} onClick={() => { setTemplateCorrectionOpen(false); setTemplateCorrectionError(null); }}>
+                {language === "zh" ? "取消" : "Cancel"}
+              </Button>
+            </section>
+          ) : null}
+          {item.myTemplateBinding.snapshot.steps.length ? (
+            <details className="mt-3 rounded-lg border border-border/80 bg-background/70 px-3 py-2">
+              <summary className="cursor-pointer text-sm font-medium">
+                {language === "zh" ? "查看处理步骤" : "View processing steps"}
+              </summary>
+              <ol className="mt-2 space-y-1.5 text-sm text-muted-foreground">
+                {item.myTemplateBinding.snapshot.steps.map((step, index) => (
+                  <li key={step.key} className="flex gap-2">
+                    <span className="text-primary">{index + 1}.</span>
+                    <span>{step.label}</span>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          ) : null}
+        </section>
+      ) : null}
+
       <section className="rounded-xl border border-border p-4" aria-labelledby={`work-item-materials-${item.id}`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -2562,6 +3031,75 @@ export function WorkItemSummaryView({
           setRefreshVersion((version) => version + 1);
         }}
       />
+      <Modal
+        open={templateDraftOpen}
+        onClose={() => { if (!templateDraftPending) setTemplateDraftOpen(false); }}
+        title={language === "zh" ? "保存为新的“我的模板”" : "Save as a new My template"}
+        description={language === "zh"
+          ? "系统已根据这次任务整理输入和结果。保存后即可到“我的模板”检查学习结果，并由你决定是否启用。"
+          : "The input and result were extracted from this task. After saving, review what was learned in My templates and decide whether to enable it."}
+        closeDisabled={templateDraftPending}
+        footer={(
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="secondary" disabled={templateDraftPending} onClick={() => setTemplateDraftOpen(false)}>
+              {language === "zh" ? "取消" : "Cancel"}
+            </Button>
+            <Button
+              disabled={templateDraftPending || !templateDraftPreview?.eligible || !templateDraftName.trim() || !templateDraftInput.trim() || !templateDraftOutput.trim()}
+              onClick={() => { void saveTemplateDraft(); }}
+            >
+              {templateDraftPending ? <RefreshCw className="animate-spin" aria-hidden /> : <BrainCircuit aria-hidden />}
+              {templateDraftPending ? (language === "zh" ? "正在整理…" : "Saving…") : (language === "zh" ? "确认并保存模板" : "Confirm and save template")}
+            </Button>
+          </div>
+        )}
+      >
+        {templateDraftPending && !templateDraftPreview ? (
+          <p className="flex min-h-32 items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
+            <RefreshCw className="size-4 animate-spin" aria-hidden />
+            {language === "zh" ? "正在从本次输入和结果中提取…" : "Extracting this task's input and result…"}
+          </p>
+        ) : templateDraftPreview && !templateDraftPreview.eligible ? (
+          <div className="rounded-lg border border-warning/35 bg-warning/[0.06] p-3 text-sm" role="status">
+            <p className="font-semibold">{language === "zh" ? "这项任务暂时不能保存" : "This task cannot be saved yet"}</p>
+            <p className="mt-1 text-muted-foreground">
+              {templateDraftPreview.reasons.includes("task_result_evidence_required")
+                ? (language === "zh" ? "还没有可确认的结果文件、交付说明或通过记录。请先补充并确认任务结果。" : "No confirmable result file, delivery summary, or passed check is available yet.")
+                : templateDraftPreview.reasons.includes("task_already_used_my_template")
+                  ? (language === "zh" ? "这项任务已经使用了现有模板，不会再创建一个重复的新模板。" : "This task already used an existing template, so a duplicate will not be created.")
+                  : (language === "zh" ? "请先完成这项任务。" : "Complete this task first.")}
+            </p>
+          </div>
+        ) : templateDraftPreview?.suggestion ? (
+          <div className="space-y-4">
+            <label className="block space-y-1.5 text-sm">
+              <span className="font-medium">{language === "zh" ? "这类工作叫什么？" : "What is this kind of work called?"}</span>
+              <Input value={templateDraftName} onChange={(event) => setTemplateDraftName(event.target.value)} maxLength={200} autoFocus />
+            </label>
+            <label className="block space-y-1.5 text-sm">
+              <span className="font-medium">{language === "zh" ? "通常收到什么？" : "What usually comes in?"}</span>
+              <Textarea rows={2} value={templateDraftInput} onChange={(event) => setTemplateDraftInput(event.target.value)} maxLength={1000} />
+            </label>
+            <label className="block space-y-1.5 text-sm">
+              <span className="font-medium">{language === "zh" ? "最后希望得到什么？" : "What should come out?"}</span>
+              <Textarea rows={2} value={templateDraftOutput} onChange={(event) => setTemplateDraftOutput(event.target.value)} maxLength={1000} />
+            </label>
+            <div className="rounded-lg border bg-muted/20 p-3 text-sm">
+              <p className="font-medium">{language === "zh" ? "保存后会怎样？" : "What happens after saving?"}</p>
+              <p className="mt-1 text-muted-foreground">
+                {language === "zh" ? "这会保存 1 个成功案例。一个案例即可进入检查和启用；启用前不会参与匹配，原任务保持不变。" : "This saves one successful case. One case is enough to review and enable; it will not participate in matching before activation, and the original task stays unchanged."}
+              </p>
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs font-medium text-primary">{language === "zh" ? "查看系统整理的处理方法" : "View extracted method"}</summary>
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
+                  {templateDraftPreview.suggestion.steps.map((step) => <li key={step}>{step}</li>)}
+                </ol>
+              </details>
+            </div>
+          </div>
+        ) : null}
+        {templateDraftError ? <p className="mt-3 text-sm text-destructive" role="alert">{templateDraftError}</p> : null}
+      </Modal>
       <Modal
         open={reportOpen}
         onClose={() => setReportOpen(false)}

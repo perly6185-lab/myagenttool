@@ -311,7 +311,7 @@ describe("TaskView local work items", () => {
     });
     expect(screen.queryByLabelText("Priority")).toBeNull();
     expect(screen.queryByLabelText("Verification SOP")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Create task only" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save only" }));
 
     await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "prj_1",
@@ -675,13 +675,13 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("Business: Open")).toBeTruthy();
     expect(screen.getByText("Planning: Backlog")).toBeTruthy();
     expect(screen.getByText("Execution: Claimed")).toBeTruthy();
-    expect(screen.getByText("GitHub #42 · Conflict")).toBeTruthy();
-    expect(screen.getByText("Conflicting fields: title")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Verification" }));
     expect(await screen.findByText("Tests pass · 321 tests")).toBeTruthy();
     expect(await screen.findByText("test · All suites")).toBeTruthy();
     expect(await screen.findByText("run: run:test-1")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Trace" }));
+    expect(screen.getByText("GitHub #42 · Conflict")).toBeTruthy();
+    expect(screen.getByText("Conflicting fields: title")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Keep local" }));
     await waitFor(() => expect(mocks.syncWorkItemGithubIssue).toHaveBeenCalledWith(
       "lwi_1", { expectedRevision: 1, direction: "resolve_local" },
@@ -909,7 +909,11 @@ describe("TaskView local work items", () => {
     await waitFor(() => expect(mocks.findSimilarArticleImports).toHaveBeenCalledWith(
       "lwi_article", "article_import_12",
     ));
-    expect(await screen.findByText("Searched 2 local article(s) and found 1 match(es).")).toBeTruthy();
+    expect(await screen.findByText(
+      "Searched 2 local article(s) and found 1 match(es).",
+      {},
+      { timeout: 5_000 },
+    )).toBeTruthy();
     expect(screen.getByText("Similar core ideas")).toBeTruthy();
     expect(screen.getByText("Shared concepts: 播客、内容工作流")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Related article" }));

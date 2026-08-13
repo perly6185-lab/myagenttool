@@ -17,6 +17,7 @@ import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { assetResourceClass, resolveAssetCapabilities } from "./asset-capabilities.mjs";
 import {
+  copyLocalLearnedTemplateOutput,
   inspectLocalQuotationTemplate,
   quotationDraftRelativePath,
   writeLocalQuotationDraft,
@@ -56,15 +57,24 @@ const STEP_TRANSITIONS = {
 const READ_ONLY_STEP_KINDS = new Set(["extract", "retrieve"]);
 const DEVICE_CAPACITY_STEP_KINDS = new Set(["extract", "retrieve", "generate", "create_issue"]);
 const EXECUTABLE_STEP_KINDS = new Set(["retrieve", "generate", "create_issue"]);
+const AUTO_ADVANCE_EXECUTABLE_STEP_KINDS = new Set(["extract", ...EXECUTABLE_STEP_KINDS]);
+const AUTO_ADVANCE_STEP_LIMIT = 20;
 const EXECUTOR_IDS = {
+  extract: "local.confirmed-business-facts.v1",
   retrieve: "local.reference-retrieval.v1",
   generate: "local.markdown-quotation-draft.v1",
   create_issue: "local.confirmed-order-issue.v1",
 };
 const CONFIRMED_TEMPLATE_QUOTATION_EXECUTOR_ID = "local.confirmed-template-quotation.v2";
+const LEARNED_TEMPLATE_OUTPUT_EXECUTOR_ID = "local.learned-template-output.v1";
 const ALLOWED_EXECUTOR_IDS = {
+  extract: new Set([EXECUTOR_IDS.extract]),
   retrieve: new Set([EXECUTOR_IDS.retrieve]),
-  generate: new Set([EXECUTOR_IDS.generate, CONFIRMED_TEMPLATE_QUOTATION_EXECUTOR_ID]),
+  generate: new Set([
+    EXECUTOR_IDS.generate,
+    CONFIRMED_TEMPLATE_QUOTATION_EXECUTOR_ID,
+    LEARNED_TEMPLATE_OUTPUT_EXECUTOR_ID,
+  ]),
   create_issue: new Set([EXECUTOR_IDS.create_issue]),
 };
 const DEFAULT_QUOTATION_REQUIRED_FIELDS = [
@@ -93,6 +103,15 @@ const REFERENCE_DOCUMENT_TYPES = new Set([
   "other_reference",
 ]);
 
+const ROUTINE_TYPE_LABELS = Object.freeze({
+  inquiry: "inquiry",
+  contract_review: "contract review",
+  purchase_request: "purchase request",
+  customer_complaint: "customer complaint",
+  weekly_report: "weekly report",
+  project_acceptance: "project acceptance",
+});
+
 const SAFE_FIELD_RE = /^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$/;
 const SENSITIVE_FIELD_RE = /(?:password|secret|token|credential|raw_?content|prompt)/i;
 const WINDOWS_ABSOLUTE_RE = /^[a-zA-Z]:[\\/]/;
@@ -106,6 +125,68 @@ function stringList(values, { maxItems = 100, maxLength = 200 } = {}) {
   if (!Array.isArray(values) || values.length > maxItems) return null;
   const normalized = [...new Set(values.map((value) => text(value, maxLength)).filter(Boolean))];
   return normalized.length <= maxItems ? normalized : null;
+}
+
+export function normalizeRoutineTriggerType(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+    .replace(/_+/g, "_");
+  return businessDocumentTypes.includes(normalized) ? normalized : null;
+}
+
+function routineSelectionFailure(error, documentType, routineCount) {
+  const ambiguous = error === "workflow_intake_routine_selection_required";
+  return {
+    status: 409,
+    body: {
+      error,
+      documentType,
+      routineCount,
+      recovery: ambiguous
+        ? "请只保留一个触发类型匹配的已发布工作流程，或调整流程的触发类型后再试。"
+        : "请先发布一个触发类型与这项工作一致的工作流程，再重新运行。",
+      assistance: {
+        kind: ambiguous ? "routine_selection" : "workflow_setup",
+        reason: error,
+        action: ambiguous ? "resolve_routine_conflict" : "publish_matching_routine",
+        title: ambiguous ? "找到多个可用工作流程" : "还没有可用的工作流程",
+        explanation: ambiguous
+          ? "AI 无法安全判断应该采用哪一套规矩，因此没有创建任务。"
+          : "AI 没有找到触发类型与这项工作一致的已发布流程，因此没有自行猜测。",
+        instruction: ambiguous
+          ? "请检查这些流程的触发类型，只保留一个明确匹配的已发布版本。"
+          : "请从历史工作中确认并发布对应流程，然后重新处理这项工作。",
+        continuation: "流程唯一匹配后，AI 会自动创建 Local Issue，并按固定版本继续执行。",
+      },
+    },
+  };
+}
+
+export function selectPublishedBusinessRoutine(definitions, documentType) {
+  const normalizedType = normalizeRoutineTriggerType(documentType);
+  if (!normalizedType) {
+    return routineSelectionFailure("workflow_intake_routine_not_available", null, 0);
+  }
+  const matches = (Array.isArray(definitions) ? definitions : [])
+    .filter((definition) => definition?.state === "published"
+      && definition.evidenceHealth?.state !== "blocked"
+      && Array.isArray(definition.triggerDocumentTypes)
+      && definition.triggerDocumentTypes.some((trigger) =>
+        normalizeRoutineTriggerType(trigger) === normalizedType))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+  if (matches.length !== 1) {
+    return routineSelectionFailure(
+      matches.length ? "workflow_intake_routine_selection_required" : "workflow_intake_routine_not_available",
+      normalizedType,
+      matches.length,
+    );
+  }
+  return {
+    status: 200,
+    body: { documentType: normalizedType, routineDefinition: matches[0], routineCount: 1 },
+  };
 }
 
 function confidence(value) {
@@ -155,6 +236,7 @@ function executableStepConfigurationError(step) {
   const executorId = executorIdFor(step);
   if (!ALLOWED_EXECUTOR_IDS[step.kind]?.has(executorId)) return "routine_step_executor_not_allowed";
   if (step.kind === "generate"
+    && executorId !== LEARNED_TEMPLATE_OUTPUT_EXECUTOR_ID
     && !/(?:quotation|quote|报价)/i.test(`${step.key} ${step.label}`)) {
     return "routine_generate_executor_not_configured";
   }
@@ -192,6 +274,18 @@ function executableStepConfigurationError(step) {
       || templateArtifactIds.some((value) => !text(value, 200))
     )) {
       return "routine_quotation_template_artifacts_invalid";
+    }
+  }
+  if (executorId === LEARNED_TEMPLATE_OUTPUT_EXECUTOR_ID) {
+    const contract = step.configuration?.templateContract;
+    if (!contract || typeof contract !== "object"
+      || !text(contract.outputFileName, 300)
+      || !text(contract.outputFormat, 20)
+      || !Array.isArray(contract.outputArtifactIds)
+      || contract.outputArtifactIds.length < 1
+      || contract.outputArtifactIds.length > 20
+      || contract.outputArtifactIds.some((value) => !text(value, 200))) {
+      return "routine_template_output_contract_invalid";
     }
   }
   return null;
@@ -310,6 +404,7 @@ export function migrateBusinessRoutineState(state) {
   for (const [runIndex, run] of state.routineRuns.entries()) {
     run.actionReceipts ??= [];
     run.recoveryReceipts ??= [];
+    run.recoveryIntent ??= null;
     run.waitingReason ??= null;
     run.capacityQueue ??= run.waitingReason === "device_capacity"
       ? {
@@ -335,6 +430,7 @@ export function migrateBusinessRoutineState(state) {
       stepRun.conditionOutcome ??= null;
       stepRun.quotationInputs ??= null;
       stepRun.quotationReview ??= null;
+      stepRun.ledgerDefinitionId ??= null;
       if (stepRun.state === "running") {
         stepRun.state = "failed";
         stepRun.errorCode = "routine_step_interrupted";
@@ -442,7 +538,8 @@ export function createBusinessRoutineService({
         && visible(row, actor)
         && row.projectId === artifact.projectId
         && row.sourceId === artifact.sourceId
-        && (!documentType || row.documentType === documentType)
+        && (!documentType || normalizeRoutineTriggerType(row.documentType)
+          === normalizeRoutineTriggerType(documentType))
         && ["confirmed", "corrected"].includes(row.confirmationState)
         && row.artifactFingerprint === artifact.fingerprint) ?? null;
   }
@@ -459,6 +556,41 @@ export function createBusinessRoutineService({
     return businessCase;
   }
 
+  function extractConfirmedRoutineFacts(context, actor) {
+    const businessCase = currentCaseFor(context, actor);
+    if (!businessCase) return { ok: false, error: "routine_business_case_not_current" };
+    const triggerArtifacts = (context.run.triggerArtifactIds ?? [])
+      .map((artifactId) => artifactFor(artifactId, actor));
+    if (!triggerArtifacts.length || triggerArtifacts.some((artifact) =>
+      !artifact
+      || artifact.availability === "missing"
+      || artifact.exclusion
+      || businessCase.artifactFingerprints?.[artifact.id] !== artifact.fingerprint)) {
+      return { ok: false, error: "routine_extract_evidence_not_current" };
+    }
+    const classifications = triggerArtifacts.map((artifact) => currentClassification(artifact, actor));
+    if (classifications.some((classification) => !classification)) {
+      return { ok: false, error: "routine_extract_confirmation_required" };
+    }
+    const entities = (businessCase.entityIds ?? []).map((entityId) =>
+      state.businessEntities.find((row) =>
+        row.id === entityId
+        && visible(row, actor)
+        && row.projectId === context.run.projectId
+        && row.sourceId === context.run.sourceId))
+      .filter(Boolean);
+    if (!entities.length || !entities.some((entity) => Object.keys(entity.fields ?? {}).length > 0)) {
+      return { ok: false, error: "routine_extract_confirmation_required" };
+    }
+    return {
+      ok: true,
+      outputRefs: triggerArtifacts.map((artifact) => ({
+        kind: "artifact",
+        artifactId: artifact.id,
+        summary: `Confirmed business facts from ${artifact.relativePath ?? artifact.name ?? artifact.id}.`,
+      })),
+    };
+  }
   function retrieveRoutineReferences(context, step, actor) {
     const businessCase = currentCaseFor(context, actor);
     if (!businessCase) {
@@ -725,6 +857,7 @@ export function createBusinessRoutineService({
       routineVersion: context.run.routineVersion,
       executionSuffix: quotationExecutionSuffix(context, step),
       draftRevision,
+      format: selectedTemplate?.format ?? "markdown",
     });
     const ready = fields.every((field) => field.state === "confirmed") && Boolean(selectedTemplate);
     return {
@@ -832,6 +965,45 @@ export function createBusinessRoutineService({
           ],
         }
       : written;
+  }
+
+  function generateLearnedTemplateOutput(context, step, actor) {
+    const source = sourceFor(context.run.sourceId, actor, { active: true });
+    const project = projectFor(context.run.projectId, actor);
+    const businessCase = currentCaseFor(context, actor);
+    const contract = step.configuration?.templateContract;
+    const templateArtifactId = contract?.outputArtifactIds?.[0];
+    const templateArtifact = artifactFor(templateArtifactId, actor);
+    if (!source || !project || !businessCase || !templateArtifact || !text(project.path, 4_000)) {
+      return { ok: false, error: "routine_generate_context_not_found" };
+    }
+    if (templateArtifact.projectId !== context.run.projectId
+      || templateArtifact.sourceId !== context.run.sourceId
+      || templateArtifact.availability === "missing"
+      || templateArtifact.exclusion
+      || businessCase.artifactFingerprints?.[templateArtifact.id] !== templateArtifact.fingerprint) {
+      return { ok: false, error: "routine_template_drifted" };
+    }
+    const written = copyLocalLearnedTemplateOutput({
+      projectPath: project.path,
+      sourceRelativePath: source.relativePath,
+      templateRelativePath: templateArtifact.relativePath,
+      outputDirectory: step.configuration?.outputDirectory,
+      outputFileName: contract.outputFileName,
+      businessKey: context.run.businessKey,
+      executionSuffix: quotationExecutionSuffix(context, step),
+    });
+    return written.ok ? {
+      ok: true,
+      outputRefs: [{
+        kind: "file",
+        relativePath: written.relativePath,
+        summary: `${contract.outputSummary ?? contract.outputFileName} created from the confirmed output sample.`,
+      }, ...(contract.uncertainFields?.length ? [{
+        kind: "note",
+        summary: `Confirm fields without a learned source: ${contract.uncertainFields.join(", ")}.`,
+      }] : [])],
+    } : written;
   }
 
   function confirmedOrderArtifacts(context, actor) {
@@ -1217,7 +1389,10 @@ export function createBusinessRoutineService({
   function recordDocumentClassification(input = {}, actor = null) {
     const context = activeContext(input, actor);
     if (context.error) return { status: 404, body: { error: context.error } };
-    const normalized = normalizeBusinessDocumentClassification(input);
+    const normalized = normalizeBusinessDocumentClassification({
+      ...input,
+      documentType: normalizeRoutineTriggerType(input.documentType) ?? input.documentType,
+    });
     if (!normalized.ok) return { status: 400, body: { error: normalized.error } };
     const artifact = artifactFor(normalized.value.artifactId, actor);
     if (!artifact || artifact.projectId !== context.projectId || artifact.sourceId !== context.sourceId) {
@@ -1293,7 +1468,10 @@ export function createBusinessRoutineService({
   function createBusinessEntity(input = {}, actor = null) {
     const context = activeContext(input, actor);
     if (context.error) return { status: 404, body: { error: context.error } };
-    const entityType = businessEntityTypes.includes(input.entityType) ? input.entityType : null;
+    const normalizedEntityType = normalizeRoutineTriggerType(input.entityType);
+    const entityType = businessEntityTypes.includes(input.entityType)
+      ? input.entityType
+      : businessEntityTypes.includes(normalizedEntityType) ? normalizedEntityType : null;
     const businessKey = text(input.businessKey, 200);
     const fields = normalizeFields(input.fields ?? {});
     const evidenceRefs = normalizeRoutineEvidenceRefs(input.evidenceRefs ?? []);
@@ -1390,7 +1568,7 @@ export function createBusinessRoutineService({
     const artifactBindings = [];
     for (const binding of input.artifactBindings) {
       const artifactId = text(binding?.artifactId);
-      const documentType = businessDocumentTypes.includes(binding?.documentType) ? binding.documentType : null;
+      const documentType = normalizeRoutineTriggerType(binding?.documentType);
       const roles = stringList(binding?.roles ?? [], { maxItems: 4 });
       const artifact = artifactId ? artifactFor(artifactId, actor) : null;
       if (!artifact || artifact.sourceId !== context.sourceId || !documentType || !roles?.length
@@ -1446,14 +1624,20 @@ export function createBusinessRoutineService({
     const description = input.description == null ? "" : String(input.description).trim().slice(0, 1_000);
     const discoveryCandidateId = input.discoveryCandidateId == null ? null : text(input.discoveryCandidateId);
     const historicalCaseIds = stringList(input.historicalCaseIds ?? []);
-    const triggerDocumentTypes = stringList(input.triggerDocumentTypes ?? [], { maxItems: 20, maxLength: 50 });
+    const rawTriggerDocumentTypes = stringList(
+      input.triggerDocumentTypes ?? [],
+      { maxItems: 20, maxLength: 50 },
+    );
+    const triggerDocumentTypes = rawTriggerDocumentTypes
+      ? [...new Set(rawTriggerDocumentTypes.map(normalizeRoutineTriggerType))]
+      : null;
     const steps = normalizeRoutineSteps(input.steps);
     const evidenceRefs = normalizeRoutineEvidenceRefs(input.evidenceRefs ?? []);
     const score = confidence(input.confidence ?? 1);
     const requestedState = ["candidate", "draft"].includes(input.state) ? input.state : "candidate";
     const configurationError = steps.ok ? routineStepConfigurationError(steps.value) : null;
     if (!name || !historicalCaseIds || !triggerDocumentTypes?.length
-      || triggerDocumentTypes.some((type) => !businessDocumentTypes.includes(type))
+      || triggerDocumentTypes.some((type) => !type)
       || !steps.ok || configurationError || !evidenceRefs || score == null) {
       return {
         status: 400,
@@ -1495,6 +1679,7 @@ export function createBusinessRoutineService({
       historicalCaseIds,
       triggerDocumentTypes,
       steps: steps.value,
+      templateContract: steps.value.find((step) => step.kind === "generate")?.configuration?.templateContract ?? null,
       evidenceRefs,
       evidenceFingerprints: Object.fromEntries(
         [...new Set([
@@ -1581,9 +1766,13 @@ export function createBusinessRoutineService({
   }
 
   function routineDefinitionHealth(definition, actor) {
-    const source = sourceFor(definition.sourceId, actor, { active: true });
-    if (!source) {
+    const taskLearnedTemplate = definition.origin?.kind === "my_template_draft";
+    const source = taskLearnedTemplate ? null : sourceFor(definition.sourceId, actor, { active: true });
+    if (!taskLearnedTemplate && !source) {
       return { state: "blocked", issues: ["Source access was revoked."], recovery: "Restore source access." };
+    }
+    if (taskLearnedTemplate) {
+      return { state: "valid", issues: [], recovery: null };
     }
     const issues = [];
     if (definition.discoveryCandidateId) {
@@ -1604,8 +1793,9 @@ export function createBusinessRoutineService({
         issues.push("Historical evidence changed after this draft was created.");
       }
     }
-    if (definition.discoveryCandidateId || definition.historicalCaseIds.length) {
-      const historicalCases = definition.historicalCaseIds.map((caseId) =>
+    const historicalCaseIds = definition.historicalCaseIds ?? [];
+    if (definition.discoveryCandidateId || historicalCaseIds.length) {
+      const historicalCases = historicalCaseIds.map((caseId) =>
         state.businessCases.find((row) =>
           row.id === caseId
           && visible(row, actor)
@@ -1630,11 +1820,15 @@ export function createBusinessRoutineService({
       if (healthyCaseCount !== historicalCases.filter(Boolean).length) {
         issues.push("A historical business case is no longer confirmed or its evidence changed.");
       }
-      if (healthyCaseCount < 3) {
-        issues.push("At least three healthy confirmed historical cases are required.");
+      const requiredHealthyCases = source?.purpose === "template_learning"
+        || definition.templateScope === "team"
+        || definition.templateLearningTaskId
+        || definition.templateMaturity === "trial" ? 1 : 3;
+      if (healthyCaseCount < requiredHealthyCases) {
+        issues.push(`At least ${requiredHealthyCases} healthy confirmed historical case${requiredHealthyCases === 1 ? " is" : "s are"} required.`);
       }
     }
-    const configurationError = routineStepConfigurationError(definition.steps);
+    const configurationError = routineStepConfigurationError(definition.steps ?? []);
     if (configurationError) {
       issues.push("A conditional step is missing its business condition.");
     }
@@ -1653,6 +1847,17 @@ export function createBusinessRoutineService({
     return { status: 200, body: { routineDefinitions, count: routineDefinitions.length } };
   }
 
+  function selectPublishedRoutineForTrigger({ projectId, sourceId, documentType } = {}, actor = null) {
+    const context = activeContext({ projectId, sourceId }, actor);
+    if (context.error) return { status: 404, body: { error: context.error } };
+    const listed = listRoutineDefinitions({ sourceId }, actor);
+    if (listed.status >= 400) return listed;
+    return selectPublishedBusinessRoutine(
+      listed.body.routineDefinitions.filter((definition) => definition.projectId === projectId),
+      documentType,
+    );
+  }
+
   function createRoutineDraftFromDiscovery({ discoveryCandidateId } = {}, actor = null) {
     const candidate = state.routineDiscoveryCandidates.find((row) =>
       row.id === discoveryCandidateId && visible(row, actor));
@@ -1660,12 +1865,12 @@ export function createBusinessRoutineService({
     if (candidate.state !== "candidate") {
       return { status: 409, body: { error: "routine_discovery_candidate_not_current" } };
     }
-    if (candidate.confirmedCaseIds.length < 3) {
+    if (candidate.confirmedCaseIds.length < (candidate.minimumCaseCount ?? 3)) {
       return {
         status: 409,
         body: {
           error: "insufficient_confirmed_business_cases",
-          recovery: "Confirm at least three comparable business cases, then discover again.",
+          recovery: `Confirm at least ${candidate.minimumCaseCount ?? 3} comparable business cases, then discover again.`,
         },
       };
     }
@@ -1690,11 +1895,12 @@ export function createBusinessRoutineService({
         },
       };
     }
-    return createRoutineDefinition({
+    const created = createRoutineDefinition({
       projectId: candidate.projectId,
       sourceId: candidate.sourceId,
-      name: "Commercial inquiry and quotation",
-      description: "Register an inquiry, retrieve references, prepare and approve a quotation, then hand off a confirmed order.",
+      name: candidate.name ?? "Commercial inquiry and quotation",
+      description: candidate.description
+        ?? "Register an inquiry, retrieve references, prepare and approve a quotation, then hand off a confirmed order.",
       state: "draft",
       discoveryCandidateId: candidate.id,
       historicalCaseIds: candidate.confirmedCaseIds,
@@ -1724,6 +1930,30 @@ export function createBusinessRoutineService({
       evidenceRefs: candidate.evidenceRefs,
       confidence: candidate.confidence,
     }, actor);
+    if ([200, 201].includes(created.status) && created.body?.routineDefinition) {
+      created.body.routineDefinition.templateMaturity = "stable";
+      if (candidate.templateContract) {
+        created.body.routineDefinition.templateContract = candidate.templateContract;
+      }
+      const source = state.workflowSources.find((row) => row.id === candidate.sourceId);
+      if (source?.purpose === "template_learning") {
+        const replacement = created.body.routineDefinition;
+        runTx(() => {
+          for (const previous of state.routineDefinitions.filter((row) =>
+            row.id !== replacement.id
+            && row.ownerTeamId === replacement.ownerTeamId
+            && row.sourceId === replacement.sourceId
+            && row.state === "draft")) {
+            previous.state = "superseded";
+            previous.supersededById = replacement.id;
+            previous.revision += 1;
+            previous.updatedAt = now();
+            previous.updatedBy = actorUser(actor);
+          }
+        });
+      }
+    }
+    return created;
   }
 
   function updateRoutineDefinition({
@@ -1754,13 +1984,16 @@ export function createBusinessRoutineService({
     const nextDescription = description == null
       ? definition.description
       : text(description, 1_000);
-    const nextTriggers = triggerDocumentTypes == null
+    const rawNextTriggers = triggerDocumentTypes == null
       ? definition.triggerDocumentTypes
       : stringList(triggerDocumentTypes, { maxItems: 20, maxLength: 50 });
+    const nextTriggers = rawNextTriggers
+      ? [...new Set(rawNextTriggers.map(normalizeRoutineTriggerType))]
+      : null;
     const nextSteps = steps == null ? { ok: true, value: definition.steps } : normalizeRoutineSteps(steps);
     const configurationError = nextSteps.ok ? routineStepConfigurationError(nextSteps.value) : null;
     if (!nextName || !nextDescription || !nextTriggers?.length
-      || nextTriggers.some((type) => !businessDocumentTypes.includes(type))
+      || nextTriggers.some((type) => !type)
       || !nextSteps.ok
       || configurationError
       || nextSteps.value.some((step) => !evidenceBelongsTo(step.evidenceRefs, definition, actor))) {
@@ -1780,6 +2013,9 @@ export function createBusinessRoutineService({
         description: nextDescription,
         triggerDocumentTypes: nextTriggers,
         steps: nextSteps.value,
+        templateContract: nextSteps.value.find((step) => step.kind === "generate")?.configuration?.templateContract
+          ?? definition.templateContract
+          ?? null,
         evidenceFingerprints: Object.fromEntries(
           [...new Set([
             ...definition.evidenceRefs.map((ref) => ref.artifactId),
@@ -2153,6 +2389,7 @@ export function createBusinessRoutineService({
       })),
       actionReceipts: [],
       recoveryReceipts: [],
+      recoveryIntent: null,
       waitingReason: null,
       cancellationRequestedAt: null,
       revision: 1,
@@ -2221,8 +2458,25 @@ export function createBusinessRoutineService({
       } = stepRun;
       return visibleStepRun;
     };
+    const availableLedgers = state.ledgerDefinitions
+      .filter((definition) =>
+        definition.ownerTeamId === context.run.ownerTeamId
+        && definition.projectId === context.run.projectId
+        && definition.sourceId === context.run.sourceId
+        && definition.state === "active")
+      .map((definition) => ({
+        id: definition.id,
+        name: definition.name,
+        documentType: definition.documentType,
+        format: definition.format,
+        relativePath: definition.relativePath,
+        sheet: definition.sheet,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .slice(0, 100);
     return {
       workItemId: context.workItem.id,
+      sourceId: context.run.sourceId,
       definition: {
         id: context.definition.id,
         name: context.definition.name,
@@ -2245,9 +2499,24 @@ export function createBusinessRoutineService({
           waitingSince: context.run.capacityQueue?.queuedAt ?? null,
         },
       },
+      assistance: routineAssistance(context),
+      recovery: context.run.recoveryIntent
+        ? {
+            kind: context.run.recoveryIntent.kind,
+            stepKey: context.run.recoveryIntent.stepKey,
+            requestedAt: context.run.recoveryIntent.requestedAt,
+          }
+        : null,
+      availableLedgers,
       availableOrderTriggers,
       steps: context.definition.steps.map((step) => {
         const { executorId: _executorId, ...publicConfiguration } = step.configuration ?? {};
+        const stepRun = runByKey.get(step.key);
+        if (step.kind === "ledger_upsert"
+          && !publicConfiguration.ledgerDefinitionId
+          && stepRun?.ledgerDefinitionId) {
+          publicConfiguration.ledgerDefinitionId = stepRun.ledgerDefinitionId;
+        }
         return {
           key: step.key,
           label: step.label,
@@ -2255,7 +2524,7 @@ export function createBusinessRoutineService({
           required: step.required,
           dependsOn: step.dependsOn,
           configuration: publicConfiguration,
-          run: publicStepRun(runByKey.get(step.key)),
+          run: publicStepRun(stepRun),
         };
       }),
     };
@@ -2461,7 +2730,7 @@ export function createBusinessRoutineService({
         status: 409,
         body: {
           error: "routine_issue_trigger_evidence_not_current",
-          recovery: "Re-analyze and reconfirm the inquiry before creating its task.",
+          recovery: "Re-analyze and reconfirm the source document before creating its task.",
         },
       };
     }
@@ -2485,14 +2754,23 @@ export function createBusinessRoutineService({
         readiness: { state: "ready", reason: "available_on_owning_terminal" },
       };
     }) : [];
+    const primaryTriggerType = definition.triggerDocumentTypes
+      .map(normalizeRoutineTriggerType)
+      .find((value) => value && value !== "unknown") ?? "unknown";
+    const routineTypeLabel = ROUTINE_TYPE_LABELS[primaryTriggerType]
+      ?? primaryTriggerType.replaceAll("_", " ");
     const created = createWorkItem({
       projectId: definition.projectId,
-      title: `Process inquiry — ${businessCase.businessKey}`,
+      title: `Process ${routineTypeLabel} — ${businessCase.businessKey}`,
       body: `${definition.description}\n\nThis task is pinned to ${definition.name} v${definition.version}.`,
       type: "task",
       status: "ready",
       priority: "p1",
-      labels: ["routine-work", "commercial-inquiry"],
+      labels: [
+        "routine-work",
+        `workflow-${primaryTriggerType.replaceAll("_", "-")}`,
+        ...(primaryTriggerType === "inquiry" ? ["commercial-inquiry"] : []),
+      ],
       acceptanceCriteria: definition.steps.filter((step) => step.required).map((step) => step.label),
       idempotencyKey,
       routineDefinitionId: definition.id,
@@ -2722,7 +3000,7 @@ export function createBusinessRoutineService({
     const step = context.definition.steps.find((row) => row.key === stepKey);
     const stepRun = context.run.stepRuns.find((row) => row.stepKey === stepKey);
     if (!step || !stepRun) return { status: 404, body: { error: "routine_step_not_found" } };
-    if (!EXECUTABLE_STEP_KINDS.has(step.kind)) {
+    if (!AUTO_ADVANCE_EXECUTABLE_STEP_KINDS.has(step.kind)) {
       return { status: 409, body: { error: "routine_step_has_no_executor" } };
     }
     if (stepRun.state !== "running") {
@@ -2740,10 +3018,14 @@ export function createBusinessRoutineService({
 
     let result;
     let childWorkItem = null;
-    if (step.kind === "retrieve") {
+    if (step.kind === "extract") {
+      result = extractConfirmedRoutineFacts(context, actor);
+    } else if (step.kind === "retrieve") {
       result = retrieveRoutineReferences(context, step, actor);
     } else if (step.kind === "generate") {
-      result = generateQuotationDraft(context, step, actor);
+      result = executorIdFor(step) === LEARNED_TEMPLATE_OUTPUT_EXECUTOR_ID
+        ? generateLearnedTemplateOutput(context, step, actor)
+        : generateQuotationDraft(context, step, actor);
     } else {
       const created = ensureOrderChildIssue(context, confirmedOrderArtifacts(context, actor), actor);
       result = created.ok
@@ -2803,6 +3085,283 @@ export function createBusinessRoutineService({
       body: {
         ...completed.body,
         ...(childWorkItem ? { childWorkItem: publicRoutineWorkItem(childWorkItem) } : {}),
+      },
+    };
+  }
+
+  function routineAssistance(context) {
+    const runByKey = new Map(context.run.stepRuns.map((row) => [row.stepKey, row]));
+    const activeStep = context.definition.steps.find((step) => {
+      const state = runByKey.get(step.key)?.state;
+      return ["running", "awaiting_approval", "awaiting_condition", "failed"].includes(state);
+    }) ?? null;
+    const stepRun = activeStep ? runByKey.get(activeStep.key) : null;
+    const base = activeStep ? { stepKey: activeStep.key, stepLabel: activeStep.label } : {
+      stepKey: null,
+      stepLabel: null,
+    };
+    if (context.run.status === "succeeded") return null;
+    if (context.run.status === "cancelled") {
+      return { ...base, kind: "cancelled", reason: "routine_cancelled", action: "none" };
+    }
+    if (stepRun?.state === "failed" && String(stepRun.errorCode ?? "").startsWith("routine_extract_")) {
+      return {
+        ...base,
+        kind: "needs_review",
+        reason: stepRun.errorCode,
+        action: "review_extracted_facts",
+      };
+    }
+    if (stepRun?.state === "failed" || context.run.status === "failed") {
+      return {
+        ...base,
+        kind: "failed",
+        reason: stepRun?.errorCode ?? context.run.waitingReason ?? "routine_step_failed",
+        action: "retry_step",
+      };
+    }
+    if (context.run.waitingReason === "routine_quotation_facts_required") {
+      return {
+        ...base,
+        kind: "needs_input",
+        reason: context.run.waitingReason,
+        action: "provide_input",
+      };
+    }
+    if (stepRun?.state === "awaiting_approval") {
+      return { ...base, kind: "awaiting_approval", reason: "human_approval_required", action: "review_approval" };
+    }
+    if (stepRun?.state === "awaiting_condition") {
+      return { ...base, kind: "awaiting_condition", reason: "business_condition_required", action: "decide_condition" };
+    }
+    if (activeStep?.kind === "ledger_upsert") {
+      return { ...base, kind: "ledger_write", reason: "ledger_review_required", action: "review_ledger" };
+    }
+    if (context.run.waitingReason === "device_capacity") {
+      return { ...base, kind: "waiting", reason: "device_capacity", action: "wait" };
+    }
+    if (activeStep && !AUTO_ADVANCE_EXECUTABLE_STEP_KINDS.has(activeStep.kind)) {
+      return { ...base, kind: "manual_step", reason: "routine_step_requires_user", action: "complete_step" };
+    }
+    if (context.run.waitingReason) {
+      return { ...base, kind: "waiting", reason: context.run.waitingReason, action: "wait" };
+    }
+    return null;
+  }
+
+  /**
+   * Continues only the fixed, local governed executors. The method deliberately
+   * stops before approvals, business decisions, ledger mutations, unknown/manual
+   * steps, missing quotation facts, failures, and capacity waits.
+   */
+  function advanceRoutineWorkItem({
+    workItemId,
+    maxSteps = AUTO_ADVANCE_STEP_LIMIT,
+  } = {}, actor = null) {
+    let context = routineExecutionContext(workItemId, actor);
+    if (context.error) return { status: context.status, body: { error: context.error } };
+    const boundedLimit = Math.max(1, Math.min(AUTO_ADVANCE_STEP_LIMIT, Number(maxSteps) || AUTO_ADVANCE_STEP_LIMIT));
+    const advancedStepKeys = [];
+
+    if (context.run.status === "planned") {
+      const started = startRoutineWorkItem({
+        workItemId,
+        expectedRevision: context.run.revision,
+        idempotencyKey: `routine-auto:start:${context.run.id}`,
+      }, actor);
+      if (started.status >= 400) return started;
+      context = routineExecutionContext(workItemId, actor);
+    }
+
+    for (let attempt = 0; attempt < boundedLimit; attempt += 1) {
+      if (["succeeded", "cancelled", "failed"].includes(context.run.status)
+        || context.run.waitingReason) break;
+      const runByKey = new Map(context.run.stepRuns.map((row) => [row.stepKey, row]));
+      const step = context.definition.steps.find((candidate) =>
+        runByKey.get(candidate.key)?.state === "running");
+      if (!step || !AUTO_ADVANCE_EXECUTABLE_STEP_KINDS.has(step.kind)) break;
+      const stepRun = runByKey.get(step.key);
+      const executed = executeRoutineStep({
+        workItemId,
+        stepKey: step.key,
+        expectedRevision: context.run.revision,
+        idempotencyKey: `routine-auto:step:${context.run.id}:${step.key}:${stepRun.attempts}:${context.run.revision}`,
+      }, actor);
+      if (executed.status >= 400) return executed;
+      context = routineExecutionContext(workItemId, actor);
+      if (context.run.stepRuns.find((row) => row.stepKey === step.key)?.state === "succeeded") {
+        advancedStepKeys.push(step.key);
+      }
+    }
+
+    const assistance = routineAssistance(context);
+    return {
+      status: 200,
+      body: {
+        execution: routineExecutionView(context),
+        advancedStepKeys,
+        assistance,
+        completed: context.run.status === "succeeded",
+      },
+    };
+  }
+
+  function materializeAdaptiveRoutineSuggestion({
+    projectId,
+    sourceId,
+    observationId,
+    artifactId,
+    documentType,
+  } = {}, actor = null) {
+    const selection = selectPublishedRoutineForTrigger({ projectId, sourceId, documentType }, actor);
+    if (selection.status >= 400) return selection;
+    const normalizedType = selection.body.documentType;
+    const definition = selection.body.routineDefinition;
+    const observation = state.workflowIntakeObservations?.find((row) =>
+      row.id === observationId
+      && row.artifactId === artifactId
+      && row.projectId === projectId
+      && row.sourceId === sourceId
+      && visible(row, actor));
+    const artifact = artifactFor(artifactId, actor);
+    if (!observation || observation.state !== "ready" || !artifact
+      || artifact.projectId !== projectId || artifact.sourceId !== sourceId
+      || !/^[a-f0-9]{64}$/i.test(String(artifact.fingerprint ?? ""))
+      || artifact.availability === "missing" || artifact.exclusion) {
+      return {
+        status: 409,
+        body: {
+          error: "workflow_intake_observation_not_ready",
+          recovery: "请重新扫描并确认来源文件，确认完成后 AI 会继续创建任务。",
+          assistance: {
+            kind: "needs_review",
+            reason: "workflow_intake_observation_not_ready",
+            action: "review_source_file",
+            title: "来源文件还不能安全处理",
+            explanation: "文件可能仍在变化、已被排除，或尚未完成识别确认。",
+            instruction: "请检查该文件并完成识别确认。",
+            continuation: "确认后，AI 会重新匹配工作流程并继续。",
+          },
+        },
+      };
+    }
+    const classification = [...state.businessDocumentClassifications]
+      .reverse()
+      .find((row) => row.artifactId === artifact.id
+        && visible(row, actor)
+        && row.projectId === projectId
+        && row.sourceId === sourceId
+        && ["confirmed", "corrected"].includes(row.confirmationState)
+        && !(row.riskSignals ?? []).length
+        && row.artifactFingerprint === artifact.fingerprint
+        && normalizeRoutineTriggerType(row.documentType) === normalizedType);
+    if (!classification) {
+      return {
+        status: 409,
+        body: {
+          error: "adaptive_work_classification_confirmation_required",
+          recovery: "请先确认这份文件的工作类型，再重新运行。",
+          assistance: {
+            kind: "needs_review",
+            reason: "adaptive_work_classification_confirmation_required",
+            action: "confirm_document_type",
+            title: "工作类型还需要确认",
+            explanation: "AI 只会对已经人工确认、且文件内容未变化的类型自动执行。",
+            instruction: "请确认文件类型，或修正为正确的工作类型。",
+            continuation: "确认后，AI 会按唯一匹配的已发布流程创建任务。",
+          },
+        },
+      };
+    }
+    const identityProposal = (classification.fieldProposals ?? []).find((field) =>
+      ["confirmed", "corrected"].includes(field.confirmationState)
+      && /(?:number|_id|period|title|name)$/i.test(field.key)
+      && text(field.normalizedValue ?? field.value, 120));
+    const identity = text(identityProposal?.normalizedValue ?? identityProposal?.value, 120)
+      ?? String(artifact.fingerprint ?? artifact.id).slice(0, 24);
+    const businessKey = `${normalizedType}:${identity}`.slice(0, 200);
+    const evidenceRefs = [
+      ...(classification.evidenceRefs ?? []),
+      ...(classification.fieldProposals ?? []).flatMap((field) => field.evidenceRefs ?? []),
+    ];
+    const boundedEvidence = evidenceRefs.length
+      ? evidenceRefs.slice(0, 100)
+      : [{ artifactId: artifact.id, kind: "confirmed_document_type", field: null }];
+    const fields = Object.fromEntries((classification.fieldProposals ?? [])
+      .filter((field) => ["confirmed", "corrected"].includes(field.confirmationState)
+        && SAFE_FIELD_RE.test(field.key)
+        && !SENSITIVE_FIELD_RE.test(field.key)
+        && ["string", "number", "boolean"].includes(typeof (field.normalizedValue ?? field.value)))
+      .slice(0, 98)
+      .map((field) => [field.key, field.normalizedValue ?? field.value]));
+    fields.document_type = normalizedType;
+    fields.source_file = String(artifact.relativePath ?? artifact.id).slice(0, 1_000);
+    const entityResult = createBusinessEntity({
+      projectId,
+      sourceId,
+      entityType: normalizedType,
+      businessKey,
+      fields,
+      evidenceRefs: boundedEvidence,
+      confidence: classification.confidence,
+    }, actor);
+    if (entityResult.status >= 400) return entityResult;
+    const caseResult = createBusinessCase({
+      projectId,
+      sourceId,
+      businessKey,
+      state: "confirmed",
+      entityIds: [entityResult.body.entity.id],
+      artifactBindings: [{
+        artifactId: artifact.id,
+        documentType: normalizedType,
+        roles: ["trigger", "input"],
+      }],
+      evidenceRefs: boundedEvidence,
+      confidence: classification.confidence,
+    }, actor);
+    if (caseResult.status >= 400) return caseResult;
+    const businessCase = caseResult.body.businessCase;
+    const currentTrigger = businessCase.artifactBindings?.find((binding) =>
+      binding.roles?.includes("trigger"));
+    if (currentTrigger?.artifactId !== artifact.id
+      || businessCase.artifactFingerprints?.[artifact.id] !== artifact.fingerprint) {
+      return {
+        status: 409,
+        body: {
+          error: "workflow_intake_business_identity_conflict",
+          recovery: "请检查是否为同一项工作的重复文件，并确认应该使用哪个版本。",
+          assistance: {
+            kind: "needs_input",
+            reason: "workflow_intake_business_identity_conflict",
+            action: "review_business_identity",
+            title: "发现同一工作编号的不同文件",
+            explanation: "AI 无法判断新文件是重复件、更新版，还是另一项工作。",
+            instruction: "请确认要采用的文件版本。",
+            continuation: "确认后，AI 会使用选定版本继续，且不会重复创建任务。",
+          },
+        },
+      };
+    }
+    const materialized = materializeRoutineIssue({
+      routineDefinitionId: definition.id,
+      businessCaseId: businessCase.id,
+      triggerArtifactIds: [artifact.id],
+    }, actor);
+    if (materialized.status >= 400) return materialized;
+    return {
+      status: materialized.status,
+      body: {
+        ...materialized.body,
+        routineDefinition: {
+          id: definition.id,
+          familyId: definition.familyId,
+          name: definition.name,
+          version: definition.version,
+          triggerDocumentTypes: definition.triggerDocumentTypes,
+        },
+        businessCase,
+        replayed: Boolean(materialized.body.replayed),
       },
     };
   }
@@ -2926,6 +3485,196 @@ export function createBusinessRoutineService({
     };
   }
 
+  function bindRoutineLedger({
+    workItemId,
+    stepKey,
+    ledgerDefinitionId,
+    expectedRevision,
+    idempotencyKey,
+  } = {}, actor = null) {
+    const context = routineExecutionContext(workItemId, actor);
+    if (context.error) return { status: context.status, body: { error: context.error } };
+    const normalizedLedgerId = text(ledgerDefinitionId);
+    const blocked = validateRoutineAction(
+      context,
+      expectedRevision,
+      idempotencyKey,
+      "bind_ledger",
+      stepKey,
+      normalizedLedgerId,
+    );
+    if (blocked) return blocked;
+    const step = context.definition.steps.find((row) => row.key === stepKey);
+    const stepRun = context.run.stepRuns.find((row) => row.stepKey === stepKey);
+    if (!step || !stepRun) return { status: 404, body: { error: "routine_step_not_found" } };
+    if (step.kind !== "ledger_upsert" || stepRun.state !== "running") {
+      return {
+        status: 409,
+        body: { error: "routine_ledger_binding_not_allowed", currentState: stepRun.state },
+      };
+    }
+    const configuredLedgerId = text(step.configuration?.ledgerDefinitionId);
+    if (configuredLedgerId && configuredLedgerId !== normalizedLedgerId) {
+      return { status: 409, body: { error: "routine_ledger_definition_mismatch" } };
+    }
+    const ledgerDefinition = state.ledgerDefinitions.find((row) =>
+      row.id === normalizedLedgerId
+      && visible(row, actor)
+      && row.projectId === context.run.projectId
+      && row.sourceId === context.run.sourceId);
+    if (!ledgerDefinition) {
+      return { status: 404, body: { error: "routine_ledger_definition_not_found" } };
+    }
+    if (ledgerDefinition.state !== "active") {
+      return { status: 409, body: { error: "routine_ledger_definition_not_active" } };
+    }
+    runTx(() => {
+      const timestamp = now();
+      stepRun.ledgerDefinitionId = ledgerDefinition.id;
+      context.run.revision += 1;
+      context.run.updatedAt = timestamp;
+      context.run.updatedBy = actorUser(actor);
+      recordReceipt(
+        context.run,
+        idempotencyKey,
+        "bind_ledger",
+        stepKey,
+        ledgerDefinition.id,
+      );
+      event("routine_ledger_bound", "Ledger selected for this routine work item.", context.run, actor, {
+        routineRunId: context.run.id,
+        workItemId: context.workItem.id,
+        stepKey,
+        ledgerDefinitionId: ledgerDefinition.id,
+      });
+    });
+    return {
+      status: 200,
+      body: {
+        execution: routineExecutionView(context),
+        ledgerDefinition: {
+          id: ledgerDefinition.id,
+          name: ledgerDefinition.name,
+          format: ledgerDefinition.format,
+          relativePath: ledgerDefinition.relativePath,
+          sheet: ledgerDefinition.sheet,
+        },
+        replayed: false,
+      },
+    };
+  }
+
+  function requestRoutineStepReview({
+    workItemId,
+    stepKey,
+    expectedRevision,
+    idempotencyKey,
+  } = {}, actor = null) {
+    const context = routineExecutionContext(workItemId, actor);
+    if (context.error) return { status: context.status, body: { error: context.error } };
+    const blocked = validateRoutineAction(
+      context,
+      expectedRevision,
+      idempotencyKey,
+      "request_source_review",
+      stepKey,
+    );
+    if (blocked) return blocked;
+    const step = context.definition.steps.find((row) => row.key === stepKey);
+    const stepRun = context.run.stepRuns.find((row) => row.stepKey === stepKey);
+    if (!step || !stepRun) return { status: 404, body: { error: "routine_step_not_found" } };
+    if (step.kind !== "extract"
+      || stepRun.state !== "failed"
+      || !String(stepRun.errorCode ?? "").startsWith("routine_extract_")) {
+      return {
+        status: 409,
+        body: { error: "routine_source_review_not_required", currentState: stepRun.state },
+      };
+    }
+    runTx(() => {
+      const timestamp = now();
+      context.run.recoveryIntent = {
+        kind: "retry_after_source_review",
+        stepKey,
+        requestedAt: timestamp,
+        requestedBy: actorUser(actor),
+      };
+      context.run.revision += 1;
+      context.run.updatedAt = timestamp;
+      context.run.updatedBy = actorUser(actor);
+      recordReceipt(context.run, idempotencyKey, "request_source_review", stepKey);
+      event("routine_source_review_requested",
+        "Source review requested before retrying routine extraction.", context.run, actor, {
+          routineRunId: context.run.id,
+          workItemId: context.workItem.id,
+          stepKey,
+        });
+    });
+    return {
+      status: 200,
+      body: { execution: routineExecutionView(context), replayed: false },
+    };
+  }
+
+  function resumeRoutineRecovery({
+    workItemId,
+    expectedRevision,
+    idempotencyKey,
+  } = {}, actor = null) {
+    const context = routineExecutionContext(workItemId, actor);
+    if (context.error) return { status: context.status, body: { error: context.error } };
+    const intent = context.run.recoveryIntent;
+    if (!intent) {
+      return {
+        status: 200,
+        body: { execution: routineExecutionView(context), resumed: false, awaitingReview: false },
+      };
+    }
+    if (expectedRevision !== context.run.revision) {
+      return {
+        status: 409,
+        body: { error: "routine_run_revision_conflict", currentRevision: context.run.revision },
+      };
+    }
+    const stepRun = context.run.stepRuns.find((row) => row.stepKey === intent.stepKey);
+    if (!stepRun || stepRun.state !== "failed"
+      || !String(stepRun.errorCode ?? "").startsWith("routine_extract_")) {
+      runTx(() => {
+        context.run.recoveryIntent = null;
+        context.run.revision += 1;
+        context.run.updatedAt = now();
+        context.run.updatedBy = actorUser(actor);
+      });
+      return {
+        status: 200,
+        body: { execution: routineExecutionView(context), resumed: false, awaitingReview: false },
+      };
+    }
+    const confirmedFacts = extractConfirmedRoutineFacts(context, actor);
+    if (!confirmedFacts.ok) {
+      return {
+        status: 202,
+        body: {
+          execution: routineExecutionView(context),
+          resumed: false,
+          awaitingReview: true,
+          reason: confirmedFacts.error,
+        },
+      };
+    }
+    const retried = retryRoutineStep({
+      workItemId,
+      stepKey: intent.stepKey,
+      expectedRevision: context.run.revision,
+      idempotencyKey,
+    }, actor);
+    if (retried.status >= 400) return retried;
+    return {
+      ...retried,
+      body: { ...retried.body, resumed: true, awaitingReview: false },
+    };
+  }
+
   function retryRoutineStep({
     workItemId,
     stepKey,
@@ -2949,6 +3698,7 @@ export function createBusinessRoutineService({
       stepRun.state = "pending";
       stepRun.completedAt = null;
       stepRun.errorCode = null;
+      if (context.run.recoveryIntent?.stepKey === stepKey) context.run.recoveryIntent = null;
       context.run.waitingReason = null;
       startedStepKeys = scheduleRoutineRun(context.run, context.definition, timestamp);
       context.run.revision += 1;
@@ -3342,8 +4092,10 @@ export function createBusinessRoutineService({
     if (step.kind !== "ledger_upsert" || stepRun.state !== "running") {
       return { ok: false, status: 409, error: "routine_ledger_step_not_writable" };
     }
-    if (step.configuration?.ledgerDefinitionId
-      && step.configuration.ledgerDefinitionId !== ledgerDefinitionId) {
+    const configuredLedgerDefinitionId = step.configuration?.ledgerDefinitionId
+      ?? stepRun.ledgerDefinitionId
+      ?? null;
+    if (configuredLedgerDefinitionId && configuredLedgerDefinitionId !== ledgerDefinitionId) {
       return { ok: false, status: 409, error: "routine_ledger_definition_mismatch" };
     }
     return {
@@ -3431,18 +4183,24 @@ export function createBusinessRoutineService({
     createRoutineDefinition,
     createRoutineDraftFromDiscovery,
     listRoutineDefinitions,
+    selectPublishedRoutineForTrigger,
     updateRoutineDefinition,
     createRoutineDefinitionVersion,
     publishRoutineDefinition,
     transitionRoutineDefinition,
     createLedgerDefinition,
     materializeRoutineIssue,
+    materializeAdaptiveRoutineSuggestion,
     createRoutineRun,
     getRoutineWorkItemExecution,
     listRoutineWorkQueue,
     startRoutineWorkItem,
+    advanceRoutineWorkItem,
     executeRoutineStep,
     confirmQuotationInputs,
+    bindRoutineLedger,
+    requestRoutineStepReview,
+    resumeRoutineRecovery,
     completeRoutineStep,
     retryRoutineStep,
     decideRoutineApproval,
