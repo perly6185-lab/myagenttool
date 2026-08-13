@@ -162,7 +162,7 @@ declare global {
         | { ok: false; error: "attachment_not_found" | "download_too_large" | "attachment_unavailable" }
       >;
       readMailAttachmentForTask?: (input: { messageId: string; folderPath?: string; attachmentId: string }) => Promise<
-        | { ok: true; attachment: { id: string; name: string; contentType: string; size: number; data: ArrayBuffer } }
+        | { ok: true; attachment: { id: string; name: string; contentType: string; size: number; sha256: string; data: ArrayBuffer } }
         | { ok: false; error: "attachment_not_found" | "download_too_large" | "attachment_unavailable" }
       >;
       connect163MailSend?: (input: { email: string; authorizationCode: string }) => Promise<

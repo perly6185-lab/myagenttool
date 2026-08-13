@@ -6,10 +6,15 @@ const MAX_FILES = 10;
 const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
-export function registerMailOutboundAttachmentHandler({ ipcMain, dialog, getWindow, attachmentRoot }) {
+export function registerMailOutboundAttachmentHandler({ ipcMain, dialog, getWindow, attachmentRoot, getReferencedAttachmentRefs = null }) {
   ipcMain.removeHandler("mail:pick-outbound-attachments");
   ipcMain.removeHandler("mail:stage-pasted-attachments");
-  pruneStagedMailAttachments(attachmentRoot);
+  if (typeof getReferencedAttachmentRefs === "function") {
+    void Promise.resolve()
+      .then(() => getReferencedAttachmentRefs())
+      .then((referencedRefs) => pruneStagedMailAttachments(attachmentRoot, { referencedRefs }))
+      .catch(() => { /* startup cleanup must never make live draft attachments unavailable */ });
+  }
 
   ipcMain.handle("mail:pick-outbound-attachments", async () => {
     const chosen = await dialog.showOpenDialog(getWindow(), {
@@ -46,11 +51,14 @@ export function registerMailOutboundAttachmentHandler({ ipcMain, dialog, getWind
   });
 }
 
-export function pruneStagedMailAttachments(root, { now = Date.now(), retentionMs = DEFAULT_RETENTION_MS } = {}) {
+export function pruneStagedMailAttachments(root, { now = Date.now(), retentionMs = DEFAULT_RETENTION_MS, referencedRefs = null } = {}) {
   if (!root || !existsSync(root)) return { removed: 0 };
+  if (!referencedRefs || typeof referencedRefs[Symbol.iterator] !== "function") return { removed: 0 };
+  const liveRefs = new Set([...referencedRefs].map((value) => String(value ?? "")));
   let removed = 0;
   for (const name of readdirSync(root)) {
-    if (!/^mailatt_[a-f0-9-]{36}\.(?:bin|json)$/.test(name)) continue;
+    const match = /^(mailatt_[a-f0-9-]{36})\.(?:bin|json)$/.exec(name);
+    if (!match || liveRefs.has(match[1])) continue;
     const path = join(root, name);
     const info = lstatSync(path);
     if (!info.isFile() || info.isSymbolicLink() || now - info.mtimeMs < retentionMs) continue;

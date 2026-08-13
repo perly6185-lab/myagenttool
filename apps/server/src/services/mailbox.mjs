@@ -277,6 +277,14 @@ export function createMailboxService({
       row.messageId === normalizedId && (row.ownerTeamId ?? "team_local") === teamId,
     );
     if (existing) return { ok: true, status: 200, body: { task: publicTaskLink(existing), replayed: true } };
+    const idempotencyKey = `mail:${createHash("sha256").update(`${teamId}\0${normalizedId}`).digest("hex")}`;
+    const recoveredWorkItem = (state.workItems ?? []).find((item) =>
+      (item.ownerTeamId ?? "team_local") === teamId && item.createIdempotencyKey === idempotencyKey,
+    );
+    if (recoveredWorkItem) {
+      const recoveredLink = ensureMailTaskLink(normalizedId, recoveredWorkItem, teamId, actor);
+      return { ok: true, status: 200, body: { task: publicTaskLink(recoveredLink), replayed: true } };
+    }
     if (typeof createWorkItem !== "function") {
       return { ok: false, status: 503, body: { error: "mail_task_service_unavailable" } };
     }
@@ -304,7 +312,9 @@ export function createMailboxService({
         return asset
           && asset.originalName === taskMaterialName(attachment.name)
           && asset.size === Number(attachment.size)
-          && (asset.mimeType ?? "application/octet-stream") === String(attachment.contentType ?? "application/octet-stream");
+          && (asset.mimeType ?? "application/octet-stream") === String(attachment.contentType ?? "application/octet-stream")
+          && /^[a-f0-9]{64}$/.test(String(attachment.sha256 ?? ""))
+          && asset.hash === attachment.sha256;
       });
       if (!matches || Number(inspected.body.draft.revision) !== Number(materialDraftRevision)) {
         return { ok: false, status: 409, body: { error: "mail_task_material_draft_mismatch" } };
@@ -325,7 +335,6 @@ export function createMailboxService({
       "## 任务说明",
       normalizedDescription || message.preview || "请查看邮件原文并补充任务说明。",
     ];
-    const idempotencyKey = `mail:${createHash("sha256").update(`${teamId}\0${normalizedId}`).digest("hex")}`;
     const created = createWorkItem({
       projectId: normalizedProjectId,
       title: normalizedTitle,
@@ -344,25 +353,30 @@ export function createMailboxService({
     }, actor);
     if (!created?.ok) return created;
     const workItem = created.body.workItem;
+    const durableLink = ensureMailTaskLink(normalizedId, workItem, teamId, actor);
+    return { ok: true, status: created.status, body: { task: publicTaskLink(durableLink), replayed: created.body.replayed === true } };
+  }
+
+  function ensureMailTaskLink(messageId, workItem, teamId, actor) {
+    const timestamp = now();
     const link = {
       id: nextId("mailtask"),
-      messageId: normalizedId,
+      messageId,
       workItemId: workItem.id,
       localRef: workItem.localRef,
       title: workItem.title,
       projectId: workItem.projectId,
       ownerTeamId: teamId,
       createdBy: actor?.userId ?? null,
-      createdAt: now(),
-      updatedAt: now(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
     };
     runTx(() => {
       state.mailTaskLinks ??= [];
-      const replay = state.mailTaskLinks.find((row) => row.messageId === normalizedId && (row.ownerTeamId ?? "team_local") === teamId);
+      const replay = state.mailTaskLinks.find((row) => row.messageId === messageId && (row.ownerTeamId ?? "team_local") === teamId);
       if (!replay) state.mailTaskLinks.unshift(link);
     });
-    const durableLink = (state.mailTaskLinks ?? []).find((row) => row.messageId === normalizedId && (row.ownerTeamId ?? "team_local") === teamId) ?? link;
-    return { ok: true, status: created.status, body: { task: publicTaskLink(durableLink), replayed: created.body.replayed === true } };
+    return (state.mailTaskLinks ?? []).find((row) => row.messageId === messageId && (row.ownerTeamId ?? "team_local") === teamId) ?? link;
   }
 
   return { snapshot, startSync, setMessageRead, createDraft, updateDraft, deleteDraft, createTaskFromMessage };

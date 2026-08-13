@@ -63,7 +63,7 @@ export interface MailboxMessage {
   fetched: boolean;
   inReplyTo: string | null;
   references: string[];
-  attachments: Array<{ id: string; name: string; contentType: string; size: number; previewable: boolean }>;
+  attachments: Array<{ id: string; name: string; contentType: string; size: number; sha256: string | null; previewable: boolean }>;
   attachmentMetadataLoaded: boolean;
   applicationId: string | null;
   issueNumber: number | null;
