@@ -145,6 +145,14 @@ declare global {
       openContainedOfficeDocument?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ opened: true }>;
       openContainedAsset?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ opened: true }>;
       revealContainedAsset?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ revealed: true }>;
+      getMailConnectorStatus?: () => Promise<{
+        desktop: true;
+        providers: Array<{ id: "netease_163" | "gmail"; name: string; available: boolean; connected: boolean; account: string | null }>;
+      }>;
+      connect163Mail?: (input: { email: string; authorizationCode: string }) => Promise<
+        | { ok: true; account: { provider: string; email: string; canReceive: true; canSend: false } }
+        | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }
+      >;
     };
   }
 }

@@ -47,3 +47,24 @@ test("operator env overrides a base key deterministically", () => {
     else process.env.TZ = saved;
   }
 });
+
+test("Electron-as-Node is added only for the exact shell-owned mail runtime", () => {
+  const keys = ["MYAGENTTOOL_MAIL_MCP_ENTRY", "MYAGENTTOOL_MAIL_MCP_NODE", "MYAGENTTOOL_MAIL_MCP_ELECTRON_RUN_AS_NODE"];
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.MYAGENTTOOL_MAIL_MCP_ENTRY = "C:\\app\\tools\\mail-mcp\\src\\server.mjs";
+    process.env.MYAGENTTOOL_MAIL_MCP_NODE = "C:\\app\\MyAgentTool.exe";
+    process.env.MYAGENTTOOL_MAIL_MCP_ELECTRON_RUN_AS_NODE = "1";
+    const trusted = buildMcpChildEnv({ command: "C:\\app\\MyAgentTool.exe", args: ["C:\\app\\tools\\mail-mcp\\src\\server.mjs"] });
+    const otherEntry = buildMcpChildEnv({ command: "C:\\app\\MyAgentTool.exe", args: ["C:\\other\\server.mjs"] });
+    const otherCommand = buildMcpChildEnv({ command: "C:\\other\\electron.exe", args: ["C:\\app\\tools\\mail-mcp\\src\\server.mjs"] });
+    assert.equal(trusted.ELECTRON_RUN_AS_NODE, "1");
+    assert.equal(otherEntry.ELECTRON_RUN_AS_NODE, undefined);
+    assert.equal(otherCommand.ELECTRON_RUN_AS_NODE, undefined);
+  } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  }
+});

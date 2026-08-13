@@ -169,13 +169,16 @@ function mailboxAccounts(applications, { sendEnabled = false } = {}) {
     if (providers.has(provider)) continue;
     const send = sendApps.find((candidate) => providerOf(candidate) === provider) ?? null;
     const active = ["active", "registered"].includes(application.status);
+    const receiveCredentialReady = !application.source?.credential
+      || application.credentialReadiness?.status === "authorized";
+    const canReceive = active && receiveCredentialReady;
     providers.set(provider, {
       id: application.id,
       provider,
       name: providerLabel(provider, application.name),
-      status: active ? "connected" : "needs_attention",
-      statusDetail: active ? "ready" : String(application.status ?? "not_connected"),
-      canReceive: active,
+      status: canReceive ? "connected" : "needs_attention",
+      statusDetail: !active ? String(application.status ?? "not_connected") : receiveCredentialReady ? "ready" : "credential_not_authorized",
+      canReceive,
       canSend: Boolean(
         sendEnabled
         && send

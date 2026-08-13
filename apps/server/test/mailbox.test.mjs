@@ -14,6 +14,7 @@ function harness({ mailSendEnabled = () => false } = {}) {
         status: "active",
         ownerTeamId: "team_a",
         source: { credential: { provider: "netease", scope: "imap.readonly" } },
+        credentialReadiness: { status: "authorized" },
         capabilityFacades: [
           { id: "list_unread", agentToolName: "mail_list_unread" },
           { id: "fetch", agentToolName: "mail_fetch" },
@@ -121,6 +122,15 @@ test("send readiness is honest about the flag and separate authorized credential
   assert.equal(enabled.service.snapshot({ actor: { teamId: "team_a" } }).accounts[0].canSend, true);
   enabled.state.applications.at(-1).credentialReadiness.status = "missing";
   assert.equal(enabled.service.snapshot({ actor: { teamId: "team_a" } }).accounts[0].canSend, false);
+});
+
+test("receive readiness does not claim connected before the device reports its credential", () => {
+  const { state, service } = harness();
+  state.applications[0].credentialReadiness = { status: "missing" };
+  const account = service.snapshot({ actor: { teamId: "team_a" } }).accounts[0];
+  assert.equal(account.canReceive, false);
+  assert.equal(account.status, "needs_attention");
+  assert.equal(account.statusDetail, "credential_not_authorized");
 });
 
 function sendApplication() {

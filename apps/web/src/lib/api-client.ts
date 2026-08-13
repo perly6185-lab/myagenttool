@@ -32,7 +32,7 @@ export interface MailboxAccount {
   provider: string;
   name: string;
   status: "connected" | "needs_attention";
-  statusDetail: string;
+  statusDetail: "ready" | "credential_not_authorized" | string;
   canReceive: boolean;
   canSend: boolean;
   readApplicationId: string;
