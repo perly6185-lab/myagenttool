@@ -170,6 +170,21 @@ test("a confirmed draft sends with one approved action; the payload is resolved 
   }
 });
 
+test("a user-authored draft grant is bound to the reviewed revision", () => {
+  setSendFlag(true);
+  try {
+    const harness = sendHarness();
+    harness.state.mailDrafts[0].revision = 2;
+    const stale = harness.service.sendConfirmedDraft({ draftId: "maildraft_1", approvalToken: harness.grantFor("maildraft_1@1"), actor: ACTOR });
+    assert.equal(stale.body.error, "approval_required");
+    assert.equal(harness.state.mailDrafts[0].status, "draft");
+    const current = harness.service.sendConfirmedDraft({ draftId: "maildraft_1", approvalToken: harness.grantFor("maildraft_1@2"), actor: ACTOR });
+    assert.equal(current.status, 202);
+  } finally {
+    setSendFlag(false);
+  }
+});
+
 test("the gate refusal matrix: unknown/foreign draft, unsent states, missing credential, missing agent, bad grant", () => {
   setSendFlag(true);
   try {

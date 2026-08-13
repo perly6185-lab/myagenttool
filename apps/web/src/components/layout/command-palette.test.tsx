@@ -57,9 +57,9 @@ describe("CommandPalette", () => {
     useUiStore.getState().setSection("dashboard");
     render(<CommandPalette />);
     open();
-    press({ key: "ArrowDown" }); // highlight moves to the second result
+    press({ key: "ArrowDown" }); // highlight moves to the second result (mail)
     press({ key: "Enter" });
-    expect(useUiStore.getState().section).toBe("task");
+    expect(useUiStore.getState().section).toBe("mail");
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

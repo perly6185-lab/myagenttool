@@ -2,6 +2,7 @@ import { lazy, type ComponentType } from "react";
 import type { SectionKey } from "@/store/ui-store";
 
 const DashboardView = lazy(() => import("@/features/dashboard/dashboard-view").then((m) => ({ default: m.DashboardView })));
+const MailView = lazy(() => import("@/features/mail/mail-view").then((m) => ({ default: m.MailView })));
 const WorkBoardView = lazy(() => import("@/features/work-board/work-board-view").then((m) => ({ default: m.WorkBoardView })));
 const WorkspaceView = lazy(() => import("@/features/workspace/workspace-view").then((m) => ({ default: m.WorkspaceView })));
 const DocumentsView = lazy(() => import("@/features/documents/documents-view").then((m) => ({ default: m.DocumentsView })));
@@ -37,6 +38,7 @@ const MeView = lazy(() => import("@/features/me/me-view").then((m) => ({ default
 export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   settings: SettingsHomeView,
   dashboard: DashboardView,
+  mail: MailView,
   me: MeView,
   workBoard: WorkBoardView,
   workspace: WorkspaceView,

@@ -1,11 +1,11 @@
-import { FolderKanban, Home, SquareCheckBig, UserRound } from "lucide-react";
+import { FolderKanban, Home, Mail, SquareCheckBig, UserRound } from "lucide-react";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { type SectionKey, useUiStore } from "@/store/ui-store";
 import { pageRegistration } from "@/app/sections";
 
-type MobileDestination = "home" | "tasks" | "projects" | "me";
+type MobileDestination = "home" | "mail" | "tasks" | "projects" | "me";
 
 const ITEMS: Array<{
   key: MobileDestination;
@@ -13,6 +13,7 @@ const ITEMS: Array<{
   icon: typeof Home;
 }> = [
   { key: "home", section: "dashboard", icon: Home },
+  { key: "mail", section: "mail", icon: Mail },
   { key: "tasks", section: "task", icon: SquareCheckBig },
   { key: "projects", section: "projects", icon: FolderKanban },
   { key: "me", section: "me", icon: UserRound },
@@ -20,6 +21,7 @@ const ITEMS: Array<{
 
 function activeDestination(section: SectionKey): MobileDestination | null {
   if (section === "dashboard") return "home";
+  if (section === "mail") return "mail";
   if (section === "task") return "tasks";
   if (section === "projects") return "projects";
   if (section === "workBoard" || section === "autoRuns" || section === "approvals") return "tasks";
@@ -40,7 +42,7 @@ export function MobileBottomNavigation() {
       className="z-30 shrink-0 border-t border-border bg-background/95 backdrop-blur md:hidden"
       style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.25rem)" }}
     >
-      <div className="grid min-h-14 grid-cols-4">
+      <div className="grid min-h-14 grid-cols-5">
         {ITEMS.map((item) => {
           const Icon = item.icon;
           const selected = active === item.key;

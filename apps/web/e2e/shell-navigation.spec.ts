@@ -45,7 +45,7 @@ test.beforeEach(async ({ page }) => {
 
 test("keeps ordinary desktop navigation concise and nests professional capabilities under Me", async ({ page }) => {
   const navigation = page.getByRole("navigation", { name: "Control plane sections" });
-  for (const destination of ["My home", "My tasks", "My projects", "My settings"]) {
+  for (const destination of ["My home", "My email", "My tasks", "My projects", "My settings"]) {
     await expect(navigation.getByRole("button", { name: destination, exact: true })).toBeVisible();
   }
   await expect(navigation.getByRole("button", { name: /^Needs me/ })).toHaveCount(0);
@@ -140,11 +140,11 @@ test("supports keyboard navigation and direct legacy section bookmarks", async (
   await expect(page.getByRole("heading", { name: "Assets" })).toBeVisible();
 });
 
-test("offers four mobile destinations and keeps task status as a secondary task tool", async ({ page }, testInfo) => {
+test("offers five mobile destinations and keeps task status as a secondary task tool", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
-  for (const destination of ["My home", "My tasks", "My projects", "My settings"]) {
+  for (const destination of ["My home", "My email", "My tasks", "My projects", "My settings"]) {
     await expect(navigation.getByRole("button", { name: destination, exact: true })).toBeVisible();
   }
   await expect(navigation.getByRole("button", { name: /^Needs me/ })).toHaveCount(0);

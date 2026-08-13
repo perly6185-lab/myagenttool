@@ -135,6 +135,8 @@ export function createServerState({ defaultProjectPath, now }) {
     // — the write itself (4b) is separate.
     claudeApplyAuthorizations: [],
     applicationResults: [],
+    mailDrafts: [],
+    mailReplies: [],
     budgets: [],
     // #890: in-flight budget holds placed at admission and released on settle so
     // concurrent spend-bearing runs cannot jointly exceed a hard block budget.
@@ -340,6 +342,8 @@ export function resetStateForSelfCheck({ state, now }) {
   state.codexExecChangeReviews = [];
   state.claudeApplyAuthorizations = [];
   state.applicationResults = [];
+  state.mailDrafts = [];
+  state.mailReplies = [];
   state.budgets = [];
   state.decisionSoftClaims = [];
   state.issueClaims = [];

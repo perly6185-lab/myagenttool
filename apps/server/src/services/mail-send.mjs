@@ -26,6 +26,7 @@
 
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { GMAIL_SEND_APPLICATION_ID } from "./gmail-send-application.mjs";
+import { mailSendApprovalTarget } from "./mailbox.mjs";
 
 export const MAIL_SEND_ACTION = "mail.send";
 
@@ -101,7 +102,11 @@ export function createMailSendService({
     // allowLegacy: false — the phase-1 migration fallback (any non-empty string
     // passes as legacy_token) must never open the exfiltration boundary. Send
     // takes a REAL single-use grant or nothing.
-    const approval = validateApprovalToken(approvalToken, { action: MAIL_SEND_ACTION, targetId: draft.id, actor, allowLegacy: false });
+    // User-authored drafts are editable, so their grant binds to the current
+    // revision. A draft changed after review cannot reuse the old grant. Legacy
+    // reviewed-reply drafts have no revision and retain the historical id target.
+    const approvalTarget = mailSendApprovalTarget(draft);
+    const approval = validateApprovalToken(approvalToken, { action: MAIL_SEND_ACTION, targetId: approvalTarget, actor, allowLegacy: false });
     if (!approval.approved) {
       return { ok: false, status: 409, body: { error: "approval_required", reason: approval.reason ?? "grant_required" } };
     }
