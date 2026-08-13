@@ -275,6 +275,10 @@ export interface WorkflowSource {
   id: string;
   projectId: string;
   name: string;
+  purpose?: "template_learning" | string;
+  templateId?: string;
+  templateLearningTaskId?: string;
+  selectedFileCount?: number;
   relativePath: string;
   readMode: "metadata" | "supported_text";
   state: "active" | "revoked";
@@ -361,6 +365,11 @@ export type BusinessDocumentType =
   | "price_list"
   | "customer_reference"
   | "other_reference"
+  | "contract_review"
+  | "purchase_request"
+  | "customer_complaint"
+  | "weekly_report"
+  | "project_acceptance"
   | "unknown";
 
 export interface BusinessFieldProposal {
@@ -491,17 +500,38 @@ export interface BusinessRoutineDiscoveryStep {
   configuration: Record<string, unknown>;
 }
 
+export interface MyTemplateContract {
+  version: number;
+  inputSummary: string;
+  inputFormats: string[];
+  inputArtifactIds: string[];
+  outputSummary: string;
+  outputFormat: string;
+  outputFileName: string;
+  outputArtifactIds: string[];
+  outputColumns: string[];
+  fieldMappings: Array<{
+    column: string;
+    source: string;
+    confidence: "supported" | "needs_confirmation";
+  }>;
+  uncertainFields: string[];
+}
+
 export interface BusinessRoutineDiscoveryCandidate {
   id: string;
   familyId: string;
   projectId: string;
   sourceId: string;
   name: string;
+  description?: string | null;
   version: number;
   state: "candidate" | "superseded";
   triggerDocumentTypes: BusinessDocumentType[];
   confirmedCaseIds: string[];
   minimumCaseCount: number;
+  templateMaturity?: "trial" | "stable";
+  templateContract?: MyTemplateContract | null;
   mandatoryCoverageThreshold: number;
   steps: BusinessRoutineDiscoveryStep[];
   confidence: number;
@@ -525,6 +555,30 @@ export interface BusinessRoutineStep {
   configuration: Record<string, unknown>;
 }
 
+export interface MyTemplateDraft {
+  id: string;
+  projectId: string;
+  name: string;
+  typicalInput: string;
+  expectedOutput: string;
+  applicability: string;
+  steps: string[];
+  state: "learning" | "needs_review" | "ready" | "rejected";
+  caseCount: number;
+  casesRequired: number;
+  revision: number;
+  origin: { kind: "work_item"; workItemId: string; localRef: string | null; title: string };
+  activation?: {
+    definitionId: string;
+    familyId: string;
+    version: number;
+    confirmedAt: string;
+    confirmedBy: string;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface BusinessRoutineDefinition {
   id: string;
   familyId: string;
@@ -539,6 +593,10 @@ export interface BusinessRoutineDefinition {
   triggerDocumentTypes: BusinessDocumentType[];
   steps: BusinessRoutineStep[];
   confidence: number;
+  templateScope?: "team";
+  templateMaturity?: "trial" | "stable";
+  templateContract?: MyTemplateContract | null;
+  templateLearningTaskId?: string;
   supersedesId: string | null;
   supersededById: string | null;
   evidenceHealth: {
@@ -1403,9 +1461,10 @@ export async function request<T = unknown>(
   body?: unknown,
   retry = true,
   timeoutMs = REQUEST_TIMEOUT_MS,
+  extraHeaders?: Record<string, string>,
 ): Promise<T> {
   await ensureSession();
-  const headers: Record<string, string> = { ...csrfHeaders(method) };
+  const headers: Record<string, string> = { ...csrfHeaders(method), ...extraHeaders };
   if (body) headers["Content-Type"] = "application/json";
   const response = await fetch(`${apiBase}${path}`, {
     method,
@@ -1418,7 +1477,7 @@ export async function request<T = unknown>(
   if (response.status === 401 && retry) {
     sessionReady = false;
     await ensureSession();
-    return request<T>(method, path, body, false, timeoutMs);
+    return request<T>(method, path, body, false, timeoutMs, extraHeaders);
   }
   if (response.status === 204) return undefined as T;
   const data = await response.json().catch(() => ({}));
@@ -1447,7 +1506,7 @@ async function requestBytes(path: string, retry = true): Promise<ArrayBuffer> {
   return response.arrayBuffer();
 }
 
-async function requestRaw<T>(method: string, path: string, body: Blob, contentType: string, retry = true, userSignal?: AbortSignal): Promise<T> {
+export async function requestRaw<T>(method: string, path: string, body: Blob, contentType: string, retry = true, userSignal?: AbortSignal): Promise<T> {
   await ensureSession();
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), REQUEST_TIMEOUT_MS);
@@ -1536,7 +1595,9 @@ async function requestByteRange(path: string, start: number, end: number, retry 
 }
 
 export function fetchState(): Promise<ConsoleSnapshot> {
-  return request<ConsoleSnapshot>("GET", "/api/state");
+  return request<ConsoleSnapshot>("GET", "/api/state", undefined, true, REQUEST_TIMEOUT_MS, {
+    Accept: "application/vnd.myagenttool.console-state+json",
+  });
 }
 
 export type GuidedSetupCommand = "start" | "resume" | "recheck" | "cancel";
@@ -1952,8 +2013,14 @@ export const api = {
       `/api/projects/${encodeURIComponent(id)}/asset-reveal`,
       { path, ...(worktreeId ? { worktreeId } : {}) },
     ),
+  openProjectAsset: (id: string, path: string, worktreeId?: string) =>
+    request<{ opened: true; path: string }>(
+      "POST",
+      `/api/projects/${encodeURIComponent(id)}/asset-open`,
+      { path, ...(worktreeId ? { worktreeId } : {}) },
+    ),
   projectAssetPreview: (id: string, path: string, worktreeId?: string) =>
-    request<{ path: string; family: "markdown"; text: string; size: number; truncated: boolean }>(
+    request<{ path: string; family: "markdown" | "text"; text: string; size: number; truncated: boolean }>(
       "GET",
       `/api/projects/${encodeURIComponent(id)}/asset-preview?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
     ),
@@ -2218,6 +2285,13 @@ export const api = {
     businessCaseId?: string;
     businessKey?: string;
     triggerArtifactIds?: string[];
+    myTemplateBinding?: {
+      definitionId: string;
+      familyId: string;
+      version: number;
+      matchReasons: string[];
+      userConfirmedResult?: boolean;
+    };
     inputAssets?: Array<{
       id: string | null;
       path: string;
@@ -2248,8 +2322,57 @@ export const api = {
     acceptanceCriteria?: string[];
   }) => request("POST", "/api/work-items/from-external", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
-  suggestWorkItemDraft: (payload: { projectId: string; title: string; body?: string }) =>
+  suggestWorkItemDraft: (payload: {
+    projectId: string;
+    title: string;
+    body?: string;
+    materialDraftId?: string;
+    materialDraftRevision?: number;
+  }) =>
     request("POST", "/api/work-items/assist/draft", payload),
+  listMyTemplateDefinitions: () =>
+    request("GET", "/api/workflow-memory/business-routine-definitions"),
+  listMyTemplateLearning: (projectId?: string) =>
+    request("GET", `/api/work-items/my-template-learning${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  removeMyTemplateLearning: (feedbackId: string) =>
+    request("DELETE", `/api/work-items/my-template-learning/${encodeURIComponent(feedbackId)}`),
+  previewMyTemplateDraft: (workItemId: string) =>
+    request("GET", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-draft`),
+  listMyTemplateDrafts: (projectId?: string) =>
+    request("GET", `/api/work-items/my-template-drafts${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  listSimilarMyTemplateWorkItems: (draftId: string) =>
+    request("GET", `/api/work-items/my-template-drafts/${encodeURIComponent(draftId)}/similar-work-items`),
+  reviewMyTemplateDraft: (draftId: string) =>
+    request("GET", `/api/work-items/my-template-drafts/${encodeURIComponent(draftId)}/review`),
+  addMyTemplateLearningCase: (draftId: string, payload: {
+    workItemId: string;
+    expectedDraftRevision: number;
+    expectedWorkItemRevision: number;
+    confirm: true;
+  }) => request("POST", `/api/work-items/my-template-drafts/${encodeURIComponent(draftId)}/cases`, payload),
+  activateMyTemplateDraft: (draftId: string, payload: {
+    expectedDraftRevision: number;
+    confirm: boolean;
+    name?: string;
+    typicalInput?: string;
+    expectedOutput?: string;
+  }) => request("POST", `/api/work-items/my-template-drafts/${encodeURIComponent(draftId)}/activate`, payload),
+  createMyTemplateDraft: (workItemId: string, payload: {
+    expectedRevision: number;
+    confirm: true;
+    name: string;
+    typicalInput: string;
+    expectedOutput: string;
+    idempotencyKey?: string;
+  }) => request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-draft`, payload),
+  listMyTemplateOutcomes: (projectId?: string) =>
+    request("GET", `/api/work-items/my-template-outcomes${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  recordMyTemplateOutcomeFeedback: (workItemId: string, payload: {
+    outcome: "met_expectations" | "wrong_result" | "needs_quality_adjustment";
+    note?: string;
+  }) => request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-outcome-feedback`, payload),
+  resumeMyTemplateGovernanceObservation: (familyId: string, payload: { projectId: string; confirm: true }) =>
+    request("POST", `/api/work-items/my-template-governance/${encodeURIComponent(familyId)}/resume-observation`, payload),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
   claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>

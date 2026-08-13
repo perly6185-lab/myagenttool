@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -29,7 +29,9 @@ import { CommercialPilotWorkbench } from "@/features/workflow-memory/commercial-
 import { workflowMemoryApi } from "@/features/workflow-memory/workflow-memory-api";
 import { InquiryIntakePanel } from "@/features/workflow-memory/inquiry-intake-panel";
 import { AdaptiveWorkbench } from "@/features/workflow-memory/adaptive-workbench";
+import { DailyWorkAutomationCard } from "@/features/workflow-memory/daily-work-automation-card";
 import { RoutineSetupGuide } from "@/features/workflow-memory/routine-setup-guide";
+import { WorkMemoryOverview } from "@/features/workflow-memory/work-memory-overview";
 import { ApiError } from "@/lib/api-client";
 import type {
   BusinessRoutineDefinition,
@@ -68,9 +70,25 @@ const COPY = {
   en: {
     title: "Delivery memory",
     description: "Learn an explainable, reusable workflow from confirmed requirement and delivery files.",
+    advancedTools: "Advanced learning and pilot tools",
+    advancedToolsHint: "Use these only when you need to adjust learned rules, evaluate quality, or review pilot records.",
+    advancedSourceSettings: "Advanced folder settings",
+    advancedSourceSettingsHint: "Use the manual fields only when folder selection is unavailable or you need to adjust how the folder is read.",
+    folderSetupHint: "Choose your existing work folder once. It will be connected and reviewed automatically.",
+    folderManagement: "Folder management",
+    revokedFolderHelp: "Access to this folder was removed earlier. Open Folder management, delete the old learning record, then choose the folder again. Your original files will not be deleted.",
+    workTypes: "Work this computer has learned",
+    workTypesHint: "Choose a work type to see how new work will be handled.",
+    chooseWorkType: "Work type to view",
+    workTypeUsing: "in use",
+    workTypeReview: "needs your review",
+    workTypePaused: "paused",
     back: "Back to assets",
+    backToTask: "Back to task",
     addSource: "Add a learning source",
     chooseFolder: "Choose folder",
+    changeFolder: "Choose another folder",
+    authorizedFolder: "Authorized folder",
     sourceHint: "Only the selected registered project folder is read. Nothing outside it is scanned.",
     project: "Project",
     sourceName: "Source name",
@@ -80,8 +98,10 @@ const COPY = {
     text: "Read supported text files",
     add: "Authorize source",
     sources: "Learning sources",
+    currentSource: "Current authorized folder",
     noSources: "No folder has been authorized yet.",
     scan: "Scan now",
+    retryScan: "Retry scan",
     cancelScan: "Cancel scan",
     revoke: "Revoke access",
     deleteData: "Delete learned data",
@@ -175,6 +195,9 @@ const COPY = {
       routine_definition_source_revoked: "Restore access to the source before changing this work type.",
       routine_definition_publication_confirmation_required: "Review the work type and select the confirmation before enabling it.",
     },
+    errors: {
+      workflow_source_exists: "This folder is already connected. Continue with the next step below.",
+    },
     routineStepKinds: {
       extract: "Read the inquiry",
       retrieve: "Retrieve references",
@@ -188,6 +211,11 @@ const COPY = {
       inquiry: "Inquiry",
       quotation: "Quotation",
       order: "Order",
+      contract_review: "Contract review",
+      purchase_request: "Purchase request",
+      customer_complaint: "Customer complaint",
+      weekly_report: "Weekly report",
+      project_acceptance: "Project acceptance",
     },
     routineStepConfiguration: {
       extract: "Fields to read",
@@ -354,22 +382,40 @@ const COPY = {
     },
   },
   zh: {
-    title: "交付记忆",
-    description: "从已确认的需求和交付文件中，形成可解释、可复用的工作流。",
+    title: "教 AI 做你的日常工作",
+    description: "选一些你以前做过的工作，AI 会照着学习；遇到相似的新工作时，就能按你的做法处理。",
+    advancedTools: "历史案例和更多设置",
+    advancedToolsHint: "在这里配对历史工作，或查看 AI 的判断和试运行记录。",
+    advancedSourceSettings: "手动选择（一般用不到）",
+    advancedSourceSettingsHint: "只有无法直接选择文件夹，或需要调整读取方式时，才使用下面的手动设置。",
+    folderSetupHint: "请选择同时包含“收到的材料”和“最终交付结果”的历史工作文件夹。AI 只会读取这个文件夹。",
+    folderManagement: "文件夹设置",
+    revokedFolderHelp: "这个文件夹之前已撤销访问。请打开“目录管理”，删除旧的学习记录后再重新选择；原始文件不会被删除。",
+    workTypes: "这台电脑已学会的工作",
+    workTypesHint: "选择一项工作，查看以后有新工作时会怎样处理。",
+    chooseWorkType: "要查看的工作",
+    workTypeUsing: "项正在使用",
+    workTypeReview: "项需要你检查",
+    workTypePaused: "项已暂停",
     back: "返回资产",
-    addSource: "添加学习目录",
-    chooseFolder: "选择本地目录",
-    sourceHint: "系统只读取所选已注册项目内的目录，不会扫描目录之外的文件。",
+    backToTask: "返回任务",
+    addSource: "选择历史工作文件夹",
+    chooseFolder: "选择历史工作文件夹",
+    changeFolder: "更换",
+    authorizedFolder: "历史工作文件夹",
+    sourceHint: "请选择保存过往工作的文件夹。AI 只读取这个文件夹，不会查看其他位置。",
     project: "项目",
     sourceName: "目录名称",
     relativePath: "项目内子目录",
     rootHint: "留空表示使用整个项目目录。",
     metadata: "只读取文件信息",
     text: "读取受支持的文本内容",
-    add: "授权目录",
+    add: "使用这个文件夹",
     sources: "学习目录",
+    currentSource: "当前文件夹",
     noSources: "还没有授权任何目录。",
     scan: "立即扫描",
+    retryScan: "重新扫描",
     cancelScan: "取消扫描",
     revoke: "撤销访问",
     deleteData: "删除学习数据",
@@ -389,20 +435,20 @@ const COPY = {
     reusedParsing: "未变化复用",
     lastScan: "最近扫描",
     never: "尚未扫描",
-    review: "确认文件角色",
-    reviewHint: "系统会建议文件是需求、交付、资料还是草稿，并解释原因；确认后才能作为学习证据。",
+    review: "第 2 步：确认这些文件是做什么的",
+    reviewHint: "AI 已经先猜好了。你只需改正猜错的文件，然后点击确认；不需要逐个打开阅读。",
     noArtifacts: "请先扫描该目录以发现受支持文件。",
-    confidence: "置信度",
+    confidence: "AI 判断把握",
     confirm: "确认",
-    confirmVisible: "批量确认当前建议",
+    confirmVisible: "这些判断都对",
     changed: "文件已发生变化，需要重新确认",
-    reason: "判断依据",
+    reason: "判断线索",
     untrusted: "检测到类似指令的文字。请将文件视为不可信输入并在使用前复核。",
-    pairs: "需求 → 交付案例",
-    pairsHint: "只确认你认可的对应关系；有歧义的配对不会被自动学习。",
-    noPairs: "没有待确认的配对建议。",
-    createCase: "确认案例",
-    confirmedCases: "已确认学习案例",
+    pairs: "第 3 步：把同一项工作的文件配成一组",
+    pairsHint: "左边是当时收到的材料，右边是最后交付的结果。如果它们属于同一项工作，就点击“这是一组”。通常确认 3 组即可。",
+    noPairs: "还没有可以配对的文件。请先完成上一步的文件用途确认。",
+    createCase: "这是一组",
+    confirmedCases: "已经配好的历史工作",
     archiveCase: "撤销案例",
     restoreCase: "恢复案例",
     archiveCasePrompt: "请输入撤销这个学习案例的原因：",
@@ -463,6 +509,9 @@ const COPY = {
       routine_definition_source_revoked: "请先恢复来源目录的访问权限，再修改这个工作类型。",
       routine_definition_publication_confirmation_required: "请审核工作类型并勾选确认后再启用。",
     },
+    errors: {
+      workflow_source_exists: "这个文件夹已经添加过了，无需重复添加。请直接继续下一步。",
+    },
     routineStepKinds: {
       extract: "读取询价信息",
       retrieve: "检索参考资料",
@@ -476,6 +525,11 @@ const COPY = {
       inquiry: "询价单",
       quotation: "报价单",
       order: "订单",
+      contract_review: "合同审查",
+      purchase_request: "采购申请",
+      customer_complaint: "客户投诉",
+      weekly_report: "周报",
+      project_acceptance: "项目验收",
     },
     routineStepConfiguration: {
       extract: "需要读取的字段",
@@ -634,16 +688,22 @@ const COPY = {
     scanRecoverable: "已保留扫描检查点；重试时会复用已完成文件。",
     truncation: "扫描达到安全上限，请缩小目录范围后再学习。",
     roles: {
-      requirement: "需求",
-      delivery: "交付",
-      reference: "参考资料",
-      draft: "草稿",
-      unknown: "待识别",
+      requirement: "别人发来的材料",
+      delivery: "我最终交付的结果",
+      reference: "过程中参考的资料",
+      draft: "中间稿",
+      unknown: "暂时不确定",
     },
   },
 } as const;
 
-export function WorkflowMemoryView() {
+export function WorkflowMemoryView({
+  onBack,
+  backLabel,
+}: {
+  onBack?: () => void;
+  backLabel?: string;
+} = {}) {
   const { i18n } = useAppTranslation();
   const copy = COPY[i18n.resolvedLanguage?.startsWith("zh") ? "zh" : "en"];
   const { data: consoleState } = useConsoleState();
@@ -654,15 +714,27 @@ export function WorkflowMemoryView() {
   const setSelectedWorkItemSection = useUiStore((state) => state.setSelectedWorkItemSection);
   const setSelectedWorktreeId = useUiStore((state) => state.setSelectedWorktreeId);
   const queryClient = useQueryClient();
+  const returnWorkItemId = new URLSearchParams(window.location.search).get("returnWorkItemId")?.trim() ?? "";
 
   const sourcesQuery = useQuery({
     queryKey: ["workflow-memory", "sources"],
     queryFn: () => workflowApi.listWorkflowSources(),
   });
   const sources = sourcesQuery.data?.sources ?? [];
-  const [selectedSourceId, setSelectedSourceId] = useState("");
+  const requestedSourceId = new URLSearchParams(window.location.search).get("sourceId")?.trim() ?? "";
+  const [selectedSourceId, setSelectedSourceId] = useState(requestedSourceId);
   const selectedSource = sources.find((source) => source.id === selectedSourceId) ?? sources[0] ?? null;
   const activeSourceId = selectedSource?.id ?? "";
+  const hasDesktopFolderPicker = Boolean(window.myagenttoolDesktop?.pickWorkflowSourceFolder);
+  const selectedSourceProject = selectedSource
+    ? projects.find((project) => project.id === selectedSource.projectId)
+    : null;
+  const selectedSourceProjectPath = selectedSourceProject?.path?.trim() ?? "";
+  const selectedSourcePath = selectedSourceProjectPath
+    ? selectedSource.relativePath
+      ? `${selectedSourceProjectPath.replace(/[\\/]+$/, "")}${selectedSourceProjectPath.includes("\\") ? "\\" : "/"}${selectedSource.relativePath.replaceAll("/", selectedSourceProjectPath.includes("\\") ? "\\" : "/")}`
+      : selectedSourceProjectPath
+    : selectedSource?.relativePath || selectedSource?.name || "";
 
   const [projectId, setProjectId] = useState("");
   const effectiveProjectId = projectId || consoleState?.currentProjectId || projects[0]?.id || "";
@@ -687,6 +759,8 @@ export function WorkflowMemoryView() {
   } | null>(null);
   const [publicationConfirmations, setPublicationConfirmations] = useState<Record<string, boolean>>({});
   const [routinePublishConfirmations, setRoutinePublishConfirmations] = useState<Record<string, boolean>>({});
+  const [routineDraftDirty, setRoutineDraftDirty] = useState<Record<string, boolean>>({});
+  const [selectedRoutineDefinitionId, setSelectedRoutineDefinitionId] = useState("");
   const [pendingAction, setPendingAction] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -762,12 +836,25 @@ export function WorkflowMemoryView() {
   const profileDrafts = (profileDraftsQuery.data?.drafts ?? []).filter((draft) =>
     draft.sourceId === activeSourceId && draft.state === "draft");
   const routineDefinitions = routineDefinitionsQuery.data?.routineDefinitions ?? [];
-  const primaryRoutineDefinition = routineDefinitions
+  const routineDefinitionChoices = routineDefinitions
     .slice()
     .sort((left, right) => {
-      const priority = { draft: 5, candidate: 4, published: 3, disabled: 2, superseded: 1 };
+      const priority = { published: 5, draft: 4, candidate: 3, disabled: 2, superseded: 1 };
       return priority[right.state] - priority[left.state] || right.version - left.version;
-    })[0] ?? null;
+    });
+  const selectedRoutineDefinition = routineDefinitionChoices.find((definition) =>
+    definition.id === selectedRoutineDefinitionId) ?? routineDefinitionChoices[0] ?? null;
+  const routineStateLabels: Record<BusinessRoutineDefinition["state"], string> = {
+    candidate: copy.routineDefinitionCandidate,
+    draft: copy.routineDraft,
+    published: copy.routinePublished,
+    disabled: copy.routineDisabled,
+    superseded: copy.routineSuperseded,
+  };
+  const routineUsingCount = routineDefinitionChoices.filter((definition) => definition.state === "published").length;
+  const routineReviewCount = routineDefinitionChoices.filter((definition) =>
+    ["candidate", "draft"].includes(definition.state)).length;
+  const routinePausedCount = routineDefinitionChoices.filter((definition) => definition.state === "disabled").length;
   const routineCandidates = (routineCandidatesQuery.data?.candidates ?? []).filter((candidate) =>
     candidate.state === "candidate"
     && !routineDefinitions.some((definition) =>
@@ -799,6 +886,21 @@ export function WorkflowMemoryView() {
     }))
     .filter((proposal) => !assignedRequirements.has(proposal.requirement.id) && proposal.candidates.length > 0);
 
+  useEffect(() => {
+    const revealAdvancedTarget = () => {
+      const targetId = window.location.hash.replace(/^#/, "");
+      if (!["workflow-file-review", "workflow-routine-library"].includes(targetId)) return;
+      const advanced = document.getElementById("advanced-workflow-tools") as HTMLDetailsElement | null;
+      const target = document.getElementById(targetId);
+      if (!advanced || !target) return;
+      advanced.open = true;
+      target.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    };
+    revealAdvancedTarget();
+    window.addEventListener("hashchange", revealAdvancedTarget);
+    return () => window.removeEventListener("hashchange", revealAdvancedTarget);
+  }, [activeSourceId]);
+
   async function refreshSourceData() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["workflow-memory", "sources"] }),
@@ -827,7 +929,10 @@ export function WorkflowMemoryView() {
       const routineError = caught instanceof ApiError
         ? copy.routineErrors[caught.code as keyof typeof copy.routineErrors]
         : null;
-      setError(routineError ?? (caught instanceof Error ? caught.message : copy.error));
+      const friendlyError = caught instanceof ApiError
+        ? copy.errors[caught.code as keyof typeof copy.errors]
+        : null;
+      setError(routineError ?? friendlyError ?? (caught instanceof Error ? caught.message : copy.error));
     } finally {
       setPendingAction("");
     }
@@ -835,6 +940,16 @@ export function WorkflowMemoryView() {
 
   const addSource = () => {
     if (!effectiveProjectId) return;
+    const normalizeRelativePath = (value: string) =>
+      value.replaceAll("\\", "/").replace(/^\.\/?$/, "").replace(/^\/+|\/+$/g, "");
+    const existingSource = sources.find((source) =>
+      source.projectId === effectiveProjectId
+      && normalizeRelativePath(source.relativePath) === normalizeRelativePath(relativePath.trim()));
+    if (existingSource) {
+      setSelectedSourceId(existingSource.id);
+      setError(existingSource.state === "revoked" ? copy.revokedFolderHelp : null);
+      return;
+    }
     void runAction("add-source", async () => {
       const result = await workflowApi.createWorkflowSource({
         projectId: effectiveProjectId,
@@ -855,20 +970,50 @@ export function WorkflowMemoryView() {
       const selection = await picker();
       if (!selection) return;
       const match = longestProjectRoot(selection.absolutePath, projects);
+      let selectedProjectId: string;
+      let selectedRelativePath: string;
       if (match) {
-        setProjectId(match.projectId);
-        setRelativePath(match.relativePath);
+        selectedProjectId = match.projectId;
+        selectedRelativePath = match.relativePath;
       } else {
         const result = await workflowApi.bindProject({
           repoPath: selection.absolutePath,
           name: selection.name,
         }) as { project?: { id: string } };
         if (!result.project?.id) throw new Error(copy.error);
-        setProjectId(result.project.id);
-        setRelativePath("");
+        selectedProjectId = result.project.id;
+        selectedRelativePath = "";
         await refreshConsoleState();
       }
+      setProjectId(selectedProjectId);
+      setRelativePath(selectedRelativePath);
       setSourceName(selection.name);
+      setReadMode("supported_text");
+      const normalizeRelativePath = (value: string) =>
+        value.replaceAll("\\", "/").replace(/^\.\/?$/, "").replace(/^\/+|\/+$/g, "");
+      const latestSources = await workflowApi.listWorkflowSources();
+      const existingSource = (latestSources.sources ?? sources).find((source) =>
+        source.projectId === selectedProjectId
+        && normalizeRelativePath(source.relativePath) === normalizeRelativePath(selectedRelativePath));
+      if (existingSource) {
+        setSelectedSourceId(existingSource.id);
+        if (existingSource.state === "revoked") {
+          setError(copy.revokedFolderHelp);
+          return;
+        }
+        if (existingSource.scanState !== "scanning") {
+          await workflowApi.scanWorkflowSource(existingSource.id);
+        }
+        return;
+      }
+      const created = await workflowApi.createWorkflowSource({
+        projectId: selectedProjectId,
+        relativePath: selectedRelativePath,
+        readMode: "supported_text",
+        name: selection.name,
+      });
+      setSelectedSourceId(created.source.id);
+      await workflowApi.scanWorkflowSource(created.source.id);
     });
   };
 
@@ -935,11 +1080,50 @@ export function WorkflowMemoryView() {
     });
   };
 
+  const manualSourceForm = (
+    <div className="space-y-3">
+      <Field label={copy.project}>
+        <Select value={effectiveProjectId} onChange={(event) => setProjectId(event.target.value)}>
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </Select>
+      </Field>
+      <Field label={copy.sourceName}>
+        <Input value={sourceName} onChange={(event) => setSourceName(event.target.value)} />
+      </Field>
+      <Field label={copy.relativePath} hint={copy.rootHint}>
+        <Input value={relativePath} onChange={(event) => setRelativePath(event.target.value)} placeholder="客户项目/历史案例" />
+      </Field>
+      <Select value={readMode} onChange={(event) => setReadMode(event.target.value as WorkflowSource["readMode"])}>
+        <option value="metadata">{copy.metadata}</option>
+        <option value="supported_text">{copy.text}</option>
+      </Select>
+      <Button className="w-full" disabled={!effectiveProjectId || pendingAction === "add-source"} onClick={addSource}>
+        {pendingAction === "add-source" ? <Loader2 className="animate-spin" /> : <FolderSearch />}
+        {copy.add}
+      </Button>
+    </div>
+  );
+
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-3 sm:p-6">
       <header className="flex flex-wrap items-start gap-3">
-        <Button variant="ghost" size="sm" onClick={() => setSection("documents")}>
-          <ArrowLeft /> {copy.back}
+        <Button variant="ghost" size="sm" onClick={() => {
+          if (onBack) {
+            onBack();
+            return;
+          }
+          if (!returnWorkItemId) {
+            setSection("documents");
+            return;
+          }
+          setSelectedWorkItemId(returnWorkItemId);
+          const url = new URL(window.location.href);
+          url.searchParams.delete("returnWorkItemId");
+          url.hash = "";
+          window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+          setSection("task");
+        }}>
+          <ArrowLeft /> {backLabel ?? (returnWorkItemId ? copy.backToTask : copy.back)}
         </Button>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -960,66 +1144,67 @@ export function WorkflowMemoryView() {
       <div className="grid gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
         <aside className="space-y-4">
           <Card>
-            <CardHeader><CardTitle className="text-base">{copy.addSource}</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-base">{selectedSource ? copy.authorizedFolder : copy.addSource}</CardTitle></CardHeader>
             <CardContent className="space-y-3">
-              <p className="text-xs text-muted-foreground">{copy.sourceHint}</p>
-              {window.myagenttoolDesktop?.pickWorkflowSourceFolder ? (
-                <Button className="w-full" variant="secondary" disabled={pendingAction === "pick-folder"} onClick={chooseFolder}>
-                  {pendingAction === "pick-folder" ? <Loader2 className="animate-spin" /> : <FolderSearch />}
-                  {copy.chooseFolder}
-                </Button>
-              ) : null}
-              <Field label={copy.project}>
-                <Select value={effectiveProjectId} onChange={(event) => setProjectId(event.target.value)}>
-                  {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-                </Select>
-              </Field>
-              <Field label={copy.sourceName}>
-                <Input value={sourceName} onChange={(event) => setSourceName(event.target.value)} />
-              </Field>
-              <Field label={copy.relativePath} hint={copy.rootHint}>
-                <Input value={relativePath} onChange={(event) => setRelativePath(event.target.value)} placeholder="客户项目/历史案例" />
-              </Field>
-              <Select value={readMode} onChange={(event) => setReadMode(event.target.value as WorkflowSource["readMode"])}>
-                <option value="metadata">{copy.metadata}</option>
-                <option value="supported_text">{copy.text}</option>
-              </Select>
-              <Button className="w-full" disabled={!effectiveProjectId || pendingAction === "add-source"} onClick={addSource}>
-                {pendingAction === "add-source" ? <Loader2 className="animate-spin" /> : <FolderSearch />}
-                {copy.add}
-              </Button>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader><CardTitle className="text-base">{copy.sources}</CardTitle></CardHeader>
-            <CardContent className="space-y-2">
-              {sources.length === 0 ? <p className="text-sm text-muted-foreground">{copy.noSources}</p> : sources.map((source) => (
-                <button
-                  key={source.id}
-                  type="button"
-                  onClick={() => setSelectedSourceId(source.id)}
-                  className={cn(
-                    "w-full rounded-md border p-3 text-left",
-                    source.id === activeSourceId ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50",
-                  )}
+              <p className="text-xs text-muted-foreground">
+                {hasDesktopFolderPicker ? copy.folderSetupHint : copy.sourceHint}
+              </p>
+              {hasDesktopFolderPicker ? (
+                <Button
+                  aria-label={copy.chooseFolder}
+                  className="h-auto w-full justify-start px-3 py-3 text-left"
+                  variant="secondary"
+                  disabled={pendingAction === "pick-folder"}
+                  onClick={chooseFolder}
                 >
+                  {pendingAction === "pick-folder" ? <Loader2 className="animate-spin" /> : <FolderSearch />}
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-normal text-muted-foreground">{copy.currentSource}</span>
+                    <span className="block truncate font-medium">
+                      {selectedSource ? selectedSourcePath : copy.chooseFolder}
+                    </span>
+                  </span>
+                  {selectedSource ? <span className="shrink-0 text-xs text-primary">{copy.changeFolder}</span> : null}
+                </Button>
+              ) : selectedSource ? null : manualSourceForm}
+              {selectedSource ? (
+                <div className="rounded-md border border-primary/40 bg-primary/5 p-3">
                   <span className="flex items-center justify-between gap-2">
-                    <span className="truncate text-sm font-medium">{source.name}</span>
-                    <Badge tone={source.state === "active" ? "success" : "neutral"}>
-                      {source.state === "active" ? copy.active : copy.revoked}
+                    <span className="truncate text-sm font-medium">{selectedSource.name}</span>
+                    <Badge tone={selectedSource.state === "active" ? "success" : "neutral"}>
+                      {selectedSource.state === "active" ? <Check className="size-3" /> : null}
+                      {selectedSource.state === "active" ? copy.active : copy.revoked}
                     </Badge>
                   </span>
-                  <span className="mt-1 block truncate font-mono text-[10px] text-muted-foreground">
-                    {source.relativePath || "."}
-                  </span>
                   <span className="mt-2 block text-xs text-muted-foreground">
-                    {source.fileCount} {copy.files} · {source.skippedCount} {copy.skipped}
+                    {selectedSource.fileCount} {copy.files} · {selectedSource.skippedCount} {copy.skipped}
                   </span>
-                </button>
-              ))}
+                </div>
+              ) : null}
+              {hasDesktopFolderPicker || selectedSource ? (
+                <details className="rounded-md border bg-muted/20 p-3">
+                  <summary className="cursor-pointer text-sm font-medium">{copy.advancedSourceSettings}</summary>
+                  <p className="mb-3 mt-1 text-xs text-muted-foreground">{copy.advancedSourceSettingsHint}</p>
+                  {manualSourceForm}
+                </details>
+              ) : null}
             </CardContent>
           </Card>
+          {selectedSource ? (
+            <SourceSummary
+              source={selectedSource}
+              copy={copy}
+              pendingAction={pendingAction}
+              onScan={() => void runAction("scan", () => workflowApi.scanWorkflowSource(selectedSource.id))}
+              onCancel={() => void runAction("cancel-scan", () => workflowApi.cancelWorkflowSourceScan(selectedSource.id))}
+              onRevoke={() => void runAction("revoke", () => workflowApi.revokeWorkflowSource(selectedSource.id, selectedSource.revision))}
+              onDelete={() => {
+                if (!window.confirm(copy.deleteConfirm)) return;
+                void runAction("delete-source", () =>
+                  workflowApi.deleteWorkflowSourceLearning(selectedSource.id, selectedSource.revision));
+              }}
+            />
+          ) : null}
         </aside>
 
         <main className="min-w-0 space-y-4">
@@ -1031,53 +1216,57 @@ export function WorkflowMemoryView() {
             </Card>
           ) : (
             <>
-              <SourceSummary
-                source={selectedSource}
-                copy={copy}
-                pendingAction={pendingAction}
-                onScan={() => void runAction("scan", () => workflowApi.scanWorkflowSource(selectedSource.id))}
-                onCancel={() => void runAction("cancel-scan", () => workflowApi.cancelWorkflowSourceScan(selectedSource.id))}
-                onRevoke={() => void runAction("revoke", () => workflowApi.revokeWorkflowSource(selectedSource.id, selectedSource.revision))}
-                onDelete={() => {
-                  if (!window.confirm(copy.deleteConfirm)) return;
-                  void runAction("delete-source", () =>
-                    workflowApi.deleteWorkflowSourceLearning(selectedSource.id, selectedSource.revision));
-                }}
-              />
-
-              <InquiryIntakePanel
-                source={selectedSource}
-                onOpenTask={(workItemId) => {
-                  setSelectedWorkItemId(workItemId);
-                  setSection("task");
-                }}
-              />
-
-              <AdaptiveWorkbench
-                projectId={selectedSource.projectId}
-                sourceId={selectedSource.id}
-                onOpenTask={(workItemId) => {
-                  setSelectedWorkItemId(workItemId);
-                  setSection("task");
-                }}
-              />
-
-              <CommercialPilotWorkbench
-                projectId={selectedSource.projectId}
-                onOpenTask={(workItemId, section) => {
-                  setSelectedWorkItemId(workItemId);
-                  setSelectedWorkItemSection(section);
-                  setSection("task");
-                }}
-              />
+              {routineDefinitionChoices.length ? (
+                <section className="rounded-lg border bg-background p-4" aria-labelledby="learned-work-types-title">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h2 id="learned-work-types-title" className="font-semibold">{copy.workTypes}</h2>
+                      <p className="mt-1 text-sm text-muted-foreground">{copy.workTypesHint}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {routineUsingCount ? <Badge tone="success">{routineUsingCount} {copy.workTypeUsing}</Badge> : null}
+                      {routineReviewCount ? <Badge tone="warning">{routineReviewCount} {copy.workTypeReview}</Badge> : null}
+                      {routinePausedCount ? <Badge tone="neutral">{routinePausedCount} {copy.workTypePaused}</Badge> : null}
+                    </div>
+                  </div>
+                  {routineDefinitionChoices.length > 1 ? (
+                    <label className="mt-3 block text-sm font-medium">
+                      {copy.chooseWorkType}
+                      <Select className="mt-1" value={selectedRoutineDefinition?.id ?? ""}
+                        onChange={(event) => setSelectedRoutineDefinitionId(event.target.value)}>
+                        {routineDefinitionChoices.map((definition) => (
+                          <option key={definition.id} value={definition.id}>
+                            {definition.name} · {routineStateLabels[definition.state]}
+                          </option>
+                        ))}
+                      </Select>
+                    </label>
+                  ) : (
+                    <p className="mt-3 text-sm font-medium">
+                      {selectedRoutineDefinition?.name} · {selectedRoutineDefinition
+                        ? routineStateLabels[selectedRoutineDefinition.state]
+                        : ""}
+                    </p>
+                  )}
+                </section>
+              ) : null}
 
               <RoutineSetupGuide
                 source={selectedSource}
-                candidate={routineCandidates[0] ?? null}
-                definition={primaryRoutineDefinition}
+                candidate={selectedRoutineDefinition ? null : routineCandidates[0] ?? null}
+                definition={selectedRoutineDefinition}
                 artifacts={artifacts}
                 pending={pendingAction === "scan"
                   || pendingAction.startsWith("routine-candidate-")}
+                publishPending={selectedRoutineDefinition
+                  ? pendingAction === `routine-definition-${selectedRoutineDefinition.id}`
+                  : false}
+                publishConfirmed={selectedRoutineDefinition
+                  ? routinePublishConfirmations[selectedRoutineDefinition.id] === true
+                  : false}
+                publishBlocked={selectedRoutineDefinition
+                  ? routineDraftDirty[selectedRoutineDefinition.id] === true
+                  : false}
                 onScan={() => void runAction(
                   "scan",
                   () => workflowApi.scanWorkflowSource(selectedSource.id),
@@ -1086,9 +1275,74 @@ export function WorkflowMemoryView() {
                   `routine-candidate-${candidateId}`,
                   () => workflowApi.createBusinessRoutineDraft(candidateId),
                 )}
+                onPublishConfirmed={(confirmed) => {
+                  if (!selectedRoutineDefinition) return;
+                  setRoutinePublishConfirmations((current) => ({
+                    ...current,
+                    [selectedRoutineDefinition.id]: confirmed,
+                  }));
+                }}
+                onPublish={() => {
+                  if (!selectedRoutineDefinition) return;
+                  void runAction(
+                    `routine-definition-${selectedRoutineDefinition.id}`,
+                    () => workflowApi.publishBusinessRoutineDefinition(
+                      selectedRoutineDefinition.id,
+                      selectedRoutineDefinition.revision,
+                      routinePublishConfirmations[selectedRoutineDefinition.id] === true,
+                    ),
+                  );
+                }}
               />
 
-              <SectionCard title={copy.inbox} hint={copy.inboxHint} icon={FileQuestion}>
+              <DailyWorkAutomationCard
+                projectId={selectedSource.projectId}
+                sourceId={selectedSource.id}
+                learnedRoutineName={selectedRoutineDefinition?.state === "published"
+                  ? selectedRoutineDefinition.name
+                  : null}
+              />
+
+              {selectedRoutineDefinition?.state === "published" ? (
+                <WorkMemoryOverview
+                  projectId={selectedSource.projectId}
+                  sourceId={selectedSource.id}
+                  routineDefinitionId={selectedRoutineDefinition.id}
+                  routineName={selectedRoutineDefinition.name}
+                />
+              ) : null}
+
+              <details id="advanced-workflow-tools" className="rounded-lg border bg-muted/10 p-4">
+                <summary className="cursor-pointer font-medium">{copy.advancedTools}</summary>
+                <p className="mt-1 text-xs text-muted-foreground">{copy.advancedToolsHint}</p>
+                <div className="mt-4 space-y-4">
+                  <InquiryIntakePanel
+                    source={selectedSource}
+                    onOpenTask={(workItemId) => {
+                      setSelectedWorkItemId(workItemId);
+                      setSection("task");
+                    }}
+                  />
+
+                  <AdaptiveWorkbench
+                    projectId={selectedSource.projectId}
+                    sourceId={selectedSource.id}
+                    onOpenTask={(workItemId) => {
+                      setSelectedWorkItemId(workItemId);
+                      setSection("task");
+                    }}
+                  />
+
+                  <CommercialPilotWorkbench
+                    projectId={selectedSource.projectId}
+                    onOpenTask={(workItemId, section) => {
+                      setSelectedWorkItemId(workItemId);
+                      setSelectedWorkItemSection(section);
+                      setSection("task");
+                    }}
+                  />
+
+                  <SectionCard title={copy.inbox} hint={copy.inboxHint} icon={FileQuestion}>
                 {(inboxQuery.data?.artifacts ?? []).length === 0
                   ? <Empty text={copy.inboxEmpty} />
                   : <div className="grid gap-2 sm:grid-cols-2">
@@ -1451,20 +1705,16 @@ export function WorkflowMemoryView() {
                             ...current,
                             [definition.id]: confirmed,
                           }))}
+                          onDirtyChange={(dirty) => setRoutineDraftDirty((current) =>
+                            current[definition.id] === dirty
+                              ? current
+                              : { ...current, [definition.id]: dirty })}
                           onSave={(draft) => void runAction(
                             `routine-definition-${definition.id}`,
                             () => workflowApi.updateBusinessRoutineDefinition(definition.id, {
                               expectedRevision: definition.revision,
                               ...draft,
                             }),
-                          )}
-                          onPublish={() => void runAction(
-                            `routine-definition-${definition.id}`,
-                            () => workflowApi.publishBusinessRoutineDefinition(
-                              definition.id,
-                              definition.revision,
-                              routinePublishConfirmations[definition.id] === true,
-                            ),
                           )}
                           onNewVersion={() => void runAction(
                             `routine-definition-${definition.id}`,
@@ -2036,7 +2286,9 @@ export function WorkflowMemoryView() {
                       </div>
                     ))}
                   </div>}
-              </SectionCard>
+                  </SectionCard>
+                </div>
+              </details>
             </>
           )}
         </main>
@@ -2089,54 +2341,65 @@ function SourceSummary({
 }) {
   return (
     <Card>
-      <CardContent className="flex flex-wrap items-center gap-3 p-4">
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate font-semibold">{source.name}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {copy.lastScan}: {source.lastScanAt ? new Date(source.lastScanAt).toLocaleString() : copy.never}
-          </p>
-          {source.scanState === "scanning" && source.scanProgress ? (
+      <CardContent className="p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate font-semibold">{source.name}</h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              {source.scanProgress.scannedEntries} {copy.files} · {copy.discovered} {source.scanProgress.discovered}
-              {" · "}{copy.parsed} {source.scanProgress.parsed}
-              {source.scanProgress.reused ? ` · ${copy.reusedParsing} ${source.scanProgress.reused}` : ""}
-              {source.scanProgress.parseFailed ? ` · ${copy.parseFailed} ${source.scanProgress.parseFailed}` : ""}
+              {copy.lastScan}: {source.lastScanAt ? new Date(source.lastScanAt).toLocaleString() : copy.never}
             </p>
+            {source.scanState === "scanning" && source.scanProgress ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {source.scanProgress.scannedEntries} {copy.files} · {copy.discovered} {source.scanProgress.discovered}
+                {" · "}{copy.parsed} {source.scanProgress.parsed}
+                {source.scanProgress.reused ? ` · ${copy.reusedParsing} ${source.scanProgress.reused}` : ""}
+                {source.scanProgress.parseFailed ? ` · ${copy.parseFailed} ${source.scanProgress.parseFailed}` : ""}
+              </p>
+            ) : null}
+            {source.scanState === "ready" && (source.parsedCount || source.parseFailedCount) ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {copy.parsed} {source.parsedCount ?? 0}
+                {source.reusedCount ? ` · ${copy.reusedParsing} ${source.reusedCount}` : ""}
+                {source.parseFailedCount ? ` · ${copy.parseFailed} ${source.parseFailedCount}` : ""}
+              </p>
+            ) : null}
+            {source.scanState === "failed" ? (
+              <p className="mt-1 text-xs text-destructive">
+                {copy.scanFailed}{source.recoveryAvailable ? ` ${copy.scanRecoverable}` : ""}
+              </p>
+            ) : null}
+            {source.truncated ? <p className="mt-1 text-xs text-warning">{copy.truncation}</p> : null}
+          </div>
+          {pendingAction === "scan" || source.scanState === "scanning" ? (
+            <Button size="sm" variant="secondary" disabled={pendingAction === "cancel-scan"} onClick={onCancel}>
+              {pendingAction === "cancel-scan" ? <Loader2 className="animate-spin" /> : <XIcon />}
+              {copy.cancelScan}
+            </Button>
+          ) : source.scanState === "failed" ? (
+            <Button size="sm" disabled={source.state !== "active"} onClick={onScan}>
+              <RefreshCw /> {copy.retryScan}
+            </Button>
           ) : null}
-          {source.scanState === "ready" && (source.parsedCount || source.parseFailedCount) ? (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {copy.parsed} {source.parsedCount ?? 0}
-              {source.reusedCount ? ` · ${copy.reusedParsing} ${source.reusedCount}` : ""}
-              {source.parseFailedCount ? ` · ${copy.parseFailed} ${source.parseFailedCount}` : ""}
-            </p>
-          ) : null}
-          {source.scanState === "failed" ? (
-            <p className="mt-1 text-xs text-destructive">
-              {copy.scanFailed}{source.recoveryAvailable ? ` ${copy.scanRecoverable}` : ""}
-            </p>
-          ) : null}
-          {source.truncated ? <p className="mt-1 text-xs text-warning">{copy.truncation}</p> : null}
         </div>
-        <Badge tone="neutral">{source.readMode === "metadata" ? copy.metadata : copy.text}</Badge>
-        {pendingAction === "scan" || source.scanState === "scanning" ? (
-          <Button size="sm" variant="secondary" disabled={pendingAction === "cancel-scan"} onClick={onCancel}>
-            {pendingAction === "cancel-scan" ? <Loader2 className="animate-spin" /> : <XIcon />}
-            {copy.cancelScan}
-          </Button>
-        ) : (
-          <Button size="sm" disabled={source.state !== "active"} onClick={onScan}>
-            <RefreshCw />
-            {copy.scan}
-          </Button>
-        )}
-        <Button size="sm" variant="secondary" disabled={source.state !== "active" || pendingAction === "revoke"} onClick={onRevoke}>
-          {copy.revoke}
-        </Button>
-        {source.state === "revoked" ? (
-          <Button size="sm" variant="destructive" disabled={pendingAction === "delete-source"} onClick={onDelete}>
-            {copy.deleteData}
-          </Button>
-        ) : null}
+        <details className="mt-3 rounded-md border bg-muted/20 p-3" open={source.state === "revoked" || undefined}>
+          <summary className="cursor-pointer text-sm font-medium">{copy.folderManagement}</summary>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Badge tone="neutral">{source.readMode === "metadata" ? copy.metadata : copy.text}</Badge>
+            {source.scanState !== "scanning" && source.scanState !== "failed" ? (
+              <Button size="sm" variant="secondary" disabled={source.state !== "active"} onClick={onScan}>
+                <RefreshCw /> {copy.scan}
+              </Button>
+            ) : null}
+            <Button size="sm" variant="secondary" disabled={source.state !== "active" || pendingAction === "revoke"} onClick={onRevoke}>
+              {copy.revoke}
+            </Button>
+            {source.state === "revoked" ? (
+              <Button size="sm" variant="destructive" disabled={pendingAction === "delete-source"} onClick={onDelete}>
+                {copy.deleteData}
+              </Button>
+            ) : null}
+          </div>
+        </details>
       </CardContent>
     </Card>
   );
@@ -2415,8 +2678,8 @@ function RoutineDefinitionCard({
   pending,
   publishConfirmed,
   onPublishConfirmed,
+  onDirtyChange,
   onSave,
-  onPublish,
   onNewVersion,
   onDisable,
 }: {
@@ -2425,13 +2688,13 @@ function RoutineDefinitionCard({
   pending: boolean;
   publishConfirmed: boolean;
   onPublishConfirmed: (confirmed: boolean) => void;
+  onDirtyChange: (dirty: boolean) => void;
   onSave: (draft: {
     name: string;
     description: string;
     triggerDocumentTypes: BusinessRoutineDefinition["triggerDocumentTypes"];
     steps: BusinessRoutineStep[];
   }) => void;
-  onPublish: () => void;
   onNewVersion: () => void;
   onDisable: () => void;
 }) {
@@ -2460,6 +2723,9 @@ function RoutineDefinitionCard({
     trigger: definition.triggerDocumentTypes[0] ?? "inquiry",
     steps: definition.steps,
   });
+  useEffect(() => {
+    onDirtyChange(dirty);
+  }, [dirty, onDirtyChange]);
   const invalidCondition = steps.some((step) =>
     step.kind === "condition" && !routineConfigurationValue(step).trim());
   const markChanged = () => {
@@ -2638,34 +2904,6 @@ function RoutineDefinitionCard({
             {pending ? <Loader2 className="animate-spin" /> : <Check />}
             {copy.saveRoutineDraft}
           </Button>
-          {definition.state === "draft" ? (
-            <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
-              {dirty ? (
-                <p role="status" className="mb-2 text-xs text-amber-700 dark:text-amber-300">
-                  {copy.routineSaveBeforePublish}
-                </p>
-              ) : null}
-              <label className="flex items-start gap-2 text-xs">
-                <input
-                  className="mt-0.5"
-                  type="checkbox"
-                  checked={publishConfirmed}
-                  disabled={dirty || invalidCondition}
-                  onChange={(event) => onPublishConfirmed(event.target.checked)}
-                />
-                {copy.publishRoutineConfirm}
-              </label>
-              <Button
-                className="mt-2"
-                size="sm"
-                disabled={pending || dirty || invalidCondition || !publishConfirmed
-                  || definition.evidenceHealth.state !== "valid"}
-                onClick={onPublish}
-              >
-                <ShieldCheck /> {copy.publishRoutine}
-              </Button>
-            </div>
-          ) : null}
         </div>
       ) : (
         <>

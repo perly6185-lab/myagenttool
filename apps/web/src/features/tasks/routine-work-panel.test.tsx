@@ -54,9 +54,11 @@ function handlers() {
     onComplete: vi.fn(),
     onPreviewLedger: vi.fn(),
     onCommitLedger: vi.fn(),
+    onBindLedger: vi.fn(),
     onRetry: vi.fn(),
     onApproval: vi.fn(),
     onCondition: vi.fn(),
+    onOpenWorkflowMemory: vi.fn(),
   };
 }
 
@@ -109,8 +111,16 @@ describe("RoutineWorkPanel", () => {
       },
     ];
 
-    render(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
-    fireEvent.click(screen.getByRole("button", { name: "Approve and continue" }));
+    const { rerender } = render(
+      <RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />,
+    );
+    expect(screen.getByText("Needs you")).toBeTruthy();
+    expect(screen.getByText("Where it stopped")).toBeTruthy();
+    expect(screen.getByText("Why you are needed")).toBeTruthy();
+    expect(screen.getByText("What to do")).toBeTruthy();
+    expect(screen.getByText("What happens next")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Confirmed order received" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Review result" }));
     const approvalDialog = screen.getByRole("dialog", { name: "Review the quotation" });
     expect(within(approvalDialog).getByText(
       "After approval, the task will register the quotation and wait for a confirmed order before creating order work.",
@@ -118,6 +128,9 @@ describe("RoutineWorkPanel", () => {
     fireEvent.click(within(approvalDialog).getByRole("button", { name: "Approve and continue" }));
     expect(actions.onApproval).toHaveBeenCalledWith("approve", true);
 
+    current.run.status = "awaiting_condition";
+    current.steps[0].run.state = "succeeded";
+    rerender(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
     const received = screen.getByRole("button", { name: "Confirmed order received" });
     expect((received as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText("Confirmed order document"), {
@@ -285,6 +298,13 @@ describe("RoutineWorkPanel", () => {
     }];
 
     render(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
+    expect(screen.getByText("The quotation draft needs more information")).toBeTruthy();
+    expect(screen.getByText(
+      "Some required quotation details are missing or conflict with the source files, so AI cannot choose safely.",
+    )).toBeTruthy();
+    expect(screen.getByText(
+      "AI will generate the quotation draft and continue the remaining steps.",
+    )).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Review quotation details" }));
     const dialog = screen.getByRole("dialog", { name: "Confirm quotation details" });
     expect(within(dialog).getByText("Acme")).toBeTruthy();
@@ -305,5 +325,101 @@ describe("RoutineWorkPanel", () => {
       { unit_price: "25.00", sales_contact: "Alex" },
     );
     expect(actions.onExecute).not.toHaveBeenCalled();
+  });
+
+  it("explains a failed step in plain language and keeps its error code in technical details", () => {
+    const actions = handlers();
+    const current = execution({ status: "failed", revision: 6, waitingReason: "routine_step_failed" });
+    current.steps[0].run.state = "failed";
+    current.steps[0].run.attempts = 2;
+    current.steps[0].run.errorCode = "routine_executor_timeout";
+
+    render(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
+
+    expect(screen.getByText("This step did not finish")).toBeTruthy();
+    expect(screen.getByText(
+      "AI stopped before completing this step, and later steps were left unchanged.",
+    )).toBeTruthy();
+    expect(screen.getByText(
+      "AI will retry this step and continue from the saved progress if it succeeds.",
+    )).toBeTruthy();
+    const codes = screen.getAllByText(/routine_executor_timeout/);
+    expect(codes.length).toBeGreaterThan(0);
+    expect(codes.every((code) => code.closest("details") !== null)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Retry step" }));
+    expect(actions.onRetry).toHaveBeenCalledWith("extract");
+  });
+
+  it("tells the user how to confirm source facts when automatic extraction fails closed", () => {
+    const actions = handlers();
+    const current = execution({ status: "failed", revision: 7, waitingReason: null });
+    current.steps[0].run.state = "failed";
+    current.steps[0].run.errorCode = "routine_extract_confirmation_required";
+
+    render(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
+
+    expect(screen.getByText("Please confirm the information read from the source file")).toBeTruthy();
+    expect(screen.getByText(
+      "Select Review recognized information, check this source file, and confirm the correct facts.",
+    )).toBeTruthy();
+    expect(screen.getByText(
+      "When you return, this task checks the update and retries extraction once. If the facts are valid, AI continues automatically; otherwise it shows the remaining action.",
+    )).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Review recognized information" }));
+    expect(actions.onOpenWorkflowMemory).toHaveBeenCalledWith("workflow-file-review", "extract");
+    expect(actions.onRetry).not.toHaveBeenCalled();
+  });
+
+  it("lets the user bind an available ledger without leaving the task", () => {
+    const actions = handlers();
+    const current = execution({ status: "running", revision: 8, waitingReason: null });
+    current.steps[0] = {
+      ...current.steps[0],
+      key: "ledger",
+      label: "Update delivery ledger",
+      kind: "ledger_upsert",
+      configuration: {},
+      run: { ...current.steps[0].run, state: "running" },
+    };
+    current.availableLedgers = [{
+      id: "ldg_1",
+      name: "Inquiry ledger",
+      documentType: "inquiry_ledger",
+      format: "csv",
+      relativePath: "ledgers/inquiries.csv",
+      sheet: null,
+    }];
+
+    render(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
+
+    expect(screen.getByText("The ledger destination is not ready")).toBeTruthy();
+    expect(screen.getByText("Choose a ready ledger below and use it for this task.")).toBeTruthy();
+    expect(screen.getByText(
+      "The system will prepare the exact ledger change for your review, then AI will continue after you confirm it.",
+    )).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Ledger to use"), { target: { value: "ldg_1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Use this ledger" }));
+    expect(actions.onBindLedger).toHaveBeenCalledWith("ledger", "ldg_1");
+    expect(actions.onOpenWorkflowMemory).not.toHaveBeenCalled();
+  });
+
+  it("gives one direct next action when the authorized folder has no ready ledger", () => {
+    const actions = handlers();
+    const current = execution({ status: "running", revision: 8, waitingReason: null });
+    current.availableLedgers = [];
+    current.steps[0] = {
+      ...current.steps[0],
+      key: "ledger",
+      label: "Update delivery ledger",
+      kind: "ledger_upsert",
+      configuration: {},
+      run: { ...current.steps[0].run, state: "running" },
+    };
+
+    render(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
+
+    expect(screen.getByText(/Put the ledger you normally use in the authorized work folder/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Review files in the work folder" }));
+    expect(actions.onOpenWorkflowMemory).toHaveBeenCalledWith("workflow-file-review");
   });
 });

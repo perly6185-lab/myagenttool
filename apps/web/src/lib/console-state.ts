@@ -1318,6 +1318,13 @@ export interface AgentSkillSnapshot {
 }
 
 export interface ConsoleSnapshot {
+  /** Present on the browser's bounded hot-window projection of /api/state. */
+  stateWindow?: {
+    projection: "console";
+    invocationLimit: number;
+    totals: Record<string, number>;
+    truncated: string[];
+  };
   /** Server-resolved defaults the browser can't compute (e.g. home-relative paths). */
   defaults?: { cloneParentDir?: string };
   automations?: AutomationSnapshot[];

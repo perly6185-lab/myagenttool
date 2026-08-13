@@ -40,7 +40,7 @@ describe("NavRail collapsible groups (#928)", () => {
     renderNav();
     expect(screen.getByText("My home")).toBeTruthy();
     expect(screen.getByText("My tasks")).toBeTruthy();
-    expect(screen.getByText("Projects")).toBeTruthy();
+    expect(screen.getByText("My projects")).toBeTruthy();
     expect(screen.queryByText("Needs me")).toBeNull();
     expect(screen.getByText("My settings")).toBeTruthy();
     expect(screen.queryByText("External work")).toBeNull();
@@ -77,6 +77,7 @@ describe("NavRail collapsible groups (#928)", () => {
     renderNav();
     expect(screen.getByText("我的首页")).toBeTruthy();
     expect(screen.getByText("我的任务")).toBeTruthy();
+    expect(screen.getByText("我的项目")).toBeTruthy();
     expect(screen.getByText("我的设置")).toBeTruthy();
     expect(screen.queryByText("外部协作")).toBeNull();
     expect(screen.queryByText("待我处理")).toBeNull();

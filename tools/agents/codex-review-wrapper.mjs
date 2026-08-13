@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,14 +12,14 @@ requireReviewCwd(options);
 
 console.log(`Codex review started: ${options.mode}`);
 
-const prompt = buildPrompt(options);
-const commandArgs = options.baseRef
+const officeDocumentReview = options.baseRef && officeDocumentChanged(options.cwd, options.baseRef);
+const commandArgs = options.baseRef && !officeDocumentReview
   // Pin the native review sandbox explicitly. On Windows the implicit native
   // review default can inherit workspace-write and leave inspection artifacts
   // in the delivery worktree. Codex forbids a custom prompt with --base, so the
   // task context remains in the delivery report.
   ? ["exec", "review", "-c", 'sandbox_mode="read-only"', "--base", options.baseRef, "--ephemeral", "-c", "model_reasoning_effort=low", "--output-schema", reviewOutputSchemaPath, "--json"]
-  : ["exec", "--sandbox", "read-only", "--ephemeral", "--json", "-c", "model_reasoning_effort=low", prompt];
+  : ["exec", "--sandbox", "read-only", "--ephemeral", "--json", "-c", "model_reasoning_effort=low", buildPrompt(options, { officeDocumentReview })];
 const commandPlan = codexCommandPlan(options.codexCli, commandArgs);
 const { code, stdout, stderr } = await run(commandPlan.command, commandPlan.args, {
   cwd: options.cwd,
@@ -136,14 +136,30 @@ function normalizeBaseRef(value) {
   return text.toLowerCase();
 }
 
-function buildPrompt(value) {
+function buildPrompt(value, { officeDocumentReview = false } = {}) {
   return [
     "Review the current worktree diff for bugs, regressions, and missing tests.",
+    value.baseRef ? `Compare the worktree against the exact base commit ${value.baseRef}.` : null,
+    officeDocumentReview
+      ? "The delivery includes an Office document. Never infer its text, metadata, worksheet names, comments, or encoding from git's binary diff or raw binary bytes. Inspect OOXML structurally (for example with an installed Office parser or by unzipping it and decoding XML as UTF-8). If structured inspection is unavailable, report the document as unverified instead of claiming corruption. Files under .myagenttool/inputs may use an internal tma_<id>-- storage prefix; that prefix is not part of the user's original filename and must not be required or exposed in user-visible Office output."
+      : null,
     "Return JSON only with this shape:",
     "{\"summary\":\"...\",\"findings\":[{\"severity\":\"high|medium|low\",\"file\":\"path\",\"line\":1,\"message\":\"...\",\"suggestion\":\"...\",\"confidence\":\"high|medium|low\"}]}",
     `Only include findings at or above severity floor: ${value.severityFloor}.`,
     value.instruction ? `Additional reviewer instruction: ${value.instruction}` : null,
   ].filter(Boolean).join("\n");
+}
+
+function officeDocumentChanged(cwd, baseRef) {
+  const result = spawnSync("git", ["-C", cwd, "diff", "--name-only", "--diff-filter=ACMRT", "-z", baseRef, "--"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+  });
+  if (result.status !== 0) return false;
+  return String(result.stdout ?? "")
+    .split("\0")
+    .some((path) => /\.(?:docx|xlsx|pptx)$/i.test(path.trim()));
 }
 
 function codexCommandPlan(command, args) {

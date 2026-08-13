@@ -58,6 +58,11 @@ import {
   resolveWorkflowOcrConfig,
 } from "../services/workflow-ocr-adapter.mjs";
 import {
+  createCodexVisionOcrAdapter,
+  createFallbackWorkflowOcrAdapter,
+  resolveCodexVisionOcrConfig,
+} from "../services/workflow-codex-vision-ocr-adapter.mjs";
+import {
   createLocalWorkflowBusinessSemanticAdapter,
   resolveWorkflowBusinessSemanticConfig,
 } from "../services/workflow-business-semantic-adapter.mjs";
@@ -77,7 +82,7 @@ import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
 import { createTaskMaterialService } from "../services/task-materials.mjs";
 import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
-import { createWorkItemAutoRunUnderstandingService } from "../services/work-item-auto-run-understanding.mjs";
+import { createWorkItemAutoRunUnderstandingService, workItemTemplateInstructions } from "../services/work-item-auto-run-understanding.mjs";
 import { createWorkItemAutoSchedulerService } from "../services/work-item-auto-scheduler.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
 import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
@@ -87,6 +92,8 @@ import { createBusinessDocumentIntelligenceService } from "../services/business-
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
 import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree } from "../services/article-imports.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
+import { createTemplateLearningService } from "../services/template-learning.mjs";
+import { createWorkflowMemoryInsightsService } from "../services/workflow-memory-insights.mjs";
 import { createInquiryIntakeTriggerService } from "../services/inquiry-intake-triggers.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import {
@@ -436,6 +443,7 @@ export function createServerRuntimeServices({
       requestWorkItemAutoSchedulerSweep();
     },
     claimTaskMaterialDraft: taskMaterialService.claimDraft,
+    inspectTaskMaterialDraft: taskMaterialService.getDraft,
     resolveClaimedTaskMaterial: taskMaterialService.resolveClaimedAsset,
   });
   let releaseRoutineLedgerReservations = () => {};
@@ -488,6 +496,14 @@ export function createServerRuntimeServices({
       invocationService?.startInvocationIfAllowed(invocation, agent),
     store,
   });
+  const workflowOcrAdapter = createFallbackWorkflowOcrAdapter({
+    localAdapter: createLocalWorkflowOcrAdapter({
+      config: resolveWorkflowOcrConfig(),
+    }),
+    codexAdapter: createCodexVisionOcrAdapter({
+      config: resolveCodexVisionOcrConfig(),
+    }),
+  });
   const workflowMemoryService = createWorkflowMemoryService({
     state,
     now,
@@ -497,9 +513,7 @@ export function createServerRuntimeServices({
     embeddingAdapter: createLocalWorkflowEmbeddingAdapter({
       config: resolveWorkflowEmbeddingConfig(),
     }),
-    ocrAdapter: createLocalWorkflowOcrAdapter({
-      config: resolveWorkflowOcrConfig(),
-    }),
+    ocrAdapter: workflowOcrAdapter,
     createWorkItem: workItemService.createWorkItem,
     recordWorkItemVerification: workItemService.recordVerification,
     // Lazy execution bridge: Auto-run is composed below, but this callback is
@@ -532,6 +546,7 @@ export function createServerRuntimeServices({
       };
       const issueBody = [
         item.body,
+        workItemTemplateInstructions(item),
         item.acceptanceCriteria?.length
           ? `Acceptance criteria:\n${item.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}`
           : "",
@@ -595,6 +610,7 @@ export function createServerRuntimeServices({
     createBusinessEntity: businessRoutineService.createBusinessEntity,
     store,
   });
+  let inquiryIntakeTriggerService = null;
   const workflowAdaptiveWorkService = createWorkflowAdaptiveWorkService({
     state,
     now,
@@ -603,6 +619,102 @@ export function createServerRuntimeServices({
     persistStateSoon,
     store,
     createWorkItem: workItemService.createWorkItem,
+    materializeRoutineSuggestion: async (suggestion, actor) => {
+      const selected = businessRoutineService.selectPublishedRoutineForTrigger({
+        projectId: suggestion.projectId,
+        sourceId: suggestion.sourceId,
+        documentType: suggestion.documentType,
+      }, actor);
+      if (selected.status >= 400) return selected;
+      const selectedDefinition = selected.body.routineDefinition;
+      if (suggestion.documentType !== "inquiry") {
+        const materialized = businessRoutineService.materializeAdaptiveRoutineSuggestion({
+          projectId: suggestion.projectId,
+          sourceId: suggestion.sourceId,
+          observationId: suggestion.observationId,
+          artifactId: suggestion.artifact?.id,
+          documentType: suggestion.documentType,
+        }, actor);
+        if (materialized.status >= 400) return materialized;
+        const advanced = businessRoutineService.advanceRoutineWorkItem({
+          workItemId: materialized.body.workItem.id,
+        }, actor);
+        if (advanced.status >= 400) return advanced;
+        return {
+          status: materialized.status,
+          body: {
+            ...materialized.body,
+            executionStatus: advanced.body.execution.run.status,
+            advancedStepKeys: advanced.body.advancedStepKeys,
+            assistance: advanced.body.assistance,
+            routineRunId: materialized.body.execution.run.id,
+          },
+        };
+      }
+      if (!inquiryIntakeTriggerService) {
+        return { status: 503, body: { error: "workflow_intake_service_unavailable" } };
+      }
+      const inspected = await inquiryIntakeTriggerService.inspect({
+        observationId: suggestion.observationId,
+      }, actor);
+      if (inspected.status >= 400) {
+        return inspected;
+      }
+      const routines = inspected.body.routines ?? [];
+      if (!routines.some((routine) => routine.id === selectedDefinition.id)) {
+        return {
+          status: 409,
+          body: {
+            error: "workflow_intake_routine_not_available",
+            routineCount: 0,
+            recovery: "请重新检查已发布流程与当前文件的触发类型，然后再试。",
+            assistance: {
+              kind: "workflow_setup",
+              reason: "workflow_intake_routine_not_available",
+              action: "review_workflow",
+              title: "已发布流程目前不能处理这份文件",
+              explanation: "流程虽然匹配工作类型，但当前文件检查没有通过。",
+              instruction: "请检查文件识别结果和流程证据是否仍然有效。",
+              continuation: "检查通过后，AI 会自动创建 Local Issue 并继续执行。",
+            },
+          },
+        };
+      }
+      const accepted = await inquiryIntakeTriggerService.accept({
+        observationId: suggestion.observationId,
+        expectedRevision: inspected.body.observation.revision,
+        idempotencyKey: `adaptive-execute:${suggestion.id}:${selectedDefinition.id}`,
+        routineDefinitionId: selectedDefinition.id,
+        confirmed: true,
+        fieldCorrections: {},
+        excludedFieldKeys: [],
+        supportingObservationIds: [],
+        supportingObservationRoles: {},
+      }, actor);
+      if (accepted.status >= 400) return accepted;
+      const receipt = accepted.body.receipt;
+      const workItem = state.workItems.find((row) =>
+        row.id === receipt.workItemId && row.ownerTeamId === (actor?.teamId ?? "team_local"));
+      if (!workItem) {
+        return { status: 502, body: { error: "workflow_intake_materialized_issue_missing" } };
+      }
+      const advanced = businessRoutineService.advanceRoutineWorkItem({
+        workItemId: workItem.id,
+      }, actor);
+      if (advanced.status >= 400) return advanced;
+      return {
+        status: accepted.status,
+        body: {
+          workItem,
+          replayed: Boolean(accepted.body.replayed),
+          receipt,
+          routineRunId: receipt.routineRunId,
+          executionStatus: advanced.body.execution.run.status,
+          advancedStepKeys: advanced.body.advancedStepKeys,
+          assistance: advanced.body.assistance,
+        },
+      };
+    },
     runIntakeCycle: async ({ projectId, sourceId }, actor) => {
       const scan = await workflowMemoryService.scanIncrementalIntake({ sourceId }, actor);
       if (scan.status >= 400) return scan;
@@ -611,7 +723,7 @@ export function createServerRuntimeServices({
         .map((row) => row.artifactId))].slice(0, 10);
       const analysis = await Promise.all(artifactIds.map((artifactId) =>
         businessDocumentIntelligenceService.analyzeArtifact({ artifactId }, actor)));
-      const adaptiveWork = workflowAdaptiveWorkService.reconcile({ projectId, sourceId }, actor);
+      const adaptiveWork = await workflowAdaptiveWorkService.reconcile({ projectId, sourceId }, actor);
       return {
         status: 200,
         body: {
@@ -637,7 +749,7 @@ export function createServerRuntimeServices({
     createBusinessCase: businessRoutineService.createBusinessCase,
     store,
   });
-  const inquiryIntakeTriggerService = createInquiryIntakeTriggerService({
+  inquiryIntakeTriggerService = createInquiryIntakeTriggerService({
     state,
     now,
     nextId,
@@ -651,6 +763,58 @@ export function createServerRuntimeServices({
     verifyEvidence: workflowMemoryService.verifyIntakeEvidence,
     store,
   });
+  const templateLearningService = createTemplateLearningService({
+    state,
+    stateStorePath,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    createWorkflowSource: workflowMemoryService.createSource,
+    scanWorkflowSource: workflowMemoryService.scanSource,
+    ocrWorkflowArtifact: workflowMemoryService.ocrArtifact,
+    analyzeBusinessDocuments: businessDocumentIntelligenceService.analyzeSource,
+    confirmBusinessDocumentClassification: businessDocumentIntelligenceService.confirmClassification,
+    discoverBusinessCases: businessCaseDiscoveryService.discoverBusinessCases,
+    reviewBusinessCaseCandidate: businessCaseDiscoveryService.reviewBusinessCaseCandidate,
+    discoverBusinessRoutine: businessCaseDiscoveryService.discoverRoutine,
+    createRoutineDraft: businessRoutineService.createRoutineDraftFromDiscovery,
+    createWorkItem: workItemService.createWorkItem,
+    updateWorkItem: workItemService.updateWorkItem,
+    store,
+  });
+  const workflowMemoryInsightsService = createWorkflowMemoryInsightsService({ state });
+  const continueRoutineAfterAction = (action, input, actor) => {
+    const result = action(input, actor);
+    if (result?.status >= 400 || !input?.workItemId) return result;
+    const workItem = state.workItems.find((row) => row.id === input.workItemId);
+    const run = state.routineRuns.find((row) => row.workItemId === input.workItemId);
+    const sourcePolicy = state.workflowAdaptivePolicies.find((row) =>
+      row.projectId === workItem?.projectId
+      && row.sourceId === run?.sourceId
+      && row.ownerTeamId === workItem?.ownerTeamId);
+    const projectPolicy = state.workflowAdaptivePolicies.find((row) =>
+      row.projectId === workItem?.projectId
+      && row.sourceId == null
+      && row.ownerTeamId === workItem?.ownerTeamId);
+    if ((sourcePolicy ?? projectPolicy)?.mode !== "execute") return result;
+    const continued = businessRoutineService.advanceRoutineWorkItem({
+      workItemId: input.workItemId,
+    }, actor);
+    if (continued.status >= 400) return result;
+    return {
+      ...result,
+      body: {
+        ...result.body,
+        execution: continued.body.execution,
+        automaticContinuation: {
+          advancedStepKeys: continued.body.advancedStepKeys,
+          assistance: continued.body.assistance,
+          completed: continued.body.completed,
+        },
+      },
+    };
+  };
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
   });
@@ -1441,6 +1605,7 @@ export function createServerRuntimeServices({
       const commands = resolveAutoRunVerificationPlan({
         verifyCommandName: project?.verifyCommandName ?? null,
         changedPaths,
+        repositoryRoot: worktree?.path ?? null,
       });
       if (!commands.length || !worktree?.path) {
         return { passed: true, verified: false, summary: "No verification command configured — PR opened unverified." };
@@ -4241,6 +4406,18 @@ export function createServerRuntimeServices({
     updateWorkItemAttention: workItemService.updateAttention,
     getWorkItemGithubSyncDiagnostics: workItemService.githubSyncDiagnostics,
     suggestWorkItemDraft: workItemService.suggestWorkItemDraft,
+    listMyTemplateRoutingFeedback: workItemService.listMyTemplateRoutingFeedback,
+    removeMyTemplateRoutingFeedback: workItemService.removeMyTemplateRoutingFeedback,
+    previewMyTemplateDraft: workItemService.previewMyTemplateDraft,
+    listMyTemplateDrafts: workItemService.listMyTemplateDrafts,
+    reviewMyTemplateDraft: workItemService.reviewMyTemplateDraft,
+    listSimilarMyTemplateWorkItems: workItemService.listSimilarMyTemplateWorkItems,
+    createMyTemplateDraft: workItemService.createMyTemplateDraft,
+    addMyTemplateLearningCase: workItemService.addMyTemplateLearningCase,
+    activateMyTemplateDraft: workItemService.activateMyTemplateDraft,
+    listMyTemplateOutcomeFeedback: workItemService.listMyTemplateOutcomeFeedback,
+    recordMyTemplateOutcomeFeedback: workItemService.recordMyTemplateOutcomeFeedback,
+    resumeMyTemplateGovernanceObservation: workItemService.resumeMyTemplateGovernanceObservation,
     prepareWorkItemExecutionContract: workItemService.prepareExecutionContract,
     listWorkItemReportDrafts: workItemService.listReportDrafts,
     getWorkItemReportDraft: workItemService.getReportDraft,
@@ -4284,8 +4461,10 @@ export function createServerRuntimeServices({
     exportBusinessPilotCollection: businessPilotEvidenceService.exportWorkbenchCollection,
     revokeBusinessPilotCollection: businessPilotEvidenceService.revokeWorkbenchCollection,
     getWorkflowAdaptiveWorkbench: workflowAdaptiveWorkService.getWorkbench,
+    getWorkflowMemoryInsights: workflowMemoryInsightsService.getOverview,
     updateWorkflowAdaptivePolicy: workflowAdaptiveWorkService.updatePolicy,
     updateWorkflowAdaptiveMonitor: workflowAdaptiveWorkService.updateMonitor,
+    updateWorkflowAdaptiveAutomation: workflowAdaptiveWorkService.updateAutomation,
     sweepWorkflowAdaptiveMonitors: workflowAdaptiveWorkService.sweepMonitors,
     runWorkflowAdaptiveMonitorNow: workflowAdaptiveWorkService.runMonitorNow,
     syncWorkflowAdaptiveOutcomes: workflowAdaptiveWorkService.syncOutcomes,
@@ -4305,13 +4484,24 @@ export function createServerRuntimeServices({
     createRoutineRun: businessRoutineService.createRoutineRun,
     getRoutineWorkItemExecution: businessRoutineService.getRoutineWorkItemExecution,
     listRoutineWorkQueue: businessRoutineService.listRoutineWorkQueue,
-    startRoutineWorkItem: businessRoutineService.startRoutineWorkItem,
-    executeRoutineStep: businessRoutineService.executeRoutineStep,
-    confirmQuotationInputs: businessRoutineService.confirmQuotationInputs,
-    completeRoutineStep: businessRoutineService.completeRoutineStep,
-    retryRoutineStep: businessRoutineService.retryRoutineStep,
-    decideRoutineApproval: businessRoutineService.decideRoutineApproval,
-    decideRoutineCondition: businessRoutineService.decideRoutineCondition,
+    startRoutineWorkItem: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.startRoutineWorkItem, input, actor),
+    executeRoutineStep: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.executeRoutineStep, input, actor),
+    confirmQuotationInputs: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.confirmQuotationInputs, input, actor),
+    bindRoutineLedger: businessRoutineService.bindRoutineLedger,
+    requestRoutineStepReview: businessRoutineService.requestRoutineStepReview,
+    resumeRoutineRecovery: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.resumeRoutineRecovery, input, actor),
+    completeRoutineStep: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.completeRoutineStep, input, actor),
+    retryRoutineStep: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.retryRoutineStep, input, actor),
+    decideRoutineApproval: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.decideRoutineApproval, input, actor),
+    decideRoutineCondition: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.decideRoutineCondition, input, actor),
     cancelRoutineWorkItem: businessRoutineService.cancelRoutineWorkItem,
     transitionRoutineStep: businessRoutineService.transitionRoutineStep,
     analyzeWorkflowBusinessDocuments: businessDocumentIntelligenceService.analyzeSource,
@@ -4337,6 +4527,11 @@ export function createServerRuntimeServices({
     getArticleDerivative: articleImportService.getDerivative,
     listWorkflowSources: workflowMemoryService.listSources,
     createWorkflowSource: workflowMemoryService.createSource,
+    listTemplateLearningTasks: templateLearningService.listTasks,
+    createTemplateLearningTask: templateLearningService.createTask,
+    stageTemplateLearningFile: templateLearningService.stageFile,
+    startTemplateLearningTask: templateLearningService.startTask,
+    completeTemplateLearningTask: templateLearningService.completeTask,
     scanWorkflowSource: workflowMemoryService.scanSource,
     scanWorkflowIncrementalIntake: workflowMemoryService.scanIncrementalIntake,
     listWorkflowIntakeObservations: workflowMemoryService.listIntakeObservations,

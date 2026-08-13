@@ -3,7 +3,7 @@ import { File, LoaderCircle, Paperclip, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export const MAX_TASK_MATERIALS = 6;
-export const MAX_TASK_MATERIAL_BYTES = 5 * 1024 * 1024;
+export const MAX_TASK_MATERIAL_BYTES = 50 * 1024 * 1024;
 
 export type TaskMaterialSelection = {
   id: string;

@@ -2,7 +2,7 @@ const APPLICATION_RUNNING = new Set(["queued", "dispatching", "running"]);
 const APPLICATION_APPROVAL = new Set(["waiting_for_local_approval", "awaiting_approval"]);
 const APPLICATION_FAILED = new Set(["failed", "timed_out", "cancelled", "rejected"]);
 const AUTO_RUN_RUNNING = new Set(["materializing", "running", "waiting_capacity", "publishing"]);
-const AUTO_RUN_APPROVAL = new Set(["awaiting_approval", "needs_input"]);
+const AUTO_RUN_APPROVAL = new Set(["awaiting_approval"]);
 const AUTO_RUN_VERIFYING = new Set(["verifying", "pr_open", "report_posted", "plan_proposed"]);
 const AUTO_RUN_FAILED = new Set(["blocked", "failed", "cancelled"]);
 const AUTO_RUN_COMPLETED = new Set(["done", "decomposed"]);
@@ -48,6 +48,9 @@ function applicationExecutionState(invocation) {
 
 function autoRunExecutionState(autoRun) {
   if (AUTO_RUN_RUNNING.has(autoRun.status)) return "running";
+  // A clarification pauses the Agent, but it is not an approval gate. Keep the
+  // durable claim while the task-level experience asks the user for an answer.
+  if (autoRun.status === "needs_input") return "claimed";
   if (AUTO_RUN_APPROVAL.has(autoRun.status)) return "awaiting_approval";
   if (AUTO_RUN_VERIFYING.has(autoRun.status)) return "verifying";
   if (AUTO_RUN_FAILED.has(autoRun.status)) return "failed";

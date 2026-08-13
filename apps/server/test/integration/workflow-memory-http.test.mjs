@@ -183,7 +183,12 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     artifact.name === "询价单-RFQ-HTTP-001.md");
   const ocrReadiness = await call("/api/workflow-memory/ocr-readiness");
   assert.equal(ocrReadiness.status, 200);
-  assert.equal(ocrReadiness.body.localOnly, true);
+  assert.equal(typeof ocrReadiness.body.localOnly, "boolean");
+  assert.equal(typeof ocrReadiness.body.requiresCloudConsent, "boolean");
+  assert.equal(
+    ocrReadiness.body.localOnly && ocrReadiness.body.requiresCloudConsent,
+    false,
+  );
   assert.equal((await call(
     `/api/workflow-memory/artifacts/${requirement.id}/ocr`,
     {
@@ -415,6 +420,17 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(publishedRoutine.status, 200, JSON.stringify(publishedRoutine.body));
   assert.equal(publishedRoutine.body.routineDefinition.state, "published");
+  const memoryInsights = await call(
+    `/api/workflow-memory/insights?projectId=${source.projectId}&sourceId=${source.id}`,
+  );
+  assert.equal(memoryInsights.status, 200, JSON.stringify(memoryInsights.body));
+  assert.equal(memoryInsights.body.routineSelection.state, "matched");
+  assert.equal(memoryInsights.body.memoryPackage.basis.routineDefinitionId, routineDefinitionId);
+  assert.equal(memoryInsights.body.pathGraph.nodes.length, 5);
+  assert.equal((await call(
+    `/api/workflow-memory/insights?projectId=${source.projectId}&sourceId=${source.id}`,
+    { token: "tok_b" },
+  )).status, 404);
   const inspectedIntake = await call(
     `/api/workflow-memory/intake-observations/${pendingObservation.id}/inspect`,
     { method: "POST" },
@@ -1407,9 +1423,26 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     body: { projectId: source.projectId, sourceId: source.id },
   });
   assert.equal(reconciled.status, 200, JSON.stringify(reconciled.body));
-  assert.equal(reconciled.body.autoCreated, 1);
-  assert.equal(reconciled.body.created[0].localRef.startsWith("LOCAL-"), true);
-  assert.equal(reconciled.body.workbench.metrics.materialized, 2);
+  assert.equal(reconciled.body.autoCreated, 0);
+  assert.equal(reconciled.body.failures.length, 1);
+  assert.equal(reconciled.body.failures[0].assistance.kind, "needs_review");
+  assert.equal(reconciled.body.workbench.metrics.materialized, 1);
+
+  const pausedAutomation = await call("/api/workflow-memory/adaptive-workbench/automation", {
+    method: "PUT",
+    body: {
+      projectId: source.projectId,
+      sourceId: source.id,
+      expectedPolicyRevision: executePolicy.body.policy.revision,
+      expectedMonitorRevision: adaptiveMonitor.body.monitor.revision,
+      enabled: false,
+      intervalMinutes: adaptiveMonitor.body.monitor.intervalMinutes,
+    },
+  });
+  assert.equal(pausedAutomation.status, 200, JSON.stringify(pausedAutomation.body));
+  assert.equal(pausedAutomation.body.enabled, false);
+  assert.equal(pausedAutomation.body.policy.mode, "assist");
+  assert.equal(pausedAutomation.body.monitor.enabled, false);
 
   const foreignList = await call("/api/workflow-memory/sources", { token: "tok_b" });
   assert.deepEqual(foreignList.body.sources, []);

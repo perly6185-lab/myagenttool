@@ -9,6 +9,7 @@ import {
   CircleDot,
   Clock3,
   ListChecks,
+  LoaderCircle,
   Plus,
   RotateCcw,
   Sparkles,
@@ -68,8 +69,16 @@ type Copy = {
   unscheduled: string;
   unscheduledHint: string;
   columnSwipeHint: string;
+  mobileOther: string;
+  scheduleScope: string;
+  refreshing: string;
+  updatedAt: string;
   unassigned: string;
   unassignedHint: string;
+  noMyTasks: string;
+  noMyTasksHint: string;
+  createFirstTask: string;
+  quickCreateTask: string;
   claim: string;
   claiming: string;
   handOffAi: string;
@@ -95,6 +104,7 @@ type Copy = {
   aiScheduled: string;
   noAiWork: string;
   noAiWorkHint: string;
+  selectTaskForAi: string;
   executionDate: string;
   noExecutionDate: string;
   expectedCompletion: string;
@@ -130,6 +140,10 @@ type Copy = {
     savingSchedule: string;
     cancelSchedule: string;
     scheduleError: string;
+    aiNeedsAnswer: string;
+    dependencyBlocked: string;
+    waitingAuthorizedMember: string;
+    viewProgress: string;
   };
   rolloverPrompt: {
     title: string;
@@ -193,9 +207,9 @@ type Copy = {
 
 const COPY: Record<"zh" | "en", Copy> = {
   zh: {
-    title: "我的任务",
+    title: "任务日程",
     subtitle: "复盘昨天，执行今天，规划明天",
-    overview: "查看我的任务",
+    overview: "打开完整任务列表",
     todayProgress: "今日进度",
     attention: "待处理",
     active: "进行中",
@@ -218,63 +232,72 @@ const COPY: Record<"zh" | "en", Copy> = {
     planTomorrow: "规划明天",
     more: "查看另外 {{count}} 项",
     less: "收起",
-    terminalOffline: "本终端不可执行",
+    terminalOffline: "这台电脑暂时不可执行",
     terminalCapacity: "可用槽位 {{available}} / {{total}}",
     queueDepth: "队列 {{count}}",
     worktreeLocks: "工作区锁 {{count}}",
-    unscheduled: "其他完成日期",
-    unscheduledHint: "显示更晚日期以及尚未设置预期完成日期的任务。",
-    columnSwipeHint: "左右滑动查看全部 4 列",
+    unscheduled: "稍后 / 未排期",
+    unscheduledHint: "包含更晚完成的任务，以及尚未设置完成日期的任务。",
+    columnSwipeHint: "选择日期，或左右滑动查看任务",
+    mobileOther: "稍后",
+    scheduleScope: "调度范围：所有项目",
+    refreshing: "正在更新调度…",
+    updatedAt: "调度更新于 {{time}}",
     unassigned: "待认领",
-    unassignedHint: "所有尚未分配的本地 Issue 都在这里；认领后才会进入个人调度并占用终端容量。",
+    unassignedHint: "尚未分配的任务会显示在这里；认领后才会进入你的安排，并占用这台电脑的执行名额。",
+    noMyTasks: "还没有安排任务",
+    noMyTasksHint: "创建第一项任务后，就能按完成日期安排今天和接下来的工作。",
+    createFirstTask: "创建任务",
+    quickCreateTask: "快速创建任务",
     claim: "认领",
     claiming: "认领中…",
     handOffAi: "交给 AI",
     handingOffAi: "正在交给 AI…",
     handOffAiError: "暂时无法交给 AI，请打开任务检查执行条件后重试。",
-    myWork: "我的任务",
-    myWorkHint: "同一批 Issue 的人员负责与预期完成视角",
-    allMyWork: "全部人员",
-    peopleCategory: "任务人员",
+    myWork: "我的安排",
+    myWorkHint: "按负责人和预计完成日期安排任务",
+    allMyWork: "全部任务",
+    peopleCategory: "按关系筛选",
     otherPeople: "其他 / 未归类",
     needsMine: "需要我处理",
     waitingMe: "待我回复",
     approvals: "AI 待审批",
     automationApprovals: "待审批",
-    aiFailed: "自动执行失败",
+    aiFailed: "AI 执行失败",
     dueToday: "今日到期",
     reviewReady: "待复核与汇报",
     automationCompleted: "已完成",
-    activeAi: "自动执行",
-    aiWorkHint: "由系统导入或 Agent 自动处理的任务；任务仍统一保留在“我的任务”中",
-    allAiWork: "全部自动执行",
+    activeAi: "AI 执行",
+    aiWorkHint: "查看交给 AI 的任务及执行时间；所有任务仍统一保留在“我的任务”中",
+    allAiWork: "全部 AI 任务",
     aiRunning: "执行中",
     aiScheduled: "待执行",
-    noAiWork: "暂无自动执行",
-    noAiWorkHint: "系统导入或交给 AI 的任务会显示在这里",
-    executionDate: "自动执行日期",
+    noAiWork: "暂无 AI 执行任务",
+    noAiWorkHint: "交给 AI 的任务会显示在这里，并按执行日期排列。",
+    selectTaskForAi: "选择任务交给 AI",
+    executionDate: "AI 执行日期",
     noExecutionDate: "未安排执行日期",
     expectedCompletion: "预期完成",
     noExpectedCompletion: "未设置预期完成日期",
-    otherDates: "其他执行日期 / 未安排",
-    otherDatesHint: "显示更晚执行或尚未安排执行日期的自动任务。",
+    otherDates: "稍后 / 未排期",
+    otherDatesHint: "包含稍后执行以及尚未安排执行日期的 AI 任务。",
     owner: "负责人",
     waitingLabel: "人",
-    aiLabel: "自动执行",
+    aiLabel: "执行方式",
     coordination: {
       aiNotLinked: "尚未自动执行",
       executionAfterCompletion: "自动执行晚于预期完成",
       aiUnscheduled: "自动执行已关联，但尚未安排执行日期",
       reviewPending: "自动执行已完成，等待人工复核",
       locateAi: "在自动执行看板定位",
-      locateMy: "在个人看板定位",
-      located: "已临时显示对应 Issue，原筛选保持不变",
+      locateMy: "在我的安排中定位",
+      located: "已临时显示对应任务，原筛选保持不变",
       backToAi: "返回自动执行看板",
-      backToMy: "返回个人看板",
+      backToMy: "返回我的安排",
     },
     actionQueue: {
       title: "需要我处理",
-      hint: "只显示确实需要你决策、复核、补充信息或处理异常的任务；每个 Issue 只保留一个下一步",
+      hint: "只显示确实需要你决策、复核、补充信息或处理异常的任务；每项任务只保留一个下一步",
       all: "全部",
       urgent: "需重点处理",
       pending: "待行动",
@@ -282,11 +305,15 @@ const COPY: Record<"zh" | "en", Copy> = {
       adjustExecution: "调整执行日期",
       scheduleAi: "安排 AI",
       scheduleTitle: "安排 AI 执行日期",
-      scheduleHint: "保存后会刷新两个看板中的同一 Issue。",
+      scheduleHint: "保存后会刷新两个看板中的同一任务。",
       saveSchedule: "保存日期",
       savingSchedule: "正在保存…",
       cancelSchedule: "取消",
       scheduleError: "执行日期保存失败，请重试。",
+      aiNeedsAnswer: "AI 正在等你回答，收到答案后会继续执行",
+      dependencyBlocked: "需要先完成前置任务",
+      waitingAuthorizedMember: "正在等待有操作权限的成员处理，你无需操作。",
+      viewProgress: "查看进展",
     },
     rolloverPrompt: {
       title: "昨日未完成事项",
@@ -331,11 +358,11 @@ const COPY: Record<"zh" | "en", Copy> = {
     relation: { boss: "老板", manager: "上级", customer: "客户", child: "小孩学习", colleague: "同事", self: "自己", unknown: "未标注" },
     waiting: { me: "等我", requester: "等提出者", internal: "等内部成员", ai: "等 AI", none: "无需等待" },
     attentionReason: {
-      overdue: "承诺或截止时间已逾期", approval_required: "需要人工审批", ai_failed: "执行失败，需要人工处理",
+      ai_needs_input: "AI 正在等你回答", overdue: "承诺或截止时间已逾期", approval_required: "需要人工审批", ai_failed: "执行失败，需要人工处理", dependency_blocked: "前置任务尚未完成",
       review_ready: "结果已就绪，等待人工复核", user_action_required: "轮到你处理", follow_up_due: "已到跟进时间", waiting_requester: "等待提出者回复",
       waiting_internal: "等待内部成员", ai_running: "执行中，无需人工处理", planned: "已安排",
     },
-    nextAction: { open_issue: "查看任务", record_progress: "跟进", review_result: "审核结果", open_approval: "审批", open_run: "查看运行", retry: "处理失败" },
+    nextAction: { open_issue: "查看任务", record_progress: "跟进", review_result: "审核结果", open_approval: "审批", open_run: "查看运行", retry: "处理失败", answer_ai: "回答 AI" },
     report: { draft: "汇报草稿", confirmed: "汇报已确认", stale: "汇报已过期", prepare: "准备汇报", review: "复核汇报" },
     scheduleReasons: {
       manual_retry_today: "重新执行，已安排到今天",
@@ -348,8 +375,8 @@ const COPY: Record<"zh" | "en", Copy> = {
       auto_run_not_ready: "当前尚不可执行",
       work_item_blocked: "任务被阻塞",
       review_required: "等待评审",
-      terminal_unavailable: "本终端不可用",
-      terminal_at_capacity: "本终端容量已满",
+      terminal_unavailable: "这台电脑暂时不可用",
+      terminal_at_capacity: "这台电脑的执行名额已满",
       capacity_exhausted: "今天和明天容量不足",
       pinned_capacity_exceeded: "固定日期超出容量",
       pinned_outside_horizon: "固定日期不在两日计划范围内",
@@ -383,9 +410,9 @@ const COPY: Record<"zh" | "en", Copy> = {
     },
   },
   en: {
-    title: "My tasks",
+    title: "Task schedule",
     subtitle: "Review yesterday, execute today, plan tomorrow",
-    overview: "View my tasks",
+    overview: "Open full task list",
     todayProgress: "Today's progress",
     attention: "Attention",
     active: "In progress",
@@ -412,20 +439,28 @@ const COPY: Record<"zh" | "en", Copy> = {
     terminalCapacity: "Available slots {{available}} / {{total}}",
     queueDepth: "Queue {{count}}",
     worktreeLocks: "Workspace locks {{count}}",
-    unscheduled: "Other completion dates",
+    unscheduled: "Later / unscheduled",
     unscheduledHint: "Tasks due later or missing an expected completion date.",
-    columnSwipeHint: "Swipe horizontally to view all 4 columns",
+    columnSwipeHint: "Choose a date or swipe horizontally through tasks",
+    mobileOther: "Later",
+    scheduleScope: "Schedule scope: All projects",
+    refreshing: "Refreshing schedule…",
+    updatedAt: "Schedule updated {{time}}",
     unassigned: "Unassigned",
-    unassignedHint: "Every unassigned local Issue appears here. It enters personal scheduling and terminal capacity only after you claim it.",
+    unassignedHint: "Unassigned tasks appear here. After you claim one, it enters your schedule and uses an execution slot on this computer.",
+    noMyTasks: "No tasks scheduled yet",
+    noMyTasksHint: "Create your first task to start arranging today and upcoming work by completion date.",
+    createFirstTask: "Create task",
+    quickCreateTask: "Quick create task",
     claim: "Claim",
     claiming: "Claiming…",
     handOffAi: "Hand off to AI",
     handingOffAi: "Handing off…",
     handOffAiError: "Could not hand this task to AI. Open the task, check its execution requirements, and try again.",
-    myWork: "My tasks",
-    myWorkHint: "People ownership and expected completion for the same Issues",
-    allMyWork: "All people",
-    peopleCategory: "Task person",
+    myWork: "My schedule",
+    myWorkHint: "Arrange tasks by owner and expected completion date",
+    allMyWork: "All tasks",
+    peopleCategory: "Filter by relationship",
     otherPeople: "Other / unlabeled",
     needsMine: "Needs my action",
     waitingMe: "Waiting on me",
@@ -435,36 +470,37 @@ const COPY: Record<"zh" | "en", Copy> = {
     dueToday: "Due today",
     reviewReady: "Review and report",
     automationCompleted: "Completed",
-    activeAi: "Automated work",
-    aiWorkHint: "System imports and Agent-managed tasks; every task remains in My tasks",
-    allAiWork: "All automated work",
+    activeAi: "AI execution",
+    aiWorkHint: "See tasks handed to AI and their execution dates; every task still remains in My tasks",
+    allAiWork: "All AI tasks",
     aiRunning: "Running",
     aiScheduled: "Scheduled",
     noAiWork: "No automated work yet",
-    noAiWorkHint: "System imports and tasks handed to AI appear here",
+    noAiWorkHint: "Tasks handed to AI appear here, arranged by execution date.",
+    selectTaskForAi: "Choose a task for AI",
     executionDate: "Automated execution date",
     noExecutionDate: "No execution date",
     expectedCompletion: "Expected completion",
     noExpectedCompletion: "Expected completion not set",
-    otherDates: "Other execution dates / unscheduled",
+    otherDates: "Later / unscheduled",
     otherDatesHint: "Automated tasks scheduled later or missing an execution date.",
     owner: "Owner",
     waitingLabel: "People",
-    aiLabel: "Automation",
+    aiLabel: "Execution",
     coordination: {
       aiNotLinked: "Not automated yet",
       executionAfterCompletion: "Automated execution is after expected completion",
       aiUnscheduled: "Automated execution has no execution date",
       reviewPending: "Automated execution completed; awaiting human review",
       locateAi: "Locate in automated work",
-      locateMy: "Locate in My tasks",
-      located: "Temporarily showing this Issue without changing your filter",
+      locateMy: "Locate in My schedule",
+      located: "Temporarily showing this task without changing your filter",
       backToAi: "Back to automated work",
-      backToMy: "Back to My tasks",
+      backToMy: "Back to My schedule",
     },
     actionQueue: {
       title: "Needs my action",
-      hint: "Only tasks that need your decision, review, input, or exception handling; one next step per Issue",
+      hint: "Only tasks that need your decision, review, input, or exception handling; one next step per task",
       all: "All",
       urgent: "Needs attention",
       pending: "Pending action",
@@ -472,11 +508,15 @@ const COPY: Record<"zh" | "en", Copy> = {
       adjustExecution: "Adjust execution date",
       scheduleAi: "Schedule AI",
       scheduleTitle: "Schedule AI execution",
-      scheduleHint: "Saving refreshes the same Issue in both boards.",
+      scheduleHint: "Saving refreshes the same task in both boards.",
       saveSchedule: "Save date",
       savingSchedule: "Saving…",
       cancelSchedule: "Cancel",
       scheduleError: "Could not save the execution date. Try again.",
+      aiNeedsAnswer: "AI is waiting for your answer and will continue after you reply",
+      dependencyBlocked: "Complete the prerequisite task first",
+      waitingAuthorizedMember: "Waiting for a member with permission. You do not need to act.",
+      viewProgress: "View progress",
     },
     rolloverPrompt: {
       title: "Unfinished work from yesterday",
@@ -521,11 +561,11 @@ const COPY: Record<"zh" | "en", Copy> = {
     relation: { boss: "Boss", manager: "Manager", customer: "Customer", child: "Child learning", colleague: "Colleague", self: "Self", unknown: "Not labeled" },
     waiting: { me: "Waiting on me", requester: "Waiting on requester", internal: "Waiting on internal", ai: "Waiting on AI", none: "Not waiting" },
     attentionReason: {
-      overdue: "Commitment or due date overdue", approval_required: "Needs human approval", ai_failed: "Execution failed; needs human action",
+      ai_needs_input: "AI is waiting for your answer", overdue: "Commitment or due date overdue", approval_required: "Needs human approval", ai_failed: "Execution failed; needs human action", dependency_blocked: "A prerequisite task is incomplete",
       review_ready: "Result ready for human review", user_action_required: "Needs your action", follow_up_due: "Follow-up is due", waiting_requester: "Waiting for requester",
       waiting_internal: "Waiting for internal member", ai_running: "Execution in progress; no human action", planned: "Planned",
     },
-    nextAction: { open_issue: "View task", record_progress: "Follow up", review_result: "Review result", open_approval: "Approve", open_run: "View run", retry: "Handle failure" },
+    nextAction: { open_issue: "View task", record_progress: "Follow up", review_result: "Review result", open_approval: "Approve", open_run: "View run", retry: "Handle failure", answer_ai: "Answer AI" },
     report: { draft: "Report draft", confirmed: "Report confirmed", stale: "Report stale", prepare: "Prepare report", review: "Review report" },
     scheduleReasons: {
       manual_retry_today: "Retry scheduled for today",
@@ -602,6 +642,7 @@ type DailyLocalWorkItem = LocalWorkItem & { scheduleReason?: string | null };
 type ActionQueueFilter = "all" | "danger" | "warning" | "running";
 type DailyGroupKey = WorkState | LocalWorkItem["status"];
 type WorkView = "my" | "ai";
+type DateColumnKey = "yesterday" | "today" | "tomorrow" | "other";
 
 export function hasAutomatedExecution(item: HomeWorkbenchItem): boolean {
   return Boolean(item.executionKind || item.ai);
@@ -610,6 +651,7 @@ export function hasAutomatedExecution(item: HomeWorkbenchItem): boolean {
 export const hasAiExecution = hasAutomatedExecution;
 
 function isAiWorking(item: HomeWorkbenchItem): boolean {
+  if (item.ai?.status === "needs_input") return false;
   return item.userStatus ? item.userStatus === "ai_working" : ["claimed", "running", "verifying"].includes(item.executionState);
 }
 
@@ -702,7 +744,7 @@ function executionLabel(item: HomeWorkbenchItem, copy: Copy): string {
 function executionTypeLabel(item: HomeWorkbenchItem, locale: string, copy: Copy): string {
   if (item.executionKind === "article_import") return locale.startsWith("zh") ? "公众号导入" : "Article import";
   if (item.executionKind === "article_derivative") return locale.startsWith("zh") ? "内容衍生" : "Article derivative";
-  if (item.ai) return "Agent";
+  if (item.ai) return "AI";
   return copy.aiLabel;
 }
 
@@ -919,6 +961,7 @@ export function DailyWorkBoard({
   onOpenItem,
   onOpenApproval,
   onOpenTasks,
+  onCreateTask,
   onClaimItem,
   onStartAi,
   onUpdatePlannedDate,
@@ -938,7 +981,10 @@ export function DailyWorkBoard({
   rollingOver = false,
   onApplyUrgent,
   applyingUrgent = false,
+  refreshing = false,
+  updatedAt = null,
   now = Date.now(),
+  canOperate = true,
 }: {
   board?: WorkBoard;
   report?: WorkReport;
@@ -954,6 +1000,7 @@ export function DailyWorkBoard({
   onOpenApproval?: (decision: PendingDecision) => void;
   onOpenItem: (item: WorkItem) => void;
   onOpenTasks: () => void;
+  onCreateTask?: () => void;
   onOpenAttention?: () => void;
   onOpenActive?: () => void;
   onOpenCompleted?: () => void;
@@ -977,7 +1024,10 @@ export function DailyWorkBoard({
   rollingOver?: boolean;
   onApplyUrgent?: (confirmPinned: boolean) => void;
   applyingUrgent?: boolean;
+  refreshing?: boolean;
+  updatedAt?: string | null;
   now?: number;
+  canOperate?: boolean;
 }) {
   const [unassignedExpanded, setUnassignedExpanded] = useState(false);
   const [capacityExpanded, setCapacityExpanded] = useState(false);
@@ -985,6 +1035,8 @@ export function DailyWorkBoard({
   const [actionQueueFilter, setActionQueueFilter] = useState<ActionQueueFilter>("all");
   const [rolloverPromptOpen, setRolloverPromptOpen] = useState(false);
   const [activeWorkView, setActiveWorkView] = useState<WorkView>("my");
+  const [myDateColumn, setMyDateColumn] = useState<DateColumnKey>("today");
+  const [aiDateColumn, setAiDateColumn] = useState<DateColumnKey>("today");
   const [myWorkFilter, setMyWorkFilter] = useState<WorkItemRequesterRelation | "all" | "other">("all");
   const [aiWorkFilter, setAiWorkFilter] = useState<"all" | "scheduled" | "running" | "awaiting_approval" | "failed" | "review_ready" | "completed">("all");
   const [focusedIssue, setFocusedIssue] = useState<FocusedIssue | null>(null);
@@ -997,11 +1049,21 @@ export function DailyWorkBoard({
   const [focusTargetId, setFocusTargetId] = useState<string | null>(null);
   const myDateColumnsRef = useRef<HTMLDivElement>(null);
   const aiDateColumnsRef = useRef<HTMLDivElement>(null);
-  const myMobilePositioned = useRef(false);
-  const aiMobilePositioned = useRef(false);
+  const myDateNavigationReady = useRef(false);
+  const aiDateNavigationReady = useRef(false);
   const { i18n } = useAppTranslation();
   const locale = i18n.language.startsWith("zh") ? "zh-CN" : "en-US";
   const copy = COPY[locale === "zh-CN" ? "zh" : "en"];
+  const relationCounts = {
+    self: workbench?.summary.byRelation.self ?? plannedItems.filter((item) => item.requesterRelation === "self").length,
+    boss: workbench?.summary.byRelation.boss ?? plannedItems.filter((item) => item.requesterRelation === "boss").length,
+    manager: workbench?.summary.byRelation.manager ?? plannedItems.filter((item) => item.requesterRelation === "manager").length,
+    customer: workbench?.summary.byRelation.customer ?? plannedItems.filter((item) => item.requesterRelation === "customer").length,
+    child: workbench?.summary.byRelation.child ?? plannedItems.filter((item) => item.requesterRelation === "child").length,
+    other: workbench
+      ? workbench.summary.byRelation.colleague + workbench.summary.byRelation.unknown
+      : plannedItems.filter((item) => item.requesterRelation === "colleague" || item.requesterRelation === "unknown").length,
+  };
   const currentDay = workbench?.horizon.today ?? dateKey(now) ?? new Date(now).toISOString().slice(0, 10);
   const nextDay = workbench?.horizon.tomorrow ?? dateKey(addDays(now, 1)) ?? new Date(addDays(now, 1)).toISOString().slice(0, 10);
   const suggestedDates = new Map(preview?.days.flatMap((day) =>
@@ -1044,6 +1106,9 @@ export function DailyWorkBoard({
   }));
   const myWorkFilterActive = myWorkFilter !== "all";
   const baseModel = buildDailyWorkBoardModel(previewBoard, report, now, previewItems, projectedWorkbenchItems);
+  const showMyEmptyState = Boolean(workbench
+    && workbench.summary.total === 0
+    && baseModel.yesterday.length + baseModel.today.length + baseModel.tomorrow.length + baseModel.unscheduled.length === 0);
   const filterItems = (items: WorkItem[]) => items.filter((item) => {
     const row = item as DailyWorkItem;
     const workItemId = row.home?.workItemId ?? row.targetId;
@@ -1060,7 +1125,7 @@ export function DailyWorkBoard({
     unscheduled: filterItems(baseModel.unscheduled),
   } : baseModel;
   const aiWorkItems = projectedWorkbenchItems.filter(hasAutomatedExecution);
-  const actionQueue = buildActionQueue(projectedWorkbenchItems, copy);
+  const actionQueue = buildActionQueue(projectedWorkbenchItems, copy, canOperate);
   const actionQueueCounts: Record<ActionQueueFilter, number> = {
     all: actionQueue.length,
     danger: actionQueue.filter((item) => item.tone === "danger").length,
@@ -1143,9 +1208,13 @@ export function DailyWorkBoard({
   const rolloverPromptKey = `myagenttool:rollover-prompt:${rollover?.sourceDate ?? ""}`;
   const urgentCount = urgent?.insertions.length ?? 0;
   const progressTotal = model.today.length;
+  const myVisibleItemCount = model.yesterday.length + model.today.length + model.tomorrow.length + model.unscheduled.length;
   const progress = progressTotal ? Math.round((model.todayCompleted / progressTotal) * 100) : 0;
   const runHomeAction = (item: HomeWorkbenchItem) => {
-    onOpenItem(homeTaskWorkItem(item));
+    const targetId = item.userAction?.target.section === "task"
+      ? item.userAction.target.id
+      : item.workItemId;
+    onOpenItem({ ...homeTaskWorkItem(item), targetId });
   };
   const runHomeReport = (item: HomeWorkbenchItem) => onOpenItem(homeReportWorkItem(item));
   const handOffToAi = async (item: HomeWorkbenchItem) => {
@@ -1243,7 +1312,11 @@ export function DailyWorkBoard({
   }, [focusTargetId, focusedActionIndex]);
 
   useEffect(() => {
-    if (!autoRolloverPrompt || !rollover?.sourceDate || !rolloverPromptItems.length) return;
+    if (!autoRolloverPrompt) {
+      setRolloverPromptOpen(false);
+      return;
+    }
+    if (!rollover?.sourceDate || !rolloverPromptItems.length) return;
     try {
       if (window.localStorage.getItem(rolloverPromptKey) === "dismissed") return;
     } catch {
@@ -1274,21 +1347,74 @@ export function DailyWorkBoard({
   useEffect(() => {
     if (!window.matchMedia?.("(max-width: 1023px)").matches) return;
     const frame = window.requestAnimationFrame(() => {
-      const positionToday = (container: HTMLDivElement | null, testId: string) => {
-        const today = container?.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
-        if (!container || !today) return false;
-        container.scrollTo?.({ left: Math.max(0, today.offsetLeft - 12), behavior: "auto" });
-        return true;
-      };
-      if (activeWorkView === "my" && !myMobilePositioned.current && positionToday(myDateColumnsRef.current, "today-completion-column")) {
-        myMobilePositioned.current = true;
-      }
-      if (activeWorkView === "ai" && !aiMobilePositioned.current && positionToday(aiDateColumnsRef.current, "today-execution-column")) {
-        aiMobilePositioned.current = true;
+      const container = activeWorkView === "my" ? myDateColumnsRef.current : aiDateColumnsRef.current;
+      const dateColumn = activeWorkView === "my" ? myDateColumn : aiDateColumn;
+      const suffix = activeWorkView === "my" ? "completion-column" : "execution-column";
+      const target = container?.querySelector<HTMLElement>(`[data-testid="${dateColumn}-${suffix}"]`);
+      if (container && target) {
+        container.scrollTo?.({ left: Math.max(0, target.offsetLeft - 12), behavior: "auto" });
+        if (activeWorkView === "my") myDateNavigationReady.current = true;
+        else aiDateNavigationReady.current = true;
       }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeWorkView, aiWorkItems.length]);
+  }, [activeWorkView, aiDateColumn, aiWorkItems.length, myDateColumn, myVisibleItemCount]);
+
+  const mobileDateNavigation = (
+    view: WorkView,
+    selected: DateColumnKey,
+    onSelect: (value: DateColumnKey) => void,
+  ) => (
+    <div
+      className={cn("sticky top-14 z-10 grid grid-cols-4 gap-1 bg-card/95 py-2 backdrop-blur lg:hidden", view === "my" && "px-4")}
+      role="group"
+      aria-label={copy.columnSwipeHint}
+      data-testid={`${view}-date-navigation`}
+    >
+      {([
+        ["yesterday", copy.yesterday, copy.yesterday],
+        ["today", copy.today, copy.today],
+        ["tomorrow", copy.tomorrow, copy.tomorrow],
+        ["other", copy.mobileOther, view === "my" ? copy.unscheduled : copy.otherDates],
+      ] as const).map(([value, visibleLabel, accessibleLabel]) => (
+        <button
+          key={value}
+          type="button"
+          aria-label={accessibleLabel}
+          aria-pressed={selected === value}
+          className={cn(
+            "min-w-0 truncate rounded-md border px-2 py-1.5 text-xs transition-colors",
+            selected === value
+              ? "border-primary/40 bg-primary/10 font-semibold text-primary"
+              : "border-border bg-background text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => onSelect(value)}
+          title={accessibleLabel}
+        >
+          {visibleLabel}
+        </button>
+      ))}
+    </div>
+  );
+  const syncMobileDateNavigation = (view: WorkView, container: HTMLDivElement) => {
+    if (!window.matchMedia?.("(max-width: 1023px)").matches) return;
+    if (view === "my" ? !myDateNavigationReady.current : !aiDateNavigationReady.current) return;
+    const suffix = view === "my" ? "completion-column" : "execution-column";
+    const columns = Array.from(container.querySelectorAll<HTMLElement>(`[data-testid$="-${suffix}"]`));
+    const nearest = columns.reduce<HTMLElement | null>((current, candidate) => {
+      if (!current) return candidate;
+      const currentDistance = Math.abs(current.offsetLeft - container.scrollLeft);
+      const candidateDistance = Math.abs(candidate.offsetLeft - container.scrollLeft);
+      return candidateDistance < currentDistance ? candidate : current;
+    }, null);
+    const key = nearest?.dataset.testid?.replace(`-${suffix}`, "") as DateColumnKey | undefined;
+    if (!key || !["yesterday", "today", "tomorrow", "other"].includes(key)) return;
+    if (view === "my") setMyDateColumn(key);
+    else setAiDateColumn(key);
+  };
+  const updatedTime = updatedAt && !Number.isNaN(new Date(updatedAt).getTime())
+    ? new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(updatedAt))
+    : null;
 
   const dailyBrief = workbench ? (
         <DailyCoordinationBrief
@@ -1389,7 +1515,7 @@ export function DailyWorkBoard({
           </Button>
         </div>
       </Modal>
-      <div className="flex w-full min-w-0 flex-wrap items-center gap-2" data-testid="work-view-tabs">
+      <div className="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-2" data-testid="work-view-tabs">
         <div
           className="inline-flex w-fit max-w-full items-center gap-1 rounded-lg border border-border/80 bg-muted/30 p-1"
           role="tablist"
@@ -1432,6 +1558,29 @@ export function DailyWorkBoard({
             <Badge tone={aiWorkItems.length ? "running" : "neutral"}>{aiWorkItems.length}</Badge>
           </button>
         </div>
+        {onCreateTask ? (
+          <Button
+            type="button"
+            size="icon"
+            variant="secondary"
+            className="ml-auto size-9 shrink-0 lg:hidden"
+            aria-label={copy.quickCreateTask}
+            title={copy.quickCreateTask}
+            onClick={onCreateTask}
+          >
+            <Plus aria-hidden />
+          </Button>
+        ) : null}
+        <div className="flex min-w-0 basis-full items-center justify-between gap-2 px-1 text-xs text-muted-foreground sm:basis-auto sm:justify-start sm:px-0">
+          <span>{copy.scheduleScope}</span>
+          {refreshing ? (
+            <span className="inline-flex items-center gap-1" role="status" aria-live="polite">
+              <LoaderCircle className="size-3 animate-spin" aria-hidden />{copy.refreshing}
+            </span>
+          ) : updatedTime ? (
+            <span role="status">{copy.updatedAt.replace("{{time}}", updatedTime)}</span>
+          ) : null}
+        </div>
         {approvals.length ? (
           <div
             className="ml-auto flex min-w-0 max-w-full flex-1 items-center justify-end gap-2 overflow-x-auto"
@@ -1462,15 +1611,15 @@ export function DailyWorkBoard({
       </div>
 
       <div id="my-work-panel" role="tabpanel" aria-labelledby="my-work-tab" hidden={activeWorkView !== "my"}>
-      <Card className="min-w-0 overflow-hidden border-border/80" data-testid="my-work-section">
-      <div className="flex flex-col gap-4 border-b border-border/80 px-5 py-4 xl:flex-row xl:items-center">
+      <Card className="min-w-0 overflow-clip border-border/80" data-testid="my-work-section">
+      <div className="flex flex-col gap-3 border-b border-border/80 px-4 py-3 sm:px-5 sm:py-4 xl:flex-row xl:items-center">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary sm:size-10 sm:rounded-xl">
             <BriefcaseBusiness className="size-5" aria-hidden />
           </span>
           <div className="min-w-0">
             <h2 className="truncate text-base font-semibold">{copy.title}</h2>
-            <p className="truncate text-xs text-muted-foreground">
+            <p className="hidden truncate text-xs text-muted-foreground sm:block">
               {formatDate(now, locale)} · {copy.myWorkHint}
             </p>
           </div>
@@ -1483,12 +1632,25 @@ export function DailyWorkBoard({
         </div>
       </div>
 
-      <section className="border-b border-border/80 bg-muted/10 px-4 py-4" data-testid="my-work-status-cards">
-          <div className="mb-3 flex items-center gap-2">
-            <h3 className="text-sm font-semibold">{copy.peopleCategory}</h3>
-            <span className="text-xs text-muted-foreground">{copy.expectedCompletion} · {copy.yesterday} / {copy.today} / {copy.tomorrow} / {copy.unscheduled}</span>
+      {showMyEmptyState ? (
+        <section className="grid min-h-52 place-items-center px-5 py-8 text-center" data-testid="my-work-empty-state">
+          <div className="max-w-sm">
+            <span className="mx-auto grid size-11 place-items-center rounded-xl bg-primary/10 text-primary">
+              <BriefcaseBusiness className="size-5" aria-hidden />
+            </span>
+            <h3 className="mt-3 font-semibold">{copy.noMyTasks}</h3>
+            <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.noMyTasksHint}</p>
+            {onCreateTask ? <Button className="mt-4" onClick={onCreateTask}><Plus aria-hidden />{copy.createFirstTask}</Button> : null}
           </div>
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-7">
+        </section>
+      ) : (
+        <>
+      <section className="border-b border-border/80 bg-muted/10 px-3 py-3 sm:px-4 sm:py-4" data-testid="my-work-status-cards">
+          <div className="mb-2 flex items-center gap-2 sm:mb-3">
+            <h3 className="text-sm font-semibold">{copy.peopleCategory}</h3>
+            <span className="hidden text-xs text-muted-foreground sm:inline">{copy.expectedCompletion} · {copy.yesterday} / {copy.today} / {copy.tomorrow} / {copy.unscheduled}</span>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1 sm:grid sm:grid-cols-3 sm:overflow-visible sm:pb-0 xl:grid-cols-7">
             <WorkStatusFilterCard
               label={copy.allMyWork}
               value={workbench?.summary.total ?? plannedItems.length}
@@ -1496,26 +1658,25 @@ export function DailyWorkBoard({
               active={myWorkFilter === "all"}
               onClick={() => setMyWorkFilter("all")}
             />
-            {(["self", "boss", "manager", "customer", "child"] as const).map((relation) => (
+            {(["self", "boss", "manager", "customer", "child"] as const).filter((relation) => relationCounts[relation] > 0).map((relation) => (
               <WorkStatusFilterCard
                 key={relation}
                 label={copy.relation[relation]}
-                value={workbench?.summary.byRelation[relation]
-                  ?? plannedItems.filter((item) => item.requesterRelation === relation).length}
+                value={relationCounts[relation]}
                 tone={relation === "boss" ? "warning" : relation === "customer" ? "running" : relation === "child" ? "success" : "neutral"}
                 active={myWorkFilter === relation}
                 onClick={() => setMyWorkFilter(relation)}
               />
             ))}
-            <WorkStatusFilterCard
-              label={copy.otherPeople}
-              value={workbench
-                ? workbench.summary.byRelation.colleague + workbench.summary.byRelation.unknown
-                : plannedItems.filter((item) => item.requesterRelation === "colleague" || item.requesterRelation === "unknown").length}
-              tone="neutral"
-              active={myWorkFilter === "other"}
-              onClick={() => setMyWorkFilter("other")}
-            />
+            {relationCounts.other > 0 ? (
+              <WorkStatusFilterCard
+                label={copy.otherPeople}
+                value={relationCounts.other}
+                tone="neutral"
+                active={myWorkFilter === "other"}
+                onClick={() => setMyWorkFilter("other")}
+              />
+            ) : null}
           </div>
         </section>
 
@@ -1523,16 +1684,14 @@ export function DailyWorkBoard({
         <LocateContextBar copy={copy} originView={focusedIssue.originView} onReturn={returnFromLocate} />
       ) : null}
       {startAiError ? <p className="mx-4 mt-3 text-xs text-destructive" role="alert">{startAiError}</p> : null}
-      <div className="flex items-center justify-end gap-1 px-4 pt-3 text-[11px] text-muted-foreground lg:hidden">
-        <span>{copy.columnSwipeHint}</span>
-        <ArrowRight className="size-3.5" aria-hidden />
-      </div>
+      {mobileDateNavigation("my", myDateColumn, setMyDateColumn)}
       <div
         ref={myDateColumnsRef}
-        className="grid grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto p-3 pb-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-4 lg:overflow-visible"
+        className="grid snap-x snap-mandatory grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto p-3 pb-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-4 lg:overflow-visible"
         data-testid="my-date-columns"
         aria-label={copy.columnSwipeHint}
         tabIndex={0}
+        onScroll={(event) => syncMobileDateNavigation("my", event.currentTarget)}
       >
         <DayColumn
           testId="yesterday-completion-column"
@@ -1625,6 +1784,8 @@ export function DailyWorkBoard({
           onLocateAi={(item) => locateIssue("ai", item.workItemId)}
         />
       </div>
+        </>
+      )}
       {unassignedItems.length > 0 ? (
         <section className="border-t border-border/80 px-4 py-4" data-testid="unassigned-work">
           <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
@@ -1667,7 +1828,7 @@ export function DailyWorkBoard({
       </div>
 
       <div id="ai-work-panel" role="tabpanel" aria-labelledby="ai-work-tab" hidden={activeWorkView !== "ai"}>
-      <Card className="min-w-0 overflow-hidden border-border/80" data-testid="ai-work-section">
+      <Card className="min-w-0 overflow-clip border-border/80" data-testid="ai-work-section">
         <div className="flex flex-col gap-3 border-b border-border/80 px-5 py-4 xl:flex-row xl:items-center">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
@@ -1740,8 +1901,21 @@ export function DailyWorkBoard({
           </div>
         ) : null}
 
-        <section className="border-b border-border/80 bg-muted/10 px-4 py-4" data-testid="ai-work-status-cards">
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
+        {workbench && aiWorkItems.length === 0 ? (
+          <section className="grid min-h-52 place-items-center px-5 py-8 text-center" data-testid="ai-work-empty-state">
+            <div className="max-w-sm">
+              <span className="mx-auto grid size-11 place-items-center rounded-xl bg-primary/10 text-primary">
+                <Bot className="size-5" aria-hidden />
+              </span>
+              <h3 className="mt-3 font-semibold">{copy.noAiWork}</h3>
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.noAiWorkHint}</p>
+              <Button className="mt-4" variant="secondary" onClick={onOpenTasks}>{copy.selectTaskForAi}<ArrowRight aria-hidden /></Button>
+            </div>
+          </section>
+        ) : (
+          <>
+        <section className="border-b border-border/80 bg-muted/10 px-3 py-3 sm:px-4 sm:py-4" data-testid="ai-work-status-cards">
+          <div className="flex gap-2 overflow-x-auto pb-1 sm:grid sm:grid-cols-4 sm:overflow-visible sm:pb-0 xl:grid-cols-7">
             <WorkStatusFilterCard
               label={copy.allAiWork}
               value={aiCounts.all}
@@ -1805,16 +1979,14 @@ export function DailyWorkBoard({
                 {filteredAiWorkItems.length ? `${filteredAiWorkItems.length} · ${copy.allAiWork}` : copy.noAiWorkHint}
               </span>
             </div>
-            <div className="flex items-center justify-end gap-1 text-[11px] text-muted-foreground lg:hidden">
-              <span>{copy.columnSwipeHint}</span>
-              <ArrowRight className="size-3.5" aria-hidden />
-            </div>
+            {mobileDateNavigation("ai", aiDateColumn, setAiDateColumn)}
             <div
               ref={aiDateColumnsRef}
-              className="grid grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto pb-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-4 lg:overflow-visible"
+              className="grid snap-x snap-mandatory grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto pb-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-4 lg:overflow-visible"
               data-testid="ai-date-columns"
               aria-label={copy.columnSwipeHint}
               tabIndex={0}
+              onScroll={(event) => syncMobileDateNavigation("ai", event.currentTarget)}
             >
               <AiDateColumn
                 testId="yesterday-execution-column"
@@ -1826,6 +1998,7 @@ export function DailyWorkBoard({
                 locale={locale}
                 onOpenItem={onOpenItem}
                 onAction={runHomeAction}
+                canOperate={canOperate}
                 focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
                 onLocateMy={(item) => locateIssue("my", item.workItemId)}
                 showAll={aiWorkFilter === "failed"}
@@ -1840,6 +2013,7 @@ export function DailyWorkBoard({
                 locale={locale}
                 onOpenItem={onOpenItem}
                 onAction={runHomeAction}
+                canOperate={canOperate}
                 focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
                 onLocateMy={(item) => locateIssue("my", item.workItemId)}
                 featured
@@ -1855,6 +2029,7 @@ export function DailyWorkBoard({
                 locale={locale}
                 onOpenItem={onOpenItem}
                 onAction={runHomeAction}
+                canOperate={canOperate}
                 focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
                 onLocateMy={(item) => locateIssue("my", item.workItemId)}
                 showAll={aiWorkFilter === "failed"}
@@ -1869,6 +2044,7 @@ export function DailyWorkBoard({
                 locale={locale}
                 onOpenItem={onOpenItem}
                 onAction={runHomeAction}
+                canOperate={canOperate}
                 focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
                 onLocateMy={(item) => locateIssue("my", item.workItemId)}
                 showAll={aiWorkFilter === "failed"}
@@ -1876,6 +2052,8 @@ export function DailyWorkBoard({
             </div>
           </div>
         </section>
+          </>
+        )}
       </Card>
       </div>
 
@@ -2039,6 +2217,7 @@ function AiDateColumn({
   locale,
   onOpenItem,
   onAction,
+  canOperate,
   focusedWorkItemId,
   onLocateMy,
   featured = false,
@@ -2053,6 +2232,7 @@ function AiDateColumn({
   locale: string;
   onOpenItem: (item: WorkItem) => void;
   onAction: (item: HomeWorkbenchItem) => void;
+  canOperate: boolean;
   focusedWorkItemId: string | null;
   onLocateMy: (item: HomeWorkbenchItem) => void;
   featured?: boolean;
@@ -2087,6 +2267,7 @@ function AiDateColumn({
             locale={locale}
             onOpenItem={onOpenItem}
             onAction={onAction}
+            canOperate={canOperate}
             focused={focusedWorkItemId === item.workItemId}
             onLocateMy={() => onLocateMy(item)}
           />
@@ -2116,6 +2297,7 @@ function AiWorkCard({
   locale,
   onOpenItem,
   onAction,
+  canOperate,
   focused,
   onLocateMy,
 }: {
@@ -2124,6 +2306,7 @@ function AiWorkCard({
   locale: string;
   onOpenItem: (item: WorkItem) => void;
   onAction: (item: HomeWorkbenchItem) => void;
+  canOperate: boolean;
   focused: boolean;
   onLocateMy: () => void;
 }) {
@@ -2154,6 +2337,11 @@ function AiWorkCard({
         <span className="col-span-2">{executionActorLabel(item, locale, copy)}</span>
       </div>
       <WorkCoordinationNotice item={item} copy={copy} />
+      {!canOperate && item.userAction?.requiresPermission ? (
+        <p className="mt-1.5 rounded-md bg-warning/[0.07] px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
+          {copy.actionQueue.waitingAuthorizedMember}
+        </p>
+      ) : null}
       {item.result?.summary ? (
         <p className="mt-1.5 line-clamp-2 rounded-md bg-success/[0.06] px-2 py-1.5 text-[11px] leading-relaxed text-foreground" data-testid={`result-summary-${item.workItemId}`}>
           <span className="font-medium">{item.result.needsReview ? copy.attentionReason.review_ready : copy.completed}：</span>{item.result.summary}
@@ -2161,7 +2349,9 @@ function AiWorkCard({
       ) : null}
       <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1 border-t border-border/70 pt-1.5">
         <Button size="sm" variant="primary" onClick={() => onAction(item)}>
-          {copy.nextAction[item.nextAction.kind]}<ArrowRight aria-hidden />
+          {!canOperate && item.userAction?.requiresPermission
+            ? copy.actionQueue.viewProgress
+            : copy.nextAction[item.nextAction.kind]}<ArrowRight aria-hidden />
         </Button>
         <Button size="sm" variant="ghost" onClick={onLocateMy}>{copy.coordination.locateMy}</Button>
       </div>
@@ -2211,10 +2401,15 @@ type ActionQueueItem = {
   rank: number;
 };
 
-function buildActionQueue(items: HomeWorkbenchItem[], copy: Copy): ActionQueueItem[] {
+function buildActionQueue(items: HomeWorkbenchItem[], copy: Copy, canOperate = true): ActionQueueItem[] {
   return items.flatMap((item): ActionQueueItem[] => {
     if (item.planningStatus === "done") return [];
+    if (!canOperate && item.userAction?.requiresPermission) return [];
     const attention = item.attentionReason;
+    if (attention === "ai_needs_input") {
+      const question = item.userAction?.instruction?.trim();
+      return [{ item, reason: question ? `${copy.actionQueue.aiNeedsAnswer}: ${question}` : copy.actionQueue.aiNeedsAnswer, tone: "warning", action: "next", actionLabel: copy.nextAction.answer_ai, rank: 0 }];
+    }
     if (attention === "ai_failed") {
       return [{ item, reason: copy.attentionReason.ai_failed, tone: "danger", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 0 }];
     }
@@ -2229,6 +2424,10 @@ function buildActionQueue(items: HomeWorkbenchItem[], copy: Copy): ActionQueueIt
     }
     if (attention === "user_action_required" || attention === "follow_up_due") {
       return [{ item, reason: copy.attentionReason[attention], tone: "warning", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 4 }];
+    }
+    if (attention === "dependency_blocked") {
+      const dependency = item.userAction?.instruction?.trim();
+      return [{ item, reason: dependency ? `${copy.actionQueue.dependencyBlocked}: ${dependency}` : copy.actionQueue.dependencyBlocked, tone: "warning", action: "next", actionLabel: copy.nextAction.open_issue, rank: 2 }];
     }
     // Scheduling metadata must never turn work that is already moving into a
     // human interruption. The execution continues and can be inspected under
@@ -2288,7 +2487,7 @@ function DailyCoordinationBrief({
   }
   return (
     <Card className="h-full min-w-0 overflow-hidden border-primary/30 bg-gradient-to-br from-primary/[0.08] via-card to-card" data-testid="daily-coordination-brief">
-      <div className="flex h-full flex-col gap-4 p-5">
+      <div className="flex h-full flex-col gap-3 p-4 sm:gap-4 sm:p-5">
         <div className="flex items-start gap-3">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
             <Sparkles className="size-5" aria-hidden />
@@ -2303,7 +2502,7 @@ function DailyCoordinationBrief({
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2" data-testid="daily-brief-metrics">
+        <div className="hidden grid-cols-3 gap-2 sm:grid" data-testid="daily-brief-metrics">
           {[
             [todayDueCount, copy.dailyBrief.due, "text-foreground"],
             [actionCount, copy.dailyBrief.actions, actionCount ? "text-warning" : "text-foreground"],
@@ -2321,15 +2520,15 @@ function DailyCoordinationBrief({
             <div className="rounded-lg border border-border/80 bg-background/55 px-3 py-2.5">
               <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{copy.dailyBrief.nextUp}</p>
               <p className="mt-1 text-sm font-medium [overflow-wrap:anywhere]">{firstAction.item.localRef} · {firstAction.item.title}</p>
-              <p className="mt-0.5 text-xs text-muted-foreground">{firstAction.reason}</p>
+              <p className="mt-0.5 hidden text-xs text-muted-foreground sm:block">{firstAction.reason}</p>
             </div>
           ) : <p className="text-sm text-muted-foreground">{copy.dailyBrief.allClear}</p>}
           {firstAction ? (
-            <div className="mt-3 grid gap-2 sm:flex sm:flex-wrap">
-              <Button className="w-full sm:w-auto" onClick={onStartFocus}>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+              <Button className="min-w-0 px-2 sm:w-auto sm:px-4" onClick={onStartFocus}>
                 {copy.dailyBrief.startFocus}<ArrowRight aria-hidden />
               </Button>
-              <Button className="w-full sm:w-auto" variant="secondary" onClick={onReviewPlan}>
+              <Button className="min-w-0 px-2 sm:w-auto sm:px-4" variant="secondary" onClick={onReviewPlan}>
                 <ListChecks aria-hidden />{copy.dailyBrief.reviewPlan}
               </Button>
             </div>
@@ -2553,18 +2752,18 @@ function WorkStatusFilterCard({
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "group min-w-0 rounded-xl border bg-card px-3 py-3 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "group flex min-w-max items-center gap-2 rounded-lg border bg-card px-3 py-2 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:block sm:min-w-0 sm:rounded-xl sm:py-3",
         active ? "border-primary/60 bg-primary/[0.045]" : "border-border",
       )}
     >
       <span className={cn(
-        "block text-xl font-semibold tabular-nums",
+        "block text-base font-semibold tabular-nums sm:text-xl",
         tone === "warning" && "text-warning",
         tone === "running" && "text-primary",
         tone === "success" && "text-success",
         tone === "danger" && "text-destructive",
       )}>{value}</span>
-      <span className={cn("mt-1 block truncate text-xs", active ? "font-medium text-foreground" : "text-muted-foreground")}>{label}</span>
+      <span className={cn("block truncate text-xs sm:mt-1", active ? "font-medium text-foreground" : "text-muted-foreground")}>{label}</span>
     </button>
   );
 }

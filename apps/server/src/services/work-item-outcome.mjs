@@ -53,7 +53,10 @@ function linkedFilesFrom(markdown) {
   const files = [];
   const pattern = /\[[^\]]*\]\(([^\)]+)\)/g;
   for (const match of String(markdown ?? "").matchAll(pattern)) {
-    const target = match[1].trim();
+    // CommonMark allows destinations to be wrapped in angle brackets. Keep
+    // those delimiters out of the path so the same file is not projected as a
+    // second, unusable result entry.
+    const target = match[1].trim().replace(/^<(.+)>$/, "$1").trim();
     if (!target || /^(?:https?:|mailto:|#)/i.test(target)) continue;
     files.push(target.replaceAll("\\", "/"));
   }
@@ -102,6 +105,10 @@ function fileExtension(path) {
   return dot >= 0 ? name.slice(dot) : "";
 }
 
+function systemMaterialBookkeepingPath(value) {
+  return /^\.myagenttool\/inputs\/[^/]+\/\.gitignore$/i.test(normalizedFilePath(value).replace(/^\.\//, ""));
+}
+
 function projectFileEntries({ item, deliveryReport, fullReport, invocationSummary, fileContext }) {
   const defaultWorktreeId = fileContext?.worktreeId ?? null;
   const candidates = [
@@ -121,6 +128,7 @@ function projectFileEntries({ item, deliveryReport, fullReport, invocationSummar
 
   for (const candidate of candidates) {
     const originalPath = normalizedFilePath(candidate.path);
+    if (systemMaterialBookkeepingPath(originalPath)) continue;
     let path = safeRelativePath(originalPath);
     let worktreeId = candidate.worktreeId ?? defaultWorktreeId;
     let status = "available";

@@ -1379,6 +1379,26 @@ test("self-repair: a failing check re-attempts (preApproved), then blocks after 
   assert.equal(calls.pr.length, 0);
 });
 
+test("self-repair does not spend attempts when verifier infrastructure is unavailable", async () => {
+  const { svc, calls } = makeAutoRun({ verify: {
+    passed: false,
+    verified: true,
+    repairable: false,
+    summary: "ERR_PNPM_NO_PKG_MANIFEST No package.json found",
+  } });
+  state.autoRunSettings = { maxRepairAttempts: 2 };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 152, title: "Business document", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-152",
+  });
+  const invocationCount = calls.createInvocation.length;
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "blocked");
+  assert.equal(autoRun.repairAttempts ?? 0, 0);
+  assert.equal(calls.createInvocation.length, invocationCount, "infrastructure failures must not launch an agent repair");
+});
+
 test("self-repair: a fail then a pass reaches pr_open", async () => {
   let n = 0;
   const { svc, calls } = makeAutoRun({

@@ -23,7 +23,19 @@ export function createWorkflowSourceManager({
   function listSources(actor) {
     return {
       status: 200,
-      body: { sources: state.workflowSources.filter((item) => visible(item, actor)) },
+      body: {
+        sources: state.workflowSources.filter((item) => visible(item, actor)).map((item) => {
+          if (item.purpose !== "template_learning") return item;
+          const task = (state.templateLearningTasks ?? []).find((row) =>
+            row.sourceId === item.id && visible(row, actor));
+          if (!task) return item;
+          return {
+            ...item,
+            selectedFileCount: task.cases.reduce((sum, learningCase) =>
+              sum + learningCase.files.length, 0),
+          };
+        }),
+      },
     };
   }
 

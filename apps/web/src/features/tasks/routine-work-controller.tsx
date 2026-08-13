@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAsyncAction } from "@/data/use-console-actions";
 import { useVisibleInterval } from "@/hooks/use-visible-interval";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { RoutineWorkPanel } from "./routine-work-panel";
 import {
   routineWorkApi,
@@ -19,14 +20,26 @@ export default function RoutineWorkController({
   onChanged: () => void;
 }) {
   const { execute, pending, error } = useAsyncAction();
+  const navigate = usePageNavigation();
   const text = useRoutineWorkLabels();
   const [execution, setExecution] = useState<RoutineWorkExecution | null>(null);
   const [ledgerPreviews, setLedgerPreviews] = useState<Record<string, LedgerUpsertPreview>>({});
 
   const refresh = async () => {
     const result = await routineWorkApi.get(workItemId);
-    setExecution(result.execution);
-    const previews = await routineWorkApi.listLedgerPreviews(result.execution.run.id);
+    let nextExecution = result.execution;
+    if (nextExecution.recovery?.kind === "retry_after_source_review") {
+      try {
+        const resumed = await routineWorkApi.resumeRecovery(workItemId, nextExecution.run.revision);
+        nextExecution = resumed.execution;
+        if (resumed.resumed) onChanged();
+      } catch {
+        // The recovery intent is persisted by the service. A later refresh can
+        // safely try again without relying on this browser session.
+      }
+    }
+    setExecution(nextExecution);
+    const previews = await routineWorkApi.listLedgerPreviews(nextExecution.run.id);
     setLedgerPreviews(Object.fromEntries(
       previews.previews
         .filter((preview) => preview.routineStepKey)
@@ -90,6 +103,69 @@ export default function RoutineWorkController({
       onChanged();
     });
   };
+  const bindLedger = (stepKey: string, ledgerDefinitionId: string) => {
+    let nextExecution: RoutineWorkExecution | null = null;
+    let preview: LedgerUpsertPreview | null = null;
+    void execute(async () => {
+      const bound = await routineWorkApi.bindLedger(
+        workItemId,
+        stepKey,
+        execution.run.revision,
+        ledgerDefinitionId,
+      );
+      nextExecution = bound.execution;
+      const previewed = await routineWorkApi.previewLedger(
+        ledgerDefinitionId,
+        bound.execution.run.id,
+        stepKey,
+      );
+      preview = previewed.preview;
+      return previewed;
+    }).then((ok) => {
+      if (nextExecution) {
+        setExecution(nextExecution);
+        onChanged();
+      }
+      if (ok && preview) {
+        setLedgerPreviews((current) => ({ ...current, [stepKey]: preview! }));
+      }
+    });
+  };
+  const navigateToWorkflowMemory = (anchor: "workflow-file-review" | "workflow-routine-library") => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("section", "workflowMemory");
+    url.searchParams.set("returnWorkItemId", workItemId);
+    if (execution.sourceId) url.searchParams.set("sourceId", execution.sourceId);
+    url.hash = anchor;
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    navigate("workflowMemory");
+    window.requestAnimationFrame?.(() => {
+      document.getElementById(anchor)?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    });
+  };
+  const openWorkflowMemory = (
+    anchor: "workflow-file-review" | "workflow-routine-library",
+    reviewStepKey?: string,
+  ) => {
+    if (!reviewStepKey) {
+      navigateToWorkflowMemory(anchor);
+      return;
+    }
+    let prepared: RoutineWorkExecution | null = null;
+    void execute(async () => {
+      const result = await routineWorkApi.requestSourceReview(
+        workItemId,
+        reviewStepKey,
+        execution.run.revision,
+      );
+      prepared = result.execution;
+      return result;
+    }).then((ok) => {
+      if (!ok || !prepared) return;
+      setExecution(prepared);
+      navigateToWorkflowMemory(anchor);
+    });
+  };
   return (
     <>
       <RoutineWorkPanel
@@ -112,6 +188,7 @@ export default function RoutineWorkController({
           routineWorkApi.complete(workItemId, stepKey, execution.run.revision))}
         onPreviewLedger={previewLedger}
         onCommitLedger={commitLedger}
+        onBindLedger={bindLedger}
         onRetry={(stepKey) => run(() =>
           routineWorkApi.retry(workItemId, stepKey, execution.run.revision))}
         onApproval={(stepKey, approved) => run(() =>
@@ -124,6 +201,7 @@ export default function RoutineWorkController({
             outcome,
             triggerArtifactIds,
           ))}
+        onOpenWorkflowMemory={openWorkflowMemory}
       />
       {error ? (
         <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 p-3" role="alert">
