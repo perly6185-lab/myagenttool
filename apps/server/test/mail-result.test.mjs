@@ -41,6 +41,18 @@ test("fetch output parses one message, carrying the body as data", () => {
   assert.match(parsed.body, /rm -rf/, "the body is carried, never executed");
 });
 
+test("fetch imports attachment metadata only and rejects forged identifiers", () => {
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({
+    messageId: "<m@x>",
+    attachments: [
+      { id: "attachment-1", name: "safe.pdf", contentType: "application/pdf", size: 1200, previewable: true, dataBase64: "must-not-survive" },
+      { id: "../../escape", name: "bad", contentType: "text/plain", size: 1, previewable: true },
+    ],
+  }) });
+  assert.deepEqual(parsed.attachments, [{ id: "attachment-1", name: "safe.pdf", contentType: "application/pdf", size: 1200, previewable: true }]);
+  assert(!JSON.stringify(parsed).includes("must-not-survive"));
+});
+
 test("fields are length-capped so a hostile sender cannot bloat state", () => {
   const parsed = parseMailApplicationResult({
     text: JSON.stringify({ messageId: "<m@x>", subject: "z".repeat(5000), body: "b".repeat(50000) }),

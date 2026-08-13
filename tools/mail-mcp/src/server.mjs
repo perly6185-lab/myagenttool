@@ -1,6 +1,4 @@
-import { ImapFlow } from "imapflow";
-import { simpleParser } from "mailparser";
-import { readCredential } from "./credential.mjs";
+import { fetch163ParsedMessage, with163Inbox } from "./imap-163.mjs";
 import { headerOf, messageRecordOf } from "./message.mjs";
 
 export const TOOL_NAMES = ["mail_list_unread", "mail_fetch"];
@@ -58,27 +56,9 @@ async function handle(message) {
   }
 }
 
-async function withInbox(action) {
-  const credential = readCredential();
-  const client = new ImapFlow({
-    host: "imap.163.com",
-    port: 993,
-    secure: true,
-    auth: { user: credential.username, pass: credential.authorizationCode },
-    logger: false,
-  });
-  try {
-    await client.connect();
-    const lock = await client.getMailboxLock("INBOX", { readOnly: true });
-    try { return await action(client); } finally { lock.release(); }
-  } finally {
-    if (client.usable) await client.logout().catch(() => client.close());
-  }
-}
-
 async function listUnread(args) {
   const limit = Number.isInteger(args.limit) ? Math.min(Math.max(args.limit, 1), 100) : 20;
-  return withInbox(async (client) => {
+  return with163Inbox(async (client) => {
     const uids = await client.search({ seen: false }, { uid: true });
     const selected = uids.slice(-limit).reverse();
     if (!selected.length) return { unread: [] };
@@ -91,22 +71,8 @@ async function listUnread(args) {
 async function fetchMessage(args) {
   const messageId = String(args.messageId ?? "").trim();
   if (!messageId) throw new Error("messageId is required");
-  return withInbox(async (client) => {
-    // IMAP HEADER search is a SUBSTRING match (RFC 3501), so `<a1@host>` also
-    // matches `<xa1@host>`; taking uids.at(-1) then returned the newest of any
-    // partial hit — a DIFFERENT message, whose body/threading mapped a reply
-    // onto the wrong issue (#1199). Confirm an EXACT Message-ID before fetching.
-    const uids = await client.search({ header: { "message-id": messageId } }, { uid: true });
-    if (!uids.length) throw new Error(`no message with Message-ID ${messageId}`);
-    const candidates = await client.fetchAll(uids, { envelope: true }, { uid: true });
-    const match = candidates.find((m) => m.envelope?.messageId === messageId);
-    if (!match) throw new Error(`no message with Message-ID ${messageId}`);
-    // Re-fetch with the source; guard the expunge race (fetchOne → false).
-    const message = await client.fetchOne(match.uid, { envelope: true, source: true }, { uid: true });
-    if (!message) throw new Error(`no message with Message-ID ${messageId}`);
-    const parsed = await simpleParser(message.source);
-    return messageRecordOf(message, parsed);
-  });
+  const { message, parsed } = await fetch163ParsedMessage(messageId);
+  return messageRecordOf(message, parsed);
 }
 
 function publicError(error) {

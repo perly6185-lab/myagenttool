@@ -17,12 +17,25 @@ export async function handleMailRoutes({
   sendConfirmedDraft,
   mailboxSnapshot,
   startMailboxSync,
+  setMailboxMessageRead,
   createMailboxDraft,
   updateMailboxDraft,
   deleteMailboxDraft,
 }) {
   if (req.method === "GET" && url.pathname === "/api/mailbox" && typeof mailboxSnapshot === "function") {
-    sendJson(res, 200, mailboxSnapshot({ actor }));
+    sendJson(res, 200, mailboxSnapshot({ actor, page: url.searchParams.get("page"), pageSize: url.searchParams.get("pageSize") }));
+    return true;
+  }
+
+  const readMatch = url.pathname.match(/^\/api\/mailbox\/messages\/([^/]+)\/read$/);
+  if (req.method === "PATCH" && readMatch && typeof setMailboxMessageRead === "function") {
+    const body = await readJson(req);
+    if (typeof body?.read !== "boolean") {
+      sendJson(res, 400, { error: "mail_read_state_invalid" });
+      return true;
+    }
+    const result = setMailboxMessageRead({ messageId: decodeURIComponent(readMatch[1]), read: body.read, actor });
+    sendJson(res, result.status, result.body);
     return true;
   }
 

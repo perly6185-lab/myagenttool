@@ -11,6 +11,7 @@ import { overlayFromChrome, readSkinSettings, registerSkinChrome } from "./skin-
 import { registerContainedAssetOpen, registerContainedAssetReveal, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, registerWorkflowSourceFolderPicker } from "./local-office-document-picker.mjs";
 import { registerWorkflowCaseIntake } from "./workflow-case-intake.mjs";
 import { registerMailAccountConnector } from "./mail-account-connector.mjs";
+import { registerMailAttachmentHandler } from "./mail-attachment-handler.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -210,6 +211,15 @@ function createMainWindow(url, serverUrl) {
     verifyCredential: async (credential) => {
       const module = await import(pathToFileURL(join(paths.runtimeRoot, "tools", "mail-mcp", "src", "verify-163.mjs")).href);
       return module.verify163Credential(credential);
+    },
+  });
+  registerMailAttachmentHandler({
+    ipcMain,
+    dialog,
+    getWindow: () => mainWindow,
+    readAttachment: async (input) => {
+      const module = await import(pathToFileURL(join(paths.runtimeRoot, "tools", "mail-mcp", "src", "attachment-163.mjs")).href);
+      return module.read163Attachment(input);
     },
   });
   const chrome = readSkinSettings(skinStateDir());

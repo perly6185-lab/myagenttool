@@ -16,6 +16,9 @@ const MAX_SUBJECT = 400;
 const MAX_BODY = 20_000;
 const MAX_DRAFTS = 200;
 const MAX_MESSAGES = 500;
+const MAX_MESSAGE_STATES = 10_000;
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 50;
 const ACTIVE_SYNC_STATUSES = new Set(["queued", "waiting_for_local_approval", "dispatching", "running", "cancelling"]);
 
 const cap = (value, max) => typeof value === "string" ? value.slice(0, max) : "";
@@ -32,7 +35,7 @@ export function createMailboxService({
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
-  function snapshot({ actor = null } = {}) {
+  function snapshot({ actor = null, page = 1, pageSize = DEFAULT_PAGE_SIZE } = {}) {
     const teamId = actor?.teamId ?? null;
     const applications = (state.applications ?? []).filter((application) =>
       teamId == null || (application.ownerTeamId ?? "team_local") === teamId,
@@ -48,7 +51,13 @@ export function createMailboxService({
       sendEnabled: Boolean(mailSendEnabled()),
       credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [],
     });
-    const messages = mailboxMessages(results, state.mailThreads ?? {}).slice(0, MAX_MESSAGES);
+    const allMessages = mailboxMessages(
+      results,
+      state.mailThreads ?? {},
+      (state.mailMessageStates ?? []).filter((row) => teamId == null || (row.ownerTeamId ?? "team_local") === teamId),
+    ).slice(0, MAX_MESSAGES);
+    const pagination = mailboxPagination(allMessages.length, page, pageSize);
+    const messages = allMessages.slice(pagination.offset, pagination.offset + pagination.pageSize);
     const publicDrafts = drafts.map(publicDraft).sort(compareRecent);
 
     return {
@@ -56,15 +65,50 @@ export function createMailboxService({
       connection: mailboxConnection(accounts),
       sync: mailboxSync(state.invocations ?? [], accounts),
       folders: [
-        { id: "inbox", count: messages.length, unread: messages.filter((message) => message.unread).length },
+        { id: "inbox", count: allMessages.length, unread: allMessages.filter((message) => message.unread).length },
         { id: "drafts", count: publicDrafts.filter((draft) => draft.status === "draft").length },
         { id: "sent", count: publicDrafts.filter((draft) => draft.status === "sent").length },
         { id: "outbox", count: publicDrafts.filter((draft) => ["sending", "send_unconfirmed"].includes(draft.status)).length },
       ],
       messages,
+      pagination: publicPagination(pagination),
       drafts: publicDrafts,
       updatedAt: latestTimestamp([...results, ...drafts, ...applications]),
     };
+  }
+
+  function setMessageRead({ messageId, read = true, actor = null } = {}) {
+    const normalizedId = cap(String(messageId ?? "").trim(), MAX_RECIPIENT);
+    const teamId = actor?.teamId ?? "team_local";
+    if (!normalizedId) return { ok: false, status: 400, body: { error: "mail_message_invalid" } };
+    const visible = (state.applicationResults ?? []).some((record) =>
+      record.source === "mail_headers"
+      && (record.ownerTeamId ?? "team_local") === teamId
+      && recordContainsMessage(record, normalizedId),
+    );
+    if (!visible) return { ok: false, status: 404, body: { error: "mail_message_not_found" } };
+    runTx(() => {
+      state.mailMessageStates = (state.mailMessageStates ?? []).filter((row) =>
+        !(row.messageId === normalizedId && (row.ownerTeamId ?? "team_local") === teamId),
+      );
+      if (read !== false) {
+        const readAt = now();
+        state.mailMessageStates.unshift({
+          id: nextId("mailmsgstate"),
+          messageId: normalizedId,
+          ownerTeamId: teamId,
+          readAt,
+          createdAt: readAt,
+          updatedAt: readAt,
+        });
+        const ownRows = state.mailMessageStates
+          .filter((row) => (row.ownerTeamId ?? "team_local") === teamId)
+          .slice(0, MAX_MESSAGE_STATES);
+        const otherRows = state.mailMessageStates.filter((row) => (row.ownerTeamId ?? "team_local") !== teamId);
+        state.mailMessageStates = [...ownRows, ...otherRows];
+      }
+    });
+    return { ok: true, status: 200, body: { messageId: normalizedId, unread: read === false } };
   }
 
   function startSync({ actor = null } = {}) {
@@ -187,7 +231,7 @@ export function createMailboxService({
     return draft;
   }
 
-  return { snapshot, startSync, createDraft, updateDraft, deleteDraft };
+  return { snapshot, startSync, setMessageRead, createDraft, updateDraft, deleteDraft };
 }
 
 export function mailSendApprovalTarget(draft) {
@@ -284,7 +328,7 @@ function mailboxSync(invocations, accounts) {
   };
 }
 
-function mailboxMessages(results, threads) {
+function mailboxMessages(results, threads, readStates = []) {
   const messages = new Map();
   const ordered = [...results].sort((left, right) => timestampOf(left) - timestampOf(right));
   for (const record of ordered) {
@@ -294,7 +338,27 @@ function mailboxMessages(results, threads) {
       mergeMessage(messages, record.data, record, true, threads);
     }
   }
-  return [...messages.values()].sort(compareRecent);
+  const readIds = new Set(readStates.filter((row) => row?.readAt).map((row) => row.messageId));
+  return [...messages.values()]
+    .map((message) => readIds.has(message.messageId) ? { ...message, unread: false } : message)
+    .sort(compareRecent);
+}
+
+function recordContainsMessage(record, messageId) {
+  if (record.data?.kind === "message") return record.data.messageId === messageId;
+  if (record.data?.kind === "unread_headers") return (record.data.headers ?? []).some((header) => header.messageId === messageId);
+  return false;
+}
+
+function mailboxPagination(total, requestedPage, requestedPageSize) {
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(requestedPageSize, 10) || DEFAULT_PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(totalPages, Math.max(1, Number.parseInt(requestedPage, 10) || 1));
+  return { page, pageSize, total, totalPages, offset: (page - 1) * pageSize };
+}
+
+function publicPagination({ page, pageSize, total, totalPages }) {
+  return { page, pageSize, total, totalPages, hasPrevious: page > 1, hasNext: page < totalPages };
 }
 
 function mergeMessage(messages, input, record, unread, threads) {
@@ -315,6 +379,8 @@ function mergeMessage(messages, input, record, unread, threads) {
     fetched: Boolean(body),
     inReplyTo: cap(input?.inReplyTo, MAX_RECIPIENT) || previous.inReplyTo || null,
     references: Array.isArray(input?.references) ? input.references.slice(0, 50) : previous.references ?? [],
+    attachments: Array.isArray(input?.attachments) ? input.attachments.slice(0, 50) : previous.attachments ?? [],
+    attachmentMetadataLoaded: input?.attachmentMetadataLoaded === true || previous.attachmentMetadataLoaded === true,
     applicationId: record.applicationId ?? previous.applicationId ?? null,
     issueNumber: threads?.[messageId]?.issueNumber ?? null,
     createdAt: record.createdAt ?? previous.createdAt ?? date,

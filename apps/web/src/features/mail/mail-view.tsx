@@ -3,9 +3,15 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Eye,
   FilePenLine,
   Inbox,
   Mail,
+  MailOpen,
+  Paperclip,
   PenLine,
   RefreshCw,
   Reply,
@@ -17,6 +23,7 @@ import { SectionHeading } from "@/components/common/section-heading";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { api, ApiError, type MailboxDraft, type MailboxMessage } from "@/lib/api-client";
+import { mailApi } from "@/features/mail/mail-api";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { cn } from "@/lib/cn";
 
@@ -33,7 +40,23 @@ const COPY = {
     syncComplete: "收取完成，收件箱已更新。",
     syncFailed: "暂时无法收取新邮件。已有邮件仍然保留，请重试；若持续失败，请检查连接。",
     lastSynced: "上次收取：{{time}}",
-    search: "搜索发件人、主题或正文",
+    search: "搜索当前页的发件人、主题或正文",
+    previousPage: "上一页",
+    nextPage: "下一页",
+    pageStatus: "第 {{page}} / {{total}} 页",
+    markUnread: "标为未读",
+    markReadFailed: "暂时无法更新已读状态，请重试。",
+    attachments: "附件",
+    previewAttachment: "预览",
+    downloadAttachment: "下载",
+    previewTitle: "附件预览",
+    previewUnsupported: "此附件不能在应用内安全预览，请下载后使用可信应用打开。",
+    previewTooLarge: "附件太大，无法在应用内预览；你仍可选择下载。",
+    attachmentUnavailable: "暂时无法读取附件，请稍后重试。",
+    downloadSaved: "附件已保存：{{name}}",
+    downloadTooLarge: "附件超过当前 25 MB 下载限制。",
+    desktopAttachmentOnly: "请在 MyAgentTool 桌面版中预览或下载附件。",
+    localReadHint: "已读状态仅保存在 MyAgentTool，不会修改服务商邮箱。",
     connected: "已连接",
     receiveOnly: "当前可收件；发件权限尚未连接",
     folders: { inbox: "收件箱", drafts: "草稿", sent: "已发送", outbox: "发件箱" },
@@ -123,7 +146,23 @@ const COPY = {
     syncComplete: "Mail received. Your inbox is up to date.",
     syncFailed: "New mail could not be retrieved. Existing mail is safe. Try again, then check the connection if it continues.",
     lastSynced: "Last checked: {{time}}",
-    search: "Search sender, subject, or body",
+    search: "Search sender, subject, or body on this page",
+    previousPage: "Previous",
+    nextPage: "Next",
+    pageStatus: "Page {{page}} of {{total}}",
+    markUnread: "Mark unread",
+    markReadFailed: "The read state could not be updated. Try again.",
+    attachments: "Attachments",
+    previewAttachment: "Preview",
+    downloadAttachment: "Download",
+    previewTitle: "Attachment preview",
+    previewUnsupported: "This attachment cannot be previewed safely in the app. Download it and open it with a trusted application.",
+    previewTooLarge: "This attachment is too large for in-app preview. You can still download it.",
+    attachmentUnavailable: "The attachment is temporarily unavailable. Try again.",
+    downloadSaved: "Attachment saved: {{name}}",
+    downloadTooLarge: "The attachment exceeds the current 25 MB download limit.",
+    desktopAttachmentOnly: "Use the MyAgentTool desktop app to preview or download attachments.",
+    localReadHint: "Read state is stored in MyAgentTool and does not change your provider mailbox.",
     connected: "Connected",
     receiveOnly: "Receiving is ready; sending is not connected yet",
     folders: { inbox: "Inbox", drafts: "Drafts", sent: "Sent", outbox: "Outbox" },
@@ -209,7 +248,8 @@ export function MailView() {
   const { i18n } = useAppTranslation();
   const copy = i18n.language.startsWith("zh") ? COPY.zh : COPY.en;
   const queryClient = useQueryClient();
-  const mailbox = useQuery({ queryKey: ["mailbox"], queryFn: api.getMailbox, refetchInterval: 4_000 });
+  const [page, setPage] = useState(1);
+  const mailbox = useQuery({ queryKey: ["mailbox", page], queryFn: () => mailApi.getMailbox(page), refetchInterval: 4_000 });
   const [folder, setFolder] = useState<FolderId>("inbox");
   const [query, setQuery] = useState("");
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
@@ -219,6 +259,7 @@ export function MailView() {
   const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string } | null>(null);
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [pendingSyncId, setPendingSyncId] = useState<string | null>(null);
+  const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview | null>(null);
   const data = mailbox.data;
   const account = data?.accounts.find((item) => item.canReceive) ?? data?.accounts[0] ?? null;
   const selectedMessage = data?.messages.find((message) => message.id === selectedMessageId) ?? null;
@@ -237,6 +278,10 @@ export function MailView() {
       setNotice({ tone: "error", text: copy.syncFailed });
     }
   }, [copy.syncComplete, copy.syncFailed, data?.sync?.invocationId, data?.sync?.status, pendingSyncId]);
+
+  useEffect(() => {
+    if (data?.pagination && data.pagination.page !== page) setPage(data.pagination.page);
+  }, [data?.pagination, page]);
 
   const visibleMessages = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -266,7 +311,12 @@ export function MailView() {
 
   async function openMessage(message: MailboxMessage) {
     setSelectedMessageId(message.id);
-    if (message.fetched || !account?.fetchCapability || busy === "fetch") return;
+    if (message.unread) {
+      void mailApi.setMessageRead(message.messageId, true)
+        .then(() => queryClient.invalidateQueries({ queryKey: ["mailbox"] }))
+        .catch(() => setNotice({ tone: "error", text: copy.markReadFailed }));
+    }
+    if ((message.fetched && message.attachmentMetadataLoaded) || !account?.fetchCapability || busy === "fetch") return;
     setBusy("fetch");
     try {
       await api.invokeCapability(account.fetchCapability, { messageId: message.messageId });
@@ -275,6 +325,39 @@ export function MailView() {
       setNotice({ tone: "error", text: copy.bodyUnavailable });
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function markUnread(message: MailboxMessage) {
+    try {
+      await mailApi.setMessageRead(message.messageId, false);
+      await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
+      setSelectedMessageId(null);
+    } catch {
+      setNotice({ tone: "error", text: copy.markReadFailed });
+    }
+  }
+
+  async function previewAttachment(message: MailboxMessage, attachment: MailboxMessage["attachments"][number]) {
+    const bridge = window.myagenttoolDesktop;
+    if (!bridge?.previewMailAttachment) { setNotice({ tone: "error", text: copy.desktopAttachmentOnly }); return; }
+    const result = await bridge.previewMailAttachment({ messageId: message.messageId, attachmentId: attachment.id }).catch(() => ({ ok: false as const, error: "attachment_unavailable" as const }));
+    if (!result.ok) {
+      const text = result.error === "preview_not_supported" ? copy.previewUnsupported : result.error === "preview_too_large" ? copy.previewTooLarge : copy.attachmentUnavailable;
+      setNotice({ tone: "error", text });
+      return;
+    }
+    setAttachmentPreview(result.preview);
+  }
+
+  async function downloadAttachment(message: MailboxMessage, attachment: MailboxMessage["attachments"][number]) {
+    const bridge = window.myagenttoolDesktop;
+    if (!bridge?.downloadMailAttachment) { setNotice({ tone: "error", text: copy.desktopAttachmentOnly }); return; }
+    const result = await bridge.downloadMailAttachment({ messageId: message.messageId, attachmentId: attachment.id }).catch(() => ({ ok: false as const, error: "attachment_unavailable" as const }));
+    if (!result.ok) {
+      setNotice({ tone: "error", text: result.error === "download_too_large" ? copy.downloadTooLarge : copy.attachmentUnavailable });
+    } else if (result.saved) {
+      setNotice({ tone: "info", text: copy.downloadSaved.replace("{{name}}", result.name ?? attachment.name) });
     }
   }
 
@@ -400,10 +483,11 @@ export function MailView() {
                   : <DraftRow key={(entry as MailboxDraft).id} draft={entry as MailboxDraft} copy={copy} onOpen={folder === "drafts" ? editDraft : undefined} />)
                   : <div className="p-8 text-center"><p className="font-medium">{folder === "inbox" ? copy.emptyInbox : copy.emptyFolder}</p>{folder === "inbox" ? <p className="mt-1 text-sm text-muted-foreground">{copy.emptyInboxHint}</p> : null}</div>}
               </div>
+              {folder === "inbox" && data.pagination.totalPages > 1 ? <div className="flex items-center justify-between gap-2 border-t p-2"><Button size="sm" variant="ghost" disabled={!data.pagination.hasPrevious} onClick={() => { setPage((value) => Math.max(1, value - 1)); setSelectedMessageId(null); }}><ChevronLeft />{copy.previousPage}</Button><span className="text-xs text-muted-foreground">{copy.pageStatus.replace("{{page}}", String(data.pagination.page)).replace("{{total}}", String(data.pagination.totalPages))}</span><Button size="sm" variant="ghost" disabled={!data.pagination.hasNext} onClick={() => { setPage((value) => value + 1); setSelectedMessageId(null); }}>{copy.nextPage}<ChevronRight /></Button></div> : null}
             </section>
 
             <section className={cn("min-w-0", selectedMessage ? "block" : "hidden lg:block")} aria-label={selectedMessage?.subject ?? copy.choose}>
-              {selectedMessage ? <MessageDetail message={selectedMessage} copy={copy} loading={busy === "fetch" && !selectedMessage.fetched} onBack={() => setSelectedMessageId(null)} onReply={() => startCompose(selectedMessage)} /> : <div className="grid h-full min-h-80 place-items-center p-8 text-center text-sm text-muted-foreground"><div><Mail className="mx-auto mb-3 size-8 opacity-40" />{copy.choose}</div></div>}
+              {selectedMessage ? <MessageDetail message={selectedMessage} copy={copy} loading={busy === "fetch" && !selectedMessage.fetched} onBack={() => setSelectedMessageId(null)} onReply={() => startCompose(selectedMessage)} onMarkUnread={() => void markUnread(selectedMessage)} onPreview={(attachment) => void previewAttachment(selectedMessage, attachment)} onDownload={(attachment) => void downloadAttachment(selectedMessage, attachment)} /> : <div className="grid h-full min-h-80 place-items-center p-8 text-center text-sm text-muted-foreground"><div><Mail className="mx-auto mb-3 size-8 opacity-40" />{copy.choose}</div></div>}
             </section>
           </div>
         </>
@@ -415,6 +499,7 @@ export function MailView() {
         void queryClient.invalidateQueries({ queryKey: ["mailbox"] });
         window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 2_000);
       }} />
+      <AttachmentPreviewModal copy={copy} preview={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
     </div>
   );
 }
@@ -474,6 +559,16 @@ interface ComposeState {
   references: string[];
 }
 
+interface AttachmentPreview {
+  id: string;
+  name: string;
+  contentType: string;
+  size: number;
+  kind: "image" | "text" | "pdf";
+  text?: string;
+  dataBase64?: string;
+}
+
 function MessageRow({ message, selected, onOpen }: { message: MailboxMessage; selected: boolean; onOpen: (message: MailboxMessage) => void }) {
   return <button type="button" onClick={() => void onOpen(message)} className={cn("block w-full border-b p-3 text-left hover:bg-muted/50", selected && "bg-muted", message.unread && "border-l-2 border-l-primary")}><div className="flex items-baseline justify-between gap-2"><span className={cn("truncate text-sm", message.unread && "font-semibold")}>{message.from}</span><time className="shrink-0 text-[11px] text-muted-foreground">{shortDate(message.date)}</time></div><p className={cn("mt-1 truncate text-sm", message.unread && "font-medium")}>{message.subject}</p><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{message.preview || "…"}</p></button>;
 }
@@ -483,8 +578,14 @@ function DraftRow({ draft, copy, onOpen }: { draft: MailboxDraft; copy: typeof C
   return onOpen ? <button type="button" onClick={() => onOpen(draft)} className="block w-full border-b p-3 text-left hover:bg-muted/50">{content}</button> : <article className="border-b p-3">{content}</article>;
 }
 
-function MessageDetail({ message, copy, loading, onBack, onReply }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; loading: boolean; onBack: () => void; onReply: () => void }) {
-  return <div className="flex h-full min-h-0 flex-col"><div className="border-b p-4"><Button className="mb-3 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold">{message.subject}</h2><p className="mt-2 break-words text-sm">{message.from}</p><time className="text-xs text-muted-foreground">{longDate(message.date)}</time></div><Button size="sm" variant="secondary" onClick={onReply}><Reply />{copy.reply}</Button></div>{message.issueNumber ? <p className="mt-3 text-xs text-primary">{copy.issue.replace("{{number}}", String(message.issueNumber))}</p> : null}</div><div className="border-b bg-amber-500/5 px-4 py-2 text-xs text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.untrusted}</div><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">{loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : message.body ? <div className="whitespace-pre-wrap break-words text-sm leading-7">{message.body}</div> : <p className="text-sm text-muted-foreground">{copy.bodyUnavailable}</p>}</div></div>;
+function MessageDetail({ message, copy, loading, onBack, onReply, onMarkUnread, onPreview, onDownload }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; loading: boolean; onBack: () => void; onReply: () => void; onMarkUnread: () => void; onPreview: (attachment: MailboxMessage["attachments"][number]) => void; onDownload: (attachment: MailboxMessage["attachments"][number]) => void }) {
+  return <div className="flex h-full min-h-0 flex-col"><div className="border-b p-4"><Button className="mb-3 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold">{message.subject}</h2><p className="mt-2 break-words text-sm">{message.from}</p><time className="text-xs text-muted-foreground">{longDate(message.date)}</time></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="ghost" onClick={onMarkUnread}><MailOpen />{copy.markUnread}</Button><Button size="sm" variant="secondary" onClick={onReply}><Reply />{copy.reply}</Button></div></div>{message.issueNumber ? <p className="mt-3 text-xs text-primary">{copy.issue.replace("{{number}}", String(message.issueNumber))}</p> : null}<p className="mt-2 text-[11px] text-muted-foreground">{copy.localReadHint}</p></div><div className="border-b bg-amber-500/5 px-4 py-2 text-xs text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.untrusted}</div><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">{loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : message.body ? <div className="whitespace-pre-wrap break-words text-sm leading-7">{message.body}</div> : <p className="text-sm text-muted-foreground">{copy.bodyUnavailable}</p>}{message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</p></div><div className="flex gap-2">{attachment.previewable ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}<Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button></div></article>)}</div></section> : null}</div></div>;
+}
+
+function AttachmentPreviewModal({ copy, preview, onClose }: { copy: typeof COPY.zh | typeof COPY.en; preview: AttachmentPreview | null; onClose: () => void }) {
+  if (!preview) return null;
+  const dataUrl = preview.dataBase64 ? `data:${preview.contentType};base64,${preview.dataBase64}` : null;
+  return <Modal open title={copy.previewTitle} description={`${preview.name} · ${formatBytes(preview.size)}`} size="lg" onClose={onClose} footer={<Button variant="secondary" onClick={onClose}>{copy.close}</Button>}><div className="max-h-[65vh] overflow-auto rounded-lg border bg-background p-3">{preview.kind === "text" ? <pre className="whitespace-pre-wrap break-words text-sm">{preview.text}</pre> : preview.kind === "image" && dataUrl ? <img src={dataUrl} alt={preview.name} className="mx-auto max-h-[58vh] max-w-full object-contain" /> : preview.kind === "pdf" && dataUrl ? <iframe title={preview.name} src={dataUrl} className="h-[58vh] w-full border-0" sandbox="" /> : null}</div></Modal>;
 }
 
 function ComposeModal({ copy, value, onChange, busy, canSend, onClose, onSave, onReview, onDelete }: { copy: typeof COPY.zh | typeof COPY.en; value: ComposeState | null; onChange: (value: ComposeState | null) => void; busy: string | null; canSend: boolean; onClose: () => void; onSave: () => void; onReview: () => void; onDelete: () => void }) {
@@ -500,3 +601,4 @@ function SendReviewModal({ copy, draft, pending, onClose, onSend }: { copy: type
 
 function shortDate(value: string | null) { const date = value ? new Date(value) : null; return date && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date) : ""; }
 function longDate(value: string | null) { const date = value ? new Date(value) : null; return date && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date) : ""; }
+function formatBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`; return `${(value / (1024 * 1024)).toFixed(1)} MB`; }

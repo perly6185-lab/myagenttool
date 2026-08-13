@@ -55,6 +55,7 @@ function harness({ mailSendEnabled = () => false } = {}) {
     ],
     mailThreads: { "<one@example.com>": { issueNumber: 99 } },
     mailDrafts: [],
+    mailMessageStates: [],
     invocations: [],
     events,
   };
@@ -95,6 +96,51 @@ test("mailbox snapshot turns imported mail into a deduplicated ordinary-user inb
   assert.equal(snapshot.messages[0].body, "Body text");
   assert.equal(snapshot.messages[0].issueNumber, 99);
   assert(!JSON.stringify(snapshot).includes("must not leak"), "foreign-team mail stays hidden");
+});
+
+test("inbox pagination is bounded and local read state updates counts without provider mutation", () => {
+  const { state, service } = harness();
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  const first = service.snapshot({ actor, page: 1, pageSize: 1 });
+  assert.equal(first.messages.length, 1);
+  assert.deepEqual(first.pagination, { page: 1, pageSize: 1, total: 2, totalPages: 2, hasPrevious: false, hasNext: true });
+  assert.equal(first.folders[0].unread, 2);
+
+  const marked = service.setMessageRead({ messageId: first.messages[0].messageId, read: true, actor });
+  assert.deepEqual(marked.body, { messageId: first.messages[0].messageId, unread: false });
+  assert.equal(state.mailMessageStates.length, 1);
+  assert.match(state.mailMessageStates[0].id, /^mailmsgstate_/);
+  const afterRead = service.snapshot({ actor, page: 1, pageSize: 1 });
+  assert.equal(afterRead.messages[0].unread, false);
+  assert.equal(afterRead.folders[0].unread, 1);
+
+  service.setMessageRead({ messageId: first.messages[0].messageId, read: false, actor });
+  assert.equal(state.mailMessageStates.length, 0);
+  assert.equal(service.snapshot({ actor }).folders[0].unread, 2);
+});
+
+test("read state is tenant-scoped and unknown messages fail closed", () => {
+  const { state, service } = harness();
+  const foreign = service.setMessageRead({ messageId: "<one@example.com>", actor: { teamId: "team_b" } });
+  assert.equal(foreign.status, 404);
+  assert.equal(state.mailMessageStates.length, 0);
+  assert.equal(service.setMessageRead({ messageId: "<missing@example.com>", actor: { teamId: "team_a" } }).status, 404);
+});
+
+test("one tenant's read-state cap never evicts another tenant's records", () => {
+  const { state, service } = harness();
+  state.mailMessageStates = [
+    ...Array.from({ length: 10_000 }, (_, index) => ({
+      id: `mailmsgstate_a_${index}`,
+      messageId: `<old-${index}@example.com>`,
+      ownerTeamId: "team_a",
+      readAt: "2026-08-12T00:00:00.000Z",
+    })),
+    { id: "mailmsgstate_b", messageId: "<foreign@example.com>", ownerTeamId: "team_b", readAt: "2026-08-12T00:00:00.000Z" },
+  ];
+  service.setMessageRead({ messageId: "<one@example.com>", read: true, actor: { teamId: "team_a" } });
+  assert.equal(state.mailMessageStates.filter((row) => row.ownerTeamId === "team_a").length, 10_000);
+  assert.equal(state.mailMessageStates.some((row) => row.id === "mailmsgstate_b"), true);
 });
 
 test("one-click sync dispatches a server-owned capability and reuses the active run", () => {
