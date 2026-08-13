@@ -23,6 +23,7 @@ import { SectionHeading } from "@/components/common/section-heading";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { api, ApiError, type MailboxDraft, type MailboxMessage } from "@/lib/api-client";
+import { mailApi } from "@/features/mail/mail-api";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { cn } from "@/lib/cn";
 
@@ -248,7 +249,7 @@ export function MailView() {
   const copy = i18n.language.startsWith("zh") ? COPY.zh : COPY.en;
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
-  const mailbox = useQuery({ queryKey: ["mailbox", page], queryFn: () => api.getMailbox(page), refetchInterval: 4_000 });
+  const mailbox = useQuery({ queryKey: ["mailbox", page], queryFn: () => mailApi.getMailbox(page), refetchInterval: 4_000 });
   const [folder, setFolder] = useState<FolderId>("inbox");
   const [query, setQuery] = useState("");
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
@@ -311,7 +312,7 @@ export function MailView() {
   async function openMessage(message: MailboxMessage) {
     setSelectedMessageId(message.id);
     if (message.unread) {
-      void api.setMailMessageRead(message.messageId, true)
+      void mailApi.setMessageRead(message.messageId, true)
         .then(() => queryClient.invalidateQueries({ queryKey: ["mailbox"] }))
         .catch(() => setNotice({ tone: "error", text: copy.markReadFailed }));
     }
@@ -329,7 +330,7 @@ export function MailView() {
 
   async function markUnread(message: MailboxMessage) {
     try {
-      await api.setMailMessageRead(message.messageId, false);
+      await mailApi.setMessageRead(message.messageId, false);
       await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
       setSelectedMessageId(null);
     } catch {

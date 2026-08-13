@@ -23,6 +23,10 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
   return { ...actual, api: mocks };
 });
 
+vi.mock("@/features/mail/mail-api", () => ({
+  mailApi: { getMailbox: mocks.getMailbox, setMessageRead: mocks.setMailMessageRead },
+}));
+
 const connectedMailbox = {
   accounts: [{
     id: "app_163_mail_v2", provider: "netease", name: "163 Mail", status: "connected", statusDetail: "ready",

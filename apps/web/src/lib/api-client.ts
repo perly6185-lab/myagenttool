@@ -1790,9 +1790,7 @@ async function requestResult(
 }
 
 export const api = {
-  getMailbox: (page = 1, pageSize = 25) => request<MailboxSnapshot>("GET", `/api/mailbox?page=${encodeURIComponent(page)}&pageSize=${encodeURIComponent(pageSize)}`),
   syncMailbox: () => request<{ sync: MailboxSync; reused: boolean }>("POST", "/api/mailbox/sync"),
-  setMailMessageRead: (messageId: string, read: boolean) => request<{ messageId: string; unread: boolean }>("PATCH", `/api/mailbox/messages/${encodeURIComponent(messageId)}/read`, { read }),
   createMailDraft: (body: { to: string; subject: string; body: string; inReplyTo?: string | null; references?: string[] }) =>
     request<{ draft: MailboxDraft }>("POST", "/api/mail/drafts", body),
   updateMailDraft: (id: string, body: { to: string; subject: string; body: string }) =>
