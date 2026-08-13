@@ -18,6 +18,7 @@
 const MAX_HEADERS = 200;
 const MAX_FIELD = 998; // RFC 5322 line-length ceiling; generous but bounded.
 const MAX_BODY = 20000;
+const MAX_ATTACHMENTS = 50;
 
 const cap = (value, max) => (typeof value === "string" ? value.slice(0, max) : null);
 
@@ -64,14 +65,33 @@ export function parseMailApplicationResult({ text }) {
       : typeof payload.references === "string"
         ? payload.references.split(/\s+/).map((ref) => cap(ref, MAX_FIELD)).filter(Boolean).slice(0, 50)
         : [];
+    const attachments = Array.isArray(payload.attachments)
+      ? payload.attachments.slice(0, MAX_ATTACHMENTS).map(normalizeAttachment).filter(Boolean)
+      : [];
     return {
       kind: "message",
       ...header,
       inReplyTo: cap(payload.inReplyTo, MAX_FIELD),
       references,
       body: cap(payload.body, MAX_BODY) ?? "",
+      attachments,
+      attachmentMetadataLoaded: true,
     };
   }
 
   return null;
+}
+
+function normalizeAttachment(value) {
+  if (!value || typeof value !== "object") return null;
+  const id = cap(value.id, 100);
+  const name = cap(value.name, 255);
+  if (!id || !name || !/^attachment-[1-9][0-9]*$/.test(id)) return null;
+  return {
+    id,
+    name,
+    contentType: cap(value.contentType, 127) ?? "application/octet-stream",
+    size: Number.isFinite(value.size) ? Math.max(0, Math.min(Number(value.size), 25 * 1024 * 1024)) : 0,
+    previewable: value.previewable === true,
+  };
 }

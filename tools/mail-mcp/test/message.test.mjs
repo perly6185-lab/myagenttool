@@ -70,6 +70,18 @@ test("messageRecordOf falls back to html when a message carries no text part", (
   assert.equal(empty.body, "", "a bodyless message reads as empty, not undefined");
 });
 
+test("messageRecordOf exposes bounded attachment metadata but never bytes", () => {
+  const record = messageRecordOf({ envelope }, { text: "body", attachments: [
+    { filename: "diagram.png", contentType: "image/png", size: 1234, content: Buffer.from("secret-binary") },
+    { filename: "macro.docm", contentType: "application/vnd.ms-word.document.macroenabled.12", size: 99, content: Buffer.from("macro") },
+  ] });
+  assert.deepEqual(record.attachments, [
+    { id: "attachment-1", name: "diagram.png", contentType: "image/png", size: 1234, previewable: true },
+    { id: "attachment-2", name: "macro.docm", contentType: "application/vnd.ms-word.document.macroenabled.12", size: 99, previewable: false },
+  ]);
+  assert(!JSON.stringify(record).includes("secret-binary"));
+});
+
 test("formatAddresses keeps a bare address and joins multiple senders", () => {
   assert.equal(formatAddresses([{ address: "noname@163.com" }]), "noname@163.com");
   assert.equal(

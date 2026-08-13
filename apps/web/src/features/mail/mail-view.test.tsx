@@ -7,6 +7,7 @@ import { i18n } from "@/lib/i18n";
 const mocks = vi.hoisted(() => ({
   getMailbox: vi.fn(),
   syncMailbox: vi.fn(),
+  setMailMessageRead: vi.fn(),
   invokeCapability: vi.fn(),
   createMailDraft: vi.fn(),
   updateMailDraft: vi.fn(),
@@ -34,8 +35,9 @@ const connectedMailbox = {
   messages: [{
     id: "<one@example.com>", messageId: "<one@example.com>", from: "Alice <alice@example.com>", subject: "Project update",
     date: "2026-08-13T01:00:00.000Z", body: "The latest project update is attached.", preview: "The latest project update is attached.",
-    unread: true, fetched: true, inReplyTo: null, references: [], applicationId: "app_163_mail_v2", issueNumber: null, createdAt: "2026-08-13T01:00:00.000Z",
+    unread: true, fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 5, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, createdAt: "2026-08-13T01:00:00.000Z",
   }],
+  pagination: { page: 1, pageSize: 25, total: 1, totalPages: 1, hasPrevious: false, hasNext: false },
   drafts: [],
   updatedAt: "2026-08-13T01:00:00.000Z",
 };
@@ -49,6 +51,7 @@ beforeEach(async () => {
   await i18n.changeLanguage("zh-CN");
   mocks.getMailbox.mockResolvedValue(connectedMailbox);
   mocks.syncMailbox.mockResolvedValue({ sync: { status: "syncing", invocationId: "inv_sync", lastCompletedAt: null, lastSucceededAt: null }, reused: false });
+  mocks.setMailMessageRead.mockResolvedValue({ messageId: "<one@example.com>", unread: false });
   mocks.invokeCapability.mockResolvedValue({ invocationId: "inv_1", status: "queued" });
   mocks.createMailDraft.mockResolvedValue({ draft: {
     id: "maildraft_1", status: "draft", revision: 1, origin: "user", to: "bob@example.com", subject: "Hello", body: "Message body",
@@ -66,11 +69,51 @@ describe("MailView ordinary-user flow", () => {
     renderView();
     expect(await screen.findByText("Project update")).toBeTruthy();
     fireEvent.click(screen.getByText("Project update"));
+    await waitFor(() => expect(mocks.setMailMessageRead).toHaveBeenCalledWith("<one@example.com>", true));
     expect(screen.getAllByText("The latest project update is attached.").length).toBeGreaterThan(1);
     expect(screen.getByText(/系统只把它当作内容展示/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "回复" }));
     expect(screen.getByRole("dialog", { name: "写邮件" })).toBeTruthy();
     expect((screen.getByLabelText("收件人") as HTMLInputElement).value).toBe("Alice <alice@example.com>");
+  });
+
+  it("previews and downloads attachment content only through the desktop bridge", async () => {
+    const previewMailAttachment = vi.fn().mockResolvedValue({ ok: true, preview: { id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 5, kind: "text", text: "hello" } });
+    const downloadMailAttachment = vi.fn().mockResolvedValue({ ok: true, saved: true, name: "notes.txt" });
+    window.myagenttoolDesktop = { previewMailAttachment, downloadMailAttachment };
+    renderView();
+    fireEvent.click(await screen.findByText("Project update"));
+    fireEvent.click(await screen.findByRole("button", { name: "预览" }));
+    expect(await screen.findByRole("dialog", { name: "附件预览" })).toBeTruthy();
+    expect(screen.getByText("hello")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "关闭" }).at(-1)!);
+    fireEvent.click(screen.getByRole("button", { name: "下载" }));
+    await waitFor(() => expect(downloadMailAttachment).toHaveBeenCalledWith({ messageId: "<one@example.com>", attachmentId: "attachment-1" }));
+    expect(await screen.findByText("附件已保存：notes.txt")).toBeTruthy();
+  });
+
+  it("moves between bounded inbox pages without making users change a page size", async () => {
+    const secondPage = {
+      ...connectedMailbox,
+      messages: [{
+        ...connectedMailbox.messages[0],
+        id: "<two@example.com>",
+        messageId: "<two@example.com>",
+        subject: "Second page message",
+      }],
+      pagination: { page: 2, pageSize: 25, total: 26, totalPages: 2, hasPrevious: true, hasNext: false },
+    };
+    mocks.getMailbox.mockImplementation((page = 1) => Promise.resolve(page === 2 ? secondPage : {
+      ...connectedMailbox,
+      pagination: { page: 1, pageSize: 25, total: 26, totalPages: 2, hasPrevious: false, hasNext: true },
+    }));
+    renderView();
+    await screen.findByText("Project update");
+    expect(screen.getByText("第 1 / 2 页")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("Second page message")).toBeTruthy();
+    expect(mocks.getMailbox).toHaveBeenCalledWith(2);
+    expect((screen.getByRole("button", { name: "上一页" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("keeps one-click receiving busy until the real sync completes", async () => {

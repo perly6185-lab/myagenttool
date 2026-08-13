@@ -59,6 +59,8 @@ export interface MailboxMessage {
   fetched: boolean;
   inReplyTo: string | null;
   references: string[];
+  attachments: Array<{ id: string; name: string; contentType: string; size: number; previewable: boolean }>;
+  attachmentMetadataLoaded: boolean;
   applicationId: string | null;
   issueNumber: number | null;
   createdAt: string | null;
@@ -87,6 +89,7 @@ export interface MailboxSnapshot {
   sync: MailboxSync;
   folders: Array<{ id: "inbox" | "drafts" | "sent" | "outbox"; count: number; unread?: number }>;
   messages: MailboxMessage[];
+  pagination: { page: number; pageSize: number; total: number; totalPages: number; hasPrevious: boolean; hasNext: boolean };
   drafts: MailboxDraft[];
   updatedAt: string | null;
 }
@@ -1787,8 +1790,9 @@ async function requestResult(
 }
 
 export const api = {
-  getMailbox: () => request<MailboxSnapshot>("GET", "/api/mailbox"),
+  getMailbox: (page = 1, pageSize = 25) => request<MailboxSnapshot>("GET", `/api/mailbox?page=${encodeURIComponent(page)}&pageSize=${encodeURIComponent(pageSize)}`),
   syncMailbox: () => request<{ sync: MailboxSync; reused: boolean }>("POST", "/api/mailbox/sync"),
+  setMailMessageRead: (messageId: string, read: boolean) => request<{ messageId: string; unread: boolean }>("PATCH", `/api/mailbox/messages/${encodeURIComponent(messageId)}/read`, { read }),
   createMailDraft: (body: { to: string; subject: string; body: string; inReplyTo?: string | null; references?: string[] }) =>
     request<{ draft: MailboxDraft }>("POST", "/api/mail/drafts", body),
   updateMailDraft: (id: string, body: { to: string; subject: string; body: string }) =>

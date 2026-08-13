@@ -51,5 +51,26 @@ export function messageRecordOf(message, parsed) {
     inReplyTo: message.envelope?.inReplyTo ?? null,
     references: Array.isArray(references) ? references.filter(Boolean) : [references].filter(Boolean),
     body: parsed?.text ?? parsed?.html ?? "",
+    attachments: (parsed?.attachments ?? []).slice(0, 50).map(attachmentMetadataOf),
   };
+}
+
+export function attachmentMetadataOf(attachment, index) {
+  const name = String(attachment?.filename ?? `attachment-${Number(index) + 1}`).slice(0, 255);
+  const contentType = String(attachment?.contentType ?? "application/octet-stream").toLowerCase().slice(0, 127);
+  const size = Number.isFinite(attachment?.size) ? Math.max(0, Number(attachment.size)) : attachment?.content?.length ?? 0;
+  return {
+    id: `attachment-${Number(index) + 1}`,
+    name,
+    contentType,
+    size,
+    previewable: previewKind(contentType) !== null,
+  };
+}
+
+export function previewKind(contentType) {
+  if (["image/png", "image/jpeg", "image/gif", "image/webp"].includes(contentType)) return "image";
+  if (contentType === "text/plain") return "text";
+  if (contentType === "application/pdf") return "pdf";
+  return null;
 }

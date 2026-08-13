@@ -4352,6 +4352,7 @@ export function createServerRuntimeServices({
     sendConfirmedDraft,
     mailboxSnapshot: mailboxService.snapshot,
     startMailboxSync: mailboxService.startSync,
+    setMailboxMessageRead: mailboxService.setMessageRead,
     createMailboxDraft: mailboxService.createDraft,
     updateMailboxDraft: mailboxService.updateDraft,
     deleteMailboxDraft: mailboxService.deleteDraft,
