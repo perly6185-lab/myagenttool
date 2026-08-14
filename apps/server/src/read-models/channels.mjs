@@ -12,6 +12,7 @@ export function channelOperations({
   channelEvents = [],
   channelConversations = [],
   channelDeliveries = [],
+  channelTaskThreads = [],
   readinessForChannel = null,
 } = {}) {
   const byChannel = (rows, channelId) => rows.filter((row) => row?.channelId === channelId);
@@ -19,13 +20,31 @@ export function channelOperations({
   return channels.map((channel) => {
     const events = byChannel(channelEvents, channel.id);
     const deliveries = byChannel(channelDeliveries, channel.id);
+    const taskThreads = byChannel(channelTaskThreads, channel.id);
     const failed = deliveries.filter((row) => row.status === "failed_terminal");
+    const taskSummary = {
+      total: taskThreads.length,
+      queued: taskThreads.filter((row) => row.status === "queued").length,
+      running: taskThreads.filter((row) => row.status === "running").length,
+      waitingApproval: taskThreads.filter((row) => ["awaiting_confirmation", "waiting_approval"].includes(row.status)).length,
+      waitingUser: taskThreads.filter((row) => row.status === "waiting_user").length,
+      humanTakeover: taskThreads.filter((row) => row.status === "human_takeover").length,
+      succeeded: taskThreads.filter((row) => row.status === "succeeded").length,
+      failed: taskThreads.filter((row) => row.status === "failed").length,
+      cancelled: taskThreads.filter((row) => row.status === "cancelled").length,
+    };
+    taskSummary.active = taskSummary.queued
+      + taskSummary.running
+      + taskSummary.waitingApproval
+      + taskSummary.waitingUser
+      + taskSummary.humanTakeover;
     const readiness = typeof readinessForChannel === "function" ? readinessForChannel(channel) : (channel.readiness ?? {});
     const readinessValues = Object.values(readiness);
     const ready = readinessValues.length > 0 && readinessValues.every(Boolean);
     const lastActivityAt = [
       ...events.map((row) => row.receivedAt),
       ...deliveries.map((row) => row.updatedAt),
+      ...taskThreads.map((row) => row.lastActivityAt ?? row.updatedAt ?? row.createdAt),
     ]
       .filter(Boolean)
       .sort()
@@ -35,7 +54,7 @@ export function channelOperations({
     // "attention" when enabled-but-not-ready or carrying terminal failures.
     let health = "ok";
     if (channel.status !== "enabled") health = "idle";
-    else if (!ready || failed.length > 0) health = "attention";
+    else if (!ready || failed.length > 0 || taskSummary.failed > 0) health = "attention";
 
     return {
       id: channel.id,
@@ -50,6 +69,7 @@ export function channelOperations({
       statusCapability: channel.statusCapability ?? null,
       // The project /task files issues into (null = /task disabled for this channel).
       taskProjectId: channel.taskProjectId ?? null,
+      operationMode: channel.operationMode === "team" ? "team" : "personal",
       taskAutoRoute: Boolean(channel.taskAutoRoute),
       taskDailyLimit: Number.isInteger(channel.taskDailyLimit) ? channel.taskDailyLimit : 50,
       taskDayDate: channel.taskDayDate ?? null,
@@ -63,6 +83,7 @@ export function channelOperations({
         failedDeliveries: failed.length,
         injectionFlagged: events.filter((row) => row.injectionSuspicious).length,
       },
+      taskSummary,
       lastActivityAt,
     };
   });

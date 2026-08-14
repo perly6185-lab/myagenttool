@@ -38,6 +38,7 @@ const MAX_CHANNEL_EVENTS = 2000;
 // day) — the second limiter above the per-conversation 10/min. Owner-configurable.
 const DEFAULT_TASK_DAILY_LIMIT = 50;
 const MAX_TASK_DAILY_LIMIT = 10_000;
+export const CHANNEL_OPERATION_MODES = Object.freeze(["personal", "team"]);
 
 function encodeInteractionCursor(value) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
@@ -191,17 +192,18 @@ export function createChannelService({
       // channel; the owner binding a project IS the authorization to file tasks
       // from this channel's (untrusted) inbound into that repo.
       taskProjectId: null,
-      // Trust model (default = capture, NOT auto-route): a /task is filed as a
-      // tracked REQUEST a human promotes to work. Opt-in to auto-route to file
-      // with the dispatcher label directly (no human in the loop).
-      taskAutoRoute: false,
+      // Personal channels are the default local-user experience: the owner is
+      // also the operator, so confirmed tasks enter execution directly. Team
+      // channels can opt back into capture/approval semantics.
+      operationMode: "personal",
+      taskAutoRoute: true,
       // Aggregate /task ceiling: at most this many per UTC day across all users.
       taskDailyLimit: DEFAULT_TASK_DAILY_LIMIT,
       taskDayDate: null, // the UTC day taskDayCount is counting
       taskDayCount: 0,
-      // In-channel /approve is requester==approver by construction (a conversation
-      // is one identity), so it's DISABLED by default — risky runs are approved in
-      // the console by a separate operator. Owner opt-in for trusted channels.
+      // Personal mode removes the team-admin step for ordinary confirmed
+      // tasks. High-risk invocation approval remains a separate, explicit
+      // console action unless the owner opts into in-channel approval.
       allowSelfApprove: false,
       createdAt: now(),
       updatedAt: now(),
@@ -270,6 +272,16 @@ export function createChannelService({
           externalUserId: row.externalUserId,
           providerMessageId: row.providerMessageId,
           injectionSuspicious: Boolean(row.injectionSuspicious),
+          mediaFailure: row.mediaFailure
+            ? {
+              total: row.mediaFailure.total ?? 0,
+              failed: (row.mediaFailure.failed ?? []).map((item) => ({
+                kind: String(item?.kind ?? "file").slice(0, 40),
+                filename: String(item?.filename ?? "attachment").slice(0, 160),
+                code: String(item?.code ?? "media_import_failed").slice(0, 80),
+              })),
+            }
+            : null,
         };
       });
     const outbound = (state.channelDeliveries ?? [])
@@ -523,7 +535,7 @@ export function createChannelService({
   // Bind (or clear, projectId=null) the project that /task files GitHub issues
   // into. Owner-scoped + approval-gated like the allowlist; the bound project
   // must belong to the channel's owning team (no cross-team task filing).
-  function setChannelTaskProject({ channelId, projectId, terminalId = null, autoRoute, dailyLimit, approvalToken } = {}, actor = null) {
+  function setChannelTaskProject({ channelId, projectId, terminalId = null, autoRoute, dailyLimit, operationMode, approvalToken } = {}, actor = null) {
     const channel = findOwnChannel(channelId, actor);
     if (!channel) return notFound();
     const target = projectId == null ? null : (state.projects ?? []).find((p) => p.id === String(projectId));
@@ -545,6 +557,10 @@ export function createChannelService({
     if (target && !terminal) {
       return { ok: false, status: 400, body: { error: requestedTerminalId ? "terminal_not_found" : "terminal_binding_required" } };
     }
+    const requestedMode = operationMode == null ? null : String(operationMode).trim().toLowerCase();
+    if (requestedMode != null && !CHANNEL_OPERATION_MODES.includes(requestedMode)) {
+      return { ok: false, status: 400, body: { error: "invalid_channel_operation_mode", supported: CHANNEL_OPERATION_MODES } };
+    }
     const approval = typeof validateApprovalToken === "function"
       ? validateApprovalToken(approvalToken, { action: CHANNEL_TASK_PROJECT_ACTION, targetId: channel.id, actor })
       : { approved: false, reason: "approval_validator_unavailable" };
@@ -565,7 +581,9 @@ export function createChannelService({
     runTx(() => {
       channel.taskProjectId = target ? target.id : null;
       channel.taskTerminalId = terminal?.id ?? null;
-      if (autoRoute != null) channel.taskAutoRoute = Boolean(autoRoute);
+      if (requestedMode != null) channel.operationMode = requestedMode;
+      if (requestedMode === "personal") channel.taskAutoRoute = true;
+      else if (autoRoute != null) channel.taskAutoRoute = Boolean(autoRoute);
       if (dailyLimit != null) {
         const n = Number(dailyLimit);
         if (Number.isInteger(n) && n >= 0) channel.taskDailyLimit = Math.min(n, MAX_TASK_DAILY_LIMIT);
@@ -575,8 +593,8 @@ export function createChannelService({
         invocationId: null,
         type: "channel_task_project_set",
         level: "info",
-        message: `Channel ${channel.id}: task project ${target ? `bound to ${target.id}` : "cleared"}${autoRoute != null ? `, auto-route ${channel.taskAutoRoute ? "on" : "off"}` : ""}.`,
-        data: { channelId: channel.id, projectId: target?.id ?? null, terminalId: channel.taskTerminalId, autoRoute: channel.taskAutoRoute },
+        message: `Channel ${channel.id}: task project ${target ? `bound to ${target.id}` : "cleared"}${requestedMode != null ? `, mode ${channel.operationMode}` : ""}${autoRoute != null ? `, auto-route ${channel.taskAutoRoute ? "on" : "off"}` : ""}.`,
+        data: { channelId: channel.id, projectId: target?.id ?? null, terminalId: channel.taskTerminalId, operationMode: channel.operationMode, autoRoute: channel.taskAutoRoute },
       });
     });
     return { ok: true, status: 200, body: { channel: publicChannel(channel) } };
@@ -636,6 +654,7 @@ export function createChannelService({
     providerCreateTime = null,
     agentId = null,
     attachmentAssets = [],
+    mediaFailure = null,
     // Optional per-provider reply target (#1135): providers whose reply address
     // differs from the sender identity (Teams: {serviceUrl, conversationId})
     // pass this; it is stored on the conversation and used by delivery. Other
@@ -724,6 +743,18 @@ export function createChannelService({
         providerCreateTime: providerCreateTime ? String(providerCreateTime) : null,
         agentId: agentId ? String(agentId) : null,
         attachmentAssets: normalizedAttachments,
+        mediaFailure: mediaFailure && typeof mediaFailure === "object"
+          ? {
+            total: Math.max(0, Math.min(20, Number(mediaFailure.total) || 0)),
+            failed: Array.isArray(mediaFailure.failed)
+              ? mediaFailure.failed.slice(0, 20).map((item) => ({
+                kind: String(item?.kind ?? "file").slice(0, 40),
+                filename: String(item?.filename ?? "attachment").slice(0, 160),
+                code: String(item?.code ?? "media_import_failed").slice(0, 80),
+              }))
+              : [],
+          }
+          : null,
         status: "imported",
         injectionSuspicious: injection.suspicious,
         receivedAt: now(),

@@ -67,6 +67,16 @@ export function createServerState({ defaultProjectPath, now }) {
     // Channel /task requests awaiting a human "route or dismiss" decision (the
     // capture-then-promote trust model). A routed request becomes an auto-run.
     channelTaskRequests: [],
+    // Bounded natural-language routing counters. Raw classifier output is never
+    // stored; the conversation service records only this normalized aggregate.
+    channelIntentMetrics: {
+      total: 0,
+      byIntent: {},
+      bySource: {},
+      lowConfidence: 0,
+      ambiguous: 0,
+      updatedAt: null,
+    },
     articleImportJobs: [],
     // When this deployment began recording refusals — the honesty anchor so a
     // genuinely-zero window after this date reads as a trustworthy 0, not "unknown".
@@ -261,6 +271,8 @@ export function createServerState({ defaultProjectPath, now }) {
     channelEvents: [],
     channelConversations: [],
     channelDeliveries: [],
+    channelIntakeGroups: [],
+    channelTaskThreads: [],
     // iLink account metadata only. Bot tokens live in the credential store, not
     // in the durable public state snapshot.
     ilinkAccounts: [],
@@ -390,6 +402,16 @@ export function resetStateForSelfCheck({ state, now }) {
   state.channelEvents = [];
   state.channelConversations = [];
   state.channelDeliveries = [];
+  state.channelIntakeGroups = [];
+  state.channelTaskThreads = [];
+  state.channelIntentMetrics = {
+    total: 0,
+    byIntent: {},
+    bySource: {},
+    lowConfidence: 0,
+    ambiguous: 0,
+    updatedAt: null,
+  };
   state.ilinkAccounts = [];
   state.terminalRuntimeCapability = createTerminalRuntimeCapability();
 }

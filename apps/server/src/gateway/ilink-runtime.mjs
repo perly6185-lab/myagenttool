@@ -53,6 +53,8 @@ function publicAccount(account) {
     lastPollAt: account.lastPollAt ?? null,
     lastMessageAt: account.lastMessageAt ?? null,
     lastError: account.lastError ?? null,
+    workerFailureCount: Number(account.workerFailureCount ?? 0),
+    nextRetryAt: account.nextRetryAt ?? null,
     connectedAt: account.connectedAt ?? null,
     updatedAt: account.updatedAt ?? null,
     pairingExpiresAt: account.pairingExpiresAt ?? null,
@@ -102,6 +104,8 @@ export function createIlinkRuntime({
         lastPollAt: null,
         lastMessageAt: null,
         lastError: null,
+        workerFailureCount: 0,
+        nextRetryAt: null,
         connectedAt: null,
         updatedAt: now(),
         pairingExpiresAt: null,
@@ -119,6 +123,14 @@ export function createIlinkRuntime({
   function setAccount(account, patch) {
     Object.assign(account, patch, { updatedAt: now() });
     persistStateSoon();
+  }
+
+  function requireReauth(account, code = "auth_expired") {
+    if (!account) return;
+    setAccount(account, { status: "reauth_required", lastError: code });
+    // Do not let an expired credential keep a worker alive until the next
+    // process restart. A fresh login is the only supported recovery path.
+    stopWorker(account.id);
   }
 
   function readiness(channel) {
@@ -283,6 +295,7 @@ export function createIlinkRuntime({
     const candidates = ilinkMediaCandidates(message);
     const attachmentCandidates = [];
     const descriptions = [];
+    const failed = [];
     const voiceTexts = [];
     for (const candidate of candidates) {
       if (candidate.voiceText) voiceTexts.push(candidate.voiceText);
@@ -300,6 +313,7 @@ export function createIlinkRuntime({
       } catch (error) {
         const filename = mediaFilename(candidate, null);
         descriptions.push(`${mediaLabel(candidate, filename)}下载失败`);
+        failed.push({ kind: candidate.kind, filename, code: error?.code ?? "media_import_failed" });
         appendEvent({
           invocationId: null,
           type: "ilink_media_import_failed",
@@ -309,7 +323,7 @@ export function createIlinkRuntime({
         });
       }
     }
-    return { attachmentCandidates, descriptions, voiceTexts };
+    return { attachmentCandidates, descriptions, failed, voiceTexts };
   }
 
   async function processMessage(account, client, message) {
@@ -327,7 +341,9 @@ export function createIlinkRuntime({
     // P1 intentionally supports private chats only; group messages must not
     // accidentally create tasks or consume the pairing code.
     if (message?.group_id) return;
-    const media = mediaTypes.length ? await downloadMediaCandidates(client, message, channel.id) : { attachmentCandidates: [], descriptions: [], voiceTexts: [] };
+    const media = mediaTypes.length
+      ? await downloadMediaCandidates(client, message, channel.id)
+      : { attachmentCandidates: [], descriptions: [], failed: [], voiceTexts: [] };
     const content = [text, ...media.voiceTexts.filter((value) => !text.includes(value)), ...media.descriptions]
       .filter(Boolean)
       .join("\n")
@@ -356,6 +372,9 @@ export function createIlinkRuntime({
       providerCreateTime: message?.create_time_ms ? new Date(Number(message.create_time_ms)).toISOString() : null,
       replyContext: { contextToken: String(message?.context_token ?? "") },
       attachmentCandidates: media.attachmentCandidates,
+      mediaFailure: media.failed.length
+        ? { failed: media.failed, total: mediaTypes.filter((candidate) => candidate.media).length }
+        : null,
     });
     if (imported?.ok) setAccount(account, { lastMessageAt: now(), lastError: null });
   }
@@ -370,19 +389,42 @@ export function createIlinkRuntime({
       if (!channel || channel.status !== "enabled") break;
       try {
         const response = await client.getUpdates({ cursor: account.cursor ?? "", signal: worker.abortController.signal });
-        for (const message of response?.msgs ?? []) await processMessage(account, client, message);
+        let processingFailed = false;
+        for (const message of response?.msgs ?? []) {
+          try {
+            await processMessage(account, client, message);
+          } catch (error) {
+            processingFailed = true;
+            // One malformed provider message must not block the cursor or every
+            // later user message. The failure is durable evidence without
+            // persisting raw payloads or credentials.
+            appendEvent({
+              invocationId: null,
+              type: "ilink_message_processing_failed",
+              level: "error",
+              message: `iLink message processing failed (${error?.code ?? "message_processing_failed"}).`,
+              data: { channelId: account.channelId, code: error?.code ?? "message_processing_failed" },
+            });
+          }
+        }
         if (response?.get_updates_buf !== undefined) account.cursor = String(response.get_updates_buf ?? "");
-        setAccount(account, { lastPollAt: now(), lastError: null });
+        setAccount(account, { status: "connected", lastPollAt: now(), lastError: processingFailed ? "message_processing_failed" : null, workerFailureCount: 0, nextRetryAt: null });
         failures = 0;
       } catch (error) {
         if (worker.abortController.signal.aborted) break;
         failures += 1;
         if (error instanceof IlinkApiError && error.authExpired) {
-          setAccount(account, { status: "reauth_required", lastError: error.code });
+          requireReauth(account, error.code);
           break;
         }
-        setAccount(account, { status: "error", lastError: error?.code ?? "worker_error" });
-        await sleep(Math.min(30_000, 1_000 * 2 ** Math.min(failures, 5)));
+        const delay = Math.min(30_000, 1_000 * 2 ** Math.min(failures, 5));
+        setAccount(account, {
+          status: "error",
+          lastError: error?.code ?? "worker_error",
+          workerFailureCount: failures,
+          nextRetryAt: new Date(Date.now() + delay).toISOString(),
+        });
+        await sleep(delay);
       }
     }
     try { await client.notifyStop(); } catch { /* best effort */ }
@@ -390,7 +432,7 @@ export function createIlinkRuntime({
   }
 
   function startWorker(account) {
-    if (stopped || workers.has(account.id)) return;
+    if (stopped || workers.has(account.id) || account.status === "reauth_required") return;
     const abortController = new AbortController();
     const worker = { abortController };
     workers.set(account.id, worker);
@@ -404,7 +446,7 @@ export function createIlinkRuntime({
     for (const account of state.ilinkAccounts ?? []) {
       const channel = channelFor(account.channelId);
       if (channel?.provider !== "wechat_ilink") continue;
-      if (channel.status === "enabled" && credentials.load(account.id)?.botToken && !workers.has(account.id)) startWorker(account);
+      if (channel.status === "enabled" && account.status !== "reauth_required" && credentials.load(account.id)?.botToken && !workers.has(account.id)) startWorker(account);
       if (channel.status !== "enabled") stopWorker(account.id);
     }
   }
@@ -467,7 +509,7 @@ export function createIlinkRuntime({
       setAccount(account, { lastError: null });
       return { ok: true, msgid: result?.clientId ?? String(Date.now()) };
     } catch (error) {
-      if (error?.authExpired) setAccount(account, { status: "reauth_required", lastError: error.code });
+      if (error?.authExpired) requireReauth(account, error.code);
       return { ok: false, retryable: Boolean(error?.retryable), errcode: error?.code ?? "ilink_send_failed" };
     }
   }

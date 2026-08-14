@@ -264,6 +264,13 @@ if (typeof httpDependencies.sweepWorkItemAutoScheduler === "function") {
   sweepAutoScheduler();
   setInterval(sweepAutoScheduler, 10_000).unref?.();
 }
+if (typeof httpDependencies.sweepChannelTaskThreads === "function") {
+  const sweepChannelTaskThreads = () => {
+    try { httpDependencies.sweepChannelTaskThreads(); } catch { /* best-effort channel timeout sweep */ }
+  };
+  sweepChannelTaskThreads();
+  setInterval(sweepChannelTaskThreads, 60_000).unref?.();
+}
 if (typeof httpDependencies.reconcileWorkItemAutoRunUnderstanding === "function") {
   const reconcileUnderstanding = () =>
     httpDependencies.reconcileWorkItemAutoRunUnderstanding().catch(() => {});

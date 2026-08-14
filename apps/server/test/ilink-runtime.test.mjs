@@ -142,6 +142,111 @@ test("iLink runtime downloads inbound media and passes governed attachment candi
   runtime.stop();
 });
 
+test("iLink runtime records media failure so the composed channel path can refuse unsafe task creation", async () => {
+  const state = {
+    channels: [{ id: "chn_media_fail", provider: "wechat_ilink", ownerTeamId: "team_local", status: "enabled" }],
+    ilinkAccounts: [{ id: "ila_media_fail", channelId: "chn_media_fail", ownerTeamId: "team_local", status: "connected", cursor: "", botId: "bot-1" }],
+  };
+  let imported;
+  let runtime;
+  let firstPoll = true;
+  const client = {
+    notifyStart: async () => {},
+    notifyStop: async () => {},
+    getUpdates: async () => {
+      if (!firstPoll) return { ret: 0, msgs: [], get_updates_buf: "cursor-2" };
+      firstPoll = false;
+      runtime.stop();
+      return {
+        ret: 0,
+        get_updates_buf: "cursor-1",
+        msgs: [{
+          message_id: 100,
+          from_user_id: "wx-user",
+          message_type: 1,
+          item_list: [{ type: 2, image_item: { media: { encrypt_query_param: "missing-media" } } }],
+        }],
+      };
+    },
+    downloadMedia: async () => { throw Object.assign(new Error("cdn_timeout"), { code: "cdn_timeout" }); },
+  };
+  runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-media-failure-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_1`,
+    credentialStore: { load: () => ({ botToken: "secret", baseUrl: "https://example.test" }), save: () => {}, remove: () => {} },
+    clientFactory: () => client,
+    persistStateSoon: () => {},
+    appendEvent: () => {},
+    importChannelEvent: async (payload) => { imported = payload; return { ok: true }; },
+  });
+  runtime.start();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(imported.mediaFailure.failed[0].code, "cdn_timeout");
+  assert.equal(imported.mediaFailure.total, 1);
+  assert.equal(imported.attachmentCandidates.length, 0);
+  runtime.stop();
+});
+
+test("iLink runtime does not restart a worker with a credential that requires reauthentication", () => {
+  const state = {
+    channels: [{ id: "chn_reauth", provider: "wechat_ilink", ownerTeamId: "team_local", status: "enabled" }],
+    ilinkAccounts: [{ id: "ila_reauth", channelId: "chn_reauth", ownerTeamId: "team_local", status: "reauth_required", cursor: "", botId: "bot-1" }],
+  };
+  let polls = 0;
+  const runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-reauth-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_1`,
+    credentialStore: { load: () => ({ botToken: "expired", baseUrl: "https://example.test" }), save: () => {}, remove: () => {} },
+    clientFactory: () => ({ getUpdates: async () => { polls += 1; return { ret: 0, msgs: [] }; } }),
+    persistStateSoon: () => {},
+  });
+  runtime.start();
+  assert.equal(polls, 0);
+  assert.equal(runtime.readiness(state.channels[0]).worker, false);
+  runtime.stop();
+});
+
+test("iLink worker recovers from a transient poll failure and clears the visible error", async () => {
+  const account = { id: "ila_retry", channelId: "chn_retry", ownerTeamId: "team_local", status: "connected", cursor: "", botId: "bot-1" };
+  const state = {
+    channels: [{ id: "chn_retry", provider: "wechat_ilink", ownerTeamId: "team_local", status: "enabled" }],
+    ilinkAccounts: [account],
+  };
+  let polls = 0;
+  let runtime;
+  const client = {
+    notifyStart: async () => {},
+    notifyStop: async () => {},
+    getUpdates: async () => {
+      polls += 1;
+      if (polls === 1) throw Object.assign(new Error("temporary network"), { code: "network_error", retryable: true });
+      runtime.stop();
+      return { ret: 0, msgs: [], get_updates_buf: "cursor-ok" };
+    },
+  };
+  runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-retry-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_1`,
+    credentialStore: { load: () => ({ botToken: "secret", baseUrl: "https://example.test" }), save: () => {}, remove: () => {} },
+    clientFactory: () => client,
+    persistStateSoon: () => {},
+  });
+  runtime.start();
+  await new Promise((resolve) => setTimeout(resolve, 2_200));
+  assert.equal(polls, 2);
+  assert.equal(account.status, "connected");
+  assert.equal(account.lastError, null);
+  assert.equal(account.workerFailureCount, 0);
+  assert.equal(account.cursor, "cursor-ok");
+  runtime.stop();
+});
+
 test("iLink runtime resolves confined output assets and sends encrypted media with the reply", async () => {
   const projectPath = await mkdtemp(join(tmpdir(), "myagenttool-ilink-outbound-"));
   const bytes = Buffer.from("png-output");

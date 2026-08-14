@@ -8,7 +8,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
 import { useConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
-import type { ChannelDelivery, ChannelInteraction, ChannelOperations, ChannelTaskRequest, ProjectSnapshot } from "@/lib/console-state";
+import type { ChannelDelivery, ChannelInteraction, ChannelOperations, ChannelTaskRequest, ChannelTaskThread, ProjectSnapshot } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
@@ -33,6 +33,31 @@ function interactionStatusTone(status: string): Tone {
 
 function interactionTypeKey(type: string): string {
   return ["text", "image", "voice", "file", "mixed"].includes(type) ? type : "mixed";
+}
+
+const taskThreadStatusLabels: Record<string, string> = {
+  awaiting_confirmation: "等待你确认",
+  waiting_approval: "等待确认",
+  queued: "排队中",
+  running: "执行中",
+  waiting_user: "等待你补充信息",
+  paused: "已暂停",
+  human_takeover: "人工处理中",
+  succeeded: "已完成",
+  failed: "执行失败",
+  cancelled: "已取消",
+};
+
+function taskThreadStatusLabel(status: string): string {
+  return taskThreadStatusLabels[status] ?? status.replaceAll("_", " ");
+}
+
+function waitingForLabel(value: string): string {
+  if (value === "confirmation") return "你确认";
+  if (value === "approval") return "确认";
+  if (value === "user_input") return "你补充信息";
+  if (value === "human") return "人工处理";
+  return value.replaceAll("_", " ");
 }
 
 type Translate = ReturnType<typeof useAppTranslation>["t"];
@@ -67,6 +92,12 @@ export function ChannelsView() {
         actions={<Button size="sm" onClick={() => setupOpen ? setSetupOpen(false) : openSetup()}>{t("channelsPage.addWechat")}</Button>}
       />
       {setupOpen ? <IlinkSetupPanel channelId={setupChannelId} onClose={() => { setSetupOpen(false); setSetupChannelId(null); }} /> : null}
+      {state?.channelIntentMetrics && state.channelIntentMetrics.total > 0 ? (
+        <div className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground" data-testid="channel-intent-metrics">
+          意图识别：{state.channelIntentMetrics.total} 次，低置信度 {state.channelIntentMetrics.lowConfidence ?? 0} 次，需澄清 {state.channelIntentMetrics.ambiguous ?? 0} 次
+          {state.channelIntentMetrics.bridge?.attempts ? <span className="ml-2">Bridge：{state.channelIntentMetrics.bridge.succeeded ?? 0} 成功 / {state.channelIntentMetrics.bridge.failed ?? 0} 失败，平均 {state.channelIntentMetrics.bridge.averageLatencyMs ?? "—"} ms{state.channelIntentMetrics.bridge.circuitOpen ? "，已自动降级本地识别" : ""}</span> : null}
+        </div>
+      ) : null}
       {channels.length === 0 ? (
         <EmptyState
           title={t("channelsPage.empty")}
@@ -81,6 +112,7 @@ export function ChannelsView() {
               deliveries={(state?.channelDeliveries ?? []).filter((d) => d.channelId === channel.id)}
               projects={(state?.projects ?? []).filter((p) => p.status !== "archived")}
               tasks={(state?.channelTaskRequests ?? []).filter((task) => task.channelId === channel.id)}
+              threads={(state?.channelTaskThreads ?? []).filter((thread) => thread.channelId === channel.id)}
               onReconnect={(channelId) => openSetup(channelId)}
             />
           ))}
@@ -139,6 +171,7 @@ function IlinkSetupPanel({ channelId = null, onClose }: { channelId?: string | n
     if (!wizard || wizard.stage !== "scan") return undefined;
     let active = true;
     let timer: number | undefined;
+    let terminal = false;
     const poll = async () => {
       try {
         const result = await api.pollIlinkLogin(wizard.channelId) as { status?: string; qr?: { imageUrl?: string; expiresAt?: string }; account?: { status?: string } };
@@ -148,6 +181,7 @@ function IlinkSetupPanel({ channelId = null, onClose }: { channelId?: string | n
           setWizard((current) => current ? { ...current, stage: "activate", status } : current);
         } else {
           const expired = ["expired", "timeout", "refused", "reauth_required", "error"].includes(status);
+          terminal = expired;
           setWizard((current) => current ? {
             ...current,
             status,
@@ -158,12 +192,12 @@ function IlinkSetupPanel({ channelId = null, onClose }: { channelId?: string | n
       } catch {
         // The next poll surfaces transient network failures without losing the QR.
       } finally {
-        if (active) timer = window.setTimeout(() => void poll(), 1_500);
+        if (active && !terminal) timer = window.setTimeout(() => void poll(), 1_500);
       }
     };
     void poll();
     return () => { active = false; if (timer !== undefined) window.clearTimeout(timer); };
-  }, [wizard?.channelId, wizard?.stage]);
+  }, [wizard?.channelId, wizard?.stage, wizard?.status]);
 
   useEffect(() => {
     if (!wizard || wizard.stage !== "pair") return undefined;
@@ -265,10 +299,11 @@ function IlinkSetupPanel({ channelId = null, onClose }: { channelId?: string | n
   );
 }
 
-function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { channel: ChannelOperations; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[]; tasks: ChannelTaskRequest[]; onReconnect: (channelId: string) => void }) {
+function ChannelCard({ channel, deliveries, projects, tasks, threads, onReconnect }: { channel: ChannelOperations; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[]; tasks: ChannelTaskRequest[]; threads: ChannelTaskThread[]; onReconnect: (channelId: string) => void }) {
   const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const [taskProject, setTaskProject] = useState(channel.taskProjectId ?? "");
+  const [operationMode, setOperationMode] = useState<"personal" | "team">(channel.operationMode === "team" ? "team" : "personal");
   const [autoRoute, setAutoRoute] = useState(Boolean(channel.taskAutoRoute));
   const [dailyLimit, setDailyLimit] = useState(channel.taskDailyLimit ?? 50);
   const [interactionsOpen, setInteractionsOpen] = useState(false);
@@ -281,6 +316,7 @@ function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { ch
   const [interactionNextCursor, setInteractionNextCursor] = useState<string | null>(null);
   const [interactionLoading, setInteractionLoading] = useState(false);
   const [interactionError, setInteractionError] = useState(false);
+  const [humanReplyDrafts, setHumanReplyDrafts] = useState<Record<string, string>>({});
   const today = new Date().toISOString().slice(0, 10);
   const usedToday = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
 
@@ -316,6 +352,28 @@ function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { ch
   }, [channel.id, interactionDirection, interactionType, interactionStatus, interactionQuery, interactionCursor, interactionsOpen]);
 
   const failed = useMemo(() => deliveries.filter((d) => d.status === "failed_terminal"), [deliveries]);
+  const taskThreadIds = useMemo(() => new Set(threads.map((thread) => thread.id)), [threads]);
+  const taskByThreadId = useMemo(() => new Map(tasks.filter((task) => task.threadId).map((task) => [task.threadId as string, task])), [tasks]);
+  const legacyTasks = useMemo(() => tasks.filter((task) => !task.threadId || !taskThreadIds.has(task.threadId)), [tasks, taskThreadIds]);
+  const deliveryByThreadId = useMemo(() => {
+    const latest = new Map<string, ChannelDelivery>();
+    for (const delivery of deliveries) {
+      const threadId = delivery.taskContext?.threadId;
+      if (!threadId) continue;
+      const previous = latest.get(threadId);
+      if (!previous || String(delivery.updatedAt ?? delivery.createdAt ?? "") > String(previous.updatedAt ?? previous.createdAt ?? "")) latest.set(threadId, delivery);
+    }
+    return latest;
+  }, [deliveries]);
+  const taskSummaryParts = channel.taskSummary ? [
+    channel.taskSummary.queued > 0 ? `排队 ${channel.taskSummary.queued}` : null,
+    channel.taskSummary.running > 0 ? `执行中 ${channel.taskSummary.running}` : null,
+    channel.taskSummary.waitingApproval > 0 ? `待确认 ${channel.taskSummary.waitingApproval}` : null,
+    channel.taskSummary.waitingUser > 0 ? `待补充 ${channel.taskSummary.waitingUser}` : null,
+    channel.taskSummary.humanTakeover > 0 ? `人工跟进 ${channel.taskSummary.humanTakeover}` : null,
+    channel.taskSummary.failed > 0 ? `失败 ${channel.taskSummary.failed}` : null,
+    channel.taskSummary.succeeded > 0 ? `已完成 ${channel.taskSummary.succeeded}` : null,
+  ].filter(Boolean) : [];
 
   async function enable() {
     const grant = await api.issueApprovalGrant("channel.enable", channel.id);
@@ -342,7 +400,7 @@ function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { ch
 
   async function saveTaskProject() {
     const grant = await api.issueApprovalGrant("channel.taskProject", channel.id);
-    await execute(() => api.setChannelTaskProject(channel.id, taskProject || null, autoRoute, dailyLimit, grant.token));
+    await execute(() => api.setChannelTaskProject(channel.id, taskProject || null, autoRoute, dailyLimit, grant.token, operationMode));
   }
 
   function resetInteractionCursor() {
@@ -354,6 +412,16 @@ function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { ch
   async function taskAction(task: ChannelTaskRequest, action: "route" | "dismiss" | "retry" | "reroute" | "takeover") {
     const handlers = { route: api.routeChannelTask, dismiss: api.dismissChannelTask, retry: api.retryChannelTask, reroute: api.rerouteChannelTask, takeover: api.takeoverChannelTask };
     await execute(() => handlers[action](task.id));
+  }
+
+  async function sendHumanReply(targetId: string) {
+    const content = String(humanReplyDrafts[targetId] ?? "").trim();
+    if (!content) return;
+    await execute(async () => {
+      const result = await api.replyChannelTask(targetId, content);
+      setHumanReplyDrafts((current) => ({ ...current, [targetId]: "" }));
+      return result;
+    });
   }
 
   return (
@@ -371,6 +439,11 @@ function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { ch
               {channel.counts.identities} identities · {channel.counts.conversations} conversations · {channel.counts.events} events
               {channel.counts.injectionFlagged > 0 ? ` · ${channel.counts.injectionFlagged} flagged` : ""}
             </p>
+            {channel.taskSummary && channel.taskSummary.total > 0 ? (
+              <p className="text-xs text-muted-foreground" data-testid="channel-task-summary">
+                任务：{taskSummaryParts.join(" · ")}
+              </p>
+            ) : null}
           </div>
           <div className="flex items-center gap-3">
             <label className="flex items-center gap-1 text-xs text-muted-foreground" title={t("channelsPage.approveHint")}>
@@ -433,6 +506,16 @@ function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { ch
           <span className="text-muted-foreground">{t("channelsPage.taskProject")} (/task →)</span>
           <select
             className="h-7 rounded-md border border-border bg-background px-1.5"
+            value={operationMode}
+            onChange={(e) => setOperationMode(e.target.value === "team" ? "team" : "personal")}
+            disabled={pending}
+            aria-label="任务模式"
+          >
+            <option value="personal">个人模式</option>
+            <option value="team">团队模式</option>
+          </select>
+          <select
+            className="h-7 rounded-md border border-border bg-background px-1.5"
             value={taskProject}
             onChange={(e) => setTaskProject(e.target.value)}
             disabled={pending}
@@ -443,8 +526,8 @@ function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { ch
             ))}
           </select>
           <label className="flex items-center gap-1 text-muted-foreground">
-            <input type="checkbox" checked={autoRoute} onChange={(e) => setAutoRoute(e.target.checked)} disabled={pending || !taskProject} />
-            {t("channelsPage.autoRoute")}
+            <input type="checkbox" checked={autoRoute} onChange={(e) => setAutoRoute(e.target.checked)} disabled={pending || !taskProject || operationMode === "personal"} />
+            {operationMode === "personal" ? "确认后自动排队" : t("channelsPage.autoRoute")}
           </label>
           <label className="flex items-center gap-1 text-muted-foreground">
             <input
@@ -461,21 +544,21 @@ function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { ch
             variant="secondary"
             size="sm"
             onClick={saveTaskProject}
-            disabled={pending || ((channel.taskProjectId ?? "") === taskProject && Boolean(channel.taskAutoRoute) === autoRoute && (channel.taskDailyLimit ?? 50) === dailyLimit)}
+            disabled={pending || ((channel.taskProjectId ?? "") === taskProject && (channel.operationMode === "team" ? "team" : "personal") === operationMode && Boolean(channel.taskAutoRoute) === autoRoute && (channel.taskDailyLimit ?? 50) === dailyLimit)}
           >
             {t("channelsPage.save")}
           </Button>
           {channel.taskProjectId ? (
-            <Badge tone="success">{channel.taskAutoRoute ? t("channelsPage.autoRoute") : t("channelsPage.capture")}</Badge>
+            <Badge tone="success">{operationMode === "personal" ? "个人模式" : channel.taskAutoRoute ? t("channelsPage.autoRoute") : t("channelsPage.capture")}</Badge>
           ) : (
             <span className="text-muted-foreground">{t("channelsPage.unbound")}</span>
           )}
         </div>
 
-        {tasks.length > 0 && (
+        {legacyTasks.length > 0 && (
           <div className="space-y-2 border-t border-border pt-3" data-testid="channel-task-operations">
             <p className="text-xs font-medium">{t("channelsPage.tasks")}</p>
-            {tasks.slice().reverse().slice(0, 10).map((task) => (
+            {legacyTasks.slice().reverse().slice(0, 10).map((task) => (
               <div key={task.id} className="grid gap-2 rounded-md border border-border p-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto]">
                 <div className="min-w-0 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -493,6 +576,70 @@ function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { ch
                   {task.actions.reroute ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "reroute")} disabled={pending}>{t("channelsPage.reroute")}</Button> : null}
                   {task.actions.takeover ? <Button variant="ghost" size="sm" onClick={() => taskAction(task, "takeover")} disabled={pending}>{t("channelsPage.takeover")}</Button> : null}
                 </div>
+                {task.status === "human_takeover" && (!task.threadId || !taskThreadIds.has(task.threadId)) ? <HumanReplyBox
+                  value={humanReplyDrafts[task.id] ?? ""}
+                  onChange={(value) => setHumanReplyDrafts((current) => ({ ...current, [task.id]: value }))}
+                  onSend={() => void sendHumanReply(task.id)}
+                  disabled={pending}
+                /> : null}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {threads.length > 0 && (
+          <div className="space-y-2 border-t border-border pt-3" data-testid="channel-task-threads">
+            <p className="text-xs font-medium">任务对话</p>
+            {threads.slice().reverse().slice(0, 10).map((thread) => (
+              <div key={thread.id} className="rounded-md border border-border p-3 text-xs">
+                {(() => {
+                  const task = taskByThreadId.get(thread.id);
+                  const threadDelivery = deliveryByThreadId.get(thread.id);
+                  return (
+                    <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={thread.status === "queued" || thread.status === "succeeded" ? "success" : thread.status === "failed" ? "danger" : thread.status === "human_takeover" || thread.status === "paused" ? "warning" : "neutral"}>{taskThreadStatusLabel(thread.status)}</Badge>
+                  <span className="font-mono">{thread.shortRef ?? thread.id}</span>
+                  {thread.status === "queued" && Number(thread.queueAheadCount ?? 0) > 0 ? <span className="text-muted-foreground">前面还有 {thread.queueAheadCount} 个任务</span> : null}
+                  {thread.status === "queued" && Number(thread.queuePosition ?? 0) > 0 ? <span className="text-muted-foreground">排第 {thread.queuePosition} 位</span> : null}
+                  {thread.waitingFor ? <span className="text-muted-foreground">等待：{waitingForLabel(thread.waitingFor)}</span> : null}
+                  {task?.status === "pending" ? <><Button size="sm" onClick={() => taskAction(task, "route")} disabled={pending}>{t("channelsPage.route")}</Button><Button variant="ghost" size="sm" onClick={() => taskAction(task, "dismiss")} disabled={pending}>{t("channelsPage.dismiss")}</Button></> : null}
+                  {task?.actions.retry ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "retry")} disabled={pending}>{t("channelsPage.retry")}</Button> : null}
+                  {task?.actions.reroute ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "reroute")} disabled={pending}>{t("channelsPage.reroute")}</Button> : null}
+                  {task?.actions.takeover ? <Button variant="ghost" size="sm" onClick={() => taskAction(task, "takeover")} disabled={pending}>{t("channelsPage.takeover")}</Button> : null}
+                </div>
+                <p className="mt-1 line-clamp-2 text-muted-foreground">{thread.summary}</p>
+                {thread.lastProgressSummary ? <p className="mt-1 text-muted-foreground">进展：{thread.lastProgressSummary}</p> : null}
+                {thread.nextAction ? <p className="mt-1 text-muted-foreground">下一步：{thread.nextAction}</p> : null}
+                {thread.lastDeliveryStatus ? <p className="mt-1 text-muted-foreground">消息：{thread.lastDeliveryStatus === "delivered" ? "已发送" : thread.lastDeliveryStatus === "retrying" ? "发送失败，自动重试中" : thread.lastDeliveryStatus === "failed_terminal" ? "发送失败，请重试" : thread.lastDeliveryStatus === "queued" ? "等待发送" : thread.lastDeliveryStatus}</p> : null}
+                {thread.resultSummary ? <p className="mt-1 line-clamp-3 text-muted-foreground">{thread.resultSummary}</p> : null}
+                {threadDelivery?.status === "failed_terminal" ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-destructive">
+                    <span>结果消息未送达：{threadDelivery.lastErrorCode ?? thread.lastDeliveryError ?? "发送失败"}</span>
+                    <Button variant="secondary" size="sm" onClick={() => void retry(threadDelivery.id)} disabled={pending}>重试发送</Button>
+                  </div>
+                ) : threadDelivery?.status === "retrying" ? (
+                  <p className="mt-1 text-amber-600">结果消息发送失败，正在自动重试。</p>
+                ) : null}
+                {thread.statusHistory?.length ? <p className="mt-1 text-[11px] text-muted-foreground">{thread.statusHistory.slice(-4).map((entry) => taskThreadStatusLabel(entry.status)).join(" → ")}</p> : null}
+                {thread.status === "human_takeover" ? <HumanReplyBox
+                  value={humanReplyDrafts[thread.id] ?? ""}
+                  onChange={(value) => setHumanReplyDrafts((current) => ({ ...current, [thread.id]: value }))}
+                  onSend={() => void sendHumanReply(thread.id)}
+                  disabled={pending}
+                /> : null}
+                {thread.messages?.length ? (
+                  <details className="mt-2 text-muted-foreground">
+                    <summary className="cursor-pointer">交互记录（{thread.messages.length + (threadDelivery ? 1 : 0)}）</summary>
+                    <div className="mt-1 space-y-1 border-l border-border pl-2">
+                      {thread.messages.slice(-6).map((message) => <p key={message.eventId}>{message.content || "[media]"}</p>)}
+                      {threadDelivery ? <p className={threadDelivery.status === "failed_terminal" ? "text-destructive" : "text-primary"}>系统回复：{threadDelivery.content ?? threadDelivery.status}</p> : null}
+                    </div>
+                  </details>
+                ) : null}
+                    </>
+                  );
+                })()}
               </div>
             ))}
           </div>
@@ -519,6 +666,22 @@ function ChannelCard({ channel, deliveries, projects, tasks, onReconnect }: { ch
         {error && <p className="text-xs text-destructive">{error}</p>}
       </CardContent>
     </Card>
+  );
+}
+
+function HumanReplyBox({ value, onChange, onSend, disabled }: { value: string; onChange: (value: string) => void; onSend: () => void; disabled: boolean }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      <Input
+        className="min-w-64 flex-1 text-xs"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="回复用户…"
+        disabled={disabled}
+        onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); onSend(); } }}
+      />
+      <Button variant="secondary" size="sm" onClick={onSend} disabled={disabled || !value.trim()}>发送给用户</Button>
+    </div>
   );
 }
 
@@ -604,6 +767,11 @@ function InteractionRow({ interaction, t }: { interaction: ChannelInteraction; t
       </div>
       {interaction.content ? <p className="mt-2 whitespace-pre-wrap break-words text-sm">{interaction.content}</p> : <p className="mt-2 text-muted-foreground">{t("channelsPage.noContent")}</p>}
       {interaction.injectionSuspicious ? <p className="mt-2 text-amber-600">⚠ {t("channelsPage.flagged")}</p> : null}
+      {interaction.mediaFailure?.failed?.length ? (
+        <p className="mt-2 text-amber-600">
+          ⚠ 附件接收不完整：{interaction.mediaFailure.failed.map((item) => item.filename || "附件").join("、")}，任务未开始
+        </p>
+      ) : null}
       {interaction.attachments.length ? (
         <div className="mt-2 flex flex-wrap gap-2">
           {interaction.attachments.map((asset) => {

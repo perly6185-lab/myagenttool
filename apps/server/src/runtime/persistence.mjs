@@ -191,6 +191,8 @@ export const persistedArrayKeys = [
   "channelEvents",
   "channelConversations",
   "channelDeliveries",
+  "channelIntakeGroups",
+  "channelTaskThreads",
   "channelTaskRequests",
   "ilinkAccounts",
 ];
@@ -221,6 +223,7 @@ export const persistedObjectKeys = [
   "reportSchedule",
   // When refusal recording began (work-report coverage-honesty anchor).
   "refusalStatsMeta",
+  "channelIntentMetrics",
 ];
 
 // Collections that carry BOTH a self-stamped owning team AND a project link. The

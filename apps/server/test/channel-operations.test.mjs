@@ -32,6 +32,11 @@ test("channelOperations rolls up readiness, health, counts, and last activity", 
       { channelId: "chn_1", status: "delivered", updatedAt: "2026-07-15T02:00:00.000Z" },
       { channelId: "chn_1", status: "failed_terminal", updatedAt: "2026-07-15T03:00:00.000Z" },
     ],
+    channelTaskThreads: [
+      { channelId: "chn_1", status: "queued", createdAt: "2026-07-15T04:00:00.000Z" },
+      { channelId: "chn_1", status: "waiting_user", updatedAt: "2026-07-15T05:00:00.000Z", lastActivityAt: "2026-07-15T05:00:00.000Z" },
+      { channelId: "chn_1", status: "failed", updatedAt: "2026-07-15T06:00:00.000Z" },
+    ],
   });
 
   const ops = rows.find((r) => r.id === "chn_1");
@@ -41,7 +46,19 @@ test("channelOperations rolls up readiness, health, counts, and last activity", 
   assert.equal(ops.counts.events, 2);
   assert.equal(ops.counts.failedDeliveries, 1);
   assert.equal(ops.counts.injectionFlagged, 1);
-  assert.equal(ops.lastActivityAt, "2026-07-15T03:00:00.000Z");
+  assert.equal(ops.lastActivityAt, "2026-07-15T06:00:00.000Z");
+  assert.deepEqual(ops.taskSummary, {
+    total: 3,
+    active: 2,
+    queued: 1,
+    running: 0,
+    waitingApproval: 0,
+    waitingUser: 1,
+    humanTakeover: 0,
+    succeeded: 0,
+    failed: 1,
+    cancelled: 0,
+  });
 
   assert.equal(rows.find((r) => r.id === "chn_2").health, "idle"); // not enabled
   assert.equal(rows.find((r) => r.id === "chn_3").health, "attention"); // enabled but not ready

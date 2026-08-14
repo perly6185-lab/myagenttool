@@ -19,6 +19,7 @@ export async function handleChannelRoutes({
   retryChannelTask,
   rerouteChannelTask,
   takeoverChannelTask,
+  replyChannelTask,
   listChannels,
   listChannelInteractions,
   enableChannel,
@@ -136,11 +137,21 @@ export async function handleChannelRoutes({
     return true;
   }
 
+  const channelTaskReply = url.pathname.match(/^\/api\/channel-tasks\/([^/]+)\/reply$/);
+  if (channelTaskReply && req.method === "POST") {
+    const body = await readJson(req);
+    const result = typeof replyChannelTask === "function"
+      ? await replyChannelTask(decodeURIComponent(channelTaskReply[1]), body?.content, actor)
+      : { status: 501, body: { error: "unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   const taskProject = url.pathname.match(/^\/api\/channels\/([^/]+)\/task-project$/);
   if (taskProject && req.method === "POST") {
     const body = await readJson(req);
     const result = setChannelTaskProject(
-      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, autoRoute: body?.autoRoute, dailyLimit: body?.dailyLimit, approvalToken: body?.approvalToken },
+      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, autoRoute: body?.autoRoute, dailyLimit: body?.dailyLimit, operationMode: body?.operationMode, approvalToken: body?.approvalToken },
       actor,
     );
     sendJson(res, result.status, result.body);
