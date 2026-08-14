@@ -15,6 +15,7 @@ import { listDevices } from "../runtime/device.mjs";
 const MAX_RECIPIENT = 998;
 const MAX_SUBJECT = 400;
 const MAX_BODY = 20_000;
+const MAX_HTML_BODY = 50_000;
 const MAX_DRAFTS = 200;
 const MAX_MESSAGES = 10_000;
 const MAX_MESSAGE_STATES = 10_000;
@@ -530,6 +531,7 @@ function mergeMessage(messages, input, record, unread, threads) {
   if (!messageId) return;
   const previous = messages.get(messageId) ?? {};
   const body = typeof input?.body === "string" ? cap(input.body, MAX_BODY) : previous.body ?? null;
+  const bodyHtml = typeof input?.bodyHtml === "string" ? input.bodyHtml.slice(0, MAX_HTML_BODY) : previous.bodyHtml ?? "";
   const date = cap(input?.date, MAX_RECIPIENT) || previous.date || record.createdAt || null;
   messages.set(messageId, {
     id: messageId,
@@ -538,12 +540,16 @@ function mergeMessage(messages, input, record, unread, threads) {
     subject: cap(input?.subject, MAX_SUBJECT) || previous.subject || "(no subject)",
     date,
     body,
+    bodyHtml,
+    hasHtml: Boolean(bodyHtml),
+    bodyTruncated: typeof input?.bodyTruncated === "boolean" ? input.bodyTruncated : previous.bodyTruncated === true,
+    bodyContentVersion: input?.bodyContentVersion === 2 ? 2 : previous.bodyContentVersion ?? 1,
     preview: body ? body.replace(/\s+/g, " ").trim().slice(0, 160) : "",
     unread: typeof input?.unread === "boolean" ? input.unread : previous.unread ?? unread,
     folderId: cap(input?.folderId, 100) || previous.folderId || "inbox",
     folderPath: cap(input?.folderPath, MAX_RECIPIENT) || previous.folderPath || "INBOX",
     providerUid: Number.isInteger(input?.uid) ? input.uid : previous.providerUid ?? null,
-    fetched: Boolean(body),
+    fetched: Boolean(body || bodyHtml),
     inReplyTo: cap(input?.inReplyTo, MAX_RECIPIENT) || previous.inReplyTo || null,
     references: Array.isArray(input?.references) ? input.references.slice(0, 50) : previous.references ?? [],
     attachments: Array.isArray(input?.attachments) ? input.attachments.slice(0, 50) : previous.attachments ?? [],
@@ -691,12 +697,49 @@ function normalizeDraftAttachments(input) {
 }
 
 function validRecipientList(value) {
-  const entries = value.split(/[;,]/).map((entry) => entry.trim()).filter(Boolean);
+  const entries = splitRecipientList(value);
   if (!entries.length || entries.length > 20) return false;
   return entries.every((entry) => {
     const bracketed = entry.match(/<([^<>]+)>$/)?.[1] ?? entry;
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(bracketed.trim());
   });
+}
+
+function splitRecipientList(value) {
+  const entries = [];
+  let current = "";
+  let quote = null;
+  let angleDepth = 0;
+  let escaped = false;
+  for (const character of value) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (quote && character === "\\") {
+      current += character;
+      escaped = true;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      if (!quote) quote = character;
+      else if (quote === character) quote = null;
+      current += character;
+      continue;
+    }
+    if (!quote && character === "<") angleDepth += 1;
+    if (!quote && character === ">") angleDepth = Math.max(0, angleDepth - 1);
+    const commaSeparates = character === "," && angleDepth === 0 && (current.includes("@") || current.includes(">"));
+    if (!quote && angleDepth === 0 && (character === ";" || commaSeparates)) {
+      if (current.trim()) entries.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  if (current.trim()) entries.push(current.trim());
+  return entries;
 }
 
 function mailTools(application) {

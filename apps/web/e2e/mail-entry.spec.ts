@@ -15,7 +15,7 @@ const MAILBOX = {
   sync: { status: "idle", invocationId: null, lastCompletedAt: null, lastSucceededAt: "2026-08-13T02:00:00.000Z" },
   folders: [{ id: "inbox", count: 2, unread: 2 }, { id: "drafts", count: 1 }, { id: "sent", count: 0 }, { id: "outbox", count: 0 }],
   messages: [
-    { id: "m1", messageId: "m1", from: "示例客户 <customer@example.com>", subject: "确认交付范围", date: "2026-08-13T02:00:00.000Z", body: "你好，请确认本周交付范围。", preview: "你好，请确认本周交付范围。", unread: true, fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "范围说明.txt", contentType: "text/plain", size: 24, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-13T02:00:00.000Z" },
+    { id: "m1", messageId: "m1", from: "示例客户 <customer@example.com>", subject: "确认交付范围", date: "2026-08-13T02:00:00.000Z", body: "你好，请确认本周交付范围。详情：https://example.com/delivery", bodyHtml: '<p>你好，请确认本周交付范围。<a href="https://example.com/delivery">查看详情</a></p><img src="https://images.example.com/tracker.png" alt="交付示意图"><script>alert(1)</script>', hasHtml: true, bodyTruncated: false, bodyContentVersion: 2, preview: "你好，请确认本周交付范围。", unread: true, fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "范围说明.txt", contentType: "text/plain", size: 24, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-13T02:00:00.000Z" },
     { id: "m2", messageId: "m2", from: "同事 <team@example.com>", subject: "周会资料", date: "2026-08-12T02:00:00.000Z", body: null, preview: "", unread: true, fetched: false, inReplyTo: null, references: [], attachments: [], attachmentMetadataLoaded: false, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-12T02:00:00.000Z" },
   ],
   pagination: { page: 1, pageSize: 25, total: 2, totalPages: 1, hasPrevious: false, hasNext: false },
@@ -61,8 +61,17 @@ for (const fixture of [
     await page.getByRole("button", { name: "收取新邮件" }).click();
     await expect(page.getByText("收取完成，收件箱已更新。")).toBeVisible();
     await page.getByText("确认交付范围", { exact: true }).click();
-    await expect(page.getByLabel("确认交付范围").getByText("你好，请确认本周交付范围。")).toBeVisible();
+    await expect(page.getByLabel("确认交付范围").getByText("你好，请确认本周交付范围。详情：https://example.com/delivery")).toBeVisible();
+    await expect(page.getByRole("link", { name: "https://example.com/delivery" })).toHaveAttribute("rel", /noopener/);
     await expect(page.getByText(/系统只把它当作内容展示/)).toBeVisible();
+    await page.getByRole("button", { name: "查看安全排版" }).click();
+    const safeFrame = page.getByTitle("安全邮件内容");
+    await expect(safeFrame).toBeVisible();
+    await expect(safeFrame).not.toHaveAttribute("srcdoc", /<script/);
+    await expect(safeFrame).not.toHaveAttribute("srcdoc", /images\.example\.com\/tracker/);
+    await page.getByRole("button", { name: "加载远程图片" }).click();
+    await expect(safeFrame).toHaveAttribute("srcdoc", /images\.example\.com\/tracker/);
+    await page.getByRole("button", { name: "返回纯文本" }).click();
 
     await page.getByRole("button", { name: "转为任务" }).click();
     const taskDialog = page.getByRole("dialog", { name: "确认任务内容" });

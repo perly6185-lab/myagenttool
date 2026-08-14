@@ -14,6 +14,9 @@
 
 import { createHash } from "node:crypto";
 
+const MAX_BODY = 20_000;
+const MAX_HTML_BODY = 50_000;
+
 export function formatAddresses(addresses = []) {
   return addresses.map(({ name, address }) => (name ? `${name} <${address}>` : address)).filter(Boolean).join(", ");
 }
@@ -52,11 +55,17 @@ export function messageRecordOf(message, parsed) {
   const header = headerOf(message);
   if (!header) return null;
   const references = parsed?.references ?? [];
+  const rawHtml = typeof parsed?.html === "string" ? parsed.html : "";
+  const rawText = typeof parsed?.text === "string" ? parsed.text : rawHtml ? fallbackHtmlText(rawHtml) : "";
   return {
     ...header,
     inReplyTo: message.envelope?.inReplyTo ?? null,
     references: Array.isArray(references) ? references.filter(Boolean) : [references].filter(Boolean),
-    body: parsed?.text ?? parsed?.html ?? "",
+    body: rawText.slice(0, MAX_BODY),
+    bodyHtml: rawHtml.slice(0, MAX_HTML_BODY),
+    hasHtml: Boolean(rawHtml),
+    bodyTruncated: rawText.length > MAX_BODY || rawHtml.length > MAX_HTML_BODY,
+    bodyContentVersion: 2,
     attachments: (parsed?.attachments ?? []).slice(0, 50).map(attachmentMetadataOf),
   };
 }
@@ -66,6 +75,7 @@ export function attachmentMetadataOf(attachment, index) {
   const contentType = String(attachment?.contentType ?? "application/octet-stream").toLowerCase().slice(0, 127);
   const size = Number.isFinite(attachment?.size) ? Math.max(0, Number(attachment.size)) : attachment?.content?.length ?? 0;
   const content = Buffer.from(attachment?.content ?? []);
+  const contentId = normalizeContentId(attachment?.contentId);
   return {
     id: `attachment-${Number(index) + 1}`,
     name,
@@ -73,7 +83,28 @@ export function attachmentMetadataOf(attachment, index) {
     size,
     sha256: createHash("sha256").update(content).digest("hex"),
     previewable: previewKind(contentType) !== null,
+    ...(contentId ? { contentId } : {}),
   };
+}
+
+function normalizeContentId(value) {
+  return String(value ?? "").trim().replace(/^<|>$/g, "").slice(0, 998) || null;
+}
+
+function fallbackHtmlText(value) {
+  return String(value ?? "")
+    .replace(/<(script|style|head)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<br\s*\/?\s*>/gi, "\n")
+    .replace(/<\/(p|div|li|tr|h[1-6])\s*>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export function previewKind(contentType) {

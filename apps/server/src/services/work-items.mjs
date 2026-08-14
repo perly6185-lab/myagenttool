@@ -1400,6 +1400,7 @@ export function createWorkItemService({
 
   function listWorkItems(query = {}, actor = null) {
     const q = String(query.q ?? "").trim().toLowerCase();
+    const projectNames = new Map((state.projects ?? []).map((project) => [project.id, project.name ?? ""]));
     const updatedSince = normalizedUpdatedSince(query.updatedSince);
     if (updatedSince === undefined) return { ok: false, status: 400, body: { error: "invalid_updated_since" } };
     const plannedDate = String(query.plannedDate ?? "");
@@ -1425,7 +1426,7 @@ export function createWorkItemService({
       .filter((item) => !assigneeId || (item.assigneeIds ?? []).includes(assigneeId))
       .filter((item) => query.includeArchived === "1" || !item.archivedAt)
       .filter((item) => !updatedSince || item.updatedAt > updatedSince)
-      .filter((item) => !q || `${item.localRef} ${item.title} ${item.body} ${item.labels.join(" ")}`.toLowerCase().includes(q))
+      .filter((item) => !q || `${item.localRef} ${item.title} ${item.body} ${item.labels.join(" ")} ${projectNames.get(item.projectId) ?? ""}`.toLowerCase().includes(q))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id))
       .map((item) => workItemView(item, actor));
     const page = paginateRows(rows, query);

@@ -33,7 +33,7 @@ function harness({ mailSendEnabled = () => false, createWorkItem = null, inspect
         applicationId: "app_163_mail_v2",
         ownerTeamId: "team_a",
         createdAt: "2026-08-13T02:00:00.000Z",
-        data: { kind: "message", messageId: "<one@example.com>", from: "A <a@example.com>", subject: "Hello", date: "2026-08-13T01:00:00.000Z", body: "Body text" },
+        data: { kind: "message", messageId: "<one@example.com>", from: "A <a@example.com>", subject: "Hello", date: "2026-08-13T01:00:00.000Z", body: "Body text", bodyHtml: '<p>Body <a href="https://example.com">text</a></p>', hasHtml: true, bodyTruncated: true },
       },
       {
         id: "appres_headers",
@@ -98,6 +98,10 @@ test("mailbox snapshot turns imported mail into a deduplicated ordinary-user inb
   assert.equal(snapshot.sync.status, "idle");
   assert.equal(snapshot.messages.length, 2, "header + fetched body merge by Message-ID");
   assert.equal(snapshot.messages[0].body, "Body text");
+  assert.equal(snapshot.messages[0].hasHtml, true);
+  assert.match(snapshot.messages[0].bodyHtml, /https:\/\/example\.com/);
+  assert.equal(snapshot.messages[0].bodyTruncated, true);
+  assert.equal(snapshot.messages[0].bodyContentVersion, 1, "legacy imported bodies are marked for one-time enrichment");
   assert.equal(snapshot.messages[0].issueNumber, 99);
   assert(!JSON.stringify(snapshot).includes("must not leak"), "foreign-team mail stays hidden");
 });
@@ -319,6 +323,18 @@ test("mail can create one tenant-scoped local task and exposes the durable link"
   assert.equal(replay.body.replayed, true);
   assert.equal(calls.length, 1, "a linked Message-ID never creates a second task");
   assert.equal(service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor: { teamId: "team_b" } }).status, 404);
+});
+
+test("draft validation accepts reply display names containing commas", () => {
+  const { service } = harness();
+  const created = service.createDraft({
+    actor: { userId: "usr_a", teamId: "team_a" },
+    to: "Doe, John <john@example.com>; Jane Example <jane@example.com>",
+    subject: "Reply",
+    body: "Thanks",
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.draft.to, "Doe, John <john@example.com>; Jane Example <jane@example.com>");
 });
 
 test("mail task retry repairs a missing durable link without duplicating work across teammates", () => {

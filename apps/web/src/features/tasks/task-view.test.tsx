@@ -322,6 +322,42 @@ describe("TaskView local work items", () => {
     })));
   });
 
+  it("shows a retryable error instead of an empty task list when loading fails", async () => {
+    mocks.listWorkItems.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Tasks could not be loaded");
+    expect(screen.queryByText("No tasks yet")).toBeNull();
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.listWorkItems).toHaveBeenCalledTimes(2));
+  });
+
+  it("sends ordinary task searches to the server before pagination", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+    await screen.findByText("No tasks yet");
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search tasks" }), { target: { value: "customer handoff" } });
+    await waitFor(() => expect(mocks.listWorkItems).toHaveBeenCalledWith(expect.objectContaining({
+      q: "customer handoff",
+      limit: "100",
+    })));
+  });
+
+  it("asks before discarding an unsaved ordinary task", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
+    const createDialog = await screen.findByRole("dialog", { name: "New task" });
+    fireEvent.change(within(createDialog).getByRole("textbox", { name: "Create a task" }), { target: { value: "Keep this draft" } });
+    fireEvent.click(within(createDialog).getByRole("button", { name: "Close" }));
+
+    const confirm = await screen.findByRole("dialog", { name: "Discard this unsaved task?" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("dialog", { name: "New task" })).toBeTruthy();
+  });
+
   it("puts tasks needing the user first and offers plain-language progress filters", async () => {
     const base = {
       projectId: "prj_1", body: "", type: "task", priority: "p2", state: "open",

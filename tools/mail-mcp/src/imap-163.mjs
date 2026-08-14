@@ -41,6 +41,9 @@ export async function fetch163ParsedMessage(messageId, folderPath = "INBOX") {
     if (!match) throw new Error("mail_message_not_found");
     const message = await client.fetchOne(match.uid, { envelope: true, source: true }, { uid: true });
     if (!message) throw new Error("mail_message_not_found");
-    return { message, parsed: await simpleParser(message.source) };
+    // Keep cid: references in the bounded HTML record. Inline image bytes stay
+    // behind the existing attachment bridge and are loaded only for a user's
+    // safe-HTML preview; embedding them here would bloat persisted state.
+    return { message, parsed: await simpleParser(message.source, { keepCidLinks: true }) };
   });
 }
