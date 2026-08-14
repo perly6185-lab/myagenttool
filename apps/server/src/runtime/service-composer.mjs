@@ -31,6 +31,7 @@ import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
 import { createMailSendService, isMailSendEnabled } from "../services/mail-send.mjs";
 import { createMailboxService } from "../services/mailbox.mjs";
+import { createLocalContentCatalogService } from "../services/local-content-catalog.mjs";
 import { createChannelService } from "../services/channels.mjs";
 import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
 import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
@@ -429,6 +430,9 @@ export function createServerRuntimeServices({
   let requestWorkItemAutoSchedulerSweep = () => {};
   const taskMaterialService = createTaskMaterialService({
     state, stateStorePath, now, nextId, persistStateSoon, appendEvent, store,
+  });
+  const localContentCatalogService = createLocalContentCatalogService({
+    state, stateStorePath, now,
   });
   const workItemService = createWorkItemService({
     state, now, nextId, appendEvent, persistStateSoon, store,
@@ -4359,6 +4363,9 @@ export function createServerRuntimeServices({
     updateMailboxDraft: mailboxService.updateDraft,
     deleteMailboxDraft: mailboxService.deleteDraft,
     createMailboxTask: mailboxService.createTaskFromMessage,
+    rebuildLocalContentCatalog: localContentCatalogService.rebuild,
+    searchLocalContent: localContentCatalogService.search,
+    getLocalContentCatalogStats: localContentCatalogService.stats,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
     enableChannel: channelService.enableChannel,

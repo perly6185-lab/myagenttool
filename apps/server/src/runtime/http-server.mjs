@@ -11,6 +11,7 @@ import { handleApplicationRoutes } from "../routes/applications.mjs";
 import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
+import { handleLocalContentRoutes } from "../routes/local-content.mjs";
 import { handleMailRoutes } from "../routes/mail.mjs";
 import { handleChannelRoutes } from "../routes/channels.mjs";
 import { handleCanvasSceneRoutes } from "../routes/canvas-scenes.mjs";
@@ -439,6 +440,9 @@ export function createHttpServer({
   updateMailboxDraft,
   deleteMailboxDraft,
   createMailboxTask,
+  rebuildLocalContentCatalog,
+  searchLocalContent,
+  getLocalContentCatalogStats,
   listCanvasScenes,
   getCanvasScene,
   createCanvasScene,
@@ -749,6 +753,13 @@ export function createHttpServer({
         req, res, url, sendJson, readJson, actor,
         createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft,
         mailboxSnapshot, startMailboxSync, setMailboxMessageRead, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft, createMailboxTask,
+      })) {
+        return;
+      }
+
+      if (await handleLocalContentRoutes({
+        req, res, url, sendJson, readJson, actor,
+        rebuildLocalContentCatalog, searchLocalContent, getLocalContentCatalogStats,
       })) {
         return;
       }

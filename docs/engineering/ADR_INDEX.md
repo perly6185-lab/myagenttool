@@ -29,6 +29,7 @@ This index lists accepted engineering decisions that guide implementation.
 
 ## Proposed
 
+- [ADR 0026: Local content originals stay authoritative; the catalog is derived and rebuildable](ADR_0026_LOCAL_CONTENT_LIBRARY.md) — first catalog and offline search slice tracked by #1684; awaiting architecture and data-boundary review.
 - [ADR 0020: The invocation plane and the loop plane are two deliberately separate governed-run planes over one shared governance vocabulary](ADR_0020_TWO_GOVERNED_RUN_PLANES.md) — raised during the 2026-07 architecture governance review; awaiting ratification.
 - [ADR 0021: Local access and enterprise sign-in share one server-enforced identity boundary](ADR_0021_PROVIDER_NEUTRAL_ENTERPRISE_IDENTITY.md) — provider-neutral China-friendly identity entry; awaiting security and product review.
 - [ADR 0022: User-selected local assets use an explicit Bridge selection boundary](ADR_0022_USER_SELECTED_LOCAL_ASSET_BOUNDARY.md) — excludes registered Project/Worktree roots; awaiting protocol, security, and product review.
