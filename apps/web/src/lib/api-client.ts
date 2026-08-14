@@ -67,8 +67,9 @@ export interface MailboxMessage {
   fetched: boolean;
   inReplyTo: string | null;
   references: string[];
-  attachments: Array<{ id: string; name: string; contentType: string; size: number; sha256: string | null; previewable: boolean; contentId?: string }>;
+  attachments: Array<{ id: string; name: string; contentType: string; size: number; sha256: string | null; previewable: boolean; localAvailable?: boolean; contentId?: string }>;
   attachmentMetadataLoaded: boolean;
+  archive: { version: 1; ref?: string; availability: "available" | "unavailable"; sha256?: string; size?: number; archivedAt?: string | null; reason?: string } | null;
   applicationId: string | null;
   issueNumber: number | null;
   task: { id: string; localRef: string; title: string; projectId: string } | null;

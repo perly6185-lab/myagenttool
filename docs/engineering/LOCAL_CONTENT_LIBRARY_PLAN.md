@@ -39,22 +39,23 @@ Exit gate:
 - foreign-team and foreign-project records remain opaque;
 - search works with no network or model.
 
-## Phase 1 — Managed mail originals
+## Phase 1 — Managed mail originals (implemented for review in #1686)
 
 Problem: current mailbox results contain bounded parsed bodies, while attachment bytes remain provider-backed and the RFC 822 original is not archived.
 
 Scope:
 
-- save a verified `message.eml` under application-managed storage during sync;
+- save a verified `message.eml` under application-managed storage when a user explicitly fetches/opens the message; keep background folder sync header-only;
 - derive displayed body and attachment metadata from the archived original;
-- cache selected or policy-approved attachment bytes locally;
+- retain attachment bytes once inside that message's RFC 822 original, without duplicate per-attachment copies;
 - relate mail, attachments, replies, and converted tasks;
-- define retention, quota, backup, encryption-at-rest, and account-removal behavior;
+- apply a 50 MiB/message and 2 GiB/archive fail-closed quota; retain indefinitely in this slice and require preview-plus-confirmation for future cleanup;
+- treat archives as sensitive mailbox backup data, retain them when credentials are removed, and rely on OS profile/volume protection until an application-layer encryption ADR is accepted;
 - preserve remote-image blocking and the untrusted-input boundary.
 
 Exit gate:
 
-- a synced mail result can be reconstructed from the local `.eml` while retained;
+- a fetched mail result can be reconstructed byte-for-byte from the local `.eml` while retained;
 - attachment availability is explicit and never inferred from metadata alone;
 - removing derived indexes cannot remove mail originals;
 - retention previews name exactly what will be removed before confirmation.

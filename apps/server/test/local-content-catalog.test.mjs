@@ -320,6 +320,28 @@ test("catalog can be deleted and rebuilt without changing originals", async () =
   }
 });
 
+test("catalog reports a verified mail archive as a managed available original", async () => {
+  const fx = fixture();
+  try {
+    const archiveRef = `mailarc_${"a".repeat(24)}_${"b".repeat(40)}`;
+    fx.state.applicationResults[0].data.archive = {
+      version: 1,
+      ref: archiveRef,
+      availability: "available",
+      sha256: "c".repeat(64),
+      size: 2048,
+      archivedAt: "2026-08-14T01:20:00.000Z",
+    };
+    await fx.service.rebuild({}, actor);
+    const result = await fx.service.search({ query: "本地文件整理建议" }, actor);
+    assert.equal(result.body.results[0].storageMode, "managed");
+    assert.deepEqual(result.body.results[0].root, { kind: "mail_archive", id: archiveRef });
+    assert.deepEqual(result.body.results[0].original, { available: true, reason: null });
+    assert.equal(result.body.results[0].mimeType, "message/rfc822");
+    assert.equal(JSON.stringify(result.body).includes("c".repeat(64)), false, "content hashes remain catalog internals, not ordinary UI fields");
+  } finally { await fx.cleanup(); }
+});
+
 test("catalog refuses a symlinked original instead of indexing its target", async (t) => {
   const fx = fixture();
   try {

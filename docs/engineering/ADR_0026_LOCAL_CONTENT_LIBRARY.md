@@ -113,7 +113,7 @@ It does not yet deliver:
 
 ## Follow-up decisions
 
-- Managed mail archive and attachment retention/encryption policy.
+- Managed mail archive and attachment retention/encryption policy (proposed in [ADR 0027](ADR_0027_MANAGED_MAIL_ARCHIVE.md)).
 - Snapshot creation and retention UX for completed task outputs.
 - Local Library navigation and saved-search product flow.
 - OCR and semantic-ranking rollout gates with deterministic evaluation.

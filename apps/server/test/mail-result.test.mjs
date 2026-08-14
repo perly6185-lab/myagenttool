@@ -61,6 +61,28 @@ test("current fetch output marks the safe HTML body contract version", () => {
   assert.equal(parsed.bodyContentVersion, 2);
 });
 
+test("fetch imports only a bounded opaque local archive receipt", () => {
+  const ref = `mailarc_${"a".repeat(24)}_${"b".repeat(40)}`;
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({
+    messageId: "<archived@x>",
+    archive: { version: 1, ref, availability: "available", sha256: "c".repeat(64), size: 1234, archivedAt: "2026-08-14T05:00:00.000Z", attachmentCount: 1, path: "C:\\private\\message.eml" },
+    attachments: [{ id: "attachment-1", name: "note.txt", localAvailable: true }],
+  }) });
+  assert.deepEqual(parsed.archive, { version: 1, ref, availability: "available", sha256: "c".repeat(64), size: 1234, archivedAt: "2026-08-14T05:00:00.000Z", attachmentCount: 1 });
+  assert.equal(parsed.attachments[0].localAvailable, true);
+  assert.equal(JSON.stringify(parsed).includes("C:\\private"), false);
+});
+
+test("an incomplete archive claim cannot mark the original or attachments locally available", () => {
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({
+    messageId: "<forged@x>",
+    archive: { version: 1, ref: `mailarc_${"a".repeat(24)}_${"b".repeat(40)}`, availability: "available", sha256: "c".repeat(64), size: 0 },
+    attachments: [{ id: "attachment-1", name: "note.txt", localAvailable: true }],
+  }) });
+  assert.equal(parsed.archive, null);
+  assert.equal(parsed.attachments[0].localAvailable, undefined);
+});
+
 test("fetch imports attachment metadata only and rejects forged identifiers", () => {
   const parsed = parseMailApplicationResult({ text: JSON.stringify({
     messageId: "<m@x>",

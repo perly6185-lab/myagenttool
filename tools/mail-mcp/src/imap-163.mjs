@@ -17,23 +17,23 @@ export async function with163Client(action) {
   });
   try {
     await client.connect();
-    return await action(client);
+    return await action(client, { username: credential.username });
   } finally {
     if (client.usable) await client.logout().catch(() => client.close());
   }
 }
 
 export async function with163Mailbox(path, { readOnly = true } = {}, action) {
-  return with163Client(async (client) => {
+  return with163Client(async (client, identity) => {
     const lock = await client.getMailboxLock(path, { readOnly });
-    try { return await action(client); } finally { lock.release(); }
+    try { return await action(client, identity); } finally { lock.release(); }
   });
 }
 
 export async function fetch163ParsedMessage(messageId, folderPath = "INBOX") {
   const normalizedId = String(messageId ?? "").trim();
   if (!normalizedId) throw new Error("messageId is required");
-  return with163Mailbox(folderPath, { readOnly: true }, async (client) => {
+  return with163Mailbox(folderPath, { readOnly: true }, async (client, identity) => {
     const uids = await client.search({ header: { "message-id": normalizedId } }, { uid: true });
     if (!uids.length) throw new Error("mail_message_not_found");
     const candidates = await client.fetchAll(uids, { envelope: true }, { uid: true });
@@ -44,6 +44,6 @@ export async function fetch163ParsedMessage(messageId, folderPath = "INBOX") {
     // Keep cid: references in the bounded HTML record. Inline image bytes stay
     // behind the existing attachment bridge and are loaded only for a user's
     // safe-HTML preview; embedding them here would bloat persisted state.
-    return { message, parsed: await simpleParser(message.source, { keepCidLinks: true }) };
+    return { message, parsed: await simpleParser(message.source, { keepCidLinks: true }), identity };
   });
 }

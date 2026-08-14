@@ -352,6 +352,7 @@ export function collectLocalContent({ state, stateStorePath, indexedAt }) {
   const mailByMessage = collectMailMessages(state);
   for (const mail of mailByMessage.values()) {
     const id = contentId("mail", mail.ownerTeamId, mail.messageId);
+    const archived = validMailArchiveReceipt(mail.archive);
     addRecord(catalogRecord({
       id,
       ownerTeamId: mail.ownerTeamId,
@@ -361,22 +362,28 @@ export function collectLocalContent({ state, stateStorePath, indexedAt }) {
       title: mail.subject || "(no subject)",
       body: mail.body ?? "",
       summary: boundedSummary(mail.body, mail.from || "Mail message"),
-      storageMode: "state_record",
+      storageMode: archived ? "managed" : "state_record",
+      rootKind: archived ? "mail_archive" : null,
+      rootId: archived ? mail.archive.ref : null,
       stateCollection: "applicationResults",
       stateId: mail.recordId,
-      sourceType: "mail_cache",
+      mimeType: archived ? "message/rfc822" : null,
+      size: archived ? mail.archive.size : null,
+      sha256: archived ? mail.archive.sha256 : null,
+      sourceType: archived ? "mail_archive" : "mail_cache",
       sourceId: mail.messageId,
       occurredAt: mail.date ?? mail.createdAt ?? null,
       importedAt: mail.createdAt ?? null,
       modifiedAt: mail.updatedAt ?? mail.createdAt ?? null,
-      originalAvailable: false,
-      unavailableReason: "mail_original_not_archived",
-      indexStatus: "partial",
+      originalAvailable: archived,
+      unavailableReason: archived ? null : mail.archive?.reason ?? "mail_original_not_archived",
+      indexStatus: archived ? "ready" : "partial",
       metadata: {
         from: mail.from ?? null,
         folderId: mail.folderId ?? null,
         hasHtml: Boolean(mail.bodyHtml),
         attachmentCount: mail.attachments?.length ?? 0,
+        archiveAvailability: mail.archive?.availability ?? "not_archived",
       },
       indexedAt,
     }), `mail:${mail.ownerTeamId}:${mail.messageId}`);
@@ -808,6 +815,7 @@ function collectMailMessages(state) {
         body: typeof candidate.body === "string" ? candidate.body : previous.body ?? "",
         bodyHtml: typeof candidate.bodyHtml === "string" ? candidate.bodyHtml : previous.bodyHtml ?? "",
         attachments: Array.isArray(candidate.attachments) ? candidate.attachments : previous.attachments ?? [],
+        archive: candidate.archive && typeof candidate.archive === "object" ? candidate.archive : previous.archive ?? null,
       });
     }
   }
@@ -820,6 +828,16 @@ function normalizeKinds(input) {
   return kinds.every((kind) => LOCAL_CONTENT_KINDS.has(kind))
     ? { ok: true, value: kinds }
     : { ok: false, value: [] };
+}
+
+function validMailArchiveReceipt(value) {
+  return value?.version === 1
+    && value.availability === "available"
+    && /^mailarc_[a-f0-9]{24}_[a-f0-9]{40}$/.test(String(value.ref ?? ""))
+    && /^[a-f0-9]{64}$/.test(String(value.sha256 ?? ""))
+    && Number.isSafeInteger(value.size)
+    && value.size > 0
+    && value.size <= 50 * 1024 * 1024;
 }
 
 function normalizeQuery(value) {
