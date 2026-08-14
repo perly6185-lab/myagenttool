@@ -11,6 +11,7 @@ import { parse } from "parse5";
 import { actorCanAccessProject } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { importFeishuDocToWorktree } from "./feishu-doc-imports.mjs";
+import { renderZhihuArticle } from "./zhihu-imports.mjs";
 import { validateExternalWebhookTarget } from "./auto-run-alerts.mjs";
 
 export const ARTICLE_IMPORT_LIMITS = Object.freeze({
@@ -206,6 +207,30 @@ export async function inspectArticle({
       _document: { media: [] },
     };
   }
+  if (detectArticleSource(canonicalUrl) === "zhihu") {
+    // Zhihu content pages sit behind the secng/zse-ck JS-challenge WAF; the
+    // plain-HTTP preview cannot read them and launching a browser here would
+    // block the preview for ~a minute. Return a synthetic inspection; the real
+    // title and media are resolved at import (inspectZhihuArticle renders the
+    // page in a browser subprocess and reuses this pipeline's download+write).
+    return {
+      sourceUrl: String(url),
+      canonicalUrl,
+      resolvedUrl: canonicalUrl,
+      provider: "zhihu",
+      contentType: "article",
+      title: "Zhihu article",
+      author: null,
+      publishedAt: null,
+      publishedAtSource: "imported",
+      textLength: 0,
+      media: [],
+      mediaCounts: { images: 0, audio: 0, video: 0 },
+      markdownPreview: "",
+      fetchedAt: new Date().toISOString(),
+      _document: { media: [] },
+    };
+  }
   const page = await fetchPublicResource(canonicalUrl, {
     fetchImpl,
     resolveHostname,
@@ -242,6 +267,41 @@ export async function inspectArticle({
   };
 }
 
+/**
+ * Inspect a public Zhihu article by rendering it in a browser subprocess (to
+ * clear the secng/zse-ck JS-challenge WAF that 403s plain-HTTP clients), then
+ * parsing the rendered HTML with the shared parseArticleDocument — whose zhihu
+ * selectors (Post-RichTextContainer / RichContent-inner / Post-Title /
+ * AuthorInfo-name) finally hit real content. Returns the same inspection shape
+ * as inspectArticle so importArticleToWorktree's downloadMedia + write pipeline
+ * is reused unchanged (zhimg images are fetched with Referer = resolvedUrl).
+ *
+ * @param {{ url: string, signal?: AbortSignal, limits?: object }} args
+ * @returns {Promise<object>} the inspection shape (with `_document`).
+ */
+export async function inspectZhihuArticle({ url, signal, limits = ARTICLE_IMPORT_LIMITS } = {}) {
+  const canonicalUrl = canonicalizeArticleUrl(url);
+  const { resolvedUrl, html } = await renderZhihuArticle(canonicalUrl, { signal });
+  const parsed = parseArticleDocument(html, resolvedUrl, "zhihu", limits.mediaCount);
+  return {
+    sourceUrl: String(url),
+    canonicalUrl,
+    resolvedUrl,
+    provider: "zhihu",
+    contentType: "article",
+    title: parsed.title,
+    author: parsed.author,
+    publishedAt: parsed.publishedAt,
+    publishedAtSource: parsed.publishedAt ? "source" : "imported",
+    textLength: parsed.plainText.length,
+    media: parsed.media.map(({ token, ...item }) => item),
+    mediaCounts: countMedia(parsed.media),
+    markdownPreview: parsed.markdown.slice(0, 2_000),
+    fetchedAt: new Date().toISOString(),
+    _document: parsed,
+  };
+}
+
 function assertArticlePage(html, pageUrl, provider) {
   if (provider !== "wechat") return;
   const path = new URL(pageUrl).pathname.toLowerCase();
@@ -264,18 +324,26 @@ export async function importArticleToWorktree({
   signal,
   limits = ARTICLE_IMPORT_LIMITS,
 } = {}) {
-  // Feishu public docs are JS-rendered SPAs the plain-HTTP importer cannot read;
-  // delegate to the Playwright-backed fetcher (see feishu-doc-imports.mjs). A
-  // malformed URL throws here and falls through to inspectArticle, whose
-  // canonicalization raises the canonical article_url_refused error.
+  // Feishu public docs (JS-rendered SPA) and Zhihu (secng/zse-ck JS-challenge
+  // WAF) both need a real browser; the plain-HTTP importer cannot read them.
+  // Feishu delegates entirely to its own fetch+write bundle
+  // (feishu-doc-imports.mjs). Zhihu only needs the browser to RENDER the page —
+  // it then reuses this same download+write pipeline, so below we swap in a
+  // browser-rendered inspection (inspectZhihuArticle) for the plain-HTTP one.
+  // A malformed URL throws in detectArticleSource; we route it to the generic
+  // path so inspectArticle's canonicalizeArticleUrl raises article_url_refused.
+  let source;
   try {
-    if (detectArticleSource(url) === "feishu") {
-      return importFeishuDocToWorktree({ url, worktreePath, workItemId, importedAt, signal });
-    }
+    source = detectArticleSource(url);
   } catch {
-    /* fall through to inspectArticle */
+    source = "web";
   }
-  const inspection = await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
+  if (source === "feishu") {
+    return importFeishuDocToWorktree({ url, worktreePath, workItemId, importedAt, signal });
+  }
+  const inspection = source === "zhihu"
+    ? await inspectZhihuArticle({ url, signal, limits })
+    : await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
   const publishedAt = inspection.publishedAt ?? importedAt.slice(0, 10);
   const relativeDirectory = buildArticleRelativeDirectory({
     provider: inspection.provider,

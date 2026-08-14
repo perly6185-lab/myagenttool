@@ -1,0 +1,107 @@
+#!/usr/bin/env node
+// CLI entry point for the Zhihu Playwright renderer subprocess.
+//
+// Contract (mirrors tools/feishu-doc-imports/src/cli.mjs):
+//   argv:   <url> [--headed] [--profile <dir>] [--login]
+//   stdout: on success, a single JSON object {"ok":true,"url":"<resolved>","html":"<rendered>"}
+//           followed by a newline. No JSON is written on failure. (--login
+//           writes only guidance to stderr and emits no JSON.)
+//   exit:   0 success · 1 usage error · 2 render/fetch/login failure
+//   stderr: a single human-readable line on failure ("zhihu-imports failed: <msg>").
+//
+// This process owns NO disk writes beyond the persistent profile's browser
+// state, and downloads NOTHING. It only renders the page and returns its HTML;
+// the parent reuses the article-imports pipeline.
+//
+// Auth: zhihu's secng WAF blocks unauthenticated automated browsers (see
+// fetch-doc.mjs). Seed a logged-in profile once with `--login --profile <dir>`
+// (or ZHIHU_PROFILE_DIR), then render reuses it. Without a profile the render
+// still runs but real zhihu content will time out → exit 2.
+
+import { parseZhihuUrl, ZhihuUrlError } from "./parse-url.mjs";
+import { resolveConfig } from "./config.mjs";
+import { loginZhihuProfile, renderZhihuDoc } from "./fetch-doc.mjs";
+
+const USAGE = "usage: zhihu-imports <url> [--headed] [--profile <dir>] [--login]\n";
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const positional = [];
+  let headlessOverride = null;
+  let profileOverride = null;
+  let login = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--headed") {
+      headlessOverride = false;
+    } else if (a === "--login") {
+      login = true;
+    } else if (a === "--profile") {
+      profileOverride = argv[++i];
+      if (!profileOverride) {
+        process.stderr.write("zhihu-imports: --profile requires a directory argument\n");
+        process.stderr.write(USAGE);
+        return 1;
+      }
+    } else if (a.startsWith("--profile=")) {
+      profileOverride = a.slice("--profile=".length);
+    } else if (a.startsWith("--")) {
+      process.stderr.write(`zhihu-imports: unknown option '${a}'\n`);
+      process.stderr.write(USAGE);
+      return 1;
+    } else {
+      positional.push(a);
+    }
+  }
+
+  const baseConfig = resolveConfig(process.env);
+  const config = {
+    ...baseConfig,
+    ...(headlessOverride === null ? {} : { headless: headlessOverride }),
+    ...(profileOverride ? { profileDir: profileOverride } : {}),
+  };
+
+  // --login seeds a persistent profile with a logged-in zhihu session. It needs
+  // no URL and writes no success JSON — it just captures the z_c0 cookie.
+  if (login) {
+    try {
+      await loginZhihuProfile({ config });
+      return 0;
+    } catch (err) {
+      process.stderr.write(`zhihu-imports failed: ${(err && err.message) || err}\n`);
+      return 2;
+    }
+  }
+
+  if (positional.length !== 1) {
+    process.stderr.write(USAGE);
+    return 1;
+  }
+
+  let parsed;
+  try {
+    parsed = parseZhihuUrl(positional[0]);
+  } catch (err) {
+    if (err instanceof ZhihuUrlError) {
+      process.stderr.write(`zhihu-imports: ${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+
+  try {
+    const { url, html } = await renderZhihuDoc({ url: parsed.canonicalUrl, config });
+    if (!html || html.trim() === "") {
+      throw new Error("Rendered page HTML was empty.");
+    }
+    process.stdout.write(JSON.stringify({ ok: true, url, html }) + "\n");
+    return 0;
+  } catch (err) {
+    const msg = (err && err.message) || String(err);
+    process.stderr.write(`zhihu-imports failed: ${msg}\n`);
+    return 2;
+  }
+}
+
+const code = await main();
+process.exit(code);
