@@ -1057,7 +1057,7 @@ describe("TaskView local work items", () => {
     await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_delivery", "local_merge", 4));
   });
 
-  it("shows task run history only when the server reports a failure or rerun", async () => {
+  it("shows task run history and promotes a posted report", async () => {
     const item = {
       id: "lwi_history", localRef: "LOCAL-60", projectId: "prj_1",
       title: "Retry a local task", body: "", type: "task", status: "in_progress",
@@ -1098,6 +1098,12 @@ describe("TaskView local work items", () => {
       workItem: item,
       observability: {
         ...observability,
+        latestRun: {
+          ...observability.latestRun,
+          status: "report_posted",
+          report: "The report is ready for review.",
+          decision: { path: "evaluate", decidedBy: "agent", confidence: 0.9 },
+        },
         runHistory: [{
           invocationId: "inv_first", autoRunId: "aur_history", attempt: 1, status: "failed",
           createdAt: "2026-08-07T01:00:00.000Z", startedAt: "2026-08-07T01:00:01.000Z",
@@ -1118,6 +1124,11 @@ describe("TaskView local work items", () => {
     expect(within(history).getByText("The local connection closed.")).toBeTruthy();
     expect(within(history).getByText("Reason: transport_closed")).toBeTruthy();
     expect(within(history).getByText("Current")).toBeTruthy();
+    const reportText = await screen.findByText("The report is ready for review.");
+    const reportCard = reportText.closest("section");
+    expect(reportCard?.className).toContain("rounded-lg bg-card p-6");
+    expect(reportCard).toBeTruthy();
+    expect((reportCard?.compareDocumentPosition(history) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("shows the external issue funnel and plain-language stalled recovery", async () => {
