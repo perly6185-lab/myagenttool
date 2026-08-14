@@ -18,6 +18,7 @@
 const MAX_HEADERS = 200;
 const MAX_FIELD = 998; // RFC 5322 line-length ceiling; generous but bounded.
 const MAX_BODY = 20000;
+const MAX_HTML_BODY = 50000;
 const MAX_ATTACHMENTS = 50;
 const MAX_FOLDERS = 20;
 
@@ -83,6 +84,8 @@ export function parseMailApplicationResult({ text }) {
   if (payload.messageId) {
     const header = normalizeHeader(payload);
     if (!header) return null;
+    const body = typeof payload.body === "string" ? payload.body : "";
+    const bodyHtml = typeof payload.bodyHtml === "string" ? payload.bodyHtml : "";
     const references = Array.isArray(payload.references)
       ? payload.references.map((ref) => cap(ref, MAX_FIELD)).filter(Boolean).slice(0, 50)
       : typeof payload.references === "string"
@@ -98,7 +101,11 @@ export function parseMailApplicationResult({ text }) {
       folderPath: cap(payload.folderPath, MAX_FIELD) ?? "INBOX",
       inReplyTo: cap(payload.inReplyTo, MAX_FIELD),
       references,
-      body: cap(payload.body, MAX_BODY) ?? "",
+      body: cap(body, MAX_BODY) ?? "",
+      bodyHtml: cap(bodyHtml, MAX_HTML_BODY) ?? "",
+      hasHtml: Boolean(bodyHtml),
+      bodyTruncated: payload.bodyTruncated === true || body.length > MAX_BODY || bodyHtml.length > MAX_HTML_BODY,
+      bodyContentVersion: payload.bodyContentVersion === 2 ? 2 : 1,
       attachments,
       attachmentMetadataLoaded: true,
     };
@@ -165,6 +172,7 @@ function normalizeAttachment(value) {
   const id = cap(value.id, 100);
   const name = cap(value.name, 255);
   if (!id || !name || !/^attachment-[1-9][0-9]*$/.test(id)) return null;
+  const contentId = cap(value.contentId, MAX_FIELD)?.trim().replace(/^<|>$/g, "") || null;
   return {
     id,
     name,
@@ -172,5 +180,6 @@ function normalizeAttachment(value) {
     size: Number.isFinite(value.size) ? Math.max(0, Math.min(Number(value.size), 25 * 1024 * 1024)) : 0,
     sha256: /^[a-f0-9]{64}$/.test(String(value.sha256 ?? "")) ? String(value.sha256) : null,
     previewable: value.previewable === true,
+    ...(contentId ? { contentId } : {}),
   };
 }

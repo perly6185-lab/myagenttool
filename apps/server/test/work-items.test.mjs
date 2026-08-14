@@ -3079,7 +3079,8 @@ test("close, reopen, archive and restore preserve the record", () => {
 });
 
 test("list supports project, status, type, assignee and text filters", () => {
-  const { service } = harness();
+  const { service, state } = harness();
+  state.projects.find((project) => project.id === "prj_a").name = "Customer delivery";
   service.createWorkItem({
     projectId: "prj_a",
     title: "Repair release",
@@ -3090,6 +3091,7 @@ test("list supports project, status, type, assignee and text filters", () => {
   }, ACTOR_A);
   service.createWorkItem({ projectId: "prj_a", title: "Write docs" }, ACTOR_A);
   assert.equal(service.listWorkItems({ q: "release" }, ACTOR_A).body.count, 1);
+  assert.equal(service.listWorkItems({ q: "customer delivery" }, ACTOR_A).body.count, 2);
   assert.equal(service.listWorkItems({ status: "blocked", type: "bug", assigneeId: "usr_a" }, ACTOR_A).body.count, 1);
   assert.equal(service.listWorkItems({ status: "done" }, ACTOR_A).body.count, 0);
 });

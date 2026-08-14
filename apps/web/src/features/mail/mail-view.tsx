@@ -23,10 +23,12 @@ import {
   X,
 } from "lucide-react";
 import { SectionHeading } from "@/components/common/section-heading";
+import { ConfirmModal } from "@/components/common/confirm-modal";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { api, ApiError, type MailboxDraft, type MailboxMessage, type MailDraftAttachment } from "@/lib/api-client";
 import { mailApi } from "@/features/mail/mail-api";
+import { normalizeCid, PlainMailBody, SafeHtmlMailBody } from "@/features/mail/safe-mail-content";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { cn } from "@/lib/cn";
@@ -44,6 +46,8 @@ const COPY = {
     syncing: "正在收取…",
     syncComplete: "收取完成，收件箱已更新。",
     syncFailed: "暂时无法收取新邮件。已有邮件仍然保留，请重试；若持续失败，请检查连接。",
+    loadFailed: "邮箱暂时无法加载。已有邮件和草稿没有丢失，请重试。",
+    retry: "重新加载",
     lastSynced: "上次收取：{{time}}",
     search: "搜索此文件夹内已收取的邮件",
     searchEmpty: "没有找到匹配的邮件",
@@ -75,6 +79,17 @@ const COPY = {
     choose: "选择一封邮件查看内容",
     loadingBody: "正在安全读取邮件正文…",
     bodyUnavailable: "正文尚未下载。你可以重新收取邮件后再试。",
+    htmlTextNotice: "这封邮件包含 HTML。默认显示经过转换的安全文本，不会加载远程图片。",
+    viewSafeHtml: "查看安全排版",
+    viewPlainText: "返回纯文本",
+    safeHtmlTitle: "安全邮件内容",
+    safeHtmlNotice: "HTML 已移除脚本、表单、样式和非安全地址，并在隔离区域中显示。",
+    remoteImagesBlocked: "远程图片默认已拦截，以避免向发件人暴露阅读状态和网络地址。",
+    remoteImagesLoaded: "已按你的选择加载远程图片；发件方可能获知你的网络地址和阅读行为。",
+    loadRemoteImages: "加载远程图片",
+    blockRemoteImages: "重新拦截远程图片",
+    inlineImagesLoading: "正在安全加载邮件内嵌图片…",
+    bodyTruncated: "这封邮件超过本地安全读取上限，当前正文并不完整。请到邮箱服务商查看原文。",
     reply: "回复",
     issue: "已关联任务来源 #{{number}}",
     createTask: "转为任务",
@@ -165,6 +180,14 @@ const COPY = {
     sendFailed: "邮件暂未发送。草稿仍然保留，你可以检查发件连接后重试。",
     sendDisabled: "发件功能尚未启用。草稿已经保存。",
     sendQueued: "邮件已进入发件箱，正在等待服务商回执。",
+    deliveryDetails: "邮件详情",
+    deliveryStatus: "发送状态",
+    updatedAt: "更新时间",
+    sendProblem: "上次发送未完成",
+    sendUnconfirmedHint: "请先到服务商邮箱核对是否已经发送，再决定是否重新发送，避免收件人收到重复邮件。",
+    discardComposeTitle: "放弃未保存的邮件？",
+    discardComposeDescription: "关闭后，本次尚未保存的收件人、主题、正文和附件将不会保留。",
+    discardComposeConfirm: "放弃并关闭",
     noSubject: "（无主题）",
     close: "关闭",
     saved: "草稿已保存",
@@ -185,6 +208,8 @@ const COPY = {
     syncing: "Getting mail…",
     syncComplete: "Mail received. Your inbox is up to date.",
     syncFailed: "New mail could not be retrieved. Existing mail is safe. Try again, then check the connection if it continues.",
+    loadFailed: "The mailbox could not be loaded. Your existing mail and drafts are still safe; try again.",
+    retry: "Retry",
     lastSynced: "Last checked: {{time}}",
     search: "Search received mail in this folder",
     searchEmpty: "No matching messages",
@@ -216,6 +241,17 @@ const COPY = {
     choose: "Choose an email to read it",
     loadingBody: "Safely loading the message…",
     bodyUnavailable: "The body has not been downloaded yet. Get new mail and try again.",
+    htmlTextNotice: "This email contains HTML. Safe converted text is shown by default, without loading remote images.",
+    viewSafeHtml: "View safe layout",
+    viewPlainText: "Back to plain text",
+    safeHtmlTitle: "Safe email content",
+    safeHtmlNotice: "Scripts, forms, styles, and unsafe addresses were removed, and the HTML is isolated from the app.",
+    remoteImagesBlocked: "Remote images are blocked by default so the sender cannot learn your reading status or network address.",
+    remoteImagesLoaded: "Remote images were loaded at your request; the sender may learn your network address and reading activity.",
+    loadRemoteImages: "Load remote images",
+    blockRemoteImages: "Block remote images again",
+    inlineImagesLoading: "Safely loading inline email images…",
+    bodyTruncated: "This email exceeds the local safe-reading limit, so the displayed body is incomplete. Open it at your email provider to see the original.",
     reply: "Reply",
     issue: "Linked task source #{{number}}",
     createTask: "Turn into task",
@@ -306,6 +342,14 @@ const COPY = {
     sendFailed: "The email was not sent. Your draft is safe; check the send connection and try again.",
     sendDisabled: "Sending is not enabled yet. Your draft has been saved.",
     sendQueued: "The email is in Outbox while we wait for the provider receipt.",
+    deliveryDetails: "Email details",
+    deliveryStatus: "Delivery status",
+    updatedAt: "Updated",
+    sendProblem: "The last send did not complete",
+    sendUnconfirmedHint: "Check your provider mailbox before sending again so the recipient does not receive a duplicate.",
+    discardComposeTitle: "Discard this unsaved email?",
+    discardComposeDescription: "Closing will discard the unsaved recipient, subject, message, and attachments.",
+    discardComposeConfirm: "Discard and close",
     noSubject: "(no subject)",
     close: "Close",
     saved: "Draft saved",
@@ -335,7 +379,10 @@ export function MailView() {
   const mailbox = useQuery({ queryKey: ["mailbox", page, folder, systemFolder ? "" : deferredQuery], queryFn: () => mailApi.getMailbox(page, systemFolder ? "inbox" : folder, systemFolder ? "" : deferredQuery), refetchInterval: 4_000 });
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [compose, setCompose] = useState<ComposeState | null>(null);
+  const [composeBaseline, setComposeBaseline] = useState("");
+  const [confirmComposeClose, setConfirmComposeClose] = useState(false);
   const [reviewDraft, setReviewDraft] = useState<MailboxDraft | null>(null);
+  const [viewedDraft, setViewedDraft] = useState<MailboxDraft | null>(null);
   const [busy, setBusy] = useState<"sync" | "fetch" | "save" | "send" | "delete" | "task" | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string; task?: NonNullable<MailboxMessage["task"]> } | null>(null);
   const [connectorOpen, setConnectorOpen] = useState(false);
@@ -354,6 +401,7 @@ export function MailView() {
   const lastSyncText = data?.sync?.lastSucceededAt
     ? copy.lastSynced.replace("{{time}}", new Intl.DateTimeFormat(i18n.language, { dateStyle: "short", timeStyle: "short" }).format(new Date(data.sync.lastSucceededAt)))
     : null;
+  const composeDirty = Boolean(compose && composeFingerprint(compose) !== composeBaseline);
 
   useEffect(() => {
     if (!pendingSyncId || data?.sync?.invocationId !== pendingSyncId) return;
@@ -408,7 +456,7 @@ export function MailView() {
         .then(() => queryClient.invalidateQueries({ queryKey: ["mailbox"] }))
         .catch(() => setNotice({ tone: "error", text: copy.markReadFailed }));
     }
-    if ((message.fetched && message.attachmentMetadataLoaded) || !account?.fetchCapability || busy === "fetch") return;
+    if ((message.fetched && message.attachmentMetadataLoaded && message.bodyContentVersion >= 2) || !account?.fetchCapability || busy === "fetch") return;
     setBusy("fetch");
     try {
       await api.invokeCapability(account.fetchCapability, account.incrementalSync ? { messageId: message.messageId, folderPath: message.folderPath } : { messageId: message.messageId });
@@ -552,13 +600,22 @@ export function MailView() {
 
   function startCompose(message?: MailboxMessage) {
     const subject = message ? `Re: ${message.subject.replace(/^(\s*re\s*:\s*)+/i, "")}` : "";
-    setCompose({ id: null, to: message?.from ?? "", subject, body: "", attachments: [], inReplyTo: message?.messageId ?? null, references: message ? [...message.references, message.messageId] : [] });
+    const next = { id: null, to: message?.from ?? "", subject, body: "", attachments: [], inReplyTo: message?.messageId ?? null, references: message ? [...message.references, message.messageId] : [], sendError: null };
+    setCompose(next);
+    setComposeBaseline(composeFingerprint(next));
     setNotice(null);
   }
 
   function editDraft(draft: MailboxDraft) {
-    setCompose({ id: draft.id, to: draft.to, subject: draft.subject, body: draft.body, attachments: draft.attachments ?? [], inReplyTo: draft.inReplyTo, references: draft.references });
+    const next = { id: draft.id, to: draft.to, subject: draft.subject, body: draft.body, attachments: draft.attachments ?? [], inReplyTo: draft.inReplyTo, references: draft.references, sendError: draft.sendError };
+    setCompose(next);
+    setComposeBaseline(composeFingerprint(next));
     setNotice(null);
+  }
+
+  function closeCompose() {
+    if (composeDirty) setConfirmComposeClose(true);
+    else setCompose(null);
   }
 
   function mergeComposeAttachments(attachments: MailDraftAttachment[]) {
@@ -603,7 +660,12 @@ export function MailView() {
         ? await api.updateMailDraft(value.id, { to: value.to, subject: value.subject, body: value.body, attachments: value.attachments })
         : await api.createMailDraft({ to: value.to, subject: value.subject, body: value.body, attachments: value.attachments, inReplyTo: value.inReplyTo, references: value.references });
       await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
-      setCompose((current) => current ? { ...current, id: result.draft.id } : current);
+      const saved = { ...value, id: result.draft.id, sendError: result.draft.sendError };
+      setCompose((current) => {
+        if (!current) return current;
+        return { ...current, id: result.draft.id, sendError: result.draft.sendError };
+      });
+      setComposeBaseline(composeFingerprint(saved));
       setNotice({ tone: "info", text: copy.saved });
       return result.draft;
     } catch (error) {
@@ -631,6 +693,7 @@ export function MailView() {
       await api.sendMailDraft(reviewDraft.id, grant.token);
       setReviewDraft(null);
       setCompose(null);
+      setComposeBaseline("");
       setFolder("outbox");
       setNotice({ tone: "info", text: copy.sendQueued });
       await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
@@ -649,6 +712,7 @@ export function MailView() {
     try {
       await api.deleteMailDraft(compose.id);
       setCompose(null);
+      setComposeBaseline("");
       await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
     } catch {
       setNotice({ tone: "error", text: copy.saveFailed });
@@ -658,6 +722,7 @@ export function MailView() {
   }
 
   if (mailbox.isLoading) return <div role="status" className="py-12 text-center text-sm text-muted-foreground">{copy.syncing}</div>;
+  if (mailbox.isError && !data) return <div role="alert" className="mx-auto flex max-w-xl flex-col items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-8 text-center"><p className="text-sm font-medium">{copy.loadFailed}</p><Button variant="secondary" onClick={() => void mailbox.refetch()}><RefreshCw />{copy.retry}</Button></div>;
 
   return (
     <div className="mx-auto max-w-[1500px] space-y-4" data-testid="mail-view">
@@ -670,6 +735,7 @@ export function MailView() {
       </div>
 
       {notice ? <div role={notice.tone === "error" ? "alert" : "status"} className={cn("flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm", notice.tone === "error" ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-primary/30 bg-primary/5 text-foreground")}><span>{notice.text}</span>{notice.tone === "info" && notice.task ? <Button size="sm" variant="secondary" onClick={() => showTask(notice.task!)}><ListTodo />{copy.viewTask}</Button> : null}</div> : null}
+      {mailbox.isError ? <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"><span>{copy.loadFailed}</span><Button size="sm" variant="secondary" onClick={() => void mailbox.refetch()}><RefreshCw />{copy.retry}</Button></div> : null}
       {data?.folders.some((item) => item.syncError) ? <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">{copy.folderSyncError}</div> : null}
       {data?.folders.some((item) => item.cursorReset) ? <div role="status" className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm">{copy.cursorReset}</div> : null}
 
@@ -707,7 +773,7 @@ export function MailView() {
               <div className="max-h-[70vh] overflow-y-auto lg:max-h-[560px]">
                 {visibleMessages.length ? visibleMessages.map((entry) => !systemFolder
                   ? <MessageRow key={(entry as MailboxMessage).id} message={entry as MailboxMessage} selected={selectedMessageId === (entry as MailboxMessage).id} onOpen={openMessage} />
-                  : <DraftRow key={(entry as MailboxDraft).id} draft={entry as MailboxDraft} copy={copy} onOpen={folder === "drafts" ? editDraft : undefined} />)
+                  : <DraftRow key={(entry as MailboxDraft).id} draft={entry as MailboxDraft} copy={copy} onOpen={folder === "drafts" ? editDraft : setViewedDraft} />)
                   : <div className="p-8 text-center"><p className="font-medium">{!systemFolder ? (query.trim() ? copy.searchEmpty : copy.emptyInbox) : copy.emptyFolder}</p>{!systemFolder && !query.trim() ? <p className="mt-1 text-sm text-muted-foreground">{copy.emptyInboxHint}</p> : null}</div>}
               </div>
               {!systemFolder && data.pagination.totalPages > 1 ? <div className="flex items-center justify-between gap-2 border-t p-2"><Button size="sm" variant="ghost" disabled={!data.pagination.hasPrevious} onClick={() => { setPage((value) => Math.max(1, value - 1)); setSelectedMessageId(null); }}><ChevronLeft />{copy.previousPage}</Button><span className="text-xs text-muted-foreground">{copy.pageStatus.replace("{{page}}", String(data.pagination.page)).replace("{{total}}", String(data.pagination.totalPages))}</span><Button size="sm" variant="ghost" disabled={!data.pagination.hasNext} onClick={() => { setPage((value) => value + 1); setSelectedMessageId(null); }}>{copy.nextPage}<ChevronRight /></Button></div> : null}
@@ -720,8 +786,10 @@ export function MailView() {
         </>
       )}
 
-      <ComposeModal copy={copy} value={compose} onChange={setCompose} busy={busy} canSend={Boolean(account?.canSend)} onClose={() => setCompose(null)} onSave={() => compose && void persistDraft(compose)} onReview={() => void reviewForSend()} onDelete={() => void removeDraft()} onPickAttachments={() => void pickComposeAttachments()} onPasteAttachments={(files) => void pasteComposeAttachments(files)} onRemoveAttachment={(ref) => setCompose((current) => current ? { ...current, attachments: current.attachments.filter((item) => item.ref !== ref) } : current)} />
+      <ComposeModal copy={copy} value={compose} onChange={setCompose} busy={busy} canSend={Boolean(account?.canSend)} onClose={closeCompose} onSave={() => compose && void persistDraft(compose)} onReview={() => void reviewForSend()} onDelete={() => void removeDraft()} onPickAttachments={() => void pickComposeAttachments()} onPasteAttachments={(files) => void pasteComposeAttachments(files)} onRemoveAttachment={(ref) => setCompose((current) => current ? { ...current, attachments: current.attachments.filter((item) => item.ref !== ref) } : current)} />
       <SendReviewModal copy={copy} draft={reviewDraft} pending={busy === "send"} onClose={() => setReviewDraft(null)} onSend={() => void sendDraft()} />
+      <MailDraftDetailModal copy={copy} draft={viewedDraft} onClose={() => setViewedDraft(null)} />
+      <ConfirmModal open={confirmComposeClose} title={copy.discardComposeTitle} description={copy.discardComposeDescription} confirmLabel={copy.discardComposeConfirm} destructive onClose={() => setConfirmComposeClose(false)} onConfirm={() => { setConfirmComposeClose(false); setCompose(null); setComposeBaseline(""); }} />
       <MailConnectionModal copy={copy} open={connectorOpen} onClose={() => setConnectorOpen(false)} onConnected={() => {
         void queryClient.invalidateQueries({ queryKey: ["mailbox"] });
         window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 2_000);
@@ -804,6 +872,7 @@ interface ComposeState {
   attachments: MailDraftAttachment[];
   inReplyTo: string | null;
   references: string[];
+  sendError: string | null;
 }
 
 interface MailTaskDraft {
@@ -829,12 +898,56 @@ function MessageRow({ message, selected, onOpen }: { message: MailboxMessage; se
 }
 
 function DraftRow({ draft, copy, onOpen }: { draft: MailboxDraft; copy: typeof COPY.zh | typeof COPY.en; onOpen?: (draft: MailboxDraft) => void }) {
-  const content = <><div className="flex items-center justify-between gap-2"><span className="truncate text-sm font-medium">{draft.to || "—"}</span><span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px]">{copy.status[draft.status as keyof typeof copy.status] ?? draft.status}</span></div><p className="mt-1 truncate text-sm">{draft.subject || copy.noSubject}</p><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{draft.body || "…"}</p></>;
+  const content = <><div className="flex items-center justify-between gap-2"><span className="truncate text-sm font-medium">{draft.to || "—"}</span><span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px]">{copy.status[draft.status as keyof typeof copy.status] ?? draft.status}</span></div><p className="mt-1 truncate text-sm">{draft.subject || copy.noSubject}</p><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{draft.body || "…"}</p>{draft.sendError ? <p className="mt-1 line-clamp-2 text-xs text-destructive">{copy.sendProblem}</p> : null}</>;
   return onOpen ? <button type="button" onClick={() => onOpen(draft)} className="block w-full border-b p-3 text-left hover:bg-muted/50">{content}</button> : <article className="border-b p-3">{content}</article>;
 }
 
 function MessageDetail({ message, copy, loading, onBack, onReply, onCreateTask, onMarkUnread, onPreview, onDownload }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; loading: boolean; onBack: () => void; onReply: () => void; onCreateTask: () => void; onMarkUnread: () => void; onPreview: (attachment: MailboxMessage["attachments"][number]) => void; onDownload: (attachment: MailboxMessage["attachments"][number]) => void }) {
-  return <div className="flex h-full min-h-0 flex-col"><div className="border-b p-4"><Button className="mb-3 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold">{message.subject}</h2><p className="mt-2 break-words text-sm">{message.from}</p><time className="text-xs text-muted-foreground">{longDate(message.date)}</time></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="ghost" onClick={onMarkUnread}><MailOpen />{copy.markUnread}</Button><Button size="sm" variant="secondary" onClick={onReply}><Reply />{copy.reply}</Button><Button size="sm" onClick={onCreateTask}><ListTodo />{message.task ? copy.linkedTask.replace("{{ref}}", message.task.localRef) : copy.createTask}</Button></div></div>{message.issueNumber ? <p className="mt-3 text-xs text-primary">{copy.issue.replace("{{number}}", String(message.issueNumber))}</p> : null}<p className="mt-2 text-[11px] text-muted-foreground">{copy.localReadHint}</p></div><div className="border-b bg-amber-500/5 px-4 py-2 text-xs text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.untrusted}</div><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">{loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : message.body ? <div className="whitespace-pre-wrap break-words text-sm leading-7">{message.body}</div> : <p className="text-sm text-muted-foreground">{copy.bodyUnavailable}</p>}{message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</p></div><div className="flex gap-2">{attachment.previewable ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}<Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button></div></article>)}</div></section> : null}</div></div>;
+  return <div className="flex h-full min-h-0 flex-col"><div className="border-b p-4"><Button className="mb-3 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold">{message.subject}</h2><p className="mt-2 break-words text-sm">{message.from}</p><time className="text-xs text-muted-foreground">{longDate(message.date)}</time></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="ghost" onClick={onMarkUnread}><MailOpen />{copy.markUnread}</Button><Button size="sm" variant="secondary" onClick={onReply}><Reply />{copy.reply}</Button><Button size="sm" onClick={onCreateTask}><ListTodo />{message.task ? copy.linkedTask.replace("{{ref}}", message.task.localRef) : copy.createTask}</Button></div></div>{message.issueNumber ? <p className="mt-3 text-xs text-primary">{copy.issue.replace("{{number}}", String(message.issueNumber))}</p> : null}<p className="mt-2 text-[11px] text-muted-foreground">{copy.localReadHint}</p></div><div className="border-b bg-amber-500/5 px-4 py-2 text-xs text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.untrusted}</div><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">{loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : <MailMessageBody key={message.id} message={message} copy={copy} />}{message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</p></div><div className="flex gap-2">{attachment.previewable ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}<Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button></div></article>)}</div></section> : null}</div></div>;
+}
+
+function MailMessageBody({ message, copy }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en }) {
+  const html = message.bodyHtml ?? "";
+  const [showHtml, setShowHtml] = useState(false);
+  const [allowRemoteImages, setAllowRemoteImages] = useState(false);
+  const [cidImages, setCidImages] = useState<Record<string, string>>({});
+  const [inlineImagesLoading, setInlineImagesLoading] = useState(false);
+
+  useEffect(() => {
+    setShowHtml(false);
+    setAllowRemoteImages(false);
+    setCidImages({});
+    setInlineImagesLoading(false);
+  }, [message.id]);
+
+  async function showSafeHtml() {
+    setShowHtml(true);
+    const bridge = window.myagenttoolDesktop;
+    const inline = message.attachments
+      .filter((attachment) => attachment.contentId && !cidImages[normalizeCid(attachment.contentId)] && attachment.previewable && attachment.contentType.startsWith("image/"))
+      .slice(0, 10);
+    if (!bridge?.previewMailAttachment || !inline.length) return;
+    setInlineImagesLoading(true);
+    const entries = await Promise.all(inline.map(async (attachment) => {
+      const result = await bridge.previewMailAttachment!({ messageId: message.messageId, folderPath: message.folderPath, attachmentId: attachment.id }).catch(() => null);
+      if (!result?.ok || result.preview.kind !== "image" || !result.preview.dataBase64) return null;
+      const contentType = result.preview.contentType.toLowerCase();
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(contentType)) return null;
+      return [normalizeCid(attachment.contentId!), `data:${contentType};base64,${result.preview.dataBase64}`] as const;
+    }));
+    setCidImages((current) => ({ ...current, ...Object.fromEntries(entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))) }));
+    setInlineImagesLoading(false);
+  }
+
+  return <div className="space-y-3">
+    {message.bodyTruncated ? <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs leading-5"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.bodyTruncated}</div> : null}
+    {html ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 px-3 py-2"><p className="min-w-0 flex-1 text-xs text-muted-foreground">{showHtml ? copy.safeHtmlNotice : copy.htmlTextNotice}</p><Button size="sm" variant="secondary" onClick={() => showHtml ? setShowHtml(false) : void showSafeHtml()}>{showHtml ? copy.viewPlainText : copy.viewSafeHtml}</Button></div> : null}
+    {showHtml && html ? <>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2"><p className="min-w-0 flex-1 text-xs text-muted-foreground">{allowRemoteImages ? copy.remoteImagesLoaded : copy.remoteImagesBlocked}</p><Button size="sm" variant="ghost" onClick={() => setAllowRemoteImages((current) => !current)}>{allowRemoteImages ? copy.blockRemoteImages : copy.loadRemoteImages}</Button></div>
+      {inlineImagesLoading ? <p role="status" className="text-xs text-muted-foreground">{copy.inlineImagesLoading}</p> : null}
+      <SafeHtmlMailBody html={html} title={copy.safeHtmlTitle} allowRemoteImages={allowRemoteImages} cidImages={cidImages} />
+    </> : message.body ? <PlainMailBody body={message.body} /> : <p className="text-sm text-muted-foreground">{copy.bodyUnavailable}</p>}
+  </div>;
 }
 
 function MailTaskReviewModal({ copy, value, projects, pending, onChange, onClose, onCreate }: {
@@ -872,12 +985,42 @@ function AttachmentPreviewModal({ copy, preview, onClose }: { copy: typeof COPY.
 function ComposeModal({ copy, value, onChange, busy, canSend, onClose, onSave, onReview, onDelete, onPickAttachments, onPasteAttachments, onRemoveAttachment }: { copy: typeof COPY.zh | typeof COPY.en; value: ComposeState | null; onChange: (value: ComposeState | null) => void; busy: string | null; canSend: boolean; onClose: () => void; onSave: () => void; onReview: () => void; onDelete: () => void; onPickAttachments: () => void; onPasteAttachments: (files: File[]) => void; onRemoveAttachment: (ref: string) => void }) {
   if (!value) return null;
   const update = (field: "to" | "subject" | "body", next: string) => onChange({ ...value, [field]: next });
-  return <Modal open title={value.id ? copy.editDraftTitle : copy.composeTitle} description={copy.composeHint} size="lg" onClose={onClose} footer={<div className="flex flex-wrap items-center justify-between gap-2"><div>{value.id ? <Button variant="ghost" onClick={onDelete} disabled={busy === "delete"}>{copy.deleteDraft}</Button> : null}</div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={onSave} disabled={busy === "save"}>{busy === "save" ? copy.saving : copy.save}</Button><Button onClick={onReview} disabled={busy === "save" || !canSend}><Send />{copy.reviewSend}</Button></div></div>}><div className="space-y-3" onPaste={(event) => { const files = [...event.clipboardData.files]; if (files.length) { event.preventDefault(); onPasteAttachments(files); } }}><label className="block text-sm font-medium">{copy.to}<input autoFocus value={value.to} onChange={(event) => update("to", event.target.value)} placeholder={copy.toPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.subject}<input value={value.subject} onChange={(event) => update("subject", event.target.value)} placeholder={copy.subjectPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.body}<textarea value={value.body} onChange={(event) => update("body", event.target.value)} placeholder={copy.bodyPlaceholder} className="mt-1 min-h-64 w-full resize-y rounded-md border bg-background px-3 py-2 font-normal leading-6 outline-none focus:ring-2 focus:ring-ring" /></label><section className="rounded-lg border bg-muted/20 p-3" aria-label={copy.attachments}><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-medium">{copy.attachments}</p><p className="text-xs text-muted-foreground">{copy.pasteAttachments} · {copy.attachmentLimit}</p></div><Button type="button" size="sm" variant="secondary" onClick={onPickAttachments}><Paperclip />{copy.addAttachments}</Button></div>{value.attachments.length ? <div className="mt-3 space-y-2">{value.attachments.map((attachment) => <div key={attachment.ref} className="flex min-w-0 items-center gap-2 rounded-md bg-background px-3 py-2"><Paperclip className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span><button type="button" className="rounded p-1 hover:bg-muted" aria-label={copy.removeAttachment.replace("{{name}}", attachment.name)} onClick={() => onRemoveAttachment(attachment.ref)}><X className="size-4" /></button></div>)}</div> : null}</section>{!canSend ? <p className="text-xs text-muted-foreground">{copy.sendUnavailable}</p> : null}</div></Modal>;
+  return <Modal open title={value.id ? copy.editDraftTitle : copy.composeTitle} description={copy.composeHint} size="lg" onClose={onClose} footer={<div className="flex flex-wrap items-center justify-between gap-2"><div>{value.id ? <Button variant="ghost" onClick={onDelete} disabled={busy === "delete"}>{copy.deleteDraft}</Button> : null}</div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={onSave} disabled={busy === "save"}>{busy === "save" ? copy.saving : copy.save}</Button><Button onClick={onReview} disabled={busy === "save" || !canSend}><Send />{copy.reviewSend}</Button></div></div>}><div className="space-y-3" onPaste={(event) => { const files = [...event.clipboardData.files]; if (files.length) { event.preventDefault(); onPasteAttachments(files); } }}>{value.sendError ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"><p className="font-medium text-destructive">{copy.sendProblem}</p><p className="mt-1 break-words text-xs text-muted-foreground">{value.sendError}</p></div> : null}<label className="block text-sm font-medium">{copy.to}<input autoFocus value={value.to} onChange={(event) => update("to", event.target.value)} placeholder={copy.toPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.subject}<input value={value.subject} onChange={(event) => update("subject", event.target.value)} placeholder={copy.subjectPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.body}<textarea value={value.body} onChange={(event) => update("body", event.target.value)} placeholder={copy.bodyPlaceholder} className="mt-1 min-h-64 w-full resize-y rounded-md border bg-background px-3 py-2 font-normal leading-6 outline-none focus:ring-2 focus:ring-ring" /></label><section className="rounded-lg border bg-muted/20 p-3" aria-label={copy.attachments}><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-medium">{copy.attachments}</p><p className="text-xs text-muted-foreground">{copy.pasteAttachments} · {copy.attachmentLimit}</p></div><Button type="button" size="sm" variant="secondary" onClick={onPickAttachments}><Paperclip />{copy.addAttachments}</Button></div>{value.attachments.length ? <div className="mt-3 space-y-2">{value.attachments.map((attachment) => <div key={attachment.ref} className="flex min-w-0 items-center gap-2 rounded-md bg-background px-3 py-2"><Paperclip className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span><button type="button" className="rounded p-1 hover:bg-muted" aria-label={copy.removeAttachment.replace("{{name}}", attachment.name)} onClick={() => onRemoveAttachment(attachment.ref)}><X className="size-4" /></button></div>)}</div> : null}</section>{!canSend ? <p className="text-xs text-muted-foreground">{copy.sendUnavailable}</p> : null}</div></Modal>;
 }
 
 function SendReviewModal({ copy, draft, pending, onClose, onSend }: { copy: typeof COPY.zh | typeof COPY.en; draft: MailboxDraft | null; pending: boolean; onClose: () => void; onSend: () => void }) {
   if (!draft) return null;
   return <Modal open title={copy.sendReviewTitle} description={copy.sendReviewHint} size="lg" onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button onClick={onSend} disabled={pending}><Send />{pending ? copy.sending : copy.sendNow}</Button></div>}><dl className="space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">{copy.to}</dt><dd className="mt-1 break-words font-medium">{draft.to}</dd></div><div><dt className="text-xs text-muted-foreground">{copy.subject}</dt><dd className="mt-1 break-words font-medium">{draft.subject || copy.noSubject}</dd></div><div><dt className="text-xs text-muted-foreground">{copy.body}</dt><dd className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border bg-background p-3 leading-6">{draft.body}</dd></div>{draft.attachments?.length ? <div><dt className="text-xs text-muted-foreground">{copy.attachments}</dt><dd className="mt-1 space-y-1">{draft.attachments.map((attachment) => <div key={attachment.ref} className="flex items-center gap-2 rounded-md border px-3 py-2"><Paperclip className="size-4" /><span className="min-w-0 flex-1 truncate">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span></div>)}</dd></div> : null}</dl></Modal>;
+}
+
+function MailDraftDetailModal({ copy, draft, onClose }: { copy: typeof COPY.zh | typeof COPY.en; draft: MailboxDraft | null; onClose: () => void }) {
+  if (!draft) return null;
+  const unconfirmed = draft.status === "send_unconfirmed";
+  return <Modal open title={copy.deliveryDetails} description={draft.subject || copy.noSubject} size="lg" onClose={onClose} footer={<div className="flex justify-end"><Button variant="secondary" onClick={onClose}>{copy.close}</Button></div>}>
+    <dl className="space-y-3 text-sm">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div><dt className="text-xs text-muted-foreground">{copy.deliveryStatus}</dt><dd className="mt-1 font-medium">{copy.status[draft.status as keyof typeof copy.status] ?? draft.status}</dd></div>
+        <div><dt className="text-xs text-muted-foreground">{copy.updatedAt}</dt><dd className="mt-1 font-medium">{longDate(draft.sentAt ?? draft.updatedAt)}</dd></div>
+      </div>
+      {draft.sendError ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-3"><dt className="font-medium text-destructive">{copy.sendProblem}</dt><dd className="mt-1 break-words text-xs text-muted-foreground">{draft.sendError}</dd>{unconfirmed ? <p className="mt-2 text-xs font-medium">{copy.sendUnconfirmedHint}</p> : null}</div> : null}
+      <div><dt className="text-xs text-muted-foreground">{copy.to}</dt><dd className="mt-1 break-words font-medium">{draft.to}</dd></div>
+      <div><dt className="text-xs text-muted-foreground">{copy.subject}</dt><dd className="mt-1 break-words font-medium">{draft.subject || copy.noSubject}</dd></div>
+      <div><dt className="text-xs text-muted-foreground">{copy.body}</dt><dd className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border bg-background p-3 leading-6">{draft.body}</dd></div>
+      {draft.attachments?.length ? <div><dt className="text-xs text-muted-foreground">{copy.attachments}</dt><dd className="mt-1 space-y-1">{draft.attachments.map((attachment) => <div key={attachment.ref} className="flex items-center gap-2 rounded-md border px-3 py-2"><Paperclip className="size-4" /><span className="min-w-0 flex-1 truncate">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span></div>)}</dd></div> : null}
+    </dl>
+  </Modal>;
+}
+
+function composeFingerprint(value: ComposeState) {
+  return JSON.stringify({
+    id: value.id,
+    to: value.to,
+    subject: value.subject,
+    body: value.body,
+    attachments: value.attachments.map(({ ref, name, contentType, size }) => ({ ref, name, contentType, size })),
+    inReplyTo: value.inReplyTo,
+    references: value.references,
+  });
 }
 
 function shortDate(value: string | null) { const date = value ? new Date(value) : null; return date && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date) : ""; }

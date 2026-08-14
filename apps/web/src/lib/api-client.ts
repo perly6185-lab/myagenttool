@@ -56,6 +56,10 @@ export interface MailboxMessage {
   subject: string;
   date: string | null;
   body: string | null;
+  bodyHtml: string;
+  hasHtml: boolean;
+  bodyTruncated: boolean;
+  bodyContentVersion: number;
   preview: string;
   unread: boolean;
   folderId: string;
@@ -63,7 +67,7 @@ export interface MailboxMessage {
   fetched: boolean;
   inReplyTo: string | null;
   references: string[];
-  attachments: Array<{ id: string; name: string; contentType: string; size: number; sha256: string | null; previewable: boolean }>;
+  attachments: Array<{ id: string; name: string; contentType: string; size: number; sha256: string | null; previewable: boolean; contentId?: string }>;
   attachmentMetadataLoaded: boolean;
   applicationId: string | null;
   issueNumber: number | null;

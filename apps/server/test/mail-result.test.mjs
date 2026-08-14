@@ -41,6 +41,26 @@ test("fetch output parses one message, carrying the body as data", () => {
   assert.match(parsed.body, /rm -rf/, "the body is carried, never executed");
 });
 
+test("fetch output carries bounded HTML as inert data with format metadata", () => {
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({
+    messageId: "<html@x>",
+    body: "Readable link [https://example.com]",
+    bodyHtml: `<p>${"h".repeat(50_100)}</p>`,
+    bodyTruncated: false,
+    attachments: [{ id: "attachment-1", name: "logo.png", contentType: "image/png", size: 4, contentId: "<logo@x>", previewable: true }],
+  }) });
+  assert.equal(parsed.hasHtml, true);
+  assert.equal(parsed.bodyHtml.length, 50_000);
+  assert.equal(parsed.bodyTruncated, true);
+  assert.equal(parsed.bodyContentVersion, 1, "legacy tool output remains identifiable for one-time refetch");
+  assert.equal(parsed.attachments[0].contentId, "logo@x");
+});
+
+test("current fetch output marks the safe HTML body contract version", () => {
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({ messageId: "<v2@x>", body: "text", bodyContentVersion: 2 }) });
+  assert.equal(parsed.bodyContentVersion, 2);
+});
+
 test("fetch imports attachment metadata only and rejects forged identifiers", () => {
   const parsed = parseMailApplicationResult({ text: JSON.stringify({
     messageId: "<m@x>",
