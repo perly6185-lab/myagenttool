@@ -157,6 +157,42 @@ test("a queued delivery sends, records the provider receipt, and leaves evidence
   assert.equal(harness.events.at(-1).type, "channel_delivery_recorded");
 });
 
+test("delivery sender receives the durable delivery id for provider deduplication", async () => {
+  const harness = makeDeliveryHarness();
+  let sentArgs;
+  const service = createChannelDeliveryService({
+    state: harness.state,
+    now: () => new Date(1_800_000_000_000).toISOString(),
+    nextId: (prefix) => prefix + "_stable",
+    appendEvent: () => {},
+    sendMessage: async (args) => {
+      sentArgs = args;
+      return { ok: true, msgid: "stable_receipt" };
+    },
+  });
+  service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    content: "dedupe me",
+  });
+  await service.sweepChannelDeliveries();
+  assert.equal(sentArgs.deliveryId, "chdl_stable");
+});
+
+test("a media-only delivery preserves bounded asset references and passes them to the provider", async () => {
+  const harness = makeDeliveryHarness();
+  const queued = harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    mediaAssets: [{ projectId: "prj_media", terminalId: "term_1", path: "deliveries/result.png", family: "image", size: 12, hash: "sha256:abc" }],
+  });
+  assert.equal(queued.ok, true);
+  assert.equal(harness.state.channelDeliveries.at(-1).content, "");
+  assert.equal(harness.state.channelDeliveries.at(-1).mediaAssets[0].hash, "sha256:abc");
+  await harness.service.sweepChannelDeliveries();
+  assert.equal(harness.sent[0].mediaAssets[0].path, "deliveries/result.png");
+});
+
 test("delivery preserves bounded task and trace correlation without attachment payloads", () => {
   const harness = makeDeliveryHarness();
   const queued = harness.service.enqueueChannelDelivery({
@@ -273,6 +309,7 @@ test("a delivery scheduled for later is not due until its backoff elapses; non-r
 
 test("notifyInvocationCompleted queues a result message only for channel-originated invocations", () => {
   const harness = makeDeliveryHarness();
+  harness.state.workItems.push({ id: "task-1", projectId: "prj_media", outputAssets: [{ id: "asset-1", path: "result.pdf", family: "pdf", size: 20 }] });
   const ignored = harness.service.notifyInvocationCompleted({ id: "inv_x", status: "succeeded", options: { metadata: {} } });
   assert.equal(ignored, null);
 
@@ -291,6 +328,8 @@ test("notifyInvocationCompleted queues a result message only for channel-origina
   assert.match(delivery.content, /Task task-1: completed/);
   assert.match(delivery.content, /clean tree/);
   assert.match(delivery.content, /Trace: task-1/);
+  assert.equal(delivery.mediaAssets[0].projectId, "prj_media");
+  assert.equal(delivery.mediaAssets[0].path, "result.pdf");
 });
 
 test("no secret or token material ever lands in state, events, or refusals", async () => {

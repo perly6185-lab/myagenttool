@@ -260,7 +260,10 @@ export function createServerState({ defaultProjectPath, now }) {
     canvasScenes: [],
     channelEvents: [],
     channelConversations: [],
-    channelDeliveries: []
+    channelDeliveries: [],
+    // iLink account metadata only. Bot tokens live in the credential store, not
+    // in the durable public state snapshot.
+    ilinkAccounts: [],
   };
   defineDeviceAlias(state);
   return { defaultProject, state };
@@ -387,6 +390,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.channelEvents = [];
   state.channelConversations = [];
   state.channelDeliveries = [];
+  state.ilinkAccounts = [];
   state.terminalRuntimeCapability = createTerminalRuntimeCapability();
 }
 

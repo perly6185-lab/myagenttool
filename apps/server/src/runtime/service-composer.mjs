@@ -31,11 +31,12 @@ import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
 import { createMailSendService, isMailSendEnabled } from "../services/mail-send.mjs";
 import { createMailboxService } from "../services/mailbox.mjs";
-import { createChannelService } from "../services/channels.mjs";
+import { createChannelService, defaultReadinessProbes } from "../services/channels.mjs";
 import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
 import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
+import { createIlinkRuntime } from "../gateway/ilink-runtime.mjs";
 import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
@@ -105,7 +106,7 @@ import {
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
-import { ingestChannelAttachmentCandidates } from "../services/channel-attachment-ingestion.mjs";
+import { ingestChannelAttachmentBytes, ingestChannelAttachmentCandidates } from "../services/channel-attachment-ingestion.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
 import { refreshEpicChildStates } from "../services/auto-run-epic.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
@@ -2001,6 +2002,7 @@ export function createServerRuntimeServices({
     ledgerSummary,
     budgetStatuses,
     expireCodexApprovalBrokerRequests,
+    channelReadiness: (channel) => channelService.readiness(channel),
   });
 
   const {
@@ -2101,8 +2103,13 @@ export function createServerRuntimeServices({
   // + fail-closed identity mappings. Readiness is env-presence booleans; enable
   // is approval-gated like every other side-effecting action. Import denials
   // (S3) go through the refuse() chokepoint like every other veto.
+  let ilinkRuntime = null;
   const channelService = createChannelService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken, refuse,
+    readinessProbes: {
+      ...defaultReadinessProbes,
+      wechat_ilink: (channel) => ilinkRuntime?.readiness(channel) ?? { account: false, session: false, worker: false },
+    },
   });
 
   // Conversation execution (S4): imported events dispatch into GOVERNED
@@ -2374,16 +2381,40 @@ export function createServerRuntimeServices({
     if (Array.isArray(payload?.attachmentCandidates) && payload.attachmentCandidates.length) {
       const channel = (state.channels ?? []).find((row) => row.id === payload.channelId);
       const project = (state.projects ?? []).find((row) => row.id === channel?.taskProjectId);
-      try {
-        const attachmentAssets = await ingestChannelAttachmentCandidates({
-          candidates: payload.attachmentCandidates,
-          projectPath: project?.path,
-          projectId: channel?.taskProjectId,
-          terminalId: channel?.taskTerminalId,
-        });
-        normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets };
-      } catch (error) {
-        return { ok: false, refused: true, reason: error?.code ?? "channel_attachment_ingestion_failed" };
+      const attachmentBindingAvailable = Boolean(channel?.taskProjectId && channel?.taskTerminalId && project?.path);
+      // Media is optional enrichment. A channel with /task disabled must still
+      // retain the inbound interaction and its bounded text/media description;
+      // refusing the whole event here made ordinary image/voice/file messages
+      // disappear before they reached the interaction center.
+      if (!attachmentBindingAvailable) {
+        normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets: [] };
+      } else {
+        try {
+          const byteCandidates = payload.attachmentCandidates.filter((candidate) => candidate && candidate.bytes != null);
+          const remoteCandidates = payload.attachmentCandidates.filter((candidate) => !candidate || candidate.bytes == null);
+          const attachmentAssets = [];
+          if (remoteCandidates.length) {
+            attachmentAssets.push(...await ingestChannelAttachmentCandidates({
+              candidates: remoteCandidates,
+              projectPath: project?.path,
+              projectId: channel?.taskProjectId,
+              terminalId: channel?.taskTerminalId,
+            }));
+          }
+          for (const candidate of byteCandidates) {
+            attachmentAssets.push(await ingestChannelAttachmentBytes({
+              filename: candidate.filename,
+              bytes: candidate.bytes,
+              contentType: candidate.contentType,
+              projectPath: project?.path,
+              projectId: channel?.taskProjectId,
+              terminalId: channel?.taskTerminalId,
+            }));
+          }
+          normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets };
+        } catch (error) {
+          return { ok: false, refused: true, reason: error?.code ?? "channel_attachment_ingestion_failed" };
+        }
       }
     }
     const imported = channelService.importChannelEvent(normalizedPayload);
@@ -2401,6 +2432,19 @@ export function createServerRuntimeServices({
     }
     return imported;
   };
+
+  ilinkRuntime = createIlinkRuntime({
+    state,
+    stateStorePath,
+    now,
+    nextId,
+    persistStateSoon,
+    appendEvent,
+    importChannelEvent: receiveChannelEvent,
+    mapChannelIdentity: channelService.mapChannelIdentity,
+    enableChannel: channelService.enableChannel,
+    disableChannel: channelService.disableChannel,
+  });
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
     const application = findApplication(applicationId);
@@ -4361,6 +4405,7 @@ export function createServerRuntimeServices({
     createMailboxTask: mailboxService.createTaskFromMessage,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
+    listChannelInteractions: channelService.listChannelInteractions,
     enableChannel: channelService.enableChannel,
     disableChannel: channelService.disableChannel,
     channelHealth: channelService.channelHealth,
@@ -4636,6 +4681,15 @@ export function createServerRuntimeServices({
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
     retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
+    beginIlinkLogin: ilinkRuntime.beginLogin,
+    pollIlinkLogin: ilinkRuntime.pollLogin,
+    activateIlinkChannel: ilinkRuntime.activate,
+    disconnectIlinkChannel: ilinkRuntime.disconnect,
+    sendIlinkApplicationMessage: ilinkRuntime.sendApplicationMessage,
+    startIlink: ilinkRuntime.start,
+    stopIlink: ilinkRuntime.stop,
+    syncIlinkWorkers: ilinkRuntime.syncWorkers,
+    onIlinkChannelStateChanged: ilinkRuntime.onChannelStateChanged,
     // Scheduled work-report post: the slow-tick sweep (index.mjs), the manual
     // "post now", and the config setter (routes).
     sweepReportSchedule: reportScheduleService.sweepReportSchedule,

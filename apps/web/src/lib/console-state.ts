@@ -1433,6 +1433,7 @@ export interface ConsoleSnapshot {
   channelOperations?: ChannelOperations[];
   channelDeliveries?: ChannelDelivery[];
   channelTaskRequests?: ChannelTaskRequest[];
+  channelInteractions?: ChannelInteraction[];
 }
 
 export interface ChannelTaskRequest {
@@ -1527,6 +1528,35 @@ export interface ChannelDelivery {
   providerReceiptId?: string | null;
   lastErrorCode?: string | null;
   updatedAt?: string | null;
+}
+
+export interface ChannelInteractionAttachment {
+  id?: string | null;
+  name: string;
+  family: string;
+  mimeType?: string | null;
+  size?: number | null;
+  projectId?: string | null;
+  path?: string | null;
+}
+
+export interface ChannelInteraction {
+  id: string;
+  direction: "inbound" | "outbound";
+  type: "text" | "image" | "voice" | "file" | "mixed" | string;
+  content: string;
+  attachments: ChannelInteractionAttachment[];
+  status: string;
+  createdAt?: string | null;
+  conversationId: string;
+  externalUserId?: string | null;
+  providerMessageId?: string | null;
+  deliveryId?: string | null;
+  invocationId?: string | null;
+  injectionSuspicious?: boolean;
+  attempts?: number;
+  providerReceiptId?: string | null;
+  lastErrorCode?: string | null;
 }
 
 export type ApplicationSource =

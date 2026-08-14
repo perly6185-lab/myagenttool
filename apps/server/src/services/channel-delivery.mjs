@@ -20,6 +20,9 @@ const BASE_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 10 * 60 * 1000;
 const RATE_LIMIT_BACKOFF_MS = 60 * 1000;
 const MAX_CONTENT_CHARS = 2048;
+const MAX_MEDIA_ASSETS = 5;
+const MAX_CHANNEL_DELIVERIES = 10_000;
+const TERMINAL_DELIVERY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 // A row claimed for sending is durably "sending"; if the process dies mid-send
 // (before the outcome commits), the sweep — which only takes queued/retrying —
 // would never resume it. Fold "sending" rows older than this back to retrying.
@@ -64,12 +67,50 @@ export function createChannelDeliveryService({
   const findConversation = (conversationId) =>
     (state.channelConversations ?? []).find((row) => row.id === conversationId) ?? null;
 
+  function normalizeMediaAssets(value) {
+    return (Array.isArray(value) ? value : []).slice(0, MAX_MEDIA_ASSETS).map((asset) => ({
+      id: asset?.id ? String(asset.id).slice(0, 200) : null,
+      projectId: asset?.projectId ? String(asset.projectId).slice(0, 200) : null,
+      terminalId: asset?.terminalId ? String(asset.terminalId).slice(0, 200) : null,
+      path: asset?.path ? String(asset.path).replaceAll("\\", "/").slice(0, 1_000) : null,
+      name: asset?.name ? String(asset.name).slice(0, 200) : null,
+      family: asset?.family ? String(asset.family).slice(0, 40) : null,
+      mimeType: asset?.mimeType ? String(asset.mimeType).slice(0, 120) : null,
+      size: Number.isFinite(Number(asset?.size)) ? Number(asset.size) : null,
+      hash: asset?.hash ? String(asset.hash).slice(0, 120) : null,
+    })).filter((asset) => asset.projectId && asset.path);
+  }
+
+  function pruneDeliveryHistory() {
+    const rows = state.channelDeliveries ?? [];
+    const activeStatuses = new Set(["queued", "retrying", "sending"]);
+    const cutoff = Date.parse(now()) - TERMINAL_DELIVERY_RETENTION_MS;
+    const hasExpiredHistory = Number.isFinite(cutoff) && rows.some((row) => {
+      if (activeStatuses.has(row.status)) return false;
+      const timestamp = Date.parse(row.updatedAt ?? row.createdAt ?? "");
+      return Number.isFinite(timestamp) && timestamp < cutoff;
+    });
+    if (rows.length <= MAX_CHANNEL_DELIVERIES && !hasExpiredHistory) return;
+    const active = rows.filter((row) => activeStatuses.has(row.status));
+    const historical = rows
+      .filter((row) => !activeStatuses.has(row.status))
+      .filter((row) => {
+        const timestamp = Date.parse(row.updatedAt ?? row.createdAt ?? "");
+        return !Number.isFinite(cutoff) || !Number.isFinite(timestamp) || timestamp >= cutoff;
+      })
+      .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? "")));
+    const keepHistorical = historical.slice(0, Math.max(0, MAX_CHANNEL_DELIVERIES - active.length));
+    const retained = [...active, ...keepHistorical];
+    if (retained.length < rows.length) state.channelDeliveries = retained;
+  }
+
   /** Queue one outbound message to a conversation. Durable before any send attempt. */
-  function enqueueChannelDelivery({ channelId, conversationId, invocationId = null, content, taskContext = null } = {}) {
+  function enqueueChannelDelivery({ channelId, conversationId, invocationId = null, content, taskContext = null, mediaAssets = [] } = {}) {
     const channel = findChannel(String(channelId ?? ""));
     const conversation = findConversation(String(conversationId ?? ""));
     const text = String(content ?? "").trim();
-    if (!channel || !conversation || conversation.channelId !== channel.id || !text) {
+    const normalizedMediaAssets = normalizeMediaAssets(mediaAssets);
+    if (!channel || !conversation || conversation.channelId !== channel.id || (!text && !normalizedMediaAssets.length)) {
       return { ok: false, reason: "invalid_delivery" };
     }
     const delivery = {
@@ -92,6 +133,7 @@ export function createChannelDeliveryService({
       toUser: conversation.externalUserId,
       replyContext: conversation.replyContext ?? null,
       content: text.slice(0, MAX_CONTENT_CHARS),
+      mediaAssets: normalizedMediaAssets,
       status: "queued",
       attempts: 0,
       nextAttemptAt: now(),
@@ -102,6 +144,7 @@ export function createChannelDeliveryService({
     };
     runTx(() => {
       state.channelDeliveries.push(delivery);
+      pruneDeliveryHistory();
     });
     return { ok: true, deliveryId: delivery.id };
   }
@@ -124,7 +167,7 @@ export function createChannelDeliveryService({
     const send = senderFor(delivery);
     try {
       if (typeof send !== "function") throw Object.assign(new Error("no_sender"), { errcode: "no_sender" });
-      outcome = await send({ toUser: delivery.toUser, content: delivery.content, replyContext: delivery.replyContext ?? null });
+      outcome = await send({ channelId: delivery.channelId, deliveryId: delivery.id, toUser: delivery.toUser, content: delivery.content, mediaAssets: delivery.mediaAssets ?? [], replyContext: delivery.replyContext ?? null });
     } catch (error) {
       outcome = { ok: false, retryable: true, errcode: error?.errcode ?? "transport_error" };
     }
@@ -256,12 +299,22 @@ export function createChannelDeliveryService({
     const lines = [`${taskRef}: ${normalizedResultStatus(invocation.status)}`];
     if (summary) lines.push(String(summary).slice(0, 1500));
     if (channelContext.traceId) lines.push(`Trace: ${String(channelContext.traceId).slice(0, 200)}`);
+    const workItem = (state.workItems ?? []).find((row) => row.id === channelContext.workItemId);
+    const resultAssets = [
+      invocation.result?.outputAssets,
+      invocation.result?.output?.outputAssets,
+      workItem?.outputAssets,
+    ].find((assets) => Array.isArray(assets) && assets.length) ?? [];
     return enqueueChannelDelivery({
       channelId: channelContext.channelId,
       conversationId: channelContext.conversationId,
       invocationId: invocation.id,
       taskContext: channelContext.taskContext ?? channelContext,
       content: lines.join("\n"),
+      mediaAssets: resultAssets.map((asset) => ({
+        ...asset,
+        projectId: asset?.projectId ?? channelContext.projectId ?? workItem?.projectId ?? null,
+      })),
     });
   }
 

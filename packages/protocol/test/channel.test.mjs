@@ -19,7 +19,7 @@ import {
 } from "@myagenttool/protocol/channel";
 
 test("channel vocabulary is the ADR 0012 closed set", () => {
-  assert.deepEqual(channelProviders, ["wecom", "feishu", "dingtalk", "slack", "teams"]);
+  assert.deepEqual(channelProviders, ["wecom", "feishu", "dingtalk", "slack", "teams", "wechat_ilink"]);
   assert.deepEqual(channelStatuses, ["registered", "enabled", "disabled"]);
   assert.deepEqual(channelEventStatuses, ["imported", "dispatched", "refused"]);
   assert.deepEqual(channelConversationStatuses, ["active", "closed"]);

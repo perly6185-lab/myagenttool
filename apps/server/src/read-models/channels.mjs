@@ -12,6 +12,7 @@ export function channelOperations({
   channelEvents = [],
   channelConversations = [],
   channelDeliveries = [],
+  readinessForChannel = null,
 } = {}) {
   const byChannel = (rows, channelId) => rows.filter((row) => row?.channelId === channelId);
 
@@ -19,7 +20,8 @@ export function channelOperations({
     const events = byChannel(channelEvents, channel.id);
     const deliveries = byChannel(channelDeliveries, channel.id);
     const failed = deliveries.filter((row) => row.status === "failed_terminal");
-    const readinessValues = Object.values(channel.readiness ?? {});
+    const readiness = typeof readinessForChannel === "function" ? readinessForChannel(channel) : (channel.readiness ?? {});
+    const readinessValues = Object.values(readiness);
     const ready = readinessValues.length > 0 && readinessValues.every(Boolean);
     const lastActivityAt = [
       ...events.map((row) => row.receivedAt),
@@ -41,7 +43,7 @@ export function channelOperations({
       name: channel.name,
       status: channel.status,
       ownerTeamId: channel.ownerTeamId ?? null,
-      readiness: channel.readiness ?? {},
+      readiness,
       ready,
       health,
       capabilityAllowlist: channel.capabilityAllowlist ?? [],

@@ -493,6 +493,11 @@ export function createHttpServer({
   rerouteChannelTask,
   takeoverChannelTask,
   retryChannelDelivery,
+  beginIlinkLogin,
+  pollIlinkLogin,
+  activateIlinkChannel,
+  disconnectIlinkChannel,
+  onIlinkChannelStateChanged,
   nextId,
   persistStateSoon,
   persistStateNow,
@@ -769,6 +774,7 @@ export function createHttpServer({
         actor,
         registerChannel,
         listChannels,
+        listChannelInteractions,
         enableChannel,
         disableChannel,
         channelHealth,
@@ -777,6 +783,11 @@ export function createHttpServer({
         listChannelIdentities,
         setChannelAllowlist,
         retryChannelDelivery,
+        beginIlinkLogin,
+        pollIlinkLogin,
+        activateIlinkChannel,
+        disconnectIlinkChannel,
+        onIlinkChannelStateChanged,
       })) {
         return;
       }

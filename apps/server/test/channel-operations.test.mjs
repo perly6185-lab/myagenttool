@@ -47,6 +47,16 @@ test("channelOperations rolls up readiness, health, counts, and last activity", 
   assert.equal(rows.find((r) => r.id === "chn_3").health, "attention"); // enabled but not ready
 });
 
+test("channelOperations can use runtime readiness instead of stale state fields", () => {
+  const rows = channelOperations({
+    channels: [{ id: "chn_ilink", provider: "wechat_ilink", status: "enabled" }],
+    readinessForChannel: () => ({ account: true, session: true, worker: true }),
+  });
+  assert.deepEqual(rows[0].readiness, { account: true, session: true, worker: true });
+  assert.equal(rows[0].ready, true);
+  assert.equal(rows[0].health, "ok");
+});
+
 test("channelTaskOperations joins Issue, auto-run, Invocation, result, delivery, and recovery actions", () => {
   const rows = channelTaskOperations({
     requests: [

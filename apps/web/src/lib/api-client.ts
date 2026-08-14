@@ -16,6 +16,7 @@ import type {
   ApplicationRegisterRequest,
   ApplicationSnapshot,
   ConsoleSnapshot,
+  ChannelInteraction,
   InvocationEventSnapshot,
   KnownApplicationCatalogEntry,
   ProjectTreeResponse,
@@ -2706,6 +2707,28 @@ export const api = {
   queueLifecycleRollback: (id: string) =>
     request("POST", `/api/m3/lifecycle-rollbacks/${encodeURIComponent(id)}/queue`),
   /** Channel lifecycle (#1090). Enable/allowlist/delivery-retry are approval-gated. */
+  registerChannel: (provider: string, name: string) =>
+    request<{ channel: { id: string; provider: string; name: string } }>("POST", "/api/channels", { provider, name }),
+  listChannelInteractions: (channelId: string, params: { direction?: string; type?: string; status?: string; query?: string; conversationId?: string; cursor?: string | null; limit?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (params.direction && params.direction !== "all") search.set("direction", params.direction);
+    if (params.type && params.type !== "all") search.set("type", params.type);
+    if (params.status && params.status !== "all") search.set("status", params.status);
+    if (params.query) search.set("q", params.query);
+    if (params.conversationId) search.set("conversationId", params.conversationId);
+    if (params.cursor) search.set("cursor", params.cursor);
+    search.set("limit", String(params.limit ?? 50));
+    const suffix = search.toString();
+    return request<{ interactions: ChannelInteraction[]; nextCursor: string | null; count: number }>("GET", `/api/channels/${encodeURIComponent(channelId)}/interactions${suffix ? `?${suffix}` : ""}`);
+  },
+  startIlinkLogin: (channelId: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/login`, {}),
+  pollIlinkLogin: (channelId: string) =>
+    request("GET", `/api/channels/${encodeURIComponent(channelId)}/ilink/login`),
+  activateIlinkChannel: (channelId: string, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/activate`, { approvalToken }),
+  disconnectIlinkChannel: (channelId: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/disconnect`, {}),
   enableChannel: (id: string, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(id)}/enable`, { approvalToken }),
   disableChannel: (id: string) =>

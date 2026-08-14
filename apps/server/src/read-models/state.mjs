@@ -138,6 +138,7 @@ export function buildPublicState({
   ledgerSummary,
   budgetStatuses,
   teamBudgetStatuses,
+  channelReadiness = null,
   actor = null,
 }) {
   // Tenancy scoping. With no actor (or one whose team owns everything, i.e.
@@ -778,6 +779,7 @@ export function buildPublicState({
       channelEvents,
       channelConversations,
       channelDeliveries,
+      readinessForChannel: channelReadiness,
     }),
   };
 }

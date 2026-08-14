@@ -32,11 +32,27 @@ const MAX_ALLOWLIST = 50;
 // Inbound-flood bounds (#channel-audit): a signed corp user's messages clear the
 // gateway, so the event log must be bounded in both per-message size and count.
 const MAX_EVENT_CONTENT_CHARS = 4000;
+const MAX_OUTBOUND_CONTENT_CHARS = 2048;
 const MAX_CHANNEL_EVENTS = 2000;
 // Per-channel /task aggregate ceiling (across ALL the channel's users, per UTC
 // day) — the second limiter above the per-conversation 10/min. Owner-configurable.
 const DEFAULT_TASK_DAILY_LIMIT = 50;
 const MAX_TASK_DAILY_LIMIT = 10_000;
+
+function encodeInteractionCursor(value) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function decodeInteractionCursor(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+    if (!parsed || typeof parsed.createdAt !== "string" || typeof parsed.id !== "string") return null;
+    return { createdAt: parsed.createdAt.slice(0, 80), id: parsed.id.slice(0, 200) };
+  } catch {
+    return null;
+  }
+}
 
 /** WeCom readiness probe: configuration PRESENCE from the gateway env — never values. */
 export function wecomEnvReadiness(env = process.env) {
@@ -82,6 +98,11 @@ export function teamsEnvReadiness(env = process.env) {
   };
 }
 
+/** iLink readiness is supplied by the session runtime, not environment secrets. */
+export function wechatIlinkEnvReadiness() {
+  return { account: false, session: false, worker: false };
+}
+
 /** Default readiness probes by provider (#1110/#1119/#1128/#1135). */
 export const defaultReadinessProbes = {
   wecom: wecomEnvReadiness,
@@ -89,6 +110,7 @@ export const defaultReadinessProbes = {
   dingtalk: dingtalkEnvReadiness,
   slack: slackEnvReadiness,
   teams: teamsEnvReadiness,
+  wechat_ilink: wechatIlinkEnvReadiness,
 };
 
 export function createChannelService({
@@ -127,7 +149,7 @@ export function createChannelService({
 
   function readiness(channel) {
     const probe = probes[channel.provider];
-    const probed = typeof probe === "function" ? probe() : {};
+    const probed = typeof probe === "function" ? probe(channel) : {};
     const scopes = {};
     for (const scope of channelReadinessScopes[channel.provider] ?? []) {
       scopes[scope] = Boolean(probed?.[scope]);
@@ -202,6 +224,94 @@ export function createChannelService({
       (row) => !actor?.teamId || (row.ownerTeamId ?? LOCAL_TEAM_ID) === actor.teamId,
     );
     return { ok: true, status: 200, body: { channels: rows.map(publicChannel), count: rows.length } };
+  }
+
+  function listChannelInteractions({ channelId, conversationId = null, direction = "all", type = "all", status = "all", query = "", cursor = null, limit = 50 } = {}, actor = null) {
+    const channel = findOwnChannel(channelId, actor);
+    if (!channel) return notFound();
+    const normalizedDirection = ["all", "inbound", "outbound"].includes(String(direction)) ? String(direction) : "all";
+    const normalizedType = ["all", "text", "image", "voice", "file", "mixed"].includes(String(type)) ? String(type) : "all";
+    const normalizedStatus = String(status ?? "all").slice(0, 40) || "all";
+    const normalizedQuery = String(query ?? "").trim().toLowerCase().slice(0, 200);
+    const normalizedConversationId = conversationId ? String(conversationId) : null;
+    const pageSize = Math.max(1, Math.min(100, Math.floor(Number(limit) || 50)));
+
+    const attachmentView = (asset) => {
+      const path = asset?.path ? String(asset.path).replaceAll("\\", "/").slice(0, 1_000) : null;
+      return {
+        id: asset?.id ? String(asset.id).slice(0, 200) : null,
+        name: String(asset?.name ?? path?.split("/").at(-1) ?? "attachment").slice(0, 200),
+        family: String(asset?.family ?? "unknown").slice(0, 40),
+        mimeType: asset?.mimeType ? String(asset.mimeType).slice(0, 120) : null,
+        size: Number.isFinite(Number(asset?.size)) ? Number(asset.size) : null,
+        projectId: asset?.projectId ? String(asset.projectId).slice(0, 200) : null,
+        path,
+      };
+    };
+    const typeFor = (directionValue, content, assets) => {
+      if (!assets.length) return "text";
+      if (assets.length > 1) return "mixed";
+      const family = assets[0].family;
+      return ["image", "audio", "video"].includes(family) ? (family === "audio" ? "voice" : family) : directionValue === "inbound" && content ? "mixed" : "file";
+    };
+    const inbound = (state.channelEvents ?? [])
+      .filter((row) => row.channelId === channel.id)
+      .map((row) => {
+        const attachments = (row.attachmentAssets ?? []).map(attachmentView);
+        return {
+          id: row.id,
+          direction: "inbound",
+          type: typeFor("inbound", row.content, attachments),
+          content: String(row.content ?? "").slice(0, MAX_EVENT_CONTENT_CHARS),
+          attachments,
+          status: row.status ?? "imported",
+          createdAt: row.receivedAt ?? row.providerCreateTime ?? null,
+          conversationId: row.conversationId,
+          externalUserId: row.externalUserId,
+          providerMessageId: row.providerMessageId,
+          injectionSuspicious: Boolean(row.injectionSuspicious),
+        };
+      });
+    const outbound = (state.channelDeliveries ?? [])
+      .filter((row) => row.channelId === channel.id)
+      .map((row) => {
+        const attachments = (row.mediaAssets ?? []).map(attachmentView);
+        return {
+          id: row.id,
+          direction: "outbound",
+          type: typeFor("outbound", row.content, attachments),
+          content: String(row.content ?? "").slice(0, MAX_OUTBOUND_CONTENT_CHARS),
+          attachments,
+          status: row.status ?? "queued",
+          createdAt: row.updatedAt ?? row.createdAt ?? null,
+          conversationId: row.conversationId,
+          deliveryId: row.id,
+          invocationId: row.invocationId ?? null,
+          attempts: Number(row.attempts ?? 0),
+          providerReceiptId: row.providerReceiptId ?? null,
+          lastErrorCode: row.lastErrorCode ?? null,
+        };
+      });
+    let rows = [...inbound, ...outbound]
+      .filter((row) => !normalizedConversationId || row.conversationId === normalizedConversationId)
+      .filter((row) => normalizedDirection === "all" || row.direction === normalizedDirection)
+      .filter((row) => normalizedType === "all" || row.type === normalizedType)
+      .filter((row) => normalizedStatus === "all" || row.status === normalizedStatus)
+      .filter((row) => {
+        if (!normalizedQuery) return true;
+        const attachmentText = row.attachments.map((asset) => `${asset.name} ${asset.family}`).join(" ");
+        return `${row.content} ${row.externalUserId ?? ""} ${attachmentText}`.toLowerCase().includes(normalizedQuery);
+      })
+      .sort((left, right) => String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? "")) || String(right.id).localeCompare(String(left.id)));
+    const decodedCursor = decodeInteractionCursor(cursor);
+    if (decodedCursor) {
+      rows = rows.filter((row) => String(row.createdAt ?? "") < decodedCursor.createdAt
+        || (String(row.createdAt ?? "") === decodedCursor.createdAt && String(row.id) < decodedCursor.id));
+    }
+    const page = rows.slice(0, pageSize);
+    const last = page.at(-1);
+    const nextCursor = rows.length > pageSize && last ? encodeInteractionCursor({ createdAt: String(last.createdAt ?? ""), id: last.id }) : null;
+    return { ok: true, status: 200, body: { interactions: page, nextCursor, count: page.length } };
   }
 
   /**
@@ -647,6 +757,7 @@ export function createChannelService({
   return {
     registerChannel,
     listChannels,
+    listChannelInteractions,
     enableChannel,
     disableChannel,
     channelHealth,
@@ -658,5 +769,6 @@ export function createChannelService({
     setChannelApprovalPolicy,
     importChannelEvent,
     findOwnChannel,
+    readiness,
   };
 }

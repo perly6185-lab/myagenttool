@@ -116,6 +116,14 @@ server.listen(port, host, () => {
 // the control-plane API is never reachable on any gateway port.
 {
   let anySenderBound = false;
+  let channelDeliverySweepStarted = false;
+  const startChannelDeliverySweep = () => {
+    if (channelDeliverySweepStarted) return;
+    channelDeliverySweepStarted = true;
+    const sweep = () => httpDependencies.sweepChannelDeliveries().catch(() => {});
+    sweep();
+    setInterval(sweep, 15_000).unref?.();
+  };
 
   // WeCom (#1090).
   const wecomConfig = wecomGatewayConfigFromEnv();
@@ -220,10 +228,17 @@ server.listen(port, host, () => {
 
   // One delivery sweep serves every provider (delivery routes by channel.provider).
   if (anySenderBound) {
-    const sweep = () => httpDependencies.sweepChannelDeliveries().catch(() => {});
-    sweep(); // restart recovery: resume queued/retrying deliveries on boot
-    setInterval(sweep, 15_000).unref?.();
+    startChannelDeliverySweep(); // restart recovery: resume queued/retrying deliveries on boot
   }
+
+  // WeChat ClawBot / iLink is a client-side long-poll channel, not a public
+  // callback listener. Its worker owns the provider credential and routes only
+  // normalized events into the shared channel pipeline.
+  if (typeof httpDependencies.sendIlinkApplicationMessage === "function") {
+    httpDependencies.setChannelDeliverySender("wechat_ilink", httpDependencies.sendIlinkApplicationMessage);
+    startChannelDeliverySweep();
+  }
+  httpDependencies.startIlink?.();
 }
 
 // Fire due automations on a 30s tick (self-check exits above, so this only runs
@@ -417,6 +432,7 @@ if (typeof httpDependencies.sweepReportSchedule === "function") {
 // artifact (#1042 — a no-op-duplicate on the memory path where JSON is the backing),
 // then release the lock.
 function shutdown() {
+  httpDependencies.stopIlink?.();
   savePersistentState();
   exportJsonSnapshot?.();
   closeSqliteStore();
