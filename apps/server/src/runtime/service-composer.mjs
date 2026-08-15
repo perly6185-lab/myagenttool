@@ -95,6 +95,7 @@ import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
 import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree } from "../services/article-imports.mjs";
+import { createSessionManager } from "../services/session-manager.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createTemplateLearningService } from "../services/template-learning.mjs";
 import { createWorkflowMemoryInsightsService } from "../services/workflow-memory-insights.mjs";
@@ -517,6 +518,15 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed: (invocation, agent) =>
       invocationService?.startInvocationIfAllowed(invocation, agent),
     store,
+  });
+  // Session manager: login-state observability + keep-alive for profile-backed
+  // site plugins (zhihu today). Dormant by design — the sweep only runs when
+  // index.mjs is gated on via MYAGENTTOOL_SESSION_MANAGER_ENABLED.
+  const sessionManagerService = createSessionManager({
+    state,
+    now,
+    appendEvent,
+    persistStateSoon,
   });
   const workflowOcrAdapter = createFallbackWorkflowOcrAdapter({
     localAdapter: createLocalWorkflowOcrAdapter({
@@ -4849,6 +4859,11 @@ export function createServerRuntimeServices({
     getArticleImport: articleImportService.get,
     cancelArticleImport: articleImportService.cancel,
     analyzeArticleImport: articleImportService.analyze,
+    listSessions: sessionManagerService.listSessions,
+    probeSessionSite: sessionManagerService.probeSite,
+    reseedSessionSite: sessionManagerService.seedLogin,
+    sessionHealthSweep: sessionManagerService.sessionHealthSweep,
+    acquireSessionProfile: sessionManagerService.acquireProfile,
     findSimilarArticleImports: articleImportService.findSimilar,
     createArticleDerivative: articleImportService.createDerivative,
     listArticleDerivatives: articleImportService.listDerivatives,
