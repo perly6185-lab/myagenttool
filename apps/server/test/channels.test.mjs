@@ -326,6 +326,39 @@ test("importChannelEvent: exactly-once by MsgId, conversation reuse, injection f
   assert.equal(events.at(-1).level, "warn");
 });
 
+test("listChannelInteractions merges inbound and outbound records with filters and cursor pagination", () => {
+  const { state, service } = makeService();
+  const { body } = service.registerChannel({ provider: "wechat_ilink", name: "wechat" }, owner);
+  const channelId = body.channel.id;
+  state.channelEvents.push({
+    id: "chev_1", channelId, conversationId: "chcv_1", providerMessageId: "wx_1",
+    externalUserId: "wx-user", msgType: "image", content: "请看图片", status: "imported",
+    attachmentAssets: [{ id: "asset_1", projectId: "prj_1", path: "attachments/a.png", family: "image", size: 12 }],
+    receivedAt: "2026-07-15T00:00:01.000Z", injectionSuspicious: false,
+  });
+  state.channelDeliveries.push({
+    id: "chdl_1", channelId, conversationId: "chcv_1", content: "已收到", status: "delivered",
+    attempts: 1, providerReceiptId: "receipt_1", createdAt: "2026-07-15T00:00:02.000Z", updatedAt: "2026-07-15T00:00:03.000Z",
+    mediaAssets: [{ projectId: "prj_1", path: "attachments/result.pdf", family: "pdf", size: 20 }],
+  });
+
+  const first = service.listChannelInteractions({ channelId, limit: 1 }, owner);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.interactions.length, 1);
+  assert.equal(first.body.interactions[0].direction, "outbound");
+  assert.equal(first.body.interactions[0].attachments[0].name, "result.pdf");
+  assert.ok(first.body.nextCursor);
+
+  const second = service.listChannelInteractions({ channelId, cursor: first.body.nextCursor, limit: 1 }, owner);
+  assert.equal(second.body.interactions[0].direction, "inbound");
+  assert.equal(second.body.interactions[0].attachments[0].path, "attachments/a.png");
+
+  const filtered = service.listChannelInteractions({ channelId, direction: "inbound", type: "image" }, owner);
+  assert.equal(filtered.body.interactions.length, 1);
+  assert.equal(filtered.body.interactions[0].content, "请看图片");
+  assert.ok(!JSON.stringify(filtered.body).includes("encrypt_query_param"));
+});
+
 test("importChannelEvent refuses (through refuse()) for unknown/disabled channels but reports ACKable shape", () => {
   const { state, refusals, service } = makeService();
   const { body } = service.registerChannel({ provider: "wecom", name: "ops" }, owner);

@@ -16,6 +16,7 @@ import type {
   ApplicationRegisterRequest,
   ApplicationSnapshot,
   ConsoleSnapshot,
+  ChannelInteraction,
   InvocationEventSnapshot,
   KnownApplicationCatalogEntry,
   ProjectTreeResponse,
@@ -2491,6 +2492,28 @@ export const api = {
   queueLifecycleRollback: (id: string) =>
     request("POST", `/api/m3/lifecycle-rollbacks/${encodeURIComponent(id)}/queue`),
   /** Channel lifecycle (#1090). Enable/allowlist/delivery-retry are approval-gated. */
+  registerChannel: (provider: string, name: string) =>
+    request<{ channel: { id: string; provider: string; name: string } }>("POST", "/api/channels", { provider, name }),
+  listChannelInteractions: (channelId: string, params: { direction?: string; type?: string; status?: string; query?: string; conversationId?: string; cursor?: string | null; limit?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (params.direction && params.direction !== "all") search.set("direction", params.direction);
+    if (params.type && params.type !== "all") search.set("type", params.type);
+    if (params.status && params.status !== "all") search.set("status", params.status);
+    if (params.query) search.set("q", params.query);
+    if (params.conversationId) search.set("conversationId", params.conversationId);
+    if (params.cursor) search.set("cursor", params.cursor);
+    search.set("limit", String(params.limit ?? 50));
+    const suffix = search.toString();
+    return request<{ interactions: ChannelInteraction[]; nextCursor: string | null; count: number }>("GET", `/api/channels/${encodeURIComponent(channelId)}/interactions${suffix ? `?${suffix}` : ""}`);
+  },
+  startIlinkLogin: (channelId: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/login`, {}),
+  pollIlinkLogin: (channelId: string) =>
+    request("GET", `/api/channels/${encodeURIComponent(channelId)}/ilink/login`),
+  activateIlinkChannel: (channelId: string, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/activate`, { approvalToken }),
+  disconnectIlinkChannel: (channelId: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/disconnect`, {}),
   enableChannel: (id: string, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(id)}/enable`, { approvalToken }),
   disableChannel: (id: string) =>
@@ -2503,14 +2526,15 @@ export const api = {
     ),
   // Bind (projectId) or clear (null) the project /task files issues into, and the
   // auto-route mode. Approval-gated.
-  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, dailyLimit: number, approvalToken: string) =>
-    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, autoRoute, dailyLimit, approvalToken }),
+  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, dailyLimit: number, approvalToken: string, operationMode: "personal" | "team" = "personal") =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, autoRoute, dailyLimit, operationMode, approvalToken }),
   // Promote a captured /task request into a tracked auto-run, or dismiss it.
   routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
   dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),
   retryChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/retry`),
   rerouteChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reroute`),
   takeoverChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/takeover`),
+  replyChannelTask: (id: string, content: string) => request<{ ok: boolean; deliveryId: string; threadId: string }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reply`, { content }),
   // Opt a channel into in-channel /approve (default off). Approval-gated.
   setChannelApprovalPolicy: (channelId: string, allowSelfApprove: boolean, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(channelId)}/approval-policy`, { allowSelfApprove, approvalToken }),

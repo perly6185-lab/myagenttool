@@ -138,6 +138,7 @@ export function buildPublicState({
   ledgerSummary,
   budgetStatuses,
   teamBudgetStatuses,
+  channelReadiness = null,
   actor = null,
 }) {
   // Tenancy scoping. With no actor (or one whose team owns everything, i.e.
@@ -286,6 +287,8 @@ export function buildPublicState({
   const channelEvents = byChannel(state.channelEvents);
   const channelConversations = byChannel(state.channelConversations);
   const channelDeliveries = byChannel(state.channelDeliveries);
+  const channelIntakeGroups = byChannel(state.channelIntakeGroups);
+  const channelTaskThreads = byChannel(state.channelTaskThreads);
   // A compare run is visible when it spans at least one invocation the team can
   // see; unscoped mode passes everything through.
   const byCompareRun = (rows) =>
@@ -771,13 +774,18 @@ export function buildPublicState({
     channelEvents,
     channelConversations,
     channelDeliveries,
+    channelIntakeGroups,
+    channelTaskThreads,
     channelTaskRequests,
+    channelIntentMetrics: isAdminScope ? state.channelIntentMetrics ?? null : null,
     channelOperations: channelOperations({
       channels,
       channelIdentities,
       channelEvents,
       channelConversations,
       channelDeliveries,
+      channelTaskThreads,
+      readinessForChannel: channelReadiness,
     }),
   };
 }

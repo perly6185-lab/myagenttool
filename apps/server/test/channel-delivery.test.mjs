@@ -157,6 +157,42 @@ test("a queued delivery sends, records the provider receipt, and leaves evidence
   assert.equal(harness.events.at(-1).type, "channel_delivery_recorded");
 });
 
+test("delivery sender receives the durable delivery id for provider deduplication", async () => {
+  const harness = makeDeliveryHarness();
+  let sentArgs;
+  const service = createChannelDeliveryService({
+    state: harness.state,
+    now: () => new Date(1_800_000_000_000).toISOString(),
+    nextId: (prefix) => prefix + "_stable",
+    appendEvent: () => {},
+    sendMessage: async (args) => {
+      sentArgs = args;
+      return { ok: true, msgid: "stable_receipt" };
+    },
+  });
+  service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    content: "dedupe me",
+  });
+  await service.sweepChannelDeliveries();
+  assert.equal(sentArgs.deliveryId, "chdl_stable");
+});
+
+test("a media-only delivery preserves bounded asset references and passes them to the provider", async () => {
+  const harness = makeDeliveryHarness();
+  const queued = harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    mediaAssets: [{ projectId: "prj_media", terminalId: "term_1", path: "deliveries/result.png", family: "image", size: 12, hash: "sha256:abc" }],
+  });
+  assert.equal(queued.ok, true);
+  assert.equal(harness.state.channelDeliveries.at(-1).content, "");
+  assert.equal(harness.state.channelDeliveries.at(-1).mediaAssets[0].hash, "sha256:abc");
+  await harness.service.sweepChannelDeliveries();
+  assert.equal(harness.sent[0].mediaAssets[0].path, "deliveries/result.png");
+});
+
 test("delivery preserves bounded task and trace correlation without attachment payloads", () => {
   const harness = makeDeliveryHarness();
   const queued = harness.service.enqueueChannelDelivery({
@@ -179,6 +215,54 @@ test("delivery preserves bounded task and trace correlation without attachment p
   assert.equal(delivery.taskContext.traceId, "trace-1");
   assert.equal(delivery.taskContext.terminalId, "terminal-1");
   assert.equal(JSON.stringify(delivery).includes("must-not-copy"), false);
+});
+
+test("task thread keeps delivery failure state and can resend the latest result", async () => {
+  const harness = makeDeliveryHarness({ sendMessage: async () => ({ ok: false, retryable: false, errcode: "user_not_found" }) });
+  const conversation = harness.state.channelConversations.find((row) => row.id === harness.conversationId);
+  harness.state.channelTaskThreads.push({
+    id: "cth_delivery", channelId: harness.channelId, conversationId: conversation.id,
+    status: "succeeded", summary: "已完成", workItemId: "wi_delivery",
+  });
+  const original = harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    invocationId: "inv_delivery",
+    content: "任务已完成\n结果内容",
+    taskContext: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_delivery", workItemId: "wi_delivery" },
+  });
+  await harness.service.sweepChannelDeliveries();
+  const thread = harness.state.channelTaskThreads[0];
+  assert.equal(harness.state.channelDeliveries.find((row) => row.id === original.deliveryId).status, "failed_terminal");
+  assert.equal(thread.lastDeliveryStatus, "failed_terminal");
+  assert.equal(thread.nextAction, "在控制台重试消息投递");
+
+  const resent = harness.service.resendChannelDelivery({ channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_delivery" });
+  assert.equal(resent.ok, true);
+  assert.equal(harness.state.channelDeliveries.at(-1).status, "queued");
+  assert.equal(harness.state.channelDeliveries.at(-1).content, "任务已完成\n结果内容");
+});
+
+test("delivery recovery rebuilds the task snapshot after restart", () => {
+  const harness = makeDeliveryHarness();
+  harness.state.channelTaskThreads.push({
+    id: "cth_restart_delivery", channelId: harness.channelId, conversationId: harness.conversationId,
+    status: "succeeded", summary: "已完成", nextAction: "查看任务结果",
+  });
+  harness.state.channelDeliveries.push({
+    id: "cdl_restart_delivery", channelId: harness.channelId, conversationId: harness.conversationId,
+    status: "failed_terminal", attempts: 5, lastErrorCode: "network_error", content: "任务结果",
+    mediaAssets: [], createdAt: "2026-08-14T00:00:00.000Z", updatedAt: "2026-08-14T00:00:01.000Z",
+    taskContext: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_restart_delivery", workItemId: "wi_restart" },
+  });
+  const restarted = createChannelDeliveryService({
+    state: harness.state, now: () => "2026-08-14T00:00:02.000Z", nextId: () => "unused",
+    appendEvent: () => {}, sendMessage: async () => ({ ok: true }),
+  });
+  assert.deepEqual(restarted.recoverThreadDeliveryState(), { recovered: 1 });
+  assert.equal(harness.state.channelTaskThreads[0].lastDeliveryStatus, "failed_terminal");
+  assert.equal(harness.state.channelTaskThreads[0].lastDeliveryError, "network_error");
+  assert.equal(harness.state.channelTaskThreads[0].nextAction, "在控制台重试消息投递");
 });
 
 test("retryable failures back off and exhaust into failed_terminal with an undeliverable refusal", async () => {
@@ -273,6 +357,7 @@ test("a delivery scheduled for later is not due until its backoff elapses; non-r
 
 test("notifyInvocationCompleted queues a result message only for channel-originated invocations", () => {
   const harness = makeDeliveryHarness();
+  harness.state.workItems.push({ id: "task-1", projectId: "prj_media", outputAssets: [{ id: "asset-1", path: "result.pdf", family: "pdf", size: 20 }] });
   const ignored = harness.service.notifyInvocationCompleted({ id: "inv_x", status: "succeeded", options: { metadata: {} } });
   assert.equal(ignored, null);
 
@@ -288,9 +373,72 @@ test("notifyInvocationCompleted queues a result message only for channel-origina
   assert.equal(queued.ok, true);
   const delivery = harness.state.channelDeliveries.at(-1);
   assert.equal(delivery.invocationId, "inv_1");
-  assert.match(delivery.content, /Task task-1: completed/);
+  assert.match(delivery.content, /任务已完成/);
   assert.match(delivery.content, /clean tree/);
-  assert.match(delivery.content, /Trace: task-1/);
+  assert.doesNotMatch(delivery.content, /task-1|Trace:/);
+  assert.equal(delivery.mediaAssets[0].projectId, "prj_media");
+  assert.equal(delivery.mediaAssets[0].path, "result.pdf");
+});
+
+test("thread notifications are idempotent for the same completed invocation", () => {
+  const harness = makeDeliveryHarness();
+  harness.state.channelTaskThreads.push({
+    id: "cth_1", shortRef: "T-0001", channelId: harness.channelId,
+    conversationId: harness.conversationId, workItemId: "task-1", status: "succeeded",
+  });
+  const invocation = {
+    id: "inv_thread", status: "succeeded", result: { summary: "done" },
+    options: { metadata: { channel: {
+      channelId: harness.channelId, conversationId: harness.conversationId,
+      threadId: "cth_1", workItemId: "task-1", traceId: "task-1",
+    } } },
+  };
+  const first = harness.service.notifyInvocationCompleted(invocation);
+  const second = harness.service.notifyInvocationCompleted(invocation);
+  assert.equal(first.ok, true);
+  assert.equal(second, null);
+  assert.equal(harness.state.channelDeliveries.length, 1);
+  assert.match(harness.state.channelDeliveries[0].content, /任务已完成/);
+  assert.doesNotMatch(harness.state.channelDeliveries[0].content, /T-0001/);
+});
+
+test("failed notification enqueue releases the dedupe claim for a later retry", () => {
+  const harness = makeDeliveryHarness();
+  harness.state.channelTaskThreads.push({
+    id: "cth_bad", shortRef: "T-BAD", channelId: harness.channelId,
+    conversationId: harness.conversationId, status: "succeeded",
+  });
+  const invocation = {
+    id: "inv_bad", status: "succeeded", result: { summary: "done" },
+    options: { metadata: { channel: {
+      channelId: "ch_missing", conversationId: harness.conversationId,
+      threadId: "cth_bad", traceId: "trace_bad",
+    } } },
+  };
+  const first = harness.service.notifyInvocationCompleted(invocation);
+  const second = harness.service.notifyInvocationCompleted(invocation);
+  assert.equal(first.ok, false);
+  assert.equal(second.ok, false);
+  assert.equal(harness.state.channelTaskThreads[0].lastNotificationKey, null);
+});
+
+test("failed task notification includes a plain-language next step", () => {
+  const harness = makeDeliveryHarness();
+  harness.state.channelTaskThreads.push({
+    id: "cth_failed", shortRef: "T-FAIL", channelId: harness.channelId,
+    conversationId: harness.conversationId, status: "failed",
+  });
+  const queued = harness.service.notifyInvocationCompleted({
+    id: "inv_failed", status: "failed", result: { summary: "执行遇到错误" },
+    options: { metadata: { channel: {
+      channelId: harness.channelId, conversationId: harness.conversationId,
+      threadId: "cth_failed", traceId: "trace_failed",
+    } } },
+  });
+  assert.equal(queued.ok, true);
+  assert.match(harness.state.channelDeliveries.at(-1).content, /回复“重试”/);
+  assert.match(harness.state.channelDeliveries.at(-1).content, /回复“转人工”/);
+  assert.doesNotMatch(harness.state.channelDeliveries.at(-1).content, /T-FAIL|Trace:/);
 });
 
 test("no secret or token material ever lands in state, events, or refusals", async () => {

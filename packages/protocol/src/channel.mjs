@@ -8,7 +8,7 @@
 // protocol vocabulary self-check and browser bundles stay clean.
 
 /** Supported channel providers. WeCom (#1090), Feishu/Lark (#1110), DingTalk (#1119), Slack (#1128). */
-export const channelProviders = ["wecom", "feishu", "dingtalk", "slack", "teams"];
+export const channelProviders = ["wecom", "feishu", "dingtalk", "slack", "teams", "wechat_ilink"];
 
 /** Channel lifecycle statuses. Registration is not enablement (ADR 0012). */
 export const channelStatuses = ["registered", "enabled", "disabled"];
@@ -91,6 +91,9 @@ export const slackReadinessScopes = ["signing_secret", "bot_token"];
  */
 export const teamsReadinessScopes = ["app_id", "app_password"];
 
+/** WeChat ClawBot/iLink readiness scopes. */
+export const wechatIlinkReadinessScopes = ["account", "session", "worker"];
+
 /** Readiness scope names by provider — the single source of truth for the console. */
 export const channelReadinessScopes = {
   wecom: wecomReadinessScopes,
@@ -98,6 +101,7 @@ export const channelReadinessScopes = {
   dingtalk: dingtalkReadinessScopes,
   slack: slackReadinessScopes,
   teams: teamsReadinessScopes,
+  wechat_ilink: wechatIlinkReadinessScopes,
 };
 
 /** Id prefixes for channel collections (see nextId in the server composer). */

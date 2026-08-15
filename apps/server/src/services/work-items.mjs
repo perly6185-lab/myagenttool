@@ -4173,6 +4173,7 @@ export function createWorkItemService({
           terminalId: item.terminalId,
           projectId: item.projectId,
           workItemId: item.id,
+          threadId: item.channelOrigin.threadId ?? null,
           traceId: item.id,
         },
       } : {}),

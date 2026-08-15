@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ingestChannelAttachmentCandidates } from "../src/services/channel-attachment-ingestion.mjs";
+import { ingestChannelAttachmentBytes, ingestChannelAttachmentCandidates } from "../src/services/channel-attachment-ingestion.mjs";
 
 const publicDns = async () => [{ address: "93.184.216.34", family: 4 }];
 
@@ -38,4 +38,28 @@ test("refuses active files, private sources, MIME spoofing, bad signatures, and 
     ...base, candidates: [{ sourceUrl: "https://files.example.test/x.png", filename: "x.png" }],
     fetchAttachment: async () => new Response("not-png", { headers: { "content-type": "text/plain" } }),
   }), /channel_attachment_mime_mismatch/);
+});
+
+test("stores trusted provider bytes through the same media and asset checks", async () => {
+  const root = mkdtempSync(join(tmpdir(), "channel-attachment-bytes-"));
+  const wav = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WAVE"), Buffer.from("audio")]);
+  const [asset] = await Promise.all([ingestChannelAttachmentBytes({
+    filename: "voice.wav",
+    bytes: wav,
+    contentType: "audio/wav",
+    projectPath: root,
+    projectId: "project-1",
+    terminalId: "terminal-1",
+  })]);
+  assert.equal(asset.family, "audio");
+  assert.ok(asset.capabilities.includes("preview"));
+  assert.deepEqual(readFileSync(join(root, asset.path)), wav);
+  await assert.rejects(() => ingestChannelAttachmentBytes({
+    filename: "payload.html",
+    bytes: Buffer.from("<script>bad</script>"),
+    contentType: "text/html",
+    projectPath: root,
+    projectId: "project-1",
+    terminalId: "terminal-1",
+  }), /active_channel_attachment_refused/);
 });
