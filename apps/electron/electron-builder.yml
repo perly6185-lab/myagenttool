@@ -16,6 +16,8 @@ files:
   - node_modules/@anthropic-ai/claude-agent-sdk/**
   - node_modules/@anthropic-ai/sdk/**
   - node_modules/@modelcontextprotocol/sdk/**
+  - node_modules/imapflow/**
+  - node_modules/mailparser/**
   - node_modules/zod/**
   - apps/server/package.json
   - apps/server/src/**
@@ -30,6 +32,8 @@ files:
   - packages/adapters/package.json
   - packages/adapters/src/**
   - tools/agents/**
+  - tools/mail-mcp/package.json
+  - tools/mail-mcp/src/**
   - tools/ai/package.json
   - tools/ai/src/**
   - "!**/test/**"

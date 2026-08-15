@@ -32,11 +32,28 @@ const MAX_ALLOWLIST = 50;
 // Inbound-flood bounds (#channel-audit): a signed corp user's messages clear the
 // gateway, so the event log must be bounded in both per-message size and count.
 const MAX_EVENT_CONTENT_CHARS = 4000;
+const MAX_OUTBOUND_CONTENT_CHARS = 2048;
 const MAX_CHANNEL_EVENTS = 2000;
 // Per-channel /task aggregate ceiling (across ALL the channel's users, per UTC
 // day) — the second limiter above the per-conversation 10/min. Owner-configurable.
 const DEFAULT_TASK_DAILY_LIMIT = 50;
 const MAX_TASK_DAILY_LIMIT = 10_000;
+export const CHANNEL_OPERATION_MODES = Object.freeze(["personal", "team"]);
+
+function encodeInteractionCursor(value) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function decodeInteractionCursor(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+    if (!parsed || typeof parsed.createdAt !== "string" || typeof parsed.id !== "string") return null;
+    return { createdAt: parsed.createdAt.slice(0, 80), id: parsed.id.slice(0, 200) };
+  } catch {
+    return null;
+  }
+}
 
 /** WeCom readiness probe: configuration PRESENCE from the gateway env — never values. */
 export function wecomEnvReadiness(env = process.env) {
@@ -82,6 +99,11 @@ export function teamsEnvReadiness(env = process.env) {
   };
 }
 
+/** iLink readiness is supplied by the session runtime, not environment secrets. */
+export function wechatIlinkEnvReadiness() {
+  return { account: false, session: false, worker: false };
+}
+
 /** Default readiness probes by provider (#1110/#1119/#1128/#1135). */
 export const defaultReadinessProbes = {
   wecom: wecomEnvReadiness,
@@ -89,6 +111,7 @@ export const defaultReadinessProbes = {
   dingtalk: dingtalkEnvReadiness,
   slack: slackEnvReadiness,
   teams: teamsEnvReadiness,
+  wechat_ilink: wechatIlinkEnvReadiness,
 };
 
 export function createChannelService({
@@ -127,7 +150,7 @@ export function createChannelService({
 
   function readiness(channel) {
     const probe = probes[channel.provider];
-    const probed = typeof probe === "function" ? probe() : {};
+    const probed = typeof probe === "function" ? probe(channel) : {};
     const scopes = {};
     for (const scope of channelReadinessScopes[channel.provider] ?? []) {
       scopes[scope] = Boolean(probed?.[scope]);
@@ -169,17 +192,18 @@ export function createChannelService({
       // channel; the owner binding a project IS the authorization to file tasks
       // from this channel's (untrusted) inbound into that repo.
       taskProjectId: null,
-      // Trust model (default = capture, NOT auto-route): a /task is filed as a
-      // tracked REQUEST a human promotes to work. Opt-in to auto-route to file
-      // with the dispatcher label directly (no human in the loop).
-      taskAutoRoute: false,
+      // Personal channels are the default local-user experience: the owner is
+      // also the operator, so confirmed tasks enter execution directly. Team
+      // channels can opt back into capture/approval semantics.
+      operationMode: "personal",
+      taskAutoRoute: true,
       // Aggregate /task ceiling: at most this many per UTC day across all users.
       taskDailyLimit: DEFAULT_TASK_DAILY_LIMIT,
       taskDayDate: null, // the UTC day taskDayCount is counting
       taskDayCount: 0,
-      // In-channel /approve is requester==approver by construction (a conversation
-      // is one identity), so it's DISABLED by default — risky runs are approved in
-      // the console by a separate operator. Owner opt-in for trusted channels.
+      // Personal mode removes the team-admin step for ordinary confirmed
+      // tasks. High-risk invocation approval remains a separate, explicit
+      // console action unless the owner opts into in-channel approval.
       allowSelfApprove: false,
       createdAt: now(),
       updatedAt: now(),
@@ -202,6 +226,104 @@ export function createChannelService({
       (row) => !actor?.teamId || (row.ownerTeamId ?? LOCAL_TEAM_ID) === actor.teamId,
     );
     return { ok: true, status: 200, body: { channels: rows.map(publicChannel), count: rows.length } };
+  }
+
+  function listChannelInteractions({ channelId, conversationId = null, direction = "all", type = "all", status = "all", query = "", cursor = null, limit = 50 } = {}, actor = null) {
+    const channel = findOwnChannel(channelId, actor);
+    if (!channel) return notFound();
+    const normalizedDirection = ["all", "inbound", "outbound"].includes(String(direction)) ? String(direction) : "all";
+    const normalizedType = ["all", "text", "image", "voice", "file", "mixed"].includes(String(type)) ? String(type) : "all";
+    const normalizedStatus = String(status ?? "all").slice(0, 40) || "all";
+    const normalizedQuery = String(query ?? "").trim().toLowerCase().slice(0, 200);
+    const normalizedConversationId = conversationId ? String(conversationId) : null;
+    const pageSize = Math.max(1, Math.min(100, Math.floor(Number(limit) || 50)));
+
+    const attachmentView = (asset) => {
+      const path = asset?.path ? String(asset.path).replaceAll("\\", "/").slice(0, 1_000) : null;
+      return {
+        id: asset?.id ? String(asset.id).slice(0, 200) : null,
+        name: String(asset?.name ?? path?.split("/").at(-1) ?? "attachment").slice(0, 200),
+        family: String(asset?.family ?? "unknown").slice(0, 40),
+        mimeType: asset?.mimeType ? String(asset.mimeType).slice(0, 120) : null,
+        size: Number.isFinite(Number(asset?.size)) ? Number(asset.size) : null,
+        projectId: asset?.projectId ? String(asset.projectId).slice(0, 200) : null,
+        path,
+      };
+    };
+    const typeFor = (directionValue, content, assets) => {
+      if (!assets.length) return "text";
+      if (assets.length > 1) return "mixed";
+      const family = assets[0].family;
+      return ["image", "audio", "video"].includes(family) ? (family === "audio" ? "voice" : family) : directionValue === "inbound" && content ? "mixed" : "file";
+    };
+    const inbound = (state.channelEvents ?? [])
+      .filter((row) => row.channelId === channel.id)
+      .map((row) => {
+        const attachments = (row.attachmentAssets ?? []).map(attachmentView);
+        return {
+          id: row.id,
+          direction: "inbound",
+          type: typeFor("inbound", row.content, attachments),
+          content: String(row.content ?? "").slice(0, MAX_EVENT_CONTENT_CHARS),
+          attachments,
+          status: row.status ?? "imported",
+          createdAt: row.receivedAt ?? row.providerCreateTime ?? null,
+          conversationId: row.conversationId,
+          externalUserId: row.externalUserId,
+          providerMessageId: row.providerMessageId,
+          injectionSuspicious: Boolean(row.injectionSuspicious),
+          mediaFailure: row.mediaFailure
+            ? {
+              total: row.mediaFailure.total ?? 0,
+              failed: (row.mediaFailure.failed ?? []).map((item) => ({
+                kind: String(item?.kind ?? "file").slice(0, 40),
+                filename: String(item?.filename ?? "attachment").slice(0, 160),
+                code: String(item?.code ?? "media_import_failed").slice(0, 80),
+              })),
+            }
+            : null,
+        };
+      });
+    const outbound = (state.channelDeliveries ?? [])
+      .filter((row) => row.channelId === channel.id)
+      .map((row) => {
+        const attachments = (row.mediaAssets ?? []).map(attachmentView);
+        return {
+          id: row.id,
+          direction: "outbound",
+          type: typeFor("outbound", row.content, attachments),
+          content: String(row.content ?? "").slice(0, MAX_OUTBOUND_CONTENT_CHARS),
+          attachments,
+          status: row.status ?? "queued",
+          createdAt: row.updatedAt ?? row.createdAt ?? null,
+          conversationId: row.conversationId,
+          deliveryId: row.id,
+          invocationId: row.invocationId ?? null,
+          attempts: Number(row.attempts ?? 0),
+          providerReceiptId: row.providerReceiptId ?? null,
+          lastErrorCode: row.lastErrorCode ?? null,
+        };
+      });
+    let rows = [...inbound, ...outbound]
+      .filter((row) => !normalizedConversationId || row.conversationId === normalizedConversationId)
+      .filter((row) => normalizedDirection === "all" || row.direction === normalizedDirection)
+      .filter((row) => normalizedType === "all" || row.type === normalizedType)
+      .filter((row) => normalizedStatus === "all" || row.status === normalizedStatus)
+      .filter((row) => {
+        if (!normalizedQuery) return true;
+        const attachmentText = row.attachments.map((asset) => `${asset.name} ${asset.family}`).join(" ");
+        return `${row.content} ${row.externalUserId ?? ""} ${attachmentText}`.toLowerCase().includes(normalizedQuery);
+      })
+      .sort((left, right) => String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? "")) || String(right.id).localeCompare(String(left.id)));
+    const decodedCursor = decodeInteractionCursor(cursor);
+    if (decodedCursor) {
+      rows = rows.filter((row) => String(row.createdAt ?? "") < decodedCursor.createdAt
+        || (String(row.createdAt ?? "") === decodedCursor.createdAt && String(row.id) < decodedCursor.id));
+    }
+    const page = rows.slice(0, pageSize);
+    const last = page.at(-1);
+    const nextCursor = rows.length > pageSize && last ? encodeInteractionCursor({ createdAt: String(last.createdAt ?? ""), id: last.id }) : null;
+    return { ok: true, status: 200, body: { interactions: page, nextCursor, count: page.length } };
   }
 
   /**
@@ -413,7 +535,7 @@ export function createChannelService({
   // Bind (or clear, projectId=null) the project that /task files GitHub issues
   // into. Owner-scoped + approval-gated like the allowlist; the bound project
   // must belong to the channel's owning team (no cross-team task filing).
-  function setChannelTaskProject({ channelId, projectId, terminalId = null, autoRoute, dailyLimit, approvalToken } = {}, actor = null) {
+  function setChannelTaskProject({ channelId, projectId, terminalId = null, autoRoute, dailyLimit, operationMode, approvalToken } = {}, actor = null) {
     const channel = findOwnChannel(channelId, actor);
     if (!channel) return notFound();
     const target = projectId == null ? null : (state.projects ?? []).find((p) => p.id === String(projectId));
@@ -435,6 +557,10 @@ export function createChannelService({
     if (target && !terminal) {
       return { ok: false, status: 400, body: { error: requestedTerminalId ? "terminal_not_found" : "terminal_binding_required" } };
     }
+    const requestedMode = operationMode == null ? null : String(operationMode).trim().toLowerCase();
+    if (requestedMode != null && !CHANNEL_OPERATION_MODES.includes(requestedMode)) {
+      return { ok: false, status: 400, body: { error: "invalid_channel_operation_mode", supported: CHANNEL_OPERATION_MODES } };
+    }
     const approval = typeof validateApprovalToken === "function"
       ? validateApprovalToken(approvalToken, { action: CHANNEL_TASK_PROJECT_ACTION, targetId: channel.id, actor })
       : { approved: false, reason: "approval_validator_unavailable" };
@@ -455,7 +581,9 @@ export function createChannelService({
     runTx(() => {
       channel.taskProjectId = target ? target.id : null;
       channel.taskTerminalId = terminal?.id ?? null;
-      if (autoRoute != null) channel.taskAutoRoute = Boolean(autoRoute);
+      if (requestedMode != null) channel.operationMode = requestedMode;
+      if (requestedMode === "personal") channel.taskAutoRoute = true;
+      else if (autoRoute != null) channel.taskAutoRoute = Boolean(autoRoute);
       if (dailyLimit != null) {
         const n = Number(dailyLimit);
         if (Number.isInteger(n) && n >= 0) channel.taskDailyLimit = Math.min(n, MAX_TASK_DAILY_LIMIT);
@@ -465,8 +593,8 @@ export function createChannelService({
         invocationId: null,
         type: "channel_task_project_set",
         level: "info",
-        message: `Channel ${channel.id}: task project ${target ? `bound to ${target.id}` : "cleared"}${autoRoute != null ? `, auto-route ${channel.taskAutoRoute ? "on" : "off"}` : ""}.`,
-        data: { channelId: channel.id, projectId: target?.id ?? null, terminalId: channel.taskTerminalId, autoRoute: channel.taskAutoRoute },
+        message: `Channel ${channel.id}: task project ${target ? `bound to ${target.id}` : "cleared"}${requestedMode != null ? `, mode ${channel.operationMode}` : ""}${autoRoute != null ? `, auto-route ${channel.taskAutoRoute ? "on" : "off"}` : ""}.`,
+        data: { channelId: channel.id, projectId: target?.id ?? null, terminalId: channel.taskTerminalId, operationMode: channel.operationMode, autoRoute: channel.taskAutoRoute },
       });
     });
     return { ok: true, status: 200, body: { channel: publicChannel(channel) } };
@@ -526,6 +654,7 @@ export function createChannelService({
     providerCreateTime = null,
     agentId = null,
     attachmentAssets = [],
+    mediaFailure = null,
     // Optional per-provider reply target (#1135): providers whose reply address
     // differs from the sender identity (Teams: {serviceUrl, conversationId})
     // pass this; it is stored on the conversation and used by delivery. Other
@@ -614,6 +743,18 @@ export function createChannelService({
         providerCreateTime: providerCreateTime ? String(providerCreateTime) : null,
         agentId: agentId ? String(agentId) : null,
         attachmentAssets: normalizedAttachments,
+        mediaFailure: mediaFailure && typeof mediaFailure === "object"
+          ? {
+            total: Math.max(0, Math.min(20, Number(mediaFailure.total) || 0)),
+            failed: Array.isArray(mediaFailure.failed)
+              ? mediaFailure.failed.slice(0, 20).map((item) => ({
+                kind: String(item?.kind ?? "file").slice(0, 40),
+                filename: String(item?.filename ?? "attachment").slice(0, 160),
+                code: String(item?.code ?? "media_import_failed").slice(0, 80),
+              }))
+              : [],
+          }
+          : null,
         status: "imported",
         injectionSuspicious: injection.suspicious,
         receivedAt: now(),
@@ -647,6 +788,7 @@ export function createChannelService({
   return {
     registerChannel,
     listChannels,
+    listChannelInteractions,
     enableChannel,
     disableChannel,
     channelHealth,
@@ -658,5 +800,6 @@ export function createChannelService({
     setChannelApprovalPolicy,
     importChannelEvent,
     findOwnChannel,
+    readiness,
   };
 }

@@ -8,10 +8,11 @@ describe("page ownership registry (#1505)", () => {
     expect(new Set(PAGE_REGISTRY.map((page) => page.key)).size).toBe(SECTION_KEYS.length);
   });
 
-  it("keeps the ordinary shell focused while exposing email and My templates as first-class destinations", () => {
+  it("keeps the ordinary shell focused while exposing email, local content, and My templates as first-class destinations", () => {
     expect(ENTRY_SECTIONS.map((page) => page.key)).toEqual([
       "dashboard",
       "mail",
+      "localLibrary",
       "task",
       "workflowMemory",
       "projects",

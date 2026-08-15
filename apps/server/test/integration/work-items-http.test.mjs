@@ -15,6 +15,7 @@ import { after, before, test } from "node:test";
 let server;
 let base;
 let runtimeState;
+let closeRuntimeServices;
 const root = join(tmpdir(), `myagenttool-work-items-http-${process.pid}`);
 const projectAPath = join(root, "a");
 
@@ -49,17 +50,20 @@ before(async () => {
   for (const agent of state.agents) {
     if (agent.location?.type === "local_device") agent.status = "available";
   }
-  const { httpDependencies } = createServerRuntimeServices({
+  const runtimeServices = createServerRuntimeServices({
     namespace: "test", protocolVersion: "0.0.0", state, defaultProject, defaultProjectPath: "/tmp",
-    persistenceEnabled: false, stateStorePath: "/tmp/unused.json", stateSchemaVersion: 1, dispatchLeaseMs: 30_000, now,
+    persistenceEnabled: false, stateStorePath: join(root, "state", "local-demo-state.json"), stateSchemaVersion: 1, dispatchLeaseMs: 30_000, now,
   });
+  const { httpDependencies } = runtimeServices;
+  closeRuntimeServices = runtimeServices.closeRuntimeServices;
   server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
-after(() => {
-  server?.close();
+after(async () => {
+  await new Promise((resolve) => server?.close(resolve) ?? resolve());
+  await closeRuntimeServices?.();
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -1274,6 +1278,64 @@ test("governed report drafts are wired through HTTP without sending or closing w
   const listed = await call(`/api/work-items/${item.id}/report-drafts`);
   assert.equal(listed.status, 200);
   assert.equal(listed.body.count, 1);
+});
+
+test("local content search and task references are tenant-scoped through the real HTTP server", async () => {
+  writeFileSync(join(projectAPath, "library-source.txt"), "HTTP local library integration phrase.\n");
+  const producer = await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Produce local library source", type: "task" },
+  });
+  assert.equal(producer.status, 201);
+  const producerState = runtimeState.workItems.find((item) => item.id === producer.body.workItem.id);
+  producerState.outputAssets = [{
+    id: "http_local_content_output",
+    originalName: "library-source.txt",
+    path: "library-source.txt",
+    family: "text",
+    mimeType: "text/plain",
+    readiness: { state: "ready", reason: "available" },
+  }];
+
+  const rebuilt = await call("/api/local-content/rebuild", { method: "POST", body: {} });
+  assert.equal(rebuilt.status, 200);
+  const searched = await call("/api/local-content?q=integration%20phrase&kind=task_output");
+  assert.equal(searched.status, 200);
+  assert.equal(searched.body.count, 1);
+  const content = searched.body.results[0];
+  assert.equal(content.title, "library-source.txt");
+  assert.equal(JSON.stringify(content).includes(projectAPath), false);
+
+  const preview = await call(`/api/local-content/${content.id}/preview`);
+  assert.equal(preview.status, 200);
+  assert.match(preview.body.preview.text, /HTTP local library integration phrase/);
+  assert.equal((await call("/api/local-content?q=integration%20phrase", { token: "tok_b" })).body.count, 0);
+  assert.equal((await call(`/api/local-content/${content.id}/preview`, { token: "tok_b" })).status, 404);
+
+  const consumer = await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Consume local library source", type: "task" },
+  });
+  assert.equal(consumer.status, 201);
+  const attached = await call(`/api/work-items/${consumer.body.workItem.id}/content-references`, {
+    method: "POST",
+    body: { contentId: content.id, expectedRevision: consumer.body.workItem.revision, purpose: "required_input" },
+  });
+  assert.equal(attached.status, 201);
+  assert.equal(attached.body.reference.contentId, content.id);
+  assert.equal(attached.body.workItem.localContentRefs.length, 1);
+  assert.equal((await call(`/api/work-items/${consumer.body.workItem.id}/content-references`, {
+    token: "tok_b",
+    method: "POST",
+    body: { contentId: content.id, expectedRevision: attached.body.workItem.revision },
+  })).status, 404);
+
+  const removed = await call(
+    `/api/work-items/${consumer.body.workItem.id}/content-references/${attached.body.reference.id}`,
+    { method: "DELETE", body: { expectedRevision: attached.body.workItem.revision } },
+  );
+  assert.equal(removed.status, 200);
+  assert.deepEqual(removed.body.workItem.localContentRefs, []);
 });
 
 test("completed My template result feedback is recorded and summarized through HTTP", async () => {

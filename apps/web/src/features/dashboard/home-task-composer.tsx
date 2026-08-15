@@ -99,6 +99,7 @@ export function HomeTaskComposer({
   draftGoal,
   onDraftGoalApplied,
   reviewFacts,
+  onDirtyChange,
 }: {
   projectId: string | null;
   projectName?: string | null;
@@ -122,6 +123,7 @@ export function HomeTaskComposer({
   draftGoal?: string | null;
   onDraftGoalApplied?: () => void;
   reviewFacts?: HomeTaskReviewFacts | null;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { i18n } = useAppTranslation();
   const zh = i18n.language.startsWith("zh");
@@ -301,6 +303,13 @@ export function HomeTaskComposer({
   const queueReady = readinessBlocking.length === 0 && (readiness?.ready === true || capacityBlocked);
   const templateNeedsClarification = planReviewed && templateMatch?.state === "ambiguous";
   const canCreateWithAi = canCreate && queueReady && !readinessLoading && !templateNeedsClarification;
+  const dirty = Boolean(goal.trim() || dueDate || criteria.trim() || verificationSop.trim() || attachments.length);
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   function chooseDesiredOutput(definitionId: string) {
     if (templateMatch?.state !== "ambiguous") return;
@@ -607,7 +616,7 @@ export function HomeTaskComposer({
               {projectName ? <p className={`mt-0.5 truncate text-xs text-muted-foreground ${mobileOpen ? "" : "hidden sm:block"}`}>{projectName}</p> : null}
             </div>
             </div>
-            <Button
+            {onMobileOpenChange ? <Button
               type="button"
               size="sm"
               variant="ghost"
@@ -618,12 +627,12 @@ export function HomeTaskComposer({
               onClick={() => onMobileOpenChange?.(!mobileOpen)}
             >
               <ChevronDown className={`transition-transform ${mobileOpen ? "rotate-180" : ""}`} aria-hidden />
-            </Button>
+            </Button> : null}
           </div>
         ) : null}
         <div
           id="home-task-composer-fields"
-          className={`space-y-3 ${inline && !mobileOpen ? "hidden sm:block" : ""}`}
+          className={`space-y-3 ${inline && onMobileOpenChange && !mobileOpen ? "hidden sm:block" : ""}`}
           onPaste={(event) => {
             if (!projectId || blocked) return;
             const pastedFiles = taskMaterialFilesFromClipboard(event.clipboardData);

@@ -16,6 +16,7 @@ import type {
   ApplicationRegisterRequest,
   ApplicationSnapshot,
   ConsoleSnapshot,
+  ChannelInteraction,
   InvocationEventSnapshot,
   KnownApplicationCatalogEntry,
   ProjectTreeResponse,
@@ -26,19 +27,60 @@ import type {
   ToolInvocationRequest,
   ToolInvocationResponse,
 } from "@/lib/console-state";
+import {
+  ApiError,
+  apiBase,
+  csrfHeaders,
+  ensureSession,
+  request,
+  requestByteRange,
+  requestBytes,
+  requestRaw,
+  REQUEST_TIMEOUT_MS,
+  setSessionReady,
+  setSessionUser,
+  type SessionUser,
+} from "@/lib/api/request";
+
+export {
+  ApiError,
+  getSessionUser,
+  openControlPlaneEventStream,
+  request,
+  requestRaw,
+  resolveApiBase,
+  SESSION_CHANGED_EVENT,
+} from "@/lib/api/request";
+export type { SessionUser } from "@/lib/api/request";
+export type {
+  LocalContentCatalogStats,
+  LocalContentHealth,
+  LocalContentKind,
+  LocalContentPreview,
+  LocalContentRecord,
+  WorkItemContentReference,
+} from "@/features/local-content/local-content-types";
 
 export interface MailboxAccount {
   id: string;
   provider: string;
   name: string;
   status: "connected" | "needs_attention";
-  statusDetail: string;
+  statusDetail: "ready" | "credential_not_authorized" | string;
   canReceive: boolean;
   canSend: boolean;
   readApplicationId: string;
   sendApplicationId: string | null;
-  syncCapability: string | null;
   fetchCapability: string | null;
+  incrementalSync: boolean;
+  providerReadState: boolean;
+}
+
+export interface MailboxSync {
+  status: "idle" | "syncing" | "succeeded" | "failed";
+  invocationId: string | null;
+  lastCompletedAt: string | null;
+  lastSucceededAt: string | null;
 }
 
 export interface MailboxMessage {
@@ -48,13 +90,23 @@ export interface MailboxMessage {
   subject: string;
   date: string | null;
   body: string | null;
+  bodyHtml: string;
+  hasHtml: boolean;
+  bodyTruncated: boolean;
+  bodyContentVersion: number;
   preview: string;
   unread: boolean;
+  folderId: string;
+  folderPath: string;
   fetched: boolean;
   inReplyTo: string | null;
   references: string[];
+  attachments: Array<{ id: string; name: string; contentType: string; size: number; sha256: string | null; previewable: boolean; localAvailable?: boolean; contentId?: string }>;
+  attachmentMetadataLoaded: boolean;
+  archive: { version: 1; ref?: string; availability: "available" | "unavailable"; sha256?: string; size?: number; archivedAt?: string | null; reason?: string } | null;
   applicationId: string | null;
   issueNumber: number | null;
+  task: { id: string; localRef: string; title: string; projectId: string } | null;
   createdAt: string | null;
 }
 
@@ -68,6 +120,7 @@ export interface MailboxDraft {
   body: string;
   inReplyTo: string | null;
   references: string[];
+  attachments: MailDraftAttachment[];
   createdAt: string | null;
   updatedAt: string | null;
   sentAt: string | null;
@@ -75,11 +128,22 @@ export interface MailboxDraft {
   approvalTarget: string;
 }
 
+export interface MailDraftAttachment {
+  ref: string;
+  name: string;
+  contentType: string;
+  size: number;
+}
+
 export interface MailboxSnapshot {
   accounts: MailboxAccount[];
   connection: { status: "connected" | "not_connected" | "needs_attention"; message: string };
-  folders: Array<{ id: "inbox" | "drafts" | "sent" | "outbox"; count: number; unread?: number }>;
+  sync: MailboxSync;
+  folders: Array<{ id: string; name?: string; kind?: "provider"; specialUse?: string | null; count: number; unread?: number; cursorReset?: boolean; syncError?: boolean }>;
   messages: MailboxMessage[];
+  query: string;
+  selectedFolder: string;
+  pagination: { page: number; pageSize: number; total: number; totalPages: number; hasPrevious: boolean; hasNext: boolean };
   drafts: MailboxDraft[];
   updatedAt: string | null;
 }
@@ -1119,117 +1183,6 @@ export interface WorktreeDiffSnapshot {
   truncated: boolean;
 }
 
-// The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
-const SERVER_PORT = "5001";
-const FALLBACK_API_BASE = `http://127.0.0.1:${SERVER_PORT}`;
-
-export class ApiError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-    public readonly status: number,
-    public readonly details?: Record<string, unknown>,
-  ) {
-    super(message);
-    this.name = "ApiError";
-  }
-}
-
-/**
- * Resolve the API base. Priority:
- *   1. `?api=<url>` override (any host — LAN / custom setups).
- *   2. Same host the console was loaded from, on the server port — so both
- *      localhost:5000 and <lan-ip>:5000 reach their server with no query param.
- */
-export function resolveApiBase(): string {
-  if (typeof window === "undefined") return FALLBACK_API_BASE;
-  const override = new URLSearchParams(window.location.search).get("api");
-  if (override) {
-    try {
-      return new URL(override).origin;
-    } catch {
-      /* fall through to the location-derived default */
-    }
-  }
-  const { protocol, hostname } = window.location;
-  if (!hostname) return FALLBACK_API_BASE;
-  return `${protocol}//${hostname}:${SERVER_PORT}`;
-}
-
-export async function openControlPlaneEventStream(
-  onEvent: (event: { id: string | null; event: string; data: Record<string, unknown> }) => void,
-  signal: AbortSignal,
-  lastEventId?: string | null,
-): Promise<void> {
-  await ensureSession();
-  const response = await fetch(`${apiBase}/api/events/stream`, {
-    headers: {
-      ...(lastEventId ? { "Last-Event-ID": lastEventId } : {}),
-    },
-    credentials: "include",
-    signal,
-  });
-  if (response.status === 401) {
-    sessionReady = false;
-    throw new ApiError("unauthenticated", "Session expired.", 401);
-  }
-  if (!response.ok || !response.body) throw new ApiError("stream_unavailable", "Live updates unavailable.", response.status);
-  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-  let buffer = "";
-  while (!signal.aborted) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += value;
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      if (!frame || frame.startsWith(":")) continue;
-      let event = "message";
-      let id: string | null = null;
-      let data = "{}";
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("id:")) id = line.slice(3).trim();
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        if (line.startsWith("data:")) data = line.slice(5).trim();
-      }
-      onEvent({ id, event, data: JSON.parse(data) as Record<string, unknown> });
-    }
-  }
-}
-
-const apiBase = resolveApiBase();
-const REQUEST_TIMEOUT_MS = 15_000;
-
-// --- ADR 0021 I2: server-side session cookie + CSRF -----------------------
-// The browser never receives or persists the session secret in JavaScript.
-export const SESSION_CHANGED_EVENT = "myagenttool:session-changed";
-
-export interface SessionUser {
-  id: string;
-  name?: string;
-  teamId?: string;
-  role?: "owner" | "admin" | "operator" | "viewer";
-}
-
-let memoryUser: SessionUser | null = null;
-let sessionReady = false;
-let sessionPromise: Promise<boolean> | null = null;
-
-function setUser(user: SessionUser | null): void {
-  memoryUser = user;
-  try {
-    window.localStorage.removeItem("myagenttool.token");
-    window.localStorage.removeItem("myagenttool.user");
-  } catch {
-    /* legacy storage may be unavailable; it is never read */
-  }
-  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(SESSION_CHANGED_EVENT));
-}
-
-/** The signed-in user (for display), or null if not logged in yet. */
-export function getSessionUser(): SessionUser | null {
-  return memoryUser;
-}
 
 export interface SessionInfo {
   id: string;
@@ -1309,38 +1262,6 @@ async function postSession(credentials: Record<string, unknown>): Promise<Sessio
   return (await response.json().catch(() => ({}))) as SessionResponse;
 }
 
-function csrfToken(): string | null {
-  if (typeof document === "undefined") return null;
-  const prefix = "myagenttool_csrf=";
-  const value = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
-  return value ? decodeURIComponent(value.slice(prefix.length)) : null;
-}
-
-function csrfHeaders(method: string): Record<string, string> {
-  if (!["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())) return {};
-  const token = csrfToken();
-  return token ? { "X-CSRF-Token": token } : {};
-}
-
-async function discoverSession(): Promise<boolean> {
-  try {
-    // One-way migration cleanup: legacy bearer/display records are never used.
-    window.localStorage.removeItem("myagenttool.token");
-    window.localStorage.removeItem("myagenttool.user");
-  } catch {
-    /* storage may be unavailable; no browser credential is read either way */
-  }
-  const current = await fetch(`${apiBase}/api/session`, { credentials: "include" }).catch(() => null);
-  if (current?.ok) {
-    const data = (await current.json().catch(() => ({}))) as SessionResponse;
-    setUser(data.user ?? null);
-    sessionReady = true;
-    return true;
-  }
-  setUser(null);
-  sessionReady = false;
-  return false;
-}
 
 export async function getIdentityOptions(): Promise<IdentityOptions> {
   const response = await fetch(`${apiBase}/api/identity/options`, { credentials: "include" });
@@ -1370,22 +1291,22 @@ export async function getIdentityOptions(): Promise<IdentityOptions> {
 export async function getCurrentSession(): Promise<SessionResponse | null> {
   const response = await fetch(`${apiBase}/api/session`, { credentials: "include" });
   if (response.status === 401) {
-    sessionReady = false;
-    setUser(null);
+    setSessionReady(false);
+    setSessionUser(null);
     return null;
   }
   if (!response.ok) throw new ApiError("session_unavailable", "Session details are unavailable.", response.status);
   const data = await response.json() as SessionResponse;
-  sessionReady = Boolean(data.user);
-  setUser(data.user ?? null);
+  setSessionReady(Boolean(data.user));
+  setSessionUser(data.user ?? null);
   return data;
 }
 
 export async function loginLocal(): Promise<SessionUser> {
   const data = await postSession({ mode: "local" });
   if (!data?.user) throw new ApiError("local_sign_in_failed", "Local sign-in failed.", 401);
-  sessionReady = true;
-  setUser(data.user);
+  setSessionReady(true);
+  setSessionUser(data.user);
   return data.user;
 }
 
@@ -1399,8 +1320,8 @@ export async function loginWithCredentials(teamId: string, userId: string, passw
   if (!data?.user) {
     throw new Error("Sign in failed — check the user id and password.");
   }
-  sessionReady = true;
-  setUser(data.user ?? { id: userId });
+  setSessionReady(true);
+  setSessionUser(data.user ?? { id: userId });
   return data.user ?? { id: userId };
 }
 
@@ -1460,8 +1381,8 @@ export async function logout(): Promise<void> {
   if (!response.ok && response.status !== 204) {
     throw new ApiError("logout_failed", "Could not revoke this session.", response.status);
   }
-  sessionReady = false;
-  setUser(null);
+  setSessionReady(false);
+  setSessionUser(null);
 }
 
 export async function logoutAllSessions(): Promise<void> {
@@ -1474,8 +1395,8 @@ export async function logoutAllSessions(): Promise<void> {
       throw new ApiError("logout_all_failed", "Could not sign out all devices.", response.status);
     }
   });
-  sessionReady = false;
-  setUser(null);
+  setSessionReady(false);
+  setSessionUser(null);
 }
 
 export async function beginIdentityChallenge(provider: IdentityProviderCapability["provider"]): Promise<IdentityChallengeResponse> {
@@ -1505,101 +1426,6 @@ export async function cancelIdentityChallenge(challengeId: string): Promise<void
   if (!response.ok) throw new ApiError("identity_challenge_cancel_failed", "Could not cancel this sign-in request.", response.status);
 }
 
-/** Discover or explicitly enter local mode, de-duping concurrent first calls. */
-function ensureSession(): Promise<boolean> {
-  if (sessionReady) return Promise.resolve(true);
-  if (!sessionPromise) sessionPromise = discoverSession().finally(() => (sessionPromise = null));
-  return sessionPromise;
-}
-
-export async function request<T = unknown>(
-  method: string,
-  path: string,
-  body?: unknown,
-  retry = true,
-  timeoutMs = REQUEST_TIMEOUT_MS,
-  extraHeaders?: Record<string, string>,
-): Promise<T> {
-  await ensureSession();
-  const headers: Record<string, string> = { ...csrfHeaders(method), ...extraHeaders };
-  if (body) headers["Content-Type"] = "application/json";
-  const response = await fetch(`${apiBase}${path}`, {
-    method,
-    headers: Object.keys(headers).length ? headers : undefined,
-    credentials: "include",
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  // Cookie rejected/expired: rediscover once, then replay the request.
-  if (response.status === 401 && retry) {
-    sessionReady = false;
-    await ensureSession();
-    return request<T>(method, path, body, false, timeoutMs, extraHeaders);
-  }
-  if (response.status === 204) return undefined as T;
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const record = data as { message?: string; error?: string };
-    throw new ApiError(record.error ?? "request_failed", record.message ?? record.error ?? `${method} ${path} failed.`, response.status);
-  }
-  return data as T;
-}
-
-async function requestBytes(path: string, retry = true): Promise<ArrayBuffer> {
-  await ensureSession();
-  const response = await fetch(`${apiBase}${path}`, {
-    method: "GET",
-    credentials: "include",
-  });
-  if (response.status === 401 && retry) {
-    sessionReady = false;
-    await ensureSession();
-    return requestBytes(path, false);
-  }
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({})) as { message?: string; error?: string };
-    throw new ApiError(data.error ?? "request_failed", data.message ?? data.error ?? `GET ${path} failed.`, response.status);
-  }
-  return response.arrayBuffer();
-}
-
-export async function requestRaw<T>(method: string, path: string, body: Blob, contentType: string, retry = true, userSignal?: AbortSignal): Promise<T> {
-  await ensureSession();
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), REQUEST_TIMEOUT_MS);
-  const abortFromUser = () => controller.abort(userSignal?.reason);
-  if (userSignal?.aborted) abortFromUser();
-  else userSignal?.addEventListener("abort", abortFromUser, { once: true });
-  let response: Response;
-  try {
-    response = await fetch(`${apiBase}${path}`, {
-      method,
-      credentials: "include",
-      headers: { ...csrfHeaders(method), "Content-Type": contentType || "application/octet-stream" },
-      body,
-      signal: controller.signal,
-    });
-  } finally {
-    window.clearTimeout(timeout);
-    userSignal?.removeEventListener("abort", abortFromUser);
-  }
-  if (response.status === 401 && retry) {
-    sessionReady = false;
-    await ensureSession();
-    return requestRaw<T>(method, path, body, contentType, false, userSignal);
-  }
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const record = data as { message?: string; error?: string };
-    throw new ApiError(
-      record.error ?? "request_failed",
-      record.message ?? record.error ?? `${method} ${path} failed.`,
-      response.status,
-      data && typeof data === "object" ? data as Record<string, unknown> : undefined,
-    );
-  }
-  return data as T;
-}
 
 export type TaskMaterialAsset = {
   id: string;
@@ -1638,18 +1464,7 @@ export type TaskMaterialStorage = {
   previewToken: string;
 };
 
-async function requestByteRange(path: string, start: number, end: number, retry = true): Promise<{ data: ArrayBuffer; total: number }> {
-  await ensureSession();
-  const response = await fetch(`${apiBase}${path}`, { method: "GET", credentials: "include", headers: { Range: `bytes=${start}-${end - 1}` } });
-  if (response.status === 401 && retry) { sessionReady = false; await ensureSession(); return requestByteRange(path, start, end, false); }
-  if (response.status !== 206) {
-    const detail = await response.json().catch(() => ({})) as { message?: string; error?: string };
-    throw new ApiError(detail.error ?? "pdf_range_failed", detail.message ?? "PDF server did not honor the byte-range request.", response.status);
-  }
-  const match = /\/(\d+)$/.exec(response.headers.get("Content-Range") ?? "");
-  if (!match) throw new ApiError("invalid_content_range", "PDF byte-range response omitted its total size.", 502);
-  return { data: await response.arrayBuffer(), total: Number(match[1]) };
-}
+
 
 export function fetchState(): Promise<ConsoleSnapshot> {
   return request<ConsoleSnapshot>("GET", "/api/state", undefined, true, REQUEST_TIMEOUT_MS, {
@@ -1771,7 +1586,7 @@ async function requestResult(
     body: body ? JSON.stringify(body) : undefined,
   });
   if (response.status === 401 && retry) {
-    sessionReady = false;
+    setSessionReady(false);
     await ensureSession();
     return requestResult(method, path, body, false);
   }
@@ -1780,10 +1595,22 @@ async function requestResult(
 }
 
 export const api = {
-  getMailbox: () => request<MailboxSnapshot>("GET", "/api/mailbox"),
-  createMailDraft: (body: { to: string; subject: string; body: string; inReplyTo?: string | null; references?: string[] }) =>
+  syncMailbox: () => request<{ sync: MailboxSync; reused: boolean }>("POST", "/api/mailbox/sync"),
+  createMailTask: (messageId: string, body: {
+    projectId: string;
+    title: string;
+    description?: string;
+    attachmentIds?: string[];
+    materialDraftId?: string;
+    materialDraftRevision?: number;
+  }) => request<{ task: { id: string; localRef: string; title: string; projectId: string }; replayed: boolean }>(
+    "POST",
+    `/api/mailbox/messages/${encodeURIComponent(messageId)}/task`,
+    body,
+  ),
+  createMailDraft: (body: { to: string; subject: string; body: string; attachments?: MailDraftAttachment[]; inReplyTo?: string | null; references?: string[] }) =>
     request<{ draft: MailboxDraft }>("POST", "/api/mail/drafts", body),
-  updateMailDraft: (id: string, body: { to: string; subject: string; body: string }) =>
+  updateMailDraft: (id: string, body: { to: string; subject: string; body: string; attachments?: MailDraftAttachment[] }) =>
     request<{ draft: MailboxDraft }>("PATCH", `/api/mail/drafts/${encodeURIComponent(id)}`, body),
   deleteMailDraft: (id: string) =>
     request<{ deleted: boolean; draftId: string }>("DELETE", `/api/mail/drafts/${encodeURIComponent(id)}`),
@@ -2665,6 +2492,28 @@ export const api = {
   queueLifecycleRollback: (id: string) =>
     request("POST", `/api/m3/lifecycle-rollbacks/${encodeURIComponent(id)}/queue`),
   /** Channel lifecycle (#1090). Enable/allowlist/delivery-retry are approval-gated. */
+  registerChannel: (provider: string, name: string) =>
+    request<{ channel: { id: string; provider: string; name: string } }>("POST", "/api/channels", { provider, name }),
+  listChannelInteractions: (channelId: string, params: { direction?: string; type?: string; status?: string; query?: string; conversationId?: string; cursor?: string | null; limit?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (params.direction && params.direction !== "all") search.set("direction", params.direction);
+    if (params.type && params.type !== "all") search.set("type", params.type);
+    if (params.status && params.status !== "all") search.set("status", params.status);
+    if (params.query) search.set("q", params.query);
+    if (params.conversationId) search.set("conversationId", params.conversationId);
+    if (params.cursor) search.set("cursor", params.cursor);
+    search.set("limit", String(params.limit ?? 50));
+    const suffix = search.toString();
+    return request<{ interactions: ChannelInteraction[]; nextCursor: string | null; count: number }>("GET", `/api/channels/${encodeURIComponent(channelId)}/interactions${suffix ? `?${suffix}` : ""}`);
+  },
+  startIlinkLogin: (channelId: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/login`, {}),
+  pollIlinkLogin: (channelId: string) =>
+    request("GET", `/api/channels/${encodeURIComponent(channelId)}/ilink/login`),
+  activateIlinkChannel: (channelId: string, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/activate`, { approvalToken }),
+  disconnectIlinkChannel: (channelId: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/disconnect`, {}),
   enableChannel: (id: string, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(id)}/enable`, { approvalToken }),
   disableChannel: (id: string) =>
@@ -2677,14 +2526,15 @@ export const api = {
     ),
   // Bind (projectId) or clear (null) the project /task files issues into, and the
   // auto-route mode. Approval-gated.
-  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, dailyLimit: number, approvalToken: string) =>
-    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, autoRoute, dailyLimit, approvalToken }),
+  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, dailyLimit: number, approvalToken: string, operationMode: "personal" | "team" = "personal") =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, autoRoute, dailyLimit, operationMode, approvalToken }),
   // Promote a captured /task request into a tracked auto-run, or dismiss it.
   routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
   dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),
   retryChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/retry`),
   rerouteChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reroute`),
   takeoverChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/takeover`),
+  replyChannelTask: (id: string, content: string) => request<{ ok: boolean; deliveryId: string; threadId: string }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reply`, { content }),
   // Opt a channel into in-channel /approve (default off). Approval-gated.
   setChannelApprovalPolicy: (channelId: string, allowSelfApprove: boolean, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(channelId)}/approval-policy`, { allowSelfApprove, approvalToken }),

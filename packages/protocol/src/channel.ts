@@ -6,8 +6,8 @@
 
 import type { IsoDateTime } from "./common.js";
 
-/** Supported channel providers. WeCom (#1090), Feishu/Lark (#1110), DingTalk (#1119), Slack (#1128). */
-export declare const channelProviders: readonly ["wecom", "feishu", "dingtalk", "slack", "teams"];
+/** Supported channel providers. */
+export declare const channelProviders: readonly ["wecom", "feishu", "dingtalk", "slack", "teams", "wechat_ilink"];
 export type ChannelProvider = (typeof channelProviders)[number];
 
 /** Channel lifecycle statuses. Registration is not enablement (ADR 0012). */
@@ -73,6 +73,18 @@ export type SlackReadinessScope = (typeof slackReadinessScopes)[number];
 export declare const teamsReadinessScopes: readonly ["app_id", "app_password"];
 export type TeamsReadinessScope = (typeof teamsReadinessScopes)[number];
 
+/** WeChat ClawBot/iLink readiness scopes. */
+export declare const wechatIlinkReadinessScopes: readonly ["account", "session", "worker"];
+export type WechatIlinkReadinessScope = (typeof wechatIlinkReadinessScopes)[number];
+
+export type ChannelReadinessScope =
+  | WecomReadinessScope
+  | FeishuReadinessScope
+  | DingtalkReadinessScope
+  | SlackReadinessScope
+  | TeamsReadinessScope
+  | WechatIlinkReadinessScope;
+
 /** Readiness scope names by provider. */
 export declare const channelReadinessScopes: Record<ChannelProvider, readonly string[]>;
 
@@ -102,7 +114,7 @@ export interface Channel {
   status: ChannelStatus;
   ownerTeamId: string;
   /** Readiness by scope name — configuration presence, never values. */
-  readiness: Partial<Record<WecomReadinessScope, boolean>>;
+  readiness: Partial<Record<ChannelReadinessScope, boolean>>;
   createdAt: IsoDateTime;
   updatedAt: IsoDateTime;
 }

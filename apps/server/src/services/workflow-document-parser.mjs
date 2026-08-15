@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { inflateRawSync } from "node:zlib";
 
 import { parse } from "parse5";
@@ -56,6 +56,28 @@ function boundedBlocks(blocks) {
   };
 }
 
+function readBoundedFile(path) {
+  let fd;
+  try {
+    fd = openSync(path, "r");
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw Object.assign(new Error("Document is not a regular file."), { code: "document_not_file" });
+    if (info.size > MAX_INPUT_BYTES) {
+      throw Object.assign(new Error("Document exceeds the parser input limit."), { code: "document_too_large" });
+    }
+    const buffer = Buffer.alloc(info.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const bytesRead = readSync(fd, buffer, offset, buffer.length - offset, offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    return buffer.subarray(0, offset);
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
+}
+
 function zipEntries(buffer) {
   const eocdSignature = 0x06054b50;
   let eocd = -1;
@@ -86,25 +108,49 @@ function zipEntries(buffer) {
     const extraLength = buffer.readUInt16LE(offset + 30);
     const commentLength = buffer.readUInt16LE(offset + 32);
     const localOffset = buffer.readUInt32LE(offset + 42);
+    const centralEnd = offset + 46 + nameLength + extraLength + commentLength;
+    if (centralEnd > buffer.length) {
+      throw Object.assign(new Error("Invalid OOXML central directory bounds."), { code: "document_archive_invalid" });
+    }
     const name = buffer.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
-    offset += 46 + nameLength + extraLength + commentLength;
+    offset = centralEnd;
     if (flags & 1) throw Object.assign(new Error("Encrypted Office files are not supported."), { code: "document_encrypted" });
-    if (!name.endsWith(".xml") || uncompressedSize > MAX_EXPANDED_BYTES) continue;
-    expanded += uncompressedSize;
-    if (expanded > MAX_EXPANDED_BYTES) {
+    if (!name.endsWith(".xml")) continue;
+    if (uncompressedSize > MAX_EXPANDED_BYTES || expanded + uncompressedSize > MAX_EXPANDED_BYTES) {
       throw Object.assign(new Error("OOXML expanded content exceeds the safety limit."), { code: "document_archive_limit" });
     }
     if (localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== 0x04034b50) {
       throw Object.assign(new Error("Invalid OOXML local entry."), { code: "document_archive_invalid" });
     }
+    const localFlags = buffer.readUInt16LE(localOffset + 6);
+    const localMethod = buffer.readUInt16LE(localOffset + 8);
+    if ((localFlags & 1) || localMethod !== method) {
+      throw Object.assign(new Error("OOXML local entry metadata does not match its directory."), { code: "document_archive_invalid" });
+    }
     const localNameLength = buffer.readUInt16LE(localOffset + 26);
     const localExtraLength = buffer.readUInt16LE(localOffset + 28);
     const start = localOffset + 30 + localNameLength + localExtraLength;
+    const end = start + compressedSize;
+    if (start > buffer.length || end > buffer.length) {
+      throw Object.assign(new Error("OOXML compressed entry exceeds the archive bounds."), { code: "document_archive_invalid" });
+    }
     const compressed = buffer.subarray(start, start + compressedSize);
     let data;
-    if (method === 0) data = compressed;
+    if (method === 0) {
+      if (compressedSize !== uncompressedSize) {
+        throw Object.assign(new Error("OOXML stored entry size is inconsistent."), { code: "document_archive_invalid" });
+      }
+      data = compressed;
+    }
     else if (method === 8) data = inflateRawSync(compressed, { maxOutputLength: Math.min(uncompressedSize + 1, MAX_EXPANDED_BYTES) });
     else continue;
+    if (data.length !== uncompressedSize) {
+      throw Object.assign(new Error("OOXML expanded entry size is inconsistent."), { code: "document_archive_invalid" });
+    }
+    expanded += data.length;
+    if (expanded > MAX_EXPANDED_BYTES) {
+      throw Object.assign(new Error("OOXML expanded content exceeds the safety limit."), { code: "document_archive_limit" });
+    }
     entries.set(name, data.toString("utf8"));
   }
   return entries;
@@ -281,7 +327,7 @@ export async function parseWorkflowDocument({
     return { state: "skipped", reason: "native_text_or_unsupported", parserVersion: WORKFLOW_DOCUMENT_PARSER_VERSION };
   }
   try {
-    const buffer = readFileSync(path);
+    const buffer = readBoundedFile(path);
     let result;
     if ([".html", ".htm"].includes(normalizedExtension)) result = parseHtml(buffer);
     else if (normalizedExtension === ".pdf") result = await parsePdf(buffer);
@@ -303,6 +349,9 @@ export async function parseWorkflowDocument({
       truncatedPages: Boolean(result.truncatedPages),
     };
   } catch (error) {
+    if (error?.code === "document_too_large") {
+      return { state: "limited", reason: "document_too_large", parserVersion: WORKFLOW_DOCUMENT_PARSER_VERSION };
+    }
     return {
       state: "failed",
       parserVersion: WORKFLOW_DOCUMENT_PARSER_VERSION,

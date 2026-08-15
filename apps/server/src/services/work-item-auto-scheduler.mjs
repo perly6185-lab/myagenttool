@@ -28,6 +28,13 @@ function publicDecision(decision) {
   };
 }
 
+function cancelledByChannelThread(item, state) {
+  const threadId = item?.channelOrigin?.threadId;
+  if (!threadId) return false;
+  return (state.channelTaskThreads ?? []).some((thread) =>
+    thread.id === threadId && ["cancelled", "paused"].includes(thread.status));
+}
+
 export function createWorkItemAutoSchedulerService({
   state,
   now = () => new Date().toISOString(),
@@ -69,6 +76,7 @@ export function createWorkItemAutoSchedulerService({
   function preview({ teamId = null, projectId = null } = {}) {
     const timestamp = now();
     const items = (state.workItems ?? [])
+      .filter((item) => !cancelledByChannelThread(item, state))
       .filter((item) => !teamId || item.ownerTeamId === teamId)
       .filter((item) => !projectId || item.projectId === projectId)
       .map((item) => ({

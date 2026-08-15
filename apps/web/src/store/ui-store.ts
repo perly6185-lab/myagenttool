@@ -20,6 +20,7 @@ import {
 export type SectionKey =
   | "dashboard"
   | "mail"
+  | "localLibrary"
   | "me"
   | "workBoard"
   | "workspace"
@@ -189,6 +190,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "settings",
   "dashboard",
   "mail",
+  "localLibrary",
   "me",
   "workBoard",
   "workspace",

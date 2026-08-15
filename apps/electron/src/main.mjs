@@ -5,11 +5,14 @@ import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { bundledAgentEnv } from "./bundled-agent-runtime.mjs";
 import { overlayFromChrome, readSkinSettings, registerSkinChrome } from "./skin-chrome.mjs";
 import { registerContainedAssetOpen, registerContainedAssetReveal, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, registerWorkflowSourceFolderPicker } from "./local-office-document-picker.mjs";
 import { registerWorkflowCaseIntake } from "./workflow-case-intake.mjs";
+import { registerMailAccountConnector } from "./mail-account-connector.mjs";
+import { registerMailAttachmentHandler } from "./mail-attachment-handler.mjs";
+import { registerMailOutboundAttachmentHandler } from "./mail-outbound-attachment-handler.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -82,6 +85,8 @@ async function startApp() {
   const webPort = await findOpenPort(serviceDefaults.webPort === serverPort ? serviceDefaults.webPort + 1 : serviceDefaults.webPort);
   const serverUrl = `http://${host}:${serverPort}`;
   const webUrl = `http://${host}:${webPort}`;
+  const mailMcpRuntime = nodeRuntime();
+  const mailMcpEntry = join(paths.runtimeRoot, "tools", "mail-mcp", "src", "server.mjs");
 
   startNodeService("server", paths.serverEntry, {
     SERVER_HOST: host,
@@ -98,6 +103,10 @@ async function startApp() {
     BRIDGE_LOOPBACK_TOKEN: loopbackToken,
     BRIDGE_TERMINAL_POLL_INTERVAL_MS: process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? "40",
     MYAGENTTOOL_BRIDGE_TOKEN_PATH: join(app.getPath("userData"), "state", "bridge-token.json"),
+    BRIDGE_CREDENTIAL_DIR: join(app.getPath("appData"), "myagenttool", "credential-readiness"),
+    MYAGENTTOOL_MAIL_MCP_ENTRY: mailMcpEntry,
+    MYAGENTTOOL_MAIL_MCP_NODE: mailMcpRuntime.command,
+    MYAGENTTOOL_MAIL_MCP_ELECTRON_RUN_AS_NODE: mailMcpRuntime.env.ELECTRON_RUN_AS_NODE ?? "0",
     ...bundledAgentEnv({ appRoot: paths.runtimeRoot, resourcesRoot: paths.resourcesRoot, execPath: process.execPath }),
   }, paths.runtimeRoot);
 
@@ -184,6 +193,52 @@ function createMainWindow(url, serverUrl) {
   registerContainedOfficeDocumentOpen({ ipcMain, getState, openPath: (path) => shell.openPath(path) });
   registerContainedAssetOpen({ ipcMain, getState, openPath: (path) => shell.openPath(path) });
   registerContainedAssetReveal({ ipcMain, getState, revealPath: (path) => shell.showItemInFolder(path) });
+  const paths = runtimePaths();
+  const runtime = nodeRuntime();
+  registerMailAccountConnector({
+    ipcMain,
+    credentialRoot: join(app.getPath("appData"), "myagenttool"),
+    runtimeRoot: paths.runtimeRoot,
+    nodeCommand: runtime.command,
+    requestServer: async (method, path, body) => {
+      const response = await fetch(`${serverUrl}${path}`, {
+        method,
+        headers: { ...loopbackHeaders, ...(body ? { "Content-Type": "application/json" } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!response.ok) throw new Error(`${method} ${path} failed.`);
+      return response.json();
+    },
+    verifyCredential: async (credential) => {
+      const module = await import(pathToFileURL(join(paths.runtimeRoot, "tools", "mail-mcp", "src", "verify-163.mjs")).href);
+      return module.verify163Credential(credential);
+    },
+    verifySendCredential: async (credential) => {
+      const module = await import(pathToFileURL(join(paths.runtimeRoot, "tools", "mail-mcp", "src", "send-163.mjs")).href);
+      return module.verify163SendCredential(credential);
+    },
+  });
+  registerMailAttachmentHandler({
+    ipcMain,
+    dialog,
+    getWindow: () => mainWindow,
+    readAttachment: async (input) => {
+      const module = await import(pathToFileURL(join(paths.runtimeRoot, "tools", "mail-mcp", "src", "attachment-163.mjs")).href);
+      return module.read163Attachment(input);
+    },
+  });
+  registerMailOutboundAttachmentHandler({
+    ipcMain,
+    dialog,
+    getWindow: () => mainWindow,
+    attachmentRoot: join(app.getPath("appData"), "myagenttool", "mail", "outbox-attachments"),
+    getReferencedAttachmentRefs: async () => {
+      const response = await fetch(`${serverUrl}/api/mailbox`, { headers: loopbackHeaders });
+      if (!response.ok) throw new Error("mailbox_attachment_refs_unavailable");
+      const mailbox = await response.json();
+      return (mailbox?.drafts ?? []).flatMap((draft) => (draft?.attachments ?? []).map((attachment) => attachment?.ref).filter(Boolean));
+    },
+  });
   const chrome = readSkinSettings(skinStateDir());
   nativeTheme.themeSource = chrome.themeSource;
 

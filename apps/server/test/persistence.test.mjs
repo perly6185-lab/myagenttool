@@ -88,6 +88,25 @@ test("persistence restores active control-plane records across runtime restart",
       id: "mtlc_1", ownerTeamId: "team_local", projectId: first.defaultProject.id,
       draftId: "mtd_1", workItemId: "lwi_1", snapshotHash: "snapshot-1", createdAt: now(),
     });
+    first.state.mailMessageStates.push({
+      id: "mailmsgstate_1",
+      messageId: "<restart@example.com>",
+      ownerTeamId: "team_local",
+      readAt: now(),
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    first.state.mailTaskLinks.push({
+      id: "mailtask_1",
+      messageId: "<restart@example.com>",
+      workItemId: "lwi_restart",
+      localRef: "LOCAL-88",
+      title: "Restart-safe mail task",
+      projectId: first.defaultProject.id,
+      ownerTeamId: "team_local",
+      createdAt: now(),
+      updatedAt: now(),
+    });
     first.state.retentionSettings.logsDays = 99;
 
     createPersistenceRuntime({
@@ -130,6 +149,8 @@ test("persistence restores active control-plane records across runtime restart",
     assert.equal(second.state.myTemplateGovernanceInterventions[0]?.id, "mtgi_1", "template governance intervention should restore");
     assert.equal(second.state.myTemplateDrafts[0]?.id, "mtd_1", "task-seeded template draft should restore");
     assert.equal(second.state.myTemplateLearningCases[0]?.id, "mtlc_1", "task-seeded learning case should restore");
+    assert.equal(second.state.mailMessageStates[0]?.messageId, "<restart@example.com>", "local mail read state should restore");
+    assert.equal(second.state.mailTaskLinks[0]?.workItemId, "lwi_restart", "mail-to-task links should restore");
     assert.equal(second.state.retentionSettings.logsDays, 99);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -1502,6 +1523,42 @@ test("persistence restores the auto-run brakes across restart (kill switch + ope
     assert.equal(second.state.autoRunSettings.autoMergeMaxDiffLines, 250, "saved knob survives");
     assert.equal(second.state.autoRunBreaker.openUntil, "2999-01-01T00:00:00.000Z", "open breaker survives restart");
     assert.equal(second.state.autoRunBreaker.consecutiveFailures, 3);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("persistence restores channel drafts, operation mode, and queued task threads", () => {
+  const root = join(tmpdir(), `myagenttool-channel-persistence-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    first.state.channels.push({
+      id: "chn_restart", provider: "wechat_ilink", name: "微信任务", status: "enabled",
+      ownerTeamId: "team_local", operationMode: "personal", taskAutoRoute: true,
+      taskProjectId: first.defaultProject.id, capabilityAllowlist: [], createdAt: now(), updatedAt: now(),
+    });
+    first.state.channelIntakeGroups.push({
+      id: "cig_restart", channelId: "chn_restart", conversationId: "chcv_restart",
+      eventIds: ["chev_restart"], messages: [{ eventId: "chev_restart", content: "继续整理" }],
+      status: "collecting", dueAt: "2026-07-15T00:00:05.000Z",
+    });
+    first.state.channelTaskThreads.push({
+      id: "cth_restart", shortRef: "T-RESTART", channelId: "chn_restart", conversationId: "chcv_restart",
+      sourceEventIds: ["chev_restart"], messages: [{ eventId: "chev_restart", content: "继续整理" }],
+      summary: "继续整理", status: "queued", queueAheadCount: 0, queuePosition: 1,
+      createdAt: now(), updatedAt: now(),
+    });
+
+    createPersistenceRuntime({ state: first.state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject: first.defaultProject, sameProjectPath }).savePersistentState();
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    createPersistenceRuntime({ state: second.state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject: second.defaultProject, sameProjectPath }).restorePersistentState();
+    assert.equal(second.state.channels.find((channel) => channel.id === "chn_restart")?.operationMode, "personal");
+    assert.equal(second.state.channelIntakeGroups.find((group) => group.id === "cig_restart")?.status, "collecting");
+    assert.equal(second.state.channelTaskThreads.find((thread) => thread.id === "cth_restart")?.queuePosition, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

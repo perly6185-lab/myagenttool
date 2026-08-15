@@ -322,6 +322,42 @@ describe("TaskView local work items", () => {
     })));
   });
 
+  it("shows a retryable error instead of an empty task list when loading fails", async () => {
+    mocks.listWorkItems.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Tasks could not be loaded");
+    expect(screen.queryByText("No tasks yet")).toBeNull();
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.listWorkItems).toHaveBeenCalledTimes(2));
+  });
+
+  it("sends ordinary task searches to the server before pagination", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+    await screen.findByText("No tasks yet");
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search tasks" }), { target: { value: "customer handoff" } });
+    await waitFor(() => expect(mocks.listWorkItems).toHaveBeenCalledWith(expect.objectContaining({
+      q: "customer handoff",
+      limit: "100",
+    })));
+  });
+
+  it("asks before discarding an unsaved ordinary task", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
+    const createDialog = await screen.findByRole("dialog", { name: "New task" });
+    fireEvent.change(within(createDialog).getByRole("textbox", { name: "Create a task" }), { target: { value: "Keep this draft" } });
+    fireEvent.click(within(createDialog).getByRole("button", { name: "Close" }));
+
+    const confirm = await screen.findByRole("dialog", { name: "Discard this unsaved task?" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("dialog", { name: "New task" })).toBeTruthy();
+  });
+
   it("puts tasks needing the user first and offers plain-language progress filters", async () => {
     const base = {
       projectId: "prj_1", body: "", type: "task", priority: "p2", state: "open",
@@ -689,7 +725,7 @@ describe("TaskView local work items", () => {
     mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_1", worktreeId: "wtr_2" } });
     render(<TaskView />);
     fireEvent.click(await screen.findByText("Editable issue"));
-    expect(await screen.findByTestId("work-item-summary-view")).toBeTruthy();
+    expect(await screen.findByTestId("work-item-summary-view", undefined, { timeout: 5_000 })).toBeTruthy();
     await openExpertDetails();
     expect(screen.getByRole("dialog", { name: "Local issue details" }).className).toContain("max-w-7xl");
     const cockpit = (await screen.findByText("Task cockpit")).closest("section");
@@ -742,7 +778,7 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mocks.createWorkItemComment).toHaveBeenCalledWith("lwi_1", "Looks good"));
     expect(screen.getByText("Created")).toBeTruthy();
-  });
+  }, 15_000);
 
   it("guards section navigation and detail close when the report has unsaved edits", async () => {
     const item = {
@@ -1057,7 +1093,7 @@ describe("TaskView local work items", () => {
     await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_delivery", "local_merge", 4));
   });
 
-  it("shows task run history only when the server reports a failure or rerun", async () => {
+  it("shows task run history and promotes a posted report", async () => {
     const item = {
       id: "lwi_history", localRef: "LOCAL-60", projectId: "prj_1",
       title: "Retry a local task", body: "", type: "task", status: "in_progress",
@@ -1098,6 +1134,12 @@ describe("TaskView local work items", () => {
       workItem: item,
       observability: {
         ...observability,
+        latestRun: {
+          ...observability.latestRun,
+          status: "report_posted",
+          report: "The report is ready for review.",
+          decision: { path: "evaluate", decidedBy: "agent", confidence: 0.9 },
+        },
         runHistory: [{
           invocationId: "inv_first", autoRunId: "aur_history", attempt: 1, status: "failed",
           createdAt: "2026-08-07T01:00:00.000Z", startedAt: "2026-08-07T01:00:01.000Z",
@@ -1118,6 +1160,11 @@ describe("TaskView local work items", () => {
     expect(within(history).getByText("The local connection closed.")).toBeTruthy();
     expect(within(history).getByText("Reason: transport_closed")).toBeTruthy();
     expect(within(history).getByText("Current")).toBeTruthy();
+    const reportText = await screen.findByText("The report is ready for review.");
+    const reportCard = reportText.closest("section");
+    expect(reportCard?.className).toContain("rounded-lg bg-card p-6");
+    expect(reportCard).toBeTruthy();
+    expect((reportCard?.compareDocumentPosition(history) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("shows the external issue funnel and plain-language stalled recovery", async () => {

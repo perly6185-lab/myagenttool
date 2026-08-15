@@ -21,3 +21,20 @@ test("task operation routes dispatch route, dismiss, retry, reroute, and takeove
     assert.deepEqual(response, { status: 200, body: { ok: true, action } });
   }
 });
+
+test("human task reply route passes bounded user content to its handler", async () => {
+  let response;
+  const handled = await handleChannelRoutes({
+    req: { method: "POST" },
+    res: {},
+    url: new URL("http://local/api/channel-tasks/cth_1/reply"),
+    sendJson: (_res, status, body) => { response = { status, body }; },
+    readJson: async () => ({ content: "已确认，人工正在继续处理。" }),
+    actor: { userId: "usr_1", teamId: "team_1" },
+    replyChannelTask: async (id, content, actor) => ({ status: 200, body: { ok: true, id, content, actor } }),
+  });
+  assert.equal(handled, true);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.id, "cth_1");
+  assert.equal(response.body.content, "已确认，人工正在继续处理。");
+});

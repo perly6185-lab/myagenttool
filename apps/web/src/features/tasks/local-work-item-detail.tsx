@@ -792,6 +792,12 @@ export function LocalWorkItemDetail({
         />
       </Suspense>
       </div>
+      {(boundRun?.status === "report_posted" && boundRun?.report) ? (
+        <section className="space-y-3 rounded-lg bg-card p-6">
+          <h3 className="text-base font-semibold">Report</h3>
+          <MarkdownBlock text={boundRun.report} />
+        </section>
+      ) : null}
       {selectedWorkItemSection === "process" && boundRun?.decision ? (
         <Suspense fallback={null}>
           <WorkItemRoutingSection
@@ -841,12 +847,6 @@ export function LocalWorkItemDetail({
               </li>
             ))}
           </ol>
-        </section>
-      ) : null}
-      {(boundRun?.status === "report_posted" && boundRun?.report) ? (
-        <section className="space-y-2 rounded-md border border-border p-3 text-xs">
-          <h3 className="text-sm font-semibold">Report</h3>
-          <MarkdownBlock text={boundRun.report} />
         </section>
       ) : null}
       <div

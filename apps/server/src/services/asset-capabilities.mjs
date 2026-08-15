@@ -17,7 +17,7 @@ const FAMILY_BY_EXTENSION = Object.freeze({
   ".dxf": "cad_dxf", ".dwg": "cad_dwg",
   ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image",
   ".webp": "image", ".avif": "image", ".svg": "image",
-  ".mp3": "audio", ".m4a": "audio", ".ogg": "audio", ".wav": "audio",
+  ".mp3": "audio", ".m4a": "audio", ".ogg": "audio", ".wav": "audio", ".silk": "audio", ".amr": "audio",
   ".mp4": "video", ".webm": "video", ".mov": "video",
 });
 
@@ -34,7 +34,7 @@ const MIME_BY_EXTENSION = Object.freeze({
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
   ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
   ".svg": "image/svg+xml",
-  ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".wav": "audio/wav",
+  ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".wav": "audio/wav", ".silk": "audio/silk", ".amr": "audio/amr",
   ".mp4": "video/mp4", ".webm": "video/webm",
   ".mov": "video/quicktime",
 });

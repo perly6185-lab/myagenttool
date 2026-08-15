@@ -96,6 +96,7 @@ function sendHarness({ draftStatus = "draft", credential = "authorized", withAge
       inReplyTo: "<orig@example.com>",
       references: ["<orig@example.com>"],
       body: "Fixed in v2. Thanks for the report.",
+      attachments: [],
       ownerTeamId: "team_a",
       provenance: { originalMessageId: "<orig@example.com>", issueNumber: 42 },
     }],
@@ -155,6 +156,7 @@ test("a confirmed draft sends with one approved action; the payload is resolved 
       inReplyTo: "<orig@example.com>",
       references: ["<orig@example.com>"],
       body: "Fixed in v2. Thanks for the report.",
+      attachments: [],
     }, "every outbound field comes from the draft row — nothing from the call");
     assert.equal(invocation.options.toolName, "mail_send");
     assert.equal(state.mailDrafts[0].status, "sending");
@@ -220,12 +222,14 @@ test("the receipt fold: sent with receipt; provider refusal returns the draft to
   try {
     // Sent with a receipt.
     const okCase = sendHarness();
+    okCase.state.mailDrafts[0].sendError = "previous attempt failed";
     okCase.service.sendConfirmedDraft({ draftId: "maildraft_1", approvalToken: okCase.grantFor("maildraft_1"), actor: ACTOR });
     okCase.service.recordMailSendResult({
       invocation: { ...okCase.created[0], status: "succeeded" },
       result: { output: { sentMessageId: "<provider-123@gmail>" } },
     });
     assert.equal(okCase.state.mailDrafts[0].status, "sent");
+    assert.equal(okCase.state.mailDrafts[0].sendError, null);
     assert.equal(okCase.state.mailDrafts[0].receipt.providerMessageId, "<provider-123@gmail>");
     assert(okCase.events.some((e) => e.type === "mail_send_completed"));
 

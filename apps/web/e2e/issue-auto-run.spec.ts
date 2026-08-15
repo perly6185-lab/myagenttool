@@ -7,7 +7,7 @@ let importedViaExternal: boolean;
 let autoRunReady: boolean;
 
 async function mockApi(page: Page) {
-  await page.route("**/api/**", async (route) => {
+  await page.route("http://127.0.0.1:5001/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
@@ -236,6 +236,23 @@ test.beforeEach(async ({ page }) => {
     window.localStorage.setItem("myagenttool-ui", JSON.stringify({ version: 1, state: { locale: "en" } }));
   });
   await mockApi(page);
+});
+
+test("creates an ordinary task from the mobile task modal without a dead collapsed form", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?section=task", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "New task" }).click();
+  const dialog = page.getByRole("dialog", { name: "New task" });
+  const task = dialog.getByRole("textbox", { name: "Create a task" });
+  await expect(task).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Expand task creation" })).toHaveCount(0);
+  await task.fill("Prepare the mobile customer update");
+  await dialog.getByRole("button", { name: "Close" }).click();
+  const confirm = page.getByRole("dialog", { name: "Discard this unsaved task?" });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await dialog.getByRole("button", { name: "Save only" }).click();
+  await expect(dialog.getByText("Task created and added to your boards.")).toBeVisible();
 });
 
 test("imports a GitLab issue, opens its Local Issue, and schedules AI from simple details", async ({ page }) => {

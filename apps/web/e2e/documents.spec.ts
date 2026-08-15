@@ -13,7 +13,7 @@ const state = {
 };
 
 async function mockApi(page: Page) {
-  await page.route("**/api/**", async (route) => {
+  await page.route("http://127.0.0.1:5001/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === "/api/state") return route.fulfill({ json: state });

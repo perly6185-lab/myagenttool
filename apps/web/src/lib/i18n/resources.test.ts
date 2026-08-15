@@ -5,6 +5,7 @@ import { autoRunTranslations } from "@/lib/i18n/auto-run-resources";
 import { workProfileTranslations } from "@/lib/i18n/work-profile-resources";
 import { worktreeViewTranslations } from "@/lib/i18n/worktree-view-resources";
 import { notificationCenterTranslations } from "@/components/layout/notification-center-copy";
+import { channelTranslations } from "@/lib/i18n/channel-resources";
 
 function flatten(value: unknown, prefix = ""): Map<string, string> {
   const result = new Map<string, string>();
@@ -31,6 +32,7 @@ describe("translation resources", () => {
     ["workProfile", workProfileTranslations],
     ["worktreeView", worktreeViewTranslations],
     ["notificationCenter", notificationCenterTranslations],
+    ["channel", channelTranslations],
   ])("keeps lazy %s resources complete and interpolation-compatible", (_name, translations) => {
     const english = flatten(translations["en-US"]);
     const chinese = flatten(translations["zh-CN"]);

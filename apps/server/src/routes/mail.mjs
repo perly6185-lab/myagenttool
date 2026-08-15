@@ -16,12 +16,41 @@ export async function handleMailRoutes({
   confirmReplyDraft,
   sendConfirmedDraft,
   mailboxSnapshot,
+  startMailboxSync,
+  setMailboxMessageRead,
   createMailboxDraft,
   updateMailboxDraft,
   deleteMailboxDraft,
+  createMailboxTask,
 }) {
   if (req.method === "GET" && url.pathname === "/api/mailbox" && typeof mailboxSnapshot === "function") {
-    sendJson(res, 200, mailboxSnapshot({ actor }));
+    sendJson(res, 200, mailboxSnapshot({ actor, page: url.searchParams.get("page"), pageSize: url.searchParams.get("pageSize"), folder: url.searchParams.get("folder") ?? "inbox", query: url.searchParams.get("q") ?? "" }));
+    return true;
+  }
+
+  const readMatch = url.pathname.match(/^\/api\/mailbox\/messages\/([^/]+)\/read$/);
+  if (req.method === "PATCH" && readMatch && typeof setMailboxMessageRead === "function") {
+    const body = await readJson(req);
+    if (typeof body?.read !== "boolean") {
+      sendJson(res, 400, { error: "mail_read_state_invalid" });
+      return true;
+    }
+    const result = setMailboxMessageRead({ messageId: decodeURIComponent(readMatch[1]), read: body.read, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const taskMatch = url.pathname.match(/^\/api\/mailbox\/messages\/([^/]+)\/task$/);
+  if (req.method === "POST" && taskMatch && typeof createMailboxTask === "function") {
+    const body = await readJson(req);
+    const result = createMailboxTask({ ...body, messageId: decodeURIComponent(taskMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mailbox/sync" && typeof startMailboxSync === "function") {
+    const result = startMailboxSync({ actor });
+    sendJson(res, result.status, result.body);
     return true;
   }
 

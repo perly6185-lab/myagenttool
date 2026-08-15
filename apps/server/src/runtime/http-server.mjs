@@ -11,6 +11,7 @@ import { handleApplicationRoutes } from "../routes/applications.mjs";
 import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
+import { handleLocalContentRoutes } from "../routes/local-content.mjs";
 import { handleMailRoutes } from "../routes/mail.mjs";
 import { handleChannelRoutes } from "../routes/channels.mjs";
 import { handleCanvasSceneRoutes } from "../routes/canvas-scenes.mjs";
@@ -142,6 +143,8 @@ export function createHttpServer({
   addWorkItemMaterials,
   removeWorkItemMaterial,
   restoreWorkItemMaterial,
+  addWorkItemContentReference,
+  removeWorkItemContentReference,
   listWorkflowSources,
   createWorkflowSource,
   listTemplateLearningTasks,
@@ -433,9 +436,20 @@ export function createHttpServer({
   confirmReplyDraft,
   sendConfirmedDraft,
   mailboxSnapshot,
+  startMailboxSync,
+  setMailboxMessageRead,
   createMailboxDraft,
   updateMailboxDraft,
   deleteMailboxDraft,
+  createMailboxTask,
+  rebuildLocalContentCatalog,
+  searchLocalContent,
+  getLocalContentCatalogStats,
+  previewLocalContent,
+  refreshLocalContent,
+  getLocalContentHealth,
+  resolveLocalContentOriginal,
+  resolveLocalContentContainer,
   listCanvasScenes,
   getCanvasScene,
   createCanvasScene,
@@ -475,6 +489,7 @@ export function createHttpServer({
   decidePlanningRecommendedAction,
   registerChannel,
   listChannels,
+  listChannelInteractions,
   enableChannel,
   disableChannel,
   channelHealth,
@@ -489,7 +504,13 @@ export function createHttpServer({
   retryChannelTask,
   rerouteChannelTask,
   takeoverChannelTask,
+  replyChannelTask,
   retryChannelDelivery,
+  beginIlinkLogin,
+  pollIlinkLogin,
+  activateIlinkChannel,
+  disconnectIlinkChannel,
+  onIlinkChannelStateChanged,
   nextId,
   persistStateSoon,
   persistStateNow,
@@ -745,7 +766,15 @@ export function createHttpServer({
       if (await handleMailRoutes({
         req, res, url, sendJson, readJson, actor,
         createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft,
-        mailboxSnapshot, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft,
+        mailboxSnapshot, startMailboxSync, setMailboxMessageRead, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft, createMailboxTask,
+      })) {
+        return;
+      }
+
+      if (await handleLocalContentRoutes({
+        req, res, url, sendJson, readJson, actor,
+        rebuildLocalContentCatalog, searchLocalContent, getLocalContentCatalogStats, previewLocalContent,
+        refreshLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
       })) {
         return;
       }
@@ -758,6 +787,7 @@ export function createHttpServer({
         retryChannelTask,
         rerouteChannelTask,
         takeoverChannelTask,
+        replyChannelTask,
         req,
         res,
         url,
@@ -766,6 +796,7 @@ export function createHttpServer({
         actor,
         registerChannel,
         listChannels,
+        listChannelInteractions,
         enableChannel,
         disableChannel,
         channelHealth,
@@ -774,6 +805,11 @@ export function createHttpServer({
         listChannelIdentities,
         setChannelAllowlist,
         retryChannelDelivery,
+        beginIlinkLogin,
+        pollIlinkLogin,
+        activateIlinkChannel,
+        disconnectIlinkChannel,
+        onIlinkChannelStateChanged,
       })) {
         return;
       }
@@ -1006,6 +1042,8 @@ export function createHttpServer({
         addMaterials: addWorkItemMaterials,
         removeMaterial: removeWorkItemMaterial,
         restoreMaterial: restoreWorkItemMaterial,
+        addContentReference: addWorkItemContentReference,
+        removeContentReference: removeWorkItemContentReference,
       })) {
         return;
       }

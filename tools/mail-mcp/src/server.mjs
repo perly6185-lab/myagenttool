@@ -1,11 +1,23 @@
-import { ImapFlow } from "imapflow";
-import { simpleParser } from "mailparser";
-import { readCredential } from "./credential.mjs";
+import { fetch163ParsedMessage, with163Client, with163Inbox } from "./imap-163.mjs";
+import { archiveMailSource, unavailableMailArchive } from "./mail-archive.mjs";
 import { headerOf, messageRecordOf } from "./message.mjs";
+import { send163Mail } from "./send-163.mjs";
+import { boundedFolder, folderIdOf, sync163Mailbox } from "./sync-163.mjs";
 
-export const TOOL_NAMES = ["mail_list_unread", "mail_fetch"];
+export const TOOL_NAMES = ["mail_sync", "mail_list_unread", "mail_fetch", "mail_set_read", "mail_send"];
 
 const tools = [
+  {
+    name: "mail_sync",
+    description: "List 163 Mail folders and fetch only headers newer than the supplied per-folder UID cursors.",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 100 },
+        cursors: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["folderPath", "uidValidity", "lastUid"], properties: { folderPath: { type: "string", maxLength: 998 }, uidValidity: { type: "string", maxLength: 30 }, lastUid: { type: "integer", minimum: 0 } } } },
+      },
+    },
+  },
   {
     name: "mail_list_unread",
     description: "List unread 163 Mail headers without changing Seen state.",
@@ -13,8 +25,18 @@ const tools = [
   },
   {
     name: "mail_fetch",
-    description: "Fetch one 163 Mail message by RFC822 Message-ID without changing Seen state.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["messageId"], properties: { messageId: { type: "string", maxLength: 998 } } },
+    description: "Fetch one 163 Mail message by RFC822 Message-ID without changing Seen state and archive its exact RFC 822 source locally when capacity permits.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["messageId"], properties: { messageId: { type: "string", maxLength: 998 }, folderPath: { type: "string", maxLength: 998 } } },
+  },
+  {
+    name: "mail_set_read",
+    description: "Set the provider Seen state for one 163 Mail message.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["messageId", "folderPath", "read"], properties: { messageId: { type: "string", maxLength: 998 }, folderPath: { type: "string", maxLength: 998 }, read: { type: "boolean" } } },
+  },
+  {
+    name: "mail_send",
+    description: "Send one server-reviewed mail draft through 163 Mail, resolving opaque local attachment references on this device.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["to", "subject", "body"], properties: { to: { type: "string", maxLength: 998 }, subject: { type: "string", maxLength: 400 }, body: { type: "string", maxLength: 20000 }, inReplyTo: { type: ["string", "null"], maxLength: 998 }, references: { type: "array", maxItems: 50, items: { type: "string", maxLength: 998 } }, attachments: { type: "array", maxItems: 10, items: { type: "object", additionalProperties: false, required: ["ref", "name", "contentType", "size"], properties: { ref: { type: "string", pattern: "^mailatt_[a-f0-9-]{36}$" }, name: { type: "string", maxLength: 255 }, contentType: { type: "string", maxLength: 127 }, size: { type: "integer", minimum: 0, maximum: 26214400 } } } } } },
   },
 ];
 
@@ -49,8 +71,16 @@ async function handle(message) {
     const name = message.params?.name;
     const args = message.params?.arguments ?? {};
     if (!TOOL_NAMES.includes(name)) throw new Error(`unknown tool ${name}`);
-    send({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: name === "mail_fetch" ? "fetching 163 Mail message" : "listing unread 163 Mail" } });
-    const result = name === "mail_fetch" ? await fetchMessage(args) : await listUnread(args);
+    send({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: `running ${name}` } });
+    const result = name === "mail_fetch"
+      ? await fetchMessage(args)
+      : name === "mail_sync"
+        ? await sync163Mailbox(args)
+        : name === "mail_send"
+          ? await send163Mail(args)
+        : name === "mail_set_read"
+          ? await setRead(args)
+          : await listUnread(args);
     send({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: JSON.stringify(result) }] } });
   } catch (error) {
     const text = publicError(error);
@@ -58,27 +88,9 @@ async function handle(message) {
   }
 }
 
-async function withInbox(action) {
-  const credential = readCredential();
-  const client = new ImapFlow({
-    host: "imap.163.com",
-    port: 993,
-    secure: true,
-    auth: { user: credential.username, pass: credential.authorizationCode },
-    logger: false,
-  });
-  try {
-    await client.connect();
-    const lock = await client.getMailboxLock("INBOX", { readOnly: true });
-    try { return await action(client); } finally { lock.release(); }
-  } finally {
-    if (client.usable) await client.logout().catch(() => client.close());
-  }
-}
-
 async function listUnread(args) {
   const limit = Number.isInteger(args.limit) ? Math.min(Math.max(args.limit, 1), 100) : 20;
-  return withInbox(async (client) => {
+  return with163Inbox(async (client) => {
     const uids = await client.search({ seen: false }, { uid: true });
     const selected = uids.slice(-limit).reverse();
     if (!selected.length) return { unread: [] };
@@ -91,21 +103,50 @@ async function listUnread(args) {
 async function fetchMessage(args) {
   const messageId = String(args.messageId ?? "").trim();
   if (!messageId) throw new Error("messageId is required");
-  return withInbox(async (client) => {
-    // IMAP HEADER search is a SUBSTRING match (RFC 3501), so `<a1@host>` also
-    // matches `<xa1@host>`; taking uids.at(-1) then returned the newest of any
-    // partial hit — a DIFFERENT message, whose body/threading mapped a reply
-    // onto the wrong issue (#1199). Confirm an EXACT Message-ID before fetching.
-    const uids = await client.search({ header: { "message-id": messageId } }, { uid: true });
-    if (!uids.length) throw new Error(`no message with Message-ID ${messageId}`);
-    const candidates = await client.fetchAll(uids, { envelope: true }, { uid: true });
-    const match = candidates.find((m) => m.envelope?.messageId === messageId);
-    if (!match) throw new Error(`no message with Message-ID ${messageId}`);
-    // Re-fetch with the source; guard the expunge race (fetchOne → false).
-    const message = await client.fetchOne(match.uid, { envelope: true, source: true }, { uid: true });
-    if (!message) throw new Error(`no message with Message-ID ${messageId}`);
-    const parsed = await simpleParser(message.source);
-    return messageRecordOf(message, parsed);
+  const folderPath = boundedFolder(args.folderPath ?? "INBOX");
+  const { message, parsed, identity } = await fetch163ParsedMessage(messageId, folderPath);
+  const record = messageRecordOf(message, parsed);
+  let archive;
+  try {
+    archive = archiveMailSource({
+      account: identity?.username,
+      messageId,
+      folderPath,
+      source: message.source,
+      attachments: record?.attachments,
+    });
+  } catch (error) {
+    archive = unavailableMailArchive(error);
+  }
+  return {
+    ...record,
+    archive,
+    attachments: (record?.attachments ?? []).map((attachment) => ({
+      ...attachment,
+      localAvailable: archive.availability === "available",
+    })),
+    folderId: folderIdOf(folderPath),
+    folderPath,
+  };
+}
+
+async function setRead(args) {
+  const messageId = String(args.messageId ?? "").trim();
+  const folderPath = boundedFolder(args.folderPath);
+  if (!messageId || !folderPath || typeof args.read !== "boolean") throw new Error("mail_read_state_invalid");
+  return with163Client(async (client) => {
+    const lock = await client.getMailboxLock(folderPath, { readOnly: false });
+    try {
+      const uids = await client.search({ header: { "message-id": messageId } }, { uid: true });
+      if (!Array.isArray(uids) || !uids.length) throw new Error("mail_message_not_found");
+      const ok = args.read
+        ? await client.messageFlagsAdd(uids, ["\\Seen"], { uid: true })
+        : await client.messageFlagsRemove(uids, ["\\Seen"], { uid: true });
+      if (!ok) throw new Error("mail_read_state_not_confirmed");
+      return { readState: { messageId, folderId: folderIdOf(folderPath), folderPath, read: args.read } };
+    } finally {
+      lock.release();
+    }
   });
 }
 

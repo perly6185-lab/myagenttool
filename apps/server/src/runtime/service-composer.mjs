@@ -31,11 +31,14 @@ import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
 import { createMailSendService, isMailSendEnabled } from "../services/mail-send.mjs";
 import { createMailboxService } from "../services/mailbox.mjs";
-import { createChannelService } from "../services/channels.mjs";
+import { createLocalContentCatalogService } from "../services/local-content-catalog.mjs";
+import { createChannelService, defaultReadinessProbes } from "../services/channels.mjs";
 import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
 import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
+import { createChannelIntentAdapter, resolveChannelIntentConfig } from "../services/channel-intent-adapter.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
+import { createIlinkRuntime } from "../gateway/ilink-runtime.mjs";
 import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
@@ -105,7 +108,7 @@ import {
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
-import { ingestChannelAttachmentCandidates } from "../services/channel-attachment-ingestion.mjs";
+import { ingestChannelAttachmentBytes, ingestChannelAttachmentCandidates } from "../services/channel-attachment-ingestion.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
 import { refreshEpicChildStates } from "../services/auto-run-epic.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
@@ -139,6 +142,10 @@ export function createServerRuntimeServices({
   // in-memory `state` stays the live view, its commit MIRRORS to SQLite, and boot
   // hydrates `state` from SQLite. null (default) = today's JSON-snapshot backing.
   sqliteStore = null,
+  // Optional provider seams used by integration tests; production leaves these
+  // unset and uses the real encrypted credential store and iLink client.
+  ilinkCredentialStore = null,
+  ilinkClientFactory = undefined,
 }) {
   let idCounter = 1;
   let invocationService = null;
@@ -427,11 +434,24 @@ export function createServerRuntimeServices({
   let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
   let syncAdaptiveWorkItemOutcome = () => {};
   let requestWorkItemAutoSchedulerSweep = () => {};
+  const localContentCatalogService = createLocalContentCatalogService({
+    state, stateStorePath, now, autoIndex: true,
+  });
+  const persistIndexedContentStateSoon = (sources, reason) => (...args) => {
+    const result = persistStateSoon(...args);
+    void localContentCatalogService.requestAutomaticIncremental({ reason, sources }).catch(() => {});
+    return result;
+  };
+  const persistTaskMaterialStateSoon = persistIndexedContentStateSoon(["work_items"], "task_material_changed");
+  const persistWorkItemStateSoon = persistIndexedContentStateSoon(["work_items", "articles"], "work_item_changed");
+  const persistArticleStateSoon = persistIndexedContentStateSoon(["articles", "work_items"], "article_changed");
+  const persistMailboxStateSoon = persistIndexedContentStateSoon(["mail", "work_items"], "mail_changed");
   const taskMaterialService = createTaskMaterialService({
-    state, stateStorePath, now, nextId, persistStateSoon, appendEvent, store,
+    state, stateStorePath, now, nextId, persistStateSoon: persistTaskMaterialStateSoon, appendEvent, store,
+    resolveLocalContentReference: localContentCatalogService.resolveOriginal,
   });
   const workItemService = createWorkItemService({
-    state, now, nextId, appendEvent, persistStateSoon, store,
+    state, now, nextId, appendEvent, persistStateSoon: persistWorkItemStateSoon, store,
     sendAlert: alertOutbox.enqueue,
     retryAlert: alertOutbox.retry,
     budgetStatusFor: (projectId) => resolveWorkItemProjectBudget(projectId),
@@ -446,6 +466,7 @@ export function createServerRuntimeServices({
     claimTaskMaterialDraft: taskMaterialService.claimDraft,
     inspectTaskMaterialDraft: taskMaterialService.getDraft,
     resolveClaimedTaskMaterial: taskMaterialService.resolveClaimedAsset,
+    resolveLocalContentReference: localContentCatalogService.resolveOriginal,
   });
   let releaseRoutineLedgerReservations = () => {};
   const businessRoutineService = createBusinessRoutineService({
@@ -488,7 +509,7 @@ export function createServerRuntimeServices({
     maxConcurrent: articleImportConfig.maxConcurrent,
     maxPending: articleImportConfig.maxPending,
     limits: articleImportConfig.limits,
-    persistStateSoon,
+    persistStateSoon: persistArticleStateSoon,
     createInvocation: (task, agent, options) => {
       if (!invocationService) throw new Error("article_derivative_agent_unavailable");
       return invocationService.createInvocation(task, agent, options);
@@ -1108,6 +1129,7 @@ export function createServerRuntimeServices({
   // originating conversation. Late-bound like the auto-run hook — the delivery
   // service composes after the invocation service.
   let channelDeliveryHook = null;
+  let channelThreadHook = null;
   let approvalAutoRunHook = null;
   let denialAutoRunHook = null;
   // Same late-binding for orchestration auto-recovery: it reuses the recovery
@@ -1179,6 +1201,9 @@ export function createServerRuntimeServices({
     // #1084: transcript count-cap evictions spill to the retention archive.
     capWithArchive: retentionArchive.capWithArchive,
     onInvocationCompleted: (invocation) => {
+      void localContentCatalogService.requestAutomaticIncremental({ reason: "invocation_completed" }).catch(() => {
+        /* local search keeps the previous valid index when an incremental pass fails */
+      });
       advanceAutoRunHook?.(invocation);
       try {
         recordApplicationExecutionStat(invocation);
@@ -1189,6 +1214,11 @@ export function createServerRuntimeServices({
         orchestrationAutoRecoveryHook?.(invocation);
       } catch {
         /* auto-recovery is best-effort; completion must never fail because of it */
+      }
+      try {
+        channelThreadHook?.(invocation);
+      } catch {
+        /* task-thread state is best-effort; completion must never fail because of it */
       }
       try {
         channelDeliveryHook?.(invocation);
@@ -2001,6 +2031,7 @@ export function createServerRuntimeServices({
     ledgerSummary,
     budgetStatuses,
     expireCodexApprovalBrokerRequests,
+    channelReadiness: (channel) => channelService.readiness(channel),
   });
 
   const {
@@ -2090,16 +2121,24 @@ export function createServerRuntimeServices({
   // Ordinary-user mailbox surface. This is a read model over imported mail and
   // a bounded store for user-authored drafts; credentials remain device-local.
   const mailboxService = createMailboxService({
-    state, now, nextId, appendEvent, persistStateSoon, store,
+    state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
     mailSendEnabled: isMailSendEnabled,
+    createCapabilityInvocation,
+    createWorkItem: workItemService.createWorkItem,
+    inspectTaskMaterialDraft: taskMaterialService.getDraft,
   });
 
   // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
   // + fail-closed identity mappings. Readiness is env-presence booleans; enable
   // is approval-gated like every other side-effecting action. Import denials
   // (S3) go through the refuse() chokepoint like every other veto.
+  let ilinkRuntime = null;
   const channelService = createChannelService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken, refuse,
+    readinessProbes: {
+      ...defaultReadinessProbes,
+      wechat_ilink: (channel) => ilinkRuntime?.readiness(channel) ?? { account: false, session: false, worker: false },
+    },
   });
 
   // Conversation execution (S4): imported events dispatch into GOVERNED
@@ -2111,7 +2150,7 @@ export function createServerRuntimeServices({
   const createChannelTaskIssue = async ({
     projectId, channelOwnerTeamId, title, description, channelId, externalUserId,
     injectionSuspicious = false, autoRoute = false, inputAssets = [], terminalId,
-    channelTaskContext,
+    channelTaskContext, threadId = null,
   }) => {
     const project = (state.projects ?? []).find((p) => p.id === projectId);
     if (!project) return { ok: false, reason: "project_not_resolvable" };
@@ -2146,6 +2185,7 @@ export function createServerRuntimeServices({
         messageId: channelTaskContext?.messageId ?? null,
         principalId: principal.id,
         traceId: workItem.id,
+        threadId,
       };
     }
     return {
@@ -2186,6 +2226,15 @@ export function createServerRuntimeServices({
         req.status = "routed";
         req.decidedAt = now();
         req.decidedBy = actor?.userId ?? null;
+        const thread = (state.channelTaskThreads ?? []).find((candidate) => candidate.workItemId === req.workItemId || candidate.id === req.threadId);
+        if (thread) {
+          thread.statusHistory = [...(thread.statusHistory ?? []), { status: "queued", reason: "console_routed", at: now() }].slice(-30);
+          thread.status = "queued";
+          thread.waitingFor = null;
+          thread.expiresAt = new Date(Date.parse(now()) + 24 * 60 * 60 * 1000).toISOString();
+          thread.lastActivityAt = now();
+          thread.updatedAt = now();
+        }
       });
       appendEvent({
         invocationId: null,
@@ -2219,7 +2268,7 @@ export function createServerRuntimeServices({
     // auto-run carries its channel ORIGIN — so evidence/audit and the console can
     // tie the run (and its actions) back to the originating channel, conversation,
     // and untrusted sender without a manual issue-number join.
-    const origin = { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, externalUserId: req.externalUserId ?? null, issueNumber: req.issueNumber };
+    const origin = { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, threadId: req.threadId ?? null, externalUserId: req.externalUserId ?? null, issueNumber: req.issueNumber };
     channelTaskRunTx(() => {
       req.status = "routed";
       req.autoRunId = autoRunId;
@@ -2234,16 +2283,57 @@ export function createServerRuntimeServices({
         invocation.options = invocation.options ?? {};
         invocation.options.metadata = {
           ...invocation.options.metadata,
-          channel: { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id },
+          channel: { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, threadId: req.threadId ?? null },
           riskTags: [...new Set([...(invocation.options.metadata?.riskTags ?? []), UNTRUSTED_INPUT_TAG])],
         };
         const conv = (state.channelConversations ?? []).find((c) => c.id === req.conversationId);
         if (conv) conv.invocationIds = [...new Set([...(conv.invocationIds ?? []), invocation.id])];
       }
+      const thread = (state.channelTaskThreads ?? []).find((candidate) => candidate.workItemId === req.workItemId || candidate.id === req.threadId);
+      if (thread) {
+        thread.autoRunId = autoRunId;
+        thread.invocationId = invocation?.id ?? autoRun.invocationId ?? thread.invocationId ?? null;
+        thread.statusHistory = [...(thread.statusHistory ?? []), { status: "queued", reason: "console_routed", at: now() }].slice(-30);
+        thread.status = "queued";
+        thread.waitingFor = null;
+        thread.expiresAt = new Date(Date.parse(now()) + 24 * 60 * 60 * 1000).toISOString();
+        thread.lastActivityAt = now();
+        thread.updatedAt = now();
+      }
     });
+    if (result?.invocation) channelThreadHook?.(result.invocation);
     appendEvent({ invocationId: null, type: "channel_task_routed", level: "info", message: `Channel task ${req.id} routed → auto-run ${autoRunId}.`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber, autoRunId } });
     return { status: 200, body: { ok: true, autoRunId, issueNumber: req.issueNumber } };
   };
+  const syncDismissedChannelTask = (req, actor) => {
+    const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+      (req.workItemId && candidate.workItemId === req.workItemId)
+      || (req.threadId && candidate.id === req.threadId));
+    if (!thread) return;
+    channelTaskRunTx(() => {
+      thread.statusHistory = [...(thread.statusHistory ?? []), { status: "cancelled", reason: "console_dismissed", at: now() }].slice(-30);
+      thread.status = "cancelled";
+      thread.waitingFor = null;
+      thread.resultSummary = "管理员已忽略此任务，未开始执行。";
+      thread.expiresAt = null;
+      thread.updatedAt = now();
+      thread.lastActivityAt = now();
+    });
+    channelDeliveryService.enqueueChannelDelivery({
+      channelId: thread.channelId,
+      conversationId: thread.conversationId,
+      content: "任务已被管理员忽略，未开始执行。",
+      taskContext: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, workItemId: thread.workItemId ?? null, traceId: thread.workItemId ?? thread.id },
+    });
+    appendEvent({
+      invocationId: null,
+      type: "channel_task_dismissed_user_notified",
+      level: "info",
+      message: `Channel task ${thread.shortRef ?? thread.id} dismissal was sent to the user.`,
+      data: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, channelTaskRequestId: req.id, actorId: actor?.userId ?? null },
+    });
+  };
+
   const dismissChannelTask = async (id, actor) => {
     const req = findPendingChannelTask(id, actor);
     if (!req) return { status: 404, body: { error: "channel_task_not_found" } };
@@ -2261,6 +2351,7 @@ export function createServerRuntimeServices({
         req.decidedAt = now();
         req.decidedBy = actor?.userId ?? null;
       });
+      syncDismissedChannelTask(req, actor);
       appendEvent({
         invocationId: null,
         type: "channel_task_dismissed",
@@ -2279,6 +2370,7 @@ export function createServerRuntimeServices({
       req.decidedAt = now();
       req.decidedBy = actor?.userId ?? null;
     });
+    syncDismissedChannelTask(req, actor);
     appendEvent({ invocationId: null, type: "channel_task_dismissed", level: "info", message: `Channel task ${req.id} dismissed (issue #${req.issueNumber} closed).`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber } });
     return { status: 200, body: { ok: true } };
   };
@@ -2330,18 +2422,177 @@ export function createServerRuntimeServices({
       req.lastAction = "takeover";
       req.lastActionAt = now();
       req.lastActionBy = actor?.userId ?? null;
+      const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+        (req.workItemId && candidate.workItemId === req.workItemId)
+        || (req.threadId && candidate.id === req.threadId));
+      if (thread && thread.status !== "human_takeover") {
+        thread.statusHistory = [...(thread.statusHistory ?? []), { status: "human_takeover", reason: "console_takeover", at: now() }].slice(-30);
+        thread.status = "human_takeover";
+        thread.waitingFor = "human";
+        thread.handoffRequestedAt = now();
+        thread.handoffRequestedBy = actor?.userId ?? null;
+        thread.resultSummary = "已转人工跟进。";
+        thread.expiresAt = null;
+        thread.lastActivityAt = now();
+        thread.updatedAt = now();
+      }
     });
     appendEvent({ invocationId: autoRun.invocationId ?? null, type: "channel_task_human_takeover", level: "warn", message: `Channel task ${req.id} moved to human takeover.`, data: { channelTaskRequestId: req.id, autoRunId: autoRun.id } });
+    alertOutbox.enqueue({
+      kind: "channel_human_takeover",
+      severity: "warning",
+      message: `Channel task ${req.id} requires human attention.`,
+      data: {
+        teamId: (state.channels ?? []).find((channel) => channel.id === req.channelId)?.ownerTeamId ?? LOCAL_TEAM_ID,
+        channelId: req.channelId,
+        conversationId: req.conversationId,
+        threadId: req.threadId ?? null,
+        workItemId: req.workItemId ?? null,
+        channelTaskRequestId: req.id,
+        autoRunId: autoRun.id,
+        reason: "console_takeover",
+      },
+    });
     return { status: 200, body: { ok: true, autoRunId: autoRun.id, status: req.status } };
   };
 
+  const replyChannelTask = (id, content, actor) => {
+    const ref = String(id ?? "").trim();
+    const text = String(content ?? "").trim().slice(0, 4_000);
+    if (!text) return { status: 400, body: { error: "channel_task_reply_required" } };
+    const request = (state.channelTaskRequests ?? []).find((candidate) => candidate.id === ref) ?? null;
+    const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+      candidate.id === ref
+      || String(candidate.shortRef ?? "").toUpperCase() === ref.toUpperCase()
+      || (request?.threadId && candidate.id === request.threadId)
+      || (request?.workItemId && candidate.workItemId === request.workItemId)) ?? null;
+    if (!thread) return { status: 404, body: { error: "channel_task_not_found" } };
+    const channel = (state.channels ?? []).find((candidate) => candidate.id === thread.channelId);
+    if (!channel || (actor?.teamId != null && (channel.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId)) {
+      return { status: 404, body: { error: "channel_task_not_found" } };
+    }
+    if (thread.status !== "human_takeover") {
+      return { status: 409, body: { error: "channel_task_reply_unavailable", reason: `thread_${thread.status}` } };
+    }
+    const queued = channelDeliveryService.enqueueChannelDelivery({
+      channelId: thread.channelId,
+      conversationId: thread.conversationId,
+      content: text,
+      taskContext: {
+        channelId: thread.channelId,
+        conversationId: thread.conversationId,
+        threadId: thread.id,
+        workItemId: thread.workItemId ?? null,
+        traceId: thread.workItemId ?? thread.id,
+      },
+    });
+    if (!queued?.ok) return { status: 409, body: { error: "channel_task_reply_enqueue_failed", reason: queued?.reason ?? "delivery_unavailable" } };
+    channelTaskRunTx(() => {
+      thread.lastHumanReplyAt = now();
+      thread.lastHumanReplyBy = actor?.userId ?? null;
+      thread.resultSummary = "人工已回复用户，等待后续消息。";
+      thread.statusHistory = [...(thread.statusHistory ?? []), { status: "human_takeover", reason: "human_reply", at: now() }].slice(-30);
+      thread.updatedAt = now();
+      if (request) {
+        request.lastAction = "human_reply";
+        request.lastActionAt = now();
+        request.lastActionBy = actor?.userId ?? null;
+      }
+    });
+    appendEvent({
+      invocationId: null,
+      type: "channel_task_human_reply",
+      level: "info",
+      message: `Channel task ${thread.shortRef ?? thread.id} received a human reply.`,
+      data: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, channelTaskRequestId: request?.id ?? null, deliveryId: queued.deliveryId },
+    });
+    return { status: 200, body: { ok: true, deliveryId: queued.deliveryId, threadId: thread.id } };
+  };
+
+  let channelReplySender = null;
+  let channelResendDelivery = null;
+  const recordChannelIntentBridgeMetric = ({ status, latencyMs, circuitOpen, circuitOpenUntil, failureStreak, circuitTrips } = {}) => {
+    const current = state.channelIntentMetrics ?? {
+      total: 0,
+      byIntent: {},
+      bySource: {},
+      lowConfidence: 0,
+      ambiguous: 0,
+      updatedAt: null,
+    };
+    const bridge = current.bridge ?? {
+      attempts: 0,
+      succeeded: 0,
+      failed: 0,
+      busy: 0,
+      timeouts: 0,
+      lastLatencyMs: null,
+      averageLatencyMs: null,
+      circuitOpen: false,
+      circuitOpenUntil: null,
+      failureStreak: 0,
+      circuitTrips: 0,
+      updatedAt: null,
+    };
+    bridge.attempts = Number(bridge.attempts ?? 0) + 1;
+    if (status === "succeeded") bridge.succeeded = Number(bridge.succeeded ?? 0) + 1;
+    else if (status === "busy") bridge.busy = Number(bridge.busy ?? 0) + 1;
+    else {
+      bridge.failed = Number(bridge.failed ?? 0) + 1;
+      if (status === "timeout") bridge.timeouts = Number(bridge.timeouts ?? 0) + 1;
+    }
+    bridge.circuitOpen = Boolean(circuitOpen);
+    bridge.circuitOpenUntil = circuitOpenUntil ?? null;
+    bridge.failureStreak = Number(failureStreak ?? bridge.failureStreak ?? 0);
+    bridge.circuitTrips = Number(circuitTrips ?? bridge.circuitTrips ?? 0);
+    if (Number.isFinite(Number(latencyMs))) {
+      const previous = Number(bridge.averageLatencyMs);
+      bridge.lastLatencyMs = Math.round(Number(latencyMs));
+      bridge.averageLatencyMs = Number.isFinite(previous)
+        ? Math.round((previous * (bridge.attempts - 1) + Number(latencyMs)) / bridge.attempts)
+        : Math.round(Number(latencyMs));
+    }
+    bridge.updatedAt = now();
+    state.channelIntentMetrics = { ...current, bridge, updatedAt: current.updatedAt ?? null };
+    persistStateSoon();
+  };
   const channelConversationService = createChannelConversationService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
     createCapabilityInvocation, cancelInvocation, createChannelTaskIssue,
+    answerClarify, retryAutoRun, cancelAutoRun,
+    classifyIntent: createChannelIntentAdapter({
+      config: resolveChannelIntentConfig(),
+      state,
+      findAgent,
+      createInvocation: (...args) => invocationService?.createInvocation(...args),
+      cancelInvocation: (...args) => invocationService?.cancelInvocation(...args),
+      now,
+      onMetric: recordChannelIntentBridgeMetric,
+    })?.classify,
+    resendDelivery: (args) => channelResendDelivery?.(args),
+    replySender: (args) => channelReplySender?.(args),
+    notifyHumanTakeover: ({ thread, request, reason }) => {
+      const channel = (state.channels ?? []).find((candidate) => candidate.id === thread?.channelId);
+      return alertOutbox.enqueue({
+        kind: "channel_human_takeover",
+        severity: "warning",
+        message: `Channel task ${thread?.shortRef ?? thread?.id ?? "unknown"} requires human attention.`,
+        data: {
+          teamId: channel?.ownerTeamId ?? LOCAL_TEAM_ID,
+          channelId: thread?.channelId ?? null,
+          conversationId: thread?.conversationId ?? null,
+          threadId: thread?.id ?? null,
+          workItemId: thread?.workItemId ?? null,
+          channelTaskRequestId: request?.id ?? null,
+          reason: reason ?? "human_takeover",
+        },
+      });
+    },
     // S6: in-channel /approve mints + consumes a single-use grant, then flips
     // the SAME approval the console acts on.
     mintDecisionGrant, validateApprovalToken, approveInvocation, denyInvocation,
   });
+  channelThreadHook = channelConversationService.syncTaskThreadFromInvocation;
   // Outbound delivery (S5/#1110): provider senders are late-bound by index.mjs
   // when each gateway is configured — this service never sees any provider
   // secret. Keyed by provider so a WeCom and a Feishu delivery route to their
@@ -2352,6 +2603,18 @@ export function createServerRuntimeServices({
     resolveSender: (provider) => channelSenders[provider] ?? null,
     validateApprovalToken,
   });
+  channelReplySender = ({ channelId, conversationId, content, threadId = null }) => channelDeliveryService.enqueueChannelDelivery({
+    channelId,
+    conversationId,
+    content,
+    taskContext: threadId
+      ? { channelId, conversationId, threadId }
+      : null,
+  });
+  channelResendDelivery = channelDeliveryService.resendChannelDelivery;
+  channelDeliveryService.recoverThreadDeliveryState?.();
+  channelConversationService.recoverTaskThreads?.();
+  channelConversationService.resumeIntake?.();
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
 
   // Scheduled work-report → channel push. Closes over the delivery service's
@@ -2371,16 +2634,40 @@ export function createServerRuntimeServices({
     if (Array.isArray(payload?.attachmentCandidates) && payload.attachmentCandidates.length) {
       const channel = (state.channels ?? []).find((row) => row.id === payload.channelId);
       const project = (state.projects ?? []).find((row) => row.id === channel?.taskProjectId);
-      try {
-        const attachmentAssets = await ingestChannelAttachmentCandidates({
-          candidates: payload.attachmentCandidates,
-          projectPath: project?.path,
-          projectId: channel?.taskProjectId,
-          terminalId: channel?.taskTerminalId,
-        });
-        normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets };
-      } catch (error) {
-        return { ok: false, refused: true, reason: error?.code ?? "channel_attachment_ingestion_failed" };
+      const attachmentBindingAvailable = Boolean(channel?.taskProjectId && channel?.taskTerminalId && project?.path);
+      // Media is optional enrichment. A channel with /task disabled must still
+      // retain the inbound interaction and its bounded text/media description;
+      // refusing the whole event here made ordinary image/voice/file messages
+      // disappear before they reached the interaction center.
+      if (!attachmentBindingAvailable) {
+        normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets: [] };
+      } else {
+        try {
+          const byteCandidates = payload.attachmentCandidates.filter((candidate) => candidate && candidate.bytes != null);
+          const remoteCandidates = payload.attachmentCandidates.filter((candidate) => !candidate || candidate.bytes == null);
+          const attachmentAssets = [];
+          if (remoteCandidates.length) {
+            attachmentAssets.push(...await ingestChannelAttachmentCandidates({
+              candidates: remoteCandidates,
+              projectPath: project?.path,
+              projectId: channel?.taskProjectId,
+              terminalId: channel?.taskTerminalId,
+            }));
+          }
+          for (const candidate of byteCandidates) {
+            attachmentAssets.push(await ingestChannelAttachmentBytes({
+              filename: candidate.filename,
+              bytes: candidate.bytes,
+              contentType: candidate.contentType,
+              projectPath: project?.path,
+              projectId: channel?.taskProjectId,
+              terminalId: channel?.taskTerminalId,
+            }));
+          }
+          normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets };
+        } catch (error) {
+          return { ok: false, refused: true, reason: error?.code ?? "channel_attachment_ingestion_failed" };
+        }
       }
     }
     const imported = channelService.importChannelEvent(normalizedPayload);
@@ -2398,6 +2685,21 @@ export function createServerRuntimeServices({
     }
     return imported;
   };
+
+  ilinkRuntime = createIlinkRuntime({
+    state,
+    stateStorePath,
+    now,
+    nextId,
+    persistStateSoon,
+    appendEvent,
+    importChannelEvent: receiveChannelEvent,
+    mapChannelIdentity: channelService.mapChannelIdentity,
+    enableChannel: channelService.enableChannel,
+    disableChannel: channelService.disableChannel,
+    credentialStore: ilinkCredentialStore ?? undefined,
+    clientFactory: ilinkClientFactory,
+  });
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
     const application = findApplication(applicationId);
@@ -4350,11 +4652,23 @@ export function createServerRuntimeServices({
     confirmReplyDraft,
     sendConfirmedDraft,
     mailboxSnapshot: mailboxService.snapshot,
+    startMailboxSync: mailboxService.startSync,
+    setMailboxMessageRead: mailboxService.setMessageRead,
     createMailboxDraft: mailboxService.createDraft,
     updateMailboxDraft: mailboxService.updateDraft,
     deleteMailboxDraft: mailboxService.deleteDraft,
+    createMailboxTask: mailboxService.createTaskFromMessage,
+    rebuildLocalContentCatalog: localContentCatalogService.rebuild,
+    searchLocalContent: localContentCatalogService.search,
+    getLocalContentCatalogStats: localContentCatalogService.stats,
+    previewLocalContent: localContentCatalogService.preview,
+    refreshLocalContent: localContentCatalogService.refresh,
+    getLocalContentHealth: localContentCatalogService.health,
+    resolveLocalContentOriginal: localContentCatalogService.resolveOriginal,
+    resolveLocalContentContainer: localContentCatalogService.resolveContainer,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
+    listChannelInteractions: channelService.listChannelInteractions,
     enableChannel: channelService.enableChannel,
     disableChannel: channelService.disableChannel,
     channelHealth: channelService.channelHealth,
@@ -4378,6 +4692,8 @@ export function createServerRuntimeServices({
     addWorkItemMaterials: workItemService.addMaterials,
     removeWorkItemMaterial: workItemService.removeMaterial,
     restoreWorkItemMaterial: workItemService.restoreMaterial,
+    addWorkItemContentReference: workItemService.addContentReference,
+    removeWorkItemContentReference: workItemService.removeContentReference,
     updateWorkItem: workItemService.updateWorkItem,
     recordWorkItemProgress: workItemService.recordWorkItemProgress,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,
@@ -4626,10 +4942,22 @@ export function createServerRuntimeServices({
     retryChannelTask,
     rerouteChannelTask,
     takeoverChannelTask,
+    replyChannelTask,
     // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
+    sweepChannelTaskThreads: channelConversationService.sweepTaskThreads,
+    recoverChannelTaskThreads: channelConversationService.recoverTaskThreads,
     retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
+    beginIlinkLogin: ilinkRuntime.beginLogin,
+    pollIlinkLogin: ilinkRuntime.pollLogin,
+    activateIlinkChannel: ilinkRuntime.activate,
+    disconnectIlinkChannel: ilinkRuntime.disconnect,
+    sendIlinkApplicationMessage: ilinkRuntime.sendApplicationMessage,
+    startIlink: ilinkRuntime.start,
+    stopIlink: ilinkRuntime.stop,
+    syncIlinkWorkers: ilinkRuntime.syncWorkers,
+    onIlinkChannelStateChanged: ilinkRuntime.onChannelStateChanged,
     // Scheduled work-report post: the slow-tick sweep (index.mjs), the manual
     // "post now", and the config setter (routes).
     sweepReportSchedule: reportScheduleService.sweepReportSchedule,
@@ -4802,6 +5130,8 @@ export function createServerRuntimeServices({
 
   return {
     httpDependencies,
+    startLocalContentIndexing: localContentCatalogService.start,
+    closeRuntimeServices: localContentCatalogService.close,
     savePersistentState,
     // #1084: the retention sweep (index.mjs) leaves an audit event per reap batch.
     appendEvent,
