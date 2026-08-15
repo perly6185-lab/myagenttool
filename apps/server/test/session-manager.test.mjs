@@ -217,17 +217,18 @@ test("sessionHealthSweep skips fresh probes and probes stale ones", async (t) =>
   t.after(cleanup);
   const { state, manager } = makeManager();
 
-  // Never probed → the sweep probes.
-  await manager.sessionHealthSweep();
+  // Never probed → the sweep probes (env forwarded, so the SHIM runs — NOT the
+  // real CLI; a missing env here would silently probe the live site).
+  await manager.sessionHealthSweep({ env });
   assert.equal(state.sessions[0].status, "active");
 
   // Fresh probe → the sweep skips (only one probe total).
   const firstAt = state.sessions[0].lastProbeAt;
-  await manager.sessionHealthSweep();
+  await manager.sessionHealthSweep({ env });
   assert.equal(state.sessions[0].lastProbeAt, firstAt);
 
   // Age the row past the registry interval (180 min) → the sweep probes again.
   state.sessions[0].lastProbeAt = new Date(Date.now() - 200 * 60_000).toISOString();
-  await manager.sessionHealthSweep();
+  await manager.sessionHealthSweep({ env });
   assert.notEqual(state.sessions[0].lastProbeAt, firstAt);
 });

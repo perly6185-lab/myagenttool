@@ -396,7 +396,7 @@ export function createSessionManager({ state, now, appendEvent, persistStateSoon
    * older than its interval, run a best-effort probe; skip sites with an
    * in-flight lock holder. Never throws.
    */
-  async function sessionHealthSweep() {
+  async function sessionHealthSweep({ env = process.env } = {}) {
     for (const entry of SESSION_SITES) {
       if (entry.heartbeatTier !== "logged_in") continue;
       if (inflight.get(entry.site)) continue;
@@ -405,7 +405,7 @@ export function createSessionManager({ state, now, appendEvent, persistStateSoon
       const last = row?.lastProbeAt ? Date.parse(row.lastProbeAt) : NaN;
       if (Number.isFinite(last) && Date.now() - last < intervalMs) continue;
       try {
-        await probeSite(entry.site);
+        await probeSite(entry.site, { env });
       } catch {
         /* best-effort sweep — the probe already recorded its failure */
       }
