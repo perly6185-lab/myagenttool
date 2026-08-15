@@ -27,7 +27,7 @@ const MAILBOX = {
 
 async function mockMail(page: Page) {
   let syncing = false;
-  await page.route("**/api/**", (route) => {
+  await page.route("http://127.0.0.1:5001/api/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/state") return route.fulfill({ json: STATE });
     if (path === "/api/mailbox/sync") {

@@ -31,7 +31,7 @@ const board = ({
 });
 
 async function routeState(page: Page, read: () => State) {
-  await page.route("**/api/**", (route) => route.fulfill({
+  await page.route("http://127.0.0.1:5001/api/**", (route) => route.fulfill({
     json: route.request().url().endsWith("/api/state")
       ? {
           projects: [],

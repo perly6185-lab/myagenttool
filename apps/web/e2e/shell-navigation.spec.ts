@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "playwright/test";
 
 async function mockShellApi(page: Page, role?: "owner" | "admin" | "operator" | "viewer") {
-  await page.route("**/api/**", (route) => {
+  await page.route("http://127.0.0.1:5001/api/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     const json = path === "/api/session" && role
       ? { user: { id: `usr_${role}`, name: role, teamId: "team_local", role } }
@@ -13,6 +13,7 @@ async function mockShellApi(page: Page, role?: "owner" | "admin" | "operator" | 
           pendingDecisions: [],
           evidenceLedger: [],
           invocations: [],
+          events: [],
           workBoard: {
             generatedAt: 1,
             states: {
@@ -41,6 +42,7 @@ async function mockShellApi(page: Page, role?: "owner" | "admin" | "operator" | 
 test.beforeEach(async ({ page }) => {
   await mockShellApi(page);
   await page.goto("/?section=dashboard");
+  await expect(page.getByRole("navigation", { name: "Control plane sections" })).toBeVisible();
 });
 
 test("keeps ordinary desktop navigation concise and nests professional capabilities under Me", async ({ page }) => {
@@ -175,11 +177,12 @@ test("offers five mobile destinations and keeps task status as a secondary task 
 });
 
 test("uses the verified session role to limit professional discovery", async ({ page }) => {
-  await page.unroute("**/api/**");
+  await page.unroute("http://127.0.0.1:5001/api/**");
   await mockShellApi(page, "viewer");
   await page.goto("/?section=settings");
 
-  await expect(page.getByRole("status")).toContainText("Viewer access");
+  const settings = page.getByRole("dialog", { name: "My settings" });
+  await expect(settings.getByRole("status")).toContainText("Viewer access");
   await page.getByRole("button", { name: /Records & diagnostics/ }).click();
   await expect(page.locator("#settings-subnav-diagnostics").getByRole("button", { name: "Invocations", exact: true })).toBeVisible();
   await expect(page.getByText("Agents", { exact: true })).toHaveCount(0);
@@ -194,8 +197,8 @@ test("uses the verified session role to limit professional discovery", async ({ 
   await page.keyboard.press("Escape");
 
   await page.goto("/?section=agents");
-  await expect(page.getByRole("dialog", { name: "My settings" })).toBeVisible();
-  await expect(page.getByRole("status")).toContainText("Unavailable for this role");
+  await expect(settings).toBeVisible();
+  await expect(settings.getByRole("status")).toContainText("Unavailable for this role");
 });
 
 for (const width of [320, 390, 430]) {
@@ -223,8 +226,8 @@ for (const width of [320, 390, 430]) {
 
 test("keeps the mobile destination model available when work is empty or the server is offline", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.unroute("**/api/**");
-  await page.route("**/api/**", (route) => route.fulfill({
+  await page.unroute("http://127.0.0.1:5001/api/**");
+  await page.route("http://127.0.0.1:5001/api/**", (route) => route.fulfill({
     json: route.request().url().endsWith("/api/state")
       ? { projects: [], invocations: [], pendingDecisions: [], evidenceLedger: [] }
       : {},
@@ -234,8 +237,8 @@ test("keeps the mobile destination model available when work is empty or the ser
   await expect(page.getByText("No task status yet")).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("mobile-empty.png"), fullPage: true });
 
-  await page.unroute("**/api/**");
-  await page.route("**/api/**", (route) => route.abort("failed"));
+  await page.unroute("http://127.0.0.1:5001/api/**");
+  await page.route("http://127.0.0.1:5001/api/**", (route) => route.abort("failed"));
   await page.reload();
   await page.getByRole("button", { name: /Notifications: 1 require action/ }).click();
   await expect(page.getByRole("button", { name: /Execution disconnected/ })).toBeVisible();
