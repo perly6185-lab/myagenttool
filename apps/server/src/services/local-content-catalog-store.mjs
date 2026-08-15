@@ -438,6 +438,41 @@ function summarizeFacets(db, teamId) {
   };
 }
 
+const DIRECTORY_EXPRESSIONS = Object.freeze({
+  kind: "kind",
+  project: "project_id",
+  work_item: "work_item_id",
+  source: "source_type",
+  month: "substr(COALESCE(occurred_at, imported_at, modified_at, indexed_at), 1, 7)",
+  availability: "CASE WHEN original_available = 1 THEN 'available' ELSE 'unavailable' END",
+  index_status: "index_status",
+});
+
+export function browseCatalogDirectory(db, { teamId, dimension, query = "", limit, offset }) {
+  const expression = DIRECTORY_EXPRESSIONS[dimension];
+  if (!expression) throw new Error("local_content_directory_dimension_invalid");
+  const normalizedQuery = String(query).toLocaleLowerCase();
+  const escapedQuery = normalizedQuery.replace(/[\\%_]/g, "\\$&");
+  const rows = db.prepare(`
+    WITH directory AS (
+      SELECT ${expression} AS value, COUNT(*) AS count
+      FROM local_content_records
+      WHERE owner_team_id = ?
+      GROUP BY value
+      HAVING value IS NOT NULL AND value != ''
+    )
+    SELECT value, count, COUNT(*) OVER() AS total_entries
+    FROM directory
+    WHERE ? = '' OR lower(value) LIKE ? ESCAPE '\\'
+    ORDER BY count DESC, value
+    LIMIT ? OFFSET ?
+  `).all(teamId, normalizedQuery, `%${escapedQuery}%`, limit, offset);
+  return {
+    entries: rows.map((row) => ({ value: row.value, count: Number(row.count) })),
+    totalEntries: Number(rows[0]?.total_entries ?? 0),
+  };
+}
+
 function bumpCatalogRevision(db) {
   db.prepare(`
     INSERT INTO local_content_meta(key, value) VALUES('catalog_revision', '1')
