@@ -10,7 +10,10 @@ import { useConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import type { ChannelDelivery, ChannelInteraction, ChannelOperations, ChannelTaskRequest, ChannelTaskThread, ProjectSnapshot } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
+import { installChannelTranslations } from "@/lib/i18n/channel-resources";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+
+installChannelTranslations();
 
 function healthTone(health: string): Tone {
   if (health === "attention") return "danger";
