@@ -2,6 +2,7 @@ import { runStateTransaction } from "../../runtime/state-transaction.mjs";
 import { stampClaudeProposalArtifact } from "../claude-propose-imports.mjs";
 import { capClaudePlanResult } from "../claude-plan-imports.mjs";
 import { recordRunTranscript } from "../run-transcripts.mjs";
+import { sanitizeChannelIntentInvocationResult } from "../channel-intent-adapter.mjs";
 
 export function createInvocationCompletionRuntime({
   state,
@@ -86,7 +87,9 @@ export function createInvocationCompletionRuntime({
       : null;
     invocation.status = terminalStatus;
     const claudeSessionId = body.result?.claudeSessionId ?? null;
-    invocation.result = stripClaudeProviderSessionId(body.result);
+    invocation.result = invocation.options?.metadata?.channelIntentClassifier
+      ? sanitizeChannelIntentInvocationResult(body.result)
+      : stripClaudeProviderSessionId(body.result);
     // #913: a succeeded proposal becomes an immutable artifact NOW — stamp its
     // bindings (content hash, validated base commit, descriptor lineage) before
     // anything reads or persists the result. Pure no-op for every other tool.

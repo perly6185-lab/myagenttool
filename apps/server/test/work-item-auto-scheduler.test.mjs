@@ -101,6 +101,22 @@ test("scheduler defaults on safely and the global kill switch stops it", async (
   assert.deepEqual(await stopped.service.sweep(), { mode: "off", swept: 0, selected: 0 });
 });
 
+test("a cancelled channel task is not admitted again by the background scheduler", async () => {
+  const { state, events, service } = fixture("enabled");
+  state.channelTaskThreads = [{ id: "cth_cancelled", status: "cancelled" }];
+  state.workItems[0].channelOrigin = { threadId: "cth_cancelled" };
+
+  const preview = service.preview({ teamId: "team_a" });
+  assert.equal(preview.nextWorkItemId, null);
+  assert.deepEqual(preview.eligibleWorkItemIds, []);
+
+  const result = await service.sweep();
+  assert.deepEqual(result, {
+    mode: "enabled", swept: 1, selected: 0, eligibleCount: 0, recoveredBindings: 0, starts: [],
+  });
+  assert.equal(events.length, 0);
+});
+
 test("scheduler resolves the current terminal time zone for every preview", () => {
   const { state } = fixture();
   state.projects[0].futurePullForwardEnabled = false;
