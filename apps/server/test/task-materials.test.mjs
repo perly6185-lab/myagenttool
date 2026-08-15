@@ -100,7 +100,7 @@ test("local content references reuse the task materializer and produce a provide
       size: bytes.length,
       sha256: digest,
       originalName: "source.md",
-      record: { id: contentId, kind: "article", title: "Source", projectId, workItemId: "source_task", mimeType: "text/markdown", storageMode: "referenced" },
+      record: { id: contentId, kind: "article", title: "Source", summary: "Short source summary", projectId, workItemId: "source_task", mimeType: "text/markdown", storageMode: "referenced" },
     }),
   });
   try {
@@ -123,7 +123,21 @@ test("local content references reuse the task materializer and produce a provide
     assert.match(prepared.manifest.fingerprint, /^sha256:[a-f0-9]{64}$/);
     const manifest = JSON.parse(readFileSync(join(worktreePath, prepared.manifest.path), "utf8"));
     assert.equal(manifest.entries[0].trust, "untrusted_reference");
+    assert.equal(manifest.entries[0].summary, "Short source summary");
+    assert.deepEqual(manifest.entries[0].directory, {
+      kind: "article", projectId: "project_1", workItemId: "source_task", storageMode: "referenced",
+    });
     assert.equal(JSON.stringify(manifest).includes(fx.root), false);
+
+    const previousPath = prepared.assets[0].path;
+    fx.state.workItems[0].localContentRefs = [{
+      id: "wcr_2", contentId: `lc_${"b".repeat(32)}`, purpose: "required_input", selectedFingerprint: digest,
+    }];
+    const retried = await fx.service.materialize({ workItemId: "work_refs", worktree: { id: "wt_refs", path: worktreePath }, actor });
+    assert.equal(retried.ok, true);
+    assert.equal(retried.assets.length, 1);
+    assert.equal(existsSync(join(worktreePath, previousPath)), false);
+    assert.equal(readFileSync(join(worktreePath, retried.assets[0].path), "utf8"), bytes.toString("utf8"));
   } finally {
     fx.cleanup();
   }

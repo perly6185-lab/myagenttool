@@ -29,10 +29,12 @@ import {
   normalizeKinds,
   normalizeQuery,
   parseIndexSources,
+  searchCursorBinding,
   sourceForKind,
 } from "./local-content-catalog-query.mjs";
 import {
   applyCatalogDelta,
+  browseCatalogDirectory,
   catalogRecordsForSources,
   publicRecordsWithRelations,
   replaceCatalog,
@@ -69,6 +71,7 @@ export {
 };
 
 const MAX_SEARCH_LIMIT = 100;
+const MAX_DIRECTORY_LIMIT = 100;
 const MAX_PREVIEW_BYTES = 1024 * 1024;
 const DEFAULT_INDEX_DEBOUNCE_MS = 250;
 const MAX_ORIGINAL_WATCH_DIRECTORIES = 512;
@@ -457,11 +460,24 @@ export function createLocalContentCatalogService({
     }
     const normalizedQuery = normalizeQuery(query);
     const boundedLimit = Math.min(MAX_SEARCH_LIMIT, Math.max(1, Number.parseInt(limit, 10) || 30));
-    const cursorOffset = decodeSearchCursor(cursor);
+    const db = await database();
+    const catalogRevision = db.prepare("SELECT value FROM local_content_meta WHERE key = 'catalog_revision'").get()?.value ?? "empty";
+    const cursorBinding = searchCursorBinding({
+      teamId,
+      projectId: normalizedProjectId,
+      workItemId: workItemId == null || workItemId === "" ? null : String(workItemId),
+      sourceType: sourceType == null || sourceType === "" ? null : String(sourceType),
+      yearMonth: normalizedYearMonth,
+      availability: normalizedAvailability.value,
+      indexStatus: normalizedIndexStatus.value,
+      kinds: [...normalizedKinds.value].sort(),
+      query: normalizedQuery,
+      catalogRevision,
+    });
+    const cursorOffset = decodeSearchCursor(cursor, cursorBinding);
     if (cursor && cursorOffset == null) return { status: 400, body: { error: "local_content_cursor_invalid" } };
     const requestedOffset = cursorOffset ?? (Number.parseInt(offset, 10) || 0);
     const boundedOffset = Math.min(MAX_SEARCH_OFFSET, Math.max(0, requestedOffset));
-    const db = await database();
     const rows = searchCatalog(db, {
       teamId,
       projectId: normalizedProjectId,
@@ -485,8 +501,46 @@ export function createLocalContentCatalogService({
         limit: boundedLimit,
         offset: boundedOffset,
         hasMore: results.length === boundedLimit,
-        nextCursor: results.length === boundedLimit ? encodeSearchCursor(boundedOffset + results.length) : null,
+        nextCursor: results.length === boundedLimit ? encodeSearchCursor(boundedOffset + results.length, cursorBinding) : null,
         retrieval: { mode: normalizedQuery ? "fts_with_metadata_fallback" : "metadata_recent", offline: true },
+      },
+    };
+  }
+
+  async function browseDirectories({ dimension, query = "", limit = 50, cursor = null } = {}, actor = null) {
+    const allowedDimensions = new Set(["kind", "project", "work_item", "source", "month", "availability", "index_status"]);
+    const normalizedDimension = String(dimension ?? "").trim().toLowerCase();
+    if (!allowedDimensions.has(normalizedDimension)) {
+      return { status: 400, body: { error: "local_content_directory_dimension_invalid" } };
+    }
+    const normalizedQuery = normalizeQuery(query).slice(0, 120);
+    const boundedLimit = Math.min(MAX_DIRECTORY_LIMIT, Math.max(1, Number.parseInt(limit, 10) || 50));
+    const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const db = await database();
+    const catalogRevision = db.prepare("SELECT value FROM local_content_meta WHERE key = 'catalog_revision'").get()?.value ?? "empty";
+    const cursorBinding = searchCursorBinding({ teamId, dimension: normalizedDimension, query: normalizedQuery, catalogRevision });
+    const cursorOffset = decodeSearchCursor(cursor, cursorBinding);
+    if (cursor && cursorOffset == null) return { status: 400, body: { error: "local_content_cursor_invalid" } };
+    const offset = cursorOffset ?? 0;
+    const directory = browseCatalogDirectory(db, {
+      teamId,
+      dimension: normalizedDimension,
+      query: normalizedQuery,
+      limit: boundedLimit,
+      offset,
+    });
+    const hasMore = offset + directory.entries.length < directory.totalEntries;
+    return {
+      status: 200,
+      body: {
+        dimension: normalizedDimension,
+        query: normalizedQuery,
+        entries: directory.entries,
+        count: directory.entries.length,
+        totalEntries: directory.totalEntries,
+        hasMore,
+        nextCursor: hasMore ? encodeSearchCursor(offset + directory.entries.length, cursorBinding) : null,
+        retrieval: { mode: "logical_directory", offline: true },
       },
     };
   }
@@ -582,7 +636,7 @@ export function createLocalContentCatalogService({
   }
 
   const service = {
-    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, get, preview, refresh, health,
+    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, browseDirectories, get, preview, refresh, health,
     resolveOriginal, resolveContainer, stats, start, close, databasePath,
   };
   return service;

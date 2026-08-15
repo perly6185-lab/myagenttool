@@ -309,6 +309,33 @@ test("catalog search is tenant and project scoped and rejects unknown kinds", as
   }
 });
 
+test("catalog search combines FTS body hits with metadata-only hits", async () => {
+  const fx = fixture();
+  try {
+    fx.state.applicationResults.push({
+      id: "result_mail_body_hit",
+      applicationId: "mail_app",
+      ownerTeamId: "team_1",
+      createdAt: "2026-08-14T01:22:00.000Z",
+      data: {
+        kind: "message",
+        messageId: "<body-hit@example.com>",
+        from: "Bob <bob@example.com>",
+        subject: "Body-only match",
+        body: "Alice is named in this message body.",
+      },
+    });
+    await fx.service.rebuild({}, actor);
+    const result = await fx.service.search({ query: "Alice", kinds: ["mail"] }, actor);
+    assert.deepEqual(new Set(result.body.results.map((record) => record.title)), new Set([
+      "本地文件整理建议",
+      "Body-only match",
+    ]));
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("catalog can be deleted and rebuilt without changing originals", async () => {
   const fx = fixture();
   try {
@@ -801,12 +828,26 @@ test("logical directory filters, snippets, facets, and opaque cursors remain usa
     assert.match(first.body.nextCursor, /^[A-Za-z0-9_-]+$/);
     const second = await fx.service.search({ limit: 1, cursor: first.body.nextCursor }, actor);
     assert.notEqual(second.body.results[0].id, first.body.results[0].id);
+    const crossQuery = await fx.service.search({ query: "local", limit: 1, cursor: first.body.nextCursor }, actor);
+    assert.deepEqual(crossQuery, { status: 400, body: { error: "local_content_cursor_invalid" } });
+    await fx.service.rebuild({}, actor);
+    const stale = await fx.service.search({ limit: 1, cursor: first.body.nextCursor }, actor);
+    assert.deepEqual(stale, { status: 400, body: { error: "local_content_cursor_invalid" } });
     const invalid = await fx.service.search({ cursor: "not-a-cursor" }, actor);
     assert.deepEqual(invalid, { status: 400, body: { error: "local_content_cursor_invalid" } });
 
     const stats = await fx.service.stats(actor);
     assert.equal(stats.body.catalog.facets.workItems.some((facet) => facet.value === "work_1"), true);
     assert.equal(stats.body.catalog.facets.months.some((facet) => facet.value === "2026-08"), true);
+    assert.equal(stats.body.catalog.facets.coverage.workItems.truncated, false);
+
+    const directoryFirst = await fx.service.browseDirectories({ dimension: "work_item", limit: 1 }, actor);
+    assert.equal(directoryFirst.status, 200);
+    assert.equal(directoryFirst.body.entries[0].value, "work_1");
+    const directorySearch = await fx.service.browseDirectories({ dimension: "work_item", query: "work_1" }, actor);
+    assert.deepEqual(directorySearch.body.entries, [{ value: "work_1", count: 6 }]);
+    const invalidDirectory = await fx.service.browseDirectories({ dimension: "absolute_path" }, actor);
+    assert.deepEqual(invalidDirectory, { status: 400, body: { error: "local_content_directory_dimension_invalid" } });
   } finally {
     await fx.cleanup();
   }
@@ -903,6 +944,9 @@ test("50,000-record lexical search stays within budget and directory paging reac
     assert.equal(durations[18] < 300, true, `search p95 was ${durations[18].toFixed(1)} ms`);
     const beyondLegacyCap = await service.search({ limit: 1, offset: 10_001 }, scaleActor);
     assert.equal(beyondLegacyCap.body.results.length, 1);
+    const stats = await service.stats(scaleActor);
+    assert.equal(stats.body.catalog.facets.workItems.length, 200);
+    assert.deepEqual(stats.body.catalog.facets.coverage.workItems, { limit: 200, returned: 200, truncated: true });
   } finally {
     await service.close();
   }
@@ -944,6 +988,24 @@ test("local content routes bind bounded query parameters and rebuild requests", 
   });
   assert.deepEqual(sent[0], { status: 200, body: { results: [] } });
 
+  const directoryHandled = await handleLocalContentRoutes({
+    req: { method: "GET" },
+    res,
+    url: new URL("http://local/api/local-content/directories?dimension=work_item&q=LOCAL&limit=15"),
+    sendJson,
+    readJson: async () => ({}),
+    actor,
+    browseLocalContentDirectories: async (input, routeActor) => {
+      captured.push({ input, routeActor });
+      return { status: 200, body: { entries: [] } };
+    },
+  });
+  assert.equal(directoryHandled, true);
+  assert.deepEqual(captured[1], {
+    input: { dimension: "work_item", query: "LOCAL", limit: "15", cursor: null },
+    routeActor: actor,
+  });
+
   const rebuildHandled = await handleLocalContentRoutes({
     req: { method: "POST" },
     res,
@@ -957,8 +1019,8 @@ test("local content routes bind bounded query parameters and rebuild requests", 
     },
   });
   assert.equal(rebuildHandled, true);
-  assert.deepEqual(captured[1], { input: { reason: "manual_repair" }, routeActor: actor });
-  assert.deepEqual(sent[1], { status: 200, body: { rebuild: { records: 5 } } });
+  assert.deepEqual(captured[2], { input: { reason: "manual_repair" }, routeActor: actor });
+  assert.deepEqual(sent[2], { status: 200, body: { rebuild: { records: 5 } } });
 
   const previewHandled = await handleLocalContentRoutes({
     req: { method: "GET" },
@@ -973,7 +1035,7 @@ test("local content routes bind bounded query parameters and rebuild requests", 
     },
   });
   assert.equal(previewHandled, true);
-  assert.deepEqual(captured[2], { input: { contentId: "lc_preview" }, routeActor: actor });
+  assert.deepEqual(captured[3], { input: { contentId: "lc_preview" }, routeActor: actor });
 
   const healthHandled = await handleLocalContentRoutes({
     req: { method: "POST" },
@@ -988,7 +1050,7 @@ test("local content routes bind bounded query parameters and rebuild requests", 
     },
   });
   assert.equal(healthHandled, true);
-  assert.deepEqual(captured[3], { input: { contentIds: ["lc_health"] }, routeActor: actor });
+  assert.deepEqual(captured[4], { input: { contentIds: ["lc_health"] }, routeActor: actor });
 
   const refreshHandled = await handleLocalContentRoutes({
     req: { method: "POST" },
@@ -1003,7 +1065,7 @@ test("local content routes bind bounded query parameters and rebuild requests", 
     },
   });
   assert.equal(refreshHandled, true);
-  assert.deepEqual(captured[4], { input: { contentId: "lc_refresh" }, routeActor: actor });
+  assert.deepEqual(captured[5], { input: { contentId: "lc_refresh" }, routeActor: actor });
 
   let revealedTarget = null;
   const revealHandled = await handleLocalContentRoutes({
@@ -1035,4 +1097,33 @@ test("local content routes bind bounded query parameters and rebuild requests", 
   assert.equal(revealedTarget, "C:\\private");
   assert.deepEqual(sent.at(-1), { status: 200, body: { revealed: true, name: "private" } });
   assert.equal(JSON.stringify(sent.at(-1)).includes("C:\\private"), false);
+
+  const contractsHandled = await handleLocalContentRoutes({
+    req: { method: "GET" },
+    res,
+    url: new URL("http://local/api/local-content/retrieval/contracts"),
+    sendJson,
+    readJson: async () => ({}),
+    actor,
+    describeLocalContentRetrieval: () => ({ status: 200, body: { version: "1.0.0", tools: [] } }),
+  });
+  assert.equal(contractsHandled, true);
+  assert.deepEqual(sent.at(-1), { status: 200, body: { version: "1.0.0", tools: [] } });
+
+  const retrievalBody = { invocationId: "inv_1", provider: "codex", query: "report" };
+  const retrievalHandled = await handleLocalContentRoutes({
+    req: { method: "POST" },
+    res,
+    url: new URL("http://local/api/local-content/retrieval/summaries"),
+    sendJson,
+    readJson: async () => retrievalBody,
+    actor,
+    retrieveLocalContentSummaries: async (input, routeActor) => {
+      captured.push({ input, routeActor });
+      return { status: 200, body: { candidates: [] } };
+    },
+  });
+  assert.equal(retrievalHandled, true);
+  assert.deepEqual(captured.at(-1), { input: retrievalBody, routeActor: actor });
+  assert.deepEqual(sent.at(-1), { status: 200, body: { candidates: [] } });
 });

@@ -9,6 +9,11 @@ export async function handleLocalContentRoutes({
   actor,
   rebuildLocalContentCatalog,
   searchLocalContent,
+  browseLocalContentDirectories,
+  describeLocalContentRetrieval,
+  retrieveLocalContentDirectories,
+  retrieveLocalContentSummaries,
+  readRetrievedLocalContent,
   getLocalContentCatalogStats,
   previewLocalContent,
   refreshLocalContent,
@@ -17,6 +22,42 @@ export async function handleLocalContentRoutes({
   resolveLocalContentContainer,
   revealLocalContentOriginal = revealFileInFileManager,
 }) {
+  if (req.method === "GET" && url.pathname === "/api/local-content/retrieval/contracts") {
+    const result = typeof describeLocalContentRetrieval === "function"
+      ? describeLocalContentRetrieval()
+      : { status: 503, body: { error: "local_content_retrieval_unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/local-content/directories") {
+    const result = await browseLocalContentDirectories({
+      dimension: url.searchParams.get("dimension"),
+      query: url.searchParams.get("q") ?? "",
+      limit: url.searchParams.get("limit"),
+      cursor: url.searchParams.get("cursor"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const retrievalMatch = url.pathname.match(/^\/api\/local-content\/retrieval\/(directories|summaries|read)$/);
+  if (req.method === "POST" && retrievalMatch) {
+    const operation = retrievalMatch[1];
+    const handler = operation === "directories"
+      ? retrieveLocalContentDirectories
+      : operation === "summaries"
+        ? retrieveLocalContentSummaries
+        : readRetrievedLocalContent;
+    if (typeof handler !== "function") {
+      sendJson(res, 503, { error: "local_content_retrieval_unavailable" });
+      return true;
+    }
+    const result = await handler(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/local-content") {
     const result = await searchLocalContent({
       query: url.searchParams.get("q") ?? "",

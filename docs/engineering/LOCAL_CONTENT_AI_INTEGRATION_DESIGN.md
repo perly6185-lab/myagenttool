@@ -4,7 +4,7 @@ Status: First server and ordinary-user Web slice implemented for review
 
 Date: 2026-08-14
 
-Implementation: the server provides guarded original resolution, task content-reference APIs and health checks, shared worktree materialization, a provider-neutral manifest, invocation-scoped receipts, catalog lineage, durable source-scoped automatic indexing journals, known-original file watching, safe native-text/parsed-mail/PDF/Office extracted-text preview, and path-private operating-system location. The Web slice adds the Local Library destination, directory facets and cursor paging, automatic-index status and recovery, preview/location, task selection, and task-detail reference health/removal/recovery. OCR, discovery of new unregistered files, visual document rendering, tags, and saved searches remain follow-up slices.
+Implementation: the server provides guarded original resolution, task content-reference APIs and health checks, shared worktree materialization, a provider-neutral directory/summary/original manifest, stale execution-input pruning, invocation-scoped receipts, catalog lineage, query-and-revision-bound cursors, combined FTS/metadata retrieval, durable source-scoped automatic indexing journals, known-original file watching, safe native-text/parsed-mail/PDF/Office extracted-text preview, and path-private operating-system location. It also provides a versioned, provider-neutral dynamic retrieval domain with logical-directory browsing, summary search, bounded original reads, active-invocation/provider authorization, per-invocation quotas, untrusted-content labels, and redacted audit events. The Web slice adds the Local Library destination, directory facets with explicit coverage, cursor paging, automatic-index status and recovery, preview/location, task selection, and task-detail reference health/removal/recovery. External MCP/CLI transport wiring, OCR, discovery of new unregistered files, visual document rendering, tags, and saved searches remain follow-up slices.
 
 Architecture: [ADR 0026](ADR_0026_LOCAL_CONTENT_LIBRARY.md)
 
@@ -109,10 +109,11 @@ The current task-material path remains valid and becomes the common execution bo
 2. Verify team/project visibility, root confinement, regular-file status, size, and fingerprint.
 3. Copy required bytes atomically into `.myagenttool/inputs/<work-item-id>/`.
 4. Verify the destination hash before launching the agent.
-5. Write `.myagenttool/inputs/<work-item-id>/manifest.json` with display name, kind, `contentId`, source fingerprint, execution-relative path, and an untrusted-reference label.
-6. Keep the directory ignored by Git and excluded from catalog scanning.
-7. Bind the manifest fingerprint and materialization receipts to the invocation contract.
-8. On retry, rebuild or verify byte-identical inputs from the authoritative source.
+5. Rebuild `.myagenttool/inputs/<work-item-id>/` from the current selected set so a same-worktree retry cannot retain removed inputs.
+6. Write `manifest.json` with logical directory fields, a bounded summary, display name, kind, `contentId`, source fingerprint, execution-relative original path, and an untrusted-reference label. Agents inspect this index before opening only the originals needed for the task.
+7. Keep the directory ignored by Git and excluded from catalog scanning.
+8. Bind the manifest fingerprint and materialization receipts to the invocation contract.
+9. On retry, rebuild or verify byte-identical inputs from the authoritative source.
 
 Existing user uploads already follow the essential source-to-worktree copy pattern. Local-library references reuse that materializer instead of creating a second AI-specific file pipeline.
 
@@ -139,18 +140,19 @@ The first release uses the existing deterministic local catalog:
 
 Pre-run search belongs to the application service and UI. It is not an agent tool call.
 
-## MCP decision
+## Dynamic retrieval and MCP decision
 
-MCP is deferred. Add a thin dynamic-retrieval adapter only when measured usage shows that users frequently need an agent to discover additional material after a run has started, or when external AI clients must reuse the catalog directly.
-
-If introduced, it exposes only bounded provider-neutral operations such as:
+The server-side retrieval domain and its versioned read-only contract are implemented so Claude and Codex adapters do not develop separate search behavior. The contract exposes only bounded provider-neutral operations:
 
 ```text
-local_content.search(query, kinds, projectId, limit)
-local_content.read(contentId, offset, limit)
+local_content.directories(invocationId, provider, dimension, query, limit, cursor)
+local_content.search(invocationId, provider, query, kinds, projectId, limit, cursor)
+local_content.read(invocationId, provider, contentId, offset, limit)
 ```
 
-It reuses the catalog, resolver, tenancy rules, audit log, byte limits, and untrusted-content labeling. It does not own files, create another index, return arbitrary absolute paths, or replace the normal task-reference flow.
+It reuses the catalog, resolver, tenancy rules, audit log, byte limits, and untrusted-content labeling. Calls fail closed unless the invocation is running, the actor can see its project, and the invocation's agent matches the declared provider. Summary results omit original paths and private source identifiers; original reads return bounded plain-text chunks under per-invocation read and character quotas.
+
+The HTTP boundary publishes the contract and guarded operations for first-party adapters. A standalone MCP server or direct Claude/Codex CLI tool registration remains deferred until an adapter can preserve invocation identity and actor authentication end to end. The retrieval domain does not own files, create another index, return arbitrary absolute paths, or replace the normal task-reference flow.
 
 ## Failure and recovery
 
@@ -198,4 +200,4 @@ The integration is ready for ordinary daily use when all of the following pass:
 4. Add Local Library search, preview, and Add-to-task UI.
 5. Add incremental indexing, extraction diagnostics, and execution-copy exclusion tests.
 6. Validate ordinary-user flows, provider parity, cleanup, and recovery.
-7. Consider MCP and semantic reranking only after usage evidence and evaluation gates exist.
+7. Wire the common retrieval contract into MCP or direct CLI tools only after transport identity tests and usage evidence exist; consider semantic reranking behind evaluation gates.
