@@ -143,6 +143,8 @@ export function createHttpServer({
   addWorkItemMaterials,
   removeWorkItemMaterial,
   restoreWorkItemMaterial,
+  addWorkItemContentReference,
+  removeWorkItemContentReference,
   listWorkflowSources,
   createWorkflowSource,
   listTemplateLearningTasks,
@@ -443,6 +445,11 @@ export function createHttpServer({
   rebuildLocalContentCatalog,
   searchLocalContent,
   getLocalContentCatalogStats,
+  previewLocalContent,
+  refreshLocalContent,
+  getLocalContentHealth,
+  resolveLocalContentOriginal,
+  resolveLocalContentContainer,
   listCanvasScenes,
   getCanvasScene,
   createCanvasScene,
@@ -759,7 +766,8 @@ export function createHttpServer({
 
       if (await handleLocalContentRoutes({
         req, res, url, sendJson, readJson, actor,
-        rebuildLocalContentCatalog, searchLocalContent, getLocalContentCatalogStats,
+        rebuildLocalContentCatalog, searchLocalContent, getLocalContentCatalogStats, previewLocalContent,
+        refreshLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
       })) {
         return;
       }
@@ -1020,6 +1028,8 @@ export function createHttpServer({
         addMaterials: addWorkItemMaterials,
         removeMaterial: removeWorkItemMaterial,
         restoreMaterial: restoreWorkItemMaterial,
+        addContentReference: addWorkItemContentReference,
+        removeContentReference: removeWorkItemContentReference,
       })) {
         return;
       }

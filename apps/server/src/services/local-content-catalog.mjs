@@ -1,124 +1,77 @@
-import { createHash } from "node:crypto";
 import {
-  closeSync,
   existsSync,
   lstatSync,
-  mkdirSync,
-  openSync,
-  readSync,
-  realpathSync,
+  readFileSync,
+  watch as watchFileSystem,
 } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
+import {
+  extractionText,
+  parseWorkflowDocument,
+} from "./workflow-document-parser.mjs";
+import {
+  LOCAL_CONTENT_CATALOG_SCHEMA_VERSION,
+  localContentCatalogPath,
+  migrateLocalContentCatalog,
+  openLocalContentCatalogDatabase,
+} from "./local-content-catalog-database.mjs";
+import { collectLocalContent } from "./local-content-collector.mjs";
+import {
+  decodeSearchCursor,
+  encodeSearchCursor,
+  LOCAL_CONTENT_INDEX_SOURCES,
+  LOCAL_CONTENT_KINDS,
+  MAX_SEARCH_OFFSET,
+  normalizeChoice,
+  normalizeIndexSources,
+  normalizeKinds,
+  normalizeQuery,
+  parseIndexSources,
+  sourceForKind,
+} from "./local-content-catalog-query.mjs";
+import {
+  applyCatalogDelta,
+  catalogRecordsForSources,
+  publicRecordsWithRelations,
+  replaceCatalog,
+  searchCatalog,
+  summarizeCatalog,
+} from "./local-content-catalog-store.mjs";
+import {
+  boundedText,
+  parseJson,
+} from "./local-content-records.mjs";
+import {
+  catalogFileLocator,
+  confinedCandidate,
+  confinedExistingContainer,
+  defaultMailArchiveRoot,
+  DOCUMENT_PREVIEW_EXTENSIONS,
+  inspectOriginal,
+  originalNameFor,
+  readFilePrefix,
+  resolveCatalogOriginal,
+  resolveStateRecord,
+  safeMarkupPreview,
+  unresolved,
+} from "./local-content-originals.mjs";
 
-export const LOCAL_CONTENT_CATALOG_SCHEMA_VERSION = 1;
-export const LOCAL_CONTENT_KINDS = new Set(["article", "mail", "task", "task_input", "task_output"]);
+export {
+  collectLocalContent,
+  LOCAL_CONTENT_CATALOG_SCHEMA_VERSION,
+  LOCAL_CONTENT_INDEX_SOURCES,
+  LOCAL_CONTENT_KINDS,
+  localContentCatalogPath,
+  migrateLocalContentCatalog,
+  openLocalContentCatalogDatabase,
+};
 
-const MAX_EXTRACTED_BYTES = 256 * 1024;
-const MAX_SEARCH_TEXT = 300_000;
-const MAX_SEARCH_QUERY = 500;
 const MAX_SEARCH_LIMIT = 100;
-
-export function localContentCatalogPath(stateStorePath) {
-  return resolve(dirname(stateStorePath), "indexes", "local-content-catalog-v1.sqlite");
-}
-
-export async function openLocalContentCatalogDatabase({ path }) {
-  const { DatabaseSync } = await import("node:sqlite");
-  if (path !== ":memory:") {
-    const directory = dirname(path);
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const directoryInfo = lstatSync(directory);
-    if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) {
-      throw new Error("Local content catalog directory is not a private directory.");
-    }
-    if (existsSync(path)) {
-      const fileInfo = lstatSync(path);
-      if (fileInfo.isSymbolicLink() || !fileInfo.isFile()) {
-        throw new Error("Local content catalog path is not a regular file.");
-      }
-    }
-  }
-  const db = new DatabaseSync(path);
-  db.exec("PRAGMA journal_mode = WAL;");
-  db.exec("PRAGMA foreign_keys = ON;");
-  migrateLocalContentCatalog(db);
-  return db;
-}
-
-export function migrateLocalContentCatalog(db) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS local_content_meta(
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS local_content_records(
-      id TEXT PRIMARY KEY,
-      owner_team_id TEXT NOT NULL,
-      project_id TEXT,
-      work_item_id TEXT,
-      kind TEXT NOT NULL,
-      title TEXT NOT NULL,
-      summary TEXT NOT NULL,
-      search_text TEXT NOT NULL,
-      storage_mode TEXT NOT NULL,
-      root_kind TEXT,
-      root_id TEXT,
-      relative_path TEXT,
-      state_collection TEXT,
-      state_id TEXT,
-      mime_type TEXT,
-      size INTEGER,
-      sha256 TEXT,
-      source_type TEXT,
-      source_id TEXT,
-      occurred_at TEXT,
-      imported_at TEXT,
-      modified_at TEXT,
-      original_available INTEGER NOT NULL,
-      unavailable_reason TEXT,
-      index_status TEXT NOT NULL,
-      metadata_json TEXT NOT NULL,
-      indexed_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS local_content_by_team_kind
-      ON local_content_records(owner_team_id, kind, occurred_at DESC);
-    CREATE INDEX IF NOT EXISTS local_content_by_team_project
-      ON local_content_records(owner_team_id, project_id, occurred_at DESC);
-    CREATE INDEX IF NOT EXISTS local_content_by_work_item
-      ON local_content_records(owner_team_id, work_item_id);
-    CREATE INDEX IF NOT EXISTS local_content_by_hash
-      ON local_content_records(owner_team_id, sha256);
-    CREATE TABLE IF NOT EXISTS local_content_relations(
-      id TEXT PRIMARY KEY,
-      owner_team_id TEXT NOT NULL,
-      source_id TEXT NOT NULL,
-      target_id TEXT NOT NULL,
-      relation_type TEXT NOT NULL,
-      metadata_json TEXT NOT NULL,
-      FOREIGN KEY(source_id) REFERENCES local_content_records(id) ON DELETE CASCADE,
-      FOREIGN KEY(target_id) REFERENCES local_content_records(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS local_content_relation_source
-      ON local_content_relations(owner_team_id, source_id, relation_type);
-    CREATE INDEX IF NOT EXISTS local_content_relation_target
-      ON local_content_relations(owner_team_id, target_id, relation_type);
-    CREATE VIRTUAL TABLE IF NOT EXISTS local_content_fts USING fts5(
-      id UNINDEXED,
-      title,
-      summary,
-      body,
-      tokenize = 'unicode61 remove_diacritics 2'
-    );
-  `);
-  const current = db.prepare("SELECT value FROM local_content_meta WHERE key = 'schema_version'").get();
-  if (current && Number(current.value) !== LOCAL_CONTENT_CATALOG_SCHEMA_VERSION) {
-    throw new Error(`Unsupported local content catalog schema ${current.value}.`);
-  }
-  db.prepare("INSERT OR REPLACE INTO local_content_meta(key, value) VALUES('schema_version', ?)")
-    .run(String(LOCAL_CONTENT_CATALOG_SCHEMA_VERSION));
-}
+const MAX_PREVIEW_BYTES = 1024 * 1024;
+const DEFAULT_INDEX_DEBOUNCE_MS = 250;
+const MAX_ORIGINAL_WATCH_DIRECTORIES = 512;
 
 export function createLocalContentCatalogService({
   state,
@@ -126,31 +79,199 @@ export function createLocalContentCatalogService({
   now = () => new Date().toISOString(),
   databasePath = localContentCatalogPath(stateStorePath),
   openDatabase = openLocalContentCatalogDatabase,
+  mailArchiveRoot = defaultMailArchiveRoot(),
+  autoIndex = false,
+  indexDebounceMs = DEFAULT_INDEX_DEBOUNCE_MS,
+  collectContent = collectLocalContent,
+  parseDocument = parseWorkflowDocument,
+  watchOriginals = autoIndex,
+  watchDirectory = watchFileSystem,
 } = {}) {
   let databasePromise = null;
+  let indexTimer = null;
+  let incrementalPromise = null;
+  let indexOperationChain = Promise.resolve();
+  const originalWatchers = new Map();
+  let started = false;
+  let closed = false;
 
   const database = () => {
     databasePromise ??= Promise.resolve(openDatabase({ path: databasePath }));
     return databasePromise;
   };
 
+  function runIndexOperation(operation) {
+    const run = indexOperationChain.then(operation, operation);
+    indexOperationChain = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  function closeOriginalWatchers() {
+    for (const entry of originalWatchers.values()) entry.watcher.close();
+    originalWatchers.clear();
+  }
+
+  function syncOriginalWatchers(db) {
+    if (!watchOriginals || closed) return;
+    const desired = new Map();
+    const rows = db.prepare(`
+      SELECT kind, root_kind, root_id, relative_path
+      FROM local_content_records
+      WHERE storage_mode != 'state_record' AND (relative_path IS NOT NULL OR root_kind = 'mail_archive')
+    `).all();
+    for (const row of rows) {
+      const locator = catalogFileLocator({ row, state, stateStorePath, mailArchiveRoot });
+      if (!locator?.rootPath || !locator.relativePath) continue;
+      const inspected = inspectOriginal(locator.rootPath, locator.relativePath);
+      const candidate = inspected.absolutePath ?? confinedCandidate(locator.rootPath, locator.relativePath);
+      const safeTarget = confinedExistingContainer(locator.rootPath, locator.relativePath);
+      if (!candidate || !safeTarget) continue;
+      let directory;
+      try {
+        const targetInfo = lstatSync(safeTarget);
+        directory = targetInfo.isDirectory() ? safeTarget : dirname(safeTarget);
+      } catch {
+        continue;
+      }
+      if (!existsSync(directory)) continue;
+      if (!desired.has(directory) && desired.size >= MAX_ORIGINAL_WATCH_DIRECTORIES) continue;
+      const current = desired.get(directory) ?? { names: new Set(), sources: new Set() };
+      current.names.add(basename(candidate).toLocaleLowerCase());
+      current.sources.add(sourceForKind(row.kind));
+      desired.set(directory, current);
+    }
+    for (const [directory, entry] of originalWatchers) {
+      if (desired.has(directory)) continue;
+      entry.watcher.close();
+      originalWatchers.delete(directory);
+    }
+    for (const [directory, target] of desired) {
+      const existing = originalWatchers.get(directory);
+      if (existing) {
+        existing.names = target.names;
+        existing.sources = target.sources;
+        continue;
+      }
+      try {
+        const entry = { watcher: null, names: target.names, sources: target.sources };
+        entry.watcher = watchDirectory(directory, { persistent: false }, (_eventType, fileName) => {
+          if (closed) return;
+          const changedName = fileName == null ? null : String(fileName).toLocaleLowerCase();
+          if (changedName && !entry.names.has(changedName)) return;
+          void requestIncremental({
+            reason: "original_file_changed",
+            sources: [...entry.sources],
+          }).catch(() => {});
+        });
+        entry.watcher.on?.("error", () => {
+          entry.watcher.close();
+          originalWatchers.delete(directory);
+        });
+        originalWatchers.set(directory, entry);
+      } catch {
+        // The durable state journal and manual refresh remain the fallback.
+      }
+    }
+  }
+
   async function rebuild(_input = {}, actor = null) {
-    const db = await database();
-    const built = collectLocalContent({ state, stateStorePath, indexedAt: now() });
-    replaceCatalog(db, built);
-    const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
-    return {
-      status: 200,
-      body: {
-        catalog: summarizeCatalog(db, teamId),
-        rebuild: {
-          records: built.records.filter((record) => record.ownerTeamId === teamId).length,
-          relations: built.relations.filter((relation) => relation.ownerTeamId === teamId).length,
-          indexedAt: built.indexedAt,
-          originalFilesChanged: false,
+    return runIndexOperation(async () => {
+      const db = await database();
+      // Jobs already queued when the rebuild starts are covered by this complete
+      // snapshot. Jobs created while collection is in progress must survive and
+      // run afterwards, because their state may have changed after its source was read.
+      db.prepare("DELETE FROM local_content_index_jobs WHERE status IN ('queued', 'failed')").run();
+      const built = await collectContent({ state, stateStorePath, indexedAt: now(), parseDocument });
+      replaceCatalog(db, built);
+      syncOriginalWatchers(db);
+      const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+      return {
+        status: 200,
+        body: {
+          catalog: summarizeCatalog(db, teamId),
+          rebuild: {
+            records: built.records.filter((record) => record.ownerTeamId === teamId).length,
+            relations: built.relations.filter((relation) => relation.ownerTeamId === teamId).length,
+            indexedAt: built.indexedAt,
+            originalFilesChanged: false,
+          },
         },
-      },
-    };
+      };
+    });
+  }
+
+  function scheduleIncremental(delay = indexDebounceMs) {
+    if (closed || indexTimer) return;
+    indexTimer = setTimeout(() => {
+      indexTimer = null;
+      void flushIncremental().catch(() => {});
+    }, Math.max(0, delay));
+    indexTimer.unref?.();
+  }
+
+  async function requestIncremental({ reason = "state_changed", sources = [...LOCAL_CONTENT_INDEX_SOURCES], immediate = false } = {}, _actor = null) {
+    const db = await database();
+    const requestedAt = now();
+    const normalizedSources = normalizeIndexSources(sources);
+    const pending = db.prepare("SELECT id, sources_json FROM local_content_index_jobs WHERE status = 'queued' ORDER BY id LIMIT 1").get();
+    if (pending) {
+      const mergedSources = normalizeIndexSources([...parseIndexSources(pending.sources_json), ...normalizedSources]);
+      db.prepare("UPDATE local_content_index_jobs SET reason = ?, sources_json = ?, requested_at = ? WHERE id = ? AND status = 'queued'")
+        .run(boundedText(reason, 120) || "state_changed", JSON.stringify(mergedSources), requestedAt, pending.id);
+    } else {
+      db.prepare("INSERT INTO local_content_index_jobs(reason, sources_json, status, requested_at) VALUES(?, ?, 'queued', ?)")
+        .run(boundedText(reason, 120) || "state_changed", JSON.stringify(normalizedSources), requestedAt);
+    }
+    scheduleIncremental(immediate ? 0 : indexDebounceMs);
+    return { status: 202, body: { queued: true, requestedAt } };
+  }
+
+  async function requestAutomaticIncremental(input = {}, actor = null) {
+    if (!started || closed) return { status: 202, body: { queued: false, reason: "automatic_index_not_started" } };
+    return requestIncremental(input, actor);
+  }
+
+  async function flushIncremental(_input = {}, actor = null) {
+    if (incrementalPromise) return incrementalPromise;
+    incrementalPromise = runIndexOperation(async () => {
+      const db = await database();
+      const job = db.prepare("SELECT * FROM local_content_index_jobs WHERE status = 'queued' ORDER BY id LIMIT 1").get();
+      if (!job) return { status: 200, body: { catalog: summarizeCatalog(db, actor?.teamId ?? LOCAL_TEAM_ID), incremental: { processed: false } } };
+      const startedAt = now();
+      db.prepare("UPDATE local_content_index_jobs SET status = 'running', attempts = attempts + 1, started_at = ?, last_error = NULL WHERE id = ?")
+        .run(startedAt, job.id);
+      try {
+        const sources = parseIndexSources(job.sources_json);
+        const existingRecords = catalogRecordsForSources(db, sources);
+        const built = await collectContent({
+          state, stateStorePath, indexedAt: startedAt, sources, existingRecords, parseDocument,
+        });
+        const delta = applyCatalogDelta(db, built, { sources });
+        syncOriginalWatchers(db);
+        const completedAt = now();
+        db.prepare("UPDATE local_content_index_jobs SET status = 'completed', completed_at = ? WHERE id = ?").run(completedAt, job.id);
+        db.prepare("DELETE FROM local_content_index_jobs WHERE status = 'failed' AND id < ?").run(job.id);
+        db.prepare("DELETE FROM local_content_index_jobs WHERE status = 'completed' AND id NOT IN (SELECT id FROM local_content_index_jobs WHERE status = 'completed' ORDER BY id DESC LIMIT 50)").run();
+        return {
+          status: 200,
+          body: {
+            catalog: summarizeCatalog(db, actor?.teamId ?? LOCAL_TEAM_ID),
+            incremental: { processed: true, jobId: job.id, reason: job.reason, sources, ...delta, indexedAt: startedAt, originalFilesChanged: false },
+          },
+        };
+      } catch (error) {
+        db.prepare("UPDATE local_content_index_jobs SET status = 'failed', completed_at = ?, last_error = ? WHERE id = ?")
+          .run(now(), boundedText(error instanceof Error ? error.message : String(error), 500), job.id);
+        throw error;
+      }
+    });
+    try {
+      return await incrementalPromise;
+    } finally {
+      incrementalPromise = null;
+      const db = await database();
+      if (db.prepare("SELECT 1 FROM local_content_index_jobs WHERE status = 'queued' LIMIT 1").get()) scheduleIncremental(0);
+    }
   }
 
   async function stats(actor = null) {
@@ -158,7 +279,164 @@ export function createLocalContentCatalogService({
     return { status: 200, body: { catalog: summarizeCatalog(db, actor?.teamId ?? LOCAL_TEAM_ID) } };
   }
 
-  async function search({ query = "", kinds = [], projectId = null, limit = 30, offset = 0 } = {}, actor = null) {
+  async function get({ contentId } = {}, actor = null) {
+    const db = await database();
+    const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const row = db.prepare("SELECT * FROM local_content_records WHERE id = ? AND owner_team_id = ?")
+      .get(String(contentId ?? ""), teamId);
+    if (!row) return { status: 404, body: { error: "local_content_not_found" } };
+    return { status: 200, body: { content: publicRecordsWithRelations(db, [row], teamId)[0] } };
+  }
+
+  async function resolveOriginal({ contentId, projectId = null } = {}, actor = null) {
+    const db = await database();
+    const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const row = db.prepare("SELECT * FROM local_content_records WHERE id = ? AND owner_team_id = ?")
+      .get(String(contentId ?? ""), teamId);
+    if (!row) return { ok: false, status: 404, error: "local_content_not_found" };
+    if (projectId && row.project_id && row.project_id !== String(projectId)) {
+      return { ok: false, status: 404, error: "local_content_not_found" };
+    }
+    const resolved = resolveCatalogOriginal({ row, state, stateStorePath, mailArchiveRoot });
+    if (!resolved.ok) return resolved;
+    return {
+      ...resolved,
+      record: {
+        id: row.id,
+        kind: row.kind,
+        title: row.title,
+        summary: row.summary,
+        projectId: row.project_id,
+        workItemId: row.work_item_id,
+        mimeType: row.mime_type,
+        storageMode: row.storage_mode,
+        fingerprint: resolved.sha256,
+      },
+    };
+  }
+
+  async function preview({ contentId } = {}, actor = null) {
+    const resolved = await resolveOriginal({ contentId }, actor);
+    if (!resolved.ok) return { status: resolved.status, body: { error: resolved.error } };
+    const mimeType = String(resolved.record?.mimeType ?? "").toLowerCase();
+    const extension = extname(resolved.originalName ?? "").toLowerCase();
+    if (resolved.record?.kind === "mail" && mimeType === "message/rfc822") {
+      const db = await database();
+      const row = db.prepare(`
+        SELECT r.metadata_json, r.search_body AS body
+        FROM local_content_records r
+        WHERE r.id = ? AND r.owner_team_id = ?
+      `).get(resolved.record.id, actor?.teamId ?? LOCAL_TEAM_ID);
+      const metadata = parseJson(row?.metadata_json);
+      const text = [
+        metadata.from ? `From: ${metadata.from}` : "",
+        `Subject: ${resolved.record.title}`,
+        "",
+        String(row?.body ?? "").trim(),
+        ...(Array.isArray(metadata.attachmentNames) && metadata.attachmentNames.length
+          ? ["", "Attachments:", ...metadata.attachmentNames.map((name) => `- ${name}`)]
+          : []),
+      ].filter((value, index) => value || index === 2).join("\n").trim();
+      return {
+        status: 200,
+        body: {
+          preview: {
+            contentId: resolved.record.id,
+            title: resolved.record.title,
+            kind: resolved.record.kind,
+            format: "plain_text",
+            text: text || resolved.record.summary,
+            truncated: false,
+            bytesRead: resolved.size,
+            totalBytes: resolved.size,
+            mimeType: resolved.record.mimeType,
+            originalName: resolved.originalName,
+            activeContentExecuted: false,
+            remoteResourcesLoaded: false,
+          },
+        },
+      };
+    }
+    if (resolved.sourceType === "file" && DOCUMENT_PREVIEW_EXTENSIONS.has(extension)) {
+      const extraction = await parseDocument({
+        path: resolved.localPath,
+        extension,
+        readMode: "supported_text",
+        size: resolved.size,
+      });
+      if (extraction.state !== "ready") {
+        const error = extraction.state === "limited"
+          ? "local_content_preview_too_large"
+          : extraction.state === "needs_ocr"
+            ? "local_content_preview_needs_ocr"
+            : "local_content_preview_extraction_failed";
+        return {
+          status: extraction.state === "limited" ? 413 : 415,
+          body: { error, reason: extraction.reason ?? extraction.errorCode ?? null },
+        };
+      }
+      return {
+        status: 200,
+        body: {
+          preview: {
+            contentId: resolved.record.id,
+            title: resolved.record.title,
+            kind: resolved.record.kind,
+            format: "plain_text",
+            text: extractionText(extraction),
+            truncated: Boolean(extraction.truncated || extraction.truncatedPages),
+            bytesRead: resolved.size,
+            totalBytes: resolved.size,
+            mimeType: resolved.record.mimeType,
+            originalName: resolved.originalName,
+            extraction: {
+              parserVersion: extraction.parserVersion,
+              pageCount: extraction.pageCount,
+              cellCount: extraction.cellCount,
+            },
+            activeContentExecuted: false,
+            remoteResourcesLoaded: false,
+          },
+        },
+      };
+    }
+    const previewable = mimeType.startsWith("text/")
+      || ["application/json", "application/xml", "message/rfc822"].includes(mimeType)
+      || [".md", ".markdown", ".txt", ".log", ".json", ".csv", ".tsv", ".xml", ".yaml", ".yml", ".html", ".htm", ".eml"].includes(extension);
+    if (!previewable) return { status: 415, body: { error: "local_content_preview_unsupported" } };
+    const totalBytes = resolved.size;
+    const bytes = resolved.sourceType === "bytes"
+      ? resolved.bytes.subarray(0, MAX_PREVIEW_BYTES)
+      : readFilePrefix(resolved.localPath, Math.min(totalBytes, MAX_PREVIEW_BYTES));
+    if (!bytes || bytes.includes(0)) return { status: 415, body: { error: "local_content_preview_unsupported" } };
+    let text = bytes.toString("utf8");
+    const markup = mimeType.includes("html") || [".html", ".htm"].includes(extension);
+    if (markup) text = safeMarkupPreview(text);
+    return {
+      status: 200,
+      body: {
+        preview: {
+          contentId: resolved.record.id,
+          title: resolved.record.title,
+          kind: resolved.record.kind,
+          format: "plain_text",
+          text,
+          truncated: totalBytes > bytes.length,
+          bytesRead: bytes.length,
+          totalBytes,
+          mimeType: resolved.record.mimeType,
+          originalName: resolved.originalName,
+          activeContentExecuted: false,
+          remoteResourcesLoaded: false,
+        },
+      },
+    };
+  }
+
+  async function search({
+    query = "", kinds = [], projectId = null, workItemId = null, sourceType = null,
+    yearMonth = null, availability = null, indexStatus = null, limit = 30, offset = 0, cursor = null,
+  } = {}, actor = null) {
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
     const normalizedProjectId = projectId == null || projectId === "" ? null : String(projectId);
     if (normalizedProjectId) {
@@ -169,19 +447,35 @@ export function createLocalContentCatalogService({
     }
     const normalizedKinds = normalizeKinds(kinds);
     if (!normalizedKinds.ok) return { status: 400, body: { error: "local_content_kind_invalid" } };
+    const normalizedAvailability = normalizeChoice(availability, ["available", "unavailable"]);
+    if (!normalizedAvailability.ok) return { status: 400, body: { error: "local_content_availability_invalid" } };
+    const normalizedIndexStatus = normalizeChoice(indexStatus, ["ready", "partial", "metadata_only", "missing"]);
+    if (!normalizedIndexStatus.ok) return { status: 400, body: { error: "local_content_index_status_invalid" } };
+    const normalizedYearMonth = yearMonth == null || yearMonth === "" ? null : String(yearMonth);
+    if (normalizedYearMonth && !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(normalizedYearMonth)) {
+      return { status: 400, body: { error: "local_content_year_month_invalid" } };
+    }
     const normalizedQuery = normalizeQuery(query);
     const boundedLimit = Math.min(MAX_SEARCH_LIMIT, Math.max(1, Number.parseInt(limit, 10) || 30));
-    const boundedOffset = Math.min(10_000, Math.max(0, Number.parseInt(offset, 10) || 0));
+    const cursorOffset = decodeSearchCursor(cursor);
+    if (cursor && cursorOffset == null) return { status: 400, body: { error: "local_content_cursor_invalid" } };
+    const requestedOffset = cursorOffset ?? (Number.parseInt(offset, 10) || 0);
+    const boundedOffset = Math.min(MAX_SEARCH_OFFSET, Math.max(0, requestedOffset));
     const db = await database();
     const rows = searchCatalog(db, {
       teamId,
       projectId: normalizedProjectId,
+      workItemId: workItemId == null || workItemId === "" ? null : String(workItemId),
+      sourceType: sourceType == null || sourceType === "" ? null : String(sourceType),
+      yearMonth: normalizedYearMonth,
+      availability: normalizedAvailability.value,
+      indexStatus: normalizedIndexStatus.value,
       kinds: normalizedKinds.value,
       query: normalizedQuery,
       limit: boundedLimit,
       offset: boundedOffset,
     });
-    const results = publicRecordsWithRelations(db, rows, teamId);
+    const results = publicRecordsWithRelations(db, rows, teamId, normalizedQuery);
     return {
       status: 200,
       body: {
@@ -191,761 +485,105 @@ export function createLocalContentCatalogService({
         limit: boundedLimit,
         offset: boundedOffset,
         hasMore: results.length === boundedLimit,
+        nextCursor: results.length === boundedLimit ? encodeSearchCursor(boundedOffset + results.length) : null,
         retrieval: { mode: normalizedQuery ? "fts_with_metadata_fallback" : "metadata_recent", offline: true },
       },
     };
   }
 
+  async function refresh({ contentId } = {}, actor = null) {
+    const db = await database();
+    const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const row = db.prepare("SELECT kind FROM local_content_records WHERE id = ? AND owner_team_id = ?")
+      .get(String(contentId ?? ""), teamId);
+    if (!row) return { status: 404, body: { error: "local_content_not_found" } };
+    const sources = [sourceForKind(row.kind)];
+    return runIndexOperation(async () => {
+      const indexedAt = now();
+      const existingRecords = catalogRecordsForSources(db, sources);
+      const built = await collectContent({
+        state, stateStorePath, indexedAt, sources, existingRecords, parseDocument,
+      });
+      const delta = applyCatalogDelta(db, built, { sources });
+      syncOriginalWatchers(db);
+      const refreshed = db.prepare("SELECT * FROM local_content_records WHERE id = ? AND owner_team_id = ?")
+        .get(String(contentId ?? ""), teamId);
+      return {
+        status: refreshed ? 200 : 404,
+        body: refreshed
+          ? { content: publicRecordsWithRelations(db, [refreshed], teamId)[0], refresh: { ...delta, indexedAt } }
+          : { error: "local_content_not_found" },
+      };
+    });
+  }
+
+  async function health({ contentIds = [] } = {}, actor = null) {
+    const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const ids = [...new Set((Array.isArray(contentIds) ? contentIds : [contentIds])
+      .map((value) => String(value ?? ""))
+      .filter((value) => /^lc_[a-f0-9]{32}$/.test(value)))].slice(0, 50);
+    if (!ids.length) return { status: 200, body: { health: [] } };
+    const db = await database();
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = db.prepare(`SELECT * FROM local_content_records WHERE owner_team_id = ? AND id IN (${placeholders})`)
+      .all(teamId, ...ids);
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return {
+      status: 200,
+      body: {
+        health: ids.map((id) => {
+          const row = byId.get(id);
+          if (!row) return { contentId: id, state: "missing_record", available: false, reason: "local_content_not_found" };
+          if (row.storage_mode === "state_record") {
+            const resolved = resolveStateRecord(row, state);
+            return { contentId: id, state: resolved.ok ? "ready" : "missing", available: resolved.ok, reason: resolved.error ?? null, canRefresh: true, canReveal: false };
+          }
+          const locator = catalogFileLocator({ row, state, stateStorePath, mailArchiveRoot });
+          const inspected = inspectOriginal(locator?.rootPath, locator?.relativePath);
+          if (!inspected.available) return { contentId: id, state: "missing", available: false, reason: inspected.reason, canRefresh: true, canReveal: Boolean(confinedExistingContainer(locator?.rootPath, locator?.relativePath)) };
+          const changed = Number(row.size) !== inspected.size || (row.modified_at && row.modified_at !== inspected.modifiedAt);
+          return { contentId: id, state: changed ? "changed" : "ready", available: true, reason: changed ? "local_content_original_changed" : null, canRefresh: true, canReveal: true };
+        }),
+      },
+    };
+  }
+
+  async function resolveContainer({ contentId } = {}, actor = null) {
+    const db = await database();
+    const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const row = db.prepare("SELECT * FROM local_content_records WHERE id = ? AND owner_team_id = ?")
+      .get(String(contentId ?? ""), teamId);
+    if (!row) return { ok: false, status: 404, error: "local_content_not_found" };
+    if (row.storage_mode === "state_record") return unresolved("local_content_original_not_file", 409);
+    const locator = catalogFileLocator({ row, state, stateStorePath, mailArchiveRoot });
+    const target = confinedExistingContainer(locator?.rootPath, locator?.relativePath);
+    if (!target) return unresolved("local_content_original_container_unavailable", 409);
+    return { ok: true, status: 200, localPath: target, originalName: originalNameFor(row) };
+  }
+
   async function close() {
+    closed = true;
+    closeOriginalWatchers();
+    if (indexTimer) clearTimeout(indexTimer);
+    indexTimer = null;
+    await incrementalPromise?.catch(() => {});
+    await indexOperationChain;
     if (!databasePromise) return;
     const db = await databasePromise;
     db.close();
     databasePromise = null;
   }
 
-  return { rebuild, search, stats, close, databasePath };
-}
+  async function start() {
+    if (started || closed || !autoIndex) return { status: 200, body: { started: false } };
+    started = true;
+    const result = await requestIncremental({ reason: "startup", immediate: true });
+    return { status: result.status, body: { ...result.body, started: true } };
+  }
 
-export function collectLocalContent({ state, stateStorePath, indexedAt }) {
-  const records = [];
-  const relations = [];
-  const byKey = new Map();
-  const tasks = new Map();
-  const articlePaths = new Map();
-  const dataRoot = resolve(dirname(stateStorePath));
-
-  const addRecord = (record, key = null) => {
-    if (records.some((candidate) => candidate.id === record.id)) return record.id;
-    records.push(record);
-    if (key) byKey.set(key, record.id);
-    return record.id;
+  const service = {
+    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, get, preview, refresh, health,
+    resolveOriginal, resolveContainer, stats, start, close, databasePath,
   };
-  const addRelation = (ownerTeamId, sourceId, targetId, relationType, metadata = {}) => {
-    if (!sourceId || !targetId || sourceId === targetId) return;
-    relations.push({
-      id: contentId("relation", ownerTeamId, sourceId, targetId, relationType),
-      ownerTeamId,
-      sourceId,
-      targetId,
-      relationType,
-      metadata,
-    });
-  };
-
-  for (const item of state.workItems ?? []) {
-    const project = (state.projects ?? []).find((candidate) => candidate.id === item.projectId);
-    const ownerTeamId = item.ownerTeamId ?? teamOf(project);
-    const id = contentId("task", ownerTeamId, item.id);
-    const body = [item.body, ...(item.acceptanceCriteria ?? []), ...(item.labels ?? [])].filter(Boolean).join("\n");
-    addRecord(catalogRecord({
-      id,
-      ownerTeamId,
-      projectId: item.projectId ?? null,
-      workItemId: item.id,
-      kind: "task",
-      title: item.title || item.localRef || "Local task",
-      body,
-      summary: boundedSummary(body, item.localRef || "Local task"),
-      storageMode: "state_record",
-      stateCollection: "workItems",
-      stateId: item.id,
-      sourceType: "local_task",
-      sourceId: item.localRef ?? item.id,
-      occurredAt: item.createdAt ?? item.updatedAt ?? null,
-      importedAt: item.createdAt ?? null,
-      modifiedAt: item.updatedAt ?? null,
-      originalAvailable: true,
-      indexStatus: "ready",
-      metadata: { localRef: item.localRef ?? null, status: item.status ?? item.state ?? null },
-      indexedAt,
-    }), `task:${item.id}`);
-    tasks.set(item.id, { item, ownerTeamId, contentId: id, project });
-  }
-
-  for (const job of state.articleImportJobs ?? []) {
-    if (job.state !== "completed" || !job.result?.markdownPath) continue;
-    const task = tasks.get(job.workItemId);
-    if (!task) continue;
-    const root = contentRootFor(state, task.item, { worktreeId: job.worktreeId });
-    const path = safeRelativePath(job.result.markdownPath);
-    const inspected = inspectOriginal(root?.path, path);
-    const body = inspected.available ? readBoundedText(inspected.absolutePath, inspected.size) : "";
-    const title = articleTitle(body) || task.item.title || basename(path || "article.md");
-    const id = contentId("article", task.ownerTeamId, job.id);
-    addRecord(catalogRecord({
-      id,
-      ownerTeamId: task.ownerTeamId,
-      projectId: task.item.projectId ?? null,
-      workItemId: task.item.id,
-      kind: "article",
-      title,
-      body,
-      summary: boundedSummary(body, title),
-      storageMode: "referenced",
-      rootKind: root?.kind ?? "worktree",
-      rootId: root?.id ?? job.worktreeId ?? null,
-      relativePath: path,
-      mimeType: "text/markdown",
-      size: inspected.size,
-      sha256: inspected.available ? fileDigest(inspected.absolutePath, inspected.size) : null,
-      sourceType: "article_import",
-      sourceId: job.canonicalUrl ?? job.sourceUrl ?? job.id,
-      occurredAt: job.completedAt ?? job.createdAt ?? null,
-      importedAt: job.completedAt ?? null,
-      modifiedAt: inspected.modifiedAt,
-      originalAvailable: inspected.available,
-      unavailableReason: inspected.reason,
-      indexStatus: inspected.available ? "ready" : "missing",
-      metadata: {
-        articleImportJobId: job.id,
-        canonicalUrl: job.canonicalUrl ?? null,
-        manifestPath: job.result.manifestPath ?? null,
-        htmlPath: job.result.htmlPath ?? null,
-      },
-      indexedAt,
-    }), rootPathKey(root, path));
-    articlePaths.set(rootPathKey(root, path), id);
-    addRelation(task.ownerTeamId, task.contentId, id, "produces_output");
-  }
-
-  for (const task of tasks.values()) {
-    for (const asset of task.item.inputAssets ?? []) {
-      const source = taskInputSource(state, stateStorePath, task.item, asset);
-      const id = contentId("task_input", task.ownerTeamId, task.item.id, asset.id ?? asset.path);
-      addRecord(assetRecord({
-        id,
-        ownerTeamId: task.ownerTeamId,
-        projectId: task.item.projectId ?? null,
-        workItemId: task.item.id,
-        kind: "task_input",
-        asset,
-        source,
-        taskTitle: task.item.title,
-        indexedAt,
-      }), rootPathKey(source, source.relativePath));
-      addRelation(task.ownerTeamId, task.contentId, id, "uses_input");
-    }
-    for (const asset of task.item.outputAssets ?? []) {
-      const source = taskAssetSource(state, task.item, asset);
-      const key = rootPathKey(source, source.relativePath);
-      const articleId = articlePaths.get(key);
-      if (articleId) {
-        addRelation(task.ownerTeamId, task.contentId, articleId, "produces_output");
-        continue;
-      }
-      const id = contentId("task_output", task.ownerTeamId, task.item.id, asset.id ?? asset.path);
-      addRecord(assetRecord({
-        id,
-        ownerTeamId: task.ownerTeamId,
-        projectId: task.item.projectId ?? null,
-        workItemId: task.item.id,
-        kind: "task_output",
-        asset,
-        source,
-        taskTitle: task.item.title,
-        indexedAt,
-      }), key);
-      addRelation(task.ownerTeamId, task.contentId, id, "produces_output");
-    }
-  }
-
-  const mailByMessage = collectMailMessages(state);
-  for (const mail of mailByMessage.values()) {
-    const id = contentId("mail", mail.ownerTeamId, mail.messageId);
-    const archived = validMailArchiveReceipt(mail.archive);
-    addRecord(catalogRecord({
-      id,
-      ownerTeamId: mail.ownerTeamId,
-      projectId: null,
-      workItemId: null,
-      kind: "mail",
-      title: mail.subject || "(no subject)",
-      body: mail.body ?? "",
-      summary: boundedSummary(mail.body, mail.from || "Mail message"),
-      storageMode: archived ? "managed" : "state_record",
-      rootKind: archived ? "mail_archive" : null,
-      rootId: archived ? mail.archive.ref : null,
-      stateCollection: "applicationResults",
-      stateId: mail.recordId,
-      mimeType: archived ? "message/rfc822" : null,
-      size: archived ? mail.archive.size : null,
-      sha256: archived ? mail.archive.sha256 : null,
-      sourceType: archived ? "mail_archive" : "mail_cache",
-      sourceId: mail.messageId,
-      occurredAt: mail.date ?? mail.createdAt ?? null,
-      importedAt: mail.createdAt ?? null,
-      modifiedAt: mail.updatedAt ?? mail.createdAt ?? null,
-      originalAvailable: archived,
-      unavailableReason: archived ? null : mail.archive?.reason ?? "mail_original_not_archived",
-      indexStatus: archived ? "ready" : "partial",
-      metadata: {
-        from: mail.from ?? null,
-        folderId: mail.folderId ?? null,
-        hasHtml: Boolean(mail.bodyHtml),
-        attachmentCount: mail.attachments?.length ?? 0,
-        archiveAvailability: mail.archive?.availability ?? "not_archived",
-      },
-      indexedAt,
-    }), `mail:${mail.ownerTeamId}:${mail.messageId}`);
-  }
-
-  for (const link of state.mailTaskLinks ?? []) {
-    const task = tasks.get(link.workItemId);
-    if (!task) continue;
-    const mailId = byKey.get(`mail:${task.ownerTeamId}:${link.messageId}`);
-    addRelation(task.ownerTeamId, mailId, task.contentId, "converted_to_task");
-  }
-
-  const firstByHash = new Map();
-  for (const record of records) {
-    if (!record.sha256) continue;
-    const key = `${record.ownerTeamId}:${record.sha256}`;
-    const first = firstByHash.get(key);
-    if (first) addRelation(record.ownerTeamId, first, record.id, "same_content");
-    else firstByHash.set(key, record.id);
-  }
-
-  return { records, relations: dedupeRelations(relations), indexedAt, dataRoot };
-}
-
-function replaceCatalog(db, { records, relations, indexedAt }) {
-  const insertRecord = db.prepare(`
-    INSERT INTO local_content_records(
-      id, owner_team_id, project_id, work_item_id, kind, title, summary, search_text,
-      storage_mode, root_kind, root_id, relative_path, state_collection, state_id,
-      mime_type, size, sha256, source_type, source_id, occurred_at, imported_at,
-      modified_at, original_available, unavailable_reason, index_status, metadata_json, indexed_at
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const insertFts = db.prepare("INSERT INTO local_content_fts(id, title, summary, body) VALUES(?, ?, ?, ?)");
-  const insertRelation = db.prepare(`
-    INSERT INTO local_content_relations(id, owner_team_id, source_id, target_id, relation_type, metadata_json)
-    VALUES(?, ?, ?, ?, ?, ?)
-  `);
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    db.exec("DELETE FROM local_content_relations; DELETE FROM local_content_fts; DELETE FROM local_content_records;");
-    for (const record of records) {
-      insertRecord.run(
-        record.id, record.ownerTeamId, record.projectId, record.workItemId, record.kind,
-        record.title, record.summary, record.searchText, record.storageMode, record.rootKind,
-        record.rootId, record.relativePath, record.stateCollection, record.stateId, record.mimeType,
-        record.size, record.sha256, record.sourceType, record.sourceId, record.occurredAt,
-        record.importedAt, record.modifiedAt, record.originalAvailable ? 1 : 0,
-        record.unavailableReason, record.indexStatus, JSON.stringify(record.metadata), record.indexedAt,
-      );
-      insertFts.run(record.id, record.title, record.summary, record.searchBody);
-    }
-    for (const relation of relations) {
-      insertRelation.run(
-        relation.id,
-        relation.ownerTeamId,
-        relation.sourceId,
-        relation.targetId,
-        relation.relationType,
-        JSON.stringify(relation.metadata),
-      );
-    }
-    db.prepare("INSERT OR REPLACE INTO local_content_meta(key, value) VALUES('last_rebuilt_at', ?)").run(indexedAt);
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-}
-
-function searchCatalog(db, { teamId, projectId, kinds, query, limit, offset }) {
-  const filters = ["r.owner_team_id = ?"];
-  const params = [teamId];
-  if (projectId) {
-    filters.push("r.project_id = ?");
-    params.push(projectId);
-  }
-  if (kinds.length) {
-    filters.push(`r.kind IN (${kinds.map(() => "?").join(", ")})`);
-    params.push(...kinds);
-  }
-  const where = filters.join(" AND ");
-  if (!query) {
-    return db.prepare(`
-      SELECT r.*, 0 AS rank FROM local_content_records r
-      WHERE ${where}
-      ORDER BY COALESCE(r.occurred_at, r.imported_at, r.modified_at, r.indexed_at) DESC, r.id
-      LIMIT ? OFFSET ?
-    `).all(...params, limit, offset);
-  }
-
-  const targetCount = Math.min(10_100, limit + offset);
-  const rows = [];
-  const seen = new Set();
-  const match = ftsQuery(query);
-  if (match) {
-    try {
-      const ftsRows = db.prepare(`
-        SELECT r.*, bm25(local_content_fts, 8.0, 3.0, 1.0) AS rank
-        FROM local_content_fts
-        JOIN local_content_records r ON r.id = local_content_fts.id
-        WHERE local_content_fts MATCH ? AND ${where}
-        ORDER BY rank, COALESCE(r.occurred_at, r.imported_at, r.indexed_at) DESC
-        LIMIT ?
-      `).all(match, ...params, targetCount);
-      for (const row of ftsRows) {
-        rows.push(row);
-        seen.add(row.id);
-      }
-    } catch {
-      // Bounded metadata fallback below is the deterministic degraded path.
-    }
-  }
-  if (rows.length < targetCount) {
-    const remaining = targetCount - rows.length;
-    const parsedTerms = searchTerms(query);
-    const terms = parsedTerms.length ? parsedTerms : [query];
-    const likes = terms.map((term) => `%${term.toLocaleLowerCase()}%`);
-    const primaryLike = likes[0] ?? `%${query.toLocaleLowerCase()}%`;
-    const fallback = db.prepare(`
-      SELECT r.*, 1000 AS rank FROM local_content_records r
-      WHERE ${where} AND ${likes.map(() => "lower(r.search_text) LIKE ?").join(" AND ")}
-      ORDER BY
-        CASE WHEN lower(r.title) LIKE ? THEN 0 WHEN lower(r.summary) LIKE ? THEN 1 ELSE 2 END,
-        COALESCE(r.occurred_at, r.imported_at, r.indexed_at) DESC,
-        r.id
-      LIMIT ? OFFSET ?
-    `).all(...params, ...likes, primaryLike, primaryLike, remaining + rows.length, 0);
-    for (const row of fallback) {
-      if (seen.has(row.id)) continue;
-      rows.push(row);
-      seen.add(row.id);
-      if (rows.length >= targetCount) break;
-    }
-  }
-  return rows.slice(offset, offset + limit);
-}
-
-function publicRecordsWithRelations(db, rows, teamId) {
-  if (!rows.length) return [];
-  const ids = rows.map((row) => row.id);
-  const placeholders = ids.map(() => "?").join(", ");
-  const relations = db.prepare(`
-    SELECT source_id, target_id, relation_type, metadata_json
-    FROM local_content_relations
-    WHERE owner_team_id = ? AND (source_id IN (${placeholders}) OR target_id IN (${placeholders}))
-  `).all(teamId, ...ids, ...ids);
-  const byId = new Map(ids.map((id) => [id, []]));
-  for (const relation of relations) {
-    if (byId.has(relation.source_id)) {
-      byId.get(relation.source_id).push({
-        direction: "outgoing",
-        type: relation.relation_type,
-        contentId: relation.target_id,
-        metadata: parseJson(relation.metadata_json),
-      });
-    }
-    if (byId.has(relation.target_id)) {
-      byId.get(relation.target_id).push({
-        direction: "incoming",
-        type: relation.relation_type,
-        contentId: relation.source_id,
-        metadata: parseJson(relation.metadata_json),
-      });
-    }
-  }
-  return rows.map((row) => ({
-    id: row.id,
-    kind: row.kind,
-    title: row.title,
-    summary: row.summary,
-    projectId: row.project_id,
-    workItemId: row.work_item_id,
-    storageMode: row.storage_mode,
-    root: row.root_kind ? { kind: row.root_kind, id: row.root_id } : null,
-    relativePath: row.relative_path,
-    stateLocator: row.state_collection ? { collection: row.state_collection, id: row.state_id } : null,
-    mimeType: row.mime_type,
-    size: row.size,
-    source: { type: row.source_type, id: row.source_id },
-    occurredAt: row.occurred_at,
-    importedAt: row.imported_at,
-    modifiedAt: row.modified_at,
-    original: { available: row.original_available === 1, reason: row.unavailable_reason },
-    indexStatus: row.index_status,
-    metadata: parseJson(row.metadata_json),
-    relations: byId.get(row.id) ?? [],
-  }));
-}
-
-function summarizeCatalog(db, teamId) {
-  const rows = db.prepare(`
-    SELECT kind, COUNT(*) AS count,
-      SUM(CASE WHEN original_available = 1 THEN 1 ELSE 0 END) AS available
-    FROM local_content_records WHERE owner_team_id = ? GROUP BY kind ORDER BY kind
-  `).all(teamId);
-  const rebuilt = db.prepare("SELECT value FROM local_content_meta WHERE key = 'last_rebuilt_at'").get();
-  return {
-    schemaVersion: LOCAL_CONTENT_CATALOG_SCHEMA_VERSION,
-    total: rows.reduce((sum, row) => sum + Number(row.count), 0),
-    available: rows.reduce((sum, row) => sum + Number(row.available), 0),
-    byKind: Object.fromEntries(rows.map((row) => [row.kind, { count: Number(row.count), available: Number(row.available) }])),
-    lastRebuiltAt: rebuilt?.value ?? null,
-    rebuildable: true,
-  };
-}
-
-function catalogRecord(input) {
-  const title = boundedText(input.title, 500) || "Untitled local content";
-  const body = boundedText(input.body, MAX_SEARCH_TEXT);
-  const summary = boundedText(input.summary, 1_000) || boundedSummary(body, title);
-  return {
-    id: input.id,
-    ownerTeamId: input.ownerTeamId ?? LOCAL_TEAM_ID,
-    projectId: input.projectId ?? null,
-    workItemId: input.workItemId ?? null,
-    kind: input.kind,
-    title,
-    summary,
-    searchText: boundedText([
-      title,
-      summary,
-      body,
-      input.sourceId,
-      metadataSearchText(input.metadata),
-    ].filter(Boolean).join("\n"), MAX_SEARCH_TEXT),
-    searchBody: body,
-    storageMode: input.storageMode,
-    rootKind: input.rootKind ?? null,
-    rootId: input.rootId ?? null,
-    relativePath: input.relativePath ?? null,
-    stateCollection: input.stateCollection ?? null,
-    stateId: input.stateId ?? null,
-    mimeType: input.mimeType ?? null,
-    size: Number.isSafeInteger(input.size) ? input.size : null,
-    sha256: input.sha256 ?? null,
-    sourceType: input.sourceType ?? null,
-    sourceId: boundedText(input.sourceId, 2_000) || null,
-    occurredAt: validTimestamp(input.occurredAt),
-    importedAt: validTimestamp(input.importedAt),
-    modifiedAt: validTimestamp(input.modifiedAt),
-    originalAvailable: input.originalAvailable === true,
-    unavailableReason: input.unavailableReason ?? null,
-    indexStatus: input.indexStatus,
-    metadata: input.metadata ?? {},
-    indexedAt: input.indexedAt,
-  };
-}
-
-function assetRecord({ id, ownerTeamId, projectId, workItemId, kind, asset, source, taskTitle, indexedAt }) {
-  const inspected = inspectOriginal(source.path, source.relativePath);
-  const body = inspected.available ? readBoundedText(inspected.absolutePath, inspected.size) : "";
-  const title = asset.originalName || basename(source.relativePath || asset.path || kind);
-  return catalogRecord({
-    id,
-    ownerTeamId,
-    projectId,
-    workItemId,
-    kind,
-    title,
-    body,
-    summary: boundedSummary(body, `${kind === "task_input" ? "Input for" : "Output from"} ${taskTitle || "local task"}`),
-    storageMode: source.kind === "application_data" ? "managed" : "referenced",
-    rootKind: source.kind,
-    rootId: source.id,
-    relativePath: source.relativePath,
-    mimeType: asset.mimeType ?? mimeTypeFor(title),
-    size: inspected.size ?? asset.size ?? null,
-    sha256: inspected.available ? fileDigest(inspected.absolutePath, inspected.size) : normalizeDigest(asset.hash),
-    sourceType: kind,
-    sourceId: asset.id ?? asset.path,
-    occurredAt: null,
-    importedAt: null,
-    modifiedAt: inspected.modifiedAt,
-    originalAvailable: inspected.available,
-    unavailableReason: inspected.reason,
-    indexStatus: inspected.available ? (body ? "ready" : "metadata_only") : "missing",
-    metadata: { family: asset.family ?? null, resourceClass: asset.resourceClass ?? null },
-    indexedAt,
-  });
-}
-
-function taskInputSource(state, stateStorePath, item, asset) {
-  const draft = (state.taskMaterialDrafts ?? []).find((candidate) =>
-    candidate.workItemId === item.id && (candidate.assets ?? []).some((entry) => entry.id === asset.id));
-  const sourceAsset = draft?.assets?.find((entry) => entry.id === asset.id);
-  if (draft && sourceAsset) {
-    return {
-      kind: "application_data",
-      id: "task-materials",
-      path: resolve(dirname(stateStorePath)),
-      relativePath: safeRelativePath(join(
-        "task-materials",
-        safeSegment(draft.ownerTeamId),
-        safeSegment(draft.projectId),
-        safeSegment(draft.id),
-        sourceAsset.storedName,
-      )),
-    };
-  }
-  return taskAssetSource(state, item, asset);
-}
-
-function taskAssetSource(state, item, asset) {
-  const root = contentRootFor(state, item, asset);
-  return { ...root, relativePath: safeRelativePath(asset.path) };
-}
-
-function contentRootFor(state, item, asset = {}) {
-  const worktree = asset.worktreeId
-    ? (state.worktrees ?? []).find((candidate) => candidate.id === asset.worktreeId)
-    : null;
-  if (worktree?.path || worktree?.worktreePath) {
-    return { kind: "worktree", id: worktree.id, path: worktree.path ?? worktree.worktreePath };
-  }
-  const project = (state.projects ?? []).find((candidate) => candidate.id === item?.projectId);
-  return project?.path
-    ? { kind: "project", id: project.id, path: project.path }
-    : { kind: "project", id: item?.projectId ?? null, path: null };
-}
-
-function inspectOriginal(root, relativePath) {
-  if (!root || !relativePath) return { available: false, reason: "original_path_unresolved", size: null, modifiedAt: null };
-  try {
-    const rootPath = resolve(root);
-    if (!existsSync(rootPath) || lstatSync(rootPath).isSymbolicLink() || !lstatSync(rootPath).isDirectory()) {
-      return { available: false, reason: "original_root_unavailable", size: null, modifiedAt: null };
-    }
-    const normalized = safeRelativePath(relativePath);
-    if (!normalized) return { available: false, reason: "original_path_invalid", size: null, modifiedAt: null };
-    const candidate = resolve(rootPath, normalized);
-    const lexical = relative(rootPath, candidate);
-    if (!lexical || lexical.startsWith("..") || isAbsolute(lexical)) {
-      return { available: false, reason: "original_path_outside_root", size: null, modifiedAt: null };
-    }
-    let cursor = rootPath;
-    for (const part of lexical.split(sep)) {
-      cursor = join(cursor, part);
-      if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) {
-        return { available: false, reason: "original_path_symlink", size: null, modifiedAt: null };
-      }
-    }
-    if (!existsSync(candidate)) return { available: false, reason: "original_missing", size: null, modifiedAt: null };
-    const info = lstatSync(candidate);
-    if (!info.isFile()) return { available: false, reason: "original_not_file", size: null, modifiedAt: null };
-    const realRoot = realpathSync(rootPath);
-    const realCandidate = realpathSync(candidate);
-    const confined = relative(realRoot, realCandidate);
-    if (!confined || confined.startsWith("..") || isAbsolute(confined)) {
-      return { available: false, reason: "original_path_outside_root", size: null, modifiedAt: null };
-    }
-    return {
-      available: true,
-      reason: null,
-      size: info.size,
-      modifiedAt: info.mtime.toISOString(),
-      absolutePath: realCandidate,
-    };
-  } catch {
-    return { available: false, reason: "original_unreadable", size: null, modifiedAt: null };
-  }
-}
-
-function readBoundedText(path, size) {
-  if (!textExtension(path) || !Number.isSafeInteger(size) || size <= 0) return "";
-  const length = Math.min(size, MAX_EXTRACTED_BYTES);
-  const buffer = Buffer.alloc(length);
-  let fd;
-  try {
-    fd = openSync(path, "r");
-    const bytesRead = readSync(fd, buffer, 0, length, 0);
-    return plainText(buffer.subarray(0, bytesRead).toString("utf8"));
-  } catch {
-    return "";
-  } finally {
-    if (fd != null) closeSync(fd);
-  }
-}
-
-function fileDigest(path, size) {
-  if (!Number.isSafeInteger(size) || size < 0 || size > 64 * 1024 * 1024) return null;
-  const hash = createHash("sha256");
-  const buffer = Buffer.alloc(Math.min(64 * 1024, Math.max(1, size)));
-  let fd;
-  try {
-    fd = openSync(path, "r");
-    let position = 0;
-    while (position < size) {
-      const bytesRead = readSync(fd, buffer, 0, Math.min(buffer.length, size - position), position);
-      if (!bytesRead) break;
-      hash.update(buffer.subarray(0, bytesRead));
-      position += bytesRead;
-    }
-    return position === size ? `sha256:${hash.digest("hex")}` : null;
-  } catch {
-    return null;
-  } finally {
-    if (fd != null) closeSync(fd);
-  }
-}
-
-function collectMailMessages(state) {
-  const messages = new Map();
-  const results = [...(state.applicationResults ?? [])].sort((left, right) =>
-    Date.parse(left.createdAt ?? 0) - Date.parse(right.createdAt ?? 0));
-  for (const record of results) {
-    const application = (state.applications ?? []).find((candidate) => candidate.id === record.applicationId);
-    const ownerTeamId = record.ownerTeamId ?? application?.ownerTeamId ?? LOCAL_TEAM_ID;
-    const candidates = record.data?.kind === "message"
-      ? [record.data]
-      : record.data?.kind === "unread_headers"
-        ? record.data.headers ?? []
-        : record.data?.kind === "mailbox_sync"
-          ? record.data.messages ?? []
-          : [];
-    for (const candidate of candidates) {
-      const messageId = String(candidate?.messageId ?? "").trim();
-      if (!messageId) continue;
-      const key = `${ownerTeamId}:${messageId}`;
-      const previous = messages.get(key) ?? {};
-      messages.set(key, {
-        ...previous,
-        ...candidate,
-        messageId,
-        ownerTeamId,
-        recordId: record.id,
-        createdAt: record.createdAt ?? previous.createdAt ?? null,
-        updatedAt: record.updatedAt ?? record.createdAt ?? previous.updatedAt ?? null,
-        body: typeof candidate.body === "string" ? candidate.body : previous.body ?? "",
-        bodyHtml: typeof candidate.bodyHtml === "string" ? candidate.bodyHtml : previous.bodyHtml ?? "",
-        attachments: Array.isArray(candidate.attachments) ? candidate.attachments : previous.attachments ?? [],
-        archive: candidate.archive && typeof candidate.archive === "object" ? candidate.archive : previous.archive ?? null,
-      });
-    }
-  }
-  return messages;
-}
-
-function normalizeKinds(input) {
-  const values = Array.isArray(input) ? input : String(input ?? "").split(",");
-  const kinds = [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
-  return kinds.every((kind) => LOCAL_CONTENT_KINDS.has(kind))
-    ? { ok: true, value: kinds }
-    : { ok: false, value: [] };
-}
-
-function validMailArchiveReceipt(value) {
-  return value?.version === 1
-    && value.availability === "available"
-    && /^mailarc_[a-f0-9]{24}_[a-f0-9]{40}$/.test(String(value.ref ?? ""))
-    && /^[a-f0-9]{64}$/.test(String(value.sha256 ?? ""))
-    && Number.isSafeInteger(value.size)
-    && value.size > 0
-    && value.size <= 50 * 1024 * 1024;
-}
-
-function normalizeQuery(value) {
-  return String(value ?? "").normalize("NFKC").trim().replace(/\s+/g, " ").slice(0, MAX_SEARCH_QUERY);
-}
-
-function ftsQuery(value) {
-  const tokens = searchTerms(value);
-  return tokens.map((token) => `"${token.replaceAll('"', '""')}"*`).join(" AND ");
-}
-
-function searchTerms(value) {
-  return value.match(/[\p{L}\p{N}_-]+/gu)?.slice(0, 20) ?? [];
-}
-
-function contentId(kind, ...identity) {
-  return `lc_${createHash("sha256").update(JSON.stringify([kind, ...identity])).digest("hex").slice(0, 32)}`;
-}
-
-function dedupeRelations(relations) {
-  return [...new Map(relations.map((relation) => [relation.id, relation])).values()];
-}
-
-function rootPathKey(root, path) {
-  return root?.kind && root?.id && path ? `${root.kind}:${root.id}:${safeRelativePath(path)}` : null;
-}
-
-function safeRelativePath(value) {
-  const normalized = String(value ?? "").replaceAll("\\", "/").replace(/^\.\//, "");
-  if (!normalized || normalized.startsWith("/") || /^[a-z]:\//i.test(normalized)) return null;
-  const parts = normalized.split("/");
-  if (parts.some((part) => !part || part === "." || part === ".." || part.includes("\0"))) return null;
-  return parts.join("/").slice(0, 2_000);
-}
-
-function safeSegment(value) {
-  return String(value ?? "unknown").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 160) || "unknown";
-}
-
-function articleTitle(text) {
-  const frontMatter = /^---\s*\n([\s\S]*?)\n---/.exec(text)?.[1] ?? "";
-  const yamlTitle = /^title:\s*["']?(.+?)["']?\s*$/im.exec(frontMatter)?.[1];
-  const flattenedTitle = /(?:^|\s)title:\s*["']([^"']+)["']/.exec(text)?.[1];
-  return boundedText(yamlTitle || flattenedTitle || /^#\s+(.+)$/m.exec(text)?.[1], 500);
-}
-
-function boundedSummary(value, fallback) {
-  const text = plainText(value).replace(/^---[\s\S]*?---\s*/, "").trim();
-  return boundedText(text || fallback, 600);
-}
-
-function plainText(value) {
-  return String(value ?? "")
-    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/[`*_>#|~-]+/g, " ")
-    .replace(/&(?:nbsp|amp|lt|gt|quot|#39);/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function boundedText(value, limit) {
-  return String(value ?? "").slice(0, limit);
-}
-
-function validTimestamp(value) {
-  return value && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
-}
-
-function textExtension(path) {
-  return new Set([".md", ".markdown", ".txt", ".html", ".htm", ".json", ".csv", ".tsv", ".xml", ".yaml", ".yml"])
-    .has(extname(path).toLowerCase());
-}
-
-function mimeTypeFor(path) {
-  const extension = extname(path).toLowerCase();
-  if ([".md", ".markdown"].includes(extension)) return "text/markdown";
-  if ([".html", ".htm"].includes(extension)) return "text/html";
-  if (extension === ".json") return "application/json";
-  if (extension === ".csv") return "text/csv";
-  if ([".txt", ".log", ".yaml", ".yml", ".xml", ".tsv"].includes(extension)) return "text/plain";
-  return null;
-}
-
-function normalizeDigest(value) {
-  const text = String(value ?? "").toLowerCase();
-  if (/^sha256:[a-f0-9]{64}$/.test(text)) return text;
-  if (/^[a-f0-9]{64}$/.test(text)) return `sha256:${text}`;
-  return null;
-}
-
-function parseJson(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return {};
-  }
-}
-
-function metadataSearchText(value, depth = 0) {
-  if (depth > 2 || value == null) return "";
-  if (["string", "number", "boolean"].includes(typeof value)) return boundedText(value, 2_000);
-  if (Array.isArray(value)) return value.slice(0, 50).map((item) => metadataSearchText(item, depth + 1)).join(" ");
-  if (typeof value === "object") {
-    return Object.entries(value).slice(0, 50).flatMap(([key, item]) => [key, metadataSearchText(item, depth + 1)]).join(" ");
-  }
-  return "";
+  return service;
 }

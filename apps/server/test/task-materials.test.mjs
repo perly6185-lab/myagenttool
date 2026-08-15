@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ import {
   createTaskMaterialService,
 } from "../src/services/task-materials.mjs";
 
-function fixture() {
+function fixture({ resolveLocalContentReference = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), "myagenttool-task-materials-"));
   const stateStorePath = join(root, "state", "snapshot.json");
   const state = { taskMaterialDrafts: [] };
@@ -23,6 +24,7 @@ function fixture() {
     nextId: (prefix) => `${prefix}_${++sequence}`,
     persistStateSoon: () => {},
     appendEvent: (event) => events.push(event),
+    resolveLocalContentReference,
   });
   return { root, stateStorePath, state, service, events, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
@@ -82,6 +84,88 @@ test("task materials survive draft creation, claim, and verified worktree materi
     assert.equal(preparedAfterRemoval.ok, true);
     assert.deepEqual(preparedAfterRemoval.assets, []);
     assert.equal(existsSync(join(nextWorktreePath, claimed.assets[0].path)), false);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("local content references reuse the task materializer and produce a provider-neutral manifest", async () => {
+  const bytes = Buffer.from("authoritative local content", "utf8");
+  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const fx = fixture({
+    resolveLocalContentReference: async ({ contentId, projectId }) => ({
+      ok: true,
+      sourceType: "bytes",
+      bytes,
+      size: bytes.length,
+      sha256: digest,
+      originalName: "source.md",
+      record: { id: contentId, kind: "article", title: "Source", projectId, workItemId: "source_task", mimeType: "text/markdown", storageMode: "referenced" },
+    }),
+  });
+  try {
+    fx.state.workItems = [{
+      id: "work_refs",
+      ownerTeamId: "team_1",
+      projectId: "project_1",
+      terminalId: "device_1",
+      inputAssets: [],
+      localContentRefs: [{ id: "wcr_1", contentId: `lc_${"a".repeat(32)}`, purpose: "required_input", selectedFingerprint: digest }],
+    }];
+    const worktreePath = join(fx.root, "reference-worktree");
+    mkdirSync(worktreePath, { recursive: true });
+    const prepared = await fx.service.materialize({ workItemId: "work_refs", worktree: { id: "wt_refs", path: worktreePath }, actor });
+    assert.equal(prepared.ok, true);
+    assert.equal(prepared.assets.length, 1);
+    assert.equal(prepared.assets[0].contentId, `lc_${"a".repeat(32)}`);
+    assert.equal(readFileSync(join(worktreePath, prepared.assets[0].path), "utf8"), bytes.toString("utf8"));
+    assert.equal(prepared.receipts[0].sourceFingerprint, digest);
+    assert.match(prepared.manifest.fingerprint, /^sha256:[a-f0-9]{64}$/);
+    const manifest = JSON.parse(readFileSync(join(worktreePath, prepared.manifest.path), "utf8"));
+    assert.equal(manifest.entries[0].trust, "untrusted_reference");
+    assert.equal(JSON.stringify(manifest).includes(fx.root), false);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("an unavailable optional library reference is reported and omitted without blocking required inputs", async () => {
+  const bytes = Buffer.from("required content", "utf8");
+  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const fx = fixture({
+    resolveLocalContentReference: async ({ contentId }) => contentId.endsWith("b".repeat(32))
+      ? { ok: false, error: "local_content_original_missing" }
+      : {
+          ok: true,
+          sourceType: "bytes",
+          bytes,
+          size: bytes.length,
+          sha256: digest,
+          originalName: "required.txt",
+          record: { id: contentId, kind: "task_input", title: "Required", mimeType: "text/plain", storageMode: "managed" },
+        },
+  });
+  try {
+    fx.state.workItems = [{
+      id: "work_optional",
+      ownerTeamId: "team_1",
+      inputAssets: [],
+      localContentRefs: [
+        { id: "required", contentId: `lc_${"a".repeat(32)}`, purpose: "required_input", title: "Required" },
+        { id: "optional", contentId: `lc_${"b".repeat(32)}`, purpose: "reference", title: "Optional" },
+      ],
+    }];
+    const worktreePath = join(fx.root, "optional-worktree");
+    mkdirSync(worktreePath, { recursive: true });
+    const prepared = await fx.service.materialize({ workItemId: "work_optional", worktree: { id: "wt_optional", path: worktreePath }, actor });
+    assert.equal(prepared.ok, true);
+    assert.equal(prepared.assets.length, 1);
+    assert.deepEqual(prepared.skippedReferences, [{
+      referenceId: "optional",
+      contentId: `lc_${"b".repeat(32)}`,
+      title: "Optional",
+      reason: "local_content_original_missing",
+    }]);
   } finally {
     fx.cleanup();
   }

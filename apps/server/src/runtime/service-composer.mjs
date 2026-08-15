@@ -428,14 +428,24 @@ export function createServerRuntimeServices({
   let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
   let syncAdaptiveWorkItemOutcome = () => {};
   let requestWorkItemAutoSchedulerSweep = () => {};
-  const taskMaterialService = createTaskMaterialService({
-    state, stateStorePath, now, nextId, persistStateSoon, appendEvent, store,
-  });
   const localContentCatalogService = createLocalContentCatalogService({
-    state, stateStorePath, now,
+    state, stateStorePath, now, autoIndex: true,
+  });
+  const persistIndexedContentStateSoon = (sources, reason) => (...args) => {
+    const result = persistStateSoon(...args);
+    void localContentCatalogService.requestAutomaticIncremental({ reason, sources }).catch(() => {});
+    return result;
+  };
+  const persistTaskMaterialStateSoon = persistIndexedContentStateSoon(["work_items"], "task_material_changed");
+  const persistWorkItemStateSoon = persistIndexedContentStateSoon(["work_items", "articles"], "work_item_changed");
+  const persistArticleStateSoon = persistIndexedContentStateSoon(["articles", "work_items"], "article_changed");
+  const persistMailboxStateSoon = persistIndexedContentStateSoon(["mail", "work_items"], "mail_changed");
+  const taskMaterialService = createTaskMaterialService({
+    state, stateStorePath, now, nextId, persistStateSoon: persistTaskMaterialStateSoon, appendEvent, store,
+    resolveLocalContentReference: localContentCatalogService.resolveOriginal,
   });
   const workItemService = createWorkItemService({
-    state, now, nextId, appendEvent, persistStateSoon, store,
+    state, now, nextId, appendEvent, persistStateSoon: persistWorkItemStateSoon, store,
     sendAlert: alertOutbox.enqueue,
     retryAlert: alertOutbox.retry,
     budgetStatusFor: (projectId) => resolveWorkItemProjectBudget(projectId),
@@ -450,6 +460,7 @@ export function createServerRuntimeServices({
     claimTaskMaterialDraft: taskMaterialService.claimDraft,
     inspectTaskMaterialDraft: taskMaterialService.getDraft,
     resolveClaimedTaskMaterial: taskMaterialService.resolveClaimedAsset,
+    resolveLocalContentReference: localContentCatalogService.resolveOriginal,
   });
   let releaseRoutineLedgerReservations = () => {};
   const businessRoutineService = createBusinessRoutineService({
@@ -492,7 +503,7 @@ export function createServerRuntimeServices({
     maxConcurrent: articleImportConfig.maxConcurrent,
     maxPending: articleImportConfig.maxPending,
     limits: articleImportConfig.limits,
-    persistStateSoon,
+    persistStateSoon: persistArticleStateSoon,
     createInvocation: (task, agent, options) => {
       if (!invocationService) throw new Error("article_derivative_agent_unavailable");
       return invocationService.createInvocation(task, agent, options);
@@ -1183,6 +1194,9 @@ export function createServerRuntimeServices({
     // #1084: transcript count-cap evictions spill to the retention archive.
     capWithArchive: retentionArchive.capWithArchive,
     onInvocationCompleted: (invocation) => {
+      void localContentCatalogService.requestAutomaticIncremental({ reason: "invocation_completed" }).catch(() => {
+        /* local search keeps the previous valid index when an incremental pass fails */
+      });
       advanceAutoRunHook?.(invocation);
       try {
         recordApplicationExecutionStat(invocation);
@@ -2094,7 +2108,7 @@ export function createServerRuntimeServices({
   // Ordinary-user mailbox surface. This is a read model over imported mail and
   // a bounded store for user-authored drafts; credentials remain device-local.
   const mailboxService = createMailboxService({
-    state, now, nextId, appendEvent, persistStateSoon, store,
+    state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
     mailSendEnabled: isMailSendEnabled,
     createCapabilityInvocation,
     createWorkItem: workItemService.createWorkItem,
@@ -4366,6 +4380,11 @@ export function createServerRuntimeServices({
     rebuildLocalContentCatalog: localContentCatalogService.rebuild,
     searchLocalContent: localContentCatalogService.search,
     getLocalContentCatalogStats: localContentCatalogService.stats,
+    previewLocalContent: localContentCatalogService.preview,
+    refreshLocalContent: localContentCatalogService.refresh,
+    getLocalContentHealth: localContentCatalogService.health,
+    resolveLocalContentOriginal: localContentCatalogService.resolveOriginal,
+    resolveLocalContentContainer: localContentCatalogService.resolveContainer,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
     enableChannel: channelService.enableChannel,
@@ -4391,6 +4410,8 @@ export function createServerRuntimeServices({
     addWorkItemMaterials: workItemService.addMaterials,
     removeWorkItemMaterial: workItemService.removeMaterial,
     restoreWorkItemMaterial: workItemService.restoreMaterial,
+    addWorkItemContentReference: workItemService.addContentReference,
+    removeWorkItemContentReference: workItemService.removeContentReference,
     updateWorkItem: workItemService.updateWorkItem,
     recordWorkItemProgress: workItemService.recordWorkItemProgress,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,
@@ -4815,6 +4836,8 @@ export function createServerRuntimeServices({
 
   return {
     httpDependencies,
+    startLocalContentIndexing: localContentCatalogService.start,
+    closeRuntimeServices: localContentCatalogService.close,
     savePersistentState,
     // #1084: the retention sweep (index.mjs) leaves an audit event per reap batch.
     appendEvent,

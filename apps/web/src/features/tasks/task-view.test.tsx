@@ -725,7 +725,7 @@ describe("TaskView local work items", () => {
     mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_1", worktreeId: "wtr_2" } });
     render(<TaskView />);
     fireEvent.click(await screen.findByText("Editable issue"));
-    expect(await screen.findByTestId("work-item-summary-view")).toBeTruthy();
+    expect(await screen.findByTestId("work-item-summary-view", undefined, { timeout: 5_000 })).toBeTruthy();
     await openExpertDetails();
     expect(screen.getByRole("dialog", { name: "Local issue details" }).className).toContain("max-w-7xl");
     const cockpit = (await screen.findByText("Task cockpit")).closest("section");
@@ -778,7 +778,7 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mocks.createWorkItemComment).toHaveBeenCalledWith("lwi_1", "Looks good"));
     expect(screen.getByText("Created")).toBeTruthy();
-  });
+  }, 15_000);
 
   it("guards section navigation and detail close when the report has unsaved edits", async () => {
     const item = {

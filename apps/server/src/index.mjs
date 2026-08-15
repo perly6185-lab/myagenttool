@@ -77,6 +77,8 @@ const {
   exportJsonSnapshot,
   selfCheckDependencies,
   appendEvent,
+  startLocalContentIndexing,
+  closeRuntimeServices,
 } = createServerRuntimeServices({
   namespace,
   protocolVersion,
@@ -107,6 +109,9 @@ const server = createHttpServer({
 
 server.listen(port, host, () => {
   console.log(`[server] http://${host}:${port}`);
+  void startLocalContentIndexing().catch((error) => {
+    console.warn(`[local-content] automatic indexing could not start: ${error?.message ?? error}`);
+  });
 });
 
 // Channel gateways (#1090/#1110; ADR 0012 rule 1 + ADR 0013): each provider is
@@ -416,15 +421,19 @@ if (typeof httpDependencies.sweepReportSchedule === "function") {
 // path — both via savePersistentState), then write a JSON EXPORT as a rollback/backup
 // artifact (#1042 — a no-op-duplicate on the memory path where JSON is the backing),
 // then release the lock.
-function shutdown() {
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   savePersistentState();
   exportJsonSnapshot?.();
+  await closeRuntimeServices?.();
   closeSqliteStore();
   releaseStateLock();
   process.exit(0);
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
 // Best-effort release on any other clean exit so a crash-free shutdown never
 // leaves a stale lock the next start has to reclaim.
 process.on("exit", () => releaseStateLock());
