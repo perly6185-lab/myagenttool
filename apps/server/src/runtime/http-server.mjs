@@ -444,6 +444,11 @@ export function createHttpServer({
   createMailboxTask,
   rebuildLocalContentCatalog,
   searchLocalContent,
+  browseLocalContentDirectories,
+  describeLocalContentRetrieval,
+  retrieveLocalContentDirectories,
+  retrieveLocalContentSummaries,
+  readRetrievedLocalContent,
   getLocalContentCatalogStats,
   previewLocalContent,
   refreshLocalContent,
@@ -773,7 +778,9 @@ export function createHttpServer({
 
       if (await handleLocalContentRoutes({
         req, res, url, sendJson, readJson, actor,
-        rebuildLocalContentCatalog, searchLocalContent, getLocalContentCatalogStats, previewLocalContent,
+        rebuildLocalContentCatalog, searchLocalContent, browseLocalContentDirectories, describeLocalContentRetrieval,
+        retrieveLocalContentDirectories, retrieveLocalContentSummaries, readRetrievedLocalContent,
+        getLocalContentCatalogStats, previewLocalContent,
         refreshLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
       })) {
         return;

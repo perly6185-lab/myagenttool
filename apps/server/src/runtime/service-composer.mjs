@@ -32,6 +32,10 @@ import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
 import { createMailSendService, isMailSendEnabled } from "../services/mail-send.mjs";
 import { createMailboxService } from "../services/mailbox.mjs";
 import { createLocalContentCatalogService } from "../services/local-content-catalog.mjs";
+import {
+  createLocalContentRetrievalAuthorizer,
+  createLocalContentRetrievalService,
+} from "../services/local-content-retrieval.mjs";
 import { createChannelService, defaultReadinessProbes } from "../services/channels.mjs";
 import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
 import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
@@ -436,6 +440,13 @@ export function createServerRuntimeServices({
   let requestWorkItemAutoSchedulerSweep = () => {};
   const localContentCatalogService = createLocalContentCatalogService({
     state, stateStorePath, now, autoIndex: true,
+  });
+  const localContentRetrievalService = createLocalContentRetrievalService({
+    browseDirectories: localContentCatalogService.browseDirectories,
+    searchLocalContent: localContentCatalogService.search,
+    previewLocalContent: localContentCatalogService.preview,
+    authorizeRetrieval: createLocalContentRetrievalAuthorizer({ state, teamOf }),
+    appendEvent,
   });
   const persistIndexedContentStateSoon = (sources, reason) => (...args) => {
     const result = persistStateSoon(...args);
@@ -1201,6 +1212,7 @@ export function createServerRuntimeServices({
     // #1084: transcript count-cap evictions spill to the retention archive.
     capWithArchive: retentionArchive.capWithArchive,
     onInvocationCompleted: (invocation) => {
+      localContentRetrievalService.releaseInvocation(invocation.id);
       void localContentCatalogService.requestAutomaticIncremental({ reason: "invocation_completed" }).catch(() => {
         /* local search keeps the previous valid index when an incremental pass fails */
       });
@@ -4660,6 +4672,11 @@ export function createServerRuntimeServices({
     createMailboxTask: mailboxService.createTaskFromMessage,
     rebuildLocalContentCatalog: localContentCatalogService.rebuild,
     searchLocalContent: localContentCatalogService.search,
+    browseLocalContentDirectories: localContentCatalogService.browseDirectories,
+    describeLocalContentRetrieval: localContentRetrievalService.describe,
+    retrieveLocalContentDirectories: localContentRetrievalService.directory,
+    retrieveLocalContentSummaries: localContentRetrievalService.summaries,
+    readRetrievedLocalContent: localContentRetrievalService.read,
     getLocalContentCatalogStats: localContentCatalogService.stats,
     previewLocalContent: localContentCatalogService.preview,
     refreshLocalContent: localContentCatalogService.refresh,
