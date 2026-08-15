@@ -29,6 +29,7 @@ import {
   normalizeKinds,
   normalizeQuery,
   parseIndexSources,
+  searchCursorBinding,
   sourceForKind,
 } from "./local-content-catalog-query.mjs";
 import {
@@ -457,11 +458,24 @@ export function createLocalContentCatalogService({
     }
     const normalizedQuery = normalizeQuery(query);
     const boundedLimit = Math.min(MAX_SEARCH_LIMIT, Math.max(1, Number.parseInt(limit, 10) || 30));
-    const cursorOffset = decodeSearchCursor(cursor);
+    const db = await database();
+    const catalogRevision = db.prepare("SELECT value FROM local_content_meta WHERE key = 'catalog_revision'").get()?.value ?? "empty";
+    const cursorBinding = searchCursorBinding({
+      teamId,
+      projectId: normalizedProjectId,
+      workItemId: workItemId == null || workItemId === "" ? null : String(workItemId),
+      sourceType: sourceType == null || sourceType === "" ? null : String(sourceType),
+      yearMonth: normalizedYearMonth,
+      availability: normalizedAvailability.value,
+      indexStatus: normalizedIndexStatus.value,
+      kinds: [...normalizedKinds.value].sort(),
+      query: normalizedQuery,
+      catalogRevision,
+    });
+    const cursorOffset = decodeSearchCursor(cursor, cursorBinding);
     if (cursor && cursorOffset == null) return { status: 400, body: { error: "local_content_cursor_invalid" } };
     const requestedOffset = cursorOffset ?? (Number.parseInt(offset, 10) || 0);
     const boundedOffset = Math.min(MAX_SEARCH_OFFSET, Math.max(0, requestedOffset));
-    const db = await database();
     const rows = searchCatalog(db, {
       teamId,
       projectId: normalizedProjectId,
@@ -485,7 +499,7 @@ export function createLocalContentCatalogService({
         limit: boundedLimit,
         offset: boundedOffset,
         hasMore: results.length === boundedLimit,
-        nextCursor: results.length === boundedLimit ? encodeSearchCursor(boundedOffset + results.length) : null,
+        nextCursor: results.length === boundedLimit ? encodeSearchCursor(boundedOffset + results.length, cursorBinding) : null,
         retrieval: { mode: normalizedQuery ? "fts_with_metadata_fallback" : "metadata_recent", offline: true },
       },
     };

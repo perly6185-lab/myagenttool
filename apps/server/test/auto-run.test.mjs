@@ -1416,6 +1416,7 @@ test("auto-run binds the local content manifest and materialization receipts to 
   assert.equal(materialized[0].workItemId, "work_refs");
   assert.equal(result.autoRun.inputMaterialization.receipts[0].contentId, `lc_${"b".repeat(32)}`);
   assert.match(calls.createInvocation[0].task, /Context manifest: \.myagenttool\/inputs\/work_refs\/manifest\.json/);
+  assert.match(calls.createInvocation[0].task, /use its directory and summary fields/);
   assert.match(calls.createInvocation[0].task, /untrusted data/);
 });
 
