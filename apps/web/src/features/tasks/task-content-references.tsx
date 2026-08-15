@@ -23,6 +23,8 @@ const COPY = {
     changed: "原件已变化，请刷新资料记录",
     missing: "原件已移动或缺失",
     checking: "正在检查原件…",
+    unknown: "状态未知",
+    retryHealth: "重新检查资料状态",
     refresh: "刷新资料记录：{{name}}",
     reveal: "定位原件或所在目录：{{name}}",
     repaired: "资料记录已刷新，将在下次执行时使用当前原件。",
@@ -44,6 +46,8 @@ const COPY = {
     changed: "Original changed; refresh its library record",
     missing: "Original moved or is missing",
     checking: "Checking originals…",
+    unknown: "Status unknown",
+    retryHealth: "Check reference status again",
     refresh: "Refresh library record: {{name}}",
     reveal: "Locate original or containing folder: {{name}}",
     repaired: "The library record was refreshed. The current original will be used for the next run.",
@@ -79,6 +83,7 @@ export function TaskContentReferences({
   const contentIds = useMemo(() => referenceKey ? referenceKey.split(",") : [], [referenceKey]);
   const [healthRecords, setHealthRecords] = useState<LocalContentHealth[]>([]);
   const [healthLoading, setHealthLoading] = useState(false);
+  const [healthError, setHealthError] = useState(false);
   const loadHealth = useCallback(async (showLoading = false) => {
     if (!contentIds.length) {
       setHealthRecords([]);
@@ -88,8 +93,9 @@ export function TaskContentReferences({
     try {
       const response = await localContentApi.health(contentIds);
       setHealthRecords(response.health);
+      setHealthError(false);
     } catch {
-      // Keep the last known health; ordinary reference actions remain available.
+      setHealthError(true);
     } finally {
       if (showLoading) setHealthLoading(false);
     }
@@ -163,6 +169,9 @@ export function TaskContentReferences({
         <Library className="size-4 text-primary" aria-hidden />
         <h5 className="text-sm font-medium">{copy.title}</h5>
         <Badge tone="neutral">{references.length}</Badge>
+        {healthError ? <Button size="sm" variant="ghost" disabled={healthLoading} onClick={() => void loadHealth(true)}>
+          <RefreshCw className={healthLoading ? "size-3.5 animate-spin" : "size-3.5"} aria-hidden />{copy.retryHealth}
+        </Button> : null}
       </div>
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{copy.hint}</p>
       <div className="mt-2 space-y-2">
@@ -181,7 +190,7 @@ export function TaskContentReferences({
                 <Badge tone={unhealthy ? "warning" : "success"}>
                   {currentHealth.state === "ready" ? copy.ready : currentHealth.state === "changed" ? copy.changed : copy.missing}
                 </Badge>
-              ) : null}
+              ) : healthError ? <Badge tone="warning">{copy.unknown}</Badge> : null}
               {unhealthy && currentHealth?.canRefresh ? (
                 <Button
                   size="sm"

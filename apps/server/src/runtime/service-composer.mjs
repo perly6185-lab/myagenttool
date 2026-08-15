@@ -444,7 +444,7 @@ export function createServerRuntimeServices({
   const localContentRetrievalService = createLocalContentRetrievalService({
     browseDirectories: localContentCatalogService.browseDirectories,
     searchLocalContent: localContentCatalogService.search,
-    previewLocalContent: localContentCatalogService.preview,
+    readLocalContentText: localContentCatalogService.readTextChunk,
     authorizeRetrieval: createLocalContentRetrievalAuthorizer({ state, teamOf }),
     appendEvent,
   });
