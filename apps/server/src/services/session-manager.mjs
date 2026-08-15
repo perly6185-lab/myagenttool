@@ -199,9 +199,10 @@ function summarizeExecError(error) {
  *   now: () => string,
  *   appendEvent: (event: object) => void,
  *   persistStateSoon: () => void,
+ *   sendAlert?: (alert: object) => void,
  * }} deps
  */
-export function createSessionManager({ state, now, appendEvent, persistStateSoon }) {
+export function createSessionManager({ state, now, appendEvent, persistStateSoon, sendAlert } = {}) {
   if (!Array.isArray(state.sessions)) state.sessions = [];
 
   /** per-site exclusive lock — the profile dir cannot host two browsers. */
@@ -300,6 +301,16 @@ export function createSessionManager({ state, now, appendEvent, persistStateSoon
   }
 
   /**
+   * Surface a probe transition through the alert outbox. Transition-deduped by
+   * the caller: a sweep that re-finds the same state must not re-alert (the
+   * 180-minute interval would otherwise spam one alert per cycle).
+   */
+  function emitSessionAlert(site, displayName, { kind, severity, message, data = {} }) {
+    if (typeof sendAlert !== "function") return;
+    sendAlert({ kind, severity, message, data: { site, displayName, ...data } });
+  }
+
+  /**
    * Probe a site's profile health. Updates the durable row + emits an event.
    * `loggedIn:false` is a FINDING (exit 0 from the CLI), not an error.
    */
@@ -307,6 +318,7 @@ export function createSessionManager({ state, now, appendEvent, persistStateSoon
     const entry = findSessionSite(site);
     if (!entry) throw sessionError("session_site_unknown", `Unknown session site '${site}'.`);
     const { probeTimeoutMs } = resolveSessionSiteConfig(site, env);
+    const previous = sessionRow(site)?.status ?? "unknown";
 
     let result;
     try {
@@ -320,6 +332,16 @@ export function createSessionManager({ state, now, appendEvent, persistStateSoon
         message: `Session probe for ${site} failed: ${String(error?.message ?? error).slice(0, 200)}`,
         data: { site },
       });
+      // A probe that cannot even run is only actionable when it degrades a
+      // previously-healthy site — otherwise there is no transition to report.
+      if (previous === "active") {
+        emitSessionAlert(site, entry.displayName, {
+          kind: "session_health",
+          severity: "warning",
+          message: `Session probe for ${site} (previously healthy) failed: ${String(error?.message ?? error).slice(0, 200)}`,
+          data: { previous, detail: String(error?.message ?? error).slice(0, 500) },
+        });
+      }
       throw error;
     }
 
@@ -332,6 +354,25 @@ export function createSessionManager({ state, now, appendEvent, persistStateSoon
       message: `Session probe for ${site}: ${loggedIn ? "logged in" : "not logged in"} (${String(result?.detail ?? "")}).`,
       data: { site, loggedIn },
     });
+    if (loggedIn) {
+      if (previous === "needs_login") {
+        emitSessionAlert(site, entry.displayName, {
+          kind: "session_health_recovered",
+          severity: "info",
+          message: `Session for ${site} recovered: probe now reports logged in (${String(result?.detail ?? "")}).`,
+          data: { previous, detail: String(result?.detail ?? "") },
+        });
+      }
+    } else if (previous !== "needs_login") {
+      // Covers both first discovery (unknown → needs_login) and expiry
+      // (active → needs_login). Staying expired is NOT a new transition.
+      emitSessionAlert(site, entry.displayName, {
+        kind: "session_health",
+        severity: "warning",
+        message: `Session for ${site} is no longer logged in (${String(result?.detail ?? "")}). Interactive re-login required.`,
+        data: { previous, detail: String(result?.detail ?? "") },
+      });
+    }
     return { ok: true, loggedIn, detail: String(result?.detail ?? ""), session: sessionRow(site) };
   }
 
