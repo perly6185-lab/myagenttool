@@ -56,6 +56,7 @@ export type LocalContentCatalogStats = {
     months: Array<{ value: string; count: number }>;
     availability: Array<{ value: string; count: number }>;
     indexStatuses: Array<{ value: string; count: number }>;
+    coverage?: Record<string, { limit: number; returned: number; truncated: boolean }>;
   };
   lastRebuiltAt: string | null;
   rebuildable: boolean;

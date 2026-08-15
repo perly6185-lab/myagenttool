@@ -309,6 +309,33 @@ test("catalog search is tenant and project scoped and rejects unknown kinds", as
   }
 });
 
+test("catalog search combines FTS body hits with metadata-only hits", async () => {
+  const fx = fixture();
+  try {
+    fx.state.applicationResults.push({
+      id: "result_mail_body_hit",
+      applicationId: "mail_app",
+      ownerTeamId: "team_1",
+      createdAt: "2026-08-14T01:22:00.000Z",
+      data: {
+        kind: "message",
+        messageId: "<body-hit@example.com>",
+        from: "Bob <bob@example.com>",
+        subject: "Body-only match",
+        body: "Alice is named in this message body.",
+      },
+    });
+    await fx.service.rebuild({}, actor);
+    const result = await fx.service.search({ query: "Alice", kinds: ["mail"] }, actor);
+    assert.deepEqual(new Set(result.body.results.map((record) => record.title)), new Set([
+      "本地文件整理建议",
+      "Body-only match",
+    ]));
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("catalog can be deleted and rebuilt without changing originals", async () => {
   const fx = fixture();
   try {
@@ -801,12 +828,18 @@ test("logical directory filters, snippets, facets, and opaque cursors remain usa
     assert.match(first.body.nextCursor, /^[A-Za-z0-9_-]+$/);
     const second = await fx.service.search({ limit: 1, cursor: first.body.nextCursor }, actor);
     assert.notEqual(second.body.results[0].id, first.body.results[0].id);
+    const crossQuery = await fx.service.search({ query: "local", limit: 1, cursor: first.body.nextCursor }, actor);
+    assert.deepEqual(crossQuery, { status: 400, body: { error: "local_content_cursor_invalid" } });
+    await fx.service.rebuild({}, actor);
+    const stale = await fx.service.search({ limit: 1, cursor: first.body.nextCursor }, actor);
+    assert.deepEqual(stale, { status: 400, body: { error: "local_content_cursor_invalid" } });
     const invalid = await fx.service.search({ cursor: "not-a-cursor" }, actor);
     assert.deepEqual(invalid, { status: 400, body: { error: "local_content_cursor_invalid" } });
 
     const stats = await fx.service.stats(actor);
     assert.equal(stats.body.catalog.facets.workItems.some((facet) => facet.value === "work_1"), true);
     assert.equal(stats.body.catalog.facets.months.some((facet) => facet.value === "2026-08"), true);
+    assert.equal(stats.body.catalog.facets.coverage.workItems.truncated, false);
   } finally {
     await fx.cleanup();
   }
@@ -903,6 +936,9 @@ test("50,000-record lexical search stays within budget and directory paging reac
     assert.equal(durations[18] < 300, true, `search p95 was ${durations[18].toFixed(1)} ms`);
     const beyondLegacyCap = await service.search({ limit: 1, offset: 10_001 }, scaleActor);
     assert.equal(beyondLegacyCap.body.results.length, 1);
+    const stats = await service.stats(scaleActor);
+    assert.equal(stats.body.catalog.facets.workItems.length, 200);
+    assert.deepEqual(stats.body.catalog.facets.coverage.workItems, { limit: 200, returned: 200, truncated: true });
   } finally {
     await service.close();
   }

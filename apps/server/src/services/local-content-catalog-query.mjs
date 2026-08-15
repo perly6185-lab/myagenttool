@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const LOCAL_CONTENT_KINDS = new Set(["article", "mail", "task", "task_input", "task_output"]);
 export const LOCAL_CONTENT_INDEX_SOURCES = new Set(["articles", "mail", "work_items"]);
 
@@ -48,15 +50,22 @@ export function normalizeChoice(value, allowed) {
     : { ok: false, value: null };
 }
 
-export function encodeSearchCursor(offset) {
-  return Buffer.from(JSON.stringify({ version: 1, offset }), "utf8").toString("base64url");
+export function searchCursorBinding(value) {
+  return createHash("sha256").update(JSON.stringify(value ?? {})).digest("base64url").slice(0, 32);
 }
 
-export function decodeSearchCursor(value) {
+export function encodeSearchCursor(offset, binding) {
+  return Buffer.from(JSON.stringify({ version: 2, offset, binding }), "utf8").toString("base64url");
+}
+
+export function decodeSearchCursor(value, expectedBinding) {
   if (value == null || value === "") return null;
   try {
     const parsed = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
-    return parsed?.version === 1 && Number.isSafeInteger(parsed.offset) && parsed.offset >= 0 && parsed.offset <= MAX_SEARCH_OFFSET
+    return parsed?.version === 2
+      && typeof parsed.binding === "string"
+      && parsed.binding === expectedBinding
+      && Number.isSafeInteger(parsed.offset) && parsed.offset >= 0 && parsed.offset <= MAX_SEARCH_OFFSET
       ? parsed.offset
       : null;
   } catch {

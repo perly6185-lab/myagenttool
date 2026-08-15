@@ -47,6 +47,7 @@ export function replaceCatalog(db, { records, relations, indexedAt }) {
     }
     rebuildSameContentRelations(db, insertRelation);
     db.prepare("INSERT OR REPLACE INTO local_content_meta(key, value) VALUES('last_rebuilt_at', ?)").run(indexedAt);
+    bumpCatalogRevision(db);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -113,6 +114,7 @@ export function applyCatalogDelta(db, { records, relations, indexedAt }, { sourc
     db.prepare("DELETE FROM local_content_relations WHERE relation_type = 'same_content'").run();
     relationCount += rebuildSameContentRelations(db, insertRelation);
     db.prepare("INSERT OR REPLACE INTO local_content_meta(key, value) VALUES('last_incremental_at', ?)").run(indexedAt);
+    bumpCatalogRevision(db);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -253,8 +255,7 @@ export function searchCatalog(db, {
       // Bounded metadata fallback below is the deterministic degraded path.
     }
   }
-  if (rows.length === 0) {
-    const remaining = targetCount;
+  if (rows.length < targetCount) {
     const parsedTerms = searchTerms(query);
     const terms = parsedTerms.length ? parsedTerms : [query];
     const likes = terms.map((term) => `%${term.toLocaleLowerCase()}%`);
@@ -268,7 +269,7 @@ export function searchCatalog(db, {
         COALESCE(r.occurred_at, r.imported_at, r.indexed_at) DESC,
         r.id
       LIMIT ? OFFSET ?
-    `).all(...params, ...likes, primaryLike, primaryLike, remaining, 0);
+    `).all(...params, ...likes, primaryLike, primaryLike, targetCount, 0);
     for (const row of fallback) {
       if (seen.has(row.id)) continue;
       rows.push(row);
@@ -397,21 +398,49 @@ export function summarizeCatalog(db, teamId) {
 }
 
 function summarizeFacets(db, teamId) {
-  const group = (expression, extra = "") => db.prepare(`
-    SELECT ${expression} AS value, COUNT(*) AS count
-    FROM local_content_records
-    WHERE owner_team_id = ? ${extra}
-    GROUP BY value
-    HAVING value IS NOT NULL AND value != ''
-    ORDER BY count DESC, value
-    LIMIT 200
-  `).all(teamId).map((row) => ({ value: row.value, count: Number(row.count) }));
-  return {
-    projects: group("project_id"),
-    workItems: group("work_item_id"),
-    sources: group("source_type"),
-    months: group("substr(COALESCE(occurred_at, imported_at, modified_at, indexed_at), 1, 7)"),
-    availability: group("CASE WHEN original_available = 1 THEN 'available' ELSE 'unavailable' END"),
-    indexStatuses: group("index_status"),
+  const limit = 200;
+  const group = (expression, extra = "") => {
+    const rows = db.prepare(`
+      SELECT ${expression} AS value, COUNT(*) AS count
+      FROM local_content_records
+      WHERE owner_team_id = ? ${extra}
+      GROUP BY value
+      HAVING value IS NOT NULL AND value != ''
+      ORDER BY count DESC, value
+      LIMIT ?
+    `).all(teamId, limit + 1);
+    return {
+      values: rows.slice(0, limit).map((row) => ({ value: row.value, count: Number(row.count) })),
+      coverage: { limit, returned: Math.min(rows.length, limit), truncated: rows.length > limit },
+    };
   };
+  const projects = group("project_id");
+  const workItems = group("work_item_id");
+  const sources = group("source_type");
+  const months = group("substr(COALESCE(occurred_at, imported_at, modified_at, indexed_at), 1, 7)");
+  const availability = group("CASE WHEN original_available = 1 THEN 'available' ELSE 'unavailable' END");
+  const indexStatuses = group("index_status");
+  return {
+    projects: projects.values,
+    workItems: workItems.values,
+    sources: sources.values,
+    months: months.values,
+    availability: availability.values,
+    indexStatuses: indexStatuses.values,
+    coverage: {
+      projects: projects.coverage,
+      workItems: workItems.coverage,
+      sources: sources.coverage,
+      months: months.coverage,
+      availability: availability.coverage,
+      indexStatuses: indexStatuses.coverage,
+    },
+  };
+}
+
+function bumpCatalogRevision(db) {
+  db.prepare(`
+    INSERT INTO local_content_meta(key, value) VALUES('catalog_revision', '1')
+    ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1
+  `).run();
 }

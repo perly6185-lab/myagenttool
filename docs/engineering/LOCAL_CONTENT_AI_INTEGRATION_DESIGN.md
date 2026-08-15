@@ -4,7 +4,7 @@ Status: First server and ordinary-user Web slice implemented for review
 
 Date: 2026-08-14
 
-Implementation: the server provides guarded original resolution, task content-reference APIs and health checks, shared worktree materialization, a provider-neutral manifest, invocation-scoped receipts, catalog lineage, durable source-scoped automatic indexing journals, known-original file watching, safe native-text/parsed-mail/PDF/Office extracted-text preview, and path-private operating-system location. The Web slice adds the Local Library destination, directory facets and cursor paging, automatic-index status and recovery, preview/location, task selection, and task-detail reference health/removal/recovery. OCR, discovery of new unregistered files, visual document rendering, tags, and saved searches remain follow-up slices.
+Implementation: the server provides guarded original resolution, task content-reference APIs and health checks, shared worktree materialization, a provider-neutral directory/summary/original manifest, stale execution-input pruning, invocation-scoped receipts, catalog lineage, query-and-revision-bound cursors, combined FTS/metadata retrieval, durable source-scoped automatic indexing journals, known-original file watching, safe native-text/parsed-mail/PDF/Office extracted-text preview, and path-private operating-system location. The Web slice adds the Local Library destination, directory facets with explicit coverage, cursor paging, automatic-index status and recovery, preview/location, task selection, and task-detail reference health/removal/recovery. OCR, discovery of new unregistered files, visual document rendering, tags, and saved searches remain follow-up slices.
 
 Architecture: [ADR 0026](ADR_0026_LOCAL_CONTENT_LIBRARY.md)
 
@@ -109,10 +109,11 @@ The current task-material path remains valid and becomes the common execution bo
 2. Verify team/project visibility, root confinement, regular-file status, size, and fingerprint.
 3. Copy required bytes atomically into `.myagenttool/inputs/<work-item-id>/`.
 4. Verify the destination hash before launching the agent.
-5. Write `.myagenttool/inputs/<work-item-id>/manifest.json` with display name, kind, `contentId`, source fingerprint, execution-relative path, and an untrusted-reference label.
-6. Keep the directory ignored by Git and excluded from catalog scanning.
-7. Bind the manifest fingerprint and materialization receipts to the invocation contract.
-8. On retry, rebuild or verify byte-identical inputs from the authoritative source.
+5. Rebuild `.myagenttool/inputs/<work-item-id>/` from the current selected set so a same-worktree retry cannot retain removed inputs.
+6. Write `manifest.json` with logical directory fields, a bounded summary, display name, kind, `contentId`, source fingerprint, execution-relative original path, and an untrusted-reference label. Agents inspect this index before opening only the originals needed for the task.
+7. Keep the directory ignored by Git and excluded from catalog scanning.
+8. Bind the manifest fingerprint and materialization receipts to the invocation contract.
+9. On retry, rebuild or verify byte-identical inputs from the authoritative source.
 
 Existing user uploads already follow the essential source-to-worktree copy pattern. Local-library references reuse that materializer instead of creating a second AI-specific file pipeline.
 

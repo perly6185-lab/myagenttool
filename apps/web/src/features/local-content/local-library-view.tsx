@@ -191,6 +191,7 @@ export function LocalLibraryView() {
       {rebuildError ? <p className="rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-sm text-destructive" role="alert">{rebuildError}</p> : null}
       {indexing ? <p className="flex items-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.05] px-3 py-2 text-sm" role="status"><RefreshCw className="size-4 animate-spin text-primary" aria-hidden />{copy.autoIndexing}</p> : null}
       {(catalog?.indexing?.failed ?? 0) > 0 ? <p className="rounded-lg border border-warning/40 bg-warning/[0.07] px-3 py-2 text-sm" role="alert">{copy.autoIndexFailed}</p> : null}
+      {catalog?.facets?.coverage?.workItems?.truncated ? <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground" role="status">{copy.directoryLimited.replace("{{count}}", String(catalog.facets.coverage.workItems.limit))}</p> : null}
       {locateFeedback ? <p className="rounded-lg border border-success/30 bg-success/[0.06] px-3 py-2 text-sm" role="status">{locateFeedback}</p> : null}
       {locateError ? <p className="rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-sm text-destructive" role="alert">{locateError}</p> : null}
 
