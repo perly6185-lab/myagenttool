@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   uploadTaskMaterialFile: vi.fn(),
 }));
 
+const archiveRef = `mailarc_${"a".repeat(24)}_${"b".repeat(40)}`;
+
 vi.mock("@/lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api-client")>();
   return { ...actual, api: mocks };
@@ -47,7 +49,7 @@ const connectedMailbox = {
   messages: [{
     id: "<one@example.com>", messageId: "<one@example.com>", from: "Alice <alice@example.com>", subject: "Project update",
     date: "2026-08-13T01:00:00.000Z", body: "The latest project update is attached.", preview: "The latest project update is attached.",
-    unread: true, folderId: "inbox", folderPath: "INBOX", fetched: true, bodyContentVersion: 2, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 5, sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-13T01:00:00.000Z",
+    unread: true, folderId: "inbox", folderPath: "INBOX", fetched: true, bodyContentVersion: 2, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 5, sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", previewable: true, localAvailable: true }], attachmentMetadataLoaded: true, archive: { version: 1, ref: archiveRef, availability: "available", sha256: "c".repeat(64), size: 4096, archivedAt: "2026-08-13T01:00:00.000Z" }, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-13T01:00:00.000Z",
   }],
   query: "",
   selectedFolder: "inbox",
@@ -89,6 +91,8 @@ describe("MailView ordinary-user flow", () => {
     await waitFor(() => expect(mocks.setMailMessageRead).toHaveBeenCalledWith("<one@example.com>", true));
     expect(screen.getAllByText("The latest project update is attached.").length).toBeGreaterThan(1);
     expect(screen.getByText(/系统只把它当作内容展示/)).toBeTruthy();
+    expect(screen.getByText(/原始邮件和附件已安全保存在本机/)).toBeTruthy();
+    expect(screen.getByText(/本机可用/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "回复" }));
     expect(screen.getByRole("dialog", { name: "写邮件" })).toBeTruthy();
     expect((screen.getByLabelText("收件人") as HTMLInputElement).value).toBe("Alice <alice@example.com>");
@@ -105,7 +109,7 @@ describe("MailView ordinary-user flow", () => {
     expect(screen.getByText("hello")).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: "关闭" }).at(-1)!);
     fireEvent.click(screen.getByRole("button", { name: "下载" }));
-    await waitFor(() => expect(downloadMailAttachment).toHaveBeenCalledWith({ messageId: "<one@example.com>", folderPath: "INBOX", attachmentId: "attachment-1" }));
+    await waitFor(() => expect(downloadMailAttachment).toHaveBeenCalledWith({ messageId: "<one@example.com>", folderPath: "INBOX", attachmentId: "attachment-1", archiveRef }));
     expect(await screen.findByText("附件已保存：notes.txt")).toBeTruthy();
   });
 
@@ -164,7 +168,7 @@ describe("MailView ordinary-user flow", () => {
     await waitFor(() => expect(frame.getAttribute("srcdoc")).toContain("data:image/png;base64,c2FmZQ=="));
     expect(frame.getAttribute("srcdoc")).not.toContain("<script");
     expect(frame.getAttribute("srcdoc")).not.toContain("https://tracker.example/pixel.png");
-    expect(previewMailAttachment).toHaveBeenCalledWith({ messageId: "<one@example.com>", folderPath: "INBOX", attachmentId: "attachment-2" });
+    expect(previewMailAttachment).toHaveBeenCalledWith({ messageId: "<one@example.com>", folderPath: "INBOX", attachmentId: "attachment-2", archiveRef });
     fireEvent.click(screen.getByRole("button", { name: "加载远程图片" }));
     await waitFor(() => expect(frame.getAttribute("srcdoc")).toContain("https://tracker.example/pixel.png"));
     expect(screen.getByText(/发件方可能获知/)).toBeTruthy();

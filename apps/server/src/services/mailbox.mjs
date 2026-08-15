@@ -554,6 +554,7 @@ function mergeMessage(messages, input, record, unread, threads) {
     references: Array.isArray(input?.references) ? input.references.slice(0, 50) : previous.references ?? [],
     attachments: Array.isArray(input?.attachments) ? input.attachments.slice(0, 50) : previous.attachments ?? [],
     attachmentMetadataLoaded: input?.attachmentMetadataLoaded === true || previous.attachmentMetadataLoaded === true,
+    archive: input?.archive && typeof input.archive === "object" ? input.archive : previous.archive ?? null,
     applicationId: record.applicationId ?? previous.applicationId ?? null,
     issueNumber: threads?.[messageId]?.issueNumber ?? null,
     createdAt: record.createdAt ?? previous.createdAt ?? date,

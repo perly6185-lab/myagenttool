@@ -94,6 +94,7 @@ export function parseMailApplicationResult({ text }) {
     const attachments = Array.isArray(payload.attachments)
       ? payload.attachments.slice(0, MAX_ATTACHMENTS).map(normalizeAttachment).filter(Boolean)
       : [];
+    const archive = normalizeArchive(payload.archive);
     return {
       kind: "message",
       ...header,
@@ -106,8 +107,11 @@ export function parseMailApplicationResult({ text }) {
       hasHtml: Boolean(bodyHtml),
       bodyTruncated: payload.bodyTruncated === true || body.length > MAX_BODY || bodyHtml.length > MAX_HTML_BODY,
       bodyContentVersion: payload.bodyContentVersion === 2 ? 2 : 1,
-      attachments,
+      attachments: archive?.availability === "available"
+        ? attachments.map((attachment) => ({ ...attachment, localAvailable: true }))
+        : attachments,
       attachmentMetadataLoaded: true,
+      archive,
     };
   }
 
@@ -182,4 +186,31 @@ function normalizeAttachment(value) {
     previewable: value.previewable === true,
     ...(contentId ? { contentId } : {}),
   };
+}
+
+function normalizeArchive(value) {
+  if (!value || typeof value !== "object" || value.version !== 1) return null;
+  if (value.availability === "available") {
+    const ref = cap(value.ref, 100);
+    const sha256 = String(value.sha256 ?? "");
+    if (!/^mailarc_[a-f0-9]{24}_[a-f0-9]{40}$/.test(ref ?? "") || !/^[a-f0-9]{64}$/.test(sha256)) return null;
+    if (!Number.isSafeInteger(value.size) || value.size < 1 || value.size > 50 * 1024 * 1024) return null;
+    return {
+      version: 1,
+      ref,
+      availability: "available",
+      sha256,
+      size: value.size,
+      archivedAt: cap(value.archivedAt, 100),
+      attachmentCount: Number.isInteger(value.attachmentCount) ? Math.max(0, Math.min(value.attachmentCount, MAX_ATTACHMENTS)) : 0,
+    };
+  }
+  const reason = [
+    "mail_archive_message_too_large",
+    "mail_archive_capacity_exceeded",
+    "mail_archive_integrity_failed",
+    "mail_archive_identity_invalid",
+    "mail_archive_unavailable",
+  ].includes(value.reason) ? value.reason : "mail_archive_unavailable";
+  return { version: 1, availability: "unavailable", reason };
 }

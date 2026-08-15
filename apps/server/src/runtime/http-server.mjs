@@ -11,6 +11,7 @@ import { handleApplicationRoutes } from "../routes/applications.mjs";
 import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
+import { handleLocalContentRoutes } from "../routes/local-content.mjs";
 import { handleMailRoutes } from "../routes/mail.mjs";
 import { handleChannelRoutes } from "../routes/channels.mjs";
 import { handleCanvasSceneRoutes } from "../routes/canvas-scenes.mjs";
@@ -142,6 +143,8 @@ export function createHttpServer({
   addWorkItemMaterials,
   removeWorkItemMaterial,
   restoreWorkItemMaterial,
+  addWorkItemContentReference,
+  removeWorkItemContentReference,
   listWorkflowSources,
   createWorkflowSource,
   listTemplateLearningTasks,
@@ -439,6 +442,14 @@ export function createHttpServer({
   updateMailboxDraft,
   deleteMailboxDraft,
   createMailboxTask,
+  rebuildLocalContentCatalog,
+  searchLocalContent,
+  getLocalContentCatalogStats,
+  previewLocalContent,
+  refreshLocalContent,
+  getLocalContentHealth,
+  resolveLocalContentOriginal,
+  resolveLocalContentContainer,
   listCanvasScenes,
   getCanvasScene,
   createCanvasScene,
@@ -760,6 +771,14 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleLocalContentRoutes({
+        req, res, url, sendJson, readJson, actor,
+        rebuildLocalContentCatalog, searchLocalContent, getLocalContentCatalogStats, previewLocalContent,
+        refreshLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
+      })) {
+        return;
+      }
+
       if (await handleChannelRoutes({
         setChannelTaskProject,
         setChannelApprovalPolicy,
@@ -1023,6 +1042,8 @@ export function createHttpServer({
         addMaterials: addWorkItemMaterials,
         removeMaterial: removeWorkItemMaterial,
         restoreMaterial: restoreWorkItemMaterial,
+        addContentReference: addWorkItemContentReference,
+        removeContentReference: removeWorkItemContentReference,
       })) {
         return;
       }

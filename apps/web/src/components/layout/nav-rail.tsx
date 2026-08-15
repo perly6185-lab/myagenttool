@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { ChevronRight, GitBranch, Hexagon, Plus, Settings } from "lucide-react";
 import {
@@ -12,14 +12,15 @@ import { useUiStore } from "@/store/ui-store";
 import { useConsoleState } from "@/data/use-console-state";
 import { api } from "@/data/use-console-actions";
 import { Modal } from "@/components/ui/modal";
-import { ProjectRegisterForm } from "@/features/projects/project-register-form";
-import { ProjectSettingsForm } from "@/features/projects/project-settings-form";
-import { WorktreeCreator } from "@/features/projects/worktree-creator";
-import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import type { ProjectSnapshot } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { useCurrentProjectSelection } from "@/hooks/use-current-project-selection";
+
+const ProjectRegisterForm = lazy(() => import("@/features/projects/project-register-form").then((module) => ({ default: module.ProjectRegisterForm })));
+const ProjectSettingsForm = lazy(() => import("@/features/projects/project-settings-form").then((module) => ({ default: module.ProjectSettingsForm })));
+const WorktreeCreator = lazy(() => import("@/features/projects/worktree-creator").then((module) => ({ default: module.WorktreeCreator })));
+const WorktreeLinkPopover = lazy(() => import("@/features/projects/worktree-link-popover").then((module) => ({ default: module.WorktreeLinkPopover })));
 
 export function NavRail() {
   const { t } = useAppTranslation();
@@ -133,7 +134,9 @@ export function NavRail() {
         title={t("navProject.register")}
         description={t("navProject.registerHint")}
       >
-        <ProjectRegisterForm onDone={() => setShowRegister(false)} />
+        <Suspense fallback={null}>
+          <ProjectRegisterForm onDone={() => setShowRegister(false)} />
+        </Suspense>
       </Modal>
     </nav>
   );
@@ -291,7 +294,7 @@ function ProjectTree() {
                           <span className="truncate" title={w.branch}>{w.branch}</span>
                           {w.isMain ? <span className="shrink-0 text-[10px] opacity-70">{t("navProject.main")}</span> : null}
                         </button>
-                        {w.link ? <WorktreeLinkPopover worktree={w} /> : null}
+                        {w.link ? <Suspense fallback={null}><WorktreeLinkPopover worktree={w} /></Suspense> : null}
                       </div>
                     </li>
                   );
@@ -309,7 +312,7 @@ function ProjectTree() {
         title={settingsFor ? t("navProject.namedSettings", { name: settingsFor.name }) : t("navProject.settings")}
         description={t("navProject.settingsHint")}
       >
-        {settingsFor ? <ProjectSettingsForm project={settingsFor} onDone={() => setSettingsFor(null)} /> : null}
+        {settingsFor ? <Suspense fallback={null}><ProjectSettingsForm project={settingsFor} onDone={() => setSettingsFor(null)} /></Suspense> : null}
       </Modal>
 
       <Modal
@@ -319,7 +322,7 @@ function ProjectTree() {
         size="lg"
       >
         {createWtFor ? (
-          <WorktreeCreator projectId={createWtFor.id} showProjectPicker onDone={() => setCreateWtFor(null)} />
+          <Suspense fallback={null}><WorktreeCreator projectId={createWtFor.id} showProjectPicker onDone={() => setCreateWtFor(null)} /></Suspense>
         ) : null}
       </Modal>
     </>

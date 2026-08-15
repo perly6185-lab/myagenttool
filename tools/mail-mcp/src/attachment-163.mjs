@@ -1,11 +1,18 @@
 import { fetch163ParsedMessage } from "./imap-163.mjs";
+import { readMailArchive } from "./mail-archive.mjs";
 import { attachmentMetadataOf, previewKind } from "./message.mjs";
+import { simpleParser } from "mailparser";
 
 const MAX_PREVIEW_BYTES = 5 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 
-export async function read163Attachment({ messageId, folderPath = "INBOX", attachmentId, purpose = "preview" }) {
-  const { parsed } = await fetch163ParsedMessage(messageId, folderPath);
+export async function read163Attachment(
+  { messageId, folderPath = "INBOX", attachmentId, archiveRef = null, purpose = "preview" },
+  { readArchive = readMailArchive, fetchMessage = fetch163ParsedMessage } = {},
+) {
+  const parsed = archiveRef
+    ? await parseArchivedMessage(readArchive({ ref: archiveRef }))
+    : (await fetchMessage(messageId, folderPath)).parsed;
   const attachments = parsed?.attachments ?? [];
   const index = attachmentIndex(attachmentId, attachments.length);
   if (index < 0) throw publicAttachmentError("attachment_not_found");
@@ -17,6 +24,16 @@ export async function read163Attachment({ messageId, folderPath = "INBOX", attac
   }
   if (content.length > MAX_DOWNLOAD_BYTES) throw publicAttachmentError("download_too_large");
   return { ...metadata, content };
+}
+
+async function parseArchivedMessage(archive) {
+  try {
+    return await simpleParser(archive.source, { keepCidLinks: true });
+  } catch {
+    const error = new Error("mail_archive_integrity_failed");
+    error.code = "mail_archive_integrity_failed";
+    throw error;
+  }
 }
 
 export function attachmentPreviewPayload(metadata, content) {

@@ -5,6 +5,8 @@ const STATE = {
   projects: [{ id: "project_1", name: "客户交付", status: "active", color: "blue", ownerTeamId: "team_local", budgetPoolId: null, defaultAgentId: null, isolation: "shared", createdAt: "2026-08-01T00:00:00.000Z" }], worktrees: [], projectTargets: [], pendingDecisions: [], evidenceLedger: [], invocations: [], events: [],
 };
 
+const ARCHIVE_REF = `mailarc_${"a".repeat(24)}_${"b".repeat(40)}`;
+
 const MAILBOX = {
   accounts: [{
     id: "app_163_mail_v2", provider: "netease", name: "163 Mail", status: "connected", statusDetail: "ready",
@@ -15,7 +17,7 @@ const MAILBOX = {
   sync: { status: "idle", invocationId: null, lastCompletedAt: null, lastSucceededAt: "2026-08-13T02:00:00.000Z" },
   folders: [{ id: "inbox", count: 2, unread: 2 }, { id: "drafts", count: 1 }, { id: "sent", count: 0 }, { id: "outbox", count: 0 }],
   messages: [
-    { id: "m1", messageId: "m1", from: "示例客户 <customer@example.com>", subject: "确认交付范围", date: "2026-08-13T02:00:00.000Z", body: "你好，请确认本周交付范围。详情：https://example.com/delivery", bodyHtml: '<p>你好，请确认本周交付范围。<a href="https://example.com/delivery">查看详情</a></p><img src="https://images.example.com/tracker.png" alt="交付示意图"><script>alert(1)</script>', hasHtml: true, bodyTruncated: false, bodyContentVersion: 2, preview: "你好，请确认本周交付范围。", unread: true, fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "范围说明.txt", contentType: "text/plain", size: 24, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-13T02:00:00.000Z" },
+    { id: "m1", messageId: "m1", from: "示例客户 <customer@example.com>", subject: "确认交付范围", date: "2026-08-13T02:00:00.000Z", body: "你好，请确认本周交付范围。详情：https://example.com/delivery", bodyHtml: '<p>你好，请确认本周交付范围。<a href="https://example.com/delivery">查看详情</a></p><img src="https://images.example.com/tracker.png" alt="交付示意图"><script>alert(1)</script>', hasHtml: true, bodyTruncated: false, bodyContentVersion: 2, preview: "你好，请确认本周交付范围。", unread: true, fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "范围说明.txt", contentType: "text/plain", size: 24, previewable: true, localAvailable: true }], attachmentMetadataLoaded: true, archive: { version: 1, ref: ARCHIVE_REF, availability: "available", sha256: "c".repeat(64), size: 4096, archivedAt: "2026-08-13T02:00:00.000Z" }, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-13T02:00:00.000Z" },
     { id: "m2", messageId: "m2", from: "同事 <team@example.com>", subject: "周会资料", date: "2026-08-12T02:00:00.000Z", body: null, preview: "", unread: true, fetched: false, inReplyTo: null, references: [], attachments: [], attachmentMetadataLoaded: false, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-12T02:00:00.000Z" },
   ],
   pagination: { page: 1, pageSize: 25, total: 2, totalPages: 1, hasPrevious: false, hasNext: false },
@@ -64,6 +66,8 @@ for (const fixture of [
     await expect(page.getByLabel("确认交付范围").getByText("你好，请确认本周交付范围。详情：https://example.com/delivery")).toBeVisible();
     await expect(page.getByRole("link", { name: "https://example.com/delivery" })).toHaveAttribute("rel", /noopener/);
     await expect(page.getByText(/系统只把它当作内容展示/)).toBeVisible();
+    await expect(page.getByText(/原始邮件和附件已安全保存在本机/)).toBeVisible();
+    await expect(page.getByText(/本机可用/)).toBeVisible();
     await page.getByRole("button", { name: "查看安全排版" }).click();
     const safeFrame = page.getByTitle("安全邮件内容");
     await expect(safeFrame).toBeVisible();

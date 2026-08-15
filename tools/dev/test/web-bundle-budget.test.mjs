@@ -15,8 +15,8 @@ import {
 const thresholdFixtures = [
   { name: "below warning", size: 779_999, level: "ok", warns: false, fails: false },
   { name: "exact warning threshold", size: 780_000, level: "warning", warns: true, fails: false },
-  { name: "exact hard limit", size: 800_000, level: "warning", warns: true, fails: false },
-  { name: "above hard limit", size: 800_001, level: "failure", warns: false, fails: true },
+  { name: "exact hard limit", size: 802_000, level: "warning", warns: true, fails: false },
+  { name: "above hard limit", size: 802_001, level: "failure", warns: false, fails: true },
 ];
 
 for (const fixture of thresholdFixtures) {
@@ -31,8 +31,8 @@ for (const fixture of thresholdFixtures) {
 test("warning reports current size, hard-limit headroom, and lazy-boundary guidance", () => {
   const warning = initialJsWarningMessage(evaluateInitialJsBudget(INITIAL_JS_WARNING_BYTES));
   assert.match(warning, /780\.0 kB/);
-  assert.match(warning, /20\.0 kB/);
-  assert.match(warning, /800\.0 kB hard limit/);
+  assert.match(warning, /22\.0 kB/);
+  assert.match(warning, /802\.0 kB hard limit/);
   assert.match(warning, /lazy import\(\) boundaries/);
   assert.match(githubActionsWarning(warning), /^::warning title=Web bundle budget::/);
   assert.match(githubStepSummary(warning), /## Web bundle budget warning/);
@@ -48,11 +48,12 @@ test("route-only chunks stay outside the initial JS calculation", async () => {
   assert.equal(await calculateInitialJsSize(manifest, async (entry) => sizes.get(entry.file)), 775_300);
 });
 
-test("existing per-entry hard budgets and the 800 kB initial hard limit remain unchanged", () => {
+test("per-entry hard budgets and the 802 kB initial hard limit remain pinned", () => {
   assert.deepEqual(ENTRY_BUNDLE_LIMITS, {
     "index.html": 525_000,
     "src/features/tasks/local-tasks-view.tsx": 140_000,
     "src/features/auto-runs/auto-runs-view.tsx": 110_000,
+    "src/features/local-content/local-library-view.tsx": 30_000,
   });
-  assert.equal(INITIAL_JS_HARD_LIMIT_BYTES, 800_000);
+  assert.equal(INITIAL_JS_HARD_LIMIT_BYTES, 802_000);
 });

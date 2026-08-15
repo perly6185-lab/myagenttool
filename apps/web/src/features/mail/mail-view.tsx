@@ -67,6 +67,9 @@ const COPY = {
     downloadTooLarge: "附件超过当前 25 MB 下载限制。",
     desktopAttachmentOnly: "请在 MyAgentTool 桌面版中预览或下载附件。",
     localReadHint: "已读状态会同步到邮箱服务商；同步失败时会保留原状态并提示重试。",
+    archiveAvailable: "原始邮件和附件已安全保存在本机，可离线读取。",
+    archiveUnavailable: "邮件正文已收取，但原始邮件尚未保存在本机；附件仍需连接邮箱读取。",
+    attachmentLocal: "本机可用",
     cursorReset: "邮箱文件夹发生变化，已安全重新收取最近邮件。",
     folderSyncError: "部分文件夹暂时无法更新，其他邮件已正常保留。请稍后再次收取。",
     connected: "已连接",
@@ -229,6 +232,9 @@ const COPY = {
     downloadTooLarge: "The attachment exceeds the current 25 MB download limit.",
     desktopAttachmentOnly: "Use the MyAgentTool desktop app to preview or download attachments.",
     localReadHint: "Read state syncs with your email provider. If syncing fails, the previous state is kept so you can retry.",
+    archiveAvailable: "The original message and attachments are safely stored on this device for offline access.",
+    archiveUnavailable: "The message body is available, but its original is not stored locally; attachments still require the mail provider.",
+    attachmentLocal: "Available offline",
     cursorReset: "This mailbox folder changed, so recent mail was safely retrieved again.",
     folderSyncError: "Some folders could not be updated. Other mail is safe; try Get new mail again later.",
     connected: "Connected",
@@ -456,7 +462,7 @@ export function MailView() {
         .then(() => queryClient.invalidateQueries({ queryKey: ["mailbox"] }))
         .catch(() => setNotice({ tone: "error", text: copy.markReadFailed }));
     }
-    if ((message.fetched && message.attachmentMetadataLoaded && message.bodyContentVersion >= 2) || !account?.fetchCapability || busy === "fetch") return;
+    if ((message.fetched && message.attachmentMetadataLoaded && message.bodyContentVersion >= 2 && message.archive) || !account?.fetchCapability || busy === "fetch") return;
     setBusy("fetch");
     try {
       await api.invokeCapability(account.fetchCapability, account.incrementalSync ? { messageId: message.messageId, folderPath: message.folderPath } : { messageId: message.messageId });
@@ -481,7 +487,7 @@ export function MailView() {
   async function previewAttachment(message: MailboxMessage, attachment: MailboxMessage["attachments"][number]) {
     const bridge = window.myagenttoolDesktop;
     if (!bridge?.previewMailAttachment) { setNotice({ tone: "error", text: copy.desktopAttachmentOnly }); return; }
-    const result = await bridge.previewMailAttachment({ messageId: message.messageId, folderPath: message.folderPath, attachmentId: attachment.id }).catch(() => ({ ok: false as const, error: "attachment_unavailable" as const }));
+    const result = await bridge.previewMailAttachment({ messageId: message.messageId, folderPath: message.folderPath, attachmentId: attachment.id, ...(message.archive?.ref ? { archiveRef: message.archive.ref } : {}) }).catch(() => ({ ok: false as const, error: "attachment_unavailable" as const }));
     if (!result.ok) {
       const text = result.error === "preview_not_supported" ? copy.previewUnsupported : result.error === "preview_too_large" ? copy.previewTooLarge : copy.attachmentUnavailable;
       setNotice({ tone: "error", text });
@@ -493,7 +499,7 @@ export function MailView() {
   async function downloadAttachment(message: MailboxMessage, attachment: MailboxMessage["attachments"][number]) {
     const bridge = window.myagenttoolDesktop;
     if (!bridge?.downloadMailAttachment) { setNotice({ tone: "error", text: copy.desktopAttachmentOnly }); return; }
-    const result = await bridge.downloadMailAttachment({ messageId: message.messageId, folderPath: message.folderPath, attachmentId: attachment.id }).catch(() => ({ ok: false as const, error: "attachment_unavailable" as const }));
+    const result = await bridge.downloadMailAttachment({ messageId: message.messageId, folderPath: message.folderPath, attachmentId: attachment.id, ...(message.archive?.ref ? { archiveRef: message.archive.ref } : {}) }).catch(() => ({ ok: false as const, error: "attachment_unavailable" as const }));
     if (!result.ok) {
       setNotice({ tone: "error", text: result.error === "download_too_large" ? copy.downloadTooLarge : copy.attachmentUnavailable });
     } else if (result.saved) {
@@ -549,6 +555,7 @@ export function MailView() {
               messageId: taskDraft.message.messageId,
               folderPath: taskDraft.message.folderPath,
               attachmentId: attachment.id,
+              ...(taskDraft.message.archive?.ref ? { archiveRef: taskDraft.message.archive.ref } : {}),
             });
             if (!read.ok
               || read.attachment.id !== attachment.id
@@ -903,7 +910,7 @@ function DraftRow({ draft, copy, onOpen }: { draft: MailboxDraft; copy: typeof C
 }
 
 function MessageDetail({ message, copy, loading, onBack, onReply, onCreateTask, onMarkUnread, onPreview, onDownload }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; loading: boolean; onBack: () => void; onReply: () => void; onCreateTask: () => void; onMarkUnread: () => void; onPreview: (attachment: MailboxMessage["attachments"][number]) => void; onDownload: (attachment: MailboxMessage["attachments"][number]) => void }) {
-  return <div className="flex h-full min-h-0 flex-col"><div className="border-b p-4"><Button className="mb-3 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold">{message.subject}</h2><p className="mt-2 break-words text-sm">{message.from}</p><time className="text-xs text-muted-foreground">{longDate(message.date)}</time></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="ghost" onClick={onMarkUnread}><MailOpen />{copy.markUnread}</Button><Button size="sm" variant="secondary" onClick={onReply}><Reply />{copy.reply}</Button><Button size="sm" onClick={onCreateTask}><ListTodo />{message.task ? copy.linkedTask.replace("{{ref}}", message.task.localRef) : copy.createTask}</Button></div></div>{message.issueNumber ? <p className="mt-3 text-xs text-primary">{copy.issue.replace("{{number}}", String(message.issueNumber))}</p> : null}<p className="mt-2 text-[11px] text-muted-foreground">{copy.localReadHint}</p></div><div className="border-b bg-amber-500/5 px-4 py-2 text-xs text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.untrusted}</div><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">{loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : <MailMessageBody key={message.id} message={message} copy={copy} />}{message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</p></div><div className="flex gap-2">{attachment.previewable ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}<Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button></div></article>)}</div></section> : null}</div></div>;
+  return <div className="flex h-full min-h-0 flex-col"><div className="border-b p-4"><Button className="mb-3 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold">{message.subject}</h2><p className="mt-2 break-words text-sm">{message.from}</p><time className="text-xs text-muted-foreground">{longDate(message.date)}</time></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="ghost" onClick={onMarkUnread}><MailOpen />{copy.markUnread}</Button><Button size="sm" variant="secondary" onClick={onReply}><Reply />{copy.reply}</Button><Button size="sm" onClick={onCreateTask}><ListTodo />{message.task ? copy.linkedTask.replace("{{ref}}", message.task.localRef) : copy.createTask}</Button></div></div>{message.issueNumber ? <p className="mt-3 text-xs text-primary">{copy.issue.replace("{{number}}", String(message.issueNumber))}</p> : null}<p className="mt-2 text-[11px] text-muted-foreground">{copy.localReadHint}</p>{message.fetched ? <p className="mt-1 text-[11px] text-muted-foreground">{message.archive?.availability === "available" ? copy.archiveAvailable : copy.archiveUnavailable}</p> : null}</div><div className="border-b bg-amber-500/5 px-4 py-2 text-xs text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.untrusted}</div><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">{loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : <MailMessageBody key={message.id} message={message} copy={copy} />}{message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}{attachment.localAvailable ? ` · ${copy.attachmentLocal}` : ""}</p></div><div className="flex gap-2">{attachment.previewable ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}<Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button></div></article>)}</div></section> : null}</div></div>;
 }
 
 function MailMessageBody({ message, copy }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en }) {
@@ -929,7 +936,7 @@ function MailMessageBody({ message, copy }: { message: MailboxMessage; copy: typ
     if (!bridge?.previewMailAttachment || !inline.length) return;
     setInlineImagesLoading(true);
     const entries = await Promise.all(inline.map(async (attachment) => {
-      const result = await bridge.previewMailAttachment!({ messageId: message.messageId, folderPath: message.folderPath, attachmentId: attachment.id }).catch(() => null);
+      const result = await bridge.previewMailAttachment!({ messageId: message.messageId, folderPath: message.folderPath, attachmentId: attachment.id, ...(message.archive?.ref ? { archiveRef: message.archive.ref } : {}) }).catch(() => null);
       if (!result?.ok || result.preview.kind !== "image" || !result.preview.dataBase64) return null;
       const contentType = result.preview.contentType.toLowerCase();
       if (!/^image\/(png|jpeg|gif|webp)$/.test(contentType)) return null;

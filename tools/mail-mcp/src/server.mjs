@@ -1,4 +1,5 @@
 import { fetch163ParsedMessage, with163Client, with163Inbox } from "./imap-163.mjs";
+import { archiveMailSource, unavailableMailArchive } from "./mail-archive.mjs";
 import { headerOf, messageRecordOf } from "./message.mjs";
 import { send163Mail } from "./send-163.mjs";
 import { boundedFolder, folderIdOf, sync163Mailbox } from "./sync-163.mjs";
@@ -24,7 +25,7 @@ const tools = [
   },
   {
     name: "mail_fetch",
-    description: "Fetch one 163 Mail message by RFC822 Message-ID without changing Seen state.",
+    description: "Fetch one 163 Mail message by RFC822 Message-ID without changing Seen state and archive its exact RFC 822 source locally when capacity permits.",
     inputSchema: { type: "object", additionalProperties: false, required: ["messageId"], properties: { messageId: { type: "string", maxLength: 998 }, folderPath: { type: "string", maxLength: 998 } } },
   },
   {
@@ -103,8 +104,30 @@ async function fetchMessage(args) {
   const messageId = String(args.messageId ?? "").trim();
   if (!messageId) throw new Error("messageId is required");
   const folderPath = boundedFolder(args.folderPath ?? "INBOX");
-  const { message, parsed } = await fetch163ParsedMessage(messageId, folderPath);
-  return { ...messageRecordOf(message, parsed), folderId: folderIdOf(folderPath), folderPath };
+  const { message, parsed, identity } = await fetch163ParsedMessage(messageId, folderPath);
+  const record = messageRecordOf(message, parsed);
+  let archive;
+  try {
+    archive = archiveMailSource({
+      account: identity?.username,
+      messageId,
+      folderPath,
+      source: message.source,
+      attachments: record?.attachments,
+    });
+  } catch (error) {
+    archive = unavailableMailArchive(error);
+  }
+  return {
+    ...record,
+    archive,
+    attachments: (record?.attachments ?? []).map((attachment) => ({
+      ...attachment,
+      localAvailable: archive.availability === "available",
+    })),
+    folderId: folderIdOf(folderPath),
+    folderPath,
+  };
 }
 
 async function setRead(args) {

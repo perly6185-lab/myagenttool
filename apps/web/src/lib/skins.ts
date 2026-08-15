@@ -153,15 +153,15 @@ declare global {
         | { ok: true; account: { provider: string; email: string; canReceive: true; canSend: false } }
         | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }
       >;
-      previewMailAttachment?: (input: { messageId: string; folderPath?: string; attachmentId: string }) => Promise<
+      previewMailAttachment?: (input: { messageId: string; folderPath?: string; attachmentId: string; archiveRef?: string }) => Promise<
         | { ok: true; preview: { id: string; name: string; contentType: string; size: number; kind: "image" | "text" | "pdf"; text?: string; dataBase64?: string } }
         | { ok: false; error: "attachment_not_found" | "preview_not_supported" | "preview_too_large" | "attachment_unavailable" }
       >;
-      downloadMailAttachment?: (input: { messageId: string; folderPath?: string; attachmentId: string }) => Promise<
+      downloadMailAttachment?: (input: { messageId: string; folderPath?: string; attachmentId: string; archiveRef?: string }) => Promise<
         | { ok: true; saved: boolean; name?: string }
         | { ok: false; error: "attachment_not_found" | "download_too_large" | "attachment_unavailable" }
       >;
-      readMailAttachmentForTask?: (input: { messageId: string; folderPath?: string; attachmentId: string }) => Promise<
+      readMailAttachmentForTask?: (input: { messageId: string; folderPath?: string; attachmentId: string; archiveRef?: string }) => Promise<
         | { ok: true; attachment: { id: string; name: string; contentType: string; size: number; sha256: string; data: ArrayBuffer } }
         | { ok: false; error: "attachment_not_found" | "download_too_large" | "attachment_unavailable" }
       >;
