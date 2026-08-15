@@ -14,7 +14,7 @@ export interface MySettingsCategory {
  */
 export const MY_SETTINGS_CATEGORIES: readonly MySettingsCategory[] = [
   { key: "execution", sections: ["devices", "agents", "agentSkills", "discovery", "tools"] },
-  { key: "connections", sections: ["applications", "integrations", "channels"] },
+  { key: "connections", sections: ["applications", "integrations", "channels", "sessions"] },
   { key: "automation", sections: ["automation", "routines", "autoRuns"] },
   { key: "governance", sections: ["approvals", "audit"] },
   { key: "resources", sections: ["economics"] },
@@ -32,6 +32,7 @@ const SETTINGS_SEARCH_ALIASES: Partial<Record<SectionKey, readonly string[]>> = 
   applications: ["app", "capability", "software", "能力", "软件", "应用"],
   integrations: ["connector", "provider", "连接器", "接入"],
   channels: ["message", "notification", "delivery", "消息", "通知", "投递"],
+  sessions: ["login", "cookie", "profile", "登录", "会话", "保活"],
   automation: ["schedule", "trigger", "rule", "排期", "触发器", "规则"],
   routines: ["recurring", "cron", "periodic", "定时", "周期", "例行"],
   autoRuns: ["autopilot", "execution", "自动执行", "自主运行"],
