@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Library, ListFilter, RefreshCw, Search, X } from "lucide-react";
 import { EmptyState } from "@/components/common/empty-state";
@@ -17,8 +17,10 @@ import { localContentApi } from "./local-content-api";
 import type { LocalContentKind, LocalContentRecord } from "./local-content-types";
 import { LocalContentCard } from "./local-content-card";
 import { COPY } from "./local-library-copy";
-import { AddToTaskModal, PreviewModal } from "./local-library-modals";
 import { useLocalContentFilters } from "./use-local-content-filters";
+
+const AddToTaskModal = lazy(() => import("./local-library-modals").then((module) => ({ default: module.AddToTaskModal })));
+const PreviewModal = lazy(() => import("./local-library-modals").then((module) => ({ default: module.PreviewModal })));
 
 const KINDS: LocalContentKind[] = ["article", "mail", "task", "task_input", "task_output"];
 const TASK_PAGE_SIZE = 200;
@@ -375,7 +377,7 @@ export function LocalLibraryView() {
         </div>
       ) : null}
 
-      <AddToTaskModal
+      {selected ? <Suspense fallback={null}><AddToTaskModal
         open={Boolean(selected)}
         copy={copy}
         adding={adding}
@@ -401,9 +403,9 @@ export function LocalLibraryView() {
         onCreateTaskTitleChange={setCreateTaskTitle}
         onAdd={() => void addReference()}
         onCreateTask={() => void createTaskAndAddReference()}
-      />
+      /></Suspense> : null}
 
-      <PreviewModal
+      {previewTarget ? <Suspense fallback={null}><PreviewModal
         target={previewTarget}
         copy={copy}
         locale={i18n.language}
@@ -416,7 +418,7 @@ export function LocalLibraryView() {
         onRetry={() => void preview.refetch()}
         onLocate={(record) => void locateOriginal(record)}
         onChoose={(record) => { setPreviewTarget(null); choose(record); }}
-      />
+      /></Suspense> : null}
     </div>
   );
 }
