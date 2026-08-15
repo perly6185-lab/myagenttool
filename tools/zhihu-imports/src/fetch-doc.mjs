@@ -23,56 +23,20 @@
 // zhihu content will not render — it times out on the content selector and the
 // CLI exits 2 (clean degradation, never a hang, never a silent corruption).
 //
+// The browser pipeline (launch options, persistent/ephemeral context, scroll)
+// lives in @myagenttool/session-engine, shared by every session-backed site
+// plugin; site specifics (selectors, auth cookie, URLs) live in site.mjs.
+//
 // This module owns NO disk writes beyond the persistent profile's own browser
 // state, and downloads NOTHING. It returns the rendered HTML for the parent's
 // parseArticleDocument + downloadMedia + write pipeline.
 
-import { chromium } from "playwright";
+import { openContext } from "@myagenttool/session-engine/launch";
+import { scrollToBottom } from "@myagenttool/session-engine/scroll";
 
-const UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-// The same selectors parseArticleDocument uses to find zhihu content, kept in
-// sync deliberately. Their presence proves the browser cleared secng AND the
-// article body rendered (vs a login wall / challenge interstitial).
-const CONTENT_SELECTOR = ".Post-RichTextContainer, .RichContent-inner, .RichText.ztext, article";
-// zhihu's auth cookie — present only in a logged-in session. Used by --login to
-// detect that the operator has signed in.
-const LOGIN_COOKIE = "z_c0";
+import { SITE } from "./site.mjs";
+
 const DEFAULT_LOGIN_TIMEOUT_MS = 300_000;
-
-/** @param {{ headless: boolean, channel: string | null }} config */
-function launchOptions(config) {
-  const opts = { headless: config.headless, args: ["--disable-blink-features=AutomationControlled"] };
-  if (config.channel) opts.channel = config.channel;
-  return opts;
-}
-
-function contextOptions() {
-  return { userAgent: UA, locale: "zh-CN", timezoneId: "Asia/Shanghai" };
-}
-
-/**
- * Open a browser context — persistent (reusing a logged-in profile) when
- * config.profileDir is set, ephemeral otherwise. Returns the page and a close
- * function that tears the whole browser down.
- *
- * @param {{ headless: boolean, channel: string | null, profileDir: string | null }} config
- * @returns {Promise<{ page: import("playwright").Page, close: () => Promise<void> }>}
- */
-async function openContext(config) {
-  if (config.profileDir) {
-    const context = await chromium.launchPersistentContext(config.profileDir, {
-      ...launchOptions(config),
-      ...contextOptions(),
-    });
-    const page = context.pages()[0] ?? (await context.newPage());
-    return { page, close: () => context.close().catch(() => {}) };
-  }
-  const browser = await chromium.launch(launchOptions(config));
-  const context = await browser.newContext(contextOptions());
-  const page = await context.newPage();
-  return { page, close: () => browser.close().catch(() => {}) };
-}
 
 /**
  * Render a public Zhihu article in a real browser and return its HTML. Reuses
@@ -98,7 +62,7 @@ export async function renderZhihuDoc({ url, config, signal }) {
     await page.waitForLoadState("networkidle", { timeout: limits.pageTimeoutMs }).catch(() => {});
 
     try {
-      await page.waitForSelector(CONTENT_SELECTOR, { timeout: limits.pageTimeoutMs });
+      await page.waitForSelector(SITE.contentSelector, { timeout: limits.pageTimeoutMs });
     } catch {
       throw new Error(
         "Could not find Zhihu article content. The session is likely not logged in (seed a profile with `--login`), or the link requires login / is private, or the page layout changed.",
@@ -126,7 +90,6 @@ export async function renderZhihuDoc({ url, config, signal }) {
  *   config: { limits: Record<string, number>, headless: boolean, channel: string | null, profileDir: string | null },
  *   signal?: AbortSignal,
  *   loginTimeoutMs?: number,
- *   homeUrl?: string,
  * }} ctx
  * @returns {Promise<void>} resolves once logged in; rejects on timeout/abort.
  */
@@ -134,62 +97,31 @@ export async function loginZhihuProfile({
   config,
   signal,
   loginTimeoutMs = DEFAULT_LOGIN_TIMEOUT_MS,
-  homeUrl = "https://www.zhihu.com/",
 }) {
   if (!config.profileDir) {
     throw new Error("A profile dir is required for --login (set ZHIHU_PROFILE_DIR or pass --profile <dir>).");
   }
   const headedConfig = { ...config, headless: false };
-  const context = await chromium.launchPersistentContext(headedConfig.profileDir, {
-    ...launchOptions(headedConfig),
-    ...contextOptions(),
-  });
+  const { page, close } = await openContext(headedConfig);
   try {
-    const page = context.pages()[0] ?? (await context.newPage());
-    await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: headedConfig.limits.pageTimeoutMs }).catch(() => {});
+    await page.goto(SITE.loginUrl, { waitUntil: "domcontentloaded", timeout: headedConfig.limits.pageTimeoutMs }).catch(() => {});
     process.stderr.write(
       `zhihu-imports --login: log into zhihu in the opened window (waiting up to ${Math.round(
         loginTimeoutMs / 1000,
-      )}s for the ${LOGIN_COOKIE} cookie).\n`,
+      )}s for the ${SITE.authCookie} cookie).\n`,
     );
     const start = Date.now();
     while (Date.now() - start < loginTimeoutMs) {
       if (signal && signal.aborted) throw new Error("Aborted");
-      const cookies = await context.cookies();
-      if (cookies.some((c) => c.name === LOGIN_COOKIE)) {
-        process.stderr.write(`zhihu-imports --login: logged in (${LOGIN_COOKIE} captured). Profile seeded.\n`);
+      const cookies = await page.context().cookies();
+      if (cookies.some((c) => c.name === SITE.authCookie)) {
+        process.stderr.write(`zhihu-imports --login: logged in (${SITE.authCookie} captured). Profile seeded.\n`);
         return;
       }
       await new Promise((r) => setTimeout(r, 2000));
     }
-    throw new Error(`Login timed out after ${loginTimeoutMs}ms — ${LOGIN_COOKIE} cookie not seen.`);
+    throw new Error(`Login timed out after ${loginTimeoutMs}ms — ${SITE.authCookie} cookie not seen.`);
   } finally {
-    await context.close().catch(() => {});
+    await close();
   }
-}
-
-/**
- * Scroll the page to the bottom in steps to trigger lazy hydration. Stops early
- * once the document height stabilizes for several consecutive steps.
- *
- * @param {import("playwright").Page} page
- * @param {Record<string, number>} limits
- */
-async function scrollToBottom(page, limits) {
-  let prevHeight = 0;
-  let stable = 0;
-  for (let i = 0; i < limits.scrollMaxSteps; i++) {
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
-    await page.waitForTimeout(limits.scrollSettleMs).catch(() => {});
-    const h = await page.evaluate(() => document.body.scrollHeight).catch(() => prevHeight);
-    if (h === prevHeight) {
-      stable++;
-      if (stable >= 3) break;
-    } else {
-      stable = 0;
-    }
-    prevHeight = h;
-  }
-  // Final settle so trailing lazy responses flush before we snapshot.
-  await page.waitForTimeout(500).catch(() => {});
 }

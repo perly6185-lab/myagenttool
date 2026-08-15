@@ -78,6 +78,10 @@ export function createServerState({ defaultProjectPath, now }) {
       updatedAt: null,
     },
     articleImportJobs: [],
+    // Login-managed site sessions (session-manager.mjs): one durable row per
+    // registered site — last probe / reseed observations only, never cookie
+    // material. Empty until the first probe/reseed records a row.
+    sessions: [],
     // When this deployment began recording refusals — the honesty anchor so a
     // genuinely-zero window after this date reads as a trustworthy 0, not "unknown".
     refusalStatsMeta: { since: now().slice(0, 10) },
@@ -319,6 +323,7 @@ export function resetStateForSelfCheck({ state, now }) {
     claudeAgent.updatedAt = now();
   }
   state.invocations = [];
+  state.sessions = [];
   state.workProfileInferences = [createInitialWorkProfileInference(state.projects[0], now)];
   state.workProfileAuditEvents = [];
   state.worktreeReviews = [];

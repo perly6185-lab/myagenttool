@@ -8,6 +8,7 @@ import {
   Files,
   Gauge,
   GitCompare,
+  KeyRound,
   GitPullRequest,
   Inbox,
   KanbanSquare,
@@ -95,6 +96,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "tools", labelKey: "sections.tools.label", icon: Wrench, blurbKey: "sections.tools.blurb", group: "configure" },
   { key: "applications", labelKey: "sections.applications.label", icon: AppWindow, blurbKey: "sections.applications.blurb", group: "configure" },
   { key: "channels", labelKey: "sections.channels.label", icon: MessagesSquare, blurbKey: "sections.channels.blurb", group: "configure" },
+  { key: "sessions", labelKey: "sections.sessions.label", icon: KeyRound, blurbKey: "sections.sessions.blurb", group: "configure" },
   // Ledgers — the metered record.
   { key: "invocations", labelKey: "sections.invocations.label", icon: ListChecks, blurbKey: "sections.invocations.blurb", group: "ledgers" },
   { key: "economics", labelKey: "sections.economics.label", icon: Receipt, blurbKey: "sections.economics.blurb", group: "ledgers" },

@@ -30,6 +30,7 @@ const ToolsView = lazy(() => import("@/features/tools/tools-view").then((m) => (
 const ReviewView = lazy(() => import("@/features/review/review-view").then((m) => ({ default: m.ReviewView })));
 const ApplicationsView = lazy(() => import("@/features/applications/applications-view").then((m) => ({ default: m.ApplicationsView })));
 const ChannelsView = lazy(() => import("@/features/channels/channels-view").then((m) => ({ default: m.ChannelsView })));
+const SessionsView = lazy(() => import("@/features/sessions/sessions-view").then((m) => ({ default: m.SessionsView })));
 const EconomicsView = lazy(() => import("@/features/economics/economics-view").then((m) => ({ default: m.EconomicsView })));
 const AuditView = lazy(() => import("@/features/audit/audit-view").then((m) => ({ default: m.AuditView })));
 const SettingsHomeView = lazy(() => import("@/features/settings/settings-home-view").then((m) => ({ default: m.SettingsHomeView })));
@@ -68,6 +69,7 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   review: ReviewView,
   applications: ApplicationsView,
   channels: ChannelsView,
+  sessions: SessionsView,
   economics: EconomicsView,
   audit: AuditView,
 };

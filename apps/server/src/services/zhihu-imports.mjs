@@ -33,6 +33,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { acquireSessionProfile } from "./session-manager.mjs";
+
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -132,10 +134,16 @@ export async function renderZhihuArticle(url, { signal, env = process.env } = {}
 
   if (signal?.aborted) throw zhihuError("zhihu_import_canceled", "Aborted before launch.");
 
+  // The render reuses the session-manager's zhihu profile (operator env →
+  // registry default ~/.myagenttool-zhihu-profile) — the same logged-in Chrome
+  // profile the probe/reauth flows maintain. Null (site disabled) falls back
+  // to the CLI's own env/config resolution.
+  const profileDir = acquireSessionProfile("zhihu", env);
+
   const [file, ...baseArgs] = command;
   let stdout;
   try {
-    const out = await execFileAsync(file, [...baseArgs, String(url)], {
+    const out = await execFileAsync(file, [...baseArgs, String(url), ...(profileDir ? ["--profile", profileDir] : [])], {
       env,
       timeout: timeoutMs,
       maxBuffer,
