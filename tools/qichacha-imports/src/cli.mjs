@@ -4,7 +4,7 @@
 // Contract (mirrors tools/zhihu-imports/src/cli.mjs):
 //   argv:   <url> | --probe | --login  [--headed] [--profile <dir>] [--channel <name>]
 //   stdout: on success, a single JSON object — render: {"ok":true,"url":"<resolved>","html":"<rendered>"},
-//           probe: {"ok":true,"loggedIn":true,"detail":"qcc-token present"} — followed by a
+//           probe: {"ok":true,"loggedIn":true,"detail":"login marker present (…)"} — followed by a
 //           newline. No JSON is written on failure. (--login writes only guidance
 //           + cookie names to stderr and emits no JSON.)
 //   exit:   0 success · 1 usage error · 2 render/fetch/probe/login failure

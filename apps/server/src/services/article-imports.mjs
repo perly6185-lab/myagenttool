@@ -2230,9 +2230,11 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
 function providerFieldText(document, provider, field) {
   const classes = {
     zhihu: field === "title" ? ["Post-Title"] : ["AuthorInfo-name"],
-    // qichacha firm pages: company name in the header — finalized by the live
-    // pass; a firm page has no author worth extracting (author stays null).
-    qichacha: field === "title" ? ["header-title", "header-name"] : [],
+    // qichacha firm pages: the company name is the page's <h1 class="copy-value">
+    // — live pass 2026-08-17 confirmed it is the FIRST copy-value node in
+    // document order (og:title is absent, so this feeds the title chain). A
+    // firm page has no author worth extracting (author stays null).
+    qichacha: field === "title" ? ["copy-value"] : [],
     juejin: field === "title" ? ["article-title"] : ["author-name"],
     jianshu: field === "title" ? ["_1RuRku"] : ["_22gUMi"],
   }[provider] ?? [];
@@ -2259,14 +2261,16 @@ function findProviderContent(document, provider) {
       (node) => hasClass(node, "Post-RichTextContainer"),
       (node) => hasClass(node, "RichContent-inner"),
     ],
-    // qichacha firm pages: content root candidates, finalized by the live
-    // pass. Generic-first: when none hit, the shared <article>/<main>/body
-    // fallback carries the page (tables flatten; Stage B adds provider-gated
-    // table rendering only if a real page proves that unreadable).
+    // qichacha firm pages: content root — live pass 2026-08-17. The firm page
+    // wraps the company header card + every detail section (15 on the sample
+    // page: 基本信息 cominfo, 股东 partner, 对外投资 touzilist, …) in
+    // `.company-detail`; a bare `.data-section` is the partial fallback. No
+    // <main>/<article> exists on these pages. Tables flatten to text rows;
+    // Stage B adds provider-gated table rendering only if a real page proves
+    // that unreadable.
     qichacha: [
-      (node) => hasClass(node, "details"),
-      (node) => hasClass(node, "basic-detail"),
-      (node) => hasClass(node, "header-content"),
+      (node) => hasClass(node, "company-detail"),
+      (node) => hasClass(node, "data-section"),
     ],
     juejin: [
       (node) => hasClass(node, "article-content"),

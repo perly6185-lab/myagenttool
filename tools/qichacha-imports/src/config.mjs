@@ -70,8 +70,11 @@ export function resolveConfig(env = process.env) {
   // context. Null → ephemeral (will not pass qichacha's login wall).
   const profileDir = parseString(env.QICHACHA_PROFILE_DIR);
   // Optional browser channel, e.g. "chrome" to drive the system Chrome instead
-  // of Playwright's bundled chromium (needed to reuse a real Chrome profile).
-  const channel = parseString(env.QICHACHA_CHANNEL);
+  // of Playwright's bundled chromium. DEFAULTS TO "chrome" for qichacha: the
+  // site's WAF (qcc.com/405.html) blocks Playwright's bundled chromium outright
+  // (live pass 2026-08-17) while the real Chrome binary passes. Set
+  // QICHACHA_CHANNEL=chromium to override.
+  const channel = parseString(env.QICHACHA_CHANNEL) ?? "chrome";
   return Object.freeze({ limits, headless, profileDir, channel });
 }
 

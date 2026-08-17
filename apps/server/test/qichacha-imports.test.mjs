@@ -15,23 +15,27 @@ import { renderQichachaPage, resolveQichachaImportConfig } from "../src/services
 const FIRM_URL = "https://www.qcc.com/firm/9d2f2be64b8b1b03ffef31fb800d5f85.shtml";
 
 // A minimal rendered firm page the subprocess would return behind the login
-// wall: company name in the header, the basic-info table under basic-detail,
-// no author and no publish date (a company page has neither). Selectors are
-// the ones parseArticleDocument reads (finalized by the live pass).
+// wall, mirroring the live structure (2026-08-17, issue #1698): site nav in
+// .qcc-header-content (NOT content), everything meaningful wrapped in
+// .company-detail — the <h1 class="copy-value"> company name and the 基本信息
+// table under section#cominfo — no author and no publish date (a company page
+// has neither). Selectors are the ones parseArticleDocument reads.
 function qichachaRenderedHtml() {
   return `<!doctype html><html><head><title>某某科技有限公司 - 企查查</title></head>
 <body>
-  <nav><a>导航噪声</a></nav>
-  <div class="header-content">
-    <h1 class="header-title">某某科技有限公司</h1>
+  <nav class="qcc-header-content"><a>导航噪声</a></nav>
+  <div class="layout-content company-detail">
+    <h1 class="copy-value">某某科技有限公司</h1>
+    <section id="cominfo" class="cominfo-section data-section">
+      <div class="cominfo-normal">
+        <table class="app-data-table ntable">
+          <tr><td>法定代表人</td><td>张三</td></tr>
+          <tr><td>注册资本</td><td>1000万元人民币</td></tr>
+        </table>
+      </div>
+      <img data-src="https://imagetm.oss-cn-hangzhou.aliyuncs.com/firm-logo.png" alt="公司Logo">
+    </section>
   </div>
-  <section class="basic-detail">
-    <table class="ntable">
-      <tr><td>法定代表人</td><td>张三</td></tr>
-      <tr><td>注册资本</td><td>1000万元人民币</td></tr>
-    </table>
-    <img data-src="https://imagetm.oss-cn-hangzhou.aliyuncs.com/firm-logo.png" alt="公司Logo">
-  </section>
 </body></html>`;
 }
 
@@ -105,7 +109,7 @@ test("renderQichachaPage returns the rendered HTML from the subprocess", async (
   t.after(cleanup);
   const { resolvedUrl, html } = await renderQichachaPage(FIRM_URL, { env });
   assert.equal(resolvedUrl, FIRM_URL);
-  assert.ok(html.includes("basic-detail"));
+  assert.ok(html.includes("company-detail"));
 });
 
 test("renderQichachaPage surfaces qichacha_import_failed when the renderer exits non-zero", async (t) => {
@@ -160,6 +164,9 @@ test("inspectQichachaArticle parses the rendered firm page into the inspection s
     // table rendering only if a real page proves this unreadable).
     assert.ok(inspection.markdownPreview.includes("法定代表人"));
     assert.ok(inspection.markdownPreview.includes("1000万元人民币"));
+    // The content root is .company-detail — the site-wide nav stays OUT (the
+    // live pass caught .header-content matching the nav on every page).
+    assert.ok(!inspection.markdownPreview.includes("导航噪声"));
     // One logo image registered for the parent's downloadMedia.
     assert.equal(inspection.media.length, 1);
     assert.equal(inspection.media[0].type, "image");

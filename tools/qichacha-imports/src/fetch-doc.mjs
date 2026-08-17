@@ -5,8 +5,8 @@
 // pages consumed by logged-in views. The proven zhihu recipe applies directly:
 // reuse a LOGGED-IN session via a persistent profile.
 //   1. Seed once — `qichacha-imports --login --profile <dir>` opens a HEADED
-//      window on that profile dir; the operator logs into qichacha (phone +
-//      password + slider); the auth cookie persists in the dir.
+//      window on that profile dir; the operator logs into qichacha (QR / SMS /
+//      password + slider); the session persists in the dir.
 //   2. Render — every later run with QICHACHA_PROFILE_DIR=<dir> reopens that
 //      profile (launchPersistentContext) headless and reads the firm page.
 //   To drive the SYSTEM Chrome and reuse a real existing profile, also set
@@ -16,11 +16,13 @@
 //   profile → QICHACHA_CHANNEL=chrome → QICHACHA_HEADLESS=0 (a legitimate
 //   escape hatch for a single-user local product).
 //
-// In-band discovery: the exact auth-cookie name is confirmed by --login, which
-// prints cookie NAMES ONLY (never values) to stderr whenever the cookie-name
-// set changes. Whichever of SITE.authCookies appears first resolves the login;
-// if none of them ever appears, the printed name diff is the evidence needed
-// to correct SITE.authCookies in site.mjs.
+// Login detection is DOM-based: the poller waits for the header's login marker
+// (site.mjs records the 2026-08-17 live-pass finding that no cookie NAME
+// distinguishes qichacha's logged-in state — the session rides server-side on
+// QCCSESSID, which exists logged-out too). While polling, every CHANGE in the
+// set of cookie names is still printed to stderr as names only — that listing
+// is the operational surface for diagnosing sessions that silently expire.
+// Cookie VALUES are never printed.
 //
 // Without a profile dir this module still runs (ephemeral context), but real
 // qichacha content will not render — it times out on the content selector and
@@ -41,6 +43,7 @@ import { SITE } from "./site.mjs";
 
 const DEFAULT_LOGIN_TIMEOUT_MS = 300_000;
 const LOGIN_POLL_MS = 2_000;
+const MARKER_SETTLE_MS = 5_000;
 
 /**
  * Render a Qichacha company page in a real browser and return its HTML. Reuses
@@ -87,14 +90,13 @@ export async function renderQichachaPage({ url, config, signal }) {
 
 /**
  * Seed a persistent profile with a logged-in qichacha session. Launches a
- * HEADED browser on config.profileDir, opens the login page, and polls for
- * any of the candidate auth cookies — the operator logs into qichacha in the
- * window at their leisure. The cookie then persists in the profile for later
- * headless renders.
+ * HEADED browser on config.profileDir, opens the homepage (login is a modal
+ * there), and polls for the header's DOM login marker — the operator logs
+ * into qichacha in the window at their leisure. The session then persists in
+ * the profile for later renders.
  *
  * While polling, every CHANGE in the set of cookie names is printed to stderr
- * as names only — that listing is both the in-band discovery mechanism for the
- * true auth cookie and the permanent operational surface for diagnosing
+ * as names only — that listing is the operational surface for diagnosing
  * sessions that silently expire. Cookie VALUES are never printed.
  *
  * @param {{
@@ -114,17 +116,23 @@ export async function loginQichachaProfile({
   }
   const headedConfig = { ...config, headless: false };
   const { page, close } = await openContext(headedConfig);
+  const markerPresent = async () =>
+    (await page.locator(SITE.loginMarkerSelector).count().catch(() => 0)) > 0;
   try {
     await page.goto(SITE.loginUrl, { waitUntil: "domcontentloaded", timeout: headedConfig.limits.pageTimeoutMs }).catch(() => {});
     process.stderr.write(
       `qichacha-imports --login: log into qichacha in the opened window (waiting up to ${Math.round(
         loginTimeoutMs / 1000,
-      )}s for one of the ${SITE.authCookies.join(", ")} cookies).\n`,
+      )}s for the login marker ${SITE.loginMarkerSelector}; refresh the page if it does not fire after signing in).\n`,
     );
     const start = Date.now();
     let printed = "";
     while (Date.now() - start < loginTimeoutMs) {
       if (signal && signal.aborted) throw new Error("Aborted");
+      if (await markerPresent()) {
+        process.stderr.write("qichacha-imports --login: logged in (login marker rendered). Profile seeded.\n");
+        return;
+      }
       const cookies = await page.context().cookies();
       const names = [...new Set(cookies.map((c) => c.name))].sort().join(", ");
       if (names !== printed) {
@@ -132,14 +140,19 @@ export async function loginQichachaProfile({
         process.stderr.write(`qichacha-imports --login: cookies now: ${names || "(none)"}\n`);
         printed = names;
       }
-      const hit = SITE.authCookies.find((name) => cookies.some((c) => c.name === name));
-      if (hit) {
-        process.stderr.write(`qichacha-imports --login: logged in (${hit} captured). Profile seeded.\n`);
-        return;
-      }
       await new Promise((r) => setTimeout(r, LOGIN_POLL_MS));
     }
-    throw new Error(`Login timed out after ${loginTimeoutMs}ms — none of the ${SITE.authCookies.join(", ")} cookies seen.`);
+    // The SPA header usually swaps to the signed-in state without a repaint;
+    // if the marker never fired, one final reload before declaring failure
+    // (the operator may have signed in via a redirect the poller's page did
+    // not observe). Never an automatic reload loop.
+    await page.reload({ waitUntil: "domcontentloaded", timeout: headedConfig.limits.pageTimeoutMs }).catch(() => {});
+    await new Promise((r) => setTimeout(r, MARKER_SETTLE_MS));
+    if (await markerPresent()) {
+      process.stderr.write("qichacha-imports --login: logged in (login marker rendered after reload). Profile seeded.\n");
+      return;
+    }
+    throw new Error(`Login timed out after ${loginTimeoutMs}ms — login marker ${SITE.loginMarkerSelector} never rendered.`);
   } finally {
     await close();
   }

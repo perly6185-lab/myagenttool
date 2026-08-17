@@ -3,26 +3,28 @@ import assert from "node:assert/strict";
 
 import { resolveConfig, LIMITS } from "../src/config.mjs";
 
-test("resolveConfig: defaults to ephemeral (no profile, no channel)", () => {
+test("resolveConfig: defaults to ephemeral profile and system-chrome channel", () => {
   const cfg = resolveConfig({});
   assert.equal(cfg.profileDir, null);
-  assert.equal(cfg.channel, null);
+  // Channel defaults to the real Chrome binary: qichacha's WAF blocks
+  // Playwright's bundled chromium outright (live pass 2026-08-17).
+  assert.equal(cfg.channel, "chrome");
   assert.equal(cfg.headless, true);
   assert.equal(cfg.limits.pageTimeoutMs, LIMITS.pageTimeoutMs);
   assert.ok(Object.isFrozen(cfg));
   assert.ok(Object.isFrozen(cfg.limits));
 });
 
-test("resolveConfig: reads QICHACHA_PROFILE_DIR (trimmed) and QICHACHA_CHANNEL", () => {
-  const cfg = resolveConfig({ QICHACHA_PROFILE_DIR: "  /tmp/qichacha-profile  ", QICHACHA_CHANNEL: "chrome" });
+test("resolveConfig: reads QICHACHA_PROFILE_DIR (trimmed) and QICHACHA_CHANNEL override", () => {
+  const cfg = resolveConfig({ QICHACHA_PROFILE_DIR: "  /tmp/qichacha-profile  ", QICHACHA_CHANNEL: "chromium" });
   assert.equal(cfg.profileDir, "/tmp/qichacha-profile");
-  assert.equal(cfg.channel, "chrome");
+  assert.equal(cfg.channel, "chromium");
 });
 
-test("resolveConfig: blank profile/channel collapse to null", () => {
+test("resolveConfig: blank profile collapses to null; blank channel falls back to default", () => {
   const cfg = resolveConfig({ QICHACHA_PROFILE_DIR: "   ", QICHACHA_CHANNEL: "" });
   assert.equal(cfg.profileDir, null);
-  assert.equal(cfg.channel, null);
+  assert.equal(cfg.channel, "chrome");
 });
 
 test("resolveConfig: bounds pageTimeoutMs to the configured range", () => {
