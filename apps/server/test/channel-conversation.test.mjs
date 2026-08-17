@@ -16,7 +16,7 @@ import { createChannelService } from "../src/services/channels.mjs";
 const NOW = "2026-07-15T00:00:00.000Z";
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, intakeQuietMs = 5 * 1000, answerClarify, retryAutoRun, cancelAutoRun, classifyIntent, createConsultation, notifyHumanTakeover, resendDelivery, operationMode = "team" } = {}) {
+function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, cancelAutoRun, classifyIntent, createConsultation, notifyHumanTakeover, resendDelivery, operationMode = "team" } = {}) {
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
   const events = [];
   const refusals = [];
@@ -72,6 +72,7 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
     notifyHumanTakeover,
     replySender: (reply) => { replies.push(reply); },
     intakeQuietMs,
+    intentTimeoutMs,
   });
 
   const { body } = channelService.registerChannel({ provider: "wecom", name: "ops" }, owner);
@@ -152,6 +153,21 @@ test("simple greetings are answered directly without creating a task", () => {
   assert.equal(harness.state.channelIntakeGroups.length, 0);
   assert.equal(harness.state.channelTaskThreads.length, 0);
   assert.equal(harness.capabilityCalls.length, 0);
+});
+
+test("P2 intent matrix handles common WeChat short forms without creating accidental work", () => {
+  const cases = [
+    { text: "你好啊", check: (result) => assert.equal(result.data.greeting, true) },
+    { text: "在吗", check: (result) => assert.equal(result.data.greeting, true) },
+    { text: "请问发布为什么失败？", check: (result) => assert.equal(result.data.consultation, true) },
+    { text: "帮我整理这批资料", check: (result) => assert.match(result.reply, /已收到/) },
+  ];
+  for (const entry of cases) {
+    const harness = makeHarness({ intakeQuietMs: 1 });
+    const result = harness.receive(entry.text).dispatched;
+    entry.check(result);
+    assert.equal(harness.capabilityCalls.length, 0);
+  }
 });
 
 test("confirmation and cancellation without an active task stay conversational", () => {
@@ -731,6 +747,7 @@ test("classifier output is normalized and recorded without trusting its task ref
   assert.equal(event.intentDecision.intent, "query");
   assert.equal(event.intentDecision.ref, null);
   assert.equal(event.intentDecision.source, "custom");
+  assert.equal(event.intentDecision.policyVersion, "ilink-intent-v2");
   assert.equal(Object.hasOwn(event.intentDecision, "reason"), false);
   assert.equal(harness.state.channelIntentMetrics.total, 1);
   assert.equal(harness.state.channelIntentMetrics.byIntent.query, 1);
@@ -760,6 +777,44 @@ test("async intent adapters can confirm a task and structured actions are honore
   const confirmed = await harness.receive("确认执行").dispatched;
   assert.equal(confirmed.status, "dispatched");
   assert.deepEqual(calls, ["filed"]);
+});
+
+test("a hung intent adapter times out into the deterministic intake path", async () => {
+  const harness = makeHarness({
+    intakeQuietMs: 1_000,
+    intentTimeoutMs: 10,
+    classifyIntent: () => new Promise(() => {}),
+  });
+  const result = await harness.receive("处理一下").dispatched;
+  assert.equal(result.status, "dispatched");
+  assert.match(result.reply, /已收到/);
+  assert.equal(harness.state.channelIntentMetrics.adapterCalls, 1);
+  assert.equal(harness.state.channelIntentMetrics.adapterTimeouts, 1);
+  assert.equal(harness.state.channelTaskThreads.length, 0);
+  assert.equal(harness.state.channelIntakeGroups.length, 1);
+});
+
+test("async channel messages are serialized per conversation", async () => {
+  let releaseFirst;
+  const first = new Promise((resolve) => { releaseFirst = resolve; });
+  const harness = makeHarness({
+    intakeQuietMs: 1_000,
+    intentTimeoutMs: 1_000,
+    createChannelTaskIssue: async () => ({ ok: true, number: 15, workItemId: "wi_15" }),
+    classifyIntent: ({ text }) => text === "第一条" ? first : { intent: "confirm", confidence: 1 },
+  });
+  harness.bindTaskProject("proj_a");
+  const firstDispatch = harness.receive("第一条").dispatched;
+  const secondDispatch = harness.receive("确认").dispatched;
+  assert.equal(typeof secondDispatch?.then, "function");
+  let secondSettled = false;
+  secondDispatch.then(() => { secondSettled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(secondSettled, false);
+  releaseFirst({ intent: "new_task", confidence: 0.95 });
+  assert.equal((await firstDispatch).status, "dispatched");
+  assert.equal((await secondDispatch).status, "dispatched");
+  assert.equal(harness.state.channelTaskThreads.length, 1);
 });
 
 test("explicit confirmation is handled locally without asking the model to reinterpret it", async () => {
@@ -798,7 +853,7 @@ test("a long-running channel task can be explicitly handed to a human", async ()
   assert.match(handoff.reply, /转人工/);
 });
 
-test("timeout sweep moves active channel work to human takeover once", async () => {
+test("timeout sweep first asks for attention, then moves stale work to human takeover", async () => {
   const harness = makeHarness({
     intakeQuietMs: 1,
     createChannelTaskIssue: async () => ({ ok: true, number: 13, workItemId: "wi_13" }),
@@ -810,11 +865,104 @@ test("timeout sweep moves active channel work to human takeover once", async () 
   await harness.receive("确认").dispatched;
   thread.expiresAt = "2020-01-01T00:00:00.000Z";
   const sweep = harness.conversationService.sweepTaskThreads();
-  assert.deepEqual(sweep, { changed: 1, handedOff: 1, expired: 0 });
+  assert.deepEqual(sweep, { changed: 1, handedOff: 0, needsAttention: 1, expired: 0 });
+  assert.equal(thread.status, "needs_attention");
+  assert.equal(harness.state.channelTaskRequests.at(-1).status, "pending");
+  thread.expiresAt = "2020-01-01T00:00:00.000Z";
+  const handoff = harness.conversationService.sweepTaskThreads();
+  assert.deepEqual(handoff, { changed: 1, handedOff: 1, needsAttention: 0, expired: 0 });
   assert.equal(thread.status, "human_takeover");
   assert.equal(harness.state.channelTaskRequests.at(-1).status, "human_takeover");
   assert.equal(harness.conversationService.sweepTaskThreads().changed, 0);
   assert.ok(harness.replies.some((reply) => /长时间没有进展/.test(reply.content)));
+});
+
+test("running channel work emits a rate-limited heartbeat after silent progress", async () => {
+  const harness = makeHarness({
+    intakeQuietMs: 1,
+    createChannelTaskIssue: async () => ({ ok: true, number: 14, workItemId: "wi_14" }),
+  });
+  harness.bindTaskProject("proj_a");
+  harness.receive("请处理心跳任务");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const thread = harness.state.channelTaskThreads[0];
+  thread.status = "running";
+  thread.expiresAt = "2099-01-01T00:00:00.000Z";
+  thread.lastProgressAt = "2026-07-14T00:00:00.000Z";
+  thread.lastProgressSummary = "正在分析输入";
+  thread.lastHeartbeatAt = null;
+  const before = harness.replies.length;
+  assert.equal(harness.conversationService.sweepTaskThreads().changed, 0);
+  assert.equal(harness.replies.length, before + 1);
+  assert.match(harness.replies.at(-1).content, /仍在执行/);
+  assert.equal(harness.conversationService.sweepTaskThreads().changed, 0);
+  assert.equal(harness.replies.length, before + 1);
+});
+
+test("needs-attention tasks can be resumed with a plain WeChat reply", async () => {
+  const harness = makeHarness({
+    intakeQuietMs: 1,
+    createChannelTaskIssue: async () => ({ ok: true, number: 16, workItemId: "wi_16" }),
+  });
+  harness.bindTaskProject("proj_a");
+  harness.receive("请继续处理这个长任务");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const thread = harness.state.channelTaskThreads[0];
+  await harness.receive("确认").dispatched;
+  thread.autoRunId = "run_16";
+  harness.state.autoRuns.push({ id: "run_16", status: "running", invocationId: "inv_16" });
+  thread.status = "needs_attention";
+  thread.expiresAt = "2020-01-01T00:00:00.000Z";
+  const resumed = await harness.receive("继续").dispatched;
+  assert.equal(resumed.status, "dispatched");
+  assert.match(resumed.reply, /继续执行中/);
+  assert.equal(thread.status, "running");
+  assert.equal(thread.attentionReason, null);
+});
+
+test("needs-attention tasks can be handed to a human from the channel", async () => {
+  const harness = makeHarness();
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const thread = {
+    id: "cth_attention_handoff",
+    shortRef: "T-ATTN",
+    channelId: harness.channelId,
+    conversationId: conversation.id,
+    sourceEventIds: [],
+    messages: [],
+    summary: "需要人工接管的任务",
+    status: "needs_attention",
+    waitingFor: "attention",
+  };
+  harness.state.channelTaskThreads.push(thread);
+  const handoff = await harness.receive("转人工").dispatched;
+  assert.equal(handoff.status, "dispatched");
+  assert.match(handoff.reply, /已转人工/);
+  assert.equal(thread.status, "human_takeover");
+});
+
+test("needs-attention does not resurrect a task from a stale execution id", async () => {
+  const harness = makeHarness();
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const thread = {
+    id: "cth_attention_stale",
+    shortRef: "T-STALE",
+    channelId: harness.channelId,
+    conversationId: conversation.id,
+    sourceEventIds: [],
+    messages: [],
+    summary: "失效执行引用",
+    status: "needs_attention",
+    waitingFor: "attention",
+    autoRunId: "run_missing",
+  };
+  harness.state.channelTaskThreads.push(thread);
+  const resumed = await harness.receive("继续").dispatched;
+  assert.equal(resumed.status, "dispatched");
+  assert.match(resumed.reply, /没有可恢复的自动执行/);
+  assert.equal(thread.status, "needs_attention");
 });
 
 test("/run: allowlisted capability dispatches governed, tainted, and correlated", () => {

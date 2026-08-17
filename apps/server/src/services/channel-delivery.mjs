@@ -386,6 +386,7 @@ export function createChannelDeliveryService({
               : thread?.status === "waiting_approval" ? "等待确认"
                 : thread?.status === "running" ? "继续执行中"
                   : thread?.status === "queued" ? "排队中"
+                : thread?.status === "needs_attention" ? "需要关注"
                 : thread?.status === "human_takeover" ? "人工处理中"
                 : ({
                   succeeded: "已完成",
@@ -398,6 +399,7 @@ export function createChannelDeliveryService({
     if (summary) lines.push(String(summary).slice(0, 1500));
     if (thread?.status === "waiting_user") lines.push("请直接回复需要补充的信息，或发送图片、语音、文件。");
     if (thread?.status === "failed") lines.push("你可以回复“重试”再次执行，或回复“转人工”。");
+    if (thread?.status === "needs_attention") lines.push("任务暂时没有新进展。回复“进度”查看，回复“继续”继续观察，或回复“转人工”。");
     if (thread?.status === "human_takeover") lines.push("请等待人工处理，我会在有进展时通知你。");
     const workItem = (state.workItems ?? []).find((row) => row.id === channelContext.workItemId);
     const resultAssets = [

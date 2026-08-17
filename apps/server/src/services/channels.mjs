@@ -779,18 +779,22 @@ export function createChannelService({
           replyContext: replyContext ?? null,
           createdAt: now(),
           updatedAt: now(),
+          inboundSequence: 0,
+          lastDispatchedSequence: 0,
         };
         state.channelConversations.push(conversation);
       } else if (replyContext) {
         // Refresh the reply target — Teams' serviceUrl can rotate between messages.
         conversation.replyContext = replyContext;
       }
+      conversation.inboundSequence = Number(conversation.inboundSequence ?? 0) + 1;
       const event = {
         id: nextId(channelIdPrefixes.event),
         channelId: channel.id,
         conversationId: conversation.id,
         ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
         providerMessageId: messageId,
+        conversationSequence: conversation.inboundSequence,
         externalUserId: senderId,
         msgType: String(msgType ?? "text"),
         // Cap stored content: an inbound message is attacker-controlled; a signed

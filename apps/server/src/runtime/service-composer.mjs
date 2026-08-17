@@ -2180,7 +2180,7 @@ export function createServerRuntimeServices({
   const createChannelTaskIssue = async ({
     projectId, channelOwnerTeamId, title, description, channelId, externalUserId,
     injectionSuspicious = false, autoRoute = false, inputAssets = [], terminalId,
-    channelTaskContext, threadId = null,
+    channelTaskContext, threadId = null, idempotencyKey = null,
   }) => {
     const project = (state.projects ?? []).find((p) => p.id === projectId);
     if (!project) return { ok: false, reason: "project_not_resolvable" };
@@ -2203,7 +2203,7 @@ export function createServerRuntimeServices({
       labels: ["channel", UNTRUSTED_INPUT_LABEL, ...(injectionSuspicious ? ["needs-triage"] : [])],
       inputAssets,
       requiredCapabilities: [],
-      idempotencyKey: `channel:${channelId}:${channelTaskContext?.messageId ?? "unknown"}`,
+      idempotencyKey: idempotencyKey ?? `channel:${channelId}:${channelTaskContext?.messageId ?? "unknown"}`,
     }, { userId: principal.id, teamId: principal.teamId, role: "member", deviceId: terminalId });
     if (!created.ok) return { ok: false, reason: created.body?.error ?? "work_item_create_failed" };
     const workItem = created.body.workItem;

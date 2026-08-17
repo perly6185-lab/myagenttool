@@ -43,11 +43,18 @@ const TASK_DAILY_LIMIT_FALLBACK = 50;
 // messages, proposes a task, and waits for an explicit confirmation before it
 // enters the existing Task/Invocation governance path.
 export const CHANNEL_INTAKE_QUIET_MS = 5 * 1000;
+// Intent classification is optional preflight. It must never make a channel
+// message wait as long as a real task or a Bridge invocation.
+export const CHANNEL_INTENT_TIMEOUT_MS = 3_500;
+export const CHANNEL_INTENT_POLICY_VERSION = "ilink-intent-v2";
 const CHANNEL_INTAKE_MAX_MS = 30 * 1000;
 const CHANNEL_INTAKE_MAX_EVENTS = 8;
 const CHANNEL_THREAD_TTL_MS = 30 * 60 * 1000;
 export const CHANNEL_WAITING_USER_TTL_MS = 30 * 60 * 1000;
 export const CHANNEL_RUNNING_TTL_MS = 24 * 60 * 60 * 1000;
+export const CHANNEL_PROGRESS_HEARTBEAT_AFTER_MS = 5 * 60 * 1000;
+export const CHANNEL_PROGRESS_HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000;
+export const CHANNEL_ATTENTION_GRACE_MS = 30 * 60 * 1000;
 const THREAD_CONFIRMATIONS = new Set([
   "确认", "确定", "开始", "执行", "可以", "好的", "好", "yes", "ok",
   "好呀", "好啊", "没问题", "按这个做", "就这样", "开始吧", "执行吧",
@@ -56,8 +63,12 @@ const THREAD_CANCELLATIONS = new Set(["取消", "不要了", "放弃", "cancel",
 const GREETING_TEXTS = new Set([
   "你好", "您好", "嗨", "嗨嗨", "哈喽", "hello", "hi", "hey",
   "早上好", "上午好", "中午好", "下午好", "晚上好", "晚安",
+  "在吗", "在不在", "有人吗", "能听到吗",
 ]);
-const NEW_TASK_PREFIX = /^(另外|另一个|还有一个|再帮我|除此之外|新任务|另一个任务)(?:\s|$)/i;
+// Accept the punctuation people naturally use in WeChat ("另外，请……") as
+// well as the compact "再帮我……" form. These phrases are a strong explicit
+// new-task signal and should not be attached to a waiting-user thread.
+const NEW_TASK_PREFIX = /^(?:(?:另外|另一个|还有一个|除此之外|新任务|另一个任务)(?=\s|[，,：:、。！!？?]|$)|再帮我)/i;
 const EXPLICIT_TASK_REQUEST = /^(?:请(?:帮我|协助我|处理|整理|分析|检查|生成|创建|修改|导出|汇总|总结|翻译|写|做|执行|运行|发送|下载|对比|审核|修复|规划|开发|实现)|(?:帮我|麻烦(?:帮我)?|请协助)(?:整理|分析|处理|检查|生成|创建|修改|导出|汇总|总结|翻译|写|做|执行|运行|发送|下载|对比|审核|修复|规划|开发|实现))/i;
 const CONSULTATION_REQUEST = /^(?:为什么|为何|怎么|如何|能否|是否|有没有|请问|什么是|有什么区别|你建议|推荐什么|应该怎么)/;
 const TASK_LIST_REQUESTS = new Set(["我的任务", "查看任务", "任务", "任务列表", "有哪些任务", "任务状态", "我的任务状态"]);
@@ -68,7 +79,7 @@ const HELP_REQUESTS = new Set([
   "帮助", "怎么用", "如何使用", "我能做什么", "你能做什么", "你可以做什么",
   "能帮我什么", "你会做什么", "你能帮我做什么", "help", "what can you do",
 ]);
-const TASK_THREAD_ACTIVE_STATUSES = new Set(["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user"]);
+const TASK_THREAD_ACTIVE_STATUSES = new Set(["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user", "needs_attention"]);
 export const CHANNEL_INTENT_CONFIDENCE_THRESHOLD = 0.65;
 
 export function createChannelConversationService({
@@ -100,10 +111,16 @@ export function createChannelConversationService({
   resendDelivery = null,
   notifyHumanTakeover = null,
   intakeQuietMs = CHANNEL_INTAKE_QUIET_MS,
+  intentTimeoutMs = CHANNEL_INTENT_TIMEOUT_MS,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   const intakeTimers = new Map();
   const threadLocks = new Set();
+  // The Bridge classifier is an optional async preflight. Serializing only
+  // messages that can reach it preserves the synchronous fast path for
+  // commands/greetings while preventing an older classification from winning
+  // over a newer message in the same conversation.
+  const conversationDispatchTails = new Map();
 
   const findChannel = (channelId) => (state.channels ?? []).find((row) => row.id === channelId) ?? null;
   const findConversation = (conversationId) =>
@@ -197,12 +214,15 @@ export function createChannelConversationService({
       thread.expiresAt = new Date(Date.parse(now()) + CHANNEL_WAITING_USER_TTL_MS).toISOString();
     } else if (["queued", "running"].includes(status)) {
       thread.expiresAt = new Date(Date.parse(now()) + CHANNEL_RUNNING_TTL_MS).toISOString();
+    } else if (status === "needs_attention") {
+      thread.expiresAt = new Date(Date.parse(now()) + CHANNEL_ATTENTION_GRACE_MS).toISOString();
     } else if (["succeeded", "failed", "cancelled", "paused", "human_takeover"].includes(status)) {
       thread.expiresAt = null;
     }
     thread.nextAction = threadNextAction(status, thread);
     thread.lastProgressAt = now();
     thread.lastProgressSummary = `状态更新：${taskThreadStatus({ status })}`;
+    thread.lastHeartbeatAt = null;
     thread.lastActivityAt = now();
   }
 
@@ -215,6 +235,7 @@ export function createChannelConversationService({
       queued: "等待前面的任务完成，系统会自动开始",
       running: "等待执行完成，系统会自动通知",
       waiting_user: "请直接回复需要补充的信息",
+      needs_attention: "任务暂时没有新进展，回复“继续”继续观察，或回复“转人工”",
       human_takeover: "等待人工回复",
       succeeded: "查看任务结果或继续描述新的需求",
       failed: "回复“重试”再次执行，或回复“转人工”",
@@ -257,7 +278,7 @@ export function createChannelConversationService({
 
   function isGreeting(text) {
     const value = normalizedText(text).toLowerCase().replace(/[!！。.,，?？~～]+$/g, "");
-    return GREETING_TEXTS.has(value);
+    return GREETING_TEXTS.has(value) || /^(?:你好|您好)(?:啊|呀|喽)$/.test(value);
   }
 
   function isNewTask(text) {
@@ -305,8 +326,14 @@ export function createChannelConversationService({
     if (resend) return { kind: "resend", ref: resend[1].toUpperCase() };
     const pause = value.match(/^暂停(?:任务)?(?:\s+(T-[a-z0-9_-]+))?$/i);
     if (pause?.[1]) return { kind: "pause", ref: pause[1].toUpperCase() };
-    const resume = value.match(/^(?:继续执行|恢复|恢复任务)(?:\s+(T-[a-z0-9_-]+))?$/i);
-    if (resume?.[1]) return { kind: "resume", ref: resume[1].toUpperCase() };
+    const resume = value.match(/^(?:继续|继续执行|恢复|恢复任务)(?:\s+(T-[a-z0-9_-]+))?$/i);
+    if (resume?.[1]) {
+      const selected = conversation
+        ? (state.channelTaskThreads ?? []).find((thread) => thread.conversationId === conversation.id && threadRef(thread).toUpperCase() === resume[1].toUpperCase())
+        : null;
+      if (selected && !["paused", "needs_attention"].includes(selected.status)) return { kind: "select", ref: resume[1].toUpperCase() };
+      return { kind: "resume", ref: resume[1].toUpperCase() };
+    }
     const handoff = value.match(/^(?:转人工|人工处理|人工)\s+(T-[a-z0-9_-]+)$/i);
     if (handoff) return { kind: "handoff", ref: handoff[1].toUpperCase() };
     const select = value.match(/^(?:继续|选择|切换)\s+(T-[a-z0-9_-]+)$/i);
@@ -331,7 +358,7 @@ export function createChannelConversationService({
         return { kind: "handoff", ref: latest ? threadRef(latest) : null, friendly: true };
       }
       if (pause && latest && TASK_THREAD_ACTIVE_STATUSES.has(latest.status)) return { kind: "pause", ref: threadRef(latest), friendly: true };
-      if (resume && latest && latest.status === "paused") return { kind: "resume", ref: threadRef(latest), friendly: true };
+      if (resume && latest && ["paused", "needs_attention"].includes(latest.status)) return { kind: "resume", ref: threadRef(latest), friendly: true };
       const ordinal = taskOrdinal(value);
       if (ordinal) {
         const selected = recent[ordinal.index - 1];
@@ -345,7 +372,7 @@ export function createChannelConversationService({
       }
       if (latest && value === "重试" && ["failed", "cancelled"].includes(latest.status)) return { kind: "retry", ref: threadRef(latest), friendly: true };
       if (latest && ["暂停", "暂停任务"].includes(value) && TASK_THREAD_ACTIVE_STATUSES.has(latest.status)) return { kind: "pause", ref: threadRef(latest), friendly: true };
-      if (latest && ["继续执行", "恢复", "恢复任务"].includes(value) && latest.status === "paused") return { kind: "resume", ref: threadRef(latest), friendly: true };
+      if (latest && ["继续", "继续执行", "恢复", "恢复任务"].includes(value) && ["paused", "needs_attention"].includes(latest.status)) return { kind: "resume", ref: threadRef(latest), friendly: true };
       if (latest && value === "继续" && latest.status === "paused") return { kind: "resume", ref: threadRef(latest), friendly: true };
       if (latest && value === "取消" && TASK_THREAD_ACTIVE_STATUSES.has(latest.status)) return { kind: "cancel", ref: threadRef(latest), friendly: true };
       if (latest && ["转人工", "人工处理", "人工"].includes(value) && TASK_THREAD_ACTIVE_STATUSES.has(latest.status)) return { kind: "handoff", ref: threadRef(latest), friendly: true };
@@ -358,6 +385,37 @@ export function createChannelConversationService({
       if (latest && /^(?:转人工|交给人工)(?:处理)?(?:刚才|上一个)(?:的)?任务$/i.test(value) && TASK_THREAD_ACTIVE_STATUSES.has(latest.status)) return { kind: "handoff", ref: threadRef(latest), friendly: true };
     }
     return null;
+  }
+
+  function recordIntentAdapterMetric(kind) {
+    runTx(() => {
+      const metrics = state.channelIntentMetrics ?? {
+        policyVersion: CHANNEL_INTENT_POLICY_VERSION,
+        total: 0,
+        byIntent: {},
+        bySource: {},
+        lowConfidence: 0,
+        ambiguous: 0,
+        adapterCalls: 0,
+        adapterTimeouts: 0,
+        adapterErrors: 0,
+        updatedAt: null,
+      };
+      metrics.policyVersion = CHANNEL_INTENT_POLICY_VERSION;
+      const key = kind === "timeout" ? "adapterTimeouts" : kind === "error" ? "adapterErrors" : "adapterCalls";
+      metrics[key] = Number(metrics[key] ?? 0) + 1;
+      metrics.updatedAt = now();
+      state.channelIntentMetrics = metrics;
+    });
+  }
+
+  function withIntentTimeout(value, timeoutMs) {
+    const boundedTimeout = Math.max(250, Number(timeoutMs) || CHANNEL_INTENT_TIMEOUT_MS);
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error("channel_intent_timeout"), { code: "channel_intent_timeout" })), boundedTimeout);
+    });
+    return Promise.race([Promise.resolve(value), timeout]).finally(() => clearTimeout(timer));
   }
 
   function activeTaskThreads(conversation) {
@@ -462,15 +520,20 @@ export function createChannelConversationService({
     if (typeof classifyIntent !== "function" || control || isConfirmation(value) || isCancellation(value) || isGreeting(value) || isExplicitTaskRequest(value) || isNewTask(value) || isConsultationRequest(value)) {
       return normalizeChannelIntentResult(fallback, { fallback, activeRefs: new Set(active.map(threadRef)) });
     }
+    recordIntentAdapterMetric("call");
     try {
       const proposed = classifyIntent({ text: value, conversationId: conversation.id, activeThreads: active.map((thread) => ({ ref: threadRef(thread), status: thread.status, summary: String(thread.summary ?? "").slice(0, 400) })) });
       if (proposed && typeof proposed.then === "function") {
-        return proposed
+        return withIntentTimeout(proposed, intentTimeoutMs)
           .then((result) => normalizeChannelIntentResult(result, { fallback, activeRefs: new Set(active.map(threadRef)) }))
-          .catch(() => normalizeChannelIntentResult(fallback, { fallback, activeRefs: new Set(active.map(threadRef)) }));
+          .catch((error) => {
+            recordIntentAdapterMetric(error?.code === "channel_intent_timeout" ? "timeout" : "error");
+            return normalizeChannelIntentResult(fallback, { fallback, activeRefs: new Set(active.map(threadRef)) });
+          });
       }
       return normalizeChannelIntentResult(proposed, { fallback, activeRefs: new Set(active.map(threadRef)) });
     } catch {
+      recordIntentAdapterMetric("error");
       return normalizeChannelIntentResult(fallback, { fallback, activeRefs: new Set(active.map(threadRef)) });
     }
   }
@@ -483,15 +546,21 @@ export function createChannelConversationService({
         confidence: normalized.confidence,
         ref: normalized.ref,
         source: normalized.source,
+        policyVersion: CHANNEL_INTENT_POLICY_VERSION,
       };
       const metrics = state.channelIntentMetrics ?? {
+        policyVersion: CHANNEL_INTENT_POLICY_VERSION,
         total: 0,
         byIntent: {},
         lowConfidence: 0,
         ambiguous: 0,
         bySource: {},
+        adapterCalls: 0,
+        adapterTimeouts: 0,
+        adapterErrors: 0,
         updatedAt: null,
       };
+      metrics.policyVersion = CHANNEL_INTENT_POLICY_VERSION;
       metrics.total = Number(metrics.total ?? 0) + 1;
       metrics.byIntent = { ...(metrics.byIntent ?? {}), [normalized.intent]: Number(metrics.byIntent?.[normalized.intent] ?? 0) + 1 };
       metrics.bySource = { ...(metrics.bySource ?? {}), [normalized.source]: Number(metrics.bySource?.[normalized.source] ?? 0) + 1 };
@@ -583,6 +652,10 @@ export function createChannelConversationService({
       nextAction: threadNextAction(status),
       lastProgressAt: timestamp,
       lastProgressSummary: `任务${status === "queued" ? "已排队" : "已创建"}`,
+      attentionReason: null,
+      attentionAt: null,
+      lastHeartbeatAt: null,
+      lastProgressNotificationAt: null,
       lastDeliveryStatus: null,
       lastDeliveryId: null,
       lastDeliveryError: null,
@@ -668,6 +741,10 @@ export function createChannelConversationService({
       nextAction: threadNextAction("awaiting_confirmation"),
       lastProgressAt: timestamp,
       lastProgressSummary: "任务草稿已整理，等待确认",
+      attentionReason: null,
+      attentionAt: null,
+      lastHeartbeatAt: null,
+      lastProgressNotificationAt: null,
       lastDeliveryStatus: null,
       lastDeliveryId: null,
       lastDeliveryError: null,
@@ -880,7 +957,8 @@ export function createChannelConversationService({
     if (threadLocks.has(thread.id)) return settle(event, { status: "dispatched", reply: `${friendly ? "当前任务" : threadRef(thread)} 正在处理，请稍候。`, data: { taskThreadId: thread.id, status: "processing" } });
     threadLocks.add(thread.id);
     try {
-      const result = await retryAutoRun(thread.autoRunId, { actor });
+      const retryIdempotencyKey = `channel-retry:${thread.id}:${thread.invocationId ?? thread.autoRunId}`;
+      const result = await retryAutoRun(thread.autoRunId, { actor, idempotencyKey: retryIdempotencyKey });
       const autoRun = result?.autoRun ?? (state.autoRuns ?? []).find((run) => run.id === thread.autoRunId) ?? null;
       const invocation = result?.invocation ?? null;
       runTx(() => {
@@ -902,7 +980,7 @@ export function createChannelConversationService({
   }
 
   async function handoffTaskThread(event, thread, actor, { friendly = false } = {}) {
-    if (!thread || !["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user"].includes(thread.status)) {
+    if (!thread || !["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user", "needs_attention"].includes(thread.status)) {
       return settle(event, { status: "dispatched", reply: `${friendly ? "当前任务" : threadRef(thread)} 当前${taskThreadStatus(thread)}，无需转人工。`, data: { taskThreadId: thread?.id ?? null, reason: "not_active" } });
     }
     if (thread.autoRunId && typeof cancelAutoRun === "function") {
@@ -1271,16 +1349,38 @@ export function createChannelConversationService({
         return settle(event, { status: "dispatched", reply: control.friendly ? "任务已暂停。回复“继续”恢复，或回复“取消”放弃。" : `${threadRef(referenced)} 已暂停。回复“继续”恢复。`, data: { taskThreadId: referenced.id, status: "paused" } });
       }
       if (control.kind === "resume") {
-        if (referenced.status !== "paused") return settle(event, { status: "dispatched", reply: `当前任务${taskThreadStatus(referenced)}，不需要恢复。`, data: { taskThreadId: referenced.id, status: referenced.status, reason: "resume_unavailable" } });
+        if (!["paused", "needs_attention"].includes(referenced.status)) return settle(event, { status: "dispatched", reply: `当前任务${taskThreadStatus(referenced)}，不需要恢复。`, data: { taskThreadId: referenced.id, status: referenced.status, reason: "resume_unavailable" } });
+        const resumeInvocation = referenced.invocationId ? findInvocation(referenced.invocationId) : null;
+        const resumeAutoRun = referenced.autoRunId
+          ? (state.autoRuns ?? []).find((run) => run.id === referenced.autoRunId)
+          : resumeInvocation?.options?.metadata?.autoRunId
+            ? (state.autoRuns ?? []).find((run) => run.id === resumeInvocation.options.metadata.autoRunId)
+            : null;
+        if (referenced.status === "needs_attention" && !resumeAutoRun && !resumeInvocation) {
+          return settle(event, { status: "dispatched", reply: "这个任务当前没有可恢复的自动执行。回复“转人工”继续处理，或重新描述需求创建新任务。", data: { taskThreadId: referenced.id, status: referenced.status, reason: "no_resumable_execution" } });
+        }
+        const resumedStatus = referenced.status === "needs_attention"
+          ? recoveredThreadStatus({ autoRunStatus: resumeAutoRun?.status, invocationStatus: resumeInvocation?.status, fallback: "queued" })
+          : "queued";
+        if (["succeeded", "failed", "cancelled"].includes(resumedStatus)) {
+          return settle(event, { status: "dispatched", reply: "这个任务已经没有可恢复的自动执行。回复“重试”再次执行，或回复“转人工”继续处理。", data: { taskThreadId: referenced.id, status: referenced.status, reason: "execution_finished" } });
+        }
         runTx(() => {
-          setThreadStatus(referenced, "queued", "user_resumed");
-          referenced.waitingFor = null;
+          setThreadStatus(referenced, resumedStatus, "user_resumed");
+          referenced.waitingFor = resumedStatus === "waiting_user" ? "user_input" : resumedStatus === "waiting_approval" ? "approval" : null;
+          referenced.attentionReason = null;
+          referenced.attentionAt = null;
           referenced.resumedAt = now();
           referenced.updatedAt = now();
           event.taskThreadId = referenced.id;
         });
         refreshQueuePositions(referenced.channelId);
-        return settle(event, { status: "dispatched", reply: control.friendly ? "任务已恢复，已重新排队。完成后我会通知你。" : `${threadRef(referenced)} 已恢复，已重新排队。`, data: { taskThreadId: referenced.id, status: "queued" } });
+        const resumedReply = resumedStatus === "waiting_user"
+          ? "任务已恢复，请补充需要的信息。"
+          : resumedStatus === "waiting_approval"
+            ? "任务已恢复，等待桌面端审批后继续。"
+            : "任务已恢复，继续执行中；完成后我会通知你。";
+        return settle(event, { status: "dispatched", reply: control.friendly ? resumedReply : `${threadRef(referenced)} ${resumedReply}`, data: { taskThreadId: referenced.id, status: resumedStatus } });
       }
       if (control.kind === "resend") {
         const resent = typeof resendDelivery === "function"
@@ -1506,6 +1606,9 @@ export function createChannelConversationService({
         terminalId: taskContext.terminalId,
         channelTaskContext: taskContext,
         threadId,
+        idempotencyKey: threadId
+          ? `channel-thread:${channel.id}:${threadId}`
+          : `channel-event:${channel.id}:${event.id}`,
         autoRoute,
       });
     } catch (error) {
@@ -1519,33 +1622,46 @@ export function createChannelConversationService({
       traceId: filed.workItemId ?? taskContext.traceId,
     });
     runTx(() => {
-      conversation.taskIssues = [...(conversation.taskIssues ?? []), {
-        number: filed.number, localRef: filed.localRef ?? null, workItemId: filed.workItemId ?? null,
-        url: filed.url ?? null, at: now(),
-      }].slice(-50);
+      const idempotencyKey = threadId
+        ? `channel-thread:${channel.id}:${threadId}`
+        : `channel-event:${channel.id}:${event.id}`;
+      const alreadyRecorded = (conversation.taskIssues ?? []).some((issue) =>
+        issue.idempotencyKey === idempotencyKey
+        || (filed.workItemId && issue.workItemId === filed.workItemId));
+      if (!alreadyRecorded) {
+        conversation.taskIssues = [...(conversation.taskIssues ?? []), {
+          number: filed.number, localRef: filed.localRef ?? null, workItemId: filed.workItemId ?? null,
+          url: filed.url ?? null, idempotencyKey, at: now(),
+        }].slice(-50);
+      }
       // Capture mode: record a request that shows up as a pending decision until a
       // human routes (→ auto-run) or dismisses it. Bounded newest-keeps.
       if (!autoRoute) {
-        const request = {
-          id: nextId("ctr"),
-          channelId: channel.id,
-          conversationId: conversation.id,
-          projectId: channel.taskProjectId,
-          issueNumber: filed.number,
-          localRef: filed.localRef ?? null,
-          workItemId: filed.workItemId ?? null,
-          issueUrl: filed.url ?? null,
-          title,
-          externalUserId: event.externalUserId,
-          terminalId: taskContext.terminalId,
-          inputAssets: taskContext.attachmentAssets,
-          channelTaskContext: boundTaskContext,
-          threadId,
-          status: "pending",
-          autoRunId: null,
-          createdAt: now(),
-        };
-        state.channelTaskRequests = [...(state.channelTaskRequests ?? []), request].slice(-500);
+        const existingRequest = (state.channelTaskRequests ?? []).find((request) =>
+          (filed.workItemId && request.workItemId === filed.workItemId)
+          || (threadId && request.threadId === threadId));
+        if (!existingRequest) {
+          const request = {
+            id: nextId("ctr"),
+            channelId: channel.id,
+            conversationId: conversation.id,
+            projectId: channel.taskProjectId,
+            issueNumber: filed.number,
+            localRef: filed.localRef ?? null,
+            workItemId: filed.workItemId ?? null,
+            issueUrl: filed.url ?? null,
+            title,
+            externalUserId: event.externalUserId,
+            terminalId: taskContext.terminalId,
+            inputAssets: taskContext.attachmentAssets,
+            channelTaskContext: boundTaskContext,
+            threadId,
+            status: "pending",
+            autoRunId: null,
+            createdAt: now(),
+          };
+          state.channelTaskRequests = [...(state.channelTaskRequests ?? []), request].slice(-500);
+        }
       }
       conversation.updatedAt = now();
     });
@@ -1683,7 +1799,7 @@ export function createChannelConversationService({
   // which does I/O (files a GitHub issue) and returns a Promise. The composer
   // `await`s the result, which normalizes both; sync-command callers/tests are
   // unaffected (they never hit the /task path).
-  function dispatchImportedChannelEvent({ eventId } = {}) {
+  function dispatchImportedChannelEventNow({ eventId } = {}) {
     const event = (state.channelEvents ?? []).find((row) => row.id === String(eventId ?? ""));
     if (!event || event.status !== "imported") {
       return { ok: false, status: "not_dispatchable", reply: null };
@@ -1692,6 +1808,26 @@ export function createChannelConversationService({
     const conversation = findConversation(event.conversationId);
     if (!channel || channel.status !== "enabled" || !conversation) {
       return settle(event, { status: "refused", reply: GENERIC_DENIED_REPLY, data: { reason: "channel_not_enabled" } });
+    }
+
+    // The provider may deliver several messages while a classifier is still
+    // resolving. The dispatcher wrapper normally serializes these, but this
+    // durable sequence guard also protects direct/recovery calls and prevents
+    // a stale event from mutating a newer conversation state after restart.
+    const eventSequence = Number(event.conversationSequence ?? 0);
+    const lastDispatchedSequence = Number(conversation.lastDispatchedSequence ?? 0);
+    if (eventSequence > 0 && eventSequence < lastDispatchedSequence) {
+      return settle(event, {
+        status: "dispatched",
+        reply: "已收到，这条消息已按后续消息一起处理。回复“进度”可查看当前任务。",
+        data: { reason: "stale_conversation_event", conversationSequence: eventSequence, lastDispatchedSequence },
+      });
+    }
+    if (eventSequence > lastDispatchedSequence) {
+      runTx(() => {
+        conversation.lastDispatchedSequence = eventSequence;
+        conversation.updatedAt = now();
+      });
     }
 
     // Identity fails closed BEFORE any command semantics (ADR 0012 rule 3).
@@ -1934,6 +2070,33 @@ export function createChannelConversationService({
     }
   }
 
+  function dispatchImportedChannelEvent({ eventId } = {}) {
+    const event = (state.channelEvents ?? []).find((row) => row.id === String(eventId ?? ""));
+    const conversation = event ? findConversation(event.conversationId) : null;
+    const previous = conversation ? conversationDispatchTails.get(conversation.id) : null;
+    if (!event || !conversation || previous) {
+      if (!previous) return dispatchImportedChannelEventNow({ eventId });
+      const current = previous
+        .catch(() => null)
+        .then(() => dispatchImportedChannelEventNow({ eventId }));
+      let tracked;
+      tracked = current.finally(() => {
+        if (conversationDispatchTails.get(conversation.id) === tracked) conversationDispatchTails.delete(conversation.id);
+      });
+      conversationDispatchTails.set(conversation.id, tracked);
+      return tracked;
+    }
+
+    const result = dispatchImportedChannelEventNow({ eventId });
+    if (!result || typeof result.then !== "function") return result;
+    let tracked;
+    tracked = result.finally(() => {
+      if (conversationDispatchTails.get(conversation.id) === tracked) conversationDispatchTails.delete(conversation.id);
+    });
+    conversationDispatchTails.set(conversation.id, tracked);
+    return tracked;
+  }
+
   function resumeIntake() {
     for (const group of state.channelIntakeGroups ?? []) {
       if (group.status === "collecting") scheduleIntakeGroup(group.id);
@@ -1947,6 +2110,7 @@ export function createChannelConversationService({
       queued: "排队中",
       running: "执行中",
       waiting_user: "等待你补充信息",
+      needs_attention: "需要关注",
       paused: "已暂停",
       human_takeover: "人工跟进",
       succeeded: "已完成",
@@ -1986,6 +2150,7 @@ export function createChannelConversationService({
       return `${label} ${status}：${summary}\n${approvalHint}${detail}`;
     }
     if (thread?.status === "waiting_user") return `${label} ${status}：${summary}\n请直接回复需要补充的信息。${detail}`;
+    if (thread?.status === "needs_attention") return `${label} ${status}：${summary}\n任务暂时没有新进展，最近状态：${String(thread?.lastProgressSummary ?? "仍在处理中").slice(0, 240)}。回复“继续”继续观察，或回复“转人工”。${detail}`;
     if (thread?.status === "human_takeover") return `${label} ${status}：${summary}\n自动执行已暂停，请等待人工回复。${detail}`;
     if (thread?.status === "paused") return `${label} ${status}：${summary}\n回复“继续”恢复任务，或回复“取消”放弃。${detail}`;
     return `${label} ${status}：${summary}${detail}`;
@@ -2035,6 +2200,7 @@ export function createChannelConversationService({
       thread.lastProgressSummary = summary
         ? String(summary).slice(0, 4000)
         : `状态更新：${taskThreadStatus({ status: nextStatus })}`;
+      thread.lastHeartbeatAt = null;
       thread.nextAction = threadNextAction(nextStatus, thread);
       if (["waiting_user", "waiting_approval"].includes(nextStatus)) {
         thread.expiresAt = new Date(Date.parse(now()) + CHANNEL_WAITING_USER_TTL_MS).toISOString();
@@ -2072,12 +2238,14 @@ export function createChannelConversationService({
   function recoverTaskThreads() {
     let reconciled = 0;
     let requeued = 0;
-    const activeStatuses = new Set(["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user"]);
+    const activeStatuses = new Set(["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user", "needs_attention"]);
     runTx(() => {
       for (const thread of state.channelTaskThreads ?? []) {
         if (!thread.nextAction) thread.nextAction = threadNextAction(thread.status, thread);
         if (!thread.lastProgressAt) thread.lastProgressAt = thread.lastActivityAt ?? thread.updatedAt ?? now();
         if (!thread.lastProgressSummary) thread.lastProgressSummary = `状态更新：${taskThreadStatus(thread)}`;
+        if (!Object.prototype.hasOwnProperty.call(thread, "lastHeartbeatAt")) thread.lastHeartbeatAt = null;
+        if (!Object.prototype.hasOwnProperty.call(thread, "lastProgressNotificationAt")) thread.lastProgressNotificationAt = null;
         if (!Object.prototype.hasOwnProperty.call(thread, "lastDeliveryStatus")) thread.lastDeliveryStatus = null;
         if (!Object.prototype.hasOwnProperty.call(thread, "lastDeliveryId")) thread.lastDeliveryId = null;
         if (!Object.prototype.hasOwnProperty.call(thread, "lastDeliveryError")) thread.lastDeliveryError = null;
@@ -2129,9 +2297,10 @@ export function createChannelConversationService({
 
   function sweepTaskThreads() {
     const currentMs = Date.parse(now());
-    if (!Number.isFinite(currentMs)) return { changed: 0, handedOff: 0, expired: 0 };
+    if (!Number.isFinite(currentMs)) return { changed: 0, handedOff: 0, needsAttention: 0, expired: 0 };
     let changed = 0;
     let handedOff = 0;
+    let needsAttention = 0;
     let expired = 0;
     const notifications = [];
     const cancellations = [];
@@ -2139,7 +2308,25 @@ export function createChannelConversationService({
     const affectedChannelIds = new Set();
     runTx(() => {
       for (const thread of state.channelTaskThreads ?? []) {
-        if (!["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user"].includes(thread.status)) continue;
+        if (!["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user", "needs_attention"].includes(thread.status)) continue;
+        if (thread.status === "running") {
+          const lastProgressMs = Date.parse(thread.lastProgressAt ?? thread.updatedAt ?? "");
+          const lastHeartbeatMs = Date.parse(thread.lastHeartbeatAt ?? "");
+          const progressAge = Number.isFinite(lastProgressMs) ? currentMs - lastProgressMs : Number.POSITIVE_INFINITY;
+          const heartbeatAge = Number.isFinite(lastHeartbeatMs) ? currentMs - lastHeartbeatMs : Number.POSITIVE_INFINITY;
+          if (progressAge >= CHANNEL_PROGRESS_HEARTBEAT_AFTER_MS && heartbeatAge >= CHANNEL_PROGRESS_HEARTBEAT_INTERVAL_MS) {
+            const summary = String(thread.lastProgressSummary ?? "任务仍在执行").replace(/\s+/g, " ").trim().slice(0, 240);
+            thread.lastHeartbeatAt = now();
+            thread.lastProgressNotificationAt = now();
+            notifications.push({
+              channelId: thread.channelId,
+              conversationId: thread.conversationId,
+              threadId: thread.id,
+              dedupeKey: `channel-task:${thread.id}:heartbeat:${thread.lastHeartbeatAt}`,
+              content: `任务仍在执行，最近进展：${summary || "执行中"}。回复“进度”可随时查看。`,
+            });
+          }
+        }
         const expiresMs = Date.parse(thread.expiresAt ?? "");
         if (!Number.isFinite(expiresMs) || expiresMs > currentMs) continue;
         changed += 1;
@@ -2150,6 +2337,26 @@ export function createChannelConversationService({
           thread.cancelReason = "expired";
           thread.resultSummary = "确认超时，任务草稿已取消。";
           expired += 1;
+        } else if (thread.status !== "needs_attention") {
+          const previousStatus = thread.status;
+          setThreadStatus(thread, "needs_attention", "no_progress_timeout");
+          thread.waitingFor = "attention";
+          thread.attentionReason = previousStatus === "waiting_user"
+            ? "user_response_timeout"
+            : previousStatus === "waiting_approval"
+              ? "approval_timeout"
+              : previousStatus === "queued"
+                ? "queue_wait_timeout"
+                : "no_progress_timeout";
+          thread.attentionAt = now();
+          thread.resultSummary = "任务暂时没有新进展，仍保留自动执行上下文。";
+          notifications.push({
+            channelId: thread.channelId,
+            conversationId: thread.conversationId,
+            threadId: thread.id,
+            content: "任务暂时没有新进展，但我还保留着执行状态。回复“进度”查看，回复“继续”继续观察，或回复“转人工”。",
+          });
+          needsAttention += 1;
         } else {
           setThreadStatus(thread, "human_takeover", "timeout_handoff");
           thread.waitingFor = "human";
@@ -2185,7 +2392,7 @@ export function createChannelConversationService({
           type: "channel_task_timeout_sweep",
           level: "warn",
           message: `Channel task timeout sweep changed ${changed} thread(s).`,
-          data: { changed, handedOff, expired },
+          data: { changed, handedOff, needsAttention, expired },
         });
       }
     });
@@ -2203,7 +2410,7 @@ export function createChannelConversationService({
     // channel reply agree on the same queue number.
     for (const channelId of affectedChannelIds) refreshQueuePositions(channelId, { notify: true });
     for (const notification of notifications) sendDeferredReply(notification);
-    return { changed, handedOff, expired };
+    return { changed, handedOff, needsAttention, expired };
   }
 
   function listTaskThreads(conversation) {
