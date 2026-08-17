@@ -32,6 +32,8 @@ test("channel intent adapter is closed, bounded, and conversation-local", () => 
   });
   assert.equal(invalidRef.ref, null);
   assert.equal(channelIntentRequiresClarification({ intent: "unknown", confidence: 1 }), true);
+  assert.equal(normalizeChannelIntentResult({ intent: "greeting", confidence: 1 }, { fallback }).intent, "greeting");
+  assert.equal(normalizeChannelIntentResult({ intent: "consultation", confidence: 0.9 }, { fallback }).intent, "consultation");
 });
 
 test("channel intent adapter reuses the authorized Bridge Agent and bounds its prompt", async () => {

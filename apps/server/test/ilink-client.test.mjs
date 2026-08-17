@@ -7,7 +7,7 @@ function response(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) };
 }
 
-test("iLink client uses QR GET, authenticated long-poll, and sendmessage envelopes", async () => {
+test("iLink client uses Tencent-compatible QR POST, headers, long-poll, and sendmessage envelopes", async () => {
   const calls = [];
   const client = createIlinkClient({
     token: "bot-secret",
@@ -19,19 +19,22 @@ test("iLink client uses QR GET, authenticated long-poll, and sendmessage envelop
     },
   });
 
-  const qr = await client.getQrCode();
+  const qr = await client.getQrCode({ localTokenList: ["old-token"] });
   const updates = await client.getUpdates({ cursor: "cursor-1", timeoutMs: 100 });
   const sent = await client.sendMessage({ toUser: "wx-user", content: "hello", contextToken: "ctx-1", clientId: "cdl_1" });
 
   assert.equal(qr.qrcode, "qr-1");
   assert.equal(updates.get_updates_buf, "cursor-2");
   assert.equal(sent.clientId, "cdl_1");
-  assert.equal(calls[0].options.method, "GET");
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(calls[0].options.headers["iLink-App-Id"], "bot");
+  assert.equal(typeof calls[0].options.headers["iLink-App-ClientVersion"], "string");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { local_token_list: ["old-token"] });
   assert.equal(calls[1].options.headers.Authorization, "Bearer bot-secret");
   const updateBody = JSON.parse(calls[1].options.body);
   assert.equal(updateBody.get_updates_buf, "cursor-1");
   const sendBody = JSON.parse(calls[2].options.body);
-  assert.deepEqual(sendBody.base_info, { channel_version: "1.0.0", bot_agent: "MyAgentTool/1.0.0" });
+  assert.deepEqual(sendBody.base_info, { channel_version: "2.4.6", bot_agent: "MyAgentTool/0.2.0" });
   assert.equal(sendBody.msg.to_user_id, "wx-user");
   assert.equal(sendBody.msg.context_token, "ctx-1");
   assert.equal(sendBody.msg.client_id, "cdl_1");
@@ -39,9 +42,51 @@ test("iLink client uses QR GET, authenticated long-poll, and sendmessage envelop
   assert.equal(sendBody.msg.message_type, 2);
 });
 
-test("iLink client rejects an HTTP-success response without a protocol ret code", async () => {
+test("iLink QR status supports Tencent verification-code and redirect parameters", async () => {
+  const calls = [];
+  const client = createIlinkClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return response({ status: "need_verifycode" });
+    },
+  });
+  const status = await client.getQrCodeStatus("qr-verify", { verifyCode: "123456" });
+  assert.equal(status.status, "need_verifycode");
+  assert.match(calls[0].url, /get_qrcode_status\?qrcode=qr-verify&verify_code=123456$/);
+  assert.equal(calls[0].options.headers["iLink-App-Id"], "bot");
+});
+
+test("iLink getUpdates accepts Tencent success responses without an explicit ret field", async () => {
+  const client = createIlinkClient({
+    token: "bot-secret",
+    fetchImpl: async () => response({ msgs: [], get_updates_buf: "cursor-next", longpolling_timeout_ms: 35_000 }),
+  });
+  const updates = await client.getUpdates({ cursor: "cursor-before", timeoutMs: 100 });
+  assert.deepEqual(updates, { msgs: [], get_updates_buf: "cursor-next", longpolling_timeout_ms: 35_000 });
+});
+
+test("iLink getUpdates rejects a malformed success response instead of spinning on it", async () => {
+  const client = createIlinkClient({
+    token: "bot-secret",
+    fetchImpl: async () => response({ msgs: "not-an-array", get_updates_buf: 42 }),
+  });
+  await assert.rejects(
+    () => client.getUpdates({ cursor: "cursor-before", timeoutMs: 100 }),
+    (error) => error.code === "invalid_response" && error.retryable === true,
+  );
+});
+
+test("iLink sendMessage accepts Tencent success responses without an explicit ret field", async () => {
   const client = createIlinkClient({
     fetchImpl: async () => response({}),
+  });
+  const sent = await client.sendMessage({ toUser: "wx-user", content: "hello" });
+  assert.match(sent.clientId, /^[0-9a-f-]{36}$/);
+});
+
+test("iLink client rejects malformed non-object send responses", async () => {
+  const client = createIlinkClient({
+    fetchImpl: async () => response([]),
   });
   await assert.rejects(
     () => client.sendMessage({ toUser: "wx-user", content: "hello" }),
@@ -96,7 +141,7 @@ test("iLink client encrypts, uploads, and sends outbound media using the CDN con
     filesize: uploaded.encryptedSize,
     no_need_thumb: true,
     aeskey: Buffer.from(uploaded.media.aes_key, "base64").toString("hex"),
-    base_info: { channel_version: "1.0.0", bot_agent: "MyAgentTool/1.0.0" },
+    base_info: { channel_version: "2.4.6", bot_agent: "MyAgentTool/0.2.0" },
   });
 
   await client.sendMessage({

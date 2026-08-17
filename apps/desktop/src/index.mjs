@@ -39,7 +39,7 @@ import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
 import { managedRuntimeBinDirectory, runApprovedApplicationInstall } from "./application-installer.mjs";
-import { registerBridgeWithRetry } from "./bridge-registration-retry.mjs";
+import { registerBridgeWithRecovery, registerBridgeWithRetry } from "./bridge-registration-retry.mjs";
 import { startProcessTreeGuardian } from "./process-tree-guardian.mjs";
 import {
   applyClaudeCliResumeArgs,
@@ -451,7 +451,7 @@ try {
   const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest, {
     environmentForCommand: (command) => buildEnv({ command, environmentPolicy: "inherit_safe" }),
   });
-  registration = await registerBridgeWithRetry(() => request("POST", "/api/bridge/register", {
+  const register = () => registerBridgeWithRetry(() => request("POST", "/api/bridge/register", {
       bridgeVersion: "0.0.0",
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       bridgeSessionId,
@@ -462,13 +462,24 @@ try {
     }), {
       onRetry: (_error, attempt) => console.warn(`[desktop] bridge registration network error; retrying (${attempt}/2).`),
     });
+  registration = await registerBridgeWithRecovery(register, {
+    recoverExpiredCredential: async () => {
+      console.warn("[desktop] paired bridge credential expired; automatically re-pairing this local device.");
+      await request("POST", "/api/device/relink");
+    },
+    resetCredential: () => {
+      bridgeToken = "";
+      clearBridgeToken();
+    },
+  });
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   // A credential rejection at register is a pairing problem, not a bug — tell the
   // operator how to recover instead of dying with a raw stack. Covers a lost token
   // (invalid), an operator unlink (revoked), AND an idle-expired credential
   // (bridge_credentials_expired: the server was unreachable past the ~12h TTL, so
-  // register can no longer rotate the expired token — by design).
+  // register can no longer rotate the expired token directly; the bridge now
+  // performs a loopback-authorized relink and retries once before reaching here.
   if (/invalid_bridge_credentials|device_credentials_revoked|bridge_credentials_expired/.test(message)) {
     const expired = /bridge_credentials_expired/.test(message);
     console.error(`[desktop] bridge registration was refused by ${serverUrl}: ${expired ? "the paired credential idled out (server unreachable past the TTL)" : "the server holds a paired credential this bridge cannot present"}.`);
@@ -3894,6 +3905,14 @@ function saveBridgeToken(token, credential = null) {
     }, null, 2)}\n`);
   } catch (error) {
     console.error(`[desktop] could not save bridge credential: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function clearBridgeToken() {
+  try {
+    rmSync(bridgeTokenPath, { force: true });
+  } catch (error) {
+    console.error(`[desktop] could not clear expired bridge credential: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
