@@ -141,6 +141,12 @@ const ARTICLE_DERIVATIVE_AGE_PRESETS = new Set(Object.keys(ARTICLE_DERIVATIVE_AG
 const SKIPPED_TAGS = new Set(["script", "style", "noscript", "svg", "nav", "button", "form", "input", "iframe"]);
 const BLOCK_TAGS = new Set(["p", "div", "section", "figure", "figcaption"]);
 const TRACKING_PARAMS = new Set(["from", "isappinstalled", "scene", "clicktime", "enterid"]);
+// WeChat share links always carry src= (timeline/singlemsg/…) — share-source
+// metadata, not content identity. Without stripping it, the share variant and
+// the bare /s/ link canonicalize differently and import dedup (keyed on
+// canonicalUrl) records the same article twice. Scoped to wechat because src
+// is a generic name that may carry meaning on other sites.
+const WECHAT_TRACKING_PARAMS = new Set(["src"]);
 
 export function detectArticleSource(value) {
   const hostname = new URL(value).hostname.toLowerCase();
@@ -161,8 +167,13 @@ export function canonicalizeArticleUrl(value) {
   const url = new URL(String(value ?? "").trim());
   if (url.protocol !== "https:" || url.username || url.password) throw articleError("article_url_refused");
   url.hash = "";
+  const provider = detectArticleSource(url.toString());
   for (const key of [...url.searchParams.keys()]) {
-    if (key.toLowerCase().startsWith("utm_") || TRACKING_PARAMS.has(key.toLowerCase())) url.searchParams.delete(key);
+    const normalized = key.toLowerCase();
+    const wechatExtra = provider === "wechat" && WECHAT_TRACKING_PARAMS.has(normalized);
+    if (normalized.startsWith("utm_") || TRACKING_PARAMS.has(normalized) || wechatExtra) {
+      url.searchParams.delete(key);
+    }
   }
   url.hostname = url.hostname.toLowerCase();
   return url.toString();
