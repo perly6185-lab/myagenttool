@@ -63,6 +63,7 @@ async function setup(mode, extraArgs = []) {
 function makeManager() {
   const state = { sessions: [] };
   const events = [];
+  const alerts = [];
   const persist = { count: 0 };
   const manager = createSessionManager({
     state,
@@ -71,8 +72,9 @@ function makeManager() {
     persistStateSoon: () => {
       persist.count++;
     },
+    sendAlert: (alert) => alerts.push(alert),
   });
-  return { state, events, persist, manager };
+  return { state, events, alerts, persist, manager };
 }
 
 test("resolveSessionSiteConfig prefers the operator override and bounds timeouts", () => {
@@ -155,6 +157,61 @@ test("probeSite records needs_login on loggedIn:false — a finding, not an erro
   assert.equal(result.loggedIn, false);
   assert.equal(state.sessions[0].status, "needs_login");
   assert.ok(events.some((e) => e.type === "session_probe_expired"));
+});
+
+test("probe findings alert once per transition, not per sweep", async (t) => {
+  const { env, cleanup } = await setup("expired");
+  t.after(cleanup);
+  const { alerts, manager } = makeManager();
+
+  // unknown → needs_login: first discovery alerts.
+  await manager.probeSite("zhihu", { env });
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].kind, "session_health");
+  assert.equal(alerts[0].severity, "warning");
+  assert.equal(alerts[0].data.site, "zhihu");
+
+  // needs_login → needs_login: the next sweep re-finds the same state — silent.
+  await manager.probeSite("zhihu", { env });
+  assert.equal(alerts.length, 1);
+});
+
+test("recovery after needs_login emits an info alert; healthy probes never alert", async (t) => {
+  const { env: expiredEnv, cleanup: cleanupExpired } = await setup("expired");
+  t.after(cleanupExpired);
+  const { env: okEnv, cleanup: cleanupOk } = await setup("ok");
+  t.after(cleanupOk);
+  const { alerts, manager } = makeManager();
+
+  await manager.probeSite("zhihu", { env: expiredEnv }); // → needs_login (1 alert)
+  await manager.probeSite("zhihu", { env: okEnv }); // recovery
+  assert.equal(alerts.length, 2);
+  assert.equal(alerts[1].kind, "session_health_recovered");
+  assert.equal(alerts[1].severity, "info");
+
+  // active → active: a healthy site stays silent.
+  await manager.probeSite("zhihu", { env: okEnv });
+  assert.equal(alerts.length, 2);
+});
+
+test("a healthy-then-failing probe alerts; unknown-then-failing stays silent", async (t) => {
+  const { env: okEnv, cleanup: cleanupOk } = await setup("ok");
+  t.after(cleanupOk);
+  const { env: failEnv, cleanup: cleanupFail } = await setup("fail");
+  t.after(cleanupFail);
+  const { alerts, manager } = makeManager();
+
+  // unknown → probe failure: nothing degraded, nothing to report.
+  await assert.rejects(() => manager.probeSite("zhihu", { env: failEnv }));
+  assert.equal(alerts.length, 0);
+
+  // active → probe failure: the site was healthy and now cannot be verified.
+  await manager.probeSite("zhihu", { env: okEnv });
+  await assert.rejects(() => manager.probeSite("zhihu", { env: failEnv }));
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].kind, "session_health");
+  assert.equal(alerts[0].severity, "warning");
+  assert.ok(alerts[0].message.includes("previously healthy"));
 });
 
 test("probeSite maps CLI failure / bad JSON to session_cli_failed and keeps the row honest", async (t) => {

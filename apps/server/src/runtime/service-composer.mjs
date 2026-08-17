@@ -538,6 +538,7 @@ export function createServerRuntimeServices({
     now,
     appendEvent,
     persistStateSoon,
+    sendAlert: alertOutbox.enqueue,
   });
   const workflowOcrAdapter = createFallbackWorkflowOcrAdapter({
     localAdapter: createLocalWorkflowOcrAdapter({
