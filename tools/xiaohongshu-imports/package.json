@@ -1,0 +1,14 @@
+{
+  "name": "@myagenttool/xiaohongshu-imports",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Playwright subprocess renderer for Xiaohongshu (小红书) notes: renders behind the login wall via a persistent profile and returns HTML; the parent reuses the article-imports pipeline. Owns no disk writes and downloads nothing.",
+  "type": "module",
+  "dependencies": {
+    "@myagenttool/session-engine": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test ./test/*.test.mjs",
+    "import": "node ./src/cli.mjs"
+  }
+}

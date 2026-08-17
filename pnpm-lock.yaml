@@ -411,6 +411,12 @@ importers:
 
   tools/session-engine: {}
 
+  tools/xiaohongshu-imports:
+    dependencies:
+      '@myagenttool/session-engine':
+        specifier: workspace:*
+        version: link:../session-engine
+
   tools/zhihu-imports:
     dependencies:
       '@myagenttool/session-engine':
