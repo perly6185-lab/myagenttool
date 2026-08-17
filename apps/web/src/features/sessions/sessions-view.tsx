@@ -12,7 +12,7 @@ export interface SessionCard {
   displayName: string;
   authMethod: string;
   heartbeatTier: string;
-  heartbeatIntervalMinutes: number;
+  heartbeatIntervalMinutes: number | null;
   profileDir: string;
   status: "active" | "unknown" | "expired" | "needs_login";
   lastProbeAt: string | null;

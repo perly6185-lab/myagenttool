@@ -12,6 +12,7 @@ import { actorCanAccessProject } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { importFeishuDocToWorktree } from "./feishu-doc-imports.mjs";
 import { renderZhihuArticle } from "./zhihu-imports.mjs";
+import { renderQichachaPage } from "./qichacha-imports.mjs";
 import { validateExternalWebhookTarget } from "./auto-run-alerts.mjs";
 
 export const ARTICLE_IMPORT_LIMITS = Object.freeze({
@@ -50,7 +51,7 @@ const MEDIA_EXTENSIONS = new Map([
   ["video/quicktime", ".mov"],
 ]);
 
-const ARTICLE_PROVIDERS = new Set(["feishu", "wechat", "xiaohongshu", "zhihu", "juejin", "jianshu", "web"]);
+const ARTICLE_PROVIDERS = new Set(["feishu", "wechat", "xiaohongshu", "zhihu", "qichacha", "juejin", "jianshu", "web"]);
 const ARTICLE_SIMILARITY_INDEX_SCHEMA_VERSION = 1;
 const ARTICLE_SIMILARITY_INDEX_MAX_BYTES = 64 * 1024 * 1024;
 const ARTICLE_DERIVATIVE_KINDS = new Set(["article_rewrite", "video_script"]);
@@ -158,6 +159,9 @@ export function detectArticleSource(value) {
     return "xiaohongshu";
   }
   if (hostname === "zhihu.com" || hostname.endsWith(".zhihu.com")) return "zhihu";
+  if (hostname === "qcc.com" || hostname.endsWith(".qcc.com") || hostname === "qichacha.com" || hostname.endsWith(".qichacha.com")) {
+    return "qichacha";
+  }
   if (hostname === "juejin.cn" || hostname.endsWith(".juejin.cn")) return "juejin";
   if (hostname === "jianshu.com" || hostname.endsWith(".jianshu.com")) return "jianshu";
   return "web";
@@ -242,6 +246,32 @@ export async function inspectArticle({
       _document: { media: [] },
     };
   }
+  if (detectArticleSource(canonicalUrl) === "qichacha") {
+    // Qichacha content sits behind a login wall with anti-crawl on top; a
+    // plain-HTTP preview would eat the wall (and polling it looks like a bot),
+    // while launching a browser here would block the preview for ~a minute —
+    // and a logged-in render spends view quota. Return a synthetic
+    // inspection; the real title and media are resolved at import
+    // (inspectQichachaArticle renders the page in a browser subprocess via the
+    // seeded profile and reuses this pipeline's download+write).
+    return {
+      sourceUrl: String(url),
+      canonicalUrl,
+      resolvedUrl: canonicalUrl,
+      provider: "qichacha",
+      contentType: "company",
+      title: "Qichacha company page",
+      author: null,
+      publishedAt: null,
+      publishedAtSource: "imported",
+      textLength: 0,
+      media: [],
+      mediaCounts: { images: 0, audio: 0, video: 0 },
+      markdownPreview: "",
+      fetchedAt: new Date().toISOString(),
+      _document: { media: [] },
+    };
+  }
   const page = await fetchPublicResource(canonicalUrl, {
     fetchImpl,
     resolveHostname,
@@ -313,6 +343,45 @@ export async function inspectZhihuArticle({ url, signal, limits = ARTICLE_IMPORT
   };
 }
 
+/**
+ * Inspect a Qichacha company page by rendering it in a browser subprocess
+ * (behind the login wall, via the seeded persistent profile — see
+ * qichacha-imports.mjs), then parsing the rendered HTML with the shared
+ * parseArticleDocument. Returns the same inspection shape as inspectArticle so
+ * importArticleToWorktree's downloadMedia + write pipeline is reused unchanged.
+ *
+ * A firm page has no author and no publish date — both stay null (the import
+ * pipeline stamps the import date). Extraction is generic-first: the qichacha
+ * selectors below (header/company name) are finalized by the live pass; table
+ * fidelity beyond flattening is deliberately NOT special-cased until a real
+ * page proves it unreadable (Stage B, provider-gated).
+ *
+ * @param {{ url: string, signal?: AbortSignal, limits?: object }} args
+ * @returns {Promise<object>} the inspection shape (with `_document`).
+ */
+export async function inspectQichachaArticle({ url, signal, limits = ARTICLE_IMPORT_LIMITS } = {}) {
+  const canonicalUrl = canonicalizeArticleUrl(url);
+  const { resolvedUrl, html } = await renderQichachaPage(canonicalUrl, { signal });
+  const parsed = parseArticleDocument(html, resolvedUrl, "qichacha", limits.mediaCount);
+  return {
+    sourceUrl: String(url),
+    canonicalUrl,
+    resolvedUrl,
+    provider: "qichacha",
+    contentType: "company",
+    title: parsed.title,
+    author: null,
+    publishedAt: parsed.publishedAt ?? null,
+    publishedAtSource: parsed.publishedAt ? "source" : "imported",
+    textLength: parsed.plainText.length,
+    media: parsed.media.map(({ token, ...item }) => item),
+    mediaCounts: countMedia(parsed.media),
+    markdownPreview: parsed.markdown.slice(0, 2_000),
+    fetchedAt: new Date().toISOString(),
+    _document: parsed,
+  };
+}
+
 function assertArticlePage(html, pageUrl, provider) {
   if (provider !== "wechat") return;
   const path = new URL(pageUrl).pathname.toLowerCase();
@@ -335,12 +404,13 @@ export async function importArticleToWorktree({
   signal,
   limits = ARTICLE_IMPORT_LIMITS,
 } = {}) {
-  // Feishu public docs (JS-rendered SPA) and Zhihu (secng/zse-ck JS-challenge
-  // WAF) both need a real browser; the plain-HTTP importer cannot read them.
-  // Feishu delegates entirely to its own fetch+write bundle
-  // (feishu-doc-imports.mjs). Zhihu only needs the browser to RENDER the page —
-  // it then reuses this same download+write pipeline, so below we swap in a
-  // browser-rendered inspection (inspectZhihuArticle) for the plain-HTTP one.
+  // Feishu public docs (JS-rendered SPA), Zhihu (secng/zse-ck JS-challenge
+  // WAF), and Qichacha (login wall + view quota) all need a real browser; the
+  // plain-HTTP importer cannot read them. Feishu delegates entirely to its own
+  // fetch+write bundle (feishu-doc-imports.mjs). Zhihu and qichacha only need
+  // the browser to RENDER the page — they then reuse this same download+write
+  // pipeline, so below we swap a browser-rendered inspection
+  // (inspectZhihuArticle / inspectQichachaArticle) for the plain-HTTP one.
   // A malformed URL throws in detectArticleSource; we route it to the generic
   // path so inspectArticle's canonicalizeArticleUrl raises article_url_refused.
   let source;
@@ -354,7 +424,9 @@ export async function importArticleToWorktree({
   }
   const inspection = source === "zhihu"
     ? await inspectZhihuArticle({ url, signal, limits })
-    : await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
+    : source === "qichacha"
+      ? await inspectQichachaArticle({ url, signal, limits })
+      : await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
   const publishedAt = inspection.publishedAt ?? importedAt.slice(0, 10);
   const relativeDirectory = buildArticleRelativeDirectory({
     provider: inspection.provider,
@@ -2158,6 +2230,9 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
 function providerFieldText(document, provider, field) {
   const classes = {
     zhihu: field === "title" ? ["Post-Title"] : ["AuthorInfo-name"],
+    // qichacha firm pages: company name in the header — finalized by the live
+    // pass; a firm page has no author worth extracting (author stays null).
+    qichacha: field === "title" ? ["header-title", "header-name"] : [],
     juejin: field === "title" ? ["article-title"] : ["author-name"],
     jianshu: field === "title" ? ["_1RuRku"] : ["_22gUMi"],
   }[provider] ?? [];
@@ -2183,6 +2258,15 @@ function findProviderContent(document, provider) {
     zhihu: [
       (node) => hasClass(node, "Post-RichTextContainer"),
       (node) => hasClass(node, "RichContent-inner"),
+    ],
+    // qichacha firm pages: content root candidates, finalized by the live
+    // pass. Generic-first: when none hit, the shared <article>/<main>/body
+    // fallback carries the page (tables flatten; Stage B adds provider-gated
+    // table rendering only if a real page proves that unreadable).
+    qichacha: [
+      (node) => hasClass(node, "details"),
+      (node) => hasClass(node, "basic-detail"),
+      (node) => hasClass(node, "header-content"),
     ],
     juejin: [
       (node) => hasClass(node, "article-content"),

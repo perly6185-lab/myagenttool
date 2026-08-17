@@ -1,6 +1,6 @@
 // Local session manager: keeps logged-in site profiles alive and observable.
 //
-// Sites that need a login (zhihu today) are rendered by their plugin CLI
+// Sites that need a login (zhihu, qichacha today) are rendered by their plugin CLI
 // (tools/<site>-imports) reusing a persistent browser profile. This service is
 // the single owner of "is that profile still logged in?": it probes on demand,
 // reseeds via an interactive --login, and (opt-in) sweeps on a slow interval —
@@ -59,8 +59,11 @@ function resolveProfileDir(site) {
  * heartbeatTier:
  *   - "logged_in": sweep probes this site on its interval (zhihu's z_c0 is a
  *     long-lived cookie that a gentle low-frequency visit keeps warm).
- *   - "manual": probe only on demand; the login flow is too interactive
- *     (QR scan / slider) for automated keep-alive. Reserved for future sites.
+ *   - "manual": probe only on demand. Either the login flow is too interactive
+ *     for automated keep-alive, or — qichacha's case — the site meters what a
+ *     logged-in view costs (daily view quota on firm pages), so an automated
+ *     heartbeat would spend the user's budget. The sweep skips these rows
+ *     entirely; the card shows "manual probe only".
  */
 const SESSION_SITES = Object.freeze([
   {
@@ -70,6 +73,14 @@ const SESSION_SITES = Object.freeze([
     heartbeatTier: "logged_in",
     heartbeatIntervalMinutes: 180,
     profileDir: resolveProfileDir("zhihu"),
+  },
+  {
+    site: "qichacha",
+    displayName: "企查查 (Qichacha)",
+    authMethod: "persistent_profile",
+    heartbeatTier: "manual",
+    heartbeatIntervalMinutes: null,
+    profileDir: resolveProfileDir("qichacha"),
   },
 ]);
 
