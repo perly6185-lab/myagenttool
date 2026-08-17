@@ -24,7 +24,7 @@ import {
 // Keep the fail-closed response generic, but make it actionable for the local
 // single-user setup. Do not reveal whether the sender was unmapped, disabled,
 // or blocked by an allowlist.
-const GENERIC_DENIED_REPLY = "当前消息暂时无法处理，请在桌面端检查微信绑定和频道状态。";
+const GENERIC_DENIED_REPLY = "当前消息暂时无法处理。请在桌面端打开“频道”，确认微信已绑定且处于在线状态；首次使用请复制绑定口令，在微信 ClawBot 对话中发送。";
 const USAGE_REPLY = `你可以直接发送文字、图片、语音或文件，我会先理解你的需求。\n\n常用操作：\n• 直接描述需求：我会整理后请你确认\n• 我的任务 / 任务：查看任务\n• 当前进度 / 进度：查看最新任务\n• 历史：查看最近记录\n• 确认 / 修改 / 取消：处理待确认任务\n• 暂停 / 继续 / 重试 / 重发结果 / 转人工：管理最新任务\n\n也可以直接说“你好”“我想了解……”或“帮我……”，不需要记命令。\n高级命令：重试 T-xxxx、暂停 T-xxxx、重发结果 T-xxxx、转人工 T-xxxx、${channelCommands.join("、")}`;
 
 // A staged confirmation goes stale after this long — a fresh /run is required
@@ -200,16 +200,18 @@ export function createChannelConversationService({
     } else if (["succeeded", "failed", "cancelled", "paused", "human_takeover"].includes(status)) {
       thread.expiresAt = null;
     }
-    thread.nextAction = threadNextAction(status);
+    thread.nextAction = threadNextAction(status, thread);
     thread.lastProgressAt = now();
     thread.lastProgressSummary = `状态更新：${taskThreadStatus({ status })}`;
     thread.lastActivityAt = now();
   }
 
-  function threadNextAction(status) {
+  function threadNextAction(status, thread = null) {
     return ({
       awaiting_confirmation: "回复“确认”开始，或继续补充、回复“取消”",
-      waiting_approval: "等待确认后开始执行",
+      waiting_approval: thread?.waitingFor === "approval"
+        ? "任务内容已确认，请在桌面端审批中心批准，批准后会自动继续"
+        : "等待任务路由确认后开始执行",
       queued: "等待前面的任务完成，系统会自动开始",
       running: "等待执行完成，系统会自动通知",
       waiting_user: "请直接回复需要补充的信息",
@@ -362,6 +364,12 @@ export function createChannelConversationService({
     return (state.channelTaskThreads ?? [])
       .filter((thread) => thread.conversationId === conversation.id && TASK_THREAD_ACTIVE_STATUSES.has(thread.status))
       .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? "")));
+  }
+
+  function collectingIntakeGroup(conversation) {
+    return (state.channelIntakeGroups ?? [])
+      .filter((group) => group.conversationId === conversation?.id && group.status === "collecting")
+      .sort((left, right) => String(right.updatedAt ?? right.startedAt ?? "").localeCompare(String(left.updatedAt ?? left.startedAt ?? "")))[0] ?? null;
   }
 
   function queueAheadCount(channelId, createdAt, excludeThreadId = null) {
@@ -774,7 +782,7 @@ export function createChannelConversationService({
         thread.lastProgressSummary = result.status === "dispatched"
           ? (autoRoute ? "任务已进入执行队列" : "任务已创建，等待确认")
           : "任务创建失败，等待重试或人工处理";
-        thread.nextAction = threadNextAction(thread.status);
+        thread.nextAction = threadNextAction(thread.status, thread);
         event.taskThreadId = thread.id;
         if (result.status === "dispatched") {
           if (autoRoute) {
@@ -1093,6 +1101,7 @@ export function createChannelConversationService({
         ? { kind: intent.intent, ref: threadRef(activeTaskThreads(conversation)[0]), friendly: true }
         : null;
     const control = parsedControl ?? inferredControl;
+    const collectingGroup = collectingIntakeGroup(conversation);
     // An attachment cannot be answered by the text-only consultation adapter.
     // Treat a media-backed question as work intake so the normal task path can
     // carry the governed attachment assets instead of pretending the Bridge saw
@@ -1129,6 +1138,29 @@ export function createChannelConversationService({
         ...consultation,
         data: { ...(consultation.data ?? {}), intent: intent.intent, confidence: intent.confidence },
       };
+    }
+    if (collectingGroup && control && ["list", "history", "status"].includes(control.kind) && !control.ref) {
+      const pendingHint = "上一条消息正在整理，稍后会发任务草稿；你可以继续补充，或稍候再问进度。";
+      if (control.kind === "status") {
+        const latest = recentTaskThreads(conversation)[0] ?? null;
+        return settle(event, {
+          status: "dispatched",
+          reply: latest ? `${taskStatusReply(latest, { label: "当前任务" })}\n\n${pendingHint}` : pendingHint,
+          data: { taskStatus: true, intakePending: true, intakeGroupId: collectingGroup.id, taskThreadId: latest?.id ?? null },
+        });
+      }
+      if (control.kind === "list") {
+        const rows = listTaskThreads(conversation);
+        const reply = rows.length
+          ? `${rows.map((row, index) => taskListLine(row, index + 1)).join("\n")}\n\n${pendingHint}`
+          : pendingHint;
+        return settle(event, { status: "dispatched", reply, data: { taskThreadList: true, intakePending: true, intakeGroupId: collectingGroup.id, count: rows.length } });
+      }
+      return settle(event, {
+        status: "dispatched",
+        reply: `${conversationHistoryReply(conversation)}\n\n${pendingHint}`,
+        data: { conversationHistory: true, intakePending: true, intakeGroupId: collectingGroup.id },
+      });
     }
     if (control?.kind === "status" && !control.ref) {
       const latest = recentTaskThreads(conversation)[0] ?? null;
@@ -1944,8 +1976,14 @@ export function createChannelConversationService({
       return `${label} ${status}：${summary}\n${queue}你不需要重复发送。${detail}`;
     }
     if (thread?.status === "running") return `${label} ${status}：${summary}\n正在处理中，完成后我会通知你。${detail}`;
-    if (thread?.status === "awaiting_confirmation" || thread?.status === "waiting_approval") {
+    if (thread?.status === "awaiting_confirmation") {
       return `${label} ${status}：${summary}\n回复“确认”开始，或继续补充、回复“取消”。${detail}`;
+    }
+    if (thread?.status === "waiting_approval") {
+      const approvalHint = thread.waitingFor === "approval"
+        ? "任务内容已确认，正在等待桌面端审批中心批准；批准后会自动继续。"
+        : "任务已创建，等待任务路由确认后开始执行。你不需要重复发送。";
+      return `${label} ${status}：${summary}\n${approvalHint}${detail}`;
     }
     if (thread?.status === "waiting_user") return `${label} ${status}：${summary}\n请直接回复需要补充的信息。${detail}`;
     if (thread?.status === "human_takeover") return `${label} ${status}：${summary}\n自动执行已暂停，请等待人工回复。${detail}`;
@@ -1997,7 +2035,7 @@ export function createChannelConversationService({
       thread.lastProgressSummary = summary
         ? String(summary).slice(0, 4000)
         : `状态更新：${taskThreadStatus({ status: nextStatus })}`;
-      thread.nextAction = threadNextAction(nextStatus);
+      thread.nextAction = threadNextAction(nextStatus, thread);
       if (["waiting_user", "waiting_approval"].includes(nextStatus)) {
         thread.expiresAt = new Date(Date.parse(now()) + CHANNEL_WAITING_USER_TTL_MS).toISOString();
       } else if (["queued", "running"].includes(nextStatus)) {
@@ -2037,7 +2075,7 @@ export function createChannelConversationService({
     const activeStatuses = new Set(["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user"]);
     runTx(() => {
       for (const thread of state.channelTaskThreads ?? []) {
-        if (!thread.nextAction) thread.nextAction = threadNextAction(thread.status);
+        if (!thread.nextAction) thread.nextAction = threadNextAction(thread.status, thread);
         if (!thread.lastProgressAt) thread.lastProgressAt = thread.lastActivityAt ?? thread.updatedAt ?? now();
         if (!thread.lastProgressSummary) thread.lastProgressSummary = `状态更新：${taskThreadStatus(thread)}`;
         if (!Object.prototype.hasOwnProperty.call(thread, "lastDeliveryStatus")) thread.lastDeliveryStatus = null;

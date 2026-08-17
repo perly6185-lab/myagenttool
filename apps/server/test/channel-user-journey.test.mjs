@@ -10,7 +10,7 @@ import { createChannelService } from "../src/services/channels.mjs";
 const NOW = "2026-08-14T00:00:00.000Z";
 const OWNER = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeJourneyHarness() {
+function makeJourneyHarness({ retryAutoRun = null } = {}) {
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
   const events = [];
   const replies = [];
@@ -51,6 +51,7 @@ function makeJourneyHarness() {
         invocation: { id: "inv_resumed", options: { metadata: {} } },
       };
     },
+    retryAutoRun,
     replySender: (reply) => replies.push(reply),
     intakeQuietMs: 1,
   });
@@ -101,6 +102,13 @@ function makeJourneyHarness() {
     receive,
     projectId,
   };
+}
+
+async function createConfirmedTask(harness, content) {
+  harness.receive(content);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const confirmed = await harness.receive("确认").dispatched;
+  return { confirmed, thread: harness.state.channelTaskThreads.at(-1) };
 }
 
 test("iLink ordinary-user journey stays understandable from intake through delivery", async () => {
@@ -206,4 +214,143 @@ test("iLink ordinary-user journey keeps image, voice, and file inputs in one tas
   assert.equal(confirmed.status, "dispatched");
   assert.deepEqual(harness.taskCalls[0].inputAssets.map((asset) => asset.id), ["asset_image", "asset_voice", "asset_file"]);
   assert.equal(harness.state.channelTaskThreads[0].messages.length, 1);
+});
+
+test("iLink multi-task results stay correlated when tasks complete out of order", async () => {
+  const harness = makeJourneyHarness();
+  const first = await createConfirmedTask(harness, "请整理第一批反馈");
+  const second = await createConfirmedTask(harness, "另外 第二批反馈");
+  assert.equal(first.thread.status, "queued");
+  assert.equal(second.thread.status, "queued");
+
+  const secondInvocation = {
+    id: "inv_second_done",
+    status: "succeeded",
+    result: { summary: "第二批反馈已完成" },
+    options: { metadata: { channel: {
+      channelId: harness.channelId,
+      conversationId: second.thread.conversationId,
+      threadId: second.thread.id,
+      workItemId: second.thread.workItemId,
+    } } },
+  };
+  const secondSync = harness.conversationService.syncTaskThreadFromInvocation(secondInvocation);
+  assert.equal(secondSync.status, "succeeded");
+  assert.equal(first.thread.status, "queued");
+  assert.equal(harness.deliveryService.notifyInvocationCompleted(secondInvocation).ok, true);
+  await harness.deliveryService.sweepChannelDeliveries();
+  assert.equal(harness.sent.length, 1);
+  assert.match(harness.sent[0].content, /第二批反馈已完成/);
+  assert.equal(harness.state.channelDeliveries.at(-1).taskContext.threadId, second.thread.id);
+
+  const firstInvocation = {
+    id: "inv_first_done",
+    status: "succeeded",
+    result: { summary: "第一批反馈已完成" },
+    options: { metadata: { channel: {
+      channelId: harness.channelId,
+      conversationId: first.thread.conversationId,
+      threadId: first.thread.id,
+      workItemId: first.thread.workItemId,
+    } } },
+  };
+  const firstSync = harness.conversationService.syncTaskThreadFromInvocation(firstInvocation);
+  assert.equal(firstSync.status, "succeeded");
+  assert.equal(harness.deliveryService.notifyInvocationCompleted(firstInvocation).ok, true);
+  await harness.deliveryService.sweepChannelDeliveries();
+  assert.equal(harness.sent.length, 2);
+  assert.match(harness.sent[1].content, /第一批反馈已完成/);
+  assert.equal(harness.state.channelDeliveries.at(-1).taskContext.threadId, first.thread.id);
+  assert.notEqual(harness.state.channelDeliveries[0].taskContext.threadId, harness.state.channelDeliveries[1].taskContext.threadId);
+});
+
+test("iLink failed task can be retried and its retry result is delivered once", async () => {
+  const retryCalls = [];
+  const harness = makeJourneyHarness({
+    retryAutoRun: async (autoRunId) => {
+      retryCalls.push(autoRunId);
+      return {
+        autoRun: { id: autoRunId, status: "running", invocationId: "inv_retry" },
+        invocation: { id: "inv_retry", options: { metadata: {} } },
+      };
+    },
+  });
+  const task = await createConfirmedTask(harness, "请检查失败的部署");
+  harness.state.autoRuns.push({ id: "run_failed", status: "failed", invocationId: "inv_failed", error: "部署失败" });
+  const failedInvocation = {
+    id: "inv_failed",
+    status: "failed",
+    result: { summary: "部署失败" },
+    options: { metadata: { channel: {
+      channelId: harness.channelId,
+      conversationId: task.thread.conversationId,
+      threadId: task.thread.id,
+      workItemId: task.thread.workItemId,
+      autoRunId: "run_failed",
+    } } },
+  };
+  assert.equal(harness.conversationService.syncTaskThreadFromInvocation(failedInvocation).status, "failed");
+  assert.equal(harness.deliveryService.notifyInvocationCompleted(failedInvocation).ok, true);
+  await harness.deliveryService.sweepChannelDeliveries();
+  assert.match(harness.sent[0].content, /失败/);
+  assert.match(harness.sent[0].content, /重试/);
+
+  const retried = await harness.receive("重试").dispatched;
+  assert.match(retried.reply, /重新开始执行/);
+  assert.deepEqual(retryCalls, ["run_failed"]);
+  assert.equal(task.thread.status, "running");
+  assert.equal(task.thread.invocationId, "inv_retry");
+
+  harness.state.autoRuns[0].status = "succeeded";
+  const retryInvocation = {
+    id: "inv_retry",
+    status: "succeeded",
+    result: { summary: "部署重试成功" },
+    options: { metadata: { channel: {
+      channelId: harness.channelId,
+      conversationId: task.thread.conversationId,
+      threadId: task.thread.id,
+      workItemId: task.thread.workItemId,
+      autoRunId: "run_failed",
+    } } },
+  };
+  assert.equal(harness.conversationService.syncTaskThreadFromInvocation(retryInvocation).status, "succeeded");
+  assert.equal(harness.deliveryService.notifyInvocationCompleted(retryInvocation).ok, true);
+  await harness.deliveryService.sweepChannelDeliveries();
+  assert.equal(harness.sent.length, 2);
+  assert.match(harness.sent[1].content, /部署重试成功/);
+  assert.equal(new Set(harness.state.channelDeliveries.map((delivery) => delivery.taskContext.threadId)).size, 1);
+});
+
+test("iLink restart recovery reconciles completed work and requeues unfinished tasks together", async () => {
+  const harness = makeJourneyHarness();
+  const first = await createConfirmedTask(harness, "请恢复第一项任务");
+  const second = await createConfirmedTask(harness, "另外 第二项任务");
+  const third = await createConfirmedTask(harness, "另外 第三项任务");
+  first.thread.status = "running";
+  second.thread.status = "running";
+  third.thread.status = "queued";
+  first.thread.invocationId = "inv_restart_done";
+  harness.state.invocations.push({
+    id: "inv_restart_done",
+    status: "succeeded",
+    result: { summary: "第一项已在重启前完成" },
+    options: { metadata: { channel: {
+      channelId: harness.channelId,
+      conversationId: first.thread.conversationId,
+      threadId: first.thread.id,
+      workItemId: first.thread.workItemId,
+    } } },
+  });
+
+  const recovery = harness.conversationService.recoverTaskThreads();
+  assert.equal(recovery.reconciled, 1);
+  assert.equal(recovery.requeued, 1);
+  assert.equal(first.thread.status, "succeeded");
+  assert.equal(second.thread.status, "queued");
+  assert.equal(third.thread.status, "queued");
+  assert.equal(second.thread.queuePosition, 1);
+  assert.equal(third.thread.queuePosition, 2);
+  assert.equal(second.thread.queueAheadCount, 0);
+  assert.equal(third.thread.queueAheadCount, 1);
 });

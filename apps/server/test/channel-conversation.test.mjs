@@ -114,7 +114,8 @@ test("unmapped sender is refused through refuse() with a generic reply that leak
   const harness = makeHarness();
   const { dispatched } = harness.receive("/run git.status", { from: "wx_stranger" });
   assert.equal(dispatched.status, "refused");
-  assert.equal(dispatched.reply, "当前消息暂时无法处理，请在桌面端检查微信绑定和频道状态。");
+  assert.match(dispatched.reply, /请在桌面端打开“频道”/);
+  assert.match(dispatched.reply, /微信 ClawBot/);
   assert.ok(!dispatched.reply.includes("git.status"));
   const refusal = harness.refusals.at(-1);
   assert.equal(refusal.category, "policy");
@@ -455,6 +456,20 @@ test("ordinary progress questions return the current task without a task id", ()
   assert.match(eta.reply, /前面还有 2 个任务/);
 });
 
+test("desktop approval progress explains that task confirmation is already complete", () => {
+  const harness = makeHarness();
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  harness.state.channelTaskThreads.push({
+    id: "cth_approval", shortRef: "T-APPROVAL", channelId: harness.channelId, conversationId: conversation.id,
+    sourceEventIds: [], messages: [], summary: "发布变更", status: "waiting_approval", waitingFor: "approval", createdAt: NOW, updatedAt: NOW,
+  });
+  const result = harness.receive("当前进度").dispatched;
+  assert.match(result.reply, /任务内容已确认/);
+  assert.match(result.reply, /桌面端审批中心/);
+  assert.doesNotMatch(result.reply, /回复“确认”开始/);
+});
+
 test("ordinary users can pause and resume a queued task without knowing its internal id", () => {
   const harness = makeHarness({ operationMode: "personal" });
   harness.receive("/help");
@@ -494,6 +509,17 @@ test("progress question without tasks gives a next action instead of creating wo
   assert.match(result.reply, /还没有任务线程/);
   assert.equal(harness.state.channelTaskThreads.length, 0);
   assert.equal(harness.state.channelIntakeGroups.length, 0);
+});
+
+test("progress question during intake explains that the latest message is still being整理", () => {
+  const harness = makeHarness({ intakeQuietMs: 50 });
+  harness.receive("请整理这份反馈");
+  const result = harness.receive("当前进度").dispatched;
+  assert.equal(result.status, "dispatched");
+  assert.match(result.reply, /正在整理/);
+  assert.match(result.reply, /任务草稿/);
+  assert.equal(result.data.intakePending, true);
+  assert.equal(harness.state.channelTaskThreads.length, 0);
 });
 
 test("ordinary users can select and cancel a task by its list position", () => {
