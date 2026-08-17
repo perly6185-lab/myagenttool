@@ -30,7 +30,7 @@ test("iLink runtime persists QR login without exposing the bot token", async () 
       getQrCode: async () => ({ ret: 0, qrcode: "qr-1", qrcode_img_content: "https://example.test/qr" }),
       getQrCodeStatus: async () => {
         statusCalls += 1;
-        return { ret: 0, status: "confirmed", bot_token: "secret", baseurl: "https://example.test", ilink_bot_id: "bot-1" };
+        return { ret: 0, status: "confirmed", bot_token: "secret", baseurl: "https://ilinkai.weixin.qq.com", ilink_bot_id: "bot-1" };
       },
       sendMessage: async () => ({ clientId: "msg-1" }),
     }),
@@ -50,6 +50,198 @@ test("iLink runtime persists QR login without exposing the bot token", async () 
   assert.equal(secrets.values().next().value.botToken, "secret");
   const sent = await runtime.sendApplicationMessage({ channelId: "chn_1", toUser: "wx-user", content: "hello", replyContext: { contextToken: "ctx" } });
   assert.deepEqual(sent, { ok: true, msgid: "msg-1" });
+});
+
+test("iLink reconnect keeps the previous credential when QR acquisition fails", async () => {
+  const state = {
+    channels: [{ id: "chn_reconnect", provider: "wechat_ilink", ownerTeamId: "team_local", status: "registered" }],
+    ilinkAccounts: [{ id: "ila_reconnect", channelId: "chn_reconnect", ownerTeamId: "team_local", status: "connected", botId: "old-bot" }],
+  };
+  const stored = new Map([["ila_reconnect", { botToken: "old-token", baseUrl: "https://old.example", botId: "old-bot" }]]);
+  const credentials = {
+    save: (id, value) => stored.set(id, value),
+    load: (id) => stored.get(id) ?? null,
+    remove: (id) => stored.delete(id),
+  };
+  const runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-reconnect-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_reconnect`,
+    credentialStore: credentials,
+    clientFactory: () => ({
+      getQrCode: async () => { throw Object.assign(new Error("network"), { code: "network_error" }); },
+    }),
+    persistStateSoon: () => {},
+  });
+
+  const result = await runtime.beginLogin({ channelId: "chn_reconnect" });
+  assert.equal(result.status, 502);
+  assert.deepEqual(credentials.load("ila_reconnect"), { botToken: "old-token", baseUrl: "https://old.example", botId: "old-bot" });
+  assert.equal(state.ilinkAccounts[0].status, "connected");
+});
+
+test("iLink QR login passes local tokens and follows Tencent redirect/verification states", async () => {
+  const state = {
+    channels: [{ id: "chn_protocol", provider: "wechat_ilink", ownerTeamId: "team_local", status: "registered" }],
+    ilinkAccounts: [],
+  };
+  const credentials = {
+    listBotTokens: () => ["existing-token"],
+    load: () => null,
+    save: () => {},
+    remove: () => {},
+  };
+  const qrArgs = [];
+  const factoryArgs = [];
+  let statusCall = 0;
+  const runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-protocol-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_protocol`,
+    credentialStore: credentials,
+    clientFactory: (options = {}) => {
+      factoryArgs.push(options);
+      return {
+        getQrCode: async (args) => { qrArgs.push(args); return { ret: 0, qrcode: "qr-protocol", qrcode_img_content: "https://example.test/qr" }; },
+        getQrCodeStatus: async (_qrcode, options) => {
+          statusCall += 1;
+          if (statusCall === 1) return { status: "need_verifycode" };
+          assert.deepEqual(options, { verifyCode: "123456" });
+          if (statusCall === 2) return { status: "scaned_but_redirect", redirect_host: "ilink-asia.weixin.qq.com" };
+          assert.equal(factoryArgs.at(-1).baseUrl, "https://ilink-asia.weixin.qq.com");
+          return { status: "confirmed", bot_token: "new-token", baseurl: "https://ilinkai.weixin.qq.com", ilink_bot_id: "bot-protocol" };
+        },
+      };
+    },
+    persistStateSoon: () => {},
+  });
+
+  const started = await runtime.beginLogin({ channelId: "chn_protocol" });
+  assert.equal(started.body.status, "waiting_scan");
+  assert.deepEqual(qrArgs, [{ localTokenList: ["existing-token"] }]);
+  const verification = await runtime.pollLogin({ channelId: "chn_protocol" });
+  assert.equal(verification.body.status, "verification_required");
+  const scanned = await runtime.pollLogin({ channelId: "chn_protocol", verifyCode: "123456" });
+  assert.equal(scanned.body.status, "scanned");
+  const confirmed = await runtime.pollLogin({ channelId: "chn_protocol" });
+  assert.equal(confirmed.body.status, "authenticated");
+});
+
+test("iLink reconnect restores the previous credential when QR expires", async () => {
+  const state = {
+    channels: [{ id: "chn_reconnect_expired", provider: "wechat_ilink", ownerTeamId: "team_local", status: "registered" }],
+    ilinkAccounts: [{ id: "ila_reconnect_expired", channelId: "chn_reconnect_expired", ownerTeamId: "team_local", status: "connected", botId: "old-bot" }],
+  };
+  const stored = new Map([["ila_reconnect_expired", { botToken: "old-token", baseUrl: "https://old.example", botId: "old-bot" }]]);
+  const credentials = { save: (id, value) => stored.set(id, value), load: (id) => stored.get(id) ?? null, remove: () => {} };
+  const runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-reconnect-expired-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_reconnect_expired`,
+    credentialStore: credentials,
+    clientFactory: () => ({
+      getQrCode: async () => ({ ret: 0, qrcode: "qr-reconnect", qrcode_img_content: "https://example.test/qr" }),
+      getQrCodeStatus: async () => ({ ret: 0, status: "expired" }),
+    }),
+    persistStateSoon: () => {},
+  });
+
+  const started = await runtime.beginLogin({ channelId: "chn_reconnect_expired" });
+  assert.equal(started.body.status, "waiting_scan");
+  const expired = await runtime.pollLogin({ channelId: "chn_reconnect_expired" });
+  assert.equal(expired.body.status, "expired");
+  assert.equal(expired.body.account.status, "connected");
+  assert.deepEqual(credentials.load("ila_reconnect_expired"), { botToken: "old-token", baseUrl: "https://old.example", botId: "old-bot" });
+});
+
+test("iLink reconnect drops a stale QR session after status polling fails", async () => {
+  const state = {
+    channels: [{ id: "chn_reconnect_poll", provider: "wechat_ilink", ownerTeamId: "team_local", status: "registered" }],
+    ilinkAccounts: [{ id: "ila_reconnect_poll", channelId: "chn_reconnect_poll", ownerTeamId: "team_local", status: "connected", botId: "old-bot" }],
+  };
+  const stored = new Map([["ila_reconnect_poll", { botToken: "old-token", baseUrl: "https://old.example", botId: "old-bot" }]]);
+  const credentials = { save: (id, value) => stored.set(id, value), load: (id) => stored.get(id) ?? null, remove: () => {} };
+  const runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-reconnect-poll-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_reconnect_poll`,
+    credentialStore: credentials,
+    clientFactory: () => ({
+      getQrCode: async () => ({ ret: 0, qrcode: "qr-reconnect-poll", qrcode_img_content: "https://example.test/qr" }),
+      getQrCodeStatus: async () => { throw Object.assign(new Error("network"), { code: "network_error" }); },
+    }),
+    persistStateSoon: () => {},
+  });
+
+  await runtime.beginLogin({ channelId: "chn_reconnect_poll" });
+  const failed = await runtime.pollLogin({ channelId: "chn_reconnect_poll" });
+  assert.equal(failed.status, 502);
+  assert.equal(state.ilinkAccounts[0].status, "connected");
+  const afterCleanup = await runtime.pollLogin({ channelId: "chn_reconnect_poll" });
+  assert.equal(afterCleanup.body.status, "connected");
+  assert.deepEqual(credentials.load("ila_reconnect_poll"), { botToken: "old-token", baseUrl: "https://old.example", botId: "old-bot" });
+});
+
+test("iLink reconnect keeps an active worker running until the new QR is confirmed", async () => {
+  const state = {
+    channels: [{ id: "chn_reconnect_live", provider: "wechat_ilink", ownerTeamId: "team_local", status: "enabled" }],
+    ilinkAccounts: [{ id: "ila_reconnect_live", channelId: "chn_reconnect_live", ownerTeamId: "team_local", status: "connected", botId: "old-bot" }],
+  };
+  const credentials = { load: () => ({ botToken: "old-token", baseUrl: "https://old.example", botId: "old-bot" }), save: () => {}, remove: () => {} };
+  const client = {
+    getQrCode: async () => ({ ret: 0, qrcode: "qr-live", qrcode_img_content: "https://example.test/qr" }),
+    getUpdates: ({ signal }) => new Promise((resolve) => signal.addEventListener("abort", () => resolve({ ret: 0, msgs: [] }), { once: true })),
+  };
+  const runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-reconnect-live-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_reconnect_live`,
+    credentialStore: credentials,
+    clientFactory: () => client,
+    persistStateSoon: () => {},
+  });
+
+  runtime.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  const started = await runtime.beginLogin({ channelId: "chn_reconnect_live" });
+  assert.equal(started.body.status, "waiting_scan");
+  assert.equal(runtime.readiness(state.channels[0]).worker, true);
+  runtime.stop();
+});
+
+test("iLink pairing expiry is surfaced without degrading the connected account", async () => {
+  const account = {
+    id: "ila_pair_expired",
+    channelId: "chn_pair_expired",
+    ownerTeamId: "team_local",
+    status: "pairing",
+    pendingPairCode: "ABC123",
+    pendingPairUserId: "usr_local",
+    pairingExpiresAt: "2026-08-12T00:00:00.000Z",
+  };
+  const state = {
+    channels: [{ id: "chn_pair_expired", provider: "wechat_ilink", ownerTeamId: "team_local", status: "enabled" }],
+    ilinkAccounts: [account],
+  };
+  const runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-pair-expired-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_pair_expired`,
+    credentialStore: { load: () => ({ botToken: "secret", baseUrl: "https://example.test" }), save: () => {}, remove: () => {} },
+    persistStateSoon: () => {},
+  });
+
+  const result = await runtime.pollLogin({ channelId: "chn_pair_expired" });
+  assert.equal(result.body.account.status, "connected");
+  assert.equal(result.body.account.pairingStatus, "expired");
+  assert.equal(account.pendingPairCode, null);
+  assert.equal(account.pairingExpiresAt, null);
 });
 
 test("iLink QR status polling is single-flight per channel", async () => {
@@ -189,6 +381,90 @@ test("iLink runtime records media failure so the composed channel path can refus
   runtime.stop();
 });
 
+test("iLink replay re-enters the durable event path instead of silently dropping a reply", async () => {
+  const state = {
+    channels: [{ id: "chn_replay", provider: "wechat_ilink", ownerTeamId: "team_local", status: "enabled" }],
+    ilinkAccounts: [{ id: "ila_replay", channelId: "chn_replay", ownerTeamId: "team_local", status: "connected", cursor: "", botId: "bot-1" }],
+    channelEvents: [{
+      id: "che_existing", channelId: "chn_replay", providerMessageId: "102", status: "imported",
+      conversationId: "cvc_replay", externalUserId: "wx-user", content: "hello",
+    }],
+  };
+  let runtime;
+  let importCalls = 0;
+  const client = {
+    notifyStart: async () => {},
+    notifyStop: async () => {},
+    getUpdates: async () => {
+      runtime.stop();
+      return {
+        msgs: [{ message_id: 102, from_user_id: "wx-user", message_type: 1, item_list: [{ type: 1, text_item: { text: "hello" } }] }],
+        get_updates_buf: "cursor-after",
+      };
+    },
+  };
+  runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-replay-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_1`,
+    credentialStore: { load: () => ({ botToken: "secret", baseUrl: "https://example.test" }), save: () => {}, remove: () => {} },
+    clientFactory: () => client,
+    persistStateSoon: () => {},
+    importChannelEvent: async (payload) => {
+      importCalls += 1;
+      assert.equal(payload.providerMessageId, "102");
+      return { ok: true, duplicate: true, eventId: "che_existing", conversationId: "cvc_replay" };
+    },
+  });
+  runtime.start();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(importCalls, 1);
+  runtime.stop();
+});
+
+test("iLink worker does not advance the cursor when durable message import fails", async () => {
+  const account = {
+    id: "ila_import_retry",
+    channelId: "chn_import_retry",
+    ownerTeamId: "team_local",
+    status: "connected",
+    cursor: "cursor-before",
+    botId: "bot-1",
+  };
+  const state = {
+    channels: [{ id: "chn_import_retry", provider: "wechat_ilink", ownerTeamId: "team_local", status: "enabled" }],
+    ilinkAccounts: [account],
+  };
+  let runtime;
+  const client = {
+    notifyStart: async () => {},
+    notifyStop: async () => {},
+    getUpdates: async () => {
+      runtime.stop();
+      return {
+        msgs: [{ message_id: 101, from_user_id: "wx-user", message_type: 1, item_list: [{ type: 1, text_item: { text: "retry me" } }] }],
+        get_updates_buf: "cursor-after",
+      };
+    },
+  };
+  runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-import-retry-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_1`,
+    credentialStore: { load: () => ({ botToken: "secret", baseUrl: "https://example.test" }), save: () => {}, remove: () => {} },
+    clientFactory: () => client,
+    persistStateSoon: () => {},
+    importChannelEvent: async () => ({ ok: false, refused: true, reason: "temporary_store_failure" }),
+  });
+  runtime.start();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(account.cursor, "cursor-before");
+  assert.equal(account.lastError, "message_processing_failed");
+  runtime.stop();
+});
+
 test("iLink runtime does not restart a worker with a credential that requires reauthentication", () => {
   const state = {
     channels: [{ id: "chn_reauth", provider: "wechat_ilink", ownerTeamId: "team_local", status: "enabled" }],
@@ -244,6 +520,29 @@ test("iLink worker recovers from a transient poll failure and clears the visible
   assert.equal(account.lastError, null);
   assert.equal(account.workerFailureCount, 0);
   assert.equal(account.cursor, "cursor-ok");
+  runtime.stop();
+});
+
+test("iLink readiness distinguishes a worker retry from a healthy connection", async () => {
+  const account = { id: "ila_health", channelId: "chn_health", ownerTeamId: "team_local", status: "connected", cursor: "", botId: "bot-1" };
+  const state = {
+    channels: [{ id: "chn_health", provider: "wechat_ilink", ownerTeamId: "team_local", status: "enabled" }],
+    ilinkAccounts: [account],
+  };
+  const runtime = createIlinkRuntime({
+    state,
+    stateStorePath: "/tmp/unused-ilink-health-state.json",
+    now: () => "2026-08-13T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_health`,
+    credentialStore: { load: () => ({ botToken: "secret", baseUrl: "https://example.test" }), save: () => {}, remove: () => {} },
+    clientFactory: () => ({ getUpdates: async () => { throw Object.assign(new Error("temporary network"), { code: "network_error", retryable: true }); } }),
+    persistStateSoon: () => {},
+  });
+  runtime.start();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(runtime.readiness(state.channels[0]).worker, false);
+  assert.equal(runtime.readiness(state.channels[0]).workerRunning, true);
+  assert.equal(runtime.readiness(state.channels[0]).workerHealthy, false);
   runtime.stop();
 });
 

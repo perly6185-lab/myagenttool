@@ -47,6 +47,11 @@ test("channelOperations rolls up readiness, health, counts, and last activity", 
   assert.equal(ops.counts.failedDeliveries, 1);
   assert.equal(ops.counts.injectionFlagged, 1);
   assert.equal(ops.lastActivityAt, "2026-07-15T06:00:00.000Z");
+  assert.equal(ops.lastInboundAt, "2026-07-15T01:00:00.000Z");
+  assert.equal(ops.lastOutboundAt, "2026-07-15T03:00:00.000Z");
+  assert.equal(ops.lastDeliveredAt, "2026-07-15T02:00:00.000Z");
+  assert.equal(ops.lastFailureAt, "2026-07-15T03:00:00.000Z");
+  assert.deepEqual(ops.pipeline, { inbound: {}, outbound: { delivered: 1, failed_terminal: 1 } });
   assert.deepEqual(ops.taskSummary, {
     total: 3,
     active: 2,

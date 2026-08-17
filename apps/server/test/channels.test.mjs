@@ -393,3 +393,46 @@ test("health counts channel child rows and terminal delivery failures", () => {
   const health = service.channelHealth({ channelId }, owner);
   assert.deepEqual(health.body.counts, { events: 1, conversations: 1, deliveries: 2, failedDeliveries: 1 });
 });
+
+test("diagnostics reports pipeline health without exposing message content or secrets", () => {
+  const { state, service } = makeService();
+  const { body } = service.registerChannel({ provider: "wecom", name: "ops" }, owner);
+  const channelId = body.channel.id;
+  state.channelEvents.push(
+    {
+      id: "chev_diag_1", channelId, status: "imported", receivedAt: "2026-07-15T00:00:01.000Z",
+      content: SECRET, mediaFailure: null,
+    },
+    {
+      id: "chev_diag_2", channelId, status: "refused", receivedAt: "2026-07-15T00:00:02.000Z",
+      content: "private user content", intentDecision: { reason: "not_authorized" },
+    },
+  );
+  state.channelConversations.push({ id: "chcv_diag_1", channelId });
+  state.channelDeliveries.push(
+    { id: "chdl_diag_1", channelId, status: "delivered", createdAt: "2026-07-15T00:00:03.000Z", updatedAt: "2026-07-15T00:00:04.000Z" },
+    { id: "chdl_diag_2", channelId, status: "failed_terminal", attempts: 3, lastErrorCode: "network_error", createdAt: "2026-07-15T00:00:05.000Z", updatedAt: "2026-07-15T00:00:06.000Z", content: SECRET },
+  );
+  state.channelTaskThreads.push({ id: "cth_diag_1", channelId, status: "queued" });
+
+  const diagnostics = service.channelDiagnostics({ channelId }, owner);
+  assert.equal(diagnostics.status, 200);
+  assert.equal(diagnostics.body.channel.id, channelId);
+  assert.equal(diagnostics.body.activity.lastInboundAt, "2026-07-15T00:00:02.000Z");
+  assert.equal(diagnostics.body.activity.lastDeliveredAt, "2026-07-15T00:00:04.000Z");
+  assert.deepEqual(diagnostics.body.pipeline.inbound, { imported: 1, refused: 1 });
+  assert.deepEqual(diagnostics.body.pipeline.outbound, { delivered: 1, failed_terminal: 1 });
+  assert.deepEqual(diagnostics.body.pipeline.tasks, { queued: 1 });
+  assert.equal(diagnostics.body.failures[0].code, "network_error");
+  assert.equal(diagnostics.body.failures[1].code, "not_authorized");
+  assert.ok(!JSON.stringify(diagnostics.body).includes(SECRET));
+  assert.ok(!JSON.stringify(diagnostics.body).includes("private user content"));
+});
+
+test("diagnostics preserves channel tenancy opacity", () => {
+  const { service } = makeService();
+  const { body } = service.registerChannel({ provider: "wecom", name: "ops" }, owner);
+  const result = service.channelDiagnostics({ channelId: body.channel.id }, foreign);
+  assert.equal(result.status, 404);
+  assert.equal(result.body.error, "channel_not_found");
+});
