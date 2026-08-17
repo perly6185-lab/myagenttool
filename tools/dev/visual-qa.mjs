@@ -751,10 +751,10 @@ async function assertVisualState(page, scenario) {
       throw new Error("approval renders a duplicate Home work-state banner alongside the approval card");
     }
   }
-  // The Home composer now exposes task context/materials under a plain-language
-  // progressive disclosure. Keep this assertion tied to the current entry
-  // surface instead of the retired workspace-only temporary-run wording.
-  const contextSummary = page.getByText("Add completion criteria or references", { exact: true });
+  // The Home composer exposes optional project/date/criteria context under a
+  // plain-language progressive disclosure. Keep this assertion tied to the
+  // current entry surface instead of a retired workspace-only wording.
+  const contextSummary = page.getByText("More options", { exact: true });
   await contextSummary.waitFor();
   if (await contextSummary.locator("xpath=ancestor::details[1]").getAttribute("open") !== null) {
     throw new Error(`${scenario.name} opens task context/material controls on the ordinary Home surface`);

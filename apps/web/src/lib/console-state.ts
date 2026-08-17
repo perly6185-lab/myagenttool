@@ -1564,6 +1564,8 @@ export interface ChannelOperations {
   statusCapability?: string | null;
   /** The project `/task` files GitHub issues into (null = /task disabled). */
   taskProjectId?: string | null;
+  /** The execution device selected for channel tasks. */
+  taskTerminalId?: string | null;
   /** Personal mode is the local-user default; team mode keeps an approval boundary. */
   operationMode?: "personal" | "team" | string;
   /** Auto-route /task straight to work (personal mode routes after confirmation). */
@@ -1595,6 +1597,41 @@ export interface ChannelOperations {
     cancelled: number;
   };
   lastActivityAt?: string | null;
+  lastInboundAt?: string | null;
+  lastOutboundAt?: string | null;
+  lastDeliveredAt?: string | null;
+  lastFailureAt?: string | null;
+  lastFailureCode?: string | null;
+  pipeline?: {
+    inbound: Record<string, number>;
+    outbound: Record<string, number>;
+  };
+}
+
+export interface ChannelDiagnostics {
+  generatedAt: string;
+  channel: {
+    id: string;
+    provider: string;
+    name: string;
+    status: string;
+    ready: boolean;
+    readiness: Record<string, boolean>;
+  };
+  activity: {
+    lastInboundAt: string | null;
+    lastOutboundAt: string | null;
+    lastDeliveredAt: string | null;
+    lastFailureAt: string | null;
+  };
+  pipeline: {
+    conversations: number;
+    inbound: Record<string, number>;
+    outbound: Record<string, number>;
+    tasks: Record<string, number>;
+  };
+  failures: Array<{ direction: string; status: string; code: string; attempts: number; at: string }>;
+  note: string;
 }
 
 /** An inbound-established conversation — the addressable target for an outbound

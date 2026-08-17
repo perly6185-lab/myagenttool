@@ -18,7 +18,7 @@ const action = vi.hoisted(() => ({
   })),
 }));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: () => ({ data: {
-  channelOperations: [{ id: "chn_1", provider: "wecom", name: "Ops", status: "enabled", readiness: { callback: true }, ready: true, health: "ok", capabilityAllowlist: [], counts: { identities: 1, conversations: 1, events: 1, deliveries: 1, failedDeliveries: 0, injectionFlagged: 0 } }],
+  channelOperations: [{ id: "chn_1", provider: "wecom", name: "Ops", status: "enabled", readiness: { callback: true }, ready: true, health: "ok", capabilityAllowlist: [], counts: { identities: 1, conversations: 1, events: 1, deliveries: 1, failedDeliveries: 0, injectionFlagged: 0 }, lastInboundAt: "2026-08-13T12:00:00.000Z", lastOutboundAt: "2026-08-13T12:01:00.000Z", lastDeliveredAt: "2026-08-13T12:01:00.000Z", pipeline: { inbound: { imported: 1 }, outbound: { delivered: 1 } } }],
   channelDeliveries: [], projects: [],
   channelTaskRequests: [{ id: "ctr_1", channelId: "chn_1", projectId: "prj_1", issueNumber: 42, issueUrl: "https://example.test/42", title: "Repair failed release", status: "routed", stage: "run_failed", autoRunId: "run_1", runStatus: "failed", invocationId: "inv_1", invocationStatus: "failed", resultSummary: "Bridge disconnected", deliveryStatus: "failed_terminal", actions: { retry: true, reroute: true, takeover: true } }],
 } }) }));
@@ -32,6 +32,8 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 describe("ChannelsView task operations", () => {
   it("shows trace links, understandable failure state, and recovery actions", async () => {
     render(<ChannelsView />);
+    expect(screen.getByTestId("channel-diagnostics-summary").textContent).toContain("最后入站");
+    expect(screen.getByTestId("channel-diagnostics-summary").textContent).toContain("入站 已接收 1");
     expect(screen.getByText("run failed")).toBeTruthy();
     expect(screen.getByText("Issue #42")).toBeTruthy();
     expect(screen.getByText("inv_1")).toBeTruthy();

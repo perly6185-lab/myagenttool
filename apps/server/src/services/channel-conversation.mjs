@@ -21,8 +21,11 @@ import {
   normalizeChannelIntentResult,
 } from "./channel-intent.mjs";
 
-const GENERIC_DENIED_REPLY = "Not authorized for this channel. Contact your team administrator.";
-const USAGE_REPLY = `你可以直接发送文字、图片、语音或文件，我会先整理成任务再执行。\n\n常用操作：确认、修改、取消、我的任务、继续第一个任务、重试、暂停、继续、重发结果、转人工。\n高级命令：重试 T-xxxx、暂停 T-xxxx、重发结果 T-xxxx、转人工 T-xxxx、${channelCommands.join("、")}`;
+// Keep the fail-closed response generic, but make it actionable for the local
+// single-user setup. Do not reveal whether the sender was unmapped, disabled,
+// or blocked by an allowlist.
+const GENERIC_DENIED_REPLY = "当前消息暂时无法处理，请在桌面端检查微信绑定和频道状态。";
+const USAGE_REPLY = `你可以直接发送文字、图片、语音或文件，我会先理解你的需求。\n\n常用操作：\n• 直接描述需求：我会整理后请你确认\n• 我的任务 / 任务：查看任务\n• 当前进度 / 进度：查看最新任务\n• 历史：查看最近记录\n• 确认 / 修改 / 取消：处理待确认任务\n• 暂停 / 继续 / 重试 / 重发结果 / 转人工：管理最新任务\n\n也可以直接说“你好”“我想了解……”或“帮我……”，不需要记命令。\n高级命令：重试 T-xxxx、暂停 T-xxxx、重发结果 T-xxxx、转人工 T-xxxx、${channelCommands.join("、")}`;
 
 // A staged confirmation goes stale after this long — a fresh /run is required
 // (mirrors the approval-grant TTL: a confirm-click artifact, not a work queue).
@@ -45,13 +48,26 @@ const CHANNEL_INTAKE_MAX_EVENTS = 8;
 const CHANNEL_THREAD_TTL_MS = 30 * 60 * 1000;
 export const CHANNEL_WAITING_USER_TTL_MS = 30 * 60 * 1000;
 export const CHANNEL_RUNNING_TTL_MS = 24 * 60 * 60 * 1000;
-const THREAD_CONFIRMATIONS = new Set(["确认", "确定", "开始", "执行", "可以", "好的", "好", "yes", "ok"]);
+const THREAD_CONFIRMATIONS = new Set([
+  "确认", "确定", "开始", "执行", "可以", "好的", "好", "yes", "ok",
+  "好呀", "好啊", "没问题", "按这个做", "就这样", "开始吧", "执行吧",
+]);
 const THREAD_CANCELLATIONS = new Set(["取消", "不要了", "放弃", "cancel", "no"]);
+const GREETING_TEXTS = new Set([
+  "你好", "您好", "嗨", "嗨嗨", "哈喽", "hello", "hi", "hey",
+  "早上好", "上午好", "中午好", "下午好", "晚上好", "晚安",
+]);
 const NEW_TASK_PREFIX = /^(另外|另一个|还有一个|再帮我|除此之外|新任务|另一个任务)(?:\s|$)/i;
-const TASK_LIST_REQUESTS = new Set(["我的任务", "查看任务", "任务列表", "有哪些任务", "任务状态"]);
-const TASK_PROGRESS_REQUESTS = new Set(["当前进度", "进度怎么样", "现在做到哪了", "现在什么情况", "还有多久", "排队情况", "排队到哪了", "任务进展", "进展如何", "做得怎么样"]);
+const EXPLICIT_TASK_REQUEST = /^(?:请(?:帮我|协助我|处理|整理|分析|检查|生成|创建|修改|导出|汇总|总结|翻译|写|做|执行|运行|发送|下载|对比|审核|修复|规划|开发|实现)|(?:帮我|麻烦(?:帮我)?|请协助)(?:整理|分析|处理|检查|生成|创建|修改|导出|汇总|总结|翻译|写|做|执行|运行|发送|下载|对比|审核|修复|规划|开发|实现))/i;
+const CONSULTATION_REQUEST = /^(?:为什么|为何|怎么|如何|能否|是否|有没有|请问|什么是|有什么区别|你建议|推荐什么|应该怎么)/;
+const TASK_LIST_REQUESTS = new Set(["我的任务", "查看任务", "任务", "任务列表", "有哪些任务", "任务状态", "我的任务状态"]);
+const TASK_HISTORY_REQUESTS = new Set(["历史", "历史记录", "聊天记录", "最近记录", "最近任务", "我刚才做了什么"]);
+const TASK_PROGRESS_REQUESTS = new Set(["进度", "当前进度", "任务进度", "我的进度", "进度怎么样", "现在做到哪了", "现在什么情况", "还有多久", "排队情况", "排队到哪了", "任务进展", "进展如何", "做得怎么样"]);
 const TASK_RESULT_RESEND_REQUESTS = new Set(["重发结果", "再发一次", "再发一次结果", "把结果发我", "重新发送结果", "结果再发一次"]);
-const HELP_REQUESTS = new Set(["帮助", "怎么用", "如何使用", "我能做什么", "help"]);
+const HELP_REQUESTS = new Set([
+  "帮助", "怎么用", "如何使用", "我能做什么", "你能做什么", "你可以做什么",
+  "能帮我什么", "你会做什么", "你能帮我做什么", "help", "what can you do",
+]);
 const TASK_THREAD_ACTIVE_STATUSES = new Set(["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user"]);
 export const CHANNEL_INTENT_CONFIDENCE_THRESHOLD = 0.65;
 
@@ -79,6 +95,7 @@ export function createChannelConversationService({
   retryAutoRun = null,
   cancelAutoRun = null,
   classifyIntent = null,
+  createConsultation = null,
   replySender = null,
   resendDelivery = null,
   notifyHumanTakeover = null,
@@ -228,15 +245,30 @@ export function createChannelConversationService({
   }
 
   function isConfirmation(text) {
-    return THREAD_CONFIRMATIONS.has(normalizedText(text).toLowerCase());
+    const value = normalizedText(text).toLowerCase().replace(/[!！。.,，?？~～]+$/g, "");
+    return THREAD_CONFIRMATIONS.has(value);
   }
 
   function isCancellation(text) {
     return THREAD_CANCELLATIONS.has(normalizedText(text).toLowerCase());
   }
 
+  function isGreeting(text) {
+    const value = normalizedText(text).toLowerCase().replace(/[!！。.,，?？~～]+$/g, "");
+    return GREETING_TEXTS.has(value);
+  }
+
   function isNewTask(text) {
     return NEW_TASK_PREFIX.test(normalizedText(text));
+  }
+
+  function isExplicitTaskRequest(text) {
+    return EXPLICIT_TASK_REQUEST.test(normalizedText(text));
+  }
+
+  function isConsultationRequest(text) {
+    const value = normalizedText(text);
+    return CONSULTATION_REQUEST.test(value) || /[？?]$/.test(value);
   }
 
   function recentTaskThreads(conversation) {
@@ -255,8 +287,14 @@ export function createChannelConversationService({
 
   function taskControl(text, conversation = null) {
     const value = normalizedText(text);
-    if (HELP_REQUESTS.has(value.toLowerCase())) return { kind: "help", ref: null };
+    const lower = value.toLowerCase();
+    if (HELP_REQUESTS.has(lower) || ["菜单", "操作说明", "使用说明", "指引"].includes(value)
+      || /^(?:hello|hi)[,，\s]*(?:what can you do|what do you do)\??$/i.test(value)
+      || /^(?:你好|您好)[，,\s]*(?:你能做什么|你可以做什么|能帮我什么|怎么用)[？?！!]?$/.test(value)) {
+      return { kind: "help", ref: null };
+    }
     if (TASK_LIST_REQUESTS.has(value)) return { kind: "list", ref: null };
+    if (TASK_HISTORY_REQUESTS.has(value)) return { kind: "history", ref: null };
     const cancel = value.match(/^取消\s+(T-[a-z0-9_-]+)$/i);
     if (cancel) return { kind: "cancel", ref: cancel[1].toUpperCase() };
     const retry = value.match(/^(?:重试|再试一次)\s+(T-[a-z0-9_-]+)$/i);
@@ -278,6 +316,18 @@ export function createChannelConversationService({
       const latest = recent[0] ?? null;
       if (TASK_PROGRESS_REQUESTS.has(value)) return { kind: "status", ref: latest ? threadRef(latest) : null, friendly: true };
       if (TASK_RESULT_RESEND_REQUESTS.has(value)) return { kind: "resend", ref: latest ? threadRef(latest) : null, friendly: true };
+      if (/^(?:取消|停止)(?:当前|现在|刚才|上一个)?(?:的)?任务$/i.test(value)) {
+        return { kind: "cancel", ref: latest ? threadRef(latest) : null, friendly: true };
+      }
+      if (/^(?:暂停)(?:当前|现在|刚才|上一个)?(?:的)?任务$/i.test(value)) {
+        return { kind: "pause", ref: latest ? threadRef(latest) : null, friendly: true };
+      }
+      if (/^(?:重试|再试一次)(?:当前|现在|刚才|上一个)?(?:的)?任务$/i.test(value)) {
+        return { kind: "retry", ref: latest ? threadRef(latest) : null, friendly: true };
+      }
+      if (/^(?:转人工|交给人工)(?:处理)?(?:当前|现在|刚才|上一个)?(?:的)?任务$/i.test(value)) {
+        return { kind: "handoff", ref: latest ? threadRef(latest) : null, friendly: true };
+      }
       if (pause && latest && TASK_THREAD_ACTIVE_STATUSES.has(latest.status)) return { kind: "pause", ref: threadRef(latest), friendly: true };
       if (resume && latest && latest.status === "paused") return { kind: "resume", ref: threadRef(latest), friendly: true };
       const ordinal = taskOrdinal(value);
@@ -359,6 +409,7 @@ export function createChannelConversationService({
               channelId: thread.channelId,
               conversationId: thread.conversationId,
               threadId: thread.id,
+              dedupeKey: `channel-queue:${thread.id}:${ahead}`,
               content: `排队有更新，你的任务前面还有 ${ahead} 个任务，前面的任务完成后会自动开始。`,
             });
           }
@@ -382,10 +433,16 @@ export function createChannelConversationService({
         ? { intent: "confirm", confidence: 1, source: "deterministic" }
         : isCancellation(value)
           ? { intent: "cancel", confidence: 1, source: "deterministic" }
+          : isGreeting(value)
+            ? { intent: "greeting", confidence: 1, source: "deterministic" }
+          : isExplicitTaskRequest(value)
+            ? { intent: "new_task", confidence: 0.96, source: "deterministic" }
           : isNewTask(value)
             ? { intent: "new_task", confidence: 0.98, source: "deterministic" }
             : preferredWaitingUser
               ? { intent: "supplement", confidence: 0.96, ref: threadRef(preferredWaitingUser), source: "deterministic" }
+              : isConsultationRequest(value)
+                ? { intent: "consultation", confidence: 0.9, source: "deterministic" }
               : active.length > 1
               ? { intent: "ambiguous", confidence: 0.35, source: "deterministic" }
               : waitingUser.length === 1
@@ -394,7 +451,7 @@ export function createChannelConversationService({
     // Explicit controls are already exact and must not be reinterpreted by a
     // model. The adapter is reserved for natural-language messages where the
     // local fallback benefits from context, such as supplement vs new_task.
-    if (typeof classifyIntent !== "function" || control || isConfirmation(value) || isCancellation(value) || isNewTask(value)) {
+    if (typeof classifyIntent !== "function" || control || isConfirmation(value) || isCancellation(value) || isGreeting(value) || isExplicitTaskRequest(value) || isNewTask(value) || isConsultationRequest(value)) {
       return normalizeChannelIntentResult(fallback, { fallback, activeRefs: new Set(active.map(threadRef)) });
     }
     try {
@@ -454,10 +511,10 @@ export function createChannelConversationService({
     return normalized;
   }
 
-  function sendDeferredReply({ channelId, conversationId, content, threadId = null }) {
+  function sendDeferredReply({ channelId, conversationId, content, threadId = null, invocationId = null, dedupeKey = null }) {
     if (typeof replySender !== "function" || !content) return;
     try {
-      const result = replySender({ channelId, conversationId, content, threadId });
+      const result = replySender({ channelId, conversationId, content, threadId, invocationId, dedupeKey });
       if (result?.catch) result.catch(() => {});
     } catch {
       // The durable event/thread remains authoritative if the provider is down.
@@ -879,6 +936,140 @@ export function createChannelConversationService({
     });
   }
 
+  function consultationAnswer(invocation) {
+    const result = invocation?.result;
+    const candidates = [
+      typeof result === "string" ? result : null,
+      result?.summary,
+      result?.message,
+      result?.text,
+      typeof result?.output === "string" ? result.output : null,
+      typeof result?.output?.text === "string" ? result.output.text : null,
+      typeof result?.output?.summary === "string" ? result.output.summary : null,
+    ];
+    const answer = candidates.find((value) => String(value ?? "").trim());
+    if (answer) return String(answer).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").trim().slice(0, 6000);
+    return "我暂时没有拿到有效答案。你可以换一种方式描述问题，或说“帮我……”让我整理成任务处理。";
+  }
+
+  function startConsultation(event, conversation) {
+    const existing = (state.invocations ?? []).find((invocation) =>
+      invocation.status
+      && !["succeeded", "failed", "cancelled", "timed_out"].includes(invocation.status)
+      && invocation.options?.metadata?.channelConsultation
+      && invocation.options?.metadata?.channel?.eventId === event.id);
+    if (existing) {
+      runTx(() => {
+        event.consultationInvocationId = existing.id;
+        event.consultationStatus = "queued";
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: "已收到，正在整理答案，稍后会发给你。",
+        invocationId: existing.id,
+        data: { consultation: true, status: "queued", deduplicated: true },
+      });
+    }
+    if (typeof createConsultation !== "function") {
+      return settle(event, {
+        status: "dispatched",
+        reply: "这是一个咨询问题。我目前无法直接生成答案；如果希望我实际处理，请说“帮我……”或发送相关图片、语音和文件。",
+        data: { consultation: true, suggestedAction: "new_task", reason: "consultation_unavailable" },
+      });
+    }
+    try {
+      const history = (state.channelEvents ?? [])
+        .filter((candidate) => candidate.conversationId === conversation.id && candidate.id !== event.id)
+        .sort((left, right) => String(left.receivedAt ?? "").localeCompare(String(right.receivedAt ?? "")))
+        .slice(-6)
+        .map((candidate) => ({ content: candidate.content, receivedAt: candidate.receivedAt }));
+      const invocation = createConsultation({
+        text: event.content,
+        channelId: event.channelId,
+        conversationId: conversation.id,
+        eventId: event.id,
+        history,
+      });
+      runTx(() => {
+        event.consultationInvocationId = invocation?.id ?? null;
+        event.consultationStatus = "queued";
+        event.consultationQueuedAt = now();
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: "已收到，正在回答你的问题，稍后会把答案发回来。\n如果你想让我直接处理，请说“帮我……”；这不会自动创建任务。",
+        invocationId: invocation?.id ?? null,
+        data: { consultation: true, status: "queued", suggestedAction: "new_task" },
+      });
+    } catch (error) {
+      runTx(() => {
+        event.consultationStatus = "fallback";
+        event.consultationError = String(error?.message ?? error).slice(0, 160);
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: "这是一个咨询问题，但当前回答服务暂时不可用。你可以稍后再问；如果希望我直接处理，请说“帮我……”或发送相关资料。",
+        data: { consultation: true, suggestedAction: "new_task", reason: "consultation_enqueue_failed" },
+      });
+    }
+  }
+
+  function syncConsultationFromInvocation(invocation) {
+    const metadata = invocation?.options?.metadata;
+    if (!metadata?.channelConsultation) return null;
+    const eventId = metadata.channel?.eventId ?? null;
+    const event = eventId ? (state.channelEvents ?? []).find((candidate) => candidate.id === eventId) : null;
+    if (!event) return null;
+    if (["answered", "failed"].includes(event.consultationStatus)) return { event, status: event.consultationStatus };
+    const conversation = findConversation(metadata.channel?.conversationId ?? event.conversationId);
+    const terminal = ["succeeded", "failed", "cancelled", "timed_out"].includes(invocation.status);
+    if (!terminal) return { event, status: "queued" };
+    const answer = invocation.status === "succeeded"
+      ? consultationAnswer(invocation)
+      : "这次咨询暂时没有完成，可能是本地助手正在忙或连接中断。你可以稍后重试，也可以说“帮我……”让我直接整理成任务。";
+    runTx(() => {
+      event.consultationStatus = invocation.status === "succeeded" ? "answered" : "failed";
+      event.consultationAnswer = answer;
+      event.consultationCompletedAt = now();
+      appendEvent({
+        invocationId: invocation.id,
+        type: invocation.status === "succeeded" ? "channel_consultation_answered" : "channel_consultation_failed",
+        level: invocation.status === "succeeded" ? "info" : "warn",
+        message: `Channel ${event.channelId}: consultation ${event.consultationStatus}.`,
+        data: {
+          channelId: event.channelId,
+          conversationId: event.conversationId,
+          eventId: event.id,
+          consultationStatus: event.consultationStatus,
+        },
+      });
+    });
+    if (conversation) {
+      sendDeferredReply({
+        channelId: event.channelId,
+        conversationId: conversation.id,
+        content: answer,
+        invocationId: invocation.id,
+        dedupeKey: `channel-consultation:${event.id}:${invocation.id}:answer`,
+      });
+    }
+    return { event, status: event.consultationStatus, answer };
+  }
+
+  function recoverConsultations() {
+    let recovered = 0;
+    for (const invocation of state.invocations ?? []) {
+      if (!invocation?.options?.metadata?.channelConsultation) continue;
+      if (!["succeeded", "failed", "cancelled", "timed_out"].includes(invocation.status)) continue;
+      const eventId = invocation.options?.metadata?.channel?.eventId ?? null;
+      const event = eventId ? (state.channelEvents ?? []).find((candidate) => candidate.id === eventId) : null;
+      if (["answered", "failed"].includes(event?.consultationStatus)) continue;
+      const result = syncConsultationFromInvocation(invocation);
+      if (result && ["answered", "failed"].includes(result.status)) recovered += 1;
+    }
+    return { recovered };
+  }
+
   function handleNaturalEvent(event, channel, conversation, actor) {
     const classification = classifyNaturalIntent(normalizedText(event.content), conversation);
     if (classification && typeof classification.then === "function") {
@@ -902,15 +1093,42 @@ export function createChannelConversationService({
         ? { kind: intent.intent, ref: threadRef(activeTaskThreads(conversation)[0]), friendly: true }
         : null;
     const control = parsedControl ?? inferredControl;
-    const newTaskIntent = isNewTask(text) || (!parsedControl && intent.intent === "new_task");
+    // An attachment cannot be answered by the text-only consultation adapter.
+    // Treat a media-backed question as work intake so the normal task path can
+    // carry the governed attachment assets instead of pretending the Bridge saw
+    // the file/image/voice.
+    const mediaBackedConsultation = intent.intent === "consultation" && (event.attachmentAssets ?? []).length > 0;
+    const newTaskIntent = isNewTask(text) || mediaBackedConsultation || (!parsedControl && intent.intent === "new_task");
     const explicitlySelectedWaitingThread = thread?.status === "waiting_user"
       && conversation.activeTaskThreadId === thread.id;
+    const pendingDrafts = activeTaskThreads(conversation)
+      .filter((candidate) => candidate.status === "awaiting_confirmation");
     if (control?.kind === "help") {
       return settle(event, {
         status: "dispatched",
-        reply: "你可以直接发送文字、图片、语音或文件，我会先整理成任务再执行。\n\n回复“确认”开始，回复“修改 xxx”补充，回复“取消”放弃；发送“我的任务”查看进度，也可以说“当前进度”“现在做到哪了”“还有多久”“暂停”“继续”“重发结果”“重试”或“转人工”。\n高级操作仍支持：重试 T-xxxx、暂停 T-xxxx、重发结果 T-xxxx、转人工 T-xxxx。",
+        reply: USAGE_REPLY,
         data: { help: true },
       });
+    }
+    if (!control && intent.intent === "greeting") {
+      return settle(event, {
+        status: "dispatched",
+        reply: "你好！我可以帮你咨询问题、整理任务，也支持处理图片、语音和文件。直接告诉我想做什么即可；如果需要执行，我会先帮你整理并请你确认。",
+        data: { greeting: true, intent: intent.intent, confidence: intent.confidence },
+      });
+    }
+    if (!control && intent.intent === "consultation" && !mediaBackedConsultation) {
+      const consultation = startConsultation(event, conversation);
+      if (consultation && typeof consultation.then === "function") {
+        return consultation.then((result) => ({
+          ...result,
+          data: { ...(result.data ?? {}), intent: intent.intent, confidence: intent.confidence },
+        }));
+      }
+      return {
+        ...consultation,
+        data: { ...(consultation.data ?? {}), intent: intent.intent, confidence: intent.confidence },
+      };
     }
     if (control?.kind === "status" && !control.ref) {
       const latest = recentTaskThreads(conversation)[0] ?? null;
@@ -933,6 +1151,24 @@ export function createChannelConversationService({
         : "你还没有任务线程。";
       return settle(event, { status: "dispatched", reply, data: { taskThreadList: true, count: rows.length } });
     }
+    if (control?.kind === "history") {
+      return settle(event, {
+        status: "dispatched",
+        reply: conversationHistoryReply(conversation),
+        data: { conversationHistory: true },
+      });
+    }
+    if (control?.ref == null && ["cancel", "retry", "pause", "resume", "resend", "handoff"].includes(control?.kind)) {
+      const messages = {
+        cancel: "当前没有可以取消的任务。",
+        retry: "当前没有可以重试的失败任务。",
+        pause: "当前没有可以暂停的任务。",
+        resume: "当前没有已暂停的任务。",
+        resend: "当前还没有可重发的任务结果。",
+        handoff: "当前没有可以转人工的任务。",
+      };
+      return settle(event, { status: "dispatched", reply: messages[control.kind], data: { taskControl: control.kind, reason: "no_task" } });
+    }
     if (!control && intent.intent === "query") {
       const rows = listTaskThreads(conversation);
       const reply = rows.length
@@ -944,6 +1180,14 @@ export function createChannelConversationService({
     // This lets a user say “另外……” and then simply “确认” without having
     // to identify the earlier task; ambiguity is reserved for multiple drafts
     // that are simultaneously waiting for a decision.
+    if (!control && pendingDrafts.length > 1
+      && ["confirm", "cancel", "supplement"].includes(intent.intent)) {
+      return settle(event, {
+        status: "dispatched",
+        reply: candidateSelectionReply(pendingDrafts),
+        data: { intent: intent.intent, confidence: intent.confidence, reason: "multiple_pending_drafts" },
+      });
+    }
     const hasPendingDraft = thread?.status === "awaiting_confirmation"
       && ["confirm", "cancel"].includes(intent.intent);
     if (!control && !explicitlySelectedWaitingThread && !hasPendingDraft
@@ -1101,6 +1345,20 @@ export function createChannelConversationService({
         });
         return settle(event, { status: "dispatched", reply: "这条任务已取消。", data: { intakeGroupId: group.id, status: "cancelled" } });
       }
+    }
+    if (!thread && (isConfirmation(text) || intent.intent === "confirm")) {
+      return settle(event, {
+        status: "dispatched",
+        reply: "当前没有等待确认的任务。请直接告诉我想做什么，我会先帮你整理。",
+        data: { intent: "confirm", reason: "no_pending_task" },
+      });
+    }
+    if (!thread && (isCancellation(text) || intent.intent === "cancel")) {
+      return settle(event, {
+        status: "dispatched",
+        reply: "当前没有可以取消的任务。",
+        data: { intent: "cancel", reason: "no_active_task" },
+      });
     }
     if (thread && (isConfirmation(text) || intent.intent === "confirm")) return confirmTaskThread(event, channel, conversation, thread);
     if (thread && (isCancellation(text) || intent.intent === "cancel")) {
@@ -1755,6 +2013,7 @@ export function createChannelConversationService({
             channelId: thread.channelId,
             conversationId: thread.conversationId,
             threadId: thread.id,
+            dedupeKey: `channel-task:${notificationKey}`,
             content: "任务已开始执行，完成后我会通知你。",
           };
         }
@@ -1916,14 +2175,36 @@ export function createChannelConversationService({
       .slice(0, 10);
   }
 
+  function conversationHistoryReply(conversation) {
+    const tasks = listTaskThreads(conversation).slice(0, 5);
+    const consultations = (state.channelEvents ?? [])
+      .filter((event) => event.conversationId === conversation.id && event.consultationStatus === "answered")
+      .sort((left, right) => String(right.consultationCompletedAt ?? right.receivedAt ?? "").localeCompare(String(left.consultationCompletedAt ?? left.receivedAt ?? "")))
+      .slice(0, 3);
+    if (!tasks.length && !consultations.length) {
+      return "当前还没有历史记录。直接发送问题或描述需求即可开始。";
+    }
+    const lines = ["最近记录："];
+    for (const [index, task] of tasks.entries()) {
+      lines.push(`${index + 1}. 任务${taskThreadStatus(task)}：${String(task.summary ?? "").slice(0, 100)}`);
+    }
+    for (const consultation of consultations) {
+      lines.push(`咨询已回答：${String(consultation.content ?? "").slice(0, 80)}`);
+    }
+    lines.push("回复“进度”查看最新任务，或直接描述新的需求。");
+    return lines.join("\n");
+  }
+
   function candidateSelectionReply(threads) {
     const choices = threads.slice(0, 5).map((thread, index) => `${index + 1}. ${taskThreadStatus(thread)}：${String(thread.summary ?? "").slice(0, 80)}`).join("\n");
-    return `我不确定这条消息属于哪个任务。请回复“继续第一个任务”选择任务，或回复“另外……”创建新任务。\n${choices}`;
+    return `我发现有多个任务正在等待处理。请回复“继续第一个任务”或“取消第一个任务”选择目标，也可以回复“另外……”创建新任务。\n${choices}`;
   }
 
   return {
     dispatchImportedChannelEvent,
     resumeIntake,
+    recoverConsultations,
+    syncConsultationFromInvocation,
     syncTaskThreadFromInvocation,
     recoverTaskThreads,
     sweepTaskThreads,
