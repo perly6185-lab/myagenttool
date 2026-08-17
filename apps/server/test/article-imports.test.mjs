@@ -207,6 +207,50 @@ test("inspects WeChat lazy images while preserving content order", async () => {
   assert.match(result.markdownPreview, /第一段[\s\S]+MYAGENTTOOL_MEDIA_0[\s\S]+第二段/);
 });
 
+test("extracts a real WeChat page shape: js_name author, ct epoch date, tolerated mp media", async () => {
+  const result = await inspectArticle({
+    url: "https://mp.weixin.qq.com/s/realistic",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async () => htmlResponse(wechatRealisticFixture()),
+  });
+  assert.equal(result.provider, "wechat");
+  // No og:title / meta author on real pages: title comes from the
+  // rich_media_title h1 and the author (公众号名) from #js_name.
+  assert.equal(result.title, "看不见的砷污染");
+  assert.equal(result.author, "引领未来的");
+  // var ct = "1722967200" is 2024-08-07T02:00+08:00 — the Shanghai date is
+  // Aug 7 while UTC is still Aug 6, so this pins the Asia/Shanghai rendering
+  // (a naive UTC parse would yield 2024-08-06).
+  assert.equal(result.publishedAt, "2024-08-07");
+  // mmbiz lazy images register; the v.qq.com iframe is a skipped tag and the
+  // mpvoice file id is not an http URL, so both degrade to nothing instead of
+  // crashing or emitting a media token.
+  assert.deepEqual(result.mediaCounts, { images: 2, audio: 0, video: 0 });
+  assert.match(result.markdownPreview, /第一段正文[\s\S]+MYAGENTTOOL_MEDIA_0[\s\S]+第二段正文/);
+});
+
+test("canonicalizes WeChat share variants while keeping the __biz identity form", () => {
+  const bare = canonicalizeArticleUrl("https://mp.weixin.qq.com/s/q36Efhy47_23x4aGIDp2NA");
+  assert.equal(
+    canonicalizeArticleUrl(
+      "https://mp.weixin.qq.com/s/q36Efhy47_23x4aGIDp2NA?src=timeline&scene=1&from=timeline&isappinstalled=0&clicktime=1710000000&enterid=1710000000",
+    ),
+    bare,
+  );
+  assert.equal(
+    canonicalizeArticleUrl(
+      "https://mp.weixin.qq.com/s?__biz=MzA1MjIzNDA1NF8w&mid=2651234567&idx=1&sn=abcdef0123&src=singlemsg&scene=126#rd",
+    ),
+    "https://mp.weixin.qq.com/s?__biz=MzA1MjIzNDA1NF8w&mid=2651234567&idx=1&sn=abcdef0123",
+  );
+  // src is only share metadata on mp.weixin hosts; elsewhere it may carry
+  // meaning and must survive canonicalization.
+  assert.equal(
+    canonicalizeArticleUrl("https://example.com/gallery?src=timeline"),
+    "https://example.com/gallery?src=timeline",
+  );
+});
+
 test("rejects a WeChat verification challenge instead of importing an empty article", async () => {
   await assert.rejects(
     inspectArticle({
@@ -1221,6 +1265,43 @@ function wechatFixture() {
         <p>第二段</p>
         <img data-src="https://mmbiz.qpic.cn/image-2" alt="图二">
         <img data-src="https://mmbiz.qpic.cn/image-3" alt="图三">
+      </div>
+    </body>
+  </html>`;
+}
+
+// Shape captured from a real mp.weixin.qq.com article page (2026-08 live
+// verification, issue #1696): no og:title / meta author / meta published_time —
+// title lives in the rich_media_title h1, the 公众号名 in #js_name, the date in
+// `var ct = "<epoch>"`, images are data-src lazy mmbiz assets, and embedded
+// media arrive as a v.qq.com iframe inside js_mp_video_container plus mpvoice
+// elements whose file ids are not http URLs.
+function wechatRealisticFixture() {
+  return `<!doctype html>
+  <html lang="zh_CN">
+    <head>
+      <meta charset="utf-8">
+      <title>看不见的砷污染</title>
+      <script>var ct = "1722967200";</script>
+    </head>
+    <body>
+      <div class="rich_media_area_primary">
+        <h1 class="rich_media_title" id="activity-name">
+          看不见的砷污染
+        </h1>
+        <div class="rich_media_meta_list">
+          <a id="js_name" href="javascript:void(0);">引领未来的</a>
+        </div>
+        <div class="rich_media_content" id="js_content">
+          <p>第一段正文。</p>
+          <img data-src="https://mmbiz.qpic.cn/mmbiz_jpg/realistic-1.jpeg" alt="图一">
+          <span class="js_mp_video_container">
+            <iframe class="video_iframe" data-src="https://v.qq.com/iframe/player.html?vid=realistic"></iframe>
+          </span>
+          <mpvoice voice_encode_fileid="MzA1MjIzNDA1NF81MDA0" name="语音介绍"></mpvoice>
+          <p>第二段正文。</p>
+          <img data-src="https://mmbiz.qpic.cn/mmbiz_png/realistic-2.png" alt="图二">
+        </div>
       </div>
     </body>
   </html>`;
