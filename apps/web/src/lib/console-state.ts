@@ -231,6 +231,8 @@ export interface ClaudeApplyAuthorization {
   nextAction?: string | null;
   lastProgressAt?: string | null;
   lastProgressSummary?: string | null;
+  attentionReason?: string | null;
+  attentionAt?: string | null;
   lastDeliveryStatus?: string | null;
   lastDeliveryId?: string | null;
   lastDeliveryError?: string | null;
@@ -1446,6 +1448,7 @@ export interface ConsoleSnapshot {
 }
 
 export interface ChannelIntentMetrics {
+  policyVersion?: string;
   total: number;
   byIntent?: Record<string, number>;
   bySource?: Record<string, number>;
@@ -1505,6 +1508,8 @@ export interface ChannelTaskThread {
   nextAction?: string | null;
   lastProgressAt?: string | null;
   lastProgressSummary?: string | null;
+  attentionReason?: string | null;
+  attentionAt?: string | null;
   lastDeliveryStatus?: string | null;
   lastDeliveryId?: string | null;
   lastDeliveryError?: string | null;
@@ -1591,6 +1596,7 @@ export interface ChannelOperations {
     running: number;
     waitingApproval: number;
     waitingUser: number;
+    needsAttention: number;
     humanTakeover: number;
     succeeded: number;
     failed: number;

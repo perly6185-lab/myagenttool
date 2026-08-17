@@ -28,6 +28,7 @@ export function channelOperations({
       running: taskThreads.filter((row) => row.status === "running").length,
       waitingApproval: taskThreads.filter((row) => ["awaiting_confirmation", "waiting_approval"].includes(row.status)).length,
       waitingUser: taskThreads.filter((row) => row.status === "waiting_user").length,
+      needsAttention: taskThreads.filter((row) => row.status === "needs_attention").length,
       humanTakeover: taskThreads.filter((row) => row.status === "human_takeover").length,
       succeeded: taskThreads.filter((row) => row.status === "succeeded").length,
       failed: taskThreads.filter((row) => row.status === "failed").length,
@@ -37,6 +38,7 @@ export function channelOperations({
       + taskSummary.running
       + taskSummary.waitingApproval
       + taskSummary.waitingUser
+      + taskSummary.needsAttention
       + taskSummary.humanTakeover;
     const readiness = typeof readinessForChannel === "function" ? readinessForChannel(channel) : (channel.readiness ?? {});
     const readinessValues = Object.values(readiness);

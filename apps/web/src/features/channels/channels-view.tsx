@@ -75,6 +75,13 @@ function readableTaskError(error: string | null, t: Translate): string | null {
   return t("channelsPage.taskSetupFailed");
 }
 
+function taskDeviceLabel(t: Translate, device: DeviceSnapshot): string {
+  const status = device.status === "online"
+    ? t("channelsPage.healthOk")
+    : `${t("channelsPage.healthAttention")} · ${t("channelsPage.queued")}`;
+  return `${device.name} · ${status}`;
+}
+
 function interactionStatusTone(status: string): Tone {
   if (status === "delivered" || status === "imported") return "success";
   if (status === "failed_terminal") return "danger";
@@ -92,6 +99,7 @@ const taskThreadStatusLabels: Record<string, string> = {
   queued: "排队中",
   running: "执行中",
   waiting_user: "等待你补充信息",
+  needs_attention: "需要关注",
   paused: "已暂停",
   human_takeover: "人工处理中",
   succeeded: "已完成",
@@ -99,14 +107,16 @@ const taskThreadStatusLabels: Record<string, string> = {
   cancelled: "已取消",
 };
 
-function taskThreadStatusLabel(status: string): string {
+function taskThreadStatusLabel(status: string, waitingFor?: string | null): string {
+  if (status === "waiting_approval" && waitingFor === "approval") return "等待桌面审批";
   return taskThreadStatusLabels[status] ?? status.replaceAll("_", " ");
 }
 
 function waitingForLabel(value: string): string {
   if (value === "confirmation") return "你确认";
-  if (value === "approval") return "确认";
+  if (value === "approval") return "桌面审批";
   if (value === "user_input") return "你补充信息";
+  if (value === "attention") return "等待任务恢复";
   if (value === "human") return "人工处理";
   return value.replaceAll("_", " ");
 }
@@ -151,7 +161,7 @@ export function ChannelsView() {
       {setupOpen ? <IlinkSetupPanel channelId={setupChannelId} existingChannelId={existingWechat?.id ?? null} onClose={() => { setSetupOpen(false); setSetupChannelId(null); }} /> : null}
       {state?.channelIntentMetrics && state.channelIntentMetrics.total > 0 ? (
         <div className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground" data-testid="channel-intent-metrics">
-          意图识别：{state.channelIntentMetrics.total} 次，低置信度 {state.channelIntentMetrics.lowConfidence ?? 0} 次，需澄清 {state.channelIntentMetrics.ambiguous ?? 0} 次
+          意图识别：{state.channelIntentMetrics.total} 次，低置信度 {state.channelIntentMetrics.lowConfidence ?? 0} 次，需澄清 {state.channelIntentMetrics.ambiguous ?? 0} 次{state.channelIntentMetrics.policyVersion ? `，策略 ${state.channelIntentMetrics.policyVersion}` : ""}
           {state.channelIntentMetrics.bridge?.attempts ? <span className="ml-2">Bridge：{state.channelIntentMetrics.bridge.succeeded ?? 0} 成功 / {state.channelIntentMetrics.bridge.failed ?? 0} 失败，平均 {state.channelIntentMetrics.bridge.averageLatencyMs ?? "—"} ms{state.channelIntentMetrics.bridge.circuitOpen ? "，已自动降级本地识别" : ""}</span> : null}
         </div>
       ) : null}
@@ -474,6 +484,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
   const today = new Date().toISOString().slice(0, 10);
   const usedToday = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
   const connectionLabel = ilinkConnectionLabel(t, channel);
+  const selectedTaskDevice = devices.find((device) => device.id === taskTerminalId) ?? null;
 
   useEffect(() => {
     if (!interactionsOpen) return undefined;
@@ -526,6 +537,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
     channel.taskSummary.running > 0 ? `执行中 ${channel.taskSummary.running}` : null,
     channel.taskSummary.waitingApproval > 0 ? `待确认 ${channel.taskSummary.waitingApproval}` : null,
     channel.taskSummary.waitingUser > 0 ? `待补充 ${channel.taskSummary.waitingUser}` : null,
+    channel.taskSummary.needsAttention > 0 ? `需要关注 ${channel.taskSummary.needsAttention}` : null,
     channel.taskSummary.humanTakeover > 0 ? `人工跟进 ${channel.taskSummary.humanTakeover}` : null,
     channel.taskSummary.failed > 0 ? `失败 ${channel.taskSummary.failed}` : null,
     channel.taskSummary.succeeded > 0 ? `已完成 ${channel.taskSummary.succeeded}` : null,
@@ -734,10 +746,11 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
               aria-label={t("channelsPage.taskDevice")}
             >
               <option value="">— {t("channelsPage.taskDevicePlaceholder")} —</option>
-              {devices.map((device) => <option key={device.id} value={device.id}>{device.name} · {device.status}</option>)}
+              {devices.map((device) => <option key={device.id} value={device.id}>{taskDeviceLabel(t, device)}</option>)}
             </select>
           ) : null}
           {taskProject && devices.length > 1 && !taskTerminalId ? <span className="w-full text-amber-600 sm:w-auto">{t("channelsPage.taskDeviceRequired")}</span> : null}
+          {taskProject && selectedTaskDevice && selectedTaskDevice.status !== "online" ? <span className="w-full text-amber-600 sm:w-auto">{t("channelsPage.healthAttention")}：{t("channelsPage.queued")}，设备上线后自动开始。</span> : null}
           {!taskProject ? <span className="w-full text-amber-600 sm:w-auto">{t("channelsPage.taskProjectHint")}</span> : null}
           <label className="flex items-center gap-1 text-muted-foreground">
             <input type="checkbox" checked={autoRoute} onChange={(e) => setAutoRoute(e.target.checked)} disabled={pending || !taskProject || operationMode === "personal"} />
@@ -812,7 +825,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                   return (
                     <>
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone={thread.status === "queued" || thread.status === "succeeded" ? "success" : thread.status === "failed" ? "danger" : thread.status === "human_takeover" || thread.status === "paused" ? "warning" : "neutral"}>{taskThreadStatusLabel(thread.status)}</Badge>
+                  <Badge tone={thread.status === "queued" || thread.status === "succeeded" ? "success" : thread.status === "failed" ? "danger" : thread.status === "human_takeover" || thread.status === "needs_attention" || thread.status === "paused" ? "warning" : "neutral"}>{taskThreadStatusLabel(thread.status, thread.waitingFor)}</Badge>
                   <span className="text-muted-foreground">当前会话任务</span>
                   {thread.status === "queued" && Number(thread.queueAheadCount ?? 0) > 0 ? <span className="text-muted-foreground">前面还有 {thread.queueAheadCount} 个任务</span> : null}
                   {thread.status === "queued" && Number(thread.queuePosition ?? 0) > 0 ? <span className="text-muted-foreground">排第 {thread.queuePosition} 位</span> : null}
