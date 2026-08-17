@@ -19,23 +19,26 @@ const SHORT_LINK = "https://xhslink.com/a/JIYvTxx50Yi4";
 const RESOLVED_URL = "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9?xsec_source=app_share&type=normal&xsec_token=CBQ0qV-kmKok";
 
 // A minimal rendered note page the subprocess would return behind the login
-// wall. Shape mirrors the existing offline hydration fixtures: SSR
-// window.__INITIAL_STATE__ carries the note object (title/desc/user/imageList)
-// and #detail-desc.note-content is the DOM fallback root. The image rides
-// sns-img.xhscdn.com with a data-src (lazy) attribute.
+// wall. Shape mirrors the live pass (2026-08-17, issue #1703): the content
+// root #detail-desc.note-content carries TEXT only — the note's images live in
+// the carousel outside it and only exist as SSR imageList entries. One entry
+// rides plain http (sns-webpic-qc.xhscdn.com, as the live hydration emits) to
+// pin the https upgrade; the other is already https.
 function xiaohongshuRenderedHtml() {
   return `<!doctype html><html><head><title>结构化笔记 - 小红书</title></head>
 <body>
   <div class="login-container" style="display:none"><span>登录后浏览</span></div>
   <div id="detail-desc" class="note-content"><p>页面正文段落</p></div>
-  <img data-src="https://sns-img.xhscdn.com/note-1.jpg" alt="笔记图片">
   <script>window.__INITIAL_STATE__ = ${JSON.stringify({
     note: {
       title: "结构化笔记",
       desc: "结构化说明",
       user: { nickname: "红薯作者" },
       publishTime: Date.parse("2026-07-20T10:00:00+08:00"),
-      imageList: [{ urlDefault: "https://sns-img.xhscdn.com/note-1.jpg" }],
+      imageList: [
+        { urlDefault: "http://sns-webpic-qc.xhscdn.com/202608171611/865c0a94f7ea3f741c801d0c183a6bca/1040g008322lqncfpmu105pk3j0s3cje7shuqg60!nd_dft_wlteh_webp_3" },
+        { urlDefault: "https://sns-img.xhscdn.com/note-2.jpg" },
+      ],
     },
     recommendations: [{
       title: "不应导入的推荐笔记",
@@ -171,7 +174,13 @@ test("inspectXiaohongshuArticle parses the rendered note into the inspection sha
     assert.equal(inspection.publishedAtSource, "source");
     assert.equal(inspection.resolvedUrl, NOTE_URL);
     assert.ok(inspection.textLength > 0);
-    assert.deepEqual(inspection.mediaCounts, { images: 1, audio: 0, video: 0 });
+    assert.deepEqual(inspection.mediaCounts, { images: 2, audio: 0, video: 0 });
+    // The http xhscdn entry registered as https (the CDN serves the same path
+    // over https; http would be refused at download time).
+    assert.ok(
+      inspection._document.media.every((item) => item.sourceUrl.startsWith("https://")),
+      inspection._document.media.map((item) => item.sourceUrl).join(" "),
+    );
     // The recommendation feed entry must NOT be imported.
     assert.ok(!inspection.markdownPreview.includes("不应导入的推荐笔记"));
     assert.ok(inspection._document.markdown.length > 0);
@@ -220,8 +229,9 @@ test("importArticleToWorktree routes xiaohongshu URLs through the renderer and d
       importedAt: "2026-08-17T00:00:00.000Z",
       resolveHostname: async () => [{ address: "93.184.216.34" }],
       fetchImpl: async (url) => {
-        // downloadMedia fetches the note image (Referer = resolvedUrl).
-        if (String(url).includes("sns-img.xhscdn.com/note-1.jpg")) {
+        // downloadMedia fetches the note images (Referer = resolvedUrl). Both
+        // arrive as https — the http webpic entry was upgraded at registration.
+        if (String(url).includes("xhscdn.com/")) {
           return new Response(Buffer.from([0xff, 0xd8, 0xff, 0x01]), {
             status: 200,
             headers: { "content-type": "image/jpeg" },
@@ -242,13 +252,14 @@ test("importArticleToWorktree routes xiaohongshu URLs through the renderer and d
     const manifest = JSON.parse(await readFile(join(worktreePath, result.manifestPath), "utf8"));
     assert.equal(manifest.sourceProvider, "xiaohongshu");
     assert.equal(manifest.contentType, "note");
-    assert.ok(manifest.media.length >= 1);
+    assert.ok(manifest.media.length >= 2);
     assert.equal(manifest.warnings.length, 0);
-    // The note image was downloaded and restored in-place at a local asset path.
+    // The note images were downloaded and restored in-place at local asset paths.
     assert.match(markdown, /!\[.*\]\(assets\/001-[^)]+\.jpg\)/);
+    assert.match(markdown, /!\[.*\]\(assets\/002-[^)]+\.jpg\)/);
     assert.doesNotMatch(markdown, /xhscdn\.com/);
     const assets = await readdir(join(worktreePath, result.relativeDirectory, "assets"));
-    assert.equal(assets.length, 1);
+    assert.equal(assets.length, 2);
   } finally {
     if (prev === undefined) delete process.env.MYAGENTTOOL_XIAOHONGSHU_IMPORT_COMMAND_JSON;
     else process.env.MYAGENTTOOL_XIAOHONGSHU_IMPORT_COMMAND_JSON = prev;

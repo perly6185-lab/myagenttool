@@ -2552,7 +2552,16 @@ function collectStructuredFields(value, result, pageUrl, depth = 0) {
         result.publishedAt = normalizeStructuredDate(entry);
       }
       if (/(?:url|src)/.test(key)) {
-        const sourceUrl = resolveHttpUrl(text, pageUrl);
+        let sourceUrl = resolveHttpUrl(text, pageUrl);
+        // XHS hydration carries some imageList entries over plain http (live
+        // pass 2026-08-17, issue #1703: sns-webpic-qc.xhscdn.com/…) while the
+        // media fetch layer speaks https only — an http registration would be
+        // refused as article_url_refused. The CDN serves the same path over
+        // https (verified 200 + image bytes, referer-independent), so upgrade
+        // xhscdn hosts before registering.
+        if (/^http:\/\/(?:[^/]+\.)?xhscdn\.com\//i.test(sourceUrl ?? "")) {
+          sourceUrl = sourceUrl.replace(/^http:/i, "https:");
+        }
         const type = /video/.test(key) ? "video" : /audio/.test(key) ? "audio" : /image|img|cover|urldefault|urlpre/.test(key) ? "image" : null;
         if (sourceUrl && type && !result.media.some((item) => item.sourceUrl === sourceUrl)) {
           result.media.push({ type, sourceUrl, alt: type });
