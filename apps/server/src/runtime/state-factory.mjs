@@ -70,11 +70,15 @@ export function createServerState({ defaultProjectPath, now }) {
     // Bounded natural-language routing counters. Raw classifier output is never
     // stored; the conversation service records only this normalized aggregate.
     channelIntentMetrics: {
+      policyVersion: "ilink-intent-v2",
       total: 0,
       byIntent: {},
       bySource: {},
       lowConfidence: 0,
       ambiguous: 0,
+      adapterCalls: 0,
+      adapterTimeouts: 0,
+      adapterErrors: 0,
       updatedAt: null,
     },
     articleImportJobs: [],
@@ -410,11 +414,15 @@ export function resetStateForSelfCheck({ state, now }) {
   state.channelIntakeGroups = [];
   state.channelTaskThreads = [];
   state.channelIntentMetrics = {
+    policyVersion: "ilink-intent-v2",
     total: 0,
     byIntent: {},
     bySource: {},
     lowConfidence: 0,
     ambiguous: 0,
+    adapterCalls: 0,
+    adapterTimeouts: 0,
+    adapterErrors: 0,
     updatedAt: null,
   };
   state.ilinkAccounts = [];

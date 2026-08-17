@@ -1,6 +1,8 @@
 import { CHANNEL_INTENT_KINDS } from "./channel-intent.mjs";
 
-const DEFAULT_TIMEOUT_MS = 8_000;
+// Classification is routing preflight, not user-visible work. Keep its Bridge
+// lease short so a busy local agent cannot hold the channel inbox open.
+const DEFAULT_TIMEOUT_MS = 3_000;
 const MAX_INPUT_CHARS = 8_000;
 const MAX_ACTIVE_THREADS = 8;
 const MAX_THREAD_SUMMARY_CHARS = 300;
@@ -81,7 +83,7 @@ export function resolveChannelIntentConfig(env = process.env) {
     providerId: "desktop_bridge",
     agentId,
     timeoutMs: Math.max(
-      2_000,
+      1_500,
       Math.min(30_000, Number(env.MYAGENTTOOL_CHANNEL_INTENT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS),
     ),
     failureThreshold: Math.max(2, Math.min(10, Number(env.MYAGENTTOOL_CHANNEL_INTENT_FAILURE_THRESHOLD) || DEFAULT_FAILURE_THRESHOLD)),

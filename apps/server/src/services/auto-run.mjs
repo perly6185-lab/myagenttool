@@ -2825,6 +2825,7 @@ export function createAutoRunService({
     feedback = null,
     approvalRecoveryRequestId = null,
     approvalRecoveryClaimToken = null,
+    idempotencyKey = null,
   } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
@@ -2975,6 +2976,7 @@ export function createAutoRunService({
               resumeFromInvocationId: timeoutResumeSource.id,
             }
           : {}),
+        ...(idempotencyKey && !resumesExecutionTimeout ? { idempotencyKey: String(idempotencyKey).slice(0, 200) } : {}),
         // Same role seeding as the initial run so role-restricted skills render.
         metadata: {
           worktreeId: worktree.id,
