@@ -1,9 +1,9 @@
 # @myagenttool/session-engine
 
 Shared Playwright browser pipeline for **session-backed site plugins** — the
-workspace packages under `tools/<site>-imports/` (zhihu today) that render
-login-walled / WAF-protected sites by reusing a logged-in persistent browser
-profile.
+workspace packages under `tools/<site>-imports/` (zhihu, qichacha today) that
+render login-walled / WAF-protected sites by reusing a logged-in persistent
+browser profile.
 
 The product bundles no browser and the server never imports playwright; only
 these tool packages do, via the hoisted root devDependency.
@@ -56,7 +56,10 @@ flags, mirroring `tools/zhihu-imports/src/config.mjs`.
    `src/parse-url.mjs` (host rules). `cli.mjs`, the renderer, login, and probe
    are reusable — they delegate to this engine and read `site.mjs`.
 2. Add one line to `SESSION_SITES` in
-   `apps/server/src/services/session-manager.mjs`.
+   `apps/server/src/services/session-manager.mjs`. `heartbeatTier:
+   "logged_in"` joins the slow automated sweep; `"manual"` (qichacha's tier —
+   logged-in views spend the site's daily quota) is probe-on-demand only and
+   the sweep skips it entirely.
 3. Add a render branch in `apps/server/src/services/article-imports.mjs`
    (mirror the zhihu/feishu branch) calling a `<site>-imports.mjs` adapter.
 4. Write SHIM unit tests (mirror `apps/server/test/session-manager.test.mjs`).

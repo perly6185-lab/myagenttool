@@ -80,6 +80,12 @@ test("GET /api/sessions lists the registry with unknown status before any probe"
   assert.equal(zhihu.lastProbeAt, null);
   assert.equal(zhihu.authMethod, "persistent_profile");
   assert.equal(zhihu.heartbeatTier, "logged_in");
+  // The manual-tier card: probe on demand only, no sweep interval (quota).
+  const qichacha = body.sessions.find((s) => s.site === "qichacha");
+  assert.ok(qichacha, "qichacha card present");
+  assert.equal(qichacha.status, "unknown");
+  assert.equal(qichacha.heartbeatTier, "manual");
+  assert.equal(qichacha.heartbeatIntervalMinutes, null);
 });
 
 test("GET /api/sessions requires auth", async () => {

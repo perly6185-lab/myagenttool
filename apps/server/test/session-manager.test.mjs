@@ -120,11 +120,42 @@ test("acquireSessionProfile: registry default → env override → disable", () 
 test("listSessions merges the registry with durable rows without mutating state", () => {
   const { state, manager } = makeManager();
   const sessions = manager.listSessions();
-  assert.equal(sessions.length, 1);
+  assert.equal(sessions.length, 2);
   assert.equal(sessions[0].site, "zhihu");
   assert.equal(sessions[0].status, "unknown");
   assert.equal(sessions[0].lastProbeAt, null);
+  const qichacha = sessions.find((s) => s.site === "qichacha");
+  assert.ok(qichacha);
+  assert.equal(qichacha.heartbeatTier, "manual");
+  assert.equal(qichacha.heartbeatIntervalMinutes, null);
+  assert.equal(qichacha.status, "unknown");
   assert.equal(state.sessions.length, 0); // listing alone records nothing
+});
+
+test("sessionHealthSweep never touches manual-tier sites (qichacha quota discipline)", async (t) => {
+  // Two shims that LOG every probe run. Zhihu (logged_in tier, no probe yet →
+  // due) must get swept; qichacha (manual tier, equally stale) must never be —
+  // its log file is never even created. That is the quota contract: an
+  // automated heartbeat must not spend the site's daily view budget.
+  const shimDir = await mkdtemp(join(tmpdir(), "session-shim-"));
+  t.after(async () => {
+    await rm(shimDir, { recursive: true, force: true }).catch(() => {});
+  });
+  const shimPath = join(shimDir, "shim.mjs");
+  await writeFile(shimPath, SHIM, "utf8");
+  const zhihuLog = join(shimDir, "zhihu.log");
+  const qichachaLog = join(shimDir, "qichacha.log");
+  const env = {
+    ...process.env,
+    MYAGENTTOOL_SESSION_ZHIHU_COMMAND_JSON: JSON.stringify([process.execPath, shimPath, "--mode", "overlap", "--log", zhihuLog]),
+    MYAGENTTOOL_SESSION_QICHACHA_COMMAND_JSON: JSON.stringify([process.execPath, shimPath, "--mode", "overlap", "--log", qichachaLog]),
+  };
+  const { manager } = makeManager();
+  await manager.sessionHealthSweep({ env });
+
+  const zhihuRan = await readFile(zhihuLog, "utf8");
+  assert.match(zhihuRan, /start/);
+  await assert.rejects(() => readFile(qichachaLog, "utf8"), /ENOENT/);
 });
 
 test("probeSite records an active session on loggedIn:true", async (t) => {
