@@ -120,7 +120,7 @@ test("acquireSessionProfile: registry default → env override → disable", () 
 test("listSessions merges the registry with durable rows without mutating state", () => {
   const { state, manager } = makeManager();
   const sessions = manager.listSessions();
-  assert.equal(sessions.length, 3);
+  assert.equal(sessions.length, 4);
   assert.equal(sessions[0].site, "zhihu");
   assert.equal(sessions[0].status, "unknown");
   assert.equal(sessions[0].lastProbeAt, null);
@@ -134,15 +134,20 @@ test("listSessions merges the registry with durable rows without mutating state"
   assert.equal(xiaohongshu.heartbeatTier, "manual");
   assert.equal(xiaohongshu.heartbeatIntervalMinutes, null);
   assert.equal(xiaohongshu.status, "unknown");
+  const jianshu = sessions.find((s) => s.site === "jianshu");
+  assert.ok(jianshu);
+  assert.equal(jianshu.heartbeatTier, "manual");
+  assert.equal(jianshu.heartbeatIntervalMinutes, null);
+  assert.equal(jianshu.status, "unknown");
   assert.equal(state.sessions.length, 0); // listing alone records nothing
 });
 
-test("sessionHealthSweep never touches manual-tier sites (qichacha quota / xiaohongshu risk-control discipline)", async (t) => {
+test("sessionHealthSweep never touches manual-tier sites (qichacha quota / xiaohongshu + jianshu risk discipline)", async (t) => {
   // Shims that LOG every probe run. Zhihu (logged_in tier, no probe yet →
-  // due) must get swept; qichacha and xiaohongshu (manual tier, equally stale)
-  // must never be — their log files are never even created. That is the
-  // contract: an automated heartbeat must not spend qichacha's daily view
-  // budget, and must not feed xiaohongshu's behavioral risk control.
+  // due) must get swept; qichacha, xiaohongshu, and jianshu (manual tier,
+  // equally stale) must never be — their log files are never even created.
+  // That is the contract: an automated heartbeat must not spend qichacha's
+  // daily view budget, and must not feed the manual sites' risk discipline.
   const shimDir = await mkdtemp(join(tmpdir(), "session-shim-"));
   t.after(async () => {
     await rm(shimDir, { recursive: true, force: true }).catch(() => {});
@@ -152,11 +157,13 @@ test("sessionHealthSweep never touches manual-tier sites (qichacha quota / xiaoh
   const zhihuLog = join(shimDir, "zhihu.log");
   const qichachaLog = join(shimDir, "qichacha.log");
   const xiaohongshuLog = join(shimDir, "xiaohongshu.log");
+  const jianshuLog = join(shimDir, "jianshu.log");
   const env = {
     ...process.env,
     MYAGENTTOOL_SESSION_ZHIHU_COMMAND_JSON: JSON.stringify([process.execPath, shimPath, "--mode", "overlap", "--log", zhihuLog]),
     MYAGENTTOOL_SESSION_QICHACHA_COMMAND_JSON: JSON.stringify([process.execPath, shimPath, "--mode", "overlap", "--log", qichachaLog]),
     MYAGENTTOOL_SESSION_XIAOHONGSHU_COMMAND_JSON: JSON.stringify([process.execPath, shimPath, "--mode", "overlap", "--log", xiaohongshuLog]),
+    MYAGENTTOOL_SESSION_JIANSHU_COMMAND_JSON: JSON.stringify([process.execPath, shimPath, "--mode", "overlap", "--log", jianshuLog]),
   };
   const { manager } = makeManager();
   await manager.sessionHealthSweep({ env });
@@ -165,6 +172,7 @@ test("sessionHealthSweep never touches manual-tier sites (qichacha quota / xiaoh
   assert.match(zhihuRan, /start/);
   await assert.rejects(() => readFile(qichachaLog, "utf8"), /ENOENT/);
   await assert.rejects(() => readFile(xiaohongshuLog, "utf8"), /ENOENT/);
+  await assert.rejects(() => readFile(jianshuLog, "utf8"), /ENOENT/);
 });
 
 test("probeSite records an active session on loggedIn:true", async (t) => {

@@ -14,6 +14,7 @@ import { importFeishuDocToWorktree } from "./feishu-doc-imports.mjs";
 import { renderZhihuArticle } from "./zhihu-imports.mjs";
 import { renderQichachaPage } from "./qichacha-imports.mjs";
 import { renderXiaohongshuPage } from "./xiaohongshu-imports.mjs";
+import { renderJianshuPage } from "./jianshu-imports.mjs";
 import { validateExternalWebhookTarget } from "./auto-run-alerts.mjs";
 
 export const ARTICLE_IMPORT_LIMITS = Object.freeze({
@@ -299,6 +300,33 @@ export async function inspectArticle({
       _document: { media: [] },
     };
   }
+  if (detectArticleSource(canonicalUrl) === "jianshu") {
+    // Jianshu is a Next.js SPA: the full body ships in __NEXT_DATA__, NOT in
+    // the SSR DOM (the superseded in-process attempt, PR #1664 / issue #1661,
+    // documented this; plugin conversion per issue #1705). A plain anonymous
+    // fetch here would silently preview the TRUNCATED intro as if it were the
+    // article. Return a synthetic inspection — the real title and media are
+    // resolved at import (inspectJianshuArticle renders via the plugin
+    // subprocess, which extracts __NEXT_DATA__ server-side of the server, and
+    // reuses this pipeline's download+write).
+    return {
+      sourceUrl: String(url),
+      canonicalUrl,
+      resolvedUrl: canonicalUrl,
+      provider: "jianshu",
+      contentType: "article",
+      title: "Jianshu article",
+      author: null,
+      publishedAt: null,
+      publishedAtSource: "imported",
+      textLength: 0,
+      media: [],
+      mediaCounts: { images: 0, audio: 0, video: 0 },
+      markdownPreview: "",
+      fetchedAt: new Date().toISOString(),
+      _document: { media: [] },
+    };
+  }
   const page = await fetchPublicResource(canonicalUrl, {
     fetchImpl,
     resolveHostname,
@@ -462,6 +490,63 @@ export async function inspectXiaohongshuArticle({ url, signal, limits = ARTICLE_
   };
 }
 
+/**
+ * Inspect a Jianshu article by rendering it in a browser subprocess (the full
+ * body ships in the page's __NEXT_DATA__ JSON, not the SSR DOM — see
+ * inspectArticle's jianshu short-circuit). The renderer returns a COMPOSED
+ * document (title h1 / author line / date line / free_content body) plus
+ * authoritative {title, author, publishedAt} metadata extracted in-page; this
+ * parses the composed doc with the shared parseArticleDocument and applies the
+ * metadata as field overrides. Returns the same inspection shape as
+ * inspectArticle so importArticleToWorktree's downloadMedia + write pipeline
+ * is reused unchanged (a missing/empty note payload already failed loudly
+ * inside the renderer — a shell never reaches this parse).
+ *
+ * Slug canonicalization: jianshu may redirect slug aliases to the canonical
+ * /p/<slug> inside the RENDER. When it did, canonicalUrl is recomputed from
+ * that final URL so dedupe keys on the canonical article; sourceUrl keeps what
+ * the user pasted.
+ *
+ * @param {{ url: string, signal?: AbortSignal, limits?: object }} args
+ * @returns {Promise<object>} the inspection shape (with `_document`).
+ */
+export async function inspectJianshuArticle({ url, signal, limits = ARTICLE_IMPORT_LIMITS } = {}) {
+  const inputCanonicalUrl = canonicalizeArticleUrl(url);
+  const { resolvedUrl, html, meta } = await renderJianshuPage(inputCanonicalUrl, { signal });
+  let canonicalUrl = inputCanonicalUrl;
+  try {
+    if (detectArticleSource(resolvedUrl) === "jianshu") {
+      canonicalUrl = canonicalizeArticleUrl(resolvedUrl);
+    }
+  } catch {
+    /* a non-canonicalizable final URL (e.g. an error page) keeps the input canonical */
+  }
+  const parsed = parseArticleDocument(html, resolvedUrl, "jianshu", limits.mediaCount);
+  // The __NEXT_DATA__ metadata is authoritative; the composed doc carries the
+  // same values via jianshu's own title/author classes, so the DOM parse agrees
+  // — but meta wins on any divergence.
+  const title = meta.title ?? parsed.title;
+  const author = meta.author ?? parsed.author;
+  const publishedAt = meta.publishedAt ?? parsed.publishedAt ?? null;
+  return {
+    sourceUrl: String(url),
+    canonicalUrl,
+    resolvedUrl,
+    provider: "jianshu",
+    contentType: "article",
+    title,
+    author,
+    publishedAt,
+    publishedAtSource: publishedAt ? "source" : "imported",
+    textLength: parsed.plainText.length,
+    media: parsed.media.map(({ token, ...item }) => item),
+    mediaCounts: countMedia(parsed.media),
+    markdownPreview: parsed.markdown.slice(0, 2_000),
+    fetchedAt: new Date().toISOString(),
+    _document: { ...parsed, title, author, publishedAt },
+  };
+}
+
 function assertArticlePage(html, pageUrl, provider) {
   if (provider !== "wechat") return;
   const path = new URL(pageUrl).pathname.toLowerCase();
@@ -485,14 +570,15 @@ export async function importArticleToWorktree({
   limits = ARTICLE_IMPORT_LIMITS,
 } = {}) {
   // Feishu public docs (JS-rendered SPA), Zhihu (secng/zse-ck JS-challenge
-  // WAF), Qichacha (login wall + view quota), and Xiaohongshu (login-gated
-  // note data) all need a real browser; the plain-HTTP importer cannot read
+  // WAF), Qichacha (login wall + view quota), Xiaohongshu (login-gated note
+  // data), and Jianshu (Next.js SPA — the body ships in __NEXT_DATA__, not the
+  // SSR DOM) all need a real browser; the plain-HTTP importer cannot read
   // them. Feishu delegates entirely to its own fetch+write bundle
   // (feishu-doc-imports.mjs). The others only need the browser to RENDER the
   // page — they then reuse this same download+write pipeline, so below we
   // swap a browser-rendered inspection (inspectZhihuArticle /
-  // inspectQichachaArticle / inspectXiaohongshuArticle) for the plain-HTTP
-  // one.
+  // inspectQichachaArticle / inspectXiaohongshuArticle /
+  // inspectJianshuArticle) for the plain-HTTP one.
   // A malformed URL throws in detectArticleSource; we route it to the generic
   // path so inspectArticle's canonicalizeArticleUrl raises article_url_refused.
   let source;
@@ -510,7 +596,9 @@ export async function importArticleToWorktree({
       ? await inspectQichachaArticle({ url, signal, limits })
       : source === "xiaohongshu"
         ? await inspectXiaohongshuArticle({ url, signal, limits })
-        : await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
+        : source === "jianshu"
+          ? await inspectJianshuArticle({ url, signal, limits })
+          : await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
   const publishedAt = inspection.publishedAt ?? importedAt.slice(0, 10);
   const relativeDirectory = buildArticleRelativeDirectory({
     provider: inspection.provider,
@@ -2425,6 +2513,9 @@ function renderMedia(node, type, context) {
   const rawUrl = firstNonEmpty(
     attr(node, "data-src"),
     attr(node, "data-original"),
+    // Jianshu's lazy-load attribute on free_content images (issue #1705; the
+    // same gap the superseded in-process PR #1664 fixed).
+    attr(node, "data-original-src"),
     attr(node, "data-url"),
     attr(node, type === "audio" ? "data-audio-url" : "data-video-url"),
     attr(node, "src"),
