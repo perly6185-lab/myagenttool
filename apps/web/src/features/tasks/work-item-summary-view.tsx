@@ -1438,6 +1438,61 @@ export function WorkItemSummaryView({
         </div>
       ) : null}
 
+      {item.channelTaskContract?.workMode ? (
+        <section
+          className={`rounded-xl border p-4 ${item.channelTaskContract.workMode.state === "needs_confirmation" ? "border-warning/35 bg-warning/[0.05]" : "border-primary/25 bg-primary/[0.035]"}`}
+          aria-label={language === "zh" ? "本次工作方式" : "Work mode for this task"}
+          data-testid="work-mode-summary"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Bot className="size-4 text-primary" aria-hidden />
+            <h4 className="text-sm font-semibold">{language === "zh" ? "本次工作方式" : "Work mode"}</h4>
+            <Badge tone={item.channelTaskContract.workMode.state === "matched" ? "success" : "warning"}>
+              {item.channelTaskContract.workMode.state === "matched"
+                ? (language === "zh" ? "已识别" : "Recognized")
+                : item.channelTaskContract.workMode.state === "needs_confirmation"
+                  ? (language === "zh" ? "等你确认" : "Needs confirmation")
+                  : (language === "zh" ? "临时处理" : "Ad hoc")}
+            </Badge>
+          </div>
+          <p className="mt-2 text-sm font-medium">
+            {item.channelTaskContract.workMode.state === "needs_confirmation"
+              ? (language === "zh" ? "我还不能确定按哪种方式处理。" : "I need your confirmation before choosing a work mode.")
+              : item.channelTaskContract.workMode.name}
+          </p>
+          {item.channelTaskContract.workMode.expectedOutput ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {language === "zh" ? "预期结果：" : "Expected result: "}{item.channelTaskContract.workMode.expectedOutput}
+            </p>
+          ) : null}
+          {item.channelTaskContract.workMode.data.sources.length ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {language === "zh" ? "本次使用：" : "Using: "}
+              {item.channelTaskContract.workMode.data.sources.map((source) => `${source.fileName ?? "本地资料"}${source.revision != null ? `（第${source.revision}版）` : ""}`).join("、")}
+            </p>
+          ) : null}
+          {item.channelTaskContract.workMode.confirmationRequired ? (
+            <p className="mt-2 text-xs text-warning-foreground">
+              {language === "zh" ? "涉及资料选择、文件变更或外部操作，执行前会先让你确认。" : "Source selection, file changes, or external actions require confirmation before execution."}
+            </p>
+          ) : null}
+          {item.channelTaskContract.workMode.state === "needs_confirmation" && item.channelTaskContract.workMode.candidates.length ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {language === "zh" ? "可能的方式：" : "Possible modes: "}
+              {item.channelTaskContract.workMode.candidates.map((candidate) => candidate.name ?? candidate.expectedOutput).filter(Boolean).join("、")}
+            </p>
+          ) : null}
+          <details className="mt-3 rounded-lg border border-border/70 bg-background/50 px-3 py-2 text-xs">
+            <summary className="cursor-pointer font-medium">{language === "zh" ? "查看专业追溯信息" : "View professional trace"}</summary>
+            <div className="mt-2 space-y-1 text-muted-foreground">
+              <p>{language === "zh" ? "方式来源：" : "Source: "}{item.channelTaskContract.workMode.source}{item.channelTaskContract.workMode.version != null ? ` · v${item.channelTaskContract.workMode.version}` : ""}</p>
+              <p>{language === "zh" ? "资料计划摘要：" : "Data plan digest: "}{item.channelTaskContract.workMode.trace.dataPlanDigest ?? "—"}</p>
+              <p>{language === "zh" ? "本次快照：" : "Snapshot: "}{item.channelTaskContract.workMode.digest}</p>
+            </div>
+          </details>
+        </section>
+      ) : null}
+
       {item.channelTaskContract?.dataPlan && item.channelTaskContract.dataPlan.status !== "not_required" ? (
         <section
           className={`rounded-xl border p-4 ${item.channelTaskContract.dataPlan.status === "ready" ? "border-success/30 bg-success/[0.04]" : "border-warning/35 bg-warning/[0.05]"}`}

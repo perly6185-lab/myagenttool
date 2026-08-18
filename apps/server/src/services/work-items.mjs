@@ -39,6 +39,7 @@ import { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./wor
 import { normalizeRuntimeDataPlan } from "./data-plan-contract.mjs";
 import { normalizeDataRelationPreview } from "./data-relation-preview.mjs";
 import { normalizeDataMutationPreview } from "./data-mutation-contract.mjs";
+import { normalizeWorkModeSnapshot } from "./work-mode-runtime.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -381,6 +382,7 @@ function normalizeChannelTaskContract(input) {
   const dataPlan = normalizeRuntimeDataPlan(input.dataPlan);
   const dataRelationPreview = normalizeDataRelationPreview(input.dataRelationPreview);
   const dataMutationPreview = normalizeDataMutationPreview(input.dataMutationPreview);
+  const workMode = normalizeWorkModeSnapshot(input.workMode);
   const dataMutationBinding = input.dataMutationBinding && typeof input.dataMutationBinding === "object"
     ? {
       schemaVersion: 1,
@@ -539,6 +541,7 @@ function normalizeChannelTaskContract(input) {
       outputExpectation: boundedText(input.outputExpectation, 1_000) || null,
       dataSources: sources,
       templateMatch,
+      workMode,
       dataPlan,
       dataRelationPreview,
       dataMutationPreview,

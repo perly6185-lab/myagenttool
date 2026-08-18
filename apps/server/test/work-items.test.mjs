@@ -2158,6 +2158,22 @@ test("channel task contracts are normalized, traceable, and fail closed", () => 
         version: 3,
         reasons: ["期望结果匹配"],
       },
+      workMode: {
+        schemaVersion: 1,
+        state: "matched",
+        source: "my_template",
+        name: "客户报价",
+        version: 3,
+        confidence: "high",
+        goal: "根据客户资料生成报价单",
+        expectedOutput: "报价单.xlsx",
+        data: { status: "not_required", requirements: [], sources: [], relations: [], relationStatus: "not_required" },
+        mutation: { required: false, status: "not_required", targetCount: 0 },
+        confirmationRequired: true,
+        trace: { templateDefinitionId: "rtd_quote", templateFamilyId: "family_quote", templateVersion: 3, dataPlanDigest: "plan-digest-1" },
+        candidates: [],
+        digest: "work-mode-digest-1",
+      },
       executionPreview: {
         action: "对外发送或发布",
         target: "客户",
@@ -2199,6 +2215,8 @@ test("channel task contracts are normalized, traceable, and fail closed", () => 
   assert.equal(created.body.workItem.channelTaskContract.domain, "office");
   assert.equal(created.body.workItem.channelTaskContract.riskLevel, "external_communication");
   assert.equal(created.body.workItem.channelTaskContract.dataSources[0].name, "询价.pdf");
+  assert.equal(created.body.workItem.channelTaskContract.workMode.name, "客户报价");
+  assert.equal(created.body.workItem.channelTaskContract.workMode.trace.dataPlanDigest, "plan-digest-1");
   assert.equal(created.body.workItem.channelTaskContract.executionPreview.target, "客户");
   assert.equal(created.body.workItem.channelTaskContract.executionPreview.digest, "preview-digest-1");
   assert.equal(created.body.workItem.channelTaskContract.dataRelationConfirmation.status, "verified");

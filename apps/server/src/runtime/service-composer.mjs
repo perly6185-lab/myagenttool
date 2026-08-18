@@ -71,6 +71,7 @@ import {
   buildDataMutationPreview,
     dataMutationPreviewMatchesCurrent,
 } from "../services/data-mutation-contract.mjs";
+import { buildWorkModeSnapshot } from "../services/work-mode-runtime.mjs";
 import { buildPaymentReconciliationPreview } from "../services/channel-payment-reconciliation.mjs";
 import { createIlinkRuntime } from "../gateway/ilink-runtime.mjs";
 import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
@@ -2936,6 +2937,19 @@ export function createServerRuntimeServices({
       preview: executionPreview,
       dataPlanDigest: dataPlan.digest,
     })).digest("hex");
+    const workMode = buildWorkModeSnapshot({
+      goal: description,
+      outputExpectation: selectedTemplate?.expectedOutput ?? null,
+      selectedTemplate,
+      templateMatch: assistedDraft?.templateMatch ?? null,
+      selectedDefinition,
+      dataPlan,
+      dataRelationPreview,
+      dataMutationPreview,
+      riskLevel,
+      executionPreview,
+      generatedAt: now(),
+    });
     const channelTaskContract = {
       schemaVersion: 1,
       source: "channel",
@@ -2951,6 +2965,7 @@ export function createServerRuntimeServices({
         hash: asset?.hash ?? null,
       })),
       templateMatch,
+      workMode,
       dataPlan,
       dataRelationPreview,
       paymentReconciliationPreview,
@@ -3065,6 +3080,7 @@ export function createServerRuntimeServices({
       requiresDataPlan,
       requiresDataReview,
       riskLevel: channelTaskContract.riskLevel,
+      workMode: channelTaskContract.workMode,
       executionPreview: channelTaskContract.executionPreview,
       dataPlan: channelTaskContract.dataPlan,
       dataRelationPreview: channelTaskContract.dataRelationPreview,

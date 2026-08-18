@@ -116,6 +116,39 @@ export type LocalWorkItem = {
     domain: string;
     riskLevel: string;
     goal: string;
+    workMode?: {
+      schemaVersion: number;
+      state: "matched" | "needs_confirmation" | "generic" | string;
+      source: "my_template" | "suggested" | "generic" | string;
+      name: string;
+      version: number | null;
+      confidence: string;
+      goal: string;
+      expectedOutput: string | null;
+      inputs: string | null;
+      data: {
+        status: string;
+        requirements: Array<{
+          id: string | null;
+          label: string;
+          kind: string | null;
+          required: boolean;
+          multiple: boolean;
+          state: string;
+          sourceId: string | null;
+          fields: string[];
+        }>;
+        sources: Array<{ sourceId: string | null; fileName: string | null; revision: number | null; fingerprint: string | null }>;
+        relations: Array<{ id: string | null; fromRequirementId: string | null; fromField: string | null; toRequirementId: string | null; toField: string | null; state: string }>;
+        relationStatus: string;
+      };
+      mutation: { required: boolean; status: string; targetCount: number | null; digest: string | null };
+      confirmationRequired: boolean;
+      candidates: Array<{ name: string | null; expectedOutput: string | null; definitionId: string | null; version: number | null }>;
+      trace: { templateDefinitionId: string | null; templateFamilyId: string | null; templateVersion: number | null; templateMatchReason: string | null; dataPlanDigest: string | null; relationDigest: string | null; executionDigest: string | null };
+      digest: string;
+      generatedAt: string | null;
+    } | null;
     dataPlan?: {
       status: "not_required" | "needs_sources" | "ambiguous" | "ready" | "stale" | string;
       digest: string | null;

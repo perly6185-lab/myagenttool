@@ -186,6 +186,45 @@ describe("work item summary presentation", () => {
     expect(template.textContent).toContain("Generate quotation");
   });
 
+  it("shows the ordinary-user work mode and keeps professional trace collapsed", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        channelTaskContract: {
+          schemaVersion: 1,
+          source: "channel",
+          domain: "office",
+          riskLevel: "low",
+          goal: "整理订单",
+          workMode: {
+            schemaVersion: 1,
+            state: "matched",
+            source: "my_template",
+            name: "订单跟进",
+            version: 2,
+            confidence: "high",
+            goal: "整理订单",
+            expectedOutput: "订单跟进结果",
+            inputs: "订单资料",
+            data: { status: "ready", requirements: [], sources: [{ sourceId: "orders", fileName: "订单.xlsx", revision: 3, fingerprint: "hash" }], relations: [], relationStatus: "ready" },
+            mutation: { required: false, status: "not_required", targetCount: 0, digest: null },
+            confirmationRequired: false,
+            candidates: [],
+            trace: { templateDefinitionId: "def", templateFamilyId: "family", templateVersion: 2, templateMatchReason: "strong", dataPlanDigest: "plan", relationDigest: "relation", executionDigest: "execution" },
+            digest: "snapshot",
+            generatedAt: "2026-08-05T00:00:00.000Z",
+          },
+        },
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const mode = await screen.findByTestId("work-mode-summary");
+    expect(mode.textContent).toContain("Work mode");
+    expect(mode.textContent).toContain("订单跟进");
+    expect(mode.textContent).toContain("订单.xlsx");
+    expect(within(mode).getByText("View professional trace").closest("details")?.open).toBe(false);
+  });
+
   it("lets an ordinary user correct an unstarted task by choosing the desired result", async () => {
     const original = item({
       status: "backlog",

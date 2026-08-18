@@ -473,9 +473,15 @@ export function createChannelConversationService({
 
   function queueMessage(thread) {
     const ahead = Number(thread?.queueAheadCount ?? 0);
+    const workMode = thread?.workMode;
+    const modeHint = workMode?.state === "matched" && workMode.name
+      ? `我会按“${String(workMode.name).slice(0, 80)}”的方式处理${workMode.expectedOutput ? `，目标是得到“${String(workMode.expectedOutput).slice(0, 120)}”` : ""}。\n`
+      : workMode?.state === "needs_confirmation"
+        ? "我发现有几种可能的处理方式，先等你确认后再开始。\n"
+        : "";
     return ahead > 0
-      ? `任务已收录，前面还有 ${ahead} 个任务。前面的任务完成后会自动开始，你不需要重复发送。`
-      : "任务已收录，即将开始处理。完成后我会通知你。";
+      ? `${modeHint}任务已收录，前面还有 ${ahead} 个任务。前面的任务完成后会自动开始，你不需要重复发送。`
+      : `${modeHint}任务已收录，即将开始处理。完成后我会通知你。`;
   }
 
   function dataPlanReply(dataPlan, dataRelationPreview = null) {
@@ -2180,6 +2186,7 @@ export function createChannelConversationService({
             riskLevel: filed.riskLevel ?? null,
             executionPreview: filed.executionPreview ?? null,
             dataPlan: filed.dataPlan ?? null,
+            workMode: filed.workMode ?? null,
             dataRelationPreview: filed.dataRelationPreview ?? null,
             paymentReconciliationPreview: filed.paymentReconciliationPreview ?? null,
             dataMutationPreview: filed.dataMutationPreview ?? null,
@@ -2221,6 +2228,7 @@ export function createChannelConversationService({
           requiresDataMutationReview: filed.requiresDataMutationReview === true,
           riskLevel: filed.riskLevel ?? null, executionPreview: filed.executionPreview ?? null,
           dataPlan: filed.dataPlan ?? null,
+          workMode: filed.workMode ?? null,
           dataRelationPreview: filed.dataRelationPreview ?? null,
           paymentReconciliationPreview: filed.paymentReconciliationPreview ?? null,
           dataMutationPreview: filed.dataMutationPreview ?? null,
@@ -2258,6 +2266,7 @@ export function createChannelConversationService({
       thread.channelTaskRequestId = result.data?.channelTaskRequestId ?? null;
       thread.executionPreview = result.data?.executionPreview ?? null;
       thread.dataPlan = result.data?.dataPlan ?? null;
+      thread.workMode = result.data?.workMode ?? null;
       thread.dataRelationPreview = result.data?.dataRelationPreview ?? null;
       thread.paymentReconciliationPreview = paymentPreview;
       thread.dataMutationPreview = result.data?.dataMutationPreview ?? null;
