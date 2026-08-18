@@ -117,12 +117,13 @@ test("unreadable output returns null — an unparsed result is stored, not an er
 test("incremental mailbox sync imports bounded folders, cursors, and provider read flags", () => {
   const parsed = parseMailApplicationResult({ text: JSON.stringify({
     folders: [{ id: "inbox", path: "INBOX", name: "收件箱", specialUse: "\\Inbox", count: 33, unread: 2 }],
-    messages: [{ messageId: "<new@163.com>", from: "A <a@163.com>", subject: "Needle", date: "2026-08-13T01:00:00Z", uid: 42, folderId: "inbox", folderPath: "INBOX", unread: false }],
+    messages: [{ messageId: "<new@163.com>", from: "A <a@163.com>", subject: "Needle", date: "2026-08-13T01:00:00Z", uid: 42, folderId: "inbox", folderPath: "INBOX", unread: false, classificationHeaders: { listId: "updates.example", listUnsubscribe: true, secret: "drop" } }],
     cursors: [{ folderId: "inbox", folderPath: "INBOX", uidValidity: "1234", lastUid: 42 }],
   }) });
   assert.equal(parsed.kind, "mailbox_sync");
   assert.equal(parsed.folders[0].name, "收件箱");
   assert.equal(parsed.messages[0].unread, false);
+  assert.deepEqual(parsed.messages[0].classificationHeaders, { listId: "updates.example", listUnsubscribe: true });
   assert.deepEqual(parsed.cursors[0], { folderId: "inbox", folderPath: "INBOX", uidValidity: "1234", lastUid: 42 });
 });
 

@@ -89,7 +89,7 @@ function compareLocalTasksForOrdinaryUsers(left: LocalWorkItem, right: LocalWork
 
 export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const { t, i18n } = useAppTranslation();
-  const { data: state } = useConsoleState();
+  const { data: state, isError: stateUnavailable } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const projectSelection = useCurrentProjectSelection();
   const navigate = usePageNavigation();
@@ -593,7 +593,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
             <Button size="sm" onClick={() => setCreateLocalOpen(true)}>
               <Plus className="mr-1 size-4" /> {t("tasks.newLocal")}
             </Button>
-            <ExternalCollaborationMenu
+            {!localOnly || preferredLocalMode === "expert" ? <ExternalCollaborationMenu
               onImportIssue={() => setExternalImportOpen(true)}
               onOpenIssueInbox={() => {
                 setSelectedExternalWorkTab("issue");
@@ -607,7 +607,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                 navigate("settings");
                 setSettingsQuery(i18n.language.startsWith("zh") ? "外部 Issue" : "external issue");
               }}
-            />
+            /> : null}
           </div>
         </div>
       </CardHeader>
@@ -696,6 +696,23 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                 <Button variant="secondary" size="sm" onClick={() => setPlanningOpen(true)}>
                   <FolderKanban className="mr-1 size-4" /> {t("planningProjects.title")}
                 </Button>
+              ) : null}
+              {preferredLocalMode === "summary" ? (
+                <ExternalCollaborationMenu
+                  onImportIssue={() => setExternalImportOpen(true)}
+                  onOpenIssueInbox={() => {
+                    setSelectedExternalWorkTab("issue");
+                    navigate("externalWork");
+                  }}
+                  onOpenChanges={() => {
+                    setSelectedExternalWorkTab("pr");
+                    navigate("externalWork");
+                  }}
+                  onOpenSettings={() => {
+                    navigate("settings");
+                    setSettingsQuery(i18n.language.startsWith("zh") ? "外部 Issue" : "external issue");
+                  }}
+                />
               ) : null}
             </div>
           </details>
@@ -1078,7 +1095,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
               projects={projects.map((item) => ({ id: item.id, name: item.name }))}
               onProjectChange={(nextProjectId) => projectSelection.selectProject(nextProjectId, state?.currentProjectId)}
               projectError={projectSelection.error}
-              unavailable={!state}
+              unavailable={stateUnavailable}
               onCreated={() => {
                 setCreateLocalDirty(false);
                 setTab("local");
@@ -1165,7 +1182,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
       <Modal open={Boolean(selectedLocalId)} onClose={() => {
         if (selectedLocalDirty) setConfirmSelectedLocalClose(true);
         else setSelectedLocalId(null);
-      }} title={t("taskLocal.details")} size={selectedLocalMode === "expert" ? "full" : "2xl"}>
+      }} title={i18n.language.startsWith("zh") ? "任务详情" : t("taskLocal.details")} size={selectedLocalMode === "expert" ? "full" : "2xl"}>
         {selectedLocalId ? (
           <div className="space-y-4">
             {importHandoff?.workItemId === selectedLocalId ? (

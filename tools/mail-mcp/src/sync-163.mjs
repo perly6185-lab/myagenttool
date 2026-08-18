@@ -25,7 +25,11 @@ export async function sync163Mailbox(args, withClient = with163Client) {
         let uids = await client.search(lastUid > 0 ? { uid: `${lastUid + 1}:4294967295` } : { all: true }, { uid: true });
         uids = (Array.isArray(uids) ? uids : []).filter((uid) => Number.isInteger(uid) && uid > lastUid);
         const selected = uids.slice(-limit);
-        const fetched = selected.length ? await client.fetchAll(selected, { envelope: true, flags: true }, { uid: true }) : [];
+        const fetched = selected.length ? await client.fetchAll(selected, {
+          envelope: true,
+          flags: true,
+          headers: ["List-Id", "List-Unsubscribe", "Auto-Submitted", "Precedence"],
+        }, { uid: true }) : [];
         const byUid = new Map(fetched.map((message) => [message.uid, message]));
         for (const uid of selected) {
           const header = headerOf(byUid.get(uid), { folderId, folderPath });

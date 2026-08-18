@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { listDevices } from "../runtime/device.mjs";
+import { MAIL_CLASSIFIER_VERSION, mailMessageKey } from "./mail-header-classifier.mjs";
 
 const MAX_RECIPIENT = 998;
 const MAX_SUBJECT = 400;
@@ -26,8 +27,13 @@ const MAX_TASK_ATTACHMENTS = 6;
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 50;
 const ACTIVE_SYNC_STATUSES = new Set(["queued", "waiting_for_local_approval", "dispatching", "running", "cancelling"]);
+const MAIL_SMART_VIEWS = new Set(["all", "needs_attention", "important", "notifications", "subscriptions", "other"]);
 
 const cap = (value, max) => typeof value === "string" ? value.slice(0, max) : "";
+
+export function isMailClassificationEnabled() {
+  return process.env.MYAGENTTOOL_MAIL_CLASSIFICATION_ENABLED !== "0";
+}
 
 export function createMailboxService({
   state,
@@ -37,13 +43,20 @@ export function createMailboxService({
   persistStateSoon = () => {},
   store,
   mailSendEnabled = () => false,
+  mailOrganizeEnabled = () => false,
+  mailAutoOrganizeEnabled = () => false,
+  mailClassificationEnabled = isMailClassificationEnabled,
   createCapabilityInvocation = null,
   createWorkItem = null,
   inspectTaskMaterialDraft = null,
+  classificationService = null,
+  folderSuggestionService = null,
+  folderOrganizationService = null,
+  mailQueryIndex = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
-  function snapshot({ actor = null, page = 1, pageSize = DEFAULT_PAGE_SIZE, folder = "inbox", query = "" } = {}) {
+  function snapshot({ actor = null, page = 1, pageSize = DEFAULT_PAGE_SIZE, folder = "inbox", query = "", view = "all" } = {}) {
     const teamId = actor?.teamId ?? null;
     const applications = (state.applications ?? []).filter((application) =>
       teamId == null || (application.ownerTeamId ?? "team_local") === teamId,
@@ -57,22 +70,57 @@ export function createMailboxService({
     );
     const accounts = mailboxAccounts(applications, {
       sendEnabled: Boolean(mailSendEnabled()),
+      organizeEnabled: Boolean(mailOrganizeEnabled()),
       credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [],
     });
-    const importedMessages = mailboxMessages(
-      results,
-      state.mailThreads ?? {},
-      (state.mailMessageStates ?? []).filter((row) => teamId == null || (row.ownerTeamId ?? "team_local") === teamId),
-      (state.mailTaskLinks ?? []).filter((row) => teamId == null || (row.ownerTeamId ?? "team_local") === teamId),
-    ).slice(0, MAX_MESSAGES);
-    const providerFolders = mailboxProviderFolders(results, importedMessages);
-    const requestedFolder = providerFolders.some((item) => item.id === folder) ? folder : "inbox";
     const normalizedQuery = normalizeSearchQuery(query);
-    const allMessages = importedMessages
+    const classificationEnabled = Boolean(mailClassificationEnabled());
+    const selectedView = classificationEnabled && MAIL_SMART_VIEWS.has(view) ? view : "all";
+    const folderSkeleton = mailboxProviderFolders(results, []);
+    const requestedFolder = folderSkeleton.some((item) => item.id === folder) ? folder : "inbox";
+    let importedMessages = null;
+    const getImportedMessages = () => {
+      importedMessages ??= mailboxMessages(
+        results,
+        state.mailThreads ?? {},
+        (state.mailMessageStates ?? []).filter((row) => teamId == null || (row.ownerTeamId ?? "team_local") === teamId),
+        (state.mailTaskLinks ?? []).filter((row) => teamId == null || (row.ownerTeamId ?? "team_local") === teamId),
+      ).slice(0, MAX_MESSAGES);
+      return importedMessages;
+    };
+    let indexed = null;
+    if (mailQueryIndex && teamId != null) {
+      try {
+        const request = mailboxPageRequest(page, pageSize);
+        indexed = mailQueryIndex.query({
+          teamId,
+          fingerprint: mailQueryFingerprint(state, teamId, results, classificationEnabled),
+          buildRows: () => buildMailQueryRows(getImportedMessages(), state, actor, classificationEnabled ? classificationService : null),
+          folderId: requestedFolder,
+          searchQuery: normalizedQuery,
+          view: selectedView,
+          page: request.page,
+          pageSize: request.pageSize,
+          classifierVersion: MAIL_CLASSIFIER_VERSION,
+        });
+      } catch {
+        // The index is derived data. Corruption, an unsupported SQLite runtime,
+        // or a failed rebuild must never make the ordinary mailbox unavailable.
+        indexed = null;
+      }
+    }
+    const folderMessages = indexed ? null : getImportedMessages()
       .filter((message) => (message.folderId ?? "inbox") === requestedFolder)
       .filter((message) => matchesMailSearch(message, normalizedQuery));
-    const pagination = mailboxPagination(allMessages.length, page, pageSize);
-    const messages = allMessages.slice(pagination.offset, pagination.offset + pagination.pageSize).map(publicMessage);
+    const allMessages = indexed ? null : folderMessages.filter((message) => classificationService?.matchesView(message, actor, selectedView) ?? true);
+    const pagination = indexed?.pagination ?? mailboxPagination(allMessages.length, page, pageSize);
+    const messages = indexed?.messages ?? allMessages.slice(pagination.offset, pagination.offset + pagination.pageSize).map((message) => ({
+      ...publicMessage(message),
+      ...(classificationEnabled && classificationService ? { classification: classificationService.publicFor(message, actor) } : {}),
+    }));
+    const providerFolders = indexed
+      ? mailboxProviderFolders(results, [], indexed.folderCounts)
+      : mailboxProviderFolders(results, getImportedMessages());
     const publicDrafts = drafts.map(publicDraft).sort(compareRecent);
 
     return {
@@ -88,10 +136,187 @@ export function createMailboxService({
       messages,
       query: normalizedQuery,
       selectedFolder: requestedFolder,
+      selectedView,
+      classificationSummary: classificationEnabled
+        ? indexed?.classificationSummary ?? classificationService?.summary(folderMessages, actor) ?? null
+        : null,
       pagination: publicPagination(pagination),
       drafts: publicDrafts,
       updatedAt: latestTimestamp([...results, ...drafts, ...applications]),
     };
+  }
+
+  function startClassification({ scope = "new_mail", mode = "header", confirmed = false, limit = 20, actor = null } = {}) {
+    if (!mailClassificationEnabled()) return { ok: false, status: 403, body: { error: "mail_classification_disabled" } };
+    if (!classificationService) return { ok: false, status: 503, body: { error: "mail_classification_unavailable" } };
+    if (!["header", "semantic"].includes(mode)) return { ok: false, status: 400, body: { error: "mail_classification_mode_invalid" } };
+    const messages = messagesForActor(state, actor);
+    const result = mode === "semantic"
+      ? classificationService.startSemanticJob({ messages, limit, confirmed, actor })
+      : classificationService.startJob({ messages, scope, actor });
+    return { ok: result.status < 400, ...result };
+  }
+
+  function previewSemanticClassification({ limit = 20, actor = null } = {}) {
+    if (!mailClassificationEnabled()) return { ok: false, status: 403, body: { error: "mail_classification_disabled" } };
+    if (!classificationService) return { ok: false, status: 503, body: { error: "mail_classification_unavailable" } };
+    const result = classificationService.semanticPreview({ messages: messagesForActor(state, actor), limit, actor });
+    return { ok: result.status < 400, ...result };
+  }
+
+  function getClassificationJob({ jobId, actor = null } = {}) {
+    if (!mailClassificationEnabled()) return { ok: false, status: 403, body: { error: "mail_classification_disabled" } };
+    if (!classificationService) return { ok: false, status: 503, body: { error: "mail_classification_unavailable" } };
+    const result = classificationService.getJob({ jobId, actor });
+    return { ok: result.status < 400, ...result };
+  }
+
+  function cancelClassificationJob({ jobId, actor = null } = {}) {
+    if (!mailClassificationEnabled()) return { ok: false, status: 403, body: { error: "mail_classification_disabled" } };
+    if (!classificationService) return { ok: false, status: 503, body: { error: "mail_classification_unavailable" } };
+    const result = classificationService.cancelJob({ jobId, actor });
+    return { ok: result.status < 400, ...result };
+  }
+
+  function correctClassification({ messageId, folderId = null, expectedRevision, attention, mailType, suggestedAction, actor = null } = {}) {
+    if (!mailClassificationEnabled()) return { ok: false, status: 403, body: { error: "mail_classification_disabled" } };
+    if (!classificationService) return { ok: false, status: 503, body: { error: "mail_classification_unavailable" } };
+    const normalizedId = cap(String(messageId ?? "").trim(), MAX_RECIPIENT);
+    const message = messagesForActor(state, actor).find((candidate) =>
+      candidate.messageId === normalizedId && (!folderId || candidate.folderId === String(folderId)),
+    );
+    const result = classificationService.correct({ message, expectedRevision, attention, mailType, suggestedAction, actor });
+    return { ok: result.status < 400, ...result };
+  }
+
+  function listClassificationRules({ actor = null } = {}) {
+    if (!mailClassificationEnabled()) return { ok: false, status: 403, body: { error: "mail_classification_disabled" } };
+    if (!classificationService) return { ok: false, status: 503, body: { error: "mail_classification_unavailable" } };
+    const result = classificationService.ruleCatalog({ messages: messagesForActor(state, actor), actor });
+    return { ok: result.status < 400, ...result };
+  }
+
+  function getClassificationQuality({ actor = null } = {}) {
+    if (!mailClassificationEnabled()) return { ok: false, status: 403, body: { error: "mail_classification_disabled" } };
+    if (!classificationService?.qualitySummary) return { ok: false, status: 503, body: { error: "mail_classification_quality_unavailable" } };
+    return { ok: true, status: 200, body: { quality: classificationService.qualitySummary(messagesForActor(state, actor), actor) } };
+  }
+
+  function createClassificationRule({ suggestionId, confirmed = false, actor = null } = {}) {
+    if (!mailClassificationEnabled()) return { ok: false, status: 403, body: { error: "mail_classification_disabled" } };
+    if (!classificationService) return { ok: false, status: 503, body: { error: "mail_classification_unavailable" } };
+    const result = classificationService.createRule({ messages: messagesForActor(state, actor), suggestionId, confirmed, actor });
+    return { ok: result.status < 400, ...result };
+  }
+
+  function updateClassificationRule({ ruleId, expectedRevision, action, attention, mailType, suggestedAction, actor = null } = {}) {
+    if (!mailClassificationEnabled()) return { ok: false, status: 403, body: { error: "mail_classification_disabled" } };
+    if (!classificationService) return { ok: false, status: 503, body: { error: "mail_classification_unavailable" } };
+    const result = classificationService.updateRule({ ruleId, expectedRevision, action, attention, mailType, suggestedAction, actor });
+    return { ok: result.status < 400, ...result };
+  }
+
+  function listFolderSuggestions({ actor = null } = {}) {
+    if (!mailClassificationEnabled()) return { ok: false, status: 403, body: { error: "mail_classification_disabled" } };
+    if (!folderSuggestionService) return { ok: false, status: 503, body: { error: "mail_folder_suggestions_unavailable" } };
+    const result = folderSuggestionService.catalog({
+      messages: messagesForActor(state, actor), folders: folderContextsForActor(state, actor), actor,
+    });
+    return { ok: result.status < 400, ...result, body: {
+      ...result.body,
+      movesSupported: canOrganizeForActor(state, actor, mailOrganizeEnabled),
+      automationSupported: result.body?.suggestions?.some((suggestion) => mailAutoOrganizeEnabled(suggestion.accountId)) === true,
+    } };
+  }
+
+  function createFolderMovePreview({ suggestionId, destinationFolderId = null, actor = null } = {}) {
+    if (!folderSuggestionService) return { ok: false, status: 503, body: { error: "mail_folder_suggestions_unavailable" } };
+    const result = folderSuggestionService.createPreview({
+      suggestionId, destinationFolderId,
+      messages: messagesForActor(state, actor), folders: folderContextsForActor(state, actor), actor,
+    });
+    return { ok: result.status < 400, ...result, body: result.body?.preview ? { ...result.body, preview: { ...result.body.preview, movesSupported: canOrganizeForActor(state, actor, mailOrganizeEnabled) } } : result.body };
+  }
+
+  function startFolderMove({ previewId, approvalToken, actor = null } = {}) {
+    if (!folderOrganizationService) return { ok: false, status: 503, body: { error: "mail_folder_organization_unavailable" } };
+    return folderOrganizationService.start({ previewId, approvalToken, messages: messagesForActor(state, actor), folders: folderContextsForActor(state, actor), actor });
+  }
+
+  function getFolderMoveJob({ jobId, actor = null } = {}) {
+    if (!folderOrganizationService) return { ok: false, status: 503, body: { error: "mail_folder_organization_unavailable" } };
+    return folderOrganizationService.get({ jobId, actor });
+  }
+
+  function listFolderMoveJobs({ actor = null } = {}) {
+    if (!folderOrganizationService) return { ok: false, status: 503, body: { error: "mail_folder_organization_unavailable" } };
+    return folderOrganizationService.list({ actor });
+  }
+
+  function reconcileFolderMoveJob({ jobId, actor = null } = {}) {
+    if (!folderOrganizationService) return { ok: false, status: 503, body: { error: "mail_folder_organization_unavailable" } };
+    return folderOrganizationService.reconcile({ jobId, messages: messagesForActor(state, actor), actor });
+  }
+
+  function createFolderRecoveryPreview({ jobId, actor = null } = {}) {
+    if (!folderOrganizationService) return { ok: false, status: 503, body: { error: "mail_folder_organization_unavailable" } };
+    const result = folderOrganizationService.createRecoveryPreview({
+      jobId, messages: messagesForActor(state, actor), folders: folderContextsForActor(state, actor), actor,
+    });
+    return result?.body?.preview
+      ? { ...result, body: { ...result.body, preview: { ...result.body.preview, movesSupported: canOrganizeForActor(state, actor, mailOrganizeEnabled) } } }
+      : result;
+  }
+
+  function createFolderAutomationPreview({ suggestionId, destinationFolderId = null, actor = null } = {}) {
+    if (!folderSuggestionService) return { ok: false, status: 503, body: { error: "mail_folder_suggestions_unavailable" } };
+    const messages = messagesForActor(state, actor);
+    const folders = folderContextsForActor(state, actor);
+    const catalog = folderSuggestionService.catalog({ messages, folders, actor });
+    const suggestion = catalog.body?.suggestions?.find((item) => item.id === String(suggestionId ?? ""));
+    if (!suggestion) return { ok: false, status: 404, body: { error: "mail_folder_suggestion_not_found" } };
+    if (!mailAutoOrganizeEnabled(suggestion.accountId)) return { ok: false, status: 403, body: { error: "mail_folder_automation_disabled" } };
+    const result = folderSuggestionService.createAutomaticPreview({
+      suggestionId, destinationFolderId,
+      messages, folders, actor,
+    });
+    return { ok: result.status < 400, ...result, body: result.body?.preview ? { ...result.body, preview: { ...result.body.preview, movesSupported: true } } : result.body };
+  }
+
+  function enableFolderAutomation({ previewId, approvalToken, confirmed = false, actor = null } = {}) {
+    if (!folderOrganizationService) return { ok: false, status: 503, body: { error: "mail_folder_organization_unavailable" } };
+    return folderOrganizationService.enableAutomation({
+      previewId, approvalToken, confirmed,
+      messages: messagesForActor(state, actor), folders: folderContextsForActor(state, actor), actor,
+    });
+  }
+
+  function updateFolderAutomation({ automationId, expectedRevision, action, actor = null } = {}) {
+    if (!folderOrganizationService) return { ok: false, status: 503, body: { error: "mail_folder_organization_unavailable" } };
+    return folderOrganizationService.updateAutomation({ automationId, expectedRevision, action, messages: messagesForActor(state, actor), actor });
+  }
+
+  function listFolderAutomations({ actor = null } = {}) {
+    if (!folderOrganizationService) return { ok: false, status: 503, body: { error: "mail_folder_organization_unavailable" } };
+    return folderOrganizationService.listAutomations({ actor });
+  }
+
+  function dryRunFolderAutomation({ automationId, actor = null } = {}) {
+    if (!folderOrganizationService) return { ok: false, status: 503, body: { error: "mail_folder_organization_unavailable" } };
+    return folderOrganizationService.dryRunAutomation({
+      automationId,
+      messages: messagesForActor(state, actor),
+      folders: folderContextsForActor(state, actor),
+      actor,
+    });
+  }
+
+  function runFolderAutomations({ teamId, accountId = null, triggerId = null } = {}) {
+    if (!teamId || !folderOrganizationService) return { ok: false, status: 400, body: { error: "mail_folder_automation_team_required" } };
+    const actor = { teamId, userId: "system_mail_automation" };
+    return folderOrganizationService.runAutomations({
+      messages: messagesForActor(state, actor), folders: folderContextsForActor(state, actor), actor, accountId, triggerId,
+    });
   }
 
   function setMessageRead({ messageId, read = true, actor = null } = {}) {
@@ -133,6 +358,7 @@ export function createMailboxService({
     );
     const accounts = mailboxAccounts(applications, {
       sendEnabled: Boolean(mailSendEnabled()),
+      organizeEnabled: Boolean(mailOrganizeEnabled()),
       credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [],
     });
     const account = accounts.find((candidate) => candidate.canReceive && candidate.syncCapability) ?? null;
@@ -380,7 +606,14 @@ export function createMailboxService({
     return (state.mailTaskLinks ?? []).find((row) => row.messageId === messageId && (row.ownerTeamId ?? "team_local") === teamId) ?? link;
   }
 
-  return { snapshot, startSync, setMessageRead, createDraft, updateDraft, deleteDraft, createTaskFromMessage };
+  return {
+    snapshot, startSync, setMessageRead, createDraft, updateDraft, deleteDraft, createTaskFromMessage,
+    startClassification, previewSemanticClassification, getClassificationJob, cancelClassificationJob, correctClassification,
+    listClassificationRules, getClassificationQuality, createClassificationRule, updateClassificationRule,
+    listFolderSuggestions, createFolderMovePreview, startFolderMove, getFolderMoveJob, listFolderMoveJobs,
+    reconcileFolderMoveJob, createFolderRecoveryPreview,
+    createFolderAutomationPreview, enableFolderAutomation, updateFolderAutomation, listFolderAutomations, dryRunFolderAutomation, runFolderAutomations,
+  };
 }
 
 export function mailSendApprovalTarget(draft) {
@@ -388,17 +621,29 @@ export function mailSendApprovalTarget(draft) {
   return revision > 0 ? `${draft.id}@${revision}` : draft?.id ?? "";
 }
 
-function mailboxAccounts(applications, { sendEnabled = false, credentialReadiness = [] } = {}) {
+function canOrganizeForActor(state, actor, enabled) {
+  if (!enabled()) return false;
+  const teamId = actor?.teamId ?? null;
+  const applications = (state.applications ?? []).filter((application) => teamId == null || (application.ownerTeamId ?? "team_local") === teamId);
+  return mailboxAccounts(applications, {
+    organizeEnabled: true,
+    credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [],
+  }).some((account) => account.canOrganize);
+}
+
+function mailboxAccounts(applications, { sendEnabled = false, organizeEnabled = false, credentialReadiness = [] } = {}) {
   const readApps = applications
     .filter((application) => mailTools(application).some((tool) => ["mail_sync", "mail_list_unread", "mail_fetch"].includes(tool)))
     .filter((application) => !application.successorApplicationId)
     .sort(compareApplicationReadiness);
   const sendApps = applications.filter((application) => mailTools(application).includes("mail_send"));
+  const organizeApps = applications.filter((application) => mailTools(application).includes("mail_organize_batch"));
   const providers = new Map();
   for (const application of readApps) {
     const provider = providerOf(application);
     if (providers.has(provider)) continue;
     const send = sendApps.find((candidate) => providerOf(candidate) === provider) ?? null;
+    const organize = organizeApps.find((candidate) => providerOf(candidate) === provider) ?? null;
     const active = ["active", "registered"].includes(application.status);
     const receiveCredentialReady = credentialReadyForApplication(application, credentialReadiness);
     const canReceive = active && receiveCredentialReady;
@@ -417,6 +662,8 @@ function mailboxAccounts(applications, { sendEnabled = false, credentialReadines
       ),
       readApplicationId: application.id,
       sendApplicationId: send?.id ?? null,
+      canOrganize: Boolean(organizeEnabled && organize && ["active", "registered"].includes(organize.status) && credentialReadyForApplication(organize, credentialReadiness)),
+      organizeApplicationId: organize?.id ?? null,
       syncCapability: capabilityName(application, "mail_sync") ?? capabilityName(application, "mail_list_unread"),
       fetchCapability: capabilityName(application, "mail_fetch"),
       incrementalSync: Boolean(capabilityName(application, "mail_sync")),
@@ -516,10 +763,17 @@ function recordContainsMessage(record, messageId) {
 }
 
 function mailboxPagination(total, requestedPage, requestedPageSize) {
-  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(requestedPageSize, 10) || DEFAULT_PAGE_SIZE));
+  const { page: normalizedPage, pageSize } = mailboxPageRequest(requestedPage, requestedPageSize);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const page = Math.min(totalPages, Math.max(1, Number.parseInt(requestedPage, 10) || 1));
+  const page = Math.min(totalPages, normalizedPage);
   return { page, pageSize, total, totalPages, offset: (page - 1) * pageSize };
+}
+
+function mailboxPageRequest(requestedPage, requestedPageSize) {
+  return {
+    page: Math.max(1, Number.parseInt(requestedPage, 10) || 1),
+    pageSize: Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(requestedPageSize, 10) || DEFAULT_PAGE_SIZE)),
+  };
 }
 
 function publicPagination({ page, pageSize, total, totalPages }) {
@@ -549,6 +803,9 @@ function mergeMessage(messages, input, record, unread, threads) {
     folderId: cap(input?.folderId, 100) || previous.folderId || "inbox",
     folderPath: cap(input?.folderPath, MAX_RECIPIENT) || previous.folderPath || "INBOX",
     providerUid: Number.isInteger(input?.uid) ? input.uid : previous.providerUid ?? null,
+    classificationHeaders: input?.classificationHeaders && typeof input.classificationHeaders === "object"
+      ? input.classificationHeaders
+      : previous.classificationHeaders ?? null,
     fetched: Boolean(body || bodyHtml),
     inReplyTo: cap(input?.inReplyTo, MAX_RECIPIENT) || previous.inReplyTo || null,
     references: Array.isArray(input?.references) ? input.references.slice(0, 50) : previous.references ?? [],
@@ -562,8 +819,53 @@ function mergeMessage(messages, input, record, unread, threads) {
 }
 
 function publicMessage(message) {
-  const { providerUid: _providerUid, ...value } = message;
+  const { providerUid: _providerUid, classificationHeaders: _classificationHeaders, ...value } = message;
   return value;
+}
+
+function messagesForActor(state, actor) {
+  const teamId = actor?.teamId ?? "team_local";
+  const results = (state.applicationResults ?? []).filter((record) =>
+    record.source === "mail_headers" && (record.ownerTeamId ?? "team_local") === teamId,
+  );
+  return mailboxMessages(
+    results,
+    state.mailThreads ?? {},
+    (state.mailMessageStates ?? []).filter((row) => (row.ownerTeamId ?? "team_local") === teamId),
+    (state.mailTaskLinks ?? []).filter((row) => (row.ownerTeamId ?? "team_local") === teamId),
+  ).slice(0, MAX_MESSAGES);
+}
+
+function folderContextsForActor(state, actor) {
+  const teamId = actor?.teamId ?? "team_local";
+  const results = (state.applicationResults ?? [])
+    .filter((record) => record.source === "mail_headers" && (record.ownerTeamId ?? "team_local") === teamId)
+    .sort((left, right) => timestampOf(left) - timestampOf(right));
+  const folders = new Map();
+  for (const record of results) {
+    if (record.data?.kind !== "mailbox_sync") continue;
+    const accountId = String(record.applicationId ?? "mail").slice(0, 160);
+    for (const folder of record.data.folders ?? []) {
+      const id = cap(folder?.id, 100);
+      if (!id) continue;
+      folders.set(`${accountId}\0${id}`, {
+        accountId, id, path: cap(folder.path, MAX_RECIPIENT) || null,
+        name: cap(folder.name, 255) || cap(folder.path, MAX_RECIPIENT) || id,
+        specialUse: cap(folder.specialUse, 30) || null,
+        syncError: folder.syncError === true,
+      });
+    }
+  }
+  for (const message of messagesForActor(state, actor)) {
+    const accountId = String(message.applicationId ?? "mail").slice(0, 160);
+    const id = cap(message.folderId, 100) || "inbox";
+    const key = `${accountId}\0${id}`;
+    if (!folders.has(key)) folders.set(key, {
+      accountId, id, path: cap(message.folderPath, MAX_RECIPIENT) || (id === "inbox" ? "INBOX" : null),
+      name: id === "inbox" ? "Inbox" : id, specialUse: id === "inbox" ? "\\Inbox" : null, syncError: false,
+    });
+  }
+  return [...folders.values()].slice(0, 200);
 }
 
 function publicTaskLink(link) {
@@ -589,7 +891,7 @@ function taskMaterialName(value) {
   return normalized || "reference-file";
 }
 
-function mailboxProviderFolders(results, messages) {
+function mailboxProviderFolders(results, messages, indexedCounts = null) {
   const latestById = new Map();
   for (const record of [...results].sort((left, right) => timestampOf(left) - timestampOf(right))) {
     if (record.data?.kind !== "mailbox_sync") continue;
@@ -598,14 +900,15 @@ function mailboxProviderFolders(results, messages) {
   if (!latestById.has("inbox")) latestById.set("inbox", { id: "inbox", name: "Inbox", count: 0, unread: null, specialUse: "\\Inbox" });
   return [...latestById.values()]
     .map((folder) => {
-      const cached = messages.filter((message) => message.folderId === folder.id);
+      const cached = indexedCounts?.get(folder.id) ?? null;
+      const folderMessages = cached ? [] : messages.filter((message) => message.folderId === folder.id);
       return {
         id: folder.id,
         name: folder.name,
         kind: "provider",
         specialUse: folder.specialUse ?? null,
-        count: cached.length,
-        unread: cached.filter((message) => message.unread).length,
+        count: cached?.count ?? folderMessages.length,
+        unread: cached?.unread ?? folderMessages.filter((message) => message.unread).length,
         cursorReset: folder.cursorReset === true,
         syncError: folder.syncError === true,
       };
@@ -631,6 +934,68 @@ function matchesMailSearch(message, query) {
   return [message.from, message.subject, message.preview, message.body]
     .filter((value) => typeof value === "string")
     .some((value) => value.normalize("NFKC").toLocaleLowerCase().includes(query));
+}
+
+function buildMailQueryRows(messages, state, actor, classificationService) {
+  const teamId = actor?.teamId ?? "team_local";
+  const persistedKeys = new Set((state.mailClassifications ?? [])
+    .filter((row) => (row.ownerTeamId ?? "team_local") === teamId)
+    .map((row) => row.messageKey));
+  return messages.map((message) => {
+    const messageKey = mailMessageKey(message);
+    const classification = classificationService?.publicFor(message, actor) ?? null;
+    return {
+      messageKey,
+      messageId: String(message.messageId ?? ""),
+      accountId: String(message.applicationId ?? "mail"),
+      folderId: String(message.folderId ?? "inbox"),
+      sortAt: timestampOf(message),
+      ordinal: stableMailOrdinal(messageKey),
+      unread: message.unread === true,
+      smartView: mailSmartView(message, actor, classificationService),
+      classified: persistedKeys.has(messageKey),
+      searchText: [message.from, message.subject, message.preview, message.body]
+        .filter((value) => typeof value === "string")
+        .map((value) => value.normalize("NFKC").toLocaleLowerCase())
+        .join("\n"),
+      payload: {
+        ...publicMessage(message),
+        ...(classificationService ? { classification } : {}),
+      },
+    };
+  });
+}
+
+function stableMailOrdinal(messageKey) {
+  const value = Number.parseInt(String(messageKey).slice(0, 12), 16);
+  return Number.isSafeInteger(value) ? value : 0;
+}
+
+function mailSmartView(message, actor, classificationService) {
+  if (!classificationService) return "other";
+  for (const view of ["needs_attention", "important", "notifications", "subscriptions"]) {
+    if (classificationService.matchesView(message, actor, view)) return view;
+  }
+  return "other";
+}
+
+function mailQueryFingerprint(state, teamId, results, classificationEnabled = true) {
+  const hash = createHash("sha256");
+  hash.update(`mail-query-v2\0classifier-${MAIL_CLASSIFIER_VERSION}\0classification-${classificationEnabled ? "on" : "off"}\0${teamId}`);
+  const addRows = (name, rows, fields) => {
+    hash.update(`\0${name}\0${rows.length}`);
+    for (const row of [...rows].sort((left, right) => String(left.id ?? left.messageId ?? "").localeCompare(String(right.id ?? right.messageId ?? "")))) {
+      hash.update(`\0${fields.map((field) => String(row?.[field] ?? "")).join("\0")}`);
+    }
+  };
+  addRows("results", results, ["id", "applicationId", "createdAt", "updatedAt"]);
+  const own = (rows) => (rows ?? []).filter((row) => (row.ownerTeamId ?? "team_local") === teamId);
+  addRows("read", own(state.mailMessageStates), ["id", "messageId", "readAt", "updatedAt"]);
+  addRows("tasks", own(state.mailTaskLinks), ["id", "messageId", "workItemId", "updatedAt", "title"]);
+  addRows("classifications", own(state.mailClassifications), ["id", "messageKey", "revision", "updatedAt"]);
+  addRows("rules", own(state.mailClassificationRules), ["id", "revision", "status", "updatedAt"]);
+  hash.update(`\0threads\0${JSON.stringify(state.mailThreads ?? {})}`);
+  return hash.digest("hex");
 }
 
 function folderRank(folder) {

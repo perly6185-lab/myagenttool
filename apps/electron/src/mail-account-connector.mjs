@@ -6,6 +6,8 @@ const APPLICATION_ID = "app_163_mail";
 const AGENT_ID = "agt_mcp_mail_v2";
 const SEND_AGENT_ID = "agt_mcp_163_mail_send";
 const SEND_APPLICATION_ID = "app_163_mail_send";
+const ORGANIZE_AGENT_ID = "agt_mcp_163_mail_organize";
+const ORGANIZE_APPLICATION_ID = "app_163_mail_organize";
 const PROVIDER = "netease";
 const SCOPE = "imap.mail";
 const EMAIL = /^[^\s@]+@163\.com$/i;
@@ -25,6 +27,7 @@ export function registerMailAccountConnector({
   ipcMain.removeHandler("mail:get-connector-status");
   ipcMain.removeHandler("mail:connect-163");
   ipcMain.removeHandler("mail:connect-163-send");
+  ipcMain.removeHandler("mail:connect-163-organize");
 
   const paths = credentialPaths(credentialRoot);
   ipcMain.handle("mail:get-connector-status", async () => {
@@ -34,7 +37,7 @@ export function registerMailAccountConnector({
     return {
       desktop: true,
       providers: [
-        { id: "netease_163", name: "163 邮箱", available: platform === "win32", connected: validCredentialMetadata(paths.credential) && fullMailboxReady, upgradeNeeded: validCredentialMetadata(paths.credential) && !fullMailboxReady, sendConnected: validSendCredentialMetadata(paths.sendCredential), account: credentialUsername(paths.credential) },
+        { id: "netease_163", name: "163 邮箱", available: platform === "win32", connected: validCredentialMetadata(paths.credential) && fullMailboxReady, upgradeNeeded: validCredentialMetadata(paths.credential) && !fullMailboxReady, sendConnected: validSendCredentialMetadata(paths.sendCredential), organizeConnected: validOrganizeCredentialMetadata(paths.organizeCredential), account: credentialUsername(paths.credential) },
         { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
       ],
     };
@@ -91,6 +94,39 @@ export function registerMailAccountConnector({
       return { ok: true, account: { provider: PROVIDER, email: username, canReceive: validCredentialMetadata(paths.credential), canSend: true } };
     } catch { return failure("save_failed"); }
   });
+
+  ipcMain.handle("mail:connect-163-organize", async (_event, input) => {
+    const username = String(input?.email ?? "").trim().toLowerCase();
+    const authorizationCode = String(input?.authorizationCode ?? "").trim();
+    if (platform !== "win32") return failure("platform_not_supported");
+    if (!EMAIL.test(username)) return failure("invalid_email");
+    if (!authorizationCode || authorizationCode.length > 256) return failure("invalid_authorization_code");
+    try { await verifyCredential({ username, authorizationCode }); } catch { return failure("verification_failed"); }
+    try {
+      const applicationId = await ensureMailOrganizeApplication({ requestServer, runtimeRoot, nodeCommand });
+      const obtainedAt = now();
+      writeJsonAtomic(paths.organizeCredential, { provider: PROVIDER, scope: "imap.organize", username, protectedAuthorizationCode: protectSecret(authorizationCode), obtainedAt });
+      writeJsonAtomic(join(credentialRoot, "credential-readiness", `${applicationId}.json`), { applicationId, provider: PROVIDER, scope: "imap.organize", obtainedAt });
+      return { ok: true, account: { provider: PROVIDER, email: username, canOrganize: true } };
+    } catch { return failure("save_failed"); }
+  });
+}
+
+async function ensureMailOrganizeApplication({ requestServer, runtimeRoot, nodeCommand }) {
+  await requestServer("POST", "/api/agents", {
+    id: ORGANIZE_AGENT_ID, name: "163 Mail (organize)", type: "mcp", transport: "stdio", command: nodeCommand,
+    args: [join(runtimeRoot, "tools", "mail-mcp", "src", "server.mjs")], allowedTools: ["mail_organize_batch"], timeoutMs: 120_000,
+    provider: PROVIDER, capabilityName: "mail.organize", riskLevel: "high", riskTags: ["external_mailbox", "provider_state_write", "write_credential", "local_agent"],
+  });
+  const mailbox = await requestServer("GET", "/api/mailbox").catch(() => ({ accounts: [] }));
+  const existing = mailbox?.accounts?.find((account) => account.provider === PROVIDER)?.organizeApplicationId;
+  if (existing) return existing;
+  await requestServer("POST", "/api/applications/register", {
+    id: ORGANIZE_APPLICATION_ID, name: "163 Mail (organize)", kind: "external", autoOnline: false,
+    source: { type: "manual", credential: { provider: PROVIDER, scope: "imap.organize", write: true, justification: "Create one reviewed folder and move one explicitly confirmed batch of messages." }, manifest: { description: "Moves only a server-selected, revision-bound batch after explicit confirmation." } },
+    capabilityFacades: [{ id: "organize", agentId: ORGANIZE_AGENT_ID, agentToolName: "mail_organize_batch", displayName: "Organize reviewed mail batch", description: "Create the reviewed destination if needed and move at most 50 server-selected messages.", riskLevel: "high", requiresApproval: true, directInvocation: false, riskTags: ["external_mailbox", "provider_state_write", "write_credential", "local_agent"], inputSchema: { type: "object", additionalProperties: false, required: ["previewId"], properties: { previewId: { type: "string" } } }, outputCollection: "invocations" }],
+  });
+  return ORGANIZE_APPLICATION_ID;
 }
 
 async function ensureMailSendApplication({ requestServer, runtimeRoot, nodeCommand }) {
@@ -220,12 +256,18 @@ function credentialPaths(root) {
   return {
     credential: join(root, "mail", "163.json"),
     sendCredential: join(root, "mail", "163-send.json"),
+    organizeCredential: join(root, "mail", "163-organize.json"),
   };
 }
 
 function validSendCredentialMetadata(path) {
   const record = readCredentialRecord(path);
   return record?.provider === PROVIDER && record?.scope === "smtp.send" && EMAIL.test(String(record?.username ?? "")) && Boolean(record?.protectedAuthorizationCode);
+}
+
+function validOrganizeCredentialMetadata(path) {
+  const record = readCredentialRecord(path);
+  return record?.provider === PROVIDER && record?.scope === "imap.organize" && EMAIL.test(String(record?.username ?? "")) && Boolean(record?.protectedAuthorizationCode);
 }
 
 function writeJsonAtomic(path, value) {

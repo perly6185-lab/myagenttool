@@ -28,11 +28,28 @@ function normalizeHeader(entry) {
   if (!entry || typeof entry !== "object") return null;
   const messageId = cap(entry.messageId, MAX_FIELD);
   if (!messageId) return null; // no idempotency key -> not a usable record
+  const classificationHeaders = normalizeClassificationHeaders(entry.classificationHeaders);
   return {
     messageId,
     from: cap(entry.from, MAX_FIELD),
     subject: cap(entry.subject, MAX_FIELD),
     date: cap(entry.date, MAX_FIELD),
+    ...(classificationHeaders ? { classificationHeaders } : {}),
+  };
+}
+
+function normalizeClassificationHeaders(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const listId = cap(value.listId, 255)?.replace(/[\u0000-\u001f\u007f]/g, " ").trim() || null;
+  const autoSubmitted = cap(value.autoSubmitted, 80)?.replace(/[\u0000-\u001f\u007f]/g, " ").trim() || null;
+  const precedence = cap(value.precedence, 80)?.replace(/[\u0000-\u001f\u007f]/g, " ").trim() || null;
+  const listUnsubscribe = value.listUnsubscribe === true;
+  if (!listId && !autoSubmitted && !precedence && !listUnsubscribe) return null;
+  return {
+    ...(listId ? { listId } : {}),
+    ...(listUnsubscribe ? { listUnsubscribe: true } : {}),
+    ...(autoSubmitted ? { autoSubmitted } : {}),
+    ...(precedence ? { precedence } : {}),
   };
 }
 
