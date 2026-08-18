@@ -32,7 +32,7 @@ export default function CreateLocalWorkItemForm({
   const { t, i18n } = useAppTranslation();
   const plannedDateLabel = i18n.language.startsWith("zh") ? "计划 AI 执行日期" : "Planned AI execution date";
   const expectedCompletionLabel = i18n.language.startsWith("zh") ? "预期完成日期" : "Expected completion date";
-  const verificationSopLabel = i18n.language.startsWith("zh") ? "验收 SOP" : "Verification SOP";
+  const verificationSopLabel = i18n.language.startsWith("zh") ? "检查步骤" : "Verification steps";
   const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
   const [projectId, setProjectId] = useState(initialProjectId);

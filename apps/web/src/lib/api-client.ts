@@ -39,12 +39,14 @@ import {
   requestRaw,
   REQUEST_TIMEOUT_MS,
   setSessionReady,
+  setSessionAnonymous,
   setSessionUser,
   type SessionUser,
 } from "@/lib/api/request";
 
 export {
   ApiError,
+  ensureSession,
   getSessionUser,
   openControlPlaneEventStream,
   request,
@@ -70,8 +72,10 @@ export interface MailboxAccount {
   statusDetail: "ready" | "credential_not_authorized" | string;
   canReceive: boolean;
   canSend: boolean;
+  canOrganize?: boolean;
   readApplicationId: string;
   sendApplicationId: string | null;
+  organizeApplicationId?: string | null;
   fetchCapability: string | null;
   incrementalSync: boolean;
   providerReadState: boolean;
@@ -109,6 +113,213 @@ export interface MailboxMessage {
   issueNumber: number | null;
   task: { id: string; localRef: string; title: string; projectId: string } | null;
   createdAt: string | null;
+  classification?: MailClassification | null;
+}
+
+export interface MailClassification {
+  attention: "action_required" | "reply_expected" | "important" | "routine" | "low_value" | "unknown";
+  mailType: "human_conversation" | "customer_or_project" | "transaction" | "account_security" | "calendar" | "system_notification" | "newsletter" | "marketing" | "personal" | "other" | "unknown";
+  suggestedAction: "reply" | "create_task" | "review_attachment" | "read" | "archive_candidate" | "none";
+  label: string;
+  explanation: string;
+  uncertain: boolean;
+  confirmationState: "proposed" | "confirmed" | "corrected" | "dismissed";
+  revision: number;
+  source?: "header" | "semantic" | "rule" | "manual";
+  ruleId?: string;
+}
+
+export interface MailClassificationTarget {
+  attention: MailClassification["attention"];
+  mailType: MailClassification["mailType"];
+  suggestedAction: MailClassification["suggestedAction"];
+}
+
+export interface MailClassificationRule {
+  id: string;
+  accountId: string;
+  status: "active" | "paused" | "revoked";
+  matchKind: "sender" | "domain";
+  matchValue: string;
+  target: MailClassificationTarget;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MailClassificationRuleSuggestion {
+  id: string;
+  accountId: string;
+  matchKind: "sender" | "domain";
+  matchValue: string;
+  target: MailClassificationTarget;
+  evidenceCount: number;
+  affectedCount: number;
+  samples: Array<{ messageId: string; from: string; subject: string; date: string | null }>;
+}
+
+export interface MailFolderDestination {
+  kind: "existing" | "new";
+  folderId: string | null;
+  folderPath: string | null;
+  name: string | null;
+  category: "subscriptions" | "notifications";
+}
+
+export interface MailFolderSuggestion {
+  id: string;
+  accountId: string;
+  classificationRuleId: string;
+  classificationRuleRevision: number;
+  matchKind: "sender" | "domain";
+  matchValue: string;
+  destinationCategory: "subscriptions" | "notifications";
+  affectedCount: number;
+  protectedCount: number;
+  proposedDestination: MailFolderDestination;
+  folderOptions: MailFolderDestination[];
+  samples: Array<{ messageId: string; from: string; subject: string; date: string | null; folderId: string }>;
+}
+
+export interface MailFolderMovePreview {
+  id: string;
+  accountId: string;
+  suggestionId: string;
+  destination: MailFolderDestination;
+  totalMatched: number;
+  selectedCount: number;
+  remainingCount: number;
+  status: "previewed";
+  purpose?: "manual" | "automatic" | "recovery";
+  recoveryOfJobId?: string | null;
+  revision: number;
+  expiresAt: string;
+  samples: MailFolderSuggestion["samples"];
+  approvalTarget: string;
+  movesSupported: boolean;
+}
+
+export interface MailFolderMoveJob {
+  id: string;
+  accountId: string;
+  previewId: string;
+  destination: MailFolderDestination;
+  requestedCount: number;
+  movedCount: number;
+  missingCount: number;
+  conflictCount?: number;
+  pendingCount?: number;
+  unknownCount?: number;
+  mode?: "manual" | "automatic" | "recovery";
+  automationId?: string | null;
+  recoveryOfJobId?: string | null;
+  status: "moving" | "succeeded" | "unconfirmed" | "recoverable" | "conflict";
+  conflictType?: string | null;
+  revision: number;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  items?: Array<{ messageId: string; sourceFolderPath: string; status: "pending" | "moved" | "missing" | "conflict" | "unknown"; reason: string | null }>;
+}
+
+export interface MailFolderAutomation {
+  id: string;
+  accountId: string;
+  classificationRuleId: string;
+  classificationRuleRevision: number;
+  suggestionId: string;
+  destination: MailFolderDestination;
+  status: "active" | "paused" | "revoked";
+  pauseReason: string | null;
+  batchSize: number;
+  revision: number;
+  enabledAt: string;
+  lastRunAt: string | null;
+  lastJobId: string | null;
+  lastSuccessfulAt: string | null;
+  consecutiveSuccessfulBatches: number;
+  lastCheckedAt: string | null;
+  nextAction: "none" | "resume_when_ready" | "sync_and_review" | "review_classification_quality" | "enable_rollout" | "reauthorize" | "create_new_authorization";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MailFolderAutomationDryRun {
+  automationId: string;
+  checkedAt: string;
+  providerCalled: false;
+  successCountersChanged: false;
+  accountId?: string;
+  destination?: MailFolderDestination;
+  selectedCount: number;
+  matchedCount: number;
+  excludedCount: number;
+  exclusions?: { protected: number; batchLimit: number };
+  exclusionReasons: string[];
+}
+
+export type MailSmartView = "all" | "needs_attention" | "important" | "notifications" | "subscriptions" | "other";
+
+export interface MailClassificationJob {
+  id: string;
+  scope: string;
+  mode: "header" | "semantic";
+  status: "queued" | "running" | "cancelling" | "succeeded" | "degraded" | "cancelled" | "interrupted";
+  total: number;
+  processed: number;
+  classified: number;
+  failed: number;
+  cancelled?: number;
+  provider?: string | null;
+  model?: string | null;
+}
+
+export interface MailQualityMetric {
+  numerator: number;
+  denominator: number;
+  value: number | null;
+  target: number;
+  direction: "at_least" | "at_most";
+}
+
+export interface MailClassificationQuality {
+  status: "collecting" | "healthy" | "needs_attention";
+  generatedAt: string;
+  sampleSize: number;
+  minimumSample: number;
+  signals: Array<"insufficient_sample" | "low_coverage" | "high_unknown_rate" | "high_correction_rate" | "high_job_failure_rate" | "stale_classifier_results">;
+  metrics: {
+    coverage: MailQualityMetric;
+    unknown: MailQualityMetric;
+    corrections: MailQualityMetric;
+    jobFailures: MailQualityMetric;
+    semantic: { count: number };
+    stale: { count: number };
+  };
+  organization: {
+    status: "collecting" | "healthy" | "needs_attention";
+    completedBatches: number;
+    unconfirmedBatches: number;
+    unconfirmedRate: number | null;
+    minimumSample: number;
+  };
+  privacy: { localOnly: true; includesMessageContent: false; includesSenderIdentity: false };
+}
+
+export interface MailSemanticPreview {
+  available: boolean;
+  reason: "not_configured" | "circuit_open" | null;
+  eligible: number;
+  pending: number;
+  limit: number;
+  newestDate: string | null;
+  oldestDate: string | null;
+  readsUnopenedBodies: false;
+  externalModel: false;
+  provider: string | null;
+  model: string | null;
+  circuitRemainingMs: number;
 }
 
 export interface MailboxDraft {
@@ -144,6 +355,13 @@ export interface MailboxSnapshot {
   messages: MailboxMessage[];
   query: string;
   selectedFolder: string;
+  selectedView?: MailSmartView;
+  classificationSummary?: {
+    counts: Record<MailSmartView, number>;
+    classified: number;
+    pending: number;
+    classifierVersion: number;
+  } | null;
   pagination: { page: number; pageSize: number; total: number; totalPages: number; hasPrevious: boolean; hasNext: boolean };
   drafts: MailboxDraft[];
   updatedAt: string | null;
@@ -1292,7 +1510,7 @@ export async function getIdentityOptions(): Promise<IdentityOptions> {
 export async function getCurrentSession(): Promise<SessionResponse | null> {
   const response = await fetch(`${apiBase}/api/session`, { credentials: "include" });
   if (response.status === 401) {
-    setSessionReady(false);
+    setSessionAnonymous();
     setSessionUser(null);
     return null;
   }
@@ -1382,7 +1600,7 @@ export async function logout(): Promise<void> {
   if (!response.ok && response.status !== 204) {
     throw new ApiError("logout_failed", "Could not revoke this session.", response.status);
   }
-  setSessionReady(false);
+  setSessionAnonymous();
   setSessionUser(null);
 }
 
@@ -1396,7 +1614,7 @@ export async function logoutAllSessions(): Promise<void> {
       throw new ApiError("logout_all_failed", "Could not sign out all devices.", response.status);
     }
   });
-  setSessionReady(false);
+  setSessionAnonymous();
   setSessionUser(null);
 }
 

@@ -76,6 +76,14 @@ export const localContentApi = {
     "/api/local-content/health",
     { contentIds },
   ),
+  createTask: (payload: { projectId: string; title: string; body?: string; idempotencyKey?: string }) =>
+    request<{ workItem: unknown }>("POST", "/api/work-items", {
+      ...payload,
+      type: "task",
+      status: "backlog",
+      priority: "p2",
+      executionPolicy: "manual",
+    }),
   addToWorkItem: (
     workItemId: string,
     payload: { contentId: string; expectedRevision: number; purpose?: "reference" | "required_input"; selectedFingerprint?: string },

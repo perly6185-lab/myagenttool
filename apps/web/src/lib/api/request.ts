@@ -42,6 +42,7 @@ export interface SessionUser {
 
 let memoryUser: SessionUser | null = null;
 let sessionReady = false;
+let sessionChecked = false;
 let sessionPromise: Promise<boolean> | null = null;
 
 export function setSessionUser(user: SessionUser | null): void {
@@ -57,6 +58,13 @@ export function setSessionUser(user: SessionUser | null): void {
 
 export function setSessionReady(ready: boolean): void {
   sessionReady = ready;
+  sessionChecked = ready;
+}
+
+/** Record a completed session check that found no signed-in user. */
+export function setSessionAnonymous(): void {
+  sessionReady = false;
+  sessionChecked = true;
 }
 
 export function getSessionUser(): SessionUser | null {
@@ -88,15 +96,21 @@ async function discoverSession(): Promise<boolean> {
     const data = (await current.json().catch(() => ({}))) as { user?: SessionUser };
     setSessionUser(data.user ?? null);
     sessionReady = true;
+    sessionChecked = true;
     return true;
   }
   setSessionUser(null);
   sessionReady = false;
+  // A 401 is a valid anonymous state, not a transport failure. Remember it so
+  // every public dashboard request does not rediscover the same missing
+  // session and flood the server with identical 401s.
+  sessionChecked = current?.status === 401;
   return false;
 }
 
 export function ensureSession(): Promise<boolean> {
   if (sessionReady) return Promise.resolve(true);
+  if (sessionChecked) return Promise.resolve(false);
   if (!sessionPromise) sessionPromise = discoverSession().finally(() => (sessionPromise = null));
   return sessionPromise;
 }
@@ -109,7 +123,7 @@ export async function request<T = unknown>(
   timeoutMs = REQUEST_TIMEOUT_MS,
   extraHeaders?: Record<string, string>,
 ): Promise<T> {
-  await ensureSession();
+  const hadSession = await ensureSession();
   const headers: Record<string, string> = { ...csrfHeaders(method), ...extraHeaders };
   if (body) headers["Content-Type"] = "application/json";
   const response = await fetch(`${apiBase}${path}`, {
@@ -119,8 +133,9 @@ export async function request<T = unknown>(
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (response.status === 401 && retry) {
+  if (response.status === 401 && retry && hadSession) {
     sessionReady = false;
+    sessionChecked = false;
     await ensureSession();
     return request<T>(method, path, body, false, timeoutMs, extraHeaders);
   }
@@ -134,10 +149,11 @@ export async function request<T = unknown>(
 }
 
 export async function requestBytes(path: string, retry = true): Promise<ArrayBuffer> {
-  await ensureSession();
+  const hadSession = await ensureSession();
   const response = await fetch(`${apiBase}${path}`, { method: "GET", credentials: "include" });
-  if (response.status === 401 && retry) {
+  if (response.status === 401 && retry && hadSession) {
     sessionReady = false;
+    sessionChecked = false;
     await ensureSession();
     return requestBytes(path, false);
   }
@@ -156,7 +172,7 @@ export async function requestRaw<T>(
   retry = true,
   userSignal?: AbortSignal,
 ): Promise<T> {
-  await ensureSession();
+  const hadSession = await ensureSession();
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), REQUEST_TIMEOUT_MS);
   const abortFromUser = () => controller.abort(userSignal?.reason);
@@ -175,8 +191,9 @@ export async function requestRaw<T>(
     window.clearTimeout(timeout);
     userSignal?.removeEventListener("abort", abortFromUser);
   }
-  if (response.status === 401 && retry) {
+  if (response.status === 401 && retry && hadSession) {
     sessionReady = false;
+    sessionChecked = false;
     await ensureSession();
     return requestRaw<T>(method, path, body, contentType, false, userSignal);
   }
@@ -199,14 +216,15 @@ export async function requestByteRange(
   end: number,
   retry = true,
 ): Promise<{ data: ArrayBuffer; total: number }> {
-  await ensureSession();
+  const hadSession = await ensureSession();
   const response = await fetch(`${apiBase}${path}`, {
     method: "GET",
     credentials: "include",
     headers: { Range: `bytes=${start}-${end - 1}` },
   });
-  if (response.status === 401 && retry) {
+  if (response.status === 401 && retry && hadSession) {
     sessionReady = false;
+    sessionChecked = false;
     await ensureSession();
     return requestByteRange(path, start, end, false);
   }
@@ -232,6 +250,7 @@ export async function openControlPlaneEventStream(
   });
   if (response.status === 401) {
     sessionReady = false;
+    sessionChecked = false;
     throw new ApiError("unauthenticated", "Session expired.", 401);
   }
   if (!response.ok || !response.body) throw new ApiError("stream_unavailable", "Live updates unavailable.", response.status);

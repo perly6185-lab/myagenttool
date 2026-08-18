@@ -148,6 +148,7 @@ jobs:
       - name: Sub-capability gates (mock provider, issue-gate must pass 100%)
         run: |
           pnpm ai:eval-subcap
+          pnpm release:mail
           pnpm test:commercial-routine-release
           pnpm eval:commercial-routine
           pnpm eval:commercial-pilot:rehearsal

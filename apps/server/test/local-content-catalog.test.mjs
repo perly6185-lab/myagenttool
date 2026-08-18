@@ -547,6 +547,36 @@ test("catalog previews text without exposing paths and neutralizes active HTML",
   }
 });
 
+test("catalog reads native text beyond the preview limit with UTF-8-safe continuation offsets", async () => {
+  const fx = fixture();
+  try {
+    writeFileSync(fx.articleFile, "你".repeat(400_000));
+    await fx.service.rebuild({}, actor);
+    const searched = await fx.service.search({ kinds: ["article"], limit: 10 }, actor);
+    const article = searched.body.results.find((record) => record.kind === "article");
+    assert.ok(article);
+
+    const first = await fx.service.readTextChunk({ contentId: article.id, offset: 0, limit: 1 }, actor);
+    assert.equal(first.status, 200);
+    assert.equal(first.body.chunk.text, "你");
+    assert.equal(first.body.chunk.nextOffset, 3);
+    assert.equal(first.body.chunk.text.includes("�"), false);
+
+    const beyondPreview = await fx.service.readTextChunk({
+      contentId: article.id,
+      offset: 1_048_575,
+      limit: 10,
+    }, actor);
+    assert.equal(beyondPreview.status, 200);
+    assert.equal(beyondPreview.body.chunk.text, "你".repeat(10));
+    assert.equal(beyondPreview.body.chunk.nextOffset, 1_048_605);
+    assert.equal(beyondPreview.body.chunk.eof, false);
+    assert.equal(beyondPreview.body.chunk.sourceTruncated, false);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 test("catalog indexes and safely previews extracted Office text without executing the document", async () => {
   const fx = fixture();
   try {

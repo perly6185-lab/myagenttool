@@ -101,6 +101,21 @@ test("send authorization is verified and stored as a separate write credential",
   assert.equal(registration.body.capabilityFacades[0].directInvocation, false);
 });
 
+test("folder organization is a separate approval-gated write credential", async () => {
+  const { root, handlers, requests } = harness();
+  const result = await handlers.get("mail:connect-163-organize")(null, { email: "user@163.com", authorizationCode: "organize-code" });
+  assert.equal(result.ok, true);
+  const credential = JSON.parse(readFileSync(join(root, "mail", "163-organize.json"), "utf8"));
+  assert.equal(credential.scope, "imap.organize");
+  assert(!JSON.stringify(requests).includes("organize-code"));
+  const registration = requests.find((item) => item.path === "/api/applications/register");
+  assert.equal(registration.body.source.credential.write, true);
+  assert.equal(registration.body.capabilityFacades[0].agentToolName, "mail_organize_batch");
+  assert.equal(registration.body.capabilityFacades[0].requiresApproval, true);
+  assert.equal(registration.body.capabilityFacades[0].directInvocation, false);
+  assert.equal(existsSync(join(root, "credential-readiness", "app_163_mail_organize.json")), true);
+});
+
 test("invalid addresses are rejected before verification", async () => {
   let called = false;
   const { handlers } = harness({ verifyCredential: async () => { called = true; } });
