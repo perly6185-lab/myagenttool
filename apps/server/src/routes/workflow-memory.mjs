@@ -5,6 +5,22 @@
  * only decode the bounded HTTP shape and preserve identical 404 behavior for a
  * missing or foreign resource.
  */
+
+const MAX_TEMPLATE_LEARNING_UPLOAD_BYTES = 24 * 1024 * 1024;
+
+async function readBoundedBinary(req, limit = MAX_TEMPLATE_LEARNING_UPLOAD_BYTES) {
+  const declared = Number(req.headers["content-length"] ?? 0);
+  if (Number.isFinite(declared) && declared > limit) return { error: "template_learning_file_size_invalid" };
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > limit) return { error: "template_learning_file_size_invalid" };
+    chunks.push(chunk);
+  }
+  return { bytes: Buffer.concat(chunks, total) };
+}
+
 export async function handleWorkflowMemoryRoutes({
   req,
   res,
@@ -14,6 +30,11 @@ export async function handleWorkflowMemoryRoutes({
   actor,
   listSources,
   createSource,
+  listTemplateLearningTasks,
+  createTemplateLearningTask,
+  stageTemplateLearningFile,
+  startTemplateLearningTask,
+  completeTemplateLearningTask,
   scanSource,
   scanIncrementalIntake,
   listIntakeObservations,
@@ -70,8 +91,10 @@ export async function handleWorkflowMemoryRoutes({
   exportBusinessPilotCollection,
   revokeBusinessPilotCollection,
   getWorkflowAdaptiveWorkbench,
+  getWorkflowMemoryInsights,
   updateWorkflowAdaptivePolicy,
   updateWorkflowAdaptiveMonitor,
+  updateWorkflowAdaptiveAutomation,
   runWorkflowAdaptiveMonitorNow,
   syncWorkflowAdaptiveOutcomes,
   listWorkflowAdaptiveLearning,
@@ -92,6 +115,9 @@ export async function handleWorkflowMemoryRoutes({
   startRoutineWorkItem,
   executeRoutineStep,
   confirmQuotationInputs,
+  bindRoutineLedger,
+  requestRoutineStepReview,
+  resumeRoutineRecovery,
   completeRoutineStep,
   retryRoutineStep,
   decideRoutineApproval,
@@ -126,6 +152,70 @@ export async function handleWorkflowMemoryRoutes({
 }) {
   if (!url.pathname.startsWith("/api/workflow-memory")) return false;
 
+  if (url.pathname === "/api/workflow-memory/template-learning") {
+    if (req.method === "GET") {
+      const result = listTemplateLearningTasks({}, actor);
+      sendJson(res, result.status, result.body);
+      return true;
+    }
+    if (req.method === "POST") {
+      const result = createTemplateLearningTask(await readJson(req), actor);
+      sendJson(res, result.status, result.body);
+      return true;
+    }
+  }
+
+  const templateLearningFileMatch = url.pathname.match(
+    /^\/api\/workflow-memory\/template-learning\/([^/]+)\/files$/,
+  );
+  if (templateLearningFileMatch && req.method === "POST") {
+    const body = await readBoundedBinary(req);
+    if (body.error) {
+      sendJson(res, 413, { error: body.error, maxBytes: MAX_TEMPLATE_LEARNING_UPLOAD_BYTES });
+      return true;
+    }
+    const result = stageTemplateLearningFile({
+      taskId: decodeURIComponent(templateLearningFileMatch[1]),
+      caseId: url.searchParams.get("caseId"),
+      role: url.searchParams.get("role"),
+      filename: url.searchParams.get("filename"),
+      contentType: req.headers["content-type"],
+      bytes: body.bytes,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const templateLearningStartMatch = url.pathname.match(
+    /^\/api\/workflow-memory\/template-learning\/([^/]+)\/start$/,
+  );
+  if (templateLearningStartMatch && req.method === "POST") {
+    const body = await readJson(req);
+    const result = await startTemplateLearningTask({
+      taskId: decodeURIComponent(templateLearningStartMatch[1]),
+      background: true,
+      allowCloudOcr: body.allowCloudOcr === true,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/template-learning/complete" && req.method === "POST") {
+    const result = completeTemplateLearningTask(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/insights" && req.method === "GET") {
+    const result = getWorkflowMemoryInsights({
+      projectId: url.searchParams.get("projectId"),
+      sourceId: url.searchParams.get("sourceId"),
+      routineDefinitionId: url.searchParams.get("routineDefinitionId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (url.pathname === "/api/workflow-memory/adaptive-workbench"
     && req.method === "GET") {
     const result = getWorkflowAdaptiveWorkbench({
@@ -146,6 +236,13 @@ export async function handleWorkflowMemoryRoutes({
   if (url.pathname === "/api/workflow-memory/adaptive-workbench/monitor"
     && req.method === "PUT") {
     const result = updateWorkflowAdaptiveMonitor(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/adaptive-workbench/automation"
+    && req.method === "PUT") {
+    const result = updateWorkflowAdaptiveAutomation(await readJson(req), actor);
     sendJson(res, result.status, result.body);
     return true;
   }
@@ -250,7 +347,7 @@ export async function handleWorkflowMemoryRoutes({
 
   if (url.pathname === "/api/workflow-memory/adaptive-workbench/reconcile"
     && req.method === "POST") {
-    const result = reconcileWorkflowAdaptiveWork(await readJson(req), actor);
+    const result = await reconcileWorkflowAdaptiveWork(await readJson(req), actor);
     sendJson(res, result.status, result.body);
     return true;
   }
@@ -410,10 +507,10 @@ export async function handleWorkflowMemoryRoutes({
           capped: artifactIds.length === 10
             && (result.body.observations ?? []).filter((row) => row.state === "ready").length > 10,
         };
-        result.body.adaptiveWork = reconcileWorkflowAdaptiveWork({
+        result.body.adaptiveWork = (await reconcileWorkflowAdaptiveWork({
           projectId: result.body.source.projectId,
           sourceId,
-        }, actor).body;
+        }, actor)).body;
       }
     } else if (action === "cancel-scan" && req.method === "POST") {
       result = cancelScan({ sourceId }, actor);
@@ -727,7 +824,7 @@ export async function handleWorkflowMemoryRoutes({
   }
 
   const routineWorkItemAction = url.pathname.match(
-    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)\/(start|cancel)$/,
+    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)\/(start|cancel|resume)$/,
   );
   if (routineWorkItemAction && req.method === "POST") {
     const body = await readJson(req);
@@ -738,13 +835,15 @@ export async function handleWorkflowMemoryRoutes({
     };
     const result = routineWorkItemAction[2] === "start"
       ? startRoutineWorkItem(input, actor)
-      : cancelRoutineWorkItem(input, actor);
+      : routineWorkItemAction[2] === "resume"
+        ? resumeRoutineRecovery(input, actor)
+        : cancelRoutineWorkItem(input, actor);
     sendJson(res, result.status, result.body);
     return true;
   }
 
   const routineStepAction = url.pathname.match(
-    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)\/steps\/([^/]+)\/(execute|quotation-inputs|complete|retry|approval|condition)$/,
+    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)\/steps\/([^/]+)\/(execute|quotation-inputs|ledger-binding|review-request|complete|retry|approval|condition)$/,
   );
   if (routineStepAction && req.method === "POST") {
     const body = await readJson(req);
@@ -764,6 +863,13 @@ export async function handleWorkflowMemoryRoutes({
         answers: body?.answers,
         confirmed: body?.confirmed,
       }, actor);
+    } else if (routineStepAction[3] === "ledger-binding") {
+      result = bindRoutineLedger({
+        ...input,
+        ledgerDefinitionId: body?.ledgerDefinitionId,
+      }, actor);
+    } else if (routineStepAction[3] === "review-request") {
+      result = requestRoutineStepReview(input, actor);
     } else if (routineStepAction[3] === "complete") {
       result = completeRoutineStep({
         ...input,

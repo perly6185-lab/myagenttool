@@ -20,7 +20,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { join, relative, resolve, sep, win32 } from "node:path";
 import { promisify } from "node:util";
 
 import { parseAddr } from "./officecli-sheet-ops.mjs";
@@ -34,6 +34,29 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 // Node's execFile default is 1 MB; a rendered document can be larger. Cap high
 // enough for real previews but bounded so a pathological render can't OOM.
 const MAX_HTML_BYTES = 16 * 1024 * 1024;
+
+export function resolveOfficecliInvocation(command, args = [], {
+  platform = process.platform,
+  env = process.env,
+  fileExists = existsSync,
+  nodePath = process.execPath,
+} = {}) {
+  if (platform !== "win32" || command !== "officecli") return { executable: command, args };
+  const candidates = [
+    env.APPDATA ? win32.join(env.APPDATA, "npm", "node_modules", "@officecli", "officecli", "officecli.js") : null,
+    env.npm_config_prefix ? win32.join(env.npm_config_prefix, "node_modules", "@officecli", "officecli", "officecli.js") : null,
+  ].filter(Boolean);
+  const cli = candidates.find((candidate) => fileExists(candidate));
+  return cli ? { executable: nodePath, args: [cli, ...args] } : { executable: command, args };
+}
+
+function runOfficecli(command, args, opts) {
+  const invocation = resolveOfficecliInvocation(command, args);
+  return execFileAsync(invocation.executable, invocation.args, {
+    ...opts,
+    env: { ...process.env, OFFICECLI_RESIDENT_FLUSH: "each" },
+  });
+}
 
 export class OfficecliPreviewError extends Error {
   constructor(code, message) {
@@ -106,7 +129,7 @@ export async function renderOfficecliPreview({ projectPath, relativeFile, timeou
   // so a promote could capture stale on-disk content). Setting it here keeps every
   // officecli invocation — reads and the write runner alike — flush-each, so any
   // resident is flush-each regardless of who touches the file first.
-  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, { ...opts, env: { ...process.env, OFFICECLI_RESIDENT_FLUSH: "each" } }));
+  const spawn = run ?? runOfficecli;
 
   let stdout;
   try {
@@ -166,7 +189,7 @@ export async function readOfficecliDocParagraphs({ projectPath, relativeFile, ti
   // so a promote could capture stale on-disk content). Setting it here keeps every
   // officecli invocation — reads and the write runner alike — flush-each, so any
   // resident is flush-each regardless of who touches the file first.
-  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, { ...opts, env: { ...process.env, OFFICECLI_RESIDENT_FLUSH: "each" } }));
+  const spawn = run ?? runOfficecli;
 
   let stdout;
   try {
@@ -256,7 +279,7 @@ export async function readOfficecliSheet({ projectPath, relativeFile, sheet, tim
   // so a promote could capture stale on-disk content). Setting it here keeps every
   // officecli invocation — reads and the write runner alike — flush-each, so any
   // resident is flush-each regardless of who touches the file first.
-  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, { ...opts, env: { ...process.env, OFFICECLI_RESIDENT_FLUSH: "each" } }));
+  const spawn = run ?? runOfficecli;
   const getJson = async (selector, extra = []) => {
     let stdout;
     try {
@@ -330,7 +353,7 @@ export async function readOfficecliDeck({ projectPath, relativeFile, timeoutMs =
   // so a promote could capture stale on-disk content). Setting it here keeps every
   // officecli invocation — reads and the write runner alike — flush-each, so any
   // resident is flush-each regardless of who touches the file first.
-  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, { ...opts, env: { ...process.env, OFFICECLI_RESIDENT_FLUSH: "each" } }));
+  const spawn = run ?? runOfficecli;
   let stdout;
   try {
     ({ stdout } = await spawn("officecli", ["get", relPath, "/", "--json", "--depth", "2"], {

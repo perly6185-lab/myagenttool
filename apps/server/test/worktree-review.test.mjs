@@ -62,6 +62,20 @@ test("comments are cleaned: empties dropped, non-objects dropped, null path kept
   assert.equal(r.comments[1].body, "general note");
 });
 
+test("review comments discard absolute and traversing paths outside the worktree", () => {
+  const { s } = svc();
+  const r = s.submitWorktreeReview({
+    worktreeId: "wt_1",
+    verdict: "changes_requested",
+    comments: [
+      { path: "src/inside.ts", body: "valid path" },
+      { path: "../outside.ts", body: "traversal path" },
+      { path: "/etc/passwd", body: "absolute path" },
+    ],
+  });
+  assert.deepEqual(r.comments.map((comment) => comment.path), ["src/inside.ts", null, null]);
+});
+
 test("latest-wins: the newest review is the one that gates", () => {
   const { s } = svc();
   s.submitWorktreeReview({ worktreeId: "wt_1", verdict: "changes_requested" });

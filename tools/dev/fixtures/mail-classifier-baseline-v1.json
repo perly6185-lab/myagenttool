@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "evaluationVersion": 1,
+  "classifierVersion": 1,
+  "dataset": {
+    "fingerprint": "c1e58986ae7d823fbf0f90edf6f1142def9ee3cf5cf0e3f6200181f05a81c0b3",
+    "total": 450,
+    "chinese": 200,
+    "english": 200,
+    "adversarial": 50
+  },
+  "baselineMetrics": {
+    "attentionPrecision": 1,
+    "attentionRecall": 1,
+    "subscriptionPrecision": 1,
+    "unknownRate": 0.2,
+    "injectionSafeRate": 1
+  }
+}

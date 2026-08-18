@@ -1,5 +1,6 @@
 import {
   request,
+  requestRaw,
   type BusinessDocumentAnalysisJob,
   type BusinessDocumentClassification,
   type BusinessDocumentType,
@@ -20,6 +21,41 @@ import {
   type WorkflowRun,
   type WorkflowSource,
 } from "@/lib/api-client";
+
+export type TemplateLearningStage =
+  | "collecting_cases" | "analyzing" | "needs_case_review" | "failed" | "completed";
+
+export interface TemplateLearningTask {
+  id: string;
+  templateId: string;
+  sourceId: string;
+  workItemId: string;
+  name: string;
+  nameSuggested?: boolean;
+  stage: TemplateLearningStage;
+  progress: number;
+  lastError?: string | null;
+  allowCloudOcr?: boolean;
+  cases: Array<{
+    id: string;
+    files: Array<{
+      id: string;
+      role: "input" | "output" | "reference";
+      name: string;
+      extension: string;
+      contentType: string;
+      size: number;
+      hash: string;
+      relativePath: string;
+      copiedAt: string;
+    }>;
+  }>;
+  fileCount: number;
+  totalBytes: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
 
 export interface WorkflowIntakeObservation {
   id: string;
@@ -571,11 +607,91 @@ export interface AdaptiveWorkWorkbench {
   permissions: { canUse: boolean; canManage: boolean };
 }
 
+export type WorkflowMemoryInsights = {
+  pathGraph: {
+    nodes: Array<{
+      kind: "entry" | "reference" | "intermediate" | "final" | "ledger";
+      state: "confirmed" | "unknown";
+      paths: Array<{ path: string }>;
+    }>;
+    unknownKinds: string[];
+  } | null;
+  health: {
+    score: number | null;
+    status: "insufficient_data" | "healthy" | "watch" | "at_risk";
+    reasons: string[];
+    metrics: {
+      sampleCount: number;
+      duplicateRate: number | null;
+      manualCorrectionRate: number | null;
+      completionRate: number | null;
+      anomalyRate: number | null;
+    };
+  } | null;
+  memoryPackage: {
+    version: number;
+    summary: Record<string, { state: "confirmed" | "unknown"; value: unknown }>;
+  } | null;
+  previousMemoryPackage: { version: number } | null;
+  packageDiff: {
+    changes: Array<{ path: string; kind: string; before: unknown; after: unknown }>;
+  } | null;
+  routineSelection: { state: "matched" | "conflict" | "missing"; routineDefinitionId: string | null; count: number };
+  resultSuggestions: Array<{
+    id: string;
+    documentType: string;
+    evidenceCount: number;
+    changes: { added: string[]; removed: string[]; thresholdChanged: boolean };
+    evaluationPassed: boolean;
+  }>;
+  rollback: { available: boolean; ruleId: string | null; expectedRevision: number | null };
+};
+
 /**
  * Workflow Memory is route-lazy, so keep its sizeable API surface in the same
  * lazy chunk instead of charging every user for it during application boot.
  */
 export const workflowMemoryApi = {
+  listTemplateLearningTasks: () =>
+    request<{ tasks: TemplateLearningTask[] }>("GET", "/api/workflow-memory/template-learning"),
+  createTemplateLearningTask: (body: { name?: string; allowCloudOcr?: boolean }) =>
+    request<{ task: TemplateLearningTask; source: WorkflowSource; workItem: { id: string; localRef: string; title: string } }>(
+      "POST", "/api/workflow-memory/template-learning", body,
+    ),
+  uploadTemplateLearningFile: (
+    taskId: string,
+    caseId: string,
+    role: "input" | "output" | "reference",
+    file: File,
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams({ caseId, role, filename: file.name });
+    return requestRaw<{ task: TemplateLearningTask }>(
+      "POST",
+      `/api/workflow-memory/template-learning/${encodeURIComponent(taskId)}/files?${query}`,
+      file,
+      file.type || "application/octet-stream",
+      true,
+      signal,
+    );
+  },
+  startTemplateLearningTask: (taskId: string, body: { allowCloudOcr?: boolean } = {}) =>
+    request<{ task: TemplateLearningTask; source?: WorkflowSource; accepted?: boolean }>(
+      "POST", `/api/workflow-memory/template-learning/${encodeURIComponent(taskId)}/start`, body,
+    ),
+  completeTemplateLearningTask: (sourceId: string) =>
+    request<{ task: TemplateLearningTask }>(
+      "POST", "/api/workflow-memory/template-learning/complete", { sourceId },
+    ),
+  getWorkflowMemoryInsights: (projectId: string, sourceId: string, routineDefinitionId?: string) => {
+    const query = new URLSearchParams({ projectId, sourceId });
+    if (routineDefinitionId) query.set("routineDefinitionId", routineDefinitionId);
+    return (
+    request<WorkflowMemoryInsights>(
+      "GET",
+      `/api/workflow-memory/insights?${query}`,
+    ));
+  },
   getAdaptiveWorkWorkbench: (projectId: string, sourceId?: string) => {
     const query = new URLSearchParams({ projectId });
     if (sourceId) query.set("sourceId", sourceId);
@@ -605,6 +721,23 @@ export const workflowMemoryApi = {
   }) => request<{ monitor: AdaptiveWorkMonitor }>(
     "PUT",
     "/api/workflow-memory/adaptive-workbench/monitor",
+    body,
+  ),
+  updateAdaptiveWorkAutomation: (body: {
+    projectId: string;
+    sourceId: string;
+    expectedPolicyRevision: number;
+    expectedMonitorRevision: number;
+    enabled: boolean;
+    intervalMinutes: number;
+    confirmed?: true;
+  }) => request<{
+    enabled: boolean;
+    policy: AdaptiveWorkWorkbench["policy"];
+    monitor: AdaptiveWorkMonitor;
+  }>(
+    "PUT",
+    "/api/workflow-memory/adaptive-workbench/automation",
     body,
   ),
   runAdaptiveWorkMonitorNow: (body: { projectId: string; sourceId: string }) =>
@@ -694,8 +827,31 @@ export const workflowMemoryApi = {
       observed: number;
       prepared: number;
       autoCreated: number;
-      created: Array<{ suggestionId: string; workItemId: string; localRef: string; replayed: boolean }>;
-      failures: Array<{ suggestionId: string; error: string }>;
+      created: Array<{
+        suggestionId: string;
+        workItemId: string;
+        localRef: string;
+        replayed: boolean;
+        routineRunId: string | null;
+        executionStatus: string | null;
+        advancedStepKeys: string[];
+        assistance: {
+          kind: string;
+          reason: string;
+          stepKey: string | null;
+          stepLabel: string | null;
+          action: string;
+        } | null;
+      }>;
+      failures: Array<{
+        suggestionId: string;
+        error: string;
+        assistance: {
+          kind: string;
+          reason: string;
+          action: string;
+        };
+      }>;
       capped: boolean;
       workbench: AdaptiveWorkWorkbench;
     }>("POST", "/api/workflow-memory/adaptive-workbench/reconcile", body),
@@ -892,12 +1048,15 @@ export const workflowMemoryApi = {
       state: "ready" | "unavailable";
       providerId: string | null;
       reason: string | null;
-      localOnly: true;
+      localOnly: boolean;
+      requiresCloudConsent?: boolean;
+      local?: { state: "ready" | "unavailable"; providerId: string | null; reason: string | null } | null;
+      cloudFallback?: { state: "ready" | "unavailable"; providerId: string | null; reason: string | null } | null;
       supportedExtensions: string[];
     }>("GET", "/api/workflow-memory/ocr-readiness"),
   ocrWorkflowArtifact: (
     artifactId: string,
-    body: { expectedRevision: number; confirmed: true },
+    body: { expectedRevision: number; confirmed: true; allowCloudOcr?: boolean },
   ) => request<{ artifact: WorkflowArtifact; replayed: boolean }>(
     "POST",
     `/api/workflow-memory/artifacts/${encodeURIComponent(artifactId)}/ocr`,

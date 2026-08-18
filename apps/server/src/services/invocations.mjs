@@ -7,6 +7,16 @@ import { createInvocationDirectHttpRuntime } from "./invocations/direct-http.mjs
 import { createInvocationDispatchRuntime } from "./invocations/dispatch.mjs";
 import { createInvocationTroubleshootingRuntime } from "./invocations/troubleshooting.mjs";
 
+const CANONICAL_DEFAULT_AGENT_ID = "agt_codex_cli";
+
+export function selectDefaultAgent(agents = []) {
+  return agents.find((item) => item.id === CANONICAL_DEFAULT_AGENT_ID)
+    ?? agents.find((item) => item.adapter?.type !== "platform" && item.id !== "agt_demo_cli")
+    ?? agents.find((item) => item.id === "agt_demo_cli")
+    ?? agents[0]
+    ?? null;
+}
+
 export function createInvocationService({
   state,
   now,
@@ -225,7 +235,7 @@ export function createInvocationService({
   }
 
   function defaultAgent() {
-    return state.agents.find((item) => item.id === "agt_demo_cli") ?? state.agents.find((item) => item.adapter.type !== "platform") ?? state.agents[0] ?? null;
+    return selectDefaultAgent(state.agents);
   }
 
   return {

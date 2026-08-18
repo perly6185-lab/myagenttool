@@ -16,6 +16,11 @@ export const businessDocumentTypes = [
   "price_list",
   "customer_reference",
   "other_reference",
+  "contract_review",
+  "purchase_request",
+  "customer_complaint",
+  "weekly_report",
+  "project_acceptance",
   "unknown",
 ];
 
@@ -25,6 +30,11 @@ export const businessEntityTypes = [
   "inquiry",
   "quotation",
   "order",
+  "contract_review",
+  "purchase_request",
+  "customer_complaint",
+  "weekly_report",
+  "project_acceptance",
 ];
 
 // A document type is intrinsic to the business document. Its role is contextual:

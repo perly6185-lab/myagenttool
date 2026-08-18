@@ -10,6 +10,10 @@
     "dist:win": "pnpm --dir ../.. desktop:dist",
     "pack:mac": "pnpm --dir ../.. desktop:pack:mac",
     "dist:mac": "pnpm --dir ../.. desktop:dist:mac",
+    "pack:linux": "pnpm --dir ../.. desktop:pack:linux",
+    "dist:linux": "pnpm --dir ../.. desktop:dist:linux",
+    "pack:linux:arm64": "pnpm --dir ../.. desktop:pack:linux:arm64",
+    "dist:linux:arm64": "pnpm --dir ../.. desktop:dist:linux:arm64",
     "test": "node ./src/main.mjs --check && node ./src/static-web-server.mjs --check && node --test test/*.test.mjs",
     "lint": "node ./src/main.mjs --check && node ./src/static-web-server.mjs --check"
   }

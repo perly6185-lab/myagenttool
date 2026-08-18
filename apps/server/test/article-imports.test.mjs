@@ -28,6 +28,8 @@ test("detects source providers and builds deterministic source/date paths", () =
   assert.equal(detectArticleSource("https://zhuanlan.zhihu.com/p/123"), "zhihu");
   assert.equal(detectArticleSource("https://juejin.cn/post/123"), "juejin");
   assert.equal(detectArticleSource("https://www.jianshu.com/p/123"), "jianshu");
+  assert.equal(detectArticleSource("https://mynhkbykqf.feishu.cn/wiki/CHDzwTXYriLNIpk2HsRcx2VWnQe"), "feishu");
+  assert.equal(detectArticleSource("https://tenant.larksuite.com/docx/CHDzwTXYriLNIpk2HsRcx2VWnQe"), "feishu");
   assert.equal(detectArticleSource("https://example.com/post"), "web");
   assert.equal(
     canonicalizeArticleUrl("https://EXAMPLE.com/post?utm_source=test&id=1#part"),
@@ -205,48 +207,92 @@ test("inspects WeChat lazy images while preserving content order", async () => {
   assert.match(result.markdownPreview, /第一段[\s\S]+MYAGENTTOOL_MEDIA_0[\s\S]+第二段/);
 });
 
+test("extracts a real WeChat page shape: js_name author, ct epoch date, tolerated mp media", async () => {
+  const result = await inspectArticle({
+    url: "https://mp.weixin.qq.com/s/realistic",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async () => htmlResponse(wechatRealisticFixture()),
+  });
+  assert.equal(result.provider, "wechat");
+  // No og:title / meta author on real pages: title comes from the
+  // rich_media_title h1 and the author (公众号名) from #js_name.
+  assert.equal(result.title, "看不见的砷污染");
+  assert.equal(result.author, "引领未来的");
+  // var ct = "1722967200" is 2024-08-07T02:00+08:00 — the Shanghai date is
+  // Aug 7 while UTC is still Aug 6, so this pins the Asia/Shanghai rendering
+  // (a naive UTC parse would yield 2024-08-06).
+  assert.equal(result.publishedAt, "2024-08-07");
+  // mmbiz lazy images register; the v.qq.com iframe is a skipped tag and the
+  // mpvoice file id is not an http URL, so both degrade to nothing instead of
+  // crashing or emitting a media token.
+  assert.deepEqual(result.mediaCounts, { images: 2, audio: 0, video: 0 });
+  assert.match(result.markdownPreview, /第一段正文[\s\S]+MYAGENTTOOL_MEDIA_0[\s\S]+第二段正文/);
+});
+
+test("canonicalizes WeChat share variants while keeping the __biz identity form", () => {
+  const bare = canonicalizeArticleUrl("https://mp.weixin.qq.com/s/q36Efhy47_23x4aGIDp2NA");
+  assert.equal(
+    canonicalizeArticleUrl(
+      "https://mp.weixin.qq.com/s/q36Efhy47_23x4aGIDp2NA?src=timeline&scene=1&from=timeline&isappinstalled=0&clicktime=1710000000&enterid=1710000000",
+    ),
+    bare,
+  );
+  assert.equal(
+    canonicalizeArticleUrl(
+      "https://mp.weixin.qq.com/s?__biz=MzA1MjIzNDA1NF8w&mid=2651234567&idx=1&sn=abcdef0123&src=singlemsg&scene=126#rd",
+    ),
+    "https://mp.weixin.qq.com/s?__biz=MzA1MjIzNDA1NF8w&mid=2651234567&idx=1&sn=abcdef0123",
+  );
+  // src is only share metadata on mp.weixin hosts; elsewhere it may carry
+  // meaning and must survive canonicalization.
+  assert.equal(
+    canonicalizeArticleUrl("https://example.com/gallery?src=timeline"),
+    "https://example.com/gallery?src=timeline",
+  );
+});
+
+test("rejects a WeChat verification challenge instead of importing an empty article", async () => {
+  await assert.rejects(
+    inspectArticle({
+      url: "https://mp.weixin.qq.com/s/challenged",
+      resolveHostname: PUBLIC_DNS,
+      fetchImpl: async () => htmlResponse(`<!doctype html><html><body>
+        <form action="/mp/wappoc_appmsgcaptcha"><input name="poc_token"></form>
+        <p>完成验证后即可继续访问</p>
+      </body></html>`),
+    }),
+    (error) => error.code === "article_download_challenge",
+  );
+});
+
+test("rejects an incomplete WeChat shell without the real article body", async () => {
+  await assert.rejects(
+    inspectArticle({
+      url: "https://mp.weixin.qq.com/s/incomplete",
+      resolveHostname: PUBLIC_DNS,
+      fetchImpl: async () => htmlResponse("<!doctype html><html><body><p>微信文章加载中</p></body></html>"),
+    }),
+    (error) => error.code === "article_content_incomplete",
+  );
+});
+
 test("recovers Xiaohongshu note metadata and direct media from hydration data", async () => {
+  // Xiaohongshu note data is login-gated (issue #1703) — inspectArticle
+  // short-circuits to a synthetic preview and the hydration path is exercised
+  // end-to-end (through the renderer shim) in xiaohongshu-imports.test.mjs.
+  // Here only the short-circuit contract is pinned: no network, no wall.
   const result = await inspectArticle({
     url: "https://www.xiaohongshu.com/explore/note-1",
     resolveHostname: PUBLIC_DNS,
-    fetchImpl: async () => htmlResponse(`<!doctype html><html><body>
-      <div class="note-content"><p>页面正文</p><img data-src="https://sns-img.example/note.jpg"></div>
-      <script>window.__INITIAL_STATE__ = ${JSON.stringify({
-        note: {
-          title: "结构化笔记",
-          desc: "结构化说明",
-          user: { nickname: "红薯作者" },
-          publishTime: Date.parse("2026-07-20T10:00:00+08:00"),
-          imageList: [{ urlDefault: "https://sns-img.example/note.jpg" }],
-          video: { videoUrl: "https://sns-video.example/note.mp4" },
-        },
-        recommendations: [{
-          title: "不应导入的推荐笔记",
-          desc: "推荐内容",
-          imageList: [{ urlDefault: "https://sns-img.example/unrelated.jpg" }],
-        }],
-      })};</script>
-    </body></html>`),
+    fetchImpl: async () => {
+      throw new Error("the xiaohongshu preview must never fetch (anonymous fetch eats the /404 wall)");
+    },
   });
   assert.equal(result.provider, "xiaohongshu");
   assert.equal(result.contentType, "note");
-  assert.equal(result.title, "结构化笔记");
-  assert.equal(result.author, "红薯作者");
-  assert.equal(result.publishedAt, "2026-07-20");
-  assert.deepEqual(result.mediaCounts, { images: 1, audio: 0, video: 1 });
-});
-
-test("uses Xiaohongshu hydration description when the page has no visible article body", async () => {
-  const result = await inspectArticle({
-    url: "https://www.xiaohongshu.com/explore/note-hydrated",
-    resolveHostname: PUBLIC_DNS,
-    fetchImpl: async () => htmlResponse(`<html><body><script>window.__INITIAL_STATE__ = ${JSON.stringify({
-      note: { title: "仅结构化笔记", desc: "这是结构化正文", user: { nickname: "作者" } },
-    })};</script></body></html>`),
-  });
-  assert.equal(result.title, "仅结构化笔记");
-  assert.equal(result.textLength, "这是结构化正文".length);
-  assert.match(result.markdownPreview, /这是结构化正文/);
+  assert.equal(result.title, "Xiaohongshu note");
+  assert.equal(result.textLength, 0);
+  assert.deepEqual(result.mediaCounts, { images: 0, audio: 0, video: 0 });
 });
 
 test("uses provider-specific article roots and metadata for Juejin", async () => {
@@ -820,7 +866,7 @@ test("preserves the source calendar date instead of shifting it to UTC", async (
     resolveHostname: PUBLIC_DNS,
     fetchImpl: async () => htmlResponse(`
       <meta property="article:published_time" content="2026-07-27T00:30:00+08:00">
-      <article>offset</article>
+      <div id="js_content">offset</div>
     `),
   });
   assert.equal(offsetResult.publishedAt, "2026-07-27");
@@ -829,7 +875,7 @@ test("preserves the source calendar date instead of shifting it to UTC", async (
   const epochResult = await inspectArticle({
     url: "https://mp.weixin.qq.com/s/epoch",
     resolveHostname: PUBLIC_DNS,
-    fetchImpl: async () => htmlResponse(`<article>epoch</article><script>var publish_time = "${epoch}";</script>`),
+    fetchImpl: async () => htmlResponse(`<div id="js_content">epoch</div><script>var publish_time = "${epoch}";</script>`),
   });
   assert.equal(epochResult.publishedAt, "2026-07-27");
 });
@@ -981,7 +1027,7 @@ test("queues an Issue-bound import and attaches generated output assets", async 
   t.after(() => rm(worktreePath, { recursive: true, force: true }));
   const item = {
     id: "lwi_1", localNumber: 1, projectId: "prj_1", terminalId: "dev_1",
-    revision: 1, labels: [], outputAssets: [],
+    revision: 1, status: "backlog", waitingOn: "none", labels: [], outputAssets: [],
   };
   const updates = [];
   const bindings = [];
@@ -1041,6 +1087,8 @@ test("queues an Issue-bound import and attaches generated output assets", async 
   assert.equal(bindings[0].kind, "article_import");
   assert.equal(updates.length, 1);
   assert.deepEqual(updates[0].labels, ["source:wechat", "content:article"]);
+  assert.equal(updates[0].status, "review");
+  assert.equal(updates[0].waitingOn, "me");
   assert.equal(updates[0].outputAssets.length, 3);
   assert.match(updates[0].outputAssets[0].path, /article\.md$/);
   assert.match(updates[0].outputAssets[1].path, /article\.html$/);
@@ -1192,6 +1240,43 @@ function wechatFixture() {
         <p>第二段</p>
         <img data-src="https://mmbiz.qpic.cn/image-2" alt="图二">
         <img data-src="https://mmbiz.qpic.cn/image-3" alt="图三">
+      </div>
+    </body>
+  </html>`;
+}
+
+// Shape captured from a real mp.weixin.qq.com article page (2026-08 live
+// verification, issue #1696): no og:title / meta author / meta published_time —
+// title lives in the rich_media_title h1, the 公众号名 in #js_name, the date in
+// `var ct = "<epoch>"`, images are data-src lazy mmbiz assets, and embedded
+// media arrive as a v.qq.com iframe inside js_mp_video_container plus mpvoice
+// elements whose file ids are not http URLs.
+function wechatRealisticFixture() {
+  return `<!doctype html>
+  <html lang="zh_CN">
+    <head>
+      <meta charset="utf-8">
+      <title>看不见的砷污染</title>
+      <script>var ct = "1722967200";</script>
+    </head>
+    <body>
+      <div class="rich_media_area_primary">
+        <h1 class="rich_media_title" id="activity-name">
+          看不见的砷污染
+        </h1>
+        <div class="rich_media_meta_list">
+          <a id="js_name" href="javascript:void(0);">引领未来的</a>
+        </div>
+        <div class="rich_media_content" id="js_content">
+          <p>第一段正文。</p>
+          <img data-src="https://mmbiz.qpic.cn/mmbiz_jpg/realistic-1.jpeg" alt="图一">
+          <span class="js_mp_video_container">
+            <iframe class="video_iframe" data-src="https://v.qq.com/iframe/player.html?vid=realistic"></iframe>
+          </span>
+          <mpvoice voice_encode_fileid="MzA1MjIzNDA1NF81MDA0" name="语音介绍"></mpvoice>
+          <p>第二段正文。</p>
+          <img data-src="https://mmbiz.qpic.cn/mmbiz_png/realistic-2.png" alt="图二">
+        </div>
       </div>
     </body>
   </html>`;

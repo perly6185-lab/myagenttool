@@ -228,6 +228,14 @@ export interface ClaudeApplyAuthorization {
   rollback?: { available?: boolean; executed?: boolean; strategy?: string | null; command?: string | null } | null;
   rollbackError?: string | null;
   resultSummary?: string | null;
+  nextAction?: string | null;
+  lastProgressAt?: string | null;
+  lastProgressSummary?: string | null;
+  attentionReason?: string | null;
+  attentionAt?: string | null;
+  lastDeliveryStatus?: string | null;
+  lastDeliveryId?: string | null;
+  lastDeliveryError?: string | null;
   patchPreview?: string | null;
   createdAt?: string;
   appliedAt?: string;
@@ -309,6 +317,8 @@ export interface WorkItem {
   /** Native section to deep-link to for the full context. */
   section: string;
   targetId?: string | null;
+  /** Durable ordinary-user task linked to this execution row, when available. */
+  workItemId?: string | null;
   projectId?: string | null;
   updatedAt?: string | null;
   /** follow_up rows only: why this needs attention. */
@@ -1011,7 +1021,15 @@ export interface ProjectSnapshot {
   ownerTeamId: string;
   budgetPoolId: string | null;
   defaultAgentId: string | null;
+  autoExecutionEnabled?: boolean;
+  futurePullForwardEnabled?: boolean;
   verifyCommandName?: string | null;
+  externalIssuePolicy?: {
+    intakeEnabled: boolean;
+    writebackEnabled: boolean;
+    autoExecutionEnabled: boolean;
+    emergencyStop: boolean;
+  };
   status: "active" | "archived";
   isolation: "shared" | "worktree";
   createdAt: string;
@@ -1308,6 +1326,13 @@ export interface AgentSkillSnapshot {
 }
 
 export interface ConsoleSnapshot {
+  /** Present on the browser's bounded hot-window projection of /api/state. */
+  stateWindow?: {
+    projection: "console";
+    invocationLimit: number;
+    totals: Record<string, number>;
+    truncated: string[];
+  };
   /** Server-resolved defaults the browser can't compute (e.g. home-relative paths). */
   defaults?: { cloneParentDir?: string };
   automations?: AutomationSnapshot[];
@@ -1340,6 +1365,8 @@ export interface ConsoleSnapshot {
     blocked: number;
     activeExecutions: number;
     updatedAt: string | null;
+    /** Changes whenever a Home workbench item, bound execution, or approval changes. */
+    homeWorkbenchUpdatedAt?: string | null;
   };
   workItemAlertSummary?: {
     queued: number;
@@ -1414,6 +1441,78 @@ export interface ConsoleSnapshot {
   channelOperations?: ChannelOperations[];
   channelDeliveries?: ChannelDelivery[];
   channelTaskRequests?: ChannelTaskRequest[];
+  channelIntakeGroups?: ChannelIntakeGroup[];
+  channelTaskThreads?: ChannelTaskThread[];
+  channelIntentMetrics?: ChannelIntentMetrics | null;
+  channelInteractions?: ChannelInteraction[];
+}
+
+export interface ChannelIntentMetrics {
+  policyVersion?: string;
+  total: number;
+  byIntent?: Record<string, number>;
+  bySource?: Record<string, number>;
+  lowConfidence?: number;
+  ambiguous?: number;
+  bridge?: {
+    attempts?: number;
+    succeeded?: number;
+    failed?: number;
+    busy?: number;
+    timeouts?: number;
+    lastLatencyMs?: number | null;
+    averageLatencyMs?: number | null;
+    circuitOpen?: boolean;
+    circuitOpenUntil?: string | null;
+    failureStreak?: number;
+    circuitTrips?: number;
+    updatedAt?: string | null;
+  } | null;
+  updatedAt?: string | null;
+}
+
+export interface ChannelIntakeGroup {
+  id: string;
+  channelId: string;
+  conversationId: string;
+  eventIds: string[];
+  status: string;
+  threadId?: string | null;
+  startedAt?: string | null;
+  updatedAt?: string | null;
+  dueAt?: string | null;
+}
+
+export interface ChannelTaskThread {
+  id: string;
+  shortRef?: string | null;
+  channelId: string;
+  conversationId: string;
+  sourceEventIds: string[];
+  messages: { eventId: string; content?: string; receivedAt?: string }[];
+  attachmentAssets?: unknown[];
+  summary: string;
+  status: string;
+  waitingFor?: string | null;
+  workItemId?: string | null;
+  autoRunId?: string | null;
+  invocationId?: string | null;
+  resultSummary?: string | null;
+  queueAheadCount?: number;
+  queuePosition?: number;
+  statusHistory?: { status: string; reason?: string | null; at?: string | null }[];
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  lastActivityAt?: string | null;
+  expiresAt?: string | null;
+  nextAction?: string | null;
+  lastProgressAt?: string | null;
+  lastProgressSummary?: string | null;
+  attentionReason?: string | null;
+  attentionAt?: string | null;
+  lastDeliveryStatus?: string | null;
+  lastDeliveryId?: string | null;
+  lastDeliveryError?: string | null;
 }
 
 export interface ChannelTaskRequest {
@@ -1426,6 +1525,7 @@ export interface ChannelTaskRequest {
   status: string;
   stage: string;
   autoRunId?: string | null;
+  threadId?: string | null;
   runStatus?: string | null;
   invocationId?: string | null;
   invocationStatus?: string | null;
@@ -1469,7 +1569,11 @@ export interface ChannelOperations {
   statusCapability?: string | null;
   /** The project `/task` files GitHub issues into (null = /task disabled). */
   taskProjectId?: string | null;
-  /** Auto-route /task straight to work (default off = capture-then-promote). */
+  /** The execution device selected for channel tasks. */
+  taskTerminalId?: string | null;
+  /** Personal mode is the local-user default; team mode keeps an approval boundary. */
+  operationMode?: "personal" | "team" | string;
+  /** Auto-route /task straight to work (personal mode routes after confirmation). */
   taskAutoRoute?: boolean;
   /** Per-channel/day aggregate /task ceiling + today's usage. */
   taskDailyLimit?: number;
@@ -1485,7 +1589,55 @@ export interface ChannelOperations {
     failedDeliveries: number;
     injectionFlagged: number;
   };
+  taskSummary?: {
+    total: number;
+    active: number;
+    queued: number;
+    running: number;
+    waitingApproval: number;
+    waitingUser: number;
+    needsAttention: number;
+    humanTakeover: number;
+    succeeded: number;
+    failed: number;
+    cancelled: number;
+  };
   lastActivityAt?: string | null;
+  lastInboundAt?: string | null;
+  lastOutboundAt?: string | null;
+  lastDeliveredAt?: string | null;
+  lastFailureAt?: string | null;
+  lastFailureCode?: string | null;
+  pipeline?: {
+    inbound: Record<string, number>;
+    outbound: Record<string, number>;
+  };
+}
+
+export interface ChannelDiagnostics {
+  generatedAt: string;
+  channel: {
+    id: string;
+    provider: string;
+    name: string;
+    status: string;
+    ready: boolean;
+    readiness: Record<string, boolean>;
+  };
+  activity: {
+    lastInboundAt: string | null;
+    lastOutboundAt: string | null;
+    lastDeliveredAt: string | null;
+    lastFailureAt: string | null;
+  };
+  pipeline: {
+    conversations: number;
+    inbound: Record<string, number>;
+    outbound: Record<string, number>;
+    tasks: Record<string, number>;
+  };
+  failures: Array<{ direction: string; status: string; code: string; attempts: number; at: string }>;
+  note: string;
 }
 
 /** An inbound-established conversation — the addressable target for an outbound
@@ -1503,11 +1655,45 @@ export interface ChannelDelivery {
   channelId: string;
   conversationId: string;
   invocationId?: string | null;
+  taskContext?: { threadId?: string | null; workItemId?: string | null; traceId?: string | null } | null;
   status: "queued" | "sending" | "delivered" | "retrying" | "failed_terminal" | string;
   attempts: number;
   providerReceiptId?: string | null;
   lastErrorCode?: string | null;
+  content?: string | null;
+  mediaAssets?: ChannelInteractionAttachment[];
+  createdAt?: string | null;
   updatedAt?: string | null;
+}
+
+export interface ChannelInteractionAttachment {
+  id?: string | null;
+  name: string;
+  family: string;
+  mimeType?: string | null;
+  size?: number | null;
+  projectId?: string | null;
+  path?: string | null;
+}
+
+export interface ChannelInteraction {
+  id: string;
+  direction: "inbound" | "outbound";
+  type: "text" | "image" | "voice" | "file" | "mixed" | string;
+  content: string;
+  attachments: ChannelInteractionAttachment[];
+  status: string;
+  createdAt?: string | null;
+  conversationId: string;
+  externalUserId?: string | null;
+  providerMessageId?: string | null;
+  deliveryId?: string | null;
+  invocationId?: string | null;
+  injectionSuspicious?: boolean;
+  attempts?: number;
+  providerReceiptId?: string | null;
+  lastErrorCode?: string | null;
+  mediaFailure?: { total?: number; failed?: { kind?: string; filename?: string; code?: string }[] } | null;
 }
 
 export type ApplicationSource =

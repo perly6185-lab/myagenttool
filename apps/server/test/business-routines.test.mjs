@@ -18,9 +18,12 @@ import { createServerState } from "../src/runtime/state-factory.mjs";
 import {
   businessRoutineCollectionKeys,
   createBusinessRoutineService,
+  normalizeRoutineTriggerType,
   routineIdempotencyKeys,
+  selectPublishedBusinessRoutine,
 } from "../src/services/business-routines.mjs";
 import {
+  copyLocalLearnedTemplateOutput,
   inspectLocalQuotationTemplate,
   writeLocalQuotationDraft,
 } from "../src/services/business-routine-executors.mjs";
@@ -160,6 +163,123 @@ function createCaseAndDefinition(service) {
   }, ACTOR_A).body.routineDefinition;
   return { entity, businessCase, definition };
 }
+
+test("published Routine selection normalizes common work-type names and fails closed", () => {
+  const aliases = [
+    ["contract-review", "contract review", "contract_review"],
+    ["purchase request", "purchase-request", "purchase_request"],
+    ["customer-complaint", "customer complaint", "customer_complaint"],
+    ["weekly report", "weekly-report", "weekly_report"],
+    ["project-acceptance", "project acceptance", "project_acceptance"],
+  ];
+  for (const [trigger, incoming, canonical] of aliases) {
+    assert.equal(normalizeRoutineTriggerType(trigger), canonical);
+    const selected = selectPublishedBusinessRoutine([{
+      id: `routine_${canonical}`,
+      state: "published",
+      triggerDocumentTypes: [trigger],
+      evidenceHealth: { state: "valid" },
+    }], incoming);
+    assert.equal(selected.status, 200);
+    assert.equal(selected.body.documentType, canonical);
+  }
+
+  const missing = selectPublishedBusinessRoutine([], "weekly report");
+  assert.equal(missing.status, 409);
+  assert.equal(missing.body.error, "workflow_intake_routine_not_available");
+  assert.match(missing.body.assistance.instruction, /发布/);
+
+  const ambiguous = selectPublishedBusinessRoutine([
+    { id: "rtd_b", state: "published", triggerDocumentTypes: ["contract_review"] },
+    { id: "rtd_a", state: "published", triggerDocumentTypes: ["contract-review"] },
+  ], "contract review");
+  assert.equal(ambiguous.status, 409);
+  assert.equal(ambiguous.body.error, "workflow_intake_routine_selection_required");
+  assert.equal(ambiguous.body.routineCount, 2);
+  assert.match(ambiguous.body.assistance.explanation, /无法安全判断/);
+});
+
+test("a confirmed non-inquiry document materializes one pinned Routine Issue idempotently", () => {
+  const { state, service } = harness();
+  state.workflowArtifacts.push({
+    id: "wfa_contract",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    availability: "available",
+    fingerprint: "e".repeat(64),
+    relativePath: "contracts/CTR-2026-009.md",
+  });
+  state.workflowIntakeObservations = [{
+    id: "wio_contract",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    artifactId: "wfa_contract",
+    state: "ready",
+  }];
+  assert.equal(service.recordDocumentClassification({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    artifactId: "wfa_contract",
+    artifactFingerprint: "e".repeat(64),
+    documentType: "contract review",
+    confidence: 0.98,
+    reasons: ["Confirmed from historical contract-review work"],
+    evidenceRefs: [{ artifactId: "wfa_contract", kind: "document_type" }],
+    fieldProposals: [],
+    riskSignals: [],
+    confirmationState: "confirmed",
+  }, ACTOR_A).status, 201);
+  assert.equal(state.businessDocumentClassifications.at(-1).documentType, "contract_review");
+  let definition = service.createRoutineDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Contract review",
+    triggerDocumentTypes: ["contract-review"],
+    steps: [
+      { key: "extract", kind: "extract", label: "Read confirmed contract facts" },
+      {
+        key: "review",
+        kind: "human_approval",
+        label: "Review contract conclusion",
+        dependsOn: ["extract"],
+      },
+    ],
+    evidenceRefs: [{ artifactId: "wfa_contract", kind: "historical_example" }],
+    confidence: 0.95,
+  }, ACTOR_A).body.routineDefinition;
+  assert.deepEqual(definition.triggerDocumentTypes, ["contract_review"]);
+  definition = service.transitionRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    action: "review",
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.transitionRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    action: "publish",
+    confirmed: true,
+  }, ACTOR_A).body.routineDefinition;
+
+  const input = {
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    observationId: "wio_contract",
+    artifactId: "wfa_contract",
+    documentType: "contract review",
+  };
+  const first = service.materializeAdaptiveRoutineSuggestion(input, ACTOR_A);
+  assert.equal(first.status, 201);
+  assert.equal(first.body.workItem.routineDefinitionId, definition.id);
+  assert.match(first.body.workItem.title, /^Process contract review/);
+  assert.ok(first.body.workItem.labels.includes("workflow-contract-review"));
+  const replay = service.materializeAdaptiveRoutineSuggestion(input, ACTOR_A);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.workItem.id, first.body.workItem.id);
+  assert.equal(state.workItems.length, 1);
+});
 
 test("records bounded document semantics independently from contextual roles", () => {
   const { service, state } = harness();
@@ -592,6 +712,7 @@ test("routine Issues materialize once and schedule dependency-safe work with bou
   assert.equal(created.status, 201);
   assert.equal(created.body.workItem.title, "Process inquiry — RFQ-2026-001");
   assert.equal(created.body.workItem.routineVersion, 1);
+  assert.equal(created.body.execution.sourceId, "wfs_a");
   assert.equal(created.body.workItem.createIdempotencyKey, undefined);
   assert.equal(created.body.execution.run.actionReceipts, undefined);
   const replay = service.materializeRoutineIssue({
@@ -855,6 +976,277 @@ test("governed executors retrieve current evidence, write one quotation draft, a
   }
 });
 
+test("automatic routine advancement runs governed safe steps and pauses for human approval", () => {
+  const { service, state } = harness();
+  const { businessCase } = createCaseAndDefinition(service);
+  state.businessDocumentClassifications.push({
+    id: "bdc_inquiry_current",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    artifactId: "wfa_inquiry",
+    artifactFingerprint: "a".repeat(64),
+    documentType: "inquiry",
+    confirmationState: "confirmed",
+    confidence: 1,
+    riskSignals: [],
+    fieldProposals: [],
+    revision: 1,
+  }, {
+    id: "bdc_price_current",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    artifactId: "wfa_price",
+    artifactFingerprint: "f".repeat(64),
+    documentType: "price_list",
+    confirmationState: "confirmed",
+    confidence: 1,
+    riskSignals: [],
+    fieldProposals: [],
+    revision: 1,
+  });
+  let definition = service.createRoutineDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Safe automatic inquiry preparation",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [{
+      key: "extract",
+      kind: "extract",
+      label: "Use confirmed inquiry facts",
+    }, {
+      key: "references",
+      kind: "retrieve",
+      label: "Retrieve approved references",
+      dependsOn: ["extract"],
+      configuration: { documentTypes: ["price_list"] },
+    }, {
+      key: "approve",
+      kind: "human_approval",
+      label: "Approve external delivery",
+      dependsOn: ["references"],
+    }],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+    confidence: 0.95,
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.transitionRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    action: "review",
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.transitionRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    action: "publish",
+    confirmed: true,
+  }, ACTOR_A).body.routineDefinition;
+  const materialized = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A);
+
+  const advanced = service.advanceRoutineWorkItem({
+    workItemId: materialized.body.workItem.id,
+  }, ACTOR_A);
+  assert.equal(advanced.status, 200);
+  assert.deepEqual(advanced.body.advancedStepKeys, ["extract", "references"]);
+  assert.equal(advanced.body.execution.run.status, "awaiting_approval");
+  assert.deepEqual(advanced.body.assistance, {
+    stepKey: "approve",
+    stepLabel: "Approve external delivery",
+    kind: "awaiting_approval",
+    reason: "human_approval_required",
+    action: "review_approval",
+  });
+  assert.equal(
+    advanced.body.execution.steps.find((step) => step.key === "references").run.state,
+    "succeeded",
+  );
+  assert.equal(
+    advanced.body.execution.steps.find((step) => step.key === "extract").run.state,
+    "succeeded",
+  );
+});
+
+test("automatic extraction fails closed when confirmed source facts are unavailable", () => {
+  const { service } = harness();
+  const { businessCase, definition } = createCaseAndDefinition(service);
+  const materialized = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A);
+
+  const advanced = service.advanceRoutineWorkItem({
+    workItemId: materialized.body.workItem.id,
+  }, ACTOR_A);
+  assert.equal(advanced.status, 200);
+  assert.equal(advanced.body.execution.run.status, "failed");
+  assert.deepEqual(advanced.body.advancedStepKeys, []);
+  assert.deepEqual(advanced.body.assistance, {
+    stepKey: "extract",
+    stepLabel: "Extract inquiry",
+    kind: "needs_review",
+    reason: "routine_extract_confirmation_required",
+    action: "review_extracted_facts",
+  });
+});
+
+test("source review intent persists and resumes extraction only after facts are confirmed", () => {
+  const { service, state, recreateService } = harness();
+  const { businessCase, definition } = createCaseAndDefinition(service);
+  const materialized = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A);
+  const failed = service.advanceRoutineWorkItem({
+    workItemId: materialized.body.workItem.id,
+  }, ACTOR_A);
+
+  const requested = service.requestRoutineStepReview({
+    workItemId: materialized.body.workItem.id,
+    stepKey: "extract",
+    expectedRevision: failed.body.execution.run.revision,
+    idempotencyKey: "review-extract-once",
+  }, ACTOR_A);
+  assert.equal(requested.status, 200);
+  assert.deepEqual(requested.body.execution.recovery, {
+    kind: "retry_after_source_review",
+    stepKey: "extract",
+    requestedAt: "2026-07-29T00:00:00.000Z",
+  });
+
+  const restoredService = recreateService();
+  const restored = restoredService.getRoutineWorkItemExecution({
+    workItemId: materialized.body.workItem.id,
+  }, ACTOR_A);
+  assert.equal(restored.body.execution.recovery.stepKey, "extract");
+  const stillWaiting = restoredService.resumeRoutineRecovery({
+    workItemId: materialized.body.workItem.id,
+    expectedRevision: restored.body.execution.run.revision,
+    idempotencyKey: "resume-extract-before-confirmation",
+  }, ACTOR_A);
+  assert.equal(stillWaiting.status, 202);
+  assert.equal(stillWaiting.body.awaitingReview, true);
+  assert.equal(stillWaiting.body.execution.run.status, "failed");
+
+  state.businessDocumentClassifications.push({
+    id: "bdc_confirmed_after_review",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    artifactId: "wfa_inquiry",
+    artifactFingerprint: "a".repeat(64),
+    documentType: "inquiry",
+    confirmationState: "confirmed",
+    confidence: 1,
+    riskSignals: [],
+    fieldProposals: [],
+    revision: 1,
+  });
+  const resumed = restoredService.resumeRoutineRecovery({
+    workItemId: materialized.body.workItem.id,
+    expectedRevision: restored.body.execution.run.revision,
+    idempotencyKey: "resume-extract-after-confirmation",
+  }, ACTOR_A);
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.resumed, true);
+  assert.equal(resumed.body.execution.recovery, null);
+  assert.equal(
+    resumed.body.execution.steps.find((step) => step.key === "extract").run.state,
+    "running",
+  );
+});
+
+test("a running task can persistently bind an active ledger without changing its published definition", () => {
+  const { service, state } = harness();
+  const { businessCase } = createCaseAndDefinition(service);
+  let definition = service.createRoutineDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Register inquiry",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [{ key: "register", kind: "ledger_upsert", label: "Register inquiry" }],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+    confidence: 0.9,
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.transitionRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    action: "review",
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.transitionRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    action: "publish",
+    confirmed: true,
+  }, ACTOR_A).body.routineDefinition;
+  state.ledgerDefinitions.push({
+    id: "ldg_active",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Inquiry ledger",
+    state: "active",
+    documentType: "inquiry_ledger",
+    format: "csv",
+    relativePath: "ledgers/inquiries.csv",
+    sheet: null,
+  });
+  state.ledgerDefinitions.push({
+    id: "ldg_foreign",
+    ownerTeamId: "team_b",
+    projectId: "prj_b",
+    sourceId: "wfs_b",
+    name: "Foreign ledger",
+    state: "active",
+    documentType: "inquiry_ledger",
+    format: "csv",
+    relativePath: "foreign.csv",
+    sheet: null,
+  });
+  const materialized = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A);
+  const started = service.startRoutineWorkItem({
+    workItemId: materialized.body.workItem.id,
+    expectedRevision: materialized.body.execution.run.revision,
+    idempotencyKey: "start-ledger-binding",
+  }, ACTOR_A);
+  assert.deepEqual(started.body.execution.availableLedgers.map((ledger) => ledger.id), ["ldg_active"]);
+
+  const bound = service.bindRoutineLedger({
+    workItemId: materialized.body.workItem.id,
+    stepKey: "register",
+    ledgerDefinitionId: "ldg_active",
+    expectedRevision: started.body.execution.run.revision,
+    idempotencyKey: "bind-ledger-on-task",
+  }, ACTOR_A);
+  assert.equal(bound.status, 200);
+  assert.equal(bound.body.execution.steps[0].configuration.ledgerDefinitionId, "ldg_active");
+  assert.equal(definition.steps[0].configuration.ledgerDefinitionId, undefined);
+  assert.equal(
+    state.routineRuns.find((run) => run.id === bound.body.execution.run.id)
+      .stepRuns[0].ledgerDefinitionId,
+    "ldg_active",
+  );
+  assert.equal(service.validateRoutineLedgerStep({
+    routineRunId: bound.body.execution.run.id,
+    stepKey: "register",
+    ledgerDefinitionId: "ldg_active",
+  }, ACTOR_A).ok, true);
+  assert.equal(service.validateRoutineLedgerStep({
+    routineRunId: bound.body.execution.run.id,
+    stepKey: "register",
+    ledgerDefinitionId: "ldg_foreign",
+  }, ACTOR_A).error, "routine_ledger_definition_mismatch");
+});
+
 test("confirmed-template quotations block missing and conflicting facts before rendering an audited draft", () => {
   const root = join(tmpdir(), `myagenttool-confirmed-quotation-${Date.now()}`);
   const sourceRoot = join(root, "commercial");
@@ -1050,7 +1442,7 @@ test("confirmed-template quotations block missing and conflicting facts before r
   }
 });
 
-test("quotation template inspection refuses drift, active Markdown, links, and unverified Office preservation", () => {
+test("quotation template inspection refuses drift, active Markdown, links, and invalid Office packages", () => {
   const root = join(tmpdir(), `myagenttool-quotation-template-safety-${Date.now()}`);
   const sourceRoot = join(root, "commercial");
   mkdirSync(join(sourceRoot, "templates"), { recursive: true });
@@ -1096,7 +1488,7 @@ test("quotation template inspection refuses drift, active Markdown, links, and u
       templateRelativePath: "templates/quotation.docx",
     }), {
       ok: false,
-      error: "routine_template_preservation_unavailable",
+      error: "routine_office_template_invalid",
       format: "docx",
     });
     const outside = join(root, "outside.md");
@@ -1211,6 +1603,29 @@ test("quotation draft executor never overwrites an existing file with different 
       error: "routine_output_conflict",
     });
     assert.equal(readFileSync(target, "utf8"), "user-owned content\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("learned template output executor copies the confirmed sample without modifying it", () => {
+  const root = join(tmpdir(), `myagenttool-learned-output-${Date.now()}`);
+  const sourceRoot = join(root, "templates");
+  const templatePath = join(sourceRoot, "cases", "case-1", "raw", "outputs", "采购清单.txt");
+  mkdirSync(join(sourceRoot, "cases", "case-1", "raw", "outputs"), { recursive: true });
+  writeFileSync(templatePath, "序号 | 型号 | 报价单价\n", "utf8");
+  try {
+    const result = copyLocalLearnedTemplateOutput({
+      projectPath: root,
+      sourceRelativePath: "templates",
+      templateRelativePath: "cases/case-1/raw/outputs/采购清单.txt",
+      outputFileName: "采购清单.txt",
+      businessKey: "NEW-001",
+      executionSuffix: "1234abcd",
+    });
+    assert.equal(result.ok, true);
+    assert.equal(readFileSync(templatePath, "utf8"), "序号 | 型号 | 报价单价\n");
+    assert.equal(readFileSync(join(root, result.relativePath), "utf8"), "序号 | 型号 | 报价单价\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -3,7 +3,7 @@ import { expect, test } from "playwright/test";
 test("recovers from a transient state 5xx while the event stream is unavailable", async ({ page }) => {
   let stateAttempts = 0;
   await page.addInitScript(() => window.localStorage.setItem("myagenttool.token", "e2e-token"));
-  await page.route("**/api/**", (route) => route.fulfill({ json: {} }));
+  await page.route("http://127.0.0.1:5001/api/**", (route) => route.fulfill({ json: {} }));
   await page.route("**/api/events/stream", (route) => route.fulfill({ status: 503, json: { error: "stream_unavailable" } }));
   await page.route("**/api/state", (route) => {
     stateAttempts += 1;

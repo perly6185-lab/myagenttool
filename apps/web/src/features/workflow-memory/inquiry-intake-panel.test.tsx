@@ -518,6 +518,37 @@ describe("InquiryIntakePanel", () => {
     await waitFor(() => expect(mocks.inspect).toHaveBeenCalledWith("wio_scanned", [], {}));
   });
 
+  it("tells an ordinary user exactly what to do when local OCR is unavailable", async () => {
+    const scanned = {
+      ...readyObservation,
+      id: "wio_scanned_unavailable",
+      name: "scanned-inquiry.pdf",
+      artifactId: "wfa_scanned_unavailable",
+      canonicalArtifactId: "wfa_scanned_unavailable",
+      extraction: {
+        state: "needs_ocr" as const,
+        pageCount: 2,
+        characterCount: 0,
+        providerId: null,
+        localOnly: null,
+      },
+    };
+    mocks.list.mockResolvedValue({ observations: [scanned], count: 1 });
+    mocks.ocrReadiness.mockResolvedValue({
+      state: "unavailable",
+      providerId: null,
+      reason: "provider_missing",
+      localOnly: true,
+      supportedExtensions: [],
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Run local OCR" }));
+
+    expect(await screen.findByText(/use your usual OCR tool to save a searchable PDF or text copy/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Read and continue" })).toHaveProperty("disabled", true);
+  });
+
   it("opens the created local task and does not offer a second create action", async () => {
     const onOpenTask = vi.fn();
     mocks.list.mockResolvedValue({

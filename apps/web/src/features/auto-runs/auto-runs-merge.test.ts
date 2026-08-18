@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { mergeRisk, postureRows, type AutoRunRecord } from "./auto-runs-view";
+import { mergeRisk, postureRows, type AutoRunRecord } from "./auto-run-model";
 
 const run = (over: Partial<AutoRunRecord> = {}): AutoRunRecord => ({ id: "aur_1", status: "pr_open", prNumber: 9, ...over });
 

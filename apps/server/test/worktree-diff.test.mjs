@@ -55,6 +55,8 @@ beforeEach(() => {
   // if it threw first). (audit: intra-file order coupling)
   git(worktree.path, "reset", "--hard", baselineSha);
   execFileSync("git", ["-C", worktree.path, "clean", "-fdx"], { encoding: "utf8" });
+  worktree.baseBranch = "HEAD";
+  worktree.baseCommit = baselineSha;
 });
 
 test("clean worktree: no files, empty diff, base resolves to the repo default branch", () => {
@@ -97,6 +99,22 @@ test("changedPaths: committed + working-tree changes both listed (porcelain alon
   assert.ok(result.changedPaths.includes("loose.txt"), "working-tree file is in changedPaths");
   assert.equal(result.files.some((f) => f.path === "README.md"), false, "porcelain no longer sees the committed file — why changedPaths exists");
 
+});
+
+test("recorded fork commit excludes older branch history when the display base is HEAD", () => {
+  writeFileSync(join(worktree.path, "README.md"), "hello\npre-existing fetched change\n");
+  git(worktree.path, "add", ".");
+  git(worktree.path, "commit", "-m", "pre-existing remote work");
+  worktree.baseCommit = git(worktree.path, "rev-parse", "HEAD");
+
+  writeFileSync(join(worktree.path, "task-only.txt"), "this run only\n");
+  git(worktree.path, "add", ".");
+  git(worktree.path, "commit", "-m", "task delivery");
+
+  const result = svc.worktreeDiff(worktree);
+
+  assert.deepEqual(result.changedPaths, ["task-only.txt"]);
+  assert.equal(result.base, worktree.baseCommit);
 });
 
 test("tracked modification: listed in files and rendered in the unified diff", () => {

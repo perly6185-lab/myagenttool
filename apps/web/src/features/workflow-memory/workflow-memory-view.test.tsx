@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorkflowMemoryView } from "@/features/workflow-memory/workflow-memory-view";
@@ -161,6 +161,8 @@ function renderView() {
 
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
+  window.myagenttoolDesktop = undefined;
+  window.history.replaceState({}, "", window.location.pathname);
   Object.values(mocks.api).forEach((mock) => mock.mockReset());
   mocks.setSection.mockReset();
   mocks.setSelectedWorkItemId.mockReset();
@@ -224,6 +226,194 @@ afterEach(() => {
 });
 
 describe("WorkflowMemoryView", () => {
+  it("shows the task's authorized folder as a local path without an authorized-source dropdown", async () => {
+    window.myagenttoolDesktop = { pickWorkflowSourceFolder: vi.fn().mockResolvedValue(null) };
+    const otherSource = {
+      ...source,
+      id: "source-2",
+      name: "Sales history",
+      relativePath: "sales-history",
+    };
+    mocks.api.listWorkflowSources.mockResolvedValue({ sources: [source, otherSource] });
+    window.history.replaceState({}, "", `${window.location.pathname}?section=workflowMemory&sourceId=source-2`);
+
+    renderView();
+
+    expect(await screen.findByText("/work/client/sales-history")).toBeTruthy();
+    expect(screen.getAllByText("Sales history").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("combobox", { name: "Current authorized folder" })).toBeNull();
+  });
+
+  it("connects and scans a desktop folder in one action while keeping manual settings advanced", async () => {
+    const pickWorkflowSourceFolder = vi.fn().mockResolvedValue({
+      absolutePath: "D:\\work\\customer-history",
+      name: "Customer history",
+    });
+    window.myagenttoolDesktop = { pickWorkflowSourceFolder };
+    mocks.api.listWorkflowSources.mockResolvedValue({ sources: [] });
+    mocks.api.bindProject.mockResolvedValue({ project: { id: "project-picked" } });
+    mocks.api.createWorkflowSource.mockResolvedValue({
+      source: { ...source, id: "source-picked", projectId: "project-picked", name: "Customer history" },
+    });
+    mocks.api.scanWorkflowSource.mockResolvedValue({ source: { ...source, id: "source-picked" } });
+
+    renderView();
+
+    const advanced = screen.getByText("Advanced folder settings").closest("details");
+    expect(advanced?.hasAttribute("open")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    await waitFor(() => expect(mocks.api.bindProject).toHaveBeenCalledWith({
+      repoPath: "D:\\work\\customer-history",
+      name: "Customer history",
+    }));
+    expect(mocks.api.createWorkflowSource).toHaveBeenCalledWith({
+      projectId: "project-picked",
+      relativePath: "",
+      readMode: "supported_text",
+      name: "Customer history",
+    });
+    expect(mocks.api.scanWorkflowSource).toHaveBeenCalledWith("source-picked");
+  });
+
+  it("does not change anything when desktop folder selection is cancelled", async () => {
+    window.myagenttoolDesktop = { pickWorkflowSourceFolder: vi.fn().mockResolvedValue(null) };
+    mocks.api.listWorkflowSources.mockResolvedValue({ sources: [] });
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    await waitFor(() => expect(window.myagenttoolDesktop?.pickWorkflowSourceFolder).toHaveBeenCalled());
+    expect(mocks.api.bindProject).not.toHaveBeenCalled();
+    expect(mocks.api.createWorkflowSource).not.toHaveBeenCalled();
+    expect(mocks.api.scanWorkflowSource).not.toHaveBeenCalled();
+  });
+
+  it("reuses and rescans an already authorized desktop folder without creating a duplicate", async () => {
+    window.myagenttoolDesktop = {
+      pickWorkflowSourceFolder: vi.fn().mockResolvedValue({
+        absolutePath: "/work/client/history",
+        name: "Historical delivery",
+      }),
+    };
+    mocks.api.scanWorkflowSource.mockResolvedValue({ source });
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    await waitFor(() => expect(mocks.api.scanWorkflowSource).toHaveBeenCalledWith("source-1"));
+    expect(mocks.api.bindProject).not.toHaveBeenCalled();
+    expect(mocks.api.createWorkflowSource).not.toHaveBeenCalled();
+  });
+
+  it("opens an existing manual folder instead of exposing a duplicate-source error", async () => {
+    renderView();
+    await screen.findByText("Authorized folder");
+
+    fireEvent.change(screen.getByLabelText(/Folder inside project/), {
+      target: { value: "history" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Authorize source" }));
+
+    expect(mocks.api.createWorkflowSource).not.toHaveBeenCalled();
+    expect(screen.queryByText("workflow_source_exists")).toBeNull();
+  });
+
+  it("explains how to reauthorize a folder whose earlier access was revoked", async () => {
+    window.myagenttoolDesktop = {
+      pickWorkflowSourceFolder: vi.fn().mockResolvedValue({
+        absolutePath: "/work/client/history",
+        name: "Historical delivery",
+      }),
+    };
+    mocks.api.listWorkflowSources.mockResolvedValue({ sources: [{ ...source, state: "revoked" }] });
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    expect(await screen.findByText(/Access to this folder was removed earlier/)).toBeTruthy();
+    expect(mocks.api.createWorkflowSource).not.toHaveBeenCalled();
+    expect(mocks.api.scanWorkflowSource).not.toHaveBeenCalled();
+    const management = screen.getByText("Folder management").closest("details");
+    expect(management?.hasAttribute("open")).toBe(true);
+  });
+
+  it("switches between learned work types and summarizes their user-facing states", async () => {
+    const routine = (id: string, name: string, state: "published" | "disabled", version: number) => ({
+      id,
+      familyId: id,
+      projectId: "project-1",
+      sourceId: source.id,
+      name,
+      description: `${name} description`,
+      version,
+      state,
+      discoveryCandidateId: null,
+      historicalCaseIds: ["case-1", "case-2", "case-3"],
+      triggerDocumentTypes: ["inquiry"],
+      steps: [],
+      confidence: 0.9,
+      supersedesId: null,
+      supersededById: null,
+      evidenceHealth: { state: "valid", issues: [], recovery: null },
+      revision: 1,
+    });
+    mocks.api.listBusinessRoutineDefinitions.mockResolvedValue({
+      routineDefinitions: [
+        routine("routine-quotes", "Prepare quotations", "published", 2),
+        routine("routine-orders", "Register orders", "published", 1),
+        routine("routine-archive", "Archive reports", "disabled", 1),
+      ],
+      count: 3,
+    });
+
+    renderView();
+
+    const select = await screen.findByRole("combobox", { name: "Work type to view" }) as HTMLSelectElement;
+    expect(screen.getByText("2 in use")).toBeTruthy();
+    expect(screen.getByText("1 paused")).toBeTruthy();
+    expect(within(select).getByRole("option", { name: "Prepare quotations · Enabled" })).toBeTruthy();
+    expect(within(select).getByRole("option", { name: "Register orders · Enabled" })).toBeTruthy();
+    fireEvent.change(select, { target: { value: "routine-orders" } });
+    expect(select.value).toBe("routine-orders");
+    expect(screen.getAllByText("Register orders").length).toBeGreaterThan(0);
+  });
+
+  it("keeps engineering review and history tools in one collapsed advanced area", async () => {
+    renderView();
+
+    const advanced = (await screen.findByText("Advanced learning and pilot tools")).closest("details");
+    expect(advanced).toBeTruthy();
+    expect(advanced?.hasAttribute("open")).toBe(false);
+    const tools = within(advanced!);
+    expect(tools.getByText("New requirements")).toBeTruthy();
+    expect(tools.getByText("Review file roles")).toBeTruthy();
+    expect(tools.getByText("Requirement → delivery cases")).toBeTruthy();
+    expect(tools.getByText("Daily work types")).toBeTruthy();
+    expect(tools.getByText("Workflow profiles")).toBeTruthy();
+  });
+
+  it("opens advanced tools when a task links directly to a review section", async () => {
+    window.location.hash = "#workflow-file-review";
+    renderView();
+
+    const advanced = (await screen.findByText("Advanced learning and pilot tools")).closest("details");
+    await waitFor(() => expect(advanced?.hasAttribute("open")).toBe(true));
+    expect(document.getElementById("workflow-file-review")).toBeTruthy();
+  });
+
+  it("returns to the requesting task and clears its temporary deep link", async () => {
+    window.history.replaceState({}, "", "?returnWorkItemId=work-42#workflow-routine-library");
+    renderView();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Back to task" }));
+
+    expect(mocks.setSelectedWorkItemId).toHaveBeenCalledWith("work-42");
+    expect(mocks.setSection).toHaveBeenCalledWith("task");
+    expect(window.location.search).toBe("");
+    expect(window.location.hash).toBe("");
+  });
+
   it("reviews a discovered work type and requires explicit confirmation before enabling it", async () => {
     const discoveryCandidate = {
       id: "rdc-1",
@@ -307,6 +497,7 @@ describe("WorkflowMemoryView", () => {
     });
     const draftView = renderView();
     const publish = await screen.findByRole("button", { name: "Enable this work type" });
+    expect(document.getElementById("advanced-workflow-tools")?.contains(publish)).toBe(false);
     expect((publish as HTMLButtonElement).disabled).toBe(true);
     const output = screen.getByLabelText("Prepare the quotation Output to prepare");
     fireEvent.change(output, { target: { value: "Reviewed quotation document" } });

@@ -2,6 +2,10 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+// The first app-server boot may migrate/open the user's runtime state before it
+// can answer initialize. Keep that cold-start allowance separate from ordinary
+// RPCs so a genuinely stuck turn/start still fails promptly.
+const DEFAULT_INITIALIZE_TIMEOUT_MS = 60_000;
 const DEFAULT_INTERRUPT_GRACE_MS = 10_000;
 
 function providerFailureCode(message) {
@@ -38,6 +42,7 @@ export function createCodexAppServerClient({
   onSpawn = () => undefined,
   terminateProcess = (processHandle) => processHandle.kill("SIGTERM"),
   requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  initializeTimeoutMs = DEFAULT_INITIALIZE_TIMEOUT_MS,
   interruptGraceMs = DEFAULT_INTERRUPT_GRACE_MS,
   clientInfo = {
     name: "myagenttool",
@@ -171,15 +176,17 @@ export function createCodexAppServerClient({
     if (closed) {
       throw new Error("Codex app-server client is closed.");
     }
-    child = spawnProcess(command, args, {
+    const spawnedChild = spawnProcess(command, args, {
       cwd,
       env,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
-    onSpawn(child);
-    lineReader = createInterface({ input: child.stdout });
-    lineReader.on("line", (line) => {
+    child = spawnedChild;
+    onSpawn(spawnedChild);
+    const spawnedLineReader = createInterface({ input: spawnedChild.stdout });
+    lineReader = spawnedLineReader;
+    spawnedLineReader.on("line", (line) => {
       const trimmed = String(line ?? "").trim();
       if (!trimmed) return;
       try {
@@ -188,7 +195,7 @@ export function createCodexAppServerClient({
         onStderr(`Codex app-server emitted malformed JSON: ${trimmed.slice(0, 300)}`);
       }
     });
-    child.stderr?.on("data", (chunk) => {
+    spawnedChild.stderr?.on("data", (chunk) => {
       const text = chunk.toString("utf8").trim();
       if (!text) return;
       onStderr(text);
@@ -200,23 +207,27 @@ export function createCodexAppServerClient({
         }
       }
     });
-    child.on("error", (error) => {
-      failPending(error);
+    spawnedChild.on("error", (error) => {
+      if (child === spawnedChild) failPending(error);
     });
-    child.on("close", (code, signal) => {
+    spawnedChild.on("close", (code, signal) => {
+      const wasCurrentTransport = child === spawnedChild;
       const error = new Error(`Codex app-server exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "none"}).`);
-      failPending(error);
-      for (const listener of listeners) {
-        try {
-          listener({ method: "transport/closed", params: { error } });
-        } catch {
-          // Ignore consumer cleanup errors.
+      if (wasCurrentTransport) {
+        failPending(error);
+        for (const listener of listeners) {
+          try {
+            listener({ method: "transport/closed", params: { error } });
+          } catch {
+            // Ignore consumer cleanup errors.
+          }
         }
       }
-      child = null;
-      lineReader = null;
-      if (!closed) startPromise = null;
+      if (wasCurrentTransport) child = null;
+      if (lineReader === spawnedLineReader) lineReader = null;
+      if (!closed && child === null) startPromise = null;
     });
+    return spawnedChild;
   }
 
   async function start() {
@@ -228,13 +239,18 @@ export function createCodexAppServerClient({
         capabilities: {
           experimentalApi: true,
         },
-      });
+      }, initializeTimeoutMs);
       notify("initialized", {});
       return result;
     })();
     try {
       return await startPromise;
     } catch (error) {
+      const failedChild = child;
+      if (failedChild && failedChild.exitCode === null) terminateProcess(failedChild);
+      if (child === failedChild) child = null;
+      lineReader?.close();
+      lineReader = null;
       startPromise = null;
       throw error;
     }

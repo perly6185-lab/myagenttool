@@ -11,13 +11,26 @@ import { cn } from "@/lib/cn";
 
 const SAFE_HREF = /^(https?:|mailto:|#|\/)/i;
 
-export function MarkdownBlock({ text, className }: { text: string; className?: string }) {
+export function MarkdownBlock({
+  text,
+  className,
+  variant = "compact",
+  resolveImageSrc,
+  imageUnavailableLabel = "Image unavailable",
+}: {
+  text: string;
+  className?: string;
+  variant?: "compact" | "document";
+  resolveImageSrc?: (src: string) => string | null | undefined;
+  imageUnavailableLabel?: string;
+}) {
+  const document = variant === "document";
   return (
-    <div className={cn("min-w-0 text-sm leading-relaxed [overflow-wrap:anywhere]", className)}>
+    <div className={cn("min-w-0 [overflow-wrap:anywhere]", document ? "text-[15px] leading-7" : "text-sm leading-relaxed", className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          p: (props) => <p className="my-1.5 first:mt-0 last:mb-0" {...strip(props)} />,
+          p: (props) => <p className={document ? "my-3 first:mt-0 last:mb-0" : "my-1.5 first:mt-0 last:mb-0"} {...strip(props)} />,
           a: ({ href, ...props }) => (
             <a
               href={SAFE_HREF.test(href ?? "") ? href : undefined}
@@ -27,11 +40,11 @@ export function MarkdownBlock({ text, className }: { text: string; className?: s
               {...strip(props)}
             />
           ),
-          ul: (props) => <ul className="my-1.5 list-disc space-y-0.5 pl-5" {...strip(props)} />,
-          ol: (props) => <ol className="my-1.5 list-decimal space-y-0.5 pl-5" {...strip(props)} />,
-          h1: (props) => <h1 className="mb-1.5 mt-3 text-base font-semibold first:mt-0" {...strip(props)} />,
-          h2: (props) => <h2 className="mb-1.5 mt-3 text-base font-semibold first:mt-0" {...strip(props)} />,
-          h3: (props) => <h3 className="mb-1 mt-2.5 text-sm font-semibold first:mt-0" {...strip(props)} />,
+          ul: (props) => <ul className={document ? "my-3 list-disc space-y-1 pl-6" : "my-1.5 list-disc space-y-0.5 pl-5"} {...strip(props)} />,
+          ol: (props) => <ol className={document ? "my-3 list-decimal space-y-1 pl-6" : "my-1.5 list-decimal space-y-0.5 pl-5"} {...strip(props)} />,
+          h1: (props) => <h1 className={document ? "mb-4 mt-8 text-2xl font-bold leading-tight first:mt-0 sm:text-3xl" : "mb-1.5 mt-3 text-base font-semibold first:mt-0"} {...strip(props)} />,
+          h2: (props) => <h2 className={document ? "mb-3 mt-8 border-b border-border pb-2 text-xl font-semibold first:mt-0" : "mb-1.5 mt-3 text-base font-semibold first:mt-0"} {...strip(props)} />,
+          h3: (props) => <h3 className={document ? "mb-2 mt-6 text-lg font-semibold first:mt-0" : "mb-1 mt-2.5 text-sm font-semibold first:mt-0"} {...strip(props)} />,
           blockquote: (props) => (
             <blockquote className="my-1.5 border-l-2 border-border pl-3 text-muted-foreground" {...strip(props)} />
           ),
@@ -53,7 +66,22 @@ export function MarkdownBlock({ text, className }: { text: string; className?: s
             <th className="border border-border bg-muted/40 px-2 py-1 text-left font-semibold" {...strip(props)} />
           ),
           td: (props) => <td className="border border-border px-2 py-1 align-top" {...strip(props)} />,
-          hr: (props) => <hr className="my-2 border-border" {...strip(props)} />,
+          hr: (props) => <hr className={document ? "my-7 border-border" : "my-2 border-border"} {...strip(props)} />,
+          img: ({ src, alt }) => {
+            const resolved = resolveImageSrc ? resolveImageSrc(src ?? "") : src;
+            return resolved ? (
+              <img
+                src={resolved}
+                alt={alt ?? ""}
+                loading="lazy"
+                className={document ? "mx-auto my-5 max-h-[34rem] max-w-full rounded-lg border border-border object-contain" : "max-w-full"}
+              />
+            ) : (
+              <span className="my-3 block rounded-lg border border-dashed border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground" role="img" aria-label={alt || imageUnavailableLabel}>
+                {alt || imageUnavailableLabel}
+              </span>
+            );
+          },
         }}
       >
         {text}

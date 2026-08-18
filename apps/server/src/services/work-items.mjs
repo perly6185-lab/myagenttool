@@ -5,9 +5,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { normalizeLocalIssueRoutineBinding } from "@myagenttool/protocol/business-routine";
-import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
+import { businessRoutineSchemaVersion, normalizeLocalIssueRoutineBinding } from "@myagenttool/protocol/business-routine";
+import { actorCanAccessProject, findUser, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { listDevices } from "../runtime/device.mjs";
+import { homeWorkbenchReadModel } from "../read-models/home-workbench.mjs";
 import { backfillTerminalOwnership } from "../runtime/terminal-ownership.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
@@ -15,10 +16,42 @@ import { externalIssueProviderReadiness } from "./external-issue-provider.mjs";
 import { ASSET_CAPABILITY_VERBS, evaluateAssetRequirements } from "./asset-capabilities.mjs";
 import { createApplicationExecutionContract } from "./application-execution-contract.mjs";
 import { routineIdempotencyKeys } from "./business-routines.mjs";
+import {
+  WORK_ITEM_FOLLOW_UP_MUTABLE_FIELDS,
+  WORK_ITEM_FOLLOW_UP_SERVER_FIELDS,
+  normalizeWorkItemFollowUpInput,
+  workItemFollowUpContextView,
+} from "./work-item-follow-up.mjs";
+import { createWorkItemReportDraftService } from "./work-item-report-drafts.mjs";
+import { resolveWorkItemExecution } from "./work-item-execution.mjs";
+import { projectWorkItemOutcome } from "./work-item-outcome.mjs";
+import {
+  compactMatchText,
+  definitionTemplateContract,
+  evaluateMyTemplateGovernance,
+  latestMyTemplateGovernanceIntervention,
+  learnedTemplateOutput,
+  matchPublishedMyTemplate,
+  templateRoutingTerms,
+  textSimilarity,
+} from "./work-item-template-matching.mjs";
+import { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
+
+export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
+export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
 const PRIORITIES = new Set(["p0", "p1", "p2", "p3"]);
+const EXECUTION_POLICIES = new Set(["inherit", "auto", "manual", "paused"]);
+// Friendly aliases normalized to canonical p0–p3 before validation, so callers
+// may pass "critical"/"high"/"medium"/"low" etc. (mirrors the alias→canonical
+// pattern in normalizeClaudePermissionMode). Invalid values still reject.
+const PRIORITY_ALIASES = { critical: "p0", urgent: "p0", high: "p1", medium: "p2", normal: "p2", low: "p3" };
+function normalizePriority(value) {
+  const candidate = String(value ?? "").toLowerCase().trim();
+  return PRIORITY_ALIASES[candidate] ?? candidate;
+}
 const MAX_TITLE = 300;
 const MAX_BODY = 200_000;
 const MAX_LABELS = 50;
@@ -32,6 +65,8 @@ const ROUTINE_BINDING_FIELDS = [
   "triggerArtifactIds",
 ];
 const GITHUB_SYNC_FIELDS = ["title", "body", "state", "labels", "milestone", "assigneeIds"];
+const EXTERNAL_RELATIONS = new Set(["source", "related", "duplicate", "parent", "blocks"]);
+const EXTERNAL_SYNC_POLICIES = new Set(["manual", "webhook_pull", "bidirectional"]);
 const VERIFICATION_KINDS = new Set(["test", "lint", "typecheck", "manual", "review"]);
 const VERIFICATION_STATUSES = new Set(["passed", "failed"]);
 const EXECUTION_OPERATION_TTL_MS = 30 * 60_000;
@@ -99,8 +134,24 @@ function validDateOnly(value) {
   return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
 }
 
+function normalizeIsoDateTime(value) {
+  if (value == null || value === "") return { ok: true, value: null };
+  if (typeof value !== "string" || value.length > 50
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)
+    || !/(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    return { ok: false };
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed)
+    ? { ok: true, value: new Date(parsed).toISOString() }
+    : { ok: false };
+}
+
 function validateDraft(input, { partial = false } = {}) {
   const value = {};
+  if (WORK_ITEM_FOLLOW_UP_SERVER_FIELDS.some((field) => Object.hasOwn(input, field))) {
+    return { error: "work_item_follow_up_server_fields_immutable" };
+  }
   if (!partial || Object.hasOwn(input, "title")) {
     const title = String(input.title ?? "").trim();
     if (!title || title.length > MAX_TITLE) return { error: "invalid_work_item_title" };
@@ -115,10 +166,15 @@ function validateDraft(input, { partial = false } = {}) {
     ["type", TYPES, "task"],
     ["status", STATUSES, "backlog"],
     ["priority", PRIORITIES, "p2"],
+    ["executionPolicy", EXECUTION_POLICIES, "inherit"],
   ]) {
     if (!partial || Object.hasOwn(input, field)) {
-      const candidate = String(input[field] ?? fallback);
-      if (!allowed.has(candidate)) return { error: `invalid_work_item_${field}` };
+      const candidate = field === "priority"
+        ? normalizePriority(input[field] ?? fallback)
+        : String(input[field] ?? fallback);
+      if (!allowed.has(candidate)) {
+        return { error: `invalid_work_item_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}` };
+      }
       value[field] = candidate;
     }
   }
@@ -134,10 +190,20 @@ function validateDraft(input, { partial = false } = {}) {
     if (!acceptanceCriteria) return { error: "invalid_work_item_acceptance_criteria" };
     value.acceptanceCriteria = acceptanceCriteria;
   }
+  if (!partial || Object.hasOwn(input, "verificationSop")) {
+    const verificationSop = strings(input.verificationSop ?? [], { limit: 30, maxLength: 2_000 });
+    if (!verificationSop) return { error: "invalid_work_item_verification_sop" };
+    value.verificationSop = verificationSop;
+  }
   if (!partial || Object.hasOwn(input, "dueDate")) {
     const dueDate = input.dueDate == null || input.dueDate === "" ? null : String(input.dueDate);
     if (dueDate && !validDateOnly(dueDate)) return { error: "invalid_work_item_due_date" };
     value.dueDate = dueDate;
+  }
+  if (!partial || Object.hasOwn(input, "notBefore")) {
+    const notBefore = normalizeIsoDateTime(input.notBefore);
+    if (!notBefore.ok) return { error: "invalid_work_item_not_before" };
+    value.notBefore = notBefore.value;
   }
   for (const field of ["plannedDate", "carriedFromDate"]) {
     if (!partial || Object.hasOwn(input, field)) {
@@ -175,6 +241,9 @@ function validateDraft(input, { partial = false } = {}) {
     if (!assets) return { error: "invalid_work_item_output_assets" };
     value.outputAssets = assets;
   }
+  const followUp = normalizeWorkItemFollowUpInput(input, { partial });
+  if (followUp.error) return followUp;
+  Object.assign(value, followUp.value);
   const hasRoutineBinding = Object.hasOwn(input, "routineBinding")
     || ROUTINE_BINDING_FIELDS.some((field) => Object.hasOwn(input, field));
   if (hasRoutineBinding) {
@@ -188,6 +257,20 @@ function validateDraft(input, { partial = false } = {}) {
     }
     const { schemaVersion, ...binding } = normalized.value;
     Object.assign(value, binding, { routineBindingSchemaVersion: schemaVersion });
+  }
+  if (Object.hasOwn(input, "myTemplateBinding")) {
+    const binding = input.myTemplateBinding;
+    const definitionId = String(binding?.definitionId ?? "").trim();
+    const familyId = String(binding?.familyId ?? "").trim();
+    const version = Number(binding?.version);
+    const matchReasons = strings(binding?.matchReasons ?? [], { limit: 10, maxLength: 500 });
+    if (!definitionId || !familyId || !Number.isInteger(version) || version < 1 || !matchReasons) {
+      return { error: "invalid_work_item_my_template_binding" };
+    }
+    value.myTemplateBinding = {
+      definitionId, familyId, version, matchReasons,
+      userConfirmedResult: binding?.userConfirmedResult === true,
+    };
   }
   return { value };
 }
@@ -204,8 +287,10 @@ function normalizeAssetRefs(input) {
     if (!capabilities || capabilities.some((verb) => !ASSET_CAPABILITY_VERBS.includes(verb))) return null;
     assets.push({
       id: String(candidate.id ?? "").slice(0, 100) || null,
+      originalName: candidate.originalName ? String(candidate.originalName).replace(/[\r\n\t]/g, " ").slice(0, 200) : undefined,
       path,
       family: String(candidate.family ?? "unknown").slice(0, 40),
+      mimeType: candidate.mimeType ? String(candidate.mimeType).slice(0, 120) : null,
       terminalId,
       size: Number.isSafeInteger(candidate.size) && candidate.size >= 0 ? candidate.size : null,
       resourceClass: ["small", "medium", "large", "unknown"].includes(candidate.resourceClass)
@@ -223,6 +308,11 @@ function normalizeAssetRefs(input) {
   return assets;
 }
 
+function contentReferenceView(reference) {
+  const { selectedFingerprint: _selectedFingerprint, ...visible } = reference ?? {};
+  return { ...visible, fingerprintPinned: Boolean(reference?.selectedFingerprint) };
+}
+
 export function createWorkItemService({
   state,
   now,
@@ -237,17 +327,101 @@ export function createWorkItemService({
   invokeResolvedCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } }),
   issueApplicationApprovalGrant = null,
   onWorkItemChanged = () => {},
+  claimTaskMaterialDraft = null,
+  inspectTaskMaterialDraft = null,
+  resolveClaimedTaskMaterial = null,
+  resolveLocalContentReference = null,
   store,
 }) {
+  state.myTemplateRoutingFeedback ??= [];
+  state.myTemplateOutcomeFeedback ??= [];
+  state.myTemplateGovernanceInterventions ??= [];
+  state.myTemplateDrafts ??= [];
+  state.myTemplateLearningCases ??= [];
+  state.routineDefinitions ??= [];
   const runTx = makeRunTx({ store, persistStateSoon });
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const actorUser = (actor) => actor?.userId ?? LOCAL_USER_ID;
+  const taskDraftsNeedingSingleCaseMigration = state.myTemplateDrafts.filter((draft) =>
+    draft.casesRequired !== 1 || (draft.state === "learning" && Number(draft.caseCount ?? 0) >= 1));
+  if (taskDraftsNeedingSingleCaseMigration.length) runTx(() => {
+    for (const draft of taskDraftsNeedingSingleCaseMigration) {
+      draft.casesRequired = 1;
+      if (draft.state === "learning" && Number(draft.caseCount ?? 0) >= 1) draft.state = "needs_review";
+    }
+  });
+  const legacyContractCandidates = (state.workItems ?? []).filter((item) =>
+    !item.executionContractSnapshot && item.executionContractConfirmedAt
+    && (item.acceptanceCriteria ?? []).length && (item.verificationSop ?? []).length);
+  if (legacyContractCandidates.length) runTx(() => {
+    for (const item of legacyContractCandidates) {
+      const confirmedBy = ["assisted", "agent_assisted"].includes(item.executionContractSource)
+        ? "ai_policy"
+        : item.lastModifiedBy ?? item.createdBy ?? "legacy_user";
+      item.executionContractSnapshot = {
+        schemaVersion: "legacy-v1",
+        id: `contract:legacy:${item.id}:${item.executionContractConfirmedAt}`,
+        workItemId: item.id,
+        workItemRevision: item.revision ?? null,
+        autoRunId: null,
+        acceptanceCriteria: [...item.acceptanceCriteria],
+        verificationSop: [...item.verificationSop],
+        confirmedBy,
+        confirmedAt: item.executionContractConfirmedAt,
+        digest: createHash("sha256").update(JSON.stringify({
+          schemaVersion: "legacy-v1",
+          workItemId: item.id,
+          acceptanceCriteria: item.acceptanceCriteria,
+          verificationSop: item.verificationSop,
+          confirmedAt: item.executionContractConfirmedAt,
+        })).digest("hex"),
+        readOnly: true,
+        migratedAt: now(),
+      };
+    }
+  });
   const notifyWorkItemChanged = (item, actor, reason) => {
     try {
       onWorkItemChanged(item, actor, reason);
     } catch {
       // Outcome projection is best-effort and must never roll back the Issue mutation.
     }
+  };
+  const materializeMyTemplateBinding = (requested, projectId, actor, timestamp = now()) => {
+    const definition = (state.routineDefinitions ?? []).find((row) =>
+      row.id === requested.definitionId
+      && row.familyId === requested.familyId
+      && row.version === requested.version
+      && (row.projectId === projectId || row.templateScope === "team")
+      && row.ownerTeamId === actorTeam(actor)
+      && row.state === "published");
+    if (!definition) return { error: "work_item_my_template_not_available" };
+    const snapshot = {
+      name: definition.name,
+      description: definition.description,
+      expectedOutput: learnedTemplateOutput(definition),
+      ...(definition.templateContract ? { templateContract: definition.templateContract } : {}),
+      steps: (definition.steps ?? []).map((step) => ({
+        key: step.key,
+        kind: step.kind,
+        label: step.label,
+        required: Boolean(step.required),
+      })),
+    };
+    return {
+      value: {
+        schemaVersion: 1,
+        definitionId: definition.id,
+        familyId: definition.familyId,
+        version: definition.version,
+        name: definition.name,
+        expectedOutput: snapshot.expectedOutput,
+        matchReasons: requested.matchReasons,
+        snapshot,
+        snapshotHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+        matchedAt: timestamp,
+      },
+    };
   };
   const localTerminalId = () => listDevices(state)[0]?.id ?? null;
   const localAssetResourceClasses = (terminalId) => {
@@ -337,6 +511,62 @@ export function createWorkItemService({
     return item && item.ownerTeamId === actorTeam(actor) ? item : null;
   }
 
+  const reportDraftService = createWorkItemReportDraftService({
+    state, now, nextId, runTx, findOwn, recordActivity, actorTeam, actorUser,
+  });
+
+  function resolveFollowUpContext(context, actor, { input = {} } = {}) {
+    const value = workItemFollowUpContextView(context);
+    const relation = value.requesterRelation;
+    const explicitRequesterUserId = Object.hasOwn(input, "requesterUserId");
+    const explicitIdentity = ["requesterName", "requesterOrganization", "requesterUserId"]
+      .some((field) => Object.hasOwn(input, field) && input[field] != null && input[field] !== "");
+
+    if (relation === "self") {
+      if (explicitRequesterUserId && value.requesterUserId && value.requesterUserId !== actorUser(actor)) {
+        return { error: "work_item_self_requester_mismatch" };
+      }
+      value.requesterUserId = actorUser(actor);
+      value.requesterName = null;
+      value.requesterOrganization = null;
+    } else if (relation === "unknown") {
+      if (explicitIdentity) return { error: "work_item_unknown_requester_identity_forbidden" };
+      value.requesterUserId = null;
+      value.requesterName = null;
+      value.requesterOrganization = null;
+    } else if (relation === "customer") {
+      if (!value.requesterName) return { error: "work_item_customer_requester_name_required" };
+      if (explicitRequesterUserId && value.requesterUserId) {
+        return { error: "work_item_customer_internal_requester_forbidden" };
+      }
+      value.requesterUserId = null;
+    } else if (relation === "child") {
+      if (explicitRequesterUserId && value.requesterUserId) {
+        return { error: "work_item_child_internal_requester_forbidden" };
+      }
+      value.requesterUserId = null;
+    } else {
+      if (!value.requesterUserId && !value.requesterName) {
+        return { error: "work_item_internal_requester_identity_required" };
+      }
+      if (value.requesterUserId) {
+        const requester = findUser(state, value.requesterUserId);
+        if (!requester || (requester.teamId ?? LOCAL_TEAM_ID) !== actorTeam(actor)) {
+          return { error: "invalid_work_item_requester_user" };
+        }
+      }
+    }
+
+    if (value.waitingOn === "requester" && ["self", "unknown"].includes(relation)) {
+      return { error: "work_item_waiting_on_requester_requires_requester" };
+    }
+    if (Object.hasOwn(input, "nextFollowUpAt") && value.nextFollowUpAt
+      && Date.parse(value.nextFollowUpAt) <= Date.parse(now())) {
+      return { error: "work_item_next_follow_up_at_in_past" };
+    }
+    return { value };
+  }
+
   function applyPlanningAutomation(item, actor) {
     const matchingProjects = (state.planningProjects ?? []).filter((project) =>
       project.ownerTeamId === actorTeam(actor) && !project.archivedAt
@@ -375,39 +605,7 @@ export function createWorkItemService({
   }
 
   function executionState(item) {
-    const latestApplicationBinding = [...(item.executionBindings ?? [])]
-      .reverse()
-      .find((binding) => binding.kind === "application_invocation");
-    const applicationInvocation = latestApplicationBinding
-      ? (state.invocations ?? []).find((candidate) => candidate.id === latestApplicationBinding.id)
-      : null;
-    if (applicationInvocation) {
-      if (["queued", "dispatching", "running"].includes(applicationInvocation.status)) return "running";
-      if (["waiting_for_local_approval", "awaiting_approval"].includes(applicationInvocation.status)) return "awaiting_approval";
-      if (["verifying"].includes(applicationInvocation.status)) return "verifying";
-      if (["failed", "timed_out", "cancelled", "rejected"].includes(applicationInvocation.status)) return "failed";
-      if (applicationInvocation.status === "succeeded") return "completed";
-    }
-    // A durable task binding whose invocation disappeared across a crash/restart
-    // is recovery work, not an unclaimed task. Surface it to Entry attention so
-    // the user can retry on the same immutable terminal.
-    if (latestApplicationBinding) return "failed";
-    const latestBinding = [...(item.executionBindings ?? [])]
-      .reverse()
-      .find((binding) => binding.kind === "auto_run");
-    const run = latestBinding
-      ? (state.autoRuns ?? []).find((candidate) => candidate.id === latestBinding.targetId)
-      : null;
-    if (run) {
-      if (["materializing", "running", "waiting_capacity", "publishing"].includes(run.status)) return "running";
-      if (["awaiting_approval", "needs_input"].includes(run.status)) return "awaiting_approval";
-      if (["verifying", "pr_open", "report_posted", "plan_proposed"].includes(run.status)) return "verifying";
-      if (["blocked", "failed"].includes(run.status)) return "failed";
-      if (["done", "decomposed"].includes(run.status)) return "completed";
-    }
-    const claimActive = item.claim?.status === "active"
-      && Date.parse(item.claim.leaseExpiresAt) > Date.parse(now());
-    return claimActive ? "claimed" : "unclaimed";
+    return resolveWorkItemExecution(item, state, { now: now() }).executionState;
   }
 
   function completionGate(item) {
@@ -420,9 +618,274 @@ export function createWorkItemService({
     return { ready: missingCriteria.length === 0 && !verificationRequired, missingCriteria, verificationRequired };
   }
 
+  function executionContractGate(item) {
+    const missing = [];
+    if (!(item.acceptanceCriteria ?? []).length) missing.push("acceptance_criteria");
+    if (!(item.verificationSop ?? []).length) missing.push("verification_sop");
+    if (!item.executionContractConfirmedAt) missing.push("confirmation");
+    const latestRun = [...(item.executionBindings ?? [])].reverse()
+      .filter((binding) => binding.kind === "auto_run")
+      .map((binding) => (state.autoRuns ?? []).find((candidate) => candidate.id === binding.targetId))
+      .find(Boolean) ?? null;
+    const latestAttemptStartedAt = latestRun?.executionBudget?.startedAt ?? latestRun?.createdAt ?? null;
+    if (item.executionContractConfirmedAt && latestAttemptStartedAt
+      && Date.parse(item.executionContractConfirmedAt) > Date.parse(latestAttemptStartedAt)) {
+      missing.push("confirmed_before_execution");
+    }
+    return {
+      ready: missing.length === 0,
+      missing,
+      source: item.executionContractSource ?? null,
+      confirmedAt: item.executionContractConfirmedAt ?? null,
+      latestAttemptStartedAt,
+    };
+  }
+
+  function reviewContract(item) {
+    const latestRun = [...(item.executionBindings ?? [])].reverse()
+      .filter((binding) => binding.kind === "auto_run")
+      .map((binding) => (state.autoRuns ?? []).find((candidate) => candidate.id === binding.targetId))
+      .find(Boolean) ?? null;
+    const contract = latestRun?.executionContract ?? item.executionContractSnapshot ?? null;
+    if (!contract) return null;
+    return {
+      schemaVersion: contract.schemaVersion ?? "execution-contract-v2",
+      id: contract.id,
+      workItemId: contract.workItemId ?? item.id,
+      workItemRevision: contract.workItemRevision ?? null,
+      autoRunId: contract.autoRunId ?? latestRun?.id ?? null,
+      acceptanceCriteria: [...(contract.acceptanceCriteria ?? [])],
+      verificationSop: [...(contract.verificationSop ?? [])],
+      confirmedBy: contract.confirmedBy ?? null,
+      confirmedAt: contract.confirmedAt ?? null,
+      digest: contract.digest ?? null,
+      readOnly: true,
+    };
+  }
+
+  function reviewEvidence(item, contract) {
+    if (!contract) return [];
+    const verificationById = new Map((item.verificationRecords ?? []).map((record) => [record.id, record]));
+    return contract.acceptanceCriteria.map((criterion) => {
+      const result = (item.acceptanceResults ?? []).find((candidate) => candidate.criterion === criterion) ?? null;
+      const verification = result?.verificationId ? verificationById.get(result.verificationId) ?? null : null;
+      return {
+        criterion,
+        status: result?.status ?? "not_tested",
+        note: result?.note ?? "",
+        verificationId: verification?.id ?? null,
+        command: verification?.command ?? null,
+        verificationSummary: verification?.summary ?? null,
+        evidence: [...(verification?.evidence ?? [])],
+        sourceAutoRunId: verification?.sourceAutoRunId ?? contract.autoRunId ?? null,
+        reviewedBy: verification?.recordedBy ?? null,
+        reviewedAt: verification?.recordedAt ?? null,
+      };
+    });
+  }
+
+  function executionContractDefinitionGate(item) {
+    const missing = [];
+    if (!(item.acceptanceCriteria ?? []).length) missing.push("acceptance_criteria");
+    if (!(item.verificationSop ?? []).length) missing.push("verification_sop");
+    if (!item.executionContractConfirmedAt) missing.push("confirmation");
+    return {
+      ready: missing.length === 0,
+      missing,
+      source: item.executionContractSource ?? null,
+      confirmedAt: item.executionContractConfirmedAt ?? null,
+    };
+  }
+
+  function myTemplateDraftView(draft) {
+    if (!draft) return null;
+    return {
+      id: draft.id,
+      projectId: draft.projectId,
+      name: draft.name,
+      typicalInput: draft.typicalInput,
+      expectedOutput: draft.expectedOutput,
+      applicability: draft.applicability,
+      steps: [...(draft.steps ?? [])],
+      state: draft.state,
+      caseCount: draft.caseCount,
+      casesRequired: draft.casesRequired,
+      revision: draft.revision,
+      origin: { ...draft.origin },
+      activation: draft.activation ? { ...draft.activation } : null,
+      createdAt: draft.createdAt,
+      updatedAt: draft.updatedAt,
+    };
+  }
+
+  function taskTemplateDraftFor(item, actor) {
+    return state.myTemplateDrafts.find((draft) =>
+      draft.ownerTeamId === actorTeam(actor)
+      && draft.projectId === item.projectId
+      && draft.origin?.workItemId === item.id) ?? null;
+  }
+
+  function latestTaskDelivery(item) {
+    const runIds = new Set((item.executionBindings ?? [])
+      .filter((binding) => binding.kind === "auto_run" && binding.targetId)
+      .map((binding) => binding.targetId));
+    const run = (state.autoRuns ?? [])
+      .filter((candidate) => runIds.has(candidate.id))
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))[0] ?? null;
+    return { run, report: run?.deliveryReport ?? null };
+  }
+
+  function taskTemplateDraftPreview(item, actor) {
+    const existing = taskTemplateDraftFor(item, actor);
+    if (existing) return { eligible: true, alreadySaved: true, draft: myTemplateDraftView(existing), reasons: [] };
+
+    const reasons = [];
+    if (item.status !== "done") reasons.push("task_not_completed");
+    if (item.myTemplateBinding) reasons.push("task_already_used_my_template");
+    const { report } = latestTaskDelivery(item);
+    const passedVerification = (item.verificationRecords ?? []).some((record) => record.status === "passed");
+    const passedAcceptance = (item.acceptanceResults ?? []).some((result) => result.status === "passed");
+    const hasResultEvidence = Boolean(
+      (item.outputAssets ?? []).length
+      || report?.summary
+      || report?.changedFiles?.length
+      || item.lastProgressSummary
+      || passedVerification
+      || passedAcceptance,
+    );
+    if (!hasResultEvidence) reasons.push("task_result_evidence_required");
+
+    const fileLabel = (asset) => String(asset.originalName ?? asset.path ?? "").replaceAll("\\", "/").split("/").pop();
+    const inputLabels = [...new Set((item.inputAssets ?? []).map(fileLabel).filter(Boolean))];
+    const outputLabels = [...new Set([
+      ...(item.outputAssets ?? []).map(fileLabel),
+      ...(report?.changedFiles ?? []).map((path) => String(path).replaceAll("\\", "/").split("/").pop()),
+    ].filter(Boolean))];
+    const typicalInput = inputLabels.length
+      ? inputLabels.slice(0, 5).join("、")
+      : `与“${String(item.title ?? "这项工作").slice(0, 120)}”类似的任务说明和材料`;
+    const expectedOutput = outputLabels.length
+      ? outputLabels.slice(0, 5).join("、")
+      : String(report?.summary ?? item.lastProgressSummary ?? "得到符合任务目标并通过检查的结果").trim().slice(0, 1_000);
+    const observedSteps = [...new Set((item.assetOperations ?? [])
+      .map((operation) => String(operation.summary ?? operation.capability ?? "").trim().slice(0, 1_000))
+      .filter(Boolean))];
+    const steps = (observedSteps.length ? observedSteps : [
+      `理解并检查${typicalInput}`,
+      "按任务目标完成处理",
+      `检查并交付${expectedOutput}`,
+    ]).slice(0, 12);
+    return {
+      eligible: reasons.length === 0,
+      alreadySaved: false,
+      reasons,
+      draft: null,
+      suggestion: {
+        name: String(item.title ?? "新的我的模版").trim().slice(0, 200),
+        typicalInput: typicalInput.slice(0, 1_000),
+        expectedOutput: expectedOutput.slice(0, 1_000),
+        applicability: `当收到${typicalInput.slice(0, 500)}，并希望得到${expectedOutput.slice(0, 500)}时`,
+        steps,
+      },
+      evidence: {
+        inputCount: item.inputAssets?.length ?? 0,
+        outputCount: item.outputAssets?.length ?? 0,
+        passedVerification,
+        passedAcceptance,
+        hasDeliveryReport: Boolean(report?.summary || report?.changedFiles?.length),
+      },
+    };
+  }
+
+  function taskTemplateLearningSnapshot(item) {
+    const boundedAssetRef = (asset) => ({
+      id: asset.id ?? null,
+      name: asset.originalName ?? String(asset.path ?? "").replaceAll("\\", "/").split("/").pop() ?? null,
+      path: asset.path ?? null,
+      family: asset.family ?? null,
+      hash: asset.hash ?? null,
+      version: asset.version ?? null,
+      terminalId: asset.terminalId ?? null,
+    });
+    const { report } = latestTaskDelivery(item);
+    const snapshot = {
+      schemaVersion: 1,
+      workItemId: item.id,
+      workItemRevision: item.revision,
+      taskTitle: String(item.title ?? "").slice(0, 300),
+      inputAssets: (item.inputAssets ?? []).slice(0, 100).map(boundedAssetRef),
+      outputAssets: (item.outputAssets ?? []).slice(0, 100).map(boundedAssetRef),
+      resultSummary: String(report?.summary ?? item.lastProgressSummary ?? "").slice(0, 2_000),
+      changedFiles: strings(report?.changedFiles ?? [], { limit: 100, maxLength: 1_000 }) ?? [],
+      acceptanceCriteria: strings(item.acceptanceCriteria ?? [], { limit: 30, maxLength: 2_000 }) ?? [],
+      acceptanceResults: (item.acceptanceResults ?? []).slice(0, 100).map((result) => ({
+        criterion: String(result.criterion ?? "").slice(0, 2_000),
+        status: result.status,
+      })),
+      verificationEvidence: (item.verificationRecords ?? []).slice(-30).map((record) => ({
+        kind: record.kind,
+        status: record.status,
+        summary: String(record.summary ?? "").slice(0, 1_000),
+      })),
+    };
+    return {
+      snapshot,
+      snapshotHash: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+    };
+  }
+
+  function similarTaskCandidate(draft, item, actor) {
+    if (item.ownerTeamId !== actorTeam(actor) || item.projectId !== draft.projectId) return null;
+    if ((draft.learningCaseIds ?? []).some((caseId) => state.myTemplateLearningCases
+      .some((entry) => entry.id === caseId && entry.workItemId === item.id))) return null;
+    if (state.myTemplateLearningCases.some((entry) =>
+      entry.ownerTeamId === actorTeam(actor) && entry.workItemId === item.id)) return null;
+    if (item.status !== "done" || item.myTemplateBinding) return null;
+    const preview = taskTemplateDraftPreview(item, actor);
+    if (!preview.eligible || !preview.suggestion) return null;
+
+    const titleScore = textSimilarity(draft.name, item.title);
+    const inputScore = textSimilarity(draft.typicalInput, preview.suggestion.typicalInput);
+    const outputScore = textSimilarity(draft.expectedOutput, preview.suggestion.expectedOutput);
+    const draftOutputExtension = String(draft.expectedOutput).toLowerCase().match(/\.[a-z0-9]{1,8}\b/)?.[0] ?? null;
+    const candidateOutputExtension = String(preview.suggestion.expectedOutput).toLowerCase().match(/\.[a-z0-9]{1,8}\b/)?.[0] ?? null;
+    const sameOutputFormat = Boolean(draftOutputExtension && draftOutputExtension === candidateOutputExtension);
+    if (outputScore < 0.12 && !sameOutputFormat) return null;
+    const score = Math.min(1, titleScore * 0.35 + inputScore * 0.25 + outputScore * 0.4 + (sameOutputFormat ? 0.08 : 0));
+    if (score < 0.22) return null;
+    const reasons = [];
+    if (outputScore >= 0.2) reasons.push("交付结果相似");
+    if (inputScore >= 0.2) reasons.push("输入材料相似");
+    if (titleScore >= 0.2) reasons.push("任务目标相似");
+    if (sameOutputFormat) reasons.push("输出格式一致");
+    return {
+      workItem: {
+        id: item.id,
+        localRef: item.localRef ?? null,
+        title: item.title,
+        completedAt: item.completedAt ?? item.updatedAt ?? null,
+        revision: item.revision,
+      },
+      similarity: Number(score.toFixed(4)),
+      confidence: score >= 0.55 ? "high" : score >= 0.35 ? "medium" : "low",
+      reasons,
+      typicalInput: preview.suggestion.typicalInput,
+      expectedOutput: preview.suggestion.expectedOutput,
+      evidence: preview.evidence,
+    };
+  }
+
   function workItemView(item, actor) {
     const { createIdempotencyKey: _createIdempotencyKey, ...publicItem } = item;
-    const derivedExecutionState = executionState(item);
+    const bodyAcceptanceCriteria = (item.acceptanceCriteria ?? []).length
+      ? []
+      : extractAcceptanceCriteriaFromBody(item.body);
+    const visibleAcceptanceCriteria = (publicItem.acceptanceCriteria ?? []).length
+      ? publicItem.acceptanceCriteria
+      : bodyAcceptanceCriteria;
+    const derivedExecution = resolveWorkItemExecution(item, state, { now: now() });
+    const derivedExecutionState = derivedExecution.executionState;
+    const frozenReviewContract = reviewContract(item);
     const memberships = (state.planningProjectItems ?? []).filter(
       (row) => row.workItemId === item.id && row.ownerTeamId === actorTeam(actor),
     );
@@ -433,8 +896,17 @@ export function createWorkItemService({
     const completedSubIssues = subIssues.filter(
       (candidate) => candidate.status === "done" || candidate.state === "closed",
     ).length;
+    const templateOutcomeFeedback = state.myTemplateOutcomeFeedback.find((feedback) =>
+      feedback.ownerTeamId === actorTeam(actor) && feedback.workItemId === item.id) ?? null;
     return {
       ...publicItem,
+      localContentRefs: (item.localContentRefs ?? []).map(contentReferenceView),
+      acceptanceCriteria: visibleAcceptanceCriteria,
+      acceptanceCriteriaSource: (publicItem.acceptanceCriteria ?? []).length
+        ? publicItem.executionContractSource ?? "structured"
+        : bodyAcceptanceCriteria.length ? "body_unstructured" : null,
+      completedAt: publicItem.completedAt ?? ((item.state === "closed" || item.status === "done") ? item.updatedAt : null),
+      ...workItemFollowUpContextView(item),
       assetReadiness: evaluateAssetRequirements(
         item.inputAssets ?? [],
         item.requiredCapabilities ?? [],
@@ -445,12 +917,28 @@ export function createWorkItemService({
       businessState: item.state,
       planningStatus: item.status,
       executionState: derivedExecutionState,
+      executionKind: derivedExecution.binding?.kind ?? null,
       statusModel: {
         business: item.state,
         planning: item.status,
         execution: derivedExecutionState,
       },
-      completionGate: completionGate(item),
+      completionGate: completionGate({ ...item, acceptanceCriteria: visibleAcceptanceCriteria }),
+      executionContractGate: executionContractGate(item),
+      reviewContract: frozenReviewContract,
+      reviewEvidence: reviewEvidence(item, frozenReviewContract),
+      myTemplateOutcomeFeedback: templateOutcomeFeedback ? {
+        id: templateOutcomeFeedback.id,
+        outcome: templateOutcomeFeedback.outcome,
+        note: templateOutcomeFeedback.note,
+        definitionId: templateOutcomeFeedback.definitionId,
+        familyId: templateOutcomeFeedback.familyId,
+        version: templateOutcomeFeedback.version,
+        revision: templateOutcomeFeedback.revision,
+        createdAt: templateOutcomeFeedback.createdAt,
+        updatedAt: templateOutcomeFeedback.updatedAt,
+      } : null,
+      myTemplateDraft: myTemplateDraftView(taskTemplateDraftFor(item, actor)),
       parent: parent ? {
         id: parent.id, localRef: parent.localRef, title: parent.title,
         status: parent.status, state: parent.state,
@@ -499,6 +987,7 @@ export function createWorkItemService({
 
   function listWorkItems(query = {}, actor = null) {
     const q = String(query.q ?? "").trim().toLowerCase();
+    const projectNames = new Map((state.projects ?? []).map((project) => [project.id, project.name ?? ""]));
     const updatedSince = normalizedUpdatedSince(query.updatedSince);
     if (updatedSince === undefined) return { ok: false, status: 400, body: { error: "invalid_updated_since" } };
     const plannedDate = String(query.plannedDate ?? "");
@@ -506,6 +995,7 @@ export function createWorkItemService({
       return { ok: false, status: 400, body: { error: "invalid_work_item_planned_date" } };
     }
     const assigneeId = query.assigneeId === "mine" ? actorUser(actor) : String(query.assigneeId ?? "");
+    const terminalId = query.terminalId === "local" ? localTerminalId() : String(query.terminalId ?? "");
     const planningProjectId = String(query.planningProjectId ?? "");
     const planningWorkItemIds = planningProjectId
       ? new Set((state.planningProjectItems ?? [])
@@ -518,11 +1008,12 @@ export function createWorkItemService({
       .filter((item) => !query.projectId || item.projectId === query.projectId)
       .filter((item) => !query.status || item.status === query.status)
       .filter((item) => !query.type || item.type === query.type)
+      .filter((item) => !terminalId || item.terminalId === terminalId)
       .filter((item) => !plannedDate || item.plannedDate === plannedDate)
       .filter((item) => !assigneeId || (item.assigneeIds ?? []).includes(assigneeId))
       .filter((item) => query.includeArchived === "1" || !item.archivedAt)
       .filter((item) => !updatedSince || item.updatedAt > updatedSince)
-      .filter((item) => !q || `${item.localRef} ${item.title} ${item.body} ${item.labels.join(" ")}`.toLowerCase().includes(q))
+      .filter((item) => !q || `${item.localRef} ${item.title} ${item.body} ${item.labels.join(" ")} ${projectNames.get(item.projectId) ?? ""}`.toLowerCase().includes(q))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id))
       .map((item) => workItemView(item, actor));
     const page = paginateRows(rows, query);
@@ -530,6 +1021,28 @@ export function createWorkItemService({
     return {
       ok: true, status: 200,
       body: { workItems: page.rows, count: page.rows.length, nextCursor: page.nextCursor, hasMore: page.hasMore },
+    };
+  }
+
+  function getHomeWorkbench(query = {}, actor = null) {
+    const timezoneOffset = Number(query.timezoneOffset ?? 0);
+    if (!Number.isInteger(timezoneOffset) || timezoneOffset < -840 || timezoneOffset > 840) {
+      return { ok: false, status: 400, body: { error: "invalid_timezone_offset" } };
+    }
+    const assigneeId = query.assigneeId === "mine" || query.assigneeId == null
+      ? actorUser(actor)
+      : query.assigneeId === "all"
+        ? ""
+        : String(query.assigneeId);
+    const workItems = (state.workItems ?? [])
+      .filter((item) => item.ownerTeamId === actorTeam(actor))
+      .filter((item) => query.assigneeId !== "all" || item.terminalId === localTerminalId())
+      .filter((item) => !assigneeId || (item.assigneeIds ?? []).includes(assigneeId))
+      .map((item) => workItemView(item, actor));
+    return {
+      ok: true,
+      status: 200,
+      body: homeWorkbenchReadModel({ state, workItems, now: now(), timezoneOffset }),
     };
   }
 
@@ -562,11 +1075,17 @@ export function createWorkItemService({
       });
       const runBinding = [...(item.executionBindings ?? [])].reverse().find((bindingRow) => bindingRow.kind === "auto_run");
       const run = runBinding ? (state.autoRuns ?? []).find((candidate) => candidate.id === runBinding.targetId) : null;
-      if (run && ["awaiting_approval", "needs_input"].includes(run.status)) rows.push({
+      if (run?.status === "awaiting_approval") rows.push({
         id: `execution_approval:${item.id}:${run.id}`, kind: "execution_approval", severity: "high",
         workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
         title: item.title, createdAt: run.updatedAt ?? run.createdAt ?? item.updatedAt,
         details: { autoRunId: run.id, status: run.status },
+      });
+      if (run?.status === "needs_input" && run.decision?.path === "clarify" && !run.clarifyAnswer) rows.push({
+        id: `execution_input:${item.id}:${run.id}`, kind: "execution_input", severity: "high",
+        workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
+        title: item.title, createdAt: run.updatedAt ?? run.createdAt ?? item.updatedAt,
+        details: { autoRunId: run.id, status: run.status, questions: run.decision?.clarifyingQuestions ?? [] },
       });
       const failed = (item.verificationRecords ?? []).find((record) => record.status === "failed");
       if (failed) rows.push({
@@ -1056,8 +1575,8 @@ export function createWorkItemService({
     const runIds = new Set((item.executionBindings ?? [])
       .filter((binding) => binding.kind === "auto_run")
       .map((binding) => binding.targetId));
-    const latestRun = (state.autoRuns ?? [])
-      .filter((run) => runIds.has(run.id))
+    const boundRuns = (state.autoRuns ?? []).filter((run) => runIds.has(run.id));
+    const latestRun = boundRuns
       .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))[0] ?? null;
     const pendingLocalDelivery = latestRun?.status === "done"
       && latestRun.link?.type === "local_issue"
@@ -1070,13 +1589,111 @@ export function createWorkItemService({
       ? (state.worktreeReviews ?? []).find((review) => review.worktreeId === deliveryWorktree.id) ?? null
       : null;
     const deliveryProject = (state.projects ?? []).find((project) => project.id === item.projectId) ?? null;
+    const latestRunBinding = [...(item.executionBindings ?? [])].reverse().find(
+      (binding) => binding.kind === "auto_run" && binding.targetId === latestRun?.id,
+    ) ?? null;
+    const outcomeWorktreeId = latestRun?.localDelivery?.worktreeId ?? latestRunBinding?.worktreeId ?? null;
+    const boundWorktreeIds = new Set((item.executionBindings ?? [])
+      .map((binding) => binding.worktreeId)
+      .filter(Boolean));
+    if (outcomeWorktreeId) boundWorktreeIds.add(outcomeWorktreeId);
+    const outcomeFileContext = {
+      projectId: item.projectId,
+      worktreeId: outcomeWorktreeId,
+      scopes: [
+        ...(deliveryProject?.path ? [{ root: deliveryProject.path, worktreeId: null }] : []),
+        ...(state.worktrees ?? [])
+          .filter((worktree) => boundWorktreeIds.has(worktree.id) && worktree.projectId === item.projectId)
+          .map((worktree) => ({ root: worktree.path ?? worktree.worktreePath, worktreeId: worktree.id })),
+      ].filter((scope) => scope.root),
+    };
     const deliveryRemoteUrl = deliveryProject?.git?.remoteUrl ?? null;
     const deliveryMode = deliveryRemoteUrl && /github\.com[/:]/i.test(deliveryRemoteUrl)
       ? "pull_request"
       : "local_merge";
-    const invocationIds = new Set((state.autoRuns ?? [])
-      .filter((run) => runIds.has(run.id) && run.invocationId)
+    const currentInvocationIds = new Set(boundRuns
+      .filter((run) => run.invocationId)
       .map((run) => run.invocationId));
+    const relatedInvocations = (state.invocations ?? [])
+      .filter((invocation) => {
+        const autoRunId = invocation.options?.metadata?.autoRunId;
+        return (autoRunId && runIds.has(autoRunId)) || currentInvocationIds.has(invocation.id);
+      })
+      .sort((left, right) =>
+        String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""))
+        || String(left.id).localeCompare(String(right.id)));
+    const runInvocations = relatedInvocations.filter(
+      (invocation) => invocation.options?.metadata?.role !== "delivery_review",
+    );
+    const latestExecutionInvocation = runInvocations.find((invocation) => invocation.id === latestRun?.invocationId) ?? null;
+    const reviewInvocation = latestRun?.deliveryReview?.invocationId
+      ? relatedInvocations.find((invocation) => invocation.id === latestRun.deliveryReview.invocationId) ?? null
+      : null;
+    const projectedDeliveryReview = latestRun?.deliveryReview
+      ? {
+        ...latestRun.deliveryReview,
+        status: latestRun.deliveryReview.status === "queued" && reviewInvocation?.status === "running"
+          ? "running"
+          : latestRun.deliveryReview.status,
+      }
+      : null;
+    const projectedDeliveryReport = latestRun?.deliveryReport ?? (pendingLocalDelivery ? {
+      summary: latestExecutionInvocation?.result?.output?.latestMessage
+        ?? latestExecutionInvocation?.result?.output?.summary
+        ?? latestExecutionInvocation?.result?.summary
+        ?? null,
+      verification: latestRun?.verification ? { ...latestRun.verification } : null,
+      changedFiles: [],
+      completedAt: latestExecutionInvocation?.completedAt ?? latestRun?.updatedAt ?? null,
+    } : null);
+    const taskOutcome = projectWorkItemOutcome({
+      item,
+      latestRun,
+      deliveryReport: projectedDeliveryReport,
+      invocationSummary: latestExecutionInvocation?.result?.output?.latestMessage
+        ?? latestExecutionInvocation?.result?.output?.summary
+        ?? latestExecutionInvocation?.result?.summary
+        ?? null,
+      fileContext: outcomeFileContext,
+    });
+    const outcomeHistory = (latestRun?.outcomeHistory ?? []).map((entry, index, entries) => ({
+      version: entries.length - index,
+      ...projectWorkItemOutcome({
+        item,
+        latestRun: {
+          status: entry.status,
+          report: entry.report,
+          updatedAt: entry.completedAt ?? entry.supersededAt,
+        },
+        deliveryReport: entry.deliveryReport,
+        fileContext: outcomeFileContext,
+      }),
+      invocationId: entry.invocationId ?? null,
+      supersededAt: entry.supersededAt ?? null,
+      supersededByFeedback: entry.supersededByFeedback ?? null,
+    }));
+    const invocationIds = new Set(relatedInvocations.map((invocation) => invocation.id));
+    const failureStatuses = new Set(["failed", "timed_out", "cancelled", "rejected", "expired"]);
+    const showRunHistory = runInvocations.length > 1
+      || runInvocations.some((invocation) => failureStatuses.has(invocation.status));
+    const runHistory = showRunHistory
+      ? runInvocations.map((invocation, index) => ({
+        invocationId: invocation.id,
+        autoRunId: invocation.options?.metadata?.autoRunId
+          ?? boundRuns.find((run) => run.invocationId === invocation.id)?.id
+          ?? null,
+        attempt: index + 1,
+        status: invocation.status,
+        createdAt: invocation.createdAt ?? null,
+        startedAt: invocation.startedAt ?? null,
+        completedAt: invocation.completedAt ?? null,
+        errorCode: invocation.result?.errorCode ?? null,
+        summary: invocation.result?.summary
+          ? String(invocation.result.summary).slice(0, 500)
+          : null,
+        current: invocation.id === latestRun?.invocationId,
+      }))
+      : [];
     const activeClaim = item.claim?.status === "active" && Date.parse(item.claim.leaseExpiresAt) > Date.parse(now())
       ? item.claim
       : null;
@@ -1202,8 +1819,10 @@ export function createWorkItemService({
         ? latestRun?.decision?.rationale ?? routeSignals[path]
         : routeSignals[path],
     }));
-    const nextAction = attention.some((row) => row.kind === "execution_approval")
-      ? "review_approval"
+    const nextAction = attention.some((row) => row.kind === "execution_input")
+      ? "answer_ai"
+      : attention.some((row) => row.kind === "execution_approval")
+        ? "review_approval"
       : attention.some((row) => row.kind === "github_conflict")
         ? "resolve_sync_conflict"
         : executionState(item) === "failed"
@@ -1227,6 +1846,7 @@ export function createWorkItemService({
           latestRun: latestRun ? {
             id: latestRun.id,
             status: latestRun.status,
+            phase: latestRun.phase ?? null,
             updatedAt: latestRun.updatedAt,
             decision: latestRun.decision ?? null,
             routingOverride: latestRun.routingOverride ? {
@@ -1240,18 +1860,31 @@ export function createWorkItemService({
             terminalOutcome: latestRun.terminalOutcome ?? null,
             invocationId: latestRun.invocationId ?? null,
             agentId: latestRun.agentId ?? null,
+            report: latestRun.report ?? null,
             localDelivery: latestRun.localDelivery ?? null,
+            deliveryReport: projectedDeliveryReport,
+            deliveryReview: projectedDeliveryReview,
           } : null,
+          outcome: taskOutcome,
+          outcomeHistory,
+          runHistory,
           delivery: pendingLocalDelivery ? {
             state: "awaiting_review",
             mode: deliveryMode,
             worktreeId: deliveryWorktree?.id ?? latestRun.localDelivery.worktreeId,
             branchName: latestRun.localDelivery.branchName ?? deliveryWorktree?.branchName ?? null,
             remoteUrl: deliveryRemoteUrl,
+            report: projectedDeliveryReport,
+            aiReview: projectedDeliveryReview,
             review: deliveryReview ? {
               verdict: deliveryReview.verdict,
+              summary: deliveryReview.summary ?? null,
+              comments: Array.isArray(deliveryReview.comments) ? deliveryReview.comments : [],
               reviewedCommit: deliveryReview.reviewedCommit ?? null,
               reviewedBy: deliveryReview.reviewedBy ?? null,
+              source: deliveryReview.source ?? "human",
+              reviewerName: deliveryReview.reviewerName ?? null,
+              reviewInvocationId: deliveryReview.reviewInvocationId ?? null,
               createdAt: deliveryReview.createdAt ?? null,
             } : null,
           } : null,
@@ -1315,29 +1948,966 @@ export function createWorkItemService({
     const type = /bug|fix|error|fail|崩溃|错误|修复/.test(lower) ? "bug"
       : /initiative|epic|项目|计划/.test(lower) ? "initiative"
         : /feature|新增|支持|能力/.test(lower) ? "feature" : "task";
-    const acceptanceCriteria = [
-      `The requested outcome for “${title}” is demonstrably complete.`,
-      "Automated verification covers the primary success path.",
-      ...(type === "bug" ? ["A regression test reproduces the prior failure and passes after the fix."] : []),
-    ];
+    const extractedCriteria = extractAcceptanceCriteriaFromBody(body);
+    let materialDraft = null;
+    const materialDraftId = String(input.materialDraftId ?? "").trim();
+    if (materialDraftId) {
+      if (typeof inspectTaskMaterialDraft !== "function") {
+        return { ok: false, status: 503, body: { error: "task_material_service_unavailable" } };
+      }
+      const inspected = inspectTaskMaterialDraft({ projectId, draftId: materialDraftId }, actor);
+      if (inspected.status !== 200) return { ok: false, status: inspected.status, body: inspected.body };
+      materialDraft = inspected.body.draft;
+      const expectedRevision = Number(input.materialDraftRevision);
+      if (Number.isInteger(expectedRevision) && expectedRevision !== materialDraft.revision) {
+        return { ok: false, status: 409, body: { error: "task_material_revision_conflict", currentRevision: materialDraft.revision } };
+      }
+    }
+    const attachments = materialDraft?.assets ?? [];
+    const attachmentNames = attachments.map((asset) => asset.originalName).filter(Boolean).join("\n");
+    const templateMatch = matchPublishedMyTemplate({
+      definitions: (state.routineDefinitions ?? []).filter((definition) => definition.ownerTeamId === actorTeam(actor)),
+      routingFeedback: state.myTemplateRoutingFeedback.filter((feedback) =>
+        feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+      outcomeFeedback: state.myTemplateOutcomeFeedback.filter((feedback) =>
+        feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+      governanceInterventions: state.myTemplateGovernanceInterventions.filter((entry) =>
+        entry.ownerTeamId === actorTeam(actor) && entry.projectId === projectId),
+      projectId,
+      intent: `${title}\n${body}`,
+      attachments,
+    });
+    const selectedDefinition = templateMatch.selected
+      ? (state.routineDefinitions ?? []).find((definition) => definition.id === templateMatch.selected.definitionId)
+      : null;
+    const templateContract = definitionTemplateContract(selectedDefinition);
+    const expectedOutput = templateMatch.selected?.expectedOutput ?? "工作结果";
+    const outputFileName = templateContract?.outputFileName || expectedOutput;
+    const outputColumns = (templateContract?.outputColumns ?? []).filter(Boolean);
+    const uncertainFields = (templateContract?.uncertainFields ?? []).filter(Boolean);
+    const chinese = /[\u3400-\u9fff]/.test(`${title}${body}${attachmentNames}`);
+    const businessLike = attachments.length > 0 || templateMatch.state !== "missing";
+    const templateAcceptance = selectedDefinition ? [
+      `生成并可正常打开${outputFileName}`,
+      ...(outputColumns.length ? [`结果保留模版约定的 ${outputColumns.length} 个字段，字段名称和顺序一致`] : []),
+      "输入材料中能够确认的信息已准确写入结果",
+      ...(uncertainFields.length ? [`${uncertainFields.join("、")}无法确认时保持空白，不得猜测`] : []),
+    ] : [];
+    const acceptanceCriteria = extractedCriteria.length ? extractedCriteria
+      : templateAcceptance.length ? templateAcceptance
+        : businessLike && chinese ? [
+          `已生成可查看、可继续使用的${expectedOutput}`,
+          "结果中的关键信息与输入文件一致，无法确认的内容没有被猜测填充",
+        ] : [
+          `The requested outcome for “${title}” is demonstrably complete.`,
+          "Automated verification covers the primary success path.",
+          ...(type === "bug" ? ["A regression test reproduces the prior failure and passes after the fix."] : []),
+        ];
+    const verificationSop = businessLike && chinese ? [
+      `打开${outputFileName}，确认文件可正常查看且格式完整`,
+      "对照输入材料抽查关键信息，确认名称、规格、数量等内容准确",
+      ...(uncertainFields.length ? [`检查${uncertainFields.join("、")}；原文没有依据时应保持空白`] : []),
+      "确认系统只处理任务中的安全副本，原始文件未被修改",
+    ] : defaultVerificationSop({ title, body });
     return {
       ok: true, status: 200, body: {
         draft: {
           title, body: body || `Implement ${title} with a user-visible result and documented verification.`,
           type, priority: /urgent|critical|p0|紧急|严重/.test(lower) ? "p0" : "p2",
           acceptanceCriteria,
+          verificationSop,
+          executionContractSource: extractedCriteria.length ? "body_extracted" : "assisted",
           suggestedRoute: type === "initiative" ? "decompose" : body.length < 40 ? "clarify" : "develop",
+          templateMatch,
           risks: [
-            ...(!body ? ["The problem statement needs more context."] : []),
-            "Confirm affected users and rollback expectations before execution.",
+            ...(businessLike && chinese
+              ? ["系统只处理任务中的安全副本，不会修改原始文件。"]
+              : [...(!body ? ["The problem statement needs more context."] : []), "Confirm affected users and rollback expectations before execution."]),
           ],
           evidence: {
             generator: "heuristic",
             policyVersion: "local-work-item-draft-v1",
             modelVersion: null,
-            inputDigest: createHash("sha256").update(JSON.stringify({ projectId, title, body })).digest("hex"),
+            inputDigest: createHash("sha256").update(JSON.stringify({
+              projectId, title, body, attachments: attachments.map((asset) => ({ name: asset.originalName, hash: asset.hash })),
+            })).digest("hex"),
             confidence: body.length >= 120 ? 0.78 : body.length >= 40 ? 0.65 : 0.45,
           },
+        },
+      },
+    };
+  }
+
+  function listMyTemplateRoutingFeedback({ projectId = null } = {}, actor = null) {
+    const selectedProjectId = projectId ? String(projectId) : null;
+    if (selectedProjectId && !actorCanAccessProject(state, actor, selectedProjectId)) return notFound();
+    const ownerTeamId = actorTeam(actor);
+    const ownedFeedback = state.myTemplateRoutingFeedback.filter((entry) => entry.ownerTeamId === ownerTeamId
+      && (!selectedProjectId || entry.projectId === selectedProjectId));
+    const conflictFor = (entry) => {
+      const related = ownedFeedback.filter((candidate) => candidate.projectId === entry.projectId
+        && (candidate.intentTerms ?? []).some((term) => (entry.intentTerms ?? []).includes(term)));
+      const choices = [...related.reduce((counts, candidate) => {
+        const key = compactMatchText(candidate.selectedOutput);
+        if (!key) return counts;
+        const current = counts.get(key) ?? { label: candidate.selectedOutput, count: 0 };
+        current.count += candidate.kind === "confirmation" ? 2 : 1;
+        counts.set(key, current);
+        return counts;
+      }, new Map()).values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+      const conflict = choices.length > 1 && choices[0].count - choices[1].count <= 1;
+      return { state: conflict ? "conflict" : "active", conflictingOutputs: conflict ? choices.map((choice) => choice.label) : [] };
+    };
+    const feedback = ownedFeedback
+      .map((entry) => {
+        const workItem = (state.workItems ?? []).find((item) => item.id === entry.workItemId
+          && item.ownerTeamId === ownerTeamId);
+        return {
+          id: entry.id,
+          projectId: entry.projectId,
+          workItemId: entry.workItemId,
+          workItem: workItem ? { id: workItem.id, localRef: workItem.localRef, title: workItem.title } : null,
+          intentTerms: [...(entry.intentTerms ?? [])],
+          rejectedOutput: entry.rejectedOutput,
+          selectedOutput: entry.selectedOutput,
+          reason: entry.reason,
+          createdAt: entry.createdAt,
+          ...conflictFor(entry),
+        };
+      });
+    return { ok: true, status: 200, body: { feedback, count: feedback.length } };
+  }
+
+  function removeMyTemplateRoutingFeedback({ feedbackId } = {}, actor = null) {
+    const ownerTeamId = actorTeam(actor);
+    const index = state.myTemplateRoutingFeedback.findIndex((entry) =>
+      entry.id === String(feedbackId ?? "") && entry.ownerTeamId === ownerTeamId);
+    if (index < 0) return notFound();
+    const feedback = state.myTemplateRoutingFeedback[index];
+    runTx(() => {
+      state.myTemplateRoutingFeedback.splice(index, 1);
+      const workItem = (state.workItems ?? []).find((item) => item.id === feedback.workItemId
+        && item.ownerTeamId === ownerTeamId);
+      if (workItem) {
+        recordActivity(workItem, actor, "my_template_learning_removed", {
+          feedbackId: feedback.id,
+          selectedOutput: feedback.selectedOutput,
+          rejectedOutput: feedback.rejectedOutput,
+          affectsFutureMatchesOnly: true,
+        });
+      }
+      appendEvent({
+        invocationId: null,
+        type: "my_template_learning_removed",
+        level: "info",
+        message: "A learned My template routing preference was removed.",
+        data: { feedbackId: feedback.id, projectId: feedback.projectId, actorTeamId: ownerTeamId },
+      });
+    });
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        removed: {
+          id: feedback.id,
+          projectId: feedback.projectId,
+          selectedOutput: feedback.selectedOutput,
+          rejectedOutput: feedback.rejectedOutput,
+        },
+        affectsFutureMatchesOnly: true,
+      },
+    };
+  }
+
+  function previewMyTemplateDraft({ workItemId } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    return { ok: true, status: 200, body: taskTemplateDraftPreview(item, actor) };
+  }
+
+  function listMyTemplateDrafts({ projectId = null } = {}, actor = null) {
+    const selectedProjectId = projectId ? String(projectId) : null;
+    if (selectedProjectId && !actorCanAccessProject(state, actor, selectedProjectId)) return notFound();
+    const drafts = state.myTemplateDrafts
+      .filter((draft) => draft.ownerTeamId === actorTeam(actor)
+        && actorCanAccessProject(state, actor, draft.projectId)
+        && (!selectedProjectId || draft.projectId === selectedProjectId))
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
+      .map(myTemplateDraftView);
+    return { ok: true, status: 200, body: { drafts, count: drafts.length } };
+  }
+
+  function findOwnMyTemplateDraft(draftId, actor) {
+    const draft = state.myTemplateDrafts.find((entry) =>
+      entry.id === String(draftId)
+      && entry.ownerTeamId === actorTeam(actor)
+      && actorCanAccessProject(state, actor, entry.projectId));
+    return draft ?? null;
+  }
+
+  function myTemplateLearningCaseView(entry, actor) {
+    const item = (state.workItems ?? []).find((candidate) =>
+      candidate.id === entry.workItemId
+      && candidate.ownerTeamId === actorTeam(actor)
+      && candidate.projectId === entry.projectId);
+    const inputNames = (entry.snapshot?.inputAssets ?? []).map((asset) => asset.name).filter(Boolean);
+    const outputNames = [
+      ...(entry.snapshot?.outputAssets ?? []).map((asset) => asset.name),
+      ...(entry.snapshot?.changedFiles ?? []).map((path) => String(path).replaceAll("\\", "/").split("/").pop()),
+    ].filter(Boolean);
+    return {
+      id: entry.id,
+      workItem: item ? {
+        id: item.id,
+        localRef: item.localRef ?? null,
+        title: item.title,
+        completedAt: item.completedAt ?? item.updatedAt ?? null,
+      } : {
+        id: entry.workItemId,
+        localRef: null,
+        title: entry.snapshot?.taskTitle ?? "原任务已不可用",
+        completedAt: null,
+      },
+      typicalInput: entry.extracted?.typicalInput ?? (inputNames.join("、") || "任务说明和相关材料"),
+      expectedOutput: entry.extracted?.expectedOutput
+        ?? (outputNames.join("、") || entry.snapshot?.resultSummary || "已确认的任务结果"),
+      similarity: entry.similarity ?? null,
+      createdAt: entry.createdAt,
+    };
+  }
+
+  function myTemplateDraftReview(draft, actor) {
+    const cases = (draft.learningCaseIds ?? [])
+      .map((caseId) => state.myTemplateLearningCases.find((entry) =>
+        entry.id === caseId && entry.ownerTeamId === actorTeam(actor) && entry.projectId === draft.projectId))
+      .filter(Boolean)
+      .map((entry) => myTemplateLearningCaseView(entry, actor));
+    const inputExamples = [...new Set(cases.map((entry) => entry.typicalInput).filter(Boolean))];
+    const outputExamples = [...new Set(cases.map((entry) => entry.expectedOutput).filter(Boolean))];
+    const confidence = cases.length >= 3 ? "high" : cases.length >= 2 ? "medium" : "initial";
+    return {
+      draft: myTemplateDraftView(draft),
+      cases,
+      learnedResult: {
+        taskGoal: draft.name,
+        typicalInput: draft.typicalInput,
+        useWhen: draft.applicability,
+        expectedOutput: draft.expectedOutput,
+        steps: [...(draft.steps ?? [])],
+        inputExamples,
+        outputExamples,
+      },
+      readiness: {
+        canEnable: draft.state === "needs_review" && cases.length >= 1,
+        confidence,
+        caseCount: cases.length,
+        message: cases.length === 1
+          ? "已具备一个成功案例，可以启用；系统会继续根据后续任务结果校正匹配。"
+          : `已用 ${cases.length} 个成功案例交叉验证，可以启用。`,
+      },
+      futureBehavior: {
+        participatesInMatching: draft.state === "ready",
+        affectsExistingTasks: false,
+        requiresExplicitConfirmation: draft.state !== "ready",
+      },
+    };
+  }
+
+  function reviewMyTemplateDraft({ draftId } = {}, actor = null) {
+    const draft = findOwnMyTemplateDraft(draftId, actor);
+    if (!draft) return { ok: false, status: 404, body: { error: "my_template_draft_not_found" } };
+    return { ok: true, status: 200, body: myTemplateDraftReview(draft, actor) };
+  }
+
+  function listSimilarMyTemplateWorkItems({ draftId } = {}, actor = null) {
+    const draft = findOwnMyTemplateDraft(draftId, actor);
+    if (!draft) return { ok: false, status: 404, body: { error: "my_template_draft_not_found" } };
+    const cases = (draft.learningCaseIds ?? [])
+      .map((caseId) => state.myTemplateLearningCases.find((entry) =>
+        entry.id === caseId && entry.ownerTeamId === actorTeam(actor) && entry.projectId === draft.projectId))
+      .filter(Boolean)
+      .map((entry) => myTemplateLearningCaseView(entry, actor));
+    const suggestions = draft.state === "ready" || draft.state === "rejected" ? [] : (state.workItems ?? [])
+      .map((item) => similarTaskCandidate(draft, item, actor))
+      .filter(Boolean)
+      .sort((left, right) => right.similarity - left.similarity
+        || String(right.workItem.completedAt ?? "").localeCompare(String(left.workItem.completedAt ?? "")))
+      .slice(0, 20);
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        draft: myTemplateDraftView(draft), cases, suggestions, count: suggestions.length,
+        review: myTemplateDraftReview(draft, actor),
+      },
+    };
+  }
+
+  function addMyTemplateLearningCase({
+    draftId, workItemId, expectedDraftRevision, expectedWorkItemRevision, confirm = false,
+  } = {}, actor = null) {
+    const draft = findOwnMyTemplateDraft(draftId, actor);
+    if (!draft) return { ok: false, status: 404, body: { error: "my_template_draft_not_found" } };
+    const existingCase = state.myTemplateLearningCases.find((entry) =>
+      entry.ownerTeamId === actorTeam(actor) && entry.draftId === draft.id && entry.workItemId === String(workItemId));
+    if (existingCase) {
+      return {
+        ok: true, status: 200,
+        body: { draft: myTemplateDraftView(draft), learningCase: myTemplateLearningCaseView(existingCase, actor), replayed: true },
+      };
+    }
+    if (!["learning", "needs_review"].includes(draft.state)) {
+      return { ok: false, status: 409, body: { error: "my_template_draft_not_learning", state: draft.state } };
+    }
+    if (!Number.isInteger(expectedDraftRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_draft_revision_required" } };
+    }
+    if (expectedDraftRevision !== draft.revision) {
+      return { ok: false, status: 409, body: { error: "my_template_draft_revision_conflict", currentRevision: draft.revision } };
+    }
+    if (confirm !== true) {
+      return { ok: false, status: 400, body: { error: "my_template_learning_case_confirmation_required" } };
+    }
+    const item = findOwn(workItemId, actor);
+    if (!item || item.projectId !== draft.projectId) return notFound();
+    if (!Number.isInteger(expectedWorkItemRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedWorkItemRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const usedBy = state.myTemplateLearningCases.find((entry) =>
+      entry.ownerTeamId === actorTeam(actor) && entry.workItemId === item.id && entry.draftId !== draft.id);
+    if (usedBy) {
+      return { ok: false, status: 409, body: { error: "work_item_already_used_as_my_template_case", draftId: usedBy.draftId } };
+    }
+    const candidate = similarTaskCandidate(draft, item, actor);
+    if (!candidate) {
+      return { ok: false, status: 409, body: { error: "work_item_not_similar_to_my_template" } };
+    }
+    const { snapshot, snapshotHash } = taskTemplateLearningSnapshot(item);
+    const timestamp = now();
+    const learningCase = {
+      id: nextId("mtlc"),
+      ownerTeamId: actorTeam(actor),
+      projectId: draft.projectId,
+      draftId: draft.id,
+      workItemId: item.id,
+      workItemRevision: item.revision,
+      snapshot,
+      snapshotHash,
+      extracted: { typicalInput: candidate.typicalInput, expectedOutput: candidate.expectedOutput },
+      similarity: {
+        score: candidate.similarity,
+        confidence: candidate.confidence,
+        reasons: [...candidate.reasons],
+      },
+      resultConfirmed: true,
+      createdBy: actorUser(actor),
+      createdAt: timestamp,
+    };
+    runTx(() => {
+      state.myTemplateLearningCases.unshift(learningCase);
+      draft.learningCaseIds = [...(draft.learningCaseIds ?? []), learningCase.id];
+      draft.caseCount = draft.learningCaseIds.length;
+      draft.state = draft.caseCount >= draft.casesRequired ? "needs_review" : "learning";
+      draft.revision += 1;
+      draft.updatedBy = actorUser(actor);
+      draft.updatedAt = timestamp;
+      state.myTemplateLearningCases = state.myTemplateLearningCases.slice(0, 5_000);
+      recordActivity(item, actor, "my_template_learning_case_added", {
+        draftId: draft.id,
+        learningCaseId: learningCase.id,
+        similarity: learningCase.similarity,
+        caseCount: draft.caseCount,
+        state: draft.state,
+        affectsOriginalTask: false,
+        participatesInMatching: false,
+      });
+      appendEvent({
+        invocationId: null,
+        type: "my_template_learning_case_added",
+        level: "info",
+        message: "A user-confirmed similar task was added to a learning My template.",
+        data: {
+          draftId: draft.id,
+          workItemId: item.id,
+          learningCaseId: learningCase.id,
+          caseCount: draft.caseCount,
+          state: draft.state,
+          actorTeamId: actorTeam(actor),
+        },
+      });
+    });
+    return {
+      ok: true,
+      status: 201,
+      body: {
+        draft: myTemplateDraftView(draft),
+        learningCase: myTemplateLearningCaseView(learningCase, actor),
+        readyForReview: draft.state === "needs_review",
+        replayed: false,
+      },
+    };
+  }
+
+  function activateMyTemplateDraft({
+    draftId, expectedDraftRevision, confirm = false, name, typicalInput, expectedOutput,
+  } = {}, actor = null) {
+    const draft = findOwnMyTemplateDraft(draftId, actor);
+    if (!draft) return { ok: false, status: 404, body: { error: "my_template_draft_not_found" } };
+    if (draft.state === "ready" && draft.activation?.definitionId) {
+      const definition = state.routineDefinitions.find((entry) =>
+        entry.id === draft.activation.definitionId
+        && entry.ownerTeamId === actorTeam(actor)
+        && entry.projectId === draft.projectId
+        && entry.state === "published");
+      if (!definition) {
+        return { ok: false, status: 409, body: { error: "my_template_activation_definition_missing" } };
+      }
+      return {
+        ok: true, status: 200,
+        body: { draft: myTemplateDraftView(draft), definition, review: myTemplateDraftReview(draft, actor), replayed: true },
+      };
+    }
+    if (!Number.isInteger(expectedDraftRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_draft_revision_required" } };
+    }
+    if (expectedDraftRevision !== draft.revision) {
+      return { ok: false, status: 409, body: { error: "my_template_draft_revision_conflict", currentRevision: draft.revision } };
+    }
+    if (confirm !== true) {
+      return { ok: false, status: 400, body: { error: "my_template_activation_confirmation_required" } };
+    }
+    const review = myTemplateDraftReview(draft, actor);
+    if (!review.readiness.canEnable) {
+      return {
+        ok: false, status: 409,
+        body: { error: "my_template_draft_not_ready_for_activation", state: draft.state, caseCount: review.readiness.caseCount },
+      };
+    }
+    const normalizedName = String(name ?? draft.name).trim().slice(0, 200);
+    const normalizedInput = String(typicalInput ?? draft.typicalInput).trim().slice(0, 1_000);
+    const normalizedOutput = String(expectedOutput ?? draft.expectedOutput).trim().slice(0, 1_000);
+    if (!normalizedName || !normalizedInput || !normalizedOutput) {
+      return { ok: false, status: 400, body: { error: "my_template_activation_fields_required" } };
+    }
+    const familySignature = createHash("sha256").update(JSON.stringify({
+      name: compactMatchText(normalizedName),
+      input: compactMatchText(normalizedInput),
+      output: compactMatchText(normalizedOutput),
+    })).digest("hex");
+    const duplicate = state.routineDefinitions.find((entry) =>
+      entry.ownerTeamId === actorTeam(actor)
+      && entry.projectId === draft.projectId
+      && entry.state === "published"
+      && entry.myTemplateSignature === familySignature);
+    if (duplicate) {
+      return {
+        ok: false, status: 409,
+        body: { error: "equivalent_my_template_already_enabled", definitionId: duplicate.id, familyId: duplicate.familyId },
+      };
+    }
+    const timestamp = now();
+    const definitionId = nextId("rtd");
+    const originStepLabels = (draft.steps ?? []).map((step) => String(step).trim()).filter(Boolean);
+    const definition = {
+      id: definitionId,
+      familyId: definitionId,
+      schemaVersion: businessRoutineSchemaVersion,
+      ownerTeamId: actorTeam(actor),
+      projectId: draft.projectId,
+      sourceId: `my-template-draft:${draft.id}`,
+      name: normalizedName,
+      description: `当收到${normalizedInput}，并希望得到${normalizedOutput}时使用。`,
+      version: 1,
+      state: "published",
+      templateScope: "team",
+      templateMaturity: "stable",
+      discoveryCandidateId: null,
+      historicalCaseIds: [],
+      triggerDocumentTypes: ["unknown"],
+      steps: [
+        {
+          key: "understand_input", kind: "extract",
+          label: (originStepLabels[0] ?? `理解并检查${normalizedInput}`).slice(0, 200),
+          required: true, dependsOn: [], evidenceRefs: [], configuration: {},
+        },
+        {
+          key: "produce_result", kind: "generate",
+          label: `生成${normalizedOutput}`.slice(0, 200),
+          required: true, dependsOn: ["understand_input"], evidenceRefs: [],
+          configuration: { expectedOutput: normalizedOutput },
+        },
+        {
+          key: "verify_result", kind: "human_approval",
+          label: (originStepLabels.at(-1) ?? `检查并交付${normalizedOutput}`).slice(0, 200),
+          required: true, dependsOn: ["produce_result"], evidenceRefs: [], configuration: {},
+        },
+      ],
+      evidenceRefs: [],
+      evidenceFingerprints: {},
+      confidence: review.readiness.confidence === "high" ? 0.9 : review.readiness.confidence === "medium" ? 0.75 : 0.6,
+      supersedesId: null,
+      supersededById: null,
+      myTemplateSignature: familySignature,
+      myTemplateLearningCaseIds: [...(draft.learningCaseIds ?? [])],
+      origin: { kind: "my_template_draft", draftId: draft.id, workItemId: draft.origin?.workItemId ?? null },
+      idempotencyKey: `my-template-activation:v1:${draft.id}`,
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy: actorUser(actor),
+      updatedBy: actorUser(actor),
+    };
+    const sourceItem = (state.workItems ?? []).find((item) =>
+      item.id === draft.origin?.workItemId && item.ownerTeamId === actorTeam(actor) && item.projectId === draft.projectId);
+    runTx(() => {
+      state.routineDefinitions.push(definition);
+      draft.name = normalizedName;
+      draft.typicalInput = normalizedInput;
+      draft.expectedOutput = normalizedOutput;
+      draft.applicability = definition.description.replace(/。$/, "");
+      draft.familySignature = familySignature;
+      draft.state = "ready";
+      draft.activation = {
+        definitionId: definition.id,
+        familyId: definition.familyId,
+        version: definition.version,
+        confirmedAt: timestamp,
+        confirmedBy: actorUser(actor),
+      };
+      draft.revision += 1;
+      draft.updatedBy = actorUser(actor);
+      draft.updatedAt = timestamp;
+      if (sourceItem) recordActivity(sourceItem, actor, "my_template_activated", {
+        draftId: draft.id,
+        definitionId: definition.id,
+        familyId: definition.familyId,
+        version: definition.version,
+        affectsExistingTasks: false,
+        participatesInMatching: true,
+      });
+      appendEvent({
+        invocationId: null,
+        type: "my_template_activated",
+        level: "info",
+        message: "A reviewed task-learned My template was enabled for future matching.",
+        data: {
+          draftId: draft.id, definitionId: definition.id, projectId: draft.projectId,
+          caseCount: draft.caseCount, actorTeamId: actorTeam(actor), affectsExistingTasks: false,
+        },
+      });
+    });
+    return {
+      ok: true, status: 201,
+      body: { draft: myTemplateDraftView(draft), definition, review: myTemplateDraftReview(draft, actor), replayed: false },
+    };
+  }
+
+  function createMyTemplateDraft({
+    workItemId, expectedRevision, confirm = false, name, typicalInput, expectedOutput, idempotencyKey = null,
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const existing = taskTemplateDraftFor(item, actor);
+    if (existing) {
+      return {
+        ok: true, status: 200,
+        body: { draft: myTemplateDraftView(existing), workItem: workItemView(item, actor), replayed: true },
+      };
+    }
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (confirm !== true) {
+      return { ok: false, status: 400, body: { error: "my_template_draft_confirmation_required" } };
+    }
+    const preview = taskTemplateDraftPreview(item, actor);
+    if (!preview.eligible) {
+      return { ok: false, status: 409, body: { error: "work_item_not_eligible_for_my_template", reasons: preview.reasons } };
+    }
+    const normalizedName = String(name ?? preview.suggestion.name).trim().slice(0, 200);
+    const normalizedInput = String(typicalInput ?? preview.suggestion.typicalInput).trim().slice(0, 1_000);
+    const normalizedOutput = String(expectedOutput ?? preview.suggestion.expectedOutput).trim().slice(0, 1_000);
+    if (!normalizedName || !normalizedInput || !normalizedOutput) {
+      return { ok: false, status: 400, body: { error: "my_template_draft_fields_required" } };
+    }
+    const timestamp = now();
+    const { snapshot, snapshotHash } = taskTemplateLearningSnapshot(item);
+    const familySignature = createHash("sha256").update(JSON.stringify({
+      name: compactMatchText(normalizedName),
+      input: compactMatchText(normalizedInput),
+      output: compactMatchText(normalizedOutput),
+    })).digest("hex");
+    const draftId = nextId("mtd");
+    const learningCase = {
+      id: nextId("mtlc"),
+      ownerTeamId: actorTeam(actor),
+      projectId: item.projectId,
+      draftId,
+      workItemId: item.id,
+      workItemRevision: item.revision,
+      snapshot,
+      snapshotHash,
+      extracted: { typicalInput: normalizedInput, expectedOutput: normalizedOutput },
+      similarity: null,
+      resultConfirmed: true,
+      createdBy: actorUser(actor),
+      createdAt: timestamp,
+    };
+    const draft = {
+      id: draftId,
+      ownerTeamId: actorTeam(actor),
+      projectId: item.projectId,
+      name: normalizedName,
+      typicalInput: normalizedInput,
+      expectedOutput: normalizedOutput,
+      applicability: `当收到${normalizedInput.slice(0, 500)}，并希望得到${normalizedOutput.slice(0, 500)}时`,
+      steps: [...preview.suggestion.steps],
+      state: "needs_review",
+      caseCount: 1,
+      casesRequired: 1,
+      familySignature,
+      origin: { kind: "work_item", workItemId: item.id, localRef: item.localRef ?? null, title: item.title },
+      learningCaseIds: [learningCase.id],
+      createIdempotencyKey: idempotencyKey ? String(idempotencyKey).slice(0, 200) : null,
+      revision: 1,
+      createdBy: actorUser(actor),
+      updatedBy: actorUser(actor),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    runTx(() => {
+      state.myTemplateDrafts.unshift(draft);
+      state.myTemplateLearningCases.unshift(learningCase);
+      state.myTemplateDrafts = state.myTemplateDrafts.slice(0, 2_000);
+      state.myTemplateLearningCases = state.myTemplateLearningCases.slice(0, 5_000);
+      recordActivity(item, actor, "my_template_draft_created", {
+        draftId: draft.id,
+        learningCaseId: learningCase.id,
+        state: draft.state,
+        affectsOriginalTask: false,
+        participatesInMatching: false,
+      });
+      appendEvent({
+        invocationId: null,
+        type: "my_template_draft_created",
+        level: "info",
+        message: "A completed ordinary task was saved as a learning My template.",
+        data: { draftId: draft.id, workItemId: item.id, projectId: item.projectId, actorTeamId: actorTeam(actor) },
+      });
+    });
+    return {
+      ok: true, status: 201,
+      body: { draft: myTemplateDraftView(draft), workItem: workItemView(item, actor), replayed: false },
+    };
+  }
+
+  function listMyTemplateOutcomeFeedback({ projectId = null } = {}, actor = null) {
+    const selectedProjectId = projectId ? String(projectId) : null;
+    if (selectedProjectId && !actorCanAccessProject(state, actor, selectedProjectId)) return notFound();
+    const ownerTeamId = actorTeam(actor);
+    const interventions = state.myTemplateGovernanceInterventions.filter((entry) =>
+      entry.ownerTeamId === ownerTeamId && (!selectedProjectId || entry.projectId === selectedProjectId));
+    const feedback = state.myTemplateOutcomeFeedback
+      .filter((entry) => entry.ownerTeamId === ownerTeamId
+        && (!selectedProjectId || entry.projectId === selectedProjectId))
+      .map((entry) => ({
+        id: entry.id,
+        projectId: entry.projectId,
+        workItemId: entry.workItemId,
+        definitionId: entry.definitionId,
+        familyId: entry.familyId,
+        version: entry.version,
+        outcome: entry.outcome,
+        note: entry.note,
+        workItem: (() => {
+          const item = (state.workItems ?? []).find((candidate) =>
+            candidate.id === entry.workItemId && candidate.ownerTeamId === ownerTeamId);
+          return item ? { id: item.id, localRef: item.localRef, title: item.title, status: item.status } : null;
+        })(),
+        governanceImpact: (() => {
+          const latestIntervention = latestMyTemplateGovernanceIntervention(interventions, entry.familyId);
+          if ((latestIntervention?.feedbackIds ?? []).includes(entry.id)) return "historical_baseline";
+          if (entry.outcome === "wrong_result") return "negative";
+          if (entry.outcome === "met_expectations") return "positive";
+          return "quality_neutral";
+        })(),
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+      }));
+    const summaries = [...feedback.reduce((groups, entry) => {
+      const current = groups.get(entry.familyId) ?? {
+        familyId: entry.familyId,
+        total: 0,
+        metExpectations: 0,
+        wrongResult: 0,
+        needsQualityAdjustment: 0,
+      };
+      current.total += 1;
+      if (entry.outcome === "met_expectations") current.metExpectations += 1;
+      if (entry.outcome === "wrong_result") current.wrongResult += 1;
+      if (entry.outcome === "needs_quality_adjustment") current.needsQualityAdjustment += 1;
+      groups.set(entry.familyId, current);
+      return groups;
+    }, new Map()).values()].map((summary) => ({
+      ...summary,
+      state: summary.wrongResult > 0 ? "needs_attention"
+        : summary.metExpectations >= 3 ? "stable"
+          : summary.needsQualityAdjustment > 0 ? "quality_adjustment" : "learning",
+      governance: evaluateMyTemplateGovernance({
+        outcomeFeedback: feedback, interventions, familyId: summary.familyId,
+      }),
+    }));
+    return { ok: true, status: 200, body: { feedback, summaries, count: feedback.length } };
+  }
+
+  function resumeMyTemplateGovernanceObservation({ familyId, projectId, confirm = false } = {}, actor = null) {
+    const normalizedFamilyId = String(familyId ?? "");
+    const normalizedProjectId = String(projectId ?? "");
+    if (!normalizedFamilyId || !normalizedProjectId || !actorCanAccessProject(state, actor, normalizedProjectId)) {
+      return notFound();
+    }
+    const ownerTeamId = actorTeam(actor);
+    const definition = (state.routineDefinitions ?? []).find((entry) =>
+      entry.familyId === normalizedFamilyId
+      && entry.projectId === normalizedProjectId
+      && entry.ownerTeamId === ownerTeamId
+      && entry.state === "published");
+    if (!definition) return notFound();
+    if (confirm !== true) {
+      return { ok: false, status: 400, body: { error: "my_template_governance_resume_confirmation_required" } };
+    }
+    const ownedFeedback = state.myTemplateOutcomeFeedback.filter((entry) =>
+      entry.ownerTeamId === ownerTeamId
+      && entry.projectId === normalizedProjectId
+      && entry.familyId === normalizedFamilyId);
+    const ownedInterventions = state.myTemplateGovernanceInterventions.filter((entry) =>
+      entry.ownerTeamId === ownerTeamId && entry.projectId === normalizedProjectId);
+    const current = evaluateMyTemplateGovernance({
+      outcomeFeedback: ownedFeedback, interventions: ownedInterventions, familyId: normalizedFamilyId,
+    });
+    if (current.state !== "paused") {
+      return { ok: false, status: 409, body: { error: "my_template_governance_resume_not_needed", governance: current } };
+    }
+    const timestamp = now();
+    const intervention = {
+      id: nextId("mtgi"),
+      ownerTeamId,
+      projectId: normalizedProjectId,
+      familyId: normalizedFamilyId,
+      definitionId: definition.id,
+      action: "resume_observation",
+      reason: "user_reviewed_governance_details",
+      feedbackIds: ownedFeedback.map((entry) => entry.id),
+      priorState: current.state,
+      createdBy: actorUser(actor),
+      createdAt: timestamp,
+    };
+    runTx(() => {
+      state.myTemplateGovernanceInterventions.unshift(intervention);
+      state.myTemplateGovernanceInterventions = state.myTemplateGovernanceInterventions.slice(0, 1_000);
+      appendEvent({
+        invocationId: null,
+        type: "my_template_governance_resumed",
+        level: "warning",
+        message: "My template automatic matching was manually returned to observation.",
+        data: {
+          interventionId: intervention.id,
+          projectId: normalizedProjectId,
+          familyId: normalizedFamilyId,
+          priorState: current.state,
+          historicalFeedbackCount: intervention.feedbackIds.length,
+          actorTeamId: ownerTeamId,
+          actorUserId: actorUser(actor),
+        },
+      });
+    });
+    const governance = evaluateMyTemplateGovernance({
+      outcomeFeedback: ownedFeedback,
+      interventions: [intervention, ...ownedInterventions],
+      familyId: normalizedFamilyId,
+    });
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        intervention: {
+          id: intervention.id,
+          familyId: intervention.familyId,
+          projectId: intervention.projectId,
+          action: intervention.action,
+          priorState: intervention.priorState,
+          historicalFeedbackCount: intervention.feedbackIds.length,
+          createdAt: intervention.createdAt,
+        },
+        governance,
+      },
+    };
+  }
+
+  function recordMyTemplateOutcomeFeedback({ workItemId, outcome, note = "" } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!item.myTemplateBinding) {
+      return { ok: false, status: 409, body: { error: "work_item_my_template_not_used" } };
+    }
+    if (item.status !== "done") {
+      return { ok: false, status: 409, body: { error: "work_item_result_feedback_requires_completion" } };
+    }
+    const normalizedOutcome = String(outcome ?? "");
+    if (!["met_expectations", "wrong_result", "needs_quality_adjustment"].includes(normalizedOutcome)) {
+      return { ok: false, status: 400, body: { error: "invalid_my_template_outcome_feedback" } };
+    }
+    const normalizedNote = String(note ?? "").trim().slice(0, 1_000);
+    const timestamp = now();
+    let feedback = state.myTemplateOutcomeFeedback.find((entry) =>
+      entry.ownerTeamId === actorTeam(actor) && entry.workItemId === item.id);
+    if (feedback && feedback.outcome === normalizedOutcome && feedback.note === normalizedNote) {
+      return { ok: true, status: 200, body: { feedback: workItemView(item, actor).myTemplateOutcomeFeedback, workItem: workItemView(item, actor), replayed: true } };
+    }
+    const governanceBefore = evaluateMyTemplateGovernance({
+      outcomeFeedback: state.myTemplateOutcomeFeedback.filter((entry) =>
+        entry.ownerTeamId === actorTeam(actor) && entry.projectId === item.projectId),
+      interventions: state.myTemplateGovernanceInterventions.filter((entry) =>
+        entry.ownerTeamId === actorTeam(actor) && entry.projectId === item.projectId),
+      familyId: item.myTemplateBinding.familyId,
+    });
+    runTx(() => {
+      if (feedback) {
+        feedback.outcome = normalizedOutcome;
+        feedback.note = normalizedNote;
+        feedback.revision += 1;
+        feedback.updatedAt = timestamp;
+        feedback.updatedBy = actorUser(actor);
+      } else {
+        feedback = {
+          id: nextId("mtof"),
+          ownerTeamId: actorTeam(actor),
+          projectId: item.projectId,
+          workItemId: item.id,
+          definitionId: item.myTemplateBinding.definitionId,
+          familyId: item.myTemplateBinding.familyId,
+          version: item.myTemplateBinding.version,
+          snapshotHash: item.myTemplateBinding.snapshotHash,
+          outcome: normalizedOutcome,
+          note: normalizedNote,
+          source: "user",
+          revision: 1,
+          createdBy: actorUser(actor),
+          updatedBy: actorUser(actor),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        state.myTemplateOutcomeFeedback.unshift(feedback);
+        state.myTemplateOutcomeFeedback = state.myTemplateOutcomeFeedback.slice(0, 1_000);
+      }
+      recordActivity(item, actor, "my_template_outcome_feedback_recorded", {
+        feedbackId: feedback.id,
+        outcome: feedback.outcome,
+        matchingSignal: feedback.outcome === "wrong_result" ? "negative"
+          : feedback.outcome === "met_expectations" ? "positive" : "neutral",
+        technicalFailure: false,
+      });
+      const governanceAfter = evaluateMyTemplateGovernance({
+        outcomeFeedback: state.myTemplateOutcomeFeedback.filter((entry) =>
+          entry.ownerTeamId === actorTeam(actor) && entry.projectId === item.projectId),
+        interventions: state.myTemplateGovernanceInterventions.filter((entry) =>
+          entry.ownerTeamId === actorTeam(actor) && entry.projectId === item.projectId),
+        familyId: item.myTemplateBinding.familyId,
+      });
+      if (governanceBefore.state !== governanceAfter.state) {
+        recordActivity(item, actor, "my_template_governance_changed", {
+          familyId: item.myTemplateBinding.familyId,
+          from: governanceBefore.state,
+          to: governanceAfter.state,
+          reason: governanceAfter.reason,
+          autoMatchAllowed: governanceAfter.autoMatchAllowed,
+          matchingFeedbackCount: governanceAfter.matchingFeedbackCount,
+          wrongResultRate: governanceAfter.wrongResultRate,
+        });
+      }
+    });
+    notifyWorkItemChanged(item, actor, "my_template_outcome_feedback_recorded");
+    const view = workItemView(item, actor);
+    return { ok: true, status: 200, body: { feedback: view.myTemplateOutcomeFeedback, workItem: view, replayed: false } };
+  }
+
+  function prepareExecutionContract({ workItemId, expectedRevision, confirm = true, draftOverride = null } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const currentGate = executionContractDefinitionGate(item);
+    if (currentGate.ready && confirm) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    const assisted = suggestWorkItemDraft({ projectId: item.projectId, title: item.title, body: item.body }, actor);
+    if (!assisted.ok) return assisted;
+    const assistedDraft = assisted.body?.draft ?? {};
+    const override = draftOverride && typeof draftOverride === "object" ? draftOverride : null;
+    const draft = override ? {
+      ...assistedDraft,
+      ...override,
+      acceptanceCriteria: Array.isArray(override.acceptanceCriteria) && override.acceptanceCriteria.length
+        ? override.acceptanceCriteria
+        : assistedDraft.acceptanceCriteria,
+      verificationSop: Array.isArray(override.verificationSop) && override.verificationSop.length
+        ? override.verificationSop
+        : assistedDraft.verificationSop,
+      risks: Array.isArray(override.risks) ? override.risks : assistedDraft.risks,
+      evidence: {
+        ...(assistedDraft.evidence ?? {}),
+        ...(override.evidence ?? {}),
+      },
+    } : assistedDraft;
+    const acceptanceCriteria = (item.acceptanceCriteria ?? []).length
+      ? [...item.acceptanceCriteria]
+      : strings(draft.acceptanceCriteria ?? [], { limit: 30, maxLength: 2_000 });
+    const verificationSop = (item.verificationSop ?? []).length
+      ? [...item.verificationSop]
+      : strings(draft.verificationSop ?? [], { limit: 30, maxLength: 2_000 });
+    if (!acceptanceCriteria?.length || !verificationSop?.length) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_contract_assistance_incomplete" } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      item.acceptanceCriteria = acceptanceCriteria;
+      item.verificationSop = verificationSop;
+      item.executionContractSource = override ? "agent_assisted" : "assisted";
+      item.executionContractConfirmedAt = confirm ? timestamp : null;
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_contract_prepared", {
+        source: item.executionContractSource,
+        confirmed: confirm,
+        policyVersion: draft.evidence?.policyVersion ?? null,
+        confidence: draft.evidence?.confidence ?? null,
+        suggestedRoute: draft.suggestedRoute ?? null,
+      });
+    });
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        workItem: workItemView(item, actor),
+        draft: {
+          taskUnderstanding: draft.taskUnderstanding ?? "",
+          acceptanceCriteria,
+          verificationSop,
+          suggestedRoute: draft.suggestedRoute ?? null,
+          risks: draft.risks ?? [],
+          evidence: draft.evidence ?? null,
+          confirmedAt: confirm ? timestamp : null,
         },
       },
     };
@@ -1388,6 +2958,11 @@ export function createWorkItemService({
       externalId,
       bindingId: binding.bindingId
         ?? [provider ?? "unknown", resourceType, binding.repository ?? "repository", externalId].join(":"),
+      relation: EXTERNAL_RELATIONS.has(binding.relation) ? binding.relation : "source",
+      isPrimary: binding.isPrimary !== false,
+      syncPolicy: EXTERNAL_SYNC_POLICIES.has(binding.syncPolicy) ? binding.syncPolicy : "manual",
+      linkedAt: binding.linkedAt ?? null,
+      linkedBy: binding.linkedBy ?? null,
     };
   }
 
@@ -1413,7 +2988,15 @@ export function createWorkItemService({
     };
   }
 
-  function bindExternalIssue({ workItemId, expectedRevision, provider = "github", remote } = {}, actor = null) {
+  function bindExternalIssue({
+    workItemId,
+    expectedRevision,
+    provider = "github",
+    remote,
+    relation = "source",
+    isPrimary = true,
+    syncPolicy = "manual",
+  } = {}, actor = null) {
     const normalizedProvider = String(provider).toLowerCase();
     if (!["github", "gitlab", "gitea"].includes(normalizedProvider)) {
       return { ok: false, status: 400, body: { error: "unsupported_external_provider" } };
@@ -1425,8 +3008,20 @@ export function createWorkItemService({
     }
     const snapshot = normalizeGithubSnapshot(remote);
     if (!snapshot) return { ok: false, status: 400, body: { error: "invalid_external_issue_snapshot", provider: normalizedProvider } };
+    const normalizedRelation = String(relation ?? "source").toLowerCase();
+    const normalizedSyncPolicy = String(syncPolicy ?? "manual").toLowerCase();
+    if (!EXTERNAL_RELATIONS.has(normalizedRelation)) {
+      return { ok: false, status: 400, body: { error: "invalid_external_issue_relation", provider: normalizedProvider } };
+    }
+    if (!EXTERNAL_SYNC_POLICIES.has(normalizedSyncPolicy)) {
+      return { ok: false, status: 400, body: { error: "invalid_external_issue_sync_policy", provider: normalizedProvider } };
+    }
+    const primary = Boolean(isPrimary) && normalizedRelation === "source";
     if (externalIssueBinding(item, normalizedProvider)) {
       return { ok: false, status: 409, body: { error: "external_issue_already_bound", provider: normalizedProvider } };
+    }
+    if (primary && (item.externalBindings ?? []).some((candidate) => candidate.isPrimary !== false)) {
+      return { ok: false, status: 409, body: { error: "external_primary_source_already_bound", provider: normalizedProvider } };
     }
     const duplicate = (state.workItems ?? []).find((candidate) =>
       candidate.ownerTeamId === actorTeam(actor) && candidate.projectId === item.projectId
@@ -1445,12 +3040,73 @@ export function createWorkItemService({
       syncedLocalRevision: item.revision, remoteUpdatedAt: snapshot.updatedAt,
       baseline: Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [field, snapshot[field]])),
       conflict: null, lastSyncedAt: now(),
+      relation: normalizedRelation,
+      isPrimary: primary,
+      syncPolicy: normalizedSyncPolicy,
+      linkedAt: now(),
+      linkedBy: actorUser(actor),
     };
     runTx(() => {
       item.externalBindings.push(binding);
       recordActivity(item, actor, `${normalizedProvider}_linked`, { provider: normalizedProvider, number: snapshot.number, url: snapshot.url });
     });
     return { ok: true, status: 201, body: { workItem: workItemView(item, actor), binding: externalBindingView(binding) } };
+  }
+
+  function createWorkItemFromExternal({
+    projectId,
+    provider = "github",
+    remote,
+    relation = "source",
+    isPrimary = true,
+    syncPolicy = "manual",
+    ...input
+  } = {}, actor = null) {
+    const normalizedProvider = String(provider).toLowerCase();
+    if (!["github", "gitlab", "gitea"].includes(normalizedProvider)) {
+      return { ok: false, status: 400, body: { error: "unsupported_external_provider" } };
+    }
+    const snapshot = normalizeGithubSnapshot(remote);
+    if (!snapshot) {
+      return { ok: false, status: 400, body: { error: "invalid_external_issue_snapshot", provider: normalizedProvider } };
+    }
+    const duplicate = (state.workItems ?? []).find((candidate) =>
+      candidate.ownerTeamId === actorTeam(actor)
+      && candidate.projectId === projectId
+      && (candidate.externalBindings ?? []).some((binding) =>
+        providerOfBinding(binding) === normalizedProvider
+        && binding.number === snapshot.number
+        && (binding.repository ?? null) === (snapshot.repository ?? null)));
+    if (duplicate) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "external_issue_already_linked", provider: normalizedProvider, workItemId: duplicate.id, workItem: workItemView(duplicate, actor) },
+      };
+    }
+    const created = createWorkItem({
+      ...input,
+      projectId,
+      title: input.title ?? snapshot.title,
+      body: input.body ?? snapshot.body,
+      labels: input.labels ?? snapshot.labels,
+      intakeChannel: input.intakeChannel ?? (normalizedProvider === "github" ? "github" : "import"),
+      externalReference: input.externalReference ?? snapshot.url,
+    }, actor);
+    if (!created.ok) return created;
+    const linked = bindExternalIssue({
+      workItemId: created.body.workItem.id,
+      expectedRevision: created.body.workItem.revision,
+      provider: normalizedProvider,
+      remote: snapshot,
+      relation,
+      isPrimary,
+      syncPolicy,
+    }, actor);
+    if (!linked.ok) {
+      return { ...linked, body: { ...linked.body, workItemId: created.body.workItem.id } };
+    }
+    return { ok: true, status: 201, body: { ...linked.body, created: true } };
   }
 
   function bindGithubIssue(input = {}, actor = null) {
@@ -1620,6 +3276,38 @@ export function createWorkItemService({
     }
     const validated = validateDraft(input);
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    if (!validated.value.myTemplateBinding && !hasRoutineInput) {
+      const automaticMatch = matchPublishedMyTemplate({
+        definitions: (state.routineDefinitions ?? []).filter(
+          (definition) => definition.ownerTeamId === actorTeam(actor),
+        ),
+        routingFeedback: state.myTemplateRoutingFeedback.filter((feedback) =>
+          feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+        outcomeFeedback: state.myTemplateOutcomeFeedback.filter((feedback) =>
+          feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+        governanceInterventions: state.myTemplateGovernanceInterventions.filter((entry) =>
+          entry.ownerTeamId === actorTeam(actor) && entry.projectId === projectId),
+        projectId,
+        intent: `${validated.value.title}\n${validated.value.body ?? ""}`,
+      });
+      if (automaticMatch.state === "matched" && automaticMatch.selected) {
+        validated.value.myTemplateBinding = {
+          definitionId: automaticMatch.selected.definitionId,
+          familyId: automaticMatch.selected.templateId,
+          version: automaticMatch.selected.version,
+          matchReasons: automaticMatch.selected.reasons,
+        };
+      }
+    }
+    const templateResultConfirmed = validated.value.myTemplateBinding?.userConfirmedResult === true;
+    if (validated.value.myTemplateBinding) {
+      const materialized = materializeMyTemplateBinding(validated.value.myTemplateBinding, projectId, actor);
+      if (materialized.error) return { ok: false, status: 409, body: { error: materialized.error } };
+      validated.value.myTemplateBinding = materialized.value;
+    }
+    const followUp = resolveFollowUpContext(validated.value, actor, { input });
+    if (followUp.error) return { ok: false, status: 400, body: { error: followUp.error } };
+    Object.assign(validated.value, followUp.value);
     if (!Object.hasOwn(input, "assigneeIds")) validated.value.assigneeIds = [actorUser(actor)];
     if (!idempotencyKey && validated.value.routineDefinitionId) {
       idempotencyKey = routineIdempotencyKeys({
@@ -1665,6 +3353,23 @@ export function createWorkItemService({
       .filter((item) => item.ownerTeamId === teamId)
       .map((item) => Number(item.localNumber) || 0));
     const timestamp = now();
+    const suppliedCriteria = validated.value.acceptanceCriteria ?? [];
+    const extractedCriteria = suppliedCriteria.length
+      ? []
+      : extractAcceptanceCriteriaFromBody(validated.value.body);
+    const contractCriteria = suppliedCriteria.length ? suppliedCriteria : extractedCriteria;
+    if (contractCriteria.length) {
+      validated.value.acceptanceCriteria = contractCriteria;
+      validated.value.verificationSop = validated.value.verificationSop?.length
+        ? validated.value.verificationSop
+        : defaultVerificationSop(validated.value);
+      validated.value.executionContractSource = suppliedCriteria.length ? "manual" : "body_extracted";
+      validated.value.executionContractConfirmedAt = timestamp;
+    } else {
+      validated.value.verificationSop = [];
+      validated.value.executionContractSource = null;
+      validated.value.executionContractConfirmedAt = null;
+    }
     const workItem = {
       id: nextId("lwi"),
       localNumber,
@@ -1688,7 +3393,28 @@ export function createWorkItemService({
       lastModifiedBy: actorUser(actor),
       externalBindings: [],
       executionBindings: [],
+      localContentRefs: [],
+      materialChangesPending: false,
     };
+    const materialDraftId = input.materialDraftId == null ? null : String(input.materialDraftId).trim();
+    if (materialDraftId) {
+      if (typeof claimTaskMaterialDraft !== "function") {
+        return { ok: false, status: 503, body: { error: "task_material_service_unavailable" } };
+      }
+      const claimed = claimTaskMaterialDraft({
+        projectId,
+        draftId: materialDraftId,
+        expectedRevision: input.materialDraftRevision,
+        workItemId: workItem.id,
+        terminalId: workItem.terminalId,
+        deferPersist: true,
+      }, actor);
+      if (!claimed.ok) {
+        return { ok: false, status: claimed.status ?? 409, body: { error: claimed.error ?? "task_material_claim_failed" } };
+      }
+      workItem.materialDraftId = materialDraftId;
+      workItem.inputAssets = claimed.assets;
+    }
     const assetReadiness = evaluateAssetRequirements(
       workItem.inputAssets,
       workItem.requiredCapabilities,
@@ -1711,12 +3437,40 @@ export function createWorkItemService({
       (state.workItems ??= []).unshift(workItem);
       recordActivity(workItem, actor, "created", {
         title: workItem.title, type: workItem.type, status: workItem.status, priority: workItem.priority,
+        followUpContext: workItemFollowUpContextView(workItem),
         ...(workItem.routineDefinitionId ? {
           routineDefinitionId: workItem.routineDefinitionId,
           routineVersion: workItem.routineVersion,
           businessCaseId: workItem.businessCaseId,
         } : {}),
       });
+      if (templateResultConfirmed && workItem.myTemplateBinding) {
+        const feedback = {
+          id: nextId("mtf"),
+          kind: "confirmation",
+          ownerTeamId: actorTeam(actor),
+          projectId: workItem.projectId,
+          workItemId: workItem.id,
+          intentTerms: templateRoutingTerms(`${workItem.title}\n${workItem.body ?? ""}`),
+          rejectedDefinitionId: null,
+          rejectedFamilyId: null,
+          rejectedVersion: null,
+          rejectedOutput: null,
+          selectedDefinitionId: workItem.myTemplateBinding.definitionId,
+          selectedFamilyId: workItem.myTemplateBinding.familyId,
+          selectedVersion: workItem.myTemplateBinding.version,
+          selectedOutput: workItem.myTemplateBinding.expectedOutput,
+          reason: "user_confirmed_desired_output",
+          createdBy: actorUser(actor),
+          createdAt: timestamp,
+        };
+        state.myTemplateRoutingFeedback.unshift(feedback);
+        state.myTemplateRoutingFeedback = state.myTemplateRoutingFeedback.slice(0, 1_000);
+        recordActivity(workItem, actor, "my_template_match_confirmed", {
+          feedbackId: feedback.id,
+          selectedOutput: feedback.selectedOutput,
+        });
+      }
       applyPlanningAutomation(workItem, actor);
       appendEvent({
         invocationId: null,
@@ -1734,6 +3488,7 @@ export function createWorkItemService({
         },
       });
     });
+    notifyWorkItemChanged(workItem, actor, "created");
     return { ok: true, status: 201, body: { workItem: workItemView(workItem, actor) } };
   }
 
@@ -1752,6 +3507,10 @@ export function createWorkItemService({
       || ROUTINE_BINDING_FIELDS.some((field) => Object.hasOwn(changes, field))) {
       return { ok: false, status: 409, body: { error: "work_item_routine_binding_immutable" } };
     }
+    if (Object.hasOwn(changes, "myTemplateBinding")
+      && (item.executionBindings ?? []).length) {
+      return { ok: false, status: 409, body: { error: "work_item_my_template_binding_immutable" } };
+    }
     if (Object.hasOwn(changes, "terminalId")) {
       return {
         ok: false,
@@ -1767,10 +3526,103 @@ export function createWorkItemService({
     }
     const validated = validateDraft(changes, { partial: true });
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    const followUpContextChanged = WORK_ITEM_FOLLOW_UP_MUTABLE_FIELDS.some((field) => Object.hasOwn(changes, field));
+    if (followUpContextChanged) {
+      const followUp = resolveFollowUpContext({
+        ...workItemFollowUpContextView(item),
+        ...validated.value,
+      }, actor, { input: changes });
+      if (followUp.error) return { ok: false, status: 400, body: { error: followUp.error } };
+      for (const [field, value] of Object.entries(followUp.value)) {
+        if (!Object.is(item[field], value)) validated.value[field] = value;
+      }
+    }
     const nextInputAssets = validated.value.inputAssets ?? item.inputAssets ?? [];
     const nextOutputAssets = validated.value.outputAssets ?? item.outputAssets ?? [];
     if ([...nextInputAssets, ...nextOutputAssets].some((asset) => asset.terminalId !== item.terminalId)) {
       return { ok: false, status: 409, body: { error: "asset_terminal_mismatch", terminalId: item.terminalId } };
+    }
+    const timestamp = now();
+    const previousTemplateBinding = item.myTemplateBinding ?? null;
+    const templateResultConfirmed = validated.value.myTemplateBinding?.userConfirmedResult === true;
+    if (validated.value.myTemplateBinding) {
+      const materialized = materializeMyTemplateBinding(
+        validated.value.myTemplateBinding,
+        validated.value.projectId ?? item.projectId,
+        actor,
+        timestamp,
+      );
+      if (materialized.error) return { ok: false, status: 409, body: { error: materialized.error } };
+      validated.value.myTemplateBinding = materialized.value;
+    }
+    const templateCorrection = previousTemplateBinding
+      && validated.value.myTemplateBinding
+      && (previousTemplateBinding.familyId !== validated.value.myTemplateBinding.familyId
+        || previousTemplateBinding.version !== validated.value.myTemplateBinding.version)
+      ? {
+          id: nextId("mtf"),
+          ownerTeamId: actorTeam(actor),
+          projectId: item.projectId,
+          workItemId: item.id,
+          intentTerms: templateRoutingTerms(`${item.title}\n${item.body ?? ""}`),
+          rejectedDefinitionId: previousTemplateBinding.definitionId,
+          rejectedFamilyId: previousTemplateBinding.familyId,
+          rejectedVersion: previousTemplateBinding.version,
+          rejectedOutput: previousTemplateBinding.expectedOutput,
+          selectedDefinitionId: validated.value.myTemplateBinding.definitionId,
+          selectedFamilyId: validated.value.myTemplateBinding.familyId,
+          selectedVersion: validated.value.myTemplateBinding.version,
+          selectedOutput: validated.value.myTemplateBinding.expectedOutput,
+          reason: validated.value.myTemplateBinding.matchReasons.at(-1) ?? "user_corrected_desired_output",
+          createdBy: actorUser(actor),
+          createdAt: timestamp,
+        }
+      : null;
+    const templateConfirmation = !previousTemplateBinding
+      && validated.value.myTemplateBinding
+      && templateResultConfirmed
+      ? {
+          id: nextId("mtf"),
+          kind: "confirmation",
+          ownerTeamId: actorTeam(actor),
+          projectId: item.projectId,
+          workItemId: item.id,
+          intentTerms: templateRoutingTerms(`${item.title}\n${item.body ?? ""}`),
+          rejectedDefinitionId: null,
+          rejectedFamilyId: null,
+          rejectedVersion: null,
+          rejectedOutput: null,
+          selectedDefinitionId: validated.value.myTemplateBinding.definitionId,
+          selectedFamilyId: validated.value.myTemplateBinding.familyId,
+          selectedVersion: validated.value.myTemplateBinding.version,
+          selectedOutput: validated.value.myTemplateBinding.expectedOutput,
+          reason: "user_confirmed_desired_output",
+          createdBy: actorUser(actor),
+          createdAt: timestamp,
+        }
+      : null;
+    const contractInputChanged = Object.hasOwn(changes, "acceptanceCriteria")
+      || Object.hasOwn(changes, "verificationSop")
+      || (Object.hasOwn(changes, "body") && !(item.acceptanceCriteria ?? []).length);
+    if (contractInputChanged) {
+      let nextCriteria = validated.value.acceptanceCriteria ?? item.acceptanceCriteria ?? [];
+      if (!Object.hasOwn(changes, "acceptanceCriteria") && !nextCriteria.length && Object.hasOwn(changes, "body")) {
+        nextCriteria = extractAcceptanceCriteriaFromBody(validated.value.body);
+      }
+      if (nextCriteria.length) {
+        validated.value.acceptanceCriteria = nextCriteria;
+        validated.value.verificationSop = validated.value.verificationSop?.length
+          ? validated.value.verificationSop
+          : (item.verificationSop?.length ? item.verificationSop : defaultVerificationSop({ ...item, ...validated.value }));
+        validated.value.executionContractSource = Object.hasOwn(changes, "acceptanceCriteria")
+          ? "manual"
+          : "body_extracted";
+        validated.value.executionContractConfirmedAt = timestamp;
+      } else {
+        validated.value.verificationSop = [];
+        validated.value.executionContractSource = null;
+        validated.value.executionContractConfirmedAt = null;
+      }
     }
     if (validated.value.status === "done") {
       const gate = completionGate({ ...item, ...validated.value });
@@ -1829,7 +3681,6 @@ export function createWorkItemService({
       validated.value.parentId = parentId;
     }
     const nextValues = { ...validated.value };
-    const timestamp = now();
     if (Object.hasOwn(validated.value, "plannedDate")) {
       nextValues.schedulePlanSource = validated.value.plannedDate ? "manual" : null;
       nextValues.scheduleReason = validated.value.plannedDate ? "manual_schedule" : null;
@@ -1852,7 +3703,33 @@ export function createWorkItemService({
         changes: Object.fromEntries(Object.entries(nextValues).map(([key, value]) => [
           key, { from: previous[key], to: value },
         ])),
+        ...(followUpContextChanged ? { followUpContextChanged: true } : {}),
       });
+      if (templateCorrection) {
+        state.myTemplateRoutingFeedback.unshift(templateCorrection);
+        state.myTemplateRoutingFeedback = state.myTemplateRoutingFeedback.slice(0, 1_000);
+        recordActivity(item, actor, "my_template_match_corrected", {
+          feedbackId: templateCorrection.id,
+          from: {
+            definitionId: templateCorrection.rejectedDefinitionId,
+            version: templateCorrection.rejectedVersion,
+            expectedOutput: templateCorrection.rejectedOutput,
+          },
+          to: {
+            definitionId: templateCorrection.selectedDefinitionId,
+            version: templateCorrection.selectedVersion,
+            expectedOutput: templateCorrection.selectedOutput,
+          },
+        });
+      }
+      if (templateConfirmation) {
+        state.myTemplateRoutingFeedback.unshift(templateConfirmation);
+        state.myTemplateRoutingFeedback = state.myTemplateRoutingFeedback.slice(0, 1_000);
+        recordActivity(item, actor, "my_template_match_confirmed", {
+          feedbackId: templateConfirmation.id,
+          selectedOutput: templateConfirmation.selectedOutput,
+        });
+      }
       applyPlanningAutomation(item, actor);
       appendEvent({
         invocationId: null,
@@ -1864,6 +3741,103 @@ export function createWorkItemService({
     });
     notifyWorkItemChanged(item, actor, "updated");
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
+  }
+
+  function recordWorkItemProgress({
+    workItemId,
+    expectedRevision,
+    idempotencyKey,
+    summary,
+    ...changes
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const key = typeof idempotencyKey === "string" ? idempotencyKey.trim() : "";
+    const normalizedSummary = typeof summary === "string" ? summary.trim() : "";
+    if (!key || key.length > 200) {
+      return { ok: false, status: 400, body: { error: "work_item_progress_idempotency_key_required" } };
+    }
+    if (!normalizedSummary || normalizedSummary.length > 2_000) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_progress_summary" } };
+    }
+    const allowedFields = new Set(["waitingOn", "nextFollowUpAt"]);
+    if (Object.keys(changes).some((field) => !allowedFields.has(field))) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_progress_fields" } };
+    }
+    const followUpInput = Object.fromEntries(Object.entries(changes)
+      .filter(([field]) => allowedFields.has(field)));
+    const normalized = normalizeWorkItemFollowUpInput(followUpInput, { partial: true });
+    if (normalized.error) return { ok: false, status: 400, body: { error: normalized.error } };
+    const progressInput = { summary: normalizedSummary };
+    if (Object.hasOwn(normalized.value, "waitingOn")) progressInput.waitingOn = normalized.value.waitingOn;
+    if (Object.hasOwn(normalized.value, "nextFollowUpAt")) progressInput.nextFollowUpAt = normalized.value.nextFollowUpAt;
+    const replay = (state.workItemActivities ?? []).find((activity) =>
+      activity.workItemId === item.id
+      && activity.ownerTeamId === actorTeam(actor)
+      && activity.actorId === actorUser(actor)
+      && activity.action === "progress_recorded"
+      && activity.details?.idempotencyKey === key);
+    if (replay) {
+      if (JSON.stringify(replay.details?.progressInput) !== JSON.stringify(progressInput)) {
+        return { ok: false, status: 409, body: { error: "work_item_progress_idempotency_conflict" } };
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: { workItem: workItemView(item, actor), activity: replay, replayed: true },
+      };
+    }
+    if (item.state === "closed" || item.status === "done" || item.archivedAt) {
+      return { ok: false, status: 409, body: { error: "work_item_not_open_for_progress" } };
+    }
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const followUp = resolveFollowUpContext({
+      ...workItemFollowUpContextView(item),
+      ...normalized.value,
+    }, actor, { input: followUpInput });
+    if (followUp.error) return { ok: false, status: 400, body: { error: followUp.error } };
+    const timestamp = now();
+    const previous = {
+      waitingOn: item.waitingOn ?? "none",
+      nextFollowUpAt: item.nextFollowUpAt ?? null,
+    };
+    let activity;
+    runTx(() => {
+      Object.assign(item, normalized.value, {
+        lastProgressAt: timestamp,
+        lastProgressSummary: normalizedSummary,
+        revision: item.revision + 1,
+        updatedAt: timestamp,
+        lastModifiedBy: actorUser(actor),
+      });
+      activity = recordActivity(item, actor, "progress_recorded", {
+        idempotencyKey: key,
+        progressInput,
+        summary: normalizedSummary,
+        changes: Object.fromEntries(Object.keys(normalized.value).map((field) => [
+          field,
+          { from: previous[field] ?? null, to: item[field] ?? null },
+        ])),
+      });
+      appendEvent({
+        invocationId: null,
+        type: "work_item_progress_recorded",
+        level: "info",
+        message: `${item.localRef} progress recorded.`,
+        data: { workItemId: item.id, revision: item.revision, activityId: activity.id, actorTeamId: actorTeam(actor) },
+      });
+    });
+    notifyWorkItemChanged(item, actor, "progress_recorded");
+    return {
+      ok: true,
+      status: 201,
+      body: { workItem: workItemView(item, actor), activity, replayed: false },
+    };
   }
 
   function bulkUpdateWorkItems({ items, changes } = {}, actor = null) {
@@ -1971,12 +3945,20 @@ export function createWorkItemService({
     }
     const pastTense = { close: "closed", reopen: "reopened", archive: "archived", restore: "restored" }[action];
     runTx(() => {
-      if (action === "close") item.state = "closed";
-      if (action === "reopen") item.state = "open";
+      const transitionAt = now();
+      if (action === "close") {
+        item.state = "closed";
+        item.completedAt = item.completedAt ?? transitionAt;
+        item.waitingOn = "none";
+      }
+      if (action === "reopen") {
+        item.state = "open";
+        item.completedAt = null;
+      }
       if (action === "archive") item.archivedAt = now();
       if (action === "restore") item.archivedAt = null;
       item.revision += 1;
-      item.updatedAt = now();
+      item.updatedAt = transitionAt;
       item.lastModifiedBy = actorUser(actor);
       recordActivity(item, actor, action, { state: item.state, archivedAt: item.archivedAt });
       appendEvent({
@@ -2191,6 +4173,7 @@ export function createWorkItemService({
           terminalId: item.terminalId,
           projectId: item.projectId,
           workItemId: item.id,
+          threadId: item.channelOrigin.threadId ?? null,
           traceId: item.id,
         },
       } : {}),
@@ -2414,6 +4397,10 @@ export function createWorkItemService({
       };
     }
     if (kind === "auto_run") {
+      // Handing a task to AI creates the durable Run first. Acceptance criteria
+      // and the verification SOP are established during that Run's read-only
+      // understanding phase; the hard contract gate lives immediately before
+      // worktree materialization instead of blocking Run creation here.
       const activeRun = activeBoundAutoRun(item);
       if (activeRun) {
         return {
@@ -2520,6 +4507,7 @@ export function createWorkItemService({
     };
     runTx(() => {
       item.executionBindings = [...(item.executionBindings ?? []), binding];
+      if (kind === "worktree" || kind === "auto_run") item.materialChangesPending = false;
       if (operationId != null) {
         item.executionOperation = null;
         if (item.claim?.status === "active" && item.claim.executionOperationId === String(operationId)) {
@@ -2703,6 +4691,8 @@ export function createWorkItemService({
       } else {
         item.status = "done";
         item.state = "closed";
+        item.completedAt = deliveredAt;
+        item.waitingOn = "none";
       }
       item.revision += 1;
       item.updatedAt = deliveredAt;
@@ -3232,19 +5222,243 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: result };
   }
 
+  function getExternalIssueFunnel({ projectId } = {}, actor = null) {
+    const visible = (state.workItems ?? []).filter((item) =>
+      item.ownerTeamId === actorTeam(actor)
+      && (!projectId || item.projectId === String(projectId))
+      && (item.externalBindings?.length ?? 0) > 0);
+    const stages = { notStarted: 0, running: 0, review: 0, completed: 0 };
+    const stalls = [];
+    const cutoff = Date.parse(now()) - 24 * 60 * 60 * 1_000;
+    for (const item of visible) {
+      const execution = executionState(item);
+      const completed = item.state === "closed" || item.status === "done";
+      const review = !completed && (item.status === "review" || execution === "completed" || execution === "awaiting_approval");
+      const running = !completed && !review && ["claimed", "running", "verifying"].includes(execution);
+      const stage = completed ? "completed" : review ? "review" : running ? "running" : "notStarted";
+      stages[stage] += 1;
+      const primary = item.externalBindings.find((binding) => binding.isPrimary !== false) ?? item.externalBindings[0];
+      const since = primary.linkedAt ?? item.createdAt ?? item.updatedAt;
+      const stale = Number.isFinite(Date.parse(since)) && Date.parse(since) < cutoff;
+      let kind = null;
+      if (execution === "failed") kind = "execution_failed";
+      else if (completed && primary.syncPolicy === "manual" && primary.syncedLocalRevision !== item.revision) kind = "writeback_pending";
+      else if (stage === "notStarted" && stale) kind = "imported_not_started";
+      else if (stage === "review" && stale) kind = "review_waiting";
+      if (kind) stalls.push({
+        kind,
+        workItemId: item.id,
+        localRef: item.localRef,
+        title: item.title,
+        provider: providerOfBinding(primary),
+        issueNumber: primary.number,
+        since,
+      });
+    }
+    stalls.sort((a, b) => String(a.since).localeCompare(String(b.since)));
+    return {
+      ok: true,
+      status: 200,
+      body: { metrics: { total: visible.length, ...stages, stalled: stalls.length }, stalls: stalls.slice(0, 20) },
+    };
+  }
+
+  function addMaterials({ workItemId, expectedRevision, materialDraftId, materialDraftRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") {
+      return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    }
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    if ((item.inputAssets ?? []).length > 94) return { ok: false, status: 409, body: { error: "work_item_material_limit_exceeded" } };
+    if (typeof claimTaskMaterialDraft !== "function") {
+      return { ok: false, status: 503, body: { error: "task_material_service_unavailable" } };
+    }
+    const claimed = claimTaskMaterialDraft({
+      projectId: item.projectId,
+      draftId: materialDraftId,
+      expectedRevision: materialDraftRevision,
+      workItemId: item.id,
+      terminalId: item.terminalId,
+      deferPersist: true,
+    }, actor);
+    if (!claimed.ok) return { ok: false, status: claimed.status ?? 409, body: { error: claimed.error ?? "task_material_claim_failed" } };
+    const existingIds = new Set((item.inputAssets ?? []).map((asset) => asset.id).filter(Boolean));
+    const additions = claimed.assets.filter((asset) => !existingIds.has(asset.id));
+    if (!additions.length) return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true, appliesTo: "next_execution" } };
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      item.inputAssets = [...(item.inputAssets ?? []), ...additions];
+      item.materialDraftIds = [...new Set([...(item.materialDraftIds ?? []), String(materialDraftId)])];
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "materials_added", { assetIds: additions.map((asset) => asset.id), appliesTo: active ? "future_execution" : "next_execution" });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
+  function removeMaterial({ workItemId, assetId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") {
+      return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    }
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    const asset = (item.inputAssets ?? []).find((candidate) => candidate.id === String(assetId));
+    if (!asset) return { ok: false, status: 404, body: { error: "task_material_not_found" } };
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      item.inputAssets = (item.inputAssets ?? []).filter((candidate) => candidate.id !== asset.id);
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "material_removed", { assetId: asset.id, appliesTo: active ? "future_execution" : "next_execution" });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
+  function restoreMaterial({ workItemId, assetId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") {
+      return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    }
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    if ((item.inputAssets ?? []).some((candidate) => candidate.id === String(assetId))) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true, appliesTo: "next_execution" } };
+    }
+    if (typeof resolveClaimedTaskMaterial !== "function") {
+      return { ok: false, status: 503, body: { error: "task_material_service_unavailable" } };
+    }
+    const resolved = resolveClaimedTaskMaterial({ workItemId: item.id, assetId, terminalId: item.terminalId }, actor);
+    if (!resolved.ok) return { ok: false, status: resolved.status ?? 404, body: { error: resolved.error ?? "task_material_not_found" } };
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      item.inputAssets = [...(item.inputAssets ?? []), resolved.asset];
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "material_restored", { assetId: resolved.asset.id, appliesTo: active ? "future_execution" : "next_execution" });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
+  async function addContentReference({
+    workItemId, contentId, expectedRevision, purpose = "required_input", selectedFingerprint = null,
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") {
+      return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    }
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    if (!/^lc_[a-f0-9]{32}$/.test(String(contentId ?? ""))) {
+      return { ok: false, status: 400, body: { error: "local_content_id_invalid" } };
+    }
+    if (!["reference", "required_input"].includes(purpose)) {
+      return { ok: false, status: 400, body: { error: "local_content_reference_purpose_invalid" } };
+    }
+    if ((item.localContentRefs ?? []).length >= 20) {
+      return { ok: false, status: 409, body: { error: "local_content_reference_limit_exceeded" } };
+    }
+    const existing = (item.localContentRefs ?? []).find((reference) => reference.contentId === String(contentId));
+    if (existing) return { ok: true, status: 200, body: { workItem: workItemView(item, actor), reference: contentReferenceView(existing), replayed: true } };
+    if (typeof resolveLocalContentReference !== "function") {
+      return { ok: false, status: 503, body: { error: "local_content_resolver_unavailable" } };
+    }
+    const resolved = await resolveLocalContentReference({ contentId, projectId: item.projectId }, actor);
+    if (!resolved?.ok) {
+      return { ok: false, status: resolved?.status ?? 409, body: { error: resolved?.error ?? "local_content_original_unavailable" } };
+    }
+    const fingerprint = String(resolved.sha256 ?? "");
+    if (selectedFingerprint && String(selectedFingerprint).replace(/^sha256:/, "") !== fingerprint.replace(/^sha256:/, "")) {
+      return { ok: false, status: 409, body: { error: "local_content_original_changed" } };
+    }
+    const reference = {
+      id: nextId("wcr"),
+      contentId: String(contentId),
+      purpose,
+      selectedFingerprint: selectedFingerprint ? fingerprint : null,
+      title: String(resolved.record?.title ?? resolved.originalName ?? "Local content").slice(0, 500),
+      kind: String(resolved.record?.kind ?? "").slice(0, 50),
+      addedBy: actorUser(actor),
+      createdAt: now(),
+    };
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      item.localContentRefs = [...(item.localContentRefs ?? []), reference];
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "local_content_reference_added", {
+        referenceId: reference.id,
+        contentId: reference.contentId,
+        purpose: reference.purpose,
+        appliesTo: active ? "future_execution" : "next_execution",
+      });
+    });
+    return { ok: true, status: 201, body: { workItem: workItemView(item, actor), reference: contentReferenceView(reference), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
+  function removeContentReference({ workItemId, referenceId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") {
+      return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    }
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    const reference = (item.localContentRefs ?? []).find((candidate) => candidate.id === String(referenceId));
+    if (!reference) return { ok: false, status: 404, body: { error: "local_content_reference_not_found" } };
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      item.localContentRefs = (item.localContentRefs ?? []).filter((candidate) => candidate.id !== reference.id);
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "local_content_reference_removed", {
+        referenceId: reference.id,
+        contentId: reference.contentId,
+        appliesTo: active ? "future_execution" : "next_execution",
+      });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
   return {
-    listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+    listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+    listReportDrafts: reportDraftService.list,
+    getReportDraft: reportDraftService.get,
+    generateReportDraft: reportDraftService.generate,
+    updateReportDraft: reportDraftService.update,
+    confirmReportDraft: reportDraftService.confirm,
+    discardReportDraft: reportDraftService.discard,
     listActivity, listComments, createComment, updateComment, deleteComment,
     beginExecution, abortExecution, recordExecutionBinding,
     beginDelivery, failDelivery, completeDelivery,
     claimWorkItem, releaseWorkItemClaim, assignWorkItemToSelf,
-    bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders,
+    bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
-    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, retryWorkItemAlert,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, retryWorkItemAlert,
     startApplicationExecution, requestApplicationExecutionApproval,
     applyLocalSchedulePlan,
     applyLocalScheduleRollover,
     applyLocalScheduleUrgent,
+    addMaterials,
+    removeMaterial,
+    restoreMaterial,
+    addContentReference,
+    removeContentReference,
   };
 }

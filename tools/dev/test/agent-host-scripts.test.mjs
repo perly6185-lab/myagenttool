@@ -83,7 +83,11 @@ function hostScriptTest(name, fn) {
 }
 
 function fixture(t, label) {
-  const root = mkdtempSync(join(tmpdir(), `myagenttool-${label}-`));
+  // Sandboxed Windows runs may expose the OS temp directory to Node but not
+  // to the nested Git Bash process. A task-specific override keeps the same
+  // fixture semantics without redirecting a real user HOME.
+  const fixtureBase = process.env.MYAGENTTOOL_TEST_TMPDIR || tmpdir();
+  const root = mkdtempSync(join(fixtureBase, `myagenttool-${label}-`));
   const home = join(root, "home");
   const mockBin = join(root, "mock-bin");
   const temp = join(root, "tmp");

@@ -39,6 +39,7 @@ after(() => server?.close());
 test("bridge registration issues a device-bound credential and protects bridge routes", async () => {
   const registered = await call("/api/bridge/register", { method: "POST", body: {
     bridgeVersion: "test",
+    timeZone: "Asia/Shanghai",
     applicationBinaryReadiness: [
       { command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "available", version: "git version 2.50.0", authenticationStatus: "authenticated", authenticationMethod: "API Key $$$" },
       { command: "C:/evil.exe", capabilityPrefix: "app.app_git.wrapper.", status: "available", version: "bad" },
@@ -51,6 +52,8 @@ test("bridge registration issues a device-bound credential and protects bridge r
   assert.equal(registered.body.device.bridgeCredential.tokenHash, undefined);
   assert.equal(registered.body.bridgeCredential.tokenHash, undefined);
   assert.equal(typeof state.device.bridgeCredential.tokenHash, "string");
+  assert.equal(state.device.timeZone, "Asia/Shanghai");
+  assert.equal(registered.body.device.timeZone, "Asia/Shanghai");
   assert.deepEqual(state.device.runtimeReadiness, state.device.applicationBinaryReadiness);
   assert.deepEqual(state.device.applicationBinaryReadiness, [{
     runtimeId: "runtime_git",
@@ -66,12 +69,25 @@ test("bridge registration issues a device-bound credential and protects bridge r
   const refreshed = await call("/api/bridge/readiness", {
     method: "POST",
     token: registered.body.bridgeToken,
-    body: { applicationBinaryReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "absent", version: "must be dropped", authenticationStatus: "authenticated", authenticationMethod: "must_drop" }] },
+    body: {
+      timeZone: "America/Los_Angeles",
+      applicationBinaryReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "absent", version: "must be dropped", authenticationStatus: "authenticated", authenticationMethod: "must_drop" }],
+    },
   });
   assert.equal(refreshed.status, 200);
+  assert.equal(state.device.timeZone, "America/Los_Angeles");
   assert.equal(state.device.applicationBinaryReadiness[0].status, "absent");
   assert.equal(state.device.applicationBinaryReadiness[0].version, null);
   assert.equal(state.device.applicationBinaryReadiness[0].authenticationStatus, undefined);
+
+  const invalidTimeZone = await call("/api/bridge/readiness", {
+    method: "POST",
+    token: registered.body.bridgeToken,
+    body: { timeZone: "not/a-time-zone" },
+  });
+  assert.equal(invalidTimeZone.status, 400);
+  assert.equal(invalidTimeZone.body.error, "invalid_device_timezone");
+  assert.equal(state.device.timeZone, "America/Los_Angeles", "an invalid refresh must not overwrite the stored zone");
 
   const unauthenticatedPoll = await call("/api/bridge/next");
   assert.equal(unauthenticatedPoll.status, 401);

@@ -1,3 +1,5 @@
+import type { WorkItemContentReference } from "@/features/local-content/local-content-types";
+
 export type GithubItem = {
   type: "issue" | "pr";
   number: number;
@@ -9,10 +11,19 @@ export type GithubItem = {
 };
 export type GithubResult = { available: boolean; message: string; items: GithubItem[] };
 export type WorkItemExecutionState = "unclaimed" | "claimed" | "running" | "awaiting_approval" | "verifying" | "failed" | "completed";
+export type WorkItemExecutionKind = "auto_run" | "application_invocation" | "article_import" | "article_derivative";
+export type WorkItemRequesterRelation = "boss" | "manager" | "customer" | "child" | "colleague" | "self" | "unknown";
+export type WorkItemIntakeChannel = "manual" | "meeting" | "email" | "chat" | "phone" | "github" | "import" | "other" | "unknown";
+export type WorkItemWaitingOn = "me" | "requester" | "internal" | "ai" | "none";
 export type ExternalWorkItemBinding = {
   kind: "github_issue" | "gitlab_issue" | "gitea_issue";
   provider?: "github" | "gitlab" | "gitea";
   resourceType?: "issue";
+  relation?: "source" | "related" | "duplicate" | "parent" | "blocks";
+  isPrimary?: boolean;
+  syncPolicy?: "manual" | "webhook_pull" | "bidirectional";
+  linkedAt?: string | null;
+  linkedBy?: string | null;
   externalId?: string;
   bindingId?: string;
   number: number; url: string | null; lastSyncedAt: string;
@@ -27,10 +38,12 @@ export type LocalWorkItem = {
   type: "task" | "bug" | "feature" | "initiative";
   status: "backlog" | "ready" | "in_progress" | "review" | "blocked" | "done";
   priority: "p0" | "p1" | "p2" | "p3";
+  executionPolicy?: "inherit" | "auto" | "manual" | "paused";
   state: "open" | "closed";
   businessState?: "open" | "closed";
   planningStatus?: LocalWorkItem["status"];
   executionState?: WorkItemExecutionState;
+  executionKind?: WorkItemExecutionKind | null;
   statusModel?: {
     business: "open" | "closed";
     planning: LocalWorkItem["status"];
@@ -38,14 +51,64 @@ export type LocalWorkItem = {
   };
   labels: string[];
   assigneeIds: string[];
+  followUpSchemaVersion: 1;
+  requesterRelation: WorkItemRequesterRelation;
+  requesterName: string | null;
+  requesterOrganization: string | null;
+  requesterUserId: string | null;
+  intakeChannel: WorkItemIntakeChannel;
+  externalReference: string | null;
+  waitingOn: WorkItemWaitingOn;
+  commitmentDate: string | null;
+  nextFollowUpAt: string | null;
+  lastProgressAt: string | null;
+  lastProgressSummary: string | null;
   acceptanceCriteria: string[];
+  acceptanceCriteriaSource?: "manual" | "body_extracted" | "assisted" | "structured" | "body_unstructured" | null;
+  verificationSop?: string[];
+  executionContractSource?: "manual" | "body_extracted" | "assisted" | null;
+  executionContractConfirmedAt?: string | null;
+  executionContractGate?: {
+    ready: boolean;
+    missing: ("acceptance_criteria" | "verification_sop" | "confirmation" | "confirmed_before_execution")[];
+    source: string | null;
+    confirmedAt: string | null;
+    latestAttemptStartedAt?: string | null;
+  };
+  reviewContract?: {
+    schemaVersion: "legacy-v1" | "execution-contract-v2" | string;
+    id: string;
+    workItemId: string;
+    workItemRevision: number | null;
+    autoRunId: string | null;
+    acceptanceCriteria: string[];
+    verificationSop: string[];
+    confirmedBy: string | null;
+    confirmedAt: string | null;
+    digest: string | null;
+    readOnly: true;
+  } | null;
+  reviewEvidence?: {
+    criterion: string;
+    status: "passed" | "failed" | "not_tested";
+    note: string;
+    verificationId: string | null;
+    command: string | null;
+    verificationSummary: string | null;
+    evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[];
+    sourceAutoRunId: string | null;
+    reviewedBy: string | null;
+    reviewedAt: string | null;
+  }[];
   acceptanceResults?: { criterion: string; status: "passed" | "failed" | "not_tested"; note: string; verificationId: string }[];
   verificationRecords?: {
     id: string; kind: "test" | "lint" | "typecheck" | "manual" | "review";
     status: "passed" | "failed"; command: string | null; summary: string;
-    evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string;
+    evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string; sourceAutoRunId?: string | null;
   }[];
   inputAssets?: WorkItemAssetRef[];
+  localContentRefs?: WorkItemContentReference[];
+  materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
   requiredCapabilities?: string[];
   assetReadiness?: { state: "ready" | "waiting_capability" | "refused"; reason: string; terminalId: string };
@@ -65,6 +128,7 @@ export type LocalWorkItem = {
   }[];
   completionGate?: { ready: boolean; missingCriteria: string[]; verificationRequired: boolean };
   dueDate: string | null;
+  notBefore?: string | null;
   plannedDate?: string | null;
   carriedFromDate?: string | null;
   schedulePlanSource?: "manual" | "auto_plan" | "rollover" | "urgent_insert" | null;
@@ -89,6 +153,50 @@ export type LocalWorkItem = {
   businessCaseId?: string;
   businessKey?: string;
   triggerArtifactIds?: string[];
+  myTemplateBinding?: {
+    schemaVersion: 1;
+    definitionId: string;
+    familyId: string;
+    version: number;
+    name: string;
+    expectedOutput: string;
+    matchReasons: string[];
+    snapshot: {
+      name: string;
+      description: string;
+      expectedOutput: string;
+      steps: Array<{ key: string; kind: string; label: string; required: boolean }>;
+    };
+    snapshotHash: string;
+    matchedAt: string;
+  };
+  myTemplateOutcomeFeedback?: {
+    id: string;
+    outcome: "met_expectations" | "wrong_result" | "needs_quality_adjustment";
+    note: string;
+    definitionId: string;
+    familyId: string;
+    version: number;
+    revision: number;
+    createdAt: string;
+    updatedAt: string;
+  } | null;
+  myTemplateDraft?: {
+    id: string;
+    projectId: string;
+    name: string;
+    typicalInput: string;
+    expectedOutput: string;
+    applicability: string;
+    steps: string[];
+    state: "learning" | "needs_review" | "ready" | "rejected";
+    caseCount: number;
+    casesRequired: number;
+    revision: number;
+    origin: { kind: "work_item"; workItemId: string; localRef: string | null; title: string };
+    createdAt: string;
+    updatedAt: string;
+  } | null;
   parentId?: string | null;
   parent?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" } | null;
   subIssues?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
@@ -100,8 +208,10 @@ export type LocalWorkItem = {
 };
 export type WorkItemAssetRef = {
   id: string | null;
+  originalName?: string;
   path: string;
   family: string;
+  mimeType?: string | null;
   terminalId: string;
   size?: number | null;
   resourceClass?: "small" | "medium" | "large" | "unknown";
@@ -223,7 +333,7 @@ export type WorkItemActivity = {
 };
 export type WorkItemAttention = {
   id: string;
-  kind: "github_conflict" | "github_deleted" | "execution_approval" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
+  kind: "github_conflict" | "github_deleted" | "execution_approval" | "execution_input" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
   severity: "low" | "medium" | "high";
   workItemId: string | null;
   planningProjectId?: string | null;
@@ -248,18 +358,58 @@ export type WorkItemAttentionMetrics = {
 export type LocalWorkItemAutoRun = {
   id: string;
   status: string;
+  phase?: "queued" | "understanding" | "waiting_for_input" | "planning" | "implementing" | "verifying" | "review_ready" | "failed" | "cancelled" | null;
   updatedAt: string;
   invocationId?: string | null;
   agentId?: string | null;
+  understandingContext?: {
+    version: string;
+    digest: string;
+    documentPaths: string[];
+    relatedFiles: { path: string; line: number; term: string }[];
+    similarTasks: { localRef: string | null; title: string; score: number }[];
+    verificationCommand: string[];
+    truncated: boolean;
+    redactions?: number;
+  } | null;
   decision?: {
     path: string; decidedBy: string; confidence: number; rationale?: string | null;
     via?: string | null; latencyMs?: number | null; clarifyingQuestions?: string[] | null;
+    suggestedActions?: Array<{ id: string; label: string; description?: string; payload?: { repoUrl?: string } | null }> | null;
     evidence?: { policyVersion: string; modelVersion: string | null; minConfidence: number; inputDigest: string } | null;
   } | null;
   terminalOutcome?: { disposition: "MERGED" | "CLOSED"; source: string; convergedAt: string } | null;
+  report?: string | null;
   localDelivery?: {
     worktreeId: string; branchName: string | null; mode?: "local_merge" | "pull_request";
     deliveredAt?: string | null; promotedAt?: string | null; prNumber?: number | null; prUrl?: string | null;
+  } | null;
+  clarifyAnswer?: { by?: string | null; at?: string | null; text?: string | null } | null;
+  deliveryReport?: {
+    summary: string | null;
+    verification: { passed: boolean; verified: boolean; summary: string | null } | null;
+    changedFiles: string[];
+    completedAt: string | null;
+  } | null;
+  deliveryReview?: {
+    status: "queued" | "running" | "completed" | "failed" | "unavailable";
+    invocationId: string | null;
+    reviewer: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    verdict: "approved" | "changes_requested" | null;
+    summary: string | null;
+    findings: { severity: "low" | "medium" | "high"; file: string; line: number | null; message: string; suggestion: string | null; confidence: "low" | "medium" | "high" }[];
+    reviewedCommit: string | null;
+    errorCode: string | null;
+    nextRetryAt?: string | null;
+  } | null;
+  deliveryStopped?: {
+    stoppedAt: string;
+    stoppedBy: string;
+    reason: string | null;
+    worktreeKept: boolean;
+    pullRequestKept: boolean;
   } | null;
   routingOverride?: {
     recommendedPath: string | null; actualPath: string; reason: string;
@@ -268,19 +418,64 @@ export type LocalWorkItemAutoRun = {
 };
 export type LocalWorkItemObservability = {
   executionChainId?: string;
-  nextAction: "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
+  nextAction: "answer_ai" | "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
+  outcome?: {
+    status: "pending" | "available" | "missing";
+    summary: string | null;
+    fullReport: string | null;
+    highlights: string[];
+    warnings: string[];
+    files: string[];
+    fileEntries?: WorkItemOutcomeFile[];
+    verification: { passed: boolean; verified: boolean; summary: string | null } | null;
+    deliveredAt: string | null;
+  } | null;
+  outcomeHistory?: Array<{
+    version: number;
+    status: "pending" | "available" | "missing";
+    summary: string | null;
+    fullReport: string | null;
+    highlights: string[];
+    warnings: string[];
+    files: string[];
+    fileEntries?: WorkItemOutcomeFile[];
+    verification: { passed: boolean; verified: boolean; summary: string | null } | null;
+    deliveredAt: string | null;
+    invocationId: string | null;
+    supersededAt: string | null;
+    supersededByFeedback: string | null;
+  }>;
+  runHistory?: {
+    invocationId: string;
+    autoRunId: string | null;
+    attempt: number;
+    status: string;
+    createdAt: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+    errorCode: string | null;
+    summary: string | null;
+    current: boolean;
+  }[];
   delivery?: {
     state: "awaiting_review";
     mode: "local_merge" | "pull_request";
     worktreeId: string;
     branchName: string | null;
     remoteUrl: string | null;
+    report: LocalWorkItemAutoRun["deliveryReport"];
+    aiReview: LocalWorkItemAutoRun["deliveryReview"];
     review: {
       verdict: "approved" | "changes_requested";
+      summary: string | null;
+      comments: { path: string | null; body: string; line?: number; severity?: "low" | "medium" | "high"; suggestion?: string }[];
       reviewedCommit: string | null;
       reviewedBy: string | null;
+      source: "human" | "ai";
+      reviewerName: string | null;
+      reviewInvocationId: string | null;
       createdAt: string | null;
     } | null;
   } | null;
@@ -312,6 +507,16 @@ export type LocalWorkItemObservability = {
     humanCorrection?: { actualPath: string; reason: string; actorId: string; recordedAt: string } | null;
     candidates: { path: string; selected: boolean; score?: number | null; reason: string }[];
   } | null;
+};
+
+export type WorkItemOutcomeFile = {
+  name: string;
+  path: string | null;
+  projectId: string | null;
+  worktreeId: string | null;
+  status: "available" | "unavailable";
+  preview: "document" | "unsupported";
+  unavailableReason?: string;
 };
 export type Row = GithubItem & { projectId: string; projectName: string };
 export const TASK_TABS = ["local", "issue", "pr"] as const;

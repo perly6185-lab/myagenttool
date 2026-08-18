@@ -10,6 +10,7 @@ import { computeLocalScheduleRollover } from "../read-models/local-schedule-roll
 import { computeLocalScheduleUrgent } from "../read-models/local-schedule-urgent.mjs";
 import { searchTraceRecords } from "../read-models/trace-search.mjs";
 import { denyForeignProject } from "../runtime/auth.mjs";
+import { currentDeviceTimeZone } from "../runtime/device.mjs";
 
 export async function handleInvocationRoutes({
   req,
@@ -42,6 +43,10 @@ export async function handleInvocationRoutes({
   applyLocalScheduleRollover,
   applyLocalScheduleUrgent,
 }) {
+  const schedulePreview = (capacity, generatedAt) => computeLocalSchedulePreview(capacity, {
+    now: () => generatedAt,
+    timeZone: currentDeviceTimeZone(state),
+  });
   if (req.method === "GET" && url.pathname === "/api/traces") {
     sendJson(res, 200, searchTraceRecords({
       state,
@@ -119,7 +124,7 @@ export async function handleInvocationRoutes({
   if (req.method === "GET" && url.pathname === "/api/local-schedule/preview") {
     const generatedAt = new Date().toISOString();
     const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
-    sendJson(res, 200, computeLocalSchedulePreview(capacity, { now: () => generatedAt }));
+    sendJson(res, 200, schedulePreview(capacity, generatedAt));
     return true;
   }
 
@@ -127,7 +132,7 @@ export async function handleInvocationRoutes({
     const body = await readJson(req);
     const generatedAt = new Date().toISOString();
     const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
-    const preview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
+    const preview = schedulePreview(capacity, generatedAt);
     let scheduleOrder = 0;
     const assignments = preview.days.flatMap((day) => day.items.map((item) => ({
       workItemId: item.workItemId,
@@ -149,8 +154,8 @@ export async function handleInvocationRoutes({
   if (req.method === "GET" && url.pathname === "/api/local-schedule/rollover-preview") {
     const generatedAt = new Date().toISOString();
     const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
-    const schedulePreview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
-    sendJson(res, 200, computeLocalScheduleRollover(capacity, schedulePreview));
+    const preview = schedulePreview(capacity, generatedAt);
+    sendJson(res, 200, computeLocalScheduleRollover(capacity, preview));
     return true;
   }
 
@@ -158,8 +163,8 @@ export async function handleInvocationRoutes({
     const body = await readJson(req);
     const generatedAt = new Date().toISOString();
     const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
-    const schedulePreview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
-    const rollover = computeLocalScheduleRollover(capacity, schedulePreview);
+    const preview = schedulePreview(capacity, generatedAt);
+    const rollover = computeLocalScheduleRollover(capacity, preview);
     const result = applyLocalScheduleRollover({
       rolloverRevision: body?.rolloverRevision,
       currentRolloverRevision: rollover.rolloverRevision,
@@ -175,8 +180,8 @@ export async function handleInvocationRoutes({
   if (req.method === "GET" && url.pathname === "/api/local-schedule/urgent-preview") {
     const generatedAt = new Date().toISOString();
     const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
-    const schedulePreview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
-    sendJson(res, 200, computeLocalScheduleUrgent(capacity, schedulePreview));
+    const preview = schedulePreview(capacity, generatedAt);
+    sendJson(res, 200, computeLocalScheduleUrgent(capacity, preview));
     return true;
   }
 
@@ -184,8 +189,8 @@ export async function handleInvocationRoutes({
     const body = await readJson(req);
     const generatedAt = new Date().toISOString();
     const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
-    const schedulePreview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
-    const urgent = computeLocalScheduleUrgent(capacity, schedulePreview);
+    const preview = schedulePreview(capacity, generatedAt);
+    const urgent = computeLocalScheduleUrgent(capacity, preview);
     const result = applyLocalScheduleUrgent({
       urgentRevision: body?.urgentRevision,
       currentUrgentRevision: urgent.urgentRevision,

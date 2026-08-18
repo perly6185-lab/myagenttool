@@ -1,0 +1,14 @@
+{
+  "name": "@myagenttool/jianshu-imports",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Playwright subprocess renderer for Jianshu (简书) articles: renders the page via a persistent profile, extracts the __NEXT_DATA__ note payload, and returns a composed HTML document plus metadata; the parent reuses the article-imports pipeline. Owns no disk writes and downloads nothing.",
+  "type": "module",
+  "dependencies": {
+    "@myagenttool/session-engine": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test ./test/*.test.mjs",
+    "import": "node ./src/cli.mjs"
+  }
+}

@@ -5,6 +5,7 @@ import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
+import { currentDeviceTimeZone, findDevice, listDevices } from "./device.mjs";
 import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
@@ -28,12 +29,25 @@ import { createApplicationStatsRuntime } from "../services/application-stats.mjs
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
-import { createMailSendService } from "../services/mail-send.mjs";
-import { createChannelService } from "../services/channels.mjs";
+import { createMailSendService, isMailSendEnabled } from "../services/mail-send.mjs";
+import { createMailClassificationService } from "../services/mail-classification.mjs";
+import { createMailFolderSuggestionService } from "../services/mail-folder-suggestions.mjs";
+import { createMailFolderOrganizationService, isMailAutomaticOrganizationEnabled, isMailOrganizationEnabled } from "../services/mail-folder-organization.mjs";
+import { createLocalMailSemanticAdapter, resolveMailSemanticConfig } from "../services/mail-semantic-classifier.mjs";
+import { createMailboxService, isMailClassificationEnabled } from "../services/mailbox.mjs";
+import { createLocalContentCatalogService } from "../services/local-content-catalog.mjs";
+import {
+  createLocalContentRetrievalAuthorizer,
+  createLocalContentRetrievalService,
+} from "../services/local-content-retrieval.mjs";
+import { createChannelService, defaultReadinessProbes } from "../services/channels.mjs";
 import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
 import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
+import { createChannelIntentAdapter, resolveChannelIntentConfig } from "../services/channel-intent-adapter.mjs";
+import { createChannelConsultationAdapter, resolveChannelConsultationConfig } from "../services/channel-consultation-adapter.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
+import { createIlinkRuntime } from "../gateway/ilink-runtime.mjs";
 import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
@@ -42,6 +56,11 @@ import { createClaudeApplyImportService } from "../services/claude-apply-imports
 import { isGovernedClaudeApplyAgent } from "../services/claude-apply-agent.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
+import {
+  CODEX_REVIEW_TOOL_CONTRACT,
+  createCodexReviewAgentRegistration,
+  isGovernedCodexReviewAgent,
+} from "../services/codex-agent.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
 import {
   createLocalWorkflowEmbeddingAdapter,
@@ -52,6 +71,11 @@ import {
   resolveWorkflowOcrConfig,
 } from "../services/workflow-ocr-adapter.mjs";
 import {
+  createCodexVisionOcrAdapter,
+  createFallbackWorkflowOcrAdapter,
+  resolveCodexVisionOcrConfig,
+} from "../services/workflow-codex-vision-ocr-adapter.mjs";
+import {
   createLocalWorkflowBusinessSemanticAdapter,
   resolveWorkflowBusinessSemanticConfig,
 } from "../services/workflow-business-semantic-adapter.mjs";
@@ -61,7 +85,7 @@ import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationEventService } from "../services/invocation-events.mjs";
 import { createInvocationRefusalService } from "../services/invocation-refusals.mjs";
 import { createInvocationTraceService } from "../services/invocation-trace.mjs";
-import { createInvocationService } from "../services/invocations.mjs";
+import { createInvocationService, selectDefaultAgent } from "../services/invocations.mjs";
 import { createCancellationSignal } from "../services/cancellation-signal.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
@@ -69,15 +93,21 @@ import { convergeAutoRunTerminalState, createAutoRunService } from "../services/
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
+import { createTaskMaterialService } from "../services/task-materials.mjs";
 import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
+import { createWorkItemAutoRunUnderstandingService, workItemTemplateInstructions } from "../services/work-item-auto-run-understanding.mjs";
+import { createWorkItemAutoSchedulerService } from "../services/work-item-auto-scheduler.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
 import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
 import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive-work.mjs";
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
-import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
+import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree } from "../services/article-imports.mjs";
+import { createSessionManager } from "../services/session-manager.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
+import { createTemplateLearningService } from "../services/template-learning.mjs";
+import { createWorkflowMemoryInsightsService } from "../services/workflow-memory-insights.mjs";
 import { createInquiryIntakeTriggerService } from "../services/inquiry-intake-triggers.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import {
@@ -88,7 +118,7 @@ import {
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
-import { ingestChannelAttachmentCandidates } from "../services/channel-attachment-ingestion.mjs";
+import { ingestChannelAttachmentBytes, ingestChannelAttachmentCandidates } from "../services/channel-attachment-ingestion.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
 import { refreshEpicChildStates } from "../services/auto-run-epic.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
@@ -122,6 +152,11 @@ export function createServerRuntimeServices({
   // in-memory `state` stays the live view, its commit MIRRORS to SQLite, and boot
   // hydrates `state` from SQLite. null (default) = today's JSON-snapshot backing.
   sqliteStore = null,
+  mailQueryIndex = null,
+  // Optional provider seams used by integration tests; production leaves these
+  // unset and uses the real encrypted credential store and iLink client.
+  ilinkCredentialStore = null,
+  ilinkClientFactory = undefined,
 }) {
   let idCounter = 1;
   let invocationService = null;
@@ -409,8 +444,32 @@ export function createServerRuntimeServices({
   let resolveWorkItemApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null });
   let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
   let syncAdaptiveWorkItemOutcome = () => {};
+  let requestWorkItemAutoSchedulerSweep = () => {};
+  const localContentCatalogService = createLocalContentCatalogService({
+    state, stateStorePath, now, autoIndex: true,
+  });
+  const localContentRetrievalService = createLocalContentRetrievalService({
+    browseDirectories: localContentCatalogService.browseDirectories,
+    searchLocalContent: localContentCatalogService.search,
+    readLocalContentText: localContentCatalogService.readTextChunk,
+    authorizeRetrieval: createLocalContentRetrievalAuthorizer({ state, teamOf }),
+    appendEvent,
+  });
+  const persistIndexedContentStateSoon = (sources, reason) => (...args) => {
+    const result = persistStateSoon(...args);
+    void localContentCatalogService.requestAutomaticIncremental({ reason, sources }).catch(() => {});
+    return result;
+  };
+  const persistTaskMaterialStateSoon = persistIndexedContentStateSoon(["work_items"], "task_material_changed");
+  const persistWorkItemStateSoon = persistIndexedContentStateSoon(["work_items", "articles"], "work_item_changed");
+  const persistArticleStateSoon = persistIndexedContentStateSoon(["articles", "work_items"], "article_changed");
+  const persistMailboxStateSoon = persistIndexedContentStateSoon(["mail", "work_items"], "mail_changed");
+  const taskMaterialService = createTaskMaterialService({
+    state, stateStorePath, now, nextId, persistStateSoon: persistTaskMaterialStateSoon, appendEvent, store,
+    resolveLocalContentReference: localContentCatalogService.resolveOriginal,
+  });
   const workItemService = createWorkItemService({
-    state, now, nextId, appendEvent, persistStateSoon, store,
+    state, now, nextId, appendEvent, persistStateSoon: persistWorkItemStateSoon, store,
     sendAlert: alertOutbox.enqueue,
     retryAlert: alertOutbox.retry,
     budgetStatusFor: (projectId) => resolveWorkItemProjectBudget(projectId),
@@ -418,7 +477,14 @@ export function createServerRuntimeServices({
     resolveApplicationCapability: (input, actor) => resolveWorkItemApplicationCapability(input, actor),
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
-    onWorkItemChanged: (item, actor) => syncAdaptiveWorkItemOutcome(item, actor),
+    onWorkItemChanged: (item, actor) => {
+      syncAdaptiveWorkItemOutcome(item, actor);
+      requestWorkItemAutoSchedulerSweep();
+    },
+    claimTaskMaterialDraft: taskMaterialService.claimDraft,
+    inspectTaskMaterialDraft: taskMaterialService.getDraft,
+    resolveClaimedTaskMaterial: taskMaterialService.resolveClaimedAsset,
+    resolveLocalContentReference: localContentCatalogService.resolveOriginal,
   });
   let releaseRoutineLedgerReservations = () => {};
   const businessRoutineService = createBusinessRoutineService({
@@ -461,7 +527,7 @@ export function createServerRuntimeServices({
     maxConcurrent: articleImportConfig.maxConcurrent,
     maxPending: articleImportConfig.maxPending,
     limits: articleImportConfig.limits,
-    persistStateSoon,
+    persistStateSoon: persistArticleStateSoon,
     createInvocation: (task, agent, options) => {
       if (!invocationService) throw new Error("article_derivative_agent_unavailable");
       return invocationService.createInvocation(task, agent, options);
@@ -469,6 +535,24 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed: (invocation, agent) =>
       invocationService?.startInvocationIfAllowed(invocation, agent),
     store,
+  });
+  // Session manager: login-state observability + keep-alive for profile-backed
+  // site plugins (zhihu today). Dormant by design — the sweep only runs when
+  // index.mjs is gated on via MYAGENTTOOL_SESSION_MANAGER_ENABLED.
+  const sessionManagerService = createSessionManager({
+    state,
+    now,
+    appendEvent,
+    persistStateSoon,
+    sendAlert: alertOutbox.enqueue,
+  });
+  const workflowOcrAdapter = createFallbackWorkflowOcrAdapter({
+    localAdapter: createLocalWorkflowOcrAdapter({
+      config: resolveWorkflowOcrConfig(),
+    }),
+    codexAdapter: createCodexVisionOcrAdapter({
+      config: resolveCodexVisionOcrConfig(),
+    }),
   });
   const workflowMemoryService = createWorkflowMemoryService({
     state,
@@ -479,9 +563,7 @@ export function createServerRuntimeServices({
     embeddingAdapter: createLocalWorkflowEmbeddingAdapter({
       config: resolveWorkflowEmbeddingConfig(),
     }),
-    ocrAdapter: createLocalWorkflowOcrAdapter({
-      config: resolveWorkflowOcrConfig(),
-    }),
+    ocrAdapter: workflowOcrAdapter,
     createWorkItem: workItemService.createWorkItem,
     recordWorkItemVerification: workItemService.recordVerification,
     // Lazy execution bridge: Auto-run is composed below, but this callback is
@@ -514,6 +596,7 @@ export function createServerRuntimeServices({
       };
       const issueBody = [
         item.body,
+        workItemTemplateInstructions(item),
         item.acceptanceCriteria?.length
           ? `Acceptance criteria:\n${item.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}`
           : "",
@@ -524,13 +607,15 @@ export function createServerRuntimeServices({
       const result = await startAutoRun({
         projectId: item.projectId,
         link,
-        name: `local-${item.localNumber}-${slug}${attemptSuffix}`,
+        localIssueId: item.id,
+        name: `local-${item.localNumber}-${slug}-autorun-${Number(item.revision) || 0}${attemptSuffix}`,
         baseBranch,
         agentId,
         actor,
         issueBody,
         executionChainId: item.id,
         terminalId: item.terminalId,
+        taskMaterialWorkItemId: item.id,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"
           : item.planningProjects?.some((project) => project.autonomyProfile === "high")
@@ -575,6 +660,7 @@ export function createServerRuntimeServices({
     createBusinessEntity: businessRoutineService.createBusinessEntity,
     store,
   });
+  let inquiryIntakeTriggerService = null;
   const workflowAdaptiveWorkService = createWorkflowAdaptiveWorkService({
     state,
     now,
@@ -583,6 +669,102 @@ export function createServerRuntimeServices({
     persistStateSoon,
     store,
     createWorkItem: workItemService.createWorkItem,
+    materializeRoutineSuggestion: async (suggestion, actor) => {
+      const selected = businessRoutineService.selectPublishedRoutineForTrigger({
+        projectId: suggestion.projectId,
+        sourceId: suggestion.sourceId,
+        documentType: suggestion.documentType,
+      }, actor);
+      if (selected.status >= 400) return selected;
+      const selectedDefinition = selected.body.routineDefinition;
+      if (suggestion.documentType !== "inquiry") {
+        const materialized = businessRoutineService.materializeAdaptiveRoutineSuggestion({
+          projectId: suggestion.projectId,
+          sourceId: suggestion.sourceId,
+          observationId: suggestion.observationId,
+          artifactId: suggestion.artifact?.id,
+          documentType: suggestion.documentType,
+        }, actor);
+        if (materialized.status >= 400) return materialized;
+        const advanced = businessRoutineService.advanceRoutineWorkItem({
+          workItemId: materialized.body.workItem.id,
+        }, actor);
+        if (advanced.status >= 400) return advanced;
+        return {
+          status: materialized.status,
+          body: {
+            ...materialized.body,
+            executionStatus: advanced.body.execution.run.status,
+            advancedStepKeys: advanced.body.advancedStepKeys,
+            assistance: advanced.body.assistance,
+            routineRunId: materialized.body.execution.run.id,
+          },
+        };
+      }
+      if (!inquiryIntakeTriggerService) {
+        return { status: 503, body: { error: "workflow_intake_service_unavailable" } };
+      }
+      const inspected = await inquiryIntakeTriggerService.inspect({
+        observationId: suggestion.observationId,
+      }, actor);
+      if (inspected.status >= 400) {
+        return inspected;
+      }
+      const routines = inspected.body.routines ?? [];
+      if (!routines.some((routine) => routine.id === selectedDefinition.id)) {
+        return {
+          status: 409,
+          body: {
+            error: "workflow_intake_routine_not_available",
+            routineCount: 0,
+            recovery: "请重新检查已发布流程与当前文件的触发类型，然后再试。",
+            assistance: {
+              kind: "workflow_setup",
+              reason: "workflow_intake_routine_not_available",
+              action: "review_workflow",
+              title: "已发布流程目前不能处理这份文件",
+              explanation: "流程虽然匹配工作类型，但当前文件检查没有通过。",
+              instruction: "请检查文件识别结果和流程证据是否仍然有效。",
+              continuation: "检查通过后，AI 会自动创建 Local Issue 并继续执行。",
+            },
+          },
+        };
+      }
+      const accepted = await inquiryIntakeTriggerService.accept({
+        observationId: suggestion.observationId,
+        expectedRevision: inspected.body.observation.revision,
+        idempotencyKey: `adaptive-execute:${suggestion.id}:${selectedDefinition.id}`,
+        routineDefinitionId: selectedDefinition.id,
+        confirmed: true,
+        fieldCorrections: {},
+        excludedFieldKeys: [],
+        supportingObservationIds: [],
+        supportingObservationRoles: {},
+      }, actor);
+      if (accepted.status >= 400) return accepted;
+      const receipt = accepted.body.receipt;
+      const workItem = state.workItems.find((row) =>
+        row.id === receipt.workItemId && row.ownerTeamId === (actor?.teamId ?? "team_local"));
+      if (!workItem) {
+        return { status: 502, body: { error: "workflow_intake_materialized_issue_missing" } };
+      }
+      const advanced = businessRoutineService.advanceRoutineWorkItem({
+        workItemId: workItem.id,
+      }, actor);
+      if (advanced.status >= 400) return advanced;
+      return {
+        status: accepted.status,
+        body: {
+          workItem,
+          replayed: Boolean(accepted.body.replayed),
+          receipt,
+          routineRunId: receipt.routineRunId,
+          executionStatus: advanced.body.execution.run.status,
+          advancedStepKeys: advanced.body.advancedStepKeys,
+          assistance: advanced.body.assistance,
+        },
+      };
+    },
     runIntakeCycle: async ({ projectId, sourceId }, actor) => {
       const scan = await workflowMemoryService.scanIncrementalIntake({ sourceId }, actor);
       if (scan.status >= 400) return scan;
@@ -591,7 +773,7 @@ export function createServerRuntimeServices({
         .map((row) => row.artifactId))].slice(0, 10);
       const analysis = await Promise.all(artifactIds.map((artifactId) =>
         businessDocumentIntelligenceService.analyzeArtifact({ artifactId }, actor)));
-      const adaptiveWork = workflowAdaptiveWorkService.reconcile({ projectId, sourceId }, actor);
+      const adaptiveWork = await workflowAdaptiveWorkService.reconcile({ projectId, sourceId }, actor);
       return {
         status: 200,
         body: {
@@ -617,7 +799,7 @@ export function createServerRuntimeServices({
     createBusinessCase: businessRoutineService.createBusinessCase,
     store,
   });
-  const inquiryIntakeTriggerService = createInquiryIntakeTriggerService({
+  inquiryIntakeTriggerService = createInquiryIntakeTriggerService({
     state,
     now,
     nextId,
@@ -631,6 +813,58 @@ export function createServerRuntimeServices({
     verifyEvidence: workflowMemoryService.verifyIntakeEvidence,
     store,
   });
+  const templateLearningService = createTemplateLearningService({
+    state,
+    stateStorePath,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    createWorkflowSource: workflowMemoryService.createSource,
+    scanWorkflowSource: workflowMemoryService.scanSource,
+    ocrWorkflowArtifact: workflowMemoryService.ocrArtifact,
+    analyzeBusinessDocuments: businessDocumentIntelligenceService.analyzeSource,
+    confirmBusinessDocumentClassification: businessDocumentIntelligenceService.confirmClassification,
+    discoverBusinessCases: businessCaseDiscoveryService.discoverBusinessCases,
+    reviewBusinessCaseCandidate: businessCaseDiscoveryService.reviewBusinessCaseCandidate,
+    discoverBusinessRoutine: businessCaseDiscoveryService.discoverRoutine,
+    createRoutineDraft: businessRoutineService.createRoutineDraftFromDiscovery,
+    createWorkItem: workItemService.createWorkItem,
+    updateWorkItem: workItemService.updateWorkItem,
+    store,
+  });
+  const workflowMemoryInsightsService = createWorkflowMemoryInsightsService({ state });
+  const continueRoutineAfterAction = (action, input, actor) => {
+    const result = action(input, actor);
+    if (result?.status >= 400 || !input?.workItemId) return result;
+    const workItem = state.workItems.find((row) => row.id === input.workItemId);
+    const run = state.routineRuns.find((row) => row.workItemId === input.workItemId);
+    const sourcePolicy = state.workflowAdaptivePolicies.find((row) =>
+      row.projectId === workItem?.projectId
+      && row.sourceId === run?.sourceId
+      && row.ownerTeamId === workItem?.ownerTeamId);
+    const projectPolicy = state.workflowAdaptivePolicies.find((row) =>
+      row.projectId === workItem?.projectId
+      && row.sourceId == null
+      && row.ownerTeamId === workItem?.ownerTeamId);
+    if ((sourcePolicy ?? projectPolicy)?.mode !== "execute") return result;
+    const continued = businessRoutineService.advanceRoutineWorkItem({
+      workItemId: input.workItemId,
+    }, actor);
+    if (continued.status >= 400) return result;
+    return {
+      ...result,
+      body: {
+        ...result.body,
+        execution: continued.body.execution,
+        automaticContinuation: {
+          advancedStepKeys: continued.body.advancedStepKeys,
+          assistance: continued.body.assistance,
+          completed: continued.body.completed,
+        },
+      },
+    };
+  };
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
   });
@@ -677,6 +911,23 @@ export function createServerRuntimeServices({
     nextBridgeHealthCheck,
     registerAgent,
   } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon, store });
+  // The delivery-review stage is product behavior, not an operator-only tool
+  // setup step. Register its fixed read-only wrapper automatically whenever the
+  // local installation contains it. The wrapper invokes the user's existing
+  // local Codex CLI, so no second sign-in or separate credentials are needed.
+  const codexReviewWrapperPath = resolve("tools/agents/codex-review-wrapper.mjs");
+  if (
+    persistenceEnabled
+    && existsSync(codexReviewWrapperPath)
+    && !(state.agents ?? []).some(isGovernedCodexReviewAgent)
+  ) {
+    const reviewDevice = listDevices(state)[0] ?? null;
+    const reviewOwner = reviewDevice?.ownerUserId ?? "usr_local";
+    registerAgent(createCodexReviewAgentRegistration({
+      wrapperScriptPath: codexReviewWrapperPath,
+      costOwner: reviewOwner,
+    }), { userId: reviewOwner });
+  }
 
   const {
     closeClaudeSession,
@@ -902,10 +1153,13 @@ export function createServerRuntimeServices({
   // #1147: same late-binding for the mail send fold — the send service needs
   // createInvocation (composed below), completion needs the fold here.
   let mailSendHooks = null;
+  let mailFolderOrganizationHooks = null;
   // S5 (#1090): channel-originated invocations report their outcome back to the
   // originating conversation. Late-bound like the auto-run hook — the delivery
   // service composes after the invocation service.
   let channelDeliveryHook = null;
+  let channelThreadHook = null;
+  let channelConsultationHook = null;
   let approvalAutoRunHook = null;
   let denialAutoRunHook = null;
   // Same late-binding for orchestration auto-recovery: it reuses the recovery
@@ -941,9 +1195,24 @@ export function createServerRuntimeServices({
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
     recordClaudeApplyResult,
-    recordMailSendResult: (args) => mailSendHooks?.recordMailSendResult(args) ?? null,
+    recordMailSendResult: (args) => {
+      mailSendHooks?.recordMailSendResult(args);
+      return mailFolderOrganizationHooks?.recordResult(args) ?? null;
+    },
     recordCodexExecChanges,
-    recordApplicationResult,
+    recordApplicationResult: (args) => {
+      const records = recordApplicationResult(args);
+      for (const record of records) {
+        if (record.source === "mail_headers" && record.data?.kind === "mailbox_sync") {
+          queueMicrotask(() => mailFolderOrganizationHooks?.onMailImported?.({
+            ownerTeamId: record.ownerTeamId,
+            accountId: record.applicationId,
+            triggerId: record.invocationId ?? record.id,
+          }));
+        }
+      }
+      return records;
+    },
     currentProject,
     worktreeForProject,
     createWorktree,
@@ -977,6 +1246,10 @@ export function createServerRuntimeServices({
     // #1084: transcript count-cap evictions spill to the retention archive.
     capWithArchive: retentionArchive.capWithArchive,
     onInvocationCompleted: (invocation) => {
+      localContentRetrievalService.releaseInvocation(invocation.id);
+      void localContentCatalogService.requestAutomaticIncremental({ reason: "invocation_completed" }).catch(() => {
+        /* local search keeps the previous valid index when an incremental pass fails */
+      });
       advanceAutoRunHook?.(invocation);
       try {
         recordApplicationExecutionStat(invocation);
@@ -987,6 +1260,16 @@ export function createServerRuntimeServices({
         orchestrationAutoRecoveryHook?.(invocation);
       } catch {
         /* auto-recovery is best-effort; completion must never fail because of it */
+      }
+      try {
+        channelThreadHook?.(invocation);
+      } catch {
+        /* task-thread state is best-effort; completion must never fail because of it */
+      }
+      try {
+        channelConsultationHook?.(invocation);
+      } catch {
+        /* consultation delivery is best-effort; completion must never fail because of it */
       }
       try {
         channelDeliveryHook?.(invocation);
@@ -1004,6 +1287,7 @@ export function createServerRuntimeServices({
       reconcileClaudeApplyTermination(invocation);
       // #1147: same for a denied send — the draft must read send_unconfirmed.
       mailSendHooks?.reconcileMailSendTermination(invocation);
+      mailFolderOrganizationHooks?.reconcileTermination(invocation);
       denialAutoRunHook?.(invocation);
     },
   });
@@ -1311,7 +1595,7 @@ export function createServerRuntimeServices({
     return { ok: true, ...result };
   }
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, stopAutoRunDelivery, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -1327,6 +1611,9 @@ export function createServerRuntimeServices({
     // it when the run settles.
     claimIssueForRun: claimIssue,
     releaseIssueClaimsForAutoRun,
+    // Development execution is admitted only from a durable Local Issue.
+    // External GitHub/GitLab issues remain intake/context records.
+    requireLocalIssueForDevelopment: true,
     // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
     sendAlert: alertOutbox.enqueue,
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
@@ -1351,6 +1638,7 @@ export function createServerRuntimeServices({
     destroyWorktree,
     findAgent,
     defaultAgent,
+    importArticleToWorktree,
     createInvocation,
     startInvocationIfAllowed,
     commitWorktreeChanges,
@@ -1400,6 +1688,7 @@ export function createServerRuntimeServices({
       const commands = resolveAutoRunVerificationPlan({
         verifyCommandName: project?.verifyCommandName ?? null,
         changedPaths,
+        repositoryRoot: worktree?.path ?? null,
       });
       if (!commands.length || !worktree?.path) {
         return { passed: true, verified: false, summary: "No verification command configured — PR opened unverified." };
@@ -1428,7 +1717,11 @@ export function createServerRuntimeServices({
     decideIssuePath: (() => {
       const command = resolveDeciderCommand(autoRunEnv);
       return command
-        ? async ({ link, issueBody }) => runDeciderCommand({ command, input: { link, issueBody }, timeoutMs: deciderTimeoutMs(autoRunEnv) })
+        ? async ({ link, issueBody, projectContext }) => runDeciderCommand({
+            command,
+            input: { link, issueBody, projectContext },
+            timeoutMs: deciderTimeoutMs(autoRunEnv),
+          })
         : undefined;
     })(),
     // Decision confidence gate + fast-path (settings overlaid on env); passed so
@@ -1501,6 +1794,50 @@ export function createServerRuntimeServices({
         return { review, diffLines, files };
       };
     })(),
+    // Every completed local code delivery gets a second, read-only Codex pass.
+    // This is the same governed reviewer exposed by the tool registry, so it
+    // inherits the Desktop Bridge's local Codex login and cannot modify files.
+    startDeliveryReview: async ({ autoRun, worktree }) => {
+      const reviewer = (state.agents ?? []).find(isGovernedCodexReviewAgent) ?? null;
+      if (!reviewer || reviewer.status === "disabled" || reviewer.health?.status === "unhealthy") {
+        throw new Error("The governed Codex reviewer is not available on this device.");
+      }
+      const reviewerDevice = reviewer.location?.type === "local_device"
+        ? findDevice(state, reviewer.location.deviceId)
+        : null;
+      if (reviewer.location?.type === "local_device" && reviewerDevice?.unlinkState !== "linked") {
+        throw new Error("The local device is not connected, so Codex review cannot start yet.");
+      }
+      const taskContext = [
+        `Review the completed delivery for local task ${autoRun.link?.number ?? autoRun.id}: ${autoRun.link?.title ?? "Untitled task"}.`,
+        "Judge whether the committed change solves the task, introduces regressions, and includes adequate tests.",
+        autoRun.issueBody ? `Task and acceptance context:\n${String(autoRun.issueBody).slice(0, 850)}` : null,
+      ].filter(Boolean).join("\n\n").slice(0, 1200);
+      const invocation = createInvocation(`Review the completed local task delivery for ${autoRun.link?.title ?? autoRun.id}.`, reviewer, {
+        actor: { userId: autoRun.requestedBy ?? "usr_local", teamId: autoRun.teamId ?? "team_local", role: "operator" },
+        requestedBy: autoRun.requestedBy ?? "usr_local",
+        metadata: {
+          tool: CODEX_REVIEW_TOOL_CONTRACT.name,
+          toolVersion: CODEX_REVIEW_TOOL_CONTRACT.version,
+          projectId: autoRun.projectId,
+          worktreeId: worktree.id,
+          severityFloor: "medium",
+          instruction: taskContext,
+          ...(typeof worktree.baseCommit === "string" && /^[0-9a-f]{40}$/i.test(worktree.baseCommit)
+            ? { reviewBaseRef: worktree.baseCommit.toLowerCase() }
+            : {}),
+          autoRunId: autoRun.id,
+          role: "delivery_review",
+        },
+        // Native Codex review can inspect call sites and tests beyond the patch.
+        // Keep it asynchronous and allow the same turn budget as a coding run;
+        // the UI polls progress and the retry policy prevents runaway attempts.
+        timeoutSeconds: 900,
+      });
+      startInvocationIfAllowed(invocation, reviewer);
+      return invocation;
+    },
+    submitDeliveryReview: submitWorktreeReview,
     // Read a small text file from a worktree (e.g. design/BRIEF.md) — used to
     // surface the FULL design/prototype brief in the report, not just the thin
     // terminal summary. Null if absent/oversized.
@@ -1578,7 +1915,19 @@ export function createServerRuntimeServices({
     // Self-healing (H2): file the auto-labeled remediation issue after a failed
     // deploy (gh issue create; gated at call-time on remediateOnDeployFailure).
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
+    materializeTaskMaterials: taskMaterialService.materialize,
     store,
+  });
+  const workItemAutoRunUnderstandingService = createWorkItemAutoRunUnderstandingService({
+    state,
+    getWorkItem: workItemService.getWorkItem,
+    prepareExecutionContract: workItemService.prepareExecutionContract,
+    decideReservedAutoRun,
+    attachAutoRunExecutionPlan,
+    failAutoRunUnderstanding,
+    deferAutoRunUnderstanding,
+    startAutoRun,
+    searchProjectContent,
   });
   const workItemAutoRunBatchService = createWorkItemAutoRunBatchService({
     state,
@@ -1590,9 +1939,26 @@ export function createServerRuntimeServices({
     beginExecution: workItemService.beginExecution,
     abortExecution: workItemService.abortExecution,
     recordExecutionBinding: workItemService.recordExecutionBinding,
-    startAutoRun,
+    reserveAutoRun,
+    enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
     store,
   });
+  const workItemAutoSchedulerService = createWorkItemAutoSchedulerService({
+    state,
+    now,
+    appendEvent,
+    getWorkItem: workItemService.getWorkItem,
+    beginExecution: workItemService.beginExecution,
+    abortExecution: workItemService.abortExecution,
+    recordExecutionBinding: workItemService.recordExecutionBinding,
+    reserveAutoRun,
+    enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
+    failAutoRunUnderstanding,
+    timeZone: () => currentDeviceTimeZone(state),
+  });
+  requestWorkItemAutoSchedulerSweep = () => {
+    setImmediate(() => void workItemAutoSchedulerService.sweep().catch(() => {}));
+  };
   const codexApprovalRecovery = createCodexApprovalRecoveryService({
     state,
     now,
@@ -1607,6 +1973,7 @@ export function createServerRuntimeServices({
   advanceAutoRunHook = async (invocation) => {
     const result = await advanceAutoRunForInvocation(invocation);
     await codexApprovalRecovery.resumeForSettledInvocation(invocation);
+    requestWorkItemAutoSchedulerSweep();
     return result;
   };
   approvalAutoRunHook = syncAutoRunOnApproval;
@@ -1618,6 +1985,14 @@ export function createServerRuntimeServices({
   queueMicrotask(() => {
     void codexApprovalRecovery.reconcilePendingRecoveries().catch(() => {});
   });
+  queueMicrotask(() => {
+    void workItemAutoRunUnderstandingService.reconcile().catch(() => {});
+  });
+  // Let the HTTP listener bind before historical delivery review reconciliation;
+  // this work may create and persist an invocation on a large local state file.
+  setTimeout(() => {
+    void reconcileDeliveryReviews({ ignoreRetryDelay: true }).catch(() => {});
+  }, 1_000).unref?.();
 
   // Routing-evaluation disposition refresh (slice 5): bounded, throttled,
   // read-only gh; persists only when something changed.
@@ -1708,6 +2083,7 @@ export function createServerRuntimeServices({
     ledgerSummary,
     budgetStatuses,
     expireCodexApprovalBrokerRequests,
+    channelReadiness: (channel) => channelService.readiness(channel),
   });
 
   const {
@@ -1794,12 +2170,57 @@ export function createServerRuntimeServices({
   mailSendHooks = mailSendService;
   const { sendConfirmedDraft } = mailSendService;
 
+  // Ordinary-user mailbox surface. This is a read model over imported mail and
+  // a bounded store for user-authored drafts; credentials remain device-local.
+  const mailClassificationService = createMailClassificationService({
+    state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
+    semanticAdapter: createLocalMailSemanticAdapter({ config: resolveMailSemanticConfig() }),
+  });
+  const mailFolderSuggestionService = createMailFolderSuggestionService({
+    state, now, nextId, persistStateSoon: persistMailboxStateSoon, store,
+    classificationService: mailClassificationService,
+  });
+  const mailFolderOrganizationService = createMailFolderOrganizationService({
+    state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
+    folderSuggestionService: mailFolderSuggestionService,
+    automaticEnabled: isMailAutomaticOrganizationEnabled,
+    qualitySummary: (messages, actor) => mailClassificationService.qualitySummary(messages, actor),
+    validateApprovalToken,
+    createInvocation: (task, agent, options) => createInvocation(task, agent, options),
+    startInvocationIfAllowed: (invocation, agent) => startInvocationIfAllowed(invocation, agent),
+    findAgent,
+    findApplication,
+  });
+  const mailboxService = createMailboxService({
+    state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
+    mailSendEnabled: isMailSendEnabled,
+    mailOrganizeEnabled: isMailOrganizationEnabled,
+    mailAutoOrganizeEnabled: isMailAutomaticOrganizationEnabled,
+    mailClassificationEnabled: isMailClassificationEnabled,
+    createCapabilityInvocation,
+    createWorkItem: workItemService.createWorkItem,
+    inspectTaskMaterialDraft: taskMaterialService.getDraft,
+    classificationService: mailClassificationService,
+    folderSuggestionService: mailFolderSuggestionService,
+    folderOrganizationService: mailFolderOrganizationService,
+    mailQueryIndex,
+  });
+  mailFolderOrganizationHooks = {
+    ...mailFolderOrganizationService,
+    onMailImported: ({ ownerTeamId, accountId, triggerId }) => mailboxService.runFolderAutomations({ teamId: ownerTeamId, accountId, triggerId }),
+  };
+
   // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
   // + fail-closed identity mappings. Readiness is env-presence booleans; enable
   // is approval-gated like every other side-effecting action. Import denials
   // (S3) go through the refuse() chokepoint like every other veto.
+  let ilinkRuntime = null;
   const channelService = createChannelService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken, refuse,
+    readinessProbes: {
+      ...defaultReadinessProbes,
+      wechat_ilink: (channel) => ilinkRuntime?.readiness(channel) ?? { account: false, session: false, worker: false },
+    },
   });
 
   // Conversation execution (S4): imported events dispatch into GOVERNED
@@ -1811,7 +2232,7 @@ export function createServerRuntimeServices({
   const createChannelTaskIssue = async ({
     projectId, channelOwnerTeamId, title, description, channelId, externalUserId,
     injectionSuspicious = false, autoRoute = false, inputAssets = [], terminalId,
-    channelTaskContext,
+    channelTaskContext, threadId = null, idempotencyKey = null,
   }) => {
     const project = (state.projects ?? []).find((p) => p.id === projectId);
     if (!project) return { ok: false, reason: "project_not_resolvable" };
@@ -1834,7 +2255,7 @@ export function createServerRuntimeServices({
       labels: ["channel", UNTRUSTED_INPUT_LABEL, ...(injectionSuspicious ? ["needs-triage"] : [])],
       inputAssets,
       requiredCapabilities: [],
-      idempotencyKey: `channel:${channelId}:${channelTaskContext?.messageId ?? "unknown"}`,
+      idempotencyKey: idempotencyKey ?? `channel:${channelId}:${channelTaskContext?.messageId ?? "unknown"}`,
     }, { userId: principal.id, teamId: principal.teamId, role: "member", deviceId: terminalId });
     if (!created.ok) return { ok: false, reason: created.body?.error ?? "work_item_create_failed" };
     const workItem = created.body.workItem;
@@ -1846,6 +2267,7 @@ export function createServerRuntimeServices({
         messageId: channelTaskContext?.messageId ?? null,
         principalId: principal.id,
         traceId: workItem.id,
+        threadId,
       };
     }
     return {
@@ -1886,6 +2308,15 @@ export function createServerRuntimeServices({
         req.status = "routed";
         req.decidedAt = now();
         req.decidedBy = actor?.userId ?? null;
+        const thread = (state.channelTaskThreads ?? []).find((candidate) => candidate.workItemId === req.workItemId || candidate.id === req.threadId);
+        if (thread) {
+          thread.statusHistory = [...(thread.statusHistory ?? []), { status: "queued", reason: "console_routed", at: now() }].slice(-30);
+          thread.status = "queued";
+          thread.waitingFor = null;
+          thread.expiresAt = new Date(Date.parse(now()) + 24 * 60 * 60 * 1000).toISOString();
+          thread.lastActivityAt = now();
+          thread.updatedAt = now();
+        }
       });
       appendEvent({
         invocationId: null,
@@ -1919,7 +2350,7 @@ export function createServerRuntimeServices({
     // auto-run carries its channel ORIGIN — so evidence/audit and the console can
     // tie the run (and its actions) back to the originating channel, conversation,
     // and untrusted sender without a manual issue-number join.
-    const origin = { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, externalUserId: req.externalUserId ?? null, issueNumber: req.issueNumber };
+    const origin = { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, threadId: req.threadId ?? null, externalUserId: req.externalUserId ?? null, issueNumber: req.issueNumber };
     channelTaskRunTx(() => {
       req.status = "routed";
       req.autoRunId = autoRunId;
@@ -1934,16 +2365,57 @@ export function createServerRuntimeServices({
         invocation.options = invocation.options ?? {};
         invocation.options.metadata = {
           ...invocation.options.metadata,
-          channel: { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id },
+          channel: { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, threadId: req.threadId ?? null },
           riskTags: [...new Set([...(invocation.options.metadata?.riskTags ?? []), UNTRUSTED_INPUT_TAG])],
         };
         const conv = (state.channelConversations ?? []).find((c) => c.id === req.conversationId);
         if (conv) conv.invocationIds = [...new Set([...(conv.invocationIds ?? []), invocation.id])];
       }
+      const thread = (state.channelTaskThreads ?? []).find((candidate) => candidate.workItemId === req.workItemId || candidate.id === req.threadId);
+      if (thread) {
+        thread.autoRunId = autoRunId;
+        thread.invocationId = invocation?.id ?? autoRun.invocationId ?? thread.invocationId ?? null;
+        thread.statusHistory = [...(thread.statusHistory ?? []), { status: "queued", reason: "console_routed", at: now() }].slice(-30);
+        thread.status = "queued";
+        thread.waitingFor = null;
+        thread.expiresAt = new Date(Date.parse(now()) + 24 * 60 * 60 * 1000).toISOString();
+        thread.lastActivityAt = now();
+        thread.updatedAt = now();
+      }
     });
+    if (result?.invocation) channelThreadHook?.(result.invocation);
     appendEvent({ invocationId: null, type: "channel_task_routed", level: "info", message: `Channel task ${req.id} routed → auto-run ${autoRunId}.`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber, autoRunId } });
     return { status: 200, body: { ok: true, autoRunId, issueNumber: req.issueNumber } };
   };
+  const syncDismissedChannelTask = (req, actor) => {
+    const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+      (req.workItemId && candidate.workItemId === req.workItemId)
+      || (req.threadId && candidate.id === req.threadId));
+    if (!thread) return;
+    channelTaskRunTx(() => {
+      thread.statusHistory = [...(thread.statusHistory ?? []), { status: "cancelled", reason: "console_dismissed", at: now() }].slice(-30);
+      thread.status = "cancelled";
+      thread.waitingFor = null;
+      thread.resultSummary = "管理员已忽略此任务，未开始执行。";
+      thread.expiresAt = null;
+      thread.updatedAt = now();
+      thread.lastActivityAt = now();
+    });
+    channelDeliveryService.enqueueChannelDelivery({
+      channelId: thread.channelId,
+      conversationId: thread.conversationId,
+      content: "任务已被管理员忽略，未开始执行。",
+      taskContext: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, workItemId: thread.workItemId ?? null, traceId: thread.workItemId ?? thread.id },
+    });
+    appendEvent({
+      invocationId: null,
+      type: "channel_task_dismissed_user_notified",
+      level: "info",
+      message: `Channel task ${thread.shortRef ?? thread.id} dismissal was sent to the user.`,
+      data: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, channelTaskRequestId: req.id, actorId: actor?.userId ?? null },
+    });
+  };
+
   const dismissChannelTask = async (id, actor) => {
     const req = findPendingChannelTask(id, actor);
     if (!req) return { status: 404, body: { error: "channel_task_not_found" } };
@@ -1961,6 +2433,7 @@ export function createServerRuntimeServices({
         req.decidedAt = now();
         req.decidedBy = actor?.userId ?? null;
       });
+      syncDismissedChannelTask(req, actor);
       appendEvent({
         invocationId: null,
         type: "channel_task_dismissed",
@@ -1979,6 +2452,7 @@ export function createServerRuntimeServices({
       req.decidedAt = now();
       req.decidedBy = actor?.userId ?? null;
     });
+    syncDismissedChannelTask(req, actor);
     appendEvent({ invocationId: null, type: "channel_task_dismissed", level: "info", message: `Channel task ${req.id} dismissed (issue #${req.issueNumber} closed).`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber } });
     return { status: 200, body: { ok: true } };
   };
@@ -2030,18 +2504,186 @@ export function createServerRuntimeServices({
       req.lastAction = "takeover";
       req.lastActionAt = now();
       req.lastActionBy = actor?.userId ?? null;
+      const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+        (req.workItemId && candidate.workItemId === req.workItemId)
+        || (req.threadId && candidate.id === req.threadId));
+      if (thread && thread.status !== "human_takeover") {
+        thread.statusHistory = [...(thread.statusHistory ?? []), { status: "human_takeover", reason: "console_takeover", at: now() }].slice(-30);
+        thread.status = "human_takeover";
+        thread.waitingFor = "human";
+        thread.handoffRequestedAt = now();
+        thread.handoffRequestedBy = actor?.userId ?? null;
+        thread.resultSummary = "已转人工跟进。";
+        thread.expiresAt = null;
+        thread.lastActivityAt = now();
+        thread.updatedAt = now();
+      }
     });
     appendEvent({ invocationId: autoRun.invocationId ?? null, type: "channel_task_human_takeover", level: "warn", message: `Channel task ${req.id} moved to human takeover.`, data: { channelTaskRequestId: req.id, autoRunId: autoRun.id } });
+    alertOutbox.enqueue({
+      kind: "channel_human_takeover",
+      severity: "warning",
+      message: `Channel task ${req.id} requires human attention.`,
+      data: {
+        teamId: (state.channels ?? []).find((channel) => channel.id === req.channelId)?.ownerTeamId ?? LOCAL_TEAM_ID,
+        channelId: req.channelId,
+        conversationId: req.conversationId,
+        threadId: req.threadId ?? null,
+        workItemId: req.workItemId ?? null,
+        channelTaskRequestId: req.id,
+        autoRunId: autoRun.id,
+        reason: "console_takeover",
+      },
+    });
     return { status: 200, body: { ok: true, autoRunId: autoRun.id, status: req.status } };
   };
 
+  const replyChannelTask = (id, content, actor) => {
+    const ref = String(id ?? "").trim();
+    const text = String(content ?? "").trim().slice(0, 4_000);
+    if (!text) return { status: 400, body: { error: "channel_task_reply_required" } };
+    const request = (state.channelTaskRequests ?? []).find((candidate) => candidate.id === ref) ?? null;
+    const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+      candidate.id === ref
+      || String(candidate.shortRef ?? "").toUpperCase() === ref.toUpperCase()
+      || (request?.threadId && candidate.id === request.threadId)
+      || (request?.workItemId && candidate.workItemId === request.workItemId)) ?? null;
+    if (!thread) return { status: 404, body: { error: "channel_task_not_found" } };
+    const channel = (state.channels ?? []).find((candidate) => candidate.id === thread.channelId);
+    if (!channel || (actor?.teamId != null && (channel.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId)) {
+      return { status: 404, body: { error: "channel_task_not_found" } };
+    }
+    if (thread.status !== "human_takeover") {
+      return { status: 409, body: { error: "channel_task_reply_unavailable", reason: `thread_${thread.status}` } };
+    }
+    const queued = channelDeliveryService.enqueueChannelDelivery({
+      channelId: thread.channelId,
+      conversationId: thread.conversationId,
+      content: text,
+      taskContext: {
+        channelId: thread.channelId,
+        conversationId: thread.conversationId,
+        threadId: thread.id,
+        workItemId: thread.workItemId ?? null,
+        traceId: thread.workItemId ?? thread.id,
+      },
+    });
+    if (!queued?.ok) return { status: 409, body: { error: "channel_task_reply_enqueue_failed", reason: queued?.reason ?? "delivery_unavailable" } };
+    channelTaskRunTx(() => {
+      thread.lastHumanReplyAt = now();
+      thread.lastHumanReplyBy = actor?.userId ?? null;
+      thread.resultSummary = "人工已回复用户，等待后续消息。";
+      thread.statusHistory = [...(thread.statusHistory ?? []), { status: "human_takeover", reason: "human_reply", at: now() }].slice(-30);
+      thread.updatedAt = now();
+      if (request) {
+        request.lastAction = "human_reply";
+        request.lastActionAt = now();
+        request.lastActionBy = actor?.userId ?? null;
+      }
+    });
+    appendEvent({
+      invocationId: null,
+      type: "channel_task_human_reply",
+      level: "info",
+      message: `Channel task ${thread.shortRef ?? thread.id} received a human reply.`,
+      data: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, channelTaskRequestId: request?.id ?? null, deliveryId: queued.deliveryId },
+    });
+    return { status: 200, body: { ok: true, deliveryId: queued.deliveryId, threadId: thread.id } };
+  };
+
+  let channelReplySender = null;
+  let channelResendDelivery = null;
+  const recordChannelIntentBridgeMetric = ({ status, latencyMs, circuitOpen, circuitOpenUntil, failureStreak, circuitTrips } = {}) => {
+    const current = state.channelIntentMetrics ?? {
+      total: 0,
+      byIntent: {},
+      bySource: {},
+      lowConfidence: 0,
+      ambiguous: 0,
+      updatedAt: null,
+    };
+    const bridge = current.bridge ?? {
+      attempts: 0,
+      succeeded: 0,
+      failed: 0,
+      busy: 0,
+      timeouts: 0,
+      lastLatencyMs: null,
+      averageLatencyMs: null,
+      circuitOpen: false,
+      circuitOpenUntil: null,
+      failureStreak: 0,
+      circuitTrips: 0,
+      updatedAt: null,
+    };
+    bridge.attempts = Number(bridge.attempts ?? 0) + 1;
+    if (status === "succeeded") bridge.succeeded = Number(bridge.succeeded ?? 0) + 1;
+    else if (status === "busy") bridge.busy = Number(bridge.busy ?? 0) + 1;
+    else {
+      bridge.failed = Number(bridge.failed ?? 0) + 1;
+      if (status === "timeout") bridge.timeouts = Number(bridge.timeouts ?? 0) + 1;
+    }
+    bridge.circuitOpen = Boolean(circuitOpen);
+    bridge.circuitOpenUntil = circuitOpenUntil ?? null;
+    bridge.failureStreak = Number(failureStreak ?? bridge.failureStreak ?? 0);
+    bridge.circuitTrips = Number(circuitTrips ?? bridge.circuitTrips ?? 0);
+    if (Number.isFinite(Number(latencyMs))) {
+      const previous = Number(bridge.averageLatencyMs);
+      bridge.lastLatencyMs = Math.round(Number(latencyMs));
+      bridge.averageLatencyMs = Number.isFinite(previous)
+        ? Math.round((previous * (bridge.attempts - 1) + Number(latencyMs)) / bridge.attempts)
+        : Math.round(Number(latencyMs));
+    }
+    bridge.updatedAt = now();
+    state.channelIntentMetrics = { ...current, bridge, updatedAt: current.updatedAt ?? null };
+    persistStateSoon();
+  };
+  const channelConsultationAdapter = createChannelConsultationAdapter({
+    config: resolveChannelConsultationConfig(),
+    state,
+    findAgent,
+    createInvocation: (...args) => invocationService?.createInvocation(...args),
+    now,
+  });
   const channelConversationService = createChannelConversationService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
     createCapabilityInvocation, cancelInvocation, createChannelTaskIssue,
+    answerClarify, retryAutoRun, cancelAutoRun,
+    classifyIntent: createChannelIntentAdapter({
+      config: resolveChannelIntentConfig(),
+      state,
+      findAgent,
+      createInvocation: (...args) => invocationService?.createInvocation(...args),
+      cancelInvocation: (...args) => invocationService?.cancelInvocation(...args),
+      now,
+      onMetric: recordChannelIntentBridgeMetric,
+    })?.classify,
+    createConsultation: channelConsultationAdapter?.enqueue,
+    resendDelivery: (args) => channelResendDelivery?.(args),
+    replySender: (args) => channelReplySender?.(args),
+    notifyHumanTakeover: ({ thread, request, reason }) => {
+      const channel = (state.channels ?? []).find((candidate) => candidate.id === thread?.channelId);
+      return alertOutbox.enqueue({
+        kind: "channel_human_takeover",
+        severity: "warning",
+        message: `Channel task ${thread?.shortRef ?? thread?.id ?? "unknown"} requires human attention.`,
+        data: {
+          teamId: channel?.ownerTeamId ?? LOCAL_TEAM_ID,
+          channelId: thread?.channelId ?? null,
+          conversationId: thread?.conversationId ?? null,
+          threadId: thread?.id ?? null,
+          workItemId: thread?.workItemId ?? null,
+          channelTaskRequestId: request?.id ?? null,
+          reason: reason ?? "human_takeover",
+        },
+      });
+    },
     // S6: in-channel /approve mints + consumes a single-use grant, then flips
     // the SAME approval the console acts on.
     mintDecisionGrant, validateApprovalToken, approveInvocation, denyInvocation,
   });
+  channelThreadHook = channelConversationService.syncTaskThreadFromInvocation;
+  channelConsultationHook = channelConversationService.syncConsultationFromInvocation;
   // Outbound delivery (S5/#1110): provider senders are late-bound by index.mjs
   // when each gateway is configured — this service never sees any provider
   // secret. Keyed by provider so a WeCom and a Feishu delivery route to their
@@ -2052,7 +2694,68 @@ export function createServerRuntimeServices({
     resolveSender: (provider) => channelSenders[provider] ?? null,
     validateApprovalToken,
   });
+  channelReplySender = ({ channelId, conversationId, content, threadId = null, invocationId = null, dedupeKey = null }) => channelDeliveryService.enqueueChannelDelivery({
+    channelId,
+    conversationId,
+    invocationId,
+    dedupeKey,
+    content,
+    taskContext: threadId
+      ? { channelId, conversationId, threadId }
+      : null,
+  });
+  channelResendDelivery = channelDeliveryService.resendChannelDelivery;
+  channelDeliveryService.recoverThreadDeliveryState?.();
+  channelConversationService.recoverTaskThreads?.();
+  channelConversationService.recoverConsultations?.();
+  channelConversationService.resumeIntake?.();
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
+
+  // Inbound events are durable before dispatch. A crash between those two
+  // steps must be recoverable on the next process start, and a replay must not
+  // create a second outbound row for the same event.
+  async function deliverChannelEventReply(event) {
+    if (!event) return { ok: false, reason: "channel_event_not_found" };
+    // Legacy settled events predate the durable reply marker. They are kept for
+    // history but must not be replayed automatically after an upgrade.
+    if (event.replyRecoveryPending !== true) return { ok: true, skipped: true, reason: "legacy_or_settled_event" };
+    let settled = null;
+    if (event.status === "imported") {
+      settled = await channelConversationService.dispatchImportedChannelEvent({ eventId: event.id });
+    } else if (event.status === "dispatched" || event.status === "refused") {
+      settled = { reply: event.replyText ?? null, invocationId: event.invocationId ?? null };
+    }
+    if (!settled?.reply) {
+      event.replyRecoveryPending = false;
+      persistStateSoon();
+      return { ok: true, status: event.status, replyQueued: false };
+    }
+    const queued = channelDeliveryService.enqueueChannelDelivery({
+      channelId: event.channelId,
+      conversationId: event.conversationId,
+      invocationId: settled.invocationId ?? event.invocationId ?? null,
+      content: settled.reply,
+      dedupeKey: `channel-event:${event.id}:reply`,
+    });
+    if (!queued?.ok) {
+      throw Object.assign(new Error("channel_event_reply_enqueue_failed"), {
+        code: queued?.reason ?? "channel_event_reply_enqueue_failed",
+      });
+    }
+    event.replyDeliveryId = queued.deliveryId ?? event.replyDeliveryId ?? null;
+    event.replyRecoveryPending = false;
+    persistStateSoon();
+    return { ok: true, status: event.status, replyQueued: true, deduplicated: Boolean(queued.deduplicated) };
+  }
+
+  async function recoverChannelEventReplies() {
+    const pending = (state.channelEvents ?? [])
+      .filter((event) => ["imported", "dispatched", "refused"].includes(event.status))
+      .slice(-200);
+    for (const event of pending) {
+      try { await deliverChannelEventReply(event); } catch { /* retry on the next recovery/sweep */ }
+    }
+  }
 
   // Scheduled work-report → channel push. Closes over the delivery service's
   // enqueue so a due schedule lands in the same durable outbound pipeline as an
@@ -2071,33 +2774,78 @@ export function createServerRuntimeServices({
     if (Array.isArray(payload?.attachmentCandidates) && payload.attachmentCandidates.length) {
       const channel = (state.channels ?? []).find((row) => row.id === payload.channelId);
       const project = (state.projects ?? []).find((row) => row.id === channel?.taskProjectId);
-      try {
-        const attachmentAssets = await ingestChannelAttachmentCandidates({
-          candidates: payload.attachmentCandidates,
-          projectPath: project?.path,
-          projectId: channel?.taskProjectId,
-          terminalId: channel?.taskTerminalId,
-        });
-        normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets };
-      } catch (error) {
-        return { ok: false, refused: true, reason: error?.code ?? "channel_attachment_ingestion_failed" };
+      const attachmentBindingAvailable = Boolean(channel?.taskProjectId && channel?.taskTerminalId && project?.path);
+      // Media is optional enrichment. A channel with /task disabled must still
+      // retain the inbound interaction and its bounded text/media description;
+      // refusing the whole event here made ordinary image/voice/file messages
+      // disappear before they reached the interaction center.
+      if (!attachmentBindingAvailable) {
+        normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets: [] };
+      } else {
+        try {
+          const byteCandidates = payload.attachmentCandidates.filter((candidate) => candidate && candidate.bytes != null);
+          const remoteCandidates = payload.attachmentCandidates.filter((candidate) => !candidate || candidate.bytes == null);
+          const attachmentAssets = [];
+          if (remoteCandidates.length) {
+            attachmentAssets.push(...await ingestChannelAttachmentCandidates({
+              candidates: remoteCandidates,
+              projectPath: project?.path,
+              projectId: channel?.taskProjectId,
+              terminalId: channel?.taskTerminalId,
+            }));
+          }
+          for (const candidate of byteCandidates) {
+            attachmentAssets.push(await ingestChannelAttachmentBytes({
+              filename: candidate.filename,
+              bytes: candidate.bytes,
+              contentType: candidate.contentType,
+              projectPath: project?.path,
+              projectId: channel?.taskProjectId,
+              terminalId: channel?.taskTerminalId,
+            }));
+          }
+          normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets };
+        } catch (error) {
+          const code = error?.code ?? "channel_attachment_ingestion_failed";
+          normalizedPayload = {
+            ...payload,
+            attachmentCandidates: undefined,
+            attachmentAssets: [],
+            mediaFailure: {
+              total: payload.attachmentCandidates.length,
+              failed: payload.attachmentCandidates.slice(0, 20).map((candidate) => ({
+                kind: candidate?.kind ?? "file",
+                filename: candidate?.filename ?? "附件",
+                code,
+              })),
+            },
+          };
+        }
       }
     }
     const imported = channelService.importChannelEvent(normalizedPayload);
-    if (imported?.ok && !imported.duplicate) {
-      const dispatched = await channelConversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
-      // Staged command replies become durable outbound deliveries.
-      if (dispatched?.reply) {
-        channelDeliveryService.enqueueChannelDelivery({
-          channelId: payload?.channelId,
-          conversationId: imported.conversationId,
-          invocationId: dispatched.invocationId ?? null,
-          content: dispatched.reply,
-        });
-      }
+    if (imported?.ok) {
+      const event = (state.channelEvents ?? []).find((candidate) => candidate.id === imported.eventId);
+      await deliverChannelEventReply(event);
     }
     return imported;
   };
+
+  ilinkRuntime = createIlinkRuntime({
+    state,
+    stateStorePath,
+    now,
+    nextId,
+    persistStateSoon,
+    appendEvent,
+    importChannelEvent: receiveChannelEvent,
+    mapChannelIdentity: channelService.mapChannelIdentity,
+    enableChannel: channelService.enableChannel,
+    disableChannel: channelService.disableChannel,
+    credentialStore: ilinkCredentialStore ?? undefined,
+    clientFactory: ilinkClientFactory,
+  });
+  void recoverChannelEventReplies();
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
     const application = findApplication(applicationId);
@@ -3346,7 +4094,7 @@ export function createServerRuntimeServices({
   }
 
   function defaultAgent() {
-    return invocationService?.defaultAgent() ?? state.agents.find((item) => item.id === "agt_demo_cli") ?? state.agents.find((item) => item.adapter.type !== "platform") ?? state.agents[0] ?? null;
+    return invocationService?.defaultAgent() ?? selectDefaultAgent(state.agents);
   }
 
   function uniqueStrings(values) {
@@ -3998,24 +4746,39 @@ export function createServerRuntimeServices({
     addProject,
     cloneProject,
     createBlankProject,
+    createTaskMaterialDraft: taskMaterialService.createDraft,
+    getTaskMaterialDraft: taskMaterialService.getDraft,
+    uploadTaskMaterialFile: taskMaterialService.uploadFile,
+    removeTaskMaterialFile: taskMaterialService.removeFile,
+    readTaskMaterialContent: taskMaterialService.readContent,
+    previewTaskMaterialCleanup: taskMaterialService.cleanupPreview,
+    executeTaskMaterialCleanup: taskMaterialService.executeCleanup,
     createWorktree,
     createWorktreePr,
     publishWorktreeBranch,
     promoteWorktreeToBase,
     promoteWorktreeToPullRequest,
     ensureLocalOrigin,
+    enqueueWorkItemAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
+    reconcileWorkItemAutoRunUnderstanding: workItemAutoRunUnderstandingService.reconcile,
+    reserveAutoRun,
+    attachAutoRunExecutionPlan,
+    failAutoRunUnderstanding,
     startAutoRun,
     retryAutoRun,
     reverifyAutoRun,
     recoverTimedOutCodexApproval: codexApprovalRecovery.recoverTimedOutApproval,
     processPlanningRecommendedActions,
     cancelAutoRun,
+    stopAutoRunDelivery,
     reapStuckAutoRuns,
     sweepWorkItemAutoRunBatches: workItemAutoRunBatchService.sweepBatches,
+    sweepWorkItemAutoScheduler: workItemAutoSchedulerService.sweep,
     sweepExpiredClaims,
     sweepAutoRunSloAlerts,
     sweepAlertOutbox: alertOutbox.sweep,
     sweepWorkItemOperationalAlerts: workItemService.sweepOperationalAlerts,
+    sweepTaskMaterialDrafts: taskMaterialService.sweepExpired,
     flushTraceExport,
     requestObservabilityDeletion,
     autoMergeSweep,
@@ -4034,11 +4797,54 @@ export function createServerRuntimeServices({
     replyOnIssue,
     confirmReplyDraft,
     sendConfirmedDraft,
+    mailboxSnapshot: mailboxService.snapshot,
+    startMailboxSync: mailboxService.startSync,
+    setMailboxMessageRead: mailboxService.setMessageRead,
+    createMailboxDraft: mailboxService.createDraft,
+    updateMailboxDraft: mailboxService.updateDraft,
+    deleteMailboxDraft: mailboxService.deleteDraft,
+    createMailboxTask: mailboxService.createTaskFromMessage,
+    startMailClassification: mailboxService.startClassification,
+    previewMailSemanticClassification: mailboxService.previewSemanticClassification,
+    getMailClassificationJob: mailboxService.getClassificationJob,
+    cancelMailClassificationJob: mailboxService.cancelClassificationJob,
+    correctMailClassification: mailboxService.correctClassification,
+    listMailClassificationRules: mailboxService.listClassificationRules,
+    getMailClassificationQuality: mailboxService.getClassificationQuality,
+    createMailClassificationRule: mailboxService.createClassificationRule,
+    updateMailClassificationRule: mailboxService.updateClassificationRule,
+    listMailFolderSuggestions: mailboxService.listFolderSuggestions,
+    createMailFolderMovePreview: mailboxService.createFolderMovePreview,
+    startMailFolderMove: mailboxService.startFolderMove,
+    getMailFolderMoveJob: mailboxService.getFolderMoveJob,
+    listMailFolderMoveJobs: mailboxService.listFolderMoveJobs,
+    reconcileMailFolderMoveJob: mailboxService.reconcileFolderMoveJob,
+    createMailFolderRecoveryPreview: mailboxService.createFolderRecoveryPreview,
+    createMailFolderAutomationPreview: mailboxService.createFolderAutomationPreview,
+    enableMailFolderAutomation: mailboxService.enableFolderAutomation,
+    updateMailFolderAutomation: mailboxService.updateFolderAutomation,
+    listMailFolderAutomations: mailboxService.listFolderAutomations,
+    dryRunMailFolderAutomation: mailboxService.dryRunFolderAutomation,
+    rebuildLocalContentCatalog: localContentCatalogService.rebuild,
+    searchLocalContent: localContentCatalogService.search,
+    browseLocalContentDirectories: localContentCatalogService.browseDirectories,
+    describeLocalContentRetrieval: localContentRetrievalService.describe,
+    retrieveLocalContentDirectories: localContentRetrievalService.directory,
+    retrieveLocalContentSummaries: localContentRetrievalService.summaries,
+    readRetrievedLocalContent: localContentRetrievalService.read,
+    getLocalContentCatalogStats: localContentCatalogService.stats,
+    previewLocalContent: localContentCatalogService.preview,
+    refreshLocalContent: localContentCatalogService.refresh,
+    getLocalContentHealth: localContentCatalogService.health,
+    resolveLocalContentOriginal: localContentCatalogService.resolveOriginal,
+    resolveLocalContentContainer: localContentCatalogService.resolveContainer,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
+    listChannelInteractions: channelService.listChannelInteractions,
     enableChannel: channelService.enableChannel,
     disableChannel: channelService.disableChannel,
     channelHealth: channelService.channelHealth,
+    channelDiagnostics: channelService.channelDiagnostics,
     mapChannelIdentity: channelService.mapChannelIdentity,
     removeChannelIdentity: channelService.removeChannelIdentity,
     listChannelIdentities: channelService.listChannelIdentities,
@@ -4051,10 +4857,18 @@ export function createServerRuntimeServices({
     updateCanvasScene: canvasSceneService.updateScene,
     deleteCanvasScene: canvasSceneService.deleteScene,
     listWorkItems: workItemService.listWorkItems,
+    getHomeWorkbench: workItemService.getHomeWorkbench,
     listWorkItemAttention: workItemService.listAttention,
     getWorkItem: workItemService.getWorkItem,
     createWorkItem: workItemService.createWorkItem,
+    createWorkItemFromExternal: workItemService.createWorkItemFromExternal,
+    addWorkItemMaterials: workItemService.addMaterials,
+    removeWorkItemMaterial: workItemService.removeMaterial,
+    restoreWorkItemMaterial: workItemService.restoreMaterial,
+    addWorkItemContentReference: workItemService.addContentReference,
+    removeWorkItemContentReference: workItemService.removeContentReference,
     updateWorkItem: workItemService.updateWorkItem,
+    recordWorkItemProgress: workItemService.recordWorkItemProgress,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,
     transitionWorkItem: workItemService.transitionWorkItem,
     beginWorkItemExecution: workItemService.beginExecution,
@@ -4070,6 +4884,7 @@ export function createServerRuntimeServices({
     recordWorkItemExecutionBinding: workItemService.recordExecutionBinding,
     createWorkItemAutoRunBatch: workItemAutoRunBatchService.createBatch,
     listWorkItemAutoRunBatches: workItemAutoRunBatchService.listBatches,
+    previewWorkItemAutoScheduler: workItemAutoSchedulerService.preview,
     claimWorkItem: workItemService.claimWorkItem,
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
     assignWorkItemToSelf: workItemService.assignWorkItemToSelf,
@@ -4078,6 +4893,7 @@ export function createServerRuntimeServices({
     bindExternalIssue: workItemService.bindExternalIssue,
     syncExternalIssue: workItemService.syncExternalIssue,
     listWorkItemExternalProviders: workItemService.listExternalProviders,
+    getWorkItemExternalIssueFunnel: workItemService.getExternalIssueFunnel,
     recordWorkItemVerification: workItemService.recordVerification,
     recordWorkItemAssetOperation: workItemService.recordAssetOperation,
     startWorkItemApplicationExecution: workItemService.startApplicationExecution,
@@ -4091,6 +4907,25 @@ export function createServerRuntimeServices({
     updateWorkItemAttention: workItemService.updateAttention,
     getWorkItemGithubSyncDiagnostics: workItemService.githubSyncDiagnostics,
     suggestWorkItemDraft: workItemService.suggestWorkItemDraft,
+    listMyTemplateRoutingFeedback: workItemService.listMyTemplateRoutingFeedback,
+    removeMyTemplateRoutingFeedback: workItemService.removeMyTemplateRoutingFeedback,
+    previewMyTemplateDraft: workItemService.previewMyTemplateDraft,
+    listMyTemplateDrafts: workItemService.listMyTemplateDrafts,
+    reviewMyTemplateDraft: workItemService.reviewMyTemplateDraft,
+    listSimilarMyTemplateWorkItems: workItemService.listSimilarMyTemplateWorkItems,
+    createMyTemplateDraft: workItemService.createMyTemplateDraft,
+    addMyTemplateLearningCase: workItemService.addMyTemplateLearningCase,
+    activateMyTemplateDraft: workItemService.activateMyTemplateDraft,
+    listMyTemplateOutcomeFeedback: workItemService.listMyTemplateOutcomeFeedback,
+    recordMyTemplateOutcomeFeedback: workItemService.recordMyTemplateOutcomeFeedback,
+    resumeMyTemplateGovernanceObservation: workItemService.resumeMyTemplateGovernanceObservation,
+    prepareWorkItemExecutionContract: workItemService.prepareExecutionContract,
+    listWorkItemReportDrafts: workItemService.listReportDrafts,
+    getWorkItemReportDraft: workItemService.getReportDraft,
+    generateWorkItemReportDraft: workItemService.generateReportDraft,
+    updateWorkItemReportDraft: workItemService.updateReportDraft,
+    confirmWorkItemReportDraft: workItemService.confirmReportDraft,
+    discardWorkItemReportDraft: workItemService.discardReportDraft,
     retryWorkItemAlert: workItemService.retryWorkItemAlert,
     applyLocalSchedulePlan: workItemService.applyLocalSchedulePlan,
     applyLocalScheduleRollover: workItemService.applyLocalScheduleRollover,
@@ -4127,8 +4962,10 @@ export function createServerRuntimeServices({
     exportBusinessPilotCollection: businessPilotEvidenceService.exportWorkbenchCollection,
     revokeBusinessPilotCollection: businessPilotEvidenceService.revokeWorkbenchCollection,
     getWorkflowAdaptiveWorkbench: workflowAdaptiveWorkService.getWorkbench,
+    getWorkflowMemoryInsights: workflowMemoryInsightsService.getOverview,
     updateWorkflowAdaptivePolicy: workflowAdaptiveWorkService.updatePolicy,
     updateWorkflowAdaptiveMonitor: workflowAdaptiveWorkService.updateMonitor,
+    updateWorkflowAdaptiveAutomation: workflowAdaptiveWorkService.updateAutomation,
     sweepWorkflowAdaptiveMonitors: workflowAdaptiveWorkService.sweepMonitors,
     runWorkflowAdaptiveMonitorNow: workflowAdaptiveWorkService.runMonitorNow,
     syncWorkflowAdaptiveOutcomes: workflowAdaptiveWorkService.syncOutcomes,
@@ -4148,13 +4985,24 @@ export function createServerRuntimeServices({
     createRoutineRun: businessRoutineService.createRoutineRun,
     getRoutineWorkItemExecution: businessRoutineService.getRoutineWorkItemExecution,
     listRoutineWorkQueue: businessRoutineService.listRoutineWorkQueue,
-    startRoutineWorkItem: businessRoutineService.startRoutineWorkItem,
-    executeRoutineStep: businessRoutineService.executeRoutineStep,
-    confirmQuotationInputs: businessRoutineService.confirmQuotationInputs,
-    completeRoutineStep: businessRoutineService.completeRoutineStep,
-    retryRoutineStep: businessRoutineService.retryRoutineStep,
-    decideRoutineApproval: businessRoutineService.decideRoutineApproval,
-    decideRoutineCondition: businessRoutineService.decideRoutineCondition,
+    startRoutineWorkItem: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.startRoutineWorkItem, input, actor),
+    executeRoutineStep: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.executeRoutineStep, input, actor),
+    confirmQuotationInputs: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.confirmQuotationInputs, input, actor),
+    bindRoutineLedger: businessRoutineService.bindRoutineLedger,
+    requestRoutineStepReview: businessRoutineService.requestRoutineStepReview,
+    resumeRoutineRecovery: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.resumeRoutineRecovery, input, actor),
+    completeRoutineStep: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.completeRoutineStep, input, actor),
+    retryRoutineStep: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.retryRoutineStep, input, actor),
+    decideRoutineApproval: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.decideRoutineApproval, input, actor),
+    decideRoutineCondition: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.decideRoutineCondition, input, actor),
     cancelRoutineWorkItem: businessRoutineService.cancelRoutineWorkItem,
     transitionRoutineStep: businessRoutineService.transitionRoutineStep,
     analyzeWorkflowBusinessDocuments: businessDocumentIntelligenceService.analyzeSource,
@@ -4174,12 +5022,22 @@ export function createServerRuntimeServices({
     getArticleImport: articleImportService.get,
     cancelArticleImport: articleImportService.cancel,
     analyzeArticleImport: articleImportService.analyze,
+    listSessions: sessionManagerService.listSessions,
+    probeSessionSite: sessionManagerService.probeSite,
+    reseedSessionSite: sessionManagerService.seedLogin,
+    sessionHealthSweep: sessionManagerService.sessionHealthSweep,
+    acquireSessionProfile: sessionManagerService.acquireProfile,
     findSimilarArticleImports: articleImportService.findSimilar,
     createArticleDerivative: articleImportService.createDerivative,
     listArticleDerivatives: articleImportService.listDerivatives,
     getArticleDerivative: articleImportService.getDerivative,
     listWorkflowSources: workflowMemoryService.listSources,
     createWorkflowSource: workflowMemoryService.createSource,
+    listTemplateLearningTasks: templateLearningService.listTasks,
+    createTemplateLearningTask: templateLearningService.createTask,
+    stageTemplateLearningFile: templateLearningService.stageFile,
+    startTemplateLearningTask: templateLearningService.startTask,
+    completeTemplateLearningTask: templateLearningService.completeTask,
     scanWorkflowSource: workflowMemoryService.scanSource,
     scanWorkflowIncrementalIntake: workflowMemoryService.scanIncrementalIntake,
     listWorkflowIntakeObservations: workflowMemoryService.listIntakeObservations,
@@ -4241,6 +5099,8 @@ export function createServerRuntimeServices({
       const result = await createExternalIssueProviderClient({ provider }).fetchIssue({ repository, issueNumber });
       return result.ok ? result.issue : result;
     },
+    listWorkItemExternalIssues: ({ provider, repository, query, page, perPage }) =>
+      createExternalIssueProviderClient({ provider }).listIssues({ repository, query, page, perPage }),
     pushWorkItemExternalIssue: ({ provider, repository, issueNumber, payload }) =>
       createExternalIssueProviderClient({ provider }).updateIssue({ repository, issueNumber, payload }),
     listPlanningProjects: planningProjectService.listProjects,
@@ -4260,10 +5120,22 @@ export function createServerRuntimeServices({
     retryChannelTask,
     rerouteChannelTask,
     takeoverChannelTask,
+    replyChannelTask,
     // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
+    sweepChannelTaskThreads: channelConversationService.sweepTaskThreads,
+    recoverChannelTaskThreads: channelConversationService.recoverTaskThreads,
     retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
+    beginIlinkLogin: ilinkRuntime.beginLogin,
+    pollIlinkLogin: ilinkRuntime.pollLogin,
+    activateIlinkChannel: ilinkRuntime.activate,
+    disconnectIlinkChannel: ilinkRuntime.disconnect,
+    sendIlinkApplicationMessage: ilinkRuntime.sendApplicationMessage,
+    startIlink: ilinkRuntime.start,
+    stopIlink: ilinkRuntime.stop,
+    syncIlinkWorkers: ilinkRuntime.syncWorkers,
+    onIlinkChannelStateChanged: ilinkRuntime.onChannelStateChanged,
     // Scheduled work-report post: the slow-tick sweep (index.mjs), the manual
     // "post now", and the config setter (routes).
     sweepReportSchedule: reportScheduleService.sweepReportSchedule,
@@ -4436,6 +5308,14 @@ export function createServerRuntimeServices({
 
   return {
     httpDependencies,
+    startLocalContentIndexing: localContentCatalogService.start,
+    closeRuntimeServices: async () => {
+      try {
+        await localContentCatalogService.close();
+      } finally {
+        mailQueryIndex?.close();
+      }
+    },
     savePersistentState,
     // #1084: the retention sweep (index.mjs) leaves an audit event per reap batch.
     appendEvent,

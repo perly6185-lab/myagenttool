@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type { ConsoleSnapshot, GuidedSetupSnapshot } from "@/lib/console-state";
 import { commandGuidedSetup, type GuidedSetupCommand } from "@/lib/api-client";
@@ -41,12 +42,21 @@ export function GuidedSetupCard() {
   const { t } = useAppTranslation();
   const stateQuery = useConsoleState();
   const { data: state } = stateQuery;
-  const setSection = useUiStore((store) => store.setSection);
+  const navigate = usePageNavigation();
+  const setComposerDraftTask = useUiStore((store) => store.setComposerDraftTask);
+  const openWorkItem = useUiStore((store) => store.openWorkItem);
   const serverSetup = useMemo(() => state?.guidedSetup ?? fallbackGuidedSetup(state), [state]);
   const [commandSetup, setCommandSetup] = useState<GuidedSetupSnapshot | null>(null);
   const [pendingCommand, setPendingCommand] = useState<GuidedSetupCommand | null>(null);
   const [commandError, setCommandError] = useState(false);
+  const [safeTestReviewed, setSafeTestReviewed] = useState(false);
+  const [safeTestBaselineIds, setSafeTestBaselineIds] = useState<string[] | null>(null);
   const setup = commandSetup ?? serverSetup;
+  const safeTestKey = setup.runId ? `myagenttool-guided-safe-test:${setup.runId}` : null;
+  const completedTasks = state?.workBoard?.states?.done?.items ?? [];
+  const firstCompletedTask = safeTestBaselineIds
+    ? completedTasks.find((item) => !safeTestBaselineIds.includes(item.id)) ?? null
+    : null;
   const started = Boolean(setup.runId);
   const checking = pendingCommand !== null;
 
@@ -61,7 +71,73 @@ export function GuidedSetupCard() {
     }
   }, [commandSetup, serverSetup]);
 
-  if (setup.status === "ready") return null;
+  useEffect(() => {
+    if (!safeTestKey) {
+      setSafeTestReviewed(false);
+      setSafeTestBaselineIds(null);
+      return;
+    }
+    try {
+      const stored = localStorage.getItem(safeTestKey);
+      if (stored === "reviewed") {
+        setSafeTestReviewed(true);
+        setSafeTestBaselineIds(null);
+        return;
+      }
+      const parsed = stored ? JSON.parse(stored) as { baselineDoneIds?: unknown } : null;
+      setSafeTestReviewed(false);
+      setSafeTestBaselineIds(Array.isArray(parsed?.baselineDoneIds)
+        ? parsed.baselineDoneIds.filter((id): id is string => typeof id === "string")
+        : null);
+    } catch {
+      setSafeTestReviewed(false);
+      setSafeTestBaselineIds(null);
+    }
+  }, [safeTestKey]);
+
+  if (setup.status === "ready") {
+    if (!setup.runId || safeTestReviewed) return null;
+    const prepareSafeTest = () => {
+      const baselineDoneIds = completedTasks.map((item) => item.id);
+      try {
+        if (safeTestKey) localStorage.setItem(safeTestKey, JSON.stringify({ baselineDoneIds, preparedAt: new Date().toISOString() }));
+      } catch {
+        // The prepared draft remains usable if browser preferences cannot be saved.
+      }
+      setSafeTestBaselineIds(baselineDoneIds);
+      setComposerDraftTask(t("guidedSetup.safeTestTask"));
+      navigate("dashboard");
+      window.requestAnimationFrame(() => document.querySelector("[data-testid='home-task-composer']")?.scrollIntoView?.({ behavior: "smooth", block: "center" }));
+    };
+    const reviewSafeTest = () => {
+      if (!firstCompletedTask) return;
+      try {
+        if (safeTestKey) localStorage.setItem(safeTestKey, "reviewed");
+      } catch {
+        // The durable task result remains available even if browser preferences cannot be saved.
+      }
+      setSafeTestReviewed(true);
+      navigate("task");
+      openWorkItem(firstCompletedTask.id, { mode: "summary" });
+    };
+    return (
+      <Card data-testid="guided-safe-test">
+        <CardContent className="space-y-3 pt-5">
+          <div className="flex items-start gap-3">
+            <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" aria-hidden />
+            <div>
+              <h3 className="font-semibold">{t("guidedSetup.safeTestTitle")}</h3>
+              <p className="mt-1 text-sm text-muted-foreground">{firstCompletedTask ? t("guidedSetup.safeTestResultReady") : t("guidedSetup.safeTestHint")}</p>
+            </div>
+          </div>
+          <Button className="min-h-11" onClick={firstCompletedTask ? reviewSafeTest : prepareSafeTest}>
+            {firstCompletedTask ? t("guidedSetup.safeTestReview") : t("guidedSetup.safeTestStart")}
+          </Button>
+          <p className="text-xs text-muted-foreground">{t("guidedSetup.safeTestBoundary")}</p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   const visibleStatus = checking ? "checking" : setup.status;
   const reasonKey = `guidedSetup.reasons.${setup.reason}` as never;
@@ -90,7 +166,7 @@ export function GuidedSetupCard() {
       void runCommand("resume");
       return;
     }
-    if (setup.action?.kind === "open_section") setSection(setup.action.section as SectionKey);
+    if (setup.action?.kind === "open_section") navigate(setup.action.section as SectionKey);
   }
 
   return (

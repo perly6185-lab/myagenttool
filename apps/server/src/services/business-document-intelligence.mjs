@@ -10,18 +10,32 @@ import { detectPromptInjection } from "@myagenttool/protocol/issue-prompt";
 import { LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
-export const BUSINESS_DOCUMENT_CLASSIFIER_VERSION = 2;
+export const BUSINESS_DOCUMENT_CLASSIFIER_VERSION = 3;
 export const BUSINESS_FIELD_EXTRACTOR_VERSION = 2;
 
 const MAX_ANALYSIS_TEXT = 96 * 1024;
 const DEFAULT_ANALYSIS_CONCURRENCY = 2;
-const SUPPORTED_ENTITY_TYPES = new Set(["inquiry", "quotation", "order"]);
+const SUPPORTED_ENTITY_TYPES = new Set([
+  "inquiry",
+  "quotation",
+  "order",
+  "contract_review",
+  "purchase_request",
+  "customer_complaint",
+  "weekly_report",
+  "project_acceptance",
+]);
 const SECRET_VALUE_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b|\bBearer\s+[A-Za-z0-9._~+/-]{12,}=*/i;
 const UNSAFE_FORMULA_RE = /^[=+@]|^-(?!\d)/;
 const CHINESE_INSTRUCTION_RE = /忽略.{0,40}(?:指令|规则|系统提示)|(?:执行|运行).{0,30}(?:命令|脚本)/i;
 const CONFIRMATION_STATES = new Set(["proposed", "confirmed", "corrected"]);
 
 const TYPE_LABELS = {
+  contract_review: ["合同审查", "合同审核", "合同评审", "contract review", "contract checklist"],
+  purchase_request: ["采购申请", "请购单", "采购需求", "purchase request", "purchase requisition"],
+  customer_complaint: ["客户投诉", "客诉", "投诉处理", "customer complaint", "complaint handling"],
+  weekly_report: ["周报", "本周工作", "下周计划", "weekly report", "weekly summary"],
+  project_acceptance: ["项目验收", "验收报告", "验收清单", "project acceptance", "acceptance checklist"],
   inquiry_ledger: ["询价台账", "询价登记表", "inquiry ledger", "rfq register", "inquiry register"],
   quotation_ledger: ["报价台账", "报价登记表", "quotation ledger", "quote register", "quotation register"],
   order_ledger: ["订单台账", "订单登记表", "order ledger", "purchase order register"],
@@ -457,7 +471,12 @@ function businessKeyFor(documentType, fields) {
     quotation: "quotation_number",
     order: "order_number",
   }[documentType];
-  return preferred ? fields.find((field) => field.key === preferred)?.normalizedValue ?? null : null;
+  if (preferred) return fields.find((field) => field.key === preferred)?.normalizedValue ?? null;
+  if (!SUPPORTED_ENTITY_TYPES.has(documentType)) return null;
+  const parts = ["document_date", "customer", "product"]
+    .map((key) => fields.find((field) => field.key === key)?.normalizedValue)
+    .filter(Boolean);
+  return parts.length >= 2 ? `${documentType}:${parts.join(":")}`.slice(0, 240) : null;
 }
 
 export function createBusinessDocumentIntelligenceService({

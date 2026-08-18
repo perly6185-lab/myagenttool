@@ -21,18 +21,18 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type OfficeDocumentType = "docx" | "xlsx" | "pptx";
 type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "html" | "canvas" | "image" | "audio" | "video";
-type ImportedSource = "all" | "wechat" | "xiaohongshu" | "zhihu" | "juejin" | "jianshu" | "web";
+type ImportedSource = "all" | "wechat" | "xiaohongshu" | "zhihu" | "qichacha" | "juejin" | "jianshu" | "web";
 type ImportedContentType = "all" | "article" | "note";
 const IMPORT_FILTER_LABELS = {
   en: {
     source: "Imported source", allSources: "All sources", wechat: "WeChat", xiaohongshu: "Xiaohongshu",
-    zhihu: "Zhihu", juejin: "Juejin", jianshu: "Jianshu", web: "Other web",
+    zhihu: "Zhihu", qichacha: "Qichacha", juejin: "Juejin", jianshu: "Jianshu", web: "Other web",
     year: "Publication year", allYears: "All years", month: "Publication month", allMonths: "All months",
     content: "Content type", allContent: "All content", article: "Article", note: "Note",
   },
   zh: {
     source: "导入来源", allSources: "所有来源", wechat: "公众号", xiaohongshu: "小红书",
-    zhihu: "知乎", juejin: "掘金", jianshu: "简书", web: "其他网页",
+    zhihu: "知乎", qichacha: "企查查", juejin: "掘金", jianshu: "简书", web: "其他网页",
     year: "原文发布年份", allYears: "所有年份", month: "原文发布月份", allMonths: "所有月份",
     content: "内容类型", allContent: "所有内容", article: "文章", note: "笔记",
   },
@@ -224,6 +224,7 @@ export function DocumentsView() {
           <option value="wechat">{importText.wechat}</option>
           <option value="xiaohongshu">{importText.xiaohongshu}</option>
           <option value="zhihu">{importText.zhihu}</option>
+          <option value="qichacha">{importText.qichacha}</option>
           <option value="juejin">{importText.juejin}</option>
           <option value="jianshu">{importText.jianshu}</option>
           <option value="web">{importText.web}</option>
@@ -313,7 +314,7 @@ export function filterImportedDocuments(
 
 function importedTaxonomy(path: string) {
   const normalized = path.replaceAll("\\", "/");
-  const match = normalized.match(/(?:^|\/)docs\/imported\/(wechat|xiaohongshu|zhihu|juejin|jianshu|web)\/(\d{4})\/(\d{2})\//);
+  const match = normalized.match(/(?:^|\/)docs\/imported\/(wechat|xiaohongshu|zhihu|qichacha|juejin|jianshu|web)\/(\d{4})\/(\d{2})\//);
   if (!match) return null;
   const source = match[1] as Exclude<ImportedSource, "all">;
   return {

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Local Issue 来源与跟进 UI 原型</title>
+    <link rel="stylesheet" href="./work-item-follow-up-fields.css">
+  </head>
+  <body>
+    <main class="prototype-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">PR 0 · UI 设计冻结</p>
+          <h1>Local Issue 来源与跟进</h1>
+          <p class="subtitle">补齐新建、编辑、详情及历史任务边界状态</p>
+        </div>
+        <span class="prototype-pill">低保真交互原型</span>
+      </header>
+
+      <nav class="scene-tabs" aria-label="设计场景">
+        <button class="scene-tab is-active" type="button" data-scene="create">新建 · 自己</button>
+        <button class="scene-tab" type="button" data-scene="customer">编辑 · 客户</button>
+        <button class="scene-tab" type="button" data-scene="detail">详情 · 交付中</button>
+        <button class="scene-tab" type="button" data-scene="unknown">历史 · 未标注</button>
+        <button class="scene-tab" type="button" data-scene="validation">校验错误</button>
+      </nav>
+
+      <section class="review-note">
+        <strong>设计边界</strong>
+        <span>提出者 ≠ 负责人 ≠ AI 执行者；关系类型不改变优先级和权限。</span>
+      </section>
+
+      <section class="scene is-visible" data-scene-panel="create">
+        <div class="modal-frame" role="dialog" aria-modal="true" aria-labelledby="create-title">
+          <div class="modal-heading">
+            <div><p class="eyebrow">新建 Local Issue</p><h2 id="create-title">创建任务</h2></div>
+            <button class="icon-button" type="button" aria-label="关闭">×</button>
+          </div>
+
+          <section class="form-section compact-section">
+            <div class="section-heading"><div><h3>基本信息</h3><p>沿用现有 Issue 创建字段。</p></div><span class="section-state">已填写</span></div>
+            <div class="field-grid two-columns">
+              <label class="field"><span>任务标题 <b>*</b></span><input value="整理本周项目复盘"></label>
+              <label class="field"><span>项目 <b>*</b></span><select><option>myagenttool</option></select></label>
+            </div>
+          </section>
+
+          <section class="form-section" aria-labelledby="create-followup-title">
+            <div class="section-heading">
+              <div><h3 id="create-followup-title">来源与跟进</h3><p>记录谁期待结果，以及下一步由谁推动。</p></div>
+              <span class="section-state required-state">交付上下文</span>
+            </div>
+            <div class="field-grid two-columns">
+              <label class="field"><span>提出者关系 <b>*</b></span><select data-create-relation><option value="self">自己</option><option value="boss">Boss</option><option value="manager">上级</option><option value="customer">客户</option><option value="colleague">同事</option></select><small>关系只用于筛选和交付上下文。</small></label>
+              <label class="field"><span>进入渠道 <b>*</b></span><select><option>手工创建</option><option>会议</option><option>邮件</option><option>聊天</option><option>电话</option><option>GitHub</option><option>导入</option></select><small>不要与文章内容来源混用。</small></label>
+            </div>
+
+            <div class="identity-summary" data-self-summary>
+              <span class="avatar">我</span><div><strong>自己提出</strong><p>不需要重复填写提出者姓名或组织。</p></div>
+            </div>
+
+            <div class="field-grid two-columns" data-requester-fields hidden>
+              <label class="field"><span>提出者姓名 <b>*</b></span><input placeholder="例如：张总"></label>
+              <label class="field"><span>组织</span><input placeholder="公司、团队或部门"></label>
+            </div>
+
+            <div class="field-grid two-columns">
+              <label class="field"><span>当前等待谁 <b>*</b></span><select><option>我</option><option>提出者</option><option>内部成员</option><option>AI</option><option>无人等待</option></select><small>首页据此计算“需要我处理”。</small></label>
+              <label class="field"><span>负责人</span><select><option>我（当前用户）</option><option>王工</option><option>李经理</option></select><small>沿用现有 assignee，不创建第二套负责人字段。</small></label>
+            </div>
+
+            <div class="field-grid two-columns">
+              <label class="field"><span>承诺时间</span><input type="datetime-local" value="2026-08-07T17:00"><small>对提出者承诺的交付时间。</small></label>
+              <label class="field"><span>下次跟进</span><input type="datetime-local" value="2026-08-05T10:00"><small>到时进入首页关注队列。</small></label>
+            </div>
+          </section>
+
+          <div class="form-actions"><button class="secondary-action" type="button">取消</button><button class="primary-action" type="button">创建 Local Issue</button></div>
+        </div>
+      </section>
+
+      <section class="scene" data-scene-panel="customer" hidden>
+        <div class="modal-frame" role="dialog" aria-modal="true" aria-labelledby="customer-title">
+          <div class="modal-heading"><div><p class="eyebrow">编辑 Local Issue · LWI-184</p><h2 id="customer-title">官网改版方案确认</h2></div><button class="icon-button" type="button" aria-label="关闭">×</button></div>
+          <section class="form-section">
+            <div class="section-heading"><div><h3>来源与跟进</h3><p>外部关系人使用姓名和组织，不伪造内部账号。</p></div><span class="relation-pill">客户</span></div>
+            <div class="field-grid two-columns">
+              <label class="field"><span>提出者关系 <b>*</b></span><select><option selected>客户</option><option>Boss</option><option>上级</option><option>同事</option><option>自己</option></select></label>
+              <label class="field"><span>进入渠道 <b>*</b></span><select><option selected>会议</option><option>邮件</option><option>聊天</option><option>电话</option></select></label>
+              <label class="field"><span>提出者姓名 <b>*</b></span><input value="张总"></label>
+              <label class="field"><span>组织</span><input value="远山科技"></label>
+              <label class="field"><span>外部引用</span><input value="客户周会 2026-08-03"><small>只保存可审计的业务引用，不保存渠道密钥。</small></label>
+              <label class="field"><span>负责人</span><select><option selected>我（当前用户）</option><option>王工</option></select></label>
+              <label class="field"><span>当前等待谁 <b>*</b></span><select><option>我</option><option selected>提出者</option><option>内部成员</option><option>AI</option></select></label>
+              <label class="field"><span>下次跟进</span><input type="datetime-local" value="2026-08-04T10:00"></label>
+              <label class="field"><span>承诺时间</span><input type="datetime-local" value="2026-08-07T17:00"></label>
+              <label class="field"><span>最近进展</span><input value="首版方案已发送，等待客户确认范围" disabled><small>通过“记录进展”操作更新，避免覆盖历史。</small></label>
+            </div>
+          </section>
+          <div class="form-actions"><button class="secondary-action" type="button">取消</button><button class="primary-action" type="button">保存关系与跟进</button></div>
+        </div>
+      </section>
+
+      <section class="scene" data-scene-panel="detail" hidden>
+        <div class="detail-shell">
+          <header class="issue-header">
+            <div><p class="eyebrow">LWI-184 · myagenttool</p><h2>官网改版方案确认</h2><p class="subtitle">规划状态：审核中 · 业务状态：开放</p></div>
+            <div class="header-actions"><button class="secondary-action" type="button">编辑任务</button><button class="primary-action" type="button">复核 AI 结果</button></div>
+          </header>
+
+          <div class="detail-grid">
+            <section class="detail-main">
+              <article class="info-card">
+                <div class="section-heading"><div><p class="eyebrow">关系与交付</p><h3>客户 · 张总</h3></div><button class="text-action" type="button">编辑关系</button></div>
+                <dl class="facts">
+                  <div><dt>组织</dt><dd>远山科技</dd></div><div><dt>进入渠道</dt><dd>会议</dd></div>
+                  <div><dt>负责人</dt><dd>我</dd></div><div><dt>当前等待</dt><dd><span class="warning-text">我复核并回复</span></dd></div>
+                  <div><dt>承诺时间</dt><dd><span class="danger-text">今天 17:00 前</span></dd></div><div><dt>下次跟进</dt><dd>今天 15:30</dd></div>
+                </dl>
+                <div class="progress-note"><div><span class="avatar small-avatar">我</span><div><strong>最近进展 · 今天 11:20</strong><p>AI 已完成首版，待确认范围后向客户更新。</p></div></div><button class="secondary-action" type="button" data-open-progress>记录进展</button></div>
+              </article>
+
+              <article class="info-card progress-editor" data-progress-editor hidden>
+                <div class="section-heading"><div><p class="eyebrow">追加记录，不覆盖历史</p><h3>记录一次进展</h3></div><button class="icon-button" type="button" data-close-progress aria-label="关闭进展编辑">×</button></div>
+                <label class="field"><span>进展摘要 <b>*</b></span><textarea>已复核首页结构，准备向客户确认范围。</textarea></label>
+                <div class="field-grid two-columns"><label class="field"><span>更新等待对象</span><select><option>我</option><option selected>提出者</option><option>内部成员</option><option>AI</option></select></label><label class="field"><span>下次跟进</span><input type="datetime-local" value="2026-08-04T10:00"></label></div>
+                <div class="form-actions"><button class="secondary-action" type="button" data-close-progress>取消</button><button class="primary-action" type="button">保存进展</button></div>
+              </article>
+
+              <article class="info-card"><p class="eyebrow">验收</p><h3>交付条件</h3><ul class="check-list"><li class="done">AI 首版方案已生成</li><li>人工复核范围与事实</li><li>向客户更新并记录反馈</li></ul></article>
+            </section>
+
+            <aside class="detail-rail">
+              <article class="ai-card"><div class="section-heading"><div><p class="eyebrow">派生状态 · 不可手工编辑</p><h3>AI 执行</h3></div><span class="success-pill">已完成</span></div><p>Codex 已生成首版方案，任务仍处于人工审核阶段。</p><dl class="facts single-column"><div><dt>Agent</dt><dd>Codex CLI</dd></div><div><dt>完成时间</dt><dd>今天 11:12</dd></div></dl><button class="secondary-action full-width" type="button">打开 Run records</button></article>
+              <article class="boundary-card"><strong>完成边界</strong><p>AI completed 不会自动把 Issue 改为 done 或 closed。</p></article>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section class="scene" data-scene-panel="unknown" hidden>
+        <div class="detail-shell narrow-detail">
+          <header class="issue-header"><div><p class="eyebrow">历史任务 · LWI-041</p><h2>整理旧版部署说明</h2><p class="subtitle">该任务创建于关系人字段上线之前。</p></div><button class="secondary-action" type="button">编辑任务</button></header>
+          <article class="info-card unknown-card">
+            <div class="unknown-icon">?</div>
+            <div><p class="eyebrow">关系与交付</p><h3>提出者未标注</h3><p>系统不会把历史任务猜测为“自己提出”。补充关系后，首页才能按 Boss、上级、客户、同事或自己筛选。</p></div>
+            <button class="primary-action" type="button">补充来源</button>
+          </article>
+          <article class="info-card"><p class="eyebrow">仍然保留</p><h3>现有任务状态不受影响</h3><dl class="facts"><div><dt>负责人</dt><dd>我</dd></div><div><dt>规划状态</dt><dd>进行中</dd></div><div><dt>AI 执行</dt><dd>未认领</dd></div><div><dt>到期时间</dt><dd>未设置</dd></div></dl></article>
+        </div>
+      </section>
+
+      <section class="scene" data-scene-panel="validation" hidden>
+        <div class="modal-frame validation-frame" role="dialog" aria-modal="true" aria-labelledby="validation-title">
+          <div class="modal-heading"><div><p class="eyebrow">保存前校验</p><h2 id="validation-title">来源与跟进</h2></div><button class="icon-button" type="button" aria-label="关闭">×</button></div>
+          <div class="error-summary" role="alert"><strong>还有 2 项需要处理</strong><a href="#requester-error">填写客户姓名</a><a href="#followup-error">调整下次跟进时间</a></div>
+          <section class="form-section">
+            <div class="field-grid two-columns">
+              <label class="field"><span>提出者关系 <b>*</b></span><select><option selected>客户</option></select></label>
+              <label class="field invalid-field" id="requester-error"><span>提出者姓名 <b>*</b></span><input aria-invalid="true" aria-describedby="requester-help" value=""><small id="requester-help">选择客户时必须填写姓名，或改为“未标注”。</small></label>
+              <label class="field"><span>承诺时间</span><input type="datetime-local" value="2026-08-07T17:00"></label>
+              <label class="field invalid-field" id="followup-error"><span>下次跟进</span><input aria-invalid="true" aria-describedby="followup-help" type="datetime-local" value="2026-08-02T10:00"><small id="followup-help">时间已经过去；请选择未来时间或清空该字段。</small></label>
+            </div>
+          </section>
+          <div class="form-actions"><button class="secondary-action" type="button">取消</button><button class="primary-action" type="button" disabled>保存关系与跟进</button></div>
+        </div>
+      </section>
+    </main>
+    <script src="./work-item-follow-up-fields.js"></script>
+  </body>
+</html>

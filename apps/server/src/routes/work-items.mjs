@@ -1,16 +1,45 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+function externalIssuePolicyFor(state, projectId) {
+  const policy = state?.projects?.find((project) => project.id === projectId)?.externalIssuePolicy ?? {};
+  return {
+    intakeEnabled: policy.intakeEnabled !== false,
+    writebackEnabled: policy.writebackEnabled !== false,
+    autoExecutionEnabled: policy.autoExecutionEnabled === true,
+    emergencyStop: policy.emergencyStop === true,
+  };
+}
+
+function externalOperationBlocked(policy, operation) {
+  if (policy.emergencyStop) return "external_issue_emergency_stop";
+  if (operation === "intake" && !policy.intakeEnabled) return "external_issue_intake_disabled";
+  if (operation === "writeback" && !policy.writebackEnabled) return "external_issue_writeback_disabled";
+  return null;
+}
+
+function externalBindingEmergencyStopped(state, provider, repository, issueNumber) {
+  return (state?.workItems ?? []).some((item) =>
+    (item.externalBindings ?? []).some((binding) =>
+      (binding.provider === provider || binding.kind === `${provider}_issue`)
+      && binding.number === Number(issueNumber)
+      && (!repository || !binding.repository || binding.repository === repository))
+    && externalIssuePolicyFor(state, item.projectId).emergencyStop);
+}
+
 export async function handleWorkItemRoutes({
-  req, res, url, sendJson, readJson, actor,
-  listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+  req, res, url, sendJson, readJson, actor, state,
+  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+  listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
   listActivity, listComments, createComment, updateComment, deleteComment,
-  createWorktree, startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
+  createWorktree, enqueueAutoRunUnderstanding, reserveAutoRun, failAutoRunUnderstanding,
+  startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
   createAutoRunBatch, listAutoRunBatches,
+  previewAutoScheduler,
   promoteWorktreeToBase, promoteWorktreeToPullRequest, beginDelivery, failDelivery, completeDelivery,
   claimWorkItem, releaseWorkItemClaim, assignWorkItemToSelf,
   bindGithubIssue, syncGithubIssue,
-  bindExternalIssue, syncExternalIssue, listExternalProviders,
-  fetchExternalIssue, pushExternalIssue,
+  bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
+  fetchExternalIssue, listExternalIssues, pushExternalIssue,
   fetchGithubIssue, pushGithubIssue,
   recordVerification,
   recordAssetOperation,
@@ -23,6 +52,19 @@ export async function handleWorkItemRoutes({
   updateAttention,
   githubSyncDiagnostics,
   suggestWorkItemDraft,
+  listMyTemplateRoutingFeedback,
+  removeMyTemplateRoutingFeedback,
+  previewMyTemplateDraft,
+  listMyTemplateDrafts,
+  reviewMyTemplateDraft,
+  listSimilarMyTemplateWorkItems,
+  createMyTemplateDraft,
+  addMyTemplateLearningCase,
+  activateMyTemplateDraft,
+  listMyTemplateOutcomeFeedback,
+  recordMyTemplateOutcomeFeedback,
+  resumeMyTemplateGovernanceObservation,
+  prepareExecutionContract,
   retryWorkItemAlert,
   inspectArticleImport,
   startArticleImport,
@@ -34,7 +76,16 @@ export async function handleWorkItemRoutes({
   createArticleDerivative,
   listArticleDerivatives,
   getArticleDerivative,
+  addMaterials,
+  removeMaterial,
+  restoreMaterial,
+  addContentReference,
+  removeContentReference,
 }) {
+  if (url.pathname === "/api/work-item-auto-scheduler" && req.method === "GET") {
+    sendJson(res, 200, previewAutoScheduler({ teamId: actor?.teamId ?? null }));
+    return true;
+  }
   if (url.pathname === "/api/work-item-auto-run-batches") {
     if (req.method === "GET") {
       const result = listAutoRunBatches({}, actor);
@@ -101,6 +152,10 @@ export async function handleWorkItemRoutes({
       repository,
       updatedAt: issue.updated_at,
     } : null;
+    if (snapshot && externalBindingEmergencyStopped(state, provider, repository, snapshot.number)) {
+      sendJson(res, 202, { accepted: true, ignored: true, reason: "external_issue_emergency_stop", provider });
+      return true;
+    }
     const result = ingestExternalWebhook({ provider, deliveryId, event, snapshot });
     sendJson(res, result.status, result.body);
     return true;
@@ -133,6 +188,10 @@ export async function handleWorkItemRoutes({
         reason: "invalid_json",
       });
       sendJson(res, 400, { error: "invalid_json" });
+      return true;
+    }
+    if (externalBindingEmergencyStopped(state, "github", payload.repository?.full_name, payload.issue?.number)) {
+      sendJson(res, 202, { accepted: true, ignored: true, reason: "external_issue_emergency_stop", provider: "github" });
       return true;
     }
     const result = ingestGithubWebhook({
@@ -230,6 +289,120 @@ export async function handleWorkItemRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/work-items/my-template-learning" && req.method === "GET") {
+    const result = listMyTemplateRoutingFeedback({
+      projectId: url.searchParams.get("projectId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateLearningMatch = url.pathname.match(/^\/api\/work-items\/my-template-learning\/([^/]+)$/);
+  if (myTemplateLearningMatch && req.method === "DELETE") {
+    const result = removeMyTemplateRoutingFeedback({
+      feedbackId: decodeURIComponent(myTemplateLearningMatch[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/my-template-outcomes" && req.method === "GET") {
+    const result = listMyTemplateOutcomeFeedback({
+      projectId: url.searchParams.get("projectId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/my-template-drafts" && req.method === "GET") {
+    const result = listMyTemplateDrafts({ projectId: url.searchParams.get("projectId") }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const similarMyTemplateWorkItemsMatch = url.pathname.match(
+    /^\/api\/work-items\/my-template-drafts\/([^/]+)\/similar-work-items$/,
+  );
+  if (similarMyTemplateWorkItemsMatch && req.method === "GET") {
+    const result = listSimilarMyTemplateWorkItems({
+      draftId: decodeURIComponent(similarMyTemplateWorkItemsMatch[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateDraftReviewMatch = url.pathname.match(
+    /^\/api\/work-items\/my-template-drafts\/([^/]+)\/review$/,
+  );
+  if (myTemplateDraftReviewMatch && req.method === "GET") {
+    const result = reviewMyTemplateDraft({
+      draftId: decodeURIComponent(myTemplateDraftReviewMatch[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateDraftActivationMatch = url.pathname.match(
+    /^\/api\/work-items\/my-template-drafts\/([^/]+)\/activate$/,
+  );
+  if (myTemplateDraftActivationMatch && req.method === "POST") {
+    const result = activateMyTemplateDraft({
+      draftId: decodeURIComponent(myTemplateDraftActivationMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateLearningCasesMatch = url.pathname.match(
+    /^\/api\/work-items\/my-template-drafts\/([^/]+)\/cases$/,
+  );
+  if (myTemplateLearningCasesMatch && req.method === "POST") {
+    const result = addMyTemplateLearningCase({
+      draftId: decodeURIComponent(myTemplateLearningCasesMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateDraftMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/my-template-draft$/);
+  if (myTemplateDraftMatch && req.method === "GET") {
+    const result = previewMyTemplateDraft({ workItemId: decodeURIComponent(myTemplateDraftMatch[1]) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (myTemplateDraftMatch && req.method === "POST") {
+    const result = createMyTemplateDraft({
+      workItemId: decodeURIComponent(myTemplateDraftMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateGovernanceResumeMatch = url.pathname.match(
+    /^\/api\/work-items\/my-template-governance\/([^/]+)\/resume-observation$/,
+  );
+  if (myTemplateGovernanceResumeMatch && req.method === "POST") {
+    const result = resumeMyTemplateGovernanceObservation({
+      familyId: decodeURIComponent(myTemplateGovernanceResumeMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const myTemplateOutcomeMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/my-template-outcome-feedback$/);
+  if (myTemplateOutcomeMatch && req.method === "POST") {
+    const result = recordMyTemplateOutcomeFeedback({
+      workItemId: decodeURIComponent(myTemplateOutcomeMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (url.pathname === "/api/work-items/attention" && req.method === "GET") {
     const result = listAttention(Object.fromEntries(url.searchParams), actor);
     sendJson(res, result.status, result.body);
@@ -260,8 +433,39 @@ export async function handleWorkItemRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/work-items/home-workbench" && req.method === "GET") {
+    const result = getHomeWorkbench(Object.fromEntries(url.searchParams), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (url.pathname === "/api/work-items/bulk" && req.method === "PATCH") {
     const result = bulkUpdateWorkItems(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const reportDraftMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/report-drafts(?:\/([^/]+)(?:\/(confirm|discard))?)?$/);
+  if (reportDraftMatch) {
+    const workItemId = decodeURIComponent(reportDraftMatch[1]);
+    const draftId = reportDraftMatch[2] ? decodeURIComponent(reportDraftMatch[2]) : null;
+    const command = reportDraftMatch[3] ?? null;
+    let result;
+    if (req.method === "GET" && !draftId) {
+      result = listReportDrafts({ workItemId }, actor);
+    } else if (req.method === "POST" && !draftId) {
+      result = generateReportDraft({ workItemId, ...(await readJson(req)) }, actor);
+    } else if (req.method === "GET" && draftId && !command) {
+      result = getReportDraft({ workItemId, draftId }, actor);
+    } else if (req.method === "PATCH" && draftId && !command) {
+      result = updateReportDraft({ workItemId, draftId, ...(await readJson(req)) }, actor);
+    } else if (req.method === "POST" && draftId && command === "confirm") {
+      result = confirmReportDraft({ workItemId, draftId, ...(await readJson(req)) }, actor);
+    } else if (req.method === "POST" && draftId && command === "discard") {
+      result = discardReportDraft({ workItemId, draftId, ...(await readJson(req)) }, actor);
+    } else {
+      return false;
+    }
     sendJson(res, result.status, result.body);
     return true;
   }
@@ -278,6 +482,137 @@ export async function handleWorkItemRoutes({
       return true;
     }
     return false;
+  }
+
+  if (url.pathname === "/api/work-items/external-funnel" && req.method === "GET") {
+    const result = getExternalIssueFunnel({ projectId: url.searchParams.get("projectId") ?? undefined }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/external-issues" && req.method === "GET") {
+    const provider = String(url.searchParams.get("provider") ?? "").toLowerCase();
+    const projectId = String(url.searchParams.get("projectId") ?? "");
+    const repository = String(url.searchParams.get("repository") ?? "").trim();
+    const project = state?.projects?.find((candidate) => candidate.id === projectId
+      && (actor?.teamId == null || (candidate.ownerTeamId ?? "team_local") === actor.teamId));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (!["gitlab", "gitea"].includes(provider) || !repository) {
+      sendJson(res, 400, { error: "invalid_provider_repository_or_issue", provider });
+      return true;
+    }
+    const intakeBlock = externalOperationBlocked(externalIssuePolicyFor(state, projectId), "intake");
+    if (intakeBlock) {
+      sendJson(res, 409, { error: intakeBlock, provider, projectId });
+      return true;
+    }
+    const result = await listExternalIssues({
+      provider,
+      repository,
+      query: url.searchParams.get("q") ?? "",
+      page: Number(url.searchParams.get("page") ?? 1),
+      perPage: Number(url.searchParams.get("limit") ?? 20),
+    });
+    sendJson(res, result.ok ? 200 : result.error === "provider_credentials_not_configured" ? 503 : 502, result);
+    return true;
+  }
+
+  // External issues enter the development system through this intake path.
+  // The endpoint snapshots the remote issue first, creates the Local Issue
+  // with that content, and records the provider/repository/number relation in
+  // the same service boundary. It never starts a worktree or an Agent.
+  if (url.pathname === "/api/work-items/from-external" && req.method === "POST") {
+    const body = await readJson(req);
+    const provider = String(body?.provider ?? "").toLowerCase();
+    const projectId = String(body?.projectId ?? "");
+    const issueNumber = Number(body?.issueNumber ?? body?.remote?.number);
+    if (!["github", "gitlab", "gitea"].includes(provider)) {
+      sendJson(res, 400, { error: "unsupported_external_provider", provider });
+      return true;
+    }
+    if (!projectId) {
+      sendJson(res, 400, { error: "invalid_external_issue_project", provider });
+      return true;
+    }
+    const intakeBlock = externalOperationBlocked(externalIssuePolicyFor(state, projectId), "intake");
+    if (intakeBlock) {
+      sendJson(res, 409, { error: intakeBlock, provider, projectId });
+      return true;
+    }
+    if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+      sendJson(res, 400, { error: "invalid_external_issue_number", provider });
+      return true;
+    }
+    if (!body?.remote && provider !== "github" && !String(body?.repository ?? "").trim()) {
+      sendJson(res, 400, { error: "invalid_provider_repository_or_issue", provider });
+      return true;
+    }
+    const remote = body?.remote ?? (provider === "github"
+      ? await fetchGithubIssue({ projectId, issueNumber })
+      : await fetchExternalIssue({ provider, repository: body?.repository, issueNumber }));
+    if (!remote || remote.ok === false) {
+      sendJson(res, remote?.error === "provider_credentials_not_configured" ? 503 : 502, {
+        error: remote?.error ?? "external_issue_fetch_failed", provider,
+      });
+      return true;
+    }
+    const result = createWorkItemFromExternal({
+      ...body,
+      projectId,
+      provider,
+      remote,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const restoreMaterialMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/materials\/([^/]+)\/restore$/);
+  if (restoreMaterialMatch && req.method === "POST") {
+    const result = restoreMaterial({
+      workItemId: decodeURIComponent(restoreMaterialMatch[1]),
+      assetId: decodeURIComponent(restoreMaterialMatch[2]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const materialsMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/materials(?:\/([^/]+))?$/);
+  if (materialsMatch && req.method === "POST" && !materialsMatch[2]) {
+    const result = addMaterials({ workItemId: decodeURIComponent(materialsMatch[1]), ...(await readJson(req)) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const contentReferenceMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/content-references(?:\/([^/]+))?$/);
+  if (contentReferenceMatch && req.method === "POST" && !contentReferenceMatch[2]) {
+    const result = await addContentReference({
+      workItemId: decodeURIComponent(contentReferenceMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (contentReferenceMatch && req.method === "DELETE" && contentReferenceMatch[2]) {
+    const result = removeContentReference({
+      workItemId: decodeURIComponent(contentReferenceMatch[1]),
+      referenceId: decodeURIComponent(contentReferenceMatch[2]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (materialsMatch && req.method === "DELETE" && materialsMatch[2]) {
+    const result = removeMaterial({
+      workItemId: decodeURIComponent(materialsMatch[1]),
+      assetId: decodeURIComponent(materialsMatch[2]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
   }
 
   const claimMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/(claim|release-claim|assign-to-me)$/);
@@ -311,6 +646,11 @@ export async function handleWorkItemRoutes({
       sendJson(res, detail.status, detail.body);
       return true;
     }
+    const intakeBlock = externalOperationBlocked(externalIssuePolicyFor(state, detail.body.workItem.projectId), "intake");
+    if (intakeBlock) {
+      sendJson(res, 409, { error: intakeBlock, projectId: detail.body.workItem.projectId });
+      return true;
+    }
     const body = await readJson(req);
     const provider = String(body?.provider ?? "").toLowerCase();
     const remote = body?.remote ?? (provider && body?.repository && body?.issueNumber
@@ -336,6 +676,13 @@ export async function handleWorkItemRoutes({
     const detail = getWorkItem({ workItemId: decodeURIComponent(externalSyncMatch[1]) }, actor);
     if (!detail.ok) {
       sendJson(res, detail.status, detail.body);
+      return true;
+    }
+    const externalPolicy = externalIssuePolicyFor(state, detail.body.workItem.projectId);
+    const syncOperation = ["push", "resolve_local"].includes(body?.direction) ? "writeback" : "sync";
+    const syncBlock = externalOperationBlocked(externalPolicy, syncOperation);
+    if (syncBlock) {
+      sendJson(res, 409, { error: syncBlock, provider, projectId: detail.body.workItem.projectId });
       return true;
     }
     const binding = detail.body.workItem.externalBindings?.find((candidate) => candidate.provider === provider || candidate.kind === `${provider}_issue`);
@@ -400,11 +747,26 @@ export async function handleWorkItemRoutes({
       return true;
     }
     const item = detail.body.workItem;
+    const githubOperation = githubMatch[2] === "link"
+      ? "intake"
+      : ["push", "resolve_local"].includes(body?.direction) ? "writeback" : "sync";
+    const githubBlock = externalOperationBlocked(externalIssuePolicyFor(state, item.projectId), githubOperation);
+    if (githubBlock) {
+      sendJson(res, 409, { error: githubBlock, provider: "github", projectId: item.projectId });
+      return true;
+    }
     if (githubMatch[2] === "link") {
       const issueNumber = Number(body?.issueNumber ?? body?.remote?.number);
       const remote = body?.remote ?? await fetchGithubIssue({ projectId: item.projectId, issueNumber });
       const result = remote
-        ? bindGithubIssue({ workItemId, expectedRevision: body?.expectedRevision, remote }, actor)
+        ? bindGithubIssue({
+          workItemId,
+          expectedRevision: body?.expectedRevision,
+          relation: body?.relation,
+          isPrimary: body?.isPrimary,
+          syncPolicy: body?.syncPolicy,
+          remote,
+        }, actor)
         : { status: 502, body: { error: "github_issue_fetch_failed" } };
       sendJson(res, result.status, result.body);
       return true;
@@ -523,6 +885,10 @@ export async function handleWorkItemRoutes({
       sendJson(res, 409, { error: "work_item_acceptance_incomplete", ...item.completionGate });
       return true;
     }
+    if (!item.executionContractGate?.ready) {
+      sendJson(res, 409, { error: "work_item_execution_contract_required", ...item.executionContractGate });
+      return true;
+    }
     const autoRun = detail.body.observability?.latestRun ?? null;
     const worktreeId = autoRun?.localDelivery?.worktreeId ?? null;
     if (!worktreeId || autoRun?.status !== "done" || autoRun.localDelivery?.deliveredAt) {
@@ -582,9 +948,28 @@ export async function handleWorkItemRoutes({
       sendJson(res, detail.status, detail.body);
       return true;
     }
-    const item = detail.body.workItem;
+    let item = detail.body.workItem;
     const body = await readJson(req);
     const kind = executionMatch[2] === "worktrees" ? "worktree" : "auto_run";
+    if (kind === "auto_run" && (!item.plannedDate || item.waitingOn !== "ai")) {
+      const timezoneOffset = Number(body?.timezoneOffset ?? 0);
+      if (!Number.isInteger(timezoneOffset) || timezoneOffset < -840 || timezoneOffset > 840) {
+        sendJson(res, 400, { error: "invalid_terminal_timezone_offset" });
+        return true;
+      }
+      const localToday = new Date(Date.now() - timezoneOffset * 60_000).toISOString().slice(0, 10);
+      const scheduled = updateWorkItem({
+        workItemId,
+        expectedRevision: item.revision,
+        ...(!item.plannedDate ? { plannedDate: localToday } : {}),
+        ...(item.waitingOn !== "ai" ? { waitingOn: "ai" } : {}),
+      }, actor);
+      if (!scheduled.ok) {
+        sendJson(res, scheduled.status, scheduled.body);
+        return true;
+      }
+      item = scheduled.body.workItem;
+    }
     const admission = beginExecution({
       workItemId,
       kind,
@@ -596,8 +981,10 @@ export async function handleWorkItemRoutes({
     }
     const operationId = admission.body.operation.id;
     const slug = String(item.title ?? "work").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "work";
-    const name = body?.name ?? `local-${item.localNumber}-${slug}`;
+    const name = body?.name ?? `local-${item.localNumber}-${slug}${kind === "auto_run" ? `-autorun-${Number(item.revision) || 0}` : ""}`;
     const link = { type: "local_issue", number: item.localNumber, title: item.title, url: null, state: item.state };
+    let reservedAutoRun = null;
+    let executionBindingRecorded = false;
     try {
       if (executionMatch[2] === "worktrees") {
         const result = createWorktree({
@@ -612,14 +999,14 @@ export async function handleWorkItemRoutes({
         sendJson(res, 201, result);
         return true;
       }
-      const issueBody = [
-        item.body,
-        item.acceptanceCriteria?.length ? `Acceptance criteria:\n${item.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}` : "",
-      ].filter(Boolean).join("\n\n");
-      const result = await startAutoRun({
-        projectId: item.projectId, link, name, baseBranch: body?.baseBranch,
-        agentId: body?.agentId, actor, issueBody,
+      // Persist the Run before drafting or checking its execution contract. At
+      // this point there is deliberately no worktree and therefore no writable
+      // execution environment.
+      const reserved = await reserveAutoRun({
+        projectId: item.projectId, link, localIssueId: item.id, name, baseBranch: body?.baseBranch,
+        agentId: body?.agentId, actor, issueBody: item.body,
         executionChainId: item.id,
+        taskMaterialWorkItemId: item.id,
         terminalId: item.terminalId,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"
@@ -627,18 +1014,25 @@ export async function handleWorkItemRoutes({
             ? "high"
             : "standard",
       });
+      reservedAutoRun = reserved.autoRun;
       const recorded = recordExecutionBinding({
-        workItemId, kind: "auto_run", targetId: result.autoRun.id, worktreeId: result.worktree?.id ?? result.autoRun.worktreeId,
+        workItemId, kind: "auto_run", targetId: reserved.autoRun.id, worktreeId: null,
         operationId,
       }, actor);
       if (!recorded.ok) throw new Error(recorded.body?.error ?? "work_item_execution_binding_failed");
-      sendJson(res, 201, result);
+      executionBindingRecorded = true;
+      item = recorded.body.workItem;
+      enqueueAutoRunUnderstanding(reserved.autoRun.id);
+      sendJson(res, 202, { autoRun: reserved.autoRun, worktree: null, invocation: null });
     } catch (error) {
-      abortExecution({
-        workItemId,
-        operationId,
-        reason: error instanceof Error ? error.message : String(error),
-      }, actor);
+      if (reservedAutoRun) failAutoRunUnderstanding(reservedAutoRun.id, error);
+      if (!executionBindingRecorded) {
+        abortExecution({
+          workItemId,
+          operationId,
+          reason: error instanceof Error ? error.message : String(error),
+        }, actor);
+      }
       sendJson(res, 400, { error: "work_item_execution_failed", message: error instanceof Error ? error.message : String(error) });
     }
     return true;
@@ -669,6 +1063,14 @@ export async function handleWorkItemRoutes({
       return true;
     }
     return false;
+  }
+
+  const progressMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/progress$/);
+  if (progressMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(progressMatch[1]);
+    const result = recordWorkItemProgress({ workItemId, ...(await readJson(req)) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
   }
 
   const match = url.pathname.match(/^\/api\/work-items\/([^/]+)(?:\/(close|reopen|archive|restore|activity))?$/);

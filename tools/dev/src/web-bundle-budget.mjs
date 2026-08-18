@@ -1,11 +1,15 @@
 export const ENTRY_BUNDLE_LIMITS = Object.freeze({
   "index.html": 525_000,
-  "src/features/tasks/task-view.tsx": 140_000,
+  "src/features/tasks/local-tasks-view.tsx": 140_000,
   "src/features/auto-runs/auto-runs-view.tsx": 110_000,
+  "src/features/local-content/local-library-view.tsx": 30_000,
 });
 
 export const INITIAL_JS_WARNING_BYTES = 780_000;
-export const INITIAL_JS_HARD_LIMIT_BYTES = 800_000;
+// A first-level Local Library adds only shell registration and navigation copy
+// to the initial graph; its implementation remains route-lazy and has its own
+// hard budget above. Preserve that deliberate 2 kB shell allowance explicitly.
+export const INITIAL_JS_HARD_LIMIT_BYTES = 802_000;
 
 export function evaluateInitialJsBudget(
   size,

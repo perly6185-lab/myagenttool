@@ -96,6 +96,7 @@ function sendHarness({ draftStatus = "draft", credential = "authorized", withAge
       inReplyTo: "<orig@example.com>",
       references: ["<orig@example.com>"],
       body: "Fixed in v2. Thanks for the report.",
+      attachments: [],
       ownerTeamId: "team_a",
       provenance: { originalMessageId: "<orig@example.com>", issueNumber: 42 },
     }],
@@ -155,6 +156,7 @@ test("a confirmed draft sends with one approved action; the payload is resolved 
       inReplyTo: "<orig@example.com>",
       references: ["<orig@example.com>"],
       body: "Fixed in v2. Thanks for the report.",
+      attachments: [],
     }, "every outbound field comes from the draft row — nothing from the call");
     assert.equal(invocation.options.toolName, "mail_send");
     assert.equal(state.mailDrafts[0].status, "sending");
@@ -165,6 +167,21 @@ test("a confirmed draft sends with one approved action; the payload is resolved 
     const again = service.sendConfirmedDraft({ draftId: "maildraft_1", approvalToken: grantFor("maildraft_1"), actor: ACTOR });
     assert.equal(again.status, 409);
     assert.equal(again.body.error, "mail_draft_not_sendable");
+  } finally {
+    setSendFlag(false);
+  }
+});
+
+test("a user-authored draft grant is bound to the reviewed revision", () => {
+  setSendFlag(true);
+  try {
+    const harness = sendHarness();
+    harness.state.mailDrafts[0].revision = 2;
+    const stale = harness.service.sendConfirmedDraft({ draftId: "maildraft_1", approvalToken: harness.grantFor("maildraft_1@1"), actor: ACTOR });
+    assert.equal(stale.body.error, "approval_required");
+    assert.equal(harness.state.mailDrafts[0].status, "draft");
+    const current = harness.service.sendConfirmedDraft({ draftId: "maildraft_1", approvalToken: harness.grantFor("maildraft_1@2"), actor: ACTOR });
+    assert.equal(current.status, 202);
   } finally {
     setSendFlag(false);
   }
@@ -205,12 +222,14 @@ test("the receipt fold: sent with receipt; provider refusal returns the draft to
   try {
     // Sent with a receipt.
     const okCase = sendHarness();
+    okCase.state.mailDrafts[0].sendError = "previous attempt failed";
     okCase.service.sendConfirmedDraft({ draftId: "maildraft_1", approvalToken: okCase.grantFor("maildraft_1"), actor: ACTOR });
     okCase.service.recordMailSendResult({
       invocation: { ...okCase.created[0], status: "succeeded" },
       result: { output: { sentMessageId: "<provider-123@gmail>" } },
     });
     assert.equal(okCase.state.mailDrafts[0].status, "sent");
+    assert.equal(okCase.state.mailDrafts[0].sendError, null);
     assert.equal(okCase.state.mailDrafts[0].receipt.providerMessageId, "<provider-123@gmail>");
     assert(okCase.events.some((e) => e.type === "mail_send_completed"));
 

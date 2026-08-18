@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { LOCAL_TEAM_ID, teamOf } from "./auth.mjs";
 import { listDevices } from "./device.mjs";
 import { backfillTerminalOwnership } from "./terminal-ownership.mjs";
+import { backfillWorkItemFollowUpContext } from "../services/work-item-follow-up.mjs";
 
 // Durable atomic snapshot write. `writeFileSync` truncates the target in place
 // and does not fsync, so a crash mid-write left a torn file — and restore's
@@ -68,6 +69,9 @@ export const persistedArrayKeys = [
   "deployments",
   "compareRuns",
   "worktreeReviews",
+  // Session-manager durable rows (one per registered site) — without this the
+  // SQLite backing silently drops probe/reseed history on restart.
+  "sessions",
   "events",
   "refusals",
   "traces",
@@ -99,16 +103,36 @@ export const persistedArrayKeys = [
   "codexExecChangeReviews",
   "claudeApplyAuthorizations",
   "applicationResults",
+  "mailDrafts",
+  "mailMessageStates",
+  "mailTaskLinks",
+  "mailClassifications",
+  "mailClassificationJobs",
+  "mailClassificationCorrections",
+  "mailClassificationRules",
+  "mailFolderMovePreviews",
+  "mailFolderMoveJobs",
+  "mailFolderMoveDeduplication",
+  "mailFolderAutomations",
+  "mailReplies",
   "budgets",
   "budgetReservations",
   "decisionSoftClaims",
   "issueClaims",
   "issueClaimEvents",
   "workItems",
+  "myTemplateRoutingFeedback",
+  "myTemplateOutcomeFeedback",
+  "myTemplateGovernanceInterventions",
+  "myTemplateDrafts",
+  "myTemplateLearningCases",
+  "templateLearningTasks",
+  "taskMaterialDrafts",
   "runtimeWorkSchedules",
   "workItemAutoRunBatches",
   "workItemComments",
   "workItemActivities",
+  "workItemReportDrafts",
   "workItemAttentionOperations",
   "articleImportJobs",
   "githubWorkItemWebhookDeliveries",
@@ -178,7 +202,10 @@ export const persistedArrayKeys = [
   "channelEvents",
   "channelConversations",
   "channelDeliveries",
+  "channelIntakeGroups",
+  "channelTaskThreads",
   "channelTaskRequests",
+  "ilinkAccounts",
 ];
 
 // NOTE: `devices` is deliberately absent from both key lists — it restores
@@ -207,6 +234,7 @@ export const persistedObjectKeys = [
   "reportSchedule",
   // When refusal recording began (work-report coverage-honesty anchor).
   "refusalStatsMeta",
+  "channelIntentMetrics",
 ];
 
 // Collections that carry BOTH a self-stamped owning team AND a project link. The
@@ -229,6 +257,12 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "workflowIntakeReceipts", owner: "ownerTeamId" },
   { key: "workflowAdaptivePolicies", owner: "ownerTeamId" },
   { key: "workflowAdaptiveFeedback", owner: "ownerTeamId" },
+  { key: "myTemplateRoutingFeedback", owner: "ownerTeamId" },
+  { key: "myTemplateOutcomeFeedback", owner: "ownerTeamId" },
+  { key: "myTemplateGovernanceInterventions", owner: "ownerTeamId" },
+  { key: "myTemplateDrafts", owner: "ownerTeamId" },
+  { key: "myTemplateLearningCases", owner: "ownerTeamId" },
+  { key: "templateLearningTasks", owner: "ownerTeamId" },
   { key: "workflowAdaptiveMonitors", owner: "ownerTeamId" },
   { key: "workflowAdaptiveOutcomes", owner: "ownerTeamId" },
   { key: "workflowAdaptiveLearningDrafts", owner: "ownerTeamId" },
@@ -346,7 +380,7 @@ export function captureSeededDefaults(state) {
  *   - merge new seeded defaults into agents / object singletons / devices (version upgrades),
  *   - repair duplicate ids, force every device offline (a restart implies no liveness),
  *   - surface ownership-inconsistent records as an auditable diagnostic.
- * Operates in place; returns { duplicateIdsRepaired, ownershipInconsistencies }.
+ * Operates in place; returns repair and compatibility-migration counts.
  */
 export function normalizeLoadedState(state, { seededDefaults, defaultProject, sameProjectPath }) {
   const same = typeof sameProjectPath === "function" ? sameProjectPath : (a, b) => a === b;
@@ -402,8 +436,14 @@ export function normalizeLoadedState(state, { seededDefaults, defaultProject, sa
   }
 
   const terminalOwnershipBackfilled = backfillTerminalOwnership(state);
+  const workItemFollowUpBackfilled = backfillWorkItemFollowUpContext(state);
   const ownershipInconsistencies = detectOwnershipInconsistencies(state);
-  return { duplicateIdsRepaired, ownershipInconsistencies, terminalOwnershipBackfilled };
+  return {
+    duplicateIdsRepaired,
+    ownershipInconsistencies,
+    terminalOwnershipBackfilled,
+    workItemFollowUpBackfilled,
+  };
 }
 
 export function createPersistenceRuntime({
@@ -561,7 +601,7 @@ export function createPersistenceRuntime({
     else if (isPlainObject(snapshot.device)) state.devices = [snapshot.device];
     if (Number.isFinite(snapshot.idCounter)) state.idCounter = snapshot.idCounter;
 
-    const { duplicateIdsRepaired, ownershipInconsistencies } = normalizeLoadedState(state, {
+    const { duplicateIdsRepaired, ownershipInconsistencies, workItemFollowUpBackfilled } = normalizeLoadedState(state, {
       seededDefaults,
       defaultProject,
       sameProjectPath,
@@ -595,7 +635,7 @@ export function createPersistenceRuntime({
       );
     }
 
-    return { duplicateIdsRepaired, ownershipInconsistencies };
+    return { duplicateIdsRepaired, ownershipInconsistencies, workItemFollowUpBackfilled };
   }
 
   return {
