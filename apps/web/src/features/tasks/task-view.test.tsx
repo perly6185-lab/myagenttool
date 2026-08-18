@@ -300,9 +300,12 @@ describe("TaskView local work items", () => {
     render(<TaskView localOnly />);
 
     expect(screen.getByText("Local").parentElement?.className).toContain("hidden");
+    const externalWork = screen.getByRole("button", { name: "External work" });
+    expect(externalWork.closest("details")?.open).toBe(false);
     const moreTools = screen.getByText("More task tools");
     expect(moreTools).toBeTruthy();
     fireEvent.click(moreTools);
+    expect(externalWork.closest("details")?.open).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Task status" }));
     expect(mocks.setSection).toHaveBeenCalledWith("workBoard");
     fireEvent.click(screen.getByRole("button", { name: /New task/i }));
@@ -343,6 +346,14 @@ describe("TaskView local work items", () => {
       q: "customer handoff",
       limit: "100",
     })));
+  });
+
+  it("keeps one unambiguous new-task action on the empty ordinary board", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+
+    await screen.findByText("No tasks yet");
+    expect(screen.getAllByRole("button", { name: /New task/i })).toHaveLength(1);
   });
 
   it("asks before discarding an unsaved ordinary task", async () => {

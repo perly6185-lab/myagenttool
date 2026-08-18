@@ -20,13 +20,15 @@ import {
   Search,
   Send,
   ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
   X,
 } from "lucide-react";
 import { SectionHeading } from "@/components/common/section-heading";
 import { ConfirmModal } from "@/components/common/confirm-modal";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import { api, ApiError, type MailboxDraft, type MailboxMessage, type MailDraftAttachment } from "@/lib/api-client";
+import { api, ApiError, type MailboxAccount, type MailboxDraft, type MailboxMessage, type MailClassification, type MailClassificationJob, type MailClassificationQuality, type MailClassificationRule, type MailClassificationRuleSuggestion, type MailFolderAutomation, type MailFolderMoveJob, type MailFolderMovePreview, type MailFolderSuggestion, type MailDraftAttachment, type MailSemanticPreview, type MailSmartView } from "@/lib/api-client";
 import { mailApi } from "@/features/mail/mail-api";
 import { normalizeCid, PlainMailBody, SafeHtmlMailBody } from "@/features/mail/safe-mail-content";
 import { useConsoleState } from "@/data/use-console-state";
@@ -46,10 +48,177 @@ const COPY = {
     syncing: "正在收取…",
     syncComplete: "收取完成，收件箱已更新。",
     syncFailed: "暂时无法收取新邮件。已有邮件仍然保留，请重试；若持续失败，请检查连接。",
+    organize: "智能分类",
+    organizing: "正在智能分类…",
+    organizeComplete: "智能分类已完成。你可以通过智能分类视图快速查看。",
+    organizeFailed: "暂时无法完成智能分类，现有邮件不受影响，请稍后重试。",
+    deepOrganize: "深度整理",
+    deepTitle: "深度整理最近邮件",
+    deepHint: "使用你在本机配置的模型，进一步判断已打开邮件的正文。",
+    deepLoading: "正在检查可整理的邮件…",
+    deepUnavailable: "本机语义模型尚未配置。基础整理仍可正常使用。",
+    deepCircuit: "本机模型连续失败，已暂时暂停。稍后可重试，基础分类不受影响。",
+    deepEligible: "将处理 {{count}} 封已打开且正文已缓存的邮件。",
+    deepRange: "范围：{{from}} 至 {{to}}",
+    deepLocal: "正文只发送到本机模型，不会发往外部服务。",
+    deepCachedOnly: "不会下载尚未打开的正文，也不会读取附件。",
+    deepNoActions: "只更新分类建议，不会移动、删除、回复或创建任务。",
+    deepStart: "确认并开始",
+    deepStarting: "正在开始…",
+    deepNoPending: "已打开的邮件都已完成深度整理。",
+    deepProgress: "已处理 {{processed}} / {{total}}",
+    deepCompleted: "深度整理完成，新的分类建议已更新。",
+    deepDegraded: "基础整理可用，但部分邮件未能完成深度判断。",
+    deepCancelled: "已取消深度整理，已完成的结果会保留。",
+    cancelDeep: "取消整理",
+    cancellingDeep: "正在取消…",
+    smartViews: { all: "全部", needs_attention: "待处理", important: "重要", notifications: "通知与回执", subscriptions: "订阅与推广", other: "其他" },
+    classificationWhy: "分类建议：{{reason}}",
+    uncertainClassification: "可能不准确",
+    classificationWrong: "分类不对",
+    correctionTitle: "调整邮件分类",
+    correctionHint: "选择更合适的位置。只改变智能视图，不会移动、删除或回复邮件。",
+    correctionLabel: "放到",
+    correctionSave: "保存调整",
+    correctionSaving: "正在保存…",
+    correctionFailed: "暂时无法保存分类调整，请重试。",
+    rules: "智能分类设置",
+    organizeMenu: "智能分类",
+    organizeMenuTitle: "智能分类",
+    organizeMenuHint: "智能分类只更新视图；邮箱目录和自动整理会在单独确认后处理低风险邮件。",
+    organizeBasicHint: "使用邮件头快速分类新邮件",
+    organizeDeepHint: "使用本机模型分析已打开的邮件",
+    organizeRulesHint: "查看和管理你的分类习惯",
+    rulesTitle: "智能分类与邮箱目录",
+    rulesHint: "系统只会根据多次一致的手动调整提出建议。智能分类规则只更新视图；自动整理需稳定达标并单独确认。",
+    rulesLoading: "正在读取规则…",
+    rulesFailed: "暂时无法读取或更新智能分类设置，请重试。",
+    rulesSuggestions: "建议启用",
+    rulesExisting: "已创建的规则",
+    rulesSuggestionEmpty: "暂无新建议。继续调整分类，出现稳定习惯后会显示在这里。",
+    rulesExistingEmpty: "尚未启用任何个人智能分类规则。",
+    rulesSuggestionNotice: "发现 {{count}} 条可复用的分类习惯",
+    rulesSuggestionNoticeHint: "查看影响范围后，可选择是否用于以后的邮件。",
+    mobileSuggestionNotice: "有 {{count}} 条整理建议",
+    mobileSuggestionNoticeHint: "按需查看，不影响正常收取和阅读邮件。",
+    rulesReview: "查看建议",
+    rulesMatchSender: "发件人 {{value}}",
+    rulesMatchDomain: "域名 {{value}}",
+    rulesEvidence: "基于 {{count}} 次一致调整",
+    rulesAffected: "当前将影响 {{count}} 封邮件",
+    rulesFutureOnly: "当前没有未手动调整的匹配邮件；规则仍可用于以后收到的邮件。",
+    rulesSamples: "影响样例",
+    rulesEnable: "启用规则",
+    rulesEnabling: "正在启用…",
+    rulesUpdating: "正在更新…",
+    rulesActive: "已启用",
+    rulesPaused: "已暂停",
+    rulesRevoked: "已撤销",
+    rulesPause: "暂停",
+    rulesResume: "恢复",
+    rulesRevoke: "撤销",
+    rulesEdit: "修改分类",
+    rulesSave: "保存规则",
+    rulesNoActions: "规则只改变智能视图，单封邮件的手动调整始终优先。",
+    rulesAccount: "邮箱：{{value}}",
+    rulesEditing: "正在修改：{{match}}",
+    rulesEnabledSuccess: "规则已启用，以后的匹配邮件将进入所选智能视图。",
+    rulesUpdatedSuccess: "规则已更新。",
+    rulesSavedSuccess: "规则分类已保存。",
+    qualityTitle: "整理质量",
+    qualityCollecting: "正在积累本地样本",
+    qualityHealthy: "当前整理表现稳定",
+    qualityNeedsAttention: "建议先检查分类结果",
+    qualityCollectingHint: "至少积累 {{count}} 封已智能分类邮件后再判断稳定性；样本不足不会开启更多自动操作。",
+    qualityHealthyHint: "当前本地信号均在建议范围内，这只是使用质量信号，不代表绝对准确率。",
+    qualityNeedsAttentionHint: "“其他”、手动调整或任务失败偏多。建议先检查规则并继续纠正，不会自动扩大整理范围。",
+    qualityCoverage: "已整理",
+    qualityUnknown: "归入其他",
+    qualityCorrections: "手动调整",
+    qualityJobFailures: "处理失败",
+    qualityMoveResults: "目录批次待核对 {{unconfirmed}} / {{total}}",
+    qualityMoveCollecting: "邮箱目录批次不足，暂不判断稳定性。",
+    qualityPrivacy: "只在本机汇总数量，不包含邮件主题、发件人或正文。",
+    qualityLoading: "正在计算本地质量…",
+    qualityFailed: "暂时无法读取整理质量，请重试。",
+    folderSuggestions: "邮箱目录建议",
+    folderSuggestionNotice: "发现 {{count}} 条邮箱目录建议",
+    folderSuggestionNoticeHint: "可以先查看哪些邮件可能适合放入同一目录；当前不会移动邮件。",
+    folderSuggestionEmpty: "暂无邮箱目录建议。启用稳定的订阅或通知智能分类规则后，建议会显示在这里。",
+    folderSuggestionLoading: "正在检查目录建议…",
+    folderSuggestionFailed: "暂时无法读取或预览目录建议，请重试。",
+    folderSuggestedExisting: "建议放入已有目录：{{value}}",
+    folderSuggestedNew: "建议新目录：{{value}}",
+    folderDestination: "预览目标目录",
+    folderAccount: "邮箱",
+    folderAffected: "{{count}} 封邮件符合条件",
+    folderProtected: "另有 {{count}} 封重要或待处理邮件已自动排除",
+    folderPreview: "预览邮件",
+    folderPreviewing: "正在生成预览…",
+    folderPreviewTitle: "邮箱目录预览",
+    folderPreviewHint: "这是只读预览，不会创建目录或移动邮件。",
+    folderPreviewCount: "本次预览 {{selected}} 封，共匹配 {{total}} 封",
+    folderPreviewRemaining: "其余 {{count}} 封将在后续批次中处理。",
+    folderPreviewNoMove: "当前不会移动任何邮件。需要执行移动时，系统会另行展示完整清单并再次要求确认。",
+    folderMoveConfirm: "确认并移动 {{count}} 封",
+    folderMoveStarting: "正在提交…",
+    folderMoveProgress: "正在整理 {{count}} 封邮件…",
+    folderMoveSuccess: "已将 {{count}} 封邮件移入目标目录。",
+    folderMoveUnconfirmed: "服务商没有返回完整结果。请先重新收取邮件，确认实际位置后再创建新预览；系统不会自动重试。",
+    folderMoveFailed: "暂时无法更新邮箱目录，请重新生成预览后再试。",
+    folderMovePermission: "启用邮箱目录权限",
+    folderMovePermissionHint: "目录创建和移动使用独立授权，不影响正常收信和发信。",
+    connectOrganize: "连接邮箱目录权限",
+    connectOrganizeHint: "仅用于目录创建和邮件移动。手动移动每批最多 50 封并逐批确认；你另行启用的稳定自动规则每批最多 10 封，可随时暂停。",
+    organizeConnected: "邮箱目录权限已连接",
+    folderMoveRecoveryNotice: "有一批邮箱目录结果需要核对",
+    folderMoveRecoveryHint: "系统不会自动重试。重新收取邮件后，请检查邮件的实际位置。",
+    folderMoveReviewStatus: "查看状态",
+    folderMoveReconcile: "核对同步结果",
+    folderMoveReconciling: "正在核对…",
+    folderMoveReconciled: "已根据同步结果确认这批邮件的位置。",
+    folderMoveReconcileFailed: "暂时无法核对，请先完成收取邮件后重试。",
+    folderMoveRecoverable: "已确认还有 {{count}} 封留在原目录，可生成新的确认预览。",
+    folderMoveConflict: "部分邮件位置仍不明确，已停止自动处理，请手动检查。",
+    folderAutomationTitle: "自动整理",
+    folderAutomationEmpty: "尚未启用自动整理。只有智能分类和邮箱目录批次都稳定后才可开启。",
+    folderAutomationEnable: "启用自动整理",
+    folderAutomationConfirmTitle: "确认自动整理",
+    folderAutomationConfirmHint: "这是持续生效的邮箱写入授权，请确认范围和目标目录。",
+    folderAutomationConfirm: "确认并启用",
+    folderAutomationScope: "以后每次收取邮件后，最多自动整理 {{count}} 封符合此规则的新邮件。",
+    folderAutomationStandingConsent: "启用后，匹配邮件不再逐批询问；你可以随时暂停或撤销。",
+    folderAutomationSafety: "待处理、重要、账号安全和手动调整邮件始终排除；任一批结果不确定时规则会立即暂停。",
+    folderAutomationQualityRequired: "需至少 50 封稳定智能分类和 10 个稳定邮箱目录批次后才能开启自动整理。",
+    folderAutomationEnabled: "自动整理已启用；每批最多 10 封，异常时会自动暂停。",
+    folderAutomationFailed: "暂时无法启用或更新自动整理，请检查质量状态和邮箱目录权限。",
+    folderAutomationActive: "自动整理已启用",
+    folderAutomationPaused: "自动整理已暂停",
+    folderAutomationNeedsReview: "上次执行或质量信号异常，需要重新授权后才能恢复。",
+    folderAutomationDryRun: "试运行",
+    folderAutomationDryRunning: "正在试运行…",
+    folderAutomationDryRunResult: "试运行：本批将整理 {{selected}} 封，排除 {{excluded}} 封；未调用邮箱服务商。",
+    folderAutomationLastSuccess: "最近成功：{{time}}",
+    folderAutomationSuccessStreak: "连续成功 {{count}} 批",
+    folderAutomationLastChecked: "最近核对：{{time}}",
+    folderAutomationPauseUser: "你已暂停；准备好后可以恢复。",
+    folderAutomationPauseSync: "结果需要核对；请先收取新邮件并查看实际位置。",
+    folderAutomationPauseQuality: "智能分类质量暂未达标；请先检查并纠正分类。",
+    folderAutomationPauseRollout: "当前发布阶段未开放自动整理；历史授权和记录仍然保留。",
+    folderAutomationPauseAuthorize: "规则或邮箱目录发生变化；请重新确认自动整理。",
+    folderHistoryTitle: "邮箱目录操作历史",
+    folderHistoryEmpty: "尚无目录移动记录。",
+    folderHistoryManual: "手动确认",
+    folderHistoryAutomatic: "自动规则",
+    folderHistoryRecovery: "失败恢复",
+    folderHistorySucceeded: "已移动 {{count}} 封",
+    folderHistoryMoving: "进行中",
+    folderHistoryRecoverable: "{{count}} 封可重试",
+    folderHistoryNeedsReview: "待核对",
     loadFailed: "邮箱暂时无法加载。已有邮件和草稿没有丢失，请重试。",
     retry: "重新加载",
     lastSynced: "上次收取：{{time}}",
-    search: "搜索此文件夹内已收取的邮件",
+    search: "搜索此邮箱目录内已收取的邮件",
     searchEmpty: "没有找到匹配的邮件",
     previousPage: "上一页",
     nextPage: "下一页",
@@ -70,8 +239,8 @@ const COPY = {
     archiveAvailable: "原始邮件和附件已安全保存在本机，可离线读取。",
     archiveUnavailable: "邮件正文已收取，但原始邮件尚未保存在本机；附件仍需连接邮箱读取。",
     attachmentLocal: "本机可用",
-    cursorReset: "邮箱文件夹发生变化，已安全重新收取最近邮件。",
-    folderSyncError: "部分文件夹暂时无法更新，其他邮件已正常保留。请稍后再次收取。",
+    cursorReset: "邮箱目录发生变化，已安全重新收取最近邮件。",
+    folderSyncError: "部分邮箱目录暂时无法更新，其他邮件已正常保留。请稍后再次收取。",
     connected: "已连接",
     receiveOnly: "当前可收件；发件权限尚未连接",
     folders: { inbox: "收件箱", drafts: "草稿", sent: "已发送", outbox: "发件箱" },
@@ -83,6 +252,7 @@ const COPY = {
     loadingBody: "正在安全读取邮件正文…",
     bodyUnavailable: "正文尚未下载。你可以重新收取邮件后再试。",
     htmlTextNotice: "这封邮件包含 HTML。默认显示经过转换的安全文本，不会加载远程图片。",
+    htmlTextNoticeCompact: "含 HTML，当前显示安全文本。",
     viewSafeHtml: "查看安全排版",
     viewPlainText: "返回纯文本",
     safeHtmlTitle: "安全邮件内容",
@@ -94,6 +264,7 @@ const COPY = {
     inlineImagesLoading: "正在安全加载邮件内嵌图片…",
     bodyTruncated: "这封邮件超过本地安全读取上限，当前正文并不完整。请到邮箱服务商查看原文。",
     reply: "回复",
+    replyDraft: "写回复草稿",
     issue: "已关联任务来源 #{{number}}",
     createTask: "转为任务",
     linkedTask: "已关联 {{ref}}",
@@ -115,6 +286,9 @@ const COPY = {
     taskTitleRequired: "请填写任务标题。",
     taskAttachmentDesktopOnly: "邮件附件只能在桌面版中转入任务；你可以取消附件选择后继续。",
     untrusted: "邮件内容来自外部。系统只把它当作内容展示，不会将其中的文字当成操作指令。",
+    securityStored: "安全显示 · 已保存在本机",
+    securityOnline: "安全显示 · 附件读取需要邮箱连接",
+    securityDetails: "安全与保存详情",
     back: "返回邮件列表",
     connectTitle: "连接你的邮箱",
     connectHint: "连接后即可在这里收件。登录信息只保存在这台电脑上。",
@@ -124,18 +298,20 @@ const COPY = {
     attentionAction: "检查连接",
     manageConnection: "管理邮箱连接",
     receiveReady: "收件已连接",
+    readyToConnect: "可连接",
     sendNotReady: "发件尚未连接",
+    connectSending: "连接发件",
     connectorTitle: "连接邮箱",
     connectorDescription: "跟着两步完成；系统会自动验证，不需要填写服务器地址。",
     provider163: "163 邮箱",
-    provider163Hint: "支持文件夹、增量收取和服务商已读状态同步",
+    provider163Hint: "支持邮箱目录、增量收取和服务商已读状态同步",
     upgradeBadge: "需要升级",
     upgradeTitle: "升级现有邮箱连接",
-    upgradeHint: "为了继续使用文件夹、增量收取和服务商已读同步，请重新输入一次客户端授权码。原有邮件和草稿不会丢失。",
+    upgradeHint: "为了继续使用邮箱目录、增量收取和服务商已读同步，请重新输入一次客户端授权码。原有邮件和草稿不会丢失。",
     upgradeAction: "升级并测试收件",
     providerGmail: "Gmail",
     comingSoon: "即将支持",
-    desktopOnly: "请在 MyAgentTool 桌面版中连接邮箱。网页不会接触你的登录信息。",
+    desktopOnly: "请打开 MyAgentTool 桌面版，进入“我的邮箱”并再次点击“连接邮箱”。当前网页不会接触你的登录信息。",
     accountEmail: "163 邮箱地址",
     authorizationCode: "客户端授权码",
     authorizationPlaceholder: "不是邮箱登录密码",
@@ -145,7 +321,7 @@ const COPY = {
     connectAndTest: "连接并测试收件",
     testing: "正在验证…",
     connectSuccess: "收件连接成功",
-    connectSuccessHint: "现在可以收取各文件夹的新邮件并同步已读状态；发件可在下一步单独连接。",
+    connectSuccessHint: "现在可以收取各邮箱目录的新邮件并同步已读状态；发件可在下一步单独连接。",
     done: "完成",
     reconnect: "重新连接",
     connectSend: "连接发件权限",
@@ -211,6 +387,173 @@ const COPY = {
     syncing: "Getting mail…",
     syncComplete: "Mail received. Your inbox is up to date.",
     syncFailed: "New mail could not be retrieved. Existing mail is safe. Try again, then check the connection if it continues.",
+    organize: "Smart classification",
+    organizing: "Classifying…",
+    organizeComplete: "Smart classification is complete. Use smart classification views to focus on what matters.",
+    organizeFailed: "Smart classification is unavailable. Existing messages are unchanged; try again.",
+    deepOrganize: "Deep organize",
+    deepTitle: "Deep organize recent mail",
+    deepHint: "Use your locally configured model to refine already-opened messages from their cached text.",
+    deepLoading: "Checking eligible messages…",
+    deepUnavailable: "A local semantic model is not configured. Basic organization remains available.",
+    deepCircuit: "The local model failed repeatedly and is temporarily paused. Basic classification is unaffected.",
+    deepEligible: "This will process {{count}} opened messages with cached text.",
+    deepRange: "Range: {{from}} to {{to}}",
+    deepLocal: "Message text goes only to the local model, never an external service.",
+    deepCachedOnly: "Unopened bodies are not downloaded, and attachments are not read.",
+    deepNoActions: "Only suggestions change; mail is never moved, deleted, replied to, or turned into tasks.",
+    deepStart: "Confirm and start",
+    deepStarting: "Starting…",
+    deepNoPending: "All eligible opened messages are already deeply organized.",
+    deepProgress: "Processed {{processed}} of {{total}}",
+    deepCompleted: "Deep organization is complete and suggestions are updated.",
+    deepDegraded: "Basic organization is available, but some messages could not be deeply classified.",
+    deepCancelled: "Deep organization was cancelled. Completed results are kept.",
+    cancelDeep: "Cancel organization",
+    cancellingDeep: "Cancelling…",
+    smartViews: { all: "All", needs_attention: "Needs attention", important: "Important", notifications: "Notifications & receipts", subscriptions: "Subscriptions & promotions", other: "Other" },
+    classificationWhy: "Classification suggestion: {{reason}}",
+    uncertainClassification: "May be inaccurate",
+    classificationWrong: "Wrong category",
+    correctionTitle: "Adjust email category",
+    correctionHint: "Choose a better smart view. This will not move, delete, or reply to the email.",
+    correctionLabel: "Move to",
+    correctionSave: "Save adjustment",
+    correctionSaving: "Saving…",
+    correctionFailed: "The category adjustment could not be saved. Try again.",
+    rules: "Smart classification settings",
+    organizeMenu: "Smart classification",
+    organizeMenuTitle: "Smart classification",
+    organizeMenuHint: "Smart classification only updates views. Mailbox folders and automatic organization handle low-risk mail after separate confirmation.",
+    organizeBasicHint: "Quickly classify new mail from message headers",
+    organizeDeepHint: "Use the local model on already-opened mail",
+    organizeRulesHint: "Review and manage your category habits",
+    rulesTitle: "Smart classification & mailbox folders",
+    rulesHint: "Suggestions appear only after repeated, consistent manual adjustments. Smart classification rules update views; automatic organization requires a separate confirmation after quality gates pass.",
+    rulesLoading: "Loading rules…",
+    rulesFailed: "Smart classification settings could not be loaded or updated. Try again.",
+    rulesSuggestions: "Suggested rules",
+    rulesExisting: "Created rules",
+    rulesSuggestionEmpty: "No new suggestions. Keep adjusting categories and stable patterns will appear here.",
+    rulesExistingEmpty: "No personal smart classification rules have been enabled yet.",
+    rulesSuggestionNotice: "Found {{count}} reusable category habits",
+    rulesSuggestionNoticeHint: "Review the impact, then choose whether to use them for future mail.",
+    mobileSuggestionNotice: "{{count}} organization suggestions",
+    mobileSuggestionNoticeHint: "Review them when convenient. Receiving and reading mail are unaffected.",
+    rulesReview: "Review suggestions",
+    rulesMatchSender: "Sender {{value}}",
+    rulesMatchDomain: "Domain {{value}}",
+    rulesEvidence: "Based on {{count}} consistent adjustments",
+    rulesAffected: "Currently affects {{count}} messages",
+    rulesFutureOnly: "No matching unadjusted messages now; the rule can still apply to future mail.",
+    rulesSamples: "Affected examples",
+    rulesEnable: "Enable rule",
+    rulesEnabling: "Enabling…",
+    rulesUpdating: "Updating…",
+    rulesActive: "Active",
+    rulesPaused: "Paused",
+    rulesRevoked: "Revoked",
+    rulesPause: "Pause",
+    rulesResume: "Resume",
+    rulesRevoke: "Revoke",
+    rulesEdit: "Change category",
+    rulesSave: "Save rule",
+    rulesNoActions: "Rules only change smart views. A manual adjustment on one message always wins.",
+    rulesAccount: "Mailbox: {{value}}",
+    rulesEditing: "Editing: {{match}}",
+    rulesEnabledSuccess: "Rule enabled. Future matching mail will use the selected smart view.",
+    rulesUpdatedSuccess: "Rule updated.",
+    rulesSavedSuccess: "Rule category saved.",
+    qualityTitle: "Organization quality",
+    qualityCollecting: "Collecting local samples",
+    qualityHealthy: "Organization is currently stable",
+    qualityNeedsAttention: "Review category results first",
+    qualityCollectingHint: "At least {{count}} smart-classified messages are needed before stability is assessed. A small sample never enables more automation.",
+    qualityHealthyHint: "Current local signals are within the suggested ranges. These are usage-quality signals, not a claim of absolute accuracy.",
+    qualityNeedsAttentionHint: "Other results, manual adjustments, or processing failures are elevated. Review rules and keep correcting; the scope will not expand automatically.",
+    qualityCoverage: "Smart classified",
+    qualityUnknown: "Other",
+    qualityCorrections: "Adjusted",
+    qualityJobFailures: "Processing failures",
+    qualityMoveResults: "Folder batches to verify: {{unconfirmed}} / {{total}}",
+    qualityMoveCollecting: "There are not enough folder batches to assess stability yet.",
+    qualityPrivacy: "Counts are summarized locally and never include subjects, senders, or message bodies.",
+    qualityLoading: "Calculating local quality…",
+    qualityFailed: "Organization quality is temporarily unavailable. Try again.",
+    folderSuggestions: "Mailbox folder suggestions",
+    folderSuggestionNotice: "Found {{count}} folder organization suggestions",
+    folderSuggestionNoticeHint: "Preview which messages may belong together. No mail will be moved yet.",
+    folderSuggestionEmpty: "No folder suggestions yet. Enable a stable subscription or notification rule to generate one.",
+    folderSuggestionLoading: "Checking folder suggestions…",
+    folderSuggestionFailed: "Folder suggestions or previews are temporarily unavailable. Try again.",
+    folderSuggestedExisting: "Suggested existing folder: {{value}}",
+    folderSuggestedNew: "Suggested new folder: {{value}}",
+    folderDestination: "Preview destination",
+    folderAccount: "Mailbox",
+    folderAffected: "{{count}} messages match",
+    folderProtected: "{{count}} important or actionable messages were automatically excluded",
+    folderPreview: "Preview messages",
+    folderPreviewing: "Building preview…",
+    folderPreviewTitle: "Mailbox folder preview",
+    folderPreviewHint: "This is a read-only preview. No folder will be created and no mail will be moved.",
+    folderPreviewCount: "Previewing {{selected}} of {{total}} matching messages",
+    folderPreviewRemaining: "The remaining {{count}} messages can be handled in a later batch.",
+    folderPreviewNoMove: "No messages will be moved now. Before any move, you will see the complete list and be asked to confirm again.",
+    folderMoveConfirm: "Confirm and move {{count}} messages",
+    folderMoveStarting: "Submitting…",
+    folderMoveProgress: "Organizing {{count}} messages…",
+    folderMoveSuccess: "Moved {{count}} messages to the destination folder.",
+    folderMoveUnconfirmed: "The provider did not return a complete result. Sync first and check the actual location before creating a new preview; the system will not retry automatically.",
+    folderMoveFailed: "Folder organization could not start. Build a fresh preview and try again.",
+    folderMovePermission: "Enable folder organization",
+    folderMovePermissionHint: "Folder creation and moves use separate authorization and do not affect receiving or sending mail.",
+    connectOrganize: "Connect folder organization",
+    connectOrganizeHint: "Used only for folder creation and moves. Manual batches are limited to 50 messages and confirmed each time; separately enabled stable automations move at most 10 per batch and can be paused anytime.",
+    organizeConnected: "Folder organization connected",
+    folderMoveRecoveryNotice: "A folder organization batch needs review",
+    folderMoveRecoveryHint: "The system will not retry automatically. Sync mail and check the messages' actual location.",
+    folderMoveReviewStatus: "View status",
+    folderMoveReconcile: "Check synced result",
+    folderMoveReconciling: "Checking…",
+    folderMoveReconciled: "The batch location was confirmed from the latest sync.",
+    folderMoveReconcileFailed: "Unable to check yet. Finish syncing mail and try again.",
+    folderMoveRecoverable: "{{count}} messages are confirmed in the source and can receive a new review preview.",
+    folderMoveConflict: "Some message locations remain unclear. Automatic processing has stopped for manual review.",
+    folderAutomationTitle: "Automatic organization",
+    folderAutomationEmpty: "Automatic organization is off. Smart classification and mailbox folder batches must both be stable first.",
+    folderAutomationEnable: "Enable automatic organization",
+    folderAutomationConfirmTitle: "Confirm automatic organization",
+    folderAutomationConfirmHint: "This is ongoing mailbox write authorization. Review its scope and destination.",
+    folderAutomationConfirm: "Confirm and enable",
+    folderAutomationScope: "After each sync, at most {{count}} newly matching messages will be organized automatically.",
+    folderAutomationStandingConsent: "Matching mail will no longer ask batch by batch. You can pause or revoke this rule at any time.",
+    folderAutomationSafety: "Action-needed, important, account-security, and manually corrected mail always stay excluded. Any uncertain batch pauses the rule immediately.",
+    folderAutomationQualityRequired: "Automatic organization requires at least 50 stable smart classifications and 10 stable mailbox folder batches.",
+    folderAutomationEnabled: "Automatic organization is enabled, bounded to 10 messages per batch, and pauses on uncertainty.",
+    folderAutomationFailed: "Unable to enable or update automatic organization. Check quality status and mailbox folder permission.",
+    folderAutomationActive: "Automatic organization active",
+    folderAutomationPaused: "Automatic organization paused",
+    folderAutomationNeedsReview: "The last run or quality signal needs review; reauthorization is required to resume.",
+    folderAutomationDryRun: "Try without changes",
+    folderAutomationDryRunning: "Checking…",
+    folderAutomationDryRunResult: "Trial: {{selected}} messages would be organized and {{excluded}} excluded; the mail provider was not called.",
+    folderAutomationLastSuccess: "Last success: {{time}}",
+    folderAutomationSuccessStreak: "{{count}} successful batches in a row",
+    folderAutomationLastChecked: "Last checked: {{time}}",
+    folderAutomationPauseUser: "You paused this. Resume when ready.",
+    folderAutomationPauseSync: "The result needs review. Sync mail and check the actual location first.",
+    folderAutomationPauseQuality: "Smart classification quality is below the gate. Review and correct classifications first.",
+    folderAutomationPauseRollout: "Automatic organization is not open in the current rollout stage; authorization and history are preserved.",
+    folderAutomationPauseAuthorize: "The rule or mailbox folder changed. Confirm automatic organization again.",
+    folderHistoryTitle: "Mailbox folder history",
+    folderHistoryEmpty: "No folder move history yet.",
+    folderHistoryManual: "Manual confirmation",
+    folderHistoryAutomatic: "Automatic organization",
+    folderHistoryRecovery: "Failure recovery",
+    folderHistorySucceeded: "Moved {{count}}",
+    folderHistoryMoving: "In progress",
+    folderHistoryRecoverable: "{{count}} ready to retry",
+    folderHistoryNeedsReview: "Needs review",
     loadFailed: "The mailbox could not be loaded. Your existing mail and drafts are still safe; try again.",
     retry: "Retry",
     lastSynced: "Last checked: {{time}}",
@@ -248,6 +591,7 @@ const COPY = {
     loadingBody: "Safely loading the message…",
     bodyUnavailable: "The body has not been downloaded yet. Get new mail and try again.",
     htmlTextNotice: "This email contains HTML. Safe converted text is shown by default, without loading remote images.",
+    htmlTextNoticeCompact: "HTML email · showing safe text",
     viewSafeHtml: "View safe layout",
     viewPlainText: "Back to plain text",
     safeHtmlTitle: "Safe email content",
@@ -259,6 +603,7 @@ const COPY = {
     inlineImagesLoading: "Safely loading inline email images…",
     bodyTruncated: "This email exceeds the local safe-reading limit, so the displayed body is incomplete. Open it at your email provider to see the original.",
     reply: "Reply",
+    replyDraft: "Draft reply",
     issue: "Linked task source #{{number}}",
     createTask: "Turn into task",
     linkedTask: "Linked to {{ref}}",
@@ -280,6 +625,9 @@ const COPY = {
     taskTitleRequired: "Add a task title.",
     taskAttachmentDesktopOnly: "Email attachments can only be copied in the desktop app. Deselect them to continue.",
     untrusted: "Email comes from outside. It is displayed as content and is never treated as an instruction.",
+    securityStored: "Safe display · saved on this device",
+    securityOnline: "Safe display · attachments need the email connection",
+    securityDetails: "Security and storage details",
     back: "Back to message list",
     connectTitle: "Connect your email",
     connectHint: "After connecting, new mail appears here. Sign-in details remain on this computer.",
@@ -289,7 +637,9 @@ const COPY = {
     attentionAction: "Check connection",
     manageConnection: "Manage connection",
     receiveReady: "Receiving connected",
+    readyToConnect: "Available to connect",
     sendNotReady: "Sending not connected",
+    connectSending: "Connect sending",
     connectorTitle: "Connect email",
     connectorDescription: "Two guided steps; no server addresses are required.",
     provider163: "163 Mail",
@@ -300,7 +650,7 @@ const COPY = {
     upgradeAction: "Upgrade and test receiving",
     providerGmail: "Gmail",
     comingSoon: "Coming soon",
-    desktopOnly: "Connect email in the MyAgentTool desktop app. The web page never handles your sign-in details.",
+    desktopOnly: "Open the MyAgentTool desktop app, go to My email, and choose Connect email again. This web page never handles your sign-in details.",
     accountEmail: "163 email address",
     authorizationCode: "Client authorization code",
     authorizationPlaceholder: "Not your mailbox password",
@@ -379,23 +729,92 @@ export function MailView() {
   const setSection = useUiStore((state) => state.setSection);
   const [page, setPage] = useState(1);
   const [folder, setFolder] = useState<FolderId>("inbox");
+  const [smartView, setSmartView] = useState<MailSmartView>("all");
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const systemFolder = ["drafts", "sent", "outbox"].includes(folder);
-  const mailbox = useQuery({ queryKey: ["mailbox", page, folder, systemFolder ? "" : deferredQuery], queryFn: () => mailApi.getMailbox(page, systemFolder ? "inbox" : folder, systemFolder ? "" : deferredQuery), refetchInterval: 4_000 });
+  const mailbox = useQuery({ queryKey: ["mailbox", page, folder, systemFolder ? "" : deferredQuery, systemFolder ? "all" : smartView], queryFn: () => mailApi.getMailbox(page, systemFolder ? "inbox" : folder, systemFolder ? "" : deferredQuery, systemFolder ? "all" : smartView), refetchInterval: 4_000 });
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [compose, setCompose] = useState<ComposeState | null>(null);
   const [composeBaseline, setComposeBaseline] = useState("");
   const [confirmComposeClose, setConfirmComposeClose] = useState(false);
   const [reviewDraft, setReviewDraft] = useState<MailboxDraft | null>(null);
   const [viewedDraft, setViewedDraft] = useState<MailboxDraft | null>(null);
-  const [busy, setBusy] = useState<"sync" | "fetch" | "save" | "send" | "delete" | "task" | null>(null);
+  const [busy, setBusy] = useState<"sync" | "fetch" | "save" | "send" | "delete" | "task" | "classify" | "deep" | "correct" | "rules" | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string; task?: NonNullable<MailboxMessage["task"]> } | null>(null);
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [pendingSyncId, setPendingSyncId] = useState<string | null>(null);
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview | null>(null);
   const [taskDraft, setTaskDraft] = useState<MailTaskDraft | null>(null);
+  const [classificationCorrection, setClassificationCorrection] = useState<ClassificationCorrectionState | null>(null);
+  const [deepOrganizeOpen, setDeepOrganizeOpen] = useState(false);
+  const [deepJobId, setDeepJobId] = useState<string | null>(null);
+  const [organizeMenuOpen, setOrganizeMenuOpen] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [ruleEdit, setRuleEdit] = useState<{ rule: MailClassificationRule; view: Exclude<MailSmartView, "all"> } | null>(null);
+  const [rulePending, setRulePending] = useState<string | null>(null);
+  const [ruleFeedback, setRuleFeedback] = useState<{ tone: "info" | "error"; text: string } | null>(null);
+  const [folderPending, setFolderPending] = useState<string | null>(null);
+  const [folderFeedback, setFolderFeedback] = useState<string | null>(null);
+  const [folderSelections, setFolderSelections] = useState<Record<string, string>>({});
+  const [folderPreview, setFolderPreview] = useState<MailFolderMovePreview | null>(null);
+  const [folderMoveJobId, setFolderMoveJobId] = useState<string | null>(null);
+  const [folderMovePending, setFolderMovePending] = useState(false);
+  const [folderMoveError, setFolderMoveError] = useState<string | null>(null);
+  const [folderRecoveryOpen, setFolderRecoveryOpen] = useState(false);
+  const [automationPreview, setAutomationPreview] = useState<MailFolderMovePreview | null>(null);
+  const [automationPending, setAutomationPending] = useState(false);
+  const [automationError, setAutomationError] = useState<string | null>(null);
+  const classificationRules = useQuery({
+    queryKey: ["mail-classification-rules"],
+    queryFn: mailApi.getClassificationRules,
+    enabled: Boolean(mailbox.data?.accounts.some((item) => item.canReceive) && !systemFolder),
+    retry: false,
+  });
+  const classificationQuality = useQuery({
+    queryKey: ["mail-classification-quality"],
+    queryFn: mailApi.getClassificationQuality,
+    enabled: Boolean(rulesOpen && mailbox.data?.accounts.some((item) => item.canReceive) && !systemFolder),
+    retry: false,
+  });
+  const folderSuggestions = useQuery({
+    queryKey: ["mail-folder-suggestions"],
+    queryFn: mailApi.getFolderSuggestions,
+    enabled: Boolean(mailbox.data?.accounts.some((item) => item.canReceive) && !systemFolder),
+    retry: false,
+  });
+  const folderMoveJob = useQuery({
+    queryKey: ["mail-folder-move-job", folderMoveJobId],
+    queryFn: () => mailApi.getFolderMoveJob(folderMoveJobId!),
+    enabled: Boolean(folderMoveJobId),
+    refetchInterval: (query) => ["succeeded", "unconfirmed", "recoverable", "conflict"].includes(query.state.data?.job.status ?? "") ? false : 500,
+  });
+  const folderMoveJobs = useQuery({
+    queryKey: ["mail-folder-move-jobs"],
+    queryFn: mailApi.getFolderMoveJobs,
+    enabled: Boolean(mailbox.data?.accounts.some((item) => item.canReceive)),
+    refetchInterval: (query) => query.state.data?.jobs.some((job) => job.status === "moving") ? 1_000 : false,
+  });
+  const folderAutomations = useQuery({
+    queryKey: ["mail-folder-automations"],
+    queryFn: mailApi.getFolderAutomations,
+    enabled: Boolean(mailbox.data?.accounts.some((item) => item.canReceive)),
+    retry: false,
+  });
+  const deepPreview = useQuery({
+    queryKey: ["mail-semantic-preview", 20],
+    queryFn: () => mailApi.getSemanticPreview(20),
+    enabled: deepOrganizeOpen && !deepJobId,
+    retry: false,
+  });
+  const deepJob = useQuery({
+    queryKey: ["mail-classification-job", deepJobId],
+    queryFn: () => mailApi.getClassificationJob(deepJobId!),
+    enabled: Boolean(deepJobId),
+    refetchInterval: (query) => isClassificationJobTerminal(query.state.data?.job.status) ? false : 500,
+  });
   const data = mailbox.data;
+  const classificationSummary = data?.classificationSummary ?? null;
   const account = data?.accounts.find((item) => item.canReceive) ?? data?.accounts[0] ?? null;
   const selectedMessage = data?.messages.find((message) => message.id === selectedMessageId) ?? null;
   const syncing = busy === "sync" || data?.sync?.status === "syncing";
@@ -408,6 +827,10 @@ export function MailView() {
     ? copy.lastSynced.replace("{{time}}", new Intl.DateTimeFormat(i18n.language, { dateStyle: "short", timeStyle: "short" }).format(new Date(data.sync.lastSucceededAt)))
     : null;
   const composeDirty = Boolean(compose && composeFingerprint(compose) !== composeBaseline);
+  const ruleSuggestionCount = classificationRules.data?.suggestions.length ?? 0;
+  const folderSuggestionCount = folderSuggestions.data?.suggestions.length ?? 0;
+  const recoveryFolderJob = folderMoveJobs.data?.jobs?.find((job) => ["moving", "unconfirmed", "recoverable", "conflict"].includes(job.status)) ?? null;
+  const organizeSuggestionCount = ruleSuggestionCount + folderSuggestionCount;
 
   useEffect(() => {
     if (!pendingSyncId || data?.sync?.invocationId !== pendingSyncId) return;
@@ -421,13 +844,23 @@ export function MailView() {
   }, [copy.syncComplete, copy.syncFailed, data?.sync?.invocationId, data?.sync?.status, pendingSyncId]);
 
   useEffect(() => {
+    const status = deepJob.data?.job.status;
+    if (!isClassificationJobTerminal(status)) return;
+    void queryClient.invalidateQueries({ queryKey: ["mailbox"] });
+    void queryClient.invalidateQueries({ queryKey: ["mail-semantic-preview"] });
+    if (status === "succeeded") setNotice({ tone: "info", text: copy.deepCompleted });
+    else if (status === "cancelled") setNotice({ tone: "info", text: copy.deepCancelled });
+    else setNotice({ tone: "error", text: copy.deepDegraded });
+  }, [copy.deepCancelled, copy.deepCompleted, copy.deepDegraded, deepJob.data?.job.status, queryClient]);
+
+  useEffect(() => {
     if (data?.pagination && data.pagination.page !== page) setPage(data.pagination.page);
   }, [data?.pagination, page]);
 
   useEffect(() => {
     setPage(1);
     setSelectedMessageId(null);
-  }, [deferredQuery, folder]);
+  }, [deferredQuery, folder, smartView]);
 
   const visibleMessages = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -452,6 +885,271 @@ export function MailView() {
       setNotice({ tone: "error", text: copy.syncFailed });
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function organizeMail() {
+    setBusy("classify");
+    setNotice(null);
+    try {
+      await mailApi.classifyMailbox(data?.classificationSummary?.classified ? "new_mail" : "rebuild");
+      await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
+      setNotice({ tone: "info", text: copy.organizeComplete });
+    } catch {
+      setNotice({ tone: "error", text: copy.organizeFailed });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function startDeepOrganize() {
+    setBusy("deep");
+    setNotice(null);
+    try {
+      const result = await mailApi.startDeepOrganize(20);
+      setDeepJobId(result.job.id);
+    } catch {
+      setNotice({ tone: "error", text: copy.deepDegraded });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function cancelDeepOrganize() {
+    if (!deepJobId) return;
+    setBusy("deep");
+    try {
+      await mailApi.cancelClassificationJob(deepJobId);
+      await deepJob.refetch();
+    } catch {
+      setNotice({ tone: "error", text: copy.deepDegraded });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function closeDeepOrganize() {
+    setDeepOrganizeOpen(false);
+    setDeepJobId(null);
+  }
+
+  async function saveClassificationCorrection() {
+    const classification = classificationCorrection?.message.classification;
+    if (!classificationCorrection || !classification) return;
+    const message = classificationCorrection.message;
+    const selected = classificationCorrection.view;
+    const currentType = classification.mailType;
+    const patch = classificationPatchForView(selected, currentType);
+    setBusy("correct");
+    try {
+      await mailApi.correctClassification(message.messageId, {
+        folderId: message.folderId,
+        expectedRevision: classification.revision,
+        ...patch,
+      });
+      setClassificationCorrection(null);
+      setSelectedMessageId(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["mailbox"] }),
+        queryClient.invalidateQueries({ queryKey: ["mail-classification-rules"] }),
+        queryClient.invalidateQueries({ queryKey: ["mail-folder-suggestions"] }),
+      ]);
+    } catch {
+      setNotice({ tone: "error", text: copy.correctionFailed });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function enableClassificationRule(suggestionId: string) {
+    setBusy("rules");
+    setRulePending(`enable:${suggestionId}`);
+    setRuleFeedback(null);
+    try {
+      await mailApi.createClassificationRule(suggestionId);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["mail-classification-rules"] }),
+        queryClient.invalidateQueries({ queryKey: ["mailbox"] }),
+        queryClient.invalidateQueries({ queryKey: ["mail-folder-suggestions"] }),
+      ]);
+      setRuleFeedback({ tone: "info", text: copy.rulesEnabledSuccess });
+    } catch {
+      setRuleFeedback({ tone: "error", text: copy.rulesFailed });
+    } finally {
+      setRulePending(null);
+      setBusy(null);
+    }
+  }
+
+  async function changeClassificationRule(rule: MailClassificationRule, action: "pause" | "resume" | "revoke") {
+    setBusy("rules");
+    setRulePending(`${action}:${rule.id}`);
+    setRuleFeedback(null);
+    try {
+      await mailApi.updateClassificationRule(rule.id, { expectedRevision: rule.revision, action });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["mail-classification-rules"] }),
+        queryClient.invalidateQueries({ queryKey: ["mailbox"] }),
+        queryClient.invalidateQueries({ queryKey: ["mail-folder-suggestions"] }),
+      ]);
+      setRuleFeedback({ tone: "info", text: copy.rulesUpdatedSuccess });
+    } catch {
+      setRuleFeedback({ tone: "error", text: copy.rulesFailed });
+    } finally {
+      setRulePending(null);
+      setBusy(null);
+    }
+  }
+
+  async function saveClassificationRule() {
+    if (!ruleEdit) return;
+    setBusy("rules");
+    setRulePending(`edit:${ruleEdit.rule.id}`);
+    setRuleFeedback(null);
+    try {
+      await mailApi.updateClassificationRule(ruleEdit.rule.id, {
+        expectedRevision: ruleEdit.rule.revision,
+        ...classificationPatchForView(ruleEdit.view, ruleEdit.rule.target.mailType),
+      });
+      setRuleEdit(null);
+      setRulesOpen(true);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["mail-classification-rules"] }),
+        queryClient.invalidateQueries({ queryKey: ["mailbox"] }),
+        queryClient.invalidateQueries({ queryKey: ["mail-folder-suggestions"] }),
+      ]);
+      setRuleFeedback({ tone: "info", text: copy.rulesSavedSuccess });
+    } catch {
+      setRuleFeedback({ tone: "error", text: copy.rulesFailed });
+    } finally {
+      setRulePending(null);
+      setBusy(null);
+    }
+  }
+
+  async function previewFolderSuggestion(suggestion: MailFolderSuggestion) {
+    setFolderPending(suggestion.id);
+    setFolderFeedback(null);
+    try {
+      const selected = folderSelections[suggestion.id];
+      const result = await mailApi.createFolderMovePreview(
+        suggestion.id,
+        selected && selected !== "__suggested__" ? selected : null,
+      );
+      setRulesOpen(false);
+      setFolderPreview(result.preview);
+    } catch {
+      setFolderFeedback(copy.folderSuggestionFailed);
+    } finally {
+      setFolderPending(null);
+    }
+  }
+
+  async function previewFolderAutomation(suggestion: MailFolderSuggestion) {
+    setFolderPending(`auto:${suggestion.id}`);
+    setFolderFeedback(null);
+    setAutomationError(null);
+    try {
+      const selected = folderSelections[suggestion.id];
+      const result = await mailApi.createFolderAutomationPreview(
+        suggestion.id,
+        selected && selected !== "__suggested__" ? selected : null,
+      );
+      setRulesOpen(false);
+      setAutomationPreview(result.preview);
+    } catch (error) {
+      const qualityBlocked = error instanceof ApiError && error.code === "mail_folder_automation_quality_gate";
+      setFolderFeedback(qualityBlocked ? copy.folderAutomationQualityRequired : copy.folderAutomationFailed);
+    } finally {
+      setFolderPending(null);
+    }
+  }
+
+  async function enableFolderAutomation() {
+    if (!automationPreview) return;
+    setAutomationPending(true);
+    setAutomationError(null);
+    try {
+      const grant = await api.issueApprovalGrant("mail.organize.auto", automationPreview.approvalTarget);
+      await mailApi.enableFolderAutomation(automationPreview.id, grant.token);
+      setAutomationPreview(null);
+      setRulesOpen(true);
+      setRuleFeedback({ tone: "info", text: copy.folderAutomationEnabled });
+      await queryClient.invalidateQueries({ queryKey: ["mail-folder-automations"] });
+    } catch (error) {
+      const qualityBlocked = error instanceof ApiError && error.code === "mail_folder_automation_quality_gate";
+      setAutomationError(qualityBlocked ? copy.folderAutomationQualityRequired : copy.folderAutomationFailed);
+    } finally {
+      setAutomationPending(false);
+    }
+  }
+
+  async function changeFolderAutomation(automation: MailFolderAutomation, action: "pause" | "resume" | "revoke") {
+    setRulePending(`auto:${automation.id}`);
+    try {
+      await mailApi.updateFolderAutomation(automation.id, automation.revision, action);
+      await queryClient.invalidateQueries({ queryKey: ["mail-folder-automations"] });
+    } catch {
+      setRuleFeedback({ tone: "error", text: copy.folderAutomationFailed });
+    } finally {
+      setRulePending(null);
+    }
+  }
+
+  async function dryRunFolderAutomation(automation: MailFolderAutomation) {
+    setRulePending(`dry:${automation.id}`);
+    setRuleFeedback(null);
+    try {
+      const result = await mailApi.dryRunFolderAutomation(automation.id);
+      setRuleFeedback({
+        tone: "info",
+        text: copy.folderAutomationDryRunResult
+          .replace("{{selected}}", String(result.dryRun.selectedCount))
+          .replace("{{excluded}}", String(result.dryRun.excludedCount)),
+      });
+    } catch {
+      setRuleFeedback({ tone: "error", text: copy.folderAutomationFailed });
+    } finally {
+      setRulePending(null);
+    }
+  }
+
+  async function reconcileFolderMove(job: MailFolderMoveJob) {
+    setFolderMovePending(true);
+    setFolderMoveError(null);
+    try {
+      const result = await mailApi.reconcileFolderMoveJob(job.id);
+      await queryClient.invalidateQueries({ queryKey: ["mail-folder-move-jobs"] });
+      if (result.job.status === "recoverable") {
+        const recovery = await mailApi.createFolderRecoveryPreview(job.id);
+        setFolderRecoveryOpen(false);
+        setFolderPreview(recovery.preview);
+        setFolderMoveJobId(null);
+      } else if (result.job.status === "succeeded") {
+        setFolderRecoveryOpen(false);
+        setNotice({ tone: "info", text: copy.folderMoveReconciled });
+      } else {
+        setFolderMoveError(copy.folderMoveConflict);
+      }
+    } catch {
+      setFolderMoveError(copy.folderMoveReconcileFailed);
+    } finally {
+      setFolderMovePending(false);
+    }
+  }
+
+  async function startFolderMove() {
+    if (!folderPreview) return;
+    setFolderMovePending(true);
+    setFolderMoveError(null);
+    try {
+      const grant = await api.issueApprovalGrant("mail.organize", folderPreview.approvalTarget);
+      const result = await mailApi.startFolderMove(folderPreview.id, grant.token);
+      setFolderMoveJobId(result.job.id);
+    } catch {
+      setFolderMoveError(copy.folderMoveFailed);
+    } finally {
+      setFolderMovePending(false);
     }
   }
 
@@ -732,16 +1430,24 @@ export function MailView() {
   if (mailbox.isError && !data) return <div role="alert" className="mx-auto flex max-w-xl flex-col items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-8 text-center"><p className="text-sm font-medium">{copy.loadFailed}</p><Button variant="secondary" onClick={() => void mailbox.refetch()}><RefreshCw />{copy.retry}</Button></div>;
 
   return (
-    <div className="mx-auto max-w-[1500px] space-y-4" data-testid="mail-view">
+    <div className="mx-auto max-w-[1500px] space-y-3 sm:space-y-4" data-testid="mail-view">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <SectionHeading eyebrow={copy.eyebrow} title={copy.title} description={copy.description} />
-        <div className="flex flex-wrap gap-2">
-          {account?.canReceive ? <Button variant="secondary" onClick={() => void syncMail()} disabled={syncing}><RefreshCw className={cn(syncing && "animate-spin")} />{syncing ? copy.syncing : copy.sync}</Button> : null}
-          <Button onClick={() => startCompose()}><PenLine />{copy.compose}</Button>
+        <div className="hidden sm:block"><SectionHeading eyebrow={copy.eyebrow} title={copy.title} description={copy.description} /></div>
+        <h2 className="sr-only sm:hidden">{copy.title}</h2>
+        <div className="flex w-full flex-nowrap gap-1.5 sm:w-auto sm:flex-wrap sm:gap-2">
+          {account?.canReceive ? <Button size="sm" variant="secondary" onClick={() => void syncMail()} disabled={syncing}><RefreshCw className={cn(syncing && "animate-spin")} />{syncing ? copy.syncing : copy.sync}</Button> : null}
+          {account?.canReceive && !systemFolder ? <Button className="hidden sm:inline-flex" variant="secondary" onClick={() => void organizeMail()} disabled={busy === "classify"}><Sparkles />{busy === "classify" ? copy.organizing : copy.organize}</Button> : null}
+          {account?.canReceive && !systemFolder ? <Button className="hidden sm:inline-flex" variant="secondary" onClick={() => setDeepOrganizeOpen(true)}><ShieldCheck />{copy.deepOrganize}</Button> : null}
+          {account?.canReceive && !systemFolder ? <Button className="hidden sm:inline-flex" variant="secondary" onClick={() => { setRuleFeedback(null); setFolderFeedback(null); setRulesOpen(true); }}><SlidersHorizontal />{copy.rules}{organizeSuggestionCount ? <span aria-hidden className="rounded-full bg-primary/15 px-1.5 text-xs text-primary">{organizeSuggestionCount}</span> : null}</Button> : null}
+          {account?.canReceive && !systemFolder ? <Button size="sm" className="sm:hidden" variant="secondary" onClick={() => setOrganizeMenuOpen(true)}><SlidersHorizontal />{copy.organizeMenu}{organizeSuggestionCount ? <span aria-hidden className="rounded-full bg-primary/15 px-1.5 text-xs text-primary">{organizeSuggestionCount}</span> : null}</Button> : null}
+          <Button size="sm" onClick={() => startCompose()}><PenLine />{copy.compose}</Button>
         </div>
       </div>
 
       {notice ? <div role={notice.tone === "error" ? "alert" : "status"} className={cn("flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm", notice.tone === "error" ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-primary/30 bg-primary/5 text-foreground")}><span>{notice.text}</span>{notice.tone === "info" && notice.task ? <Button size="sm" variant="secondary" onClick={() => showTask(notice.task!)}><ListTodo />{copy.viewTask}</Button> : null}</div> : null}
+      {ruleSuggestionCount && !systemFolder && !rulesOpen && !ruleEdit ? <div role="status" className="hidden flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 sm:flex"><div><p className="text-sm font-medium">{copy.rulesSuggestionNotice.replace("{{count}}", String(ruleSuggestionCount))}</p><p className="text-xs text-muted-foreground">{copy.rulesSuggestionNoticeHint}</p></div><Button size="sm" variant="secondary" onClick={() => { setRuleFeedback(null); setRulesOpen(true); }}>{copy.rulesReview}</Button></div> : null}
+      {folderSuggestionCount && !systemFolder && !rulesOpen && !ruleEdit && !folderPreview ? <div role="status" className="hidden flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 sm:flex"><div><p className="text-sm font-medium">{copy.folderSuggestionNotice.replace("{{count}}", String(folderSuggestionCount))}</p><p className="text-xs text-muted-foreground">{copy.folderSuggestionNoticeHint}</p></div><Button size="sm" variant="secondary" onClick={() => { setFolderFeedback(null); setRulesOpen(true); }}>{copy.rulesReview}</Button></div> : null}
+      {recoveryFolderJob && !folderPreview && !folderRecoveryOpen ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2"><div><p className="text-sm font-medium">{copy.folderMoveRecoveryNotice}</p><p className="text-xs text-muted-foreground">{copy.folderMoveRecoveryHint}</p></div><Button size="sm" variant="secondary" onClick={() => setFolderRecoveryOpen(true)}>{copy.folderMoveReviewStatus}</Button></div> : null}
       {mailbox.isError ? <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"><span>{copy.loadFailed}</span><Button size="sm" variant="secondary" onClick={() => void mailbox.refetch()}><RefreshCw />{copy.retry}</Button></div> : null}
       {data?.folders.some((item) => item.syncError) ? <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">{copy.folderSyncError}</div> : null}
       {data?.folders.some((item) => item.cursorReset) ? <div role="status" className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm">{copy.cursorReset}</div> : null}
@@ -756,12 +1462,16 @@ export function MailView() {
         </section>
       ) : (
         <>
-          <div className={cn("flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm", account?.canReceive ? "bg-card" : "border-warning/40 bg-warning/10")}>
-            <div className="flex flex-wrap items-center gap-2"><span className={cn("size-2 rounded-full", account?.canReceive ? "bg-emerald-500" : "bg-amber-500")} /><span className="font-medium">{account?.name}</span><span className="text-muted-foreground">{account?.canReceive ? copy.receiveReady : copy.attention}</span>{lastSyncText ? <span className="text-xs text-muted-foreground">{lastSyncText}</span> : null}</div>
-            <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{account?.canSend ? copy.connected : copy.sendNotReady}</span><Button size="sm" variant="secondary" onClick={() => setConnectorOpen(true)}>{account?.canReceive ? copy.manageConnection : copy.attentionAction}</Button></div>
+          <div className={cn("flex flex-nowrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm", account?.canReceive ? "bg-card" : "border-warning/40 bg-warning/10")}>
+            <div className="flex min-w-0 items-center gap-2"><span className={cn("size-2 shrink-0 rounded-full", account?.canReceive ? "bg-emerald-500" : "bg-amber-500")} /><span className="shrink-0 font-medium">{account?.name}</span><span className="hidden text-muted-foreground sm:inline">{account?.canReceive ? copy.receiveReady : copy.attention}</span>{lastSyncText ? <span className="truncate text-[11px] text-muted-foreground sm:text-xs">{lastSyncText}</span> : null}</div>
+            <div className="flex shrink-0 items-center gap-2"><span className="hidden text-xs text-muted-foreground sm:inline">{account?.canSend ? copy.connected : copy.sendNotReady}</span><Button size="sm" variant="secondary" onClick={() => setConnectorOpen(true)}>{account?.canReceive && !account.canSend ? copy.connectSending : account?.canReceive ? copy.manageConnection : copy.attentionAction}</Button></div>
           </div>
 
-          <div className="overflow-hidden rounded-2xl border bg-card lg:grid lg:min-h-[620px] lg:grid-cols-[11rem_minmax(18rem,23rem)_minmax(0,1fr)]">
+          {!systemFolder && classificationSummary ? <nav className="flex gap-2 overflow-x-auto pb-1" aria-label={copy.organize}>
+            {(Object.keys(copy.smartViews) as MailSmartView[]).map((view) => <button key={view} type="button" aria-current={smartView === view ? "page" : undefined} onClick={() => { setSmartView(view); setSelectedMessageId(null); }} className={cn("flex min-w-max items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors", smartView === view ? "border-primary bg-primary/10 font-medium text-primary" : "bg-card text-muted-foreground hover:text-foreground")}><span>{copy.smartViews[view]}</span><span className="text-xs tabular-nums">{classificationSummary.counts[view] ?? 0}</span></button>)}
+          </nav> : null}
+
+          <div className="overflow-hidden rounded-2xl border bg-card lg:grid lg:min-h-[620px] lg:grid-cols-[11rem_minmax(20rem,26rem)_minmax(0,1fr)]">
             <aside className="border-b p-2 lg:border-b-0 lg:border-r" aria-label={copy.title}>
               <div className="flex gap-1 overflow-x-auto lg:block lg:space-y-1">
                 {[...providerFolders, ...(["drafts", "sent", "outbox"] as const).map((id) => data.folders.find((item) => item.id === id) ?? { id, count: 0 })].map((item) => {
@@ -779,7 +1489,7 @@ export function MailView() {
               </div>
               <div className="max-h-[70vh] overflow-y-auto lg:max-h-[560px]">
                 {visibleMessages.length ? visibleMessages.map((entry) => !systemFolder
-                  ? <MessageRow key={(entry as MailboxMessage).id} message={entry as MailboxMessage} selected={selectedMessageId === (entry as MailboxMessage).id} onOpen={openMessage} />
+                  ? <MessageRow key={(entry as MailboxMessage).id} message={entry as MailboxMessage} copy={copy} selected={selectedMessageId === (entry as MailboxMessage).id} onOpen={openMessage} />
                   : <DraftRow key={(entry as MailboxDraft).id} draft={entry as MailboxDraft} copy={copy} onOpen={folder === "drafts" ? editDraft : setViewedDraft} />)
                   : <div className="p-8 text-center"><p className="font-medium">{!systemFolder ? (query.trim() ? copy.searchEmpty : copy.emptyInbox) : copy.emptyFolder}</p>{!systemFolder && !query.trim() ? <p className="mt-1 text-sm text-muted-foreground">{copy.emptyInboxHint}</p> : null}</div>}
               </div>
@@ -787,9 +1497,11 @@ export function MailView() {
             </section>
 
             <section className={cn("min-w-0", selectedMessage ? "block" : "hidden lg:block")} aria-label={selectedMessage?.subject ?? copy.choose}>
-              {selectedMessage ? <MessageDetail message={selectedMessage} copy={copy} loading={busy === "fetch" && !selectedMessage.fetched} onBack={() => setSelectedMessageId(null)} onReply={() => startCompose(selectedMessage)} onCreateTask={() => startTask(selectedMessage)} onMarkUnread={() => void markUnread(selectedMessage)} onPreview={(attachment) => void previewAttachment(selectedMessage, attachment)} onDownload={(attachment) => void downloadAttachment(selectedMessage, attachment)} /> : <div className="grid h-full min-h-80 place-items-center p-8 text-center text-sm text-muted-foreground"><div><Mail className="mx-auto mb-3 size-8 opacity-40" />{copy.choose}</div></div>}
+              {selectedMessage ? <MessageDetail message={selectedMessage} copy={copy} canSend={Boolean(account?.canSend)} loading={busy === "fetch" && !selectedMessage.fetched} onBack={() => setSelectedMessageId(null)} onReply={() => startCompose(selectedMessage)} onCreateTask={() => startTask(selectedMessage)} onMarkUnread={() => void markUnread(selectedMessage)} onCorrectClassification={() => setClassificationCorrection({ message: selectedMessage, view: classificationViewOf(selectedMessage) })} onPreview={(attachment) => void previewAttachment(selectedMessage, attachment)} onDownload={(attachment) => void downloadAttachment(selectedMessage, attachment)} /> : <div className="grid h-full min-h-80 place-items-center p-8 text-center text-sm text-muted-foreground"><div><Mail className="mx-auto mb-3 size-8 opacity-40" />{copy.choose}</div></div>}
             </section>
           </div>
+
+          {organizeSuggestionCount && !systemFolder && !rulesOpen && !ruleEdit && !folderPreview ? <div role="status" className="flex items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 sm:hidden"><div className="min-w-0"><p className="text-sm font-medium">{copy.mobileSuggestionNotice.replace("{{count}}", String(organizeSuggestionCount))}</p><p className="truncate text-xs text-muted-foreground">{copy.mobileSuggestionNoticeHint}</p></div><Button className="shrink-0" size="sm" variant="secondary" onClick={() => { setRuleFeedback(null); setFolderFeedback(null); setRulesOpen(true); }}>{copy.rulesReview}</Button></div> : null}
         </>
       )}
 
@@ -799,10 +1511,19 @@ export function MailView() {
       <ConfirmModal open={confirmComposeClose} title={copy.discardComposeTitle} description={copy.discardComposeDescription} confirmLabel={copy.discardComposeConfirm} destructive onClose={() => setConfirmComposeClose(false)} onConfirm={() => { setConfirmComposeClose(false); setCompose(null); setComposeBaseline(""); }} />
       <MailConnectionModal copy={copy} open={connectorOpen} onClose={() => setConnectorOpen(false)} onConnected={() => {
         void queryClient.invalidateQueries({ queryKey: ["mailbox"] });
+        void queryClient.invalidateQueries({ queryKey: ["mail-folder-suggestions"] });
         window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 2_000);
       }} />
       <AttachmentPreviewModal copy={copy} preview={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
       <MailTaskReviewModal copy={copy} value={taskDraft} projects={projects} pending={busy === "task"} onChange={setTaskDraft} onClose={() => setTaskDraft(null)} onCreate={() => void createTaskFromMail()} />
+      <ClassificationCorrectionModal copy={copy} value={classificationCorrection} pending={busy === "correct"} onChange={setClassificationCorrection} onClose={() => setClassificationCorrection(null)} onSave={() => void saveClassificationCorrection()} />
+      <MailOrganizeMenuModal copy={copy} open={organizeMenuOpen} organizing={busy === "classify"} suggestionCount={organizeSuggestionCount} onClose={() => setOrganizeMenuOpen(false)} onBasic={() => { setOrganizeMenuOpen(false); void organizeMail(); }} onDeep={() => { setOrganizeMenuOpen(false); setDeepOrganizeOpen(true); }} onRules={() => { setOrganizeMenuOpen(false); setRuleFeedback(null); setFolderFeedback(null); setRulesOpen(true); }} />
+      <DeepOrganizeModal copy={copy} open={deepOrganizeOpen} preview={deepPreview.data?.preview ?? null} previewLoading={deepPreview.isLoading} previewError={deepPreview.isError} job={deepJob.data?.job ?? null} jobLoading={Boolean(deepJobId) && deepJob.isLoading} jobError={deepJob.isError} pending={busy === "deep"} onClose={closeDeepOrganize} onStart={() => void startDeepOrganize()} onCancel={() => void cancelDeepOrganize()} />
+      <ClassificationRulesModal copy={copy} open={rulesOpen} data={classificationRules.data ?? null} quality={classificationQuality.data?.quality ?? null} qualityLoading={classificationQuality.isLoading} qualityError={classificationQuality.isError} folderData={folderSuggestions.data ?? null} automationData={folderAutomations.data?.automations ?? []} historyJobs={folderMoveJobs.data?.jobs ?? []} accounts={data?.accounts ?? []} loading={classificationRules.isLoading} error={classificationRules.isError} folderLoading={folderSuggestions.isLoading} folderError={folderSuggestions.isError} pendingKey={rulePending} feedback={ruleFeedback} folderPending={folderPending} folderFeedback={folderFeedback} folderSelections={folderSelections} onFolderSelection={(id, value) => setFolderSelections((current) => ({ ...current, [id]: value }))} onFolderPreview={(suggestion) => void previewFolderSuggestion(suggestion)} onAutomationPreview={(suggestion) => void previewFolderAutomation(suggestion)} onAutomationAction={(automation, action) => void changeFolderAutomation(automation, action)} onAutomationDryRun={(automation) => void dryRunFolderAutomation(automation)} onClose={() => { setRulesOpen(false); setRuleFeedback(null); setFolderFeedback(null); }} onRetry={() => void classificationRules.refetch()} onQualityRetry={() => void classificationQuality.refetch()} onFolderRetry={() => void folderSuggestions.refetch()} onEnable={(id) => void enableClassificationRule(id)} onAction={(rule, action) => void changeClassificationRule(rule, action)} onEdit={(rule) => { setRuleFeedback(null); setFolderFeedback(null); setRulesOpen(false); setRuleEdit({ rule, view: classificationViewForTarget(rule.target) }); }} />
+      <ClassificationRuleEditModal copy={copy} value={ruleEdit} accountName={ruleEdit ? accountLabel(ruleEdit.rule.accountId, data?.accounts ?? []) : null} pending={Boolean(ruleEdit && rulePending === `edit:${ruleEdit.rule.id}`)} feedback={ruleFeedback} onChange={setRuleEdit} onClose={() => { setRuleEdit(null); setRuleFeedback(null); setRulesOpen(true); }} onSave={() => void saveClassificationRule()} />
+      <FolderMovePreviewModal copy={copy} value={folderPreview} job={folderMoveJob.data?.job ?? null} pending={folderMovePending} error={folderMoveError} accounts={data?.accounts ?? []} onMove={() => void startFolderMove()} onConnect={() => { setFolderPreview(null); setFolderMoveJobId(null); setConnectorOpen(true); }} onSync={() => { setFolderPreview(null); setFolderMoveJobId(null); void syncMail(); }} onClose={() => { setFolderPreview(null); setFolderMoveJobId(null); setFolderMoveError(null); setRulesOpen(true); }} />
+      <FolderAutomationPreviewModal copy={copy} value={automationPreview} pending={automationPending} error={automationError} accounts={data?.accounts ?? []} onEnable={() => void enableFolderAutomation()} onClose={() => { setAutomationPreview(null); setAutomationError(null); setRulesOpen(true); }} />
+      <FolderMoveRecoveryModal copy={copy} value={folderRecoveryOpen ? recoveryFolderJob : null} pending={folderMovePending} error={folderMoveError} accounts={data?.accounts ?? []} onSync={() => { setFolderRecoveryOpen(false); void syncMail(); }} onReconcile={(job) => void reconcileFolderMove(job)} onClose={() => { setFolderRecoveryOpen(false); setFolderMoveError(null); }} />
     </div>
   );
 }
@@ -813,6 +1534,7 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
   const [authorizationCode, setAuthorizationCode] = useState("");
   const [connectedEmail, setConnectedEmail] = useState<string | null>(null);
   const [sendConnected, setSendConnected] = useState(false);
+  const [organizeConnected, setOrganizeConnected] = useState(false);
   const [upgradeNeeded, setUpgradeNeeded] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -825,6 +1547,7 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
       if (provider?.connected) setConnectedEmail(provider.account);
       setUpgradeNeeded(provider?.upgradeNeeded === true);
       setSendConnected(provider?.sendConnected === true);
+      setOrganizeConnected(provider?.organizeConnected === true);
     }).catch(() => setError(copy.errors.unavailable));
   }, [bridge, copy.errors.unavailable, open]);
 
@@ -856,10 +1579,22 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
     onConnected();
   }
 
-  return <Modal open={open} title={copy.connectorTitle} description={copy.connectorDescription} size="lg" onClose={onClose} closeDisabled={pending} footer={connectedEmail && sendConnected ? <div className="flex justify-end"><Button onClick={onClose}>{copy.done}</Button></div> : undefined}>
-    {!bridge?.getMailConnectorStatus ? <div className="rounded-xl border bg-muted/40 p-4 text-sm text-muted-foreground">{copy.desktopOnly}</div> : connectedEmail ? <div className="space-y-4 text-center"><span className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-600"><ShieldCheck /></span><div><h3 className="font-semibold">{copy.connectSuccess}</h3><p className="mt-1 text-sm text-muted-foreground">{connectedEmail}</p></div>{sendConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.sendConnected}</div> : <div className="space-y-3 rounded-xl border bg-muted/20 p-4 text-left"><p className="text-sm font-medium">{copy.connectSend}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectSendHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectSend()} disabled={pending}><Send />{pending ? copy.testing : copy.connectSend}</Button></div>}<Button variant="secondary" onClick={() => { setConnectedEmail(null); setSendConnected(false); setError(null); }}>{copy.reconnect}</Button></div> : <div className="space-y-4">
+  async function connectOrganize() {
+    if (!bridge?.connect163MailOrganize) { setError(copy.errors.unavailable); return; }
+    setPending(true);
+    setError(null);
+    const result = await bridge.connect163MailOrganize({ email, authorizationCode }).catch(() => ({ ok: false as const, error: "unavailable" as const }));
+    setPending(false);
+    if (!result.ok) { setError(copy.errors[result.error as keyof typeof copy.errors] ?? copy.errors.unavailable); return; }
+    setAuthorizationCode("");
+    setOrganizeConnected(true);
+    onConnected();
+  }
+
+  return <Modal open={open} title={copy.connectorTitle} description={copy.connectorDescription} size="lg" onClose={onClose} closeDisabled={pending} footer={connectedEmail && sendConnected && organizeConnected ? <div className="flex justify-end"><Button onClick={onClose}>{copy.done}</Button></div> : undefined}>
+    {!bridge?.getMailConnectorStatus ? <div className="rounded-xl border bg-muted/40 p-4 text-sm text-muted-foreground">{copy.desktopOnly}</div> : connectedEmail ? <div className="space-y-4 text-center"><span className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-600"><ShieldCheck /></span><div><h3 className="font-semibold">{copy.connectSuccess}</h3><p className="mt-1 text-sm text-muted-foreground">{connectedEmail}</p></div>{sendConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.sendConnected}</div> : <div className="space-y-3 rounded-xl border bg-muted/20 p-4 text-left"><p className="text-sm font-medium">{copy.connectSend}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectSendHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectSend()} disabled={pending}><Send />{pending ? copy.testing : copy.connectSend}</Button></div>}{organizeConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.organizeConnected}</div> : <div className="space-y-3 rounded-xl border bg-muted/20 p-4 text-left"><p className="text-sm font-medium">{copy.connectOrganize}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectOrganizeHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectOrganize()} disabled={pending}><Folder />{pending ? copy.testing : copy.connectOrganize}</Button></div>}<Button variant="secondary" onClick={() => { setConnectedEmail(null); setSendConnected(false); setOrganizeConnected(false); setError(null); }}>{copy.reconnect}</Button></div> : <div className="space-y-4">
       <div className="grid gap-2 sm:grid-cols-2">
-        <div className="rounded-xl border border-primary/40 bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.provider163}</span><span className={cn("rounded-full px-2 py-0.5 text-xs", upgradeNeeded ? "bg-amber-500/10 text-amber-700" : "bg-emerald-500/10 text-emerald-600")}>{upgradeNeeded ? copy.upgradeBadge : copy.receiveReady}</span></div><p className="mt-1 text-xs text-muted-foreground">{copy.provider163Hint}</p></div>
+        <div className="rounded-xl border border-primary/40 bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.provider163}</span><span className={cn("rounded-full px-2 py-0.5 text-xs", upgradeNeeded ? "bg-amber-500/10 text-amber-700" : "bg-muted text-muted-foreground")}>{upgradeNeeded ? copy.upgradeBadge : copy.readyToConnect}</span></div><p className="mt-1 text-xs text-muted-foreground">{copy.provider163Hint}</p></div>
         <div className="rounded-xl border bg-muted/30 p-3 opacity-70"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.providerGmail}</span><span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{copy.comingSoon}</span></div></div>
       </div>
       {upgradeNeeded ? <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3"><p className="text-sm font-medium">{copy.upgradeTitle}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{copy.upgradeHint}</p></div> : null}
@@ -890,6 +1625,11 @@ interface MailTaskDraft {
   attachmentIds: string[];
 }
 
+interface ClassificationCorrectionState {
+  message: MailboxMessage;
+  view: Exclude<MailSmartView, "all">;
+}
+
 interface AttachmentPreview {
   id: string;
   name: string;
@@ -900,8 +1640,20 @@ interface AttachmentPreview {
   dataBase64?: string;
 }
 
-function MessageRow({ message, selected, onOpen }: { message: MailboxMessage; selected: boolean; onOpen: (message: MailboxMessage) => void }) {
-  return <button type="button" onClick={() => void onOpen(message)} className={cn("block w-full border-b p-3 text-left hover:bg-muted/50", selected && "bg-muted", message.unread && "border-l-2 border-l-primary")}><div className="flex items-baseline justify-between gap-2"><span className={cn("truncate text-sm", message.unread && "font-semibold")}>{message.from}</span><time className="shrink-0 text-[11px] text-muted-foreground">{shortDate(message.date)}</time></div><p className={cn("mt-1 truncate text-sm", message.unread && "font-medium")}>{message.subject}</p><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{message.preview || "…"}</p></button>;
+function MessageRow({ message, copy, selected, onOpen }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; selected: boolean; onOpen: (message: MailboxMessage) => void }) {
+  const view = classificationViewOf(message);
+  const sender = mailboxSender(message.from);
+  return <button type="button" title={message.from} onClick={() => void onOpen(message)} className={cn("block w-full border-b px-3 py-3 text-left hover:bg-muted/50", selected && "bg-muted", message.unread && "border-l-2 border-l-primary")}>
+    <div className="flex min-w-0 items-baseline justify-between gap-2">
+      <span className="truncate text-xs font-medium text-muted-foreground">{sender.name}</span>
+      <time className="shrink-0 text-xs text-muted-foreground">{shortDate(message.date, copy)}</time>
+    </div>
+    <div className="mt-1 flex min-w-0 items-center gap-2">
+      <p className={cn("min-w-0 flex-1 truncate text-[15px] font-medium leading-5", message.unread && "font-semibold text-foreground")}>{message.subject || copy.noSubject}</p>
+      {message.classification ? <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px]", view === "needs_attention" ? "bg-primary/10 text-primary" : view === "important" ? "bg-amber-500/10 text-amber-600" : "bg-muted text-muted-foreground")}>{copy.smartViews[view]}</span> : null}
+    </div>
+    <p className="mt-1 line-clamp-2 text-[13px] leading-5 text-muted-foreground">{message.preview || "…"}</p>
+  </button>;
 }
 
 function DraftRow({ draft, copy, onOpen }: { draft: MailboxDraft; copy: typeof COPY.zh | typeof COPY.en; onOpen?: (draft: MailboxDraft) => void }) {
@@ -909,8 +1661,41 @@ function DraftRow({ draft, copy, onOpen }: { draft: MailboxDraft; copy: typeof C
   return onOpen ? <button type="button" onClick={() => onOpen(draft)} className="block w-full border-b p-3 text-left hover:bg-muted/50">{content}</button> : <article className="border-b p-3">{content}</article>;
 }
 
-function MessageDetail({ message, copy, loading, onBack, onReply, onCreateTask, onMarkUnread, onPreview, onDownload }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; loading: boolean; onBack: () => void; onReply: () => void; onCreateTask: () => void; onMarkUnread: () => void; onPreview: (attachment: MailboxMessage["attachments"][number]) => void; onDownload: (attachment: MailboxMessage["attachments"][number]) => void }) {
-  return <div className="flex h-full min-h-0 flex-col"><div className="border-b p-4"><Button className="mb-3 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold">{message.subject}</h2><p className="mt-2 break-words text-sm">{message.from}</p><time className="text-xs text-muted-foreground">{longDate(message.date)}</time></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="ghost" onClick={onMarkUnread}><MailOpen />{copy.markUnread}</Button><Button size="sm" variant="secondary" onClick={onReply}><Reply />{copy.reply}</Button><Button size="sm" onClick={onCreateTask}><ListTodo />{message.task ? copy.linkedTask.replace("{{ref}}", message.task.localRef) : copy.createTask}</Button></div></div>{message.issueNumber ? <p className="mt-3 text-xs text-primary">{copy.issue.replace("{{number}}", String(message.issueNumber))}</p> : null}<p className="mt-2 text-[11px] text-muted-foreground">{copy.localReadHint}</p>{message.fetched ? <p className="mt-1 text-[11px] text-muted-foreground">{message.archive?.availability === "available" ? copy.archiveAvailable : copy.archiveUnavailable}</p> : null}</div><div className="border-b bg-amber-500/5 px-4 py-2 text-xs text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.untrusted}</div><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">{loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : <MailMessageBody key={message.id} message={message} copy={copy} />}{message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}{attachment.localAvailable ? ` · ${copy.attachmentLocal}` : ""}</p></div><div className="flex gap-2">{attachment.previewable ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}<Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button></div></article>)}</div></section> : null}</div></div>;
+function MessageDetail({ message, copy, canSend, loading, onBack, onReply, onCreateTask, onMarkUnread, onCorrectClassification, onPreview, onDownload }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; canSend: boolean; loading: boolean; onBack: () => void; onReply: () => void; onCreateTask: () => void; onMarkUnread: () => void; onCorrectClassification: () => void; onPreview: (attachment: MailboxMessage["attachments"][number]) => void; onDownload: (attachment: MailboxMessage["attachments"][number]) => void }) {
+  const classificationView = classificationViewOf(message);
+  const sender = mailboxSender(message.from);
+  const archiveAvailable = message.archive?.availability === "available";
+  return <div className="flex h-full min-h-0 flex-col">
+    <div className="border-b p-4">
+      <Button className="mb-2 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="break-words text-xl font-semibold leading-7">{message.subject || copy.noSubject}</h2>
+          <p className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5 text-sm"><span className="font-medium">{sender.name}</span>{sender.address ? <span className="break-all text-xs text-muted-foreground">{sender.address}</span> : null}</p>
+          <time className="text-xs text-muted-foreground">{longDate(message.date, copy)}</time>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="ghost" onClick={onMarkUnread}><MailOpen />{copy.markUnread}</Button>
+          <Button size="sm" variant="secondary" onClick={onReply}><Reply />{canSend ? copy.reply : copy.replyDraft}</Button>
+          <Button size="sm" onClick={onCreateTask}><ListTodo />{message.task ? copy.linkedTask.replace("{{ref}}", message.task.localRef) : copy.createTask}</Button>
+        </div>
+      </div>
+      {message.classification ? <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-muted/40 px-3 py-2 text-xs"><span className="rounded-full bg-background px-2 py-0.5 font-medium">{copy.smartViews[classificationView]}</span><span className="min-w-0 flex-1 text-muted-foreground">{copy.classificationWhy.replace("{{reason}}", message.classification.explanation)}{message.classification.uncertain ? ` · ${copy.uncertainClassification}` : ""}</span><Button size="sm" variant="ghost" onClick={onCorrectClassification}>{copy.classificationWrong}</Button></div> : null}
+      {message.issueNumber ? <p className="mt-3 text-xs text-primary">{copy.issue.replace("{{number}}", String(message.issueNumber))}</p> : null}
+      <details className="group mt-2 text-xs text-muted-foreground">
+        <summary className="w-fit cursor-pointer list-none rounded-md px-1 py-1 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><ShieldCheck className="mr-1 inline size-3.5 text-emerald-500" /><span>{archiveAvailable ? copy.securityStored : copy.securityOnline}</span><span className="sr-only"> · {copy.securityDetails}</span></summary>
+        <div className="mt-1 space-y-1 rounded-lg border bg-muted/20 px-3 py-2 leading-5">
+          <p><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.untrusted}</p>
+          <p>{copy.localReadHint}</p>
+          {message.fetched ? <p>{archiveAvailable ? copy.archiveAvailable : copy.archiveUnavailable}</p> : null}
+        </div>
+      </details>
+    </div>
+    <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+      {loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : <MailMessageBody key={message.id} message={message} copy={copy} />}
+      {message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}{attachment.localAvailable ? ` · ${copy.attachmentLocal}` : ""}</p></div><div className="flex gap-2">{attachment.previewable ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}<Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button></div></article>)}</div></section> : null}
+    </div>
+  </div>;
 }
 
 function MailMessageBody({ message, copy }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en }) {
@@ -948,7 +1733,7 @@ function MailMessageBody({ message, copy }: { message: MailboxMessage; copy: typ
 
   return <div className="space-y-3">
     {message.bodyTruncated ? <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs leading-5"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.bodyTruncated}</div> : null}
-    {html ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 px-3 py-2"><p className="min-w-0 flex-1 text-xs text-muted-foreground">{showHtml ? copy.safeHtmlNotice : copy.htmlTextNotice}</p><Button size="sm" variant="secondary" onClick={() => showHtml ? setShowHtml(false) : void showSafeHtml()}>{showHtml ? copy.viewPlainText : copy.viewSafeHtml}</Button></div> : null}
+    {html ? <div className="flex flex-nowrap items-center justify-between gap-2 rounded-lg border bg-muted/20 px-3 py-2"><p className="min-w-0 flex-1 text-xs text-muted-foreground"><span className="sm:hidden">{showHtml ? copy.safeHtmlNotice : copy.htmlTextNoticeCompact}</span><span className="hidden sm:inline">{showHtml ? copy.safeHtmlNotice : copy.htmlTextNotice}</span></p><Button className="shrink-0" size="sm" variant="secondary" onClick={() => showHtml ? setShowHtml(false) : void showSafeHtml()}>{showHtml ? copy.viewPlainText : copy.viewSafeHtml}</Button></div> : null}
     {showHtml && html ? <>
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2"><p className="min-w-0 flex-1 text-xs text-muted-foreground">{allowRemoteImages ? copy.remoteImagesLoaded : copy.remoteImagesBlocked}</p><Button size="sm" variant="ghost" onClick={() => setAllowRemoteImages((current) => !current)}>{allowRemoteImages ? copy.blockRemoteImages : copy.loadRemoteImages}</Button></div>
       {inlineImagesLoading ? <p role="status" className="text-xs text-muted-foreground">{copy.inlineImagesLoading}</p> : null}
@@ -983,6 +1768,280 @@ function MailTaskReviewModal({ copy, value, projects, pending, onChange, onClose
   </Modal>;
 }
 
+function DeepOrganizeModal({ copy, open, preview, previewLoading, previewError, job, jobLoading, jobError, pending, onClose, onStart, onCancel }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  open: boolean;
+  preview: MailSemanticPreview | null;
+  previewLoading: boolean;
+  previewError: boolean;
+  job: MailClassificationJob | null;
+  jobLoading: boolean;
+  jobError: boolean;
+  pending: boolean;
+  onClose: () => void;
+  onStart: () => void;
+  onCancel: () => void;
+}) {
+  if (!open) return null;
+  const active = jobLoading || Boolean(job && !isClassificationJobTerminal(job.status));
+  const progress = job?.total ? Math.min(100, Math.round((job.processed / job.total) * 100)) : 0;
+  const unavailable = previewError || (preview && !preview.available);
+  const footer = active
+    ? <div className="flex justify-end"><Button variant="secondary" onClick={onCancel} disabled={pending}>{pending ? copy.cancellingDeep : copy.cancelDeep}</Button></div>
+    : job
+      ? <div className="flex justify-end"><Button onClick={onClose}>{copy.close}</Button></div>
+      : <div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>{copy.close}</Button><Button onClick={onStart} disabled={pending || previewLoading || unavailable || !preview?.pending}><ShieldCheck />{pending ? copy.deepStarting : copy.deepStart}</Button></div>;
+  return <Modal open title={copy.deepTitle} description={copy.deepHint} onClose={onClose} closeDisabled={active} footer={footer}>
+    {jobLoading ? <p role="status" className="text-sm text-muted-foreground">{copy.deepLoading}</p> : jobError ? <p className="text-sm text-destructive">{copy.deepDegraded}</p> : job ? <div className="space-y-3">
+      <p className="text-sm font-medium">{copy.deepProgress.replace("{{processed}}", String(job.processed)).replace("{{total}}", String(job.total))}</p>
+      <div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress}%` }} /></div>
+      {job.status === "succeeded" ? <p className="text-sm text-emerald-600">{copy.deepCompleted}</p> : null}
+      {["degraded", "interrupted"].includes(job.status) ? <p className="text-sm text-destructive">{copy.deepDegraded}</p> : null}
+      {job.status === "cancelled" ? <p className="text-sm text-muted-foreground">{copy.deepCancelled}</p> : null}
+    </div> : previewLoading ? <p role="status" className="text-sm text-muted-foreground">{copy.deepLoading}</p> : unavailable ? <p className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">{preview?.reason === "circuit_open" ? copy.deepCircuit : copy.deepUnavailable}</p> : preview ? <div className="space-y-3 text-sm">
+      <p className="font-medium">{preview.pending ? copy.deepEligible.replace("{{count}}", String(preview.pending)) : copy.deepNoPending}</p>
+      {preview.oldestDate && preview.newestDate ? <p className="text-xs text-muted-foreground">{copy.deepRange.replace("{{from}}", longDate(preview.oldestDate, copy)).replace("{{to}}", longDate(preview.newestDate, copy))}</p> : null}
+      <ul className="space-y-2 rounded-lg border bg-muted/20 p-3 text-muted-foreground">
+        <li>• {copy.deepLocal}</li>
+        <li>• {copy.deepCachedOnly}</li>
+        <li>• {copy.deepNoActions}</li>
+      </ul>
+      {preview.model ? <p className="text-xs text-muted-foreground">{preview.model}</p> : null}
+    </div> : null}
+  </Modal>;
+}
+
+function ClassificationCorrectionModal({ copy, value, pending, onChange, onClose, onSave }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  value: ClassificationCorrectionState | null;
+  pending: boolean;
+  onChange: (value: ClassificationCorrectionState | null) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  if (!value) return null;
+  const views: Array<Exclude<MailSmartView, "all">> = ["needs_attention", "important", "notifications", "subscriptions", "other"];
+  return <Modal open title={copy.correctionTitle} description={copy.correctionHint} onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button onClick={onSave} disabled={pending}>{pending ? copy.correctionSaving : copy.correctionSave}</Button></div>}>
+    <label className="block text-sm font-medium">{copy.correctionLabel}<select autoFocus value={value.view} onChange={(event) => onChange({ ...value, view: event.target.value as Exclude<MailSmartView, "all"> })} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring">{views.map((view) => <option key={view} value={view}>{copy.smartViews[view]}</option>)}</select></label>
+  </Modal>;
+}
+
+function MailOrganizeMenuModal({ copy, open, organizing, suggestionCount, onClose, onBasic, onDeep, onRules }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  open: boolean;
+  organizing: boolean;
+  suggestionCount: number;
+  onClose: () => void;
+  onBasic: () => void;
+  onDeep: () => void;
+  onRules: () => void;
+}) {
+  if (!open) return null;
+  const actions = [
+    { icon: Sparkles, title: organizing ? copy.organizing : copy.organize, description: copy.organizeBasicHint, onClick: onBasic, disabled: organizing },
+    { icon: ShieldCheck, title: copy.deepOrganize, description: copy.organizeDeepHint, onClick: onDeep, disabled: false },
+    { icon: SlidersHorizontal, title: copy.rules, description: copy.organizeRulesHint, onClick: onRules, disabled: false, count: suggestionCount },
+  ];
+  return <Modal open title={copy.organizeMenuTitle} description={copy.organizeMenuHint} onClose={onClose} closeDisabled={organizing} footer={<div className="flex justify-end"><Button variant="secondary" onClick={onClose} disabled={organizing}>{copy.close}</Button></div>}>
+    <div className="space-y-2">{actions.map((action) => <button key={action.title} type="button" onClick={action.onClick} disabled={action.disabled} className="flex w-full items-center gap-3 rounded-xl border p-3 text-left transition-colors hover:bg-muted/50 disabled:opacity-60"><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><action.icon className="size-4" /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-2 text-sm font-medium">{action.title}{action.count ? <span aria-label={`${action.count}`} className="rounded-full bg-primary/15 px-1.5 text-xs text-primary">{action.count}</span> : null}</span><span className="mt-0.5 block text-xs text-muted-foreground">{action.description}</span></span><ChevronRight className="size-4 shrink-0 text-muted-foreground" /></button>)}</div>
+  </Modal>;
+}
+
+function ClassificationRulesModal({ copy, open, data, quality, qualityLoading, qualityError, folderData, automationData, historyJobs, accounts, loading, error, folderLoading, folderError, pendingKey, feedback, folderPending, folderFeedback, folderSelections, onFolderSelection, onFolderPreview, onAutomationPreview, onAutomationAction, onAutomationDryRun, onClose, onRetry, onQualityRetry, onFolderRetry, onEnable, onAction, onEdit }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  open: boolean;
+  data: { rules: MailClassificationRule[]; suggestions: MailClassificationRuleSuggestion[] } | null;
+  quality: MailClassificationQuality | null;
+  qualityLoading: boolean;
+  qualityError: boolean;
+  folderData: { suggestions: MailFolderSuggestion[]; movesSupported: boolean; automationSupported?: boolean } | null;
+  automationData: MailFolderAutomation[];
+  historyJobs: MailFolderMoveJob[];
+  accounts: MailboxAccount[];
+  loading: boolean;
+  error: boolean;
+  folderLoading: boolean;
+  folderError: boolean;
+  pendingKey: string | null;
+  feedback: { tone: "info" | "error"; text: string } | null;
+  folderPending: string | null;
+  folderFeedback: string | null;
+  folderSelections: Record<string, string>;
+  onFolderSelection: (suggestionId: string, value: string) => void;
+  onFolderPreview: (suggestion: MailFolderSuggestion) => void;
+  onAutomationPreview: (suggestion: MailFolderSuggestion) => void;
+  onAutomationAction: (automation: MailFolderAutomation, action: "pause" | "resume" | "revoke") => void;
+  onAutomationDryRun: (automation: MailFolderAutomation) => void;
+  onClose: () => void;
+  onRetry: () => void;
+  onQualityRetry: () => void;
+  onFolderRetry: () => void;
+  onEnable: (suggestionId: string) => void;
+  onAction: (rule: MailClassificationRule, action: "pause" | "resume" | "revoke") => void;
+  onEdit: (rule: MailClassificationRule) => void;
+}) {
+  if (!open) return null;
+  const matchText = (kind: "sender" | "domain", value: string) => (kind === "sender" ? copy.rulesMatchSender : copy.rulesMatchDomain).replace("{{value}}", value);
+  const statusText = (status: MailClassificationRule["status"]) => status === "active" ? copy.rulesActive : status === "paused" ? copy.rulesPaused : copy.rulesRevoked;
+  const pauseText = (automation: MailFolderAutomation) => automation.nextAction === "resume_when_ready"
+    ? copy.folderAutomationPauseUser
+    : automation.nextAction === "sync_and_review"
+      ? copy.folderAutomationPauseSync
+      : automation.nextAction === "review_classification_quality"
+        ? copy.folderAutomationPauseQuality
+        : automation.nextAction === "enable_rollout"
+          ? copy.folderAutomationPauseRollout
+          : copy.folderAutomationPauseAuthorize;
+  const pending = Boolean(pendingKey);
+  const automationReady = quality?.status === "healthy" && quality.organization.status === "healthy" && folderData?.automationSupported === true;
+  return <Modal open title={copy.rulesTitle} description={copy.rulesHint} size="lg" onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button></div>}>
+    {loading ? <p role="status" className="text-sm text-muted-foreground">{copy.rulesLoading}</p> : error ? <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm"><span>{copy.rulesFailed}</span><Button size="sm" variant="secondary" onClick={onRetry}>{copy.retry}</Button></div> : <div className="space-y-5">
+      {feedback ? <div role={feedback.tone === "error" ? "alert" : "status"} className={cn("rounded-lg border px-3 py-2 text-sm", feedback.tone === "error" ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-emerald-500/30 bg-emerald-500/5 text-emerald-700")}>{feedback.text}</div> : null}
+      <p className="rounded-lg border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground">{copy.rulesNoActions}</p>
+      <ClassificationQualityPanel copy={copy} quality={quality} loading={qualityLoading} error={qualityError} onRetry={onQualityRetry} />
+      <section aria-label={copy.rulesSuggestions}><h3 className="text-sm font-semibold">{copy.rulesSuggestions}</h3>{data?.suggestions.length ? <div className="mt-2 space-y-3">{data.suggestions.map((suggestion) => <article key={suggestion.id} className="rounded-xl border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><p className="break-all text-sm font-medium">{matchText(suggestion.matchKind, suggestion.matchValue)}</p><p className="mt-1 text-xs text-muted-foreground">{copy.rulesAccount.replace("{{value}}", accountLabel(suggestion.accountId, accounts))}</p><p className="mt-1 text-xs text-muted-foreground">{copy.rulesEvidence.replace("{{count}}", String(suggestion.evidenceCount))} · {copy.smartViews[classificationViewForTarget(suggestion.target)]}</p><p className="mt-1 text-xs text-muted-foreground">{suggestion.affectedCount ? copy.rulesAffected.replace("{{count}}", String(suggestion.affectedCount)) : copy.rulesFutureOnly}</p></div><Button size="sm" onClick={() => onEnable(suggestion.id)} disabled={pending}>{pendingKey === `enable:${suggestion.id}` ? copy.rulesEnabling : copy.rulesEnable}</Button></div>{suggestion.samples.length ? <div className="mt-3 border-t pt-2"><p className="text-xs font-medium">{copy.rulesSamples}</p><ul className="mt-1 space-y-2 text-xs text-muted-foreground">{suggestion.samples.map((sample) => <li key={sample.messageId} className="min-w-0"><p className="truncate text-foreground">{sample.subject || copy.noSubject}</p><p className="truncate">{sample.from}{sample.date ? ` · ${shortDate(sample.date, copy)}` : ""}</p></li>)}</ul></div> : null}</article>)}</div> : <p className="mt-2 text-sm text-muted-foreground">{copy.rulesSuggestionEmpty}</p>}</section>
+      <section aria-label={copy.folderSuggestions}><h3 className="text-sm font-semibold">{copy.folderSuggestions}</h3>{folderLoading ? <p role="status" className="mt-2 text-sm text-muted-foreground">{copy.folderSuggestionLoading}</p> : folderError ? <div role="alert" className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm"><span>{copy.folderSuggestionFailed}</span><Button size="sm" variant="secondary" onClick={onFolderRetry}>{copy.retry}</Button></div> : <div className="mt-2 space-y-3">{folderFeedback ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{folderFeedback}</div> : null}{folderData?.suggestions.length ? folderData.suggestions.map((suggestion) => {
+        const categoryLabel = copy.smartViews[suggestion.destinationCategory];
+        const defaultDestination = suggestion.proposedDestination.folderId ?? "__suggested__";
+        const selected = folderSelections[suggestion.id] ?? defaultDestination;
+        return <article key={suggestion.id} className="rounded-xl border p-3"><div className="min-w-0"><p className="break-all text-sm font-medium">{matchText(suggestion.matchKind, suggestion.matchValue)}</p><p className="mt-1 text-xs text-muted-foreground">{copy.rulesAccount.replace("{{value}}", accountLabel(suggestion.accountId, accounts))}</p><p className="mt-1 text-xs text-muted-foreground">{(suggestion.proposedDestination.kind === "existing" ? copy.folderSuggestedExisting : copy.folderSuggestedNew).replace("{{value}}", suggestion.proposedDestination.name ?? categoryLabel)}</p><p className="mt-1 text-xs text-muted-foreground">{copy.folderAffected.replace("{{count}}", String(suggestion.affectedCount))}</p>{suggestion.protectedCount ? <p className="mt-1 text-xs text-amber-600">{copy.folderProtected.replace("{{count}}", String(suggestion.protectedCount))}</p> : null}{!automationReady ? <p className="mt-1 text-xs text-muted-foreground">{copy.folderAutomationQualityRequired}</p> : null}</div><div className="mt-3 flex flex-wrap items-end gap-2"><label className="min-w-0 flex-1 text-xs font-medium">{copy.folderDestination}<select value={selected} onChange={(event) => onFolderSelection(suggestion.id, event.target.value)} className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm font-normal outline-none focus:ring-2 focus:ring-ring">{suggestion.proposedDestination.kind === "new" ? <option value="__suggested__">{copy.folderSuggestedNew.replace("{{value}}", categoryLabel)}</option> : null}{suggestion.folderOptions.map((folder) => <option key={folder.folderId} value={folder.folderId ?? ""}>{folder.name}</option>)}</select></label><Button size="sm" variant="secondary" onClick={() => onFolderPreview(suggestion)} disabled={Boolean(folderPending || pending)}>{folderPending === suggestion.id ? copy.folderPreviewing : copy.folderPreview}</Button><Button size="sm" onClick={() => onAutomationPreview(suggestion)} disabled={Boolean(folderPending || pending || !automationReady)}>{folderPending === `auto:${suggestion.id}` ? copy.folderPreviewing : copy.folderAutomationEnable}</Button></div></article>;
+      }) : <p className="text-sm text-muted-foreground">{copy.folderSuggestionEmpty}</p>}</div>}</section>
+      <section aria-label={copy.folderAutomationTitle}>
+        <h3 className="text-sm font-semibold">{copy.folderAutomationTitle}</h3>
+        {automationData.length ? <div className="mt-2 space-y-2">{automationData.map((automation) => <article key={automation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">{automation.destination.name ?? automation.destination.folderPath ?? copy.smartViews[automation.destination.category]}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{automation.status === "active" ? copy.folderAutomationActive : automation.status === "paused" ? copy.folderAutomationPaused : copy.rulesRevoked}</p>
+            {automation.lastSuccessfulAt ? <p className="mt-1 text-xs text-muted-foreground">{copy.folderAutomationLastSuccess.replace("{{time}}", shortDate(automation.lastSuccessfulAt, copy))} · {copy.folderAutomationSuccessStreak.replace("{{count}}", String(automation.consecutiveSuccessfulBatches))}</p> : null}
+            {automation.lastCheckedAt ? <p className="mt-1 text-xs text-muted-foreground">{copy.folderAutomationLastChecked.replace("{{time}}", shortDate(automation.lastCheckedAt, copy))}</p> : null}
+            {automation.status === "paused" ? <p className="mt-1 text-xs text-amber-600">{pauseText(automation)}</p> : null}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {automation.status !== "revoked" ? <Button size="sm" variant="secondary" onClick={() => onAutomationDryRun(automation)} disabled={pending}>{pendingKey === `dry:${automation.id}` ? copy.folderAutomationDryRunning : copy.folderAutomationDryRun}</Button> : null}
+            {automation.status === "active" ? <Button size="sm" variant="secondary" onClick={() => onAutomationAction(automation, "pause")} disabled={pending}>{copy.rulesPause}</Button> : automation.status === "paused" && automation.pauseReason === "user_paused" ? <Button size="sm" variant="secondary" onClick={() => onAutomationAction(automation, "resume")} disabled={pending}>{copy.rulesResume}</Button> : null}
+            {automation.status !== "revoked" ? <Button size="sm" variant="ghost" onClick={() => onAutomationAction(automation, "revoke")} disabled={pending}>{copy.rulesRevoke}</Button> : null}
+          </div>
+        </article>)}</div> : <p className="mt-2 text-sm text-muted-foreground">{copy.folderAutomationEmpty}</p>}
+      </section>
+      <section aria-label={copy.folderHistoryTitle}><h3 className="text-sm font-semibold">{copy.folderHistoryTitle}</h3>{historyJobs.length ? <div className="mt-2 divide-y rounded-xl border px-3">{historyJobs.slice(0, 20).map((job) => <div key={job.id} className="flex items-center justify-between gap-3 py-2 text-sm"><div><p className="font-medium">{job.destination.name ?? job.destination.folderPath ?? copy.smartViews[job.destination.category]}</p><p className="text-xs text-muted-foreground">{job.mode === "automatic" ? copy.folderHistoryAutomatic : job.mode === "recovery" ? copy.folderHistoryRecovery : copy.folderHistoryManual} · {shortDate(job.completedAt ?? job.updatedAt, copy)}</p></div><span className={cn("rounded-full px-2 py-1 text-xs", job.status === "succeeded" ? "bg-emerald-500/10 text-emerald-700" : job.status === "moving" ? "bg-muted" : "bg-amber-500/10 text-amber-700")}>{job.status === "succeeded" ? copy.folderHistorySucceeded.replace("{{count}}", String(job.movedCount)) : job.status === "moving" ? copy.folderHistoryMoving : job.status === "recoverable" ? copy.folderHistoryRecoverable.replace("{{count}}", String(job.pendingCount ?? 0)) : copy.folderHistoryNeedsReview}</span></div>)}</div> : <p className="mt-2 text-sm text-muted-foreground">{copy.folderHistoryEmpty}</p>}</section>
+      <section aria-label={copy.rulesExisting}><h3 className="text-sm font-semibold">{copy.rulesExisting}</h3>{data?.rules.length ? <div className="mt-2 space-y-2">{data.rules.map((rule) => <article key={rule.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3"><div className="min-w-0"><p className="break-all text-sm font-medium">{matchText(rule.matchKind, rule.matchValue)}</p><p className="mt-1 text-xs text-muted-foreground">{copy.rulesAccount.replace("{{value}}", accountLabel(rule.accountId, accounts))}</p><p className="mt-1 text-xs text-muted-foreground">{statusText(rule.status)} · {copy.smartViews[classificationViewForTarget(rule.target)]}</p></div><div className="flex flex-wrap gap-1"><Button size="sm" variant="ghost" onClick={() => onEdit(rule)} disabled={pending}>{copy.rulesEdit}</Button>{rule.status === "active" ? <Button size="sm" variant="secondary" onClick={() => onAction(rule, "pause")} disabled={pending}>{pendingKey === `pause:${rule.id}` ? copy.rulesUpdating : copy.rulesPause}</Button> : <Button size="sm" variant="secondary" onClick={() => onAction(rule, "resume")} disabled={pending}>{pendingKey === `resume:${rule.id}` ? copy.rulesUpdating : copy.rulesResume}</Button>}{rule.status !== "revoked" ? <Button size="sm" variant="ghost" onClick={() => onAction(rule, "revoke")} disabled={pending}>{pendingKey === `revoke:${rule.id}` ? copy.rulesUpdating : copy.rulesRevoke}</Button> : null}</div></article>)}</div> : <p className="mt-2 text-sm text-muted-foreground">{copy.rulesExistingEmpty}</p>}</section>
+    </div>}
+  </Modal>;
+}
+
+function ClassificationQualityPanel({ copy, quality, loading, error, onRetry }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  quality: MailClassificationQuality | null;
+  loading: boolean;
+  error: boolean;
+  onRetry: () => void;
+}) {
+  if (loading) return <section aria-label={copy.qualityTitle}><h3 className="text-sm font-semibold">{copy.qualityTitle}</h3><p role="status" className="mt-2 text-sm text-muted-foreground">{copy.qualityLoading}</p></section>;
+  if (error || !quality) return <section aria-label={copy.qualityTitle}><h3 className="text-sm font-semibold">{copy.qualityTitle}</h3><div role="alert" className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm"><span>{copy.qualityFailed}</span><Button size="sm" variant="secondary" onClick={onRetry}>{copy.retry}</Button></div></section>;
+  const title = quality.status === "healthy" ? copy.qualityHealthy : quality.status === "needs_attention" ? copy.qualityNeedsAttention : copy.qualityCollecting;
+  const hint = quality.status === "healthy" ? copy.qualityHealthyHint : quality.status === "needs_attention" ? copy.qualityNeedsAttentionHint : copy.qualityCollectingHint.replace("{{count}}", String(quality.minimumSample));
+  const metrics = [
+    [copy.qualityCoverage, quality.metrics.coverage.value],
+    [copy.qualityUnknown, quality.metrics.unknown.value],
+    [copy.qualityCorrections, quality.metrics.corrections.value],
+    [copy.qualityJobFailures, quality.metrics.jobFailures.value],
+  ] as const;
+  return <section aria-label={copy.qualityTitle} className="rounded-xl border bg-muted/10 p-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><h3 className="text-sm font-semibold">{copy.qualityTitle}</h3><p className="mt-1 text-sm font-medium">{title}</p></div><span className={cn("rounded-full px-2 py-1 text-xs", quality.status === "healthy" ? "bg-emerald-500/10 text-emerald-700" : quality.status === "needs_attention" ? "bg-amber-500/10 text-amber-700" : "bg-muted text-muted-foreground")}>{quality.sampleSize} / {quality.minimumSample}</span></div><p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p><dl className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">{metrics.map(([label, value]) => <div key={label} className="rounded-lg border bg-background p-2"><dt className="text-[11px] text-muted-foreground">{label}</dt><dd className="mt-1 text-sm font-semibold tabular-nums">{formatQualityRate(value)}</dd></div>)}</dl><p className="mt-3 text-xs text-muted-foreground">{quality.organization.completedBatches ? copy.qualityMoveResults.replace("{{unconfirmed}}", String(quality.organization.unconfirmedBatches)).replace("{{total}}", String(quality.organization.completedBatches)) : copy.qualityMoveCollecting}</p><p className="mt-1 text-[11px] text-muted-foreground">{copy.qualityPrivacy}</p></section>;
+}
+
+function formatQualityRate(value: number | null) {
+  return value == null ? "—" : `${Math.round(value * 100)}%`;
+}
+
+function ClassificationRuleEditModal({ copy, value, accountName, pending, feedback, onChange, onClose, onSave }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  value: { rule: MailClassificationRule; view: Exclude<MailSmartView, "all"> } | null;
+  accountName: string | null;
+  pending: boolean;
+  feedback: { tone: "info" | "error"; text: string } | null;
+  onChange: (value: { rule: MailClassificationRule; view: Exclude<MailSmartView, "all"> } | null) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  if (!value) return null;
+  const views: Array<Exclude<MailSmartView, "all">> = ["needs_attention", "important", "notifications", "subscriptions", "other"];
+  const match = (value.rule.matchKind === "sender" ? copy.rulesMatchSender : copy.rulesMatchDomain).replace("{{value}}", value.rule.matchValue);
+  return <Modal open title={copy.rulesEdit} description={copy.rulesEditing.replace("{{match}}", match)} onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button onClick={onSave} disabled={pending}>{pending ? copy.rulesUpdating : copy.rulesSave}</Button></div>}>
+    <div className="space-y-3">{accountName ? <p className="text-xs text-muted-foreground">{copy.rulesAccount.replace("{{value}}", accountName)}</p> : null}{feedback ? <div role={feedback.tone === "error" ? "alert" : "status"} className={cn("rounded-lg border px-3 py-2 text-sm", feedback.tone === "error" ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-emerald-500/30 bg-emerald-500/5 text-emerald-700")}>{feedback.text}</div> : null}
+    <label className="block text-sm font-medium">{copy.correctionLabel}<select autoFocus value={value.view} onChange={(event) => onChange({ ...value, view: event.target.value as Exclude<MailSmartView, "all"> })} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring">{views.map((view) => <option key={view} value={view}>{copy.smartViews[view]}</option>)}</select></label>
+    <p className="text-xs leading-5 text-muted-foreground">{copy.rulesNoActions}</p></div>
+  </Modal>;
+}
+
+function FolderMovePreviewModal({ copy, value, job, pending, error, accounts, onMove, onConnect, onSync, onClose }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  value: MailFolderMovePreview | null;
+  job: MailFolderMoveJob | null;
+  pending: boolean;
+  error: string | null;
+  accounts: MailboxAccount[];
+  onMove: () => void;
+  onConnect: () => void;
+  onSync: () => void;
+  onClose: () => void;
+}) {
+  if (!value) return null;
+  const categoryLabel = copy.smartViews[value.destination.category];
+  const destinationLabel = value.destination.name ?? value.destination.folderPath ?? categoryLabel;
+  const terminal = job && ["succeeded", "unconfirmed"].includes(job.status);
+  const footer = <div className="flex flex-wrap justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending || job?.status === "moving"}>{copy.close}</Button>{job?.status === "succeeded" || job?.status === "unconfirmed" ? <Button onClick={onSync}><RefreshCw />{copy.sync}</Button> : !job && value.movesSupported ? <Button onClick={onMove} disabled={pending}><Folder />{pending ? copy.folderMoveStarting : copy.folderMoveConfirm.replace("{{count}}", String(value.selectedCount))}</Button> : !job ? <Button onClick={onConnect}><ShieldCheck />{copy.folderMovePermission}</Button> : null}</div>;
+  return <Modal open title={copy.folderPreviewTitle} description={copy.folderPreviewHint} size="lg" onClose={onClose} closeDisabled={pending || job?.status === "moving"} footer={footer}>
+    <div className="space-y-4">
+      <dl className="grid gap-3 rounded-xl border bg-muted/20 p-3 text-sm sm:grid-cols-2">
+        <div><dt className="text-xs text-muted-foreground">{copy.folderAccount}</dt><dd className="mt-1 font-medium">{accountLabel(value.accountId, accounts)}</dd></div>
+        <div><dt className="text-xs text-muted-foreground">{copy.folderDestination}</dt><dd className="mt-1 font-medium">{destinationLabel}</dd></div>
+      </dl>
+      <p className="text-sm font-medium">{copy.folderPreviewCount.replace("{{selected}}", String(value.selectedCount)).replace("{{total}}", String(value.totalMatched))}</p>
+      {value.remainingCount ? <p className="text-xs text-muted-foreground">{copy.folderPreviewRemaining.replace("{{count}}", String(value.remainingCount))}</p> : null}
+      {!job ? <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-800">{value.movesSupported ? copy.folderPreviewNoMove : `${copy.folderMovePermissionHint} ${copy.folderPreviewNoMove}`}</div> : null}
+      {job?.status === "moving" ? <div role="status" className="rounded-lg border bg-muted/30 p-3 text-sm"><RefreshCw className="mr-2 inline size-4 animate-spin" />{copy.folderMoveProgress.replace("{{count}}", String(job.requestedCount))}</div> : null}
+      {job?.status === "succeeded" ? <div role="status" className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-800">{copy.folderMoveSuccess.replace("{{count}}", String(job.movedCount))}</div> : null}
+      {job?.status === "unconfirmed" ? <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-amber-800">{copy.folderMoveUnconfirmed}</div> : null}
+      {error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{error}</div> : null}
+      {!terminal && value.samples.length ? <section aria-label={copy.rulesSamples}><h3 className="text-sm font-semibold">{copy.rulesSamples}</h3><ul className="mt-2 max-h-64 divide-y overflow-y-auto rounded-xl border px-3">{value.samples.map((sample) => <li key={sample.messageId} className="py-2 text-sm"><p className="truncate font-medium">{sample.subject || copy.noSubject}</p><p className="mt-0.5 truncate text-xs text-muted-foreground">{sample.from}{sample.date ? ` · ${shortDate(sample.date, copy)}` : ""}</p></li>)}</ul></section> : null}
+    </div>
+  </Modal>;
+}
+
+function FolderAutomationPreviewModal({ copy, value, pending, error, accounts, onEnable, onClose }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  value: MailFolderMovePreview | null;
+  pending: boolean;
+  error: string | null;
+  accounts: MailboxAccount[];
+  onEnable: () => void;
+  onClose: () => void;
+}) {
+  if (!value) return null;
+  const destination = value.destination.name ?? value.destination.folderPath ?? copy.smartViews[value.destination.category];
+  return <Modal open title={copy.folderAutomationConfirmTitle} description={copy.folderAutomationConfirmHint} onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button onClick={onEnable} disabled={pending}>{pending ? copy.folderMoveStarting : copy.folderAutomationConfirm}</Button></div>}>
+    <div className="space-y-3"><dl className="grid gap-3 rounded-xl border bg-muted/20 p-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">{copy.folderAccount}</dt><dd className="mt-1 font-medium">{accountLabel(value.accountId, accounts)}</dd></div><div><dt className="text-xs text-muted-foreground">{copy.folderDestination}</dt><dd className="mt-1 font-medium">{destination}</dd></div></dl><p className="text-sm">{copy.folderAutomationScope.replace("{{count}}", String(value.selectedCount))}</p><p className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-amber-800">{copy.folderAutomationStandingConsent}</p><p className="text-xs text-muted-foreground">{copy.folderAutomationSafety}</p>{error ? <p role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{error}</p> : null}</div>
+  </Modal>;
+}
+
+function FolderMoveRecoveryModal({ copy, value, pending, error, accounts, onSync, onReconcile, onClose }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  value: MailFolderMoveJob | null;
+  pending: boolean;
+  error: string | null;
+  accounts: MailboxAccount[];
+  onSync: () => void;
+  onReconcile: (job: MailFolderMoveJob) => void;
+  onClose: () => void;
+}) {
+  if (!value) return null;
+  const destination = value.destination.name ?? value.destination.folderPath ?? copy.smartViews[value.destination.category];
+  return <Modal open title={copy.folderMoveRecoveryNotice} description={copy.folderMoveRecoveryHint} onClose={onClose} closeDisabled={pending} footer={<div className="flex flex-wrap justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button variant="secondary" onClick={onSync} disabled={pending}><RefreshCw />{copy.sync}</Button>{value.status !== "moving" ? <Button onClick={() => onReconcile(value)} disabled={pending}>{pending ? copy.folderMoveReconciling : copy.folderMoveReconcile}</Button> : null}</div>}>
+    <dl className="grid gap-3 rounded-xl border bg-muted/20 p-3 text-sm sm:grid-cols-2"><div><dt className="text-xs text-muted-foreground">{copy.folderAccount}</dt><dd className="mt-1 font-medium">{accountLabel(value.accountId, accounts)}</dd></div><div><dt className="text-xs text-muted-foreground">{copy.folderDestination}</dt><dd className="mt-1 font-medium">{destination}</dd></div></dl>
+    <div role="alert" className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-amber-800">{value.status === "moving" ? copy.folderMoveProgress.replace("{{count}}", String(value.requestedCount)) : value.status === "recoverable" ? copy.folderMoveRecoverable.replace("{{count}}", String(value.pendingCount ?? 0)) : value.status === "conflict" ? copy.folderMoveConflict : copy.folderMoveUnconfirmed}</div>{error ? <p role="alert" className="mt-2 text-sm text-destructive">{error}</p> : null}
+  </Modal>;
+}
+
 function AttachmentPreviewModal({ copy, preview, onClose }: { copy: typeof COPY.zh | typeof COPY.en; preview: AttachmentPreview | null; onClose: () => void }) {
   if (!preview) return null;
   const dataUrl = preview.dataBase64 ? `data:${preview.contentType};base64,${preview.dataBase64}` : null;
@@ -1007,7 +2066,7 @@ function MailDraftDetailModal({ copy, draft, onClose }: { copy: typeof COPY.zh |
     <dl className="space-y-3 text-sm">
       <div className="grid gap-3 sm:grid-cols-2">
         <div><dt className="text-xs text-muted-foreground">{copy.deliveryStatus}</dt><dd className="mt-1 font-medium">{copy.status[draft.status as keyof typeof copy.status] ?? draft.status}</dd></div>
-        <div><dt className="text-xs text-muted-foreground">{copy.updatedAt}</dt><dd className="mt-1 font-medium">{longDate(draft.sentAt ?? draft.updatedAt)}</dd></div>
+        <div><dt className="text-xs text-muted-foreground">{copy.updatedAt}</dt><dd className="mt-1 font-medium">{longDate(draft.sentAt ?? draft.updatedAt, copy)}</dd></div>
       </div>
       {draft.sendError ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-3"><dt className="font-medium text-destructive">{copy.sendProblem}</dt><dd className="mt-1 break-words text-xs text-muted-foreground">{draft.sendError}</dd>{unconfirmed ? <p className="mt-2 text-xs font-medium">{copy.sendUnconfirmedHint}</p> : null}</div> : null}
       <div><dt className="text-xs text-muted-foreground">{copy.to}</dt><dd className="mt-1 break-words font-medium">{draft.to}</dd></div>
@@ -1030,6 +2089,48 @@ function composeFingerprint(value: ComposeState) {
   });
 }
 
-function shortDate(value: string | null) { const date = value ? new Date(value) : null; return date && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date) : ""; }
-function longDate(value: string | null) { const date = value ? new Date(value) : null; return date && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date) : ""; }
+function classificationViewOf(message: MailboxMessage): Exclude<MailSmartView, "all"> {
+  const classification = message.classification;
+  if (!classification) return "other";
+  if (["action_required", "reply_expected"].includes(classification.attention)) return "needs_attention";
+  if (classification.attention === "important") return "important";
+  if (["newsletter", "marketing"].includes(classification.mailType)) return "subscriptions";
+  if (["transaction", "account_security", "calendar", "system_notification"].includes(classification.mailType)) return "notifications";
+  return "other";
+}
+
+function classificationViewForTarget(target: Pick<MailClassification, "attention" | "mailType">): Exclude<MailSmartView, "all"> {
+  if (["action_required", "reply_expected"].includes(target.attention)) return "needs_attention";
+  if (target.attention === "important") return "important";
+  if (["newsletter", "marketing"].includes(target.mailType)) return "subscriptions";
+  if (["transaction", "account_security", "calendar", "system_notification"].includes(target.mailType)) return "notifications";
+  return "other";
+}
+
+function classificationPatchForView(view: Exclude<MailSmartView, "all">, currentType: MailClassification["mailType"]): Pick<MailClassification, "attention" | "mailType" | "suggestedAction"> {
+  if (view === "needs_attention") return { attention: "action_required", mailType: currentType === "unknown" ? "human_conversation" : currentType, suggestedAction: "reply" };
+  if (view === "important") return { attention: "important", mailType: currentType, suggestedAction: "read" };
+  if (view === "notifications") return { attention: "routine", mailType: "system_notification", suggestedAction: "read" };
+  if (view === "subscriptions") return { attention: "low_value", mailType: "newsletter", suggestedAction: "archive_candidate" };
+  return { attention: "routine", mailType: "other", suggestedAction: "none" };
+}
+
+function accountLabel(accountId: string, accounts: MailboxAccount[]) {
+  return accounts.find((account) => account.id === accountId)?.name ?? accountId;
+}
+
+function isClassificationJobTerminal(status: MailClassificationJob["status"] | undefined) {
+  return status ? ["succeeded", "degraded", "cancelled", "interrupted"].includes(status) : false;
+}
+
+function mailboxSender(value: string) {
+  const match = /^(.*?)\s*<([^<>]+)>\s*$/.exec(value.trim());
+  if (!match) return { name: value.trim() || "—", address: "" };
+  const name = match[1].trim().replace(/^"|"$/g, "");
+  return { name: name || match[2], address: match[2] };
+}
+
+function mailLocale(copy: typeof COPY.zh | typeof COPY.en) { return copy === COPY.zh ? "zh-CN" : "en-US"; }
+function shortDate(value: string | null, copy: typeof COPY.zh | typeof COPY.en) { const date = value ? new Date(value) : null; return date && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(mailLocale(copy), { month: "short", day: "numeric" }).format(date) : ""; }
+function longDate(value: string | null, copy: typeof COPY.zh | typeof COPY.en) { const date = value ? new Date(value) : null; return date && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(mailLocale(copy), { dateStyle: "medium", timeStyle: "short" }).format(date) : ""; }
 function formatBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`; return `${(value / (1024 * 1024)).toFixed(1)} MB`; }

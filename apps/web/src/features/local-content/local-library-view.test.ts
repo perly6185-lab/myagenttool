@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api/request";
+import { i18n } from "@/lib/i18n";
 import type { LocalContentRecord } from "./local-content-types";
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
 import { LocalLibraryView, openTasksFor } from "./local-library-view";
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   addToWorkItem: vi.fn(),
   preview: vi.fn(),
   reveal: vi.fn(),
+  createTask: vi.fn(),
   listWorkItems: vi.fn(),
   navigate: vi.fn(),
 }));
@@ -37,8 +39,9 @@ const tasks = [
 ] as LocalWorkItem[];
 
 describe("local library task targeting", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    await i18n.changeLanguage("en-US");
     mocks.stats.mockResolvedValue({ catalog: {
       schemaVersion: 1,
       total: 1,
@@ -105,6 +108,10 @@ describe("local library task targeting", () => {
       remoteResourcesLoaded: false,
     } });
     mocks.reveal.mockResolvedValue({ revealed: true, name: "brief.md" });
+    mocks.createTask.mockResolvedValue({ workItem: {
+      id: "created-a", projectId: "project-a", state: "open", status: "backlog",
+      title: "Use Local architecture brief", revision: 1,
+    } });
   });
 
   afterEach(cleanup);
@@ -129,6 +136,44 @@ describe("local library task targeting", () => {
     await waitFor(() => expect(mocks.addToWorkItem).toHaveBeenCalledWith(
       "open-a",
       { contentId: "lc_11111111111111111111111111111111", expectedRevision: 3, purpose: "required_input" },
+    ));
+    expect(await screen.findByText(/original was not moved/i)).toBeTruthy();
+  });
+
+  it("lets ordinary users choose a non-blocking reference", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add to task" }));
+    expect(await screen.findByRole("dialog", { name: "Add content reference" })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Target task" })).toBeTruthy());
+    fireEvent.change(await screen.findByRole("combobox", { name: /^How AI should use it/ }), { target: { value: "reference" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add reference" }));
+
+    await waitFor(() => expect(mocks.addToWorkItem).toHaveBeenCalledWith(
+      "open-a",
+      expect.objectContaining({ purpose: "reference" }),
+    ));
+  });
+
+  it("creates an unfinished task when there is no eligible target, then adds the reference", async () => {
+    mocks.listWorkItems.mockResolvedValueOnce({ workItems: [], count: 0, hasMore: false, nextCursor: null });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add to task" }));
+    expect(await screen.findByText(/No unfinished task/i)).toBeTruthy();
+    expect((screen.getByRole("textbox", { name: "New task name" }) as HTMLInputElement).value)
+      .toBe("Use Local architecture brief");
+    fireEvent.click(screen.getByRole("button", { name: "Create task and add" }));
+
+    await waitFor(() => expect(mocks.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-a",
+      title: "Use Local architecture brief",
+    })));
+    await waitFor(() => expect(mocks.addToWorkItem).toHaveBeenCalledWith(
+      "created-a",
+      expect.objectContaining({ expectedRevision: 1, purpose: "required_input" }),
     ));
     expect(await screen.findByText(/original was not moved/i)).toBeTruthy();
   });
@@ -162,11 +207,34 @@ describe("local library task targeting", () => {
       .getByRole("button", { name: "Locate original" })).toBeTruthy();
   });
 
+  it("shows the original file size when a safe preview is truncated", async () => {
+    mocks.preview.mockResolvedValueOnce({ preview: {
+      contentId: "lc_11111111111111111111111111111111",
+      title: "Local architecture brief",
+      kind: "article",
+      format: "plain_text",
+      text: "Bounded preview",
+      truncated: true,
+      bytesRead: 1024 * 1024,
+      totalBytes: 5 * 1024 * 1024,
+      mimeType: "text/markdown",
+      originalName: "brief.md",
+      activeContentExecuted: false,
+      remoteResourcesLoaded: false,
+    } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Safe preview" }));
+    expect(await screen.findByText(/original file 5 MB/i)).toBeTruthy();
+  });
+
   it("browses logical task, source, month, availability, and index directories", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
 
     expect(await screen.findByText(/Project A · Prepare design/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More filters" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Related task" }), { target: { value: "open-a" } });
     fireEvent.change(screen.getByRole("combobox", { name: "Source" }), { target: { value: "article_import" } });
     fireEvent.change(screen.getByRole("combobox", { name: "Date directory" }), { target: { value: "2026-08" } });

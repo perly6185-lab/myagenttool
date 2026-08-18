@@ -10,7 +10,7 @@ import {
 const actor = { userId: "usr_1", teamId: "team_1" };
 
 function fixture({ previewText = "authoritative reference text" } = {}) {
-  const calls = { directories: [], searches: [], previews: [], events: [] };
+  const calls = { directories: [], searches: [], reads: [], events: [] };
   const service = createLocalContentRetrievalService({
     browseDirectories: async (input, receivedActor) => {
       calls.directories.push({ input, actor: receivedActor });
@@ -34,16 +34,22 @@ function fixture({ previewText = "authoritative reference text" } = {}) {
         relativePath: "private/original.md",
       }], count: 1, query: input.query, hasMore: false, nextCursor: null } };
     },
-    previewLocalContent: async (input, receivedActor) => {
-      calls.previews.push({ input, actor: receivedActor });
-      return { status: 200, body: { preview: {
+    readLocalContentText: async (input, receivedActor) => {
+      calls.reads.push({ input, actor: receivedActor });
+      const text = previewText.slice(input.offset, input.offset + input.limit);
+      const nextOffset = input.offset + text.length;
+      return { status: 200, body: { chunk: {
         contentId: input.contentId,
         title: "Indexed source",
         kind: "article",
         mimeType: "text/markdown",
         format: "plain_text",
-        text: previewText,
-        truncated: false,
+        offset: input.offset,
+        text,
+        nextOffset: nextOffset < previewText.length ? nextOffset : null,
+        eof: nextOffset >= previewText.length,
+        sourceTruncated: false,
+        continuationUnavailable: false,
       } } };
     },
     authorizeRetrieval: () => ({ ok: true }),
@@ -76,8 +82,38 @@ test("provider-neutral retrieval separates directory, summary, and original stag
   assert.equal(read.body.text, "authoritativ");
   assert.equal(read.body.trust, "untrusted_reference");
   assert.equal(read.body.budget.readsUsed, 1);
+  assert.equal(fx.calls.reads[0].input.limit, 12);
   assert.deepEqual(fx.calls.events.map((event) => event.data.operation), ["directory", "summaries", "read"]);
   assert.equal(fx.calls.events.every((event) => event.invocationId === "inv_1"), true);
+});
+
+test("retrieval reports an unavailable continuation without claiming end of file", async () => {
+  const fx = fixture();
+  fx.service.releaseInvocation("inv_partial");
+  const service = createLocalContentRetrievalService({
+    readLocalContentText: async (input) => ({ status: 200, body: { chunk: {
+      contentId: input.contentId,
+      title: "Parser-limited document",
+      kind: "article",
+      mimeType: "application/pdf",
+      format: "plain_text",
+      offset: 0,
+      text: "extracted prefix",
+      nextOffset: null,
+      eof: false,
+      sourceTruncated: true,
+      continuationUnavailable: true,
+    } } }),
+    authorizeRetrieval: () => ({ ok: true }),
+  });
+  const result = await service.read({
+    invocationId: "inv_partial", provider: "claude", contentId: `lc_${"c".repeat(32)}`,
+  }, actor);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.eof, false);
+  assert.equal(result.body.nextOffset, null);
+  assert.equal(result.body.sourceTruncated, true);
+  assert.equal(result.body.continuationUnavailable, true);
 });
 
 test("retrieval validates provider context and enforces per-invocation read budgets", async () => {

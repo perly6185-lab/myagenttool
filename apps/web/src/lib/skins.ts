@@ -147,7 +147,7 @@ declare global {
       revealContainedAsset?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ revealed: true }>;
       getMailConnectorStatus?: () => Promise<{
         desktop: true;
-        providers: Array<{ id: "netease_163" | "gmail"; name: string; available: boolean; connected: boolean; upgradeNeeded?: boolean; sendConnected?: boolean; account: string | null }>;
+        providers: Array<{ id: "netease_163" | "gmail"; name: string; available: boolean; connected: boolean; upgradeNeeded?: boolean; sendConnected?: boolean; organizeConnected?: boolean; account: string | null }>;
       }>;
       connect163Mail?: (input: { email: string; authorizationCode: string }) => Promise<
         | { ok: true; account: { provider: string; email: string; canReceive: true; canSend: false } }
@@ -167,6 +167,10 @@ declare global {
       >;
       connect163MailSend?: (input: { email: string; authorizationCode: string }) => Promise<
         | { ok: true; account: { provider: string; email: string; canReceive: boolean; canSend: true } }
+        | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }
+      >;
+      connect163MailOrganize?: (input: { email: string; authorizationCode: string }) => Promise<
+        | { ok: true; account: { provider: string; email: string; canOrganize: true } }
         | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }
       >;
       pickOutboundMailAttachments?: () => Promise<
