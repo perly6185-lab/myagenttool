@@ -89,6 +89,7 @@ function makeAutoRun({
   startDeliveryReview = undefined,
   submitDeliveryReview = undefined,
   worktreeHeadSha = undefined,
+  materializeTaskMaterials = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [], childCreate: [], deliveryReviewStart: [], deliveryReviewSubmit: [], events: [] };
   let counter = 0;
@@ -174,6 +175,7 @@ function makeAutoRun({
       ? (args) => { calls.deliveryReviewSubmit.push(args); return submitDeliveryReview(args); }
       : undefined,
     worktreeHeadSha,
+    materializeTaskMaterials,
     autoApproveInvocation: autoApproveInvocation
       ? (args) => { calls.autoApprove.push(args); return autoApproveInvocation(args); }
       : undefined,
@@ -1377,6 +1379,45 @@ test("self-repair: a failing check re-attempts (preApproved), then blocks after 
   await svc.advanceAutoRunForInvocation({ id: "inv_fake_1", status: "succeeded", worktreeId: autoRun.worktreeId });
   assert.equal(autoRun.status, "blocked", "blocks once the repair cap is exhausted");
   assert.equal(calls.pr.length, 0);
+});
+
+test("auto-run binds the local content manifest and materialization receipts to the run", async () => {
+  const materialized = [];
+  const { svc, calls } = makeAutoRun({
+    materializeTaskMaterials: async (input) => {
+      materialized.push(input);
+      return {
+        ok: true,
+        assets: [{ originalName: "reference.md", path: ".myagenttool/inputs/work_refs/reference.md" }],
+        manifest: { path: ".myagenttool/inputs/work_refs/manifest.json", fingerprint: `sha256:${"a".repeat(64)}`, entryCount: 1 },
+        receipts: [{
+          referenceId: "wcr_1",
+          contentId: `lc_${"b".repeat(32)}`,
+          sourceFingerprint: `sha256:${"c".repeat(64)}`,
+          executionRelativePath: ".myagenttool/inputs/work_refs/reference.md",
+          materializedHash: `sha256:${"c".repeat(64)}`,
+          byteSize: 42,
+          status: "ready",
+          preparedAt: "2026-08-14T00:00:00.000Z",
+        }],
+      };
+    },
+  });
+  const result = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 14, title: "Use local context", url: "https://github.com/o/r/issues/14", state: "open" },
+    agentId: "agt_1",
+    name: "issue-14-use-local-context",
+    actor: { userId: "usr_x", teamId: "team_a" },
+    executionChainId: "wi_chain_14",
+    taskMaterialWorkItemId: "work_refs",
+  });
+  assert.equal(materialized.length, 1);
+  assert.equal(materialized[0].workItemId, "work_refs");
+  assert.equal(result.autoRun.inputMaterialization.receipts[0].contentId, `lc_${"b".repeat(32)}`);
+  assert.match(calls.createInvocation[0].task, /Context manifest: \.myagenttool\/inputs\/work_refs\/manifest\.json/);
+  assert.match(calls.createInvocation[0].task, /use its directory and summary fields/);
+  assert.match(calls.createInvocation[0].task, /untrusted data/);
 });
 
 test("self-repair does not spend attempts when verifier infrastructure is unavailable", async () => {

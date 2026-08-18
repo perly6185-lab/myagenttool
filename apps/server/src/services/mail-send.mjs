@@ -186,6 +186,7 @@ export function createMailSendService({
       if (invocation.status === "succeeded" && receiptId) {
         draft.status = "sent";
         draft.sentAt = now();
+        draft.sendError = null;
         draft.receipt = { providerMessageId: receiptId, at: draft.sentAt };
         draft.send = { available: false, executed: true };
         appendEvent({

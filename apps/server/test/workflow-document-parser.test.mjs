@@ -118,6 +118,53 @@ test("fails closed for corrupt or oversized documents and skips metadata-only so
   }
 });
 
+test("rejects forged stored-entry sizes and checks the actual file size", async () => {
+  const root = join(tmpdir(), `workflow-parser-${Date.now()}-${Math.random()}`);
+  mkdirSync(root, { recursive: true });
+  try {
+    const zip = new JSZip();
+    zip.file("word/document.xml", `<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>${"x".repeat(4_096)}</w:t></w:r></w:p></w:body></w:document>`);
+    const forged = await zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
+    const centralSignature = Buffer.from([0x50, 0x4b, 0x01, 0x02]);
+    let centralOffset = -1;
+    let cursor = 0;
+    while ((cursor = forged.indexOf(centralSignature, cursor)) >= 0) {
+      const nameLength = forged.readUInt16LE(cursor + 28);
+      const name = forged.subarray(cursor + 46, cursor + 46 + nameLength).toString("utf8");
+      if (name === "word/document.xml") {
+        centralOffset = cursor;
+        break;
+      }
+      cursor += 4;
+    }
+    assert.ok(centralOffset >= 0);
+    forged.writeUInt32LE(1, centralOffset + 24);
+    const forgedPath = join(root, "forged.docx");
+    writeFileSync(forgedPath, forged);
+    const rejected = await parseWorkflowDocument({
+      path: forgedPath,
+      extension: ".docx",
+      readMode: "supported_text",
+      size: forged.length,
+    });
+    assert.equal(rejected.state, "failed");
+    assert.equal(rejected.errorCode, "document_archive_invalid");
+
+    const oversizedPath = join(root, "actual-size.docx");
+    writeFileSync(oversizedPath, Buffer.alloc(24 * 1024 * 1024 + 1));
+    const oversized = await parseWorkflowDocument({
+      path: oversizedPath,
+      extension: ".docx",
+      readMode: "supported_text",
+      size: 1,
+    });
+    assert.equal(oversized.state, "limited");
+    assert.equal(oversized.reason, "document_too_large");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("extracts text PDF pages and marks image-only PDFs for OCR", async () => {
   const textPdf = fileURLToPath(
     new URL("../../../docs/Loop-Engineering-IEEE-中文版-优化版.pdf", import.meta.url),

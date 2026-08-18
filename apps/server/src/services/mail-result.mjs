@@ -18,6 +18,7 @@
 const MAX_HEADERS = 200;
 const MAX_FIELD = 998; // RFC 5322 line-length ceiling; generous but bounded.
 const MAX_BODY = 20000;
+const MAX_HTML_BODY = 50000;
 const MAX_ATTACHMENTS = 50;
 const MAX_FOLDERS = 20;
 
@@ -27,11 +28,28 @@ function normalizeHeader(entry) {
   if (!entry || typeof entry !== "object") return null;
   const messageId = cap(entry.messageId, MAX_FIELD);
   if (!messageId) return null; // no idempotency key -> not a usable record
+  const classificationHeaders = normalizeClassificationHeaders(entry.classificationHeaders);
   return {
     messageId,
     from: cap(entry.from, MAX_FIELD),
     subject: cap(entry.subject, MAX_FIELD),
     date: cap(entry.date, MAX_FIELD),
+    ...(classificationHeaders ? { classificationHeaders } : {}),
+  };
+}
+
+function normalizeClassificationHeaders(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const listId = cap(value.listId, 255)?.replace(/[\u0000-\u001f\u007f]/g, " ").trim() || null;
+  const autoSubmitted = cap(value.autoSubmitted, 80)?.replace(/[\u0000-\u001f\u007f]/g, " ").trim() || null;
+  const precedence = cap(value.precedence, 80)?.replace(/[\u0000-\u001f\u007f]/g, " ").trim() || null;
+  const listUnsubscribe = value.listUnsubscribe === true;
+  if (!listId && !autoSubmitted && !precedence && !listUnsubscribe) return null;
+  return {
+    ...(listId ? { listId } : {}),
+    ...(listUnsubscribe ? { listUnsubscribe: true } : {}),
+    ...(autoSubmitted ? { autoSubmitted } : {}),
+    ...(precedence ? { precedence } : {}),
   };
 }
 
@@ -83,6 +101,8 @@ export function parseMailApplicationResult({ text }) {
   if (payload.messageId) {
     const header = normalizeHeader(payload);
     if (!header) return null;
+    const body = typeof payload.body === "string" ? payload.body : "";
+    const bodyHtml = typeof payload.bodyHtml === "string" ? payload.bodyHtml : "";
     const references = Array.isArray(payload.references)
       ? payload.references.map((ref) => cap(ref, MAX_FIELD)).filter(Boolean).slice(0, 50)
       : typeof payload.references === "string"
@@ -91,6 +111,7 @@ export function parseMailApplicationResult({ text }) {
     const attachments = Array.isArray(payload.attachments)
       ? payload.attachments.slice(0, MAX_ATTACHMENTS).map(normalizeAttachment).filter(Boolean)
       : [];
+    const archive = normalizeArchive(payload.archive);
     return {
       kind: "message",
       ...header,
@@ -98,9 +119,16 @@ export function parseMailApplicationResult({ text }) {
       folderPath: cap(payload.folderPath, MAX_FIELD) ?? "INBOX",
       inReplyTo: cap(payload.inReplyTo, MAX_FIELD),
       references,
-      body: cap(payload.body, MAX_BODY) ?? "",
-      attachments,
+      body: cap(body, MAX_BODY) ?? "",
+      bodyHtml: cap(bodyHtml, MAX_HTML_BODY) ?? "",
+      hasHtml: Boolean(bodyHtml),
+      bodyTruncated: payload.bodyTruncated === true || body.length > MAX_BODY || bodyHtml.length > MAX_HTML_BODY,
+      bodyContentVersion: payload.bodyContentVersion === 2 ? 2 : 1,
+      attachments: archive?.availability === "available"
+        ? attachments.map((attachment) => ({ ...attachment, localAvailable: true }))
+        : attachments,
       attachmentMetadataLoaded: true,
+      archive,
     };
   }
 
@@ -165,6 +193,7 @@ function normalizeAttachment(value) {
   const id = cap(value.id, 100);
   const name = cap(value.name, 255);
   if (!id || !name || !/^attachment-[1-9][0-9]*$/.test(id)) return null;
+  const contentId = cap(value.contentId, MAX_FIELD)?.trim().replace(/^<|>$/g, "") || null;
   return {
     id,
     name,
@@ -172,5 +201,33 @@ function normalizeAttachment(value) {
     size: Number.isFinite(value.size) ? Math.max(0, Math.min(Number(value.size), 25 * 1024 * 1024)) : 0,
     sha256: /^[a-f0-9]{64}$/.test(String(value.sha256 ?? "")) ? String(value.sha256) : null,
     previewable: value.previewable === true,
+    ...(contentId ? { contentId } : {}),
   };
+}
+
+function normalizeArchive(value) {
+  if (!value || typeof value !== "object" || value.version !== 1) return null;
+  if (value.availability === "available") {
+    const ref = cap(value.ref, 100);
+    const sha256 = String(value.sha256 ?? "");
+    if (!/^mailarc_[a-f0-9]{24}_[a-f0-9]{40}$/.test(ref ?? "") || !/^[a-f0-9]{64}$/.test(sha256)) return null;
+    if (!Number.isSafeInteger(value.size) || value.size < 1 || value.size > 50 * 1024 * 1024) return null;
+    return {
+      version: 1,
+      ref,
+      availability: "available",
+      sha256,
+      size: value.size,
+      archivedAt: cap(value.archivedAt, 100),
+      attachmentCount: Number.isInteger(value.attachmentCount) ? Math.max(0, Math.min(value.attachmentCount, MAX_ATTACHMENTS)) : 0,
+    };
+  }
+  const reason = [
+    "mail_archive_message_too_large",
+    "mail_archive_capacity_exceeded",
+    "mail_archive_integrity_failed",
+    "mail_archive_identity_invalid",
+    "mail_archive_unavailable",
+  ].includes(value.reason) ? value.reason : "mail_archive_unavailable";
+  return { version: 1, availability: "unavailable", reason };
 }

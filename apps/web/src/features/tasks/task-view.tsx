@@ -23,7 +23,7 @@ import { statusTone } from "@/lib/readable-labels";
 import { useUiStore } from "@/store/ui-store";
 import { githubItemKindLabel, worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 import { ExternalLink, FolderKanban, GitBranch, Hand, History, KanbanSquare, Plus, RefreshCw, Workflow, Zap } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { LocalWorkItemDetail } from "./local-work-item-detail";
 import { LocalWorkItemTable } from "./local-work-item-table";
 import { PlanningProjectsPanel } from "./planning-projects-panel";
@@ -89,7 +89,7 @@ function compareLocalTasksForOrdinaryUsers(left: LocalWorkItem, right: LocalWork
 
 export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const { t, i18n } = useAppTranslation();
-  const { data: state } = useConsoleState();
+  const { data: state, isError: stateUnavailable } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const projectSelection = useCurrentProjectSelection();
   const navigate = usePageNavigation();
@@ -228,6 +228,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const [projectId, setProjectId] = useState<string>("all");
   const [tab, setTab] = useState<TaskTab>("local");
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query.trim());
   const [rows, setRows] = useState<Row[]>([]);
   const [localRows, setLocalRows] = useState<LocalWorkItem[]>([]);
   const [localTaskFilter, setLocalTaskFilter] = useState<LocalTaskQuickFilter>("all");
@@ -251,6 +252,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const [planningProjects, setPlanningProjects] = useState<PlanningProject[]>([]);
   const [planningProjectId, setPlanningProjectId] = useState("all");
   const [createLocalOpen, setCreateLocalOpen] = useState(false);
+  const [createLocalDirty, setCreateLocalDirty] = useState(false);
+  const [confirmCreateLocalClose, setConfirmCreateLocalClose] = useState(false);
   const [externalImportOpen, setExternalImportOpen] = useState(false);
   const [importHandoff, setImportHandoff] = useState<{
     workItemId: string;
@@ -305,6 +308,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const [selectedLocalDirty, setSelectedLocalDirty] = useState(false);
   const [confirmSelectedLocalClose, setConfirmSelectedLocalClose] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [localLoading, setLocalLoading] = useState(true);
+  const [localLoadError, setLocalLoadError] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [liveSyncError, setLiveSyncError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -341,6 +346,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
     void (api.listWorkItems({
       projectId: projectId === "all" ? undefined : projectId,
       planningProjectId: planningProjectId === "all" ? undefined : planningProjectId,
+      q: deferredQuery || undefined,
       limit: "100",
       cursor: localNextCursor,
     }) as Promise<LocalWorkItemResult>).then((result) => {
@@ -397,27 +403,31 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   useEffect(() => {
     let cancelled = false;
     const selectedProjectId = projectId === "all" ? undefined : projectId;
+    setLocalLoading(true);
+    setLocalLoadError(false);
     void (api.listWorkItems({
       projectId: selectedProjectId,
       planningProjectId: planningProjectId === "all" ? undefined : planningProjectId,
+      q: deferredQuery || undefined,
       limit: "100",
     }) as Promise<LocalWorkItemResult>)
       .then((result) => {
         if (!cancelled) {
           setLocalRows(result.workItems);
           setLocalNextCursor(result.nextCursor ?? null);
+          setLocalLoading(false);
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setLocalRows([]);
-          setLocalNextCursor(null);
+          setLocalLoadError(true);
+          setLocalLoading(false);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [projectId, planningProjectId, nonce]);
+  }, [deferredQuery, projectId, planningProjectId, nonce]);
 
   useEffect(() => {
     let cancelled = false;
@@ -464,6 +474,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
         void (api.listWorkItems({
           projectId: projectId === "all" ? undefined : projectId,
           planningProjectId: planningProjectId === "all" ? undefined : planningProjectId,
+          q: deferredQuery || undefined,
           updatedSince: latestWorkItemAt,
         }) as Promise<LocalWorkItemResult>).then((result) => {
           setLocalRows((current) => {
@@ -551,11 +562,6 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
     return counts;
   }, { all: 0, needs_action: 0, ready_for_review: 0, ai_working: 0, completed: 0 });
   const visibleLocal = localRows
-    .filter((item) => {
-      const q = query.trim().toLowerCase();
-      const projectName = projects.find((project) => project.id === item.projectId)?.name ?? "";
-      return !q || `${item.localRef} ${item.title} ${item.labels.join(" ")} ${projectName}`.toLowerCase().includes(q);
-    })
     .filter((item) => !localOnly || preferredLocalMode !== "summary"
       || matchesLocalTaskFilter(deriveWorkItemUserStatus(item), localTaskFilter))
     .sort(localOnly && preferredLocalMode === "summary" ? compareLocalTasksForOrdinaryUsers : () => 0);
@@ -587,7 +593,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
             <Button size="sm" onClick={() => setCreateLocalOpen(true)}>
               <Plus className="mr-1 size-4" /> {t("tasks.newLocal")}
             </Button>
-            <ExternalCollaborationMenu
+            {!localOnly || preferredLocalMode === "expert" ? <ExternalCollaborationMenu
               onImportIssue={() => setExternalImportOpen(true)}
               onOpenIssueInbox={() => {
                 setSelectedExternalWorkTab("issue");
@@ -601,7 +607,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                 navigate("settings");
                 setSettingsQuery(i18n.language.startsWith("zh") ? "外部 Issue" : "external issue");
               }}
-            />
+            /> : null}
           </div>
         </div>
       </CardHeader>
@@ -690,6 +696,23 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                 <Button variant="secondary" size="sm" onClick={() => setPlanningOpen(true)}>
                   <FolderKanban className="mr-1 size-4" /> {t("planningProjects.title")}
                 </Button>
+              ) : null}
+              {preferredLocalMode === "summary" ? (
+                <ExternalCollaborationMenu
+                  onImportIssue={() => setExternalImportOpen(true)}
+                  onOpenIssueInbox={() => {
+                    setSelectedExternalWorkTab("issue");
+                    navigate("externalWork");
+                  }}
+                  onOpenChanges={() => {
+                    setSelectedExternalWorkTab("pr");
+                    navigate("externalWork");
+                  }}
+                  onOpenSettings={() => {
+                    navigate("settings");
+                    setSettingsQuery(i18n.language.startsWith("zh") ? "外部 Issue" : "external issue");
+                  }}
+                />
               ) : null}
             </div>
           </details>
@@ -890,15 +913,26 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                   <Button variant="secondary" size="sm" onClick={loadMoreAttention}>{t("applicationInspectorDeep.showAll", { count: 100 })}</Button>
                 ) : null}
             </section> : null}
-            <LocalWorkItemTable
-              items={visibleLocal}
-              projects={projects}
-              simple={localOnly && preferredLocalMode === "summary"}
-              emptyTitle={t("tasks.noLocalIssues")}
-              emptyHint={t("tasks.noLocalMatches")}
-              onOpen={setSelectedLocalId}
-            />
-            {localNextCursor ? (
+            {localLoadError ? (
+              <div role="alert" className="flex flex-col items-center gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-8 text-center">
+                <p className="text-sm font-medium">{i18n.language.startsWith("zh") ? "任务加载失败，已有任务没有丢失。" : "Tasks could not be loaded. Your existing tasks are still safe."}</p>
+                <Button variant="secondary" size="sm" onClick={() => setNonce((value) => value + 1)}>
+                  <RefreshCw className="mr-1 size-4" />{i18n.language.startsWith("zh") ? "重新加载" : "Retry"}
+                </Button>
+              </div>
+            ) : localLoading && !localRows.length ? (
+              <p role="status" className="py-8 text-center text-sm text-muted-foreground">{t("tasks.loading")}</p>
+            ) : (
+              <LocalWorkItemTable
+                items={visibleLocal}
+                projects={projects}
+                simple={localOnly && preferredLocalMode === "summary"}
+                emptyTitle={t("tasks.noLocalIssues")}
+                emptyHint={t("tasks.noLocalMatches")}
+                onOpen={setSelectedLocalId}
+              />
+            )}
+            {localNextCursor && !localLoadError ? (
               <Button variant="secondary" size="sm" onClick={loadMoreLocal}>{t("applicationInspectorDeep.showAll", { count: 100 })}</Button>
             ) : null}
           </>
@@ -1047,7 +1081,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
 
       <Modal
         open={createLocalOpen}
-        onClose={() => setCreateLocalOpen(false)}
+        onClose={() => createLocalDirty ? setConfirmCreateLocalClose(true) : setCreateLocalOpen(false)}
         title={t("tasks.newLocal")}
         size="xl"
       >
@@ -1061,11 +1095,13 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
               projects={projects.map((item) => ({ id: item.id, name: item.name }))}
               onProjectChange={(nextProjectId) => projectSelection.selectProject(nextProjectId, state?.currentProjectId)}
               projectError={projectSelection.error}
-              unavailable={!state}
+              unavailable={stateUnavailable}
               onCreated={() => {
+                setCreateLocalDirty(false);
                 setTab("local");
                 setNonce((value) => value + 1);
               }}
+              onDirtyChange={setCreateLocalDirty}
               onOpenTask={(workItemId) => {
                 setCreateLocalOpen(false);
                 setTab("local");
@@ -1093,6 +1129,19 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
           )
         ) : null}
       </Modal>
+      <ConfirmModal
+        open={confirmCreateLocalClose}
+        title={i18n.language.startsWith("zh") ? "放弃未保存的任务？" : "Discard this unsaved task?"}
+        description={i18n.language.startsWith("zh") ? "关闭后，当前填写的任务内容将不会保留。" : "Closing will discard the task details you entered."}
+        confirmLabel={i18n.language.startsWith("zh") ? "放弃并关闭" : "Discard and close"}
+        destructive
+        onClose={() => setConfirmCreateLocalClose(false)}
+        onConfirm={() => {
+          setConfirmCreateLocalClose(false);
+          setCreateLocalDirty(false);
+          setCreateLocalOpen(false);
+        }}
+      />
 
       {externalImportOpen ? (
         <Suspense fallback={null}>
@@ -1133,7 +1182,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
       <Modal open={Boolean(selectedLocalId)} onClose={() => {
         if (selectedLocalDirty) setConfirmSelectedLocalClose(true);
         else setSelectedLocalId(null);
-      }} title={t("taskLocal.details")} size={selectedLocalMode === "expert" ? "full" : "2xl"}>
+      }} title={i18n.language.startsWith("zh") ? "任务详情" : t("taskLocal.details")} size={selectedLocalMode === "expert" ? "full" : "2xl"}>
         {selectedLocalId ? (
           <div className="space-y-4">
             {importHandoff?.workItemId === selectedLocalId ? (

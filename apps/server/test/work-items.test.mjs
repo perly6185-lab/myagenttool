@@ -9,12 +9,14 @@ import { sameProjectPath } from "../src/services/projects.mjs";
 import {
   backfillWorkItemTerminalOwnership,
   createWorkItemService,
-  evaluateMyTemplateGovernance,
   extractAcceptanceCriteriaFromBody,
-  matchPublishedMyTemplate,
   taskTraceStage,
 } from "../src/services/work-items.mjs";
 import { backfillWorkItemFollowUpContext } from "../src/services/work-item-follow-up.mjs";
+import {
+  evaluateMyTemplateGovernance,
+  matchPublishedMyTemplate,
+} from "../src/services/work-item-template-matching.mjs";
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a", role: "operator" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
@@ -34,6 +36,7 @@ function harness({
   claimTaskMaterialDraft,
   inspectTaskMaterialDraft,
   resolveClaimedTaskMaterial,
+  resolveLocalContentReference,
 } = {}) {
   let counter = 0;
   const events = [];
@@ -74,6 +77,7 @@ function harness({
     claimTaskMaterialDraft,
     inspectTaskMaterialDraft,
     resolveClaimedTaskMaterial,
+    resolveLocalContentReference,
   });
   return { state, events, alerts, service };
 }
@@ -1136,6 +1140,54 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   assert.equal(service.listAttention({}, ACTOR_A).body.items.some((row) => row.id === attentionId), false);
   const resolved = service.listAttention({ includeResolved: "1" }, ACTOR_A).body.items.find((row) => row.id === attentionId);
   assert.equal(resolved.resolution.note, "Handled");
+});
+
+test("adds and removes scoped local content references without copying bytes", async () => {
+  const contentId = `lc_${"a".repeat(32)}`;
+  const resolutions = [];
+  const { service } = harness({
+    resolveLocalContentReference: async (input, actor) => {
+      resolutions.push({ input, actor });
+      return {
+        ok: true,
+        sha256: `sha256:${"b".repeat(64)}`,
+        originalName: "reference.md",
+        record: { id: contentId, title: "Reference", kind: "article" },
+      };
+    },
+  });
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Reference task" }, ACTOR_A).body.workItem;
+  assert.deepEqual(created.localContentRefs, []);
+  const added = await service.addContentReference({
+    workItemId: created.id,
+    contentId,
+    expectedRevision: created.revision,
+    purpose: "required_input",
+    selectedFingerprint: `sha256:${"b".repeat(64)}`,
+  }, ACTOR_A);
+  assert.equal(added.status, 201);
+  assert.equal(added.body.reference.contentId, contentId);
+  assert.equal(added.body.reference.fingerprintPinned, true);
+  assert.equal(Object.hasOwn(added.body.reference, "selectedFingerprint"), false);
+  assert.equal(added.body.workItem.localContentRefs.length, 1);
+  assert.equal(added.body.workItem.materialChangesPending, true);
+  assert.deepEqual(resolutions[0].input, { contentId, projectId: "prj_a" });
+
+  const replay = await service.addContentReference({
+    workItemId: created.id,
+    contentId,
+    expectedRevision: added.body.workItem.revision,
+  }, ACTOR_A);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.workItem.localContentRefs.length, 1);
+
+  const removed = service.removeContentReference({
+    workItemId: created.id,
+    referenceId: added.body.reference.id,
+    expectedRevision: replay.body.workItem.revision,
+  }, ACTOR_A);
+  assert.equal(removed.status, 200);
+  assert.deepEqual(removed.body.workItem.localContentRefs, []);
 });
 
 test("AI clarification is exposed as input work instead of an approval", () => {
@@ -3079,7 +3131,8 @@ test("close, reopen, archive and restore preserve the record", () => {
 });
 
 test("list supports project, status, type, assignee and text filters", () => {
-  const { service } = harness();
+  const { service, state } = harness();
+  state.projects.find((project) => project.id === "prj_a").name = "Customer delivery";
   service.createWorkItem({
     projectId: "prj_a",
     title: "Repair release",
@@ -3090,6 +3143,7 @@ test("list supports project, status, type, assignee and text filters", () => {
   }, ACTOR_A);
   service.createWorkItem({ projectId: "prj_a", title: "Write docs" }, ACTOR_A);
   assert.equal(service.listWorkItems({ q: "release" }, ACTOR_A).body.count, 1);
+  assert.equal(service.listWorkItems({ q: "customer delivery" }, ACTOR_A).body.count, 2);
   assert.equal(service.listWorkItems({ status: "blocked", type: "bug", assigneeId: "usr_a" }, ACTOR_A).body.count, 1);
   assert.equal(service.listWorkItems({ status: "done" }, ACTOR_A).body.count, 0);
 });

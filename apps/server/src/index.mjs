@@ -18,6 +18,7 @@ import { createServerRuntimeServices } from "./runtime/service-composer.mjs";
 import { createServerState } from "./runtime/state-factory.mjs";
 import { acquireStateLock } from "./runtime/state-lock.mjs";
 import { applyRetentionPolicies } from "./services/retention.mjs";
+import { createMailQueryIndex, mailQueryIndexPath, openMailQueryIndexDatabase } from "./services/mail-query-index.mjs";
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
@@ -70,6 +71,27 @@ if (persistenceEnabled && (process.env.MYAGENTTOOL_STORE ?? "sqlite").toLowerCas
   }
 }
 
+// M7: a separate, derived mailbox read index. It is never the source of truth;
+// failure only disables the large-mailbox fast path and leaves the mailbox on
+// its existing in-memory projection.
+let mailQueryIndex = null;
+if (persistenceEnabled && process.env.MYAGENTTOOL_MAIL_QUERY_INDEX !== "0") {
+  const queryPath = mailQueryIndexPath(stateStorePath);
+  try {
+    const database = await openMailQueryIndexDatabase({ path: queryPath });
+    mailQueryIndex = createMailQueryIndex({
+      database,
+      now: () => new Date().toISOString(),
+      onDiagnostic: ({ kind, reason, errorCode }) => console.warn(
+        `[mail-query] ${kind}: ${reason}${errorCode ? ` (${errorCode})` : ""}; rebuilding from local facts.`,
+      ),
+    });
+    console.log(`[mail-query] derived index at ${queryPath}`);
+  } catch (error) {
+    console.warn(`[mail-query] index unavailable (${error?.message ?? error}); using the in-memory mailbox projection.`);
+  }
+}
+
 const { defaultProject, state } = createServerState({ defaultProjectPath, now });
 const {
   httpDependencies,
@@ -77,6 +99,8 @@ const {
   exportJsonSnapshot,
   selfCheckDependencies,
   appendEvent,
+  startLocalContentIndexing,
+  closeRuntimeServices,
 } = createServerRuntimeServices({
   namespace,
   protocolVersion,
@@ -89,6 +113,7 @@ const {
   dispatchLeaseMs,
   now,
   sqliteStore,
+  mailQueryIndex,
 });
 
 if (isSelfCheck) {
@@ -107,6 +132,9 @@ const server = createHttpServer({
 
 server.listen(port, host, () => {
   console.log(`[server] http://${host}:${port}`);
+  void startLocalContentIndexing().catch((error) => {
+    console.warn(`[local-content] automatic indexing could not start: ${error?.message ?? error}`);
+  });
 });
 
 // Channel gateways (#1090/#1110; ADR 0012 rule 1 + ADR 0013): each provider is
@@ -116,6 +144,14 @@ server.listen(port, host, () => {
 // the control-plane API is never reachable on any gateway port.
 {
   let anySenderBound = false;
+  let channelDeliverySweepStarted = false;
+  const startChannelDeliverySweep = () => {
+    if (channelDeliverySweepStarted) return;
+    channelDeliverySweepStarted = true;
+    const sweep = () => httpDependencies.sweepChannelDeliveries().catch(() => {});
+    sweep();
+    setInterval(sweep, 15_000).unref?.();
+  };
 
   // WeCom (#1090).
   const wecomConfig = wecomGatewayConfigFromEnv();
@@ -220,10 +256,17 @@ server.listen(port, host, () => {
 
   // One delivery sweep serves every provider (delivery routes by channel.provider).
   if (anySenderBound) {
-    const sweep = () => httpDependencies.sweepChannelDeliveries().catch(() => {});
-    sweep(); // restart recovery: resume queued/retrying deliveries on boot
-    setInterval(sweep, 15_000).unref?.();
+    startChannelDeliverySweep(); // restart recovery: resume queued/retrying deliveries on boot
   }
+
+  // WeChat ClawBot / iLink is a client-side long-poll channel, not a public
+  // callback listener. Its worker owns the provider credential and routes only
+  // normalized events into the shared channel pipeline.
+  if (typeof httpDependencies.sendIlinkApplicationMessage === "function") {
+    httpDependencies.setChannelDeliverySender("wechat_ilink", httpDependencies.sendIlinkApplicationMessage);
+    startChannelDeliverySweep();
+  }
+  httpDependencies.startIlink?.();
 }
 
 // Fire due automations on a 30s tick (self-check exits above, so this only runs
@@ -248,6 +291,13 @@ if (typeof httpDependencies.sweepWorkItemAutoScheduler === "function") {
   const sweepAutoScheduler = () => httpDependencies.sweepWorkItemAutoScheduler().catch(() => {});
   sweepAutoScheduler();
   setInterval(sweepAutoScheduler, 10_000).unref?.();
+}
+if (typeof httpDependencies.sweepChannelTaskThreads === "function") {
+  const sweepChannelTaskThreads = () => {
+    try { httpDependencies.sweepChannelTaskThreads(); } catch { /* best-effort channel timeout sweep */ }
+  };
+  sweepChannelTaskThreads();
+  setInterval(sweepChannelTaskThreads, 60_000).unref?.();
 }
 if (typeof httpDependencies.reconcileWorkItemAutoRunUnderstanding === "function") {
   const reconcileUnderstanding = () =>
@@ -361,6 +411,17 @@ if (typeof httpDependencies.applicationHealthSweep === "function") {
   }, 60_000).unref?.();
 }
 
+// Session keep-alive sweep (login-managed site profiles, e.g. zhihu). Strictly
+// opt-in: without the env gate NO browser is ever spawned from the sweep, and
+// the sweep itself throttles per site by its registry intervalMinutes (default
+// 180 — a too-regular heartbeat is itself a bot signal to the very WAFs these
+// profiles exist to pass).
+if (process.env.MYAGENTTOOL_SESSION_MANAGER_ENABLED === "1" && typeof httpDependencies.sessionHealthSweep === "function") {
+  setInterval(() => {
+    httpDependencies.sessionHealthSweep().catch(() => {});
+  }, 60_000).unref?.();
+}
+
 // Bridge liveness + executor deadline watchdog. A short tick bounds the window
 // where an online bridge with a dead child process can leave a zombie "running"
 // invocation. Restore is symmetric on any authenticated bridge request.
@@ -416,15 +477,20 @@ if (typeof httpDependencies.sweepReportSchedule === "function") {
 // path — both via savePersistentState), then write a JSON EXPORT as a rollback/backup
 // artifact (#1042 — a no-op-duplicate on the memory path where JSON is the backing),
 // then release the lock.
-function shutdown() {
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  httpDependencies.stopIlink?.();
   savePersistentState();
   exportJsonSnapshot?.();
+  await closeRuntimeServices?.();
   closeSqliteStore();
   releaseStateLock();
   process.exit(0);
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
 // Best-effort release on any other clean exit so a crash-free shutdown never
 // leaves a stale lock the next start has to reclaim.
 process.on("exit", () => releaseStateLock());

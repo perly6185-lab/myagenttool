@@ -19,15 +19,23 @@ export async function handleChannelRoutes({
   retryChannelTask,
   rerouteChannelTask,
   takeoverChannelTask,
+  replyChannelTask,
   listChannels,
+  listChannelInteractions,
   enableChannel,
   disableChannel,
   channelHealth,
+  channelDiagnostics,
   mapChannelIdentity,
   removeChannelIdentity,
   listChannelIdentities,
   setChannelAllowlist,
   retryChannelDelivery,
+  beginIlinkLogin,
+  pollIlinkLogin,
+  activateIlinkChannel,
+  disconnectIlinkChannel,
+  onIlinkChannelStateChanged,
 }) {
   if (!url.pathname.startsWith("/api/channels") && !url.pathname.startsWith("/api/channel-tasks/")) return false;
 
@@ -37,11 +45,61 @@ export async function handleChannelRoutes({
     return true;
   }
 
+  const diagnostics = url.pathname.match(/^\/api\/channels\/([^/]+)\/diagnostics$/);
+  if (diagnostics && req.method === "GET" && typeof channelDiagnostics === "function") {
+    const result = channelDiagnostics({ channelId: decodeURIComponent(diagnostics[1]) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const interactions = url.pathname.match(/^\/api\/channels\/([^/]+)\/interactions$/);
+  if (interactions && req.method === "GET" && typeof listChannelInteractions === "function") {
+    const result = listChannelInteractions({
+      channelId: decodeURIComponent(interactions[1]),
+      conversationId: url.searchParams.get("conversationId"),
+      direction: url.searchParams.get("direction") ?? "all",
+      type: url.searchParams.get("type") ?? "all",
+      status: url.searchParams.get("status") ?? "all",
+      query: url.searchParams.get("q") ?? "",
+      cursor: url.searchParams.get("cursor"),
+      limit: url.searchParams.get("limit") ?? 50,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/channels") {
     const body = await readJson(req);
     const result = registerChannel({ provider: body?.provider, name: body?.name }, actor);
     sendJson(res, result.status, result.body);
     return true;
+  }
+
+  const ilink = url.pathname.match(/^\/api\/channels\/([^/]+)\/ilink\/(login|activate|disconnect)$/);
+  if (ilink) {
+    const channelId = decodeURIComponent(ilink[1]);
+    const action = ilink[2];
+    if (action === "login" && req.method === "POST" && typeof beginIlinkLogin === "function") {
+      const result = await beginIlinkLogin({ channelId, actor });
+      sendJson(res, result.status, result.body);
+      return true;
+    }
+    if (action === "login" && req.method === "GET" && typeof pollIlinkLogin === "function") {
+      const result = await pollIlinkLogin({ channelId, actor, verifyCode: url.searchParams.get("verify_code") ?? undefined });
+      sendJson(res, result.status, result.body);
+      return true;
+    }
+    if (action === "activate" && req.method === "POST" && typeof activateIlinkChannel === "function") {
+      const body = await readJson(req);
+      const result = await activateIlinkChannel({ channelId, approvalToken: body?.approvalToken, actor });
+      sendJson(res, result.status, result.body);
+      return true;
+    }
+    if (action === "disconnect" && req.method === "POST" && typeof disconnectIlinkChannel === "function") {
+      const result = await disconnectIlinkChannel({ channelId, actor });
+      sendJson(res, result.status, result.body);
+      return true;
+    }
   }
 
   const deliveryRetry = url.pathname.match(/^\/api\/channels\/([^/]+)\/deliveries\/([^/]+)\/retry$/);
@@ -87,11 +145,21 @@ export async function handleChannelRoutes({
     return true;
   }
 
+  const channelTaskReply = url.pathname.match(/^\/api\/channel-tasks\/([^/]+)\/reply$/);
+  if (channelTaskReply && req.method === "POST") {
+    const body = await readJson(req);
+    const result = typeof replyChannelTask === "function"
+      ? await replyChannelTask(decodeURIComponent(channelTaskReply[1]), body?.content, actor)
+      : { status: 501, body: { error: "unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   const taskProject = url.pathname.match(/^\/api\/channels\/([^/]+)\/task-project$/);
   if (taskProject && req.method === "POST") {
     const body = await readJson(req);
     const result = setChannelTaskProject(
-      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, autoRoute: body?.autoRoute, dailyLimit: body?.dailyLimit, approvalToken: body?.approvalToken },
+      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, terminalId: body?.terminalId ?? null, autoRoute: body?.autoRoute, dailyLimit: body?.dailyLimit, operationMode: body?.operationMode, approvalToken: body?.approvalToken },
       actor,
     );
     sendJson(res, result.status, result.body);
@@ -115,11 +183,13 @@ export async function handleChannelRoutes({
     if (req.method === "POST" && lifecycle[2] === "enable") {
       const body = await readJson(req);
       const result = enableChannel({ channelId, approvalToken: body?.approvalToken }, actor);
+      if (result?.ok) onIlinkChannelStateChanged?.(channelId);
       sendJson(res, result.status, result.body);
       return true;
     }
     if (req.method === "POST" && lifecycle[2] === "disable") {
       const result = disableChannel({ channelId }, actor);
+      if (result?.ok) onIlinkChannelStateChanged?.(channelId);
       sendJson(res, result.status, result.body);
       return true;
     }

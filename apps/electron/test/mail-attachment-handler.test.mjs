@@ -20,11 +20,14 @@ function harness({ chosenPath = null, readAttachment } = {}) {
 }
 
 test("safe preview returns bounded content without a filesystem path", async () => {
-  const handlers = harness();
-  const result = await handlers.get("mail:preview-attachment")(null, { messageId: "<m@x>", attachmentId: "attachment-1" });
+  let received;
+  const handlers = harness({ readAttachment: async (input) => { received = input; return { id: "attachment-1", name: "note.txt", contentType: "text/plain", size: 5, kind: "text", text: "hello" }; } });
+  const archiveRef = `mailarc_${"a".repeat(24)}_${"b".repeat(40)}`;
+  const result = await handlers.get("mail:preview-attachment")(null, { messageId: "<m@x>", attachmentId: "attachment-1", archiveRef });
   assert.equal(result.ok, true);
   assert.equal(result.preview.text, "hello");
   assert.equal("content" in result.preview, false);
+  assert.equal(received.archiveRef, archiveRef);
 });
 
 test("download writes only to the native-dialog selection and returns no path", async () => {

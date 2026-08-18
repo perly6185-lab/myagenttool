@@ -160,7 +160,7 @@ function fulfillDashboardFallback(route: Route) {
 }
 
 async function mockReadyHome(page: Page, locale: "en-US" | "zh-CN") {
-  await page.route("**/api/**", (route) => route.request().url().endsWith("/api/state")
+  await page.route("http://127.0.0.1:5001/api/**", (route) => route.request().url().endsWith("/api/state")
     ? route.fulfill({ json: READY_STATE })
     : fulfillDashboardFallback(route));
   await page.addInitScript(({ language }) => {
@@ -248,7 +248,7 @@ for (const fixture of [
 test("keeps a populated mobile schedule ahead of the collapsed creator", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.clock.setFixedTime(new Date("2026-08-06T12:00:00+08:00"));
-  await page.route("**/api/**", (route) => {
+  await page.route("http://127.0.0.1:5001/api/**", (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === "/api/state") return route.fulfill({ json: READY_STATE });
     if (pathname === "/api/work-items/home-workbench") return route.fulfill({ json: POPULATED_HOME_WORKBENCH });
@@ -299,7 +299,7 @@ test("keeps a populated mobile schedule ahead of the collapsed creator", async (
 test("keeps the desktop brief and task creation together above the full-width schedule", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.clock.setFixedTime(new Date("2026-08-06T12:00:00+08:00"));
-  await page.route("**/api/**", (route) => {
+  await page.route("http://127.0.0.1:5001/api/**", (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === "/api/state") return route.fulfill({ json: READY_STATE });
     if (pathname === "/api/work-items/home-workbench") return route.fulfill({ json: POPULATED_HOME_WORKBENCH });
@@ -338,7 +338,7 @@ test("creates a Home task, reviews its plan, then schedules AI from simple detai
   let createdPayload: Record<string, unknown> | null = null;
   let workItem: Record<string, unknown> | null = null;
   let scheduled = false;
-  await page.route("**/api/**", async (route) => {
+  await page.route("http://127.0.0.1:5001/api/**", async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     if (pathname === "/api/state") return route.fulfill({ json: READY_STATE });
@@ -472,7 +472,7 @@ test("submits one Worktree snapshot with matching attachment and invocation idem
       },
     }],
   };
-  await page.route("**/api/**", async (route) => {
+  await page.route("http://127.0.0.1:5001/api/**", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === "/api/state") return route.fulfill({ json: state });
     if (pathname === "/api/worktrees/worktree-1/files") return route.fulfill({ json: { tree: [] } });
@@ -582,7 +582,7 @@ test("resumes the zh-CN guided setup on mobile after refresh", async ({ page }, 
       ],
     },
   };
-  await page.route("**/api/**", (route) => {
+  await page.route("http://127.0.0.1:5001/api/**", (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === "/api/state") return route.fulfill({ json: state });
     if (pathname === "/api/guided-setup/start") {
@@ -729,7 +729,7 @@ for (const locale of ["en-US", "zh-CN"] as const) {
             }]
           : [],
       };
-      await page.route("**/api/**", (route) => route.request().url().endsWith("/api/state")
+      await page.route("http://127.0.0.1:5001/api/**", (route) => route.request().url().endsWith("/api/state")
         ? route.fulfill({ json: state })
         : fulfillDashboardFallback(route));
       await page.addInitScript(({ language }) => {

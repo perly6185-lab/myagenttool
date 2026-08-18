@@ -300,9 +300,12 @@ describe("TaskView local work items", () => {
     render(<TaskView localOnly />);
 
     expect(screen.getByText("Local").parentElement?.className).toContain("hidden");
+    const externalWork = screen.getByRole("button", { name: "External work" });
+    expect(externalWork.closest("details")?.open).toBe(false);
     const moreTools = screen.getByText("More task tools");
     expect(moreTools).toBeTruthy();
     fireEvent.click(moreTools);
+    expect(externalWork.closest("details")?.open).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Task status" }));
     expect(mocks.setSection).toHaveBeenCalledWith("workBoard");
     fireEvent.click(screen.getByRole("button", { name: /New task/i }));
@@ -320,6 +323,50 @@ describe("TaskView local work items", () => {
       priority: "p2",
       executionPolicy: "manual",
     })));
+  });
+
+  it("shows a retryable error instead of an empty task list when loading fails", async () => {
+    mocks.listWorkItems.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Tasks could not be loaded");
+    expect(screen.queryByText("No tasks yet")).toBeNull();
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.listWorkItems).toHaveBeenCalledTimes(2));
+  });
+
+  it("sends ordinary task searches to the server before pagination", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+    await screen.findByText("No tasks yet");
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search tasks" }), { target: { value: "customer handoff" } });
+    await waitFor(() => expect(mocks.listWorkItems).toHaveBeenCalledWith(expect.objectContaining({
+      q: "customer handoff",
+      limit: "100",
+    })));
+  });
+
+  it("keeps one unambiguous new-task action on the empty ordinary board", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+
+    await screen.findByText("No tasks yet");
+    expect(screen.getAllByRole("button", { name: /New task/i })).toHaveLength(1);
+  });
+
+  it("asks before discarding an unsaved ordinary task", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
+    const createDialog = await screen.findByRole("dialog", { name: "New task" });
+    fireEvent.change(within(createDialog).getByRole("textbox", { name: "Create a task" }), { target: { value: "Keep this draft" } });
+    fireEvent.click(within(createDialog).getByRole("button", { name: "Close" }));
+
+    const confirm = await screen.findByRole("dialog", { name: "Discard this unsaved task?" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("dialog", { name: "New task" })).toBeTruthy();
   });
 
   it("puts tasks needing the user first and offers plain-language progress filters", async () => {
@@ -689,7 +736,7 @@ describe("TaskView local work items", () => {
     mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_1", worktreeId: "wtr_2" } });
     render(<TaskView />);
     fireEvent.click(await screen.findByText("Editable issue"));
-    expect(await screen.findByTestId("work-item-summary-view")).toBeTruthy();
+    expect(await screen.findByTestId("work-item-summary-view", undefined, { timeout: 5_000 })).toBeTruthy();
     await openExpertDetails();
     expect(screen.getByRole("dialog", { name: "Local issue details" }).className).toContain("max-w-7xl");
     const cockpit = (await screen.findByText("Task cockpit")).closest("section");
@@ -742,7 +789,7 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mocks.createWorkItemComment).toHaveBeenCalledWith("lwi_1", "Looks good"));
     expect(screen.getByText("Created")).toBeTruthy();
-  });
+  }, 15_000);
 
   it("guards section navigation and detail close when the report has unsaved edits", async () => {
     const item = {

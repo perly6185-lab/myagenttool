@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { simpleParser } from "mailparser";
 
-import { formatAddresses, headerOf, messageRecordOf } from "../src/message.mjs";
+import { classificationHeadersOf, formatAddresses, headerOf, messageRecordOf } from "../src/message.mjs";
 
 const envelope = {
   messageId: "<CAF8x9kQm2vZ@mail.163.com>",
@@ -65,18 +66,67 @@ test("messageRecordOf reports an unthreaded message honestly, never guessing", (
 
 test("messageRecordOf falls back to html when a message carries no text part", () => {
   const record = messageRecordOf({ envelope }, { html: "<p>html only</p>" });
-  assert.equal(record.body, "<p>html only</p>");
+  assert.equal(record.body, "html only");
+  assert.equal(record.bodyHtml, "<p>html only</p>");
+  assert.equal(record.hasHtml, true);
+  assert.equal(record.bodyTruncated, false);
+  assert.equal(record.bodyContentVersion, 2);
   const empty = messageRecordOf({ envelope }, {});
   assert.equal(empty.body, "", "a bodyless message reads as empty, not undefined");
 });
 
+test("headerOf carries only bounded classification-safe list and automation headers", () => {
+  const headers = Buffer.from([
+    "List-Id: Product Updates <updates.example.com>",
+    "List-Unsubscribe: <https://example.com/private-token>",
+    "Auto-Submitted: auto-generated",
+    "Precedence: bulk",
+    "X-Secret: must-not-survive",
+    "",
+  ].join("\r\n"));
+  assert.deepEqual(classificationHeadersOf(headers), {
+    listId: "Product Updates <updates.example.com>",
+    listUnsubscribe: true,
+    autoSubmitted: "auto-generated",
+    precedence: "bulk",
+  });
+  const header = headerOf({ envelope, headers });
+  assert.equal(header.classificationHeaders.listUnsubscribe, true);
+  assert.equal(JSON.stringify(header).includes("private-token"), false);
+  assert.equal(JSON.stringify(header).includes("must-not-survive"), false);
+});
+
+test("messageRecordOf bounds text and HTML independently and reports truncation", () => {
+  const record = messageRecordOf({ envelope }, { text: "t".repeat(20_001), html: `<p>${"h".repeat(50_001)}</p>` });
+  assert.equal(record.body.length, 20_000);
+  assert.equal(record.bodyHtml.length, 50_000);
+  assert.equal(record.bodyTruncated, true);
+});
+
+test("an HTML-only MIME message becomes readable text while retaining bounded safe-preview data", async () => {
+  const parsed = await simpleParser([
+    "From: a@example.com",
+    "To: b@example.com",
+    "Subject: HTML",
+    "MIME-Version: 1.0",
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    '<p>Open <a href="https://example.com/path">the report</a>.</p><img src="https://images.example.com/pixel.png" alt="Chart">',
+  ].join("\r\n"), { keepCidLinks: true });
+  const record = messageRecordOf({ envelope }, parsed);
+  assert.match(record.body, /the report \[https:\/\/example\.com\/path\]/);
+  assert.match(record.body, /Chart \[https:\/\/images\.example\.com\/pixel\.png\]/);
+  assert.match(record.bodyHtml, /<img/);
+  assert.equal(record.hasHtml, true);
+});
+
 test("messageRecordOf exposes bounded attachment metadata but never bytes", () => {
   const record = messageRecordOf({ envelope }, { text: "body", attachments: [
-    { filename: "diagram.png", contentType: "image/png", size: 1234, content: Buffer.from("secret-binary") },
+    { filename: "diagram.png", contentType: "image/png", contentId: "<logo@mail>", size: 1234, content: Buffer.from("secret-binary") },
     { filename: "macro.docm", contentType: "application/vnd.ms-word.document.macroenabled.12", size: 99, content: Buffer.from("macro") },
   ] });
   assert.deepEqual(record.attachments, [
-    { id: "attachment-1", name: "diagram.png", contentType: "image/png", size: 1234, sha256: "0f4f9b1e5b00181f65e71a7c501f03a2512913d3ebe08c91d2edf43f2d443bdb", previewable: true },
+    { id: "attachment-1", name: "diagram.png", contentType: "image/png", size: 1234, sha256: "0f4f9b1e5b00181f65e71a7c501f03a2512913d3ebe08c91d2edf43f2d443bdb", previewable: true, contentId: "logo@mail" },
     { id: "attachment-2", name: "macro.docm", contentType: "application/vnd.ms-word.document.macroenabled.12", size: 99, sha256: "27d66c0dcef19a926429158d80111b954a5c23d076833347da3e27b91e4b423d", previewable: false },
   ]);
   assert(!JSON.stringify(record).includes("secret-binary"));

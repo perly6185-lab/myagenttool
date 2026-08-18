@@ -22,9 +22,193 @@ export async function handleMailRoutes({
   updateMailboxDraft,
   deleteMailboxDraft,
   createMailboxTask,
+  startMailClassification,
+  previewMailSemanticClassification,
+  getMailClassificationJob,
+  cancelMailClassificationJob,
+  correctMailClassification,
+  getMailClassificationQuality,
+  listMailClassificationRules,
+  createMailClassificationRule,
+  updateMailClassificationRule,
+  listMailFolderSuggestions,
+  createMailFolderMovePreview,
+  startMailFolderMove,
+  getMailFolderMoveJob,
+  listMailFolderMoveJobs,
+  reconcileMailFolderMoveJob,
+  createMailFolderRecoveryPreview,
+  createMailFolderAutomationPreview,
+  enableMailFolderAutomation,
+  updateMailFolderAutomation,
+  listMailFolderAutomations,
+  dryRunMailFolderAutomation,
 }) {
   if (req.method === "GET" && url.pathname === "/api/mailbox" && typeof mailboxSnapshot === "function") {
-    sendJson(res, 200, mailboxSnapshot({ actor, page: url.searchParams.get("page"), pageSize: url.searchParams.get("pageSize"), folder: url.searchParams.get("folder") ?? "inbox", query: url.searchParams.get("q") ?? "" }));
+    sendJson(res, 200, mailboxSnapshot({ actor, page: url.searchParams.get("page"), pageSize: url.searchParams.get("pageSize"), folder: url.searchParams.get("folder") ?? "inbox", query: url.searchParams.get("q") ?? "", view: url.searchParams.get("view") ?? "all" }));
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/mailbox/semantic-classification-preview" && typeof previewMailSemanticClassification === "function") {
+    const result = previewMailSemanticClassification({ limit: url.searchParams.get("limit"), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mailbox/classification-jobs" && typeof startMailClassification === "function") {
+    const body = await readJson(req);
+    const result = startMailClassification({
+      scope: body?.scope ?? "new_mail",
+      mode: body?.mode ?? "header",
+      confirmed: body?.confirmed,
+      limit: body?.limit,
+      actor,
+    });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/mailbox/classification-rules" && typeof listMailClassificationRules === "function") {
+    const result = listMailClassificationRules({ actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/mailbox/classification-quality" && typeof getMailClassificationQuality === "function") {
+    const result = getMailClassificationQuality({ actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mailbox/classification-rules" && typeof createMailClassificationRule === "function") {
+    const body = await readJson(req);
+    const result = createMailClassificationRule({ suggestionId: body?.suggestionId, confirmed: body?.confirmed, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/mailbox/folder-suggestions" && typeof listMailFolderSuggestions === "function") {
+    const result = listMailFolderSuggestions({ actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mailbox/folder-move-previews" && typeof createMailFolderMovePreview === "function") {
+    const body = await readJson(req);
+    const result = createMailFolderMovePreview({
+      suggestionId: body?.suggestionId, destinationFolderId: body?.destinationFolderId, actor,
+    });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mailbox/folder-move-jobs" && typeof startMailFolderMove === "function") {
+    const body = await readJson(req);
+    const result = startMailFolderMove({ previewId: body?.previewId, approvalToken: body?.approvalToken, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/mailbox/folder-move-jobs" && typeof listMailFolderMoveJobs === "function") {
+    const result = listMailFolderMoveJobs({ actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mailbox/folder-automation-previews" && typeof createMailFolderAutomationPreview === "function") {
+    const body = await readJson(req);
+    const result = createMailFolderAutomationPreview({ suggestionId: body?.suggestionId, destinationFolderId: body?.destinationFolderId, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/mailbox/folder-automations" && typeof listMailFolderAutomations === "function") {
+    const result = listMailFolderAutomations({ actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mailbox/folder-automations" && typeof enableMailFolderAutomation === "function") {
+    const body = await readJson(req);
+    const result = enableMailFolderAutomation({ previewId: body?.previewId, approvalToken: body?.approvalToken, confirmed: body?.confirmed, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const folderMoveReconcileMatch = url.pathname.match(/^\/api\/mailbox\/folder-move-jobs\/([^/]+)\/reconcile$/);
+  if (req.method === "POST" && folderMoveReconcileMatch && typeof reconcileMailFolderMoveJob === "function") {
+    const result = reconcileMailFolderMoveJob({ jobId: decodeURIComponent(folderMoveReconcileMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const folderMoveRecoveryMatch = url.pathname.match(/^\/api\/mailbox\/folder-move-jobs\/([^/]+)\/recovery-preview$/);
+  if (req.method === "POST" && folderMoveRecoveryMatch && typeof createMailFolderRecoveryPreview === "function") {
+    const result = createMailFolderRecoveryPreview({ jobId: decodeURIComponent(folderMoveRecoveryMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const folderAutomationMatch = url.pathname.match(/^\/api\/mailbox\/folder-automations\/([^/]+)$/);
+  if (req.method === "PATCH" && folderAutomationMatch && typeof updateMailFolderAutomation === "function") {
+    const body = await readJson(req);
+    const result = updateMailFolderAutomation({ automationId: decodeURIComponent(folderAutomationMatch[1]), expectedRevision: body?.expectedRevision, action: body?.action, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const folderAutomationDryRunMatch = url.pathname.match(/^\/api\/mailbox\/folder-automations\/([^/]+)\/dry-run$/);
+  if (req.method === "POST" && folderAutomationDryRunMatch && typeof dryRunMailFolderAutomation === "function") {
+    const result = dryRunMailFolderAutomation({ automationId: decodeURIComponent(folderAutomationDryRunMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const folderMoveJobMatch = url.pathname.match(/^\/api\/mailbox\/folder-move-jobs\/([^/]+)$/);
+  if (req.method === "GET" && folderMoveJobMatch && typeof getMailFolderMoveJob === "function") {
+    const result = getMailFolderMoveJob({ jobId: decodeURIComponent(folderMoveJobMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const classificationRuleMatch = url.pathname.match(/^\/api\/mailbox\/classification-rules\/([^/]+)$/);
+  if (req.method === "PATCH" && classificationRuleMatch && typeof updateMailClassificationRule === "function") {
+    const body = await readJson(req);
+    const result = updateMailClassificationRule({
+      ruleId: decodeURIComponent(classificationRuleMatch[1]), expectedRevision: body?.expectedRevision,
+      action: body?.action, attention: body?.attention, mailType: body?.mailType, suggestedAction: body?.suggestedAction, actor,
+    });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const classificationJobMatch = url.pathname.match(/^\/api\/mailbox\/classification-jobs\/([^/]+)$/);
+  if (req.method === "GET" && classificationJobMatch && typeof getMailClassificationJob === "function") {
+    const result = getMailClassificationJob({ jobId: decodeURIComponent(classificationJobMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const classificationCancelMatch = url.pathname.match(/^\/api\/mailbox\/classification-jobs\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && classificationCancelMatch && typeof cancelMailClassificationJob === "function") {
+    const result = cancelMailClassificationJob({ jobId: decodeURIComponent(classificationCancelMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const classificationMatch = url.pathname.match(/^\/api\/mailbox\/messages\/([^/]+)\/classification$/);
+  if (req.method === "PATCH" && classificationMatch && typeof correctMailClassification === "function") {
+    const body = await readJson(req);
+    const result = correctMailClassification({
+      messageId: decodeURIComponent(classificationMatch[1]),
+      folderId: body?.folderId,
+      expectedRevision: body?.expectedRevision,
+      attention: body?.attention,
+      mailType: body?.mailType,
+      suggestedAction: body?.suggestedAction,
+      actor,
+    });
+    sendJson(res, result.status, result.body);
     return true;
   }
 

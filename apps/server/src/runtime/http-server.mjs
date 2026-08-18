@@ -11,6 +11,7 @@ import { handleApplicationRoutes } from "../routes/applications.mjs";
 import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
+import { handleLocalContentRoutes } from "../routes/local-content.mjs";
 import { handleMailRoutes } from "../routes/mail.mjs";
 import { handleChannelRoutes } from "../routes/channels.mjs";
 import { handleCanvasSceneRoutes } from "../routes/canvas-scenes.mjs";
@@ -30,6 +31,7 @@ import { handleTerminalRoutes } from "../routes/terminal.mjs";
 import { handleTaskMaterialRoutes } from "../routes/task-materials.mjs";
 import { handleToolRoutes } from "../routes/tools.mjs";
 import { handleWorkItemRoutes } from "../routes/work-items.mjs";
+import { handleSessionRoutes } from "../routes/sessions.mjs";
 import { handleWorkflowMemoryRoutes } from "../routes/workflow-memory.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
 import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
@@ -135,6 +137,9 @@ export function createHttpServer({
   getArticleImport,
   cancelArticleImport,
   analyzeArticleImport,
+  listSessions,
+  probeSessionSite,
+  reseedSessionSite,
   findSimilarArticleImports,
   createArticleDerivative,
   listArticleDerivatives,
@@ -142,6 +147,8 @@ export function createHttpServer({
   addWorkItemMaterials,
   removeWorkItemMaterial,
   restoreWorkItemMaterial,
+  addWorkItemContentReference,
+  removeWorkItemContentReference,
   listWorkflowSources,
   createWorkflowSource,
   listTemplateLearningTasks,
@@ -439,6 +446,40 @@ export function createHttpServer({
   updateMailboxDraft,
   deleteMailboxDraft,
   createMailboxTask,
+  startMailClassification,
+  previewMailSemanticClassification,
+  getMailClassificationJob,
+  cancelMailClassificationJob,
+  correctMailClassification,
+  listMailClassificationRules,
+  getMailClassificationQuality,
+  createMailClassificationRule,
+  updateMailClassificationRule,
+  listMailFolderSuggestions,
+  createMailFolderMovePreview,
+  startMailFolderMove,
+  getMailFolderMoveJob,
+  listMailFolderMoveJobs,
+  reconcileMailFolderMoveJob,
+  createMailFolderRecoveryPreview,
+  createMailFolderAutomationPreview,
+  enableMailFolderAutomation,
+  updateMailFolderAutomation,
+  listMailFolderAutomations,
+  dryRunMailFolderAutomation,
+  rebuildLocalContentCatalog,
+  searchLocalContent,
+  browseLocalContentDirectories,
+  describeLocalContentRetrieval,
+  retrieveLocalContentDirectories,
+  retrieveLocalContentSummaries,
+  readRetrievedLocalContent,
+  getLocalContentCatalogStats,
+  previewLocalContent,
+  refreshLocalContent,
+  getLocalContentHealth,
+  resolveLocalContentOriginal,
+  resolveLocalContentContainer,
   listCanvasScenes,
   getCanvasScene,
   createCanvasScene,
@@ -478,9 +519,11 @@ export function createHttpServer({
   decidePlanningRecommendedAction,
   registerChannel,
   listChannels,
+  listChannelInteractions,
   enableChannel,
   disableChannel,
   channelHealth,
+  channelDiagnostics,
   mapChannelIdentity,
   removeChannelIdentity,
   listChannelIdentities,
@@ -492,7 +535,13 @@ export function createHttpServer({
   retryChannelTask,
   rerouteChannelTask,
   takeoverChannelTask,
+  replyChannelTask,
   retryChannelDelivery,
+  beginIlinkLogin,
+  pollIlinkLogin,
+  activateIlinkChannel,
+  disconnectIlinkChannel,
+  onIlinkChannelStateChanged,
   nextId,
   persistStateSoon,
   persistStateNow,
@@ -749,6 +798,21 @@ export function createHttpServer({
         req, res, url, sendJson, readJson, actor,
         createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft,
         mailboxSnapshot, startMailboxSync, setMailboxMessageRead, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft, createMailboxTask,
+        startMailClassification, previewMailSemanticClassification, getMailClassificationJob, cancelMailClassificationJob, correctMailClassification,
+        listMailClassificationRules, getMailClassificationQuality, createMailClassificationRule, updateMailClassificationRule,
+        listMailFolderSuggestions, createMailFolderMovePreview, startMailFolderMove, getMailFolderMoveJob, listMailFolderMoveJobs,
+        reconcileMailFolderMoveJob, createMailFolderRecoveryPreview,
+        createMailFolderAutomationPreview, enableMailFolderAutomation, updateMailFolderAutomation, listMailFolderAutomations, dryRunMailFolderAutomation,
+      })) {
+        return;
+      }
+
+      if (await handleLocalContentRoutes({
+        req, res, url, sendJson, readJson, actor,
+        rebuildLocalContentCatalog, searchLocalContent, browseLocalContentDirectories, describeLocalContentRetrieval,
+        retrieveLocalContentDirectories, retrieveLocalContentSummaries, readRetrievedLocalContent,
+        getLocalContentCatalogStats, previewLocalContent,
+        refreshLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
       })) {
         return;
       }
@@ -761,6 +825,7 @@ export function createHttpServer({
         retryChannelTask,
         rerouteChannelTask,
         takeoverChannelTask,
+        replyChannelTask,
         req,
         res,
         url,
@@ -769,14 +834,21 @@ export function createHttpServer({
         actor,
         registerChannel,
         listChannels,
+        listChannelInteractions,
         enableChannel,
         disableChannel,
         channelHealth,
+        channelDiagnostics,
         mapChannelIdentity,
         removeChannelIdentity,
         listChannelIdentities,
         setChannelAllowlist,
         retryChannelDelivery,
+        beginIlinkLogin,
+        pollIlinkLogin,
+        activateIlinkChannel,
+        disconnectIlinkChannel,
+        onIlinkChannelStateChanged,
       })) {
         return;
       }
@@ -1009,6 +1081,8 @@ export function createHttpServer({
         addMaterials: addWorkItemMaterials,
         removeMaterial: removeWorkItemMaterial,
         restoreMaterial: restoreWorkItemMaterial,
+        addContentReference: addWorkItemContentReference,
+        removeContentReference: removeWorkItemContentReference,
       })) {
         return;
       }
@@ -1032,6 +1106,15 @@ export function createHttpServer({
       }
 
       if (handleLoopRoutineRoutes({ req, res, url, sendJson, currentLoopRoutineProjectContext })) {
+        return;
+      }
+
+      if (await handleSessionRoutes({
+        req, res, url, sendJson,
+        listSessions,
+        probeSessionSite,
+        reseedSessionSite,
+      })) {
         return;
       }
 

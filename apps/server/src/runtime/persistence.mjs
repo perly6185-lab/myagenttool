@@ -69,6 +69,9 @@ export const persistedArrayKeys = [
   "deployments",
   "compareRuns",
   "worktreeReviews",
+  // Session-manager durable rows (one per registered site) — without this the
+  // SQLite backing silently drops probe/reseed history on restart.
+  "sessions",
   "events",
   "refusals",
   "traces",
@@ -103,6 +106,14 @@ export const persistedArrayKeys = [
   "mailDrafts",
   "mailMessageStates",
   "mailTaskLinks",
+  "mailClassifications",
+  "mailClassificationJobs",
+  "mailClassificationCorrections",
+  "mailClassificationRules",
+  "mailFolderMovePreviews",
+  "mailFolderMoveJobs",
+  "mailFolderMoveDeduplication",
+  "mailFolderAutomations",
   "mailReplies",
   "budgets",
   "budgetReservations",
@@ -191,7 +202,10 @@ export const persistedArrayKeys = [
   "channelEvents",
   "channelConversations",
   "channelDeliveries",
+  "channelIntakeGroups",
+  "channelTaskThreads",
   "channelTaskRequests",
+  "ilinkAccounts",
 ];
 
 // NOTE: `devices` is deliberately absent from both key lists — it restores
@@ -220,6 +234,7 @@ export const persistedObjectKeys = [
   "reportSchedule",
   // When refusal recording began (work-report coverage-honesty anchor).
   "refusalStatsMeta",
+  "channelIntentMetrics",
 ];
 
 // Collections that carry BOTH a self-stamped owning team AND a project link. The

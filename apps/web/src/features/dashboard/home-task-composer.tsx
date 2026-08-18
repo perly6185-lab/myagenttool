@@ -16,7 +16,7 @@ import {
 import type { TaskMaterialDraft } from "@/lib/api-client";
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
 import type { SectionKey } from "@/store/ui-store";
-import { readinessSetupSection, type AutoRunReadiness } from "@/features/tasks/auto-run-readiness-ui";
+import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "@/features/tasks/auto-run-readiness-ui";
 
 type CreateMode = "task" | "ai";
 
@@ -99,6 +99,7 @@ export function HomeTaskComposer({
   draftGoal,
   onDraftGoalApplied,
   reviewFacts,
+  onDirtyChange,
 }: {
   projectId: string | null;
   projectName?: string | null;
@@ -122,6 +123,7 @@ export function HomeTaskComposer({
   draftGoal?: string | null;
   onDraftGoalApplied?: () => void;
   reviewFacts?: HomeTaskReviewFacts | null;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { i18n } = useAppTranslation();
   const zh = i18n.language.startsWith("zh");
@@ -135,9 +137,9 @@ export function HomeTaskComposer({
     project: "新任务项目",
     criteria: "完成标准（可选）",
     criteriaHint: "每行一项，例如：覆盖全部反馈\n给出明确优先级\n输出可分享的文档",
-    sop: "验收 SOP（交给 AI 前必填）",
+    sop: "检查步骤（交给 AI 前必填）",
     sopHint: "每行一步，例如：按真实使用流程检查结果\n核对自动验证证据\n确认风险后再审核通过",
-    contractReview: "执行方案草案已生成。确认完成标准和验收步骤后，再明确启动 AI。",
+    contractReview: "执行方案草案已生成。确认完成标准和检查步骤后，再明确启动 AI。",
     contractFailed: "暂时无法生成可靠的执行方案。任务尚未创建，请稍后重试。",
     templateRecommended: "将按你以往的做法处理",
     templateOutput: "预计得到",
@@ -180,7 +182,7 @@ export function HomeTaskComposer({
     failed: "任务创建失败，请检查项目和网络状态后重试。",
     preflight: "执行前检查",
     preflightChecking: "正在确认 AI、代码仓库和安全开关…",
-    preflightBlocked: "AI 暂时不能启动，请先处理以下问题。",
+    preflightBlocked: "还差一步才能交给 AI。",
     preflightWarning: "任务可以加入自动队列；AI 会在条件满足时开始，请留意以下信息。",
     preflightUnavailable: "暂时无法完成执行前检查，请重新检查。",
     preflightRetry: "重新检查",
@@ -190,7 +192,7 @@ export function HomeTaskComposer({
     openProjects: "打开项目设置",
     view: "查看任务",
     noProject: "请先选择或创建一个项目。",
-    unavailable: "服务器离线。",
+    unavailable: "暂时无法连接本地服务，请稍后重试。",
     readOnly: "你可以查看任务和调度；如需创建任务或交给 AI，请联系管理员开通操作权限。",
     readOnlyTitle: "调度查看模式",
     today: "今天",
@@ -205,7 +207,7 @@ export function HomeTaskComposer({
     project: "New task project",
     criteria: "Definition of done (optional)",
     criteriaHint: "One item per line, for example:\nCover every feedback item\nAssign a clear priority\nProduce a shareable document",
-    sop: "Verification SOP (required before AI starts)",
+    sop: "Verification steps (required before AI starts)",
     sopHint: "One step per line, for example:\nExercise the real user flow\nReview automated evidence\nConfirm risks before approval",
     contractReview: "The execution-plan draft is ready. Review its completion criteria and verification steps, then explicitly start AI.",
     contractFailed: "A reliable execution plan could not be prepared. No task was created; try again shortly.",
@@ -295,12 +297,22 @@ export function HomeTaskComposer({
   const filesReady = attachments.every((attachment) => attachment.status === "ready");
   const blocked = unavailable || readOnly;
   const canCreate = Boolean(projectId && title && !pendingMode && filesReady && !blocked);
-  const readinessBlocking = readiness?.checks.filter((check) => check.status === "blocked" && check.key !== "capacity") ?? [];
-  const readinessWarnings = readiness?.checks.filter((check) => check.status === "warn" || (check.status === "blocked" && check.key === "capacity")) ?? [];
+  const readableReadiness = readiness
+    ? { ...readiness, checks: readiness.checks.map((check) => readableAutoRunReadinessCheck(check, zh ? "zh" : "en")) }
+    : null;
+  const readinessBlocking = readableReadiness?.checks.filter((check) => check.status === "blocked" && check.key !== "capacity") ?? [];
+  const readinessWarnings = readableReadiness?.checks.filter((check) => check.status === "warn" || (check.status === "blocked" && check.key === "capacity")) ?? [];
   const capacityBlocked = readiness?.checks.some((check) => check.status === "blocked" && check.key === "capacity") ?? false;
   const queueReady = readinessBlocking.length === 0 && (readiness?.ready === true || capacityBlocked);
   const templateNeedsClarification = planReviewed && templateMatch?.state === "ambiguous";
   const canCreateWithAi = canCreate && queueReady && !readinessLoading && !templateNeedsClarification;
+  const dirty = Boolean(goal.trim() || dueDate || criteria.trim() || verificationSop.trim() || attachments.length);
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   function chooseDesiredOutput(definitionId: string) {
     if (templateMatch?.state !== "ambiguous") return;
@@ -607,7 +619,7 @@ export function HomeTaskComposer({
               {projectName ? <p className={`mt-0.5 truncate text-xs text-muted-foreground ${mobileOpen ? "" : "hidden sm:block"}`}>{projectName}</p> : null}
             </div>
             </div>
-            <Button
+            {onMobileOpenChange ? <Button
               type="button"
               size="sm"
               variant="ghost"
@@ -618,12 +630,12 @@ export function HomeTaskComposer({
               onClick={() => onMobileOpenChange?.(!mobileOpen)}
             >
               <ChevronDown className={`transition-transform ${mobileOpen ? "rotate-180" : ""}`} aria-hidden />
-            </Button>
+            </Button> : null}
           </div>
         ) : null}
         <div
           id="home-task-composer-fields"
-          className={`space-y-3 ${inline && !mobileOpen ? "hidden sm:block" : ""}`}
+          className={`space-y-3 ${inline && onMobileOpenChange && !mobileOpen ? "hidden sm:block" : ""}`}
           onPaste={(event) => {
             if (!projectId || blocked) return;
             const pastedFiles = taskMaterialFilesFromClipboard(event.clipboardData);
@@ -686,7 +698,7 @@ export function HomeTaskComposer({
               </div>
               {!readinessLoading ? <div className="flex shrink-0 flex-wrap gap-1">
                 <Button size="sm" variant="ghost" onClick={() => { void loadReadiness(); }}><RefreshCw aria-hidden />{copy.preflightRetry}</Button>
-                {readinessBlocking.length > 0 && readiness && onOpenSetup ? <Button size="sm" variant="secondary" onClick={() => onOpenSetup(readinessSetupSection({ ...readiness, checks: readinessBlocking }))}>{copy.preflightSetup}</Button> : null}
+                {readinessBlocking.length > 0 && readableReadiness && onOpenSetup ? <Button size="sm" variant="secondary" onClick={() => onOpenSetup(readinessSetupSection({ ...readableReadiness, checks: readinessBlocking }))}>{readinessFixLabel(readableReadiness, zh ? "zh" : "en")}</Button> : null}
               </div> : null}
             </div>
           </section>

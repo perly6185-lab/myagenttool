@@ -10,7 +10,7 @@ import {
   Clock3,
   FileText,
   FolderOpen,
-  ImageIcon,
+  Library,
   Download,
   Eye,
   ExternalLink,
@@ -35,11 +35,29 @@ import { useSessionUser } from "@/hooks/use-session-user";
 import { type SectionKey, type WorkItemSection } from "@/store/ui-store";
 import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item-progress-dialog";
 import { TaskMaterialEditor } from "./task-material-editor";
-import { readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
+import { TaskContentReferences } from "./task-content-references";
+import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
 import { myTemplateExpectedOutput } from "@/features/workflow-memory/my-template-model";
 import type { BusinessRoutineDefinition } from "@/lib/api-client";
-import type { LocalWorkItem, LocalWorkItemAutoRun, LocalWorkItemObservability, WorkItemComment, WorkItemExecutionKind, WorkItemExecutionState, WorkItemOutcomeFile } from "./task-view-types";
-import { deriveWorkItemUserStatus, type WorkItemUserStatus } from "./work-item-user-status";
+import type { LocalWorkItem, LocalWorkItemObservability, WorkItemComment, WorkItemOutcomeFile } from "./task-view-types";
+import { deriveWorkItemUserStatus } from "./work-item-user-status";
+import { COPY, type SummaryCopy } from "./work-item-summary-copy";
+import {
+  WAITING_LABEL,
+  aiPhaseDescription,
+  deriveDeliveryDecision,
+  executionStateLabel,
+  expertSectionFor,
+  latestExecutionKind,
+  resultPresentation,
+  type DeliveryDecision,
+} from "./work-item-summary-model";
+import {
+  DeliverableFileList,
+  DeliveryMarkdownDocument,
+  IMAGE_DELIVERY_EXTENSIONS,
+  MARKDOWN_DELIVERY_EXTENSIONS,
+} from "./work-item-deliverable-files";
 import {
   browsableDeliveryPath,
   deliveryExtension,
@@ -48,11 +66,7 @@ import {
   imageMime,
   isOfficeDeliveryPath,
   isOfficeMaterial,
-  markdownImageCount,
-  markdownImageReferences,
   normalizedDeliveryPath,
-  parseMarkdownDocument,
-  resolveDeliveryAssetPath,
   type DeliveryPreview,
 } from "./work-item-delivery-preview-model";
 
@@ -94,991 +108,6 @@ type MyTemplateDraftPreview = {
     hasDeliveryReport: boolean;
   };
 };
-
-type SummaryCopy = {
-  loading: string;
-  loadFailed: string;
-  retry: string;
-  status: Record<WorkItemUserStatus, string>;
-  next: Record<WorkItemUserStatus, string>;
-  action: Record<WorkItemUserStatus, string>;
-  goal: string;
-  noGoal: string;
-  acceptance: string;
-  noAcceptance: string;
-  progress: string;
-  coordination: string;
-  owner: string;
-  unassigned: string;
-  expectedCompletion: string;
-  unscheduled: string;
-  aiState: string;
-  waitingOn: string;
-  lastProgress: string;
-  noProgress: string;
-  files: string;
-  referenceFiles: string;
-  fileReady: string;
-  filePreparing: string;
-  previewFile: string;
-  downloadFile: string;
-  removeFile: string;
-  materialRemoved: string;
-  materialRemovedFuture: string;
-  materialRestored: string;
-  materialUndoFailed: string;
-  materialHint: string;
-  materialRunningHint: string;
-  materialCompletedHint: string;
-  noReferenceFiles: string;
-  undo: string;
-  reopenForMaterials: string;
-  reopeningTask: string;
-  taskReopened: string;
-  reopenFailed: string;
-  reopenTitle: string;
-  reopenDescription: string;
-  keepCompleted: string;
-  downloadOnly: string;
-  useUpdatedMaterials: string;
-  retryWithMaterials: string;
-  materialReprocessComment: string;
-  materialReprocessStarted: string;
-  undoAdd: string;
-  undoAddWindow: string;
-  additionUndone: string;
-  materialActionFailed: string;
-  comments: string;
-  commentPlaceholder: string;
-  addComment: string;
-  addingComment: string;
-  commentFailed: string;
-  expert: string;
-  taskCenter: string;
-  why: string;
-  impact: string;
-  remedy: string;
-  errorWhy: string;
-  errorImpact: string;
-  errorRemedy: string;
-  noAi: string;
-  collaborationTitle: string;
-  collaborationHint: string;
-  personalPlan: string;
-  aiExecution: string;
-  humanReview: string;
-  reviewPending: string;
-  reviewReady: string;
-  reviewComplete: string;
-  scheduleConflict: string;
-  progressSynced: string;
-  commentSynced: string;
-  deliverableTitle: string;
-  deliverableHint: string;
-  decisionSummary: string;
-  completedScope: string;
-  checkResult: string;
-  recommendedNext: string;
-  resultRisk: string;
-  actionEffect: string;
-  actionRisk: string;
-  riskLow: string;
-  riskMedium: string;
-  riskHigh: string;
-  riskUnknown: string;
-  originalAiNote: string;
-  deliverableSummary: string;
-  deliverableFiles: string;
-  noDeliverableFiles: string;
-  browseDeliverableFile: string;
-  deliverableFileOpening: string;
-  deliverableFileOpenHint: string;
-  deliverableFileUnavailable: string;
-  deliverableFileUnsupported: string;
-  openDeliverableFolder: string;
-  deliverableFolderUnavailable: string;
-  deliverablePreviewDescription: string;
-  deliverablePreviewLoading: string;
-  deliverablePreviewTruncated: string;
-  deliverablePreviewImageUnavailable: string;
-  deliverablePreviewSource: string;
-  deliverablePreviewAuthor: string;
-  deliverablePreviewPublished: string;
-  deliverablePreviewImages: string;
-  deliverablePreviewShowFirstImage: string;
-  noDeliverableSummary: string;
-  noAcceptanceResult: string;
-  acceptanceResult: string;
-  passed: string;
-  needsReview: string;
-  fullReport: string;
-  fullReportDescription: string;
-  openExpertDetails: string;
-  hideResult: string;
-  retryAi: string;
-  retryTitle: string;
-  retryDescription: string;
-  retryConfirm: string;
-  retrying: string;
-  retrySucceeded: string;
-  retryFailed: string;
-  startAi: string;
-  startingAi: string;
-  aiStarted: string;
-  aiStartFailed: string;
-  updateProgress: string;
-  requestChanges: string;
-  changePlaceholder: string;
-  sendChanges: string;
-  sendingChanges: string;
-  changesSent: string;
-  changesFailed: string;
-  acceptComplete: string;
-  acceptTitle: string;
-  acceptDescription: string;
-  acceptConfirm: string;
-  accepting: string;
-  completedTitle: string;
-  completedHint: string;
-  reuseTask: string;
-  createFollowUp: string;
-  reviewDecisionTitle: string;
-  reviewDecisionHint: string;
-  completionFailed: string;
-  deliveryReviewRequired: string;
-  aiReviewTitle: string;
-  aiReviewPending: string;
-  aiReviewApproved: string;
-  aiReviewChanges: string;
-  aiReviewUnavailable: string;
-  aiReviewNoFindings: string;
-  sendAiReviewBack: string;
-  verificationEvidence: string;
-  readinessTitle: string;
-  readinessChecking: string;
-  readinessBlocked: string;
-  readinessWarning: string;
-  readinessFix: string;
-  readinessRetry: string;
-  readinessUnavailable: string;
-  writebackTitle: string;
-  writebackLocalOnly: string;
-  writebackLocalOnlyHint: string;
-  writebackCloseExternal: string;
-  writebackCloseExternalHint: string;
-  writebackFailed: string;
-  completedLocally: string;
-  writebackDisabled: string;
-};
-
-const COPY: Record<"zh" | "en", SummaryCopy> = {
-  zh: {
-    loading: "正在加载任务…",
-    loadFailed: "任务加载失败，请稍后重试。",
-    retry: "重新加载",
-    status: {
-      not_started: "尚未开始",
-      scheduled: "已安排",
-      ai_working: "AI 处理中",
-      waiting: "等待他人",
-      needs_action: "需要你处理",
-      ready_for_review: "等待你确认",
-      blocked: "已受阻",
-      completed: "已完成",
-    },
-    next: {
-      not_started: "补充任务进展，或安排 AI 开始处理。",
-      scheduled: "任务已进入计划，当前无需额外操作。",
-      ai_working: "AI 正在处理；你可以查看当前进展，必要时补充说明。",
-      waiting: "任务正在等待相关人员回复，建议按约定时间跟进。",
-      needs_action: "任务需要你的判断或补充信息后才能继续。",
-      ready_for_review: "AI 已完成当前工作，请确认结果是否符合预期。",
-      blocked: "任务当前无法继续。先处理下方显示的前置任务，或更新阻塞进展。",
-      completed: "任务已经完成，可以查看最终结果和汇报。",
-    },
-    action: {
-      not_started: "更新进展",
-      scheduled: "更新进展",
-      ai_working: "更新进展",
-      waiting: "记录跟进",
-      needs_action: "查看原因并处理",
-      ready_for_review: "审核结果",
-      blocked: "更新阻塞进展",
-      completed: "查看结果",
-    },
-    goal: "任务目标",
-    noGoal: "尚未补充任务说明。",
-    acceptance: "完成标准",
-    noAcceptance: "尚未设置完成标准。",
-    progress: "当前进展",
-    coordination: "人员与 AI 协同",
-    owner: "负责人",
-    unassigned: "尚未分配",
-    expectedCompletion: "预期完成",
-    unscheduled: "尚未安排",
-    aiState: "AI 状态",
-    waitingOn: "当前等待",
-    lastProgress: "最近进展",
-    noProgress: "暂无进展记录",
-    files: "相关文件",
-    referenceFiles: "参考文件",
-    fileReady: "已就绪",
-    filePreparing: "准备中",
-    previewFile: "预览",
-    downloadFile: "下载",
-    removeFile: "移除",
-    materialRemoved: "参考文件已移除。AI 处理或重新执行任务时不再使用。",
-    materialRemovedFuture: "参考文件已移除。本次 AI 运行不变，重新执行任务时不再使用。",
-    materialRestored: "参考文件已恢复。",
-    materialUndoFailed: "暂时无法恢复参考文件，请刷新任务后重试。",
-    materialHint: "选择文件后会自动加入任务，AI 处理或重新执行任务时使用。",
-    materialRunningHint: "本次 AI 运行使用的材料不会改变；新增或移除将在重新执行任务时生效。",
-    materialCompletedHint: "任务已完成。如需调整参考材料，请先重新打开任务。",
-    noReferenceFiles: "尚未添加参考材料。",
-    undo: "撤销",
-    reopenForMaterials: "重新打开任务",
-    reopeningTask: "正在重新打开…",
-    taskReopened: "任务已重新打开，现在可以调整参考材料。",
-    reopenFailed: "暂时无法重新打开任务，请稍后重试。",
-    reopenTitle: "重新打开任务以调整参考材料？",
-    reopenDescription: "任务会恢复为进行中；已有结果和历史记录都会保留。AI 不会自动启动，直到你选择再次处理任务。",
-    keepCompleted: "保持已完成",
-    downloadOnly: "此格式仅支持下载",
-    useUpdatedMaterials: "使用更新后的材料重新处理",
-    retryWithMaterials: "使用当前材料重试",
-    materialReprocessComment: "请结合当前参考材料重新处理这个任务。",
-    materialReprocessStarted: "AI 已开始使用当前参考材料重新处理任务。",
-    undoAdd: "撤销添加",
-    undoAddWindow: "8 秒内可撤销",
-    additionUndone: "已撤销添加，AI 不会使用这些文件。",
-    materialActionFailed: "暂时无法操作参考文件，请刷新任务后重试。",
-    comments: "评论",
-    commentPlaceholder: "补充背景、决定或需要他人知道的信息…",
-    addComment: "发表评论",
-    addingComment: "正在发表…",
-    commentFailed: "评论发表失败，请重试。",
-    expert: "技术与审计详情",
-    taskCenter: "在任务中心打开",
-    why: "发生了什么",
-    impact: "有什么影响",
-    remedy: "建议处理",
-    errorWhy: "AI 执行没有成功。",
-    errorImpact: "任务尚未完成，原定计划可能受到影响。",
-    errorRemedy: "查看失败摘要，确认重试或调整任务。",
-    noAi: "尚未关联 AI 执行",
-    collaborationTitle: "协同接力",
-    collaborationHint: "个人看板关注你要完成什么，AI 看板关注 AI 何时执行；两边始终是同一个任务。",
-    personalPlan: "我的计划",
-    aiExecution: "AI 执行",
-    humanReview: "AI 审查与我的确认",
-    reviewPending: "等待 AI 交付",
-    reviewReady: "AI 已审查，等待确认",
-    reviewComplete: "已确认完成",
-    scheduleConflict: "AI 执行日期晚于预期完成日期，可能影响按时交付。",
-    progressSynced: "进展已保存，个人看板与 AI 看板已同步更新。",
-    commentSynced: "评论已发布，任务协作记录已更新。",
-    deliverableTitle: "AI 交付了什么",
-    deliverableHint: "先看普通用户能理解的结论、风险和建议动作；技术证据仍完整保留。",
-    decisionSummary: "审核结论",
-    completedScope: "AI 完成了什么",
-    checkResult: "检查结果",
-    recommendedNext: "建议下一步",
-    resultRisk: "本次结果风险",
-    actionEffect: "点击后会发生什么",
-    actionRisk: "动作风险",
-    riskLow: "较低",
-    riskMedium: "中等",
-    riskHigh: "较高",
-    riskUnknown: "待确认",
-    originalAiNote: "AI 原始交付说明（可能包含技术术语）",
-    deliverableSummary: "AI 完成的工作",
-    deliverableFiles: "涉及的文件",
-    noDeliverableFiles: "这次没有可直接打开的附件；代码变更仍保存在任务工作区。",
-    browseDeliverableFile: "浏览文件",
-    deliverableFileOpening: "正在打开",
-    deliverableFileOpenHint: "在当前任务中预览",
-    deliverableFileUnavailable: "暂时无法打开这个文件。文件可能已被移动，你仍可继续审核或稍后重试。",
-    deliverableFileUnsupported: "暂不支持在线浏览",
-    openDeliverableFolder: "打开所在文件夹",
-    deliverableFolderUnavailable: "暂时无法打开所在文件夹。请确认本地桌面 Bridge 正在运行，且文件未被移动。",
-    deliverablePreviewDescription: "任务内只读预览，不会跳离当前工作。Markdown 已按正文排版展示。",
-    deliverablePreviewLoading: "正在准备预览…",
-    deliverablePreviewTruncated: "文件较大，当前仅展示可安全读取的部分。",
-    deliverablePreviewImageUnavailable: "配图暂时无法显示",
-    deliverablePreviewSource: "来源",
-    deliverablePreviewAuthor: "作者",
-    deliverablePreviewPublished: "发布日期",
-    deliverablePreviewImages: "正文配图：{count} 张",
-    deliverablePreviewShowFirstImage: "查看首图",
-    noDeliverableSummary: "AI 已结束处理，但没有附带可直接阅读的结果摘要；可进入完整报告核对详情。",
-    noAcceptanceResult: "本任务未设置完成标准，请结合任务目标人工确认。",
-    acceptanceResult: "完成标准",
-    passed: "项已通过",
-    needsReview: "项待确认",
-    fullReport: "查看完整报告",
-    fullReportDescription: "在当前任务内查看完整交付、验证与复核结论；不会离开审核页面。",
-    openExpertDetails: "打开专业详情",
-    hideResult: "收起结果",
-    retryAi: "重试 AI 处理",
-    retryTitle: "重试 AI 处理？",
-    retryDescription: "系统会基于上次进展重新启动 AI 处理，可能产生新的运行时间和费用。",
-    retryConfirm: "确认重试",
-    retrying: "正在重试…",
-    retrySucceeded: "已重新启动 AI 处理，两块看板将持续同步最新状态。",
-    retryFailed: "暂时无法重新启动。任务仍保持原状态，你可以稍后重试或查看详细原因。",
-    startAi: "交给 AI 开始处理",
-    startingAi: "正在启动 AI…",
-    aiStarted: "AI 已开始处理，两块看板会持续同步进展。",
-    aiStartFailed: "AI 暂时无法开始，任务仍保持原状态。请稍后重试或查看技术详情。",
-    updateProgress: "我来更新进展",
-    requestChanges: "让 AI 继续修改",
-    changePlaceholder: "告诉 AI 需要修改什么，例如补充数据、调整格式或重新核对结论…",
-    sendChanges: "发送给 AI 继续修改",
-    sendingChanges: "正在发送…",
-    changesSent: "修改要求已记录，AI 已开始继续处理。",
-    changesFailed: "修改要求已保留，但 AI 暂时无法继续。请稍后重试。",
-    acceptComplete: "确认结果并完成任务",
-    acceptTitle: "确认这份结果并完成任务？",
-    acceptDescription: "确认表示结果已满足任务目标。系统会保留交付说明、验证证据和审查记录，之后仍可查看或重新打开。",
-    acceptConfirm: "确认结果并完成",
-    accepting: "正在完成…",
-    completedTitle: "这项工作已完成",
-    completedHint: "最终成果、确认记录和协作过程都已保留，你可以随时回来查看。",
-    reuseTask: "复用为新任务",
-    createFollowUp: "创建后续任务",
-    reviewDecisionTitle: "请做最后确认",
-    reviewDecisionHint: "结果符合任务目标就确认完成；如果不符合，告诉 AI 需要改什么，它会继续在同一任务中处理。",
-    completionFailed: "暂时无法完成任务。请核对未通过的完成标准或稍后重试。",
-    deliveryReviewRequired: "此任务包含待交付的代码变更，需要先完成技术审查。",
-    aiReviewTitle: "自动复核结论",
-    aiReviewPending: "系统正在独立检查本次结果，完成后会在这里给出结论。",
-    aiReviewApproved: "审查通过，可以由你确认交付。",
-    aiReviewChanges: "审查发现需要修复的问题，暂不建议接受交付。",
-    aiReviewUnavailable: "自动复核暂时不可用，系统会在检查能力就绪后重试。",
-    aiReviewNoFindings: "未发现阻止交付的问题。",
-    sendAiReviewBack: "交回 AI 修复",
-    verificationEvidence: "系统如何验证",
-    readinessTitle: "执行前检查",
-    readinessChecking: "正在确认 AI、代码仓库和安全开关…",
-    readinessBlocked: "暂时还不能启动 AI",
-    readinessWarning: "可以启动，但建议先处理这些提醒",
-    readinessFix: "去设置并修复",
-    readinessRetry: "重新检查",
-    readinessUnavailable: "无法完成执行前检查，请刷新后重试。",
-    writebackTitle: "外部 Issue 如何处理？",
-    writebackLocalOnly: "只完成本地任务",
-    writebackLocalOnlyHint: "外部 Issue 保持原状态，之后可在“管理同步”中处理。",
-    writebackCloseExternal: "完成本地任务并回写外部 Issue",
-    writebackCloseExternalHint: "把最终任务内容推送到外部平台，并关闭对应 Issue。",
-    writebackFailed: "本地任务已完成，但外部 Issue 回写失败。请在“管理同步”中重试；不会重复完成本地任务。",
-    completedLocally: "本地任务已安全完成，外部 Issue 仍待回写。",
-    writebackDisabled: "当前项目已关闭外部回写或启用了紧急停止；可先只完成本地任务。",
-  },
-  en: {
-    loading: "Loading task…",
-    loadFailed: "The task could not be loaded. Try again shortly.",
-    retry: "Try again",
-    status: {
-      not_started: "Not started",
-      scheduled: "Scheduled",
-      ai_working: "AI working",
-      waiting: "Waiting on others",
-      needs_action: "Needs your action",
-      ready_for_review: "Ready for your review",
-      blocked: "Blocked",
-      completed: "Completed",
-    },
-    next: {
-      not_started: "Add a progress update or arrange for AI to begin.",
-      scheduled: "The task is planned and needs no additional action right now.",
-      ai_working: "AI is working. Review progress or add context when needed.",
-      waiting: "The task is waiting for a response. Follow up at the agreed time.",
-      needs_action: "Your decision or additional information is needed before work can continue.",
-      ready_for_review: "AI finished its work. Confirm that the result meets expectations.",
-      blocked: "Work cannot continue until the blocking issue is resolved.",
-      completed: "The task is complete. Review the final result and report.",
-    },
-    action: {
-      not_started: "Update progress",
-      scheduled: "Update progress",
-      ai_working: "Update progress",
-      waiting: "Record follow-up",
-      needs_action: "Review and resolve",
-      ready_for_review: "Review result",
-      blocked: "Review blocker",
-      completed: "View result",
-    },
-    goal: "Task goal",
-    noGoal: "No task description has been added yet.",
-    acceptance: "Definition of done",
-    noAcceptance: "No completion criteria have been set.",
-    progress: "Current progress",
-    coordination: "People and AI coordination",
-    owner: "Owner",
-    unassigned: "Unassigned",
-    expectedCompletion: "Expected completion",
-    unscheduled: "Not scheduled",
-    aiState: "AI state",
-    waitingOn: "Waiting on",
-    lastProgress: "Latest progress",
-    noProgress: "No progress update yet",
-    files: "Related files",
-    referenceFiles: "Reference files",
-    fileReady: "Ready",
-    filePreparing: "Preparing",
-    previewFile: "Preview",
-    downloadFile: "Download",
-    removeFile: "Remove",
-    materialRemoved: "Reference file removed. AI will not use it when processing or rerunning this task.",
-    materialRemovedFuture: "Reference file removed. This AI run is unchanged; AI will not use it when you rerun the task.",
-    materialRestored: "Reference file restored.",
-    materialUndoFailed: "The reference file could not be restored. Refresh the task and try again.",
-    materialHint: "Selected files join the task automatically. AI uses them when processing or rerunning this task.",
-    materialRunningHint: "Materials used by this AI run will not change. Additions or removals apply when you rerun the task.",
-    materialCompletedHint: "This task is complete. Reopen it before changing reference files.",
-    noReferenceFiles: "No reference files have been added.",
-    undo: "Undo",
-    reopenForMaterials: "Reopen task",
-    reopeningTask: "Reopening…",
-    taskReopened: "Task reopened. You can now change reference files.",
-    reopenFailed: "The task could not be reopened. Try again shortly.",
-    reopenTitle: "Reopen this task to change its materials?",
-    reopenDescription: "The task returns to In progress. Existing results and history stay available. AI will not start until you choose to process the task again.",
-    keepCompleted: "Keep completed",
-    downloadOnly: "This format supports download only",
-    useUpdatedMaterials: "Process again with updated material",
-    retryWithMaterials: "Retry with current material",
-    materialReprocessComment: "Process this task again using the current reference materials.",
-    materialReprocessStarted: "AI started another pass using the current reference materials.",
-    undoAdd: "Undo add",
-    undoAddWindow: "Available for 8 seconds",
-    additionUndone: "Addition undone. AI will not use those files.",
-    materialActionFailed: "The reference file action failed. Refresh the task and try again.",
-    comments: "Comments",
-    commentPlaceholder: "Add context, a decision, or something others should know…",
-    addComment: "Post comment",
-    addingComment: "Posting…",
-    commentFailed: "The comment could not be posted. Try again.",
-    expert: "Technical and audit details",
-    taskCenter: "Open in task center",
-    why: "What happened",
-    impact: "Impact",
-    remedy: "Recommended action",
-    errorWhy: "The AI execution did not succeed.",
-    errorImpact: "The task is incomplete and the original plan may be affected.",
-    errorRemedy: "Review the failure summary, then retry or adjust the task.",
-    noAi: "No AI execution is linked",
-    collaborationTitle: "Collaboration handoff",
-    collaborationHint: "My tasks tracks what you need to finish; AI tasks tracks when AI works. Both views represent this same task.",
-    personalPlan: "My plan",
-    aiExecution: "AI execution",
-    humanReview: "AI review and my confirmation",
-    reviewPending: "Waiting for AI delivery",
-    reviewReady: "AI reviewed; awaiting confirmation",
-    reviewComplete: "Confirmed complete",
-    scheduleConflict: "AI execution is scheduled after the expected completion date and may delay delivery.",
-    progressSynced: "Progress saved. My tasks and AI tasks are now in sync.",
-    commentSynced: "Comment posted. The collaboration record is up to date.",
-    deliverableTitle: "What AI delivered",
-    deliverableHint: "Start with a plain-language conclusion, risk, and recommended action. Technical evidence remains available.",
-    decisionSummary: "Review conclusion",
-    completedScope: "What AI completed",
-    checkResult: "Checks",
-    recommendedNext: "Recommended next step",
-    resultRisk: "Result risk",
-    actionEffect: "What happens when you click",
-    actionRisk: "Action risk",
-    riskLow: "Low",
-    riskMedium: "Medium",
-    riskHigh: "High",
-    riskUnknown: "Needs review",
-    originalAiNote: "AI's original delivery note (may contain technical terms)",
-    deliverableSummary: "What AI completed",
-    deliverableFiles: "Files involved",
-    noDeliverableFiles: "There are no attachments to open; code changes remain in the task workspace.",
-    browseDeliverableFile: "Browse file",
-    deliverableFileOpening: "Opening",
-    deliverableFileOpenHint: "Preview inside this task",
-    deliverableFileUnavailable: "This file cannot be opened right now. It may have moved; you can keep reviewing or try again later.",
-    deliverableFileUnsupported: "Preview is not supported yet",
-    openDeliverableFolder: "Open containing folder",
-    deliverableFolderUnavailable: "The containing folder could not be opened. Check that the local Desktop Bridge is running and the file has not moved.",
-    deliverablePreviewDescription: "Read-only preview inside this task. Markdown is formatted as a document.",
-    deliverablePreviewLoading: "Preparing preview…",
-    deliverablePreviewTruncated: "This file is large, so only the safely readable portion is shown.",
-    deliverablePreviewImageUnavailable: "Image preview unavailable",
-    deliverablePreviewSource: "Source",
-    deliverablePreviewAuthor: "Author",
-    deliverablePreviewPublished: "Published",
-    deliverablePreviewImages: "Document images: {count}",
-    deliverablePreviewShowFirstImage: "Show first image",
-    noDeliverableSummary: "AI finished, but no readable result summary was attached. Open the full report to review the details.",
-    noAcceptanceResult: "No completion criteria were set. Review the outcome against the task goal.",
-    acceptanceResult: "Definition of done",
-    passed: "passed",
-    needsReview: "need review",
-    fullReport: "View full report",
-    fullReportDescription: "Review the complete delivery, verification, and conclusion without leaving this task.",
-    openExpertDetails: "Open expert details",
-    hideResult: "Hide result",
-    retryAi: "Retry AI work",
-    retryTitle: "Retry AI work?",
-    retryDescription: "AI will restart from the previous progress. This may use additional run time and cost.",
-    retryConfirm: "Retry",
-    retrying: "Retrying…",
-    retrySucceeded: "AI work restarted. My tasks and AI tasks will keep showing the latest state.",
-    retryFailed: "The retry could not be started. The task is unchanged; try again later or review the detailed cause.",
-    startAi: "Let AI start",
-    startingAi: "Starting AI…",
-    aiStarted: "AI has started. My tasks and AI tasks will keep the progress in sync.",
-    aiStartFailed: "AI could not start yet. The task is unchanged; retry later or open technical details.",
-    updateProgress: "Update it myself",
-    requestChanges: "Ask AI to revise",
-    changePlaceholder: "Tell AI what to change, such as adding evidence, adjusting the format, or checking a conclusion again…",
-    sendChanges: "Send changes to AI",
-    sendingChanges: "Sending…",
-    changesSent: "Your changes were recorded and AI has started another pass.",
-    changesFailed: "Your changes were saved, but AI could not continue yet. Try again later.",
-    acceptComplete: "Confirm result and complete",
-    acceptTitle: "Confirm this result and complete the task?",
-    acceptDescription: "Confirming means the result meets the task goal. The delivery, verification, and review record remain available afterward.",
-    acceptConfirm: "Confirm and complete",
-    accepting: "Completing…",
-    completedTitle: "This work is complete",
-    completedHint: "The final result, your confirmation, and the collaboration history have all been preserved for later review.",
-    reuseTask: "Reuse as new task",
-    createFollowUp: "Create follow-up",
-    reviewDecisionTitle: "Make the final decision",
-    reviewDecisionHint: "Confirm completion if the result meets the goal. Otherwise, tell AI what to revise and it will continue in this task.",
-    completionFailed: "The task could not be completed. Review unfinished criteria or try again shortly.",
-    deliveryReviewRequired: "This task contains code changes that still require technical delivery review.",
-    aiReviewTitle: "Codex review conclusion",
-    aiReviewPending: "Codex is independently checking this code delivery. Its conclusion will appear here.",
-    aiReviewApproved: "Review passed. The delivery is ready for your confirmation.",
-    aiReviewChanges: "The review found issues that should be fixed before accepting the delivery.",
-    aiReviewUnavailable: "Automatic review is temporarily unavailable and will retry when local Codex is ready.",
-    aiReviewNoFindings: "No delivery-blocking issues were found.",
-    sendAiReviewBack: "Send back to AI",
-    verificationEvidence: "How it was verified",
-    readinessTitle: "Preflight",
-    readinessChecking: "Checking the AI, repository, and safety controls…",
-    readinessBlocked: "AI cannot start yet",
-    readinessWarning: "Ready to start, with recommendations",
-    readinessFix: "Open setup and fix",
-    readinessRetry: "Recheck",
-    readinessUnavailable: "Preflight could not be completed. Refresh before starting AI.",
-    writebackTitle: "What should happen to the external issue?",
-    writebackLocalOnly: "Complete the local task only",
-    writebackLocalOnlyHint: "Leave the external issue unchanged and handle it later from Manage sync.",
-    writebackCloseExternal: "Complete locally and write back",
-    writebackCloseExternalHint: "Push the final task content to the provider and close the external issue.",
-    writebackFailed: "The local task is complete, but external writeback failed. Retry from Manage sync; the local completion will not be repeated.",
-    completedLocally: "The local task completed safely. External writeback is still pending.",
-    writebackDisabled: "External writeback is disabled for this project or emergency stop is active. Complete locally for now.",
-  },
-};
-
-const AI_LABEL: Record<"zh" | "en", Record<WorkItemExecutionState, string>> = {
-  zh: { unclaimed: "尚未执行", claimed: "已认领", running: "执行中", awaiting_approval: "等待审批", verifying: "验证中", failed: "执行失败", completed: "等待复核" },
-  en: { unclaimed: "Not started", claimed: "Claimed", running: "Running", awaiting_approval: "Awaiting approval", verifying: "Verifying", failed: "Execution failed", completed: "Awaiting review" },
-};
-
-function latestExecutionKind(item: LocalWorkItem): WorkItemExecutionKind | null {
-  if (item.executionKind) return item.executionKind;
-  return [...(item.executionBindings ?? [])].reverse().find((binding) =>
-    ["auto_run", "application_invocation", "article_import", "article_derivative"].includes(binding.kind))?.kind as WorkItemExecutionKind | undefined ?? null;
-}
-
-function resultPresentation(kind: WorkItemExecutionKind | null, language: "zh" | "en") {
-  if (kind === "article_import") {
-    return language === "zh" ? {
-      title: "公众号导入结果",
-      hint: "查看导入内容、验收结论和结果文件；技术证据仍完整保留。",
-      originalNote: "原始导入说明",
-      noSummary: "公众号内容已完成导入，结果文件已保存到当前任务。",
-      executionLabel: "公众号导入",
-      collaborationHint: "Local Issue 统一记录导入执行、结果文件和人工验收；它们始终属于同一个任务。",
-      completedScope: "导入完成了什么",
-    } : {
-      title: "Article import result",
-      hint: "Review the imported content, acceptance result, and output files; technical evidence remains available.",
-      originalNote: "Original import note",
-      noSummary: "The article import completed and its output files are attached to this task.",
-      executionLabel: "Article import",
-      collaborationHint: "The Local Issue keeps the import run, output files, and human acceptance together as one task.",
-      completedScope: "What the import produced",
-    };
-  }
-  return {
-    title: COPY[language].deliverableTitle,
-    hint: COPY[language].deliverableHint,
-    originalNote: COPY[language].originalAiNote,
-    noSummary: COPY[language].noDeliverableSummary,
-    executionLabel: COPY[language].aiExecution,
-    collaborationHint: COPY[language].collaborationHint,
-    completedScope: COPY[language].completedScope,
-  };
-}
-
-function executionStateLabel(item: LocalWorkItem, language: "zh" | "en") {
-  if (item.executionState === "completed" && (item.state === "closed" || item.status === "done")) {
-    return language === "zh" ? "已完成" : "Completed";
-  }
-  return item.executionState ? AI_LABEL[language][item.executionState] : COPY[language].noAi;
-}
-
-const WAITING_LABEL: Record<"zh" | "en", Record<LocalWorkItem["waitingOn"], string>> = {
-  zh: { me: "我", requester: "提出者", internal: "内部成员", ai: "AI", none: "无需等待" },
-  en: { me: "Me", requester: "Requester", internal: "Internal teammate", ai: "AI", none: "No one" },
-};
-
-function expertSectionFor(item: LocalWorkItem, status: WorkItemUserStatus): WorkItemSection {
-  if (item.executionState === "failed" || status === "blocked") return "process";
-  if (item.executionState === "awaiting_approval") return "verification";
-  if (status === "ready_for_review" || status === "completed") return "report";
-  return "overview";
-}
-
-type DeliveryDecision = {
-  state: "ready" | "changes" | "waiting" | "caution";
-  risk: "low" | "medium" | "high" | "unknown";
-  headline: string;
-  scope: string;
-  checks: string;
-  recommendation: string;
-  confirmEffect: string;
-  confirmRisk: string;
-  revisionEffect: string;
-  revisionRisk: string;
-};
-
-function aiPhaseDescription(phase: LocalWorkItemAutoRun["phase"], language: "zh" | "en") {
-  if (!phase) return null;
-  const descriptions = {
-    zh: {
-      queued: "任务已经交给 AI，正在等待开始。",
-      understanding: "AI 正在理解任务、整理完成标准和验证方式；需要你决定时会在这里提问。",
-      waiting_for_input: "AI 已暂停实质修改，正在等待你确认或补充信息。",
-      planning: "AI 正在整理执行步骤和本次验收依据。",
-      implementing: "执行依据已经建立，AI 正在隔离工作区内处理任务。",
-      verifying: "AI 已完成主要处理，正在按本次标准验证结果。",
-      review_ready: "AI 已完成处理和验证，请查看交付结果并决定是否通过。",
-      failed: "本次 AI 处理失败，请查看原因后重试或转为人工处理。",
-      cancelled: "本次 AI 处理已停止，任务仍保留在你的任务中。",
-    },
-    en: {
-      queued: "The task is with AI and waiting to start.",
-      understanding: "AI is understanding the task and establishing completion criteria and verification; it will ask here if a decision is needed.",
-      waiting_for_input: "AI has paused material changes and is waiting for your confirmation or additional information.",
-      planning: "AI is organizing the execution steps and acceptance basis for this run.",
-      implementing: "The execution basis is established and AI is working in an isolated workspace.",
-      verifying: "AI has completed the main work and is verifying the result against this run's criteria.",
-      review_ready: "AI has completed the work and verification. Review the delivery and decide whether to approve it.",
-      failed: "This AI run failed. Review the cause, then retry or return the task to manual handling.",
-      cancelled: "This AI run was stopped. The task remains in My tasks.",
-    },
-  } as const;
-  return descriptions[language][phase];
-}
-
-function changedFileScope(paths: string[], language: "zh" | "en", executionKind: WorkItemExecutionKind | null, resultFiles: string[]) {
-  if (executionKind === "article_import") {
-    if (!resultFiles.length) {
-      return language === "zh"
-        ? "公众号正文已完成导入，当前没有可直接打开的结果文件。"
-        : "The article content was imported, but no directly browsable output file is available.";
-    }
-    return language === "zh"
-      ? `公众号正文已完成导入，并在当前 Local Issue 中生成 ${resultFiles.length} 个结果文件。`
-      : `The article content was imported and ${resultFiles.length} output file${resultFiles.length === 1 ? "" : "s"} were attached to this Local Issue.`;
-  }
-  const tests = paths.filter((path) => /(?:^|[\\/])(?:test|tests|__tests__)(?:[\\/])|\.(?:test|spec)\.[^.]+$/i.test(path)).length;
-  const docsAndConfig = paths.filter((path) =>
-    /(?:^|[\\/])docs?(?:[\\/])|\.md$/i.test(path)
-    || /(?:^|[\\/])(?:\.github|config)(?:[\\/])|\.(?:json|ya?ml|toml|lock)$/i.test(path)).length;
-  const product = Math.max(0, paths.length - tests - docsAndConfig);
-  if (!paths.length) {
-    return language === "zh"
-      ? "AI 已完成处理，但系统没有取得可归类的文件清单；具体内容需要结合原始交付说明确认。"
-      : "AI finished, but no file list was available to classify. Review the original delivery note for exact scope.";
-  }
-  const parts = language === "zh"
-    ? [product ? `${product} 个程序文件` : null, tests ? `${tests} 个测试文件` : null, docsAndConfig ? `${docsAndConfig} 个说明或配置文件` : null]
-    : [product ? `${product} product file${product === 1 ? "" : "s"}` : null, tests ? `${tests} test file${tests === 1 ? "" : "s"}` : null, docsAndConfig ? `${docsAndConfig} documentation or configuration file${docsAndConfig === 1 ? "" : "s"}` : null];
-  return language === "zh"
-    ? `AI 已在独立任务工作区完成代码变更，共涉及 ${paths.length} 个文件：${parts.filter(Boolean).join("、")}。这些改动尚未进入本地主分支。`
-    : `AI completed code changes in an isolated task workspace across ${paths.length} files: ${parts.filter(Boolean).join(", ")}. These changes are not yet on the local base branch.`;
-}
-
-function deriveDeliveryDecision({
-  language,
-  mode,
-  changedFiles,
-  reviewVerdict,
-  reviewStatus,
-  verification,
-  executionKind,
-  resultFiles,
-}: {
-  language: "zh" | "en";
-  mode: "local_merge" | "pull_request" | null;
-  changedFiles: string[];
-  reviewVerdict: "approved" | "changes_requested" | null;
-  reviewStatus: string | null;
-  verification: { passed: boolean; verified: boolean; summary: string | null } | null;
-  executionKind: WorkItemExecutionKind | null;
-  resultFiles: string[];
-}): DeliveryDecision {
-  const scope = changedFileScope(changedFiles, language, executionKind, resultFiles);
-  const verifiedPass = verification?.verified === true && verification.passed === true;
-  const verifiedFail = verification?.verified === true && verification.passed === false;
-  const reviewWaiting = !reviewVerdict && ["queued", "running"].includes(reviewStatus ?? "");
-  const confirmEffect = mode === "pull_request"
-    ? language === "zh"
-      ? "创建一个 Pull Request 供后续合并；不会直接改动远端主分支，本地任务会继续保留在审核阶段。"
-      : "Create a pull request for later merge. The remote base branch is not changed directly, and this task remains in review."
-    : language === "zh"
-      ? changedFiles.length
-        ? `把这次涉及 ${changedFiles.length} 个文件的代码变更写入本地项目的基础分支，并将本地任务标记为完成；默认不会关闭 GitHub、GitLab 等外部 Issue。`
-        : "把这次代码变更写入本地项目的基础分支，并将本地任务标记为完成；默认不会关闭 GitHub、GitLab 等外部 Issue。"
-      : `Apply this ${changedFiles.length || "code"}-file delivery to the local base branch and complete the local task. External issues are not closed by default.`;
-  const confirmRisk = mode === "pull_request"
-    ? language === "zh" ? "较低：只创建待审核的 PR，但仍可能产生远端分支和协作通知。" : "Low: it only creates a reviewable PR, but it may create a remote branch and notifications."
-    : language === "zh" ? "中等：会实际修改本地项目代码。虽然已有复核和验证，仍建议先确认功能表现符合预期。" : "Medium: this changes local project code. Even with review and checks, confirm the user-visible behavior first.";
-  const revisionEffect = language === "zh"
-    ? "保留当前结果和历史记录，不应用现有交付；把你的修改要求交给 AI 在同一任务工作区继续处理。"
-    : "Keep the current result and history without applying it, then ask AI to continue in the same task workspace.";
-  const revisionRisk = language === "zh"
-    ? "较低：不会把当前变更写入基础分支，但会增加一次 AI 运行时间，可能产生额外费用。"
-    : "Low: current changes are not applied, but another AI run may take time and incur cost.";
-
-  if (reviewVerdict === "changes_requested" || verifiedFail) {
-    return {
-      state: "changes", risk: "high", scope,
-      headline: language === "zh" ? "这份结果暂不建议接受" : "Do not accept this result yet",
-      checks: verifiedFail
-        ? language === "zh" ? "自动验证未通过，当前结果存在明确失败项。" : "Automated verification failed, so the result has a confirmed problem."
-        : language === "zh" ? "自动复核发现需要处理的问题。" : "Automated review found issues that need to be fixed.",
-      recommendation: language === "zh" ? "点击“让 AI 继续修改”，说明期望或直接采用复核建议。" : "Choose Ask AI to revise and describe the expected result or use the review findings.",
-      confirmEffect, confirmRisk, revisionEffect, revisionRisk,
-    };
-  }
-  if (reviewWaiting) {
-    return {
-      state: "waiting", risk: "unknown", scope,
-      headline: language === "zh" ? "结果已生成，系统仍在复核" : "Result delivered; automated review is still running",
-      checks: verifiedPass
-        ? language === "zh" ? "自动验证已通过，独立代码复核尚未结束。" : "Automated verification passed; independent code review is still in progress."
-        : language === "zh" ? "独立代码复核尚未结束，暂不能判断是否适合接受。" : "Independent code review has not finished, so acceptance is not yet recommended.",
-      recommendation: language === "zh" ? "暂时无需操作；等待复核完成后再确认或交回修改。" : "No action yet. Wait for review before confirming or requesting changes.",
-      confirmEffect, confirmRisk, revisionEffect, revisionRisk,
-    };
-  }
-  if (executionKind === "article_import" && verifiedPass) {
-    return {
-      state: "ready", risk: "low", scope,
-      headline: language === "zh" ? "公众号导入结果已通过任务验收" : "The article import passed task acceptance",
-      checks: language === "zh"
-        ? "完成标准和验证记录均已通过，导入产物已绑定到当前 Local Issue。"
-        : "The completion criteria and verification record passed, and the imported outputs are attached to this Local Issue.",
-      recommendation: language === "zh"
-        ? "任务已经完成；需要时可直接查看、下载或复用结果文件。"
-        : "The task is complete. Review, download, or reuse the output files when needed.",
-      confirmEffect, confirmRisk, revisionEffect, revisionRisk,
-    };
-  }
-  if (reviewVerdict === "approved" && verifiedPass) {
-    return {
-      state: "ready", risk: "low", scope,
-      headline: language === "zh" ? "结果已通过自动复核和验证" : "Result passed automated review and verification",
-      checks: language === "zh" ? "未发现阻止交付的问题，自动检查也已通过；这降低了代码缺陷风险，但不等于业务表现已由人工确认。" : "No delivery-blocking issue was found and automated checks passed. This lowers code risk but does not replace a user-visible behavior check.",
-      recommendation: language === "zh" ? "如果功能表现符合你的预期，可以确认交付；拿不准时先让 AI 补充说明或继续修改。" : "Confirm delivery if the behavior matches your expectation; otherwise ask AI for clarification or revisions.",
-      confirmEffect, confirmRisk, revisionEffect, revisionRisk,
-    };
-  }
-  return {
-    state: "caution", risk: "medium", scope,
-    headline: reviewVerdict === "approved"
-      ? language === "zh" ? "自动复核已通过，但验证证据不足" : "Automated review approved the change, but verification is incomplete"
-      : language === "zh" ? "AI 已交付结果，但审核证据还不完整" : "AI delivered a result, but review evidence is incomplete",
-    checks: verification?.verified === false
-      ? language === "zh" ? "系统未配置或未执行可复现的自动验证，不能仅凭“AI 已完成”判断功能可用。" : "No reproducible automated verification ran, so AI completion alone does not prove the behavior works."
-      : language === "zh" ? "目前没有足够的独立复核与验证信息。" : "There is not enough independent review and verification evidence yet.",
-    recommendation: language === "zh" ? "建议先让 AI 补充验证或修改，不要直接确认完成。" : "Ask AI to add verification or revise before confirming completion.",
-    confirmEffect, confirmRisk, revisionEffect, revisionRisk,
-  };
-}
-
-const MARKDOWN_DELIVERY_EXTENSIONS = new Set([".md", ".mdx"]);
-const IMAGE_DELIVERY_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif"]);
-
-function DeliveryMarkdownDocument({ file, text, copy }: { file: WorkItemOutcomeFile; text: string; copy: SummaryCopy }) {
-  const document = useMemo(() => parseMarkdownDocument(text), [text]);
-  const articleRef = useRef<HTMLElement>(null);
-  const imageCount = useMemo(() => markdownImageCount(document.body), [document.body]);
-  const [imageSources, setImageSources] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    if (!file.projectId || !file.path) return undefined;
-    let cancelled = false;
-    const objectUrls: string[] = [];
-    const references = markdownImageReferences(document.body);
-    if (!references.length) return undefined;
-    void Promise.all(references.map(async (reference) => {
-      const assetPath = resolveDeliveryAssetPath(file.path!, reference);
-      if (!assetPath) return null;
-      try {
-        const bytes = await api.projectAssetPreviewBytes(file.projectId!, assetPath, file.worktreeId ?? undefined);
-        const source = URL.createObjectURL(new Blob([bytes], { type: imageMime(assetPath) }));
-        objectUrls.push(source);
-        return [reference, source] as const;
-      } catch {
-        return null;
-      }
-    })).then((entries) => {
-      if (cancelled) {
-        for (const source of objectUrls) URL.revokeObjectURL(source);
-        return;
-      }
-      setImageSources(Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => Boolean(entry))));
-    });
-    return () => {
-      cancelled = true;
-      for (const source of objectUrls) URL.revokeObjectURL(source);
-    };
-  }, [document.body, file.path, file.projectId, file.worktreeId]);
-
-  const metadata = [
-    document.metadata.author ? `${copy.deliverablePreviewAuthor}: ${document.metadata.author}` : null,
-    document.metadata.published_at ? `${copy.deliverablePreviewPublished}: ${document.metadata.published_at}` : null,
-    document.metadata.source_provider ? `${copy.deliverablePreviewSource}: ${document.metadata.source_provider}` : null,
-  ].filter(Boolean);
-  const showFirstImage = () => {
-    articleRef.current?.querySelector<HTMLElement>("img, [role='img']")?.scrollIntoView({ behavior: "smooth", block: "center" });
-  };
-  return (
-    <article ref={articleRef} className="mx-auto max-w-4xl px-1 pb-6 sm:px-5">
-      {metadata.length ? <p className="mb-5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">{metadata.join(" · ")}</p> : null}
-      {imageCount ? (
-        <div className="mb-5 flex flex-wrap items-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.045] px-3 py-2 text-sm" role="status">
-          <ImageIcon className="size-4 text-primary" aria-hidden />
-          <span className="mr-auto">{copy.deliverablePreviewImages.replace("{count}", String(imageCount))}</span>
-          <Button type="button" size="sm" variant="secondary" onClick={showFirstImage}>{copy.deliverablePreviewShowFirstImage}</Button>
-        </div>
-      ) : null}
-      <MarkdownBlock
-        text={document.body}
-        variant="document"
-        imageUnavailableLabel={copy.deliverablePreviewImageUnavailable}
-        resolveImageSrc={(src) => /^(?:https?:|data:|blob:)/i.test(src) ? src : imageSources[src] ?? null}
-      />
-    </article>
-  );
-}
-
-function DeliverableFileList({
-  entries,
-  copy,
-  openingKey,
-  error,
-  limit,
-  onOpen,
-}: {
-  entries: WorkItemOutcomeFile[];
-  copy: SummaryCopy;
-  openingKey: string | null;
-  error: string | null;
-  limit?: number;
-  onOpen: (file: WorkItemOutcomeFile) => void;
-}) {
-  const [revealingKey, setRevealingKey] = useState<string | null>(null);
-  const [revealError, setRevealError] = useState<string | null>(null);
-  const revealBridge = window.myagenttoolDesktop?.revealContainedAsset;
-  const visible = typeof limit === "number" ? entries.slice(0, limit) : entries;
-  if (!visible.length) return <p className="mt-1.5 text-sm text-muted-foreground">{copy.noDeliverableFiles}</p>;
-  return (
-    <>
-      <ul className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
-        {visible.map((file) => {
-          const key = `${file.projectId ?? "project"}:${file.worktreeId ?? "base"}:${file.path ?? file.name}`;
-          const opening = openingKey === key;
-          const canOpen = file.status === "available"
-            && Boolean(file.projectId && file.path)
-            && (file.preview === "document" || Boolean(file.worktreeId));
-          const canReveal = file.status === "available" && Boolean(file.projectId && file.path);
-          const revealing = revealingKey === key;
-          const reveal = async () => {
-            if (!file.projectId || !file.path) return;
-            setRevealError(null);
-            setRevealingKey(key);
-            try {
-              if (revealBridge) {
-                await revealBridge({
-                  projectId: file.projectId,
-                  relativePath: file.path,
-                  ...(file.worktreeId ? { worktreeId: file.worktreeId } : {}),
-                });
-              } else {
-                await api.revealProjectAsset(file.projectId, file.path, file.worktreeId ?? undefined);
-              }
-            } catch {
-              setRevealError(copy.deliverableFolderUnavailable);
-            } finally {
-              setRevealingKey(null);
-            }
-          };
-          const content = (
-            <>
-              {opening
-                ? <RefreshCw className="size-3.5 shrink-0 animate-spin text-primary" aria-hidden />
-                : canOpen
-                  ? <FileText className="size-3.5 shrink-0 text-primary" aria-hidden />
-                  : <FileText className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />}
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-mono text-xs">{file.name}</span>
-                <span className="block text-[11px] text-muted-foreground">
-                  {opening ? copy.deliverableFileOpening : canOpen ? copy.deliverableFileOpenHint : copy.deliverableFileUnsupported}
-                </span>
-              </span>
-              {canOpen ? <Eye className="size-3.5 shrink-0 text-muted-foreground" aria-hidden /> : null}
-            </>
-          );
-          return (
-            <li key={key} title={file.path ?? file.name} className="min-w-0">
-              <div className="flex overflow-hidden rounded-lg bg-background/70">
-                {canOpen ? (
-                  <button
-                    type="button"
-                    className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait"
-                    aria-label={`${copy.browseDeliverableFile}: ${file.name}`}
-                    disabled={Boolean(openingKey)}
-                    onClick={() => onOpen(file)}
-                  >
-                    {content}
-                  </button>
-                ) : <div className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 opacity-75" aria-disabled="true">{content}</div>}
-                {canReveal ? (
-                  <button
-                    type="button"
-                    className="grid w-11 shrink-0 place-items-center border-l border-border/70 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait"
-                    aria-label={`${copy.openDeliverableFolder}: ${file.name}`}
-                    title={copy.openDeliverableFolder}
-                    disabled={Boolean(revealingKey)}
-                    onClick={() => void reveal()}
-                  >
-                    {revealing ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : <FolderOpen className="size-4" aria-hidden />}
-                  </button>
-                ) : null}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      {error ? <p className="mt-2 rounded-md border border-warning/40 bg-warning/[0.07] px-3 py-2 text-sm" role="alert">{error}</p> : null}
-      {revealError ? <p className="mt-2 rounded-md border border-warning/40 bg-warning/[0.07] px-3 py-2 text-sm" role="alert">{revealError}</p> : null}
-    </>
-  );
-}
 
 export function WorkItemSummaryView({
   workItemId,
@@ -1665,8 +694,8 @@ export function WorkItemSummaryView({
       }) as { workItem: LocalWorkItem };
       setItem(prepared.workItem);
       setSyncNotice(language === "zh"
-        ? "重新执行所需的完成标准和 SOP 已建立。请先核对内容，再选择“让 AI 继续修改”启动新一轮执行；旧结果仍不能据此审核通过。"
-        : "The criteria and SOP for a new run are ready. Review them, then choose Ask AI to revise to start a new run. The old result still cannot be approved against this later contract.");
+        ? "重新执行所需的完成标准和检查步骤已建立。请先核对内容，再选择“让 AI 继续修改”启动新一轮执行；旧结果仍不能据此确认通过。"
+        : "The criteria and verification steps for a new run are ready. Review them, then choose Ask AI to revise to start a new run. The old result still cannot be approved against these later requirements.");
     } catch {
       setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
     } finally {
@@ -1740,8 +769,8 @@ export function WorkItemSummaryView({
       }) as { workItem: LocalWorkItem };
       setItem(prepared.workItem);
       setSyncNotice(language === "zh"
-        ? "执行方案已生成。请核对任务目标、完成标准和验证 SOP；确认无误后，再次选择“让 AI 开始”。"
-        : "The execution plan is ready. Review the goal, completion criteria, and verification SOP, then choose Let AI start again to confirm.");
+        ? "执行方案已生成。请核对任务目标、完成标准和检查步骤；确认无误后，再次选择“让 AI 开始”。"
+        : "The execution plan is ready. Review the goal, completion criteria, and verification steps, then choose Let AI start again to confirm.");
     } catch {
       setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
     } finally {
@@ -2081,7 +1110,7 @@ export function WorkItemSummaryView({
     if (actionPending) return;
     if (!executionContractReady) {
       setActionError(language === "zh"
-        ? "这次执行开始前没有确认完整的验收标准和 SOP，不能形成正式审核结论。请补全执行方案后重新运行。"
+        ? "这次执行开始前没有确认完整的完成标准和检查步骤，不能形成正式审核结论。请补全后重新运行。"
         : "This run did not start with confirmed acceptance criteria and a verification SOP, so it cannot produce a formal approval result. Complete the execution plan and rerun it.");
       return;
     }
@@ -2201,7 +1230,7 @@ export function WorkItemSummaryView({
         setItem(prepared.workItem);
         setRetryOpen(false);
         setSyncNotice(language === "zh"
-          ? "执行方案已生成但尚未重试。请先核对完成标准和 SOP，再次点击重试。"
+          ? "执行方案已生成但尚未重试。请先核对完成标准和检查步骤，再次点击重试。"
           : "The execution plan is ready, but the retry has not started. Review the criteria and SOP, then retry again.");
         return;
       }
@@ -2221,7 +1250,7 @@ export function WorkItemSummaryView({
     <div className="space-y-4" data-testid="work-item-summary-view">
       <header className="pr-8">
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span className="font-mono">{item.localRef}</span>
+          <span>{language === "zh" ? "任务编号" : "Task ID"}: <span className="font-mono">{item.localRef}</span></span>
           <Badge tone={status === "completed" ? "success" : ["needs_action", "blocked"].includes(status) ? "warning" : status === "ai_working" ? "running" : "neutral"}>
             {copy.status[status]}
           </Badge>
@@ -2305,7 +1334,7 @@ export function WorkItemSummaryView({
                   <p className="text-xs text-muted-foreground">{language === "zh" ? "计划验证方式" : "Planned verification"}</p>
                   <p className="mt-1 font-medium [overflow-wrap:anywhere]">{understandingContext.verificationCommand.length
                     ? understandingContext.verificationCommand.join(" ")
-                    : language === "zh" ? "将按任务的验收 SOP 验证" : "The task acceptance SOP will be used"}</p>
+                    : language === "zh" ? "将按任务的检查步骤验证" : "The task verification steps will be used"}</p>
                 </div>
               </div>
               {understandingContext.truncated || (understandingContext.redactions ?? 0) > 0 ? (
@@ -2387,14 +1416,15 @@ export function WorkItemSummaryView({
             <div className="min-w-0">
               <h4 className={`text-sm font-semibold ${readinessBlocked ? "text-destructive" : ""}`}>{readinessBlocked ? copy.readinessBlocked : copy.readinessWarning}</h4>
               <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-                {readiness.checks.filter((check) => check.status === (readinessBlocked ? "blocked" : "warn")).map((check) => (
-                  <li key={check.key}><span className="font-medium text-foreground">{check.label}:</span> {check.detail}</li>
-                ))}
+                {readiness.checks.filter((check) => check.status === (readinessBlocked ? "blocked" : "warn")).map((check) => {
+                  const readable = readableAutoRunReadinessCheck(check, language);
+                  return <li key={check.key}><span className="font-medium text-foreground">{readable.label}:</span> {readable.detail}</li>;
+                })}
               </ul>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button size="sm" variant="ghost" onClick={() => { setReadiness(null); setRefreshVersion((version) => version + 1); }}>{copy.readinessRetry}</Button>
-              <Button size="sm" variant="secondary" onClick={() => { if (onOpenSetup) onOpenSetup(readinessSetupSection(readiness)); else onOpenExpert("process"); }}>{copy.readinessFix}</Button>
+              <Button size="sm" variant="secondary" onClick={() => { if (onOpenSetup) onOpenSetup(readinessSetupSection(readiness)); else onOpenExpert("process"); }}>{readinessFixLabel(readiness, language)}</Button>
             </div>
           </div>
         </section>
@@ -2658,14 +1688,14 @@ export function WorkItemSummaryView({
           <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.reviewDecisionHint}</p>
           {!executionContractReady ? (
             <div className="mt-3 rounded-lg border border-warning/40 bg-warning/[0.08] px-3 py-2.5 text-sm" role="alert">
-              <p className="font-semibold">{language === "zh" ? "本次结果缺少执行前验收依据，暂不能审核通过" : "This result has no pre-execution acceptance basis and cannot be approved"}</p>
+              <p className="font-semibold">{language === "zh" ? "本次结果缺少事先确认的完成要求，暂不能确认通过" : "This result has no pre-confirmed completion requirements and cannot be approved"}</p>
               <p className="mt-1 leading-relaxed text-muted-foreground">
                 {executionContractDefined
                   ? language === "zh"
-                    ? "完成标准和 SOP 是在这次结果产生后才建立的，因此只能用于下一轮执行。请让 AI 重新执行；新结果才可按这份方案验收。"
+                    ? "完成标准和检查步骤是在这次结果产生后才建立的，因此只能用于下一轮执行。请让 AI 重新执行；新结果才可按这份要求确认。"
                     : "The criteria and SOP were established after this result, so they apply only to the next run. Rerun the task; only the new result can be reviewed against this plan."
                   : language === "zh"
-                    ? "验收标准和 SOP 必须在 AI 开始前确定。本次历史运行没有完整执行契约，请先建立方案并重新执行；系统不会在审核阶段倒推标准。"
+                    ? "完成标准和检查步骤必须在 AI 开始前确定。本次历史运行缺少完整要求，请先补全并重新执行；系统不会在确认结果时倒推标准。"
                     : "Acceptance criteria and the SOP must be confirmed before AI starts. This historical run has no complete execution contract; establish the plan and rerun. The system will not infer criteria during review."}
               </p>
               {!executionContractDefined ? <Button className="mt-2" size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void prepareReviewExecutionPlan()}>{language === "zh" ? "建立重新执行方案" : "Prepare rerun plan"}</Button> : null}
@@ -2737,16 +1767,16 @@ export function WorkItemSummaryView({
           <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{item.body?.trim() || copy.noGoal}</p>
         </section>
         <section className={`rounded-xl border p-4 ${executionContractReady ? "border-border" : "border-warning/35 bg-warning/[0.035]"}`}>
-          <div className="flex flex-wrap items-center gap-2"><CheckCircle2 className="size-4 text-primary" aria-hidden /><h4 className="text-sm font-semibold">{language === "zh" ? "执行与验收依据" : "Execution and acceptance basis"}</h4><Badge tone={executionContractReady ? "success" : "warning"}>{executionContractReady ? language === "zh" ? "执行前已确认" : "Confirmed before execution" : language === "zh" ? "尚未建立" : "Not established"}</Badge></div>
-          {item.acceptanceCriteriaSource === "body_unstructured" ? <p className="mt-2 text-xs leading-relaxed text-warning">{language === "zh" ? "系统在原任务正文中找到了验收标准，但本次运行开始前没有把它与 SOP 一起确认为执行契约。" : "Acceptance criteria were found in the original task body, but they were not confirmed together with an SOP before this run."}</p> : null}
+          <div className="flex flex-wrap items-center gap-2"><CheckCircle2 className="size-4 text-primary" aria-hidden /><h4 className="text-sm font-semibold">{language === "zh" ? "完成要求" : "Completion requirements"}</h4><Badge tone={executionContractReady ? "success" : "warning"}>{executionContractReady ? language === "zh" ? "AI 启动前已确认" : "Confirmed before AI starts" : language === "zh" ? "交给 AI 前待补充" : "Add before handing to AI"}</Badge></div>
+          {item.acceptanceCriteriaSource === "body_unstructured" ? <p className="mt-2 text-xs leading-relaxed text-warning">{language === "zh" ? "系统在原任务正文中找到了完成标准，但本次运行开始前没有与检查步骤一起确认。" : "Completion criteria were found in the original task body, but they were not confirmed together with verification steps before this run."}</p> : null}
           <p className="mt-3 text-xs font-medium text-muted-foreground">{copy.acceptance}</p>
           {reviewAcceptanceCriteria.length ? (
             <ul className="mt-2 space-y-1.5 text-sm">{reviewAcceptanceCriteria.map((criterion) => <li key={criterion} className="flex gap-2"><span aria-hidden>✓</span><span>{criterion}</span></li>)}</ul>
           ) : <p className="mt-2 text-sm text-muted-foreground">{copy.noAcceptance}</p>}
-          <p className="mt-4 text-xs font-medium text-muted-foreground">{language === "zh" ? "验收 SOP" : "Verification SOP"}</p>
+          <p className="mt-4 text-xs font-medium text-muted-foreground">{language === "zh" ? "检查步骤" : "Verification steps"}</p>
           {reviewVerificationSop.length ? (
             <ol className="mt-2 space-y-1.5 text-sm">{reviewVerificationSop.map((step, index) => <li key={`${index}-${step}`} className="flex gap-2"><span className="text-primary">{index + 1}.</span><span>{step}</span></li>)}</ol>
-          ) : <p className="mt-2 text-sm text-muted-foreground">{language === "zh" ? "尚未设置验收 SOP。AI 自动执行前必须先补全。" : "No verification SOP is set. Complete it before AI execution."}</p>}
+          ) : <p className="mt-2 text-sm text-muted-foreground">{language === "zh" ? "还没有检查步骤。仅保存任务时可以不填，交给 AI 前再补充。" : "No verification steps yet. They are optional when saving and required before handing the task to AI."}</p>}
         </section>
       </div>
 
@@ -2842,13 +1872,15 @@ export function WorkItemSummaryView({
             <div className="flex items-center gap-2">
               <FileText className="size-4 text-primary" aria-hidden />
               <h4 id={`work-item-materials-${item.id}`} className="text-sm font-semibold">{copy.referenceFiles}</h4>
-              <Badge tone="neutral">{item.inputAssets?.length ?? 0}</Badge>
+              <Badge tone="neutral">{(item.inputAssets?.length ?? 0) + (item.localContentRefs?.length ?? 0)}</Badge>
             </div>
             <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
               {status === "completed" ? copy.materialCompletedHint : materialChangesApplyOnRerun ? copy.materialRunningHint : copy.materialHint}
             </p>
           </div>
-          {status !== "completed" ? <TaskMaterialEditor item={item} onUpdated={(next, notice) => {
+          {status !== "completed" ? <div className="flex flex-wrap justify-end gap-2">
+            <Button size="sm" variant="secondary" onClick={() => onOpenSetup?.("localLibrary")}><Library aria-hidden />{language === "zh" ? "从资料库添加" : "Add from library"}</Button>
+            <TaskMaterialEditor item={item} onUpdated={(next, notice) => {
             const previousIds = new Set((item.inputAssets ?? []).map((asset) => asset.id).filter(Boolean));
             const addedIds = (next.inputAssets ?? []).map((asset) => asset.id).filter((id): id is string => Boolean(id) && !previousIds.has(id));
             setItem(next);
@@ -2856,7 +1888,8 @@ export function WorkItemSummaryView({
             setMaterialUndo(null);
             setMaterialAddUndo(addedIds.length ? { assetIds: addedIds } : null);
             window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-material-add", workItemId: next.id } }));
-          }} /> : <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => setReopenConfirmOpen(true)}>{copy.reopenForMaterials}</Button>}
+          }} />
+          </div> : <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => setReopenConfirmOpen(true)}>{copy.reopenForMaterials}</Button>}
         </div>
         {item.inputAssets?.length ? (
           <div className="mt-3 space-y-2">
@@ -2880,6 +1913,16 @@ export function WorkItemSummaryView({
             ))}
           </div>
         ) : null}
+        <TaskContentReferences
+          item={item}
+          readOnly={status === "completed"}
+          onUpdated={(next, notice) => {
+            setItem(next);
+            setMaterialNotice(notice);
+            setMaterialUndo(null);
+            setMaterialAddUndo(null);
+          }}
+        />
         {materialRevealError ? <p className="mt-2 rounded-md border border-warning/40 bg-warning/[0.07] px-3 py-2 text-sm" role="alert">{materialRevealError}</p> : null}
         {materialNotice ? (
           <div className="mt-2 flex items-start gap-2 rounded-lg border border-success/30 bg-success/[0.06] px-3 py-2 text-sm" role="status">

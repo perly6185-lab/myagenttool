@@ -42,6 +42,21 @@ afterEach(() => {
 });
 
 describe("HomeTaskComposer", () => {
+  it("keeps an inline modal creator expanded when no mobile-collapse controller is supplied", () => {
+    render(
+      <HomeTaskComposer
+        inline
+        projectId="prj_1"
+        onCreated={() => {}}
+        onOpenTask={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("textbox", { name: "Create a task" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Expand task creation" })).toBeNull();
+    expect(document.getElementById("home-task-composer-fields")?.classList.contains("hidden")).toBe(false);
+  });
+
   it("keeps the mobile inline creator collapsed until the user expands it", () => {
     const onMobileOpenChange = vi.fn();
     const view = render(
@@ -442,9 +457,10 @@ describe("HomeTaskComposer", () => {
     render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} onOpenSetup={onOpenSetup} />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Prepare a release note" } });
-    expect((await screen.findByRole("alert", { name: "Preflight" })).textContent).toContain("No default agent");
+    expect((await screen.findByRole("alert", { name: "Preflight" })).textContent).toContain("does not have an available task assistant");
+    expect(screen.queryByText(/No default agent/)).toBeNull();
     expect((screen.getByRole("button", { name: "Let AI handle it" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Open setup and fix" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose task assistant" }));
 
     expect(onOpenSetup).toHaveBeenCalledWith("autoRuns");
     expect(mocks.createWorkItem).not.toHaveBeenCalled();

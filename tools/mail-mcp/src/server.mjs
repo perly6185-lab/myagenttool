@@ -1,9 +1,11 @@
 import { fetch163ParsedMessage, with163Client, with163Inbox } from "./imap-163.mjs";
+import { archiveMailSource, unavailableMailArchive } from "./mail-archive.mjs";
 import { headerOf, messageRecordOf } from "./message.mjs";
 import { send163Mail } from "./send-163.mjs";
 import { boundedFolder, folderIdOf, sync163Mailbox } from "./sync-163.mjs";
+import { organize163Batch } from "./organize-163.mjs";
 
-export const TOOL_NAMES = ["mail_sync", "mail_list_unread", "mail_fetch", "mail_set_read", "mail_send"];
+export const TOOL_NAMES = ["mail_sync", "mail_list_unread", "mail_fetch", "mail_set_read", "mail_send", "mail_organize_batch"];
 
 const tools = [
   {
@@ -24,13 +26,18 @@ const tools = [
   },
   {
     name: "mail_fetch",
-    description: "Fetch one 163 Mail message by RFC822 Message-ID without changing Seen state.",
+    description: "Fetch one 163 Mail message by RFC822 Message-ID without changing Seen state and archive its exact RFC 822 source locally when capacity permits.",
     inputSchema: { type: "object", additionalProperties: false, required: ["messageId"], properties: { messageId: { type: "string", maxLength: 998 }, folderPath: { type: "string", maxLength: 998 } } },
   },
   {
     name: "mail_set_read",
     description: "Set the provider Seen state for one 163 Mail message.",
     inputSchema: { type: "object", additionalProperties: false, required: ["messageId", "folderPath", "read"], properties: { messageId: { type: "string", maxLength: 998 }, folderPath: { type: "string", maxLength: 998 }, read: { type: "boolean" } } },
+  },
+  {
+    name: "mail_organize_batch",
+    description: "Create one reviewed organization folder if needed and move at most 50 server-selected messages after explicit approval.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["messages"], properties: { destinationFolderPath: { type: ["string", "null"], maxLength: 998 }, destinationName: { type: ["string", "null"], enum: ["Subscriptions", "Notifications", null] }, messages: { type: "array", minItems: 1, maxItems: 50, items: { type: "object", additionalProperties: false, required: ["messageId", "sourceFolderPath"], properties: { messageId: { type: "string", maxLength: 998 }, sourceFolderPath: { type: "string", maxLength: 998 } } } } } },
   },
   {
     name: "mail_send",
@@ -79,7 +86,9 @@ async function handle(message) {
           ? await send163Mail(args)
         : name === "mail_set_read"
           ? await setRead(args)
-          : await listUnread(args);
+          : name === "mail_organize_batch"
+            ? await organize163Batch(args)
+            : await listUnread(args);
     send({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: JSON.stringify(result) }] } });
   } catch (error) {
     const text = publicError(error);
@@ -103,8 +112,30 @@ async function fetchMessage(args) {
   const messageId = String(args.messageId ?? "").trim();
   if (!messageId) throw new Error("messageId is required");
   const folderPath = boundedFolder(args.folderPath ?? "INBOX");
-  const { message, parsed } = await fetch163ParsedMessage(messageId, folderPath);
-  return { ...messageRecordOf(message, parsed), folderId: folderIdOf(folderPath), folderPath };
+  const { message, parsed, identity } = await fetch163ParsedMessage(messageId, folderPath);
+  const record = messageRecordOf(message, parsed);
+  let archive;
+  try {
+    archive = archiveMailSource({
+      account: identity?.username,
+      messageId,
+      folderPath,
+      source: message.source,
+      attachments: record?.attachments,
+    });
+  } catch (error) {
+    archive = unavailableMailArchive(error);
+  }
+  return {
+    ...record,
+    archive,
+    attachments: (record?.attachments ?? []).map((attachment) => ({
+      ...attachment,
+      localAvailable: archive.availability === "available",
+    })),
+    folderId: folderIdOf(folderPath),
+    folderPath,
+  };
 }
 
 async function setRead(args) {

@@ -3,6 +3,7 @@ import type { SectionKey } from "@/store/ui-store";
 
 const DashboardView = lazy(() => import("@/features/dashboard/dashboard-view").then((m) => ({ default: m.DashboardView })));
 const MailView = lazy(() => import("@/features/mail/mail-view").then((m) => ({ default: m.MailView })));
+const LocalLibraryView = lazy(() => import("@/features/local-content/local-library-view").then((m) => ({ default: m.LocalLibraryView })));
 const WorkBoardView = lazy(() => import("@/features/work-board/work-board-view").then((m) => ({ default: m.WorkBoardView })));
 const WorkspaceView = lazy(() => import("@/features/workspace/workspace-view").then((m) => ({ default: m.WorkspaceView })));
 const DocumentsView = lazy(() => import("@/features/documents/documents-view").then((m) => ({ default: m.DocumentsView })));
@@ -29,6 +30,7 @@ const ToolsView = lazy(() => import("@/features/tools/tools-view").then((m) => (
 const ReviewView = lazy(() => import("@/features/review/review-view").then((m) => ({ default: m.ReviewView })));
 const ApplicationsView = lazy(() => import("@/features/applications/applications-view").then((m) => ({ default: m.ApplicationsView })));
 const ChannelsView = lazy(() => import("@/features/channels/channels-view").then((m) => ({ default: m.ChannelsView })));
+const SessionsView = lazy(() => import("@/features/sessions/sessions-view").then((m) => ({ default: m.SessionsView })));
 const EconomicsView = lazy(() => import("@/features/economics/economics-view").then((m) => ({ default: m.EconomicsView })));
 const AuditView = lazy(() => import("@/features/audit/audit-view").then((m) => ({ default: m.AuditView })));
 const SettingsHomeView = lazy(() => import("@/features/settings/settings-home-view").then((m) => ({ default: m.SettingsHomeView })));
@@ -39,6 +41,7 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   settings: SettingsHomeView,
   dashboard: DashboardView,
   mail: MailView,
+  localLibrary: LocalLibraryView,
   me: MeView,
   workBoard: WorkBoardView,
   workspace: WorkspaceView,
@@ -66,6 +69,7 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   review: ReviewView,
   applications: ApplicationsView,
   channels: ChannelsView,
+  sessions: SessionsView,
   economics: EconomicsView,
   audit: AuditView,
 };

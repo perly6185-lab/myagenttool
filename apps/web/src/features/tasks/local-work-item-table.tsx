@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import type { ReactNode } from "react";
 import { FolderKanban } from "lucide-react";
 import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +15,7 @@ type LocalWorkItemTableProps = {
   emptyHint: string;
   onOpen: (id: string) => void;
   simple?: boolean;
+  emptyAction?: ReactNode;
 };
 
 const SIMPLE_STATUS_TONE: Record<WorkItemUserStatus, Parameters<typeof Badge>[0]["tone"]> = {
@@ -27,7 +29,7 @@ const SIMPLE_STATUS_TONE: Record<WorkItemUserStatus, Parameters<typeof Badge>[0]
   completed: "success",
 };
 
-export function LocalWorkItemTable({ items, projects, emptyTitle, emptyHint, onOpen, simple = false }: LocalWorkItemTableProps) {
+export function LocalWorkItemTable({ items, projects, emptyTitle, emptyHint, onOpen, simple = false, emptyAction }: LocalWorkItemTableProps) {
   const { t, i18n } = useAppTranslation();
   const projectNames = useMemo(() => new Map(projects.map((project) => [project.id, project.name])), [projects]);
   const today = new Date().toISOString().slice(0, 10);
@@ -52,7 +54,7 @@ export function LocalWorkItemTable({ items, projects, emptyTitle, emptyHint, onO
     completed: { status: "Completed", action: "View result" },
   };
 
-  if (!items.length) return <EmptyState title={emptyTitle} hint={emptyHint} />;
+  if (!items.length) return <EmptyState title={emptyTitle} hint={emptyHint} action={emptyAction} />;
 
   if (simple) {
     return (

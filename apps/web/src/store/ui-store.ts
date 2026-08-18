@@ -20,6 +20,7 @@ import {
 export type SectionKey =
   | "dashboard"
   | "mail"
+  | "localLibrary"
   | "me"
   | "workBoard"
   | "workspace"
@@ -47,6 +48,7 @@ export type SectionKey =
   | "review"
   | "applications"
   | "channels"
+  | "sessions"
   | "economics"
   | "audit"
   | "settings";
@@ -189,6 +191,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "settings",
   "dashboard",
   "mail",
+  "localLibrary",
   "me",
   "workBoard",
   "workspace",
@@ -216,6 +219,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "review",
   "applications",
   "channels",
+  "sessions",
   "economics",
   "audit",
 ];

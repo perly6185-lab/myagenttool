@@ -1,3 +1,5 @@
+import type { WorkItemContentReference } from "@/features/local-content/local-content-types";
+
 export type GithubItem = {
   type: "issue" | "pr";
   number: number;
@@ -105,6 +107,7 @@ export type LocalWorkItem = {
     evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string; sourceAutoRunId?: string | null;
   }[];
   inputAssets?: WorkItemAssetRef[];
+  localContentRefs?: WorkItemContentReference[];
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
   requiredCapabilities?: string[];

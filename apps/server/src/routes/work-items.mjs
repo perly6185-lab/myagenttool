@@ -79,6 +79,8 @@ export async function handleWorkItemRoutes({
   addMaterials,
   removeMaterial,
   restoreMaterial,
+  addContentReference,
+  removeContentReference,
 }) {
   if (url.pathname === "/api/work-item-auto-scheduler" && req.method === "GET") {
     sendJson(res, 200, previewAutoScheduler({ teamId: actor?.teamId ?? null }));
@@ -581,6 +583,25 @@ export async function handleWorkItemRoutes({
   const materialsMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/materials(?:\/([^/]+))?$/);
   if (materialsMatch && req.method === "POST" && !materialsMatch[2]) {
     const result = addMaterials({ workItemId: decodeURIComponent(materialsMatch[1]), ...(await readJson(req)) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const contentReferenceMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/content-references(?:\/([^/]+))?$/);
+  if (contentReferenceMatch && req.method === "POST" && !contentReferenceMatch[2]) {
+    const result = await addContentReference({
+      workItemId: decodeURIComponent(contentReferenceMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (contentReferenceMatch && req.method === "DELETE" && contentReferenceMatch[2]) {
+    const result = removeContentReference({
+      workItemId: decodeURIComponent(contentReferenceMatch[1]),
+      referenceId: decodeURIComponent(contentReferenceMatch[2]),
+      ...(await readJson(req)),
+    }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }

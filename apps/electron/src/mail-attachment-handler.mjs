@@ -13,6 +13,7 @@ export function registerMailAttachmentHandler({ ipcMain, dialog, getWindow, read
         messageId: bounded(input?.messageId, 998),
         folderPath: bounded(input?.folderPath ?? "INBOX", 998),
         attachmentId: bounded(input?.attachmentId, 100),
+        archiveRef: archiveRef(input?.archiveRef),
         purpose: "preview",
       });
       const { content: _content, ...publicPreview } = preview;
@@ -28,6 +29,7 @@ export function registerMailAttachmentHandler({ ipcMain, dialog, getWindow, read
         messageId: bounded(input?.messageId, 998),
         folderPath: bounded(input?.folderPath ?? "INBOX", 998),
         attachmentId: bounded(input?.attachmentId, 100),
+        archiveRef: archiveRef(input?.archiveRef),
         purpose: "download",
       });
       const suggestedName = safeFilename(attachment.name);
@@ -50,6 +52,7 @@ export function registerMailAttachmentHandler({ ipcMain, dialog, getWindow, read
         messageId: bounded(input?.messageId, 998),
         folderPath: bounded(input?.folderPath ?? "INBOX", 998),
         attachmentId: bounded(input?.attachmentId, 100),
+        archiveRef: archiveRef(input?.archiveRef),
         purpose: "download",
       });
       const bytes = attachment.content.buffer.slice(
@@ -75,6 +78,11 @@ export function registerMailAttachmentHandler({ ipcMain, dialog, getWindow, read
 
 function bounded(value, max) {
   return String(value ?? "").trim().slice(0, max);
+}
+
+function archiveRef(value) {
+  const ref = bounded(value, 100);
+  return /^mailarc_[a-f0-9]{24}_[a-f0-9]{40}$/.test(ref) ? ref : null;
 }
 
 function safeFilename(value) {

@@ -31,14 +31,36 @@ export function Modal({
 }) {
   const { t } = useAppTranslation();
   const dialogRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const restoreFocusIdentityRef = useRef<{ tagName: string; id: string; ariaLabel: string; text: string } | null>(null);
+  // Capture during render, before a descendant's `autoFocus` runs in the commit
+  // phase. Waiting for an effect can otherwise remember the first form field
+  // inside the dialog instead of the control that opened it.
+  if (open && document.activeElement instanceof HTMLElement && !dialogRef.current?.contains(document.activeElement)) {
+    restoreFocusRef.current = document.activeElement;
+    restoreFocusIdentityRef.current = {
+      tagName: document.activeElement.tagName,
+      id: document.activeElement.id,
+      ariaLabel: document.activeElement.getAttribute("aria-label") ?? "",
+      text: document.activeElement.textContent?.replace(/\s+/g, " ").trim() ?? "",
+    };
+  }
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const titleId = useId();
   const descriptionId = useId();
   useEffect(() => {
     if (!open) return;
-    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dialog = dialogRef.current;
+    if (document.activeElement instanceof HTMLElement && !dialog?.contains(document.activeElement)) {
+      restoreFocusRef.current = document.activeElement;
+      restoreFocusIdentityRef.current = {
+        tagName: document.activeElement.tagName,
+        id: document.activeElement.id,
+        ariaLabel: document.activeElement.getAttribute("aria-label") ?? "",
+        text: document.activeElement.textContent?.replace(/\s+/g, " ").trim() ?? "",
+      };
+    }
     const focusable = () => [...(dialog?.querySelectorAll<HTMLElement>(
       'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
     ) ?? [])];
@@ -68,7 +90,21 @@ export function Modal({
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
-      previouslyFocused?.focus();
+      const target = restoreFocusRef.current;
+      const identity = restoreFocusIdentityRef.current;
+      queueMicrotask(() => {
+        if (target?.isConnected) {
+          target.focus();
+          return;
+        }
+        if (!identity) return;
+        const replacement = [...document.querySelectorAll<HTMLElement>(identity.tagName)].find((node) =>
+          (identity.id && node.id === identity.id)
+          || (identity.ariaLabel && node.getAttribute("aria-label") === identity.ariaLabel)
+          || (identity.text && node.textContent?.replace(/\s+/g, " ").trim() === identity.text),
+        );
+        replacement?.focus();
+      });
     };
   }, [closeDisabled, open]);
 

@@ -1528,6 +1528,42 @@ test("persistence restores the auto-run brakes across restart (kill switch + ope
   }
 });
 
+test("persistence restores channel drafts, operation mode, and queued task threads", () => {
+  const root = join(tmpdir(), `myagenttool-channel-persistence-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    first.state.channels.push({
+      id: "chn_restart", provider: "wechat_ilink", name: "微信任务", status: "enabled",
+      ownerTeamId: "team_local", operationMode: "personal", taskAutoRoute: true,
+      taskProjectId: first.defaultProject.id, capabilityAllowlist: [], createdAt: now(), updatedAt: now(),
+    });
+    first.state.channelIntakeGroups.push({
+      id: "cig_restart", channelId: "chn_restart", conversationId: "chcv_restart",
+      eventIds: ["chev_restart"], messages: [{ eventId: "chev_restart", content: "继续整理" }],
+      status: "collecting", dueAt: "2026-07-15T00:00:05.000Z",
+    });
+    first.state.channelTaskThreads.push({
+      id: "cth_restart", shortRef: "T-RESTART", channelId: "chn_restart", conversationId: "chcv_restart",
+      sourceEventIds: ["chev_restart"], messages: [{ eventId: "chev_restart", content: "继续整理" }],
+      summary: "继续整理", status: "queued", queueAheadCount: 0, queuePosition: 1,
+      createdAt: now(), updatedAt: now(),
+    });
+
+    createPersistenceRuntime({ state: first.state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject: first.defaultProject, sameProjectPath }).savePersistentState();
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    createPersistenceRuntime({ state: second.state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject: second.defaultProject, sameProjectPath }).restorePersistentState();
+    assert.equal(second.state.channels.find((channel) => channel.id === "chn_restart")?.operationMode, "personal");
+    assert.equal(second.state.channelIntakeGroups.find((group) => group.id === "cig_restart")?.status, "collecting");
+    assert.equal(second.state.channelTaskThreads.find((thread) => thread.id === "cth_restart")?.queuePosition, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("normalizeLoadedState: shared boot normalization (SQLite hydrate parity with the JSON restore)", () => {
   const dir = mkdtempSync(join(tmpdir(), "normalize-loaded-"));
   try {
