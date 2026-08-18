@@ -348,12 +348,12 @@ describe("TaskView local work items", () => {
     })));
   });
 
-  it("offers a new-task action directly in the empty ordinary board", async () => {
+  it("keeps one unambiguous new-task action on the empty ordinary board", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
     render(<TaskView localOnly />);
 
     await screen.findByText("No tasks yet");
-    expect(screen.getAllByRole("button", { name: /New task/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /New task/i })).toHaveLength(1);
   });
 
   it("asks before discarding an unsaved ordinary task", async () => {

@@ -522,7 +522,7 @@ test("shows all ten synthetic cases in the Chinese mobile batch UI", async ({ pa
   await expect(batch.getByRole("listitem")).toHaveCount(10);
   await expect(batch.getByRole("button", { name: "打开下一项" })).toBeVisible();
   await batch.getByRole("button", { name: "打开下一项" }).click();
-  await expect(page.getByRole("dialog", { name: "本地 Issue 详情" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "任务详情" })).toBeVisible();
   await page.keyboard.press("Escape");
   await testInfo.attach("v1.5-ten-case-mobile-zh", {
     body: await page.screenshot({ fullPage: true }),
@@ -665,10 +665,10 @@ test("turns a recognized daily-work file into one confirmed local Issue", async 
   await expect(page.getByLabel("协助级别")).toHaveValue("assist");
   page.once("dialog", (dialog) => dialog.accept());
   await suggestion.getByRole("button", { name: "确认并创建本地 Issue" }).click();
-  await expect(page.getByRole("dialog", { name: "本地 Issue 详情" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "任务详情" })).toBeVisible();
   await expect(page.getByText(/核对询价信息/).first()).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog", { name: "本地 Issue 详情" })).toBeHidden();
+  await expect(page.getByRole("dialog", { name: "任务详情" })).toBeHidden();
 });
 
 test("shows the ten-case batch and binds one completed UI journey to pilot evidence", async ({ page }, testInfo) => {

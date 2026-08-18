@@ -930,7 +930,6 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                 emptyTitle={t("tasks.noLocalIssues")}
                 emptyHint={t("tasks.noLocalMatches")}
                 onOpen={setSelectedLocalId}
-                emptyAction={<Button size="sm" onClick={() => setCreateLocalOpen(true)}><Plus className="mr-1 size-4" />{t("tasks.newLocal")}</Button>}
               />
             )}
             {localNextCursor && !localLoadError ? (
