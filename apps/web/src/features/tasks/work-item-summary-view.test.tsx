@@ -175,7 +175,7 @@ describe("work item summary presentation", () => {
     const template = await screen.findByTestId("work-item-template-binding");
     expect(template.textContent).toContain("How this task will produce its result");
     expect(template.textContent).toContain("Selected from the result");
-    expect(template.textContent).toContain("Customer quotation");
+    expect(template.textContent).toContain("Basis: a previously confirmed approach");
     expect(template.textContent).toContain("Quotation workbook");
     expect(template.textContent).toContain("The requested result matches a quotation workbook");
     expect(screen.queryByRole("combobox", { name: /template/i })).toBeNull();
@@ -219,10 +219,10 @@ describe("work item summary presentation", () => {
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     const mode = await screen.findByTestId("work-mode-summary");
-    expect(mode.textContent).toContain("Work mode");
+    expect(mode.textContent).toContain("How I’ll handle this");
     expect(mode.textContent).toContain("订单跟进");
     expect(mode.textContent).toContain("订单.xlsx");
-    expect(within(mode).getByText("View professional trace").closest("details")?.open).toBe(false);
+    expect(within(mode).getByText("View supporting details").closest("details")?.open).toBe(false);
   });
 
   it("lets an ordinary user correct an unstarted task by choosing the desired result", async () => {
@@ -321,7 +321,7 @@ describe("work item summary presentation", () => {
     const template = await screen.findByTestId("work-item-template-binding");
     expect(template.textContent).toContain("Learned from your correction");
     expect(template.textContent).toContain("similar to one you corrected before");
-    expect(template.textContent).toContain("My templates under Learned choices");
+    expect(template.textContent).toContain("remembered choice in settings");
   });
 
   it("turns a completed result into a reusable task or follow-up draft", async () => {

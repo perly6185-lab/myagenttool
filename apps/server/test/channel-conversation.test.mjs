@@ -363,8 +363,8 @@ test("progress for a data mutation explains the actual blocking step", () => {
   harness.state.channelTaskThreads.push(thread);
   conversation.activeTaskThreadId = thread.id;
   const result = harness.receive("进度").dispatched;
-  assert.match(result.reply, /超出了当前任务模板的允许范围/);
-  assert.match(result.reply, /当前版本只支持预览/);
+  assert.match(result.reply, /超出了当前处理范围/);
+  assert.match(result.reply, /不会直接改原文件/);
   assert.doesNotMatch(result.reply, /等待任务路由确认/);
 });
 
@@ -468,7 +468,7 @@ test("combined external-risk and file-mutation previews do not promise an unavai
   await new Promise((resolve) => setTimeout(resolve, 10));
   const confirmed = await harness.receive("确认").dispatched;
   const reply = confirmed.reply ?? harness.replies.at(-1)?.content ?? "";
-  assert.match(reply, /不会直接修改源文件/);
+  assert.match(reply, /不会直接修改原文件/);
   assert.doesNotMatch(reply, /确认无误回复“确认执行”/);
 });
 

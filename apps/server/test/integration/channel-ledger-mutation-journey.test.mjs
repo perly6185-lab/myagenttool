@@ -100,7 +100,7 @@ test("P4.10 personal Channel previews, confirms, commits, and audits one CSV row
   });
   assert.equal(task.ok, true);
   const taskEvent = state.channelEvents.find((event) => event.id === task.eventId);
-  assert.match(taskEvent.replyText, /安全写回预览/);
+  assert.match(taskEvent.replyText, /文件修改预览/);
   const workItem = state.workItems.find((item) => item.channelOrigin?.messageId === task.eventId);
   assert.ok(workItem);
   assert.ok(workItem.channelTaskContract.ledgerMutationPreview);
@@ -115,7 +115,7 @@ test("P4.10 personal Channel previews, confirms, commits, and audits one CSV row
   });
   assert.equal(confirmation.ok, true);
   const confirmationEvent = state.channelEvents.find((event) => event.id === confirmation.eventId);
-  assert.match(confirmationEvent.replyText, /已完成安全写回/);
+  assert.match(confirmationEvent.replyText, /已完成文件修改/);
   assert.equal(state.channelTaskThreads.at(-1).status, "succeeded");
   assert.equal(state.channelTaskRequests.at(-1).status, "completed");
   assert.equal(state.ledgerMutationAudits.length, 1);

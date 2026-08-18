@@ -154,7 +154,7 @@ test("composed iLink journey: poll → import → channel reply queue → provid
     content: "确认执行",
   });
   const staleConfirmEvent = state.channelEvents.find((event) => event.id === staleConfirm.eventId);
-  assert.match(staleConfirmEvent.replyText, /对象.*变化/);
+  assert.match(staleConfirmEvent.replyText, /联系人、账户、文件或发布目标.*变化/);
   assert.equal(state.channelTaskRequests.find((request) => request.workItemId === highRiskWorkItem.id).status, "pending");
 
   const financialImported = await deps.importChannelEvent({
@@ -298,8 +298,9 @@ test("composed iLink journey: poll → import → channel reply queue → provid
   assert.equal(mutationWorkItem.channelTaskContract.dataMutationPreview.status, "needs_review");
   assert.equal(mutationWorkItem.channelTaskContract.executionPreview.previewReady, false);
   assert.match(mutationEvent.replyText, /修改 CSV\/Excel/);
-  assert.match(mutationEvent.replyText, /如何定位记录/);
-  assert.match(mutationEvent.replyText, /当前版本只支持预览/);
+  assert.match(mutationEvent.replyText, /哪几条记录/);
+  assert.match(mutationEvent.replyText, /不会直接改原文件/);
+  assert.doesNotMatch(mutationEvent.replyText, /模板|数据计划|Ledger|安全写回/);
   assert.equal(state.channelTaskRequests.find((request) => request.workItemId === mutationWorkItem.id).status, "pending");
   deps.stopIlink();
 });

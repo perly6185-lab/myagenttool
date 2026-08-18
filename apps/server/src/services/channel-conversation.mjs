@@ -238,12 +238,12 @@ export function createChannelConversationService({
         : thread?.waitingFor === "channel_confirmation"
           ? "任务已记录但尚未执行，回复“确认执行”开始，回复“取消”放弃"
         : thread?.waitingFor === "data_sources"
-          ? "还缺少任务所需的数据文件，直接上传或说明使用哪个文件"
+          ? "还缺少处理所需的资料，直接上传或说明使用哪个文件"
         : thread?.waitingFor === "data_review"
-          ? "数据已找到但关联结果待复核，请补充或确认关联方式"
+          ? "资料已找到，但有几条记录还对不上，请补充或确认对应关系"
         : thread?.waitingFor === "data_mutation"
-          ? "这是批量修改文件的任务，请先明确文件、记录范围、字段和值；当前版本只生成预览并留痕，不会直接修改源文件"
-        : "等待任务路由确认后开始执行",
+          ? "这是批量修改文件的任务，请先明确文件、记录范围和修改内容；我会先给你看修改预览"
+        : "正在整理执行安排，完成后会自动开始",
       queued: "等待前面的任务完成，系统会自动开始",
       running: "等待执行完成，系统会自动通知",
       waiting_user: "请直接回复需要补充的信息",
@@ -475,9 +475,9 @@ export function createChannelConversationService({
     const ahead = Number(thread?.queueAheadCount ?? 0);
     const workMode = thread?.workMode;
     const modeHint = workMode?.state === "matched" && workMode.name
-      ? `我会按“${String(workMode.name).slice(0, 80)}”的方式处理${workMode.expectedOutput ? `，目标是得到“${String(workMode.expectedOutput).slice(0, 120)}”` : ""}。\n`
+      ? `我理解为：${String(workMode.name).slice(0, 80)}${workMode.expectedOutput ? `，最后给你“${String(workMode.expectedOutput).slice(0, 120)}”` : ""}。\n`
       : workMode?.state === "needs_confirmation"
-        ? "我发现有几种可能的处理方式，先等你确认后再开始。\n"
+        ? "我发现这件事有几种处理办法，先等你确认后再开始。\n"
         : "";
     return ahead > 0
       ? `${modeHint}任务已收录，前面还有 ${ahead} 个任务。前面的任务完成后会自动开始，你不需要重复发送。`
@@ -493,12 +493,12 @@ export function createChannelConversationService({
           ? `字段缺失：${relation.missingFields.join("、")}`
           : `有 ${relation.unmatchedRows ?? 0} 条记录未匹配`)
         .slice(0, 5);
-      return `数据文件已找到，但关联结果还需要确认：${issues.join("；") || "请检查关联字段"}。我不会直接猜测，请补充或修正后再继续。`;
+      return `我找到相关资料了，但其中 ${issues.join("；") || "有几条记录还对不上"}。我不会直接猜测，请补充或修正后再继续。`;
     }
     if (dataPlan.status === "ready") {
       const sources = (dataPlan.sources ?? []).map((source) =>
         `${source.fileName ?? "本地文件"}${source.revision != null ? `（第${source.revision}版）` : ""}`);
-      return sources.length ? `数据依据：${sources.join("、")}。` : "数据依据已准备好。";
+      return sources.length ? `我会参考：${sources.join("、")}。` : "需要的资料已经准备好。";
     }
     const missing = (dataPlan.requirements ?? [])
       .filter((requirement) => requirement.required && requirement.state !== "ready")
@@ -506,7 +506,7 @@ export function createChannelConversationService({
         ? `${requirement.label}（有多个来源，请指定一个）`
         : requirement.label)
       .slice(0, 8);
-    return `开始前还需要数据依据：${missing.join("、") || "请补充或选择本地数据文件"}。请直接上传文件或说明使用哪一个文件，我会自动重新整理。`;
+    return `开始前还需要：${missing.join("、") || "相关资料"}。请直接上传文件或告诉我使用哪一个文件，我会自动重新整理。`;
   }
 
   function dataMutationReply(dataMutationPreview, dataMutationBinding = null, ledgerMutationPreview = null) {
@@ -518,30 +518,30 @@ export function createChannelConversationService({
         const children = ledgerMutationPreview.children ?? [];
         if (ledgerMutationPreview.state === "rolled_back") {
           return [
-            "这次批量写回没有保留任何修改，系统已安全回退到处理前状态。",
-            "请检查失败原因后重新整理，系统会生成一份新的预览，不会重复误写。",
+            "这次批量修改没有保留任何变化，系统已恢复到处理前的状态。",
+            "请检查失败原因后重新描述，我会重新整理，不会重复误改。",
           ].join("\n");
         }
         if (ledgerMutationPreview.state === "needs_attention") {
           return [
-            "批量写回暂时停止：处理期间检测到文件被其他程序修改。",
-            "系统没有覆盖这份新内容，也没有继续猜测恢复。请先在桌面端检查文件，再重新生成预览或联系人工处理。",
+            "批量修改暂时停止：处理期间检测到文件被其他程序修改。",
+            "系统没有覆盖新内容，也没有继续猜测。请先检查文件，再重新描述或联系人工处理。",
           ].join("\n");
         }
         if (ledgerMutationPreview.state === "committing") {
-          return "批量写回正在恢复上次处理中断的进度，已完成的记录不会重复写入，请稍后查询进度。";
+          return "批量修改正在恢复上次中断的进度，已完成的记录不会重复修改，请稍后查询进度。";
         }
         const waiting = ledgerMutationPreview.state === "waiting" || ledgerMutationPreview.state === "partial";
         const fields = [...new Set(children.flatMap((child) =>
           (child.changedCells ?? []).map((cell) => cell.field).filter(Boolean)))].slice(0, 12);
         return [
-          "已识别为多记录/多文件变更，安全写回批次预览如下：",
+          "文件修改预览：\n我准备修改多份文件中的多条记录：",
           files.length ? `文件：${files.join("、")}` : "文件：已按批次绑定",
           `预计影响：${ledgerMutationPreview.targetCount ?? files.length} 个文件、${ledgerMutationPreview.operationCount ?? children.length} 条记录`,
-          fields.length ? `字段：${fields.join("、")}` : "字段：已按记录分别生成 diff",
+          fields.length ? `修改内容：${fields.join("、")}` : "修改内容：已逐条列出变化",
           waiting
-            ? "批次中有操作正在排队或部分完成；系统会保留已完成项和剩余项，不能重复误写。"
-            : "回复“确认执行”后按文件队列写回；回复“取消”放弃。",
+            ? "其中有部分正在排队或已经完成；系统会保留进度，不会重复修改。"
+            : "回复“确认执行”后开始修改；回复“取消”放弃。",
         ].join("\n");
       }
       const changed = (ledgerMutationPreview.changedCells ?? [])
@@ -550,39 +550,48 @@ export function createChannelConversationService({
       const queued = ledgerMutationPreview.state === "waiting"
         || ledgerMutationPreview.queue?.state === "waiting";
       return [
-        "已识别为单条记录变更，安全写回预览如下：",
+        "文件修改预览：\n我准备修改一条记录：",
         files.length ? `文件：${files.join("、")}` : "文件：已绑定",
-        `记录：第${ledgerMutationPreview.rowNumber ?? "?"}行（已由唯一编号定位）`,
-        changed.length ? `变更：${changed.join("；")}` : "变更：没有检测到实际变化",
+        `记录：第${ledgerMutationPreview.rowNumber ?? "?"}行（已根据编号定位）`,
+        changed.length ? `修改内容：${changed.join("；")}` : "修改内容：没有检测到实际变化",
         queued
-          ? `该文件前面还有 ${ledgerMutationPreview.queue?.position ?? "若干"} 个写回操作，已排队等待；确认后会在轮到时执行。`
-          : "这是当前文件版本的安全预览。回复“确认执行”后才会写回；回复“取消”放弃。",
+          ? `这份文件前面还有 ${ledgerMutationPreview.queue?.position ?? "若干"} 项修改，已排队等待；轮到后会继续。`
+          : "这是按当前文件整理的修改预览。回复“确认执行”后才会修改；回复“取消”放弃。",
       ].join("\n");
     }
     if (dataMutationPreview.status === "ready") {
       const fields = (dataMutationPreview.fieldChanges ?? []).map((change) => change.field).filter(Boolean);
       return [
-        "变更范围已绑定：",
+        "我已整理好要修改的范围：",
         files.length ? `文件：${files.join("、")}` : "文件：已绑定",
-        `预计影响：${dataMutationPreview.estimatedAffectedRows ?? 0} 条记录${fields.length ? `；字段：${fields.join("、")}` : ""}`,
+        `预计影响：${dataMutationPreview.estimatedAffectedRows ?? 0} 条记录${fields.length ? `；修改内容：${fields.join("、")}` : ""}`,
         dataMutationBinding
-          ? `安全写回规则已绑定（配置版本 ${dataMutationBinding.ledgerDefinitionRevision ?? "未知"}）。`
-          : "安全写回规则尚未绑定。",
-        "当前版本还没有启用安全写回执行器，因此不会直接修改源文件；范围和版本已保留，可在执行器启用后继续。",
+          ? "系统已准备好安全修改方案。"
+          : "还需要先检查这份文件是否允许修改。",
+        "当前还不会直接修改原文件；确认内容无误后才会继续。",
       ].join("\n");
     }
-    const requiredFields = [...new Set(dataMutationPreview.requiredFields ?? [])].filter(Boolean).slice(0, 6);
+    const userRequiredField = (value) => String(value ?? "")
+      .replaceAll("任务模板尚未声明允许修改的文件、定位字段和可修改字段", "还需要先确定允许修改的文件、定位方式和修改内容")
+      .replaceAll("当前任务模板未允许多记录或多文件变更", "当前处理范围不允许一次修改多条记录或多份文件")
+      .replaceAll("当前任务模板不允许多个文件同时变更", "当前处理范围不允许一次修改多份文件")
+      .replaceAll("任务模板", "当前处理范围")
+      .replaceAll("当前当前处理范围", "当前处理范围");
+    const requiredFields = [...new Set(dataMutationPreview.requiredFields ?? [])]
+      .filter(Boolean)
+      .map(userRequiredField)
+      .slice(0, 6);
     const policyReasons = requiredFields.filter((field) => /模板|不允许|边界|超过|字段变更|预计影响条数/.test(field));
     const lines = [
       dataMutationPreview.status === "needs_sources"
         ? "这项要求涉及修改 CSV/Excel，但当前还没有可用的数据文件。"
         : dataMutationPreview.status === "policy_blocked"
-          ? `这项要求超出了当前任务模板的允许范围${policyReasons.length ? `：${policyReasons.join("；")}` : ""}。`
-          : "这项要求涉及修改 CSV/Excel，我先暂停写回，避免误改多条记录。",
+          ? `这项要求超出了当前处理范围${policyReasons.length ? `：${policyReasons.join("；")}` : ""}。`
+          : "这项要求涉及修改 CSV/Excel，我先暂停，避免误改多条记录。",
       files.length ? `候选文件：${files.join("、")}` : "请上传或选择要修改的文件。",
-      "请补充：修改哪几个文件、如何定位记录（编号或筛选条件）、修改哪些字段及新值，以及是否允许修改全部匹配记录。",
+      "请补充：要修改哪几个文件、哪几条记录、改成什么内容，以及是否允许修改全部匹配记录。",
       requiredFields.length ? `还需要确认：${requiredFields.join("；")}` : null,
-      "补充后我会继续生成变更范围预览。当前版本只支持预览和留痕，不会直接修改源文件。",
+      "补充后我会继续整理修改预览，不会直接改原文件。",
     ].filter(Boolean);
     return lines.join("\n");
   }
@@ -591,7 +600,7 @@ export function createChannelConversationService({
     if (!preview) return null;
     const summary = preview.summary ?? {};
     const lines = [
-      "对账已完成（只读核对，原始文件未修改）：",
+      "对账已完成（原始文件未修改）：",
       `应收 ${summary.receivableCount ?? 0} 条，银行流水 ${summary.transactionCount ?? 0} 条。`,
       `已匹配 ${summary.matchedCount ?? 0} 条，不一致 ${summary.mismatchCount ?? 0} 条，未匹配 ${(
         Number(summary.unmatchedReceivableCount ?? 0) + Number(summary.unmatchedTransactionCount ?? 0)
@@ -607,7 +616,7 @@ export function createChannelConversationService({
       lines.push(`流水未找到应收：${row.reference ?? "未标识"}`);
     }
     if (preview.sources?.length) {
-      lines.push(`依据文件：${preview.sources.map((source) => source.fileName || source.kind).join("、")}`);
+      lines.push(`参考资料：${preview.sources.map((source) => source.fileName || source.kind).join("、")}`);
     }
     lines.push("需要处理差异时，直接告诉我对应编号和要更新的字段；我会另建变更预览，不会自动改账。");
     return lines.join("\n");
@@ -623,7 +632,7 @@ export function createChannelConversationService({
     if (value.amount) lines.push(`金额：${value.amount}`);
     if (value.scope) lines.push(`范围：${value.scope}`);
     if (Array.isArray(value.inputs) && value.inputs.length) {
-      lines.push(`输入：${value.inputs.map((asset) => asset.name).join("、")}`);
+      lines.push(`参考资料：${value.inputs.map((asset) => asset.name).join("、")}`);
     }
     const dataNotice = dataPlanReply(dataPlan, dataRelationPreview ?? dataPlan?.relationPreview ?? null);
     if (dataNotice) lines.push(dataNotice);
@@ -631,12 +640,12 @@ export function createChannelConversationService({
     if (mutationNotice) lines.push(mutationNotice);
     if (value.impact) lines.push(`影响：${value.impact}`);
     if (Array.isArray(value.unknownFields) && value.unknownFields.length) {
-      lines.push(`还未明确：${value.unknownFields.join("、")}`);
+      lines.push(`还需要你补充：${value.unknownFields.join("、")}`);
     }
     if (Array.isArray(value.requiredFields) && value.requiredFields.length) {
-      lines.push(`请先补充：${value.requiredFields.join("、")}。补充后我会重新生成预览。`);
+      lines.push(`请先补充：${value.requiredFields.join("、")}。补充后我会重新整理。`);
     } else if (dataMutationPreview?.status === "ready" && !ledgerMutationPreview) {
-      lines.push("当前版本只支持预览和留痕，不会直接修改源文件；安全写回能力启用后，才能继续实际变更。");
+      lines.push("当前只会先展示修改内容，不会直接改原文件；确认后才会继续。");
     } else {
       lines.push("确认无误回复“确认执行”；需要修改请直接补充，回复“取消”放弃。");
     }
@@ -1181,17 +1190,17 @@ export function createChannelConversationService({
         const routeError = result?.body?.error;
         const routeRequiredFields = result?.body?.requiredFields ?? [];
         const reply = routeError === "channel_task_object_validation_changed"
-          ? "确认前我重新检查了业务对象，发现联系人、账户、文件或发布目标已经变化，原确认已失效。请补充最新信息，我会重新生成预览。"
+          ? "确认前我重新检查了联系人、账户、文件或发布目标，发现内容已经变化，原确认已失效。请补充最新信息，我会重新整理。"
           : routeError === "channel_task_object_validation_required"
-            ? `确认前还缺少可验证对象${routeRequiredFields.length ? `：${routeRequiredFields.join("、")}` : ""}。请补充后我会重新生成预览。`
+            ? `确认前还缺少${routeRequiredFields.length ? routeRequiredFields.join("、") : "必要资料"}。请补充后我会重新整理。`
             : routeError === "channel_task_data_plan_required"
               ? dataPlanReply(result?.body?.dataPlan)
-              : routeError === "channel_task_data_plan_changed"
-                ? "确认前我重新检查了数据依据，发现本地文件版本已经变化，原确认已失效。请稍后重试，我会按最新文件重新生成数据计划。"
+          : routeError === "channel_task_data_plan_changed"
+                ? "确认前我重新检查了资料，发现本地文件已经变化，原确认已失效。请稍后重试，我会按最新文件重新整理。"
                 : routeError === "channel_task_data_relation_required"
                   ? dataPlanReply(request.dataPlan ?? thread.dataPlan, result?.body?.dataRelationPreview)
                 : routeError === "channel_task_data_relation_changed"
-                    ? "确认前我重新检查了数据关联，发现对象记录已经变化，原确认已失效。请按最新数据重新生成预览。"
+                    ? "确认前我重新检查了资料之间的对应关系，发现内容已经变化，原确认已失效。请按最新资料重新整理。"
                 : routeError === "channel_task_data_mutation_required"
                   ? dataMutationReply(
                     result?.body?.dataMutationPreview ?? request.dataMutationPreview ?? thread.dataMutationPreview,
@@ -1199,19 +1208,19 @@ export function createChannelConversationService({
                     result?.body?.ledgerMutationPreview ?? request.ledgerMutationPreview ?? thread.ledgerMutationPreview,
                   )
                 : routeError === "channel_task_data_mutation_binding_required"
-                    ? "文件变更范围已经明确，但还没有配置安全写回规则。请先在桌面端为这个文件配置写回规则；当前不会修改源文件。"
+                    ? "文件修改范围已经明确，但还需要先完成文件保护设置。请先在桌面端检查这个文件；当前不会修改原文件。"
                 : routeError === "channel_task_data_mutation_binding_changed"
-                    ? "文件的安全写回规则已经变化或失效，原确认已失效。请重新检查文件配置后再生成预览。"
+                    ? "文件保护设置已经变化或失效，原确认已失效。请重新检查文件后再整理预览。"
                 : routeError === "channel_task_data_mutation_executor_unavailable"
-                    ? "变更范围和文件版本已确认，但当前版本尚未启用安全写回执行器，因此没有修改文件。任务已保留，可在执行器启用后继续。"
+                    ? "修改范围和文件版本已经确认，但当前还不能直接修改文件。任务已保留，之后可以继续。"
                 : routeError === "channel_task_data_mutation_changed"
                     ? "确认前我重新检查了文件，发现文件版本已经变化，原变更预览已失效。请按最新文件重新生成预览。"
                 : routeError === "ledger_preview_waiting"
-                    ? `该文件前面还有 ${result?.body?.preview?.queue?.position ?? "若干"} 个写回操作，请稍后再次回复“确认执行”。`
+                    ? `该文件前面还有 ${result?.body?.preview?.queue?.position ?? "若干"} 项修改，请稍后再次回复“确认执行”。`
                 : routeError === "ledger_changed_since_preview"
                     ? "确认前发现文件已被其他操作修改，原预览已失效。请重新描述这次修改，我会按最新文件重新预览。"
                 : routeError === "channel_task_mutation_personal_confirmation_required"
-                    ? "这项文件写回需要在个人 Channel 中由本人确认；团队 Channel 请在桌面端审批中心完成确认。"
+                    ? "这项文件修改需要本人确认；团队频道请在桌面端审批中心完成确认。"
                 : "任务暂时无法开始，状态已保留。请稍后再回复“确认执行”重试，或回复“取消”放弃。";
         return settle(event, {
           status: "refused",
@@ -1221,7 +1230,7 @@ export function createChannelConversationService({
       }
       if (result.body?.dataMutationCommitted) {
         const changedFields = result.body?.mutation?.changedFields ?? [];
-        const reply = `已完成安全写回：${changedFields.join("、") || "指定字段"}。文件已更新并留下审计记录。`;
+        const reply = `已完成文件修改：${changedFields.join("、") || "指定内容"}。文件已更新，处理记录已保存。`;
         runTx(() => {
           thread.confirmedByEventId = event.id;
           thread.channelTaskRequestId = request.id;
@@ -2753,14 +2762,14 @@ export function createChannelConversationService({
         return `${label} ${status}：${summary}\n${dataPlanReply(thread.dataPlan, thread.dataRelationPreview) ?? "还缺少任务所需的数据文件，请直接上传或选择文件。"}${detail}`;
       }
       if (thread.waitingFor === "data_review") {
-        return `${label} ${status}：${summary}\n${dataPlanReply(thread.dataPlan, thread.dataRelationPreview) ?? "数据关联结果还需要复核，请补充关联方式。"}${detail}`;
+          return `${label} ${status}：${summary}\n${dataPlanReply(thread.dataPlan, thread.dataRelationPreview) ?? "资料之间还有几条对应关系需要确认，请补充后继续。"}${detail}`;
       }
       if (thread.waitingFor === "data_mutation") {
         return `${label} ${status}：${summary}\n${dataMutationReply(thread.dataMutationPreview, thread.dataMutationBinding, thread.ledgerMutationPreview) ?? "还需要明确文件、记录范围和字段变更。"}${detail}`;
       }
       const approvalHint = thread.waitingFor === "approval"
         ? "任务内容已确认，正在等待桌面端审批中心批准；批准后会自动继续。"
-        : "任务已创建，等待任务路由确认后开始执行。你不需要重复发送。";
+          : "任务已创建，正在整理执行安排。你不需要重复发送。";
       return `${label} ${status}：${summary}\n${approvalHint}${detail}`;
     }
     if (thread?.status === "waiting_user") return `${label} ${status}：${summary}\n请直接回复需要补充的信息。${detail}`;

@@ -209,7 +209,7 @@ test("P0 real quotation follow-up uses a quotation ledger and reports a safe bus
   });
   assert.equal(draftConfirmation.ok, true, JSON.stringify(draftConfirmation));
   const draftEvent = h.state.channelEvents.find((candidate) => candidate.id === draftConfirmation.eventId);
-  assert.match(draftEvent.replyText, /安全写回预览/, JSON.stringify({ reply: draftEvent.replyText, thread: h.state.channelTaskThreads.at(-1), request: h.state.channelTaskRequests.at(-1), workItem: h.state.workItems.at(-1)?.channelTaskContract }));
+  assert.match(draftEvent.replyText, /文件修改预览/, JSON.stringify({ reply: draftEvent.replyText, thread: h.state.channelTaskThreads.at(-1), request: h.state.channelTaskRequests.at(-1), workItem: h.state.workItems.at(-1)?.channelTaskContract }));
   assert.match(draftEvent.replyText, /quotations\.csv/);
   assert.match(draftEvent.replyText, /status/);
   assert.match(draftEvent.replyText, /待跟进/);
@@ -226,7 +226,7 @@ test("P0 real quotation follow-up uses a quotation ledger and reports a safe bus
   });
   assert.equal(approved.ok, true, JSON.stringify(approved));
   const approvalEvent = h.state.channelEvents.find((candidate) => candidate.id === approved.eventId);
-  assert.match(approvalEvent.replyText, /已完成安全写回/);
+  assert.match(approvalEvent.replyText, /已完成文件修改/);
   assert.match(await readFile(join(h.projectPath, "ledgers/quotations.csv"), "utf8"), /Q-1001,海棠科技,12800,已跟进/);
   assert.equal(h.state.ledgerMutationAudits.length, 1);
 });
@@ -296,7 +296,7 @@ test("P0 real shipping exception scopes order and shipment changes into one batc
   });
   assert.equal(draftConfirmation.ok, true, JSON.stringify(draftConfirmation));
   const draftEvent = h.state.channelEvents.find((candidate) => candidate.id === draftConfirmation.eventId);
-  assert.match(draftEvent.replyText, /多文件/);
+  assert.match(draftEvent.replyText, /多份文件/);
   const workItem = h.state.workItems.find((item) => item.channelOrigin?.messageId === filed.eventId);
   const channelWorkItem = h.state.workItems.at(-1);
   assert.equal(workItem, undefined);
@@ -554,7 +554,7 @@ test("P0 lifecycle scenario follows one customer from quotation through payment,
     assert.equal(confirmed.ok, true, JSON.stringify(confirmed));
     const latestThread = h.state.channelTaskThreads.at(-1);
     const latestWorkItem = h.state.workItems.find((item) => item.id === latestThread?.workItemId);
-    assert.match(eventReply(confirmed.eventId), /安全写回预览|多文件/, JSON.stringify({
+    assert.match(eventReply(confirmed.eventId), /文件修改预览|多份文件/, JSON.stringify({
       reply: eventReply(confirmed.eventId),
       thread: latestThread,
       contract: latestWorkItem?.channelTaskContract,
@@ -563,7 +563,7 @@ test("P0 lifecycle scenario follows one customer from quotation through payment,
     }));
     const approved = await send(`${key}-execute`, "确认执行");
     assert.equal(approved.ok, true, JSON.stringify(approved));
-    assert.match(eventReply(approved.eventId), /已完成安全写回/);
+  assert.match(eventReply(approved.eventId), /已完成文件修改/);
   };
 
   const initialSources = new Map(h.state.channelObjectFileSources.map((source) => [source.fileName, source]));
@@ -661,7 +661,7 @@ test("P0 lifecycle rejects stale confirmation and resumes after the latest local
   await new Promise((resolve) => setTimeout(resolve, 1_100));
   const preview = await send("stale-confirm", "确认");
   assert.equal(preview.ok, true, JSON.stringify(preview));
-  assert.match(reply(preview.eventId), /安全写回预览/);
+  assert.match(reply(preview.eventId), /文件修改预览/);
 
   await writeFile(join(h.projectPath, "ledgers/quotations.csv"), "报价单号,客户,报价金额,跟进状态\nQ-3010,海棠科技,8600,外部已修改\n", "utf8");
   const stale = await send("stale-execute", "确认执行");
@@ -686,7 +686,7 @@ test("P0 lifecycle rejects stale confirmation and resumes after the latest local
   assert.equal(resumed.ok, true, JSON.stringify(resumed));
   await new Promise((resolve) => setTimeout(resolve, 1_100));
   const resumedPreview = await send("resumed-confirm", "确认");
-  assert.match(reply(resumedPreview.eventId), /安全写回预览/, JSON.stringify({
+  assert.match(reply(resumedPreview.eventId), /文件修改预览/, JSON.stringify({
     reply: reply(resumedPreview.eventId),
     source: h.state.channelObjectFileSources.find((candidate) => candidate.fileName === "quotations.csv"),
     binding: h.state.channelMutationBindings.find((candidate) => candidate.fileName === "quotations.csv"),
@@ -694,7 +694,7 @@ test("P0 lifecycle rejects stale confirmation and resumes after the latest local
   }));
   const resumedExecution = await send("resumed-execute", "确认执行");
   assert.equal(resumedExecution.ok, true, JSON.stringify(resumedExecution));
-  assert.match(reply(resumedExecution.eventId), /已完成安全写回/);
+  assert.match(reply(resumedExecution.eventId), /已完成文件修改/);
   assert.match(await readFile(join(h.projectPath, "ledgers/quotations.csv"), "utf8"), /已跟进/);
   assert.equal(h.state.ledgerMutationAudits.length, 1);
 });
