@@ -1,7 +1,42 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { createMailPilot, recordMailPilotDay, summarizeMailPilot } from "../src/mail-rollout-pilot.mjs";
+
+const pilotCli = fileURLToPath(new URL("../mail-rollout-pilot.mjs", import.meta.url));
+
+test("status reports an unstarted pilot without a stack trace", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "mail-rollout-pilot-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, "pilot.json");
+  const result = spawnSync(process.execPath, [pilotCli, "status", "--file", file], { encoding: "utf8" });
+
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+  const status = JSON.parse(result.stdout);
+  assert.equal(status.status, "not_started");
+  assert.equal(status.passed, false);
+  assert.equal(status.remainingDays, 7);
+  assert.match(status.nextCommand, /mail:pilot:start/);
+});
+
+test("record explains how to start when no pilot exists", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "mail-rollout-pilot-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, "pilot.json");
+  const result = spawnSync(process.execPath, [pilotCli, "record", "--file", file], { encoding: "utf8" });
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /has not started/);
+  assert.match(result.stderr, /mail:pilot:start/);
+  assert.doesNotMatch(result.stderr, /node:internal|at async/);
+});
 
 test("seven real consecutive records and all fault drills clear the pilot gates", () => {
   let pilot = createMailPilot({ accountAlias: "test-account-a", startedAt: "2026-08-01T00:00:00.000Z" });
