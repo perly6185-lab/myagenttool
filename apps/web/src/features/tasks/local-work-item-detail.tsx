@@ -46,6 +46,7 @@ import {
 } from "./work-item-follow-up-model";
 import { WorkItemSectionNav } from "./work-item-section-nav";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
+import { ProfessionalWorkSummary } from "./professional-work-summary";
 
 const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
 const WorkItemFollowUpFields = lazy(() => import("./work-item-follow-up-fields")
@@ -650,6 +651,7 @@ export function LocalWorkItemDetail({
           }} />
         </Suspense>
       ) : null}
+      {selectedWorkItemSection === "overview" ? <ProfessionalWorkSummary item={item} observability={observability} /> : null}
       <div
         hidden={selectedWorkItemSection !== "overview"}
         className="flex items-center gap-1 overflow-x-auto rounded-md border border-border bg-muted/40 p-2 text-xs"
