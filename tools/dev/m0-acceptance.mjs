@@ -41,14 +41,14 @@ try {
   // affordances survived the React migration.
   const consoleSource = await waitFor(async () => {
     const source = await fetchConsoleSource(webUrl);
-    return source.includes("What should your computer do?") ? source : false;
+    return source.includes("Describe the outcome you want") ? source : false;
   }, "web console bundle");
   assert(consoleSource.includes("Run on this computer"), "web console should offer a plain-language run action");
   assert(
     ["Safety", "Data", "Cost", "Cancellation"].every((label) => consoleSource.includes(label)),
     "web console should show pre-run review categories",
   );
-  assert(consoleSource.includes("Technical details"), "web console should hide advanced details behind disclosure");
+  assert(consoleSource.includes("What to know before running"), "web console should hide advanced details behind disclosure");
 
   const offlineCreated = await request("POST", "/api/invocations", {
     task: "Run the M0 acceptance offline queue test.",
@@ -282,9 +282,26 @@ async function fetchText(url) {
 // inspect the bundled product strings instead of the near-empty index.html.
 async function fetchConsoleSource(baseUrl) {
   const html = await fetchText(baseUrl);
-  const assetPaths = [...html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g)].map((match) => match[1]);
+  const assetPaths = new Set([...html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g)].map((match) => match[1]));
+  // Vite code-splits translations and feature views into dynamic chunks that
+  // are not present in index.html. Include the manifest's transitive assets so
+  // product-string assertions inspect the same bundle a browser can load.
+  try {
+    const manifest = JSON.parse(await fetchText(new URL("/.vite/manifest.json", baseUrl).toString()));
+    const visit = (entry) => {
+      if (!entry || typeof entry !== "object") return;
+      for (const path of [entry.file, ...(entry.css ?? []), ...(entry.assets ?? [])]) {
+        if (typeof path === "string") assetPaths.add(`/${path.replace(/^\/+/, "")}`);
+      }
+      for (const imported of entry.imports ?? []) visit(manifest[imported]);
+    };
+    for (const entry of Object.values(manifest)) visit(entry);
+  } catch {
+    // Older/non-Vite bundles may not expose a manifest; index assets remain a
+    // valid fallback for those builds.
+  }
   const assets = await Promise.all(
-    assetPaths.map((path) => fetchText(new URL(path, baseUrl).toString()).catch(() => "")),
+    [...assetPaths].map((path) => fetchText(new URL(path, baseUrl).toString()).catch(() => "")),
   );
   return html + assets.join("");
 }

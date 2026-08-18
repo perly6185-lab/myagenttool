@@ -43,10 +43,18 @@ test("normalizeDecision validates the contract and clamps values", () => {
     rationale: "r",
     spawnChildIssues: "yes",
     clarifyingQuestions: ["ok", 42, "  ", "also ok"],
+    taskUnderstanding: "  Deliver an observable result.  ",
+    acceptanceCriteria: ["Result is visible", 42, ""],
+    verificationSop: ["Run the focused test"],
+    risks: ["Compatibility behavior may change"],
   });
   assert.equal(d.confidence, 1, "confidence clamped to [0,1]");
   assert.equal(d.spawnChildIssues, false, "only boolean true spawns");
   assert.deepEqual(d.clarifyingQuestions, ["ok", "also ok"]);
+  assert.equal(d.taskUnderstanding, "Deliver an observable result.");
+  assert.deepEqual(d.acceptanceCriteria, ["Result is visible"]);
+  assert.deepEqual(d.verificationSop, ["Run the focused test"]);
+  assert.deepEqual(d.risks, ["Compatibility behavior may change"]);
   assert.equal(d.decidedBy, "agent");
 });
 
@@ -66,6 +74,36 @@ test("resolveDecision: records stable, versioned routing evidence", async () => 
   assert.equal(first.evidence.inputDigest, second.evidence.inputDigest);
   assert.notEqual(first.evidence.inputDigest, changed.evidence.inputDigest);
   assert.equal(first.evidence.inputDigest.length, 64);
+});
+
+test("resolveDecision passes bounded project context to the decider and fingerprints it", async () => {
+  const seen = [];
+  const decideIssuePath = async (input) => {
+    seen.push(input);
+    return { path: "develop", confidence: 0.9, rationale: "Project evidence supports implementation." };
+  };
+  const projectContext = {
+    digest: "context-a",
+    documents: [{ path: "README.md", excerpt: "Scheduling uses the terminal timezone." }],
+    relatedFiles: [{ path: "src/schedule.mjs", line: 12, preview: "computeLocalSchedulePreview" }],
+  };
+  const first = await resolveDecision({
+    link: { title: "Implement timezone propagation" },
+    issueBody: "Update scheduling.",
+    projectContext,
+    decideIssuePath,
+    fastPath: false,
+  });
+  const changed = await resolveDecision({
+    link: { title: "Implement timezone propagation" },
+    issueBody: "Update scheduling.",
+    projectContext: { ...projectContext, digest: "context-b" },
+    decideIssuePath,
+    fastPath: false,
+  });
+
+  assert.equal(seen[0].projectContext, projectContext);
+  assert.notEqual(first.evidence.inputDigest, changed.evidence.inputDigest);
 });
 
 test("resolveDecision: confidence gate degrades heavy paths, not develop/clarify", async () => {
@@ -234,4 +272,14 @@ test("resolveDecision does NOT re-decompose a spawned child even with an [Epic] 
   // a NON-child [Epic] with the flag on still decomposes
   const e = await resolveDecision({ link: { title: "[Epic]: Real", number: 10 }, issueBody: "## Project Fields\nType: epic", decideIssuePath: undefined, epicDecomposition: true });
   assert.equal(e.path, "decompose");
+});
+
+test("resolveDecision routes an article URL to summarize (heuristic floor)", async () => {
+  const d = await resolveDecision({ link: { title: "看看这篇文章", number: 11, type: "local_issue" }, issueBody: "https://mp.weixin.qq.com/s/abc123" });
+  assert.equal(d.path, "summarize");
+});
+
+test("resolveDecision keeps a GitHub URL on clarify (not summarize)", async () => {
+  const d = await resolveDecision({ link: { title: "看看", number: 12 }, issueBody: "https://github.com/nuno-faria/tiler.git" });
+  assert.equal(d.path, "clarify");
 });

@@ -97,11 +97,16 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     const s = String(v).trim();
     return s ? s.slice(0, 64) : null;
   });
+  const schedulerMode = keep("workItemAutoSchedulerMode", (v) => {
+    const candidate = String(v).trim().toLowerCase();
+    return ["off", "shadow", "enabled"].includes(candidate) ? candidate : null;
+  });
   return {
     autoTriggerEnabled: keep("autoTriggerEnabled", asBool),
     autoTriggerLabel: label,
     autoTriggerMaxConcurrent: keep("autoTriggerMaxConcurrent", (v) => clampInt(v, 1, 10)),
     autoTriggerRequireProjectFields: keep("autoTriggerRequireProjectFields", asBool),
+    workItemAutoSchedulerMode: schedulerMode,
     statusWriteback: keep("statusWriteback", asBool),
     spawnIssues: keep("spawnIssues", asBool),
     decisionMinConfidence: keep("decisionMinConfidence", (v) => clampNum(v, 0, 1)),
@@ -237,6 +242,9 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
   const decision = decisionConfig(env);
   return {
     autoTrigger,
+    workItemAutoSchedulerMode: ["shadow", "enabled"].includes(settings.workItemAutoSchedulerMode)
+      ? settings.workItemAutoSchedulerMode
+      : settings.workItemAutoSchedulerMode === "off" ? "off" : "enabled",
     statusWriteback: resolveStatusWritebackConfig(env).enabled,
     spawnIssues: spawnIssuesConfig(env).enabled,
     decision,

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { classifyIntentFromText } from "./auto-run-intent.mjs";
+import { detectArticleSource } from "./article-imports.mjs";
 import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 
 // The issue decision step (ISSUE_DECISION_AGENT_PLAN.md slice 1). An injectable
@@ -8,7 +9,9 @@ import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 // code routes: nothing here executes side effects.
 //
 // Contract: { path, spawnChildIssues, confidence, rationale, clarifyingQuestions,
-// decidedBy }. Paths:
+// taskUnderstanding?, acceptanceCriteria?, verificationSop?, risks?, decidedBy }.
+// The optional planning fields let the same read-only decision hop provide the
+// initial execution-plan draft; code still validates and freezes it separately.
 //   develop   — concrete, scoped change: go straight to the change flow.
 //   design    — open solution space: the deliverable is a design, not a diff.
 //   prototype — deep uncertainty: a runnable spike is worth more than analysis.
@@ -16,16 +19,16 @@ import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 //   decompose — an epic/initiative: break it into governed child issues (a plan,
 //               not a diff). Opt-in (epicDecomposition); EPIC_DECOMPOSITION_PLAN.md.
 
-export const AUTO_RUN_PATHS = ["develop", "design", "prototype", "clarify", "decompose"];
+export const AUTO_RUN_PATHS = ["develop", "design", "prototype", "clarify", "decompose", "evaluate", "summarize"];
 export const ROUTING_POLICY_VERSION = "2026-07-25.1";
 
 // Paths whose output is not a product diff. A low-confidence agent decision may
 // not send work down these (or spawn issues) — it degrades to clarify instead.
-const HEAVY_PATHS = new Set(["design", "prototype", "decompose"]);
+const HEAVY_PATHS = new Set(["design", "prototype", "decompose", "evaluate", "summarize"]);
 
-const INTENT_TO_PATH = { change: "develop", investigation: "design", question: "clarify" };
+const INTENT_TO_PATH = { change: "develop", investigation: "design", question: "clarify", exploration: "evaluate", reading: "summarize" };
 // Legacy `intent` field kept on records for continuity with pre-decision runs.
-const PATH_TO_INTENT = { develop: "change", design: "investigation", prototype: "investigation", clarify: "question", decompose: "investigation" };
+const PATH_TO_INTENT = { develop: "change", design: "investigation", prototype: "investigation", clarify: "question", decompose: "investigation", evaluate: "exploration", summarize: "reading" };
 
 /**
  * Deterministic epic/initiative detector. An epic is a PARENT of work, not a work
@@ -67,7 +70,50 @@ export function intentForPath(path) {
 
 /** Today's title+body heuristic mapped onto the decision contract. Always available. */
 export function heuristicDecision(link, issueBody = null) {
-  const intent = classifyIntentFromText(link?.title ?? "", issueBody ?? "");
+  const body = String(issueBody ?? "");
+  const intent = classifyIntentFromText(link?.title ?? "", body);
+  // An article URL (WeChat/Zhihu/Juejin/Jiansu/Xiaohongshu) in the body is an
+  // unambiguous "read + summarize" intent — route straight to summarize (the
+  // article-imports pipeline downloads it into the worktree, the agent reads +
+  // summarizes). Checked before the GitHub-URL branch: an article provider is
+  // never a repo, so there is nothing to clarify.
+  const articleUrl = body.match(/https?:\/\/[^\s)]+/i)?.[0] ?? null;
+  if (articleUrl) {
+    try {
+      const provider = detectArticleSource(articleUrl);
+      if (provider && provider !== "web") {
+        return {
+          path: "summarize",
+          spawnChildIssues: false,
+          confidence: 0.9,
+          rationale: `Body references a ${provider} article (${articleUrl}).`,
+          clarifyingQuestions: [],
+          decidedBy: "heuristic",
+          via: "heuristic",
+        };
+      }
+    } catch { /* not a URL detectArticleSource can parse — fall through */ }
+  }
+  // If the body references a GitHub URL but the title does not make the
+  // user's intent clear, route to clarify with structured suggested actions
+  // so the human can choose (evaluate / develop / reference-only).
+  const gitUrl = body.match(/(https?:\/\/github\.com\/[^\s)]+\.git\b|https?:\/\/github\.com\/[^\s)]+(?!\/))/i)?.[0] ?? null;
+  if (gitUrl && intent !== "exploration") {
+    return {
+      path: "clarify",
+      spawnChildIssues: false,
+      confidence: 0.3,
+      rationale: `Body references ${gitUrl} but the title does not make the user's intent clear.`,
+      clarifyingQuestions: ["What do you want to do with this GitHub repository?"],
+      suggestedActions: [
+        { id: "evaluate", label: "评估体验", description: "探索项目、启动试用、输出体验报告", payload: { path: "evaluate", repoUrl: gitUrl } },
+        { id: "develop", label: "改代码", description: "在项目中修改代码、修复问题或实现功能", payload: { path: "develop", repoUrl: gitUrl } },
+        { id: "ignore", label: "只是参考链接", description: "这个 URL 只是引用,不需要操作项目", payload: null },
+      ],
+      decidedBy: "heuristic",
+      via: "heuristic",
+    };
+  }
   return {
     path: INTENT_TO_PATH[intent] ?? "develop",
     spawnChildIssues: false,
@@ -84,6 +130,10 @@ export function normalizeDecision(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   if (!AUTO_RUN_PATHS.includes(raw.path)) return null;
   const confidence = Number(raw.confidence);
+  const stringList = (value, limit, maxLength = 2_000) => Array.isArray(value)
+    ? value.filter((item) => typeof item === "string" && item.trim())
+      .map((item) => item.trim().slice(0, maxLength)).slice(0, limit)
+    : [];
   return {
     path: raw.path,
     spawnChildIssues: raw.spawnChildIssues === true,
@@ -91,6 +141,24 @@ export function normalizeDecision(raw) {
     rationale: typeof raw.rationale === "string" ? raw.rationale.slice(0, 2000) : "",
     clarifyingQuestions: Array.isArray(raw.clarifyingQuestions)
       ? raw.clarifyingQuestions.filter((q) => typeof q === "string" && q.trim()).slice(0, 5)
+      : [],
+    taskUnderstanding: typeof raw.taskUnderstanding === "string"
+      ? raw.taskUnderstanding.trim().slice(0, 4_000)
+      : "",
+    acceptanceCriteria: stringList(raw.acceptanceCriteria, 30),
+    verificationSop: stringList(raw.verificationSop, 30),
+    risks: stringList(raw.risks, 20, 1_000),
+    // Structured action suggestions for clarify/needs-input runs (e.g. the
+    // heuristic detected a GitHub URL in the body but the user's intent —
+    // evaluate vs. reference vs. develop — is ambiguous). Each action carries
+    // a payload that the retry cycle passes back to startAutoRun.
+    suggestedActions: Array.isArray(raw.suggestedActions)
+      ? raw.suggestedActions.filter((a) => a?.id && a?.label).map((a) => ({
+          id: String(a.id),
+          label: String(a.label).slice(0, 80),
+          description: typeof a.description === "string" ? a.description.slice(0, 200) : "",
+          payload: a.payload ?? null,
+        })).slice(0, 5)
       : [],
     decidedBy: "agent",
   };
@@ -107,6 +175,7 @@ export function normalizeDecision(raw) {
 export async function resolveDecision({
   link,
   issueBody = null,
+  projectContext = null,
   decideIssuePath,
   minConfidence = decisionConfig().minConfidence,
   fastPath = decisionConfig().fastPath,
@@ -124,6 +193,7 @@ export async function resolveDecision({
         number: link?.number ?? null,
         title: link?.title ?? "",
         body: issueBody ?? "",
+        projectContextDigest: projectContext?.digest ?? null,
       })).digest("hex"),
     },
   });
@@ -150,7 +220,7 @@ export async function resolveDecision({
   const startedAt = Date.now();
   let decision = null;
   try {
-    decision = normalizeDecision(await decideIssuePath({ link, issueBody }));
+    decision = normalizeDecision(await decideIssuePath({ link, issueBody, projectContext }));
   } catch {
     decision = null;
   }

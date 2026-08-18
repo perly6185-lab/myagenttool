@@ -4,6 +4,7 @@ const slow = process.argv.includes("--slow");
 const commandSlow = process.argv.includes("--command-slow");
 const crash = process.argv.includes("--crash");
 const crashOnInitialize = process.argv.includes("--crash-on-initialize");
+const slowInitialize = process.argv.includes("--slow-initialize");
 const approval = process.argv.includes("--approval");
 const capacity = process.argv.includes("--capacity");
 const expectAuto = process.argv.includes("--expect-auto");
@@ -31,7 +32,9 @@ reader.on("line", (line) => {
     if (crashOnInitialize) {
       process.exit(18);
     }
-    send({ id, result: { userAgent: "fixture", platformFamily: "windows", platformOs: "windows" } });
+    const reply = () => send({ id, result: { userAgent: "fixture", platformFamily: "windows", platformOs: "windows" } });
+    if (slowInitialize) setTimeout(reply, 75);
+    else reply();
     return;
   }
   if (method === "initialized") {

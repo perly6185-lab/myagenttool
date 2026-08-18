@@ -12,15 +12,24 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 // archive/restore. Backed by PATCH /api/projects/:id. Used by the gear button
 // on each project node in the nav tree.
 export function ProjectSettingsForm({ project, onDone }: { project: ProjectSnapshot; onDone?: () => void }) {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
+  const zh = i18n.language.startsWith("zh");
   const { execute, pending, error } = useAsyncAction();
   const [name, setName] = useState(project.name);
   const [color, setColor] = useState(project.color);
   const [isolation, setIsolation] = useState<"shared" | "worktree">(project.isolation);
+  const [autoExecutionEnabled, setAutoExecutionEnabled] = useState(project.autoExecutionEnabled === true);
+  const [futurePullForwardEnabled, setFuturePullForwardEnabled] = useState(project.futurePullForwardEnabled !== false);
 
   function save() {
     void execute(async () => {
-      const r = await api.updateProject(project.id, { name: name.trim() || project.name, color, isolation });
+      const r = await api.updateProject(project.id, {
+        name: name.trim() || project.name,
+        color,
+        isolation,
+        autoExecutionEnabled,
+        futurePullForwardEnabled,
+      });
       onDone?.();
       return r;
     });
@@ -40,6 +49,40 @@ export function ProjectSettingsForm({ project, onDone }: { project: ProjectSnaps
       <Field label={t("projectsShared.name")}>
         <Input value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
+
+      <div className="space-y-3 rounded-lg border border-border p-3">
+        <label className="flex cursor-pointer items-start gap-3 text-sm">
+          <input
+            className="mt-0.5 size-4"
+            type="checkbox"
+            checked={autoExecutionEnabled}
+            onChange={(event) => setAutoExecutionEnabled(event.target.checked)}
+          />
+          <span>
+            <span className="font-medium">{zh ? "本项目任务默认交给 AI" : "Let AI handle project tasks by default"}</span>
+            <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+              {zh
+                ? "开启后，新任务默认自动处理；你仍可单独暂停或手动交给 AI。"
+                : "New tasks inherit automatic handling; individual tasks can still be paused or handed to AI manually."}
+            </span>
+          </span>
+        </label>
+        <label className={`flex items-start gap-3 text-sm ${autoExecutionEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
+          <input
+            className="mt-0.5 size-4"
+            type="checkbox"
+            checked={futurePullForwardEnabled}
+            disabled={!autoExecutionEnabled}
+            onChange={(event) => setFuturePullForwardEnabled(event.target.checked)}
+          />
+          <span>
+            <span className="font-medium">{zh ? "空闲时提前处理未来任务" : "Pull future work forward when idle"}</span>
+            <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+              {zh ? "计划日期是软提示；明确设置“最早开始时间”的任务不会提前。" : "Planned dates are guidance; a task with an explicit earliest start time will never start early."}
+            </span>
+          </span>
+        </label>
+      </div>
 
       <Field label={t("projectsShared.color")}>
         <div className="flex flex-wrap gap-2">

@@ -175,6 +175,135 @@ test("codex wrapper normalizes findings and filters malformed ones", () => {
   assert.equal(payload.output.findings.length, 1, "file-less finding is dropped");
   assert.equal(payload.output.findings[0].severity, "medium", "unknown severity enum falls back to medium");
   assert.equal(payload.output.findings[0].file, "a.ts");
+  const captured = JSON.parse(readFileSync(capture, "utf8"));
+  assert.deepEqual(captured.args.slice(0, 5), ["exec", "--sandbox", "read-only", "--ephemeral", "--json"]);
+  assert.deepEqual(captured.args.slice(5, 7), ["-c", "model_reasoning_effort=low"]);
+});
+
+test("codex wrapper binds delivery review to the recorded base commit", () => {
+  const capture = join(workdir, "base-capture.json");
+  const stub = writeCodexStub(capture);
+  const base = "a".repeat(40);
+  const res = runWrapper(codexWrapper, [
+    "--mode", "diff-review", "--cwd", workdir, "--codex-cli", stub, "--base-ref", base,
+  ], { STUB_CAPTURE: capture });
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const captured = JSON.parse(readFileSync(capture, "utf8"));
+  assert.deepEqual(captured.args.slice(0, 7), ["exec", "review", "-c", 'sandbox_mode="read-only"', "--base", base, "--ephemeral"]);
+  assert.deepEqual(captured.args.slice(7, 10), ["-c", "model_reasoning_effort=low", "--output-schema"]);
+  assert.match(captured.args[10], /codex-review-output\.schema\.json$/);
+  assert.equal(captured.args[11], "--json");
+});
+
+test("codex wrapper uses structured inspection instructions for Office binary changes", () => {
+  const officeWorkdir = realpathSync(mkdtempSync(join(tmpdir(), "review-wrapper-office-")));
+  spawnSync("git", ["init"], { cwd: officeWorkdir, encoding: "utf8" });
+  spawnSync("git", ["config", "user.email", "tests@example.com"], { cwd: officeWorkdir, encoding: "utf8" });
+  spawnSync("git", ["config", "user.name", "Tests"], { cwd: officeWorkdir, encoding: "utf8" });
+  writeFileSync(join(officeWorkdir, "README.md"), "base\n");
+  spawnSync("git", ["add", "README.md"], { cwd: officeWorkdir, encoding: "utf8" });
+  spawnSync("git", ["commit", "-m", "base"], { cwd: officeWorkdir, encoding: "utf8" });
+  const base = spawnSync("git", ["rev-parse", "HEAD"], { cwd: officeWorkdir, encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(officeWorkdir, "result.xlsx"), Buffer.from("PK\u0003\u0004test"));
+  spawnSync("git", ["add", "result.xlsx"], { cwd: officeWorkdir, encoding: "utf8" });
+
+  const capture = join(workdir, "office-capture.json");
+  const stub = writeCodexStub(capture, JSON.stringify({ summary: "Office content checked.", findings: [] }));
+  const res = runWrapper(codexWrapper, [
+    "--mode", "diff-review", "--cwd", officeWorkdir, "--codex-cli", stub,
+    "--base-ref", base, "--instruction", "Validate the delivered spreadsheet.",
+  ], { STUB_CAPTURE: capture });
+
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const captured = JSON.parse(readFileSync(capture, "utf8"));
+  assert.deepEqual(captured.args.slice(0, 5), ["exec", "--sandbox", "read-only", "--ephemeral", "--json"]);
+  assert.match(captured.prompt, new RegExp(base));
+  assert.match(captured.prompt, /Never infer its text.*from git's binary diff/i);
+  assert.match(captured.prompt, /unzip.*decoding XML as UTF-8/i);
+  assert.match(captured.prompt, /internal tma_<id>-- storage prefix.*must not be required or exposed/i);
+  assert.match(captured.prompt, /Additional reviewer instruction: Validate the delivered spreadsheet/);
+});
+
+test("codex wrapper normalizes native review findings", () => {
+  const capture = join(workdir, "native-capture.json");
+  const native = JSON.stringify({
+    overall_correctness: "patch is incorrect",
+    overall_explanation: "One persistence regression remains.",
+    findings: [{
+      title: "[P1] Persist the registered timezone",
+      body: "The route mutates memory without scheduling persistence.",
+      priority: 1,
+      confidence_score: 0.97,
+      code_location: {
+        absolute_file_path: join(workdir, "apps/server/src/routes/agents.mjs"),
+        line_range: { start: 170, end: 170 },
+      },
+    }],
+  });
+  const stub = writeCodexStub(capture, native);
+  const res = runWrapper(codexWrapper, [
+    "--mode", "diff-review", "--cwd", workdir, "--codex-cli", stub,
+    "--base-ref", "b".repeat(40), "--severity-floor", "medium",
+  ], { STUB_CAPTURE: capture });
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.equal(payload.output.summary, "One persistence regression remains.");
+  assert.deepEqual(payload.output.findings[0], {
+    severity: "high",
+    file: "apps/server/src/routes/agents.mjs",
+    line: 170,
+    message: "[P1] Persist the registered timezone: The route mutates memory without scheduling persistence.",
+    suggestion: "",
+    confidence: "high",
+  });
+});
+
+test("codex wrapper drops absolute and relative findings outside the review worktree", () => {
+  const capture = join(workdir, "outside-path-capture.json");
+  const native = JSON.stringify({
+    overall_correctness: "patch is incorrect",
+    overall_explanation: "Only the in-worktree finding is valid.",
+    findings: [
+      {
+        title: "[P1] Valid finding",
+        body: "This file belongs to the reviewed patch.",
+        priority: 1,
+        confidence_score: 0.95,
+        code_location: {
+          absolute_file_path: join(workdir, "src/inside.mjs"),
+          line_range: { start: 4, end: 4 },
+        },
+      },
+      {
+        title: "[P1] Outside absolute path",
+        body: "This path must not leave the worktree.",
+        priority: 1,
+        confidence_score: 0.95,
+        code_location: {
+          absolute_file_path: resolve(workdir, "../outside-secret.txt"),
+          line_range: { start: 1, end: 1 },
+        },
+      },
+      {
+        title: "[P1] Traversal path",
+        body: "Relative traversal must also be rejected.",
+        priority: 1,
+        confidence_score: 0.95,
+        code_location: {
+          absolute_file_path: "../outside-relative.txt",
+          line_range: { start: 1, end: 1 },
+        },
+      },
+    ],
+  });
+  const stub = writeCodexStub(capture, native);
+  const res = runWrapper(codexWrapper, [
+    "--mode", "diff-review", "--cwd", workdir, "--codex-cli", stub,
+    "--base-ref", "c".repeat(40), "--severity-floor", "medium",
+  ], { STUB_CAPTURE: capture });
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.deepEqual(payload.output.findings.map((finding) => finding.file), ["src/inside.mjs"]);
 });
 
 test("codex wrapper fails on malformed review JSON", () => {
@@ -194,4 +323,53 @@ test("codex wrapper accepts a RESULT-line envelope from the CLI", () => {
   const payload = resultPayload(res.stdout);
   assert.equal(payload.output.findings.length, 1);
   assert.equal(payload.output.findings[0].file, "z.ts");
+});
+
+test("codex wrapper accepts fenced JSON in the final Codex event", () => {
+  const capture = join(workdir, "fenced-event-capture.json");
+  const review = JSON.stringify({
+    summary: "A concrete regression was found.",
+    findings: [{ severity: "high", file: "route.ts", line: 9, message: "Missing persistence." }],
+  });
+  const output = `${JSON.stringify({
+    type: "item.completed",
+    item: { type: "agent_message", text: `\`\`\`json\n${review}\n\`\`\`` },
+  })}\n`;
+  const stub = writeCodexStub(capture, output);
+  const res = runWrapper(codexWrapper, ["--mode", "diff-review", "--cwd", workdir, "--codex-cli", stub], { STUB_CAPTURE: capture });
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.equal(payload.output.summary, "A concrete regression was found.");
+  assert.equal(payload.output.findings[0].file, "route.ts");
+  assert.equal(payload.output.verdict, "changes_requested");
+  assert.equal(payload.output.structured, true);
+});
+
+test("codex wrapper preserves an unstructured native review instead of reporting a parser failure", () => {
+  const capture = join(workdir, "plain-review-capture.json");
+  const output = `${JSON.stringify({
+    type: "item.completed",
+    item: { type: "agent_message", text: "[P1] Persist the timezone before returning.\nThe current route only mutates memory." },
+  })}\n`;
+  const stub = writeCodexStub(capture, output);
+  const res = runWrapper(codexWrapper, ["--mode", "diff-review", "--cwd", workdir, "--codex-cli", stub], { STUB_CAPTURE: capture });
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.match(payload.output.summary, /Persist the timezone/);
+  assert.equal(payload.output.verdict, "changes_requested", "ambiguous plain text fails closed");
+  assert.equal(payload.output.structured, false);
+});
+
+test("codex wrapper recognizes an explicitly clean unstructured review", () => {
+  const capture = join(workdir, "plain-clean-review-capture.json");
+  const output = `${JSON.stringify({
+    type: "item.completed",
+    item: { type: "agent_message", text: "The tests pass, with no actionable regressions identified." },
+  })}\n`;
+  const stub = writeCodexStub(capture, output);
+  const res = runWrapper(codexWrapper, ["--mode", "diff-review", "--cwd", workdir, "--codex-cli", stub], { STUB_CAPTURE: capture });
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.equal(payload.output.verdict, "approved");
+  assert.equal(payload.output.structured, false);
 });

@@ -8,6 +8,8 @@ import {
   Files,
   Gauge,
   GitCompare,
+  KeyRound,
+  GitPullRequest,
   Inbox,
   KanbanSquare,
   LayoutDashboard,
@@ -61,6 +63,8 @@ export interface SectionDef {
 export const SECTIONS: SectionDef[] = [
   // Work — the daily home: start a task, live in a project.
   { key: "dashboard", labelKey: "sections.dashboard.label", icon: LayoutDashboard, blurbKey: "sections.dashboard.blurb", group: "work" },
+  { key: "mail", labelKey: "sections.mail.label", icon: Inbox, blurbKey: "sections.mail.blurb", group: "work" },
+  { key: "localLibrary", labelKey: "sections.localLibrary.label", icon: Files, blurbKey: "sections.localLibrary.blurb", group: "work" },
   { key: "me", labelKey: "sections.me.label", icon: UserRound, blurbKey: "sections.me.blurb", group: "work" },
   { key: "workBoard", labelKey: "sections.workBoard.label", icon: KanbanSquare, blurbKey: "sections.workBoard.blurb", group: "work" },
   { key: "planning", labelKey: "sections.planning.label", icon: CalendarRange, blurbKey: "sections.planning.blurb", group: "work" },
@@ -71,6 +75,7 @@ export const SECTIONS: SectionDef[] = [
   // Run — the ways work executes.
   { key: "autoRuns", labelKey: "sections.autoRuns.label", icon: Bot, blurbKey: "sections.autoRuns.blurb", group: "run" },
   { key: "task", labelKey: "sections.task.label", icon: ListTodo, blurbKey: "sections.task.blurb", group: "run" },
+  { key: "externalWork", labelKey: "sections.externalWork.label", icon: GitPullRequest, blurbKey: "sections.externalWork.blurb", group: "run" },
   { key: "compare", labelKey: "sections.compare.label", icon: GitCompare, blurbKey: "sections.compare.blurb", group: "run" },
   { key: "automation", labelKey: "sections.automation.label", icon: Workflow, blurbKey: "sections.automation.blurb", group: "run" },
   { key: "routines", labelKey: "sections.routines.label", icon: Repeat, blurbKey: "sections.routines.blurb", group: "run" },
@@ -91,6 +96,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "tools", labelKey: "sections.tools.label", icon: Wrench, blurbKey: "sections.tools.blurb", group: "configure" },
   { key: "applications", labelKey: "sections.applications.label", icon: AppWindow, blurbKey: "sections.applications.blurb", group: "configure" },
   { key: "channels", labelKey: "sections.channels.label", icon: MessagesSquare, blurbKey: "sections.channels.blurb", group: "configure" },
+  { key: "sessions", labelKey: "sections.sessions.label", icon: KeyRound, blurbKey: "sections.sessions.blurb", group: "configure" },
   // Ledgers — the metered record.
   { key: "invocations", labelKey: "sections.invocations.label", icon: ListChecks, blurbKey: "sections.invocations.blurb", group: "ledgers" },
   { key: "economics", labelKey: "sections.economics.label", icon: Receipt, blurbKey: "sections.economics.blurb", group: "ledgers" },
@@ -100,7 +106,7 @@ export type PageSurface = "entry" | "settings" | "trace";
 export type PageOwnerContext = "global" | "task" | "project";
 export type PageVisibility = "primary" | "secondary" | "contextual";
 export type PageAuthority = "ordinary" | "manage" | "audit";
-export type NavigationLabelKey = `shell.navigation.${"home" | "tasks" | "projects" | "queue" | "attention"}`;
+export type NavigationLabelKey = `shell.navigation.${"home" | "tasks" | "projects" | "todo" | "queue" | "attention"}`;
 export type SurfaceLabelKey = `shell.navigation.${PageSurface}`;
 export type SurfaceDescriptionKey = `shell.navigation.${PageSurface}Hint`;
 
@@ -118,9 +124,9 @@ export interface PageRegistration extends SectionDef {
   legacyAliases: readonly string[];
 }
 
-const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "task", "projects", "autoRuns", "approvals"]);
+const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "mail", "localLibrary", "task", "workflowMemory", "projects", "me"]);
 const ENTRY_CONTEXTUAL = new Set<SectionKey>([
-  "me", "workBoard", "planning", "workspace", "documents", "workflowMemory", "canvas",
+  "workBoard", "externalWork", "autoRuns", "approvals", "planning", "workspace", "documents", "workflowMemory", "canvas",
 ]);
 const TRACE_SECTIONS = new Set<SectionKey>([
   "compare", "evidence", "review", "evalTrend", "invocations", "audit",
@@ -170,7 +176,7 @@ export const PAGE_REGISTRY: PageRegistration[] = SECTIONS.map((section) => {
   };
 });
 
-const ENTRY_ORDER: SectionKey[] = ["dashboard", "task", "projects", "autoRuns", "approvals"];
+const ENTRY_ORDER: SectionKey[] = ["dashboard", "mail", "localLibrary", "task", "workflowMemory", "projects", "me"];
 export const ENTRY_SECTIONS = ENTRY_ORDER.map((key) => pageRegistration(key));
 
 export const SURFACE_GROUPS: Array<{

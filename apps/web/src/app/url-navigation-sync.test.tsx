@@ -17,6 +17,13 @@ beforeEach(() => {
     selectedApplicationId: null,
     selectedApplicationRun: null,
     selectedEvidenceId: null,
+    selectedWorkItemId: null,
+    selectedWorkItemMode: "summary",
+    selectedWorkItemSection: "overview",
+    taskArea: "overview",
+    settingsDialogOpen: false,
+    settingsCategory: null,
+    settingsQuery: "",
     selectedPlanningProjectId: null,
     planningProjectView: "list",
     planningProjectFilters: { status: "all", priority: "all", milestone: "", due: "all" },
@@ -56,6 +63,62 @@ describe("useUrlNavigationSync", () => {
       expect(params.get("section")).toBe("invocations");
       expect(params.get("invocation")).toBe("inv_result");
       expect(params.get("evidence")).toBe("ev_result");
+    });
+  });
+
+  it("keeps an in-place task detail in the current surface URL", async () => {
+    render(<SyncHarness />);
+
+    useUiStore.getState().openWorkItem("lwi_home", { mode: "expert", section: "process" });
+
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search);
+      expect(params.get("section")).toBe("dashboard");
+      expect(params.get("task")).toBe("lwi_home");
+      expect(params.get("taskMode")).toBe("expert");
+      expect(params.get("taskView")).toBe("process");
+    });
+  });
+
+  it("restores and writes the Tasks workspace area", async () => {
+    window.history.replaceState(null, "", "/?section=task&taskArea=assets");
+    render(<SyncHarness />);
+    expect(useUiStore.getState().taskArea).toBe("assets");
+
+    useUiStore.getState().setTaskArea("verification");
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search);
+      expect(params.get("section")).toBe("task");
+      expect(params.get("taskArea")).toBe("verification");
+    });
+  });
+
+  it("restores and replaces the My settings context in its deep link", async () => {
+    window.history.replaceState(null, "", "/?section=settings&settingsCategory=connections&settingsQuery=channel");
+    render(<SyncHarness />);
+    expect(useUiStore.getState().settingsCategory).toBe("connections");
+    expect(useUiStore.getState().settingsQuery).toBe("channel");
+
+    useUiStore.getState().setSettingsCategory("diagnostics");
+    useUiStore.getState().setSettingsQuery("run record");
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search);
+      expect(params.get("settingsCategory")).toBe("diagnostics");
+      expect(params.get("settingsQuery")).toBe("run record");
+    });
+  });
+
+  it("keeps a contextual professional page inside the settings dialog across refresh", async () => {
+    window.history.replaceState(null, "", "/?section=autoRuns&settingsOpen=true&settingsCategory=automation");
+    render(<SyncHarness />);
+    expect(useUiStore.getState().section).toBe("autoRuns");
+    expect(useUiStore.getState().settingsDialogOpen).toBe(true);
+
+    useUiStore.getState().setSection("approvals");
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search);
+      expect(params.get("section")).toBe("approvals");
+      expect(params.get("settingsOpen")).toBe("true");
     });
   });
 

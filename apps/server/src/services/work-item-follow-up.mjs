@@ -4,6 +4,7 @@ export const WORK_ITEM_REQUESTER_RELATIONS = new Set([
   "boss",
   "manager",
   "customer",
+  "child",
   "colleague",
   "self",
   "unknown",

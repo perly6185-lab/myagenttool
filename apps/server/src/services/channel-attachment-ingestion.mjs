@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { validateExternalWebhookTarget } from "./auto-run-alerts.mjs";
-import { classifyAsset } from "./asset-capabilities.mjs";
+import { classifyAsset, resolveAssetCapabilities } from "./asset-capabilities.mjs";
 
 export const MAX_CHANNEL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENTS = 10;
@@ -33,26 +33,56 @@ export async function ingestChannelAttachmentCandidates({
       throw attachmentError("channel_attachment_too_large");
     }
     const bytes = await readBoundedBody(response.body, MAX_CHANNEL_ATTACHMENT_BYTES);
-    const classification = classifyAsset(filename);
-    assertContentType(response.headers?.get?.("content-type"), classification.mimeType);
-    assertSignature(bytes, classification.mimeType);
-    const stored = storeConfinedAttachment({ projectPath, filename, bytes });
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    assets.push({
-      id: `asset_${digest.slice(0, 24)}`,
+    assets.push(await ingestChannelAttachmentBytes({
+      filename,
+      bytes,
+      contentType: response.headers?.get?.("content-type"),
+      projectPath,
       projectId,
       terminalId,
-      path: stored.path,
-      family: classification.family,
-      hash: `sha256:${digest}`,
-      version: digest,
-      size: bytes.length,
-      resourceClass: bytes.length > 10 * 1024 * 1024 ? "large" : bytes.length > 1024 * 1024 ? "medium" : "small",
-      capabilities: classification.capabilities ?? [],
-      readiness: { state: "ready" },
-    });
+    }));
   }
   return assets;
+}
+
+/**
+ * Store bytes that have already been downloaded by a trusted provider client.
+ * iLink media is downloaded and decrypted before it reaches this boundary, so
+ * it must use the same MIME/signature/path checks as external attachments.
+ */
+export async function ingestChannelAttachmentBytes({
+  filename,
+  bytes,
+  contentType = null,
+  projectPath,
+  projectId,
+  terminalId,
+} = {}) {
+  if (!projectPath || !projectId || !terminalId) throw attachmentError("channel_attachment_binding_required");
+  const safeName = safeFilename(filename);
+  if (!safeName) throw attachmentError("invalid_channel_attachment");
+  if (ACTIVE_EXTENSIONS.has(extname(safeName).toLowerCase())) throw attachmentError("active_channel_attachment_refused");
+  const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes ?? []);
+  if (!buffer.length) throw attachmentError("channel_attachment_empty");
+  if (buffer.length > MAX_CHANNEL_ATTACHMENT_BYTES) throw attachmentError("channel_attachment_too_large");
+  const classification = resolveAssetCapabilities(safeName);
+  assertContentType(contentType, classification.mimeType);
+  assertSignature(buffer, classification.mimeType);
+  const stored = storeConfinedAttachment({ projectPath, filename: safeName, bytes: buffer });
+  const digest = createHash("sha256").update(buffer).digest("hex");
+  return {
+    id: `asset_${digest.slice(0, 24)}`,
+    projectId,
+    terminalId,
+    path: stored.path,
+    family: classification.family,
+    hash: `sha256:${digest}`,
+    version: digest,
+    size: buffer.length,
+    resourceClass: buffer.length > 10 * 1024 * 1024 ? "large" : buffer.length > 1024 * 1024 ? "medium" : "small",
+    capabilities: classification.capabilities ?? [],
+    readiness: { state: "ready" },
+  };
 }
 
 async function readBoundedBody(body, limit) {

@@ -36,7 +36,7 @@ const screenshotResult = browserAutomation.driver
 // Top-level nav surfaces (stable keys) the console must expose. Labels are
 // localized and therefore no longer live as English literals in sections.ts.
 const NAV_SURFACES = [
-  "dashboard", "projects", "task", "automation", "agentSkills", "invocations",
+  "dashboard", "projects", "task", "externalWork", "automation", "agentSkills", "invocations",
   "agents", "devices", "discovery", "integrations", "tools", "review",
   "applications", "economics", "audit"
 ];
@@ -211,6 +211,45 @@ async function captureScreenshots(driver) {
             }
             return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(scenario.state) });
           });
+          if (scenario.homeFixture) {
+            await page.route("**/api/work-items**", (route) => {
+              const path = new URL(route.request().url()).pathname;
+              const workItemId = path.match(/^\/api\/work-items\/([^/]+)$/)?.[1];
+              const body = path.endsWith("/home-workbench")
+                ? scenario.homeFixture.workbench
+                : path.endsWith("/comments")
+                  ? { comments: [] }
+                  : workItemId
+                    ? (() => {
+                        const decodedId = decodeURIComponent(workItemId);
+                        const workItem = scenario.homeFixture.workItems.find((item) => item.id === decodedId);
+                        const homeItem = scenario.homeFixture.workbench.items.find((item) => item.workItemId === decodedId);
+                        const retryable = homeItem?.executionState === "failed" && homeItem.nextAction.kind === "retry";
+                        return {
+                          workItem: retryable ? { ...workItem, executionState: "failed" } : workItem,
+                          observability: retryable
+                            ? { latestRun: { id: homeItem.nextAction.targetId, status: "failed" } }
+                            : null,
+                        };
+                      })()
+                    : { workItems: scenario.homeFixture.workItems, count: scenario.homeFixture.workItems.length, hasMore: false, nextCursor: null };
+              return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+            });
+          }
+          if (scenario.externalFixture) {
+            await page.route(/\/api\/projects\/[^/]+\/github(?:\?.*)?$/, (route) => route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({
+                available: true,
+                message: "",
+                items: [
+                  { type: "issue", number: 42, title: "Investigate the authentication regression", headRefName: null, author: "alex", url: "https://example.test/issues/42", state: "open" },
+                  { type: "pr", number: 43, title: "Harden authentication boundaries", headRefName: "fix/auth-boundary", author: "alex", url: "https://example.test/pulls/43", state: "open" },
+                ],
+              }),
+            }));
+          }
           if (scenario.reportFixture) {
             await page.route(/\/api\/work-items(?:[/?].*)?$/, (route) => fulfillReportFixture(route, scenario.reportFixture));
           }
@@ -239,7 +278,7 @@ async function captureScreenshots(driver) {
             path: relativeArtifactPath(filePath),
             assertions: { noHorizontalOverflow: true, nonBlank: true, keyPanelsVisible: !scenario.disconnected },
           });
-          if (scenario.name === "ready") {
+          if (["ready", "home-workbench"].includes(scenario.name)) {
             const board = page.locator('[data-testid="daily-work-board"]:visible');
             await board.waitFor({ timeout: 15_000 });
             await board.scrollIntoViewIfNeeded();
@@ -247,10 +286,11 @@ async function captureScreenshots(driver) {
             if (!boardBox || boardBox.width > viewport.width + 1) {
               throw new Error(`daily-work-board/${viewport.name} exceeds its viewport width`);
             }
-            const boardPath = resolve(screenshotDir, `daily-work-board-${viewport.name}.png`);
+            const boardName = scenario.name === "home-workbench" ? "home-workbench-board" : "daily-work-board";
+            const boardPath = resolve(screenshotDir, `${boardName}-${viewport.name}.png`);
             await board.screenshot({ path: boardPath });
             screenshots.push({
-              scenario: "daily-work-board",
+              scenario: boardName,
               viewport: viewport.name,
               path: relativeArtifactPath(boardPath),
               assertions: { noHorizontalOverflow: true, nonBlank: true, keyPanelsVisible: true },
@@ -316,12 +356,64 @@ function visualScenarios(baseline) {
       events: [{ id: `evt_${status}`, invocationId: run.id, type: "log", level: status === "failed" ? "error" : "info", message: status === "running" ? "Inspecting the authentication boundary." : "Run reached its final state.", data: { agentId: codexAgent.id }, createdAt: now }],
     };
   };
+  const homeFixture = homeWorkbenchFixture(ready.projects?.[0]?.id ?? null);
+  const homeState = {
+    ...structuredClone(ready),
+    workItemSummary: {
+      total: homeFixture.workItems.length,
+      open: homeFixture.workItems.length,
+      blocked: 0,
+      activeExecutions: 4,
+      updatedAt: homeFixture.workbench.generatedAt,
+      homeWorkbenchUpdatedAt: homeFixture.workbench.generatedAt,
+    },
+  };
   const scenarios = [
     { name: "empty", state: { ...structuredClone(ready), agents: [], device: { ...ready.device, status: "offline" } }, invocationId: null },
     { name: "ready", state: structuredClone(ready), invocationId: null },
+    {
+      name: "home-workbench",
+      state: structuredClone(homeState),
+      invocationId: null,
+      homeFixture,
+    },
+    {
+      name: "local-task-center",
+      state: structuredClone(homeState),
+      invocationId: null,
+      section: "task",
+      homeFixture,
+    },
+    {
+      name: "external-work",
+      state: {
+        ...structuredClone(homeState),
+        projectTargets: [{ projectId: ready.projects?.[0]?.id ?? "prj_visual", state: "ready" }],
+      },
+      invocationId: null,
+      section: "externalWork",
+      homeFixture,
+      externalFixture: true,
+    },
+    { name: "work-item-summary-review", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_review" },
+    { name: "work-item-summary-completed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_completed" },
+    { name: "work-item-summary-failed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_failed" },
     { name: "running", state: withRun("running"), invocationId: "inv_visual_running" },
     { name: "succeeded", state: withRun("succeeded", { summary: "Authentication boundaries reviewed; no unsafe write was performed." }), invocationId: "inv_visual_succeeded" },
-    { name: "approval", state: withRun("waiting_for_local_approval"), invocationId: "inv_visual_waiting_for_local_approval" },
+    {
+      name: "approval",
+      state: {
+        ...withRun("waiting_for_local_approval"),
+        pendingDecisions: [{
+          id: "apr_visual",
+          kind: "invocation_approval",
+          title: "Approve the visual run",
+          section: "approvals",
+          ref: { invocationId: "inv_visual_waiting_for_local_approval" },
+        }],
+      },
+      invocationId: "inv_visual_waiting_for_local_approval",
+    },
     { name: "runtime-health", state: structuredClone(ready), invocationId: null, section: "devices" },
     ...["draft", "stale", "confirmed"].map((reportStatus) => ({
       name: `report-${reportStatus}`,
@@ -350,7 +442,9 @@ function visualScenarios(baseline) {
       selectedAgentId: scenario.name === "empty" || scenario.disconnected ? null : codexAgent.id,
       selectedInvocationId: scenario.invocationId,
       selectedProjectId: ready.projects?.[0]?.id ?? null,
-      selectedWorkItemId: scenario.reportFixture?.workItem.id ?? null,
+      selectedWorkItemId: scenario.workItemId ?? scenario.reportFixture?.workItem.id ?? null,
+      selectedWorkItemMode: scenario.reportFixture ? "expert" : "summary",
+      workItemDetailPreference: "summary",
       selectedWorkItemSection: scenario.reportFixture ? "report" : "overview",
       collapsedNavGroups: ["configure", "ledgers"],
       locale: "en-US",
@@ -372,8 +466,24 @@ async function assertVisualState(page, scenario) {
     for (const label of ["Issue #42", "Retry", "Reroute", "Take over"]) await page.getByText(label, { exact: true }).waitFor();
     return;
   }
+  if (scenario.name === "local-task-center") {
+    await page.getByRole("heading", { name: "Tasks", exact: true }).waitFor({ timeout: 15_000 });
+    const title = page.getByText("Confirm the overdue customer launch commitment and publish the recovery timeline", { exact: true });
+    await (page.viewportSize().width < 640 ? title.first() : title.last()).waitFor();
+    if (await page.getByRole("tab", { name: /Issue inbox/ }).count()) {
+      throw new Error("local task center exposes the external Issue inbox");
+    }
+    return;
+  }
+  if (scenario.name === "external-work") {
+    await page.getByRole("heading", { name: "External work", exact: true }).waitFor({ timeout: 15_000 });
+    await page.getByRole("tab", { name: /Issue inbox/ }).waitFor();
+    const title = page.getByText("Investigate the authentication regression", { exact: true });
+    await (page.viewportSize().width < 640 ? title.first() : title.last()).waitFor();
+    return;
+  }
   if (scenario.reportFixture) {
-    await page.getByRole("dialog", { name: "Local issue details" }).waitFor({ timeout: 15_000 });
+    await page.getByRole("dialog", { name: "Task details" }).waitFor({ timeout: 15_000 });
     await page.getByRole("tab", { name: "Report" }).waitFor();
     await page.getByText("Stakeholder report", { exact: true }).waitFor();
     const expected = scenario.name === "report-stale"
@@ -397,7 +507,215 @@ async function assertVisualState(page, scenario) {
     }
     return;
   }
-  await page.locator('textarea[aria-label="Task"]:visible').waitFor({ timeout: 15_000 });
+  if (scenario.name === "work-item-summary-review") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    await detail.locator('[data-testid="work-item-summary-view"]').waitFor({ timeout: 15_000 });
+    await detail.getByRole("button", { name: "Review result" }).click();
+    await detail.getByText("Delivered result", { exact: true }).waitFor();
+    await detail.getByRole("button", { name: "Request changes" }).waitFor();
+    await detail.getByRole("button", { name: "Accept and complete" }).waitFor();
+    if (await detail.getByText("People and AI coordination", { exact: true }).count()) {
+      throw new Error("simple review details repeat the removed coordination card");
+    }
+    if (await detail.getByPlaceholder("Add context, a decision, or something others should know…").count()) {
+      throw new Error("simple review details expose the comment composer before discussion is expanded");
+    }
+    return;
+  }
+  if (scenario.name === "work-item-summary-completed") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    await detail.locator('[data-testid="work-item-summary-view"]').waitFor({ timeout: 15_000 });
+    await detail.getByText("Review the final result and your confirmation", { exact: true }).waitFor();
+    await detail.getByRole("status", { name: "This work is complete" }).waitFor();
+    if (await detail.getByText("Current progress", { exact: true }).count()) {
+      throw new Error("completed simple details repeat the generic progress card");
+    }
+    const resultActions = detail.getByRole("button", { name: "View result" });
+    if (await resultActions.count() !== 1) {
+      throw new Error(`completed simple details expected one result action, found ${await resultActions.count()}`);
+    }
+    await resultActions.click();
+    await detail.getByText("Delivered result", { exact: true }).waitFor();
+    await detail.getByRole("button", { name: "Hide result" }).waitFor();
+    return;
+  }
+  if (scenario.name === "work-item-summary-failed") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    await detail.locator('[data-testid="work-item-summary-view"]').waitFor({ timeout: 15_000 });
+    await detail.getByRole("button", { name: "Retry AI work" }).click();
+    await page.getByRole("dialog", { name: "Retry AI work?" }).waitFor();
+    await page.getByText(/additional run time and cost/).waitFor();
+    return;
+  }
+  await page.locator('[data-testid="home-task-composer"] textarea[aria-label="Create a task"]:visible').waitFor({ timeout: 15_000 });
+  if (scenario.name === "home-workbench") {
+    const myWork = page.locator('[data-testid="my-work-section"]');
+    const aiWork = page.locator('[data-testid="ai-work-section"]');
+    await myWork.waitFor({ timeout: 15_000 });
+    await aiWork.waitFor({ state: "attached", timeout: 15_000 });
+    const actionQueue = page.locator('[data-testid="unified-action-queue"]:visible');
+    const dailyBrief = page.locator('[data-testid="daily-coordination-brief"]:visible');
+    await dailyBrief.getByText("Today's coordination brief", { exact: true }).waitFor();
+    if (await actionQueue.count()) throw new Error("home-workbench repeats the action queue before the user requests today's plan");
+    const [briefBox, composerBox] = await Promise.all([
+      dailyBrief.boundingBox(),
+      page.locator('[data-testid="home-task-composer"]:visible').boundingBox(),
+    ]);
+    // Desktop uses a two-column first viewport (same top edge); mobile stacks
+    // the brief above the composer. Only flag an actual inversion.
+    if (!briefBox || !composerBox || briefBox.y > composerBox.y + 1) {
+      throw new Error("home-workbench coordination brief is rendered after the task composer");
+    }
+    const firstActionButton = dailyBrief.getByRole("button", { name: "Start first action" });
+    if (await firstActionButton.count() === 0) {
+      throw new Error(`home-workbench coordination brief has no first action: ${await dailyBrief.innerText()}`);
+    }
+    await firstActionButton.click();
+    const focusSession = page.getByRole("dialog", { name: "Focus session" });
+    await focusSession.waitFor();
+    await focusSession.getByText(/Item 1 of \d+/).waitFor();
+    await page.keyboard.press("Escape");
+    await dailyBrief.getByRole("button", { name: "Review today's actions" }).click();
+    await actionQueue.waitFor({ timeout: 15_000 });
+    await actionQueue.getByText("Needs my action now", { exact: true }).waitFor();
+    await actionQueue.getByRole("dialog").getByRole("button", { name: "Show fewer" }).click();
+    await actionQueue.waitFor({ state: "hidden", timeout: 15_000 });
+    // The workbench keeps one board panel visible at a time. Exercise both
+    // tabs explicitly so the assertions match the accessible interaction
+    // model rather than relying on hidden duplicate DOM.
+    await page.locator('[data-testid="my-work-status-cards"]:visible').waitFor({ timeout: 15_000 });
+    await page.locator('[data-testid="other-completion-column"]:visible').waitFor({ timeout: 15_000 });
+    await page.getByRole("tab", { name: "AI tasks" }).click();
+    await page.locator('[data-testid="ai-work-status-cards"]:visible').waitFor({ timeout: 15_000 });
+    await page.locator('[data-testid="active-ai-work"]:visible').waitFor({ timeout: 15_000 });
+    await page.locator('[data-testid="other-execution-column"]:visible').waitFor({ timeout: 15_000 });
+    await page.getByRole("tab", { name: "My tasks" }).click();
+    const viewTaskButton = myWork.getByRole("button", { name: "View task" }).first();
+    await viewTaskButton.click();
+    const taskDetail = page.getByRole("dialog", { name: "Task details" });
+    await taskDetail.locator('[data-testid="work-item-summary-view"]').waitFor({ timeout: 15_000 });
+    await taskDetail.getByRole("button", { name: "Technical and audit details" }).waitFor();
+    const collaborationPath = taskDetail.locator('[data-testid="work-item-collaboration-path"]');
+    await collaborationPath.waitFor();
+    const collaborationText = await collaborationPath.innerText();
+    if (!["My plan", "AI execution", "My confirmation"].every((label) => collaborationText.includes(label))) {
+      throw new Error("ordinary task detail does not explain the personal-to-AI collaboration handoff");
+    }
+    await taskDetail.getByText("Both views represent this same task.", { exact: false }).waitFor();
+    await taskDetail.getByText("AI execution is scheduled after the expected completion date and may delay delivery.", { exact: true }).waitFor();
+    if (new URL(page.url()).searchParams.get("section") !== "dashboard") {
+      throw new Error("home-workbench replaces Home with the task list before opening task details");
+    }
+    if ((await taskDetail.innerText()).includes("Task cockpit") || (await taskDetail.innerText()).includes("Revision")) {
+      throw new Error("home-workbench exposes expert audit content in the ordinary task detail");
+    }
+    await taskDetail.getByRole("button", { name: "Close" }).click();
+    await taskDetail.waitFor({ state: "hidden" });
+    if (!await viewTaskButton.evaluate((element) => document.activeElement === element)) {
+      throw new Error("ordinary task detail does not restore focus to the action that opened it");
+    }
+    const reviewCard = myWork.locator('[data-work-item-id="lwi_visual_review"][data-work-view="my"]');
+    await reviewCard.getByRole("button", { name: "Review a completed AI result before reporting it to leadership" }).click();
+    await taskDetail.locator('[data-testid="work-item-summary-view"]').waitFor({ timeout: 15_000 });
+    await taskDetail.getByRole("button", { name: "Review result" }).click();
+    if (!await taskDetail.getByText("Delivered result", { exact: true }).count()) {
+      throw new Error(`review-ready task did not render the simple delivery preview: ${await taskDetail.innerText()}`);
+    }
+    await taskDetail.getByText("2 passed · 0 need review", { exact: true }).waitFor();
+    await taskDetail.getByText("leadership-update.md", { exact: true }).waitFor();
+    if (new URL(page.url()).searchParams.get("section") !== "dashboard") {
+      throw new Error("reviewing a delivered result unexpectedly leaves Home");
+    }
+    await taskDetail.getByRole("button", { name: "Close" }).click();
+    await page.getByRole("heading", { name: "Other completion dates", exact: true }).waitFor();
+    await page.getByText("Expected completion · Yesterday / Today / Tomorrow / Other completion dates", { exact: true }).waitFor();
+    await page.getByRole("tab", { name: "AI tasks" }).click();
+    await page.getByRole("heading", { name: "Other execution dates / unscheduled", exact: true }).waitFor();
+    await page.getByRole("tab", { name: "My tasks" }).click();
+    await page.getByText("People ownership and expected completion for the same Issues", { exact: false }).waitFor();
+    await page.getByRole("tab", { name: "AI tasks" }).click();
+    await page.getByText("AI execution dates and states for the same Issues", { exact: true }).waitFor();
+    await page.getByRole("tab", { name: "My tasks" }).click();
+    if (await page.getByText("AI execution is after expected completion", { exact: true }).count() < 2) {
+      throw new Error("home-workbench does not surface the schedule conflict in both Issue views");
+    }
+    if (await page.getByText("Swipe horizontally to view all 4 columns", { exact: true }).count() !== 2) {
+      throw new Error("home-workbench does not expose a horizontal navigation cue for both four-column boards");
+    }
+    if (await page.evaluate(() => window.innerWidth < 1024)) {
+      await page.getByRole("tab", { name: "My tasks" }).click();
+      const myScroll = await page.locator('[data-testid="my-date-columns"]:visible').evaluate((element) => ({ left: element.scrollLeft, width: element.scrollWidth, client: element.clientWidth }));
+      const myToday = await page.locator('[data-testid="today-completion-column"]:visible').boundingBox();
+      await page.getByRole("tab", { name: "AI tasks" }).click();
+      await page.waitForTimeout(250);
+      const aiScroll = await page.locator('[data-testid="ai-date-columns"]:visible').evaluate((element) => ({ left: element.scrollLeft, width: element.scrollWidth, client: element.clientWidth }));
+      const aiToday = await page.locator('[data-testid="today-execution-column"]:visible').boundingBox();
+      if (!myToday || !aiToday) {
+        throw new Error(`home-workbench mobile boards did not render Today columns (scroll ${myScroll.left}/${aiScroll.left})`);
+      }
+      await page.getByRole("tab", { name: "My tasks" }).click();
+    }
+    const assertChronological = async (tabName, testIds) => {
+      await page.getByRole("tab", { name: tabName }).click();
+      const leftEdges = await Promise.all(testIds.map(async (testId) => {
+        const box = await page.locator(`[data-testid="${testId}"]:visible`).boundingBox();
+        return box?.x ?? Number.NaN;
+      }));
+      if (leftEdges.some((left, index) => index > 0 && left <= leftEdges[index - 1])) {
+        throw new Error(`home-workbench columns are not chronological: ${testIds.join(", ")}`);
+      }
+    };
+    await assertChronological("My tasks", ["yesterday-completion-column", "today-completion-column", "tomorrow-completion-column", "other-completion-column"]);
+    await assertChronological("AI tasks", ["yesterday-execution-column", "today-execution-column", "tomorrow-execution-column", "other-execution-column"]);
+    await page.getByRole("tab", { name: "My tasks" }).click();
+    for (const label of ["My tasks", "AI tasks", "Child learning"]) {
+      await page.getByText(label, { exact: true }).first().waitFor();
+    }
+    await page.getByRole("tab", { name: "AI tasks" }).click();
+    for (const label of ["AI execution date", "Awaiting approval", "Ready for review", "Execution failed"]) {
+      await page.getByText(label, { exact: true }).first().waitFor();
+    }
+    await page.getByRole("tab", { name: "My tasks" }).click();
+    await page.getByText("Expected completion", { exact: false }).first().waitFor();
+    if ((await myWork.innerText()).includes("Codex")) {
+      throw new Error("home-workbench mixes the AI agent status into My work");
+    }
+    if (!(await aiWork.innerText()).includes("Codex")) {
+      throw new Error("home-workbench does not expose the AI agent inside AI work");
+    }
+    await dailyBrief.getByRole("button", { name: "Review today's actions" }).click();
+    await actionQueue.waitFor({ timeout: 15_000 });
+    const adjustExecution = actionQueue.getByRole("dialog").getByRole("button", { name: "Adjust execution date" });
+    await adjustExecution.click();
+    await page.getByRole("dialog", { name: "Schedule AI execution" }).waitFor();
+    await page.keyboard.press("Escape");
+    if (await actionQueue.isVisible()) {
+      await actionQueue.getByRole("dialog").getByRole("button", { name: "Show fewer" }).click();
+      await actionQueue.waitFor({ state: "hidden", timeout: 15_000 });
+    }
+    const myApproval = myWork.locator('[data-work-view="my"][data-work-item-id="lwi_visual_approval"]');
+    await page.getByRole("tab", { name: "AI tasks" }).click();
+    const runningFilter = aiWork.getByRole("button", { name: /Running$/ }).first();
+    await runningFilter.click();
+    if (await aiWork.locator('[data-work-view="ai"][data-work-item-id="lwi_visual_approval"]').count()) {
+      throw new Error("home-workbench AI filter did not hide the approval card before cross-board location");
+    }
+    await page.getByRole("tab", { name: "My tasks" }).click();
+    await myApproval.waitFor({ timeout: 15_000 });
+    await myApproval.getByRole("button", { name: "Locate in AI tasks" }).click();
+    const aiApproval = aiWork.locator('[data-work-view="ai"][data-work-item-id="lwi_visual_approval"]');
+    await page.waitForFunction((id) => document.querySelector(`[data-work-view="ai"][data-work-item-id="${id}"]`)?.className.includes("ring-primary/35"), "lwi_visual_approval");
+    if (await runningFilter.getAttribute("aria-pressed") !== "true") {
+      throw new Error("home-workbench cross-board location cleared the active AI filter");
+    }
+    await aiWork.getByText("Temporarily showing this Issue without changing your filter", { exact: true }).waitFor();
+    await aiApproval.getByRole("button", { name: "Locate in My tasks" }).click();
+    await page.waitForFunction((id) => document.querySelector(`[data-work-view="my"][data-work-item-id="${id}"]`)?.className.includes("ring-primary/35"), "lwi_visual_approval");
+    const body = await page.locator("body").innerText();
+    for (const internal of ["waiting_for_local_approval", "report_posted"]) {
+      if (body.includes(internal)) throw new Error(`home-workbench exposes internal status ${internal}`);
+    }
+  }
   const expectedHomeState = {
     empty: "idle",
     ready: "idle",
@@ -405,11 +723,13 @@ async function assertVisualState(page, scenario) {
     // Completed invocations remain available in history, but Home intentionally
     // returns to the idle composer instead of keeping a stale result banner.
     succeeded: "idle",
-    approval: "approval",
+    // Approval is represented by the compact approval card on Home; the
+    // generic work-state banner is intentionally suppressed.
+    approval: null,
   }[scenario.name];
   if (expectedHomeState) {
     if (expectedHomeState === "idle") {
-      await page.locator('[data-home-primary-action="run"]:visible').waitFor();
+      await page.locator('[data-home-create-action="create-ai"]:visible').waitFor();
       if (await page.locator("[data-home-work-state]:visible").count() !== 0) {
         throw new Error(`${scenario.name} renders a work-state banner while idle`);
       }
@@ -417,17 +737,105 @@ async function assertVisualState(page, scenario) {
       await page.locator(`[data-home-work-state="${expectedHomeState}"]:visible`).waitFor();
     }
   }
-  const primaryAction = page.locator("[data-home-primary-action]:visible");
+  const primaryAction = expectedHomeState && expectedHomeState !== "idle"
+    ? page.locator(`[data-home-work-state="${expectedHomeState}"] [data-home-primary-action]:visible`)
+    : page.locator('[data-home-create-action="create-ai"]:visible');
   await primaryAction.waitFor();
   const actionBox = await primaryAction.boundingBox();
-  if (!actionBox || actionBox.y + actionBox.height > page.viewportSize().height) {
+  if (!actionBox || (expectedHomeState && expectedHomeState !== "idle" && actionBox.y + actionBox.height > page.viewportSize().height)) {
     throw new Error(`${scenario.name} hides the primary task action below the viewport`);
   }
-  await page.locator("summary:visible", { hasText: "What to know before running" }).click();
-  for (const label of ["Project", "Agent"]) await page.locator(`select[aria-label="${label}"]:visible`).waitFor();
-  for (const text of ["Safety", "Data", "Cost", "Computer"]) {
-    await page.locator("p:visible, dt:visible", { hasText: new RegExp(`^${text}$`) }).first().waitFor();
+  if (scenario.name === "approval") {
+    await page.getByTestId("ai-approval-card").waitFor({ timeout: 15_000 });
+    if (await page.locator("[data-home-work-state]:visible").count() !== 0) {
+      throw new Error("approval renders a duplicate Home work-state banner alongside the approval card");
+    }
   }
+  // The Home composer exposes optional project/date/criteria context under a
+  // plain-language progressive disclosure. Keep this assertion tied to the
+  // current entry surface instead of a retired workspace-only wording.
+  const contextSummary = page.getByText("More options", { exact: true });
+  await contextSummary.waitFor();
+  if (await contextSummary.locator("xpath=ancestor::details[1]").getAttribute("open") !== null) {
+    throw new Error(`${scenario.name} opens task context/material controls on the ordinary Home surface`);
+  }
+}
+
+function homeWorkbenchFixture(projectId) {
+  const now = new Date();
+  const date = (offset) => {
+    const value = new Date(now);
+    value.setHours(12, 0, 0, 0);
+    value.setDate(value.getDate() + offset);
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  };
+  const generatedAt = now.toISOString();
+  const baseItem = (id, localRef, title, overrides = {}) => ({
+    id, localRef, projectId, title, body: "", type: "task", status: "ready", priority: "p2", state: "open",
+    labels: [], assigneeIds: ["usr_local"], requesterRelation: "customer", requesterName: "Alex Morgan",
+    requesterOrganization: "Acme", requesterUserId: null, intakeChannel: "meeting", externalReference: null,
+    waitingOn: "none", commitmentDate: null, nextFollowUpAt: null, lastProgressAt: null, lastProgressSummary: null,
+    acceptanceCriteria: [], dueDate: date(0), milestone: "", estimatePoints: 1, revision: 1, archivedAt: null,
+    plannedDate: date(0), updatedAt: generatedAt, ...overrides,
+  });
+  const rows = [
+    baseItem("lwi_visual_overdue", "LOCAL-101", "Confirm the overdue customer launch commitment and publish the recovery timeline", { priority: "p0", dueDate: date(-1), commitmentDate: new Date(now.getTime() - 86_400_000).toISOString(), waitingOn: "me" }),
+    baseItem("lwi_visual_approval", "LOCAL-102", "Approve the governed production verification step", { priority: "p1", plannedDate: date(1), waitingOn: "me" }),
+    baseItem("lwi_visual_failed", "LOCAL-103", "Repair the failed child learning summary generation", { status: "blocked", executionState: "failed", plannedDate: date(-1), requesterRelation: "child", requesterName: null, requesterOrganization: null, waitingOn: "ai" }),
+    baseItem("lwi_visual_review", "LOCAL-104", "Review a completed AI result before reporting it to leadership", {
+      status: "review", executionState: "completed", dueDate: date(1), waitingOn: "me",
+      lastProgressSummary: "AI prepared the leadership update and verified the launch facts.",
+      acceptanceCriteria: ["Leadership-ready summary", "Launch facts verified"],
+      acceptanceResults: [
+        { criterion: "Leadership-ready summary", status: "passed", note: "Ready for review", verificationId: "ver_visual_1" },
+        { criterion: "Launch facts verified", status: "passed", note: "Facts checked", verificationId: "ver_visual_2" },
+      ],
+      outputAssets: [{ id: "asset_visual_report", path: "reports/leadership-update.md", family: "markdown", terminalId: "local", hash: null, version: null, capabilities: ["asset.read"], readiness: { state: "ready", reason: "ready" } }],
+    }),
+    baseItem("lwi_visual_completed", "LOCAL-106", "Share the approved leadership update with the launch team", {
+      status: "completed", state: "closed", executionState: "completed", dueDate: date(0), waitingOn: "none",
+      lastProgressSummary: "The leadership update was approved and the task was completed.",
+      acceptanceCriteria: ["Leadership-ready summary", "Launch facts verified"],
+      acceptanceResults: [
+        { criterion: "Leadership-ready summary", status: "passed", note: "Approved", verificationId: "ver_visual_3" },
+        { criterion: "Launch facts verified", status: "passed", note: "Facts checked", verificationId: "ver_visual_4" },
+      ],
+      outputAssets: [{ id: "asset_visual_completed_report", path: "reports/approved-leadership-update.md", family: "markdown", terminalId: "local", hash: null, version: null, capabilities: ["asset.read"], readiness: { state: "ready", reason: "ready" } }],
+    }),
+    baseItem("lwi_visual_long", "LOCAL-105", "Coordinate an unusually long cross-organization delivery commitment without losing the meaningful end of this title on a narrow mobile screen", { dueDate: date(2), plannedDate: date(3), requesterName: "A requester with a very long organization-facing display name", requesterRelation: "manager" }),
+  ];
+  const home = ({ id, executionState, attentionReason, waitingOn, nextAction, ai, secondaryReasons = [] }) => {
+    const item = rows.find((candidate) => candidate.id === id);
+    return {
+      workItemId: item.id, localRef: item.localRef, title: item.title, projectId, revision: item.revision,
+      priority: item.priority, assignees: [{ id: "usr_local", name: "Me" }],
+      requester: { relation: item.requesterRelation, name: item.requesterName, organization: item.requesterOrganization },
+      planningStatus: item.status, executionState, waitingOn, attentionReason, secondaryReasons,
+      needsAttention: ["overdue", "approval_required", "ai_failed", "review_ready"].includes(attentionReason),
+      dueDate: item.dueDate, plannedDate: item.plannedDate, commitmentDate: item.commitmentDate, nextFollowUpAt: item.nextFollowUpAt,
+      nextAction, ai,
+    };
+  };
+  const ai = (status, id) => ({ autoRunId: id.startsWith("aur") ? id : null, invocationId: id.startsWith("inv") ? id : `inv_${id}`, agentId: "agt_visual_codex", agentName: "Codex CLI", status, updatedAt: generatedAt });
+  const items = [
+    home({ id: "lwi_visual_overdue", executionState: "running", attentionReason: "overdue", waitingOn: "me", secondaryReasons: ["ai_running"], nextAction: { kind: "open_run", label: "open_run", targetId: "aur_overdue", section: "autoRuns" }, ai: ai("running", "aur_overdue") }),
+    home({ id: "lwi_visual_approval", executionState: "awaiting_approval", attentionReason: "approval_required", waitingOn: "me", nextAction: { kind: "open_approval", label: "review_approval", targetId: "apr_visual", section: "approvals" }, ai: ai("waiting_for_local_approval", "inv_approval") }),
+    home({ id: "lwi_visual_failed", executionState: "failed", attentionReason: "ai_failed", waitingOn: "ai", nextAction: { kind: "retry", label: "retry", targetId: "aur_failed", section: "autoRuns" }, ai: ai("failed", "aur_failed") }),
+    home({ id: "lwi_visual_review", executionState: "completed", attentionReason: "review_ready", waitingOn: "me", nextAction: { kind: "review_result", label: "review_result", targetId: "aur_review", section: "autoRuns" }, ai: ai("report_posted", "aur_review") }),
+    home({ id: "lwi_visual_long", executionState: "unclaimed", attentionReason: "planned", waitingOn: "none", nextAction: { kind: "open_issue", label: "open_issue", targetId: "lwi_visual_long", section: "task" }, ai: null }),
+  ];
+  return {
+    workItems: rows,
+    workbench: {
+      generatedAt, horizon: { today: date(0), tomorrow: date(1) },
+      summary: {
+        total: items.length, needsAttention: 4, waitingMe: 3, approvals: 1, aiFailed: 1, dueToday: 2, reviewReady: 1,
+        byRelation: { boss: 0, manager: 1, customer: 3, child: 1, colleague: 0, self: 0, unknown: 0 },
+        byWaitingOn: { me: 3, requester: 0, internal: 0, ai: 1, none: 1 },
+      },
+      items,
+    },
+  };
 }
 
 function reportVisualFixture(status, projectId) {
@@ -564,7 +972,7 @@ function contentType(extension) {
 }
 
 async function waitForApi(apiUrl) {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     try {
       await fetchJson(`${apiUrl}/health`);

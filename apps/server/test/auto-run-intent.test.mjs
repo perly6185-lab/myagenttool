@@ -54,6 +54,20 @@ test("design-artifact titles (mockup/wireframe) classify as investigation → de
   assert.equal(classifyIntentFromText("Redesign the login button styles"), "change");
 });
 
+test("exploration intent routes onboarding/experience tasks to the evaluate path", () => {
+  assert.equal(classifyIntentFromText("Onboard a new project"), "exploration");
+  assert.equal(classifyIntentFromText("Walkthrough for the new CLI"), "exploration");
+  assert.equal(classifyIntentFromText("Try out the demo app"), "exploration");
+  assert.equal(classifyIntentFromText("Usage report for project X"), "exploration");
+  assert.equal(classifyIntentFromText("Run a trial run"), "exploration");
+  assert.equal(classifyIntentFromText("Quick start for the API"), "exploration");
+  // Body-aware: exploration words in the body also trigger exploration intent
+  assert.equal(classifyIntentFromText("New tool", "onboarding experience report"), "exploration");
+  // Not exploration — generic evaluate/investigate words stay in their lanes
+  assert.notEqual(classifyIntentFromText("Evaluate a few options"), "exploration");
+  assert.notEqual(classifyIntentFromText("Assess the impact of the change"), "exploration");
+});
+
 test("isAutoRunIntent guards the injected-classifier contract", () => {
   assert.equal(isAutoRunIntent("investigation"), true);
   assert.equal(isAutoRunIntent("nonsense"), false);

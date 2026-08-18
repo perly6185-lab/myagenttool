@@ -75,10 +75,20 @@ test("#1356: the bridge manifest detects the excalidraw-cli runtime — availabl
 
 test("authentication probes publish only normalized status and method", async () => {
   const calls = [];
+  const codexEnvironment = {
+    CODEX_HOME: "C:\\Users\\demo\\.codex",
+    USERPROFILE: "C:\\Users\\demo",
+  };
   const rows = await collectApplicationBinaryReadiness(createLocalExecutionPolicyManifest(), {
     now: () => "2026-07-19T00:00:00.000Z",
     resolveBinary: (command) => command === "codex",
-    runVersion: async () => "codex-cli 0.144.6",
+    environmentForCommand: (command) => command === "codex" ? codexEnvironment : undefined,
+    runVersion: async (command, args, env) => {
+      assert.equal(command, "codex");
+      assert.deepEqual(args, ["--version"]);
+      assert.equal(env, codexEnvironment);
+      return "codex-cli 0.144.6";
+    },
     runAuthentication: async (...args) => {
       calls.push(args);
       return { status: "authenticated", method: "api_key" };
@@ -95,7 +105,7 @@ test("authentication probes publish only normalized status and method", async ()
     authenticationMethod: "api_key",
     checkedAt: "2026-07-19T00:00:00.000Z",
   });
-  assert.deepEqual(calls, [["codex", ["login", "status"], "exit-code"]]);
+  assert.deepEqual(calls, [["codex", ["login", "status"], "exit-code", codexEnvironment]]);
 });
 
 test("candidate probes mark setup-only tools available when a fallback succeeds", async () => {

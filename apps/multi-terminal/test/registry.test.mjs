@@ -15,7 +15,9 @@ test("registry persists references but never raw credentials", async () => {
   const disk = await readFile(file, "utf8");
   assert.match(disk, /STUDIO_OBSERVER_TOKEN/);
   assert.doesNotMatch(disk, /secret-value/);
-  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  // Windows does not expose POSIX owner/group mode bits and reports the
+  // writable file as 0666 even when writeFile received mode 0600.
+  if (process.platform !== "win32") assert.equal((await stat(file)).mode & 0o777, 0o600);
   const materialized = materializeTerminal(registry.list()[0], { STUDIO_OBSERVER_TOKEN: "secret-value", STUDIO_OPERATOR_TOKEN: "operator-value" });
   assert.equal(materialized.observerToken, "secret-value");
   assert.equal(materialized.operatorToken, "operator-value");

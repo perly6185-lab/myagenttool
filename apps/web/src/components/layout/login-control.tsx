@@ -1,49 +1,32 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useRefreshConsoleState } from "@/data/use-console-state";
-import {
-  getCurrentSession,
-  getSessionUser,
-  SESSION_CHANGED_EVENT,
-  type SessionUser,
-} from "@/lib/api-client";
+import type { SessionUser } from "@/lib/api-client";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { cn } from "@/lib/cn";
-import { useUiStore } from "@/store/ui-store";
+import { useSessionUser } from "@/hooks/use-session-user";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
 
 const IdentityAccountPanel = lazy(() => import("@/features/me/identity-account-panel")
   .then((module) => ({ default: module.IdentityAccountPanel })));
 const IdentityEntryPanel = lazy(() => import("@/features/me/identity-entry-panel")
   .then((module) => ({ default: module.IdentityEntryPanel })));
 
-function useSessionUser() {
-  const [user, setUser] = useState<SessionUser | null>(() => getSessionUser());
-  useEffect(() => {
-    const sync = () => setUser(getSessionUser());
-    window.addEventListener(SESSION_CHANGED_EVENT, sync);
-    void getCurrentSession().catch(() => undefined);
-    return () => window.removeEventListener(SESSION_CHANGED_EVENT, sync);
-  }, []);
-  return [user, setUser] as const;
-}
-
 /** Identity entry in the top bar; the expanded form is the Me account surface. */
 export function LoginControl({ expanded = false }: { expanded?: boolean }) {
   const { t } = useAppTranslation();
-  const [user, setUser] = useSessionUser();
+  const user = useSessionUser();
   const [open, setOpen] = useState(false);
-  const setSection = useUiStore((state) => state.setSection);
+  const navigate = usePageNavigation();
   const refresh = useRefreshConsoleState();
 
-  function signedIn(next: SessionUser) {
-    setUser(next);
+  function signedIn(_next: SessionUser) {
     setOpen(false);
     void refresh();
   }
 
   function signedOut() {
-    setUser(null);
     void refresh();
   }
 
@@ -62,7 +45,7 @@ export function LoginControl({ expanded = false }: { expanded?: boolean }) {
       {user ? (
         <button
           type="button"
-          onClick={() => setSection("me")}
+          onClick={() => navigate("me")}
           className="hidden items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground sm:flex"
           aria-label={t("identityAccount.open")}
         >

@@ -14,12 +14,14 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.2",
     "@myagenttool/adapters": "workspace:*",
     "@myagenttool/protocol": "workspace:*",
     "@myagenttool/shared": "workspace:*",
+    "@openai/codex": "0.146.0-alpha.3",
     "exceljs": "^4.4.0",
     "parse5": "^7.3.0",
-    "pdfjs-dist": "^6.1.200",
+    "pdfjs-dist": "^6.2.108",
     "yaml": "^2.8.1"
   },
   "devDependencies": {

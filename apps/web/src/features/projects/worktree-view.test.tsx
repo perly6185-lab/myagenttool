@@ -33,10 +33,27 @@ afterEach(() => {
     section: "projects",
     selectedInvocationId: null,
     selectedWorktreeId: "wt_docs",
+    officecliPreviewPath: null,
   });
 });
 
 describe("WorktreeView session history", () => {
+  it("opens a source delivery handed off from task results", async () => {
+    apiMock.fetchState.mockResolvedValue(consoleState());
+    apiMock.listWorktreeFiles.mockResolvedValue({ tree: [] });
+    apiMock.readWorktreeFile.mockResolvedValue({ content: "{\"release\":true}" });
+    apiMock.listInvocationEvents.mockResolvedValue({
+      invocationId: "inv_new", events: [], nextCursor: null, hasMore: false, retentionTruncated: false,
+    });
+    useUiStore.setState({ officecliPreviewPath: "config/release.json" });
+
+    renderWorktree();
+
+    expect(await screen.findByText('{"release":true}')).toBeTruthy();
+    expect(apiMock.readWorktreeFile).toHaveBeenCalledWith("wt_docs", "config/release.json");
+    expect(useUiStore.getState().officecliPreviewPath).toBeNull();
+  });
+
   it("defaults to the latest run and switches output when an older session is selected", async () => {
     apiMock.fetchState.mockResolvedValue(consoleState());
     apiMock.listWorktreeFiles.mockResolvedValue({

@@ -9,7 +9,7 @@ import { ingestChannelAttachmentCandidates } from "../../src/services/channel-at
 import { createChannelDeliveryService } from "../../src/services/channel-delivery.mjs";
 import { createChannelTaskContext, extendChannelTaskContext } from "../../src/services/channel-task-context.mjs";
 
-test("Channel attachment → local resolver → governed execution → output evidence → reply trace", async () => {
+test("Channel attachment → local resolver → governed execution → output evidence → plain-language reply", async () => {
   const terminalId = "terminal-1";
   const projectId = "project-1";
   const projectPath = mkdtempSync(join(tmpdir(), "channel-chain-"));
@@ -111,6 +111,7 @@ test("Channel attachment → local resolver → governed execution → output ev
     } } },
   });
   assert.equal(queued.ok, true);
-  assert.match(state.channelDeliveries[0].content, /Task task-1: completed/);
-  assert.match(state.channelDeliveries[0].content, /Trace: task-1/);
+  assert.match(state.channelDeliveries[0].content, /任务已完成/);
+  assert.match(state.channelDeliveries[0].content, /Workbook updated and preview evidence rendered\./);
+  assert.doesNotMatch(state.channelDeliveries[0].content, /Task task-1|Trace:|task-1/);
 });

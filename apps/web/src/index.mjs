@@ -11,6 +11,12 @@ const webRoot = join(__dirname, "..");
 const distDir = join(webRoot, "dist");
 const srcDir = join(webRoot, "src");
 const indexHtml = join(distDir, "index.html");
+const buildInputs = [
+  join(webRoot, "index.html"),
+  join(webRoot, "vite.config.ts"),
+  join(webRoot, "package.json"),
+  join(webRoot, "tsconfig.json"),
+];
 const host = process.env.WEB_HOST ?? "127.0.0.1";
 const port = Number(process.env.WEB_PORT ?? 3000);
 
@@ -30,12 +36,17 @@ const server = http.createServer((req, res) => {
   // Serve the built asset when it exists and stays inside dist; otherwise fall
   // back to index.html so the single-page app can route client-side.
   if (filePath.startsWith(distDir) && existsSync(filePath) && statSync(filePath).isFile()) {
-    res.writeHead(200, { "Content-Type": contentType(filePath) });
+    res.writeHead(200, {
+      "Content-Type": contentType(filePath),
+      // Always revalidate the SPA entry so a rebuilt hashed bundle is picked
+      // up immediately. Fingerprinted assets themselves are safe to cache.
+      "Cache-Control": filePath === indexHtml ? "no-store" : "public, max-age=31536000, immutable",
+    });
     createReadStream(filePath).pipe(res);
     return;
   }
 
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   createReadStream(indexHtml).pipe(res);
 });
 
@@ -45,8 +56,11 @@ server.listen(port, host, () => {
 
 // Build the SPA on demand so `pnpm dev` / acceptance "just work" after install.
 function ensureBuild() {
-  if (existsSync(indexHtml)) return;
-  console.log("[web] dist not found — building the console (vite build)…");
+  const missing = !existsSync(indexHtml);
+  const stale = !missing && latestFrontendMtime(srcDir) > statSync(indexHtml).mtimeMs;
+  const configuredAfterBuild = !missing && buildInputs.some((path) => existsSync(path) && statSync(path).mtimeMs > statSync(indexHtml).mtimeMs);
+  if (!missing && !stale && !configuredAfterBuild) return;
+  console.log(`[web] ${missing ? "dist not found" : "frontend source is newer than dist"} — building the console (vite build)…`);
   const require = createRequire(import.meta.url);
   const viteBin = resolveViteBin(webRoot, require);
   const result = spawnSync(process.execPath, [viteBin, "build"], {
@@ -56,6 +70,19 @@ function ensureBuild() {
   if (result.status !== 0 || !existsSync(indexHtml)) {
     throw new Error("[web] vite build failed; run `pnpm --filter @myagenttool/web build`.");
   }
+}
+
+function latestFrontendMtime(dir) {
+  let latest = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      latest = Math.max(latest, latestFrontendMtime(full));
+    } else if (/\.(tsx?|css)$/.test(entry.name) && !/\.(?:test|spec)\.[^.]+$/.test(entry.name)) {
+      latest = Math.max(latest, statSync(full).mtimeMs);
+    }
+  }
+  return latest;
 }
 
 function contentType(filePath) {

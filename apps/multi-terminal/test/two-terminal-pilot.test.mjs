@@ -92,7 +92,9 @@ function exited(child) {
   return new Promise((resolve) => child.once("exit", resolve));
 }
 async function waitFor(url) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  // The real server imports the full runtime graph. A cold Windows CI worker can
+  // need more than five seconds when two terminal processes start together.
+  for (let attempt = 0; attempt < 400; attempt += 1) {
     try { if ((await fetch(url)).ok) return; } catch {}
     await new Promise((resolve) => setTimeout(resolve, 50));
   }

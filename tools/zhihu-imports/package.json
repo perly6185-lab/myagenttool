@@ -1,0 +1,14 @@
+{
+  "name": "@myagenttool/zhihu-imports",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Playwright subprocess renderer for public Zhihu articles: renders the page to pass the secng/zse-ck JS challenge and returns HTML; the parent reuses the article-imports pipeline. Owns no disk writes and downloads nothing.",
+  "type": "module",
+  "dependencies": {
+    "@myagenttool/session-engine": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test ./test/*.test.mjs",
+    "import": "node ./src/cli.mjs"
+  }
+}

@@ -67,7 +67,25 @@ export function createServerState({ defaultProjectPath, now }) {
     // Channel /task requests awaiting a human "route or dismiss" decision (the
     // capture-then-promote trust model). A routed request becomes an auto-run.
     channelTaskRequests: [],
+    // Bounded natural-language routing counters. Raw classifier output is never
+    // stored; the conversation service records only this normalized aggregate.
+    channelIntentMetrics: {
+      policyVersion: "ilink-intent-v2",
+      total: 0,
+      byIntent: {},
+      bySource: {},
+      lowConfidence: 0,
+      ambiguous: 0,
+      adapterCalls: 0,
+      adapterTimeouts: 0,
+      adapterErrors: 0,
+      updatedAt: null,
+    },
     articleImportJobs: [],
+    // Login-managed site sessions (session-manager.mjs): one durable row per
+    // registered site — last probe / reseed observations only, never cookie
+    // material. Empty until the first probe/reseed records a row.
+    sessions: [],
     // When this deployment began recording refusals — the honesty anchor so a
     // genuinely-zero window after this date reads as a trustworthy 0, not "unknown".
     refusalStatsMeta: { since: now().slice(0, 10) },
@@ -135,6 +153,18 @@ export function createServerState({ defaultProjectPath, now }) {
     // — the write itself (4b) is separate.
     claudeApplyAuthorizations: [],
     applicationResults: [],
+    mailDrafts: [],
+    mailMessageStates: [],
+    mailTaskLinks: [],
+    mailClassifications: [],
+    mailClassificationJobs: [],
+    mailClassificationCorrections: [],
+    mailClassificationRules: [],
+    mailFolderMovePreviews: [],
+    mailFolderMoveJobs: [],
+    mailFolderMoveDeduplication: [],
+    mailFolderAutomations: [],
+    mailReplies: [],
     budgets: [],
     // #890: in-flight budget holds placed at admission and released on settle so
     // concurrent spend-bearing runs cannot jointly exceed a hard block budget.
@@ -150,6 +180,18 @@ export function createServerState({ defaultProjectPath, now }) {
     // Local-first planning records. These are independent of GitHub Issues and
     // may later carry one or more external bindings.
     workItems: [],
+    myTemplateRoutingFeedback: [],
+    myTemplateOutcomeFeedback: [],
+    myTemplateGovernanceInterventions: [],
+    // A completed ordinary task can seed a new personal template. These rows
+    // remain outside routineDefinitions until enough cases are reviewed and
+    // the user explicitly enables the template.
+    myTemplateDrafts: [],
+    myTemplateLearningCases: [],
+    templateLearningTasks: [],
+    // Private task-level reference material metadata. Raw bytes live beside the
+    // state store under task-materials; only bounded metadata is durable here.
+    taskMaterialDrafts: [],
     // Personal current-terminal placements for runtime Issue work that has no
     // durable local Work Item binding. Preview is pure; explicit apply writes
     // these revisioned rows so the three-day board survives restart.
@@ -244,7 +286,12 @@ export function createServerState({ defaultProjectPath, now }) {
     canvasScenes: [],
     channelEvents: [],
     channelConversations: [],
-    channelDeliveries: []
+    channelDeliveries: [],
+    channelIntakeGroups: [],
+    channelTaskThreads: [],
+    // iLink account metadata only. Bot tokens live in the credential store, not
+    // in the durable public state snapshot.
+    ilinkAccounts: [],
   };
   defineDeviceAlias(state);
   return { defaultProject, state };
@@ -288,6 +335,7 @@ export function resetStateForSelfCheck({ state, now }) {
     claudeAgent.updatedAt = now();
   }
   state.invocations = [];
+  state.sessions = [];
   state.workProfileInferences = [createInitialWorkProfileInference(state.projects[0], now)];
   state.workProfileAuditEvents = [];
   state.worktreeReviews = [];
@@ -328,6 +376,18 @@ export function resetStateForSelfCheck({ state, now }) {
   state.codexExecChangeReviews = [];
   state.claudeApplyAuthorizations = [];
   state.applicationResults = [];
+  state.mailDrafts = [];
+  state.mailMessageStates = [];
+  state.mailTaskLinks = [];
+  state.mailClassifications = [];
+  state.mailClassificationJobs = [];
+  state.mailClassificationCorrections = [];
+  state.mailClassificationRules = [];
+  state.mailFolderMovePreviews = [];
+  state.mailFolderMoveJobs = [];
+  state.mailFolderMoveDeduplication = [];
+  state.mailFolderAutomations = [];
+  state.mailReplies = [];
   state.budgets = [];
   state.decisionSoftClaims = [];
   state.issueClaims = [];
@@ -367,6 +427,21 @@ export function resetStateForSelfCheck({ state, now }) {
   state.channelEvents = [];
   state.channelConversations = [];
   state.channelDeliveries = [];
+  state.channelIntakeGroups = [];
+  state.channelTaskThreads = [];
+  state.channelIntentMetrics = {
+    policyVersion: "ilink-intent-v2",
+    total: 0,
+    byIntent: {},
+    bySource: {},
+    lowConfidence: 0,
+    ambiguous: 0,
+    adapterCalls: 0,
+    adapterTimeouts: 0,
+    adapterErrors: 0,
+    updatedAt: null,
+  };
+  state.ilinkAccounts = [];
   state.terminalRuntimeCapability = createTerminalRuntimeCapability();
 }
 
@@ -380,6 +455,7 @@ function createDefaultDevice(now) {
     defaultShell: process.platform === "win32" ? "powershell" : "bash",
     pathFormat: process.platform === "win32" ? "windows" : "posix",
     bridgeVersion: "0.0.0",
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     status: "offline",
     unlinkState: "linked",
     lastSeenAt: null,

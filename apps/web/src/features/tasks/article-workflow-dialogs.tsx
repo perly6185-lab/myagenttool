@@ -19,7 +19,7 @@ interface Messages {
 
 const messages: Record<"en" | "zh", Messages> = {
   en: {
-    provider: { wechat: "WeChat", xiaohongshu: "Xiaohongshu", zhihu: "Zhihu", juejin: "Juejin", jianshu: "Jianshu", web: "Web" },
+    provider: { wechat: "WeChat", xiaohongshu: "Xiaohongshu", zhihu: "Zhihu", qichacha: "Qichacha", juejin: "Juejin", jianshu: "Jianshu", web: "Web" },
     analysis: {
       title: "Article analysis",
       localMethod: "Extracted locally from the imported Markdown; the article is not uploaded.",
@@ -126,7 +126,7 @@ const messages: Record<"en" | "zh", Messages> = {
     },
   },
   zh: {
-    provider: { wechat: "公众号", xiaohongshu: "小红书", zhihu: "知乎", juejin: "掘金", jianshu: "简书", web: "其他网页" },
+    provider: { wechat: "公众号", xiaohongshu: "小红书", zhihu: "知乎", qichacha: "企查查", juejin: "掘金", jianshu: "简书", web: "其他网页" },
     analysis: {
       title: "文章分析",
       localMethod: "基于已导入的 Markdown 在本地提取，不会上传文章内容。",

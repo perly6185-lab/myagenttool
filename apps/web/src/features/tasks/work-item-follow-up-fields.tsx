@@ -52,7 +52,7 @@ export function WorkItemFollowUpFields({
       Object.assign(next, {
         requesterName: "", requesterOrganization: "", requesterUserId: "", waitingOn: "none" as const,
       });
-    } else if (requesterRelation === "customer") {
+    } else if (requesterRelation === "customer" || requesterRelation === "child") {
       next.requesterUserId = "";
     }
     onChange(next);
@@ -71,7 +71,7 @@ export function WorkItemFollowUpFields({
             disabled={disabled}
             onChange={(event) => setRelation(event.target.value as WorkItemRequesterRelation)}
           >
-            {(["self", "boss", "manager", "customer", "colleague", "unknown"] as const).map((relation) => (
+            {(["self", "boss", "manager", "customer", "child", "colleague", "unknown"] as const).map((relation) => (
               <option key={relation} value={relation}>{t(`taskFollowUp.relation.${relation}`)}</option>
             ))}
           </Select>

@@ -15,6 +15,7 @@ import { after, before, test } from "node:test";
 let server;
 let base;
 let runtimeState;
+let closeRuntimeServices;
 const root = join(tmpdir(), `myagenttool-work-items-http-${process.pid}`);
 const projectAPath = join(root, "a");
 
@@ -40,17 +41,29 @@ before(async () => {
     { id: "prj_a", ownerTeamId: "team_a", path: projectAPath },
     { id: "prj_b", ownerTeamId: "team_b", path: "/tmp/b" },
   );
-  const { httpDependencies } = createServerRuntimeServices({
+  // Simulate an online bridge so local CLI agents are "available" at auto-run
+  // admission. These tests exercise the HTTP creation path, not bridge execution,
+  // and startAutoRun now refuses an unavailable agent rather than accepting a run
+  // that would stall in "dispatching" forever.
+  state.device.status = "online";
+  state.device.unlinkState = "linked";
+  for (const agent of state.agents) {
+    if (agent.location?.type === "local_device") agent.status = "available";
+  }
+  const runtimeServices = createServerRuntimeServices({
     namespace: "test", protocolVersion: "0.0.0", state, defaultProject, defaultProjectPath: "/tmp",
-    persistenceEnabled: false, stateStorePath: "/tmp/unused.json", stateSchemaVersion: 1, dispatchLeaseMs: 30_000, now,
+    persistenceEnabled: false, stateStorePath: join(root, "state", "local-demo-state.json"), stateSchemaVersion: 1, dispatchLeaseMs: 30_000, now,
   });
+  const { httpDependencies } = runtimeServices;
+  closeRuntimeServices = runtimeServices.closeRuntimeServices;
   server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
-after(() => {
-  server?.close();
+after(async () => {
+  await new Promise((resolve) => server?.close(resolve) ?? resolve());
+  await closeRuntimeServices?.();
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -61,6 +74,16 @@ async function call(path, { token = "tok_a", method = "GET", body } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
   return { status: response.status, body: await response.json() };
+}
+
+async function waitForValue(read, { timeoutMs = 5_000, intervalMs = 20 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = read();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("Timed out waiting for background work-item Auto-run progress.");
 }
 
 async function webhook(payload, { secret = process.env.MYAGENTTOOL_GITHUB_WEBHOOK_SECRET, deliveryId = "delivery-http" } = {}) {
@@ -102,6 +125,37 @@ async function externalWebhook(provider, payload, {
   });
   return { status: response.status, body: await response.json() };
 }
+
+test("learned My template choices are visible and removable through the real HTTP server", async () => {
+  runtimeState.myTemplateRoutingFeedback.push(
+    {
+      id: "mtf_http_a", ownerTeamId: "team_a", projectId: "prj_a", workItemId: "missing_a",
+      intentTerms: ["询价"], rejectedOutput: "报价单", selectedOutput: "询价汇总表",
+      reason: "user_corrected_desired_output", createdBy: "usr_a", createdAt: "2026-08-11T00:00:00.000Z",
+    },
+    {
+      id: "mtf_http_b", ownerTeamId: "team_b", projectId: "prj_b", workItemId: "missing_b",
+      intentTerms: ["合同"], rejectedOutput: "合同摘要", selectedOutput: "合同登记表",
+      reason: "user_corrected_desired_output", createdBy: "usr_b", createdAt: "2026-08-11T00:00:00.000Z",
+    },
+  );
+
+  const listed = await call("/api/work-items/my-template-learning?projectId=prj_a");
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.count, 1);
+  assert.equal(listed.body.feedback[0].selectedOutput, "询价汇总表");
+  assert.equal((await call("/api/work-items/my-template-learning", { token: "tok_b" })).body.count, 1);
+  assert.equal((await call("/api/work-items/my-template-learning/mtf_http_a", {
+    token: "tok_b", method: "DELETE",
+  })).status, 404);
+
+  const removed = await call("/api/work-items/my-template-learning/mtf_http_a", { method: "DELETE" });
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.affectsFutureMatchesOnly, true);
+  assert.equal((await call("/api/work-items/my-template-learning?projectId=prj_a")).body.count, 0);
+  runtimeState.myTemplateRoutingFeedback = runtimeState.myTemplateRoutingFeedback
+    .filter((feedback) => feedback.id !== "mtf_http_b");
+});
 
 test("local work item CRUD is wired through the real HTTP server", async () => {
   const created = await call("/api/work-items", {
@@ -419,6 +473,122 @@ test("GitHub issue binding and sync are wired through HTTP", async () => {
   assert.equal(pulled.body.workItem.title, "Updated remotely");
 });
 
+test("external issue intake creates a Local Issue and direct issue execution is refused", async () => {
+  const imported = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      provider: "gitlab",
+      relation: "source",
+      remote: {
+        number: 301,
+        title: "Imported GitLab task",
+        body: "Remote task body",
+        state: "open",
+        labels: ["intake"],
+        repository: "acme/repo",
+        url: "https://gitlab.example/acme/repo/-/issues/301",
+        updatedAt: "2026-07-24T00:00:00.000Z",
+      },
+    },
+  });
+  assert.equal(imported.status, 201);
+  assert.equal(imported.body.workItem.localRef.startsWith("LOCAL-"), true);
+  assert.equal(imported.body.workItem.body, "Remote task body");
+  assert.equal(imported.body.binding.relation, "source");
+  assert.equal(imported.body.binding.isPrimary, true);
+
+  const direct = await call("/api/projects/prj_a/auto-runs", {
+    method: "POST",
+    body: {
+      link: { type: "issue", number: 302, title: "Must be imported first", url: null, state: "open" },
+    },
+  });
+  assert.equal(direct.status, 409);
+  assert.equal(direct.body.error, "local_issue_required");
+});
+
+test("external issue intake rejects incomplete provider coordinates before fetching", async () => {
+  const unsupported = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: { projectId: "prj_a", provider: "bitbucket", issueNumber: 12 },
+  });
+  assert.equal(unsupported.status, 400);
+  assert.equal(unsupported.body.error, "unsupported_external_provider");
+
+  const missingRepository = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: { projectId: "prj_a", provider: "gitlab", issueNumber: 12 },
+  });
+  assert.equal(missingRepository.status, 400);
+  assert.equal(missingRepository.body.error, "invalid_provider_repository_or_issue");
+
+  const missingNumber = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: { projectId: "prj_a", provider: "gitea", repository: "acme/repo" },
+  });
+  assert.equal(missingNumber.status, 400);
+  assert.equal(missingNumber.body.error, "invalid_external_issue_number");
+});
+
+test("project external issue controls are persisted and enforced by intake and writeback routes", async () => {
+  const disabledIntake = await call("/api/projects/prj_a", {
+    method: "PATCH",
+    body: { externalIssuePolicy: { intakeEnabled: false, writebackEnabled: true, autoExecutionEnabled: false, emergencyStop: false } },
+  });
+  assert.equal(disabledIntake.status, 200);
+  assert.equal(disabledIntake.body.project.externalIssuePolicy.intakeEnabled, false);
+
+  const refused = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: {
+      projectId: "prj_a", provider: "gitlab",
+      remote: { number: 401, title: "Blocked intake", body: "", state: "open", repository: "acme/repo" },
+    },
+  });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, "external_issue_intake_disabled");
+
+  await call("/api/projects/prj_a", {
+    method: "PATCH",
+    body: { externalIssuePolicy: { intakeEnabled: true, writebackEnabled: true, autoExecutionEnabled: false, emergencyStop: false } },
+  });
+  const imported = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: {
+      projectId: "prj_a", provider: "gitlab",
+      remote: { number: 402, title: "Writeback governed", body: "", state: "open", repository: "acme/repo", updatedAt: "2026-07-24T00:00:00.000Z" },
+    },
+  });
+  await call("/api/projects/prj_a", {
+    method: "PATCH",
+    body: { externalIssuePolicy: { intakeEnabled: true, writebackEnabled: false, autoExecutionEnabled: false, emergencyStop: false } },
+  });
+  const blockedPush = await call(`/api/work-items/${imported.body.workItem.id}/external-bindings/gitlab/sync`, {
+    method: "POST",
+    body: { expectedRevision: imported.body.workItem.revision, direction: "push" },
+  });
+  assert.equal(blockedPush.status, 409);
+  assert.equal(blockedPush.body.error, "external_issue_writeback_disabled");
+
+  await call("/api/projects/prj_a", {
+    method: "PATCH",
+    body: { externalIssuePolicy: { intakeEnabled: true, writebackEnabled: true, autoExecutionEnabled: false, emergencyStop: true } },
+  });
+  const stoppedWebhook = await externalWebhook("gitlab", {
+    project: { path_with_namespace: "acme/repo" },
+    object_attributes: { iid: 402, title: "Must not overwrite", state: "opened", labels: [], updated_at: "2026-07-25T00:00:00.000Z" },
+  }, { deliveryId: "gitlab-emergency-stop" });
+  assert.equal(stoppedWebhook.status, 202);
+  assert.equal(stoppedWebhook.body.reason, "external_issue_emergency_stop");
+  assert.equal((await call(`/api/work-items/${imported.body.workItem.id}`)).body.workItem.title, "Writeback governed");
+
+  await call("/api/projects/prj_a", {
+    method: "PATCH",
+    body: { externalIssuePolicy: { intakeEnabled: true, writebackEnabled: true, autoExecutionEnabled: false, emergencyStop: false } },
+  });
+});
+
 test("GitHub webhook uses HMAC auth, supports rotation, and keeps replay team scoped", async () => {
   const item = (await call("/api/work-items", {
     method: "POST", body: { projectId: "prj_a", title: "Webhook linked" },
@@ -610,9 +780,67 @@ test("a local issue creates a linked git worktree without a GitHub issue binding
   assert.equal(activity.body.activities.some((row) => row.action === "worktree_created"), true);
 });
 
+test("a report-only AI task reaches the same simple result review flow through HTTP", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Archive and summarize the article",
+      dueDate: "2099-08-08",
+      waitingOn: "me",
+    },
+  });
+  const stored = runtimeState.workItems.find((candidate) => candidate.id === created.body.workItem.id);
+  const completedAt = new Date().toISOString();
+  const autoRun = {
+    id: `aur_report_${stored.localNumber}`,
+    status: "report_posted",
+    phase: "review_ready",
+    projectId: stored.projectId,
+    invocationId: `inv_report_${stored.localNumber}`,
+    link: { type: "local_issue", number: stored.localNumber, title: stored.title },
+    decision: { path: "summarize", confidence: 0.93, rationale: "Article summary requested" },
+    report: "# Article result\n\nThe platform packages AI work into a repeatable delivery workflow.\n\n### Local archive\n\n- artifacts/article.md",
+    createdAt: completedAt,
+    updatedAt: completedAt,
+  };
+  runtimeState.autoRuns.unshift(autoRun);
+  runtimeState.invocations.unshift({
+    id: autoRun.invocationId,
+    status: "succeeded",
+    options: { metadata: { autoRunId: autoRun.id, role: "summarize" } },
+    createdAt: completedAt,
+    completedAt,
+    updatedAt: completedAt,
+  });
+  stored.executionBindings.push({ kind: "auto_run", targetId: autoRun.id, createdAt: completedAt });
+  stored.status = "review";
+  stored.waitingOn = "me";
+
+  const detail = await call(`/api/work-items/${stored.id}`);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.observability.latestRun.status, "report_posted");
+  assert.equal(detail.body.observability.outcome.status, "available");
+  assert.match(detail.body.observability.outcome.summary, /repeatable delivery workflow/);
+
+  const home = await call("/api/work-items/home-workbench?assigneeId=mine&timezoneOffset=-480");
+  const row = home.body.items.find((candidate) => candidate.workItemId === stored.id);
+  assert.equal(row.userStatus, "ready_for_review");
+  assert.equal(row.attentionReason, "review_ready");
+  assert.equal(row.nextAction.kind, "review_result");
+  assert.equal(row.nextAction.targetId, stored.id);
+  assert.equal(row.nextAction.section, "task");
+  assert.equal(row.result.status, "available");
+  assert.match(row.result.summary, /repeatable delivery workflow/);
+});
+
 test("approved local delivery fast-forwards the base and only then closes the issue", async () => {
   const item = (await call("/api/work-items", {
-    method: "POST", body: { projectId: "prj_a", title: "Deliver over HTTP" },
+    method: "POST", body: {
+      projectId: "prj_a",
+      title: "Deliver over HTTP",
+      acceptanceCriteria: ["The delivery is ready to apply"],
+    },
   })).body.workItem;
   const created = await call(`/api/work-items/${item.id}/worktrees`, { method: "POST", body: {} });
   const worktree = created.body.worktree;
@@ -639,9 +867,22 @@ test("approved local delivery fast-forwards the base and only then closes the is
   });
   assert.equal(review.status, 201);
 
-  const detail = await call(`/api/work-items/${item.id}`);
+  let detail = await call(`/api/work-items/${item.id}`);
   assert.equal(detail.body.observability.nextAction, "review_delivery");
   assert.equal(detail.body.observability.delivery.mode, "local_merge");
+  const verified = await call(`/api/work-items/${item.id}/verifications`, {
+    method: "POST",
+    body: {
+      expectedRevision: detail.body.workItem.revision,
+      kind: "review",
+      status: "passed",
+      summary: "Delivery reviewed",
+      acceptanceResults: [{ criterion: "The delivery is ready to apply", status: "passed" }],
+      evidence: [{ kind: "run", ref: `worktree:${worktree.id}`, summary: "Approved worktree review" }],
+    },
+  });
+  assert.equal(verified.status, 201);
+  detail = await call(`/api/work-items/${item.id}`);
   const delivered = await call(`/api/work-items/${item.id}/delivery/local`, {
     method: "POST", body: { expectedRevision: detail.body.workItem.revision },
   });
@@ -662,30 +903,63 @@ test("a local issue starts an auto-run with its local body and acceptance criter
     },
   })).body.workItem;
   const result = await call(`/api/work-items/${item.id}/auto-runs`, { method: "POST", body: {} });
-  assert.equal(result.status, 201);
-  assert.equal(result.body.autoRun.link.type, "local_issue");
-  assert.equal(result.body.autoRun.issueBody.includes("Implement the local workflow."), true);
-  assert.equal(result.body.autoRun.issueBody.includes("The local path is tested"), true);
-  assert.equal(result.body.autoRun.executionChainId, item.id);
-  assert.equal(result.body.autoRun.autonomyProfile, "standard");
-  assert.equal(result.body.autoRun.terminalId, item.terminalId);
-  const invocation = runtimeState.invocations.find((row) => row.id === result.body.autoRun.invocationId);
+  assert.equal(result.status, 202);
+  assert.equal(result.body.autoRun.phase, "understanding");
+  assert.equal(result.body.autoRun.worktreeId, null);
+  assert.equal(result.body.autoRun.decision, null, "routing is performed after the HTTP handoff");
+  const autoRun = await waitForValue(() => {
+    const candidate = runtimeState.autoRuns.find((row) => row.id === result.body.autoRun.id);
+    return candidate?.invocationId ? candidate : null;
+  });
+  assert.equal(autoRun.link.type, "local_issue");
+  assert.equal(autoRun.issueBody.includes("Implement the local workflow."), true);
+  assert.equal(autoRun.issueBody.includes("The local path is tested"), true);
+  assert.match(autoRun.issueBody, /Acceptance criteria \(frozen for this run\)/);
+  assert.match(autoRun.issueBody, /Owner verification SOP \(frozen for this run\)/);
+  assert.equal(autoRun.executionChainId, item.id);
+  assert.equal(autoRun.autonomyProfile, "standard");
+  assert.equal(autoRun.terminalId, item.terminalId);
+  assert.match(autoRun.branchName, /-autorun-\d+$/, "the AI branch cannot collide with a manually created worktree branch");
+  const invocation = runtimeState.invocations.find((row) => row.id === autoRun.invocationId);
   assert.equal(invocation.terminalId, item.terminalId);
   assert.equal(invocation.options.metadata.executionChainId, item.id);
   const approval = runtimeState.approvalRequests.find((row) => row.invocationId === invocation.id);
   if (approval) assert.equal(approval.terminalId, item.terminalId);
   const detail = await call(`/api/work-items/${item.id}`);
-  assert.equal(detail.body.workItem.executionBindings.some((binding) => binding.kind === "auto_run"), true);
+  const binding = detail.body.workItem.executionBindings.find((candidate) => candidate.kind === "auto_run");
+  assert.equal(binding?.targetId, autoRun.id);
+  assert.equal(binding?.worktreeId, autoRun.worktreeId);
+});
+
+test("a local issue without a confirmed execution contract is prepared after handoff and starts AI", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Run without explicit criteria", body: "Keep the workflow predictable." },
+  })).body.workItem;
+  const result = await call(`/api/work-items/${item.id}/auto-runs`, { method: "POST", body: {} });
+  assert.equal(result.status, 202, JSON.stringify(result.body));
+  assert.equal(result.body.autoRun.phase, "understanding");
+  const autoRun = await waitForValue(() => {
+    const candidate = runtimeState.autoRuns.find((row) => row.id === result.body.autoRun.id);
+    return candidate?.executionPlan?.status === "ready" && candidate?.invocationId ? candidate : null;
+  });
+  assert.equal(autoRun.link.type, "local_issue");
+  assert.equal(autoRun.executionPlan.confirmedBy, "ai_policy");
+  assert.ok(autoRun.executionPlan.acceptanceCriteria.length > 0);
+  assert.ok(autoRun.executionPlan.verificationSop.length > 0);
+  const detail = await call(`/api/work-items/${item.id}`);
+  assert.equal(detail.body.workItem.executionContractSource, "assisted");
+  assert.ok(detail.body.workItem.executionContractConfirmedAt);
 });
 
 test("local issues can be queued as a durable concurrency-limited Auto-run batch", async () => {
   const first = (await call("/api/work-items", {
     method: "POST",
-    body: { projectId: "prj_a", title: "Batch task one" },
+    body: { projectId: "prj_a", title: "Batch task one", acceptanceCriteria: ["Batch task one is complete"] },
   })).body.workItem;
   const second = (await call("/api/work-items", {
     method: "POST",
-    body: { projectId: "prj_a", title: "Batch task two" },
+    body: { projectId: "prj_a", title: "Batch task two", acceptanceCriteria: ["Batch task two is complete"] },
   })).body.workItem;
 
   const created = await call("/api/work-item-auto-run-batches", {
@@ -752,6 +1026,9 @@ test("AI assistance and alert retry routes are scoped and governed", async () =>
   });
   assert.equal(draft.status, 200);
   assert.equal(draft.body.draft.type, "bug");
+  assert.deepEqual(draft.body.draft.templateMatch.decision, {
+    kind: "no_match", confidence: "low", reason: "insufficient_evidence",
+  });
   assert.equal((await call("/api/work-items/assist/draft", {
     token: "tok_b", method: "POST", body: { projectId: "prj_a", title: "Foreign" },
   })).status, 404);
@@ -885,7 +1162,11 @@ test("planning projects manage local issue membership over HTTP", async () => {
 
 test("planning AI plans are review-only and autonomy reaches local executions", async () => {
   const item = (await call("/api/work-items", {
-    method: "POST", body: { projectId: "prj_a", title: "Cautious planning work" },
+    method: "POST", body: {
+      projectId: "prj_a",
+      title: "Cautious planning work",
+      acceptanceCriteria: ["The planned change meets its stated goal"],
+    },
   })).body.workItem;
   const project = (await call("/api/planning-projects", {
     method: "POST", body: { name: "Governed plan", autonomyProfile: "cautious" },
@@ -898,7 +1179,7 @@ test("planning AI plans are review-only and autonomy reaches local executions", 
   assert.equal(suggestion.body.plan.requiresApproval, true);
   assert.equal(suggestion.body.plan.autonomyProfile, "cautious");
   const execution = await call(`/api/work-items/${item.id}/auto-runs`, { method: "POST", body: {} });
-  assert.equal(execution.status, 201);
+  assert.equal(execution.status, 202);
   assert.equal(execution.body.autoRun.autonomyProfile, "cautious");
 });
 
@@ -997,4 +1278,226 @@ test("governed report drafts are wired through HTTP without sending or closing w
   const listed = await call(`/api/work-items/${item.id}/report-drafts`);
   assert.equal(listed.status, 200);
   assert.equal(listed.body.count, 1);
+});
+
+test("local content search and task references are tenant-scoped through the real HTTP server", async () => {
+  writeFileSync(join(projectAPath, "library-source.txt"), "HTTP local library integration phrase.\n");
+  const producer = await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Produce local library source", type: "task" },
+  });
+  assert.equal(producer.status, 201);
+  const producerState = runtimeState.workItems.find((item) => item.id === producer.body.workItem.id);
+  producerState.outputAssets = [{
+    id: "http_local_content_output",
+    originalName: "library-source.txt",
+    path: "library-source.txt",
+    family: "text",
+    mimeType: "text/plain",
+    readiness: { state: "ready", reason: "available" },
+  }];
+
+  const rebuilt = await call("/api/local-content/rebuild", { method: "POST", body: {} });
+  assert.equal(rebuilt.status, 200);
+  const searched = await call("/api/local-content?q=integration%20phrase&kind=task_output");
+  assert.equal(searched.status, 200);
+  assert.equal(searched.body.count, 1);
+  const content = searched.body.results[0];
+  assert.equal(content.title, "library-source.txt");
+  assert.equal(JSON.stringify(content).includes(projectAPath), false);
+
+  const preview = await call(`/api/local-content/${content.id}/preview`);
+  assert.equal(preview.status, 200);
+  assert.match(preview.body.preview.text, /HTTP local library integration phrase/);
+  assert.equal((await call("/api/local-content?q=integration%20phrase", { token: "tok_b" })).body.count, 0);
+  assert.equal((await call(`/api/local-content/${content.id}/preview`, { token: "tok_b" })).status, 404);
+
+  const consumer = await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Consume local library source", type: "task" },
+  });
+  assert.equal(consumer.status, 201);
+  const attached = await call(`/api/work-items/${consumer.body.workItem.id}/content-references`, {
+    method: "POST",
+    body: { contentId: content.id, expectedRevision: consumer.body.workItem.revision, purpose: "required_input" },
+  });
+  assert.equal(attached.status, 201);
+  assert.equal(attached.body.reference.contentId, content.id);
+  assert.equal(attached.body.workItem.localContentRefs.length, 1);
+  assert.equal((await call(`/api/work-items/${consumer.body.workItem.id}/content-references`, {
+    token: "tok_b",
+    method: "POST",
+    body: { contentId: content.id, expectedRevision: attached.body.workItem.revision },
+  })).status, 404);
+
+  const removed = await call(
+    `/api/work-items/${consumer.body.workItem.id}/content-references/${attached.body.reference.id}`,
+    { method: "DELETE", body: { expectedRevision: attached.body.workItem.revision } },
+  );
+  assert.equal(removed.status, 200);
+  assert.deepEqual(removed.body.workItem.localContentRefs, []);
+});
+
+test("completed My template result feedback is recorded and summarized through HTTP", async () => {
+  const workItem = {
+    id: "lwi_template_outcome_http", localRef: "LOCAL-OUTCOME", ownerTeamId: "team_a", projectId: "prj_a",
+    title: "Summarize inquiry", body: "Produce an inquiry summary.", type: "task", priority: "p2",
+    status: "done", state: "closed", revision: 1, labels: [], assigneeIds: ["usr_a"],
+    acceptanceCriteria: [], verificationSop: [], acceptanceResults: [], verificationRecords: [],
+    inputAssets: [], outputAssets: [], requiredCapabilities: [], externalBindings: [], executionBindings: [],
+    terminalId: runtimeState.device.id, createdBy: "usr_a", lastModifiedBy: "usr_a",
+    createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:01:00.000Z",
+    myTemplateBinding: {
+      schemaVersion: 1, definitionId: "rtd_outcome_http", familyId: "family_outcome_http", version: 1,
+      name: "Inquiry summary", expectedOutput: "Inquiry summary", matchReasons: ["Expected result matched"],
+      snapshot: { name: "Inquiry summary", description: "Summarize inquiries", expectedOutput: "Inquiry summary", steps: [] },
+      snapshotHash: "outcome-http-hash", matchedAt: "2026-08-11T00:00:00.000Z",
+    },
+  };
+  runtimeState.workItems.push(workItem);
+
+  const recorded = await call(`/api/work-items/${workItem.id}/my-template-outcome-feedback`, {
+    method: "POST", body: { outcome: "needs_quality_adjustment" },
+  });
+  assert.equal(recorded.status, 200);
+  assert.equal(recorded.body.feedback.outcome, "needs_quality_adjustment");
+  assert.equal(recorded.body.workItem.myTemplateOutcomeFeedback.outcome, "needs_quality_adjustment");
+  assert.equal((await call(`/api/work-items/${workItem.id}/my-template-outcome-feedback`, {
+    token: "tok_b", method: "POST", body: { outcome: "wrong_result" },
+  })).status, 404);
+
+  runtimeState.routineDefinitions.push({
+    id: "rtd_outcome_http", familyId: "family_outcome_http", projectId: "prj_a", ownerTeamId: "team_a",
+    state: "published", version: 1, name: "Inquiry summary", description: "Summarize inquiries",
+    triggerDocumentTypes: ["inquiry"], steps: [],
+  });
+  runtimeState.myTemplateOutcomeFeedback.push(
+    ...["wrong_result", "met_expectations", "wrong_result", "met_expectations", "wrong_result"].map((outcome, index) => ({
+      id: `mtof_outcome_http_${index}`, ownerTeamId: "team_a", projectId: "prj_a",
+      workItemId: `missing_outcome_http_${index}`, definitionId: "rtd_outcome_http",
+      familyId: "family_outcome_http", version: 1, outcome, note: "", revision: 1,
+      createdAt: `2026-08-11T01:0${index}:00.000Z`, updatedAt: `2026-08-11T01:0${index}:00.000Z`,
+    })),
+  );
+
+  const summary = await call("/api/work-items/my-template-outcomes?projectId=prj_a");
+  assert.equal(summary.status, 200);
+  assert.equal(summary.body.summaries.find((entry) => entry.familyId === "family_outcome_http").needsQualityAdjustment, 1);
+  assert.equal(summary.body.summaries.find((entry) => entry.familyId === "family_outcome_http").governance.state, "paused");
+  assert.equal(summary.body.feedback.find((entry) => entry.workItemId === workItem.id).workItem.localRef, "LOCAL-OUTCOME");
+  assert.equal((await call("/api/work-items/my-template-governance/family_outcome_http/resume-observation", {
+    token: "tok_b", method: "POST", body: { projectId: "prj_a", confirm: true },
+  })).status, 404);
+  assert.equal((await call("/api/work-items/my-template-governance/family_outcome_http/resume-observation", {
+    method: "POST", body: { projectId: "prj_a", confirm: false },
+  })).status, 400);
+  const resumed = await call("/api/work-items/my-template-governance/family_outcome_http/resume-observation", {
+    method: "POST", body: { projectId: "prj_a", confirm: true },
+  });
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.governance.manualObservation, true);
+  assert.equal(resumed.body.governance.matchingFeedbackCount, 0);
+  assert.equal((await call("/api/work-items/my-template-outcomes", { token: "tok_b" })).body.feedback
+    .some((entry) => entry.workItemId === workItem.id), false);
+  runtimeState.workItems = runtimeState.workItems.filter((entry) => entry.id !== workItem.id);
+  runtimeState.routineDefinitions = runtimeState.routineDefinitions.filter((entry) => entry.id !== "rtd_outcome_http");
+  runtimeState.myTemplateOutcomeFeedback = runtimeState.myTemplateOutcomeFeedback
+    .filter((entry) => entry.familyId !== "family_outcome_http");
+  runtimeState.myTemplateGovernanceInterventions = runtimeState.myTemplateGovernanceInterventions
+    .filter((entry) => entry.familyId !== "family_outcome_http");
+});
+
+test("completed ordinary tasks can create tenant-scoped learning My template drafts through HTTP", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "HTTP 客户回访汇总" },
+  });
+  assert.equal(created.status, 201);
+  const stored = runtimeState.workItems.find((item) => item.id === created.body.workItem.id);
+  stored.status = "done";
+  stored.outputAssets = [{ id: "http-output", path: "回访汇总.xlsx", family: "spreadsheet" }];
+
+  const preview = await call(`/api/work-items/${stored.id}/my-template-draft`);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.eligible, true);
+  assert.equal(preview.body.suggestion.expectedOutput, "回访汇总.xlsx");
+  assert.equal((await call(`/api/work-items/${stored.id}/my-template-draft`, { token: "tok_b" })).status, 404);
+
+  const saved = await call(`/api/work-items/${stored.id}/my-template-draft`, {
+    method: "POST",
+    body: {
+      expectedRevision: stored.revision,
+      confirm: true,
+      name: "客户回访汇总",
+      typicalInput: "客户回访记录",
+      expectedOutput: "客户回访汇总表",
+      idempotencyKey: "http-task-template",
+    },
+  });
+  assert.equal(saved.status, 201);
+  assert.equal(saved.body.draft.state, "needs_review");
+  assert.equal(saved.body.draft.casesRequired, 1);
+  assert.equal(saved.body.workItem.myTemplateDraft.id, saved.body.draft.id);
+  assert.equal(saved.body.workItem.myTemplateBinding, undefined);
+
+  const similarCreated = await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "客户回访汇总 九月" },
+  });
+  const similarStored = runtimeState.workItems.find((item) => item.id === similarCreated.body.workItem.id);
+  similarStored.status = "done";
+  similarStored.outputAssets = [{ id: "http-output-similar", path: "客户回访汇总表.xlsx", family: "spreadsheet" }];
+  const suggestions = await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/similar-work-items`);
+  assert.equal(suggestions.status, 200);
+  assert.ok(suggestions.body.suggestions.some((entry) => entry.workItem.id === similarStored.id));
+  assert.equal((await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/similar-work-items`, { token: "tok_b" })).status, 404);
+  const added = await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/cases`, {
+    method: "POST",
+    body: {
+      workItemId: similarStored.id,
+      expectedDraftRevision: saved.body.draft.revision,
+      expectedWorkItemRevision: similarStored.revision,
+      confirm: true,
+    },
+  });
+  assert.equal(added.status, 201);
+  assert.equal(added.body.draft.caseCount, 2);
+  assert.equal(added.body.draft.state, "needs_review");
+  assert.equal(similarStored.myTemplateBinding, undefined);
+
+  const review = await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/review`);
+  assert.equal(review.status, 200);
+  assert.equal(review.body.readiness.canEnable, true);
+  assert.equal(review.body.cases.length, 2);
+  assert.equal((await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/review`, { token: "tok_b" })).status, 404);
+  assert.equal((await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/activate`, {
+    token: "tok_b", method: "POST",
+    body: { expectedDraftRevision: added.body.draft.revision, confirm: true },
+  })).status, 404);
+  assert.equal((await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/activate`, {
+    method: "POST",
+    body: { expectedDraftRevision: added.body.draft.revision, confirm: false },
+  })).body.error, "my_template_activation_confirmation_required");
+  const activated = await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/activate`, {
+    method: "POST",
+    body: {
+      expectedDraftRevision: added.body.draft.revision,
+      confirm: true,
+      name: "客户回访分析",
+      typicalInput: "客户回访记录",
+      expectedOutput: "客户回访汇总表",
+    },
+  });
+  assert.equal(activated.status, 201);
+  assert.equal(activated.body.draft.state, "ready");
+  assert.equal(activated.body.definition.state, "published");
+  assert.equal(activated.body.review.futureBehavior.participatesInMatching, true);
+  assert.equal(stored.myTemplateBinding, undefined);
+  const definitions = await call("/api/workflow-memory/business-routine-definitions");
+  const activatedDefinition = definitions.body.routineDefinitions.find((entry) => entry.id === activated.body.definition.id);
+  assert.equal(activatedDefinition.evidenceHealth.state, "valid");
+
+  const listA = await call("/api/work-items/my-template-drafts");
+  const listB = await call("/api/work-items/my-template-drafts", { token: "tok_b" });
+  assert.ok(listA.body.drafts.some((draft) => draft.id === saved.body.draft.id));
+  assert.ok(listB.body.drafts.every((draft) => draft.id !== saved.body.draft.id));
 });

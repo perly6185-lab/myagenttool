@@ -74,8 +74,10 @@ it("supports paging, zoom, fit width, and text-search page navigation without re
   fireEvent.change(screen.getByLabelText("Search PDF text"), { target: { value: "needle" } });
   fireEvent.click(screen.getByText("Find"));
   expect(await screen.findByText("1/2")).toBeTruthy();
-  expect(document.querySelectorAll("mark[data-pdf-search]")).toHaveLength(2);
-  expect(document.querySelectorAll("mark[data-active=true]")).toHaveLength(1);
+  await waitFor(() => {
+    expect(document.querySelectorAll("mark[data-pdf-search]")).toHaveLength(2);
+    expect(document.querySelectorAll("mark[data-active=true]")).toHaveLength(1);
+  });
   fireEvent.click(screen.getByText("Next"));
   expect(await screen.findByText("2/2")).toBeTruthy();
   expect(mocks.projectPdfRange).toHaveBeenCalledOnce();

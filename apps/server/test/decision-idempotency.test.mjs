@@ -158,6 +158,36 @@ test("Auto-run approval review ignores the fixed safety wrapper and inspects the
   assert.equal(hook.brokerRequest.decision, "allow");
 });
 
+test("Auto-run template wording about output format does not pause a safe shell command", () => {
+  const invocation = {
+    id: "inv_auto_template_format",
+    input: { task: "Preserve the confirmed output format and filename pattern." },
+    options: { approvalMode: "auto", metadata: { worktreeId: "wtr_1" } },
+  };
+  const state = {
+    autoRuns: [{
+      id: "aur_template_format",
+      invocationId: invocation.id,
+      issueBody: "Generate the purchase checklist and preserve the confirmed output format.",
+    }],
+    codexSessions: [],
+    codexHookEvents: [],
+    codexApprovalBrokerRequests: [],
+    events: [],
+    refusals: [],
+  };
+  const codex = codexFor(state, makeClock(), (id) => id === invocation.id ? invocation : null);
+  const hook = codex.recordCodexHookEvent({
+    invocationId: invocation.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Run git status --short --untracked-files=no",
+  });
+
+  assert.equal(hook.brokerRequest.status, "approved");
+  assert.equal(hook.brokerRequest.decision, "allow");
+});
+
 test("Codex full access reuses the approved high-risk launch instead of prompting twice", () => {
   const invocation = {
     id: "inv_full_approved",
@@ -311,8 +341,8 @@ test("a late approval is reusable only by the exact recovery invocation", () => 
 
 // ── auto-run gates: reject/answer had no idempotency guard ───────────────────
 
-function autoRunSvcFor(state, now = makeClock()) {
-  return createAutoRunService({ state, now, nextId: idGen(), appendEvent: () => {}, persistStateSoon: () => {} });
+function autoRunSvcFor(state, now = makeClock(), overrides = {}) {
+  return createAutoRunService({ state, now, nextId: idGen(), appendEvent: () => {}, persistStateSoon: () => {}, ...overrides });
 }
 
 function designRun(overrides = {}) {
@@ -360,9 +390,26 @@ test("#1151 a rejected decomposition plan settles both gates; approve reports th
 });
 
 test("#1151 clarify: the first answer wins; the second is told who answered", async () => {
-  const run = designRun({ id: "aur_3", status: "needs_input", decision: { path: "clarify", clarifyingQuestions: ["which db?"] } });
-  const state = { autoRuns: [run], worktrees: [], events: [], refusals: [], projects: [] };
-  const svc = autoRunSvcFor(state);
+  const run = designRun({
+    id: "aur_3",
+    status: "needs_input",
+    decision: { path: "clarify", clarifyingQuestions: ["which db?"] },
+    worktreeId: "wtr_3",
+    agentId: "agt_3",
+    projectId: "prj_3",
+  });
+  const state = {
+    autoRuns: [run],
+    worktrees: [{ id: "wtr_3", projectId: "prj_3" }],
+    events: [],
+    refusals: [],
+    projects: [{ id: "prj_3" }],
+  };
+  const svc = autoRunSvcFor(state, makeClock(), {
+    findAgent: () => ({ id: "agt_3", status: "active", adapter: {}, location: {} }),
+    createInvocation: () => ({ id: "inv_clarified", status: "queued" }),
+    startInvocationIfAllowed: () => {},
+  });
 
   const first = await svc.answerClarify("aur_3", { actor: { userId: "usr_a" }, answers: "postgres" });
   assert.equal(first.ok, true);

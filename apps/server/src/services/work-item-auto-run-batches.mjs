@@ -45,7 +45,8 @@ export function createWorkItemAutoRunBatchService({
   beginExecution,
   abortExecution,
   recordExecutionBinding,
-  startAutoRun,
+  reserveAutoRun,
+  enqueueAutoRunUnderstanding,
   store,
   schedulePump = (callback, { delayMs = 0 } = {}) => {
     if (delayMs > 0) return setTimeout(() => void callback(), delayMs);
@@ -209,7 +210,7 @@ export function createWorkItemAutoRunBatchService({
     const operationId = admission.body.operation.id;
     const slug = String(item.title ?? "work").toLowerCase()
       .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "work";
-    const name = `local-${item.localNumber}-${slug}`;
+    const name = `local-${item.localNumber}-${slug}-autorun-${Number(item.revision) || 0}`;
     const link = {
       type: "local_issue",
       number: item.localNumber,
@@ -218,20 +219,16 @@ export function createWorkItemAutoRunBatchService({
       state: item.state,
     };
     try {
-      const issueBody = [
-        item.body,
-        item.acceptanceCriteria?.length
-          ? `Acceptance criteria:\n${item.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}`
-          : "",
-      ].filter(Boolean).join("\n\n");
-      const result = await startAutoRun({
+      const result = await reserveAutoRun({
         projectId: item.projectId,
         link,
+        localIssueId: item.id,
         name,
         agentId: batch.agentId,
         actor,
-        issueBody,
+        issueBody: item.body,
         executionChainId: item.id,
+        taskMaterialWorkItemId: item.id,
         terminalId: item.terminalId,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"
@@ -254,6 +251,7 @@ export function createWorkItemAutoRunBatchService({
         batchItem.startedAt = now();
         batchItem.updatedAt = now();
       });
+      enqueueAutoRunUnderstanding(result.autoRun.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       abortExecution({

@@ -401,8 +401,10 @@ test("local schedule capacity is current-terminal-only and personal-work scoped"
 });
 
 test("local schedule preview applies atomically and rejects a stale plan revision", async () => {
+  testState.device.timeZone = "Asia/Shanghai";
   const preview = await call("/api/local-schedule/preview", { token: "tok_a" });
   assert.equal(preview.status, 200);
+  assert.equal(preview.body.assumptions.timeZone, "Asia/Shanghai");
   assert.ok(preview.body.days.some((day) => day.items.some((item) => item.workItemId === "lwi_team_a")));
 
   const applied = await call("/api/local-schedule/apply", {
@@ -470,9 +472,9 @@ test("unbound Auto-run issue work is planned durably and remains tenant scoped",
 });
 
 test("unfinished-work rollover is idempotent and manual pins require explicit confirmation", async () => {
-  const date = new Date();
-  date.setDate(date.getDate() - 1);
-  const sourceDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const schedule = await call("/api/local-schedule/preview", { token: "tok_a" });
+  assert.equal(schedule.status, 200);
+  const sourceDate = schedule.body.horizon.yesterday;
   const common = {
     ownerTeamId: TEAM_A,
     terminalId: localTerminalId,
