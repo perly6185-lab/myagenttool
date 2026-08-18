@@ -156,13 +156,23 @@ export function createChannelDeliveryService({
   }
 
   /** Queue one outbound message to a conversation. Durable before any send attempt. */
-  function enqueueChannelDelivery({ channelId, conversationId, invocationId = null, content, taskContext = null, mediaAssets = [] } = {}) {
+  function enqueueChannelDelivery({ channelId, conversationId, invocationId = null, content, taskContext = null, mediaAssets = [], dedupeKey = null } = {}) {
     const channel = findChannel(String(channelId ?? ""));
     const conversation = findConversation(String(conversationId ?? ""));
     const text = String(content ?? "").trim();
     const normalizedMediaAssets = normalizeMediaAssets(mediaAssets);
     if (!channel || !conversation || conversation.channelId !== channel.id || (!text && !normalizedMediaAssets.length)) {
       return { ok: false, reason: "invalid_delivery" };
+    }
+    const normalizedDedupeKey = dedupeKey ? String(dedupeKey).trim().slice(0, 240) : null;
+    if (normalizedDedupeKey) {
+      const existing = (state.channelDeliveries ?? []).find((candidate) =>
+        candidate.channelId === channel.id
+        && candidate.conversationId === conversation.id
+        && candidate.dedupeKey === normalizedDedupeKey
+        && candidate.status !== "failed_terminal",
+      );
+      if (existing) return { ok: true, deliveryId: existing.id, deduplicated: true };
     }
     const delivery = {
       id: nextId(channelIdPrefixes.delivery),
@@ -186,6 +196,7 @@ export function createChannelDeliveryService({
       replyContext: conversation.replyContext ?? null,
       content: text.slice(0, MAX_CONTENT_CHARS),
       mediaAssets: normalizedMediaAssets,
+      dedupeKey: normalizedDedupeKey,
       status: "queued",
       attempts: 0,
       nextAttemptAt: now(),
@@ -332,6 +343,7 @@ export function createChannelDeliveryService({
     const due = (state.channelDeliveries ?? []).filter(
       (row) =>
         (row.status === "queued" || row.status === "retrying")
+        && findChannel(row.channelId)?.status === "enabled"
         && (!row.nextAttemptAt || Date.parse(row.nextAttemptAt) <= nowMs),
     );
     let processed = 0;
@@ -349,6 +361,10 @@ export function createChannelDeliveryService({
   function notifyInvocationCompleted(invocation) {
     const channelContext = invocation?.options?.metadata?.channel;
     if (!channelContext?.conversationId) return null;
+    // Consultation answers have their own completion hook so the user receives
+    // the answer text, not a generic "task completed" notification. They are
+    // deliberately not task-thread work.
+    if (invocation?.options?.metadata?.channelConsultation) return null;
     const summary = typeof invocation.result === "string"
       ? invocation.result
       : invocation.result?.summary ?? invocation.result?.output ?? null;
@@ -370,6 +386,7 @@ export function createChannelDeliveryService({
               : thread?.status === "waiting_approval" ? "等待确认"
                 : thread?.status === "running" ? "继续执行中"
                   : thread?.status === "queued" ? "排队中"
+                : thread?.status === "needs_attention" ? "需要关注"
                 : thread?.status === "human_takeover" ? "人工处理中"
                 : ({
                   succeeded: "已完成",
@@ -380,7 +397,9 @@ export function createChannelDeliveryService({
                 }[invocation.status] ?? normalizedResultStatus(invocation.status));
     const lines = [`任务${statusLabel}`];
     if (summary) lines.push(String(summary).slice(0, 1500));
+    if (thread?.status === "waiting_user") lines.push("请直接回复需要补充的信息，或发送图片、语音、文件。");
     if (thread?.status === "failed") lines.push("你可以回复“重试”再次执行，或回复“转人工”。");
+    if (thread?.status === "needs_attention") lines.push("任务暂时没有新进展。回复“进度”查看，回复“继续”继续观察，或回复“转人工”。");
     if (thread?.status === "human_takeover") lines.push("请等待人工处理，我会在有进展时通知你。");
     const workItem = (state.workItems ?? []).find((row) => row.id === channelContext.workItemId);
     const resultAssets = [
@@ -396,6 +415,7 @@ export function createChannelDeliveryService({
         invocationId: invocation.id,
         taskContext: channelContext.taskContext ?? channelContext,
         content: lines.join("\n"),
+        dedupeKey: notificationKey ? `channel-task:${notificationKey}` : null,
         mediaAssets: resultAssets.map((asset) => ({
           ...asset,
           projectId: asset?.projectId ?? channelContext.projectId ?? workItem?.projectId ?? null,

@@ -32,8 +32,18 @@ function mediaLabel(candidate, filename) {
   return `[${label}附件：${filename}]`;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms, signal = null) {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer;
+    const finish = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    timer = setTimeout(finish, ms);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 }
 
 function accountFor(state, channelId) {
@@ -42,6 +52,28 @@ function accountFor(state, channelId) {
 
 function pairCode() {
   return randomBytes(4).toString("hex").toUpperCase().slice(0, 6);
+}
+
+function ilinkRedirectBaseUrl(value) {
+  try {
+    const raw = String(value ?? "").trim();
+    const parsed = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    if (parsed.protocol !== "https:" || !/(^|\.)weixin\.qq\.com$/i.test(parsed.hostname)) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function ilinkProviderBaseUrl(value) {
+  try {
+    const raw = String(value ?? ILINK_API_BASE).trim();
+    const parsed = new URL(raw || ILINK_API_BASE);
+    if (parsed.protocol !== "https:" || !/(^|\.)weixin\.qq\.com$/i.test(parsed.hostname)) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
 }
 
 function publicAccount(account) {
@@ -53,6 +85,7 @@ function publicAccount(account) {
     lastPollAt: account.lastPollAt ?? null,
     lastMessageAt: account.lastMessageAt ?? null,
     lastError: account.lastError ?? null,
+    pairingStatus: account.pairingStatus ?? (account.status === "pairing_expired" ? "expired" : account.status === "pairing" ? "pending" : null),
     workerFailureCount: Number(account.workerFailureCount ?? 0),
     nextRetryAt: account.nextRetryAt ?? null,
     connectedAt: account.connectedAt ?? null,
@@ -109,6 +142,7 @@ export function createIlinkRuntime({
         connectedAt: null,
         updatedAt: now(),
         pairingExpiresAt: null,
+        pairingStatus: null,
         pendingPairCode: null,
         pendingPairUserId: null,
       };
@@ -136,11 +170,49 @@ export function createIlinkRuntime({
   function readiness(channel) {
     const account = accountFor(state, channel?.id);
     const credential = account ? credentials.load(account.id) : null;
+    const workerRunning = Boolean(workers.has(account?.id));
+    const workerHealthy = Boolean(workerRunning && account && account.status !== "error" && account.status !== "reauth_required" && account.status !== "stopped" && !account.lastError);
     return {
       account: Boolean(account),
       session: Boolean(credential?.botToken),
-      worker: Boolean(workers.has(account?.id)),
+      worker: workerHealthy,
+      workerRunning,
+      workerHealthy,
     };
+  }
+
+  function restorePreviousLogin(account, session, errorCode = null) {
+    if (!session?.previousCredential) return false;
+    const channel = channelFor(account.channelId);
+    setAccount(account, {
+      status: session.previousStatus ?? "authenticated",
+      lastError: errorCode,
+    });
+    if (session.previousWorker && channel?.status === "enabled") startWorker(account);
+    return true;
+  }
+
+  function expirePairingIfNeeded(account) {
+    if (!account?.pendingPairCode || !account.pairingExpiresAt) return false;
+    if (Date.parse(account.pairingExpiresAt) > Date.now()) return false;
+    setAccount(account, {
+      status: credentials.load(account.id)?.botToken ? "connected" : "disconnected",
+      pendingPairCode: null,
+      pendingPairUserId: null,
+      pairingExpiresAt: null,
+      pairingStatus: "expired",
+      lastError: null,
+    });
+    return true;
+  }
+
+  function loginDisplayStatus(status) {
+    const normalized = String(status ?? "wait").toLowerCase();
+    if (normalized === "wait") return "waiting_scan";
+    if (["scaned", "scaned_but_redirect"].includes(normalized)) return "scanned";
+    if (normalized === "need_verifycode") return "verification_required";
+    if (["confirmed", "already_connected", "binded_redirect"].includes(normalized)) return "authenticated";
+    return normalized;
   }
 
   async function beginLogin({ channelId, actor = null } = {}) {
@@ -148,36 +220,51 @@ export function createIlinkRuntime({
     if (!channelAccessible(channel, actor)) return { ok: false, status: 404, body: { error: "channel_not_found" } };
     if (channel.provider !== "wechat_ilink") return { ok: false, status: 400, body: { error: "not_ilink_channel" } };
     const account = ensureAccount(channel, actor);
-    stopWorker(account.id);
-    credentials.remove(account.id);
+    const previousCredential = credentials.load(account.id);
+    const pending = {
+      previousCredential,
+      previousStatus: account.status,
+      previousWorker: workers.has(account.id),
+    };
+    // Keep both the old credential and worker until the replacement QR session
+    // is confirmed. A user may abandon the scan, and the existing channel must
+    // continue receiving messages during that time.
     const client = clientFactory();
     let qr;
     try {
-      qr = await client.getQrCode();
+      const localTokenList = typeof credentials.listBotTokens === "function"
+        ? credentials.listBotTokens(10)
+        : previousCredential?.botToken ? [previousCredential.botToken] : [];
+      qr = await client.getQrCode({ localTokenList });
     } catch (error) {
-      setAccount(account, { status: "error", lastError: error?.code ?? "qr_request_failed" });
+      const code = error?.code ?? "qr_request_failed";
+      if (!restorePreviousLogin(account, pending, code)) setAccount(account, { status: "error", lastError: code });
       return { ok: false, status: 502, body: { error: "ilink_qr_unavailable", detail: error?.code ?? "network_error" } };
     }
     if (!qr?.qrcode) {
-      setAccount(account, { status: "error", lastError: "qr_missing" });
+      if (!restorePreviousLogin(account, pending, "qr_missing")) setAccount(account, { status: "error", lastError: "qr_missing" });
       return { ok: false, status: 502, body: { error: "ilink_qr_missing" } };
     }
     loginSessions.set(channel.id, {
+      ...pending,
       qrcode: String(qr.qrcode),
       imageUrl: String(qr.qrcode_img_content ?? ""),
       createdAt: now(),
       expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
       status: "wait",
-      accountId: account.id,
+      pollBaseUrl: ILINK_API_BASE,
+      verifyCode: null,
     });
-    setAccount(account, { status: "waiting_scan", lastError: null });
+    setAccount(account, { status: previousCredential ? "reconnecting" : "waiting_scan", lastError: null });
     return pollLogin({ channelId, actor, initial: true });
   }
 
-  async function pollLogin({ channelId, actor = null, initial = false } = {}) {
+  async function pollLogin({ channelId, actor = null, initial = false, verifyCode = undefined } = {}) {
     const normalizedChannelId = String(channelId ?? "");
     const channel = channelFor(normalizedChannelId);
     if (!channelAccessible(channel, actor) || channel.provider !== "wechat_ilink") return { ok: false, status: 404, body: { error: "channel_not_found" } };
+    const session = loginSessions.get(normalizedChannelId);
+    if (session && verifyCode !== undefined) session.verifyCode = String(verifyCode ?? "").trim() || null;
     const existing = loginPolls.get(normalizedChannelId);
     if (existing) return existing;
     const request = pollLoginInternal({ channelId: normalizedChannelId, actor, initial });
@@ -195,28 +282,55 @@ export function createIlinkRuntime({
     if (!channelAccessible(channel, actor) || channel.provider !== "wechat_ilink") return { ok: false, status: 404, body: { error: "channel_not_found" } };
     if (!session) {
       const account = accountFor(state, channel.id);
+      expirePairingIfNeeded(account);
       return { ok: true, status: 200, body: { status: account?.status ?? "disconnected", account: publicAccount(account) } };
     }
     const account = accountFor(state, channel.id);
     if (!initial && session.expiresAt && Date.parse(session.expiresAt) <= Date.now()) {
       session.status = "expired";
       loginSessions.delete(channel.id);
-      setAccount(account, { status: "expired", lastError: "ilink_qr_expired" });
+      if (!restorePreviousLogin(account, session, "ilink_qr_expired")) {
+        setAccount(account, { status: "expired", lastError: "ilink_qr_expired" });
+      }
       return { ok: true, status: 200, body: { status: "expired", qr: null, account: publicAccount(account) } };
     }
     try {
-      const statusBody = initial ? { status: "wait" } : await clientFactory().getQrCodeStatus(session.qrcode);
+      const statusBody = initial
+        ? { status: "wait" }
+        : await clientFactory({ baseUrl: session.pollBaseUrl ?? ILINK_API_BASE }).getQrCodeStatus(session.qrcode, { verifyCode: session.verifyCode });
       const status = String(statusBody?.status ?? "wait").toLowerCase();
       session.status = status;
-      if (status === "confirmed" || status === "already_connected" || status === "binded_redirect") {
+      if (status === "binded_redirect") {
+        loginSessions.delete(channel.id);
+        if (session.previousCredential) {
+          restorePreviousLogin(account, session, null);
+          setAccount(account, { status: "authenticated", lastError: null });
+          return { ok: true, status: 200, body: { status: "authenticated", account: publicAccount(account) } };
+        }
+        setAccount(account, { status: "reauth_required", lastError: "ilink_already_bound" });
+        return { ok: false, status: 409, body: { error: "ilink_already_bound" } };
+      } else if (status === "confirmed" || status === "already_connected") {
         const botToken = String(statusBody?.bot_token ?? statusBody?.botToken ?? "").trim();
-        const baseUrl = String(statusBody?.baseurl ?? statusBody?.base_url ?? ILINK_API_BASE).trim();
-        if (!botToken && status !== "binded_redirect") {
+        const baseUrl = ilinkProviderBaseUrl(statusBody?.baseurl ?? statusBody?.base_url ?? ILINK_API_BASE);
+        if (!baseUrl) {
           loginSessions.delete(channel.id);
-          setAccount(account, { status: "reauth_required", lastError: "ilink_login_missing_token" });
+          if (!restorePreviousLogin(account, session, "ilink_baseurl_invalid")) {
+            setAccount(account, { status: "error", lastError: "ilink_baseurl_invalid" });
+          }
+          return { ok: false, status: 502, body: { error: "ilink_baseurl_invalid" } };
+        }
+        if (!botToken) {
+          loginSessions.delete(channel.id);
+          if (!restorePreviousLogin(account, session, "ilink_login_missing_token")) {
+            setAccount(account, { status: "reauth_required", lastError: "ilink_login_missing_token" });
+          }
           return { ok: false, status: 502, body: { error: "ilink_login_missing_token" } };
         }
         if (botToken) {
+          // Switch workers only after the provider has confirmed the new
+          // credential. If persistence fails, the old worker/credential can
+          // still be restored by the common error path.
+          if (session.previousCredential) stopWorker(account.id);
           credentials.save(account.id, {
             botToken,
             baseUrl,
@@ -235,28 +349,50 @@ export function createIlinkRuntime({
           setAccount(account, { status: "reauth_required", lastError: "ilink_login_redirect_required" });
         }
         loginSessions.delete(channel.id);
-      } else if (status === "scaned") {
+      } else if (status === "scaned" || status === "scaned_but_redirect") {
+        if (status === "scaned_but_redirect") {
+          const redirectedBaseUrl = ilinkRedirectBaseUrl(statusBody?.redirect_host);
+          if (!redirectedBaseUrl) {
+            loginSessions.delete(channel.id);
+            if (!restorePreviousLogin(account, session, "ilink_redirect_invalid")) setAccount(account, { status: "error", lastError: "ilink_redirect_invalid" });
+            return { ok: false, status: 502, body: { error: "ilink_redirect_invalid" } };
+          }
+          session.pollBaseUrl = redirectedBaseUrl;
+        }
         setAccount(account, { status: "scanned" });
+      } else if (status === "need_verifycode") {
+        setAccount(account, { status: "verification_required", lastError: "ilink_verify_code_required" });
+      } else if (status === "verify_code_blocked") {
+        loginSessions.delete(channel.id);
+        if (!restorePreviousLogin(account, session, "ilink_verify_code_blocked")) setAccount(account, { status: "error", lastError: "ilink_verify_code_blocked" });
+        return { ok: false, status: 409, body: { error: "ilink_verify_code_blocked" } };
       } else if (["expired", "timeout", "refused"].includes(status)) {
         // Keep the terminal QR state visible so the console can offer a fresh
         // login attempt. Reporting waiting_scan here left the UI polling a dead
         // session with no QR and no recovery action.
-        setAccount(account, { status: "expired" });
+        if (!restorePreviousLogin(account, session, "ilink_qr_expired")) {
+          setAccount(account, { status: "expired", lastError: "ilink_qr_expired" });
+        }
+        loginSessions.delete(channel.id);
       }
       persistStateSoon();
       return {
         ok: true,
         status: 200,
         body: {
-          status: account.status,
+          status: loginDisplayStatus(session.status),
           qr: session.status === "wait" || session.status === "scaned" ? { imageUrl: session.imageUrl, expiresAt: session.expiresAt } : null,
           account: publicAccount(account),
         },
       };
     } catch (error) {
       if (error?.name === "AbortError") return { ok: true, status: 200, body: { status: "waiting_scan", account: publicAccount(account) } };
-      setAccount(account, { status: "error", lastError: error?.code ?? "qr_status_failed" });
-      return { ok: false, status: 502, body: { error: "ilink_qr_status_failed", detail: error?.code ?? "network_error" } };
+      const code = error?.code ?? "qr_status_failed";
+      // The previous session is already healthy again. Do not leave a stale
+      // QR poll alive to compete with the restored worker or confuse the UI.
+      loginSessions.delete(channel.id);
+      if (!restorePreviousLogin(account, session, code)) setAccount(account, { status: "error", lastError: code });
+      return { ok: false, status: 502, body: { error: "ilink_qr_status_failed", detail: code } };
     }
   }
 
@@ -273,6 +409,8 @@ export function createIlinkRuntime({
       pendingPairCode: code,
       pendingPairUserId: actor?.userId ?? account.ownerUserId ?? "usr_local",
       pairingExpiresAt: new Date(Date.now() + PAIRING_TTL_MS).toISOString(),
+      pairingStatus: "pending",
+      lastError: null,
     });
     startWorker(account);
     return { ok: true, status: 200, body: { channel: enabled.body?.channel, pairCode: code, pairingExpiresAt: account.pairingExpiresAt, account: publicAccount(account) } };
@@ -333,14 +471,33 @@ export function createIlinkRuntime({
     const text = textFromIlinkMessage(message).slice(0, MAX_MESSAGE_CHARS);
     const mediaTypes = ilinkMediaCandidates(message);
     if (!channel || !senderId || !messageId) return;
-    // Avoid downloading and storing the same media again when iLink replays a
-    // message after a cursor retry. The import service remains the authoritative
-    // exactly-once boundary; this early check only prevents duplicate I/O/files.
-    if ((state.channelEvents ?? []).some((row) => row.channelId === channel.id && row.providerMessageId === messageId)) return;
     if (Number(message?.message_type) === 2 || (!text && !mediaTypes.length)) return;
     // P1 intentionally supports private chats only; group messages must not
     // accidentally create tasks or consume the pairing code.
     if (message?.group_id) return;
+    // Avoid downloading and storing the same media again when iLink replays a
+    // message after a cursor retry. The import service remains the authoritative
+    // exactly-once boundary; replay the durable event so a crash between import,
+    // dispatch, and enqueue cannot silently lose the user's reply.
+    if ((state.channelEvents ?? []).some((row) => row.channelId === channel.id && row.providerMessageId === messageId)) {
+      const replayed = await importChannelEvent({
+        channelId: channel.id,
+        providerMessageId: messageId,
+        externalUserId: senderId,
+        msgType: mediaTypes.length === 1 ? mediaTypes[0].kind : mediaTypes.length > 1 ? "mixed" : "text",
+        content: text,
+        providerCreateTime: message?.create_time_ms ? new Date(Number(message.create_time_ms)).toISOString() : null,
+        replyContext: { contextToken: String(message?.context_token ?? "") },
+        attachmentCandidates: [],
+      });
+      if (!replayed?.ok) {
+        throw Object.assign(new Error(replayed?.reason ?? "channel_event_recovery_failed"), {
+          code: replayed?.reason ?? "channel_event_recovery_failed",
+        });
+      }
+      setAccount(account, { lastMessageAt: now(), lastError: null });
+      return;
+    }
     const media = mediaTypes.length
       ? await downloadMediaCandidates(client, message, channel.id)
       : { attachmentCandidates: [], descriptions: [], failed: [], voiceTexts: [] };
@@ -356,11 +513,21 @@ export function createIlinkRuntime({
         { channelId: channel.id, externalUserId: senderId, userId: account.pendingPairUserId ?? account.ownerUserId },
         { userId: account.pendingPairUserId ?? account.ownerUserId, teamId: account.ownerTeamId, role: "owner" },
       );
-      if (mapped?.ok || mapped?.body?.error === "identity_already_mapped") {
-        await client.sendMessage({ toUser: senderId, content: "绑定成功。现在可以发送 /help 查看可用命令。", contextToken: message.context_token, fromUserId: account.botId });
-        setAccount(account, { status: "connected", pendingPairCode: null, pendingPairUserId: null, pairingExpiresAt: null, lastMessageAt: now(), lastError: null });
-        appendEvent({ invocationId: null, type: "ilink_account_bound", level: "info", message: `iLink account bound to channel ${channel.id}.`, data: { channelId: channel.id } });
+      if (!(mapped?.ok || mapped?.body?.error === "identity_already_mapped")) {
+        throw Object.assign(new Error("identity_mapping_failed"), { code: "identity_mapping_failed" });
       }
+      // Keep this id stable across a cursor replay. If the provider accepted
+      // the first reply but the process died before the account update, the
+      // replay must not create a second visible confirmation message.
+      await client.sendMessage({
+        toUser: senderId,
+        content: "绑定成功。现在直接发送问题、文字、图片、语音或文件即可；回复“帮助”可查看使用方式。",
+        contextToken: message.context_token,
+        fromUserId: account.botId,
+        clientId: `ilink-bind-${channel.id}-${messageId}`,
+      });
+      setAccount(account, { status: "connected", pairingStatus: "bound", pendingPairCode: null, pendingPairUserId: null, pairingExpiresAt: null, lastMessageAt: now(), lastError: null });
+      appendEvent({ invocationId: null, type: "ilink_account_bound", level: "info", message: `iLink account bound to channel ${channel.id}.`, data: { channelId: channel.id } });
       return;
     }
     const imported = await importChannelEvent({
@@ -376,7 +543,10 @@ export function createIlinkRuntime({
         ? { failed: media.failed, total: mediaTypes.filter((candidate) => candidate.media).length }
         : null,
     });
-    if (imported?.ok) setAccount(account, { lastMessageAt: now(), lastError: null });
+    if (!imported?.ok) {
+      throw Object.assign(new Error(imported?.reason ?? "channel_event_import_failed"), { code: imported?.reason ?? "channel_event_import_failed" });
+    }
+    setAccount(account, { lastMessageAt: now(), lastError: null });
   }
 
   async function runWorker(account, worker) {
@@ -387,6 +557,7 @@ export function createIlinkRuntime({
     while (!worker.abortController.signal.aborted && !stopped) {
       const channel = channelFor(account.channelId);
       if (!channel || channel.status !== "enabled") break;
+      expirePairingIfNeeded(account);
       try {
         const response = await client.getUpdates({ cursor: account.cursor ?? "", signal: worker.abortController.signal });
         let processingFailed = false;
@@ -405,10 +576,20 @@ export function createIlinkRuntime({
               message: `iLink message processing failed (${error?.code ?? "message_processing_failed"}).`,
               data: { channelId: account.channelId, code: error?.code ?? "message_processing_failed" },
             });
+            break;
           }
         }
+        if (processingFailed) {
+          // Do not acknowledge the provider cursor until every message in the
+          // batch has reached a durable boundary. The next poll will replay the
+          // batch; normal imports are idempotent and binding replies use a
+          // stable client id, so this is at-least-once without message loss.
+          setAccount(account, { status: "connected", lastPollAt: now(), lastError: "message_processing_failed", workerFailureCount: 0, nextRetryAt: new Date(Date.now() + 1_000).toISOString() });
+          await sleep(1_000, worker.abortController.signal);
+          continue;
+        }
         if (response?.get_updates_buf !== undefined) account.cursor = String(response.get_updates_buf ?? "");
-        setAccount(account, { status: "connected", lastPollAt: now(), lastError: processingFailed ? "message_processing_failed" : null, workerFailureCount: 0, nextRetryAt: null });
+        setAccount(account, { status: "connected", lastPollAt: now(), lastError: null, workerFailureCount: 0, nextRetryAt: null });
         failures = 0;
       } catch (error) {
         if (worker.abortController.signal.aborted) break;
@@ -424,7 +605,7 @@ export function createIlinkRuntime({
           workerFailureCount: failures,
           nextRetryAt: new Date(Date.now() + delay).toISOString(),
         });
-        await sleep(delay);
+        await sleep(delay, worker.abortController.signal);
       }
     }
     try { await client.notifyStop(); } catch { /* best effort */ }
@@ -446,7 +627,10 @@ export function createIlinkRuntime({
     for (const account of state.ilinkAccounts ?? []) {
       const channel = channelFor(account.channelId);
       if (channel?.provider !== "wechat_ilink") continue;
-      if (channel.status === "enabled" && account.status !== "reauth_required" && credentials.load(account.id)?.botToken && !workers.has(account.id)) startWorker(account);
+      if (channel.status === "enabled" && account.status !== "reauth_required" && credentials.load(account.id)?.botToken && !workers.has(account.id)) {
+        if (account.status === "pairing_expired") setAccount(account, { status: "connected", pairingStatus: "expired", lastError: null });
+        startWorker(account);
+      }
       if (channel.status !== "enabled") stopWorker(account.id);
     }
   }
@@ -460,8 +644,15 @@ export function createIlinkRuntime({
   }
 
   async function sendApplicationMessage({ channelId, toUser, content, replyContext = null, mediaAssets = [], deliveryId = null } = {}) {
+    const channel = channelFor(channelId);
     const account = accountFor(state, channelId);
     const credential = account ? credentials.load(account.id) : null;
+    if (!channel || channel.provider !== "wechat_ilink") {
+      return { ok: false, retryable: false, errcode: "ilink_channel_not_found" };
+    }
+    if (channel.status === "disabled") {
+      return { ok: false, retryable: true, errcode: "ilink_channel_disabled" };
+    }
     if (!account || !credential?.botToken) return { ok: false, retryable: false, errcode: "ilink_not_connected" };
     try {
       const client = clientFactory({ baseUrl: credential.baseUrl, token: credential.botToken });
@@ -521,7 +712,7 @@ export function createIlinkRuntime({
     stopWorker(account.id);
     const disabled = disableChannel({ channelId: channel.id }, actor);
     credentials.remove(account.id);
-    setAccount(account, { status: "disconnected", botId: null, cursor: "", pendingPairCode: null, pendingPairUserId: null, pairingExpiresAt: null, lastError: null });
+    setAccount(account, { status: "disconnected", botId: null, cursor: "", pendingPairCode: null, pendingPairUserId: null, pairingExpiresAt: null, pairingStatus: null, lastError: null });
     loginSessions.delete(channel.id);
     return disabled?.ok ? { ok: true, status: 200, body: { channel: disabled.body?.channel, account: publicAccount(account) } } : disabled;
   }

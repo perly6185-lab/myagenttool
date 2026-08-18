@@ -412,6 +412,62 @@ export function createChannelService({
     };
   }
 
+  function channelDiagnostics({ channelId } = {}, actor = null) {
+    const channel = findOwnChannel(channelId, actor);
+    if (!channel) return notFound();
+    const events = (state.channelEvents ?? []).filter((row) => row.channelId === channel.id);
+    const deliveries = (state.channelDeliveries ?? []).filter((row) => row.channelId === channel.id);
+    const conversations = (state.channelConversations ?? []).filter((row) => row.channelId === channel.id);
+    const threads = (state.channelTaskThreads ?? []).filter((row) => row.channelId === channel.id);
+    const readinessScopes = readiness(channel);
+    const latest = (rows, selector) => rows
+      .map(selector)
+      .filter(Boolean)
+      .sort()
+      .at(-1) ?? null;
+    const inboundStatus = Object.fromEntries([...new Set(events.map((row) => row.status).filter(Boolean))].map((status) => [status, events.filter((row) => row.status === status).length]));
+    const outboundStatus = Object.fromEntries([...new Set(deliveries.map((row) => row.status).filter(Boolean))].map((status) => [status, deliveries.filter((row) => row.status === status).length]));
+    const taskStatus = Object.fromEntries([...new Set(threads.map((row) => row.status).filter(Boolean))].map((status) => [status, threads.filter((row) => row.status === status).length]));
+    const failures = [
+      ...deliveries
+        .filter((row) => row.status === "failed_terminal")
+        .map((row) => ({ direction: "outbound", status: row.status, code: row.lastErrorCode ?? "delivery_failed", attempts: row.attempts ?? 0, at: row.updatedAt ?? row.createdAt ?? null })),
+      ...events
+        .filter((row) => row.status === "refused" || row.mediaFailure?.failed?.length)
+        .map((row) => ({ direction: "inbound", status: row.status, code: row.mediaFailure?.failed?.[0]?.code ?? row.intentDecision?.reason ?? "event_refused", attempts: 0, at: row.receivedAt ?? null })),
+    ].filter((row) => row.at).sort((left, right) => String(right.at).localeCompare(String(left.at))).slice(0, 10);
+    const scopes = Object.values(readinessScopes);
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        generatedAt: now(),
+        channel: {
+          id: channel.id,
+          provider: channel.provider,
+          name: channel.name,
+          status: channel.status,
+          ready: scopes.length > 0 && scopes.every(Boolean),
+          readiness: readinessScopes,
+        },
+        activity: {
+          lastInboundAt: latest(events, (row) => row.receivedAt),
+          lastOutboundAt: latest(deliveries, (row) => row.createdAt ?? row.updatedAt),
+          lastDeliveredAt: latest(deliveries.filter((row) => row.status === "delivered"), (row) => row.updatedAt ?? row.createdAt),
+          lastFailureAt: failures[0]?.at ?? null,
+        },
+        pipeline: {
+          conversations: conversations.length,
+          inbound: inboundStatus,
+          outbound: outboundStatus,
+          tasks: taskStatus,
+        },
+        failures,
+        note: "诊断信息已脱敏，不包含消息正文、凭据或访问令牌。",
+      },
+    };
+  }
+
   /** Map a provider identity onto a user of the channel's own team. Fail-closed dispatch (S4) depends on these rows. */
   function mapChannelIdentity({ channelId, externalUserId, userId } = {}, actor = null) {
     const channel = findOwnChannel(channelId, actor);
@@ -723,18 +779,22 @@ export function createChannelService({
           replyContext: replyContext ?? null,
           createdAt: now(),
           updatedAt: now(),
+          inboundSequence: 0,
+          lastDispatchedSequence: 0,
         };
         state.channelConversations.push(conversation);
       } else if (replyContext) {
         // Refresh the reply target — Teams' serviceUrl can rotate between messages.
         conversation.replyContext = replyContext;
       }
+      conversation.inboundSequence = Number(conversation.inboundSequence ?? 0) + 1;
       const event = {
         id: nextId(channelIdPrefixes.event),
         channelId: channel.id,
         conversationId: conversation.id,
         ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
         providerMessageId: messageId,
+        conversationSequence: conversation.inboundSequence,
         externalUserId: senderId,
         msgType: String(msgType ?? "text"),
         // Cap stored content: an inbound message is attacker-controlled; a signed
@@ -756,6 +816,11 @@ export function createChannelService({
           }
           : null,
         status: "imported",
+        // Marks events created by the durable inbound pipeline as eligible for
+        // crash recovery. Keeping this explicit prevents a later upgrade from
+        // replaying historical already-settled events on startup.
+        replyRecoveryPending: true,
+        replyDeliveryId: null,
         injectionSuspicious: injection.suspicious,
         receivedAt: now(),
       };
@@ -792,6 +857,7 @@ export function createChannelService({
     enableChannel,
     disableChannel,
     channelHealth,
+    channelDiagnostics,
     mapChannelIdentity,
     removeChannelIdentity,
     listChannelIdentities,

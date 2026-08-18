@@ -69,6 +69,9 @@ export const persistedArrayKeys = [
   "deployments",
   "compareRuns",
   "worktreeReviews",
+  // Session-manager durable rows (one per registered site) — without this the
+  // SQLite backing silently drops probe/reseed history on restart.
+  "sessions",
   "events",
   "refusals",
   "traces",

@@ -2,6 +2,13 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 
 export const ILINK_API_BASE = "https://ilinkai.weixin.qq.com";
 export const ILINK_CDN_BASE = "https://novac2c.cdn.weixin.qq.com/c2c";
+// Keep these wire identifiers aligned with Tencent's current
+// @tencent-weixin/openclaw-weixin client. The application name is carried in
+// bot_agent for observability; iLink-App-Id is the protocol app identifier.
+export const ILINK_APP_ID = "bot";
+export const ILINK_PROTOCOL_VERSION = "2.4.6";
+export const ILINK_CHANNEL_VERSION = ILINK_PROTOCOL_VERSION;
+export const ILINK_BOT_AGENT = "MyAgentTool/0.2.0";
 export const MAX_ILINK_MEDIA_BYTES = 25 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
@@ -26,7 +33,14 @@ function randomWechatUin() {
   return Buffer.from(String(randomBytes(4).readUInt32BE(0)), "utf8").toString("base64");
 }
 
-function baseHeaders({ token = null, appId = "myagenttool", clientVersion = "1.0.0" } = {}) {
+function numericClientVersion(version) {
+  const parts = String(version ?? "0.0.0").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  return ((parts[0] & 0xff) << 16) | ((parts[1] & 0xff) << 8) | (parts[2] & 0xff);
+}
+
+export const ILINK_APP_CLIENT_VERSION = numericClientVersion(ILINK_PROTOCOL_VERSION);
+
+function baseHeaders({ token = null, appId = ILINK_APP_ID, clientVersion = ILINK_APP_CLIENT_VERSION } = {}) {
   const headers = {
     "content-type": "application/json",
     AuthorizationType: "ilink_bot_token",
@@ -72,10 +86,17 @@ async function fetchWithTimeout(fetchImpl, url, init, timeoutMs = MEDIA_TRANSFER
   }
 }
 
-function assertRet(body, label) {
+function assertRet(body, label, { allowMissingRet = false } = {}) {
   const rawRet = body?.ret;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new IlinkApiError(`${label}: malformed response`, {
+      code: "invalid_response",
+      retryable: true,
+    });
+  }
+  if (rawRet === undefined && allowMissingRet) return body;
   const ret = Number(rawRet);
-  if (!body || typeof body !== "object" || Array.isArray(body) || rawRet === undefined || !Number.isFinite(ret)) {
+  if (rawRet === undefined || !Number.isFinite(ret)) {
     throw new IlinkApiError(`${label}: malformed response`, {
       code: "invalid_response",
       retryable: true,
@@ -165,8 +186,8 @@ async function readBoundedResponseBody(response, maxBytes, signal = null) {
 export function createIlinkClient({
   baseUrl = ILINK_API_BASE,
   token = null,
-  appId = "myagenttool",
-  clientVersion = "1.0.0",
+  appId = ILINK_APP_ID,
+  clientVersion = ILINK_APP_CLIENT_VERSION,
   fetchImpl = globalThis.fetch,
   mediaTimeoutMs = MEDIA_TRANSFER_TIMEOUT_MS,
 } = {}) {
@@ -199,17 +220,22 @@ export function createIlinkClient({
     }
   }
 
-  async function getQrCode({ botType = 3 } = {}) {
+  async function getQrCode({ botType = 3, localTokenList = [] } = {}) {
     const body = await request(`ilink/bot/get_bot_qrcode?bot_type=${encodeURIComponent(botType)}`, {
-      method: "GET",
+      // Tencent's current client uses POST with the local token list. The
+      // list lets iLink return binded_redirect for a bot already bound to this
+      // local installation instead of creating a duplicate session.
+      method: "POST",
+      body: { local_token_list: Array.isArray(localTokenList) ? localTokenList.filter(Boolean).slice(-10) : [] },
       timeoutMs: 30_000,
       auth: false,
     });
     return assertRet(body, "get_bot_qrcode");
   }
 
-  async function getQrCodeStatus(qrcode) {
-    const body = await request(`ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`, {
+  async function getQrCodeStatus(qrcode, { verifyCode = null } = {}) {
+    const endpoint = `ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}${verifyCode ? `&verify_code=${encodeURIComponent(verifyCode)}` : ""}`;
+    const body = await request(endpoint, {
       method: "GET",
       timeoutMs: 35_000,
       auth: false,
@@ -219,11 +245,21 @@ export function createIlinkClient({
 
   async function getUpdates({ cursor = "", signal, timeoutMs = DEFAULT_LONG_POLL_TIMEOUT_MS } = {}) {
     try {
-      return assertRet(await request("ilink/bot/getupdates", {
-        body: { get_updates_buf: cursor || "", base_info: { channel_version: "1.0.0", bot_agent: "MyAgentTool/1.0.0" } },
+      const body = assertRet(await request("ilink/bot/getupdates", {
+        body: { get_updates_buf: cursor || "", base_info: { channel_version: ILINK_CHANNEL_VERSION, bot_agent: ILINK_BOT_AGENT } },
         timeoutMs,
         signal,
-      }), "getupdates");
+      }), "getupdates", { allowMissingRet: true });
+      if (body.msgs !== undefined && !Array.isArray(body.msgs)) {
+        throw new IlinkApiError("getupdates: msgs must be an array", { code: "invalid_response", retryable: true });
+      }
+      if (body.get_updates_buf !== undefined && typeof body.get_updates_buf !== "string") {
+        throw new IlinkApiError("getupdates: cursor must be a string", { code: "invalid_response", retryable: true });
+      }
+      if (body.longpolling_timeout_ms !== undefined && (!Number.isFinite(Number(body.longpolling_timeout_ms)) || Number(body.longpolling_timeout_ms) < 0)) {
+        throw new IlinkApiError("getupdates: long-poll timeout is invalid", { code: "invalid_response", retryable: true });
+      }
+      return body;
     } catch (error) {
       // A client-side timeout is the normal end of an empty long-poll. Preserve
       // the cursor and let the worker immediately open the next poll.
@@ -257,10 +293,10 @@ export function createIlinkClient({
       ],
     };
     const body = await request("ilink/bot/sendmessage", {
-      body: { msg, base_info: { channel_version: "1.0.0", bot_agent: "MyAgentTool/1.0.0" } },
+      body: { msg, base_info: { channel_version: ILINK_CHANNEL_VERSION, bot_agent: ILINK_BOT_AGENT } },
       timeoutMs: DEFAULT_TIMEOUT_MS,
     });
-    return { ...assertRet(body, "sendmessage"), clientId: msg.client_id };
+    return { ...assertRet(body, "sendmessage", { allowMissingRet: true }), clientId: msg.client_id };
   }
 
   async function getUploadUrl({ toUser, mediaType, rawSize, rawFileMd5, fileSize, aesKeyHex, fileKey } = {}) {
@@ -274,11 +310,15 @@ export function createIlinkClient({
         filesize: Number(fileSize),
         no_need_thumb: true,
         aeskey: String(aesKeyHex ?? ""),
-        base_info: { channel_version: "1.0.0", bot_agent: "MyAgentTool/1.0.0" },
+        base_info: { channel_version: ILINK_CHANNEL_VERSION, bot_agent: ILINK_BOT_AGENT },
       },
       timeoutMs: DEFAULT_TIMEOUT_MS,
     });
-    return assertRet(body, "getuploadurl");
+    const result = assertRet(body, "getuploadurl", { allowMissingRet: true });
+    if (!result.upload_param && !result.upload_full_url) {
+      throw new IlinkApiError("getuploadurl: upload URL is missing", { code: "media_upload_param_missing", retryable: true });
+    }
+    return result;
   }
 
   async function uploadMedia({ toUser, mediaType, bytes, filename = "attachment" } = {}) {
@@ -391,16 +431,16 @@ export function createIlinkClient({
 
   async function notifyStart() {
     return assertRet(await request("ilink/bot/msg/notifystart", {
-      body: { base_info: { channel_version: "1.0.0", bot_agent: "MyAgentTool/1.0.0" } },
+      body: { base_info: { channel_version: ILINK_CHANNEL_VERSION, bot_agent: ILINK_BOT_AGENT } },
       timeoutMs: 10_000,
-    }), "notifystart");
+    }), "notifystart", { allowMissingRet: true });
   }
 
   async function notifyStop() {
     return assertRet(await request("ilink/bot/msg/notifystop", {
-      body: { base_info: { channel_version: "1.0.0", bot_agent: "MyAgentTool/1.0.0" } },
+      body: { base_info: { channel_version: ILINK_CHANNEL_VERSION, bot_agent: ILINK_BOT_AGENT } },
       timeoutMs: 10_000,
-    }), "notifystop");
+    }), "notifystop", { allowMissingRet: true });
   }
 
   return { getQrCode, getQrCodeStatus, getUpdates, sendMessage, getUploadUrl, uploadMedia, downloadMedia, notifyStart, notifyStop };

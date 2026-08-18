@@ -45,6 +45,7 @@ import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
 import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
 import { createChannelIntentAdapter, resolveChannelIntentConfig } from "../services/channel-intent-adapter.mjs";
+import { createChannelConsultationAdapter, resolveChannelConsultationConfig } from "../services/channel-consultation-adapter.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
 import { createIlinkRuntime } from "../gateway/ilink-runtime.mjs";
 import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
@@ -103,6 +104,7 @@ import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
 import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree } from "../services/article-imports.mjs";
+import { createSessionManager } from "../services/session-manager.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createTemplateLearningService } from "../services/template-learning.mjs";
 import { createWorkflowMemoryInsightsService } from "../services/workflow-memory-insights.mjs";
@@ -533,6 +535,16 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed: (invocation, agent) =>
       invocationService?.startInvocationIfAllowed(invocation, agent),
     store,
+  });
+  // Session manager: login-state observability + keep-alive for profile-backed
+  // site plugins (zhihu today). Dormant by design — the sweep only runs when
+  // index.mjs is gated on via MYAGENTTOOL_SESSION_MANAGER_ENABLED.
+  const sessionManagerService = createSessionManager({
+    state,
+    now,
+    appendEvent,
+    persistStateSoon,
+    sendAlert: alertOutbox.enqueue,
   });
   const workflowOcrAdapter = createFallbackWorkflowOcrAdapter({
     localAdapter: createLocalWorkflowOcrAdapter({
@@ -1147,6 +1159,7 @@ export function createServerRuntimeServices({
   // service composes after the invocation service.
   let channelDeliveryHook = null;
   let channelThreadHook = null;
+  let channelConsultationHook = null;
   let approvalAutoRunHook = null;
   let denialAutoRunHook = null;
   // Same late-binding for orchestration auto-recovery: it reuses the recovery
@@ -1252,6 +1265,11 @@ export function createServerRuntimeServices({
         channelThreadHook?.(invocation);
       } catch {
         /* task-thread state is best-effort; completion must never fail because of it */
+      }
+      try {
+        channelConsultationHook?.(invocation);
+      } catch {
+        /* consultation delivery is best-effort; completion must never fail because of it */
       }
       try {
         channelDeliveryHook?.(invocation);
@@ -2214,7 +2232,7 @@ export function createServerRuntimeServices({
   const createChannelTaskIssue = async ({
     projectId, channelOwnerTeamId, title, description, channelId, externalUserId,
     injectionSuspicious = false, autoRoute = false, inputAssets = [], terminalId,
-    channelTaskContext, threadId = null,
+    channelTaskContext, threadId = null, idempotencyKey = null,
   }) => {
     const project = (state.projects ?? []).find((p) => p.id === projectId);
     if (!project) return { ok: false, reason: "project_not_resolvable" };
@@ -2237,7 +2255,7 @@ export function createServerRuntimeServices({
       labels: ["channel", UNTRUSTED_INPUT_LABEL, ...(injectionSuspicious ? ["needs-triage"] : [])],
       inputAssets,
       requiredCapabilities: [],
-      idempotencyKey: `channel:${channelId}:${channelTaskContext?.messageId ?? "unknown"}`,
+      idempotencyKey: idempotencyKey ?? `channel:${channelId}:${channelTaskContext?.messageId ?? "unknown"}`,
     }, { userId: principal.id, teamId: principal.teamId, role: "member", deviceId: terminalId });
     if (!created.ok) return { ok: false, reason: created.body?.error ?? "work_item_create_failed" };
     const workItem = created.body.workItem;
@@ -2620,6 +2638,13 @@ export function createServerRuntimeServices({
     state.channelIntentMetrics = { ...current, bridge, updatedAt: current.updatedAt ?? null };
     persistStateSoon();
   };
+  const channelConsultationAdapter = createChannelConsultationAdapter({
+    config: resolveChannelConsultationConfig(),
+    state,
+    findAgent,
+    createInvocation: (...args) => invocationService?.createInvocation(...args),
+    now,
+  });
   const channelConversationService = createChannelConversationService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
     createCapabilityInvocation, cancelInvocation, createChannelTaskIssue,
@@ -2633,6 +2658,7 @@ export function createServerRuntimeServices({
       now,
       onMetric: recordChannelIntentBridgeMetric,
     })?.classify,
+    createConsultation: channelConsultationAdapter?.enqueue,
     resendDelivery: (args) => channelResendDelivery?.(args),
     replySender: (args) => channelReplySender?.(args),
     notifyHumanTakeover: ({ thread, request, reason }) => {
@@ -2657,6 +2683,7 @@ export function createServerRuntimeServices({
     mintDecisionGrant, validateApprovalToken, approveInvocation, denyInvocation,
   });
   channelThreadHook = channelConversationService.syncTaskThreadFromInvocation;
+  channelConsultationHook = channelConversationService.syncConsultationFromInvocation;
   // Outbound delivery (S5/#1110): provider senders are late-bound by index.mjs
   // when each gateway is configured — this service never sees any provider
   // secret. Keyed by provider so a WeCom and a Feishu delivery route to their
@@ -2667,9 +2694,11 @@ export function createServerRuntimeServices({
     resolveSender: (provider) => channelSenders[provider] ?? null,
     validateApprovalToken,
   });
-  channelReplySender = ({ channelId, conversationId, content, threadId = null }) => channelDeliveryService.enqueueChannelDelivery({
+  channelReplySender = ({ channelId, conversationId, content, threadId = null, invocationId = null, dedupeKey = null }) => channelDeliveryService.enqueueChannelDelivery({
     channelId,
     conversationId,
+    invocationId,
+    dedupeKey,
     content,
     taskContext: threadId
       ? { channelId, conversationId, threadId }
@@ -2678,8 +2707,55 @@ export function createServerRuntimeServices({
   channelResendDelivery = channelDeliveryService.resendChannelDelivery;
   channelDeliveryService.recoverThreadDeliveryState?.();
   channelConversationService.recoverTaskThreads?.();
+  channelConversationService.recoverConsultations?.();
   channelConversationService.resumeIntake?.();
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
+
+  // Inbound events are durable before dispatch. A crash between those two
+  // steps must be recoverable on the next process start, and a replay must not
+  // create a second outbound row for the same event.
+  async function deliverChannelEventReply(event) {
+    if (!event) return { ok: false, reason: "channel_event_not_found" };
+    // Legacy settled events predate the durable reply marker. They are kept for
+    // history but must not be replayed automatically after an upgrade.
+    if (event.replyRecoveryPending !== true) return { ok: true, skipped: true, reason: "legacy_or_settled_event" };
+    let settled = null;
+    if (event.status === "imported") {
+      settled = await channelConversationService.dispatchImportedChannelEvent({ eventId: event.id });
+    } else if (event.status === "dispatched" || event.status === "refused") {
+      settled = { reply: event.replyText ?? null, invocationId: event.invocationId ?? null };
+    }
+    if (!settled?.reply) {
+      event.replyRecoveryPending = false;
+      persistStateSoon();
+      return { ok: true, status: event.status, replyQueued: false };
+    }
+    const queued = channelDeliveryService.enqueueChannelDelivery({
+      channelId: event.channelId,
+      conversationId: event.conversationId,
+      invocationId: settled.invocationId ?? event.invocationId ?? null,
+      content: settled.reply,
+      dedupeKey: `channel-event:${event.id}:reply`,
+    });
+    if (!queued?.ok) {
+      throw Object.assign(new Error("channel_event_reply_enqueue_failed"), {
+        code: queued?.reason ?? "channel_event_reply_enqueue_failed",
+      });
+    }
+    event.replyDeliveryId = queued.deliveryId ?? event.replyDeliveryId ?? null;
+    event.replyRecoveryPending = false;
+    persistStateSoon();
+    return { ok: true, status: event.status, replyQueued: true, deduplicated: Boolean(queued.deduplicated) };
+  }
+
+  async function recoverChannelEventReplies() {
+    const pending = (state.channelEvents ?? [])
+      .filter((event) => ["imported", "dispatched", "refused"].includes(event.status))
+      .slice(-200);
+    for (const event of pending) {
+      try { await deliverChannelEventReply(event); } catch { /* retry on the next recovery/sweep */ }
+    }
+  }
 
   // Scheduled work-report → channel push. Closes over the delivery service's
   // enqueue so a due schedule lands in the same durable outbound pipeline as an
@@ -2730,22 +2806,27 @@ export function createServerRuntimeServices({
           }
           normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets };
         } catch (error) {
-          return { ok: false, refused: true, reason: error?.code ?? "channel_attachment_ingestion_failed" };
+          const code = error?.code ?? "channel_attachment_ingestion_failed";
+          normalizedPayload = {
+            ...payload,
+            attachmentCandidates: undefined,
+            attachmentAssets: [],
+            mediaFailure: {
+              total: payload.attachmentCandidates.length,
+              failed: payload.attachmentCandidates.slice(0, 20).map((candidate) => ({
+                kind: candidate?.kind ?? "file",
+                filename: candidate?.filename ?? "附件",
+                code,
+              })),
+            },
+          };
         }
       }
     }
     const imported = channelService.importChannelEvent(normalizedPayload);
-    if (imported?.ok && !imported.duplicate) {
-      const dispatched = await channelConversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
-      // Staged command replies become durable outbound deliveries.
-      if (dispatched?.reply) {
-        channelDeliveryService.enqueueChannelDelivery({
-          channelId: payload?.channelId,
-          conversationId: imported.conversationId,
-          invocationId: dispatched.invocationId ?? null,
-          content: dispatched.reply,
-        });
-      }
+    if (imported?.ok) {
+      const event = (state.channelEvents ?? []).find((candidate) => candidate.id === imported.eventId);
+      await deliverChannelEventReply(event);
     }
     return imported;
   };
@@ -2764,6 +2845,7 @@ export function createServerRuntimeServices({
     credentialStore: ilinkCredentialStore ?? undefined,
     clientFactory: ilinkClientFactory,
   });
+  void recoverChannelEventReplies();
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
     const application = findApplication(applicationId);
@@ -4762,6 +4844,7 @@ export function createServerRuntimeServices({
     enableChannel: channelService.enableChannel,
     disableChannel: channelService.disableChannel,
     channelHealth: channelService.channelHealth,
+    channelDiagnostics: channelService.channelDiagnostics,
     mapChannelIdentity: channelService.mapChannelIdentity,
     removeChannelIdentity: channelService.removeChannelIdentity,
     listChannelIdentities: channelService.listChannelIdentities,
@@ -4939,6 +5022,11 @@ export function createServerRuntimeServices({
     getArticleImport: articleImportService.get,
     cancelArticleImport: articleImportService.cancel,
     analyzeArticleImport: articleImportService.analyze,
+    listSessions: sessionManagerService.listSessions,
+    probeSessionSite: sessionManagerService.probeSite,
+    reseedSessionSite: sessionManagerService.seedLogin,
+    sessionHealthSweep: sessionManagerService.sessionHealthSweep,
+    acquireSessionProfile: sessionManagerService.acquireProfile,
     findSimilarArticleImports: articleImportService.findSimilar,
     createArticleDerivative: articleImportService.createDerivative,
     listArticleDerivatives: articleImportService.listDerivatives,

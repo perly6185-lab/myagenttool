@@ -31,6 +31,7 @@ import { handleTerminalRoutes } from "../routes/terminal.mjs";
 import { handleTaskMaterialRoutes } from "../routes/task-materials.mjs";
 import { handleToolRoutes } from "../routes/tools.mjs";
 import { handleWorkItemRoutes } from "../routes/work-items.mjs";
+import { handleSessionRoutes } from "../routes/sessions.mjs";
 import { handleWorkflowMemoryRoutes } from "../routes/workflow-memory.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
 import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
@@ -136,6 +137,9 @@ export function createHttpServer({
   getArticleImport,
   cancelArticleImport,
   analyzeArticleImport,
+  listSessions,
+  probeSessionSite,
+  reseedSessionSite,
   findSimilarArticleImports,
   createArticleDerivative,
   listArticleDerivatives,
@@ -519,6 +523,7 @@ export function createHttpServer({
   enableChannel,
   disableChannel,
   channelHealth,
+  channelDiagnostics,
   mapChannelIdentity,
   removeChannelIdentity,
   listChannelIdentities,
@@ -833,6 +838,7 @@ export function createHttpServer({
         enableChannel,
         disableChannel,
         channelHealth,
+        channelDiagnostics,
         mapChannelIdentity,
         removeChannelIdentity,
         listChannelIdentities,
@@ -1100,6 +1106,15 @@ export function createHttpServer({
       }
 
       if (handleLoopRoutineRoutes({ req, res, url, sendJson, currentLoopRoutineProjectContext })) {
+        return;
+      }
+
+      if (await handleSessionRoutes({
+        req, res, url, sendJson,
+        listSessions,
+        probeSessionSite,
+        reseedSessionSite,
+      })) {
         return;
       }
 

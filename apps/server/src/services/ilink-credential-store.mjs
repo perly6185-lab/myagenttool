@@ -69,10 +69,31 @@ export function createIlinkCredentialStore({ stateStorePath }) {
     }
   }
 
+  function listBotTokens(limit = 10) {
+    const current = loadRecords();
+    return Object.values(current.records ?? {})
+      .slice(-Math.max(0, Number(limit) || 0))
+      .map((record) => {
+        try {
+          const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(record.iv, "base64"));
+          decipher.setAuthTag(Buffer.from(record.tag, "base64"));
+          return JSON.parse(Buffer.concat([
+            decipher.update(Buffer.from(record.data, "base64")),
+            decipher.final(),
+          ]).toString("utf8"))?.botToken;
+        } catch {
+          return null;
+        }
+      })
+      .filter((token) => typeof token === "string" && token.trim())
+      .map((token) => token.trim())
+      .reverse();
+  }
+
   function remove(accountId) {
     delete records.records?.[String(accountId)];
     writeJsonAtomic(dataPath, records);
   }
 
-  return { save, load, remove, paths: { keyPath, dataPath } };
+  return { save, load, listBotTokens, remove, paths: { keyPath, dataPath } };
 }

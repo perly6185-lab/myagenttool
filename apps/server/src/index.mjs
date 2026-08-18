@@ -411,6 +411,17 @@ if (typeof httpDependencies.applicationHealthSweep === "function") {
   }, 60_000).unref?.();
 }
 
+// Session keep-alive sweep (login-managed site profiles, e.g. zhihu). Strictly
+// opt-in: without the env gate NO browser is ever spawned from the sweep, and
+// the sweep itself throttles per site by its registry intervalMinutes (default
+// 180 — a too-regular heartbeat is itself a bot signal to the very WAFs these
+// profiles exist to pass).
+if (process.env.MYAGENTTOOL_SESSION_MANAGER_ENABLED === "1" && typeof httpDependencies.sessionHealthSweep === "function") {
+  setInterval(() => {
+    httpDependencies.sessionHealthSweep().catch(() => {});
+  }, 60_000).unref?.();
+}
+
 // Bridge liveness + executor deadline watchdog. A short tick bounds the window
 // where an online bridge with a dead child process can leave a zombie "running"
 // invocation. Restore is symmetric on any authenticated bridge request.

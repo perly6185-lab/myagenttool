@@ -2,11 +2,12 @@
 // CLI entry point for the Zhihu Playwright renderer subprocess.
 //
 // Contract (mirrors tools/feishu-doc-imports/src/cli.mjs):
-//   argv:   <url> [--headed] [--profile <dir>] [--login]
-//   stdout: on success, a single JSON object {"ok":true,"url":"<resolved>","html":"<rendered>"}
-//           followed by a newline. No JSON is written on failure. (--login
-//           writes only guidance to stderr and emits no JSON.)
-//   exit:   0 success · 1 usage error · 2 render/fetch/login failure
+//   argv:   <url> | --probe | --login  [--headed] [--profile <dir>] [--channel <name>]
+//   stdout: on success, a single JSON object — render: {"ok":true,"url":"<resolved>","html":"<rendered>"},
+//           probe: {"ok":true,"loggedIn":true,"detail":"z_c0 present"} — followed by a
+//           newline. No JSON is written on failure. (--login writes only guidance
+//           to stderr and emits no JSON.)
+//   exit:   0 success · 1 usage error · 2 render/fetch/probe/login failure
 //   stderr: a single human-readable line on failure ("zhihu-imports failed: <msg>").
 //
 // This process owns NO disk writes beyond the persistent profile's browser
@@ -21,21 +22,35 @@
 import { parseZhihuUrl, ZhihuUrlError } from "./parse-url.mjs";
 import { resolveConfig } from "./config.mjs";
 import { loginZhihuProfile, renderZhihuDoc } from "./fetch-doc.mjs";
+import { probeZhihuSession } from "./health-probe.mjs";
 
-const USAGE = "usage: zhihu-imports <url> [--headed] [--profile <dir>] [--login]\n";
+const USAGE = "usage: zhihu-imports <url> | --probe | --login [--headed] [--profile <dir>] [--channel <name>]\n";
 
 async function main() {
   const argv = process.argv.slice(2);
   const positional = [];
   let headlessOverride = null;
   let profileOverride = null;
+  let channelOverride = null;
   let login = false;
+  let probe = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--headed") {
       headlessOverride = false;
     } else if (a === "--login") {
       login = true;
+    } else if (a === "--probe") {
+      probe = true;
+    } else if (a === "--channel") {
+      channelOverride = argv[++i];
+      if (!channelOverride) {
+        process.stderr.write("zhihu-imports: --channel requires a name argument\n");
+        process.stderr.write(USAGE);
+        return 1;
+      }
+    } else if (a.startsWith("--channel=")) {
+      channelOverride = a.slice("--channel=".length);
     } else if (a === "--profile") {
       profileOverride = argv[++i];
       if (!profileOverride) {
@@ -59,6 +74,7 @@ async function main() {
     ...baseConfig,
     ...(headlessOverride === null ? {} : { headless: headlessOverride }),
     ...(profileOverride ? { profileDir: profileOverride } : {}),
+    ...(channelOverride ? { channel: channelOverride } : {}),
   };
 
   // --login seeds a persistent profile with a logged-in zhihu session. It needs
@@ -66,6 +82,24 @@ async function main() {
   if (login) {
     try {
       await loginZhihuProfile({ config });
+      return 0;
+    } catch (err) {
+      process.stderr.write(`zhihu-imports failed: ${(err && err.message) || err}\n`);
+      return 2;
+    }
+  }
+
+  // --probe reports whether the profile's session is still logged in
+  // ({"ok":true,"loggedIn":bool,"detail"}). loggedIn:false is exit 0 — it is a
+  // health finding, not a probe failure.
+  if (probe) {
+    if (positional.length !== 0) {
+      process.stderr.write(USAGE);
+      return 1;
+    }
+    try {
+      const result = await probeZhihuSession({ config });
+      process.stdout.write(JSON.stringify(result) + "\n");
       return 0;
     } catch (err) {
       process.stderr.write(`zhihu-imports failed: ${(err && err.message) || err}\n`);

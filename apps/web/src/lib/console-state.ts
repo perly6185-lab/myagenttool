@@ -231,6 +231,8 @@ export interface ClaudeApplyAuthorization {
   nextAction?: string | null;
   lastProgressAt?: string | null;
   lastProgressSummary?: string | null;
+  attentionReason?: string | null;
+  attentionAt?: string | null;
   lastDeliveryStatus?: string | null;
   lastDeliveryId?: string | null;
   lastDeliveryError?: string | null;
@@ -1446,6 +1448,7 @@ export interface ConsoleSnapshot {
 }
 
 export interface ChannelIntentMetrics {
+  policyVersion?: string;
   total: number;
   byIntent?: Record<string, number>;
   bySource?: Record<string, number>;
@@ -1505,6 +1508,8 @@ export interface ChannelTaskThread {
   nextAction?: string | null;
   lastProgressAt?: string | null;
   lastProgressSummary?: string | null;
+  attentionReason?: string | null;
+  attentionAt?: string | null;
   lastDeliveryStatus?: string | null;
   lastDeliveryId?: string | null;
   lastDeliveryError?: string | null;
@@ -1564,6 +1569,8 @@ export interface ChannelOperations {
   statusCapability?: string | null;
   /** The project `/task` files GitHub issues into (null = /task disabled). */
   taskProjectId?: string | null;
+  /** The execution device selected for channel tasks. */
+  taskTerminalId?: string | null;
   /** Personal mode is the local-user default; team mode keeps an approval boundary. */
   operationMode?: "personal" | "team" | string;
   /** Auto-route /task straight to work (personal mode routes after confirmation). */
@@ -1589,12 +1596,48 @@ export interface ChannelOperations {
     running: number;
     waitingApproval: number;
     waitingUser: number;
+    needsAttention: number;
     humanTakeover: number;
     succeeded: number;
     failed: number;
     cancelled: number;
   };
   lastActivityAt?: string | null;
+  lastInboundAt?: string | null;
+  lastOutboundAt?: string | null;
+  lastDeliveredAt?: string | null;
+  lastFailureAt?: string | null;
+  lastFailureCode?: string | null;
+  pipeline?: {
+    inbound: Record<string, number>;
+    outbound: Record<string, number>;
+  };
+}
+
+export interface ChannelDiagnostics {
+  generatedAt: string;
+  channel: {
+    id: string;
+    provider: string;
+    name: string;
+    status: string;
+    ready: boolean;
+    readiness: Record<string, boolean>;
+  };
+  activity: {
+    lastInboundAt: string | null;
+    lastOutboundAt: string | null;
+    lastDeliveredAt: string | null;
+    lastFailureAt: string | null;
+  };
+  pipeline: {
+    conversations: number;
+    inbound: Record<string, number>;
+    outbound: Record<string, number>;
+    tasks: Record<string, number>;
+  };
+  failures: Array<{ direction: string; status: string; code: string; attempts: number; at: string }>;
+  note: string;
 }
 
 /** An inbound-established conversation — the addressable target for an outbound

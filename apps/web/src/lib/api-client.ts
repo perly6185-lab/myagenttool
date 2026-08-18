@@ -17,6 +17,7 @@ import type {
   ApplicationSnapshot,
   ConsoleSnapshot,
   ChannelInteraction,
+  ChannelDiagnostics,
   InvocationEventSnapshot,
   KnownApplicationCatalogEntry,
   ProjectTreeResponse,
@@ -2724,10 +2725,14 @@ export const api = {
     const suffix = search.toString();
     return request<{ interactions: ChannelInteraction[]; nextCursor: string | null; count: number }>("GET", `/api/channels/${encodeURIComponent(channelId)}/interactions${suffix ? `?${suffix}` : ""}`);
   },
+  getChannelDiagnostics: (channelId: string) =>
+    request<ChannelDiagnostics>("GET", `/api/channels/${encodeURIComponent(channelId)}/diagnostics`),
   startIlinkLogin: (channelId: string) =>
     request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/login`, {}),
-  pollIlinkLogin: (channelId: string) =>
-    request("GET", `/api/channels/${encodeURIComponent(channelId)}/ilink/login`),
+  pollIlinkLogin: (channelId: string, verifyCode?: string) => {
+    const query = verifyCode?.trim() ? `?verify_code=${encodeURIComponent(verifyCode.trim())}` : "";
+    return request("GET", `/api/channels/${encodeURIComponent(channelId)}/ilink/login${query}`);
+  },
   activateIlinkChannel: (channelId: string, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/activate`, { approvalToken }),
   disconnectIlinkChannel: (channelId: string) =>
@@ -2744,8 +2749,8 @@ export const api = {
     ),
   // Bind (projectId) or clear (null) the project /task files issues into, and the
   // auto-route mode. Approval-gated.
-  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, dailyLimit: number, approvalToken: string, operationMode: "personal" | "team" = "personal") =>
-    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, autoRoute, dailyLimit, operationMode, approvalToken }),
+  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, dailyLimit: number, approvalToken: string, operationMode: "personal" | "team" = "personal", terminalId: string | null = null) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, terminalId: projectId ? terminalId : null, autoRoute, dailyLimit, operationMode, approvalToken }),
   // Promote a captured /task request into a tracked auto-run, or dismiss it.
   routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
   dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),

@@ -157,6 +157,22 @@ test("a queued delivery sends, records the provider receipt, and leaves evidence
   assert.equal(harness.events.at(-1).type, "channel_delivery_recorded");
 });
 
+test("a disabled channel pauses outbound delivery and resumes after re-enable", async () => {
+  const harness = makeDeliveryHarness();
+  harness.state.channels.find((channel) => channel.id === harness.channelId).status = "disabled";
+  const queued = harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId, conversationId: harness.conversationId, content: "wait for reconnect",
+  });
+  assert.equal(queued.ok, true);
+  assert.equal((await harness.service.sweepChannelDeliveries()).processed, 0);
+  assert.equal(harness.state.channelDeliveries.at(-1).status, "queued");
+  assert.equal(harness.sent.length, 0);
+
+  harness.state.channels.find((channel) => channel.id === harness.channelId).status = "enabled";
+  assert.equal((await harness.service.sweepChannelDeliveries()).processed, 1);
+  assert.equal(harness.state.channelDeliveries.at(-1).status, "delivered");
+});
+
 test("delivery sender receives the durable delivery id for provider deduplication", async () => {
   const harness = makeDeliveryHarness();
   let sentArgs;
@@ -378,6 +394,28 @@ test("notifyInvocationCompleted queues a result message only for channel-origina
   assert.doesNotMatch(delivery.content, /task-1|Trace:/);
   assert.equal(delivery.mediaAssets[0].projectId, "prj_media");
   assert.equal(delivery.mediaAssets[0].path, "result.pdf");
+});
+
+test("outbound delivery dedupe keys survive repeated enqueue attempts", () => {
+  const harness = makeDeliveryHarness();
+  const first = harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    content: "咨询答案",
+    dedupeKey: "channel-consultation:ce_1:inv_1:answer",
+  });
+  const second = harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    content: "咨询答案",
+    dedupeKey: "channel-consultation:ce_1:inv_1:answer",
+  });
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(second.deduplicated, true);
+  assert.equal(second.deliveryId, first.deliveryId);
+  assert.equal(harness.state.channelDeliveries.length, 1);
+  assert.equal(harness.state.channelDeliveries[0].dedupeKey, "channel-consultation:ce_1:inv_1:answer");
 });
 
 test("thread notifications are idempotent for the same completed invocation", () => {

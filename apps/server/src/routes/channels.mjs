@@ -25,6 +25,7 @@ export async function handleChannelRoutes({
   enableChannel,
   disableChannel,
   channelHealth,
+  channelDiagnostics,
   mapChannelIdentity,
   removeChannelIdentity,
   listChannelIdentities,
@@ -40,6 +41,13 @@ export async function handleChannelRoutes({
 
   if (req.method === "GET" && url.pathname === "/api/channels") {
     const result = listChannels(actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const diagnostics = url.pathname.match(/^\/api\/channels\/([^/]+)\/diagnostics$/);
+  if (diagnostics && req.method === "GET" && typeof channelDiagnostics === "function") {
+    const result = channelDiagnostics({ channelId: decodeURIComponent(diagnostics[1]) }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }
@@ -77,7 +85,7 @@ export async function handleChannelRoutes({
       return true;
     }
     if (action === "login" && req.method === "GET" && typeof pollIlinkLogin === "function") {
-      const result = await pollIlinkLogin({ channelId, actor });
+      const result = await pollIlinkLogin({ channelId, actor, verifyCode: url.searchParams.get("verify_code") ?? undefined });
       sendJson(res, result.status, result.body);
       return true;
     }
@@ -151,7 +159,7 @@ export async function handleChannelRoutes({
   if (taskProject && req.method === "POST") {
     const body = await readJson(req);
     const result = setChannelTaskProject(
-      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, autoRoute: body?.autoRoute, dailyLimit: body?.dailyLimit, operationMode: body?.operationMode, approvalToken: body?.approvalToken },
+      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, terminalId: body?.terminalId ?? null, autoRoute: body?.autoRoute, dailyLimit: body?.dailyLimit, operationMode: body?.operationMode, approvalToken: body?.approvalToken },
       actor,
     );
     sendJson(res, result.status, result.body);
