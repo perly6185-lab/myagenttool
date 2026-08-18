@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Database, Loader2, Plus, RotateCcw } from "lucide-react";
+import { Archive, Database, Loader2, Plus, RotateCcw, SlidersHorizontal } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -79,6 +79,7 @@ export function ChannelObjectRegistryCard() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ChannelObjectImportPreview | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [showProfessionalSettings, setShowProfessionalSettings] = useState(false);
   const [syncPreview, setSyncPreview] = useState<ChannelObjectSyncPreview | null>(null);
   const [credentialRefs, setCredentialRefs] = useState<Record<string, string>>({});
   const connectors = useQuery({
@@ -263,10 +264,10 @@ export function ChannelObjectRegistryCard() {
           <div>
             <CardTitle id="channel-object-registry-heading" className="flex items-center gap-2">
               <Database className="size-4 text-primary" aria-hidden="true" />
-              业务对象
+              工作资料
             </CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
-              登记报价、订单、发货、回款、售后和退货记录。微信里直接说业务目标，系统会先核对对应数据，再决定是否需要确认。
+              把常用客户、报价、订单和业务文件交给系统。微信里直接说想做什么，系统会先核对资料，再决定是否需要确认。
             </p>
           </div>
           <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
@@ -279,14 +280,14 @@ export function ChannelObjectRegistryCard() {
         <div className="rounded-lg border bg-muted/20 p-3">
           <div className="grid gap-2 md:grid-cols-[10rem_1fr_1fr_auto] md:items-end">
             <label className="grid gap-1 text-xs font-medium">
-              类型
+              资料用途
               <Select value={kind} onChange={(event) => resetForm(event.target.value as ChannelObjectKind)}>
                 {Object.entries(KIND_COPY).map(([value, copy]) => <option key={value} value={value}>{copy}</option>)}
               </Select>
             </label>
             <label className="grid gap-1 text-xs font-medium">
-              名称
-              <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={kind === "contact" ? "例如：张三" : "例如：公司付款账户"} />
+              资料名称
+              <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={kind === "contact" ? "例如：张三" : "例如：海棠科技订单"} />
             </label>
             <div className="grid gap-2 sm:grid-cols-2">
               {schema.slice(0, 2).map((field) => (
@@ -302,7 +303,7 @@ export function ChannelObjectRegistryCard() {
             </div>
             <Button onClick={() => void save()} disabled={pending || !projectId}>
               {pending ? <Loader2 className="animate-spin" /> : <Plus />}
-              登记
+              保存资料
             </Button>
           </div>
           {schema.length > 2 ? (
@@ -316,12 +317,12 @@ export function ChannelObjectRegistryCard() {
         </div>
         <div className="mt-3 grid gap-3 rounded-lg border border-dashed p-3 md:grid-cols-[1fr_auto] md:items-end">
           <label className="grid gap-1 text-xs font-medium">
-            批量导入（先预览，再确认）
+            导入已有资料（先检查，再确认）
             <Input type="file" accept=".csv,.json,.xlsx,.xls" onChange={(event) => { setImportFile(event.target.files?.[0] ?? null); setImportPreview(null); }} />
             <span className="font-normal text-muted-foreground">支持 CSV、Excel、JSON；账号只保留后四位，原文件不会保存。</span>
           </label>
           <Button variant="secondary" onClick={() => void previewImport()} disabled={pending || !importFile || !projectId}>
-            {pending ? <Loader2 className="animate-spin" /> : null}预览文件
+            {pending ? <Loader2 className="animate-spin" /> : null}先检查文件
           </Button>
         </div>
         {importPreview ? (
@@ -330,14 +331,26 @@ export function ChannelObjectRegistryCard() {
               <p className="font-medium">{importPreview.fileName}：新增 {importPreview.diff?.created ?? importPreview.acceptedRows}，修改 {importPreview.diff?.updated ?? 0}，无变化 {importPreview.diff?.unchanged ?? 0}，移除 {importPreview.diff?.removed ?? 0}，错误 {importPreview.errorRows}</p>
               <div className="flex gap-2">
                 <Button size="sm" variant="ghost" onClick={() => setImportPreview(null)}>取消</Button>
-                <Button size="sm" onClick={() => void confirmImport()} disabled={pending || importPreview.errorRows > 0 || importPreview.acceptedRows === 0}>确认导入</Button>
+                <Button size="sm" onClick={() => void confirmImport()} disabled={pending || importPreview.errorRows > 0 || importPreview.acceptedRows === 0}>确认加入</Button>
               </div>
             </div>
             {importPreview.errors.length ? <ul className="mt-2 list-disc pl-5 text-xs text-destructive">{importPreview.errors.slice(0, 5).map((item) => <li key={`${item.rowNumber}-${item.error}`}>第 {item.rowNumber} 行：{item.error}</li>)}</ul> : <p className="mt-2 text-xs text-muted-foreground">前 {Math.min(importPreview.previewRows.length, 20)} 条已通过校验，确认后才会写入。</p>}
           </div>
         ) : null}
         {fileSourceList.length ? <p className="mt-3 text-xs text-muted-foreground">当前文件源：{fileSourceList.map((source) => `${source.fileName}（第 ${source.revision} 版，${source.rowCount} 条）`).join(" · ")}</p> : null}
-        {fileSourceList.length ? (
+        <div className="mt-3 rounded-lg border bg-muted/10 p-3">
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-expanded={showProfessionalSettings}
+            onClick={() => setShowProfessionalSettings((current) => !current)}
+          >
+            <SlidersHorizontal className="size-4" />
+            {showProfessionalSettings ? "收起专业设置" : "查看专业设置"}
+          </Button>
+          <p className="mt-1 text-xs text-muted-foreground">普通使用不需要调整。这里可以查看文件写回边界、同步方式和版本状态。</p>
+        </div>
+        {showProfessionalSettings && fileSourceList.length ? (
           <div className="mt-3 rounded-lg border border-warning/30 bg-warning/[0.04] p-3 text-sm">
             <p className="font-medium">安全写回规则</p>
             <p className="mt-1 text-xs text-muted-foreground">只绑定已有的 CSV/XLSX 规则；没有规则时，微信任务只生成预览，不会修改源文件。</p>
@@ -367,7 +380,7 @@ export function ChannelObjectRegistryCard() {
             </div>
           </div>
         ) : null}
-        {syncPreview ? (
+        {showProfessionalSettings && syncPreview ? (
           <div className="mt-3 rounded-lg border bg-background p-3 text-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="font-medium">同步预览：新增 {syncPreview.creates} 条，更新 {syncPreview.updates} 条，无变化 {syncPreview.unchanged} 条</p>
@@ -377,7 +390,7 @@ export function ChannelObjectRegistryCard() {
             {syncPreview.sampleRows.length ? <ul className="mt-2 list-disc pl-5 text-xs">{syncPreview.sampleRows.slice(0, 5).map((row) => <li key={`${row.businessKey}-${row.change}`}>{row.change === "create" ? "新增" : row.change === "update" ? "更新" : "不变"}：{row.label}</li>)}</ul> : null}
           </div>
         ) : null}
-        {connectorList.length ? (
+        {showProfessionalSettings && connectorList.length ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border p-3 text-sm">
             <span className="font-medium">同步本地业务数据</span>
             <span className="text-xs text-muted-foreground">只读同步，不会修改外部系统</span>

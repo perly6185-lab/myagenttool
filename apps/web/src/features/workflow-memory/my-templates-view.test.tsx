@@ -157,6 +157,10 @@ describe("MyTemplatesView", () => {
   it("shows ordinary users what each learned template receives and produces", async () => {
     renderView();
     expect(await screen.findByRole("heading", { name: "我的模板" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "让系统按你的工作方式帮忙" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /教它一项常做的工作/ })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "工作资料" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "查看专业设置" })).toBeTruthy();
     expect(await screen.findByText("客户询价报价")).toBeTruthy();
     expect(screen.getByText("客户询价单")).toBeTruthy();
     expect(screen.getByText("报价单 Excel")).toBeTruthy();
