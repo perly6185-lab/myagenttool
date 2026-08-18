@@ -1,13 +1,20 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
-import { readCredential } from "./credential.mjs";
+import { readCredential, readOrganizeCredential } from "./credential.mjs";
 
 export async function with163Inbox(action) {
   return with163Mailbox("INBOX", { readOnly: true }, action);
 }
 
 export async function with163Client(action) {
-  const credential = readCredential();
+  return withCredentialClient(readCredential(), action);
+}
+
+export async function with163OrganizeClient(action) {
+  return withCredentialClient(readOrganizeCredential(), action);
+}
+
+async function withCredentialClient(credential, action) {
   const client = new ImapFlow({
     host: "imap.163.com",
     port: 993,

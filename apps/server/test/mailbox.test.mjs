@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createMailboxService, mailSendApprovalTarget } from "../src/services/mailbox.mjs";
+import { createMailboxService, isMailClassificationEnabled, mailSendApprovalTarget } from "../src/services/mailbox.mjs";
+import { createMailClassificationService } from "../src/services/mail-classification.mjs";
+import { createMailQueryIndex, openMailQueryIndexDatabase } from "../src/services/mail-query-index.mjs";
 
-function harness({ mailSendEnabled = () => false, createWorkItem = null, inspectTaskMaterialDraft = null } = {}) {
+function harness({ mailSendEnabled = () => false, mailClassificationEnabled = () => true, createWorkItem = null, inspectTaskMaterialDraft = null, mailQueryIndex = null } = {}) {
   let id = 0;
   const events = [];
   const capabilityCalls = [];
@@ -57,6 +59,8 @@ function harness({ mailSendEnabled = () => false, createWorkItem = null, inspect
     mailDrafts: [],
     mailMessageStates: [],
     mailTaskLinks: [],
+    mailClassifications: [],
+    mailClassificationJobs: [],
     workItems: [],
     invocations: [],
     events,
@@ -73,19 +77,119 @@ function harness({ mailSendEnabled = () => false, createWorkItem = null, inspect
     state.invocations.unshift(invocation);
     return { status: 202, body: { invocationId: invocation.id, invocation } };
   };
+  const nextId = (prefix) => `${prefix}_${++id}`;
+  const classificationService = createMailClassificationService({
+    state,
+    now: () => "2026-08-13T03:00:00.000Z",
+    nextId,
+    appendEvent: (event) => events.push(event),
+    persistStateSoon: () => {},
+  });
   const service = createMailboxService({
     state,
     now: () => "2026-08-13T03:00:00.000Z",
-    nextId: (prefix) => `${prefix}_${++id}`,
+    nextId,
     appendEvent: (event) => events.push(event),
     persistStateSoon: () => {},
     mailSendEnabled,
+    mailClassificationEnabled,
     createCapabilityInvocation,
     createWorkItem,
     inspectTaskMaterialDraft,
+    classificationService,
+    mailQueryIndex,
   });
   return { state, service, events, capabilityCalls };
 }
+
+test("read-only classification can roll back without hiding the ordinary inbox", () => {
+  const { service } = harness({ mailClassificationEnabled: () => false });
+  const snapshot = service.snapshot({ actor: { teamId: "team_a" }, view: "needs_attention" });
+  assert.equal(snapshot.selectedView, "all");
+  assert.equal(snapshot.classificationSummary, null);
+  assert.equal(snapshot.messages.length, 2);
+  assert.equal(snapshot.messages.every((message) => message.classification === undefined), true);
+  assert.equal(service.startClassification({ actor: { teamId: "team_a" } }).body.error, "mail_classification_disabled");
+});
+
+test("classification environment gate defaults on and fails closed only when explicitly disabled", () => {
+  const previous = process.env.MYAGENTTOOL_MAIL_CLASSIFICATION_ENABLED;
+  try {
+    delete process.env.MYAGENTTOOL_MAIL_CLASSIFICATION_ENABLED;
+    assert.equal(isMailClassificationEnabled(), true);
+    process.env.MYAGENTTOOL_MAIL_CLASSIFICATION_ENABLED = "0";
+    assert.equal(isMailClassificationEnabled(), false);
+  } finally {
+    if (previous === undefined) delete process.env.MYAGENTTOOL_MAIL_CLASSIFICATION_ENABLED;
+    else process.env.MYAGENTTOOL_MAIL_CLASSIFICATION_ENABLED = previous;
+  }
+});
+
+test("classification rollback rebuilds the derived index without classification payloads", async () => {
+  const database = await openMailQueryIndexDatabase({ path: ":memory:" });
+  const index = createMailQueryIndex({ database });
+  let enabled = true;
+  const { service } = harness({ mailClassificationEnabled: () => enabled, mailQueryIndex: index });
+  const classified = service.snapshot({ actor: { teamId: "team_a" } });
+  assert.equal(classified.messages.some((message) => Object.hasOwn(message, "classification")), true);
+  enabled = false;
+  const rolledBack = service.snapshot({ actor: { teamId: "team_a" }, view: "needs_attention" });
+  assert.equal(rolledBack.selectedView, "all");
+  assert.equal(rolledBack.messages.some((message) => Object.hasOwn(message, "classification")), false);
+  index.close();
+});
+
+test("mailbox uses an available query index and fails open to its original projection", () => {
+  const calls = [];
+  const indexed = harness({
+    mailQueryIndex: {
+      query(input) {
+        calls.push(input);
+        const rows = input.buildRows();
+        return {
+          messages: rows.slice(0, 1).map((item) => item.payload),
+          folderCounts: new Map([["inbox", { count: rows.length, unread: rows.length }]]),
+          classificationSummary: { counts: { all: rows.length }, classified: 0, pending: rows.length, classifierVersion: 1 },
+          pagination: { page: 1, pageSize: 1, total: rows.length, totalPages: rows.length, offset: 0 },
+        };
+      },
+    },
+  }).service.snapshot({ actor: { teamId: "team_a" }, pageSize: 1 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].teamId, "team_a");
+  assert.equal(indexed.messages.length, 1);
+  assert.equal(indexed.pagination.total, 2);
+
+  const fallback = harness({ mailQueryIndex: { query() { throw new Error("corrupt index"); } } })
+    .service.snapshot({ actor: { teamId: "team_a" } });
+  assert.equal(fallback.messages.length, 2);
+  assert.equal(fallback.pagination.total, 2);
+});
+
+test("mailbox state changes update only the affected durable query row", async () => {
+  const database = await openMailQueryIndexDatabase({ path: ":memory:" });
+  const index = createMailQueryIndex({ database });
+  const maintenance = [];
+  const trackedIndex = {
+    query(input) {
+      const result = index.query(input);
+      maintenance.push(result.maintenance);
+      return result;
+    },
+  };
+  const { service } = harness({ mailQueryIndex: trackedIndex });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  const first = service.snapshot({ actor });
+  service.setMessageRead({ messageId: first.messages[0].messageId, read: true, actor });
+  const changed = service.snapshot({ actor });
+
+  assert.equal(maintenance[0].mode, "rebuilt");
+  assert.deepEqual(maintenance[1], {
+    mode: "incremental", inserted: 0, updated: 1, deleted: 0, unchanged: 1, total: 2,
+  });
+  assert.equal(changed.folders.find((folder) => folder.id === "inbox").unread, 1);
+  index.close();
+});
 
 test("mailbox snapshot turns imported mail into a deduplicated ordinary-user inbox", () => {
   const { service } = harness();
@@ -323,6 +427,41 @@ test("mail can create one tenant-scoped local task and exposes the durable link"
   assert.equal(replay.body.replayed, true);
   assert.equal(calls.length, 1, "a linked Message-ID never creates a second task");
   assert.equal(service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor: { teamId: "team_b" } }).status, 404);
+});
+
+test("mailbox exposes additive smart views and revision-safe user corrections", () => {
+  const { service, state } = harness();
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  state.applicationResults[0].data.subject = "请确认本周交付范围";
+  state.applicationResults[1].data.headers[0].subject = "请确认本周交付范围";
+  state.applicationResults[1].data.headers[1].classificationHeaders = { listId: "weekly.example", listUnsubscribe: true };
+
+  const all = service.snapshot({ actor, view: "all" });
+  assert.equal(all.classificationSummary.counts.all, 2);
+  assert.equal(all.classificationSummary.counts.needs_attention, 1);
+  assert.equal(all.classificationSummary.counts.subscriptions, 1);
+  assert.equal(all.messages.some((item) => "classificationHeaders" in item), false);
+  assert.equal(service.snapshot({ actor, view: "not-a-view" }).selectedView, "all");
+  const attention = service.snapshot({ actor, view: "needs_attention" });
+  assert.equal(attention.messages.length, 1);
+  assert.equal(attention.messages[0].classification.label, "待处理");
+
+  const classified = service.startClassification({ actor, scope: "rebuild" });
+  assert.equal(classified.status, 200);
+  assert.equal(state.mailClassifications.length, 2);
+  const message = service.snapshot({ actor, view: "needs_attention" }).messages[0];
+  const corrected = service.correctClassification({
+    messageId: message.messageId,
+    folderId: message.folderId,
+    expectedRevision: message.classification.revision,
+    attention: "routine",
+    mailType: "other",
+    suggestedAction: "none",
+    actor,
+  });
+  assert.equal(corrected.status, 200);
+  assert.equal(service.snapshot({ actor, view: "needs_attention" }).messages.length, 0);
+  assert.equal(service.snapshot({ actor, view: "other" }).messages.some((item) => item.messageId === message.messageId), true);
 });
 
 test("draft validation accepts reply display names containing commas", () => {

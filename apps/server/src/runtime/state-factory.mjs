@@ -148,6 +148,14 @@ export function createServerState({ defaultProjectPath, now }) {
     mailDrafts: [],
     mailMessageStates: [],
     mailTaskLinks: [],
+    mailClassifications: [],
+    mailClassificationJobs: [],
+    mailClassificationCorrections: [],
+    mailClassificationRules: [],
+    mailFolderMovePreviews: [],
+    mailFolderMoveJobs: [],
+    mailFolderMoveDeduplication: [],
+    mailFolderAutomations: [],
     mailReplies: [],
     budgets: [],
     // #890: in-flight budget holds placed at admission and released on settle so
@@ -362,6 +370,14 @@ export function resetStateForSelfCheck({ state, now }) {
   state.mailDrafts = [];
   state.mailMessageStates = [];
   state.mailTaskLinks = [];
+  state.mailClassifications = [];
+  state.mailClassificationJobs = [];
+  state.mailClassificationCorrections = [];
+  state.mailClassificationRules = [];
+  state.mailFolderMovePreviews = [];
+  state.mailFolderMoveJobs = [];
+  state.mailFolderMoveDeduplication = [];
+  state.mailFolderAutomations = [];
   state.mailReplies = [];
   state.budgets = [];
   state.decisionSoftClaims = [];

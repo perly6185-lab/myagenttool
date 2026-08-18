@@ -46,6 +46,7 @@ import {
 } from "./work-item-follow-up-model";
 import { WorkItemSectionNav } from "./work-item-section-nav";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
+import { readableAutoRunReadinessCheck } from "./auto-run-readiness-ui";
 
 const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
 const WorkItemFollowUpFields = lazy(() => import("./work-item-follow-up-fields")
@@ -86,7 +87,7 @@ export function LocalWorkItemDetail({
   const { t, i18n } = useAppTranslation();
   const plannedDateLabel = i18n.language.startsWith("zh") ? "计划 AI 执行日期" : "Planned AI execution date";
   const expectedCompletionLabel = i18n.language.startsWith("zh") ? "预期完成日期" : "Expected completion date";
-  const verificationSopLabel = i18n.language.startsWith("zh") ? "验收 SOP" : "Verification SOP";
+  const verificationSopLabel = i18n.language.startsWith("zh") ? "检查步骤" : "Verification steps";
   const { data: consoleState } = useConsoleState();
   const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
@@ -1053,7 +1054,10 @@ export function LocalWorkItemDetail({
             autoRunReady={autoRunReadiness?.ready === true && !activeAutoRunId}
             autoRunBlockedReason={activeAutoRunId
               ? t("executionUi.activeAutoRunBlocked")
-              : autoRunReadiness?.checks.filter((check) => check.status === "blocked").map((check) => check.detail).join(" ")}
+              : autoRunReadiness?.checks
+                .filter((check) => check.status === "blocked")
+                .map((check) => readableAutoRunReadinessCheck(check, i18n.language.startsWith("zh") ? "zh" : "en").detail)
+                .join(" ")}
             activeAutoRunId={activeAutoRunId}
             onCreateWorktree={() => requestNavigation(createExecutionWorktree)}
             onStartAutoRun={() => requestNavigation(startExecution)}
@@ -1067,9 +1071,10 @@ export function LocalWorkItemDetail({
         <div hidden={selectedWorkItemSection !== "process"} className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs" role="alert">
           <strong className="block text-destructive">{t("taskReadiness.blocked")}</strong>
           <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
-            {autoRunReadiness.checks.filter((check) => check.status === "blocked").map((check) => (
-              <li key={check.key}>{check.label}: {check.detail}</li>
-            ))}
+            {autoRunReadiness.checks.filter((check) => check.status === "blocked").map((check) => {
+              const readable = readableAutoRunReadinessCheck(check, i18n.language.startsWith("zh") ? "zh" : "en");
+              return <li key={check.key}>{readable.label}: {readable.detail}</li>;
+            })}
           </ul>
         </div>
       ) : null}

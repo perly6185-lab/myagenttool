@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { simpleParser } from "mailparser";
 
-import { formatAddresses, headerOf, messageRecordOf } from "../src/message.mjs";
+import { classificationHeadersOf, formatAddresses, headerOf, messageRecordOf } from "../src/message.mjs";
 
 const envelope = {
   messageId: "<CAF8x9kQm2vZ@mail.163.com>",
@@ -73,6 +73,27 @@ test("messageRecordOf falls back to html when a message carries no text part", (
   assert.equal(record.bodyContentVersion, 2);
   const empty = messageRecordOf({ envelope }, {});
   assert.equal(empty.body, "", "a bodyless message reads as empty, not undefined");
+});
+
+test("headerOf carries only bounded classification-safe list and automation headers", () => {
+  const headers = Buffer.from([
+    "List-Id: Product Updates <updates.example.com>",
+    "List-Unsubscribe: <https://example.com/private-token>",
+    "Auto-Submitted: auto-generated",
+    "Precedence: bulk",
+    "X-Secret: must-not-survive",
+    "",
+  ].join("\r\n"));
+  assert.deepEqual(classificationHeadersOf(headers), {
+    listId: "Product Updates <updates.example.com>",
+    listUnsubscribe: true,
+    autoSubmitted: "auto-generated",
+    precedence: "bulk",
+  });
+  const header = headerOf({ envelope, headers });
+  assert.equal(header.classificationHeaders.listUnsubscribe, true);
+  assert.equal(JSON.stringify(header).includes("private-token"), false);
+  assert.equal(JSON.stringify(header).includes("must-not-survive"), false);
 });
 
 test("messageRecordOf bounds text and HTML independently and reports truncation", () => {

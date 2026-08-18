@@ -10,6 +10,8 @@ Architecture: [ADR 0026](ADR_0026_LOCAL_CONTENT_LIBRARY.md)
 
 Delivery plan: [Local Content Library Delivery Plan](LOCAL_CONTENT_LIBRARY_PLAN.md)
 
+Next product requirements: [Task Resource Bundle and Hidden Data Capabilities](../design/TASK_RESOURCE_BUNDLE_REQUIREMENTS.md)
+
 ## Outcome
 
 An ordinary user can find a local article, mail message, task, task input, or task output, add it to a task, and let Codex or Claude process it without understanding indexes, worktrees, file roots, or MCP. The catalog keeps pointing to one authoritative original while the execution system may create verified, disposable worktree copies.

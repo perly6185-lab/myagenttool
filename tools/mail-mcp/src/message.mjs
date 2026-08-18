@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 
 const MAX_BODY = 20_000;
 const MAX_HTML_BODY = 50_000;
+const MAX_CLASSIFICATION_HEADERS = 8_192;
 
 export function formatAddresses(addresses = []) {
   return addresses.map(({ name, address }) => (name ? `${name} <${address}>` : address)).filter(Boolean).join(", ");
@@ -24,6 +25,7 @@ export function formatAddresses(addresses = []) {
 export function headerOf(message, context = {}) {
   if (!message?.envelope) return null;
   const envelope = message.envelope;
+  const classificationHeaders = classificationHeadersOf(message.headers);
   return {
     messageId: envelope.messageId ?? null,
     from: formatAddresses(envelope.from),
@@ -39,7 +41,37 @@ export function headerOf(message, context = {}) {
     ...(context.folderId ? { folderId: String(context.folderId) } : {}),
     ...(context.folderPath ? { folderPath: String(context.folderPath) } : {}),
     ...(message.flags instanceof Set ? { unread: !message.flags.has("\\Seen") } : {}),
+    ...(classificationHeaders ? { classificationHeaders } : {}),
   };
+}
+
+export function classificationHeadersOf(value) {
+  if (!Buffer.isBuffer(value) && typeof value !== "string") return null;
+  const raw = String(Buffer.isBuffer(value) ? value.toString("utf8") : value)
+    .slice(0, MAX_CLASSIFICATION_HEADERS)
+    .replace(/\r?\n[ \t]+/g, " ");
+  const headers = new Map();
+  for (const line of raw.split(/\r?\n/)) {
+    const match = line.match(/^([A-Za-z0-9-]+):\s*(.*)$/);
+    if (!match) continue;
+    const key = match[1].toLowerCase();
+    if (!headers.has(key)) headers.set(key, match[2].trim());
+  }
+  const listId = boundedHeader(headers.get("list-id"), 255);
+  const autoSubmitted = boundedHeader(headers.get("auto-submitted"), 80);
+  const precedence = boundedHeader(headers.get("precedence"), 80);
+  const listUnsubscribe = headers.has("list-unsubscribe");
+  if (!listId && !autoSubmitted && !precedence && !listUnsubscribe) return null;
+  return {
+    ...(listId ? { listId } : {}),
+    ...(listUnsubscribe ? { listUnsubscribe: true } : {}),
+    ...(autoSubmitted ? { autoSubmitted } : {}),
+    ...(precedence ? { precedence } : {}),
+  };
+}
+
+function boundedHeader(value, max) {
+  return String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max) || null;
 }
 
 // The threading headers are NOT decoration: mail-issue-transcription.mjs maps a

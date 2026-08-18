@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("myagenttoolDesktop", {
   getMailConnectorStatus: () => ipcRenderer.invoke("mail:get-connector-status"),
   connect163Mail: (input) => ipcRenderer.invoke("mail:connect-163", input),
   connect163MailSend: (input) => ipcRenderer.invoke("mail:connect-163-send", input),
+  connect163MailOrganize: (input) => ipcRenderer.invoke("mail:connect-163-organize", input),
   previewMailAttachment: (input) => ipcRenderer.invoke("mail:preview-attachment", input),
   downloadMailAttachment: (input) => ipcRenderer.invoke("mail:download-attachment", input),
   readMailAttachmentForTask: (input) => ipcRenderer.invoke("mail:read-attachment-for-task", input),

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  getCurrentSession,
+  ensureSession,
   getSessionUser,
   SESSION_CHANGED_EVENT,
   type SessionUser,
@@ -10,7 +10,10 @@ let sessionRefresh: Promise<unknown> | null = null;
 
 function refreshSessionOnce() {
   if (!sessionRefresh) {
-    sessionRefresh = getCurrentSession()
+    // Share the transport's cached session discovery. Calling the full
+    // session-details endpoint from every shell surface caused repeated 401s
+    // for a perfectly valid signed-out local workspace.
+    sessionRefresh = ensureSession()
       .catch(() => null)
       .finally(() => { sessionRefresh = null; });
   }

@@ -6,6 +6,8 @@ Architecture: [ADR 0026](ADR_0026_LOCAL_CONTENT_LIBRARY.md)
 
 AI integration: [Local Content and Local AI Integration Design](LOCAL_CONTENT_AI_INTEGRATION_DESIGN.md)
 
+Next product requirements: [Task Resource Bundle and Hidden Data Capabilities](../design/TASK_RESOURCE_BUNDLE_REQUIREMENTS.md)
+
 ## Product outcome
 
 An ordinary local user can search previously downloaded articles, cached mail, local tasks, task inputs, and task outputs without remembering which project, mailbox folder, or worktree contains the original. Every result explains its source, related task, availability, and safe next action. Search remains useful offline and never treats external content as instructions.
