@@ -293,6 +293,19 @@ test("a reserved Local Issue Run is durable before its writable workspace exists
   assert.deepEqual(reserved.autoRun.understandingContext.documentPaths, ["README.md"]);
   assert.equal("documents" in reserved.autoRun.understandingContext, false, "the Run persists only the safe context summary");
 
+  state.workItems = [{
+    id: "wi_1301",
+    revision: 4,
+    dataContextSnapshot: {
+      schemaVersion: 1,
+      id: "dcs:wi_1301:4",
+      digest: "context-source-digest",
+      status: "captured",
+      sourceCount: 1,
+      sources: [{ sourceId: "asset_1", kind: "asset", version: "v1", hash: "sha256:v1" }],
+    },
+  }];
+
   const frozen = svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
     acceptanceCriteria: ["The requested behavior is observable."],
     verificationSop: ["Run the focused automated test."],
@@ -307,6 +320,7 @@ test("a reserved Local Issue Run is durable before its writable workspace exists
   });
   assert.equal(replay.replayed, true);
   assert.match(frozen.executionContract.digest, /^[0-9a-f]{64}$/);
+  assert.equal(frozen.executionContract.dataContextSnapshot.digest, "context-source-digest");
   assert.throws(() => svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
     acceptanceCriteria: ["A changed criterion must not replace the frozen contract."],
     verificationSop: ["Run the focused automated test."],

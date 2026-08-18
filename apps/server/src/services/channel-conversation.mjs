@@ -96,6 +96,10 @@ export function createChannelConversationService({
   // auto-trigger label) so the existing dispatcher routes + starts a tracked
   // auto-run. Async (runs `gh`); null → /task unavailable.
   createChannelTaskIssue = null,
+  // Personal-channel risk confirmation promotes the already-created local
+  // Work Item through the same route used by the desktop approval action.
+  routeChannelTask = null,
+  dismissChannelTask = null,
   // S6: the grant chokepoint — /approve mints a single-use grant sourced from
   // the channel message, consumes it, and only then flips the invocation.
   mintDecisionGrant = null,
@@ -231,6 +235,14 @@ export function createChannelConversationService({
       awaiting_confirmation: "回复“确认”开始，或继续补充、回复“取消”",
       waiting_approval: thread?.waitingFor === "approval"
         ? "任务内容已确认，请在桌面端审批中心批准，批准后会自动继续"
+        : thread?.waitingFor === "channel_confirmation"
+          ? "任务已记录但尚未执行，回复“确认执行”开始，回复“取消”放弃"
+        : thread?.waitingFor === "data_sources"
+          ? "还缺少任务所需的数据文件，直接上传或说明使用哪个文件"
+        : thread?.waitingFor === "data_review"
+          ? "数据已找到但关联结果待复核，请补充或确认关联方式"
+        : thread?.waitingFor === "data_mutation"
+          ? "这是批量修改文件的任务，请先明确文件、记录范围、字段和值；当前版本只生成预览并留痕，不会直接修改源文件"
         : "等待任务路由确认后开始执行",
       queued: "等待前面的任务完成，系统会自动开始",
       running: "等待执行完成，系统会自动通知",
@@ -267,9 +279,23 @@ export function createChannelConversationService({
     return current;
   }
 
+  function channelConfirmationThread(conversation) {
+    const preferredId = conversation.activeTaskThreadId ?? null;
+    return (state.channelTaskThreads ?? [])
+      .filter((thread) => thread.conversationId === conversation.id
+        && thread.status === "waiting_approval"
+        && ["channel_confirmation", "data_sources", "data_review", "data_mutation"].includes(thread.waitingFor))
+      .sort((left, right) => {
+        if (left.id === preferredId) return -1;
+        if (right.id === preferredId) return 1;
+        return String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""));
+      })[0] ?? null;
+  }
+
   function isConfirmation(text) {
     const value = normalizedText(text).toLowerCase().replace(/[!！。.,，?？~～]+$/g, "");
-    return THREAD_CONFIRMATIONS.has(value);
+    return THREAD_CONFIRMATIONS.has(value)
+      || /^(?:确认|确定)(?:执行|开始|发送|发布|付款|支付)?$/.test(value);
   }
 
   function isCancellation(text) {
@@ -450,6 +476,165 @@ export function createChannelConversationService({
     return ahead > 0
       ? `任务已收录，前面还有 ${ahead} 个任务。前面的任务完成后会自动开始，你不需要重复发送。`
       : "任务已收录，即将开始处理。完成后我会通知你。";
+  }
+
+  function dataPlanReply(dataPlan, dataRelationPreview = null) {
+    if (!dataPlan || dataPlan.status === "not_required") return null;
+    if (dataRelationPreview?.status === "needs_review") {
+      const issues = (dataRelationPreview.relations ?? [])
+        .filter((relation) => relation.required && relation.state !== "ready")
+        .map((relation) => relation.missingFields?.length
+          ? `字段缺失：${relation.missingFields.join("、")}`
+          : `有 ${relation.unmatchedRows ?? 0} 条记录未匹配`)
+        .slice(0, 5);
+      return `数据文件已找到，但关联结果还需要确认：${issues.join("；") || "请检查关联字段"}。我不会直接猜测，请补充或修正后再继续。`;
+    }
+    if (dataPlan.status === "ready") {
+      const sources = (dataPlan.sources ?? []).map((source) =>
+        `${source.fileName ?? "本地文件"}${source.revision != null ? `（第${source.revision}版）` : ""}`);
+      return sources.length ? `数据依据：${sources.join("、")}。` : "数据依据已准备好。";
+    }
+    const missing = (dataPlan.requirements ?? [])
+      .filter((requirement) => requirement.required && requirement.state !== "ready")
+      .map((requirement) => requirement.state === "ambiguous"
+        ? `${requirement.label}（有多个来源，请指定一个）`
+        : requirement.label)
+      .slice(0, 8);
+    return `开始前还需要数据依据：${missing.join("、") || "请补充或选择本地数据文件"}。请直接上传文件或说明使用哪一个文件，我会自动重新整理。`;
+  }
+
+  function dataMutationReply(dataMutationPreview, dataMutationBinding = null, ledgerMutationPreview = null) {
+    if (!dataMutationPreview || dataMutationPreview.status === "not_required") return null;
+    const files = (dataMutationPreview.targetSources ?? []).map((source) =>
+      `${source.fileName ?? "本地文件"}${source.revision != null ? `（第${source.revision}版）` : ""}`);
+    if (ledgerMutationPreview) {
+      if (ledgerMutationPreview.kind === "batch") {
+        const children = ledgerMutationPreview.children ?? [];
+        if (ledgerMutationPreview.state === "rolled_back") {
+          return [
+            "这次批量写回没有保留任何修改，系统已安全回退到处理前状态。",
+            "请检查失败原因后重新整理，系统会生成一份新的预览，不会重复误写。",
+          ].join("\n");
+        }
+        if (ledgerMutationPreview.state === "needs_attention") {
+          return [
+            "批量写回暂时停止：处理期间检测到文件被其他程序修改。",
+            "系统没有覆盖这份新内容，也没有继续猜测恢复。请先在桌面端检查文件，再重新生成预览或联系人工处理。",
+          ].join("\n");
+        }
+        if (ledgerMutationPreview.state === "committing") {
+          return "批量写回正在恢复上次处理中断的进度，已完成的记录不会重复写入，请稍后查询进度。";
+        }
+        const waiting = ledgerMutationPreview.state === "waiting" || ledgerMutationPreview.state === "partial";
+        const fields = [...new Set(children.flatMap((child) =>
+          (child.changedCells ?? []).map((cell) => cell.field).filter(Boolean)))].slice(0, 12);
+        return [
+          "已识别为多记录/多文件变更，安全写回批次预览如下：",
+          files.length ? `文件：${files.join("、")}` : "文件：已按批次绑定",
+          `预计影响：${ledgerMutationPreview.targetCount ?? files.length} 个文件、${ledgerMutationPreview.operationCount ?? children.length} 条记录`,
+          fields.length ? `字段：${fields.join("、")}` : "字段：已按记录分别生成 diff",
+          waiting
+            ? "批次中有操作正在排队或部分完成；系统会保留已完成项和剩余项，不能重复误写。"
+            : "回复“确认执行”后按文件队列写回；回复“取消”放弃。",
+        ].join("\n");
+      }
+      const changed = (ledgerMutationPreview.changedCells ?? [])
+        .map((cell) => `${cell.field}：${cell.before ?? "空"} → ${cell.after ?? "空"}`)
+        .slice(0, 10);
+      const queued = ledgerMutationPreview.state === "waiting"
+        || ledgerMutationPreview.queue?.state === "waiting";
+      return [
+        "已识别为单条记录变更，安全写回预览如下：",
+        files.length ? `文件：${files.join("、")}` : "文件：已绑定",
+        `记录：第${ledgerMutationPreview.rowNumber ?? "?"}行（已由唯一编号定位）`,
+        changed.length ? `变更：${changed.join("；")}` : "变更：没有检测到实际变化",
+        queued
+          ? `该文件前面还有 ${ledgerMutationPreview.queue?.position ?? "若干"} 个写回操作，已排队等待；确认后会在轮到时执行。`
+          : "这是当前文件版本的安全预览。回复“确认执行”后才会写回；回复“取消”放弃。",
+      ].join("\n");
+    }
+    if (dataMutationPreview.status === "ready") {
+      const fields = (dataMutationPreview.fieldChanges ?? []).map((change) => change.field).filter(Boolean);
+      return [
+        "变更范围已绑定：",
+        files.length ? `文件：${files.join("、")}` : "文件：已绑定",
+        `预计影响：${dataMutationPreview.estimatedAffectedRows ?? 0} 条记录${fields.length ? `；字段：${fields.join("、")}` : ""}`,
+        dataMutationBinding
+          ? `安全写回规则已绑定（配置版本 ${dataMutationBinding.ledgerDefinitionRevision ?? "未知"}）。`
+          : "安全写回规则尚未绑定。",
+        "当前版本还没有启用安全写回执行器，因此不会直接修改源文件；范围和版本已保留，可在执行器启用后继续。",
+      ].join("\n");
+    }
+    const requiredFields = [...new Set(dataMutationPreview.requiredFields ?? [])].filter(Boolean).slice(0, 6);
+    const policyReasons = requiredFields.filter((field) => /模板|不允许|边界|超过|字段变更|预计影响条数/.test(field));
+    const lines = [
+      dataMutationPreview.status === "needs_sources"
+        ? "这项要求涉及修改 CSV/Excel，但当前还没有可用的数据文件。"
+        : dataMutationPreview.status === "policy_blocked"
+          ? `这项要求超出了当前任务模板的允许范围${policyReasons.length ? `：${policyReasons.join("；")}` : ""}。`
+          : "这项要求涉及修改 CSV/Excel，我先暂停写回，避免误改多条记录。",
+      files.length ? `候选文件：${files.join("、")}` : "请上传或选择要修改的文件。",
+      "请补充：修改哪几个文件、如何定位记录（编号或筛选条件）、修改哪些字段及新值，以及是否允许修改全部匹配记录。",
+      requiredFields.length ? `还需要确认：${requiredFields.join("；")}` : null,
+      "补充后我会继续生成变更范围预览。当前版本只支持预览和留痕，不会直接修改源文件。",
+    ].filter(Boolean);
+    return lines.join("\n");
+  }
+
+  function paymentReconciliationReply(preview) {
+    if (!preview) return null;
+    const summary = preview.summary ?? {};
+    const lines = [
+      "对账已完成（只读核对，原始文件未修改）：",
+      `应收 ${summary.receivableCount ?? 0} 条，银行流水 ${summary.transactionCount ?? 0} 条。`,
+      `已匹配 ${summary.matchedCount ?? 0} 条，不一致 ${summary.mismatchCount ?? 0} 条，未匹配 ${(
+        Number(summary.unmatchedReceivableCount ?? 0) + Number(summary.unmatchedTransactionCount ?? 0)
+      )} 条。`,
+    ];
+    for (const row of (preview.mismatches ?? []).slice(0, 5)) {
+      lines.push(`差异：${row.reference ?? "未标识"}（${(row.reasons ?? []).join("、") || "请复核"}）`);
+    }
+    for (const row of (preview.unmatchedReceivables ?? []).slice(0, 3)) {
+      lines.push(`应收未找到流水：${row.reference ?? "未标识"}${row.customer ? `（${row.customer}）` : ""}`);
+    }
+    for (const row of (preview.unmatchedTransactions ?? []).slice(0, 3)) {
+      lines.push(`流水未找到应收：${row.reference ?? "未标识"}`);
+    }
+    if (preview.sources?.length) {
+      lines.push(`依据文件：${preview.sources.map((source) => source.fileName || source.kind).join("、")}`);
+    }
+    lines.push("需要处理差异时，直接告诉我对应编号和要更新的字段；我会另建变更预览，不会自动改账。");
+    return lines.join("\n");
+  }
+
+  function riskPreviewReply(preview, dataPlan = null, dataRelationPreview = null, dataMutationPreview = null, dataMutationBinding = null, ledgerMutationPreview = null) {
+    const value = preview ?? {};
+    const lines = [
+      "执行前请确认这份预览：",
+      `操作：${value.action ?? "高风险任务"}`,
+      `对象：${value.target ?? "尚未明确"}`,
+    ];
+    if (value.amount) lines.push(`金额：${value.amount}`);
+    if (value.scope) lines.push(`范围：${value.scope}`);
+    if (Array.isArray(value.inputs) && value.inputs.length) {
+      lines.push(`输入：${value.inputs.map((asset) => asset.name).join("、")}`);
+    }
+    const dataNotice = dataPlanReply(dataPlan, dataRelationPreview ?? dataPlan?.relationPreview ?? null);
+    if (dataNotice) lines.push(dataNotice);
+    const mutationNotice = dataMutationReply(dataMutationPreview, dataMutationBinding, ledgerMutationPreview);
+    if (mutationNotice) lines.push(mutationNotice);
+    if (value.impact) lines.push(`影响：${value.impact}`);
+    if (Array.isArray(value.unknownFields) && value.unknownFields.length) {
+      lines.push(`还未明确：${value.unknownFields.join("、")}`);
+    }
+    if (Array.isArray(value.requiredFields) && value.requiredFields.length) {
+      lines.push(`请先补充：${value.requiredFields.join("、")}。补充后我会重新生成预览。`);
+    } else if (dataMutationPreview?.status === "ready" && !ledgerMutationPreview) {
+      lines.push("当前版本只支持预览和留痕，不会直接修改源文件；安全写回能力启用后，才能继续实际变更。");
+    } else {
+      lines.push("确认无误回复“确认执行”；需要修改请直接补充，回复“取消”放弃。");
+    }
+    return lines.join("\n");
   }
 
   function refreshQueuePositions(channelId, { notify = false } = {}) {
@@ -850,22 +1035,63 @@ export function createChannelConversationService({
       });
       runTx(() => {
         const autoRoute = Boolean(result.data?.autoRoute);
-        setThreadStatus(thread, result.status === "dispatched" ? (autoRoute ? "queued" : "waiting_approval") : "failed", result.status === "dispatched" ? null : "task_create_failed");
-        thread.waitingFor = null;
+        const paymentPreview = result.data?.paymentReconciliationPreview ?? null;
+        const readOnlyPayment = Boolean(paymentPreview);
+        setThreadStatus(thread, result.status === "dispatched"
+          ? (readOnlyPayment ? "succeeded" : autoRoute ? "queued" : "waiting_approval")
+          : "failed", result.status === "dispatched" ? (readOnlyPayment ? "payment_reconciliation_completed" : null) : "task_create_failed");
+        thread.waitingFor = result.status === "dispatched" && !autoRoute
+          ? (result.data?.requiresDataPlan
+            ? "data_sources"
+            : result.data?.requiresDataReview
+              ? "data_review"
+              : result.data?.requiresDataMutationReview
+                ? "data_mutation"
+          : result.data?.requiresChannelConfirmation ? "channel_confirmation" : "approval")
+          : null;
+        if (readOnlyPayment) thread.waitingFor = null;
+        thread.channelTaskRequestId = result.data?.channelTaskRequestId ?? thread.channelTaskRequestId ?? null;
+        thread.executionPreview = result.data?.executionPreview ?? thread.executionPreview ?? null;
+        thread.dataPlan = result.data?.dataPlan ?? thread.dataPlan ?? null;
+        thread.dataRelationPreview = result.data?.dataRelationPreview ?? thread.dataRelationPreview ?? null;
+        thread.paymentReconciliationPreview = paymentPreview ?? thread.paymentReconciliationPreview ?? null;
+        thread.dataMutationPreview = result.data?.dataMutationPreview ?? thread.dataMutationPreview ?? null;
+        thread.dataMutationBinding = result.data?.dataMutationBinding ?? thread.dataMutationBinding ?? null;
+        thread.ledgerMutationPreview = result.data?.ledgerMutationPreview ?? thread.ledgerMutationPreview ?? null;
+        thread.dataRelationConfirmation = result.data?.dataRelationConfirmation ?? thread.dataRelationConfirmation ?? null;
+        thread.riskPreviewDigest = result.data?.previewDigest ?? thread.riskPreviewDigest ?? null;
         thread.confirmedByEventId = event.id;
         thread.workItemId = result.data?.workItemId ?? null;
         thread.updatedAt = now();
         thread.lastProgressAt = now();
         thread.lastProgressSummary = result.status === "dispatched"
-          ? (autoRoute ? "任务已进入执行队列" : "任务已创建，等待确认")
+          ? (readOnlyPayment ? "本地文件对账已完成，等待用户查看差异" : autoRoute ? "任务已进入执行队列" : "任务已创建，等待确认")
           : "任务创建失败，等待重试或人工处理";
+        if (readOnlyPayment) thread.resultSummary = paymentReconciliationReply(paymentPreview);
         thread.nextAction = threadNextAction(thread.status, thread);
         event.taskThreadId = thread.id;
         if (result.status === "dispatched") {
-          if (autoRoute) {
+          if (readOnlyPayment) {
+            event.replyText = paymentReconciliationReply(paymentPreview);
+          } else if (autoRoute) {
             thread.queueAheadCount = queueAheadCount(thread.channelId, thread.createdAt, thread.id);
             thread.queuePosition = thread.queueAheadCount + 1;
             event.replyText = queueMessage(thread);
+          } else if (result.data?.requiresDataPlan) {
+            event.replyText = dataPlanReply(result.data.dataPlan, result.data.dataRelationPreview);
+          } else if (result.data?.requiresDataReview) {
+            event.replyText = dataPlanReply(result.data.dataPlan, result.data.dataRelationPreview);
+          } else if (result.data?.requiresDataMutationReview) {
+            event.replyText = dataMutationReply(result.data.dataMutationPreview, result.data.dataMutationBinding, result.data.ledgerMutationPreview);
+          } else if (result.data?.requiresChannelConfirmation) {
+            event.replyText = riskPreviewReply(
+              result.data.executionPreview,
+              result.data.dataPlan,
+              result.data.dataRelationPreview,
+              result.data.dataMutationPreview,
+              result.data.dataMutationBinding,
+              result.data.ledgerMutationPreview,
+            );
           } else {
             event.replyText = "任务已收录，等待确认后开始执行。你不需要重复发送。";
           }
@@ -876,6 +1102,258 @@ export function createChannelConversationService({
     } finally {
       threadLocks.delete(thread.id);
     }
+  }
+
+  async function confirmChannelRiskTask(event, conversation, thread, actor) {
+    if (threadLocks.has(thread.id)) {
+      return settle(event, {
+        status: "dispatched",
+        reply: "正在处理上一条确认，请稍候。",
+        data: { taskThreadId: thread.id, status: "processing" },
+      });
+    }
+    if (typeof routeChannelTask !== "function") {
+      return settle(event, {
+        status: "refused",
+        reply: "当前任务暂时无法继续执行，请稍后重试。",
+        data: { taskThreadId: thread.id, reason: "channel_route_unavailable" },
+      });
+    }
+    threadLocks.add(thread.id);
+    try {
+      const request = (state.channelTaskRequests ?? []).find((candidate) =>
+        candidate.status === "pending"
+        && (candidate.id === thread.channelTaskRequestId
+          || (thread.workItemId && candidate.workItemId === thread.workItemId)
+          || (candidate.threadId && candidate.threadId === thread.id)),
+      );
+      if (!request) {
+        const alreadyQueued = ["queued", "running"].includes(thread.status);
+        return settle(event, {
+          status: "dispatched",
+          reply: alreadyQueued ? "这个任务已经在执行队列中，不需要重复确认。" : "这个任务当前没有可执行的待确认请求，请回复“进度”查看状态。",
+          data: { taskThreadId: thread.id, reason: alreadyQueued ? "already_routed" : "channel_task_request_not_found" },
+        });
+      }
+      if (request.previewDigest && thread.riskPreviewDigest !== request.previewDigest) {
+        return settle(event, {
+          status: "refused",
+          reply: "这项任务的执行预览已经变化，原确认已失效。请回复“取消”放弃，或重新描述最新要求。",
+          data: { taskThreadId: thread.id, reason: "channel_task_preview_changed" },
+        });
+      }
+      const requiredFields = request.requiredFields ?? thread.executionPreview?.requiredFields ?? [];
+      // A local file mutation has its own, stricter preview and confirmation
+      // chain.  Generic risk extraction can see words such as “发货” or
+      // “发送” and classify the sentence as external communication, even
+      // though the actual governed operation is a verified Ledger writeback.
+      // Once the data plan and Ledger preview are ready, do not block the
+      // second confirmation on unrelated generic recipient/content fields;
+      // routeChannelTask still revalidates source versions, bindings, scope,
+      // personal-channel approval and the Ledger batch atomically.
+      const mutationPreview = request.dataMutationPreview ?? thread.dataMutationPreview;
+      const mutationReady = mutationPreview?.status === "ready"
+        && Boolean(request.ledgerMutationPreview ?? thread.ledgerMutationPreview);
+      if ((!mutationReady && requiredFields.length > 0)
+        || (!mutationReady && request.previewReady === false)
+        || (!mutationReady && thread.executionPreview?.previewReady === false)) {
+        return settle(event, {
+          status: "dispatched",
+          reply: riskPreviewReply(
+            thread.executionPreview,
+            request.dataPlan ?? thread.dataPlan,
+            request.dataRelationPreview ?? thread.dataRelationPreview,
+            request.dataMutationPreview ?? thread.dataMutationPreview,
+            request.dataMutationBinding ?? thread.dataMutationBinding,
+            request.ledgerMutationPreview ?? thread.ledgerMutationPreview,
+          ),
+          data: { taskThreadId: thread.id, reason: "channel_task_preview_incomplete", requiredFields },
+        });
+      }
+      const result = await routeChannelTask(request.id, actor);
+      if (result?.status !== 200) {
+        const routeError = result?.body?.error;
+        const routeRequiredFields = result?.body?.requiredFields ?? [];
+        const reply = routeError === "channel_task_object_validation_changed"
+          ? "确认前我重新检查了业务对象，发现联系人、账户、文件或发布目标已经变化，原确认已失效。请补充最新信息，我会重新生成预览。"
+          : routeError === "channel_task_object_validation_required"
+            ? `确认前还缺少可验证对象${routeRequiredFields.length ? `：${routeRequiredFields.join("、")}` : ""}。请补充后我会重新生成预览。`
+            : routeError === "channel_task_data_plan_required"
+              ? dataPlanReply(result?.body?.dataPlan)
+              : routeError === "channel_task_data_plan_changed"
+                ? "确认前我重新检查了数据依据，发现本地文件版本已经变化，原确认已失效。请稍后重试，我会按最新文件重新生成数据计划。"
+                : routeError === "channel_task_data_relation_required"
+                  ? dataPlanReply(request.dataPlan ?? thread.dataPlan, result?.body?.dataRelationPreview)
+                : routeError === "channel_task_data_relation_changed"
+                    ? "确认前我重新检查了数据关联，发现对象记录已经变化，原确认已失效。请按最新数据重新生成预览。"
+                : routeError === "channel_task_data_mutation_required"
+                  ? dataMutationReply(
+                    result?.body?.dataMutationPreview ?? request.dataMutationPreview ?? thread.dataMutationPreview,
+                    request.dataMutationBinding ?? thread.dataMutationBinding,
+                    result?.body?.ledgerMutationPreview ?? request.ledgerMutationPreview ?? thread.ledgerMutationPreview,
+                  )
+                : routeError === "channel_task_data_mutation_binding_required"
+                    ? "文件变更范围已经明确，但还没有配置安全写回规则。请先在桌面端为这个文件配置写回规则；当前不会修改源文件。"
+                : routeError === "channel_task_data_mutation_binding_changed"
+                    ? "文件的安全写回规则已经变化或失效，原确认已失效。请重新检查文件配置后再生成预览。"
+                : routeError === "channel_task_data_mutation_executor_unavailable"
+                    ? "变更范围和文件版本已确认，但当前版本尚未启用安全写回执行器，因此没有修改文件。任务已保留，可在执行器启用后继续。"
+                : routeError === "channel_task_data_mutation_changed"
+                    ? "确认前我重新检查了文件，发现文件版本已经变化，原变更预览已失效。请按最新文件重新生成预览。"
+                : routeError === "ledger_preview_waiting"
+                    ? `该文件前面还有 ${result?.body?.preview?.queue?.position ?? "若干"} 个写回操作，请稍后再次回复“确认执行”。`
+                : routeError === "ledger_changed_since_preview"
+                    ? "确认前发现文件已被其他操作修改，原预览已失效。请重新描述这次修改，我会按最新文件重新预览。"
+                : routeError === "channel_task_mutation_personal_confirmation_required"
+                    ? "这项文件写回需要在个人 Channel 中由本人确认；团队 Channel 请在桌面端审批中心完成确认。"
+                : "任务暂时无法开始，状态已保留。请稍后再回复“确认执行”重试，或回复“取消”放弃。";
+        return settle(event, {
+          status: "refused",
+          reply,
+          data: { taskThreadId: thread.id, reason: routeError ?? "channel_route_failed", requiredFields: routeRequiredFields },
+        });
+      }
+      if (result.body?.dataMutationCommitted) {
+        const changedFields = result.body?.mutation?.changedFields ?? [];
+        const reply = `已完成安全写回：${changedFields.join("、") || "指定字段"}。文件已更新并留下审计记录。`;
+        runTx(() => {
+          thread.confirmedByEventId = event.id;
+          thread.channelTaskRequestId = request.id;
+          thread.workItemId = result.body?.workItemId ?? thread.workItemId ?? null;
+          thread.waitingFor = null;
+          thread.resultSummary = reply;
+          setThreadStatus(thread, "succeeded", "channel_mutation_committed");
+          event.taskThreadId = thread.id;
+          event.replyText = reply;
+        });
+        return settle(event, {
+          status: "dispatched",
+          reply,
+          data: {
+            taskThreadId: thread.id,
+            channelTaskRequestId: request.id,
+            workItemId: thread.workItemId,
+            mutation: result.body?.mutation ?? null,
+            completed: true,
+          },
+        });
+      }
+      runTx(() => {
+        thread.confirmedByEventId = event.id;
+        thread.channelTaskRequestId = request.id;
+        thread.workItemId = result.body?.workItemId ?? thread.workItemId ?? null;
+        thread.autoRunId = result.body?.autoRunId ?? thread.autoRunId ?? null;
+        thread.invocationId = result.body?.invocationId ?? thread.invocationId ?? null;
+        thread.dataRelationConfirmation = result.body?.dataRelationConfirmation ?? thread.dataRelationConfirmation ?? null;
+        thread.waitingFor = null;
+        setThreadStatus(thread, "queued", "channel_confirmation");
+        thread.queueAheadCount = queueAheadCount(thread.channelId, thread.createdAt, thread.id);
+        thread.queuePosition = thread.queueAheadCount + 1;
+        event.taskThreadId = thread.id;
+        event.replyText = queueMessage(thread);
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: event.replyText,
+        data: {
+          taskThreadId: thread.id,
+          channelTaskRequestId: request.id,
+          workItemId: thread.workItemId,
+          autoRunId: thread.autoRunId,
+          status: thread.status,
+          dataRelationConfirmation: thread.dataRelationConfirmation ?? null,
+          confirmed: true,
+        },
+      });
+    } finally {
+      threadLocks.delete(thread.id);
+    }
+  }
+
+  async function cancelChannelRiskTask(event, thread, actor) {
+    const request = (state.channelTaskRequests ?? []).find((candidate) =>
+      candidate.status === "pending"
+      && (candidate.id === thread.channelTaskRequestId
+        || (thread.workItemId && candidate.workItemId === thread.workItemId)
+        || (candidate.threadId && candidate.threadId === thread.id)),
+    );
+    if (request && typeof dismissChannelTask === "function") {
+      const result = await dismissChannelTask(request.id, actor, { notifyUser: false });
+      if (result?.status !== 200) {
+        return settle(event, {
+          status: "refused",
+          reply: "任务暂时无法取消，请稍后重试。",
+          data: { taskThreadId: thread.id, reason: result?.body?.error ?? "channel_task_cancel_failed" },
+        });
+      }
+    } else if (request) {
+      runTx(() => {
+        request.status = "dismissed";
+        request.decidedAt = now();
+        request.decidedBy = actor?.userId ?? null;
+      });
+    }
+    runTx(() => {
+      setThreadStatus(thread, "cancelled", "user_cancelled");
+      thread.waitingFor = null;
+      thread.cancelledByEventId = event.id;
+      thread.updatedAt = now();
+      event.taskThreadId = thread.id;
+    });
+    return settle(event, {
+      status: "dispatched",
+      reply: "这个任务已取消，未开始执行。",
+      data: { taskThreadId: thread.id, status: "cancelled" },
+    });
+  }
+
+  async function reviseChannelRiskThread(event, thread, actor) {
+    const request = (state.channelTaskRequests ?? []).find((candidate) =>
+      candidate.status === "pending"
+      && (candidate.id === thread.channelTaskRequestId
+        || (thread.workItemId && candidate.workItemId === thread.workItemId)
+        || (candidate.threadId && candidate.threadId === thread.id)),
+    );
+    if (request && typeof dismissChannelTask === "function") {
+      const result = await dismissChannelTask(request.id, actor, { notifyUser: false });
+      if (result?.status !== 200) {
+        return settle(event, {
+          status: "refused",
+          reply: "当前预览无法更新，请稍后重试。",
+          data: { taskThreadId: thread.id, reason: result?.body?.error ?? "channel_task_revision_failed" },
+        });
+      }
+    } else if (request) {
+      runTx(() => {
+        request.status = "dismissed";
+        request.decidedAt = now();
+        request.decidedBy = actor?.userId ?? null;
+      });
+    }
+    runTx(() => {
+      thread.messages = [...(thread.messages ?? []), { eventId: event.id, content: normalizedText(event.content), receivedAt: now() }].slice(-CHANNEL_INTAKE_MAX_EVENTS);
+      thread.sourceEventIds = [...(thread.sourceEventIds ?? []), event.id].slice(-CHANNEL_INTAKE_MAX_EVENTS);
+      thread.attachmentAssets = [...(thread.attachmentAssets ?? []), ...(event.attachmentAssets ?? [])].slice(-20);
+      thread.summary = threadSummary(thread);
+      thread.taskRevision = (Number.isInteger(thread.taskRevision) ? thread.taskRevision : 0) + 1;
+      thread.workItemId = null;
+      thread.channelTaskRequestId = null;
+      thread.executionPreview = null;
+      thread.dataPlan = null;
+      thread.dataRelationPreview = null;
+      thread.dataMutationPreview = null;
+      thread.riskPreviewDigest = null;
+      thread.resultSummary = null;
+      thread.waitingFor = null;
+      setThreadStatus(thread, "awaiting_confirmation", "risk_preview_updated");
+      thread.updatedAt = now();
+      event.taskThreadId = thread.id;
+    });
+    return settle(event, {
+      status: "dispatched",
+      reply: "已收到补充，原执行预览已失效。我会按最新内容重新整理；回复“确认”生成新的执行预览。",
+      data: { taskThreadId: thread.id, status: "awaiting_confirmation", previewInvalidated: true },
+    });
   }
 
   function waitingUserThread(conversation) {
@@ -1167,6 +1645,7 @@ export function createChannelConversationService({
   function handleNaturalEventResolved(event, channel, conversation, actor, classifiedIntent) {
     let thread = pendingThread(conversation);
     if (!thread) thread = waitingUserThread(conversation);
+    if (!thread) thread = channelConfirmationThread(conversation);
     const text = normalizedText(event.content);
     const parsedControl = taskControl(text, conversation);
     const intent = recordIntentDecision(event, classifiedIntent, {
@@ -1186,7 +1665,7 @@ export function createChannelConversationService({
     // the file/image/voice.
     const mediaBackedConsultation = intent.intent === "consultation" && (event.attachmentAssets ?? []).length > 0;
     const newTaskIntent = isNewTask(text) || mediaBackedConsultation || (!parsedControl && intent.intent === "new_task");
-    const explicitlySelectedWaitingThread = thread?.status === "waiting_user"
+    const explicitlySelectedThread = thread
       && conversation.activeTaskThreadId === thread.id;
     const pendingDrafts = activeTaskThreads(conversation)
       .filter((candidate) => candidate.status === "awaiting_confirmation");
@@ -1300,7 +1779,7 @@ export function createChannelConversationService({
     }
     const hasPendingDraft = thread?.status === "awaiting_confirmation"
       && ["confirm", "cancel"].includes(intent.intent);
-    if (!control && !explicitlySelectedWaitingThread && !hasPendingDraft
+    if (!control && !explicitlySelectedThread && !hasPendingDraft
       && (intent.intent === "ambiguous" || (activeTaskThreads(conversation).length > 1 && ["confirm", "cancel", "supplement"].includes(intent.intent)))) {
       return settle(event, { status: "dispatched", reply: candidateSelectionReply(activeTaskThreads(conversation)), data: { intent: intent.intent, confidence: intent.confidence, reason: "multiple_task_candidates" } });
     }
@@ -1399,6 +1878,9 @@ export function createChannelConversationService({
         return settle(event, { status: "dispatched", reply: control.friendly ? "已重新发送任务结果，请稍候查收。" : `${threadRef(referenced)} 的结果已重新发送，请稍候查收。`, data: { taskThreadId: referenced.id, deliveryId: resent.deliveryId, resend: true } });
       }
       if (control.kind === "cancel" && TASK_THREAD_ACTIVE_STATUSES.has(referenced.status)) {
+        if (referenced.waitingFor === "channel_confirmation") {
+          return cancelChannelRiskTask(event, referenced, actor);
+        }
         if (referenced.autoRunId && typeof cancelAutoRun === "function") {
           try { cancelAutoRun(referenced.autoRunId, { actor }); } catch { /* terminal state below remains authoritative */ }
         }
@@ -1460,7 +1942,7 @@ export function createChannelConversationService({
       && !newTaskIntent
       && intent.intent !== "confirm"
       && intent.intent !== "cancel"
-      && (explicitlySelectedWaitingThread || intent.intent !== "ambiguous")) {
+      && (explicitlySelectedThread || intent.intent !== "ambiguous")) {
       return answerTaskThread(event, conversation, thread, actor);
     }
     if (!thread && (isCancellation(text) || intent.intent === "cancel")) {
@@ -1479,10 +1961,13 @@ export function createChannelConversationService({
       }
     }
     if (!thread && (isConfirmation(text) || intent.intent === "confirm")) {
+      const activeQueued = activeTaskThreads(conversation).find((candidate) => ["queued", "running"].includes(candidate.status));
       return settle(event, {
         status: "dispatched",
-        reply: "当前没有等待确认的任务。请直接告诉我想做什么，我会先帮你整理。",
-        data: { intent: "confirm", reason: "no_pending_task" },
+        reply: activeQueued
+          ? "这个任务已经在执行队列中，不需要重复确认。回复“进度”可查看状态。"
+          : "当前没有等待确认的任务。请直接告诉我想做什么，我会先帮你整理。",
+        data: { intent: "confirm", reason: activeQueued ? "already_queued" : "no_pending_task", taskThreadId: activeQueued?.id ?? null },
       });
     }
     if (!thread && (isCancellation(text) || intent.intent === "cancel")) {
@@ -1492,8 +1977,16 @@ export function createChannelConversationService({
         data: { intent: "cancel", reason: "no_active_task" },
       });
     }
+    if (thread?.status === "waiting_approval"
+      && ["channel_confirmation", "data_sources", "data_review", "data_mutation"].includes(thread.waitingFor)
+      && (isConfirmation(text) || intent.intent === "confirm")) {
+      return confirmChannelRiskTask(event, conversation, thread, actor);
+    }
     if (thread && (isConfirmation(text) || intent.intent === "confirm")) return confirmTaskThread(event, channel, conversation, thread);
     if (thread && (isCancellation(text) || intent.intent === "cancel")) {
+      if (["channel_confirmation", "data_sources", "data_review", "data_mutation"].includes(thread.waitingFor)) {
+        return cancelChannelRiskTask(event, thread, actor);
+      }
       if (thread.autoRunId && typeof cancelAutoRun === "function") {
         try { cancelAutoRun(thread.autoRunId, { actor }); } catch { /* console can finish an already-settled run */ }
       }
@@ -1505,6 +1998,11 @@ export function createChannelConversationService({
         event.taskThreadId = thread.id;
       });
       return settle(event, { status: "dispatched", reply: "这个任务已取消。", data: { taskThreadId: thread.id, status: "cancelled" } });
+    }
+    if (thread?.status === "waiting_approval"
+      && ["channel_confirmation", "data_sources", "data_review", "data_mutation"].includes(thread.waitingFor)
+      && !isNewTask(text)) {
+      return reviseChannelRiskThread(event, thread, actor);
     }
     if (thread && !newTaskIntent) {
       runTx(() => {
@@ -1530,7 +2028,7 @@ export function createChannelConversationService({
   // dispatcher then routes it to a worker and starts an auto-run, so the task
   // shows on the six-state board with a status and work path. The bound project
   // (owner-set) IS the authorization to file from this channel's untrusted input.
-  async function dispatchTask(event, channel, conversation, description, { threadId = null, attachmentAssets = event.attachmentAssets } = {}) {
+  async function dispatchTask(event, channel, conversation, description, { threadId = null, attachmentAssets = event.attachmentAssets, dataMutationScope = null } = {}) {
     const text = String(description ?? "").replace(/\s+/g, " ").trim();
     if (!text) {
       return settle(event, { status: "refused", reply: "Usage: /task <what needs doing>", data: { reason: "missing_description" } });
@@ -1564,7 +2062,7 @@ export function createChannelConversationService({
     }
     const rate = runRateCheck(conversation);
     if (rate.limited) {
-      return settle(event, { status: "refused", reply: `Too many requests — at most ${RUN_RATE_MAX} per minute. Try again shortly.`, data: { reason: "rate_limited" } });
+      return settle(event, { status: "refused", reply: `操作太频繁了，每分钟最多处理 ${RUN_RATE_MAX} 个操作，请稍后再试。`, data: { reason: "rate_limited" } });
     }
     // Second limiter: a per-channel/day aggregate ceiling across ALL users (the
     // per-conversation minute limit alone lets many identities flood the repo).
@@ -1572,7 +2070,7 @@ export function createChannelConversationService({
     const dayCount = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
     const dailyLimit = Number.isInteger(channel.taskDailyLimit) ? channel.taskDailyLimit : TASK_DAILY_LIMIT_FALLBACK;
     if (dayCount >= dailyLimit) {
-      return settle(event, { status: "refused", reply: `This channel has reached its daily task limit (${dailyLimit}). Try again tomorrow.`, data: { reason: "daily_limit_reached" } });
+      return settle(event, { status: "refused", reply: `今天的任务数量已达到上限（${dailyLimit} 个），请明天再试。`, data: { reason: "daily_limit_reached" } });
     }
     // Reserve BOTH slots SYNCHRONOUSLY, before the `await` below — otherwise two
     // concurrent /task both read the pre-write windows and both pass (TOCTOU),
@@ -1584,9 +2082,16 @@ export function createChannelConversationService({
       conversation.updatedAt = now();
     });
     // Personal channels route after the user's confirmation. Team channels may
-    // opt back into capture/approval semantics explicitly.
-    const autoRoute = channel.operationMode !== "team" || Boolean(channel.taskAutoRoute);
+    // opt back into capture/approval semantics explicitly. The task creator
+    // can further downgrade a personal task when its risk contract requires a
+    // second, in-channel confirmation.
+    const requestedAutoRoute = channel.operationMode !== "team" || Boolean(channel.taskAutoRoute);
     const title = text.slice(0, 120);
+    const taskRevision = threadId
+      ? Number.isInteger((state.channelTaskThreads ?? []).find((candidate) => candidate.id === threadId)?.taskRevision)
+        ? (state.channelTaskThreads ?? []).find((candidate) => candidate.id === threadId).taskRevision
+        : 0
+      : 0;
     let filed;
     try {
       filed = await createChannelTaskIssue({
@@ -1607,9 +2112,10 @@ export function createChannelConversationService({
         channelTaskContext: taskContext,
         threadId,
         idempotencyKey: threadId
-          ? `channel-thread:${channel.id}:${threadId}`
+          ? `channel-thread:${channel.id}:${threadId}:${taskRevision}`
           : `channel-event:${channel.id}:${event.id}`,
-        autoRoute,
+        autoRoute: requestedAutoRoute,
+        dataMutationScope,
       });
     } catch (error) {
       filed = { ok: false, error: String(error?.message ?? error) };
@@ -1621,9 +2127,13 @@ export function createChannelConversationService({
       workItemId: filed.workItemId ?? null,
       traceId: filed.workItemId ?? taskContext.traceId,
     });
+    let channelTaskRequestId = null;
+    const effectiveAutoRoute = filed.autoRoute === undefined ? requestedAutoRoute : Boolean(filed.autoRoute);
+    const requiresChannelConfirmation = Boolean(filed.requiresChannelConfirmation);
+    const previewDigest = filed.previewDigest ?? filed.executionPreview?.digest ?? null;
     runTx(() => {
       const idempotencyKey = threadId
-        ? `channel-thread:${channel.id}:${threadId}`
+        ? `channel-thread:${channel.id}:${threadId}:${taskRevision}`
         : `channel-event:${channel.id}:${event.id}`;
       const alreadyRecorded = (conversation.taskIssues ?? []).some((issue) =>
         issue.idempotencyKey === idempotencyKey
@@ -1636,11 +2146,16 @@ export function createChannelConversationService({
       }
       // Capture mode: record a request that shows up as a pending decision until a
       // human routes (→ auto-run) or dismisses it. Bounded newest-keeps.
-      if (!autoRoute) {
+      if (!effectiveAutoRoute) {
         const existingRequest = (state.channelTaskRequests ?? []).find((request) =>
+          request.status === "pending"
+          && (
           (filed.workItemId && request.workItemId === filed.workItemId)
-          || (threadId && request.threadId === threadId));
-        if (!existingRequest) {
+          || (threadId && request.threadId === threadId)
+          ));
+        if (existingRequest) {
+          channelTaskRequestId = existingRequest.id;
+        } else {
           const request = {
             id: nextId("ctr"),
             channelId: channel.id,
@@ -1658,8 +2173,25 @@ export function createChannelConversationService({
             threadId,
             status: "pending",
             autoRunId: null,
+            requiresChannelConfirmation,
+            requiresDataPlan: filed.requiresDataPlan === true,
+            requiresDataReview: filed.requiresDataReview === true,
+            requiresDataMutationReview: filed.requiresDataMutationReview === true,
+            riskLevel: filed.riskLevel ?? null,
+            executionPreview: filed.executionPreview ?? null,
+            dataPlan: filed.dataPlan ?? null,
+            dataRelationPreview: filed.dataRelationPreview ?? null,
+            paymentReconciliationPreview: filed.paymentReconciliationPreview ?? null,
+            dataMutationPreview: filed.dataMutationPreview ?? null,
+            dataMutationBinding: filed.dataMutationBinding ?? null,
+            ledgerMutationPreview: filed.ledgerMutationPreview ?? null,
+            dataRelationConfirmation: filed.dataRelationConfirmation ?? null,
+            previewDigest,
+            previewReady: filed.previewReady !== false,
+            requiredFields: filed.executionPreview?.requiredFields ?? [],
             createdAt: now(),
           };
+          channelTaskRequestId = request.id;
           state.channelTaskRequests = [...(state.channelTaskRequests ?? []), request].slice(-500);
         }
       }
@@ -1667,14 +2199,37 @@ export function createChannelConversationService({
     });
     return settle(event, {
       status: "dispatched",
-      reply: autoRoute
+      reply: effectiveAutoRoute
         ? "任务已创建，正在排队执行。完成后我会通知你。"
-        : channel.operationMode === "team"
+        : requiresChannelConfirmation
+            ? riskPreviewReply(filed.executionPreview, filed.dataPlan, filed.dataRelationPreview, filed.dataMutationPreview, filed.dataMutationBinding)
+          : filed.requiresDataPlan
+            ? dataPlanReply(filed.dataPlan, filed.dataRelationPreview)
+          : filed.requiresDataReview
+            ? dataPlanReply(filed.dataPlan, filed.dataRelationPreview)
+          : filed.requiresDataMutationReview
+            ? dataMutationReply(filed.dataMutationPreview, filed.dataMutationBinding, filed.ledgerMutationPreview)
+          : channel.operationMode === "team"
           ? "任务已创建，等待管理员确认后开始执行。你不需要重复发送。"
           : "任务已收录，等待确认后开始执行。你不需要重复发送。",
-      data: {
-        command: "/task", issueNumber: filed.number, localRef: filed.localRef ?? null,
-        workItemId: filed.workItemId ?? null, projectId: channel.taskProjectId, autoRoute, threadId,
+        data: {
+          command: "/task", issueNumber: filed.number, localRef: filed.localRef ?? null,
+          workItemId: filed.workItemId ?? null, projectId: channel.taskProjectId,
+          autoRoute: effectiveAutoRoute, requiresChannelConfirmation,
+          requiresDataPlan: filed.requiresDataPlan === true,
+          requiresDataReview: filed.requiresDataReview === true,
+          requiresDataMutationReview: filed.requiresDataMutationReview === true,
+          riskLevel: filed.riskLevel ?? null, executionPreview: filed.executionPreview ?? null,
+          dataPlan: filed.dataPlan ?? null,
+          dataRelationPreview: filed.dataRelationPreview ?? null,
+          paymentReconciliationPreview: filed.paymentReconciliationPreview ?? null,
+          dataMutationPreview: filed.dataMutationPreview ?? null,
+          dataMutationBinding: filed.dataMutationBinding ?? null,
+          ledgerMutationPreview: filed.ledgerMutationPreview ?? null,
+          dataRelationConfirmation: filed.dataRelationConfirmation ?? null,
+          previewDigest, previewReady: filed.previewReady !== false,
+          requiredFields: filed.executionPreview?.requiredFields ?? [],
+          channelTaskRequestId, threadId,
       },
     });
   }
@@ -1696,18 +2251,59 @@ export function createChannelConversationService({
       return result;
     }
     const autoRoute = Boolean(result.data?.autoRoute);
+    const paymentPreview = result.data?.paymentReconciliationPreview ?? null;
+    const readOnlyPayment = Boolean(paymentPreview);
     runTx(() => {
       thread.workItemId = result.data?.workItemId ?? null;
-      setThreadStatus(thread, autoRoute ? "queued" : "waiting_approval", autoRoute ? "task_created" : "awaiting_route");
-      thread.waitingFor = autoRoute ? null : "approval";
+      thread.channelTaskRequestId = result.data?.channelTaskRequestId ?? null;
+      thread.executionPreview = result.data?.executionPreview ?? null;
+      thread.dataPlan = result.data?.dataPlan ?? null;
+      thread.dataRelationPreview = result.data?.dataRelationPreview ?? null;
+      thread.paymentReconciliationPreview = paymentPreview;
+      thread.dataMutationPreview = result.data?.dataMutationPreview ?? null;
+      thread.dataMutationBinding = result.data?.dataMutationBinding ?? null;
+      thread.ledgerMutationPreview = result.data?.ledgerMutationPreview ?? null;
+      thread.dataRelationConfirmation = result.data?.dataRelationConfirmation ?? null;
+      thread.riskPreviewDigest = result.data?.previewDigest ?? null;
+      setThreadStatus(thread, readOnlyPayment ? "succeeded" : autoRoute ? "queued" : "waiting_approval", readOnlyPayment ? "payment_reconciliation_completed" : autoRoute ? "task_created" : "awaiting_route");
+      thread.waitingFor = autoRoute
+        ? null
+        : result.data?.requiresDataPlan
+          ? "data_sources"
+        : result.data?.requiresDataReview
+          ? "data_review"
+        : result.data?.requiresDataMutationReview
+          ? "data_mutation"
+          : result.data?.requiresChannelConfirmation
+          ? "channel_confirmation"
+          : "approval";
+      if (readOnlyPayment) thread.waitingFor = null;
+      if (readOnlyPayment) thread.resultSummary = paymentReconciliationReply(paymentPreview);
       thread.updatedAt = now();
-      event.replyText = autoRoute
+      event.replyText = readOnlyPayment
+        ? paymentReconciliationReply(paymentPreview)
+        : autoRoute
         ? queueMessage(thread)
+        : result.data?.requiresDataPlan
+          ? dataPlanReply(result.data.dataPlan, result.data.dataRelationPreview)
+        : result.data?.requiresDataReview
+          ? dataPlanReply(result.data.dataPlan, result.data.dataRelationPreview)
+        : result.data?.requiresDataMutationReview
+          ? dataMutationReply(result.data.dataMutationPreview, result.data.dataMutationBinding, result.data.ledgerMutationPreview)
+        : result.data?.requiresChannelConfirmation
+          ? riskPreviewReply(
+            result.data.executionPreview,
+            result.data.dataPlan,
+            result.data.dataRelationPreview,
+            result.data.dataMutationPreview,
+            result.data.dataMutationBinding,
+            result.data.ledgerMutationPreview,
+          )
         : channel.operationMode === "team"
           ? "任务已创建，等待管理员确认后开始执行。你不需要重复发送。"
           : "任务已收录，等待确认后开始执行。你不需要重复发送。";
     });
-    if (autoRoute) {
+    if (autoRoute && !readOnlyPayment) {
       refreshQueuePositions(thread.channelId);
       result.reply = queueMessage(thread);
     } else {
@@ -1737,7 +2333,7 @@ export function createChannelConversationService({
     if (rate.limited) {
       return settle(event, {
         status: "refused",
-        reply: `Too many requests — at most ${RUN_RATE_MAX} per minute. Try again shortly.`,
+        reply: `操作太频繁了，每分钟最多处理 ${RUN_RATE_MAX} 个操作，请稍后再试。`,
         data: { reason: "rate_limited", capability: name },
       });
     }
@@ -2144,6 +2740,15 @@ export function createChannelConversationService({
       return `${label} ${status}：${summary}\n回复“确认”开始，或继续补充、回复“取消”。${detail}`;
     }
     if (thread?.status === "waiting_approval") {
+      if (thread.waitingFor === "data_sources") {
+        return `${label} ${status}：${summary}\n${dataPlanReply(thread.dataPlan, thread.dataRelationPreview) ?? "还缺少任务所需的数据文件，请直接上传或选择文件。"}${detail}`;
+      }
+      if (thread.waitingFor === "data_review") {
+        return `${label} ${status}：${summary}\n${dataPlanReply(thread.dataPlan, thread.dataRelationPreview) ?? "数据关联结果还需要复核，请补充关联方式。"}${detail}`;
+      }
+      if (thread.waitingFor === "data_mutation") {
+        return `${label} ${status}：${summary}\n${dataMutationReply(thread.dataMutationPreview, thread.dataMutationBinding, thread.ledgerMutationPreview) ?? "还需要明确文件、记录范围和字段变更。"}${detail}`;
+      }
       const approvalHint = thread.waitingFor === "approval"
         ? "任务内容已确认，正在等待桌面端审批中心批准；批准后会自动继续。"
         : "任务已创建，等待任务路由确认后开始执行。你不需要重复发送。";

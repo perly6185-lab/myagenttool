@@ -51,7 +51,11 @@ try {
   assert(consoleSource.includes("What to know before running"), "web console should hide advanced details behind disclosure");
 
   const offlineCreated = await request("POST", "/api/invocations", {
+    // This scenario verifies reconnect delivery, not canonical Agent choice.
+    // Pin the deterministic demo adapter so a default Codex approval gate cannot
+    // park the queued invocation before the bridge reconnects.
     task: "Run the M0 acceptance offline queue test.",
+    agentId: "agt_demo_cli",
   });
   const offlineInvocationId = offlineCreated.invocation.id;
   const queuedState = await request("GET", "/api/state");
@@ -86,18 +90,44 @@ try {
     projectId: linkedState.currentProject.id,
   });
   const gitInvocationId = gitRun.invocation.id;
-  const gitState = await waitFor(async () => {
+  let gitState;
+  try {
+    gitState = await waitFor(async () => {
+      const state = await request("GET", "/api/state");
+      const invocation = state.invocations.find((item) => item.id === gitInvocationId);
+      const application = state.applications.find((item) => item.id === "app_git");
+      const evidence = state.evidenceCenterRecords.find((item) => item.invocationId === gitInvocationId && item.type === "application_result");
+      return invocation?.status === "succeeded"
+        && application?.latestResult?.invocationId === gitInvocationId
+        && application.latestResult.importedRecordCount >= 1
+        && evidence
+        ? { state, evidence }
+        : false;
+    }, "Git Application result and evidence import");
+  } catch (error) {
     const state = await request("GET", "/api/state");
     const invocation = state.invocations.find((item) => item.id === gitInvocationId);
     const application = state.applications.find((item) => item.id === "app_git");
-    const evidence = state.evidenceCenterRecords.find((item) => item.invocationId === gitInvocationId && item.type === "application_result");
-    return invocation?.status === "succeeded"
-      && application?.latestResult?.invocationId === gitInvocationId
-      && application.latestResult.importedRecordCount >= 1
-      && evidence
-      ? { state, evidence }
-      : false;
-  }, "Git Application result and evidence import");
+    const events = state.events.filter((item) => item.invocationId === gitInvocationId).slice(-12);
+    console.error("[acceptance] Git Application diagnostic", JSON.stringify({
+      invocation: invocation ? {
+        id: invocation.id,
+        status: invocation.status,
+        errorCode: invocation.errorCode ?? null,
+        summary: invocation.summary ?? null,
+        result: invocation.result ?? null,
+      } : null,
+      application: application ? {
+        status: application.status,
+        latestResult: application.latestResult ?? null,
+      } : null,
+      activeInvocations: state.invocations
+        .filter((item) => [offlineInvocationId, gitInvocationId].includes(item.id))
+        .map((item) => ({ id: item.id, status: item.status, delivery: item.delivery ?? null, errorCode: item.errorCode ?? null, summary: item.summary ?? null })),
+      events: events.map((item) => ({ type: item.type, level: item.level, message: item.message, data: item.data ?? null })),
+    }));
+    throw error;
+  }
   const gitInvocation = gitState.state.invocations.find((item) => item.id === gitInvocationId);
   assert(gitInvocation.result?.applicationResult?.invocationId === gitInvocationId, "Git invocation should link its imported Application result");
   assert(gitState.evidence.source === "imported_application_result", "Git Application result should enter the Evidence Center");

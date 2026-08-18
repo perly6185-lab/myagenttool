@@ -82,6 +82,20 @@ test("composed iLink journey: poll → import → channel reply queue → provid
   assert.equal(mapped.ok, true);
   deps.setChannelDeliverySender("wechat_ilink", (payload) => deps.sendIlinkApplicationMessage(payload));
 
+  // P4 object verification: the natural-language customer reference can only
+  // pass an external-send preview when a same-team business record exists.
+  state.businessEntities.push({
+    id: "bent_composed_customer",
+    ownerTeamId: "team_local",
+    projectId: defaultProject.id,
+    sourceId: "wfs_composed",
+    entityType: "customer",
+    businessKey: "客户",
+    fields: { name: "客户" },
+    revision: 1,
+    status: "active",
+  });
+
   deps.startIlink();
   await new Promise((resolve) => setTimeout(resolve, 30));
   const imported = state.channelEvents.find((event) => event.providerMessageId === "101");
@@ -97,5 +111,195 @@ test("composed iLink journey: poll → import → channel reply queue → provid
   assert.match(sent[0].content, /你可以直接发送/);
   assert.equal(sent[0].contextToken, "ctx-composed");
   assert.equal(sent[0].clientId, state.channelDeliveries[0].id);
+
+  const taskImported = await deps.importChannelEvent({
+    channelId: channel.id,
+    providerMessageId: "102",
+    externalUserId: "wx-composed",
+    content: "/task 请根据客户询价资料生成报价单",
+  });
+  assert.equal(taskImported.ok, true);
+  const channelWorkItem = state.workItems.find((item) => item.channelOrigin?.messageId === taskImported.eventId);
+  assert.ok(channelWorkItem);
+  assert.equal(channelWorkItem.channelTaskContract.domain, "office");
+  assert.equal(channelWorkItem.channelTaskContract.source, "channel");
+  assert.ok(channelWorkItem.acceptanceCriteria.length >= 2);
+  assert.ok(channelWorkItem.verificationSop.length >= 2);
+  assert.equal(channelWorkItem.channelOrigin.channelId, channel.id);
+
+  const highRiskImported = await deps.importChannelEvent({
+    channelId: channel.id,
+    providerMessageId: "103",
+    externalUserId: "wx-composed",
+    content: "/task 请把报价单发给客户",
+  });
+  assert.equal(highRiskImported.ok, true);
+  const highRiskEvent = state.channelEvents.find((event) => event.id === highRiskImported.eventId);
+  const highRiskWorkItem = state.workItems.find((item) => item.channelOrigin?.messageId === highRiskImported.eventId);
+  assert.match(highRiskEvent.replyText, /执行前请确认这份预览/);
+  assert.match(highRiskEvent.replyText, /对象：客户/);
+  assert.equal(highRiskWorkItem.channelTaskContract.executionPreview.target, "客户");
+  assert.equal(highRiskWorkItem.channelTaskContract.executionPreview.targetStatus, "inferred");
+  assert.ok(highRiskWorkItem.channelTaskContract.executionPreview.digest);
+  assert.equal(highRiskWorkItem.channelTaskContract.executionPreview.objectValidation.state, "verified");
+  assert.deepEqual(highRiskWorkItem.channelTaskContract.executionPreview.objectValidation.verifiedObjects.map((object) => object.kind), ["contact"]);
+  assert.equal(state.channelTaskThreads.at(-1).waitingFor, "channel_confirmation");
+  // The object is rechecked at the confirmation boundary. A changed business
+  // record invalidates the old preview and leaves the request pending.
+  state.businessEntities.find((row) => row.id === "bent_composed_customer").revision = 2;
+  const staleConfirm = await deps.importChannelEvent({
+    channelId: channel.id,
+    providerMessageId: "103-stale-confirm",
+    externalUserId: "wx-composed",
+    content: "确认执行",
+  });
+  const staleConfirmEvent = state.channelEvents.find((event) => event.id === staleConfirm.eventId);
+  assert.match(staleConfirmEvent.replyText, /对象.*变化/);
+  assert.equal(state.channelTaskRequests.find((request) => request.workItemId === highRiskWorkItem.id).status, "pending");
+
+  const financialImported = await deps.importChannelEvent({
+    channelId: channel.id,
+    providerMessageId: "104",
+    externalUserId: "wx-composed",
+    content: "/task 请帮我汇款",
+  });
+  assert.equal(financialImported.ok, true);
+  const financialEvent = state.channelEvents.find((event) => event.id === financialImported.eventId);
+  assert.match(financialEvent.replyText, /请先补充/);
+  const financialRequest = state.channelTaskRequests.at(-1);
+  assert.equal(financialRequest.previewReady, false);
+  const financialThread = state.channelTaskThreads.find((thread) => thread.workItemId === financialRequest.workItemId);
+  const financialSelect = await deps.importChannelEvent({
+    channelId: channel.id,
+    providerMessageId: "105",
+    externalUserId: "wx-composed",
+    content: `继续 ${financialThread.shortRef}`,
+  });
+  assert.equal(financialSelect.ok, true);
+  const financialConfirm = await deps.importChannelEvent({
+    channelId: channel.id,
+    providerMessageId: "106",
+    externalUserId: "wx-composed",
+    content: "确认执行",
+  });
+  const financialConfirmEvent = state.channelEvents.find((event) => event.id === financialConfirm.eventId);
+  assert.match(financialConfirmEvent.replyText, /请先补充/);
+  assert.equal(financialRequest.status, "pending");
+
+  // P4.7: a ready relation is independently recorded before execution. The
+  // record keeps only object ids/revisions, so a later review can distinguish
+  // system verification from the task's human confirmation without storing
+  // source values in the audit row.
+  state.channelObjectFileSources.push(
+    {
+      id: "file_customer_relation",
+      ownerTeamId: "team_local",
+      projectId: defaultProject.id,
+      kind: "contact",
+      fileName: "customers.csv",
+      revision: 1,
+      status: "active",
+    },
+    {
+      id: "file_order_relation",
+      ownerTeamId: "team_local",
+      projectId: defaultProject.id,
+      kind: "order",
+      fileName: "orders.csv",
+      revision: 1,
+      status: "active",
+    },
+  );
+  state.channelObjectRecords.push(
+    {
+      id: "contact_relation_1",
+      ownerTeamId: "team_local",
+      projectId: defaultProject.id,
+      kind: "contact",
+      sourceId: "file_customer_relation",
+      label: "客户A",
+      businessKey: "客户A",
+      fields: { name: "客户A" },
+      revision: 1,
+      status: "active",
+    },
+    {
+      id: "order_relation_1",
+      ownerTeamId: "team_local",
+      projectId: defaultProject.id,
+      kind: "order",
+      sourceId: "file_order_relation",
+      label: "订单A",
+      businessKey: "订单A",
+      fields: { customer: "客户A" },
+      revision: 1,
+      status: "active",
+    },
+  );
+  state.routineDefinitions.push({
+    id: "rtd_relation_quote",
+    familyId: "family_relation_quote",
+    ownerTeamId: "team_local",
+    projectId: defaultProject.id,
+    templateScope: "team",
+    state: "published",
+    version: 1,
+    name: "客户报价单",
+    description: "根据客户订单生成报价单",
+    triggerDocumentTypes: ["unknown"],
+    steps: [
+      { key: "read_orders", kind: "extract", label: "客户订单", configuration: { inputSummary: "客户订单" } },
+      { key: "write_quote", kind: "generate", label: "生成报价单", configuration: { expectedOutput: "报价单" } },
+    ],
+    dataRequirements: [
+      { id: "customers", kind: "contact", label: "客户", fields: ["name"], required: true },
+      { id: "orders", kind: "order", label: "订单", fields: ["customer"], required: true },
+    ],
+    relations: [{
+      id: "customer_order",
+      type: "lookup",
+      fromRequirementId: "customers",
+      fromField: "name",
+      toRequirementId: "orders",
+      toField: "customer",
+      required: true,
+    }],
+  });
+  const relationTask = await deps.importChannelEvent({
+    channelId: channel.id,
+    providerMessageId: "107",
+    externalUserId: "wx-composed",
+    content: "/task 请根据客户订单生成报价单",
+  });
+  assert.equal(relationTask.ok, true);
+  const relationWorkItem = state.workItems.find((item) => item.channelOrigin?.messageId === relationTask.eventId);
+  assert.ok(relationWorkItem);
+  assert.equal(relationWorkItem.channelTaskContract.dataRelationPreview.status, "ready");
+  assert.equal(relationWorkItem.channelTaskContract.dataRelationConfirmation.confirmationMode, "runtime_verified");
+  const relationConfirmation = state.channelDataRelationConfirmations.find((record) => record.workItemId === relationWorkItem.id);
+  assert.ok(relationConfirmation);
+  assert.deepEqual(relationConfirmation.objectSnapshot, [
+    { id: "contact_relation_1", sourceId: "file_customer_relation", revision: 1 },
+    { id: "order_relation_1", sourceId: "file_order_relation", revision: 1 },
+  ]);
+  assert.equal(relationConfirmation.objectSnapshot[0].fields, undefined);
+
+  const mutationTask = await deps.importChannelEvent({
+    channelId: channel.id,
+    providerMessageId: "108",
+    externalUserId: "wx-composed",
+    content: "/task 请批量修改 customers.csv 和 orders.csv 的客户字段",
+  });
+  assert.equal(mutationTask.ok, true);
+  const mutationEvent = state.channelEvents.find((event) => event.id === mutationTask.eventId);
+  const mutationWorkItem = state.workItems.find((item) => item.channelOrigin?.messageId === mutationTask.eventId);
+  assert.ok(mutationWorkItem);
+  assert.equal(mutationWorkItem.status, "backlog", "batch file writes must not auto-route");
+  assert.equal(mutationWorkItem.channelTaskContract.dataMutationPreview.status, "needs_review");
+  assert.equal(mutationWorkItem.channelTaskContract.executionPreview.previewReady, false);
+  assert.match(mutationEvent.replyText, /修改 CSV\/Excel/);
+  assert.match(mutationEvent.replyText, /如何定位记录/);
+  assert.match(mutationEvent.replyText, /当前版本只支持预览/);
+  assert.equal(state.channelTaskRequests.find((request) => request.workItemId === mutationWorkItem.id).status, "pending");
   deps.stopIlink();
 });

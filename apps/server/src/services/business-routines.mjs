@@ -22,6 +22,7 @@ import {
   quotationDraftRelativePath,
   writeLocalQuotationDraft,
 } from "./business-routine-executors.mjs";
+import { normalizeDataContract } from "./data-plan-contract.mjs";
 
 export const businessRoutineCollectionKeys = [
   "businessDocumentClassifications",
@@ -125,6 +126,29 @@ function stringList(values, { maxItems = 100, maxLength = 200 } = {}) {
   if (!Array.isArray(values) || values.length > maxItems) return null;
   const normalized = [...new Set(values.map((value) => text(value, maxLength)).filter(Boolean))];
   return normalized.length <= maxItems ? normalized : null;
+}
+
+function fieldTransitions(value) {
+  if (value == null) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = {};
+  const entries = Object.entries(value);
+  if (entries.length > 20) return null;
+  for (const [field, mapping] of entries) {
+    if (!SAFE_FIELD_RE.test(field) || SENSITIVE_FIELD_RE.test(field)
+      || !mapping || typeof mapping !== "object" || Array.isArray(mapping)) return null;
+    const transitions = {};
+    const values = Object.entries(mapping);
+    if (values.length > 100) return null;
+    for (const [from, targets] of values) {
+      const source = text(from, 200);
+      const allowed = stringList(targets, { maxItems: 50, maxLength: 200 });
+      if (!source || !allowed) return null;
+      transitions[source] = allowed;
+    }
+    result[field] = transitions;
+  }
+  return result;
 }
 
 export function normalizeRoutineTriggerType(value) {
@@ -460,6 +484,7 @@ export function migrateBusinessRoutineState(state) {
       allowInsert: true,
       allowUpdate: true,
     };
+    definition.writePolicy.fieldTransitions ??= {};
   }
   return state;
 }
@@ -1632,13 +1657,18 @@ export function createBusinessRoutineService({
       ? [...new Set(rawTriggerDocumentTypes.map(normalizeRoutineTriggerType))]
       : null;
     const steps = normalizeRoutineSteps(input.steps);
+    const dataContract = normalizeDataContract({
+      dataRequirements: input.dataRequirements ?? [],
+      relations: input.relations ?? [],
+      mutationPolicy: input.mutationPolicy ?? null,
+    });
     const evidenceRefs = normalizeRoutineEvidenceRefs(input.evidenceRefs ?? []);
     const score = confidence(input.confidence ?? 1);
     const requestedState = ["candidate", "draft"].includes(input.state) ? input.state : "candidate";
     const configurationError = steps.ok ? routineStepConfigurationError(steps.value) : null;
     if (!name || !historicalCaseIds || !triggerDocumentTypes?.length
       || triggerDocumentTypes.some((type) => !type)
-      || !steps.ok || configurationError || !evidenceRefs || score == null) {
+      || !steps.ok || configurationError || !evidenceRefs || score == null || !dataContract) {
       return {
         status: 400,
         body: {
@@ -1680,6 +1710,9 @@ export function createBusinessRoutineService({
       triggerDocumentTypes,
       steps: steps.value,
       templateContract: steps.value.find((step) => step.kind === "generate")?.configuration?.templateContract ?? null,
+      dataRequirements: dataContract.dataRequirements,
+      relations: dataContract.relations,
+      mutationPolicy: dataContract.mutationPolicy,
       evidenceRefs,
       evidenceFingerprints: Object.fromEntries(
         [...new Set([
@@ -1929,6 +1962,9 @@ export function createBusinessRoutineService({
       })),
       evidenceRefs: candidate.evidenceRefs,
       confidence: candidate.confidence,
+      dataRequirements: candidate.dataRequirements ?? [],
+      relations: candidate.relations ?? [],
+      mutationPolicy: candidate.mutationPolicy ?? null,
     }, actor);
     if ([200, 201].includes(created.status) && created.body?.routineDefinition) {
       created.body.routineDefinition.templateMaturity = "stable";
@@ -1963,6 +1999,9 @@ export function createBusinessRoutineService({
     description,
     triggerDocumentTypes,
     steps,
+    dataRequirements,
+    relations,
+    mutationPolicy,
   } = {}, actor = null) {
     const definition = state.routineDefinitions.find((row) =>
       row.id === routineDefinitionId && visible(row, actor));
@@ -1991,11 +2030,17 @@ export function createBusinessRoutineService({
       ? [...new Set(rawNextTriggers.map(normalizeRoutineTriggerType))]
       : null;
     const nextSteps = steps == null ? { ok: true, value: definition.steps } : normalizeRoutineSteps(steps);
+    const nextDataContract = normalizeDataContract({
+      dataRequirements: dataRequirements == null ? definition.dataRequirements ?? [] : dataRequirements,
+      relations: relations == null ? definition.relations ?? [] : relations,
+      mutationPolicy: mutationPolicy == null ? definition.mutationPolicy ?? null : mutationPolicy,
+    });
     const configurationError = nextSteps.ok ? routineStepConfigurationError(nextSteps.value) : null;
     if (!nextName || !nextDescription || !nextTriggers?.length
       || nextTriggers.some((type) => !type)
       || !nextSteps.ok
       || configurationError
+      || !nextDataContract
       || nextSteps.value.some((step) => !evidenceBelongsTo(step.evidenceRefs, definition, actor))) {
       return {
         status: 400,
@@ -2016,6 +2061,9 @@ export function createBusinessRoutineService({
         templateContract: nextSteps.value.find((step) => step.kind === "generate")?.configuration?.templateContract
           ?? definition.templateContract
           ?? null,
+        dataRequirements: nextDataContract.dataRequirements,
+        relations: nextDataContract.relations,
+        mutationPolicy: nextDataContract.mutationPolicy,
         evidenceFingerprints: Object.fromEntries(
           [...new Set([
             ...definition.evidenceRefs.map((ref) => ref.artifactId),
@@ -2194,6 +2242,7 @@ export function createBusinessRoutineService({
       : "always";
     const allowInsert = input.writePolicy?.allowInsert !== false;
     const allowUpdate = input.writePolicy?.allowUpdate !== false;
+    const transitions = fieldTransitions(input.writePolicy?.fieldTransitions);
     const requestedState = ledgerDefinitionStates.includes(input.state) ? input.state : "draft";
     if (!name || !documentType || !format || !path || (input.sheet != null && input.sheet !== "" && !sheet)
       || (input.table != null && input.table !== "" && !table)
@@ -2201,6 +2250,7 @@ export function createBusinessRoutineService({
       || !businessKeyField || !SAFE_FIELD_RE.test(businessKeyField)
       || SENSITIVE_FIELD_RE.test(businessKeyField) || !fieldMappings || requestedState !== "draft"
       || !fallbackBusinessKeyFields || !requiredFields?.length
+      || !transitions
       || [...requiredFields, ...fallbackBusinessKeyFields].some((field) =>
         !SAFE_FIELD_RE.test(field) || SENSITIVE_FIELD_RE.test(field))
       || !requiredFields.includes(businessKeyField)
@@ -2244,6 +2294,7 @@ export function createBusinessRoutineService({
         approval: approvalPolicy,
         allowInsert,
         allowUpdate,
+        fieldTransitions: transitions,
       },
       idempotencyKey,
       revision: 1,

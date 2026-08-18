@@ -1438,6 +1438,186 @@ export function WorkItemSummaryView({
         </div>
       ) : null}
 
+      {item.channelTaskContract?.dataPlan && item.channelTaskContract.dataPlan.status !== "not_required" ? (
+        <section
+          className={`rounded-xl border p-4 ${item.channelTaskContract.dataPlan.status === "ready" ? "border-success/30 bg-success/[0.04]" : "border-warning/35 bg-warning/[0.05]"}`}
+          aria-label={language === "zh" ? "任务数据依据" : "Task data basis"}
+        >
+          <h4 className="text-sm font-semibold">{language === "zh" ? "任务数据依据" : "Task data basis"}</h4>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {item.channelTaskContract.dataPlan.status === "ready"
+              ? (language === "zh" ? "以下本地文件版本已随任务合同冻结，执行前仍会再次校验。" : "These local file versions are frozen in the task contract and rechecked before execution.")
+              : (language === "zh" ? "任务暂未具备完整数据依据，补齐或选择来源后才会继续执行。" : "Execution waits until the required data sources are supplied or selected.")}
+          </p>
+          {item.channelTaskContract.dataPlan.sources.length ? (
+            <ul className="mt-3 space-y-1 text-xs">
+              {item.channelTaskContract.dataPlan.sources.map((source) => (
+                <li key={source.sourceId}>
+                  <span className="font-medium">{source.fileName ?? source.sourceId}</span>
+                  {source.revision != null ? <span className="ml-1 text-muted-foreground">· v{source.revision}</span> : null}
+                  {source.rowCount != null ? <span className="ml-1 text-muted-foreground">· {source.rowCount} rows</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {item.channelTaskContract.dataPlan.requirements.filter((requirement) => requirement.state !== "ready").map((requirement) => (
+            <p key={requirement.id} className="mt-2 text-xs text-warning-foreground">
+              {language === "zh" ? "还需要：" : "Needed: "}{requirement.label}{requirement.state === "ambiguous" ? (language === "zh" ? "（来源不唯一）" : " (multiple sources)") : ""}
+            </p>
+          ))}
+          {item.channelTaskContract.dataPlan.relations.length ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {language === "zh" ? "关联计划：" : "Relation plan: "}
+              {item.channelTaskContract.dataPlan.relations.map((relation) => `${relation.fromRequirementId}.${relation.fromField} → ${relation.toRequirementId}.${relation.toField}`).join("；")}
+            </p>
+          ) : null}
+          {item.channelTaskContract.dataRelationPreview?.relations.length ? (
+            <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+              {item.channelTaskContract.dataRelationPreview.relations.map((relation) => (
+                <li key={relation.id}>
+                  {relation.fromRequirementId}.{relation.fromField} → {relation.toRequirementId}.{relation.toField}：
+                  {relation.state === "ready"
+                    ? (language === "zh" ? `已匹配 ${relation.matchedRows} 条` : `${relation.matchedRows} matched`)
+                    : (language === "zh" ? `待复核，未匹配 ${relation.unmatchedRows} 条` : `review needed, ${relation.unmatchedRows} unmatched`)}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {item.channelTaskContract.dataRelationConfirmation ? (
+            <div className="mt-3 rounded-lg border border-success/25 bg-success/[0.04] p-3 text-xs">
+              <p className="font-medium text-success-foreground">
+                {item.channelTaskContract.dataRelationConfirmation.status === "verified"
+                  ? (language === "zh" ? "数据关联已验证并留痕" : "Data relation verified and recorded")
+                  : (language === "zh" ? "数据关联验证状态：" : "Data relation verification: ") + item.channelTaskContract.dataRelationConfirmation.status}
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {item.channelTaskContract.dataRelationConfirmation.confirmationMode === "user_confirmation"
+                  ? (language === "zh" ? "由本次确认操作完成复核" : "Verified by this confirmation")
+                  : (language === "zh" ? "由系统在执行前完成校验" : "Verified by the system before execution")}
+                {item.channelTaskContract.dataRelationConfirmation.objectSnapshotCount > 0
+                  ? (language === "zh"
+                    ? ` · 已记录 ${item.channelTaskContract.dataRelationConfirmation.objectSnapshotCount} 个对象版本`
+                    : ` · ${item.channelTaskContract.dataRelationConfirmation.objectSnapshotCount} object versions recorded`)
+                  : ""}
+              </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {item.channelTaskContract?.dataMutationPreview && item.channelTaskContract.dataMutationPreview.status !== "not_required" ? (
+        <section
+          className="rounded-xl border border-warning/35 bg-warning/[0.05] p-4"
+          aria-label={language === "zh"
+            ? (item.channelTaskContract.ledgerMutationPreview?.kind === "batch" ? "批量文件变更预览" : item.channelTaskContract.ledgerMutationPreview ? "单条文件变更预览" : "文件变更预览")
+            : (item.channelTaskContract.ledgerMutationPreview ? "Single-record file mutation preview" : "File mutation preview")}
+        >
+          <h4 className="text-sm font-semibold">
+            {language === "zh"
+              ? (item.channelTaskContract.ledgerMutationPreview?.kind === "batch" ? "批量文件变更预览" : item.channelTaskContract.ledgerMutationPreview ? "单条文件变更预览" : "文件变更预览")
+              : (item.channelTaskContract.ledgerMutationPreview ? "Single-record file mutation preview" : "File mutation preview")}
+          </h4>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {item.channelTaskContract.ledgerMutationPreview
+              ? (language === "zh"
+                ? (item.channelTaskContract.ledgerMutationPreview.kind === "batch"
+                  ? "已生成批量 Ledger 安全预览；个人 Channel 回复“确认执行”后按文件队列写回，部分失败会保留可恢复记录。"
+                  : "已生成 Ledger 安全预览；个人 Channel 回复“确认执行”后才会写回，桌面端可追溯审计记录。")
+                : "A Ledger safe preview is ready. Personal Channel confirmation is required before write-back, with an auditable desktop record.")
+              : (language === "zh"
+                ? item.channelTaskContract.dataMutationPreview.status === "ready"
+                  ? "变更范围预览已生成，但当前版本尚未启用安全写回，不会直接修改源文件。"
+                  : "当前只完成变更范围登记，尚未授权写回文件；还需要明确文件、记录范围和字段变更。"
+                : item.channelTaskContract.dataMutationPreview.status === "ready"
+                  ? "The mutation scope is previewed, but safe write-back is not enabled in this version. Source files will not be modified."
+                  : "Only the mutation scope is recorded. File write-back is not authorized until files, rows, and fields are confirmed.")}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {item.channelTaskContract.dataMutationBinding
+              ? (language === "zh"
+                ? `安全写回规则已绑定 · 文件配置版本 ${item.channelTaskContract.dataMutationBinding.ledgerDefinitionRevision ?? "未知"}`
+                : `Safe write-back rule bound · definition revision ${item.channelTaskContract.dataMutationBinding.ledgerDefinitionRevision ?? "unknown"}`)
+              : (language === "zh" ? "安全写回规则尚未绑定" : "No safe write-back rule is bound")}
+          </p>
+          {item.channelTaskContract.dataMutationPreview.targetSources.length ? (
+            <ul className="mt-3 space-y-1 text-xs">
+              {item.channelTaskContract.dataMutationPreview.targetSources.map((source) => (
+                <li key={source.sourceId}>
+                  <span className="font-medium">{source.fileName ?? source.sourceId}</span>
+                  {source.revision != null ? <span className="ml-1 text-muted-foreground">· v{source.revision}</span> : null}
+                  {source.rowCount != null ? <span className="ml-1 text-muted-foreground">· {source.rowCount} rows</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {item.channelTaskContract.dataMutationPreview.dataMutationScope ? (
+            <div className="mt-3 rounded-lg border border-warning/25 bg-background/40 p-3 text-xs">
+              <p className="font-medium">
+                {language === "zh" ? "实际范围已绑定" : "Task scope bound"}
+                <span className="ml-2 text-muted-foreground">
+                  {language === "zh"
+                    ? `${item.channelTaskContract.dataMutationPreview.dataMutationScope.targets.length} 个文件 · 预计 ${item.channelTaskContract.dataMutationPreview.dataMutationScope.expectedAffectedRows} 条`
+                    : `${item.channelTaskContract.dataMutationPreview.dataMutationScope.targets.length} files · ${item.channelTaskContract.dataMutationPreview.dataMutationScope.expectedAffectedRows} rows`}
+                </span>
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {language === "zh" ? "记录定位条件只保存摘要，不保存原始筛选值。" : "Only selector digests are stored; raw filter values are not persisted."}
+              </p>
+              {item.channelTaskContract.dataMutationPreview.dataMutationScope.changes.length ? (
+                <p className="mt-1 text-muted-foreground">
+                  {language === "zh" ? "字段：" : "Fields: "}
+                  {item.channelTaskContract.dataMutationPreview.dataMutationScope.changes.map((change) => change.field).join("、")}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {item.channelTaskContract.ledgerMutationPreview ? (
+            <div className="mt-3 rounded-lg border border-success/25 bg-success/[0.04] p-3 text-xs">
+              <p className="font-medium text-success-foreground">
+                {item.channelTaskContract.ledgerMutationPreview.state === "rolled_back"
+                  ? (language === "zh" ? "批次已安全回退" : "Batch rolled back safely")
+                  : item.channelTaskContract.ledgerMutationPreview.state === "needs_attention"
+                    ? (language === "zh" ? "批次需要检查" : "Batch needs attention")
+                    : item.channelTaskContract.ledgerMutationPreview.state === "committing"
+                      ? (language === "zh" ? "批次正在恢复" : "Batch recovery in progress")
+                      : (language === "zh" ? "Ledger 预览已生成" : "Ledger preview ready")}
+                <span className="ml-2 text-muted-foreground">
+                  {item.channelTaskContract.ledgerMutationPreview.state === "waiting"
+                    ? (language === "zh" ? "排队等待文件写回" : "queued behind another writer")
+                    : item.channelTaskContract.ledgerMutationPreview.state === "rolled_back"
+                      ? (language === "zh" ? "未保留任何部分修改" : "no partial changes kept")
+                      : item.channelTaskContract.ledgerMutationPreview.state === "needs_attention"
+                        ? (language === "zh" ? "检测到外部文件变更" : "external file change detected")
+                        : item.channelTaskContract.ledgerMutationPreview.state === "committing"
+                          ? (language === "zh" ? "已完成项不会重复写入" : "completed items will not repeat")
+                    : (language === "zh" ? "等待 Channel 确认" : "awaiting Channel confirmation")}
+                </span>
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {item.channelTaskContract.ledgerMutationPreview.kind === "batch"
+                  ? `${language === "zh" ? "批次：" : "Batch: "}${item.channelTaskContract.ledgerMutationPreview.targetCount ?? 0} ${language === "zh" ? "个文件，" : "files, "}${item.channelTaskContract.ledgerMutationPreview.operationCount ?? item.channelTaskContract.ledgerMutationPreview.children?.length ?? 0} ${language === "zh" ? "条记录" : "operations"}`
+                  : item.channelTaskContract.ledgerMutationPreview.changedCells.length
+                    ? `${language === "zh" ? "字段：" : "Fields: "}${item.channelTaskContract.ledgerMutationPreview.changedCells.map((cell) => cell.field).filter(Boolean).join("、")}`
+                    : (language === "zh" ? "没有检测到实际字段变化" : "No field difference detected")}
+                {item.channelTaskContract.ledgerMutationPreview.kind !== "batch" && item.channelTaskContract.ledgerMutationPreview.rowNumber != null
+                  ? ` · ${language === "zh" ? "第" : "row "}${item.channelTaskContract.ledgerMutationPreview.rowNumber}${language === "zh" ? "行" : ""}`
+                  : ""}
+              </p>
+              {item.channelTaskContract.ledgerMutationPreview.kind === "batch" && item.channelTaskContract.ledgerMutationPreview.journal ? (
+                <p className="mt-1 text-muted-foreground">
+                  {language === "zh"
+                    ? `审计：已记录 ${item.channelTaskContract.ledgerMutationPreview.journal.appliedCount} 项写回、${item.channelTaskContract.ledgerMutationPreview.journal.snapshotCount} 个文件快照`
+                    : `Audit: ${item.channelTaskContract.ledgerMutationPreview.journal.appliedCount} applied, ${item.channelTaskContract.ledgerMutationPreview.journal.snapshotCount} file snapshots`}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {item.channelTaskContract.dataMutationPreview.requiredFields.map((field) => (
+            <p key={field} className="mt-2 text-xs text-warning-foreground">{language === "zh" ? "还需要：" : "Needed: "}{field}</p>
+          ))}
+        </section>
+      ) : null}
+
       {pendingTemplateClarification ? (
         <section id="task-template-result-question" className="rounded-xl border border-warning/40 bg-warning/[0.06] p-4" aria-label={language === "zh" ? "这次你希望最终得到什么？" : "What result do you want this time?"}>
           <h4 className="text-sm font-semibold">{language === "zh" ? "这次你希望最终得到什么？" : "What result do you want this time?"}</h4>

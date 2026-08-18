@@ -16,7 +16,7 @@ import { createChannelService } from "../src/services/channels.mjs";
 const NOW = "2026-07-15T00:00:00.000Z";
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, cancelAutoRun, classifyIntent, createConsultation, notifyHumanTakeover, resendDelivery, operationMode = "team" } = {}) {
+function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, routeChannelTask, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, cancelAutoRun, classifyIntent, createConsultation, notifyHumanTakeover, resendDelivery, operationMode = "team" } = {}) {
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
   const events = [];
   const refusals = [];
@@ -58,6 +58,7 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
       return { status: 200, body: { invocation } };
     },
     createChannelTaskIssue,
+    routeChannelTask,
     answerClarify,
     retryAutoRun,
     cancelAutoRun,
@@ -337,6 +338,138 @@ test("queue refresh keeps running work visible as ahead of queued work", () => {
   const second = harness.state.channelTaskThreads.find((thread) => thread.id === "cth_second");
   assert.equal(second.queueAheadCount, 1);
   assert.equal(second.queuePosition, 2);
+});
+
+test("progress for a data mutation explains the actual blocking step", () => {
+  const harness = makeHarness();
+  harness.receive("进度");
+  const conversation = harness.state.channelConversations.at(-1);
+  const thread = {
+    id: "cth_mutation_status",
+    shortRef: "T-MUTATION",
+    channelId: harness.channelId,
+    conversationId: conversation.id,
+    status: "waiting_approval",
+    waitingFor: "data_mutation",
+    summary: "批量修改客户文件",
+    updatedAt: NOW,
+    createdAt: NOW,
+    dataMutationPreview: {
+      status: "policy_blocked",
+      targetSources: [],
+      requiredFields: ["当前任务模板不允许多个文件同时变更"],
+    },
+  };
+  harness.state.channelTaskThreads.push(thread);
+  conversation.activeTaskThreadId = thread.id;
+  const result = harness.receive("进度").dispatched;
+  assert.match(result.reply, /超出了当前任务模板的允许范围/);
+  assert.match(result.reply, /当前版本只支持预览/);
+  assert.doesNotMatch(result.reply, /等待任务路由确认/);
+});
+
+test("data mutation review handles confirmation and supplements without duplicating the task", async () => {
+  const harness = makeHarness({
+    operationMode: "personal",
+    classifyIntent: () => ({ intent: "supplement", confidence: 1 }),
+    routeChannelTask: (requestId) => ({
+      status: 200,
+      body: { workItemId: "wi_mutation", autoRunId: "run_mutation", requestId },
+    }),
+  });
+  harness.receive("进度");
+  const conversation = harness.state.channelConversations.at(-1);
+  const thread = {
+    id: "cth_mutation_review",
+    shortRef: "T-MUTATION",
+    channelId: harness.channelId,
+    conversationId: conversation.id,
+    status: "waiting_approval",
+    waitingFor: "data_mutation",
+    summary: "整理客户文件变更",
+    createdAt: NOW,
+    updatedAt: NOW,
+    executionPreview: { previewReady: true, requiredFields: [] },
+    dataMutationPreview: { status: "ready", targetSources: ["customers.csv"], requiredFields: [] },
+    sourceEventIds: [],
+    messages: [],
+  };
+  const request = {
+    id: "ctr_mutation_review",
+    threadId: thread.id,
+    channelId: harness.channelId,
+    status: "pending",
+    previewReady: true,
+    requiredFields: [],
+    dataMutationPreview: thread.dataMutationPreview,
+  };
+  harness.state.channelTaskThreads.push(thread);
+  harness.state.channelTaskRequests.push(request);
+  conversation.activeTaskThreadId = thread.id;
+
+  const confirmed = (await harness.receive("确认执行").dispatched);
+  assert.equal(confirmed.status, "dispatched");
+  assert.equal(thread.status, "queued");
+  assert.equal(thread.waitingFor, null);
+  assert.equal(thread.channelTaskRequestId, request.id);
+
+  const secondThread = {
+    ...thread,
+    id: "cth_mutation_revision",
+    shortRef: "T-MUTATION-2",
+    status: "waiting_approval",
+    waitingFor: "data_mutation",
+    channelTaskRequestId: request.id,
+    dataMutationPreview: thread.dataMutationPreview,
+    executionPreview: thread.executionPreview,
+    sourceEventIds: [],
+    messages: [],
+  };
+  thread.status = "queued";
+  harness.state.channelTaskThreads.push(secondThread);
+  conversation.activeTaskThreadId = secondThread.id;
+  request.status = "pending";
+  const revised = (await harness.receive("补充：只处理客户主表中的地址字段").dispatched);
+  assert.equal(revised.status, "dispatched");
+  assert.equal(secondThread.status, "awaiting_confirmation");
+  assert.equal(secondThread.dataMutationPreview, null);
+  assert.equal(request.status, "dismissed");
+  assert.match(revised.reply, /原执行预览已失效/);
+});
+
+test("combined external-risk and file-mutation previews do not promise an unavailable write", async () => {
+  const harness = makeHarness({
+    operationMode: "personal",
+    intakeQuietMs: 1,
+    createChannelTaskIssue: async () => ({
+      ok: true,
+      number: 91,
+      workItemId: "wi_combined_risk",
+      autoRoute: false,
+      requiresChannelConfirmation: true,
+      requiresDataMutationReview: true,
+      executionPreview: {
+        previewReady: false,
+        action: "对外发送并修改文件",
+        target: "客户",
+        requiredFields: [],
+      },
+      dataMutationPreview: {
+        status: "ready",
+        targetSources: [{ fileName: "customers.csv", revision: 3 }],
+        fieldChanges: [{ field: "address" }],
+        estimatedAffectedRows: 2,
+        requiredFields: [],
+      },
+    }),
+  });
+  harness.bindTaskProject("proj_a");
+  harness.receive("请对外发送通知，并修改 customers.csv 的地址字段");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const confirmed = await harness.receive("确认").dispatched;
+  const reply = confirmed.reply ?? harness.replies.at(-1)?.content ?? "";
+  assert.match(reply, /不会直接修改源文件/);
+  assert.doesNotMatch(reply, /确认无误回复“确认执行”/);
 });
 
 test("restart recovery replays durable terminal state and requeues unfinished work", () => {
@@ -999,7 +1132,7 @@ test("/run is rate-limited per conversation — the 11th within a minute is refu
   // 10 dispatched; the next is throttled (refused, not dispatched).
   const throttled = harness.receive("/run git.status");
   assert.equal(throttled.dispatched.status, "refused");
-  assert.match(throttled.dispatched.reply, /Too many requests/);
+  assert.match(throttled.dispatched.reply, /操作太频繁/);
   // The throttled request spawned no invocation (budget protected).
   assert.equal(harness.capabilityCalls.length, 10);
 });
@@ -1072,7 +1205,7 @@ test("/task enforces a per-channel/day aggregate cap across all users, resetting
   channel.taskDayCount = 2; // already at the cap today
   const capped = await harness.receive("/task one more").dispatched;
   assert.equal(capped.status, "refused");
-  assert.match(capped.reply, /daily task limit \(2\)/i);
+  assert.match(capped.reply, /任务数量已达到上限（2 个）/);
   // A stale day (counter is for a prior date) resets → the next task is allowed
   // and the counter re-bases to today at 1.
   channel.taskDayDate = "2026-07-14";

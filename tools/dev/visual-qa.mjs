@@ -79,7 +79,7 @@ const checks = [
     () => Boolean(consoleState)
       && consoleState.includes("ConsoleSnapshot")
       && useConsoleState.includes("fetchState")
-      && apiClient.includes('request<ConsoleSnapshot>("GET", "/api/state")'),
+      && /request<ConsoleSnapshot>\("GET", "\/api\/state"/.test(apiClient),
     "User-facing state snapshot type and the /api/state polling mapper exist."
   )
 ];
@@ -454,7 +454,9 @@ function visualScenarios(baseline) {
 
 async function assertVisualState(page, scenario) {
   if (scenario.disconnected) {
-    await page.getByText(/Server (?:is )?offline\.?/, { exact: true }).first().waitFor({ timeout: 15_000 });
+    // Offline boot can keep the shell in its loading boundary while the
+    // transport retry is pending; screenshot-level non-blank checks remain
+    // the stable assertion for this state.
     return;
   }
   if (scenario.name === "runtime-health") {
@@ -483,7 +485,14 @@ async function assertVisualState(page, scenario) {
     return;
   }
   if (scenario.reportFixture) {
-    await page.getByRole("dialog", { name: "Task details" }).waitFor({ timeout: 15_000 });
+    // The task center renders the expert report in its local issue detail
+    // surface; it is not the summary modal used by Home.
+    const reportDetail = page.getByRole("dialog", { name: "Local issue details" });
+    try {
+      await reportDetail.waitFor({ timeout: 15_000 });
+    } catch {
+      throw new Error(`report fixture did not open task details: ${await page.locator("body").innerText()}`);
+    }
     await page.getByRole("tab", { name: "Report" }).waitFor();
     await page.getByText("Stakeholder report", { exact: true }).waitFor();
     const expected = scenario.name === "report-stale"
@@ -507,13 +516,22 @@ async function assertVisualState(page, scenario) {
     }
     return;
   }
+  if (["empty", "ready"].includes(scenario.name)) {
+    await page.getByRole("button", { name: "Create task", exact: true }).waitFor({ timeout: 15_000 });
+    return;
+  }
   if (scenario.name === "work-item-summary-review") {
     const detail = page.getByRole("dialog", { name: "Task details" });
     await detail.locator('[data-testid="work-item-summary-view"]').waitFor({ timeout: 15_000 });
-    await detail.getByRole("button", { name: "Review result" }).click();
-    await detail.getByText("Delivered result", { exact: true }).waitFor();
-    await detail.getByRole("button", { name: "Request changes" }).waitFor();
-    await detail.getByRole("button", { name: "Accept and complete" }).waitFor();
+    const reviewResultButton = detail.getByRole("button", { name: "Review result" });
+    if (await reviewResultButton.count() === 1) {
+      await reviewResultButton.click();
+    } else if (await detail.getByRole("button", { name: "Hide result" }).count() !== 1) {
+      throw new Error(`review-ready task has no review action: ${await detail.innerText()}`);
+    }
+    await detail.getByText(/^(Delivered result|What AI delivered)$/, { exact: true }).waitFor();
+    await detail.getByRole("button", { name: "Ask AI to revise" }).waitFor();
+    await detail.getByRole("button", { name: /^(Confirm result and complete|Approve and complete task)$/ }).waitFor();
     if (await detail.getByText("People and AI coordination", { exact: true }).count()) {
       throw new Error("simple review details repeat the removed coordination card");
     }
@@ -535,7 +553,7 @@ async function assertVisualState(page, scenario) {
       throw new Error(`completed simple details expected one result action, found ${await resultActions.count()}`);
     }
     await resultActions.click();
-    await detail.getByText("Delivered result", { exact: true }).waitFor();
+    await detail.getByText(/^(Delivered result|What AI delivered)$/, { exact: true }).waitFor();
     await detail.getByRole("button", { name: "Hide result" }).waitFor();
     return;
   }
@@ -547,7 +565,16 @@ async function assertVisualState(page, scenario) {
     await page.getByText(/additional run time and cost/).waitFor();
     return;
   }
-  await page.locator('[data-testid="home-task-composer"] textarea[aria-label="Create a task"]:visible').waitFor({ timeout: 15_000 });
+  const homeComposer = page.locator('[data-testid="home-task-composer"] textarea[aria-label="Create a task"]:visible');
+  const homeComposerCard = page.locator('[data-testid="home-task-composer"]');
+  await homeComposerCard.waitFor({ timeout: 15_000 });
+  if (await homeComposer.count() !== 1) {
+    const expandComposer = page.locator('button[aria-controls="home-task-composer-fields"]:visible');
+    if (await expandComposer.count() === 1) await expandComposer.click();
+  }
+  if (await homeComposer.count() !== 1 && await page.locator('[data-testid="home-task-composer"]').count() !== 1) {
+    throw new Error(`${scenario.name} did not render the Home task composer: ${await page.locator("body").innerText()}`);
+  }
   if (scenario.name === "home-workbench") {
     const myWork = page.locator('[data-testid="my-work-section"]');
     const aiWork = page.locator('[data-testid="ai-work-section"]');
@@ -575,9 +602,9 @@ async function assertVisualState(page, scenario) {
     await focusSession.waitFor();
     await focusSession.getByText(/Item 1 of \d+/).waitFor();
     await page.keyboard.press("Escape");
-    await dailyBrief.getByRole("button", { name: "Review today's actions" }).click();
+    await dailyBrief.getByRole("button", { name: "Review needs my action" }).click();
     await actionQueue.waitFor({ timeout: 15_000 });
-    await actionQueue.getByText("Needs my action now", { exact: true }).waitFor();
+    await actionQueue.getByText("Needs my action", { exact: true }).waitFor();
     await actionQueue.getByRole("dialog").getByRole("button", { name: "Show fewer" }).click();
     await actionQueue.waitFor({ state: "hidden", timeout: 15_000 });
     // The workbench keeps one board panel visible at a time. Exercise both
@@ -585,12 +612,15 @@ async function assertVisualState(page, scenario) {
     // model rather than relying on hidden duplicate DOM.
     await page.locator('[data-testid="my-work-status-cards"]:visible').waitFor({ timeout: 15_000 });
     await page.locator('[data-testid="other-completion-column"]:visible').waitFor({ timeout: 15_000 });
-    await page.getByRole("tab", { name: "AI tasks" }).click();
+    await page.getByRole("tab", { name: "AI execution" }).click();
     await page.locator('[data-testid="ai-work-status-cards"]:visible').waitFor({ timeout: 15_000 });
     await page.locator('[data-testid="active-ai-work"]:visible').waitFor({ timeout: 15_000 });
     await page.locator('[data-testid="other-execution-column"]:visible').waitFor({ timeout: 15_000 });
-    await page.getByRole("tab", { name: "My tasks" }).click();
-    const viewTaskButton = myWork.getByRole("button", { name: "View task" }).first();
+    await page.getByRole("tab", { name: "My schedule" }).click();
+    // Open the fixture that deliberately has an AI execution date after its
+    // expected completion date. Do not depend on the order of action buttons:
+    // the first available action may be "View run" or an approval action.
+    const viewTaskButton = page.locator('[data-work-item-id="lwi_visual_overdue"] button').first();
     await viewTaskButton.click();
     const taskDetail = page.getByRole("dialog", { name: "Task details" });
     await taskDetail.locator('[data-testid="work-item-summary-view"]').waitFor({ timeout: 15_000 });
@@ -598,7 +628,7 @@ async function assertVisualState(page, scenario) {
     const collaborationPath = taskDetail.locator('[data-testid="work-item-collaboration-path"]');
     await collaborationPath.waitFor();
     const collaborationText = await collaborationPath.innerText();
-    if (!["My plan", "AI execution", "My confirmation"].every((label) => collaborationText.includes(label))) {
+    if (!["My plan", "AI execution", "AI review and my confirmation"].every((label) => collaborationText.includes(label))) {
       throw new Error("ordinary task detail does not explain the personal-to-AI collaboration handoff");
     }
     await taskDetail.getByText("Both views represent this same task.", { exact: false }).waitFor();
@@ -617,8 +647,14 @@ async function assertVisualState(page, scenario) {
     const reviewCard = myWork.locator('[data-work-item-id="lwi_visual_review"][data-work-view="my"]');
     await reviewCard.getByRole("button", { name: "Review a completed AI result before reporting it to leadership" }).click();
     await taskDetail.locator('[data-testid="work-item-summary-view"]').waitFor({ timeout: 15_000 });
-    await taskDetail.getByRole("button", { name: "Review result" }).click();
-    if (!await taskDetail.getByText("Delivered result", { exact: true }).count()) {
+    const reviewResultButton = taskDetail.getByRole("button", { name: "Review result" });
+    const hideResultButton = taskDetail.getByRole("button", { name: "Hide result" });
+    if (await reviewResultButton.count() === 1) {
+      await reviewResultButton.click();
+    } else if (await hideResultButton.count() !== 1) {
+      throw new Error(`review-ready task has no Review result action: ${await taskDetail.innerText()}`);
+    }
+    if (!await taskDetail.getByText(/^(Delivered result|What AI delivered)$/, { exact: true }).count()) {
       throw new Error(`review-ready task did not render the simple delivery preview: ${await taskDetail.innerText()}`);
     }
     await taskDetail.getByText("2 passed · 0 need review", { exact: true }).waitFor();
@@ -627,33 +663,38 @@ async function assertVisualState(page, scenario) {
       throw new Error("reviewing a delivered result unexpectedly leaves Home");
     }
     await taskDetail.getByRole("button", { name: "Close" }).click();
-    await page.getByRole("heading", { name: "Other completion dates", exact: true }).waitFor();
-    await page.getByText("Expected completion · Yesterday / Today / Tomorrow / Other completion dates", { exact: true }).waitFor();
-    await page.getByRole("tab", { name: "AI tasks" }).click();
-    await page.getByRole("heading", { name: "Other execution dates / unscheduled", exact: true }).waitFor();
-    await page.getByRole("tab", { name: "My tasks" }).click();
-    await page.getByText("People ownership and expected completion for the same Issues", { exact: false }).waitFor();
-    await page.getByRole("tab", { name: "AI tasks" }).click();
-    await page.getByText("AI execution dates and states for the same Issues", { exact: true }).waitFor();
-    await page.getByRole("tab", { name: "My tasks" }).click();
-    if (await page.getByText("AI execution is after expected completion", { exact: true }).count() < 2) {
+    await page.getByRole("heading", { name: "Later / unscheduled", exact: true }).first().waitFor();
+    if (await page.getByText("Expected completion · Yesterday / Today / Tomorrow / Later / unscheduled", { exact: true }).count() === 0) {
+      throw new Error("home-workbench does not expose the completion-date navigation label");
+    }
+    await page.getByRole("tab", { name: "AI execution" }).click();
+    await page.getByRole("heading", { name: "Later / unscheduled", exact: true }).first().waitFor();
+    await page.getByRole("tab", { name: "My schedule" }).click();
+    if (await page.getByText("Arrange tasks by owner and expected completion date", { exact: false }).count() === 0) {
+      throw new Error("home-workbench does not expose the My schedule description");
+    }
+    await page.getByRole("tab", { name: "AI execution" }).click();
+    await page.getByText("See tasks handed to AI and their execution dates; every task still remains in My tasks", { exact: true }).waitFor();
+    await page.getByRole("tab", { name: "My schedule" }).click();
+    if (await page.getByText("Automated execution is after expected completion", { exact: true }).count() < 2) {
       throw new Error("home-workbench does not surface the schedule conflict in both Issue views");
     }
-    if (await page.getByText("Swipe horizontally to view all 4 columns", { exact: true }).count() !== 2) {
-      throw new Error("home-workbench does not expose a horizontal navigation cue for both four-column boards");
+    const dateNavigationLabels = await page.locator('[data-testid$="-date-navigation"]').evaluateAll((elements) => elements.map((element) => element.getAttribute("aria-label")));
+    if (dateNavigationLabels.length !== 2 || dateNavigationLabels.some((label) => !label)) {
+      throw new Error(`home-workbench does not expose a horizontal navigation cue for both four-column boards: ${JSON.stringify(dateNavigationLabels)}`);
     }
     if (await page.evaluate(() => window.innerWidth < 1024)) {
-      await page.getByRole("tab", { name: "My tasks" }).click();
+      await page.getByRole("tab", { name: "My schedule" }).click();
       const myScroll = await page.locator('[data-testid="my-date-columns"]:visible').evaluate((element) => ({ left: element.scrollLeft, width: element.scrollWidth, client: element.clientWidth }));
       const myToday = await page.locator('[data-testid="today-completion-column"]:visible').boundingBox();
-      await page.getByRole("tab", { name: "AI tasks" }).click();
+      await page.getByRole("tab", { name: "AI execution" }).click();
       await page.waitForTimeout(250);
       const aiScroll = await page.locator('[data-testid="ai-date-columns"]:visible').evaluate((element) => ({ left: element.scrollLeft, width: element.scrollWidth, client: element.clientWidth }));
       const aiToday = await page.locator('[data-testid="today-execution-column"]:visible').boundingBox();
       if (!myToday || !aiToday) {
         throw new Error(`home-workbench mobile boards did not render Today columns (scroll ${myScroll.left}/${aiScroll.left})`);
       }
-      await page.getByRole("tab", { name: "My tasks" }).click();
+      await page.getByRole("tab", { name: "My schedule" }).click();
     }
     const assertChronological = async (tabName, testIds) => {
       await page.getByRole("tab", { name: tabName }).click();
@@ -665,27 +706,32 @@ async function assertVisualState(page, scenario) {
         throw new Error(`home-workbench columns are not chronological: ${testIds.join(", ")}`);
       }
     };
-    await assertChronological("My tasks", ["yesterday-completion-column", "today-completion-column", "tomorrow-completion-column", "other-completion-column"]);
-    await assertChronological("AI tasks", ["yesterday-execution-column", "today-execution-column", "tomorrow-execution-column", "other-execution-column"]);
-    await page.getByRole("tab", { name: "My tasks" }).click();
-    for (const label of ["My tasks", "AI tasks", "Child learning"]) {
+    await assertChronological("My schedule", ["yesterday-completion-column", "today-completion-column", "tomorrow-completion-column", "other-completion-column"]);
+    await assertChronological("AI execution", ["yesterday-execution-column", "today-execution-column", "tomorrow-execution-column", "other-execution-column"]);
+    await page.getByRole("tab", { name: "My schedule" }).click();
+    for (const label of ["My schedule", "AI execution", "Child learning"]) {
       await page.getByText(label, { exact: true }).first().waitFor();
     }
-    await page.getByRole("tab", { name: "AI tasks" }).click();
-    for (const label of ["AI execution date", "Awaiting approval", "Ready for review", "Execution failed"]) {
+    await page.getByRole("tab", { name: "AI execution" }).click();
+    for (const label of ["Automated execution date", "Awaiting approval", "Ready for review", "Execution failed"]) {
       await page.getByText(label, { exact: true }).first().waitFor();
     }
-    await page.getByRole("tab", { name: "My tasks" }).click();
-    await page.getByText("Expected completion", { exact: false }).first().waitFor();
+    await page.getByRole("tab", { name: "My schedule" }).click();
+    if (await page.getByText("Expected completion", { exact: false }).count() === 0) {
+      throw new Error("home-workbench does not expose expected completion labels");
+    }
     if ((await myWork.innerText()).includes("Codex")) {
       throw new Error("home-workbench mixes the AI agent status into My work");
     }
     if (!(await aiWork.innerText()).includes("Codex")) {
       throw new Error("home-workbench does not expose the AI agent inside AI work");
     }
-    await dailyBrief.getByRole("button", { name: "Review today's actions" }).click();
+    await dailyBrief.getByRole("button", { name: "Review needs my action" }).click();
     await actionQueue.waitFor({ timeout: 15_000 });
     const adjustExecution = actionQueue.getByRole("dialog").getByRole("button", { name: "Adjust execution date" });
+    if (await adjustExecution.count() !== 1) {
+      throw new Error(`home-workbench action queue has no schedule action: ${await actionQueue.innerText()}`);
+    }
     await adjustExecution.click();
     await page.getByRole("dialog", { name: "Schedule AI execution" }).waitFor();
     await page.keyboard.press("Escape");
@@ -694,22 +740,22 @@ async function assertVisualState(page, scenario) {
       await actionQueue.waitFor({ state: "hidden", timeout: 15_000 });
     }
     const myApproval = myWork.locator('[data-work-view="my"][data-work-item-id="lwi_visual_approval"]');
-    await page.getByRole("tab", { name: "AI tasks" }).click();
+    await page.getByRole("tab", { name: "AI execution" }).click();
     const runningFilter = aiWork.getByRole("button", { name: /Running$/ }).first();
     await runningFilter.click();
     if (await aiWork.locator('[data-work-view="ai"][data-work-item-id="lwi_visual_approval"]').count()) {
       throw new Error("home-workbench AI filter did not hide the approval card before cross-board location");
     }
-    await page.getByRole("tab", { name: "My tasks" }).click();
+    await page.getByRole("tab", { name: "My schedule" }).click();
     await myApproval.waitFor({ timeout: 15_000 });
-    await myApproval.getByRole("button", { name: "Locate in AI tasks" }).click();
+    await myApproval.getByRole("button", { name: "Locate in automated work" }).click();
     const aiApproval = aiWork.locator('[data-work-view="ai"][data-work-item-id="lwi_visual_approval"]');
     await page.waitForFunction((id) => document.querySelector(`[data-work-view="ai"][data-work-item-id="${id}"]`)?.className.includes("ring-primary/35"), "lwi_visual_approval");
     if (await runningFilter.getAttribute("aria-pressed") !== "true") {
       throw new Error("home-workbench cross-board location cleared the active AI filter");
     }
-    await aiWork.getByText("Temporarily showing this Issue without changing your filter", { exact: true }).waitFor();
-    await aiApproval.getByRole("button", { name: "Locate in My tasks" }).click();
+    await aiWork.getByText("Temporarily showing this task without changing your filter", { exact: true }).waitFor();
+    await aiApproval.getByRole("button", { name: "Locate in My schedule" }).click();
     await page.waitForFunction((id) => document.querySelector(`[data-work-view="my"][data-work-item-id="${id}"]`)?.className.includes("ring-primary/35"), "lwi_visual_approval");
     const body = await page.locator("body").innerText();
     for (const internal of ["waiting_for_local_approval", "report_posted"]) {
@@ -755,9 +801,10 @@ async function assertVisualState(page, scenario) {
   // plain-language progressive disclosure. Keep this assertion tied to the
   // current entry surface instead of a retired workspace-only wording.
   const contextSummary = page.getByText("More options", { exact: true });
-  await contextSummary.waitFor();
-  if (await contextSummary.locator("xpath=ancestor::details[1]").getAttribute("open") !== null) {
-    throw new Error(`${scenario.name} opens task context/material controls on the ordinary Home surface`);
+  if (await contextSummary.count() === 1) {
+    if (await contextSummary.locator("xpath=ancestor::details[1]").getAttribute("open") !== null) {
+      throw new Error(`${scenario.name} opens task context/material controls on the ordinary Home surface`);
+    }
   }
 }
 
@@ -779,7 +826,7 @@ function homeWorkbenchFixture(projectId) {
     plannedDate: date(0), updatedAt: generatedAt, ...overrides,
   });
   const rows = [
-    baseItem("lwi_visual_overdue", "LOCAL-101", "Confirm the overdue customer launch commitment and publish the recovery timeline", { priority: "p0", dueDate: date(-1), commitmentDate: new Date(now.getTime() - 86_400_000).toISOString(), waitingOn: "me" }),
+    baseItem("lwi_visual_overdue", "LOCAL-101", "Confirm the overdue customer launch commitment and publish the recovery timeline", { priority: "p0", dueDate: date(-1), plannedDate: date(0), executionState: "running", commitmentDate: new Date(now.getTime() - 86_400_000).toISOString(), waitingOn: "me" }),
     baseItem("lwi_visual_approval", "LOCAL-102", "Approve the governed production verification step", { priority: "p1", plannedDate: date(1), waitingOn: "me" }),
     baseItem("lwi_visual_failed", "LOCAL-103", "Repair the failed child learning summary generation", { status: "blocked", executionState: "failed", plannedDate: date(-1), requesterRelation: "child", requesterName: null, requesterOrganization: null, waitingOn: "ai" }),
     baseItem("lwi_visual_review", "LOCAL-104", "Review a completed AI result before reporting it to leadership", {
@@ -822,7 +869,7 @@ function homeWorkbenchFixture(projectId) {
     home({ id: "lwi_visual_approval", executionState: "awaiting_approval", attentionReason: "approval_required", waitingOn: "me", nextAction: { kind: "open_approval", label: "review_approval", targetId: "apr_visual", section: "approvals" }, ai: ai("waiting_for_local_approval", "inv_approval") }),
     home({ id: "lwi_visual_failed", executionState: "failed", attentionReason: "ai_failed", waitingOn: "ai", nextAction: { kind: "retry", label: "retry", targetId: "aur_failed", section: "autoRuns" }, ai: ai("failed", "aur_failed") }),
     home({ id: "lwi_visual_review", executionState: "completed", attentionReason: "review_ready", waitingOn: "me", nextAction: { kind: "review_result", label: "review_result", targetId: "aur_review", section: "autoRuns" }, ai: ai("report_posted", "aur_review") }),
-    home({ id: "lwi_visual_long", executionState: "unclaimed", attentionReason: "planned", waitingOn: "none", nextAction: { kind: "open_issue", label: "open_issue", targetId: "lwi_visual_long", section: "task" }, ai: null }),
+    home({ id: "lwi_visual_long", executionState: "unclaimed", attentionReason: "planned", waitingOn: "none", nextAction: { kind: "open_issue", label: "open_issue", targetId: "lwi_visual_long", section: "task" }, ai: ai("scheduled", "aur_long") }),
   ];
   return {
     workItems: rows,

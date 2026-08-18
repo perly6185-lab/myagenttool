@@ -2137,6 +2137,149 @@ test("AI issue assistance returns an editable draft without creating work", () =
   }, ACTOR_A).status, 404);
 });
 
+test("channel task contracts are normalized, traceable, and fail closed", () => {
+  const { service, state, events } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "帮我整理客户报价",
+    body: "根据客户询价资料生成报价单。",
+    channelTaskContract: {
+      source: "channel",
+      domain: "office",
+      riskLevel: "external_communication",
+      goal: "根据客户资料生成报价单",
+      outputExpectation: "报价单.xlsx",
+      dataSources: [{ kind: "channel_attachment", id: "asset_1", name: "询价.pdf", version: "v2", hash: "sha256:1" }],
+      templateMatch: {
+        state: "matched",
+        decision: "auto_apply",
+        definitionId: "rtd_quote",
+        familyId: "family_quote",
+        version: 3,
+        reasons: ["期望结果匹配"],
+      },
+      executionPreview: {
+        action: "对外发送或发布",
+        target: "客户",
+        targetStatus: "inferred",
+        impact: "可能向外部对象发送或发布内容",
+        unknownFields: ["最终发送内容和附件"],
+        inputs: [{ name: "询价.pdf", family: "pdf" }],
+        digest: "preview-digest-1",
+      },
+      dataRelationPreview: {
+        status: "ready",
+        relations: [{
+          id: "rel_customer_order",
+          state: "ready",
+          fromRequirementId: "customers",
+          fromField: "customer_id",
+          toRequirementId: "orders",
+          toField: "customer_id",
+          matchedRows: 3,
+          unmatchedRows: 0,
+        }],
+        digest: "relation-digest-1",
+      },
+      dataRelationConfirmation: {
+        id: "drc_1",
+        status: "verified",
+        confirmationMode: "user_confirmation",
+        planDigest: "plan-digest-1",
+        relationDigest: "relation-digest-1",
+        objectSnapshotCount: 3,
+        confirmedAt: "2026-08-17T00:00:01.000Z",
+        confirmedBy: "usr_local",
+      },
+      generatedAt: "2026-08-17T00:00:00.000Z",
+    },
+  }, ACTOR_A);
+
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.channelTaskContract.domain, "office");
+  assert.equal(created.body.workItem.channelTaskContract.riskLevel, "external_communication");
+  assert.equal(created.body.workItem.channelTaskContract.dataSources[0].name, "询价.pdf");
+  assert.equal(created.body.workItem.channelTaskContract.executionPreview.target, "客户");
+  assert.equal(created.body.workItem.channelTaskContract.executionPreview.digest, "preview-digest-1");
+  assert.equal(created.body.workItem.channelTaskContract.dataRelationConfirmation.status, "verified");
+  assert.equal(created.body.workItem.channelTaskContract.dataRelationConfirmation.confirmationMode, "user_confirmation");
+  assert.equal(created.body.workItem.channelTaskContract.dataRelationConfirmation.objectSnapshotCount, 3);
+  assert.equal(state.workItemActivities[0].details.channelTaskContract.dataSourceCount, 1);
+  assert.equal(events.at(-1).data.channelTaskContract.templateMatchState, "matched");
+
+  const invalidDomain = service.createWorkItem({
+    projectId: "prj_a",
+    title: "不应创建",
+    channelTaskContract: { domain: "unknown" },
+  }, ACTOR_A);
+  assert.equal(invalidDomain.status, 400);
+  assert.equal(invalidDomain.body.error, "invalid_channel_task_domain");
+
+  const invalidRisk = service.createWorkItem({
+    projectId: "prj_a",
+    title: "不应创建",
+    channelTaskContract: { riskLevel: "unknown" },
+  }, ACTOR_A);
+  assert.equal(invalidRisk.status, 400);
+  assert.equal(invalidRisk.body.error, "invalid_channel_task_risk_level");
+});
+
+test("data context snapshots expose source versions and require confirmation after drift", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "根据资料整理结果",
+    inputAssets: [{
+      id: "asset_quote",
+      path: "inbox/quote.pdf",
+      terminalId: "dev_local",
+      family: "file",
+      hash: "sha256:quote-v1",
+      version: "v1",
+    }],
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  const item = created.body.workItem;
+  assert.equal(item.dataContext.status, "current");
+  assert.equal(item.dataContext.snapshot.sources[0].version, "v1");
+  assert.equal(item.dataContext.snapshot.sources[0].origin, "work_item_input");
+
+  const changed = service.updateWorkItem({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    inputAssets: [{
+      id: "asset_quote",
+      path: "inbox/quote.pdf",
+      terminalId: "dev_local",
+      family: "file",
+      hash: "sha256:quote-v2",
+      version: "v2",
+    }],
+  }, ACTOR_A);
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.workItem.dataContext.status, "stale");
+  assert.equal(changed.body.workItem.dataContext.requiresConfirmation, true);
+  assert.equal(changed.body.workItem.dataContext.changes[0].kind, "changed");
+
+  const refused = service.captureDataContextSnapshot({
+    workItemId: item.id,
+    expectedRevision: changed.body.workItem.revision,
+  }, ACTOR_A);
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, "data_context_confirmation_required");
+
+  const refreshed = service.captureDataContextSnapshot({
+    workItemId: item.id,
+    expectedRevision: changed.body.workItem.revision,
+    confirm: true,
+  }, ACTOR_A);
+  assert.equal(refreshed.status, 200);
+  assert.equal(refreshed.body.refreshed, true);
+  assert.equal(refreshed.body.workItem.dataContext.status, "current");
+  assert.equal(refreshed.body.workItem.dataContext.snapshot.sources[0].version, "v2");
+  assert.equal(state.workItems[0].dataContextSnapshotHistory.length, 1);
+});
+
 test("AI issue assistance uses attached business documents to select a template and draft business acceptance", () => {
   const { service, state } = harness({
     inspectTaskMaterialDraft: () => ({

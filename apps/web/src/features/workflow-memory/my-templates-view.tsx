@@ -12,6 +12,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { buildMyTemplateSummaries, type MyTemplateState } from "@/features/workflow-memory/my-template-model";
 import { MyTemplateSetupWizard } from "@/features/workflow-memory/my-template-setup-wizard";
 import { workflowMemoryApi, type TemplateLearningTask } from "@/features/workflow-memory/workflow-memory-api";
+import { ChannelObjectRegistryCard } from "@/features/workflow-memory/channel-object-registry-card";
 import { WorkflowMemoryView } from "@/features/workflow-memory/workflow-memory-view";
 import type { MyTemplateDraft } from "@/lib/api-client";
 
@@ -623,6 +624,8 @@ export function MyTemplatesView() {
         </div>
         <Button onClick={() => setCreateOpen(true)}><Plus /> 创建我的模板</Button>
       </header>
+
+      <ChannelObjectRegistryCard />
 
       {templates.length || taskDrafts.length ? (
         <div className="flex flex-wrap gap-2 text-sm">

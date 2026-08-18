@@ -17,7 +17,8 @@ import {
 } from "../services/agents.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, dirname, resolve, sep } from "node:path";
 import { mergeFileAccesses } from "../read-models/file-ledger.mjs";
 import { sanitizeRequestContext } from "../read-models/request-context.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
@@ -43,6 +44,34 @@ import { createChannelConversationService } from "../services/channel-conversati
 import { createChannelIntentAdapter, resolveChannelIntentConfig } from "../services/channel-intent-adapter.mjs";
 import { createChannelConsultationAdapter, resolveChannelConsultationConfig } from "../services/channel-consultation-adapter.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
+import {
+  channelObjectValidationMatches,
+  channelObjectValidationSummary,
+  resolveChannelObjectRequests,
+} from "../services/channel-object-resolver.mjs";
+import { createChannelObjectRegistryService } from "../services/channel-object-registry.mjs";
+import { createChannelObjectImportService } from "../services/channel-object-imports.mjs";
+import { createChannelObjectConnectorService } from "../services/channel-object-connectors.mjs";
+import { createChannelMutationBindingService } from "../services/channel-mutation-bindings.mjs";
+import {
+  channelLedgerMutationFieldHint,
+  parseLedgerMutationPlan,
+  parseSingleRecordLedgerMutation,
+} from "../services/channel-ledger-mutation.mjs";
+import {
+  buildRuntimeDataPlan,
+  dataPlanMatchesCurrent,
+  dataPlanMissingLabels,
+} from "../services/data-plan-contract.mjs";
+import {
+  buildDataRelationPreview,
+  dataRelationPreviewMatchesCurrent,
+} from "../services/data-relation-preview.mjs";
+import {
+  buildDataMutationPreview,
+    dataMutationPreviewMatchesCurrent,
+} from "../services/data-mutation-contract.mjs";
+import { buildPaymentReconciliationPreview } from "../services/channel-payment-reconciliation.mjs";
 import { createIlinkRuntime } from "../gateway/ilink-runtime.mjs";
 import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
@@ -152,6 +181,7 @@ export function createServerRuntimeServices({
   // unset and uses the real encrypted credential store and iLink client.
   ilinkCredentialStore = null,
   ilinkClientFactory = undefined,
+  channelObjectConnectorAdapters = {},
 }) {
   let idCounter = 1;
   let invocationService = null;
@@ -494,6 +524,46 @@ export function createServerRuntimeServices({
       releaseRoutineLedgerReservations(input, actor),
     store,
   });
+  let refreshChannelMutationSourceIdentity = null;
+  const channelObjectRegistryService = createChannelObjectRegistryService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+  });
+  const channelObjectImportService = createChannelObjectImportService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    upsertChannelObject: channelObjectRegistryService.upsertChannelObject,
+    setChannelObjectStatus: channelObjectRegistryService.setChannelObjectStatus,
+    onFileSourceConfirmed: (identity, actor) => refreshChannelMutationSourceIdentity?.(identity, actor),
+  });
+  const channelObjectConnectorService = createChannelObjectConnectorService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    upsertChannelObject: channelObjectRegistryService.upsertChannelObject,
+    adapters: channelObjectConnectorAdapters,
+  });
+  const channelMutationBindingService = createChannelMutationBindingService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+  });
+  refreshChannelMutationSourceIdentity = (identity, actor) =>
+    channelMutationBindingService.refreshSourceIdentity(identity, actor);
   const ledgerUpsertService = createLedgerUpsertService({
     state,
     now,
@@ -2177,10 +2247,363 @@ export function createServerRuntimeServices({
   // /task enters the SAME local Work Item service as the single-terminal Entry.
   // GitHub/GitLab/Gitea bindings remain optional synchronization edges; Channel
   // intake never needs an external tracker in order to become queued local work.
+  const inferChannelTaskDomain = (text) => {
+    const value = String(text ?? "").toLowerCase();
+    if (/(代码|开发|修复|bug|接口|部署|测试|仓库|分支|编译|程序)/i.test(value)) return "development";
+    if (/(文章|图片|视频|音频|配图|短视频|公众号|小红书|素材|脚本|剪辑|创作)/i.test(value)) return "content";
+    if (/(报价|客户|订单|发货|物流|汇款|付款|收款|采购|库存|合同|报销|邮件|表格|对账)/i.test(value)) return "office";
+    return "general";
+  };
+  const inferChannelTaskRiskLevel = (text) => {
+    const value = String(text ?? "").toLowerCase();
+    if (/(汇款|付款|支付|转账|收款账户|银行卡)/i.test(value)) return "financial";
+    if (/(删除|清空|覆盖|批量修改|销毁)/i.test(value)) return "destructive";
+    if (/(发送给|发给客户|对外发送|发布|发货|提交订单)/i.test(value)) return "external_communication";
+    if (/(修改|编辑|生成|导出|部署|合并|提交代码|改写|剪辑)/i.test(value)) return "local_change";
+    return "low";
+  };
+  const buildChannelExecutionPreview = ({
+    title, description, riskLevel, inputAssets = [], projectId = null, ownerTeamId = null,
+  }) => {
+    const text = String(description ?? title ?? "").replace(/\s+/g, " ").trim();
+    const targetMatch = text.match(/(?:发给|发送给|发布到|提交给|通知)\s*([^，,。；;！!？?]+)/i);
+    const payeeMatch = text.match(/(?:给|转给|汇给|付款给)\s*([^，,。；;！!？?]+)/i);
+    const amountMatch = text.match(/(?:金额|汇款|付款|支付)\s*(?:为|：|:)??\s*([¥￥]?\s*\d+(?:\.\d+)?\s*(?:元|人民币|美元|USD|CNY)?)/i);
+    const scopeMatch = text.match(/(?:删除|清空|覆盖|批量修改|销毁)\s*([^，,。；;！!？?]+)/i);
+    const target = targetMatch?.[1]?.trim() || payeeMatch?.[1]?.trim() || null;
+    const amount = amountMatch?.[1]?.replace(/\s+/g, " ").trim() || null;
+    const scope = scopeMatch?.[1]?.trim() || null;
+    const action = {
+      external_communication: "对外发送或发布",
+      financial: "财务操作",
+      destructive: "删除、覆盖或批量修改",
+      local_change: "修改本地内容",
+      low: "整理、分析或咨询",
+    }[riskLevel] ?? "任务处理";
+    const inputs = inputAssets.slice(0, 20).map((asset) => ({
+      name: asset?.originalName ?? asset?.name ?? String(asset?.path ?? "").replaceAll("\\", "/").split("/").at(-1) ?? "附件",
+      family: asset?.family ?? "file",
+    }));
+    const hasContent = inputs.length > 0
+      || /(报价|报价单|报告|通知|邮件|合同|文件|图片|视频|文章|内容|附件)/i.test(text);
+    const unknownFields = [];
+    const requiredFields = [];
+    if (riskLevel === "external_communication") {
+      if (!target) {
+        unknownFields.push("收件人或发布位置");
+        requiredFields.push("收件人或发布位置");
+      }
+      if (!hasContent) {
+        unknownFields.push("最终发送内容或附件");
+        requiredFields.push("最终发送内容或附件");
+      } else {
+        unknownFields.push("最终发送内容和附件");
+      }
+    } else if (riskLevel === "financial") {
+      if (!amount) {
+        unknownFields.push("金额");
+        requiredFields.push("金额");
+      }
+      if (!target) {
+        unknownFields.push("收款方");
+        requiredFields.push("收款方");
+      }
+      unknownFields.push("付款账户");
+      requiredFields.push("付款账户");
+    } else if (riskLevel === "destructive") {
+      if (!scope) {
+        unknownFields.push("具体删除或覆盖范围");
+        requiredFields.push("具体删除或覆盖范围");
+      }
+      unknownFields.push("是否需要保留备份");
+    }
+    const objectValidation = resolveChannelObjectRequests({
+      state,
+      projectId,
+      ownerTeamId,
+      text,
+      riskLevel,
+      inputAssets,
+    });
+    const objectRequiredFields = riskLevel === "external_communication" || riskLevel === "financial" || riskLevel === "destructive"
+      ? objectValidation.requiredFields
+      : [];
+    for (const field of objectRequiredFields) {
+      if (!requiredFields.includes(field)) requiredFields.push(field);
+      if (!unknownFields.includes(field)) unknownFields.push(field);
+    }
+    const preview = {
+      schemaVersion: 1,
+      action,
+      target: target || "尚未明确",
+      targetStatus: target ? "inferred" : "unknown",
+      amount,
+      scope,
+      inputs,
+      impact: riskLevel === "financial"
+        ? "可能产生资金或财务数据变更"
+        : riskLevel === "destructive"
+          ? "可能覆盖或删除已有数据"
+          : riskLevel === "external_communication"
+            ? "可能向外部对象发送或发布内容"
+            : "主要影响本地任务产物",
+      unknownFields,
+      requiredFields,
+      previewReady: requiredFields.length === 0,
+      objectValidation: channelObjectValidationSummary(objectValidation),
+    };
+    const previewDigest = createHash("sha256").update(JSON.stringify({
+      riskLevel,
+      goal: text,
+      preview,
+    })).digest("hex");
+    return { ...preview, digest: previewDigest };
+  };
+  const attachDataRelationConfirmation = ({ workItem, dataPlan, dataRelationPreview, channelId, requestId = null, threadId = null, mode }) => {
+    if (!workItem || dataRelationPreview?.status !== "ready" || !(dataRelationPreview.relations ?? []).length) return null;
+    state.channelDataRelationConfirmations ??= [];
+    const existing = state.channelDataRelationConfirmations.find((record) =>
+      record.workItemId === workItem.id && record.status === "verified");
+    if (existing) return existing;
+    const timestamp = now();
+    const record = {
+      id: nextId("drc"),
+      schemaVersion: 1,
+      ownerTeamId: workItem.ownerTeamId ?? workItem.teamId ?? LOCAL_TEAM_ID,
+      projectId: workItem.projectId,
+      channelId,
+      channelTaskRequestId: requestId,
+      threadId,
+      workItemId: workItem.id,
+      status: "verified",
+      confirmationMode: mode === "user_confirmation" ? "user_confirmation" : "runtime_verified",
+      planDigest: dataPlan?.digest ?? null,
+      relationDigest: dataRelationPreview.digest ?? null,
+      objectSnapshot: (dataRelationPreview.objectSnapshot ?? []).slice(0, 2_000),
+      objectSnapshotCount: (dataRelationPreview.objectSnapshot ?? []).length,
+      confirmedAt: timestamp,
+      confirmedBy: typeof workItem.createdBy === "string"
+        ? workItem.createdBy
+        : workItem.createdBy?.userId ?? null,
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    state.channelDataRelationConfirmations.push(record);
+    workItem.channelTaskContract.dataRelationConfirmation = {
+      schemaVersion: 1,
+      id: record.id,
+      status: record.status,
+      confirmationMode: record.confirmationMode,
+      planDigest: record.planDigest,
+      relationDigest: record.relationDigest,
+      objectSnapshotCount: record.objectSnapshotCount,
+      confirmedAt: record.confirmedAt,
+      confirmedBy: record.confirmedBy,
+    };
+    appendEvent?.({
+      invocationId: null,
+      type: "channel_data_relation_verified",
+      level: "info",
+      message: `Channel data relation verified for ${workItem.localRef ?? workItem.id}.`,
+      data: {
+        channelId,
+        channelTaskRequestId: requestId,
+        threadId,
+        workItemId: workItem.id,
+        confirmationId: record.id,
+        confirmationMode: record.confirmationMode,
+        objectSnapshotCount: record.objectSnapshotCount,
+      },
+    });
+    return record;
+  };
+  function channelLedgerEvidence(definition, actor) {
+    const artifact = (state.workflowArtifacts ?? [])
+      .filter((candidate) => candidate.ownerTeamId === (actor?.teamId ?? LOCAL_TEAM_ID)
+        && candidate.projectId === definition?.projectId
+        && candidate.sourceId === definition?.sourceId
+        && candidate.availability === "available"
+        && candidate.exclusion !== true)
+      .find((candidate) => basename(String(candidate.relativePath ?? "")).toLocaleLowerCase()
+        === basename(String(definition?.relativePath ?? "")).toLocaleLowerCase());
+    return artifact?.id ? [{ artifactId: artifact.id, field: null }] : [];
+  }
+
+  async function prepareChannelLedgerMutation({
+    text, projectId, dataMutationPreview, dataMutationBinding, dataMutationBindings = [], actor,
+  } = {}) {
+    if (!dataMutationPreview || dataMutationPreview.status === "not_required") {
+      return { ok: false, reason: "not_required" };
+    }
+    const requestedBindings = dataMutationBindings.length
+      ? dataMutationBindings
+      : dataMutationBinding ? [dataMutationBinding] : [];
+    if (!requestedBindings.length) {
+      return { ok: false, reason: "binding_required" };
+    }
+    const currentBindings = requestedBindings.map((binding) => {
+      const current = channelMutationBindingService.resolveBinding({
+        projectId,
+        fileSourceId: binding.fileSourceId,
+      }, actor);
+      return current.ok && current.binding.id === binding.id ? current : null;
+    });
+    if (currentBindings.some((binding) => !binding)) {
+      return { ok: false, reason: "binding_stale" };
+    }
+    const definitions = currentBindings.map((binding) => binding.definition);
+    const isBatch = String(text ?? "").split(/[；;]/).filter((clause) => clause.trim()).length > 1;
+    if (isBatch) {
+      const policy = dataMutationPreview.templatePolicy;
+      if (!policy || !policy.allowMultipleRows
+        || (definitions.length > 1 && !policy.allowMultipleSources)) {
+        return { ok: false, reason: "mutation_policy_batch_not_allowed" };
+      }
+      const parsedPlan = parseLedgerMutationPlan(text, definitions);
+      if (!parsedPlan.ok) return { ok: false, reason: parsedPlan.reason };
+      const operations = [];
+      const identities = [];
+      for (const parsed of parsedPlan.operations) {
+        const currentBinding = currentBindings.find((binding) => binding.definition.id === parsed.definition.id);
+        const source = currentBinding.source;
+        const targetIdentity = await ledgerUpsertService.inspectTargetIdentity({
+          ledgerDefinitionId: parsed.definition.id,
+        }, actor);
+        if (targetIdentity.status !== 200) {
+          return { ok: false, reason: targetIdentity.body?.error ?? "ledger_target_identity_unavailable" };
+        }
+        if (!source?.contentHash || source.contentHash !== targetIdentity.body.identity.contentHash) {
+          return {
+            ok: false,
+            reason: "channel_mutation_source_identity_mismatch",
+            details: {
+              fileSourceId: source?.id ?? null,
+              expectedContentHash: source?.contentHash ?? null,
+              actualContentHash: targetIdentity.body.identity.contentHash,
+            },
+          };
+        }
+        const sourceEvidence = channelLedgerEvidence(parsed.definition, actor);
+        if (!sourceEvidence.length) return { ok: false, reason: "source_evidence_required" };
+        operations.push({
+          ledgerDefinitionId: parsed.definition.id,
+          businessKey: parsed.businessKey,
+          fields: parsed.fields,
+          sourceEvidence,
+          allowPartialUpdate: true,
+        });
+        identities.push(targetIdentity.body.identity);
+      }
+      const result = await ledgerUpsertService.previewBatchUpsert({ operations }, actor);
+      if (![200, 201, 202].includes(result.status)) {
+        return { ok: false, reason: result.body?.error ?? "ledger_batch_preview_failed", details: result.body ?? null };
+      }
+      return {
+        ok: true,
+        batch: true,
+        parsedPlan,
+        preview: result.body?.batchPreview ?? null,
+        targetIdentities: identities,
+        replayed: result.body?.replayed === true,
+      };
+    }
+    const currentBinding = currentBindings[0];
+    const definition = currentBinding.definition;
+    const source = currentBinding.source;
+    const targetIdentity = await ledgerUpsertService.inspectTargetIdentity({
+      ledgerDefinitionId: definition.id,
+    }, actor);
+    if (targetIdentity.status !== 200) {
+      return {
+        ok: false,
+        reason: targetIdentity.body?.error ?? "ledger_target_identity_unavailable",
+        details: targetIdentity.body ?? null,
+      };
+    }
+    if (!source?.contentHash || source.contentHash !== targetIdentity.body.identity.contentHash) {
+      return {
+        ok: false,
+        reason: "channel_mutation_source_identity_mismatch",
+        details: {
+          fileSourceId: source?.id ?? dataMutationBinding.fileSourceId,
+          expectedContentHash: source?.contentHash ?? null,
+          actualContentHash: targetIdentity.body.identity.contentHash,
+          targetRevision: targetIdentity.body.identity.targetRevision,
+        },
+      };
+    }
+    const parsed = parseSingleRecordLedgerMutation(text, definition);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        reason: parsed.reason,
+        fieldHint: channelLedgerMutationFieldHint(definition),
+      };
+    }
+    const sourceEvidence = channelLedgerEvidence(definition, actor);
+    if (!sourceEvidence.length) return { ok: false, reason: "source_evidence_required" };
+    const result = await ledgerUpsertService.previewUpsert({
+      ledgerDefinitionId: definition.id,
+      businessKey: parsed.businessKey,
+      fields: parsed.fields,
+      sourceEvidence,
+      allowPartialUpdate: true,
+    }, actor);
+    if (![200, 201, 202].includes(result.status)) {
+      return {
+        ok: false,
+        reason: result.body?.error ?? "ledger_preview_failed",
+        details: result.body ?? null,
+      };
+    }
+    return {
+      ok: true,
+      parsed,
+      preview: result.body?.preview ?? null,
+      targetIdentity: targetIdentity.body.identity,
+      replayed: result.body?.replayed === true,
+    };
+  };
+
+  async function refreshChannelMutationSourcesAfterCommit(bindings = [], actor = null) {
+    const refreshed = [];
+    const failures = [];
+    for (const binding of bindings) {
+      if (!binding?.fileSourceId || !binding?.ledgerDefinitionId) continue;
+      const identity = await ledgerUpsertService.inspectTargetIdentity({
+        ledgerDefinitionId: binding.ledgerDefinitionId,
+      }, actor);
+      if (identity.status !== 200 || !identity.body?.identity?.contentHash) {
+        failures.push({
+          fileSourceId: binding.fileSourceId,
+          ledgerDefinitionId: binding.ledgerDefinitionId,
+          reason: identity.body?.error ?? "channel_mutation_source_refresh_failed",
+        });
+        continue;
+      }
+      const synced = channelMutationBindingService.refreshSourceIdentity({
+        fileSourceId: binding.fileSourceId,
+        contentHash: identity.body.identity.contentHash,
+      }, actor);
+      if (!synced.ok) failures.push({ ...synced, fileSourceId: binding.fileSourceId });
+      else refreshed.push(synced.source);
+    }
+    if (failures.length) {
+      appendEvent?.({
+        invocationId: null,
+        type: "channel_mutation_source_refresh_failed",
+        level: "warn",
+        message: "Channel Ledger write committed, but the local source snapshot needs refresh.",
+        data: { failures },
+      });
+    }
+    return { refreshed, failures };
+  }
   const createChannelTaskIssue = async ({
     projectId, channelOwnerTeamId, title, description, channelId, externalUserId,
     injectionSuspicious = false, autoRoute = false, inputAssets = [], terminalId,
-    channelTaskContext, threadId = null, idempotencyKey = null,
+    channelTaskContext, threadId = null, idempotencyKey = null, dataMutationScope = null,
   }) => {
     const project = (state.projects ?? []).find((p) => p.id === projectId);
     if (!project) return { ok: false, reason: "project_not_resolvable" };
@@ -2193,21 +2616,396 @@ export function createServerRuntimeServices({
     if (!principal || (principal.teamId ?? LOCAL_TEAM_ID) !== (channelOwnerTeamId ?? LOCAL_TEAM_ID)) {
       return { ok: false, reason: "channel_principal_invalid" };
     }
+    const workItemActor = { userId: principal.id, teamId: principal.teamId, role: "member", deviceId: terminalId };
+    const assisted = typeof workItemService.suggestWorkItemDraft === "function"
+      ? workItemService.suggestWorkItemDraft({ projectId, title, body: description, inputAssets }, workItemActor)
+      : null;
+    const assistedDraft = assisted?.ok ? assisted.body?.draft ?? null : null;
+    const selectedTemplate = assistedDraft?.templateMatch?.selected ?? null;
+    const selectedDefinition = selectedTemplate
+      ? (state.routineDefinitions ?? []).find((definition) => definition.id === selectedTemplate.definitionId)
+      : null;
+    const templateMatch = selectedTemplate ? {
+      state: assistedDraft.templateMatch.state,
+      decision: assistedDraft.templateMatch.decision?.reason ?? assistedDraft.templateMatch.decision?.kind ?? null,
+      definitionId: selectedTemplate.definitionId,
+      familyId: selectedTemplate.templateId,
+      version: selectedTemplate.version,
+      reasons: selectedTemplate.reasons ?? [],
+    } : {
+      state: assistedDraft?.templateMatch?.state ?? "missing",
+      decision: assistedDraft?.templateMatch?.decision?.reason ?? assistedDraft?.templateMatch?.decision?.kind ?? null,
+      definitionId: null,
+      familyId: null,
+      version: null,
+      reasons: [],
+    };
+    const dataPlan = buildRuntimeDataPlan({
+      state,
+      projectId,
+      ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
+      dataRequirements: selectedDefinition?.dataRequirements ?? [],
+      relations: selectedDefinition?.relations ?? [],
+      mutationPolicy: selectedDefinition?.mutationPolicy ?? null,
+    });
+    const dataRelationPreview = buildDataRelationPreview({
+      state,
+      plan: dataPlan,
+      projectId,
+      ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
+    });
+    const paymentRequirements = dataPlan.requirements?.filter((requirement) =>
+      ["receivable", "bank_transaction"].includes(requirement.kind),
+    ) ?? [];
+    let paymentReconciliationPreview = null;
+    if (dataPlan.status === "ready"
+      && paymentRequirements.some((requirement) => requirement.kind === "receivable")
+      && paymentRequirements.some((requirement) => requirement.kind === "bank_transaction")) {
+      const sourceIds = new Set(paymentRequirements.map((requirement) => requirement.sourceId).filter(Boolean));
+      const objects = (state.channelObjectRecords ?? []).filter((record) =>
+        record.ownerTeamId === (channelOwnerTeamId ?? LOCAL_TEAM_ID)
+        && record.projectId === projectId
+        && sourceIds.has(record.sourceId)
+        && ["receivable", "bank_transaction"].includes(record.kind),
+      );
+      const receivables = objects.filter((record) => record.kind === "receivable");
+      const bankTransactions = objects.filter((record) => record.kind === "bank_transaction");
+      paymentReconciliationPreview = buildPaymentReconciliationPreview({ receivables, bankTransactions });
+      paymentReconciliationPreview.sources = paymentRequirements.map((requirement) => ({
+        requirementId: requirement.id,
+        kind: requirement.kind,
+        sourceId: requirement.sourceId,
+        fileName: dataPlan.sources?.find((source) => source.sourceId === requirement.sourceId)?.fileName ?? null,
+      }));
+      paymentReconciliationPreview.digest = createHash("sha256")
+        .update(JSON.stringify(paymentReconciliationPreview))
+        .digest("hex");
+    }
+    let dataMutationPreview = buildDataMutationPreview({
+      state,
+      projectId,
+      ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
+      text: `${title}\n${description}`,
+      dataPlan,
+      dataMutationScope,
+    });
+    const dataMutationBindings = (dataMutationPreview?.targetSourceIds ?? []).map((fileSourceId) =>
+      channelMutationBindingService.resolveBinding({ projectId, fileSourceId }, workItemActor));
+    const dataMutationBinding = dataMutationBindings.length === 1
+      ? dataMutationBindings[0]
+      : dataMutationBindings.length > 1 && dataMutationBindings.every((binding) => binding.ok)
+        ? dataMutationBindings[0]
+        : { ok: false, reason: "channel_mutation_binding_missing" };
+    let ledgerMutationPreview = null;
+    let ledgerMutationPreparation = { ok: false, reason: "not_required" };
+    if (dataMutationPreview?.status && dataMutationPreview.status !== "not_required"
+      && dataMutationBinding.ok
+      && dataMutationBindings.length > 0
+      && dataMutationBindings.every((binding) => binding.ok)) {
+      ledgerMutationPreparation = await prepareChannelLedgerMutation({
+        text: description,
+        projectId,
+        dataMutationPreview,
+        dataMutationBinding: dataMutationBinding.binding,
+        dataMutationBindings: dataMutationBindings.map((binding) => binding.binding),
+        actor: workItemActor,
+      });
+      if (ledgerMutationPreparation.ok) {
+        ledgerMutationPreview = ledgerMutationPreparation.preview;
+        if (ledgerMutationPreparation.batch) {
+          const operations = ledgerMutationPreparation.parsedPlan.operations;
+          const sourceById = new Map((dataMutationPreview.targetSources ?? []).map((source) => [source.sourceId, source]));
+          const targets = operations.map((operation) => {
+            const binding = dataMutationBindings.find((candidate) =>
+              candidate.binding?.ledgerDefinitionId === operation.definition.id)?.binding;
+            const source = sourceById.get(binding?.fileSourceId);
+            const criteriaDigest = createHash("sha256").update(JSON.stringify(operation.businessKey)).digest("hex");
+            return {
+              sourceId: binding?.fileSourceId ?? null,
+              revision: source?.revision ?? null,
+              contentHash: source?.contentHash ?? null,
+              selector: {
+                field: operation.definition.businessKeyField,
+                operator: "equals",
+                criteriaDigest,
+                matchCount: 1,
+                allMatching: false,
+              },
+              expectedRows: 1,
+            };
+          });
+          const fields = [...new Set(operations.map((operation) => operation.field).filter(Boolean))];
+          const batchPolicy = {
+            ...(dataMutationPreview.templatePolicy ?? {}),
+            requireUserConfirmation: true,
+            writeMode: "safe_copy_replace",
+          };
+          const scoped = {
+            ...dataMutationPreview,
+            status: "ready",
+            targetStatus: "explicit",
+            templatePolicy: batchPolicy,
+            rowSelector: targets.map((target) => ({ sourceId: target.sourceId, revision: target.revision, ...target.selector })),
+            fieldChanges: fields.map((field) => ({ field, operation: "set", valueProvided: true })),
+            dataMutationScope: {
+              schemaVersion: 1,
+              operation: "update",
+              targets,
+              changes: fields.map((field) => ({ field, operation: "set", valueDigest: null, valueProvided: true })),
+              expectedAffectedRows: targets.length,
+              allowAllMatching: false,
+            },
+            estimatedAffectedRows: targets.length,
+            requiredFields: [],
+            writeMode: "safe_copy_replace",
+            executionMode: "ledger_batch",
+          };
+          scoped.digest = createHash("sha256").update(JSON.stringify({ ...scoped, digest: undefined })).digest("hex");
+          dataMutationPreview = scoped;
+        } else {
+        const parsed = ledgerMutationPreparation.parsed;
+        const targetSource = dataMutationPreview.targetSources?.find((source) =>
+          source.sourceId === dataMutationPreview.targetSourceIds?.[0]);
+        const keyField = dataMutationBinding.definition?.businessKeyField ?? null;
+        const criteriaDigest = createHash("sha256").update(JSON.stringify(parsed.businessKey)).digest("hex");
+        const valueDigest = createHash("sha256").update(JSON.stringify(parsed.fields[parsed.field])).digest("hex");
+        const singleRecordPolicy = {
+          operations: ["update"],
+          targetRequirementIds: [],
+          keyFields: keyField ? [keyField] : [],
+          mutableFields: [parsed.field],
+          allowMultipleSources: false,
+          allowMultipleRows: false,
+          maxRows: 1,
+          requireUserConfirmation: true,
+          writeMode: "safe_copy_replace",
+        };
+        const scoped = {
+          ...dataMutationPreview,
+          status: "ready",
+          targetStatus: "explicit",
+          templatePolicy: singleRecordPolicy,
+          rowSelector: [{
+            sourceId: targetSource?.sourceId ?? dataMutationPreview.targetSourceIds?.[0] ?? null,
+            revision: targetSource?.revision ?? null,
+            field: keyField,
+            operator: "equals",
+            criteriaDigest,
+            matchCount: 1,
+            allMatching: false,
+          }],
+          fieldChanges: [{
+            field: parsed.field,
+            operation: "set",
+            valueDigest: createHash("sha256").update(JSON.stringify(parsed.fields[parsed.field])).digest("hex"),
+            valueProvided: true,
+          }],
+          dataMutationScope: {
+            schemaVersion: 1,
+            operation: "update",
+            targets: [{
+              sourceId: targetSource?.sourceId ?? dataMutationPreview.targetSourceIds?.[0] ?? null,
+              revision: targetSource?.revision ?? null,
+              contentHash: targetSource?.contentHash ?? null,
+              selector: {
+                field: keyField,
+                operator: "equals",
+                criteriaDigest,
+                matchCount: 1,
+                allMatching: false,
+              },
+              expectedRows: 1,
+            }],
+            changes: [{
+              field: parsed.field,
+              operation: "set",
+              valueDigest,
+              valueProvided: true,
+            }],
+            expectedAffectedRows: 1,
+            allowAllMatching: false,
+          },
+          estimatedAffectedRows: 1,
+          requiredFields: [],
+          writeMode: "safe_copy_replace",
+          executionMode: "ledger_single_record",
+        };
+        scoped.digest = createHash("sha256").update(JSON.stringify({ ...scoped, digest: undefined })).digest("hex");
+        dataMutationPreview = scoped;
+        }
+      }
+    }
+    // A matched receivable/bank-transaction template is a read-only
+    // reconciliation, not a payment instruction. Keep “汇款/付款” wording
+    // from accidentally routing it through the financial side-effect gate.
+    const riskLevel = paymentReconciliationPreview
+      ? "low"
+      : inferChannelTaskRiskLevel(`${title}\n${description}`);
+    const executionPreview = buildChannelExecutionPreview({
+      title,
+      description,
+      riskLevel,
+      inputAssets,
+      projectId,
+      ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
+    });
+    const dataLabels = dataPlanMissingLabels(dataPlan);
+    if (dataLabels.length) {
+      executionPreview.unknownFields = [...new Set([
+        ...(executionPreview.unknownFields ?? []),
+        `数据来源：${dataLabels.join("、")}`,
+      ])].slice(0, 10);
+      executionPreview.requiredFields = [...new Set([
+        ...(executionPreview.requiredFields ?? []),
+        ...dataLabels.map((label) => `数据来源：${label}`),
+      ])].slice(0, 10);
+      executionPreview.previewReady = false;
+    }
+    if (dataRelationPreview.status === "needs_review") {
+      executionPreview.unknownFields = [...new Set([
+        ...(executionPreview.unknownFields ?? []),
+        "数据关联结果需要复核",
+      ])].slice(0, 10);
+      executionPreview.requiredFields = [...new Set([
+        ...(executionPreview.requiredFields ?? []),
+        "数据关联结果确认",
+      ])].slice(0, 10);
+      executionPreview.previewReady = false;
+    }
+    if (dataMutationPreview?.status && dataMutationPreview.status !== "not_required") {
+      if (ledgerMutationPreview) {
+        executionPreview.unknownFields = [...new Set([
+          ...(executionPreview.unknownFields ?? []),
+          ledgerMutationPreparation.batch ? "批量文件变更等待确认" : "单条文件变更等待确认",
+        ])].slice(0, 10);
+      } else {
+        executionPreview.unknownFields = [...new Set([
+          ...(executionPreview.unknownFields ?? []),
+          "文件变更范围需要复核",
+        ])].slice(0, 10);
+        executionPreview.requiredFields = [...new Set([
+          ...(executionPreview.requiredFields ?? []),
+          ...dataMutationPreview.requiredFields,
+        ])].slice(0, 10);
+        executionPreview.previewReady = false;
+      }
+      if (dataMutationPreview.status === "ready" && !dataMutationBinding.ok) {
+        executionPreview.requiredFields = [...new Set([
+          ...(executionPreview.requiredFields ?? []),
+          "需要在桌面端为该文件配置安全写回规则",
+        ])].slice(0, 10);
+      }
+      if (!ledgerMutationPreview && dataMutationBinding.ok) {
+        const reason = ledgerMutationPreparation.reason;
+        const reasonText = reason === "source_evidence_required"
+          ? "需要先扫描并确认 Ledger 文件来源"
+          : reason === "mutable_field_required"
+            ? "需要明确要修改的字段"
+            : reason === "business_key_required"
+              ? "需要明确唯一记录编号"
+          : reason === "new_value_required"
+                ? "需要明确修改后的新值"
+          : reason === "ledger_field_transition_not_allowed"
+                ? "当前状态不允许直接跳转到这个状态，请按业务流程先完成前置步骤"
+          : reason === "ledger_insert_not_allowed"
+                ? "没有找到对应的现有记录；当前模板只允许修改已有记录，请先导入或建立这条业务记录"
+          : reason === "single_record_only"
+            ? "当前 Channel 只支持单条记录更新，暂不执行批量或删除操作"
+            : reason === "mutation_policy_batch_not_allowed"
+              ? "当前任务模板未允许多记录或多文件变更，请先调整模板边界"
+              : reason === "batch_file_scope_required"
+                ? "批量变更时请在每一段中写明文件名，例如：customers.csv …；orders.csv …"
+            : "需要补充单条记录的修改表达，例如：把文件里的 1001 的客户改成 Acme";
+        // Preserve the Ledger parser's concrete refusal on the user-facing
+        // data preview as well. Otherwise an unknown business key falls back
+        // to a generic "please specify the file" prompt and hides the fact
+        // that the template deliberately refuses implicit inserts.
+        dataMutationPreview = {
+          ...dataMutationPreview,
+          requiredFields: [...new Set([...(dataMutationPreview.requiredFields ?? []), reasonText])].slice(0, 10),
+        };
+        executionPreview.requiredFields = [...new Set([
+          ...(executionPreview.requiredFields ?? []),
+          reasonText,
+        ])].slice(0, 10);
+      }
+    }
+    executionPreview.digest = createHash("sha256").update(JSON.stringify({
+      riskLevel,
+      goal: description,
+      preview: executionPreview,
+      dataPlanDigest: dataPlan.digest,
+    })).digest("hex");
+    const channelTaskContract = {
+      schemaVersion: 1,
+      source: "channel",
+      domain: inferChannelTaskDomain(`${title}\n${description}`),
+      riskLevel,
+      goal: description,
+      outputExpectation: selectedTemplate?.expectedOutput ?? null,
+      dataSources: inputAssets.slice(0, 100).map((asset) => ({
+        kind: "channel_attachment",
+        id: asset?.id ?? null,
+        name: asset?.originalName ?? asset?.name ?? String(asset?.path ?? "").replaceAll("\\", "/").split("/").at(-1) ?? null,
+        version: asset?.version ?? null,
+        hash: asset?.hash ?? null,
+      })),
+      templateMatch,
+      dataPlan,
+      dataRelationPreview,
+      paymentReconciliationPreview,
+      dataMutationPreview,
+      dataMutationBinding: dataMutationBinding.ok ? dataMutationBinding.binding : null,
+      dataMutationBindings: dataMutationBindings.filter((binding) => binding.ok).map((binding) => binding.binding),
+      ledgerMutationPreview,
+      ledgerMutationPreparation: {
+        ok: ledgerMutationPreparation.ok === true,
+        reason: ledgerMutationPreparation.reason ?? null,
+      },
+      executionPreview,
+      // Keep the normalized object snapshot at the contract level as well as
+      // inside the human-readable preview so route-time revalidation survives
+      // contract normalization and old read models can inspect it directly.
+      generatedAt: now(),
+    };
+    channelTaskContract.objectValidation = channelTaskContract.executionPreview.objectValidation;
+    // Personal channels are self-operated, but external side effects still
+    // need an explicit second confirmation. Team channels keep the existing
+    // administrator route and therefore do not use this in-channel gate.
+    const requiresChannelConfirmation = autoRoute
+      && ["external_communication", "financial", "destructive"].includes(channelTaskContract.riskLevel);
+    const requiresDataPlan = ["needs_sources", "ambiguous", "stale"].includes(dataPlan.status);
+    const requiresDataReview = dataRelationPreview.status === "needs_review";
+    const requiresDataMutationReview = Boolean(dataMutationPreview?.status && dataMutationPreview.status !== "not_required");
+    const effectiveAutoRoute = autoRoute && !requiresChannelConfirmation && !requiresDataPlan && !requiresDataReview && !requiresDataMutationReview;
+    const myTemplateBinding = selectedTemplate && assistedDraft?.templateMatch?.decision?.kind === "auto_apply"
+      ? {
+        definitionId: selectedTemplate.definitionId,
+        familyId: selectedTemplate.templateId,
+        version: selectedTemplate.version,
+        matchReasons: selectedTemplate.reasons ?? [],
+      }
+      : undefined;
     const created = workItemService.createWorkItem({
       projectId,
       title,
       body: description,
       type: "task",
-      status: autoRoute ? "ready" : "backlog",
+      status: effectiveAutoRoute ? "ready" : "backlog",
       priority: "p3",
       labels: ["channel", UNTRUSTED_INPUT_LABEL, ...(injectionSuspicious ? ["needs-triage"] : [])],
       inputAssets,
       requiredCapabilities: [],
+      ...(assistedDraft?.acceptanceCriteria?.length ? { acceptanceCriteria: assistedDraft.acceptanceCriteria } : {}),
+      ...(assistedDraft?.verificationSop?.length ? { verificationSop: assistedDraft.verificationSop } : {}),
+      ...(myTemplateBinding ? { myTemplateBinding } : {}),
+      channelTaskContract,
       idempotencyKey: idempotencyKey ?? `channel:${channelId}:${channelTaskContext?.messageId ?? "unknown"}`,
-    }, { userId: principal.id, teamId: principal.teamId, role: "member", deviceId: terminalId });
+    }, workItemActor);
     if (!created.ok) return { ok: false, reason: created.body?.error ?? "work_item_create_failed" };
     const workItem = created.body.workItem;
     const storedWorkItem = (state.workItems ?? []).find((candidate) => candidate.id === workItem.id);
+    let attachedDataRelationConfirmation = null;
     if (storedWorkItem) {
       storedWorkItem.channelOrigin = {
         channelId,
@@ -2217,6 +3015,43 @@ export function createServerRuntimeServices({
         traceId: workItem.id,
         threadId,
       };
+      if (effectiveAutoRoute && dataRelationPreview.status === "ready") {
+        attachDataRelationConfirmation({
+          workItem: storedWorkItem,
+          dataPlan,
+          dataRelationPreview,
+          channelId,
+          threadId,
+          mode: "runtime_verified",
+        });
+      }
+      attachedDataRelationConfirmation = storedWorkItem.channelTaskContract?.dataRelationConfirmation ?? null;
+      if (paymentReconciliationPreview) {
+        const verification = workItemService.recordVerification({
+          workItemId: storedWorkItem.id,
+          expectedRevision: storedWorkItem.revision,
+          kind: "manual",
+          status: "passed",
+          summary: "已按本地应收与银行流水文件完成只读对账，差异已列出，未修改原始文件。",
+          acceptanceResults: (storedWorkItem.acceptanceCriteria ?? []).map((criterion) => ({
+            criterion,
+            status: "passed",
+            note: "对账预览已生成并保留来源文件与结果摘要。",
+          })),
+          evidence: [{
+            kind: "log",
+            ref: `payment-reconciliation:${paymentReconciliationPreview.digest}`,
+            summary: "Read-only payment reconciliation result",
+          }],
+        }, workItemActor);
+        if (verification.ok) {
+          workItemService.updateWorkItem({
+            workItemId: storedWorkItem.id,
+            expectedRevision: verification.body.workItem.revision,
+            status: "done",
+          }, workItemActor);
+        }
+      }
     }
     return {
       ok: true,
@@ -2225,6 +3060,24 @@ export function createServerRuntimeServices({
       workItemId: workItem.id,
       url: `/?section=tasks&workItem=${encodeURIComponent(workItem.id)}`,
       replayed: Boolean(created.body.replayed),
+      autoRoute: effectiveAutoRoute,
+      requiresChannelConfirmation,
+      requiresDataPlan,
+      requiresDataReview,
+      riskLevel: channelTaskContract.riskLevel,
+      executionPreview: channelTaskContract.executionPreview,
+      dataPlan: channelTaskContract.dataPlan,
+      dataRelationPreview: channelTaskContract.dataRelationPreview,
+      paymentReconciliationPreview: channelTaskContract.paymentReconciliationPreview,
+      dataMutationPreview: channelTaskContract.dataMutationPreview,
+      dataMutationBinding: channelTaskContract.dataMutationBinding,
+      dataMutationBindings: channelTaskContract.dataMutationBindings,
+      ledgerMutationPreview: channelTaskContract.ledgerMutationPreview,
+      dataRelationConfirmation: attachedDataRelationConfirmation ?? channelTaskContract.dataRelationConfirmation ?? null,
+      requiresDataMutationReview,
+      previewDigest: channelTaskContract.executionPreview.digest,
+      previewReady: channelTaskContract.executionPreview.previewReady,
+      objectValidation: channelTaskContract.executionPreview.objectValidation,
     };
   };
 
@@ -2246,6 +3099,276 @@ export function createServerRuntimeServices({
     if (req.workItemId) {
       const item = (state.workItems ?? []).find((candidate) => candidate.id === req.workItemId);
       if (!item) return { status: 404, body: { error: "work_item_not_found" } };
+      const requestChannel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
+      const storedDataMutationPreview = item.channelTaskContract?.dataMutationPreview ?? null;
+      const storedLedgerMutationPreview = item.channelTaskContract?.ledgerMutationPreview ?? null;
+      const isReadyLocalMutation = storedDataMutationPreview?.status === "ready"
+        && Boolean(storedLedgerMutationPreview);
+      const storedValidation = item.channelTaskContract?.executionPreview?.objectValidation ?? null;
+      // Object validation is required for an external recipient/account/etc.
+      // It is not a prerequisite for a local Ledger writeback: the file
+      // source, row selector, fields, versions and batch digest are validated
+      // by the data-mutation path below. This also prevents words like
+      // “发货” from turning an explicitly scoped local file change into a
+      // false “missing external order object” refusal.
+      if (storedValidation && !isReadyLocalMutation) {
+        const channel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
+        const currentValidation = resolveChannelObjectRequests({
+          state,
+          projectId: item.projectId ?? req.projectId,
+          ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+          text: item.channelTaskContract?.goal ?? item.body ?? item.title,
+          riskLevel: item.channelTaskContract?.riskLevel ?? req.riskLevel ?? "low",
+          inputAssets: item.inputAssets ?? req.inputAssets ?? [],
+        });
+        const currentSummary = channelObjectValidationSummary(currentValidation);
+        if (currentValidation.state !== "verified") {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_object_validation_required",
+              objectValidation: currentSummary,
+              requiredFields: currentSummary.requiredFields,
+            },
+          };
+        }
+        if (!channelObjectValidationMatches(storedValidation, currentSummary)) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_object_validation_changed",
+              objectValidation: currentSummary,
+            },
+          };
+        }
+      }
+      const storedDataPlan = item.channelTaskContract?.dataPlan ?? null;
+      if (storedDataPlan) {
+        const channel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
+        const currentPlan = dataPlanMatchesCurrent({
+          state,
+          plan: storedDataPlan,
+          projectId: item.projectId ?? req.projectId,
+          ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+        });
+        if (!currentPlan.ok && ["needs_sources", "ambiguous", "stale"].includes(currentPlan.current?.status)) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_plan_required",
+              dataPlan: currentPlan.current,
+            },
+          };
+        }
+        if (!currentPlan.ok) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_plan_changed",
+              dataPlan: currentPlan.current,
+            },
+          };
+        }
+      }
+      const storedDataRelationPreview = item.channelTaskContract?.dataRelationPreview ?? null;
+      if (storedDataRelationPreview && storedDataPlan) {
+        const channel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
+        const currentPlan = dataPlanMatchesCurrent({
+          state,
+          plan: storedDataPlan,
+          projectId: item.projectId ?? req.projectId,
+          ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+        });
+        const currentRelationPreview = dataRelationPreviewMatchesCurrent({
+          state,
+          preview: storedDataRelationPreview,
+          plan: currentPlan.current ?? storedDataPlan,
+          projectId: item.projectId ?? req.projectId,
+          ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+        });
+        if (!currentRelationPreview.ok && currentRelationPreview.current.status === "needs_review") {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_relation_required",
+              dataRelationPreview: currentRelationPreview.current,
+            },
+          };
+        }
+        if (!currentRelationPreview.ok) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_relation_changed",
+              dataRelationPreview: currentRelationPreview.current,
+            },
+          };
+        }
+      }
+      if (storedDataMutationPreview && storedDataMutationPreview.status !== "not_required") {
+        const channel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
+        const currentMutationPreview = dataMutationPreviewMatchesCurrent({
+          state,
+          preview: storedDataMutationPreview,
+          projectId: item.projectId ?? req.projectId,
+          ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+        });
+        if (!currentMutationPreview.ok) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_mutation_changed",
+              dataMutationPreview: currentMutationPreview.current,
+            },
+          };
+        }
+        if (currentMutationPreview.current.status !== "ready") {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_mutation_required",
+              dataMutationPreview: currentMutationPreview.current,
+            },
+          };
+        }
+        const storedMutationBinding = item.channelTaskContract?.dataMutationBinding ?? null;
+        if (!storedMutationBinding) {
+          return {
+            status: 409,
+            body: { error: "channel_task_data_mutation_binding_required" },
+          };
+        }
+        const currentMutationBinding = channelMutationBindingService.resolveBinding({
+          projectId: item.projectId ?? req.projectId,
+          fileSourceId: storedMutationBinding.fileSourceId,
+        }, actor);
+        if (!currentMutationBinding.ok || currentMutationBinding.binding.id !== storedMutationBinding.id) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_mutation_binding_changed",
+              dataMutationBinding: currentMutationBinding.binding ?? null,
+            },
+          };
+        }
+        if (currentMutationPreview.current.writeMode !== "safe_copy_replace") {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_mutation_executor_unavailable",
+              dataMutationPreview: currentMutationPreview.current,
+            },
+          };
+        }
+      }
+      if (storedLedgerMutationPreview) {
+        if (requestChannel?.operationMode !== "personal") {
+          return {
+            status: 409,
+            body: { error: "channel_task_mutation_personal_confirmation_required" },
+          };
+        }
+        const committed = storedLedgerMutationPreview.kind === "batch"
+          ? await ledgerUpsertService.commitBatchPreview({
+            batchPreviewId: storedLedgerMutationPreview.id,
+            expectedRevision: storedLedgerMutationPreview.revision,
+            approved: true,
+          }, actor)
+          : await ledgerUpsertService.commitPreview({
+            previewId: storedLedgerMutationPreview.id,
+            expectedRevision: storedLedgerMutationPreview.revision,
+            approved: true,
+          }, actor);
+        if (committed.status !== 200) {
+          return {
+            status: committed.status,
+            body: {
+              ...(committed.body ?? { error: "ledger_mutation_commit_failed" }),
+              dataMutationPreview: storedDataMutationPreview,
+              ledgerMutationPreview: committed.body?.batchPreview ?? committed.body?.preview ?? storedLedgerMutationPreview,
+            },
+          };
+        }
+        const sourceRefresh = await refreshChannelMutationSourcesAfterCommit(
+          item.channelTaskContract?.dataMutationBindings
+            ?? (item.channelTaskContract?.dataMutationBinding ? [item.channelTaskContract.dataMutationBinding] : []),
+          actor,
+        );
+        const verified = workItemService.recordVerification({
+          workItemId: item.id,
+          expectedRevision: item.revision,
+          kind: "manual",
+          status: "passed",
+          summary: storedLedgerMutationPreview.kind === "batch"
+            ? "Ledger 批量安全写回已完成，文件版本和批次审计记录已生成。"
+            : "Ledger 安全写回已完成，文件版本和审计记录已生成。",
+          acceptanceResults: (item.acceptanceCriteria ?? []).map((criterion) => ({
+            criterion,
+            status: "passed",
+            note: "已由 Ledger 原子写回结果验证。",
+          })),
+          evidence: [{
+            kind: "log",
+            ref: `ledger-mutation:${committed.body?.mutation?.id ?? committed.body?.batchPreview?.id ?? storedLedgerMutationPreview.id}`,
+            summary: "Ledger mutation audit record",
+          }],
+        }, actor);
+        if (!verified.ok) return { status: verified.status, body: verified.body };
+        const completed = workItemService.updateWorkItem({
+          workItemId: item.id,
+          expectedRevision: item.revision,
+          status: "done",
+        }, actor);
+        if (!completed.ok) return { status: completed.status, body: completed.body };
+        channelTaskRunTx(() => {
+          req.status = "completed";
+          req.decidedAt = now();
+          req.decidedBy = actor?.userId ?? null;
+          req.mutationId = committed.body?.mutation?.id ?? null;
+          const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+            candidate.workItemId === req.workItemId || candidate.id === req.threadId);
+          if (thread) {
+            thread.waitingFor = null;
+            thread.resultSummary = storedLedgerMutationPreview.kind === "batch"
+              ? `已安全写回 ${committed.body?.batchPreview?.operationCount ?? storedLedgerMutationPreview.operationCount ?? "批量"} 条记录，相关文件版本已更新。`
+              : `已安全写回 ${committed.body?.mutation?.changedFields?.join("、") || "指定字段"}，文件版本已更新。`;
+            thread.statusHistory = [...(thread.statusHistory ?? []), {
+              status: "succeeded",
+              reason: "channel_mutation_committed",
+              at: now(),
+            }].slice(-30);
+            thread.status = "succeeded";
+            thread.lastActivityAt = now();
+            thread.updatedAt = now();
+          }
+        });
+        appendEvent({
+          invocationId: null,
+          type: "channel_task_mutation_committed",
+          level: "info",
+          message: `Channel task ${req.id} committed a Ledger mutation.`,
+          data: {
+            channelTaskRequestId: req.id,
+            workItemId: req.workItemId,
+            mutationId: committed.body?.mutation?.id ?? null,
+            batchPreviewId: storedLedgerMutationPreview.kind === "batch" ? storedLedgerMutationPreview.id : null,
+            previewId: storedLedgerMutationPreview.kind === "batch" ? null : storedLedgerMutationPreview.id,
+          },
+        });
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            workItemId: req.workItemId,
+            localRef: req.localRef ?? null,
+            dataMutationCommitted: true,
+            mutation: committed.body?.mutation ?? null,
+            mutations: committed.body?.results ?? null,
+            ledgerMutationPreview: committed.body?.batchPreview ?? committed.body?.preview ?? null,
+            sourceRefresh,
+          },
+        };
+      }
       const updated = workItemService.updateWorkItem({
         workItemId: item.id,
         expectedRevision: item.revision,
@@ -2253,6 +3376,15 @@ export function createServerRuntimeServices({
       }, actor);
       if (!updated.ok) return { status: updated.status, body: updated.body };
       channelTaskRunTx(() => {
+        attachDataRelationConfirmation({
+          workItem: item,
+          dataPlan: storedDataPlan,
+          dataRelationPreview: storedDataRelationPreview,
+          channelId: req.channelId,
+          requestId: req.id,
+          threadId: req.threadId ?? null,
+          mode: "user_confirmation",
+        });
         req.status = "routed";
         req.decidedAt = now();
         req.decidedBy = actor?.userId ?? null;
@@ -2275,7 +3407,13 @@ export function createServerRuntimeServices({
       });
       return {
         status: 200,
-        body: { ok: true, workItemId: req.workItemId, localRef: req.localRef ?? null },
+        body: {
+          ok: true,
+          workItemId: req.workItemId,
+          localRef: req.localRef ?? null,
+          dataMutationPreview: item.channelTaskContract?.dataMutationPreview ?? null,
+          dataRelationConfirmation: item.channelTaskContract?.dataRelationConfirmation ?? null,
+        },
       };
     }
     let result;
@@ -2335,7 +3473,7 @@ export function createServerRuntimeServices({
     appendEvent({ invocationId: null, type: "channel_task_routed", level: "info", message: `Channel task ${req.id} routed → auto-run ${autoRunId}.`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber, autoRunId } });
     return { status: 200, body: { ok: true, autoRunId, issueNumber: req.issueNumber } };
   };
-  const syncDismissedChannelTask = (req, actor) => {
+  const syncDismissedChannelTask = (req, actor, { notifyUser = true } = {}) => {
     const thread = (state.channelTaskThreads ?? []).find((candidate) =>
       (req.workItemId && candidate.workItemId === req.workItemId)
       || (req.threadId && candidate.id === req.threadId));
@@ -2349,12 +3487,14 @@ export function createServerRuntimeServices({
       thread.updatedAt = now();
       thread.lastActivityAt = now();
     });
-    channelDeliveryService.enqueueChannelDelivery({
-      channelId: thread.channelId,
-      conversationId: thread.conversationId,
-      content: "任务已被管理员忽略，未开始执行。",
-      taskContext: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, workItemId: thread.workItemId ?? null, traceId: thread.workItemId ?? thread.id },
-    });
+    if (notifyUser) {
+      channelDeliveryService.enqueueChannelDelivery({
+        channelId: thread.channelId,
+        conversationId: thread.conversationId,
+        content: "任务已被管理员忽略，未开始执行。",
+        taskContext: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, workItemId: thread.workItemId ?? null, traceId: thread.workItemId ?? thread.id },
+      });
+    }
     appendEvent({
       invocationId: null,
       type: "channel_task_dismissed_user_notified",
@@ -2364,7 +3504,7 @@ export function createServerRuntimeServices({
     });
   };
 
-  const dismissChannelTask = async (id, actor) => {
+  const dismissChannelTask = async (id, actor, { notifyUser = true } = {}) => {
     const req = findPendingChannelTask(id, actor);
     if (!req) return { status: 404, body: { error: "channel_task_not_found" } };
     if (req.workItemId) {
@@ -2381,7 +3521,7 @@ export function createServerRuntimeServices({
         req.decidedAt = now();
         req.decidedBy = actor?.userId ?? null;
       });
-      syncDismissedChannelTask(req, actor);
+      syncDismissedChannelTask(req, actor, { notifyUser });
       appendEvent({
         invocationId: null,
         type: "channel_task_dismissed",
@@ -2400,7 +3540,7 @@ export function createServerRuntimeServices({
       req.decidedAt = now();
       req.decidedBy = actor?.userId ?? null;
     });
-    syncDismissedChannelTask(req, actor);
+    syncDismissedChannelTask(req, actor, { notifyUser });
     appendEvent({ invocationId: null, type: "channel_task_dismissed", level: "info", message: `Channel task ${req.id} dismissed (issue #${req.issueNumber} closed).`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber } });
     return { status: 200, body: { ok: true } };
   };
@@ -2595,7 +3735,7 @@ export function createServerRuntimeServices({
   });
   const channelConversationService = createChannelConversationService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
-    createCapabilityInvocation, cancelInvocation, createChannelTaskIssue,
+    createCapabilityInvocation, cancelInvocation, createChannelTaskIssue, routeChannelTask, dismissChannelTask,
     answerClarify, retryAutoRun, cancelAutoRun,
     classifyIntent: createChannelIntentAdapter({
       config: resolveChannelIntentConfig(),
@@ -4791,6 +5931,7 @@ export function createServerRuntimeServices({
     createWorkItemFromExternal: workItemService.createWorkItemFromExternal,
     addWorkItemMaterials: workItemService.addMaterials,
     removeWorkItemMaterial: workItemService.removeMaterial,
+    captureWorkItemDataContext: workItemService.captureDataContextSnapshot,
     restoreWorkItemMaterial: workItemService.restoreMaterial,
     addWorkItemContentReference: workItemService.addContentReference,
     removeWorkItemContentReference: workItemService.removeContentReference,
@@ -4859,6 +6000,26 @@ export function createServerRuntimeServices({
     applyLocalScheduleUrgent: workItemService.applyLocalScheduleUrgent,
     recordBusinessDocumentClassification: businessRoutineService.recordDocumentClassification,
     createBusinessEntity: businessRoutineService.createBusinessEntity,
+    listChannelObjects: channelObjectRegistryService.listChannelObjects,
+    upsertChannelObject: channelObjectRegistryService.upsertChannelObject,
+    setChannelObjectStatus: channelObjectRegistryService.setChannelObjectStatus,
+    previewChannelObjectImport: channelObjectImportService.previewChannelObjectImport,
+    confirmChannelObjectImport: channelObjectImportService.confirmChannelObjectImport,
+    listChannelObjectImports: channelObjectImportService.listChannelObjectImports,
+    listChannelObjectFileSources: channelObjectImportService.listChannelObjectFileSources,
+    listChannelMutationBindings: channelMutationBindingService.listBindings,
+    upsertChannelMutationBinding: channelMutationBindingService.upsertBinding,
+    setChannelMutationBindingStatus: channelMutationBindingService.setBindingStatus,
+    listChannelObjectConnectors: channelObjectConnectorService.listChannelObjectConnectors,
+    listChannelObjectConnectorConfigs: channelObjectConnectorService.listChannelObjectConnectorConfigs,
+    upsertChannelObjectConnectorConfig: channelObjectConnectorService.upsertChannelObjectConnectorConfig,
+    setChannelObjectConnectorConfigStatus: channelObjectConnectorService.setChannelObjectConnectorConfigStatus,
+    testChannelObjectConnectorConfig: channelObjectConnectorService.testChannelObjectConnectorConfig,
+    previewChannelObjectConnectorSync: channelObjectConnectorService.previewChannelObjectConnectorSync,
+    confirmChannelObjectConnectorSync: channelObjectConnectorService.confirmChannelObjectConnectorSync,
+    syncChannelObjectConnector: channelObjectConnectorService.syncChannelObjectConnector,
+    retryChannelObjectConnectorSync: channelObjectConnectorService.retryChannelObjectConnectorSync,
+    listChannelObjectSyncs: channelObjectConnectorService.listChannelObjectSyncs,
     createBusinessCase: businessRoutineService.createBusinessCase,
     createRoutineDefinition: businessRoutineService.createRoutineDefinition,
     createRoutineDraftFromDiscovery: businessRoutineService.createRoutineDraftFromDiscovery,
@@ -4872,7 +6033,13 @@ export function createServerRuntimeServices({
     activateLedgerDefinition: ledgerUpsertService.activateDefinition,
     disableLedgerDefinition: ledgerUpsertService.disableDefinition,
     previewLedgerUpsert: ledgerUpsertService.previewUpsert,
+    inspectLedgerTargetIdentity: ledgerUpsertService.inspectTargetIdentity,
     commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
+    previewLedgerBatchUpsert: ledgerUpsertService.previewBatchUpsert,
+    commitLedgerBatchUpsertPreview: ledgerUpsertService.commitBatchPreview,
+    retryLedgerBatchUpsertPreview: ledgerUpsertService.retryBatchPreview,
+    listLedgerBatchUpsertPreviews: ledgerUpsertService.listBatchPreviews,
+    listLedgerBatchMutationJournals: ledgerUpsertService.listBatchMutationJournals,
     listLedgerUpsertPreviews: ledgerUpsertService.listPreviews,
     listLedgerMutations: ledgerUpsertService.listMutations,
     collectBusinessPilotEvidence: businessPilotEvidenceService.collect,
@@ -5042,6 +6209,7 @@ export function createServerRuntimeServices({
     suggestPlanningPlan: planningProjectService.suggestPlan,
     executePlanningRecommendedAction: planningProjectService.executeRecommendedAction,
     decidePlanningRecommendedAction: planningProjectService.decideRecommendedAction,
+    createChannelTaskIssue,
     routeChannelTask,
     dismissChannelTask,
     retryChannelTask,

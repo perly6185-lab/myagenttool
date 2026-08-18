@@ -171,6 +171,11 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
   assert.equal(created.body.workItem.intakeChannel, "unknown");
   assert.equal(created.body.workItem.waitingOn, "none");
 
+  const dataContext = await call(`/api/work-items/${created.body.workItem.id}/data-context`);
+  assert.equal(dataContext.status, 200);
+  assert.equal(dataContext.body.dataContext.status, "empty");
+  assert.equal(dataContext.body.dataContext.requiresConfirmation, false);
+
   const updated = await call(`/api/work-items/${created.body.workItem.id}`, {
     method: "PATCH",
     body: { expectedRevision: 1, status: "ready", priority: "p1" },
@@ -1500,4 +1505,118 @@ test("completed ordinary tasks can create tenant-scoped learning My template dra
   const listB = await call("/api/work-items/my-template-drafts", { token: "tok_b" });
   assert.ok(listA.body.drafts.some((draft) => draft.id === saved.body.draft.id));
   assert.ok(listB.body.drafts.every((draft) => draft.id !== saved.body.draft.id));
+});
+
+test("Channel business-object registry is revisioned, masked, and team scoped over HTTP", async () => {
+  const created = await call("/api/channel-objects", {
+    method: "POST",
+    body: {
+      kind: "account",
+      projectId: "prj_a",
+      label: "公司付款账户",
+      fields: { accountName: "公司付款账户", accountNumber: "6222000012345678" },
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.object.fields.accountNumber, "****5678");
+  assert.equal(JSON.stringify(runtimeState.channelObjectRecords).includes("6222000012345678"), false);
+  assert.equal((await call("/api/channel-objects?projectId=prj_a")).body.count, 1);
+  assert.equal((await call("/api/channel-objects?projectId=prj_a", { token: "tok_b" })).body.count, 0);
+  const disabled = await call(`/api/channel-objects/${created.body.object.id}/status`, {
+    method: "PATCH",
+    body: { status: "disabled", expectedRevision: 1 },
+  });
+  assert.equal(disabled.status, 200);
+  assert.equal(disabled.body.object.status, "disabled");
+  assert.equal((await call("/api/channel-objects?projectId=prj_a&status=active")).body.count, 0);
+});
+
+test("Channel object import requires confirmation and exposes the read-only business connector", async () => {
+  const preview = await call("/api/channel-objects/import/preview", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      kind: "contact",
+      format: "json",
+      fileName: "contacts.json",
+      content: Buffer.from(JSON.stringify([{ name: "导入联系人", email: "imported@example.test" }])).toString("base64"),
+    },
+  });
+  assert.equal(preview.status, 201);
+  assert.equal(preview.body.canConfirm, true);
+  assert.equal((await call("/api/channel-objects?projectId=prj_a&kind=contact")).body.count, 0);
+  const confirmed = await call("/api/channel-objects/import/confirm", {
+    method: "POST", body: { importId: preview.body.import.id },
+  });
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.objects[0].label, "导入联系人");
+  assert.equal((await call("/api/channel-objects/import/confirm", {
+    method: "POST", body: { importId: preview.body.import.id },
+  })).body.replayed, true);
+  const connectors = await call("/api/channel-objects/connectors");
+  assert.ok(connectors.body.connectors.some((connector) => connector.id === "business_entities"));
+});
+
+test("Channel mutation binding is project-scoped and revisioned over HTTP", async () => {
+  runtimeState.channelObjectFileSources.push({
+    id: "csrc_http_customers",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    fileName: "customers.csv",
+    revision: 2,
+    status: "active",
+  });
+  runtimeState.ledgerDefinitions.push({
+    id: "ldg_http_customers",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    state: "active",
+    format: "csv",
+    relativePath: "ledgers/customers.csv",
+    sourceId: "wfs_http_customers",
+    revision: 5,
+  });
+  runtimeState.workflowSources.push({
+    id: "wfs_http_customers",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    state: "active",
+  });
+  const created = await call("/api/channel-objects/mutation-bindings", {
+    method: "POST",
+    body: { projectId: "prj_a", fileSourceId: "csrc_http_customers", ledgerDefinitionId: "ldg_http_customers" },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.binding.stale, false);
+  assert.equal((await call("/api/channel-objects/mutation-bindings?projectId=prj_a")).body.count, 1);
+  assert.equal((await call("/api/channel-objects/mutation-bindings?projectId=prj_a", { token: "tok_b" })).body.count, 0);
+  runtimeState.channelObjectFileSources.find((source) => source.id === "csrc_http_customers").revision = 3;
+  const stale = await call("/api/channel-objects/mutation-bindings?projectId=prj_a");
+  assert.equal(stale.body.bindings[0].stale, true);
+  const disabled = await call(`/api/channel-objects/mutation-bindings/${created.body.binding.id}/status`, {
+    method: "PATCH", body: { status: "disabled", expectedRevision: created.body.binding.revision },
+  });
+  assert.equal(disabled.status, 200);
+  assert.equal(disabled.body.binding.status, "disabled");
+});
+
+test("Channel connector configuration, health check, and sync preview are team scoped over HTTP", async () => {
+  const saved = await call("/api/channel-objects/connector-configs", {
+    method: "POST",
+    body: { projectId: "prj_a", connectorId: "business_entities", kinds: ["contact"], name: "本地联系人" },
+  });
+  assert.equal(saved.status, 201);
+  assert.equal(saved.body.config.credentialConfigured, false);
+  assert.equal((await call("/api/channel-objects/connector-configs", { token: "tok_b" })).body.count, 0);
+  const tested = await call(`/api/channel-objects/connector-configs/${saved.body.config.id}/test`, { method: "POST", body: {} });
+  assert.equal(tested.status, 200);
+  assert.equal(tested.body.ok, true);
+  const preview = await call("/api/channel-objects/sync/preview", {
+    method: "POST", body: { configId: saved.body.config.id, kind: "contact" },
+  });
+  assert.equal(preview.status, 201);
+  assert.equal(preview.body.preview.status, "preview");
+  assert.equal((await call(`/api/channel-objects/connector-configs/${saved.body.config.id}/status`, {
+    method: "PATCH", body: { status: "disabled", expectedRevision: tested.body.config.revision },
+  })).status, 200);
 });

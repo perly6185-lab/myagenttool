@@ -26,6 +26,8 @@ const STALE_LOCK_MS = 5 * 60 * 1_000;
 const MAX_LEDGER_QUEUE_DEPTH = 100;
 const SAFE_FIELD_RE = /^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$/;
 const FORMULA_PREFIX_RE = /^[=+\-@]/;
+const PRIVATE_FIELD_RE = /(?:password|passwd|secret|token|credential|authorization|api[_-]?key|access[_-]?key|private[_-]?key|cvv|iban|routing|account(?:[_-]?number)?|bank)/i;
+const ROLLBACK_FILE_MODE = 0o600;
 
 function boundedText(value, max = 500) {
   const text = String(value ?? "").trim();
@@ -34,6 +36,44 @@ function boundedText(value, max = 500) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function protectedCellValue(field, value) {
+  if (value == null) return value;
+  if (PRIVATE_FIELD_RE.test(String(field ?? ""))) return "[redacted]";
+  const text = String(value);
+  if (/\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+/i.test(text)
+    || /(?:api[_-]?key|access[_-]?token|client[_-]?secret)\s*[:=]/i.test(text)) {
+    return "[redacted]";
+  }
+  return value;
+}
+
+function publicChangedCells(cells = []) {
+  return (Array.isArray(cells) ? cells : []).map((cell) => ({
+    ...cell,
+    before: protectedCellValue(cell.field, cell.before),
+    after: protectedCellValue(cell.field, cell.after),
+  }));
+}
+
+function safeErrorDetails(details) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return {};
+  const allowed = [
+    "expectedTargetRevision",
+    "currentTargetRevision",
+    "expectedRevision",
+    "currentRevision",
+    "missingRequiredFields",
+    "field",
+    "before",
+    "after",
+  ];
+  return Object.fromEntries(allowed
+    .filter((key) => Object.hasOwn(details, key))
+    .map((key) => [key, Array.isArray(details[key])
+      ? details[key].slice(0, 20).map((value) => String(value).slice(0, 120))
+      : String(details[key]).slice(0, 200)]));
 }
 
 export function ledgerContentRevision(value, format) {
@@ -95,14 +135,55 @@ function publicPreview(preview) {
     targetPath: _targetPath,
     queueSequence: _queueSequence,
     queuePosition: _queuePosition,
+    batchParentId: _batchParentId,
     ...result
   } = preview;
   return {
     ...result,
+    changedCells: publicChangedCells(preview.changedCells),
     queue: {
       state: preview.state === "waiting" ? "waiting" : "ready",
       position: preview.state === "waiting" ? preview.queuePosition ?? null : null,
       waitingSince: preview.waitingSince ?? null,
+    },
+  };
+}
+
+function publicBatchJournal(journal) {
+  if (!journal) return null;
+  return {
+    id: journal.id,
+    status: journal.status,
+    childPreviewIds: [...(journal.childPreviewIds ?? [])],
+    appliedPreviewIds: [...(journal.appliedPreviewIds ?? [])],
+    failedPreviewId: journal.failedPreviewId ?? null,
+    error: journal.error ?? null,
+    snapshots: (journal.snapshots ?? []).map((snapshot) => ({
+      beforeRevision: snapshot.beforeRevision ?? null,
+      beforeContentHash: snapshot.beforeContentHash ?? null,
+      restored: snapshot.restored === true,
+      blockedReason: snapshot.blockedReason ?? null,
+    })),
+    rollback: journal.rollback ?? null,
+    cleanupStatus: journal.cleanupStatus ?? null,
+    createdAt: journal.createdAt,
+    updatedAt: journal.updatedAt,
+  };
+}
+
+function publicBatchPreview(batch, children = [], journal = null) {
+  return {
+    ...batch,
+    kind: "batch",
+    children,
+    journal: publicBatchJournal(journal),
+    queue: {
+      state: batch.state === "waiting"
+        ? "waiting"
+        : ["partial", "needs_attention"].includes(batch.state)
+          ? batch.state
+          : "ready",
+      positions: batch.queuePositions ?? [],
     },
   };
 }
@@ -280,6 +361,17 @@ function planTabularMutation({ definition, rows, fields, businessKey }) {
     const before = normalizeCellValue(current[index]);
     const after = fields[field];
     if (!compareValues(before, after)) changedCells.push({ field, column, before, after });
+  }
+  for (const cell of changedCells) {
+    const transitions = definition.writePolicy?.fieldTransitions?.[cell.field];
+    if (!transitions) continue;
+    const allowed = transitions[String(cell.before ?? "")] ?? [];
+    if (!allowed.includes(String(cell.after ?? ""))) {
+      throw Object.assign(new Error("ledger_field_transition_not_allowed"), {
+        code: "ledger_field_transition_not_allowed",
+        details: { field: cell.field, before: cell.before, after: cell.after },
+      });
+    }
   }
   return {
     action: changedCells.length ? action : "no_op",
@@ -557,7 +649,7 @@ function serviceError(error) {
     "xlsx_mapped_formula_cannot_be_replaced",
     "xlsx_tables_not_supported_for_safe_preservation",
   ]);
-  return { status: conflict.has(code) ? 409 : 400, body: { error: code, ...(error.details ?? {}) } };
+  return { status: conflict.has(code) ? 409 : 400, body: { error: code, ...safeErrorDetails(error.details) } };
 }
 
 export function createLedgerUpsertService({
@@ -569,10 +661,13 @@ export function createLedgerUpsertService({
   store,
   validateRoutineLedgerStep = () => ({ ok: true, routineVersion: null }),
   completeRoutineLedgerStep = () => ({ ok: true }),
+  onBatchChildCommitted = async () => {},
 } = {}) {
   state.ledgerDefinitions ??= [];
   state.ledgerUpsertPreviews ??= [];
   state.ledgerMutationAudits ??= [];
+  state.ledgerBatchUpsertPreviews ??= [];
+  state.ledgerBatchMutationJournals ??= [];
   for (const [index, preview] of state.ledgerUpsertPreviews.entries()) {
     preview.queueSequence ??= index + 1;
     preview.queuePosition ??= preview.state === "waiting" ? 1 : null;
@@ -584,6 +679,66 @@ export function createLedgerUpsertService({
   const visible = (row, actor) => row?.ownerTeamId === actorTeam(actor);
   const runTx = makeRunTx({ store, persistStateSoon });
   const promotionByTarget = new Map();
+
+  async function cleanupKnownBatchArtifacts() {
+    let changed = false;
+    const cleanupChecks = [];
+    const statusUpdates = [];
+    for (const journal of state.ledgerBatchMutationJournals) {
+      if (!["committed", "rolled_back", "failed"].includes(journal.status)) continue;
+      const batch = state.ledgerBatchUpsertPreviews.find((row) => row.id === journal.batchPreviewId);
+      if (!batch) continue;
+      const ownerActor = { userId: LOCAL_USER_ID, teamId: journal.ownerTeamId };
+      let cleanupFailed = false;
+      for (const childId of journal.childPreviewIds ?? []) {
+        const child = state.ledgerUpsertPreviews.find((row) => row.id === childId);
+        const definition = child ? definitionFor(child.ledgerDefinitionId, ownerActor) : null;
+        const context = definition ? contextFor(definition, ownerActor, { requireActive: false }) : null;
+        if (!definition || !context) continue;
+        let target;
+        try {
+          ({ target } = await targetFor(definition, context));
+        } catch {
+          continue;
+        }
+        const expectedBackupPath = `${target}.myagenttool-${batch.id}.rollback`;
+        const snapshot = (journal.snapshots ?? []).find((row) =>
+          row.targetPath === target && row.backupPath === expectedBackupPath);
+        if (snapshot) {
+          try {
+            await unlink(expectedBackupPath);
+          } catch (error) {
+            if (error.code !== "ENOENT") cleanupFailed = true;
+          }
+          cleanupChecks.push({ snapshot, cleanupCheckedAt: now() });
+          changed = true;
+        }
+        try {
+          await unlink(`${target}.myagenttool-${batch.id}-rollback.tmp`);
+        } catch (error) {
+          if (error.code !== "ENOENT") cleanupFailed = true;
+        }
+      }
+      const cleanupStatus = cleanupFailed ? "pending" : "cleaned";
+      if (journal.cleanupStatus !== cleanupStatus) {
+        statusUpdates.push({ journal, cleanupStatus, updatedAt: now() });
+        changed = true;
+      }
+    }
+    if (changed) {
+      runTx(() => {
+        for (const update of cleanupChecks) {
+          update.snapshot.cleanupCheckedAt = update.cleanupCheckedAt;
+        }
+        for (const update of statusUpdates) {
+          update.journal.cleanupStatus = update.cleanupStatus;
+          update.journal.updatedAt = update.updatedAt;
+        }
+      });
+    }
+  }
+
+  void cleanupKnownBatchArtifacts().catch(() => {});
 
   function definitionFor(id, actor) {
     return state.ledgerDefinitions.find((row) => row.id === id && visible(row, actor)) ?? null;
@@ -847,6 +1002,613 @@ export function createLedgerUpsertService({
     return { status: 200, body: { ledgerDefinitions: rows } };
   }
 
+  // Read the identity of the file that a definition currently points to.  The
+  // semantic revision is useful for normal Ledger optimistic concurrency; the
+  // raw hash is intentionally exposed as a second, stricter identity for
+  // connectors that imported a concrete file snapshot (for example Channel).
+  async function inspectTargetIdentity({ ledgerDefinitionId } = {}, actor = null) {
+    const definition = definitionFor(ledgerDefinitionId, actor);
+    if (!definition) return { status: 404, body: { error: "ledger_definition_not_found" } };
+    const context = contextFor(definition, actor);
+    if (!context) return { status: 409, body: { error: "ledger_definition_not_active" } };
+    try {
+      const { target, metadata } = await targetFor(definition, context);
+      const buffer = await readFile(target);
+      const fileStats = await stat(target);
+      return {
+        status: 200,
+        body: {
+          identity: {
+            ledgerDefinitionId: definition.id,
+            projectId: definition.projectId,
+            sourceId: definition.sourceId,
+            relativePath: definition.relativePath,
+            format: definition.format,
+            size: buffer.length,
+            modifiedAt: fileStats.mtime.toISOString(),
+            contentHash: sha256(buffer),
+            targetRevision: ledgerContentRevision(buffer, definition.format),
+            mode: metadata.mode,
+          },
+        },
+      };
+    } catch (error) {
+      return serviceError(error);
+    }
+  }
+
+  function batchChildren(batch, actor) {
+    return (batch.childPreviewIds ?? [])
+      .map((id) => state.ledgerUpsertPreviews.find((preview) =>
+        preview.id === id && visible(preview, actor)))
+      .filter(Boolean);
+  }
+
+  function batchJournal(batch, actor) {
+    return state.ledgerBatchMutationJournals
+      .filter((row) => row.batchPreviewId === batch.id && visible(row, actor))
+      .at(-1) ?? null;
+  }
+
+  function refreshBatch(batch, actor) {
+    const children = batchChildren(batch, actor);
+    batch.queuePositions = children
+      .filter((child) => child.state === "waiting")
+      .map((child) => ({ previewId: child.id, position: child.queuePosition ?? null }));
+    const journal = batchJournal(batch, actor);
+    if (["committing", "rolled_back", "needs_attention"].includes(batch.state)
+      || (batch.state === "partial" && journal?.status === "partial")) {
+      batch.updatedAt = now();
+      return;
+    }
+    if (children.every((child) => child.state === "committed")) batch.state = "committed";
+    else if (children.some((child) => child.state === "invalidated" || child.state === "expired")) batch.state = "partial";
+    else if (children.some((child) => child.state === "waiting")) batch.state = "waiting";
+    else batch.state = "pending";
+    batch.updatedAt = now();
+  }
+
+  async function createBatchRollbackSnapshot(batch, child, journal, actor) {
+    const definition = definitionFor(child.ledgerDefinitionId, actor);
+    const context = definition ? contextFor(definition, actor) : null;
+    if (!definition || !context) {
+      throw Object.assign(new Error("ledger_definition_not_active"), { code: "ledger_definition_not_active" });
+    }
+    const { target, metadata } = await targetFor(definition, context);
+    if (target !== child.targetPath) {
+      throw Object.assign(new Error("ledger_target_changed_since_preview"), { code: "ledger_target_changed_since_preview" });
+    }
+    const existing = (journal.snapshots ?? []).find((snapshot) => snapshot.targetPath === target);
+    if (existing) return existing;
+    let lockPath = null;
+    try {
+      lockPath = await acquireLock(target, Date.parse(now()));
+      const buffer = await readFile(target);
+      const beforeRevision = ledgerContentRevision(buffer, definition.format);
+      if (beforeRevision !== child.targetRevision) {
+        throw Object.assign(new Error("ledger_changed_since_preview"), {
+          code: "ledger_changed_since_preview",
+          details: {
+            expectedTargetRevision: child.targetRevision,
+            currentTargetRevision: beforeRevision,
+          },
+        });
+      }
+      const backupPath = `${target}.myagenttool-${batch.id}.rollback`;
+      const beforeContentHash = sha256(buffer);
+      try {
+        const backupHandle = await open(backupPath, "wx", ROLLBACK_FILE_MODE);
+        try {
+          await backupHandle.writeFile(buffer);
+          await backupHandle.sync();
+        } finally {
+          await backupHandle.close();
+        }
+        await chmod(backupPath, ROLLBACK_FILE_MODE);
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        const existingBuffer = await readFile(backupPath);
+        if (sha256(existingBuffer) !== beforeContentHash) {
+          throw Object.assign(new Error("ledger_rollback_snapshot_conflict"), {
+            code: "ledger_rollback_snapshot_conflict",
+          });
+        }
+      }
+      return {
+        targetPath: target,
+        backupPath,
+        beforeRevision,
+        beforeContentHash,
+        mode: metadata.mode,
+        restored: false,
+        blockedReason: null,
+      };
+    } finally {
+      if (lockPath) await unlink(lockPath).catch(() => {});
+    }
+  }
+
+  async function ensureBatchRollbackSnapshots(batch, children, journal, actor) {
+    const snapshots = journal.snapshots ?? (journal.snapshots = []);
+    const targets = new Map();
+    for (const child of children) {
+      if (!targets.has(child.targetPath)) targets.set(child.targetPath, child);
+    }
+    for (const child of targets.values()) {
+      const snapshot = await createBatchRollbackSnapshot(batch, child, journal, actor);
+      if (!snapshots.some((row) => row.targetPath === snapshot.targetPath)) {
+        runTx(() => {
+          snapshots.push(snapshot);
+          journal.updatedAt = now();
+        });
+      }
+    }
+  }
+
+  async function cleanupBatchRollbackSnapshots(journal, batch) {
+    let pending = false;
+    for (const snapshot of journal.snapshots ?? []) {
+      const expectedBackupPath = batch
+        ? `${snapshot.targetPath}.myagenttool-${batch.id}.rollback`
+        : snapshot.backupPath;
+      if (batch && snapshot.backupPath !== expectedBackupPath) {
+        pending = true;
+        continue;
+      }
+      try {
+        await unlink(expectedBackupPath);
+      } catch (error) {
+        if (error.code !== "ENOENT") pending = true;
+      }
+    }
+    journal.cleanupStatus = pending ? "pending" : "cleaned";
+    runTx(() => {
+      journal.cleanupStatus = pending ? "pending" : "cleaned";
+      journal.updatedAt = now();
+    });
+    return !pending;
+  }
+
+  async function compensateBatch(batch, children, journal, reason, actor) {
+    const appliedIds = new Set(journal.appliedPreviewIds ?? []);
+    const audits = state.ledgerMutationAudits.filter((row) =>
+      visible(row, actor) && appliedIds.has(row.previewId));
+    const restoredTargets = [];
+    const blockedTargets = [];
+    for (const snapshot of journal.snapshots ?? []) {
+      const targetChildren = children.filter((child) => child.targetPath === snapshot.targetPath);
+      const expectedRevisions = new Set([
+        snapshot.beforeRevision,
+        ...audits
+          .filter((audit) => targetChildren.some((child) => child.id === audit.previewId))
+          .map((audit) => audit.afterHash),
+      ]);
+      try {
+        const current = await readFile(snapshot.targetPath);
+        const format = targetChildren[0]
+          ? definitionFor(targetChildren[0].ledgerDefinitionId, actor)?.format
+          : null;
+        const currentRevision = ledgerContentRevision(
+          current,
+          format,
+        );
+        if (!expectedRevisions.has(currentRevision)) {
+          snapshot.blockedReason = "ledger_target_changed_during_compensation";
+          blockedTargets.push(snapshot.targetPath);
+          continue;
+        }
+        const expectedBackupPath = `${snapshot.targetPath}.myagenttool-${batch.id}.rollback`;
+        if (snapshot.backupPath !== expectedBackupPath) {
+          snapshot.blockedReason = "ledger_rollback_snapshot_path_invalid";
+          blockedTargets.push(snapshot.targetPath);
+          continue;
+        }
+        const backup = await readFile(expectedBackupPath);
+        if (sha256(backup) !== snapshot.beforeContentHash) {
+          snapshot.blockedReason = "ledger_rollback_snapshot_changed";
+          blockedTargets.push(snapshot.targetPath);
+          continue;
+        }
+        await unlink(`${snapshot.targetPath}.myagenttool-${batch.id}-rollback.tmp`).catch((error) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+        await atomicReplace(snapshot.targetPath, backup, `${batch.id}-rollback`, snapshot.mode);
+        snapshot.restored = true;
+        snapshot.restoredAt = now();
+        restoredTargets.push(snapshot.targetPath);
+      } catch (error) {
+        snapshot.blockedReason = error?.code ?? "ledger_compensation_failed";
+        blockedTargets.push(snapshot.targetPath);
+      }
+    }
+    const complete = blockedTargets.length === 0;
+    const timestamp = now();
+    runTx(() => {
+      journal.status = complete ? "rolled_back" : "needs_attention";
+      journal.rollback = {
+        attemptedAt: timestamp,
+        reason,
+        restoredTargets: restoredTargets.length,
+        blockedTargets: blockedTargets.length,
+      };
+      journal.updatedAt = timestamp;
+      if (complete) {
+        for (const child of children) {
+          if (appliedIds.has(child.id)) {
+            child.state = "rolled_back";
+            child.revision += 1;
+            child.updatedAt = timestamp;
+            child.rollbackJournalId = journal.id;
+          }
+        }
+        batch.state = "rolled_back";
+      } else {
+        batch.state = "needs_attention";
+      }
+      batch.revision += 1;
+      batch.updatedAt = timestamp;
+    });
+    if (complete) await cleanupBatchRollbackSnapshots(journal, batch);
+    event(
+      complete ? "ledger_batch_rolled_back" : "ledger_batch_compensation_blocked",
+      complete
+        ? "Ledger batch was compensated back to its pre-commit state."
+        : "Ledger batch compensation stopped because a target changed externally.",
+      children[0] ?? batch,
+      actor,
+      { batchPreviewId: batch.id, journalId: journal.id, reason, restoredTargets, blockedTargets },
+    );
+    return { complete, restoredTargets, blockedTargets };
+  }
+
+  async function previewBatchUpsert({ operations, idempotencyKey = null } = {}, actor = null) {
+    if (!Array.isArray(operations) || operations.length < 2 || operations.length > 50) {
+      return { status: 400, body: { error: "ledger_batch_operations_invalid" } };
+    }
+    const digest = sha256(JSON.stringify({
+      operations,
+      idempotencyKey: idempotencyKey || null,
+    }));
+    const timestamp = now();
+    const replay = state.ledgerBatchUpsertPreviews.find((batch) =>
+      visible(batch, actor)
+      && batch.previewDigest === digest
+      && ["pending", "waiting", "partial", "committing"].includes(batch.state));
+    if (replay) {
+      refreshBatch(replay, actor);
+      return {
+        status: 200,
+        body: {
+          batchPreview: publicBatchPreview(replay, batchChildren(replay, actor).map(publicPreview), batchJournal(replay, actor)),
+          replayed: true,
+        },
+      };
+    }
+    const created = [];
+    for (const [operationIndex, operation] of operations.entries()) {
+      const result = await previewUpsert({ ...operation }, actor);
+      if (![200, 201, 202].includes(result.status)) {
+        const reason = result.body?.error ?? "ledger_batch_preview_failed";
+        runTx(() => {
+          for (const child of created) {
+            const internal = state.ledgerUpsertPreviews.find((row) => row.id === child.id);
+            if (internal && ["pending", "waiting"].includes(internal.state)) {
+              invalidatePreview(internal, timestamp, "ledger_batch_preview_aborted");
+            }
+          }
+          for (const target of new Set(created.map((child) => child.targetPath))) refreshQueuePositions(target, actor);
+        });
+        return {
+          status: result.status,
+          body: {
+            error: reason,
+            failedOperationIndex: operationIndex,
+            details: safeErrorDetails(result.body),
+          },
+        };
+      }
+      const child = state.ledgerUpsertPreviews.find((row) => row.id === result.body?.preview?.id);
+      if (!child) return { status: 500, body: { error: "ledger_batch_preview_child_missing" } };
+      created.push(child);
+    }
+    const batch = {
+      id: nextId("lbp"),
+      schemaVersion: businessRoutineSchemaVersion,
+      ownerTeamId: actorTeam(actor),
+      projectId: created[0].projectId,
+      childPreviewIds: created.map((child) => child.id),
+      targetCount: new Set(created.map((child) => child.targetPath)).size,
+      operationCount: created.length,
+      previewDigest: digest,
+      idempotencyKey: boundedText(idempotencyKey, 200),
+      state: "pending",
+      queuePositions: [],
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy: actorUser(actor),
+    };
+    runTx(() => {
+      for (const child of created) child.batchParentId = batch.id;
+      refreshBatch(batch, actor);
+      state.ledgerBatchUpsertPreviews.push(batch);
+      event("ledger_batch_upsert_preview_created", "Ledger batch change preview created.", created[0], actor, {
+        batchPreviewId: batch.id,
+        operationCount: batch.operationCount,
+        targetCount: batch.targetCount,
+      });
+    });
+    return {
+      status: batch.state === "waiting" ? 202 : 201,
+      body: {
+        batchPreview: publicBatchPreview(batch, created.map(publicPreview), batchJournal(batch, actor)),
+        replayed: false,
+      },
+    };
+  }
+
+  async function commitBatchPreview({ batchPreviewId, expectedRevision, approved = false } = {}, actor = null) {
+    const batch = state.ledgerBatchUpsertPreviews.find((row) =>
+      row.id === batchPreviewId && visible(row, actor));
+    if (!batch) return { status: 404, body: { error: "ledger_batch_preview_not_found" } };
+    const children = batchChildren(batch, actor);
+    if (batch.revision !== expectedRevision) {
+      return { status: 409, body: { error: "ledger_batch_preview_revision_conflict", currentRevision: batch.revision } };
+    }
+    if (batch.state === "committed") {
+      return { status: 200, body: { batchPreview: publicBatchPreview(batch, children.map(publicPreview), batchJournal(batch, actor)), replayed: true } };
+    }
+    if (batch.state === "waiting" && children[0]?.state === "waiting") {
+      refreshBatch(batch, actor);
+      return {
+        status: 423,
+        body: { error: "ledger_batch_preview_waiting", batchPreview: publicBatchPreview(batch, children.map(publicPreview), batchJournal(batch, actor)) },
+      };
+    }
+    if (!["pending", "waiting", "committing", "partial"].includes(batch.state)) {
+      return { status: 409, body: { error: "ledger_batch_preview_not_committable", currentState: batch.state } };
+    }
+    if (approved !== true) return { status: 409, body: { error: "ledger_mutation_approval_required" } };
+    const timestamp = now();
+    let journal = state.ledgerBatchMutationJournals
+      .filter((row) => row.batchPreviewId === batch.id && visible(row, actor)
+        && ["preparing", "committing", "partial"].includes(row.status))
+      .at(-1) ?? null;
+    runTx(() => {
+      batch.state = "committing";
+      batch.revision += 1;
+      batch.updatedAt = timestamp;
+      batch.commitStartedAt ??= timestamp;
+      if (!journal) {
+        journal = {
+          id: nextId("lbj"),
+          schemaVersion: 1,
+          ownerTeamId: batch.ownerTeamId,
+          projectId: batch.projectId,
+          batchPreviewId: batch.id,
+          status: "preparing",
+          childPreviewIds: [...batch.childPreviewIds],
+          appliedPreviewIds: [],
+          failedPreviewId: null,
+          error: null,
+          snapshots: [],
+          rollback: null,
+          cleanupStatus: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        state.ledgerBatchMutationJournals.push(journal);
+      } else {
+        journal.status = "preparing";
+        journal.updatedAt = timestamp;
+      }
+    });
+    try {
+      await ensureBatchRollbackSnapshots(batch, children, journal, actor);
+      runTx(() => {
+        journal.status = "committing";
+        journal.updatedAt = now();
+      });
+    } catch (error) {
+      const failure = serviceError(error);
+      runTx(() => {
+        batch.state = "partial";
+        batch.lastError = failure.body?.error ?? "ledger_batch_snapshot_failed";
+        batch.revision += 1;
+        batch.updatedAt = now();
+        journal.status = "failed";
+        journal.error = batch.lastError;
+        journal.updatedAt = batch.updatedAt;
+      });
+      await cleanupBatchRollbackSnapshots(journal, batch);
+      return {
+        status: failure.status,
+        body: {
+          error: "ledger_batch_snapshot_failed",
+          cause: failure.body ?? null,
+          batchPreview: publicBatchPreview(batch, batchChildren(batch, actor).map(publicPreview), journal),
+        },
+      };
+    }
+    const results = [];
+    for (const child of children) {
+      if (child.state === "committed") {
+        results.push({ preview: publicPreview(child), replayed: true });
+        continue;
+      }
+      const result = await commitPreview({
+        previewId: child.id,
+        expectedRevision: child.revision,
+        approved: true,
+        batchCommit: true,
+      }, actor);
+      if (result.status !== 200) {
+        if (result.status === 423) {
+          runTx(() => {
+            batch.state = results.length ? "partial" : "waiting";
+            batch.revision += 1;
+            batch.updatedAt = now();
+            journal.status = "partial";
+            journal.error = "ledger_batch_preview_waiting";
+            journal.updatedAt = batch.updatedAt;
+          });
+          return {
+            status: 423,
+            body: {
+              error: "ledger_batch_preview_waiting",
+              batchPreview: publicBatchPreview(batch, batchChildren(batch, actor).map(publicPreview), journal),
+              results,
+            },
+          };
+        }
+        runTx(() => {
+          batch.lastError = result.body?.error ?? "ledger_batch_commit_failed";
+          batch.failedPreviewId = child.id;
+          batch.revision += 1;
+          batch.updatedAt = now();
+          if (journal) Object.assign(journal, {
+            status: "partial",
+            failedPreviewId: child.id,
+            error: batch.lastError,
+            updatedAt: batch.updatedAt,
+          });
+        });
+        const compensation = results.length
+          ? await compensateBatch(batch, children, journal, batch.lastError, actor)
+          : { complete: false, restoredTargets: [], blockedTargets: [] };
+        return {
+          status: result.status,
+          body: {
+            error: compensation.complete ? "ledger_batch_commit_rolled_back" : "ledger_batch_commit_partial",
+            failedPreviewId: child.id,
+            cause: result.body ?? null,
+            batchPreview: publicBatchPreview(batch, batchChildren(batch, actor).map(publicPreview), journal),
+            results,
+          },
+        };
+      }
+      results.push(result.body);
+      runTx(() => {
+        if (journal && !journal.appliedPreviewIds.includes(child.id)) {
+          journal.appliedPreviewIds.push(child.id);
+          journal.updatedAt = now();
+        }
+      });
+      try {
+        await onBatchChildCommitted({ batchPreviewId: batch.id, childPreviewId: child.id, child }, actor);
+      } catch (error) {
+        if (error?.code === "ledger_process_interrupted") {
+          return {
+            status: 503,
+            body: {
+              error: "ledger_batch_commit_recovery_required",
+              batchPreview: publicBatchPreview(batch, batchChildren(batch, actor).map(publicPreview), journal),
+              results,
+            },
+          };
+        }
+        runTx(() => {
+          batch.lastError = error?.code ?? "ledger_batch_commit_hook_failed";
+          batch.failedPreviewId = child.id;
+          batch.revision += 1;
+          batch.updatedAt = now();
+          journal.status = "partial";
+          journal.error = batch.lastError;
+          journal.updatedAt = batch.updatedAt;
+        });
+        const compensation = results.length
+          ? await compensateBatch(batch, children, journal, batch.lastError, actor)
+          : { complete: false };
+        return {
+          status: 500,
+          body: {
+            error: compensation.complete ? "ledger_batch_commit_rolled_back" : "ledger_batch_commit_partial",
+            failedPreviewId: child.id,
+            batchPreview: publicBatchPreview(batch, batchChildren(batch, actor).map(publicPreview), journal),
+            results,
+          },
+        };
+      }
+    }
+    refreshBatch(batch, actor);
+    runTx(() => {
+      batch.state = "committed";
+      batch.revision += 1;
+      batch.updatedAt = now();
+      batch.committedAt = batch.updatedAt;
+      batch.lastError = null;
+      batch.failedPreviewId = null;
+      if (journal) Object.assign(journal, {
+        status: "committed",
+        appliedPreviewIds: [...batch.childPreviewIds],
+        updatedAt: batch.updatedAt,
+      });
+    });
+    await cleanupBatchRollbackSnapshots(journal, batch);
+    return {
+      status: 200,
+      body: {
+        batchPreview: publicBatchPreview(batch, batchChildren(batch, actor).map(publicPreview), journal),
+        results,
+        replayed: false,
+      },
+    };
+  }
+
+  function listBatchPreviews({ states = null, limit = 100 } = {}, actor = null) {
+    const allowed = Array.isArray(states) ? new Set(states) : null;
+    const rows = state.ledgerBatchUpsertPreviews
+      .filter((batch) => visible(batch, actor)
+        && actorCanAccessProject(state, actor, batch.projectId)
+        && (!allowed || allowed.has(batch.state)))
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+      .slice(0, Math.max(1, Math.min(100, Number(limit) || 100)))
+      .map((batch) => {
+        refreshBatch(batch, actor);
+        return publicBatchPreview(batch, batchChildren(batch, actor).map(publicPreview), batchJournal(batch, actor));
+      });
+    return { status: 200, body: { batchPreviews: rows } };
+  }
+
+  function listBatchMutationJournals({ batchPreviewId = null, statuses = null, limit = 100 } = {}, actor = null) {
+    const allowed = Array.isArray(statuses) ? new Set(statuses) : null;
+    const journals = state.ledgerBatchMutationJournals
+      .filter((journal) => visible(journal, actor)
+        && actorCanAccessProject(state, actor, journal.projectId)
+        && (!batchPreviewId || journal.batchPreviewId === batchPreviewId)
+        && (!allowed || allowed.has(journal.status)))
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+      .slice(0, Math.max(1, Math.min(100, Number(limit) || 100)))
+      .map(publicBatchJournal);
+    return { status: 200, body: { journals } };
+  }
+
+  async function retryBatchPreview({ batchPreviewId, approved = true } = {}, actor = null) {
+    const batch = state.ledgerBatchUpsertPreviews.find((row) =>
+      row.id === batchPreviewId && visible(row, actor));
+    if (!batch) return { status: 404, body: { error: "ledger_batch_preview_not_found" } };
+    if (["rolled_back", "needs_attention"].includes(batch.state)) {
+      return {
+        status: 409,
+        body: {
+          error: batch.state === "needs_attention"
+            ? "ledger_batch_manual_recovery_required"
+            : "ledger_batch_was_rolled_back",
+          batchPreview: publicBatchPreview(batch, batchChildren(batch, actor).map(publicPreview), batchJournal(batch, actor)),
+        },
+      };
+    }
+    const journal = batchJournal(batch, actor);
+    if (!journal || !["preparing", "committing", "partial"].includes(journal.status)) {
+      return { status: 409, body: { error: "ledger_batch_retry_not_available", currentState: batch.state } };
+    }
+    return commitBatchPreview({
+      batchPreviewId,
+      expectedRevision: batch.revision,
+      approved,
+    }, actor);
+  }
+
   async function activateDefinition({ ledgerDefinitionId, expectedRevision } = {}, actor = null) {
     const definition = definitionFor(ledgerDefinitionId, actor);
     if (!definition) return { status: 404, body: { error: "ledger_definition_not_found" } };
@@ -918,6 +1680,7 @@ export function createLedgerUpsertService({
     sourceEvidence: inputEvidence,
     routineRunId = null,
     routineStepKey = null,
+    allowPartialUpdate = false,
   } = {}, actor = null) {
     const definition = definitionFor(ledgerDefinitionId, actor);
     if (!definition) return { status: 404, body: { error: "ledger_definition_not_found" } };
@@ -962,11 +1725,6 @@ export function createLedgerUpsertService({
       return { status: 409, body: { error: "routine_ledger_business_key_mismatch" } };
     }
     fields[definition.businessKeyField] = businessKey;
-    const missingRequiredFields = definition.requiredFields.filter((field) =>
-      !Object.hasOwn(fields, field) || fields[field] == null || String(fields[field]).trim() === "");
-    if (missingRequiredFields.length) {
-      return { status: 400, body: { error: "ledger_required_fields_missing", missingRequiredFields } };
-    }
     const evidence = normalizeEvidence(inputEvidence, routineValidation.triggerArtifactIds);
     if (!evidence) return { status: 400, body: { error: "ledger_source_evidence_required" } };
     const invalidEvidence = evidence.some((row) => {
@@ -1016,6 +1774,11 @@ export function createLedgerUpsertService({
       const buffer = await readFile(target);
       const targetRevision = ledgerContentRevision(buffer, definition.format);
       const plan = await inspectLedger(buffer, definition, fields, businessKey);
+      const missingRequiredFields = definition.requiredFields.filter((field) =>
+        !Object.hasOwn(fields, field) || fields[field] == null || String(fields[field]).trim() === "");
+      if (missingRequiredFields.length && !(allowPartialUpdate && plan.action === "update")) {
+        return { status: 400, body: { error: "ledger_required_fields_missing", missingRequiredFields } };
+      }
       const proposedBuffer = await renderMutation(buffer, definition, {
         action: plan.action,
         rowNumber: plan.rowNumber,
@@ -1065,6 +1828,7 @@ export function createLedgerUpsertService({
         sourceEvidence: evidence,
         warnings: [],
         targetRevision,
+        targetContentHash: sha256(buffer),
         proposedTargetRevision,
         targetPath: target,
         fieldValues: fields,
@@ -1110,10 +1874,14 @@ export function createLedgerUpsertService({
     previewId,
     expectedRevision,
     approved = false,
+    batchCommit = false,
   } = {}, actor = null) {
     const preview = state.ledgerUpsertPreviews.find((row) =>
       row.id === previewId && visible(row, actor)) ?? null;
     if (!preview) return { status: 404, body: { error: "ledger_upsert_preview_not_found" } };
+    if (preview.batchParentId && !batchCommit) {
+      return { status: 409, body: { error: "ledger_preview_requires_batch_commit", batchPreviewId: preview.batchParentId } };
+    }
     const existingAudit = state.ledgerMutationAudits.find((row) =>
       row.previewId === preview.id && visible(row, actor));
     if (existingAudit) {
@@ -1340,7 +2108,7 @@ export function createLedgerUpsertService({
     const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 100));
     const stateFilter = Array.isArray(states)
       ? new Set(states.filter((value) =>
-        ["pending", "waiting", "committed", "expired", "invalidated"].includes(value)))
+        ["pending", "waiting", "committed", "rolled_back", "expired", "invalidated"].includes(value)))
       : null;
     const targets = [...new Set(state.ledgerUpsertPreviews
       .filter((preview) =>
@@ -1393,8 +2161,14 @@ export function createLedgerUpsertService({
     listDefinitions,
     activateDefinition,
     disableDefinition,
+    inspectTargetIdentity,
     previewUpsert,
     commitPreview,
+    previewBatchUpsert,
+    commitBatchPreview,
+    retryBatchPreview,
+    listBatchPreviews,
+    listBatchMutationJournals,
     listPreviews,
     cancelRoutineReservations,
     listMutations,

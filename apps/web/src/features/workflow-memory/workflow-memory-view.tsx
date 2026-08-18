@@ -163,6 +163,8 @@ const COPY = {
     routineDescription: "What this work produces",
     routineTrigger: "Starts when this arrives",
     routineSteps: "Work steps",
+    routineDataRequirements: "Data needed",
+    routineDataRequirementsHint: "The task will bind these abstract data needs to a specific local file at runtime.",
     routineStepKind: "Step purpose",
     routineStepDetails: "Reference, output, ledger, condition, or approval details",
     routineSaveBeforePublish: "Save the latest changes before enabling this work type.",
@@ -477,6 +479,8 @@ const COPY = {
     routineDescription: "这项工作要产出什么",
     routineTrigger: "收到什么后开始",
     routineSteps: "工作步骤",
+    routineDataRequirements: "所需数据",
+    routineDataRequirementsHint: "任务运行时会把这些抽象需求绑定到具体的本地文件版本。",
     routineStepKind: "步骤用途",
     routineStepDetails: "参考资料、输出、台账、条件或确认要求",
     routineSaveBeforePublish: "请先保存最新修改，再启用这个工作类型。",
@@ -705,7 +709,8 @@ export function WorkflowMemoryView({
   backLabel?: string;
 } = {}) {
   const { i18n } = useAppTranslation();
-  const copy = COPY[i18n.resolvedLanguage?.startsWith("zh") ? "zh" : "en"];
+  const language = i18n.resolvedLanguage?.startsWith("zh") ? "zh" : "en";
+  const copy = COPY[language];
   const { data: consoleState } = useConsoleState();
   const refreshConsoleState = useRefreshConsoleState();
   const projects = consoleState?.projects?.filter((project) => project.status !== "archived") ?? [];
@@ -2819,6 +2824,7 @@ function RoutineDefinitionCard({
               ))}
             </Select>
           </label>
+          <DataRequirementsSummary definition={definition} copy={copy} />
           <div>
             <p className="text-xs font-medium">{copy.routineSteps}</p>
             <div className="mt-1 space-y-2">
@@ -2908,6 +2914,7 @@ function RoutineDefinitionCard({
       ) : (
         <>
           <p className="mt-3 text-sm text-muted-foreground">{definition.description}</p>
+          <DataRequirementsSummary definition={definition} copy={copy} />
           <ol className="mt-3 space-y-1 text-sm">
             {definition.steps.map((step, index) => (
               <li key={step.key}>
@@ -2937,6 +2944,54 @@ function RoutineDefinitionCard({
           ) : null}
         </>
       )}
+    </div>
+  );
+}
+
+function DataRequirementsSummary({
+  definition,
+  copy,
+}: {
+  definition: BusinessRoutineDefinition;
+  copy: typeof COPY.en | typeof COPY.zh;
+}) {
+  const language = copy === COPY.zh ? "zh" : "en";
+  const requirements = definition.dataRequirements ?? [];
+  const relations = definition.relations ?? [];
+  const mutationPolicy = definition.mutationPolicy ?? null;
+  if (!requirements.length && !relations.length && !mutationPolicy) return null;
+  const labels = new Map(requirements.map((requirement) => [requirement.id, requirement.label]));
+  return (
+    <div className="mt-3 rounded-md border border-primary/20 bg-primary/[0.04] p-3" aria-label={copy.routineDataRequirements}>
+      <p className="text-xs font-semibold">{copy.routineDataRequirements}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{copy.routineDataRequirementsHint}</p>
+      <ul className="mt-2 space-y-1 text-xs">
+        {requirements.map((requirement) => (
+          <li key={requirement.id}>
+            <span className="font-medium">{requirement.label}</span>
+            <span className="ml-1 text-muted-foreground">（{requirement.kind}：{requirement.fields.join("、")}）</span>
+            {!requirement.required ? <span className="ml-1 text-muted-foreground">· optional</span> : null}
+          </li>
+        ))}
+      </ul>
+      {relations.length ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {relations.map((relation) => `${labels.get(relation.fromRequirementId) ?? relation.fromRequirementId}.${relation.fromField} → ${labels.get(relation.toRequirementId) ?? relation.toRequirementId}.${relation.toField}`).join("；")}
+        </p>
+      ) : null}
+      {mutationPolicy ? (
+        <div className="mt-3 rounded-md border border-warning/25 bg-warning/[0.04] p-2 text-xs">
+          <p className="font-medium">{language === "zh" ? "文件变更边界" : "File mutation boundary"}</p>
+          <p className="mt-1 text-muted-foreground">
+            {language === "zh"
+              ? `允许操作：${mutationPolicy.operations.join("、")}；最多 ${mutationPolicy.maxRows} 条记录；${mutationPolicy.allowMultipleSources ? "允许多文件" : "仅允许单文件"}；${mutationPolicy.allowMultipleRows ? "允许多条记录" : "仅允许单条记录"}。`
+              : `Operations: ${mutationPolicy.operations.join(", ")}; max ${mutationPolicy.maxRows} rows; ${mutationPolicy.allowMultipleSources ? "multiple files" : "one file"}; ${mutationPolicy.allowMultipleRows ? "multiple rows" : "one row"}.`}
+          </p>
+          {mutationPolicy.mutableFields.length ? (
+            <p className="mt-1 text-muted-foreground">{language === "zh" ? "可修改字段：" : "Mutable fields: "}{mutationPolicy.mutableFields.join("、")}</p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

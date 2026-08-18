@@ -33,6 +33,7 @@ import { handleToolRoutes } from "../routes/tools.mjs";
 import { handleWorkItemRoutes } from "../routes/work-items.mjs";
 import { handleSessionRoutes } from "../routes/sessions.mjs";
 import { handleWorkflowMemoryRoutes } from "../routes/workflow-memory.mjs";
+import { handleChannelObjectRoutes } from "../routes/channel-objects.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
 import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
 import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
@@ -150,6 +151,26 @@ export function createHttpServer({
   addWorkItemContentReference,
   removeWorkItemContentReference,
   listWorkflowSources,
+  listChannelObjects,
+  upsertChannelObject,
+  setChannelObjectStatus,
+  previewChannelObjectImport,
+  confirmChannelObjectImport,
+  listChannelObjectImports,
+  listChannelObjectFileSources,
+  listChannelMutationBindings,
+  upsertChannelMutationBinding,
+  setChannelMutationBindingStatus,
+  listChannelObjectConnectors,
+  listChannelObjectConnectorConfigs,
+  upsertChannelObjectConnectorConfig,
+  setChannelObjectConnectorConfigStatus,
+  testChannelObjectConnectorConfig,
+  previewChannelObjectConnectorSync,
+  confirmChannelObjectConnectorSync,
+  syncChannelObjectConnector,
+  retryChannelObjectConnectorSync,
+  listChannelObjectSyncs,
   createWorkflowSource,
   listTemplateLearningTasks,
   createTemplateLearningTask,
@@ -194,9 +215,15 @@ export function createHttpServer({
   listLedgerDefinitions,
   activateLedgerDefinition,
   disableLedgerDefinition,
+  inspectLedgerTargetIdentity,
   previewLedgerUpsert,
+  previewLedgerBatchUpsert,
   commitLedgerUpsertPreview,
+  commitLedgerBatchUpsertPreview,
+  retryLedgerBatchUpsertPreview,
   listLedgerUpsertPreviews,
+  listLedgerBatchUpsertPreviews,
+  listLedgerBatchMutationJournals,
   listLedgerMutations,
   collectBusinessPilotEvidence,
   verifyBusinessPilotEvidence,
@@ -470,6 +497,7 @@ export function createHttpServer({
   getWorkItem,
   createWorkItem,
   createWorkItemFromExternal,
+  captureWorkItemDataContext,
   updateWorkItem,
   recordWorkItemProgress,
   bulkUpdateWorkItems,
@@ -838,6 +866,32 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleChannelObjectRoutes({
+        req, res, url, sendJson, readJson, actor,
+        listChannelObjects,
+        upsertChannelObject,
+        setChannelObjectStatus,
+        previewChannelObjectImport,
+        confirmChannelObjectImport,
+        listChannelObjectImports,
+        listChannelObjectFileSources,
+        listChannelMutationBindings,
+        upsertChannelMutationBinding,
+        setChannelMutationBindingStatus,
+        listChannelObjectConnectors,
+        listChannelObjectConnectorConfigs,
+        upsertChannelObjectConnectorConfig,
+        setChannelObjectConnectorConfigStatus,
+        testChannelObjectConnectorConfig,
+        previewChannelObjectConnectorSync,
+        confirmChannelObjectConnectorSync,
+        syncChannelObjectConnector,
+        retryChannelObjectConnectorSync,
+        listChannelObjectSyncs,
+      })) {
+        return;
+      }
+
       if (await handleWorkflowMemoryRoutes({
         req,
         res,
@@ -890,9 +944,15 @@ export function createHttpServer({
         listLedgerDefinitions,
         activateLedgerDefinition,
         disableLedgerDefinition,
+        inspectLedgerTargetIdentity,
         previewLedgerUpsert,
+        previewLedgerBatchUpsert,
         commitLedgerUpsertPreview,
+        commitLedgerBatchUpsertPreview,
+        retryLedgerBatchUpsertPreview,
         listLedgerUpsertPreviews,
+        listLedgerBatchUpsertPreviews,
+        listLedgerBatchMutationJournals,
         listLedgerMutations,
         collectBusinessPilotEvidence,
         verifyBusinessPilotEvidence,
@@ -1054,6 +1114,7 @@ export function createHttpServer({
         getArticleDerivative,
         addMaterials: addWorkItemMaterials,
         removeMaterial: removeWorkItemMaterial,
+        captureDataContextSnapshot: captureWorkItemDataContext,
         restoreMaterial: restoreWorkItemMaterial,
         addContentReference: addWorkItemContentReference,
         removeContentReference: removeWorkItemContentReference,
