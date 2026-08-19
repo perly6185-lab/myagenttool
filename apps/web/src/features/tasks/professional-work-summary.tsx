@@ -16,8 +16,8 @@ function unique(values: Array<string | null | undefined>) {
 }
 
 function statusTone(status: string | null | undefined): "success" | "warning" | "danger" | "neutral" {
-  if (status === "ready" || status === "verified" || status === "passed" || status === "completed") return "success";
-  if (status === "stale" || status === "needs_review" || status === "ambiguous" || status === "waiting") return "warning";
+  if (status === "ready" || status === "verified" || status === "passed" || status === "completed" || status === "committed") return "success";
+  if (status === "stale" || status === "needs_review" || status === "ambiguous" || status === "waiting" || status === "pending" || status === "partial" || status === "committing" || status === "needs_sources" || status === "rolled_back") return "warning";
   if (status === "failed" || status === "needs_attention" || status === "invalidated") return "danger";
   return "neutral";
 }
@@ -36,6 +36,14 @@ function statusLabel(status: string | null | undefined, zh: boolean) {
     needs_attention: ["需要处理", "Needs attention"],
     invalidated: ["已失效", "Invalidated"],
     not_required: ["不需要", "Not required"],
+    pending: ["待处理", "Pending"],
+    needs_sources: ["缺少资料", "Needs sources"],
+    partial: ["部分完成", "Partially complete"],
+    committing: ["恢复中", "Recovering"],
+    committed: ["已写入", "Committed"],
+    rolled_back: ["已撤回", "Rolled back"],
+    policy_blocked: ["受范围限制", "Policy blocked"],
+    no_op: ["无需修改", "No change"],
   };
   return labels[status ?? ""]?.[zh ? 0 : 1] ?? status ?? "—";
 }
@@ -86,8 +94,11 @@ export function ProfessionalWorkSummary({
   const mutation = contract?.dataMutationPreview;
   const binding = contract?.dataMutationBinding;
   const ledger = contract?.ledgerMutationPreview;
-  const sources = unique([
+  const sourceFiles = unique([
     ...(dataPlan?.sources ?? []).map((source) => `${source.fileName ?? source.sourceId}${source.revision != null ? ` · v${source.revision}` : ""}`),
+    ...(workMode?.data.sources ?? []).map((source) => `${source.fileName ?? source.sourceId ?? "本地资料"}${source.revision != null ? ` · v${source.revision}` : ""}`),
+  ]);
+  const mutationFiles = unique([
     ...(mutation?.targetSources ?? []).map((source) => `${source.fileName ?? source.sourceId}${source.revision != null ? ` · v${source.revision}` : ""}`),
   ]);
   const criteriaCount = item.acceptanceCriteria?.length ?? 0;
@@ -99,7 +110,7 @@ export function ProfessionalWorkSummary({
     ...(mutation?.fieldChanges ?? []).map((change) => change.field),
     ...(ledger?.changedCells ?? []).map((cell) => cell.field),
   ]);
-  const sourceStatus = dataPlan?.status ?? (sources.length ? "ready" : "not_required");
+  const sourceStatus = dataPlan?.status ?? (sourceFiles.length ? "ready" : "not_required");
   const verificationStatus = item.completionGate?.verificationRequired
     ? (passedCriteria > 0 && passedCriteria >= criteriaCount ? "passed" : "waiting")
     : evidenceCount > 0 ? "passed" : "not_required";
@@ -131,7 +142,7 @@ export function ProfessionalWorkSummary({
         <Fact
           label={zh ? "资料" : "Sources"}
           value={statusLabel(sourceStatus, zh)}
-          detail={sources.length ? sources.slice(0, 3).join("、") : (zh ? "本次处理不依赖本地资料" : "No local sources required")}
+          detail={sourceFiles.length ? sourceFiles.slice(0, 3).join("、") : (zh ? "本次处理不依赖本地资料" : "No local sources required")}
           tone={statusTone(sourceStatus)}
         />
         <Fact
@@ -149,12 +160,14 @@ export function ProfessionalWorkSummary({
             <Badge tone={statusTone(ledger?.state ?? mutation.status)}>{statusLabel(ledger?.state ?? mutation.status, zh)}</Badge>
           </div>
           <div className="mt-2 grid gap-2 sm:grid-cols-3">
-            <p><span className="text-muted-foreground">{zh ? "文件" : "Files"}：</span>{sources.length || mutation.targetSourceIds.length}</p>
+            <p><span className="text-muted-foreground">{zh ? "变更文件" : "Changed files"}：</span>{mutationFiles.length || mutation.targetSourceIds.length}</p>
             <p><span className="text-muted-foreground">{zh ? "预计记录" : "Rows"}：</span>{affectedRows ?? "—"}</p>
             <p><span className="text-muted-foreground">{zh ? "修改内容" : "Fields"}：</span>{changedFields.slice(0, 6).join("、") || "—"}</p>
           </div>
           <p className="mt-2 text-muted-foreground">
-            {binding
+            {binding?.stale
+              ? (zh ? "文件保护设置已失效，当前禁止修改；请重新检查文件后生成新预览。" : "File protection is stale; changes are blocked until the file is checked and previewed again.")
+              : binding
               ? (zh ? `文件保护设置已绑定 · 文件版本 v${binding.fileSourceRevision ?? "—"}` : `File protection bound · source revision v${binding.fileSourceRevision ?? "—"}`)
               : (zh ? "文件保护设置尚未绑定，当前不会修改源文件。" : "File protection is not bound; source files will not be changed yet.")}
           </p>
@@ -168,6 +181,9 @@ export function ProfessionalWorkSummary({
           <div><dt className="text-muted-foreground">{zh ? "执行链" : "Execution chain"}</dt><dd className="break-all font-mono">{observability?.executionChainId ?? "—"}</dd></div>
           <div><dt className="text-muted-foreground">{zh ? "资料检查摘要" : "Source digest"}</dt><dd className="break-all font-mono">{contract?.dataPlan?.digest ?? workMode?.trace.dataPlanDigest ?? "—"}</dd></div>
           <div><dt className="text-muted-foreground">{zh ? "对应关系摘要" : "Relation digest"}</dt><dd className="break-all font-mono">{contract?.dataRelationConfirmation?.relationDigest ?? workMode?.trace.relationDigest ?? "—"}</dd></div>
+          <div><dt className="text-muted-foreground">{zh ? "资料对应状态" : "Relationship status"}</dt><dd>{statusLabel(contract?.dataRelationConfirmation?.status ?? contract?.dataRelationPreview?.status, zh)}{contract?.dataRelationConfirmation?.objectSnapshotCount ? ` · ${contract.dataRelationConfirmation.objectSnapshotCount} ${zh ? "个对象快照" : "object snapshots"}` : ""}</dd></div>
+          <div><dt className="text-muted-foreground">{zh ? "变更文件版本" : "Changed file versions"}</dt><dd>{mutationFiles.length ? mutationFiles.join("、") : "—"}</dd></div>
+          <div><dt className="text-muted-foreground">{zh ? "内容身份摘要" : "Content identity"}</dt><dd className="break-all font-mono">{(mutation?.targetSources ?? []).map((source) => source.contentHash ? `${source.fileName ?? source.sourceId}: ${source.contentHash.slice(0, 16)}…` : null).filter(Boolean).join("；") || "—"}</dd></div>
           <div><dt className="text-muted-foreground">{zh ? "处理摘要" : "Processing digest"}</dt><dd className="break-all font-mono">{workMode?.digest ?? mutation?.digest ?? "—"}</dd></div>
           <div><dt className="text-muted-foreground">{zh ? "重试次数 / 事件数" : "Retries / events"}</dt><dd>{retryCount} / {observability?.timeline?.length ?? 0}</dd></div>
           {ledger?.journal ? <div><dt className="text-muted-foreground">{zh ? "备份与恢复" : "Backup and recovery"}</dt><dd>{ledger.journal.snapshotCount} {zh ? "份备份，已处理 " : " snapshots, "}{ledger.journal.appliedCount} {zh ? "项" : " applied"}</dd></div> : null}

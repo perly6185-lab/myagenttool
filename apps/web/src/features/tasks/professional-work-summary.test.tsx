@@ -79,4 +79,17 @@ describe("ProfessionalWorkSummary", () => {
     expect(details.textContent).toContain("备份与恢复");
     expect(details.textContent).toContain("审核交付结果");
   });
+
+  it("does not present a stale file protection binding as executable", () => {
+    const staleItem = {
+      ...item,
+      channelTaskContract: {
+        ...item.channelTaskContract,
+        dataMutationBinding: { ...item.channelTaskContract?.dataMutationBinding, stale: true },
+      },
+    } as unknown as LocalWorkItem;
+    render(<ProfessionalWorkSummary item={staleItem} observability={observability} />);
+    expect(screen.getByTestId("professional-work-summary").textContent).toContain("文件保护设置已失效");
+    expect(screen.getByTestId("professional-work-summary").textContent).not.toContain("文件保护设置已绑定 ·");
+  });
 });
