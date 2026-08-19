@@ -10,6 +10,121 @@ import { scheduleHealthReadModel } from "./schedule-health.mjs";
 import { withLocalApplicationReadiness } from "../services/application-readiness.mjs";
 import { deriveGuidedReadiness } from "../services/guided-readiness.mjs";
 import { publicInvocationEvent } from "../services/invocation-events.mjs";
+import { businessLifecycleSummaries } from "./business-lifecycle.mjs";
+
+export const CONSOLE_STATE_MEDIA_TYPE = "application/vnd.myagenttool.console-state+json";
+
+const CONSOLE_INVOCATION_LIMIT = 300;
+const CONSOLE_ATTENTION_INVOCATION_LIMIT = 100;
+const CONSOLE_RELATED_LIMITS = Object.freeze({
+  events: 500,
+  traces: 600,
+  spans: 800,
+  auditSummaries: 600,
+  quotaDecisionRecords: 600,
+  aiUsageRecords: 600,
+  invocationRounds: 1_200,
+  toolInvocationRecords: 1_200,
+  approvalRequests: 600,
+  policyDecisionRecords: 600,
+  troubleshootingReports: 600,
+  codexSessions: 600,
+  claudeSessions: 600,
+  codexWorkspaces: 600,
+  codexEvidenceRecords: 1_000,
+  codexChangeReviews: 600,
+  codexExecChangeReviews: 600,
+  codexHookEvents: 1_000,
+  evidenceCenterRecords: 1_200,
+  evidenceLedger: 500,
+  refusals: 600,
+});
+
+/**
+ * The canonical public state remains intentionally complete for API clients and
+ * compatibility tests. The browser polls much more frequently and only renders a
+ * recent working set, so it asks for this bounded projection via Accept. Keep
+ * active, pending-decision, and attention runs even when they are older than the
+ * normal recent window; all invocation-linked collections then follow the same
+ * retained id set so a row never opens into an unrelated dossier.
+ */
+export function buildConsoleState(publicState) {
+  const invocations = Array.isArray(publicState?.invocations) ? publicState.invocations : [];
+  const recentInvocations = invocations
+    .map((invocation, index) => ({ invocation, index }))
+    .sort((left, right) => consoleInvocationTimestamp(right.invocation) - consoleInvocationTimestamp(left.invocation) || left.index - right.index)
+    .map(({ invocation }) => invocation);
+  const protectedInvocationIds = consoleProtectedInvocationIds(publicState);
+  const retainedInvocationIds = new Set();
+
+  for (const invocation of recentInvocations) {
+    if (!protectedInvocationIds.has(invocation?.id)) continue;
+    if (invocation?.id) retainedInvocationIds.add(invocation.id);
+  }
+  for (const invocation of recentInvocations) {
+    if (retainedInvocationIds.size >= CONSOLE_INVOCATION_LIMIT) break;
+    if (!invocation?.id || retainedInvocationIds.has(invocation.id)) continue;
+    retainedInvocationIds.add(invocation.id);
+  }
+  const retainedInvocations = recentInvocations.filter((invocation) => retainedInvocationIds.has(invocation?.id));
+
+  const totals = { invocations: invocations.length };
+  const truncated = [];
+  const result = { ...publicState, invocations: retainedInvocations };
+  if (retainedInvocations.length < invocations.length) truncated.push("invocations");
+
+  for (const [key, limit] of Object.entries(CONSOLE_RELATED_LIMITS)) {
+    const source = Array.isArray(publicState?.[key]) ? publicState[key] : [];
+    const retained = source
+      .filter((row) => !row?.invocationId || retainedInvocationIds.has(row.invocationId))
+      .slice(0, limit);
+    result[key] = retained;
+    totals[key] = source.length;
+    if (retained.length < source.length) truncated.push(key);
+  }
+
+  result.stateWindow = {
+    projection: "console",
+    invocationLimit: CONSOLE_INVOCATION_LIMIT,
+    totals,
+    truncated,
+  };
+  return result;
+}
+
+function consoleInvocationTimestamp(invocation) {
+  for (const value of [invocation?.updatedAt, invocation?.completedAt, invocation?.createdAt]) {
+    const timestamp = Date.parse(value ?? "");
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return 0;
+}
+
+function consoleProtectedInvocationIds(state) {
+  const protectedIds = new Set();
+  const activeStatuses = new Set([
+    "queued",
+    "dispatching",
+    "waiting_for_local_approval",
+    "running",
+    "cancelling",
+  ]);
+  for (const invocation of state?.invocations ?? []) {
+    if (invocation?.id && activeStatuses.has(invocation.status)) protectedIds.add(invocation.id);
+  }
+  for (const decision of state?.pendingDecisions ?? []) {
+    const invocationId = decision?.ref?.invocationId ?? decision?.invocationId;
+    if (invocationId) protectedIds.add(invocationId);
+  }
+  let attentionCount = 0;
+  for (const row of state?.evidenceLedger ?? []) {
+    if (!row?.attention || !row?.invocationId) continue;
+    protectedIds.add(row.invocationId);
+    attentionCount += 1;
+    if (attentionCount >= CONSOLE_ATTENTION_INVOCATION_LIMIT) break;
+  }
+  return protectedIds;
+}
 
 export function buildPublicState({
   namespace,
@@ -24,6 +139,7 @@ export function buildPublicState({
   ledgerSummary,
   budgetStatuses,
   teamBudgetStatuses,
+  channelReadiness = null,
   actor = null,
 }) {
   // Tenancy scoping. With no actor (or one whose team owns everything, i.e.
@@ -52,7 +168,7 @@ export function buildPublicState({
     if (!String(event?.type ?? "").startsWith("ssh.target.")) return true;
     return sshTargetIdVisible(event?.data?.targetId);
   };
-  const projects = (state.projects ?? []).filter((p) => projectVisible(p.id));
+  const projects = (state.projects ?? []).filter((p) => projectVisible(p.id) && p.hiddenFromNavigation !== true);
   const profileVisible = (row) => {
     if (teamId != null && (row?.ownerTeamId ?? LOCAL_TEAM_ID) !== teamId) return false;
     return !actor?.userId || (row?.userId ?? LOCAL_USER_ID) === actor.userId;
@@ -172,6 +288,16 @@ export function buildPublicState({
   const channelEvents = byChannel(state.channelEvents);
   const channelConversations = byChannel(state.channelConversations);
   const channelDeliveries = byChannel(state.channelDeliveries);
+  const channelIntakeGroups = byChannel(state.channelIntakeGroups);
+  const channelTaskThreads = byChannel(state.channelTaskThreads);
+  const channelObjectRecords = (state.channelObjectRecords ?? []).filter((record) =>
+    (teamId == null || (record?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId) && projectVisible(record?.projectId));
+  const channelObjectFileSources = (state.channelObjectFileSources ?? []).filter((source) =>
+    (teamId == null || (source?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId) && projectVisible(source?.projectId));
+  const channelLifecycleSummaries = businessLifecycleSummaries({
+    records: channelObjectRecords,
+    sources: channelObjectFileSources,
+  });
   // A compare run is visible when it spans at least one invocation the team can
   // see; unscoped mode passes everything through.
   const byCompareRun = (rows) =>
@@ -223,6 +349,28 @@ export function buildPublicState({
   const visibleWorkItems = (state.workItems ?? []).filter(
     (item) => teamId == null || (item.ownerTeamId ?? LOCAL_TEAM_ID) === teamId,
   );
+  const boundAutoRunIds = new Set();
+  const boundInvocationIds = new Set();
+  for (const item of visibleWorkItems) {
+    for (const binding of item.executionBindings ?? []) {
+      if (binding.kind === "auto_run" && binding.targetId) boundAutoRunIds.add(binding.targetId);
+      if (binding.kind === "application_invocation" && (binding.id ?? binding.targetId)) {
+        boundInvocationIds.add(binding.id ?? binding.targetId);
+      }
+    }
+  }
+  const boundAutoRuns = autoRuns.filter((run) => boundAutoRunIds.has(run.id));
+  for (const run of boundAutoRuns) {
+    if (run.invocationId) boundInvocationIds.add(run.invocationId);
+  }
+  const boundInvocations = visibleInvocations.filter((invocation) => boundInvocationIds.has(invocation.id));
+  const boundApprovals = approvalRequests.filter((approval) => boundInvocationIds.has(approval.invocationId));
+  const workbenchVersionTimestamps = [
+    ...visibleWorkItems.map((item) => item.updatedAt),
+    ...boundAutoRuns.map((run) => run.updatedAt ?? run.createdAt),
+    ...boundInvocations.map((invocation) => invocation.updatedAt ?? invocation.completedAt ?? invocation.createdAt),
+    ...boundApprovals.map((approval) => approval.updatedAt ?? approval.decidedAt ?? approval.createdAt),
+  ].filter(Boolean);
   const workItemSummary = {
     total: visibleWorkItems.length,
     open: visibleWorkItems.filter((item) => (item.businessState ?? item.state) === "open").length,
@@ -232,6 +380,10 @@ export function buildPublicState({
     ).length,
     updatedAt: visibleWorkItems.reduce(
       (latest, item) => item.updatedAt > latest ? item.updatedAt : latest,
+      "",
+    ) || null,
+    homeWorkbenchUpdatedAt: workbenchVersionTimestamps.reduce(
+      (latest, value) => value > latest ? value : latest,
       "",
     ) || null,
   };
@@ -651,13 +803,19 @@ export function buildPublicState({
     channelEvents,
     channelConversations,
     channelDeliveries,
+    channelIntakeGroups,
+    channelTaskThreads,
     channelTaskRequests,
+    channelLifecycleSummaries,
+    channelIntentMetrics: isAdminScope ? state.channelIntentMetrics ?? null : null,
     channelOperations: channelOperations({
       channels,
       channelIdentities,
       channelEvents,
       channelConversations,
       channelDeliveries,
+      channelTaskThreads,
+      readinessForChannel: channelReadiness,
     }),
   };
 }

@@ -3,6 +3,13 @@
 This folder contains low-fidelity, repo-owned prototypes used before production
 Web Console implementation.
 
+## Local Tasks And External Work
+
+- [local-task-external-work-separation.md](local-task-external-work-separation.md)
+
+The contract keeps the ordinary Tasks page local and moves code-host Issues and
+pull/merge requests into a separate External work surface.
+
 ## Home Stakeholder And AI Workbench
 
 Files:
@@ -21,6 +28,26 @@ Use the scene tabs, attention counters, requester filters, and "needs my action"
 toggle to review the relationship between human follow-up and derived AI status.
 The prototype intentionally routes detailed run, approval, and evidence work to
 their canonical surfaces instead of recreating those surfaces on Home.
+
+## Work Item Report Review
+
+Production browser visual QA:
+
+- [work-item-report-review.visual-qa.md](work-item-report-review.visual-qa.md)
+
+The review covers ordinary draft, stale-source, and confirmed states in the
+canonical Local Issue report section. Home remains a compact status and
+navigation surface and does not own a second report editor.
+
+## Work Item Report Delivery
+
+Production browser visual QA:
+
+- [work-item-report-delivery.visual-qa.md](work-item-report-delivery.visual-qa.md)
+
+The delivery review covers the exact channel and conversation recipient,
+immutable confirmed content, explicit external-send boundary, governed send,
+and provider receipt without adding task completion or closure controls.
 
 ## Local Issue Follow-up Fields
 

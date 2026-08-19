@@ -17,7 +17,13 @@ const RUNTIME_IDS = new Map([
 // the slowest probe, not the sum.
 export async function collectApplicationBinaryReadiness(
   manifest,
-  { now = () => new Date().toISOString(), resolveBinary = binaryAvailableOnPath, runVersion = defaultRunVersion, runAuthentication = defaultRunAuthentication } = {},
+  {
+    now = () => new Date().toISOString(),
+    resolveBinary = binaryAvailableOnPath,
+    runVersion = defaultRunVersion,
+    runAuthentication = defaultRunAuthentication,
+    environmentForCommand = () => undefined,
+  } = {},
 ) {
   const entries = (manifest?.applicationWrapperCommands ?? [])
     .map((entry) => ({
@@ -32,10 +38,19 @@ export async function collectApplicationBinaryReadiness(
     entries.map(async ({ command, capabilityPrefix, probe, authenticationProbe }) => {
       for (const candidate of probe.candidates) {
         if (!resolveBinary(candidate.executable)) continue;
-        const version = sanitizeVersion(await runVersion(candidate.executable, candidate.args));
+        const version = sanitizeVersion(await runVersion(
+          candidate.executable,
+          candidate.args,
+          environmentForCommand(candidate.executable),
+        ));
         if (version) {
           const authentication = authenticationProbe
-            ? await runAuthentication(authenticationProbe.executable, authenticationProbe.args, authenticationProbe.format)
+            ? await runAuthentication(
+                authenticationProbe.executable,
+                authenticationProbe.args,
+                authenticationProbe.format,
+                environmentForCommand(authenticationProbe.executable),
+              )
             : null;
           return {
             runtimeId: runtimeIdFor(command),
@@ -97,13 +112,13 @@ function dedupeCandidates(candidates) {
   });
 }
 
-async function defaultRunVersion(command, args = ["--version"]) {
-  const result = await spawnCapture(command, args, { encoding: "utf8", windowsHide: true, timeout: 3000 });
+async function defaultRunVersion(command, args = ["--version"], env = undefined) {
+  const result = await spawnCapture(command, args, { encoding: "utf8", windowsHide: true, timeout: 3000, ...(env ? { env } : {}) });
   return result.status === 0 ? result.stdout || result.stderr : "";
 }
 
-async function defaultRunAuthentication(command, args, format) {
-  const result = await spawnCapture(command, args, { encoding: "utf8", windowsHide: true, timeout: 5000 });
+async function defaultRunAuthentication(command, args, format, env = undefined) {
+  const result = await spawnCapture(command, args, { encoding: "utf8", windowsHide: true, timeout: 5000, ...(env ? { env } : {}) });
   if (format === "claude-json") {
     try {
       const parsed = JSON.parse(String(result.stdout ?? "").trim());

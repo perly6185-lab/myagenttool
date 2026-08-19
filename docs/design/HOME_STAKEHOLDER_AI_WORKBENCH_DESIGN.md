@@ -1,6 +1,6 @@
 # 首页关系人跟进与 AI 执行工作台设计
 
-Status: proposed, ready for product review
+Status: accepted; implemented through PR 6's deterministic report review UI and PR 8's governed report delivery.
 
 Related: `docs/engineering/HOME_WORKBENCH_INFORMATION_ARCHITECTURE_PLAN.md`
 
@@ -275,7 +275,7 @@ Issue 详情的“关系与交付”卡和“AI 执行”卡保持分离：
 ### 后续：汇报闭环
 
 - 记录一次进展及下次跟进；
-- AI 生成面向 Boss、上级、客户或同事的汇报草稿；
+- 当前由固定结构化模板生成面向 Boss、上级、客户或同事的汇报草稿；若后续接入语言模型，必须单独标识模型与策略版本；
 - 人工确认后才能外发或关闭任务。
 
 汇报草稿是 Issue 所有的独立、版本化资源，而不是新的任务状态。首阶段服务端契约为：
@@ -319,6 +319,28 @@ type WorkItemFollowUpReminder = {
 重新安排/清除下次跟进、完成、关闭或归档任务会自动解决已有提醒并追加活动审计。浏览器通知
 沿用现有显式开启机制且只显示数量；提醒投影不包含汇报正文、原始 transcript、凭证、收件人
 地址或渠道发送控制。真正外发仍属于 PR 8。
+### PR 8：受控外发与发送回执
+
+外发是汇报复核之后的独立两步操作，不复用“确认汇报”的命令：
+
+```text
+POST /api/work-items/:id/report-drafts/:draftId/deliveries
+GET  /api/work-items/:id/report-drafts/:draftId/deliveries
+GET  /api/work-items/:id/report-drafts/:draftId/deliveries/:deliveryId
+POST /api/work-items/:id/report-drafts/:draftId/deliveries/:deliveryId/send
+```
+
+第一步从已确认快照生成不可变外发预览，固定报告 revision、完整内容摘要、消息分段摘要、渠道和
+会话收件人；目标不存在、跨团队、渠道禁用或报告未确认时均失败关闭。第二步只接受与
+`work_item.report.deliver + deliveryId` 精确绑定的新单次审批令牌，并在目标与分段摘要仍一致时
+原子写入所有渠道投递。幂等键重放返回原结果，不允许同键切换内容或目标。
+
+外发记录状态为 `preview / queued / delivered / failed`。`queued` 之后的状态由所有渠道子投递
+汇总，回执显示已送达/失败分段数、尝试次数、提供商回执 ID 和错误码。原始外发内容与目标不进入
+公共 `/api/state`，只通过工作项和团队隔离的专用接口读取；记录及回执跨重启持久化。
+
+真正外发不会隐式完成或关闭工作项，也不改变业务状态、规划状态、执行状态或工作项 revision。
+用户必须先看到准确的渠道、提供商、收件人和不可变消息正文，再在独立确认框中授权一次发送。
 
 ## 10. MVP 验收标准
 
@@ -330,11 +352,13 @@ type WorkItemFollowUpReminder = {
 - 关系筛选、关注筛选、刷新和窄屏布局行为稳定。
 - 历史任务明确显示“未标注”，不会被误认为自己提出。
 - 首页没有复制 Run transcript、完整审批或证据详情。
+- 已确认汇报可以预览准确的渠道、收件人和不可变内容，经单次审批后真正外发并查看渠道回执。
+- 外发成功、失败或重试均不自动完成或关闭工作项。
 
 ## 11. MVP 非目标
 
 - 自动从邮件、会议或聊天创建联系人档案；
 - 按关系类型自动修改权限或审批策略；
-- 自动向外部联系人发送进展；
+- 无人确认、无目标预览或无单次审批的自动外发；
 - 以手工百分比作为主要进度表达；
 - 在首页重建完整 Run records、Approvals 或 Evidence 页面。

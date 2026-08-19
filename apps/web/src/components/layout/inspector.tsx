@@ -1,13 +1,14 @@
-import type { ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { DeviceInspector } from "@/features/devices/device-inspector";
-import { GovernanceInspector } from "@/features/integrations/governance-inspector";
-import { RunContextInspector } from "@/features/invocations/run-context-inspector";
-import { SessionHistory } from "@/features/invocations/session-history";
-import { ToolsInspector } from "@/features/tools/tools-inspector";
-import { ApplicationsInspector } from "@/features/applications/applications-inspector";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+
+const DeviceInspector = lazy(() => import("@/features/devices/device-inspector").then((module) => ({ default: module.DeviceInspector })));
+const GovernanceInspector = lazy(() => import("@/features/integrations/governance-inspector").then((module) => ({ default: module.GovernanceInspector })));
+const RunContextInspector = lazy(() => import("@/features/invocations/run-context-inspector").then((module) => ({ default: module.RunContextInspector })));
+const SessionHistory = lazy(() => import("@/features/invocations/session-history").then((module) => ({ default: module.SessionHistory })));
+const ToolsInspector = lazy(() => import("@/features/tools/tools-inspector").then((module) => ({ default: module.ToolsInspector })));
+const ApplicationsInspector = lazy(() => import("@/features/applications/applications-inspector").then((module) => ({ default: module.ApplicationsInspector })));
 
 function HintCard({ title, body }: { title: string; body: string }) {
   return (
@@ -107,7 +108,9 @@ export function Inspector() {
       aria-label={t("inspector.label")}
       className="hidden h-full w-80 shrink-0 overflow-y-auto border-l border-border bg-background px-4 py-5 xl:block"
     >
-      {content}
+      <Suspense fallback={<div className="h-24 animate-pulse rounded-lg bg-muted/40" aria-hidden />}>
+        {content}
+      </Suspense>
     </aside>
   );
 }

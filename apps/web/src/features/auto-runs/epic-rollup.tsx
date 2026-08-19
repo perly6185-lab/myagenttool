@@ -1,6 +1,6 @@
 import { GitFork, GitMerge, CircleDot, CircleDashed, XCircle, Play, Loader2 } from "lucide-react";
 import { api, useAsyncAction } from "@/data/use-console-actions";
-import type { AutoRunRecord } from "./auto-runs-view";
+import type { AutoRunRecord } from "./auto-run-model";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // Epic S4: live rollup of a decomposed epic's children. Each child rolls up from its

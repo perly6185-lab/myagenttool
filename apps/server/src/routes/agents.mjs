@@ -7,7 +7,7 @@ import {
   normalizeBridgeSessionId,
   publicDeviceView,
 } from "../runtime/bridge-auth.mjs";
-import { listDevices, primaryDevice } from "../runtime/device.mjs";
+import { listDevices, normalizeDeviceTimeZone, primaryDevice } from "../runtime/device.mjs";
 import { runtimeIdForCommand } from "../services/runtime-catalog.mjs";
 
 export async function handleAgentRoutes({
@@ -35,22 +35,35 @@ export async function handleAgentRoutes({
   issueBridgeCredential,
   requireBridgeCredential,
   supersedeBridgeSession,
+  persistStateSoon = () => {},
 }) {
   if (req.method === "POST" && url.pathname === "/api/bridge/readiness") {
     const device = requireBridgeCredential({ req, res, sendJson });
     if (!device) return true;
     const body = await readJson(req);
+    const timeZone = body?.timeZone == null ? null : normalizeDeviceTimeZone(body.timeZone);
+    if (body?.timeZone != null && !timeZone) {
+      sendJson(res, 400, { error: "invalid_device_timezone" });
+      return true;
+    }
     const runtimeReadiness = normalizeRuntimeReadiness(body?.runtimeReadiness ?? body?.applicationBinaryReadiness, now());
     device.runtimeReadiness = runtimeReadiness;
     device.applicationBinaryReadiness = runtimeReadiness;
     device.applicationCredentialReadiness = normalizeApplicationCredentialReadiness(body?.applicationCredentialReadiness, now());
+    if (timeZone) device.timeZone = timeZone;
     device.updatedAt = now();
+    persistStateSoon();
     sendJson(res, 200, { device: publicDeviceView(device) });
     return true;
   }
 
   if (req.method === "POST" && url.pathname === "/api/bridge/register") {
     const body = await readJson(req);
+    const timeZone = body?.timeZone == null ? null : normalizeDeviceTimeZone(body.timeZone);
+    if (body?.timeZone != null && !timeZone) {
+      sendJson(res, 400, { error: "invalid_device_timezone" });
+      return true;
+    }
     const bodyBridgeSessionId = body.bridgeSessionId == null
       ? null
       : normalizeBridgeSessionId(body.bridgeSessionId);
@@ -150,6 +163,7 @@ export async function handleAgentRoutes({
     device.runtimeReadiness = runtimeReadiness;
     device.applicationBinaryReadiness = runtimeReadiness;
     device.applicationCredentialReadiness = normalizeApplicationCredentialReadiness(body.applicationCredentialReadiness, device.lastSeenAt);
+    if (timeZone) device.timeZone = timeZone;
     device.updatedAt = now();
     // NOTE: this marks every local agent available, not just the ones located on
     // the registering device. Correct while one device exists; scoping it to
@@ -181,6 +195,7 @@ export async function handleAgentRoutes({
       level: "info",
       message: "Desktop Bridge registered local demo device.",
     });
+    persistStateSoon();
     sendJson(res, 200, {
       ok: true,
       device: publicDeviceView(device),

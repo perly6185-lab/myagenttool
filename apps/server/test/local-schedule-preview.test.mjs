@@ -94,3 +94,32 @@ test("uses the terminal timezone when UTC and the local calendar are on differen
   assert.deepEqual(shanghai.horizon, { yesterday: "2026-07-30", today: "2026-07-31", tomorrow: "2026-08-01" });
   assert.deepEqual(losAngeles.horizon, { yesterday: "2026-07-29", today: "2026-07-30", tomorrow: "2026-07-31" });
 });
+
+test("#1614: planRevision ignores dispatch churn but tracks schedule content", () => {
+  const opts = { now: () => NOW, timeZone: "UTC" };
+  const base = computeLocalSchedulePreview(capacity([item("a"), item("b")]), opts);
+
+  // Dispatch activity between preview and apply: an invocation starts (inFlight
+  // rises, terminal state wobbles, an item's readiness flips to waiting). None
+  // of that changes what the plan contains — the revision must hold.
+  const churned = capacity([
+    item("a", { readiness: { state: "waiting_capacity", reason: "terminal_at_capacity" } }),
+    item("b"),
+  ]);
+  churned.capacity.inFlight = 1;
+  churned.terminal.status = "offline";
+  assert.equal(computeLocalSchedulePreview(churned, opts).planRevision, base.planRevision,
+    "in-flight/readiness/terminal-status churn must not 409 a confirmed plan");
+
+  // Real content changes must each produce a different revision.
+  const bumped = computeLocalSchedulePreview(capacity([item("a", { revision: 2 }), item("b")]), opts);
+  const moved = computeLocalSchedulePreview(capacity([item("a", { plannedDate: "2026-08-01" }), item("b")]), opts);
+  const resized = computeLocalSchedulePreview(
+    capacity([item("a", { estimate: { minutes: 120, source: "history", confidence: "high", sampleSize: 3 } }), item("b")]),
+    opts,
+  );
+  const widened = computeLocalSchedulePreview(capacity([item("a"), item("b")], 2), opts);
+  const revisions = [base, bumped, moved, resized, widened].map((preview) => preview.planRevision);
+  assert.equal(new Set(revisions).size, revisions.length,
+    "item revision, planned date, estimate, and concurrency changes must each invalidate");
+});

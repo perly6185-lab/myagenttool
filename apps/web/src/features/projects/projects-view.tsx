@@ -8,6 +8,8 @@ import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import { WorktreeView } from "@/features/projects/worktree-view";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
+import { useCurrentProjectSelection } from "@/hooks/use-current-project-selection";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
@@ -19,82 +21,157 @@ import type {
 } from "@/lib/console-state";
 
 export function ProjectsView() {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
   const { data: state } = useConsoleState();
-  const { execute, pending } = useAsyncAction();
+  const projectSelection = useCurrentProjectSelection();
+  const navigate = usePageNavigation();
   const projects = state?.projects ?? [];
-  const targets = state?.projectTargets ?? [];
   const worktrees = state?.worktrees ?? [];
-  const budgetByProject = new Map((state?.budgetStatuses ?? []).map((b) => [b.projectId, b]));
-
-  const selectedProjectId = useUiStore((s) => s.selectedProjectId);
-  const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
-  const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
-  const activeId = selectedProjectId ?? projects[0]?.id ?? null;
+  const activeId = state?.currentProjectId ?? projects[0]?.id ?? null;
+  const zh = i18n.language.startsWith("zh");
+  const copy = zh ? {
+    title: "项目",
+    description: "选择当前工作项目。任务创建和处理会自动使用这里的项目。",
+    current: "当前项目",
+    switch: "切换到此项目",
+    tasks: "{{count}} 项进行中的工作",
+    ready: "可以开始创建任务",
+    needsSetup: "项目仍需完成设置",
+    add: "添加项目",
+    addHint: "仅在需要新的工作空间时使用。",
+    advanced: "高级项目设置",
+    advancedHint: "仓库、工作树、隔离、预算和归档设置已移至“我的设置”。",
+  } : {
+    title: "Projects",
+    description: "Choose your current work project. New and existing tasks use this project automatically.",
+    current: "Current project",
+    switch: "Switch to this project",
+    tasks: "{{count}} active work items",
+    ready: "Ready for new tasks",
+    needsSetup: "Project setup still needs attention",
+    add: "Add project",
+    addHint: "Use this only when you need a new workspace.",
+    advanced: "Advanced project settings",
+    advancedHint: "Repository, worktree, isolation, budget, and archive controls are now under My settings.",
+  };
+  const activeWorkByProject = new Map<string, Set<string>>();
+  for (const [stateKey, lens] of Object.entries(state?.workBoard?.states ?? {})) {
+    if (stateKey === "done") continue;
+    for (const item of lens.items) {
+      if (!item.projectId) continue;
+      const ids = activeWorkByProject.get(item.projectId) ?? new Set<string>();
+      ids.add(item.workItemId ?? item.id);
+      activeWorkByProject.set(item.projectId, ids);
+    }
+  }
 
   // A selected worktree opens its focused session view in place of the list.
   const openWorktree = worktrees.find((w) => w.id === selectedWorktreeId);
   if (openWorktree) return <WorktreeView worktree={openWorktree} />;
 
-  function archive(project: ProjectSnapshot) {
-    const next = project.status === "archived" ? "active" : "archived";
-    void execute(() => api.updateProject(project.id, { status: next }));
-  }
-
-  function toggleIsolation(project: ProjectSnapshot) {
-    const next = project.isolation === "worktree" ? "shared" : "worktree";
-    void execute(() => api.updateProject(project.id, { isolation: next }));
-  }
-
-  function removeWorktree(id: string) {
-    if (id === selectedWorktreeId) setSelectedWorktreeId(null);
-    void execute(() => api.removeWorktree(id));
-  }
-
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
+    <div className="mx-auto grid w-full max-w-4xl gap-4">
       <Card>
         <CardHeader>
-          <CardTitle>{t("projects.title")}</CardTitle>
-          <p className="text-sm text-muted-foreground">
-            {t("projects.description")}
-          </p>
+          <CardTitle>{copy.title}</CardTitle>
+          <p className="text-sm text-muted-foreground">{copy.description}</p>
         </CardHeader>
-        <CardContent className="space-y-2">
+        <CardContent className="space-y-3">
+          {projectSelection.error ? (
+            <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {t("shell.projectSwitchFailed")}: {projectSelection.error}
+            </p>
+          ) : null}
           {projects.length === 0 ? (
             <EmptyState title={t("projects.empty")} hint={t("projects.emptyHint")} />
           ) : (
-            projects.map((project) => (
-              <ProjectRow
-                key={project.id}
-                project={project}
-                target={targets.find((t) => t.projectId === project.id)}
-                worktrees={worktrees.filter((w) => w.projectId === project.id)}
-                budget={budgetByProject.get(project.id)}
-                active={project.id === activeId}
-                current={project.id === state?.currentProjectId}
-                onSelect={() => setSelectedProjectId(project.id)}
-                onArchive={() => archive(project)}
-                onToggleIsolation={() => toggleIsolation(project)}
-                onRemoveWorktree={removeWorktree}
-                selectedWorktreeId={selectedWorktreeId}
-                busy={pending}
-              />
-            ))
+            projects.filter((project) => project.status !== "archived").map((project) => {
+              const current = project.id === activeId;
+              const target = state?.projectTargets?.find((item) => item.projectId === project.id);
+              const taskCount = activeWorkByProject.get(project.id)?.size ?? 0;
+              return (
+                <div key={project.id} className={cn("flex flex-col gap-3 rounded-xl border p-4 sm:flex-row sm:items-center", current ? "border-primary bg-primary/[0.05]" : "border-border")}>
+                  <span className="size-3 shrink-0 rounded-full" style={{ backgroundColor: project.color }} aria-hidden />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="truncate text-sm font-semibold">{project.name}</h2>
+                      {current ? <Badge tone="success">{copy.current}</Badge> : null}
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {copy.tasks.replace("{{count}}", String(taskCount))} · {target && target.state !== "ready" ? copy.needsSetup : copy.ready}
+                    </p>
+                  </div>
+                  {!current ? <Button size="sm" variant="secondary" disabled={projectSelection.pending} onClick={() => void projectSelection.selectProject(project.id, state?.currentProjectId)}>{copy.switch}</Button> : null}
+                </div>
+              );
+            })
           )}
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>{t("projects.register")}</CardTitle>
-          <p className="text-sm text-muted-foreground">{t("projects.registerHint")}</p>
-        </CardHeader>
-        <CardContent>
-          <ProjectRegisterForm />
+        <CardContent className="space-y-3 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div><h2 className="text-sm font-semibold">{copy.advanced}</h2><p className="text-xs text-muted-foreground">{copy.advancedHint}</p></div>
+            <Button size="sm" variant="secondary" onClick={() => navigate("settings")}>{copy.advanced}</Button>
+          </div>
+          <details className="rounded-lg border border-border px-3 py-2">
+            <summary className="cursor-pointer text-sm font-medium">{copy.add}</summary>
+            <p className="mt-2 text-xs text-muted-foreground">{copy.addHint}</p>
+            <div className="mt-3 border-t border-border pt-3"><ProjectRegisterForm /></div>
+          </details>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+export function AdvancedProjectsSettings() {
+  const { t } = useAppTranslation();
+  const { data: state } = useConsoleState();
+  const { execute, pending } = useAsyncAction();
+  const projectSelection = useCurrentProjectSelection();
+  const projects = state?.projects ?? [];
+  const targets = state?.projectTargets ?? [];
+  const worktrees = state?.worktrees ?? [];
+  const budgetByProject = new Map((state?.budgetStatuses ?? []).map((b) => [b.projectId, b]));
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
+  const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
+  const activeId = state?.currentProjectId ?? projects[0]?.id ?? null;
+  const archive = (project: ProjectSnapshot) => void execute(() => api.updateProject(project.id, { status: project.status === "archived" ? "active" : "archived" }));
+  const toggleIsolation = (project: ProjectSnapshot) => void execute(() => api.updateProject(project.id, { isolation: project.isolation === "worktree" ? "shared" : "worktree" }));
+  const removeWorktree = (id: string) => {
+    if (id === selectedWorktreeId) setSelectedWorktreeId(null);
+    void execute(() => api.removeWorktree(id));
+  };
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.7fr)]">
+      <div className="space-y-2">
+        {projects.length ? projects.map((project) => (
+          <ProjectRow
+            key={project.id}
+            project={project}
+            target={targets.find((target) => target.projectId === project.id)}
+            worktrees={worktrees.filter((worktree) => worktree.projectId === project.id)}
+            budget={budgetByProject.get(project.id)}
+            active={project.id === activeId}
+            current={project.id === state?.currentProjectId}
+            onSelect={() => void projectSelection.selectProject(project.id, state?.currentProjectId)}
+            onArchive={() => archive(project)}
+            onToggleIsolation={() => toggleIsolation(project)}
+            onRemoveWorktree={removeWorktree}
+            selectedWorktreeId={selectedWorktreeId}
+            busy={pending || projectSelection.pending}
+          />
+        )) : <EmptyState title={t("projects.empty")} hint={t("projects.emptyHint")} />}
+      </div>
+      <div className="rounded-xl border border-border p-4">
+        <h3 className="text-sm font-semibold">{t("projects.register")}</h3>
+        <p className="mb-3 text-xs text-muted-foreground">{t("projects.registerHint")}</p>
+        <ProjectRegisterForm />
+      </div>
     </div>
   );
 }

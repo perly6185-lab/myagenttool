@@ -17,6 +17,7 @@ export function createReadModelRuntime({
   budgetStatuses,
   teamBudgetStatuses,
   expireCodexApprovalBrokerRequests,
+  channelReadiness,
 }) {
   function loopRoutineReadModelForCurrentProject() {
     return buildLoopRoutineStateSummary(currentLoopRoutineProjectContext());
@@ -47,6 +48,7 @@ export function createReadModelRuntime({
       ledgerSummary,
       budgetStatuses,
       teamBudgetStatuses,
+      channelReadiness,
       actor,
     });
   }

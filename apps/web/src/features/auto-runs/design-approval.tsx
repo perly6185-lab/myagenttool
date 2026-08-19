@@ -3,7 +3,7 @@ import { Check, Loader2, MessageSquareX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api, useAsyncAction } from "@/data/use-console-actions";
-import type { AutoRunRecord } from "./auto-runs-view";
+import type { AutoRunRecord } from "./auto-run-model";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // D4 (issue→UI-design plan): the human design gate on a posted design report.

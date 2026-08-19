@@ -41,6 +41,12 @@ const WHITELIST = {
   "invocations/completion.mjs": 2,
   // state.invocations.unshift inside createInvocation's runStateTransaction.
   "invocations/creation.mjs": 1,
+  // recordProbe/recordReauth update one observational state.sessions row each
+  // (probe verdicts + timestamps — no cross-record invariants to keep atomic).
+  // Single writer per site by the withSiteLock mutex, so there is no concurrent
+  // read-modify-write to protect; the debounce persist is the durability path on
+  // both backings (JSON snapshot + the SQLite mirror's afterFlush hook).
+  "session-manager.mjs": 2,
 };
 
 function listMjs(dir) {

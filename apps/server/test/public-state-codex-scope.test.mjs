@@ -85,11 +85,11 @@ const EVIDENCE_CENTER = [
   { id: "term", type: "file_change", invocationId: null }, // device-level manual terminal
 ];
 
-function build(actor) {
+function build(actor, state = scenarioState()) {
   return buildPublicState({
     namespace: "test",
     protocolVersion: "1",
-    state: scenarioState(),
+    state,
     defaultProjectPath: "/tmp",
     currentProject: () => null,
     defaultAgent: () => null,
@@ -162,6 +162,7 @@ test("work item summary is bounded and scoped without publishing item details", 
     blocked: 1,
     activeExecutions: 1,
     updatedAt: "2026-07-24T11:00:00.000Z",
+    homeWorkbenchUpdatedAt: "2026-07-24T11:00:00.000Z",
   });
   assert.equal(teamA.workItems, undefined);
   assert.deepEqual(teamA.workItemAlertSummary, {
@@ -188,6 +189,19 @@ test("due follow-up reminders are tenant scoped and publish no reminder internal
   assert.equal(JSON.stringify(teamA).includes("Team B private follow-up"), false);
   assert.equal(JSON.stringify(teamA).includes("wfr_b"), false);
   assert.equal(teamA.workItemFollowUpReminders, undefined);
+});
+
+test("home workbench version advances when a bound execution changes", () => {
+  const state = scenarioState();
+  state.autoRuns = [{
+    id: "aur_a",
+    projectId: "proj_a",
+    status: "running",
+    updatedAt: "2026-07-24T13:00:00.000Z",
+  }];
+  const teamA = build({ teamId: TEAM_A }, state);
+  assert.equal(teamA.workItemSummary.updatedAt, "2026-07-24T11:00:00.000Z");
+  assert.equal(teamA.workItemSummary.homeWorkbenchUpdatedAt, "2026-07-24T13:00:00.000Z");
 });
 
 test("unscoped (no actor / single-team) is a pass-through", () => {

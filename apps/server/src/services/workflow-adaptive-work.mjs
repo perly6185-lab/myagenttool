@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { actorCanAccessProject } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { normalizeRoutineTriggerType } from "./business-routines.mjs";
 
 const POLICY_MODES = new Set(["observe", "assist", "execute"]);
 const FEEDBACK_DECISIONS = new Set(["accepted", "rejected"]);
@@ -12,6 +13,19 @@ const AUTO_DOCUMENT_TYPES = new Set([
   "inquiry_ledger",
   "quotation_ledger",
   "order_ledger",
+  "contract_review",
+  "purchase_request",
+  "customer_complaint",
+  "weekly_report",
+  "project_acceptance",
+]);
+const ROUTINE_BRIDGED_DOCUMENT_TYPES = new Set([
+  "inquiry",
+  "contract_review",
+  "purchase_request",
+  "customer_complaint",
+  "weekly_report",
+  "project_acceptance",
 ]);
 const AUTO_CONFIDENCE_THRESHOLD = 0.9;
 const AUTO_HISTORY_THRESHOLD = 3;
@@ -30,6 +44,11 @@ const ACTIONS_BY_TYPE = Object.freeze({
   price_list: ["核对价格表版本", "将价格表作为报价参考资料"],
   customer_reference: ["核对客户资料", "将客户资料关联到后续商务任务"],
   other_reference: ["核对参考资料", "关联到对应商务任务"],
+  contract_review: ["核对合同信息", "按历史规则审查合同", "记录审查结论"],
+  purchase_request: ["核对采购申请", "按历史流程处理申请", "检查验收要求"],
+  customer_complaint: ["核对客诉信息", "按历史规则处理客诉", "记录处理结果"],
+  weekly_report: ["汇总本周工作", "按历史模板生成周报", "检查内容完整性"],
+  project_acceptance: ["核对项目验收资料", "按历史清单检查", "记录验收结论"],
 });
 const DOCUMENT_TYPES = new Set(Object.keys(ACTIONS_BY_TYPE));
 const LEARNING_MIN_EVIDENCE = 3;
@@ -66,6 +85,7 @@ export function createWorkflowAdaptiveWorkService({
   store,
   createWorkItem,
   runIntakeCycle,
+  materializeRoutineSuggestion,
 } = {}) {
   state.workflowAdaptivePolicies ??= [];
   state.workflowAdaptiveFeedback ??= [];
@@ -190,7 +210,8 @@ export function createWorkflowAdaptiveWorkService({
         && row.projectId === observation.projectId
         && row.sourceId === observation.sourceId
         && row.artifactId !== observation.artifactId
-        && row.documentType === classification.documentType
+        && normalizeRoutineTriggerType(row.documentType)
+          === normalizeRoutineTriggerType(classification.documentType)
         && ["confirmed", "corrected"].includes(row.confirmationState))
       .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")))
       .slice(0, 3)
@@ -212,13 +233,15 @@ export function createWorkflowAdaptiveWorkService({
   }
 
   function ruleDocumentConfig(rule, documentType) {
-    return rule?.configuration?.documentTypes?.find((row) => row.documentType === documentType) ?? null;
+    return rule?.configuration?.documentTypes?.find((row) =>
+      normalizeRoutineTriggerType(row.documentType) === normalizeRoutineTriggerType(documentType)) ?? null;
   }
 
   function ruleDocumentMapping(rule, documentType) {
     return [...(rule?.configuration?.typeMappings ?? [])]
-      .filter((row) => row.fromDocumentType === documentType
-        && DOCUMENT_TYPES.has(row.toDocumentType))
+      .filter((row) => normalizeRoutineTriggerType(row.fromDocumentType)
+          === normalizeRoutineTriggerType(documentType)
+        && DOCUMENT_TYPES.has(normalizeRoutineTriggerType(row.toDocumentType)))
       .sort((a, b) => Number(b.evidenceCount ?? 0) - Number(a.evidenceCount ?? 0))[0] ?? null;
   }
 
@@ -271,8 +294,10 @@ export function createWorkflowAdaptiveWorkService({
 
   function issueFor(suggestionId, actor) {
     const key = `adaptive-work:v1:${suggestionId}`;
+    const outcome = outcomeFor(suggestionId, actor);
     return (state.workItems ?? []).find((row) =>
-      row.ownerTeamId === actorTeam(actor) && row.createIdempotencyKey === key) ?? null;
+      row.ownerTeamId === actorTeam(actor)
+      && (row.createIdempotencyKey === key || row.id === outcome?.workItemId)) ?? null;
   }
 
   function feedbackFor(suggestionId, actor) {
@@ -313,10 +338,11 @@ export function createWorkflowAdaptiveWorkService({
       .map((observation) => {
         const artifact = artifacts.get(observation.artifactId);
         const classification = latestClassification(artifact, projectId, actor);
-        const detectedDocumentType = classification?.documentType ?? "unknown";
+        const detectedDocumentType = normalizeRoutineTriggerType(classification?.documentType) ?? "unknown";
         const activeRule = activeRuleFor(projectId, observation.sourceId, actor);
         const activeMapping = ruleDocumentMapping(activeRule, detectedDocumentType);
-        const documentType = activeMapping?.toDocumentType ?? detectedDocumentType;
+        const documentType = normalizeRoutineTriggerType(activeMapping?.toDocumentType)
+          ?? detectedDocumentType;
         const ruleConfig = ruleDocumentConfig(activeRule, documentType);
         const actions = ruleConfig?.actions
           ?? ACTIONS_BY_TYPE[documentType]
@@ -695,9 +721,10 @@ export function createWorkflowAdaptiveWorkService({
       if (row.decision === "rejected"
         && !row.correctedDocumentType
         && !(row.correctedActions ?? []).length) continue;
-      const documentType = DOCUMENT_TYPES.has(row.correctedDocumentType)
-        ? row.correctedDocumentType
-        : row.documentType;
+        const correctedType = normalizeRoutineTriggerType(row.correctedDocumentType);
+        const documentType = DOCUMENT_TYPES.has(correctedType)
+          ? correctedType
+          : normalizeRoutineTriggerType(row.documentType);
       if (!DOCUMENT_TYPES.has(documentType)) continue;
       const current = grouped.get(documentType) ?? { documentType, evidenceCount: 0, actions: [] };
       current.evidenceCount += 1;
@@ -1518,6 +1545,129 @@ export function createWorkflowAdaptiveWorkService({
     return { status: 200, body: { policy: policyView(projectId, sourceId, actor) } };
   }
 
+  function updateAutomation(input = {}, actor = null) {
+    const projectId = text(input.projectId, 100);
+    const sourceId = text(input.sourceId, 100);
+    if (!projectId || !projectFor(projectId, actor)) {
+      return { status: 404, body: { error: "adaptive_work_project_not_found" } };
+    }
+    if (!canManage(actor)) return { status: 403, body: { error: "adaptive_work_automation_forbidden" } };
+    if (!sourceId || !sourceFor(sourceId, projectId, actor)) {
+      return { status: 404, body: { error: "adaptive_work_source_not_found" } };
+    }
+    if (typeof input.enabled !== "boolean") {
+      return { status: 400, body: { error: "adaptive_work_automation_enabled_invalid" } };
+    }
+    if (input.enabled && input.confirmed !== true) {
+      return { status: 400, body: { error: "adaptive_work_automation_confirmation_required" } };
+    }
+    const intervalMinutes = Number(input.intervalMinutes ?? 15);
+    if (!Number.isInteger(intervalMinutes)
+      || intervalMinutes < MONITOR_MIN_INTERVAL_MINUTES
+      || intervalMinutes > MONITOR_MAX_INTERVAL_MINUTES) {
+      return { status: 400, body: { error: "adaptive_work_monitor_interval_invalid" } };
+    }
+    const currentPolicy = scopedPolicyFor(projectId, sourceId, actor);
+    const currentMonitor = monitorFor(projectId, sourceId, actor);
+    if (Number(input.expectedPolicyRevision) !== Number(currentPolicy?.revision ?? 0)) {
+      return {
+        status: 409,
+        body: {
+          error: "adaptive_work_policy_revision_conflict",
+          currentRevision: currentPolicy?.revision ?? 0,
+        },
+      };
+    }
+    if (Number(input.expectedMonitorRevision) !== Number(currentMonitor?.revision ?? 0)) {
+      return {
+        status: 409,
+        body: {
+          error: "adaptive_work_monitor_revision_conflict",
+          currentRevision: currentMonitor?.revision ?? 0,
+        },
+      };
+    }
+
+    const timestamp = now();
+    const mode = input.enabled ? "execute" : "assist";
+    runTx(() => {
+      if (currentPolicy) Object.assign(currentPolicy, {
+        mode,
+        revision: currentPolicy.revision + 1,
+        updatedAt: timestamp,
+        updatedBy: actorUser(actor),
+      });
+      else state.workflowAdaptivePolicies.push({
+        id: nextId("awp"),
+        ownerTeamId: actorTeam(actor),
+        projectId,
+        sourceId,
+        mode,
+        revision: 1,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        createdBy: actorUser(actor),
+        updatedBy: actorUser(actor),
+      });
+
+      if (currentMonitor) Object.assign(currentMonitor, {
+        enabled: input.enabled,
+        intervalMinutes,
+        revision: currentMonitor.revision + 1,
+        state: input.enabled ? "scheduled" : "disabled",
+        nextRunAt: input.enabled ? timestamp : null,
+        lastError: input.enabled ? currentMonitor.lastError : null,
+        consecutiveFailures: input.enabled ? currentMonitor.consecutiveFailures : 0,
+        authorizedBy: actorUser(actor),
+        updatedAt: timestamp,
+        updatedBy: actorUser(actor),
+      });
+      else state.workflowAdaptiveMonitors.push({
+        id: nextId("awm"),
+        ownerTeamId: actorTeam(actor),
+        projectId,
+        sourceId,
+        enabled: input.enabled,
+        intervalMinutes,
+        revision: 1,
+        state: input.enabled ? "scheduled" : "disabled",
+        nextRunAt: input.enabled ? timestamp : null,
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+        consecutiveFailures: 0,
+        authorizedBy: actorUser(actor),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        createdBy: actorUser(actor),
+        updatedBy: actorUser(actor),
+      });
+      appendEvent({
+        invocationId: null,
+        type: "workflow_adaptive_automation_updated",
+        level: "info",
+        message: "Workflow automatic handling was updated atomically.",
+        data: {
+          projectId,
+          sourceId,
+          enabled: input.enabled,
+          mode,
+          intervalMinutes,
+          actorTeamId: actorTeam(actor),
+          actorId: actorUser(actor),
+        },
+      });
+    });
+    return {
+      status: 200,
+      body: {
+        enabled: input.enabled,
+        policy: policyView(projectId, sourceId, actor),
+        monitor: monitorView(projectId, sourceId, actor),
+      },
+    };
+  }
+
   function createIssueFromSuggestion(suggestion, actor, { automatic = false } = {}) {
     if (suggestion.issue) {
       return {
@@ -1592,6 +1742,66 @@ export function createWorkflowAdaptiveWorkService({
     };
   }
 
+  async function createAutomaticIssueFromSuggestion(suggestion, actor) {
+    if (ROUTINE_BRIDGED_DOCUMENT_TYPES.has(normalizeRoutineTriggerType(suggestion.documentType))
+      && typeof materializeRoutineSuggestion === "function") {
+      const result = await materializeRoutineSuggestion(suggestion, actor);
+      if (result?.status >= 400) return result;
+      const workItem = result?.body?.workItem;
+      if (!workItem?.id) {
+        return { status: 502, body: { error: "adaptive_work_routine_materialization_invalid" } };
+      }
+      runTx(() => upsertOutcome(suggestion, workItem, actor));
+      appendEvent({
+        invocationId: null,
+        type: "workflow_adaptive_routine_auto_created",
+        level: "info",
+        message: "A trusted work item was materialized and advanced with its uniquely matched published routine.",
+        data: {
+          projectId: suggestion.projectId,
+          sourceId: suggestion.sourceId,
+          suggestionId: suggestion.id,
+          workItemId: workItem.id,
+          routineRunId: result.body.routineRunId ?? null,
+          actorTeamId: actorTeam(actor),
+          actorId: actorUser(actor),
+        },
+      });
+      return {
+        status: result.status,
+        body: {
+          ...result.body,
+          workItem,
+          replayed: Boolean(result.body.replayed),
+        },
+      };
+    }
+    return createIssueFromSuggestion(suggestion, actor, { automatic: true });
+  }
+
+  function automationFailureAssistance(errorBody = {}) {
+    const error = errorBody.error ?? "adaptive_work_automation_failed";
+    if (error === "workflow_intake_routine_selection_required") {
+      return {
+        kind: "routine_selection",
+        reason: error,
+        action: "choose_routine",
+      };
+    }
+    if (["workflow_intake_routine_not_available", "routine_definition_not_available_for_new_issues"]
+      .includes(error)) {
+      return { kind: "workflow_setup", reason: error, action: "review_workflow" };
+    }
+    if (["workflow_intake_business_identity_required", "workflow_intake_business_identity_conflict"]
+      .includes(error)) {
+      return { kind: "needs_input", reason: error, action: "review_business_identity" };
+    }
+    if (error.includes("evidence") || error.includes("classification") || error.includes("observation")) {
+      return { kind: "needs_review", reason: error, action: "review_source_file" };
+    }
+    return { kind: "failed", reason: error, action: "retry_or_review" };
+  }
+
   function materialize(input = {}, actor = null) {
     if (!canUse(actor)) return { status: 403, body: { error: "adaptive_work_forbidden" } };
     if (input.confirmed !== true) {
@@ -1609,7 +1819,7 @@ export function createWorkflowAdaptiveWorkService({
     return createIssueFromSuggestion(suggestion, actor);
   }
 
-  function reconcile(input = {}, actor = null) {
+  async function reconcile(input = {}, actor = null) {
     const projectId = text(input.projectId, 100);
     const sourceId = text(input.sourceId, 100);
     if (!projectId || !projectFor(projectId, actor)) {
@@ -1627,16 +1837,24 @@ export function createWorkflowAdaptiveWorkService({
       for (const suggestion of suggestions
         .filter((row) => row.automation.eligible && !row.issue)
         .slice(0, RECONCILE_LIMIT)) {
-        const result = createIssueFromSuggestion(suggestion, actor, { automatic: true });
+        const result = await createAutomaticIssueFromSuggestion(suggestion, actor);
         if (result.status < 400) {
           created.push({
             suggestionId: suggestion.id,
             workItemId: result.body.workItem.id,
             localRef: result.body.workItem.localRef,
             replayed: Boolean(result.body.replayed),
+            routineRunId: result.body.routineRunId ?? null,
+            executionStatus: result.body.executionStatus ?? null,
+            advancedStepKeys: result.body.advancedStepKeys ?? [],
+            assistance: result.body.assistance ?? null,
           });
         } else {
-          failures.push({ suggestionId: suggestion.id, error: result.body?.error ?? "unknown" });
+          failures.push({
+            suggestionId: suggestion.id,
+            error: result.body?.error ?? "unknown",
+            assistance: result.body?.assistance ?? automationFailureAssistance(result.body),
+          });
         }
       }
     }
@@ -1670,7 +1888,7 @@ export function createWorkflowAdaptiveWorkService({
     const note = input.note == null || input.note === "" ? null : text(input.note, 500);
     const correctedDocumentType = input.correctedDocumentType == null
       ? null
-      : text(input.correctedDocumentType, 80);
+      : normalizeRoutineTriggerType(text(input.correctedDocumentType, 80));
     const correctedActionsInput = input.correctedActions == null
       ? []
       : Array.isArray(input.correctedActions) ? input.correctedActions : null;
@@ -1776,6 +1994,7 @@ export function createWorkflowAdaptiveWorkService({
     getWorkbench,
     updatePolicy,
     updateMonitor,
+    updateAutomation,
     sweepMonitors,
     runMonitorNow,
     syncOutcomes,

@@ -2,6 +2,8 @@ import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { resolveActor } from "./auth.mjs";
 import { identityPolicyFromEnv } from "./identity-policy.mjs";
+import { configuredLoopbackToken, hostAllowed, loopbackTokenValid } from "./loopback-guard.mjs";
+import { authorizeProfessionalRequest, professionalRoleForbiddenBody } from "./route-authority.mjs";
 import { validSessionCsrf } from "../services/identity-security.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
@@ -9,6 +11,7 @@ import { handleApplicationRoutes } from "../routes/applications.mjs";
 import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
+import { handleLocalContentRoutes } from "../routes/local-content.mjs";
 import { handleMailRoutes } from "../routes/mail.mjs";
 import { handleChannelRoutes } from "../routes/channels.mjs";
 import { handleCanvasSceneRoutes } from "../routes/canvas-scenes.mjs";
@@ -25,13 +28,17 @@ import { backfillProjectGitFacts } from "../services/projects.mjs";
 import { backfillApplicationRuntimeMetadata } from "../services/applications.mjs";
 import { handleReviewFindingRoutes } from "../routes/review-findings.mjs";
 import { handleTerminalRoutes } from "../routes/terminal.mjs";
+import { handleTaskMaterialRoutes } from "../routes/task-materials.mjs";
 import { handleToolRoutes } from "../routes/tools.mjs";
 import { handleWorkItemRoutes } from "../routes/work-items.mjs";
+import { handleSessionRoutes } from "../routes/sessions.mjs";
 import { handleWorkflowMemoryRoutes } from "../routes/workflow-memory.mjs";
+import { handleChannelObjectRoutes } from "../routes/channel-objects.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
 import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
 import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
 import { terminalObservationReadModel } from "../read-models/terminal-observation.mjs";
+import { buildConsoleState, CONSOLE_STATE_MEDIA_TYPE } from "../read-models/state.mjs";
 
 export function createHttpServer({
   host,
@@ -47,16 +54,28 @@ export function createHttpServer({
   addProject,
   cloneProject,
   createBlankProject,
+  createTaskMaterialDraft,
+  getTaskMaterialDraft,
+  uploadTaskMaterialFile,
+  removeTaskMaterialFile,
+  readTaskMaterialContent,
+  previewTaskMaterialCleanup,
+  executeTaskMaterialCleanup,
   createWorktree,
   createWorktreePr,
   publishWorktreeBranch,
   promoteWorktreeToBase,
   promoteWorktreeToPullRequest,
   ensureLocalOrigin,
+  enqueueWorkItemAutoRunUnderstanding,
+  reserveAutoRun,
+  attachAutoRunExecutionPlan,
+  failAutoRunUnderstanding,
   startAutoRun,
   retryAutoRun,
   reverifyAutoRun,
   cancelAutoRun,
+  stopAutoRunDelivery,
   mergeAutoRunPr,
   recordRoutingOverride,
   setReportSchedule,
@@ -74,7 +93,9 @@ export function createHttpServer({
   bindExternalIssue,
   syncExternalIssue,
   listWorkItemExternalProviders,
+  getWorkItemExternalIssueFunnel,
   fetchWorkItemExternalIssue,
+  listWorkItemExternalIssues,
   pushWorkItemExternalIssue,
   fetchWorkItemGithubIssue,
   pushWorkItemGithubIssue,
@@ -91,12 +112,29 @@ export function createHttpServer({
   updateWorkItemAttention,
   getWorkItemGithubSyncDiagnostics,
   suggestWorkItemDraft,
+  listMyTemplateRoutingFeedback,
+  removeMyTemplateRoutingFeedback,
+  previewMyTemplateDraft,
+  listMyTemplateDrafts,
+  reviewMyTemplateDraft,
+  listSimilarMyTemplateWorkItems,
+  createMyTemplateDraft,
+  addMyTemplateLearningCase,
+  activateMyTemplateDraft,
+  listMyTemplateOutcomeFeedback,
+  recordMyTemplateOutcomeFeedback,
+  resumeMyTemplateGovernanceObservation,
+  prepareWorkItemExecutionContract,
   listWorkItemReportDrafts,
   getWorkItemReportDraft,
   generateWorkItemReportDraft,
   updateWorkItemReportDraft,
   confirmWorkItemReportDraft,
   discardWorkItemReportDraft,
+  listWorkItemReportDeliveries,
+  getWorkItemReportDelivery,
+  previewWorkItemReportDelivery,
+  sendWorkItemReportDelivery,
   retryWorkItemAlert,
   inspectArticleImport,
   startArticleImport,
@@ -104,12 +142,45 @@ export function createHttpServer({
   getArticleImport,
   cancelArticleImport,
   analyzeArticleImport,
+  listSessions,
+  probeSessionSite,
+  reseedSessionSite,
   findSimilarArticleImports,
   createArticleDerivative,
   listArticleDerivatives,
   getArticleDerivative,
+  addWorkItemMaterials,
+  removeWorkItemMaterial,
+  restoreWorkItemMaterial,
+  addWorkItemContentReference,
+  removeWorkItemContentReference,
   listWorkflowSources,
+  listChannelObjects,
+  upsertChannelObject,
+  setChannelObjectStatus,
+  previewChannelObjectImport,
+  confirmChannelObjectImport,
+  listChannelObjectImports,
+  listChannelObjectFileSources,
+  listChannelMutationBindings,
+  upsertChannelMutationBinding,
+  setChannelMutationBindingStatus,
+  listChannelObjectConnectors,
+  listChannelObjectConnectorConfigs,
+  upsertChannelObjectConnectorConfig,
+  setChannelObjectConnectorConfigStatus,
+  testChannelObjectConnectorConfig,
+  previewChannelObjectConnectorSync,
+  confirmChannelObjectConnectorSync,
+  syncChannelObjectConnector,
+  retryChannelObjectConnectorSync,
+  listChannelObjectSyncs,
   createWorkflowSource,
+  listTemplateLearningTasks,
+  createTemplateLearningTask,
+  stageTemplateLearningFile,
+  startTemplateLearningTask,
+  completeTemplateLearningTask,
   scanWorkflowSource,
   scanWorkflowIncrementalIntake,
   listWorkflowIntakeObservations,
@@ -148,9 +219,15 @@ export function createHttpServer({
   listLedgerDefinitions,
   activateLedgerDefinition,
   disableLedgerDefinition,
+  inspectLedgerTargetIdentity,
   previewLedgerUpsert,
+  previewLedgerBatchUpsert,
   commitLedgerUpsertPreview,
+  commitLedgerBatchUpsertPreview,
+  retryLedgerBatchUpsertPreview,
   listLedgerUpsertPreviews,
+  listLedgerBatchUpsertPreviews,
+  listLedgerBatchMutationJournals,
   listLedgerMutations,
   collectBusinessPilotEvidence,
   verifyBusinessPilotEvidence,
@@ -166,8 +243,10 @@ export function createHttpServer({
   exportBusinessPilotCollection,
   revokeBusinessPilotCollection,
   getWorkflowAdaptiveWorkbench,
+  getWorkflowMemoryInsights,
   updateWorkflowAdaptivePolicy,
   updateWorkflowAdaptiveMonitor,
+  updateWorkflowAdaptiveAutomation,
   runWorkflowAdaptiveMonitorNow,
   syncWorkflowAdaptiveOutcomes,
   listWorkflowAdaptiveLearning,
@@ -188,6 +267,9 @@ export function createHttpServer({
   startRoutineWorkItem,
   executeRoutineStep,
   confirmQuotationInputs,
+  bindRoutineLedger,
+  requestRoutineStepReview,
+  resumeRoutineRecovery,
   completeRoutineStep,
   retryRoutineStep,
   decideRoutineApproval,
@@ -388,6 +470,47 @@ export function createHttpServer({
   replyOnIssue,
   confirmReplyDraft,
   sendConfirmedDraft,
+  mailboxSnapshot,
+  startMailboxSync,
+  setMailboxMessageRead,
+  createMailboxDraft,
+  updateMailboxDraft,
+  deleteMailboxDraft,
+  createMailboxTask,
+  startMailClassification,
+  previewMailSemanticClassification,
+  getMailClassificationJob,
+  cancelMailClassificationJob,
+  correctMailClassification,
+  listMailClassificationRules,
+  getMailClassificationQuality,
+  createMailClassificationRule,
+  updateMailClassificationRule,
+  listMailFolderSuggestions,
+  createMailFolderMovePreview,
+  startMailFolderMove,
+  getMailFolderMoveJob,
+  listMailFolderMoveJobs,
+  reconcileMailFolderMoveJob,
+  createMailFolderRecoveryPreview,
+  createMailFolderAutomationPreview,
+  enableMailFolderAutomation,
+  updateMailFolderAutomation,
+  listMailFolderAutomations,
+  dryRunMailFolderAutomation,
+  rebuildLocalContentCatalog,
+  searchLocalContent,
+  browseLocalContentDirectories,
+  describeLocalContentRetrieval,
+  retrieveLocalContentDirectories,
+  retrieveLocalContentSummaries,
+  readRetrievedLocalContent,
+  getLocalContentCatalogStats,
+  previewLocalContent,
+  refreshLocalContent,
+  getLocalContentHealth,
+  resolveLocalContentOriginal,
+  resolveLocalContentContainer,
   listCanvasScenes,
   getCanvasScene,
   createCanvasScene,
@@ -398,6 +521,8 @@ export function createHttpServer({
   listWorkItemAttention,
   getWorkItem,
   createWorkItem,
+  createWorkItemFromExternal,
+  captureWorkItemDataContext,
   updateWorkItem,
   recordWorkItemProgress,
   bulkUpdateWorkItems,
@@ -411,6 +536,7 @@ export function createHttpServer({
   recordWorkItemExecutionBinding,
   createWorkItemAutoRunBatch,
   listWorkItemAutoRunBatches,
+  previewWorkItemAutoScheduler,
   listPlanningProjects,
   getPlanningProject,
   createPlanningProject,
@@ -425,9 +551,11 @@ export function createHttpServer({
   decidePlanningRecommendedAction,
   registerChannel,
   listChannels,
+  listChannelInteractions,
   enableChannel,
   disableChannel,
   channelHealth,
+  channelDiagnostics,
   mapChannelIdentity,
   removeChannelIdentity,
   listChannelIdentities,
@@ -439,15 +567,30 @@ export function createHttpServer({
   retryChannelTask,
   rerouteChannelTask,
   takeoverChannelTask,
+  replyChannelTask,
   retryChannelDelivery,
+  beginIlinkLogin,
+  pollIlinkLogin,
+  activateIlinkChannel,
+  disconnectIlinkChannel,
+  onIlinkChannelStateChanged,
   nextId,
   persistStateSoon,
   persistStateNow,
   identityProviderCore = null,
 }) {
   const identityPolicy = identityPolicyFromEnv();
+  const loopbackToken = configuredLoopbackToken();
   return http.createServer(async (req, res) => {
     try {
+      // #1616 outer perimeter, before anything else: a Host header that names
+      // a non-loopback hostname is a DNS-rebinding probe (or a misconfigured
+      // proxy), never the desktop shell, the bridge, or the local console.
+      if (!hostAllowed(req.headers?.host)) {
+        sendJson(res, 403, { error: "host_not_allowed", message: "Requests must address the control plane by a loopback hostname." });
+        return;
+      }
+
       setCors(req, res);
 
       if (req.method === "OPTIONS") {
@@ -488,6 +631,40 @@ export function createHttpServer({
         sendJson(res, 200, terminalObservationReadModel(snapshot, workItemsResult.body?.workItems ?? [], { now }));
         return;
       }
+      // #1616 launch-token gate: when the desktop shell configured a loopback
+      // token, every /api request must carry it — or ride a cookie session
+      // that could only have been established through it. This is what stops
+      // an arbitrary local process from driving the control plane. The
+      // observation endpoint keeps its own >=24-char read-only token (above);
+      // bridge and webhook paths are NOT exempt — the bridge is spawned with
+      // the token, and external webhooks cannot reach loopback in this mode.
+      if (loopbackToken && url.pathname.startsWith("/api/")) {
+        const authorized = loopbackTokenValid(req, loopbackToken)
+          || (actor.authenticated && actor.authMethod === "cookie");
+        if (!authorized) {
+          sendJson(res, 401, { error: "loopback_token_required", message: "This control plane only accepts requests from the desktop shell that launched it." });
+          return;
+        }
+      }
+
+      // #1616 content-type gate: a cross-site "simple request" can execute a
+      // blind write with text/plain or urlencoded bodies even when CORS hides
+      // the response. Every JSON route parses via readJson, so a declared
+      // non-JSON body on a write is never legitimate. Absent Content-Type is
+      // allowed: browsers always declare one when they attach a body.
+      const binaryTaskMaterialUpload = req.method === "PUT"
+        && /^\/api\/projects\/[^/]+\/task-material-drafts\/[^/]+\/files\/[^/]+$/.test(url.pathname);
+      const binaryTemplateLearningUpload = req.method === "POST"
+        && /^\/api\/workflow-memory\/template-learning\/[^/]+\/files$/.test(url.pathname);
+      if (["POST", "PUT", "PATCH"].includes(req.method) && url.pathname.startsWith("/api/")
+        && !binaryTaskMaterialUpload && !binaryTemplateLearningUpload) {
+        const contentType = String(req.headers["content-type"] ?? "").trim().toLowerCase();
+        if (contentType && !contentType.startsWith("application/json")) {
+          sendJson(res, 415, { error: "unsupported_content_type", message: "API writes must declare application/json." });
+          return;
+        }
+      }
+
       const bridgePath = url.pathname.startsWith("/api/bridge/");
       // External providers authenticate webhook deliveries with endpoint-specific
       // signatures, so a user bearer token must not block those callbacks first.
@@ -505,6 +682,12 @@ export function createHttpServer({
       const mutating = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
       if (mutating && !publicPath && actor.authMethod === "cookie" && !validSessionCsrf(req, actor)) {
         sendJson(res, 403, { error: "csrf_invalid", message: "A valid CSRF token is required." });
+        return;
+      }
+
+      const professionalAuthority = authorizeProfessionalRequest(actor, req.method, url.pathname);
+      if (!publicPath && !professionalAuthority.allowed) {
+        sendJson(res, 403, professionalRoleForbiddenBody(professionalAuthority.capability));
         return;
       }
 
@@ -532,7 +715,11 @@ export function createHttpServer({
         // Stage 2 (#1342): backfill executionScope + runtimeRequirements onto legacy
         // Application descriptors persisted before the dual-layer model (idempotent).
         backfillApplicationRuntimeMetadata(state.applications);
-        sendJson(res, 200, publicState(actor));
+        const snapshot = publicState(actor);
+        const acceptsConsoleState = String(req.headers.accept ?? "")
+          .split(",")
+          .some((value) => value.trim().split(";")[0] === CONSOLE_STATE_MEDIA_TYPE);
+        sendJson(res, 200, acceptsConsoleState ? buildConsoleState(snapshot) : snapshot);
         return;
       }
 
@@ -639,7 +826,26 @@ export function createHttpServer({
         return;
       }
 
-      if (await handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft })) {
+      if (await handleMailRoutes({
+        req, res, url, sendJson, readJson, actor,
+        createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft,
+        mailboxSnapshot, startMailboxSync, setMailboxMessageRead, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft, createMailboxTask,
+        startMailClassification, previewMailSemanticClassification, getMailClassificationJob, cancelMailClassificationJob, correctMailClassification,
+        listMailClassificationRules, getMailClassificationQuality, createMailClassificationRule, updateMailClassificationRule,
+        listMailFolderSuggestions, createMailFolderMovePreview, startMailFolderMove, getMailFolderMoveJob, listMailFolderMoveJobs,
+        reconcileMailFolderMoveJob, createMailFolderRecoveryPreview,
+        createMailFolderAutomationPreview, enableMailFolderAutomation, updateMailFolderAutomation, listMailFolderAutomations, dryRunMailFolderAutomation,
+      })) {
+        return;
+      }
+
+      if (await handleLocalContentRoutes({
+        req, res, url, sendJson, readJson, actor,
+        rebuildLocalContentCatalog, searchLocalContent, browseLocalContentDirectories, describeLocalContentRetrieval,
+        retrieveLocalContentDirectories, retrieveLocalContentSummaries, readRetrievedLocalContent,
+        getLocalContentCatalogStats, previewLocalContent,
+        refreshLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
+      })) {
         return;
       }
 
@@ -651,6 +857,7 @@ export function createHttpServer({
         retryChannelTask,
         rerouteChannelTask,
         takeoverChannelTask,
+        replyChannelTask,
         req,
         res,
         url,
@@ -659,14 +866,21 @@ export function createHttpServer({
         actor,
         registerChannel,
         listChannels,
+        listChannelInteractions,
         enableChannel,
         disableChannel,
         channelHealth,
+        channelDiagnostics,
         mapChannelIdentity,
         removeChannelIdentity,
         listChannelIdentities,
         setChannelAllowlist,
         retryChannelDelivery,
+        beginIlinkLogin,
+        pollIlinkLogin,
+        activateIlinkChannel,
+        disconnectIlinkChannel,
+        onIlinkChannelStateChanged,
       })) {
         return;
       }
@@ -682,6 +896,32 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleChannelObjectRoutes({
+        req, res, url, sendJson, readJson, actor,
+        listChannelObjects,
+        upsertChannelObject,
+        setChannelObjectStatus,
+        previewChannelObjectImport,
+        confirmChannelObjectImport,
+        listChannelObjectImports,
+        listChannelObjectFileSources,
+        listChannelMutationBindings,
+        upsertChannelMutationBinding,
+        setChannelMutationBindingStatus,
+        listChannelObjectConnectors,
+        listChannelObjectConnectorConfigs,
+        upsertChannelObjectConnectorConfig,
+        setChannelObjectConnectorConfigStatus,
+        testChannelObjectConnectorConfig,
+        previewChannelObjectConnectorSync,
+        confirmChannelObjectConnectorSync,
+        syncChannelObjectConnector,
+        retryChannelObjectConnectorSync,
+        listChannelObjectSyncs,
+      })) {
+        return;
+      }
+
       if (await handleWorkflowMemoryRoutes({
         req,
         res,
@@ -691,6 +931,11 @@ export function createHttpServer({
         actor,
         listSources: listWorkflowSources,
         createSource: createWorkflowSource,
+        listTemplateLearningTasks,
+        createTemplateLearningTask,
+        stageTemplateLearningFile,
+        startTemplateLearningTask,
+        completeTemplateLearningTask,
         scanSource: scanWorkflowSource,
         scanIncrementalIntake: scanWorkflowIncrementalIntake,
         listIntakeObservations: listWorkflowIntakeObservations,
@@ -729,9 +974,15 @@ export function createHttpServer({
         listLedgerDefinitions,
         activateLedgerDefinition,
         disableLedgerDefinition,
+        inspectLedgerTargetIdentity,
         previewLedgerUpsert,
+        previewLedgerBatchUpsert,
         commitLedgerUpsertPreview,
+        commitLedgerBatchUpsertPreview,
+        retryLedgerBatchUpsertPreview,
         listLedgerUpsertPreviews,
+        listLedgerBatchUpsertPreviews,
+        listLedgerBatchMutationJournals,
         listLedgerMutations,
         collectBusinessPilotEvidence,
         verifyBusinessPilotEvidence,
@@ -747,8 +998,10 @@ export function createHttpServer({
         exportBusinessPilotCollection,
         revokeBusinessPilotCollection,
         getWorkflowAdaptiveWorkbench,
+        getWorkflowMemoryInsights,
         updateWorkflowAdaptivePolicy,
         updateWorkflowAdaptiveMonitor,
+        updateWorkflowAdaptiveAutomation,
         runWorkflowAdaptiveMonitorNow,
         syncWorkflowAdaptiveOutcomes,
         listWorkflowAdaptiveLearning,
@@ -769,6 +1022,9 @@ export function createHttpServer({
         startRoutineWorkItem,
         executeRoutineStep,
         confirmQuotationInputs,
+        bindRoutineLedger,
+        requestRoutineStepReview,
+        resumeRoutineRecovery,
         completeRoutineStep,
         retryRoutineStep,
         decideRoutineApproval,
@@ -805,26 +1061,35 @@ export function createHttpServer({
       }
 
       if (await handleWorkItemRoutes({
-        req, res, url, sendJson, readJson, actor,
-        listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+        req, res, url, sendJson, readJson, actor, state,
+        listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
         listReportDrafts: listWorkItemReportDrafts,
         getReportDraft: getWorkItemReportDraft,
         generateReportDraft: generateWorkItemReportDraft,
         updateReportDraft: updateWorkItemReportDraft,
         confirmReportDraft: confirmWorkItemReportDraft,
         discardReportDraft: discardWorkItemReportDraft,
+        listReportDeliveries: listWorkItemReportDeliveries,
+        getReportDelivery: getWorkItemReportDelivery,
+        previewReportDelivery: previewWorkItemReportDelivery,
+        sendReportDelivery: sendWorkItemReportDelivery,
         listActivity: listWorkItemActivity,
         listComments: listWorkItemComments,
         createComment: createWorkItemComment,
         updateComment: updateWorkItemComment,
         deleteComment: deleteWorkItemComment,
         createWorktree,
+        enqueueAutoRunUnderstanding: enqueueWorkItemAutoRunUnderstanding,
+        reserveAutoRun,
+        attachAutoRunExecutionPlan,
+        failAutoRunUnderstanding,
         startAutoRun,
         beginExecution: beginWorkItemExecution,
         abortExecution: abortWorkItemExecution,
         recordExecutionBinding: recordWorkItemExecutionBinding,
         createAutoRunBatch: createWorkItemAutoRunBatch,
         listAutoRunBatches: listWorkItemAutoRunBatches,
+        previewAutoScheduler: previewWorkItemAutoScheduler,
         promoteWorktreeToBase,
         promoteWorktreeToPullRequest,
         beginDelivery: beginWorkItemDelivery,
@@ -838,7 +1103,9 @@ export function createHttpServer({
         bindExternalIssue,
         syncExternalIssue,
         listExternalProviders: listWorkItemExternalProviders,
+        getExternalIssueFunnel: getWorkItemExternalIssueFunnel,
         fetchExternalIssue: fetchWorkItemExternalIssue,
+        listExternalIssues: listWorkItemExternalIssues,
         pushExternalIssue: pushWorkItemExternalIssue,
         fetchGithubIssue: fetchWorkItemGithubIssue,
         pushGithubIssue: pushWorkItemGithubIssue,
@@ -855,6 +1122,19 @@ export function createHttpServer({
         updateAttention: updateWorkItemAttention,
         githubSyncDiagnostics: getWorkItemGithubSyncDiagnostics,
         suggestWorkItemDraft,
+        listMyTemplateRoutingFeedback,
+        removeMyTemplateRoutingFeedback,
+        previewMyTemplateDraft,
+        listMyTemplateDrafts,
+        reviewMyTemplateDraft,
+        listSimilarMyTemplateWorkItems,
+        createMyTemplateDraft,
+        addMyTemplateLearningCase,
+        activateMyTemplateDraft,
+        listMyTemplateOutcomeFeedback,
+        recordMyTemplateOutcomeFeedback,
+        resumeMyTemplateGovernanceObservation,
+        prepareExecutionContract: prepareWorkItemExecutionContract,
         retryWorkItemAlert,
         inspectArticleImport,
         startArticleImport,
@@ -866,6 +1146,12 @@ export function createHttpServer({
         createArticleDerivative,
         listArticleDerivatives,
         getArticleDerivative,
+        addMaterials: addWorkItemMaterials,
+        removeMaterial: removeWorkItemMaterial,
+        captureDataContextSnapshot: captureWorkItemDataContext,
+        restoreMaterial: restoreWorkItemMaterial,
+        addContentReference: addWorkItemContentReference,
+        removeContentReference: removeWorkItemContentReference,
       })) {
         return;
       }
@@ -892,6 +1178,28 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleSessionRoutes({
+        req, res, url, sendJson,
+        listSessions,
+        probeSessionSite,
+        reseedSessionSite,
+      })) {
+        return;
+      }
+
+      if (await handleTaskMaterialRoutes({
+        req, res, url, sendJson, readJson, state, actor,
+        createTaskMaterialDraft,
+        getTaskMaterialDraft,
+        uploadTaskMaterialFile,
+        removeTaskMaterialFile,
+        readTaskMaterialContent,
+        previewTaskMaterialCleanup,
+        executeTaskMaterialCleanup,
+      })) {
+        return;
+      }
+
       if (await handleProjectRoutes({
         req,
         res,
@@ -905,6 +1213,7 @@ export function createHttpServer({
         currentProject,
         addProject,
         cloneProject,
+        createWorkItem,
         createBlankProject,
         createWorktree,
         createWorktreePr,
@@ -914,6 +1223,7 @@ export function createHttpServer({
         retryAutoRun,
         reverifyAutoRun,
         cancelAutoRun,
+        stopAutoRunDelivery,
         mergeAutoRunPr,
         recordRoutingOverride,
         setReportSchedule,
@@ -1024,6 +1334,7 @@ export function createHttpServer({
         sendJson,
         readJson,
         state,
+        actor,
         now,
         appendEvent,
         isAgentDisabled,
@@ -1041,6 +1352,7 @@ export function createHttpServer({
         issueBridgeCredential,
         requireBridgeCredential,
         supersedeBridgeSession,
+        persistStateSoon,
       })) {
         return;
       }
@@ -1291,7 +1603,7 @@ function setCors(req, res) {
     res.setHeader("Vary", "Origin");
   }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token,X-Loopback-Token");
   res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range");
 }
 

@@ -56,12 +56,12 @@ export function followUpDraftEquals(left: WorkItemFollowUpDraft, right: WorkItem
 
 export function followUpPayload(draft: WorkItemFollowUpDraft) {
   const hidesIdentity = draft.requesterRelation === "self" || draft.requesterRelation === "unknown";
-  const isCustomer = draft.requesterRelation === "customer";
+  const isExternalCategory = draft.requesterRelation === "customer" || draft.requesterRelation === "child";
   return {
     requesterRelation: draft.requesterRelation,
     requesterName: hidesIdentity ? null : draft.requesterName.trim() || null,
     requesterOrganization: hidesIdentity ? null : draft.requesterOrganization.trim() || null,
-    requesterUserId: hidesIdentity || isCustomer ? null : draft.requesterUserId || null,
+    requesterUserId: hidesIdentity || isExternalCategory ? null : draft.requesterUserId || null,
     intakeChannel: draft.intakeChannel,
     externalReference: draft.externalReference.trim() || null,
     waitingOn: draft.waitingOn,

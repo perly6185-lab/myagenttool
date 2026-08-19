@@ -95,8 +95,35 @@ function harness(options = {}) {
     appendEvent: (event) => events.push(event),
     createWorkItem,
     runIntakeCycle: options.runIntakeCycle,
+    materializeRoutineSuggestion: options.materializeRoutineSuggestion,
   });
   return { state, service, events };
+}
+
+function addTrustedInquiryHistory(state, prefix = "trusted") {
+  for (const index of [2, 3]) {
+    state.workflowArtifacts.push({
+      id: `wfa_${prefix}_${index}`,
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      name: `RFQ-${prefix}-${index}.xlsx`,
+      family: "spreadsheet",
+      extension: "xlsx",
+    });
+    state.businessDocumentClassifications.push({
+      id: `bdc_${prefix}_${index}`,
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      artifactId: `wfa_${prefix}_${index}`,
+      documentType: "inquiry",
+      confirmationState: "confirmed",
+      confidence: 1,
+      riskSignals: [],
+      revision: 1,
+    });
+  }
 }
 
 test("directory monitor is owner-confirmed, revision guarded, and recovers with backoff", async () => {
@@ -736,7 +763,7 @@ test("unconfirmed classifications block issue creation and feedback is auditable
   assert.equal(events[0].type, "workflow_adaptive_feedback_recorded");
 });
 
-test("execute mode auto-creates only a trusted low-risk local Issue", () => {
+test("execute mode auto-creates only a trusted low-risk local Issue", async () => {
   const { state, service } = harness();
   for (const index of [2, 3]) {
     state.workflowArtifacts.push({
@@ -761,16 +788,318 @@ test("execute mode auto-creates only a trusted low-risk local Issue", () => {
       revision: 1,
     });
   }
-  assert.equal(service.reconcile({ projectId: "prj_a", sourceId: "wfs_a" }, ACTOR).body.autoCreated, 0);
+  assert.equal((await service.reconcile({ projectId: "prj_a", sourceId: "wfs_a" }, ACTOR)).body.autoCreated, 0);
   service.updatePolicy({
     projectId: "prj_a", sourceId: "wfs_a", expectedRevision: 0, mode: "execute", confirmed: true,
   }, ACTOR);
-  const result = service.reconcile({ projectId: "prj_a", sourceId: "wfs_a" }, ACTOR);
+  const result = await service.reconcile({ projectId: "prj_a", sourceId: "wfs_a" }, ACTOR);
   assert.equal(result.status, 200);
   assert.equal(result.body.autoCreated, 1);
   assert.equal(state.workItems.length, 1);
   assert.ok(state.workItems[0].labels.includes("adaptive-auto"));
-  assert.equal(service.reconcile({
+  assert.equal((await service.reconcile({
     projectId: "prj_a", sourceId: "wfs_a",
-  }, ACTOR).body.autoCreated, 0);
+  }, ACTOR)).body.autoCreated, 0);
+});
+
+test("automatic handling updates its execute policy and directory monitor in one revision-guarded action", () => {
+  const { state, service, events } = harness();
+  assert.equal(service.updateAutomation({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    expectedPolicyRevision: 0,
+    expectedMonitorRevision: 0,
+    enabled: true,
+    intervalMinutes: 15,
+  }, ACTOR).body.error, "adaptive_work_automation_confirmation_required");
+  assert.equal(state.workflowAdaptivePolicies.length, 0);
+  assert.equal(state.workflowAdaptiveMonitors.length, 0);
+
+  const enabled = service.updateAutomation({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    expectedPolicyRevision: 0,
+    expectedMonitorRevision: 0,
+    enabled: true,
+    intervalMinutes: 15,
+    confirmed: true,
+  }, ACTOR);
+  assert.equal(enabled.status, 200);
+  assert.equal(enabled.body.enabled, true);
+  assert.equal(enabled.body.policy.mode, "execute");
+  assert.equal(enabled.body.policy.revision, 1);
+  assert.equal(enabled.body.monitor.enabled, true);
+  assert.equal(enabled.body.monitor.revision, 1);
+  assert.equal(events.at(-1).type, "workflow_adaptive_automation_updated");
+
+  const stale = service.updateAutomation({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    expectedPolicyRevision: 0,
+    expectedMonitorRevision: 1,
+    enabled: false,
+    intervalMinutes: 15,
+  }, ACTOR);
+  assert.equal(stale.status, 409);
+  assert.equal(state.workflowAdaptivePolicies[0].mode, "execute");
+  assert.equal(state.workflowAdaptiveMonitors[0].enabled, true);
+
+  const disabled = service.updateAutomation({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    expectedPolicyRevision: 1,
+    expectedMonitorRevision: 1,
+    enabled: false,
+    intervalMinutes: 15,
+  }, ACTOR);
+  assert.equal(disabled.status, 200);
+  assert.equal(disabled.body.policy.mode, "assist");
+  assert.equal(disabled.body.monitor.enabled, false);
+  assert.equal(disabled.body.policy.revision, 2);
+  assert.equal(disabled.body.monitor.revision, 2);
+});
+
+test("execute mode prefers a published Routine bridge and returns automatic assistance", async () => {
+  let stateRef;
+  const calls = [];
+  const { state, service } = harness({
+    materializeRoutineSuggestion: async (suggestion, actor) => {
+      calls.push({ suggestion, actor });
+      const workItem = {
+        id: "lwi_routine",
+        localRef: "LOCAL-8",
+        ownerTeamId: actor.teamId,
+        projectId: suggestion.projectId,
+        title: "Process learned inquiry",
+        status: "ready",
+      };
+      stateRef.workItems.push(workItem);
+      return {
+        status: 201,
+        body: {
+          workItem,
+          routineRunId: "rtr_8",
+          executionStatus: "awaiting_approval",
+          advancedStepKeys: ["references", "quote"],
+          assistance: {
+            kind: "awaiting_approval",
+            reason: "human_approval_required",
+            stepKey: "approve",
+            stepLabel: "Approve quotation",
+            action: "review_approval",
+          },
+        },
+      };
+    },
+  });
+  stateRef = state;
+  for (const index of [2, 3]) {
+    state.workflowArtifacts.push({
+      id: `wfa_history_${index}`,
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      name: `RFQ-2026-10${index}.xlsx`,
+      family: "spreadsheet",
+      extension: "xlsx",
+    });
+    state.businessDocumentClassifications.push({
+      id: `bdc_history_${index}`,
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      artifactId: `wfa_history_${index}`,
+      documentType: "inquiry",
+      confirmationState: "confirmed",
+      confidence: 1,
+      riskSignals: [],
+      revision: 1,
+    });
+  }
+  service.updatePolicy({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    expectedRevision: 0,
+    mode: "execute",
+    confirmed: true,
+  }, ACTOR);
+
+  const result = await service.reconcile({ projectId: "prj_a", sourceId: "wfs_a" }, ACTOR);
+  assert.equal(result.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(result.body.autoCreated, 1);
+  assert.deepEqual(result.body.created[0], {
+    suggestionId: calls[0].suggestion.id,
+    workItemId: "lwi_routine",
+    localRef: "LOCAL-8",
+    replayed: false,
+    routineRunId: "rtr_8",
+    executionStatus: "awaiting_approval",
+    advancedStepKeys: ["references", "quote"],
+    assistance: {
+      kind: "awaiting_approval",
+      reason: "human_approval_required",
+      stepKey: "approve",
+      stepLabel: "Approve quotation",
+      action: "review_approval",
+    },
+  });
+  assert.equal(state.workItems.some((row) => row.labels?.includes("adaptive-auto")), false);
+});
+
+test("execute mode never creates a generic inquiry Issue when Routine selection is unresolved", async () => {
+  const { state, service } = harness({
+    materializeRoutineSuggestion: async () => ({
+      status: 409,
+      body: { error: "workflow_intake_routine_selection_required", routineCount: 2 },
+    }),
+  });
+  for (const index of [2, 3]) {
+    state.workflowArtifacts.push({
+      id: `wfa_ambiguous_history_${index}`,
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      name: `RFQ-ambiguous-${index}.xlsx`,
+      family: "spreadsheet",
+      extension: "xlsx",
+    });
+    state.businessDocumentClassifications.push({
+      id: `bdc_ambiguous_history_${index}`,
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      artifactId: `wfa_ambiguous_history_${index}`,
+      documentType: "inquiry",
+      confirmationState: "confirmed",
+      confidence: 1,
+      riskSignals: [],
+      revision: 1,
+    });
+  }
+  service.updatePolicy({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    expectedRevision: 0,
+    mode: "execute",
+    confirmed: true,
+  }, ACTOR);
+
+  const result = await service.reconcile({ projectId: "prj_a", sourceId: "wfs_a" }, ACTOR);
+  assert.equal(result.body.autoCreated, 0);
+  assert.equal(state.workItems.length, 0);
+  assert.deepEqual(result.body.failures[0].assistance, {
+    kind: "routine_selection",
+    reason: "workflow_intake_routine_selection_required",
+    action: "choose_routine",
+  });
+});
+
+test("execute mode leaves an inquiry unmaterialized when no published Routine is available", async () => {
+  const { state, service } = harness({
+    materializeRoutineSuggestion: async () => ({
+      status: 409,
+      body: { error: "workflow_intake_routine_not_available" },
+    }),
+  });
+  addTrustedInquiryHistory(state, "no_routine");
+  service.updatePolicy({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    expectedRevision: 0,
+    mode: "execute",
+    confirmed: true,
+  }, ACTOR);
+
+  const result = await service.reconcile({ projectId: "prj_a", sourceId: "wfs_a" }, ACTOR);
+  assert.equal(result.body.autoCreated, 0);
+  assert.equal(state.workItems.length, 0);
+  assert.deepEqual(result.body.failures[0].assistance, {
+    kind: "workflow_setup",
+    reason: "workflow_intake_routine_not_available",
+    action: "review_workflow",
+  });
+});
+
+test("execute mode routes common non-inquiry names through the Routine bridge without generic fallback", async () => {
+  const cases = [
+    ["contract review", "contract_review"],
+    ["purchase-request", "purchase_request"],
+    ["customer complaint", "customer_complaint"],
+    ["weekly-report", "weekly_report"],
+    ["project acceptance", "project_acceptance"],
+  ];
+  for (const [detectedType, canonicalType] of cases) {
+    let stateRef;
+    const calls = [];
+    const { state, service } = harness({
+      materializeRoutineSuggestion: async (suggestion, actor) => {
+        calls.push(suggestion);
+        const workItem = {
+          id: `lwi_${canonicalType}`,
+          localRef: `LOCAL-${canonicalType}`,
+          ownerTeamId: actor.teamId,
+          projectId: suggestion.projectId,
+          title: `Process ${canonicalType}`,
+          status: "ready",
+          routineDefinitionId: `rtd_${canonicalType}`,
+        };
+        stateRef.workItems.push(workItem);
+        return {
+          status: 201,
+          body: {
+            workItem,
+            replayed: false,
+            routineRunId: `rtr_${canonicalType}`,
+            executionStatus: "awaiting_approval",
+            advancedStepKeys: ["extract"],
+            assistance: { kind: "awaiting_approval", action: "review_approval" },
+          },
+        };
+      },
+    });
+    stateRef = state;
+    for (const classification of state.businessDocumentClassifications) {
+      classification.documentType = detectedType;
+    }
+    for (const index of [2, 3]) {
+      state.workflowArtifacts.push({
+        id: `wfa_${canonicalType}_${index}`,
+        ownerTeamId: "team_a",
+        projectId: "prj_a",
+        sourceId: "wfs_a",
+        name: `${canonicalType}-${index}.md`,
+        family: "markdown",
+        extension: "md",
+      });
+      state.businessDocumentClassifications.push({
+        id: `bdc_${canonicalType}_${index}`,
+        ownerTeamId: "team_a",
+        projectId: "prj_a",
+        sourceId: "wfs_a",
+        artifactId: `wfa_${canonicalType}_${index}`,
+        documentType: canonicalType,
+        confirmationState: "confirmed",
+        confidence: 1,
+        riskSignals: [],
+        revision: 1,
+      });
+    }
+    service.updatePolicy({
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      expectedRevision: 0,
+      mode: "execute",
+      confirmed: true,
+    }, ACTOR);
+
+    const result = await service.reconcile({ projectId: "prj_a", sourceId: "wfs_a" }, ACTOR);
+    assert.equal(result.body.autoCreated, 1, canonicalType);
+    assert.equal(calls.length, 1, canonicalType);
+    assert.equal(calls[0].documentType, canonicalType);
+    assert.equal(state.workItems.some((row) => row.labels?.includes("adaptive-auto")), false);
+    const replay = await service.reconcile({ projectId: "prj_a", sourceId: "wfs_a" }, ACTOR);
+    assert.equal(replay.body.autoCreated, 0, `${canonicalType} should remain idempotent`);
+    assert.equal(calls.length, 1, `${canonicalType} should not bridge twice`);
+  }
 });

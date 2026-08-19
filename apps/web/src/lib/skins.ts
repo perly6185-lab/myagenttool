@@ -144,6 +144,43 @@ declare global {
       copySelectedOfficeDocument?: (input: { selectionId: string; worktreeId: string; destination: string; onConflict?: "rename" }) => Promise<{ path: string; bytes: number; type: "docx" | "xlsx" | "pptx" }>;
       openContainedOfficeDocument?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ opened: true }>;
       openContainedAsset?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ opened: true }>;
+      revealContainedAsset?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ revealed: true }>;
+      getMailConnectorStatus?: () => Promise<{
+        desktop: true;
+        providers: Array<{ id: "netease_163" | "gmail"; name: string; available: boolean; connected: boolean; upgradeNeeded?: boolean; sendConnected?: boolean; organizeConnected?: boolean; account: string | null }>;
+      }>;
+      connect163Mail?: (input: { email: string; authorizationCode: string }) => Promise<
+        | { ok: true; account: { provider: string; email: string; canReceive: true; canSend: false } }
+        | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }
+      >;
+      previewMailAttachment?: (input: { messageId: string; folderPath?: string; attachmentId: string; archiveRef?: string }) => Promise<
+        | { ok: true; preview: { id: string; name: string; contentType: string; size: number; kind: "image" | "text" | "pdf"; text?: string; dataBase64?: string } }
+        | { ok: false; error: "attachment_not_found" | "preview_not_supported" | "preview_too_large" | "attachment_unavailable" }
+      >;
+      downloadMailAttachment?: (input: { messageId: string; folderPath?: string; attachmentId: string; archiveRef?: string }) => Promise<
+        | { ok: true; saved: boolean; name?: string }
+        | { ok: false; error: "attachment_not_found" | "download_too_large" | "attachment_unavailable" }
+      >;
+      readMailAttachmentForTask?: (input: { messageId: string; folderPath?: string; attachmentId: string; archiveRef?: string }) => Promise<
+        | { ok: true; attachment: { id: string; name: string; contentType: string; size: number; sha256: string; data: ArrayBuffer } }
+        | { ok: false; error: "attachment_not_found" | "download_too_large" | "attachment_unavailable" }
+      >;
+      connect163MailSend?: (input: { email: string; authorizationCode: string }) => Promise<
+        | { ok: true; account: { provider: string; email: string; canReceive: boolean; canSend: true } }
+        | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }
+      >;
+      connect163MailOrganize?: (input: { email: string; authorizationCode: string }) => Promise<
+        | { ok: true; account: { provider: string; email: string; canOrganize: true } }
+        | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }
+      >;
+      pickOutboundMailAttachments?: () => Promise<
+        | { ok: true; attachments: Array<{ ref: string; name: string; contentType: string; size: number }> }
+        | { ok: false; error: "attachment_invalid" | "attachment_too_large" | "attachment_stage_failed" }
+      >;
+      stagePastedMailAttachments?: (input: { files: Array<{ name: string; contentType: string; data: ArrayBuffer }> }) => Promise<
+        | { ok: true; attachments: Array<{ ref: string; name: string; contentType: string; size: number }> }
+        | { ok: false; error: "attachment_invalid" | "attachment_too_large" | "attachment_stage_failed" }
+      >;
     };
   }
 }

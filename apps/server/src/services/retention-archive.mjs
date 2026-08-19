@@ -92,29 +92,19 @@ export function createRetentionArchive({ stateStorePath, enabled = true, now = (
         };
         return eventHighWater;
       }
-      const lines = text.split("\n");
-      for (let index = 0; index < lines.length; index += 1) {
-        const line = lines[index];
-        if (!line.trim()) continue;
-        let parsed;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          // A prior crash may leave a partial JSON row. It was never confirmed
-          // by the writer, but reserve any intact id prefix conservatively and
-          // keep scanning later valid rows. The detail reader reports the shard
-          // as truncated instead of silently presenting it as complete.
-          const partialOrdinal = numericIdOrdinalFromArchiveText(line);
-          if (partialOrdinal !== null) maxOrdinal = Math.max(maxOrdinal, partialOrdinal);
-          continue;
+      // These are dedicated invocation-event shards, so boot only needs a
+      // conservative numeric-id floor. Avoid JSON.parse for every archived row:
+      // a mature local instance can hold tens of thousands of events across
+      // thousands of shards, and parsing their complete payloads delayed the
+      // HTTP listener long enough for the desktop readiness timeout to abort.
+      // Scanning every intact id token is fail-safe: nested ids may raise the
+      // allocator floor, but can never lower it or permit an id collision; torn
+      // final rows still contribute any intact prefix exactly as before.
+      for (const match of text.matchAll(/"id"\s*:\s*"[^"]*_(\d+)"/g)) {
+        const ordinal = Number(match[1]);
+        if (Number.isSafeInteger(ordinal) && ordinal >= 0) {
+          maxOrdinal = Math.max(maxOrdinal, ordinal);
         }
-        const ordinal = numericIdOrdinal(parsed?.row?.id);
-        if (parsed?.collection !== "events" || ordinal === null) {
-          const partialOrdinal = numericIdOrdinalFromArchiveText(line);
-          if (partialOrdinal !== null) maxOrdinal = Math.max(maxOrdinal, partialOrdinal);
-          continue;
-        }
-        maxOrdinal = Math.max(maxOrdinal, ordinal);
       }
     }
     eventHighWater = { maxOrdinal, readError: null };
@@ -344,13 +334,6 @@ function fsyncDirectorySync(path) {
 
 function numericIdOrdinal(id) {
   const match = typeof id === "string" ? /_(\d+)$/.exec(id) : null;
-  if (!match) return null;
-  const ordinal = Number(match[1]);
-  return Number.isSafeInteger(ordinal) && ordinal >= 0 ? ordinal : null;
-}
-
-function numericIdOrdinalFromArchiveText(text) {
-  const match = /"id"\s*:\s*"[^"]*_(\d+)"/.exec(String(text ?? ""));
   if (!match) return null;
   const ordinal = Number(match[1]);
   return Number.isSafeInteger(ordinal) && ordinal >= 0 ? ordinal : null;

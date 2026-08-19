@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import http from "node:http";
+import { join } from "node:path";
 
 const host = process.env.DEMO_HOST ?? "127.0.0.1";
 const webPort = Number(process.env.WEB_PORT ?? 5000);
@@ -9,6 +10,8 @@ const controlPort = Number(process.env.DEV_CONTROL_PORT ?? 5999);
 const serverUrl = `http://${host}:${serverPort}`;
 const webUrl = `http://${host}:${webPort}`;
 const controlUrl = `http://${controlHost}:${controlPort}`;
+const credentialReadinessDir = process.env.BRIDGE_CREDENTIAL_DIR
+  ?? (process.env.APPDATA ? join(process.env.APPDATA, "myagenttool", "credential-readiness") : null);
 
 const processes = [
   {
@@ -28,7 +31,11 @@ const processes = [
     name: "desktop",
     command: process.execPath,
     args: ["apps/desktop/src/index.mjs"],
-    env: { BRIDGE_SERVER_URL: serverUrl, BRIDGE_TERMINAL_POLL_INTERVAL_MS: "40" }
+    env: {
+      BRIDGE_SERVER_URL: serverUrl,
+      BRIDGE_TERMINAL_POLL_INTERVAL_MS: "40",
+      ...(credentialReadinessDir ? { BRIDGE_CREDENTIAL_DIR: credentialReadinessDir } : {}),
+    }
   },
   {
     name: "web",

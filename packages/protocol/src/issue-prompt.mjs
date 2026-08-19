@@ -44,6 +44,18 @@ export const SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS =
   "narrow and bounded; if a search is slow, stop it and reduce its paths instead of retrying the " +
   "same broad command.";
 
+const USER_FACING_DELIVERY_INSTRUCTIONS =
+  "Your final response is shown directly to the task owner, who may not be technical. Use the " +
+  "same primary language as the task title and description. Start with the outcome in plain " +
+  "language; do not make a file list or implementation jargon the summary. Use these short " +
+  "sections: Result, What changed, Checks performed, Remaining risks, and Recommended next step. " +
+  "State explicitly whether the result is ready for the owner to accept. If a check was not run " +
+  "or a risk remains, say so clearly and explain what the owner should do next. Report each result " +
+  "against the acceptance criteria and owner verification SOP confirmed before execution. Never " +
+  "invent, relax, or rewrite completion criteria after the work has started; if the execution " +
+  "contract is missing or contradictory, stop and request clarification instead of declaring a " +
+  "final result.";
+
 /**
  * The task prompt an agent receives when it is pointed at a worktree created
  * from a GitHub issue/PR. `item` is the worktree link shape
@@ -63,7 +75,8 @@ export function worktreeAutoRunPrompt(item) {
 
 // Role-specific instructions for a decided auto-run path. The develop role
 // implements; design and clarify explicitly must NOT change product code (their
-// deliverable is the final summary); prototype builds a throwaway spike.
+// deliverable is the final summary); prototype builds a throwaway spike; evaluate
+// explores, runs, and reports on a project's real user experience.
 const ROLE_INSTRUCTIONS = {
   develop:
     "First, orient: locate the files relevant to this issue and outline your approach before " +
@@ -104,6 +117,32 @@ const ROLE_INSTRUCTIONS = {
     "{ milestone, area, type, risk, platform, priority }. Keep each child scoped to one PR's worth of " +
     "work with concrete acceptance criteria. Also repeat a short summary of the breakdown as your " +
     "final message. Nothing is created from this yet — a human approves the plan first.",
+
+  evaluate:
+    "Explore the codebase to understand what this project does and how to run it. " +
+    "Identify the build system (package.json scripts, Makefile, docker-compose, pip, " +
+    "go build, etc.), dependencies, and the commands to start the application. " +
+    "Then actually run it — start the service, try its main features (if it has an " +
+    "HTTP API, call it; if it has a CLI, demo it; if it outputs something, capture " +
+    "screenshots or logs). Record real outputs (API responses, logs, screenshots)— " +
+    "not just your analysis. When done, write a structured evaluation report to " +
+    "evaluate/REPORT.md in this format:\n" +
+    "- ## Overview: one paragraph on what this project is and does\n" +
+    "- ## Getting Started: clone + install + run (the commands you actually ran)\n" +
+    "- ## Running the application: what happened when you started it (ports, output)\n" +
+    "- ## Key features tried: feature list with real `curl`/CLI/demo outputs\n" +
+    "- ## Impressions: what worked well, pain points, friction, quality of docs\n" +
+    "Also repeat a short version as your final summary, AND end with a single line:\n" +
+    "EvalResult: { overall: \"seamless | smooth | rough | broken\", keyInsight: \"...\" }\n" +
+    "Do NOT modify product code — the deliverable is the experience report.",
+
+  summarize:
+    "An article was just imported into this worktree (under an article/provider/date/ " +
+    "directory, or a newly-added .md file). Read it and produce a structured summary in Chinese: " +
+    "核心主题(一句话)、关键观点(3-5 条,每条带原文支撑)、可行动的要点、作者的结论。 " +
+    "Write the full summary to summary/REPORT.md so it is preserved. Do NOT modify the original " +
+    "article file. End your final message with a single line: " +
+    "SummaryResult: { overall: \"...\", keyInsight: \"...\" }.",
 };
 
 /**
@@ -151,6 +190,10 @@ const INJECTION_PATTERNS = [
   { tag: "role-override", re: /\byou are now\b|\bact as (?:a |an )?\b|\bpretend to be\b|\bfrom now on you\b/i },
   { tag: "new-instructions", re: /\bnew instructions?\s*:/i },
   { tag: "system-prompt", re: /\b(system prompt|developer message|system message)\b/i },
+  { tag: "ignore-instructions-zh", re: /(忽略|无视|忘记).{0,20}(之前|以上|先前|所有|这些).{0,12}(指令|提示|规则)/i },
+  { tag: "role-override-zh", re: /你现在是|扮演.{0,12}(角色|助手|管理员)|从现在起你/i },
+  { tag: "new-instructions-zh", re: /新(?:的)?指令\s*[:：]/i },
+  { tag: "system-prompt-zh", re: /系统提示|开发者消息|系统消息/i },
   // Exfiltration verbs now include reply/respond/forward: the #978 attack asks the
   // agent to "reply with the contents of your .env". A secret-word must still
   // follow within 40 chars, so the trigger is exfiltration intent, not the mere
@@ -161,6 +204,7 @@ const INJECTION_PATTERNS = [
   // dot), so the canonical "reply with … your .env" slipped through. `\.env\b`
   // as its own alternative, with no leading `\b`, catches it.
   { tag: "exfiltration", re: /\b(exfiltrate|leak|reveal|print|send|reply|respond|forward)\b[^.\n]{0,40}(?:\b(?:secret|secrets|credential|credentials|token|api[ _-]?key|password)\b|\.env\b)/i },
+  { tag: "exfiltration-zh", re: /(泄露|显示|打印|发送|回复|转发).{0,40}(秘密|凭据|令牌|密钥|密码|\.env)/i },
 ];
 
 export function detectPromptInjection(text) {
@@ -187,5 +231,5 @@ export function roleAutoRunPrompt(item, { path = "develop", issueBody = null, ve
     verifyCommand && (path === "develop" || path === "prototype")
       ? `\n\nYour change will be verified by running: \`${String(verifyCommand).slice(0, 300)}\`. Make sure it passes before you finish.`
       : "";
-  return `${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}\n\n${SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS}${verifyLine}`;
+  return `${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}\n\n${USER_FACING_DELIVERY_INSTRUCTIONS}\n\n${SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS}${verifyLine}`;
 }

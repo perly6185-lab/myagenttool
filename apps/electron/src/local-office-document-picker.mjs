@@ -43,7 +43,7 @@ export function registerWorkflowSourceFolderPicker({ ipcMain, dialog, getWindow 
   ipcMain.removeHandler("workflow-memory:pick-source-folder");
   ipcMain.handle("workflow-memory:pick-source-folder", async () => {
     const result = await dialog.showOpenDialog(getWindow(), {
-      title: "Choose requirement and delivery folder",
+      title: "选择授权工作目录",
       properties: ["openDirectory"],
     });
     if (result.canceled || !result.filePaths[0]) return null;
@@ -93,6 +93,24 @@ export function registerContainedAssetOpen({ ipcMain, getState, openPath }) {
       throw new Error("The system application could not open this asset.");
     }
     return { opened: true };
+  });
+}
+
+export function registerContainedAssetReveal({ ipcMain, getState, revealPath }) {
+  ipcMain.removeHandler("assets:reveal-contained");
+  ipcMain.handle("assets:reveal-contained", async (_event, input) => {
+    let target;
+    try {
+      target = resolveContainedAsset(await getState(), input);
+    } catch {
+      throw new Error("The requested asset could not be located safely.");
+    }
+    try {
+      await revealPath(target);
+    } catch {
+      throw new Error("The system file manager could not locate this asset.");
+    }
+    return { revealed: true };
   });
 }
 

@@ -1,9 +1,11 @@
 import "i18next";
-import { defaultNamespace, resources } from "@/lib/i18n/resources";
+import { defaultNamespace } from "@/lib/i18n/config";
+import type { resources } from "@/lib/i18n/resources";
 import type { executionUiTranslations } from "@/lib/i18n/execution-ui-resources";
 import type { autoRunTranslations } from "@/lib/i18n/auto-run-resources";
 import type { workProfileTranslations } from "@/lib/i18n/work-profile-resources";
 import type { worktreeViewTranslations } from "@/lib/i18n/worktree-view-resources";
+import type { channelTranslations } from "@/lib/i18n/channel-resources";
 
 declare module "i18next" {
   interface CustomTypeOptions {
@@ -17,6 +19,7 @@ declare module "i18next" {
         executionUi: (typeof executionUiTranslations)["en-US"];
         workProfile: (typeof workProfileTranslations)["en-US"];
         worktreeView: (typeof worktreeViewTranslations)["en-US"];
+        channelsPage: (typeof channelTranslations)["en-US"]["channelsPage"];
       };
     };
   }

@@ -382,7 +382,7 @@ export function planDispatch({
 // Runtime around the pure selectors. `listLabeledIssues(project, label)`,
 // `startAutoRun`, and (dispatcher only) `editIssueLabels` are injected so a
 // scan is fully testable without gh or a server.
-export function createAutoTriggerRuntime({ state, config, listLabeledIssues, startAutoRun, editIssueLabels, appendEvent, persistStateSoon, log }) {
+export function createAutoTriggerRuntime({ state, config, listLabeledIssues, startAutoRun, editIssueLabels, appendEvent, persistStateSoon, log, requireLocalIssueForDevelopment = false }) {
   // #1172: unroutable issues are reported once per process, not per tick.
   const reportedUnroutable = new Set();
 
@@ -538,6 +538,13 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
     let started = 0;
     let assigned = 0;
     for (const project of readyProjects()) {
+      // Project-level external Issue authorization is evaluated before even
+      // listing labeled issues. Legacy records without the additive policy keep
+      // their previous behavior until an operator saves the new controls.
+      if (requireLocalIssueForDevelopment && project.externalIssuePolicy
+        && (project.externalIssuePolicy.emergencyStop || project.externalIssuePolicy.autoExecutionEnabled !== true)) {
+        continue;
+      }
       scanned += 1;
       let issues = [];
       try {
@@ -552,7 +559,7 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
       }
       // The dispatcher role without a self-assignment never starts work itself.
       if (role === "dispatcher" && assignedTo === null) continue;
-      const candidates = selectAutoTriggerCandidates({
+      const selectedCandidates = selectAutoTriggerCandidates({
         issues,
         autoRuns: state.autoRuns ?? [],
         issueClaims: state.issueClaims ?? [],
@@ -562,10 +569,24 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
         nowIso,
         assignedTo,
       });
-      for (const issue of candidates) {
+      const candidates = requireLocalIssueForDevelopment
+        ? selectedCandidates.map((issue) => ({
+          issue,
+          localIssue: (state.workItems ?? []).find((item) =>
+            item.projectId === project.id
+            && !item.archivedAt
+            && item.state !== "closed"
+            && (item.externalBindings ?? []).some((binding) =>
+              (binding.provider === "github" || binding.kind === "github_issue")
+              && binding.number === issue.number),
+          ),
+        })).filter(({ localIssue }) => Boolean(localIssue))
+        : selectedCandidates.map((issue) => ({ issue, localIssue: null }));
+      for (const { issue, localIssue } of candidates) {
         try {
           await startAutoRun({
             projectId: project.id,
+            ...(localIssue ? { localIssueId: localIssue.id } : {}),
             // Respect the project's configured agent: without this, every
             // triggered run fell to defaultAgent() — the demo echo agent, which
             // never edits code. (Found by the field pilot.)

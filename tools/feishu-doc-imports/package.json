@@ -1,0 +1,11 @@
+{
+  "name": "@myagenttool/feishu-doc-imports",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Reusable engine + CLI for fetching a public Feishu wiki/docx document to local markdown + assets.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test ./test/*.test.mjs",
+    "import": "node ./src/cli.mjs"
+  }
+}

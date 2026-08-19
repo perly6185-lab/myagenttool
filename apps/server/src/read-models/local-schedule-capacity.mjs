@@ -288,6 +288,7 @@ export function computeLocalScheduleCapacity(state, {
       status: device.status ?? "unknown",
       unlinkState: device.unlinkState ?? "unknown",
       bridgeAvailable,
+      timeZone: device.timeZone ?? "UTC",
     } : null,
     capacity: {
       ...dispatch.capacity,

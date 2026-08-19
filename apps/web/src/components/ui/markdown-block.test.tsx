@@ -56,3 +56,17 @@ test("external links open in a new tab without an opener handle", () => {
   expect(link.getAttribute("rel")).toContain("noopener");
   expect(link.getAttribute("href")).toBe("https://example.com");
 });
+
+test("document mode uses article typography and replaces unresolved local images", () => {
+  render(
+    <MarkdownBlock
+      text={"# Delivery title\n\nA readable paragraph.\n\n![Architecture](assets/diagram.png)"}
+      variant="document"
+      resolveImageSrc={() => null}
+      imageUnavailableLabel="Image unavailable"
+    />,
+  );
+  expect(screen.getByRole("heading", { name: "Delivery title" }).className).toContain("text-2xl");
+  expect(screen.getByRole("img", { name: "Architecture" }).textContent).toBe("Architecture");
+  expect(screen.queryByRole("img", { name: "Image unavailable" })).toBeNull();
+});

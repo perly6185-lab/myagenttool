@@ -6,7 +6,7 @@ import { LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 export const BUSINESS_CASE_DISCOVERY_VERSION = 1;
-export const ROUTINE_DISCOVERY_VERSION = 1;
+export const ROUTINE_DISCOVERY_VERSION = 3;
 export const MINIMUM_CONFIRMED_CASES = 3;
 export const MANDATORY_COVERAGE_THRESHOLD = 0.8;
 
@@ -434,6 +434,194 @@ export function deriveRoutineCandidateFromCases(cases, {
   return { ok: true, steps };
 }
 
+const TEMPLATE_FORMAT_LABELS = Object.freeze({
+  pdf: "PDF",
+  doc: "Word",
+  docx: "Word",
+  xls: "Excel",
+  xlsx: "Excel",
+  ppt: "PowerPoint",
+  pptx: "PowerPoint",
+  png: "图片",
+  jpg: "图片",
+  jpeg: "图片",
+  webp: "图片",
+  md: "文本",
+  txt: "文本",
+});
+
+function templateArtifactExtension(artifact) {
+  const declared = String(artifact?.extension ?? "").replace(/^\./, "").toLowerCase();
+  if (declared) return declared;
+  return String(artifact?.name ?? artifact?.relativePath ?? "").match(/\.([^.\/\\]+)$/)?.[1]?.toLowerCase() ?? "";
+}
+
+function templateFileStem(artifact) {
+  const name = String(artifact?.name ?? artifact?.relativePath ?? "").split(/[\\/]/).pop() ?? "";
+  return name.replace(/\.[^.]+$/, "").trim();
+}
+
+function templateArtifactText(artifact) {
+  return (artifact?.extraction?.blocks ?? [])
+    .map((block) => String(block?.text ?? "").trim())
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 100_000);
+}
+
+function uniqueArtifactsForBindings(cases, state, acceptedRoles) {
+  const ids = [...new Set(cases.flatMap((businessCase) => businessCase.artifactBindings
+    .filter((binding) => (binding.roles ?? []).some((role) => acceptedRoles.has(role)))
+    .map((binding) => binding.artifactId)))];
+  return ids.map((id) => state.workflowArtifacts.find((artifact) => artifact.id === id)).filter(Boolean);
+}
+
+function templateInputConcept(artifacts) {
+  const corpus = artifacts.map((artifact) => `${templateFileStem(artifact)}\n${templateArtifactText(artifact).slice(0, 2_000)}`).join("\n");
+  if (/技术协议/u.test(corpus)) return /设备|试验箱|仪器/u.test(corpus) ? "设备技术协议" : "技术协议";
+  for (const [pattern, label] of [
+    [/采购申请/u, "采购申请"],
+    [/合同/u, "合同资料"],
+    [/验收/u, "验收资料"],
+    [/周报/u, "周报资料"],
+    [/询价|需求/u, "客户需求资料"],
+    [/报价/u, "报价资料"],
+  ]) {
+    if (pattern.test(corpus)) return label;
+  }
+  const stems = [...new Set(artifacts.map(templateFileStem).filter(Boolean))];
+  return stems.length === 1 && stems[0].length <= 40 ? stems[0] : "历史输入文件";
+}
+
+function templateFormatSummary(artifacts) {
+  return [...new Set(artifacts.map((artifact) =>
+    TEMPLATE_FORMAT_LABELS[templateArtifactExtension(artifact)] ?? templateArtifactExtension(artifact).toUpperCase())
+    .filter(Boolean))].join("、");
+}
+
+function spreadsheetColumns(artifact) {
+  if (!["xls", "xlsx"].includes(templateArtifactExtension(artifact))) return [];
+  const row = (artifact?.extraction?.blocks ?? []).find((block) => block?.kind === "row" && String(block.text ?? "").includes("|"));
+  if (!row) return [];
+  return String(row.text).split("|")
+    .map((cell) => cell.trim().replace(/^[A-Z]{1,3}:\s*/u, ""))
+    .map((column) => column === "产品名利" ? "产品名称" : column)
+    .filter(Boolean)
+    .slice(0, 100);
+}
+
+function mappingForColumn(column, inputCorpus) {
+  const rules = [
+    { pattern: /序号/u, source: "按输出顺序生成", evidence: true },
+    { pattern: /文件名/u, source: "输入文件名", evidence: true },
+    { pattern: /技术协议号/u, source: "技术协议编号", terms: ["技术协议号", "协议编号"] },
+    { pattern: /品牌|厂家/u, source: "生产厂家", terms: ["生产厂家", "厂家"] },
+    { pattern: /产品名/u, source: "设备或产品名称", terms: ["设备", "产品", "试验箱"] },
+    { pattern: /型号/u, source: "设备型号", terms: ["设备型号", "型号"] },
+    { pattern: /数量/u, source: "配置或合同数量", terms: ["数量", "套", "台"] },
+    { pattern: /保修/u, source: "售后服务中的保修年限", terms: ["保修", "质保"] },
+    { pattern: /使用地/u, source: "设备使用地", terms: ["使用地", "安装地点"] },
+    { pattern: /第三方计量/u, source: "计量或第三方校准要求", terms: ["第三方", "计量", "校准"] },
+    { pattern: /报价单价/u, source: "报价单价", terms: ["报价单价", "单价"] },
+    { pattern: /报价总价/u, source: "报价总价", terms: ["报价总价", "总价", "合计"] },
+    { pattern: /备注/u, source: "补充说明", terms: ["备注"] },
+  ];
+  const rule = rules.find((candidate) => candidate.pattern.test(column));
+  if (!rule) return { column, source: "待确认来源", confidence: "needs_confirmation" };
+  const supported = rule.evidence === true || rule.terms.some((term) => inputCorpus.includes(term));
+  return { column, source: rule.source, confidence: supported ? "supported" : "needs_confirmation" };
+}
+
+function deriveTemplateLearningRoutine(cases, state) {
+  const inputArtifacts = uniqueArtifactsForBindings(cases, state, new Set(["trigger", "input"]));
+  const outputArtifacts = uniqueArtifactsForBindings(cases, state, new Set(["output"]));
+  if (!inputArtifacts.length || !outputArtifacts.length) return null;
+  const inputConcept = templateInputConcept(inputArtifacts);
+  const inputFormat = templateFormatSummary(inputArtifacts);
+  const inputSummary = `${inputConcept}${inputFormat ? ` ${inputFormat}` : ""}`;
+  const primaryOutput = outputArtifacts[0];
+  const outputStem = templateFileStem(primaryOutput) || "工作结果";
+  const outputFormat = templateFormatSummary(outputArtifacts);
+  const outputSummary = `${outputStem}${outputFormat ? ` ${outputFormat}` : ""}`;
+  const outputColumns = spreadsheetColumns(primaryOutput);
+  const inputCorpus = inputArtifacts.map(templateArtifactText).join("\n");
+  const fieldMappings = outputColumns.map((column) => mappingForColumn(column, inputCorpus));
+  const uncertainFields = fieldMappings
+    .filter((mapping) => mapping.confidence === "needs_confirmation")
+    .map((mapping) => mapping.column);
+  const evidenceRefs = [...inputArtifacts, ...outputArtifacts].map((artifact) => ({
+    artifactId: artifact.id,
+    kind: "template_learning_contract",
+    field: null,
+    location: null,
+  })).slice(0, 100);
+  const supportCaseIds = cases.map((businessCase) => businessCase.id);
+  const step = (key, kind, label, dependsOn, configuration, refs = evidenceRefs) => ({
+    key,
+    kind,
+    label,
+    required: true,
+    requirement: "mandatory",
+    coverage: 1,
+    supportCaseIds,
+    exceptionCaseIds: [],
+    explanation: `来自用户明确指定的 ${cases.length} 组历史输入和最终输出。`,
+    dependsOn,
+    evidenceRefs: refs,
+    configuration,
+  });
+  const templateContract = {
+    version: 1,
+    inputSummary,
+    inputFormats: [...new Set(inputArtifacts.map(templateArtifactExtension).filter(Boolean))],
+    inputArtifactIds: inputArtifacts.map((artifact) => artifact.id),
+    outputSummary,
+    outputFormat: templateArtifactExtension(primaryOutput),
+    outputFileName: primaryOutput.name ?? `${outputStem}.${templateArtifactExtension(primaryOutput)}`,
+    outputArtifactIds: outputArtifacts.map((artifact) => artifact.id),
+    outputColumns,
+    fieldMappings,
+    uncertainFields,
+  };
+  const triggerDocumentTypes = [...new Set(cases.flatMap((businessCase) => businessCase.artifactBindings
+    .filter((binding) => (binding.roles ?? []).some((role) => role === "trigger" || role === "input"))
+    .map((binding) => binding.documentType)))].filter(Boolean);
+  return {
+    name: `${inputConcept}生成${outputStem}`.slice(0, 200),
+    description: `收到：${inputSummary}\n得到：${outputSummary}`,
+    triggerDocumentTypes: triggerDocumentTypes.length ? triggerDocumentTypes : ["other_reference"],
+    templateContract,
+    evidenceRefs,
+    steps: [
+      step("read_inputs", "extract", `读取并理解${inputSummary}`, [], {
+        inputSummary,
+        inputFormats: templateContract.inputFormats,
+        inputArtifactIds: templateContract.inputArtifactIds,
+      }, evidenceRefs.filter((ref) => templateContract.inputArtifactIds.includes(ref.artifactId))),
+      step("map_output_fields", "extract", `提取并整理${outputStem}所需字段`, ["read_inputs"], {
+        outputColumns,
+        fieldMappings,
+        uncertainFields,
+      }),
+      step("generate_output", "generate", `生成${outputSummary}`, ["map_output_fields"], {
+        executorId: "local.learned-template-output.v1",
+        outputDirectory: "runs/template-outputs",
+        expectedOutput: outputSummary,
+        outputFileName: templateContract.outputFileName,
+        outputFormat: templateContract.outputFormat,
+        outputColumns,
+        fieldMappings,
+        uncertainFields,
+        templateContract,
+      }),
+      step("review_output", "human_approval", `检查并确认${outputStem}`, ["generate_output"], {
+        safetyGate: true,
+        uncertainFields,
+      }),
+    ],
+  };
+}
+
 export function createBusinessCaseDiscoveryService({
   state,
   now = () => new Date().toISOString(),
@@ -546,6 +734,87 @@ export function createBusinessCaseDiscoveryService({
     const artifactById = new Map(artifacts.map((row) => [row.id, row]));
     const healthyClassifications = classifications.filter((row) =>
       artifactById.get(row.artifactId)?.fingerprint === row.artifactFingerprint);
+    const classificationByArtifact = new Map(healthyClassifications.map((row) => [row.artifactId, row]));
+
+    // A template-learning intake already contains a user-declared case boundary
+    // and explicit input/output roles. Preserve that fact instead of trying to
+    // rediscover the pairing from document numbers. Real businesses commonly use
+    // different inquiry and quotation numbers, so a heuristic-only pass can lose
+    // an otherwise unambiguous pair even after the user selected both files.
+    const learningTask = (state.templateLearningTasks ?? []).find((row) =>
+      row.sourceId === source.id && row.ownerTeamId === actorTeam(actor));
+    if (learningTask?.cases?.length) {
+      const artifactByPath = new Map(artifacts.map((row) => [row.relativePath, row]));
+      const results = [];
+      for (const learningCase of learningTask.cases.slice(0, MAX_CANDIDATES)) {
+        const declared = learningCase.files.map((file) => {
+          const artifact = artifactByPath.get(file.relativePath);
+          return {
+            role: file.role,
+            artifact,
+            classification: artifact ? classificationByArtifact.get(artifact.id) : null,
+          };
+        }).filter((row) => row.artifact && row.classification);
+        const inputs = declared.filter((row) => row.role === "input");
+        const outputs = declared.filter((row) => row.role === "output");
+        if (!inputs.length || !outputs.length) continue;
+        const anchorRecord = inputs.find((row) => row.classification.documentType === "inquiry") ?? inputs[0];
+        const links = declared
+          .filter((row) => row.artifact.id !== anchorRecord.artifact.id)
+          .map((row) => ({
+            fromArtifactId: anchorRecord.artifact.id,
+            toArtifactId: row.artifact.id,
+            relationship: row.role === "output" ? "precedes"
+              : row.role === "reference" ? "uses_reference" : "supports",
+            score: 1,
+            reasons: ["The user explicitly selected these files as one historical input/output case."],
+            evidenceRefs: [
+              { artifactId: anchorRecord.artifact.id, kind: "template_learning_pair", field: null, location: learningCase.id },
+              { artifactId: row.artifact.id, kind: "template_learning_pair", field: null, location: learningCase.id },
+            ],
+            alternatives: [],
+          }));
+        const shape = buildCandidateShape({
+          anchor: anchorRecord.classification,
+          links,
+          classifications: declared.map((row) => row.classification),
+          artifacts: declared.map((row) => row.artifact),
+        });
+        shape.confidence = 1;
+        shape.artifactBindings = declared.map((row) => ({
+          artifactId: row.artifact.id,
+          documentType: row.classification.documentType,
+          roles: row.role === "input"
+            ? (row.artifact.id === anchorRecord.artifact.id ? ["trigger", "input"] : ["input"])
+            : row.role === "output" ? ["output"] : ["reference"],
+        }));
+        const previous = state.businessCaseCandidates
+          .filter((row) => visible(row, actor)
+            && row.sourceId === source.id
+            && row.anchorArtifactId === anchorRecord.artifact.id
+            && row.state !== "rejected")
+          .sort((left, right) => right.version - left.version)[0] ?? null;
+        const persisted = persistCandidate(shape, source, actor, previous
+          ? { familyId: previous.familyId, version: previous.version + 1, supersedes: previous }
+          : {});
+        results.push(persisted);
+      }
+      return {
+        status: 200,
+        body: {
+          sourceId: source.id,
+          candidates: results.map((row) => ({
+            ...row.candidate,
+            evidenceHealth: candidateHealth(row.candidate, state),
+            replayed: row.replayed,
+          })),
+          count: results.length,
+          analyzedClassificationCount: healthyClassifications.length,
+          pairingMode: "user_declared_template_cases",
+          truncated: learningTask.cases.length > MAX_CANDIDATES,
+        },
+      };
+    }
     const allLinks = [];
     for (const fromClassification of healthyClassifications) {
       for (const toClassification of healthyClassifications) {
@@ -564,7 +833,7 @@ export function createBusinessCaseDiscoveryService({
       const links = selectLinksForAnchor(
         anchor.artifactId,
         allLinks,
-        new Map(healthyClassifications.map((row) => [row.artifactId, row])),
+        classificationByArtifact,
       );
       if (!links.length) continue;
       const shape = buildCandidateShape({ anchor, links, classifications: healthyClassifications, artifacts });
@@ -787,15 +1056,25 @@ export function createBusinessCaseDiscoveryService({
       visible(row, actor)
       && row.sourceId === source.id
       && CONFIRMED_CASE_STATES.has(row.state)
-      && row.artifactBindings.some((binding) => binding.documentType === "inquiry")
+      && row.artifactBindings.some((binding) =>
+        binding.documentType === "inquiry"
+        || (source.purpose === "template_learning"
+          && (binding.roles ?? []).some((role) => role === "input" || role === "trigger")))
       && caseEvidenceHealth(row, state));
-    const derived = deriveRoutineCandidateFromCases(cases);
+    const minimumCaseCount = source.purpose === "template_learning" ? 1 : MINIMUM_CONFIRMED_CASES;
+    const templateRoutine = source.purpose === "template_learning"
+      ? deriveTemplateLearningRoutine(cases, state)
+      : null;
+    const derived = templateRoutine
+      ? { ok: true, steps: templateRoutine.steps }
+      : deriveRoutineCandidateFromCases(cases, { minimumCaseCount });
     if (!derived.ok) return { status: 409, body: derived };
     const evidenceRefs = derived.steps.flatMap((step) => step.evidenceRefs).slice(0, 100);
     const signature = hash([
       ROUTINE_DISCOVERY_VERSION,
       cases.map((row) => [row.id, row.revision]).sort(),
       derived.steps.map((row) => [row.key, row.requirement, row.coverage]),
+      templateRoutine?.templateContract ?? null,
     ]);
     const replay = state.routineDiscoveryCandidates.find((row) =>
       visible(row, actor) && row.sourceId === source.id && row.signature === signature);
@@ -818,19 +1097,22 @@ export function createBusinessCaseDiscoveryService({
       ownerTeamId: actorTeam(actor),
       projectId: source.projectId,
       sourceId: source.id,
-      name: "Inquiry to quotation",
+      name: templateRoutine?.name ?? "Inquiry to quotation",
+      description: templateRoutine?.description ?? null,
       version: (previous?.version ?? 0) + 1,
       state: "candidate",
-      triggerDocumentTypes: ["inquiry"],
+      triggerDocumentTypes: templateRoutine?.triggerDocumentTypes ?? ["inquiry"],
       confirmedCaseIds: cases.map((row) => row.id),
-      minimumCaseCount: MINIMUM_CONFIRMED_CASES,
+      minimumCaseCount,
+      templateMaturity: "stable",
       mandatoryCoverageThreshold: MANDATORY_COVERAGE_THRESHOLD,
       steps: derived.steps,
-      evidenceRefs,
-      confidence: roundScore(
-        mandatorySteps.reduce((sum, step) => sum + step.coverage, 0)
-          / Math.max(1, mandatorySteps.length),
-      ),
+      evidenceRefs: templateRoutine?.evidenceRefs ?? evidenceRefs,
+      templateContract: templateRoutine?.templateContract ?? null,
+      confidence: cases.length >= MINIMUM_CONFIRMED_CASES
+        ? roundScore(mandatorySteps.reduce((sum, step) => sum + step.coverage, 0)
+          / Math.max(1, mandatorySteps.length))
+        : 0.6,
       signature,
       supersedesId: previous?.id ?? null,
       supersededById: null,

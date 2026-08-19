@@ -41,6 +41,60 @@ test("fetch output parses one message, carrying the body as data", () => {
   assert.match(parsed.body, /rm -rf/, "the body is carried, never executed");
 });
 
+test("fetch output carries bounded HTML as inert data with format metadata", () => {
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({
+    messageId: "<html@x>",
+    body: "Readable link [https://example.com]",
+    bodyHtml: `<p>${"h".repeat(50_100)}</p>`,
+    bodyTruncated: false,
+    attachments: [{ id: "attachment-1", name: "logo.png", contentType: "image/png", size: 4, contentId: "<logo@x>", previewable: true }],
+  }) });
+  assert.equal(parsed.hasHtml, true);
+  assert.equal(parsed.bodyHtml.length, 50_000);
+  assert.equal(parsed.bodyTruncated, true);
+  assert.equal(parsed.bodyContentVersion, 1, "legacy tool output remains identifiable for one-time refetch");
+  assert.equal(parsed.attachments[0].contentId, "logo@x");
+});
+
+test("current fetch output marks the safe HTML body contract version", () => {
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({ messageId: "<v2@x>", body: "text", bodyContentVersion: 2 }) });
+  assert.equal(parsed.bodyContentVersion, 2);
+});
+
+test("fetch imports only a bounded opaque local archive receipt", () => {
+  const ref = `mailarc_${"a".repeat(24)}_${"b".repeat(40)}`;
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({
+    messageId: "<archived@x>",
+    archive: { version: 1, ref, availability: "available", sha256: "c".repeat(64), size: 1234, archivedAt: "2026-08-14T05:00:00.000Z", attachmentCount: 1, path: "C:\\private\\message.eml" },
+    attachments: [{ id: "attachment-1", name: "note.txt", localAvailable: true }],
+  }) });
+  assert.deepEqual(parsed.archive, { version: 1, ref, availability: "available", sha256: "c".repeat(64), size: 1234, archivedAt: "2026-08-14T05:00:00.000Z", attachmentCount: 1 });
+  assert.equal(parsed.attachments[0].localAvailable, true);
+  assert.equal(JSON.stringify(parsed).includes("C:\\private"), false);
+});
+
+test("an incomplete archive claim cannot mark the original or attachments locally available", () => {
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({
+    messageId: "<forged@x>",
+    archive: { version: 1, ref: `mailarc_${"a".repeat(24)}_${"b".repeat(40)}`, availability: "available", sha256: "c".repeat(64), size: 0 },
+    attachments: [{ id: "attachment-1", name: "note.txt", localAvailable: true }],
+  }) });
+  assert.equal(parsed.archive, null);
+  assert.equal(parsed.attachments[0].localAvailable, undefined);
+});
+
+test("fetch imports attachment metadata only and rejects forged identifiers", () => {
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({
+    messageId: "<m@x>",
+    attachments: [
+      { id: "attachment-1", name: "safe.pdf", contentType: "application/pdf", size: 1200, sha256: "a".repeat(64), previewable: true, dataBase64: "must-not-survive" },
+      { id: "../../escape", name: "bad", contentType: "text/plain", size: 1, previewable: true },
+    ],
+  }) });
+  assert.deepEqual(parsed.attachments, [{ id: "attachment-1", name: "safe.pdf", contentType: "application/pdf", size: 1200, sha256: "a".repeat(64), previewable: true }]);
+  assert(!JSON.stringify(parsed).includes("must-not-survive"));
+});
+
 test("fields are length-capped so a hostile sender cannot bloat state", () => {
   const parsed = parseMailApplicationResult({
     text: JSON.stringify({ messageId: "<m@x>", subject: "z".repeat(5000), body: "b".repeat(50000) }),
@@ -58,4 +112,23 @@ test("header count is capped", () => {
 test("unreadable output returns null — an unparsed result is stored, not an error", () => {
   assert.equal(parseMailApplicationResult({ text: "not json" }), null);
   assert.equal(parseMailApplicationResult({ text: JSON.stringify({ nothing: true }) }), null);
+});
+
+test("incremental mailbox sync imports bounded folders, cursors, and provider read flags", () => {
+  const parsed = parseMailApplicationResult({ text: JSON.stringify({
+    folders: [{ id: "inbox", path: "INBOX", name: "收件箱", specialUse: "\\Inbox", count: 33, unread: 2 }],
+    messages: [{ messageId: "<new@163.com>", from: "A <a@163.com>", subject: "Needle", date: "2026-08-13T01:00:00Z", uid: 42, folderId: "inbox", folderPath: "INBOX", unread: false, classificationHeaders: { listId: "updates.example", listUnsubscribe: true, secret: "drop" } }],
+    cursors: [{ folderId: "inbox", folderPath: "INBOX", uidValidity: "1234", lastUid: 42 }],
+  }) });
+  assert.equal(parsed.kind, "mailbox_sync");
+  assert.equal(parsed.folders[0].name, "收件箱");
+  assert.equal(parsed.messages[0].unread, false);
+  assert.deepEqual(parsed.messages[0].classificationHeaders, { listId: "updates.example", listUnsubscribe: true });
+  assert.deepEqual(parsed.cursors[0], { folderId: "inbox", folderPath: "INBOX", uidValidity: "1234", lastUid: 42 });
+});
+
+test("provider read-state receipt is importable without exposing provider internals", () => {
+  assert.deepEqual(parseMailApplicationResult({ text: JSON.stringify({ readState: { messageId: "<a@b>", folderId: "inbox", folderPath: "INBOX", read: true } }) }), {
+    kind: "read_state", messageId: "<a@b>", folderId: "inbox", folderPath: "INBOX", read: true,
+  });
 });

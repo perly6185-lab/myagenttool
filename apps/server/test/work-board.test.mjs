@@ -40,15 +40,22 @@ test("pr_open resolves by PR state: open → waiting, merged → done", () => {
 });
 
 test("a gated auto-run is counted under 待决策 only, never double-counted in a lifecycle lens", () => {
-  const autoRuns = [{ id: "ar_gate", status: "pr_open", prState: "OPEN", prNumber: 42, updatedAt: "2026-07-17T10:00:00Z" }];
+  const autoRuns = [{ id: "ar_gate", localIssueId: "lwi_42", status: "pr_open", prState: "OPEN", prNumber: 42, updatedAt: "2026-07-17T10:00:00Z" }];
   const pendingDecisions = [
     { id: "merge:ar_gate", kind: "merge", title: "PR #42 ready to merge", section: "autoRuns", targetId: "ar_gate", createdAt: "2026-07-17T10:00:00Z", ref: { autoRunId: "ar_gate", prNumber: 42 } },
   ];
   const { states } = workBoard({ autoRuns, pendingDecisions, now: NOW });
   assert.equal(states.pending_decision.count, 1);
   assert.equal(states.pending_decision.items[0].kind, "merge");
+  assert.equal(states.pending_decision.items[0].workItemId, "lwi_42");
   assert.equal(states.waiting.count, 0);
   assert.equal(states.in_progress.count, 0);
+});
+
+test("auto-run status rows preserve the durable task link for ordinary task details", () => {
+  const autoRuns = [{ id: "ar_run", localIssueId: "lwi_1", status: "running", updatedAt: "2026-07-17T10:00:00Z" }];
+  const { states } = workBoard({ autoRuns, now: NOW });
+  assert.equal(states.in_progress.items[0].workItemId, "lwi_1");
 });
 
 test("非 auto-run 的待决策(approval/compare/lifecycle)照样进 pending_decision 桶", () => {

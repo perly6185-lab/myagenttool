@@ -8,6 +8,7 @@ import { AssetPreviewError, readAssetPreview } from "../src/services/asset-previ
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "asset-preview-"));
   writeFileSync(join(root, "notes.md"), "# Safe notes\n\nNo HTML execution.");
+  writeFileSync(join(root, "records.csv"), "name,amount\nPump,49000");
   writeFileSync(join(root, "pixel.png"), Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(24)]));
   writeFileSync(join(root, "clip.mp4"), Buffer.concat([Buffer.alloc(4), Buffer.from("ftyp"), Buffer.alloc(32)]));
   writeFileSync(join(root, "episode.mp3"), Buffer.concat([Buffer.from("ID3"), Buffer.alloc(29)]));
@@ -23,6 +24,14 @@ test("returns bounded Markdown text and validated raster image bytes", () => {
   const image = readAssetPreview({ projectPath: root, relativeFile: "pixel.png" });
   assert.equal(image.mimeType, "image/png");
   assert.equal(image.size, 32);
+});
+
+test("returns bounded plain-text data for inline preview", () => {
+  const root = fixture();
+  const text = readAssetPreview({ projectPath: root, relativeFile: "records.csv" });
+  assert.equal(text.family, "text");
+  assert.equal(text.mimeType, "text/csv");
+  assert.match(text.text, /Pump,49000/);
 });
 
 test("video always uses a bounded byte range", () => {

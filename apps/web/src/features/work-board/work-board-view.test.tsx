@@ -12,6 +12,7 @@ vi.mock("@/data/use-console-state", () => ({
 
 afterEach(async () => {
   cleanup();
+  useUiStore.getState().closeWorkItem();
   await i18n.changeLanguage("en-US");
 });
 
@@ -20,12 +21,12 @@ describe("WorkBoardView localization", () => {
     mocks.state = {};
     await i18n.changeLanguage("en-US");
     const view = render(<WorkBoardView />);
-    expect(screen.getByText("Nothing tracked yet")).toBeTruthy();
+    expect(screen.getByText("No task status yet")).toBeTruthy();
 
     await i18n.changeLanguage("zh-CN");
     view.rerender(<WorkBoardView />);
-    expect(screen.getByText("尚无待办事项")).toBeTruthy();
-    expect(screen.getByText("状态")).toBeTruthy();
+    expect(screen.getByText("尚无任务状态")).toBeTruthy();
+    expect(screen.getByText("任务状态")).toBeTruthy();
   });
 
   it("keeps user-authored work titles unchanged in zh-CN", async () => {
@@ -46,10 +47,30 @@ describe("WorkBoardView localization", () => {
     expect(screen.getByText("Fix Codex PR #42")).toBeTruthy();
   });
 
+  it("shows only non-empty states and opens the ordinary task summary when linked", () => {
+    mocks.state = {
+      reportSchedule: { enabled: false },
+      workBoard: {
+        states: {
+          pending_decision: { count: 1, items: [{ id: "item-1", state: "pending_decision", kind: "merge", title: "Review release", section: "approvals", workItemId: "lwi_1" }] },
+          follow_up: { count: 0, items: [] }, in_progress: { count: 0, items: [] }, waiting: { count: 0, items: [] }, failed: { count: 0, items: [] }, done: { count: 0, items: [] },
+        },
+      },
+    };
+    render(<WorkBoardView />);
+
+    expect(screen.queryByText("None")).toBeNull();
+    expect(screen.queryByText("Schedule to messaging channel")).toBeNull();
+    fireEvent.click(screen.getByText("Review release"));
+    expect(useUiStore.getState().selectedWorkItemId).toBe("lwi_1");
+    expect(useUiStore.getState().selectedWorkItemMode).toBe("summary");
+  });
+
   it("localizes and opens a due follow-up reminder in its canonical Local Issue", async () => {
     await i18n.changeLanguage("zh-CN");
     useUiStore.setState({ section: "workBoard", selectedWorkItemId: null });
     mocks.state = {
+      reportSchedule: { enabled: false },
       workBoard: {
         states: {
           pending_decision: { count: 0, items: [] },

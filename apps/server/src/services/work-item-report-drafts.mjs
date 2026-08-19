@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
 import { WORK_ITEM_REQUESTER_RELATIONS } from "./work-item-follow-up.mjs";
+import { chunkContent } from "./report-schedule.mjs";
+import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 
 const REPORT_TONES = new Set(["concise", "formal", "warm"]);
+const REPORT_LOCALES = new Set(["en-US", "zh-CN"]);
 const MAX_CONTENT = 20_000;
 const REPORT_DRAFT_SCHEMA_VERSION = 1;
+const REPORT_DELIVERY_SCHEMA_VERSION = 1;
+export const WORK_ITEM_REPORT_DELIVERY_ACTION = "work_item.report.deliver";
 
 function digest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -45,9 +50,9 @@ function normalizeAudience(input, item) {
   return {
     value: {
       relation,
-      name: name.value,
-      organization: organization.value,
-      userId: userId.value,
+      name: relation === "self" ? null : name.value,
+      organization: relation === "self" ? null : organization.value,
+      userId: relation === "self" ? null : userId.value,
     },
   };
 }
@@ -66,15 +71,39 @@ function progressSources(state, item) {
     .filter((entry) => entry.summary);
 }
 
+function executionSourceProjectId(source) {
+  return source?.projectId
+    ?? source?.options?.metadata?.projectId
+    ?? source?.input?.metadata?.projectId
+    ?? null;
+}
+
+function executionSourceBelongsToItem(state, source, item) {
+  const projectId = executionSourceProjectId(source);
+  if (!projectId || projectId !== item.projectId) return false;
+  const project = (state.projects ?? []).find((candidate) => candidate.id === projectId);
+  if (!project || project.ownerTeamId !== item.ownerTeamId) return false;
+  const stampedTeamIds = [
+    source?.ownerTeamId,
+    source?.teamId,
+    source?.options?.metadata?.teamId,
+  ].filter((teamId) => teamId != null);
+  return stampedTeamIds.every((teamId) => teamId === item.ownerTeamId);
+}
+
 function executionSources(state, item) {
   const rows = [];
   for (const binding of [...(item.executionBindings ?? [])].reverse()) {
     if (rows.length >= 3) break;
-    const id = String(binding.targetId ?? binding.id ?? "");
+    const autoRunBinding = binding.kind === "auto_run";
+    const invocationBinding = binding.kind === "application_invocation";
+    if (!autoRunBinding && !invocationBinding) continue;
+    const id = String(autoRunBinding ? binding.targetId ?? binding.id ?? "" : binding.id ?? binding.targetId ?? "");
     if (!id) continue;
-    const run = (state.autoRuns ?? []).find((candidate) => candidate.id === id);
-    const invocation = (state.invocations ?? []).find((candidate) => candidate.id === id);
-    const source = run ?? invocation;
+    const source = autoRunBinding
+      ? (state.autoRuns ?? []).find((candidate) => candidate.id === id)
+      : (state.invocations ?? []).find((candidate) => candidate.id === id);
+    if (!source || !executionSourceBelongsToItem(state, source, item)) continue;
     const summary = String(
       source?.resultSummary
       ?? source?.reportSummary
@@ -82,9 +111,9 @@ function executionSources(state, item) {
       ?? source?.summary
       ?? "",
     ).trim().slice(0, 2_000);
-    if (!source || !summary) continue;
+    if (!summary) continue;
     rows.push({
-      kind: run ? "auto_run" : "invocation",
+      kind: autoRunBinding ? "auto_run" : "invocation",
       id,
       status: String(source.status ?? "unknown").slice(0, 100),
       summary,
@@ -94,32 +123,63 @@ function executionSources(state, item) {
   return rows;
 }
 
-function waitingLabel(waitingOn) {
-  return {
-    me: "our next action",
-    requester: "the requester",
-    internal: "an internal collaborator",
-    ai: "AI execution",
-    none: "no external dependency",
-  }[waitingOn] ?? "no external dependency";
+function waitingLabel(waitingOn, locale) {
+  const labels = locale === "zh-CN"
+    ? {
+        me: "我方下一步行动",
+        requester: "提出者回复",
+        internal: "内部协作者",
+        ai: "AI 执行",
+        none: "无外部依赖",
+      }
+    : {
+        me: "our next action",
+        requester: "the requester",
+        internal: "an internal collaborator",
+        ai: "AI execution",
+        none: "no external dependency",
+      };
+  return labels[waitingOn] ?? labels.none;
 }
 
-function audienceLabel(audience) {
+function audienceLabel(audience, locale) {
   return audience.name
-    ?? ({ boss: "Boss", manager: "Manager", customer: "Customer", colleague: "Colleague", self: "Personal update" }[audience.relation])
-    ?? "Stakeholder";
+    ?? (locale === "zh-CN"
+      ? ({ boss: "负责人", manager: "上级", customer: "客户", child: "小孩学习", colleague: "同事", self: "个人" }[audience.relation])
+      : ({ boss: "Boss", manager: "Manager", customer: "Customer", child: "Child learning", colleague: "Colleague", self: "Personal" }[audience.relation]))
+    ?? (locale === "zh-CN" ? "关系人" : "Stakeholder");
 }
 
-function generateContent({ item, audience, tone, progress, executions }) {
+function generateContent({ item, audience, tone, progress, executions, locale }) {
+  if (locale === "zh-CN") {
+    const latest = progress[0]?.summary
+      ?? executions[0]?.summary
+      ?? item.lastProgressSummary
+      ?? "工作已准备进入下一次复核节点。";
+    const lines = [
+      `${audienceLabel(audience, locale)}进展更新 — ${item.title}`,
+      "",
+      `当前进展：${latest}`,
+      `当前等待：${waitingLabel(item.waitingOn, locale)}。`,
+    ];
+    if (item.commitmentDate) lines.push(`承诺时间：${item.commitmentDate}。`);
+    if (item.nextFollowUpAt) lines.push(`下次跟进：${item.nextFollowUpAt}。`);
+    if (progress.length > 1) {
+      lines.push("", "近期检查点：", ...progress.slice(1, 4).map((entry) => `- ${entry.summary}`));
+    }
+    if (tone === "formal") lines.push("", "如需调整优先级或范围，请审阅并告知。");
+    if (tone === "warm") lines.push("", "谢谢，我会在下一个检查点继续同步进展。");
+    return lines.join("\n").trim().slice(0, MAX_CONTENT);
+  }
   const latest = progress[0]?.summary
     ?? executions[0]?.summary
     ?? item.lastProgressSummary
     ?? "Work is prepared for the next review checkpoint.";
   const lines = [
-    `${audienceLabel(audience)} update — ${item.title}`,
+    `${audienceLabel(audience, locale)} update — ${item.title}`,
     "",
     `Current progress: ${latest}`,
-    `Waiting on: ${waitingLabel(item.waitingOn)}.`,
+    `Waiting on: ${waitingLabel(item.waitingOn, locale)}.`,
   ];
   if (item.commitmentDate) lines.push(`Commitment: ${item.commitmentDate}.`);
   if (item.nextFollowUpAt) lines.push(`Next follow-up: ${item.nextFollowUpAt}.`);
@@ -143,11 +203,15 @@ export function createWorkItemReportDraftService({
   runTx,
   findOwn,
   recordActivity,
+  appendEvent,
   actorTeam,
   actorUser,
+  enqueueChannelDeliveryBatch = null,
+  validateApprovalToken = null,
 }) {
   const notFound = () => ({ ok: false, status: 404, body: { error: "work_item_report_draft_not_found" } });
   const rows = () => (state.workItemReportDrafts ??= []);
+  const deliveryRows = () => (state.workItemReportDeliveries ??= []);
 
   function findDraft(workItemId, draftId, actor) {
     return rows().find((row) => row.id === String(draftId)
@@ -157,6 +221,47 @@ export function createWorkItemReportDraftService({
 
   function isStale(row, item) {
     return row.source.workItemRevision !== item.revision;
+  }
+
+  function findDelivery(workItemId, draftId, deliveryId, actor) {
+    return deliveryRows().find((row) => row.id === String(deliveryId)
+      && row.workItemId === String(workItemId)
+      && row.reportDraftId === String(draftId)
+      && row.ownerTeamId === actorTeam(actor)) ?? null;
+  }
+
+  function targetFor(channelId, conversationId, actor) {
+    const teamId = actorTeam(actor);
+    const channel = (state.channels ?? []).find((row) => row.id === String(channelId)
+      && (row.ownerTeamId ?? LOCAL_TEAM_ID) === teamId) ?? null;
+    const conversation = channel ? (state.channelConversations ?? []).find((row) =>
+      row.id === String(conversationId) && row.channelId === channel.id) ?? null : null;
+    return channel && conversation ? { channel, conversation } : null;
+  }
+
+  function deliveryView(row) {
+    const children = (state.channelDeliveries ?? []).filter((candidate) =>
+      row.channelDeliveryIds.includes(candidate.id) && candidate.ownerTeamId === row.ownerTeamId);
+    const submitted = row.status === "submitted";
+    const failed = children.some((child) => child.status === "failed_terminal");
+    const delivered = children.length === row.chunkCount && children.every((child) => child.status === "delivered");
+    const status = !submitted ? "preview" : failed ? "failed" : delivered ? "delivered" : "queued";
+    const { command: _command, sendCommand: _sendCommand, ...publicRow } = row;
+    return {
+      ...publicRow,
+      status,
+      canSend: status === "preview",
+      receipt: submitted ? {
+        status,
+        channelDeliveryIds: [...row.channelDeliveryIds],
+        deliveredChunks: children.filter((child) => child.status === "delivered").length,
+        failedChunks: children.filter((child) => child.status === "failed_terminal").length,
+        attempts: children.reduce((total, child) => total + Number(child.attempts ?? 0), 0),
+        providerReceiptIds: children.map((child) => child.providerReceiptId).filter(Boolean),
+        lastErrorCodes: [...new Set(children.map((child) => child.lastErrorCode).filter(Boolean))],
+        updatedAt: children.map((child) => child.updatedAt).filter(Boolean).sort().at(-1) ?? row.sentAt,
+      } : null,
+    };
   }
 
   function view(row, item) {
@@ -187,8 +292,16 @@ export function createWorkItemReportDraftService({
   }
 
   function generate(input = {}, actor = null) {
-    const { workItemId, expectedWorkItemRevision, idempotencyKey, audience: audienceInput, tone = "concise" } = input;
-    const allowedFields = new Set(["workItemId", "expectedWorkItemRevision", "idempotencyKey", "audience", "tone"]);
+    const localeProvided = Object.hasOwn(input, "locale");
+    const {
+      workItemId,
+      expectedWorkItemRevision,
+      idempotencyKey,
+      audience: audienceInput,
+      tone = "concise",
+      locale = "en-US",
+    } = input;
+    const allowedFields = new Set(["workItemId", "expectedWorkItemRevision", "idempotencyKey", "audience", "tone", "locale"]);
     if (Object.keys(input).some((field) => !allowedFields.has(field))) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_report_generate_fields" } };
     }
@@ -197,9 +310,14 @@ export function createWorkItemReportDraftService({
     const key = commandKey(idempotencyKey);
     if (!key) return { ok: false, status: 400, body: { error: "work_item_report_idempotency_key_required" } };
     if (!REPORT_TONES.has(tone)) return { ok: false, status: 400, body: { error: "invalid_work_item_report_tone" } };
+    if (!REPORT_LOCALES.has(locale)) return { ok: false, status: 400, body: { error: "invalid_work_item_report_locale" } };
     const audience = normalizeAudience(audienceInput, item);
     if (audience.error) return { ok: false, status: 400, body: { error: audience.error } };
-    const normalizedInput = { audience: audience.value, tone };
+    const normalizedInput = {
+      audience: audience.value,
+      tone,
+      ...(localeProvided ? { locale } : {}),
+    };
     const inputDigest = digest(normalizedInput);
     const replay = rows().find((row) => row.workItemId === item.id
       && row.ownerTeamId === actorTeam(actor)
@@ -247,12 +365,13 @@ export function createWorkItemReportDraftService({
       revision: 1,
       audience: audience.value,
       tone,
-      content: generateContent({ item, audience: audience.value, tone, progress, executions }),
+      content: generateContent({ item, audience: audience.value, tone, progress, executions, locale }),
       source,
       generation: {
         generator: "structured",
         policyVersion: "work-item-report-v1",
         modelVersion: null,
+        locale,
         inputDigest,
       },
       command: { idempotencyKey: key, inputDigest },
@@ -411,5 +530,238 @@ export function createWorkItemReportDraftService({
     return { ok: true, status: 200, body: { reportDraft: view(row, item), replayed: false } };
   }
 
-  return { list, get, generate, update, confirm, discard };
+  function listDeliveries({ workItemId, draftId } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    const draft = item ? findDraft(item.id, draftId, actor) : null;
+    if (!draft) return notFound();
+    const reportDeliveries = deliveryRows()
+      .filter((row) => row.workItemId === item.id
+        && row.reportDraftId === draft.id
+        && row.ownerTeamId === actorTeam(actor))
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+      .map(deliveryView);
+    return { ok: true, status: 200, body: { reportDeliveries, count: reportDeliveries.length } };
+  }
+
+  function getDelivery({ workItemId, draftId, deliveryId } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    const draft = item ? findDraft(item.id, draftId, actor) : null;
+    const row = draft ? findDelivery(item.id, draft.id, deliveryId, actor) : null;
+    return row
+      ? { ok: true, status: 200, body: { reportDelivery: deliveryView(row) } }
+      : notFound();
+  }
+
+  function previewDelivery(input = {}, actor = null) {
+    const { workItemId, draftId, channelId, conversationId, idempotencyKey } = input;
+    const allowedFields = new Set(["workItemId", "draftId", "channelId", "conversationId", "idempotencyKey"]);
+    if (Object.keys(input).some((field) => !allowedFields.has(field))) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_report_delivery_preview_fields" } };
+    }
+    const item = findOwn(workItemId, actor);
+    const draft = item ? findDraft(item.id, draftId, actor) : null;
+    if (!draft) return notFound();
+    if (draft.status !== "confirmed" || !draft.confirmedSnapshot) {
+      return { ok: false, status: 409, body: { error: "work_item_report_not_confirmed" } };
+    }
+    const target = targetFor(channelId, conversationId, actor);
+    if (!target) return { ok: false, status: 404, body: { error: "work_item_report_delivery_target_not_found" } };
+    if (target.channel.status !== "enabled") {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_channel_disabled" } };
+    }
+    const key = commandKey(idempotencyKey);
+    if (!key) return { ok: false, status: 400, body: { error: "work_item_report_idempotency_key_required" } };
+    const inputDigest = digest({
+      reportDraftId: draft.id,
+      reportRevision: draft.confirmedSnapshot.revision,
+      contentDigest: draft.confirmedSnapshot.contentDigest,
+      channelId: target.channel.id,
+      conversationId: target.conversation.id,
+    });
+    const replay = deliveryRows().find((row) => row.workItemId === item.id
+      && row.ownerTeamId === actorTeam(actor)
+      && row.createdBy === actorUser(actor)
+      && row.command?.idempotencyKey === key);
+    if (replay) {
+      if (replay.command.inputDigest !== inputDigest) {
+        return { ok: false, status: 409, body: { error: "work_item_report_idempotency_conflict" } };
+      }
+      return { ok: true, status: 200, body: { reportDelivery: deliveryView(replay), replayed: true } };
+    }
+    const chunks = chunkContent(draft.confirmedSnapshot.content);
+    const timestamp = now();
+    const row = {
+      id: nextId("wrdl"),
+      schemaVersion: REPORT_DELIVERY_SCHEMA_VERSION,
+      workItemId: item.id,
+      reportDraftId: draft.id,
+      ownerTeamId: item.ownerTeamId,
+      projectId: item.projectId,
+      status: "preview",
+      revision: 1,
+      confirmedReportRevision: draft.confirmedSnapshot.revision,
+      content: draft.confirmedSnapshot.content,
+      contentDigest: draft.confirmedSnapshot.contentDigest,
+      chunkCount: chunks.length,
+      chunkDigests: chunks.map(digest),
+      target: {
+        channelId: target.channel.id,
+        channelName: target.channel.name,
+        provider: target.channel.provider,
+        conversationId: target.conversation.id,
+        recipientId: target.conversation.externalUserId,
+      },
+      command: { idempotencyKey: key, inputDigest },
+      sendCommand: null,
+      channelDeliveryIds: [],
+      createdBy: actorUser(actor),
+      createdAt: timestamp,
+      sentBy: null,
+      sentAt: null,
+    };
+    runTx(() => {
+      deliveryRows().unshift(row);
+      recordActivity(item, actor, "report_delivery_previewed", {
+        reportDraftId: draft.id,
+        reportDeliveryId: row.id,
+        channelId: row.target.channelId,
+        conversationId: row.target.conversationId,
+        contentDigest: row.contentDigest,
+        chunkCount: row.chunkCount,
+      });
+    });
+    return { ok: true, status: 201, body: { reportDelivery: deliveryView(row), replayed: false } };
+  }
+
+  function sendDelivery(input = {}, actor = null) {
+    const { workItemId, draftId, deliveryId, expectedRevision, idempotencyKey, approvalToken } = input;
+    const allowedFields = new Set([
+      "workItemId", "draftId", "deliveryId", "expectedRevision", "idempotencyKey", "approvalToken",
+    ]);
+    if (Object.keys(input).some((field) => !allowedFields.has(field))) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_report_delivery_send_fields" } };
+    }
+    const item = findOwn(workItemId, actor);
+    const draft = item ? findDraft(item.id, draftId, actor) : null;
+    const row = draft ? findDelivery(item.id, draft.id, deliveryId, actor) : null;
+    if (!row) return notFound();
+    const key = commandKey(idempotencyKey);
+    if (!key) return { ok: false, status: 400, body: { error: "work_item_report_idempotency_key_required" } };
+    if (row.sendCommand?.idempotencyKey === key) {
+      return { ok: true, status: 200, body: { reportDelivery: deliveryView(row), replayed: true } };
+    }
+    if (row.status !== "preview") {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_already_sent" } };
+    }
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_report_delivery_revision_required" } };
+    }
+    if (expectedRevision !== row.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_revision_conflict", currentRevision: row.revision } };
+    }
+    const target = targetFor(row.target.channelId, row.target.conversationId, actor);
+    if (!target
+      || target.channel.name !== row.target.channelName
+      || target.channel.provider !== row.target.provider
+      || target.conversation.externalUserId !== row.target.recipientId) {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_target_changed" } };
+    }
+    if (target.channel.status !== "enabled") {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_channel_disabled" } };
+    }
+    const approval = typeof validateApprovalToken === "function"
+      ? validateApprovalToken(approvalToken, {
+        action: WORK_ITEM_REPORT_DELIVERY_ACTION,
+        targetId: row.id,
+        actor,
+        allowLegacy: false,
+      })
+      : { approved: false, reason: "approval_validator_unavailable" };
+    if (!approval.approved) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: approval.reason,
+          action: WORK_ITEM_REPORT_DELIVERY_ACTION,
+          targetId: row.id,
+        },
+      };
+    }
+    const chunks = chunkContent(row.content);
+    if (chunks.length !== row.chunkCount
+      || chunks.some((content, index) => digest(content) !== row.chunkDigests[index])) {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_preview_changed" } };
+    }
+    const queued = typeof enqueueChannelDeliveryBatch === "function"
+      ? enqueueChannelDeliveryBatch({
+        channelId: row.target.channelId,
+        conversationId: row.target.conversationId,
+        contents: chunks,
+        taskContext: {
+          channelId: row.target.channelId,
+          conversationId: row.target.conversationId,
+          projectId: item.projectId,
+          workItemId: item.id,
+        },
+        sourceContext: {
+          kind: "work_item_report",
+          workItemId: item.id,
+          reportDraftId: draft.id,
+          reportDeliveryId: row.id,
+          contentDigest: row.contentDigest,
+        },
+      })
+      : { ok: false, reason: "delivery_unavailable" };
+    if (!queued.ok) {
+      return { ok: false, status: 503, body: { error: "work_item_report_delivery_enqueue_failed", reason: queued.reason } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      row.status = "submitted";
+      row.revision += 1;
+      row.sendCommand = { idempotencyKey: key, approvalGrantId: approval.grantId ?? null };
+      row.channelDeliveryIds = queued.deliveryIds;
+      row.sentBy = actorUser(actor);
+      row.sentAt = timestamp;
+      recordActivity(item, actor, "report_delivery_sent", {
+        reportDraftId: draft.id,
+        reportDeliveryId: row.id,
+        channelId: row.target.channelId,
+        conversationId: row.target.conversationId,
+        channelDeliveryIds: queued.deliveryIds,
+        contentDigest: row.contentDigest,
+      });
+      appendEvent?.({
+        invocationId: null,
+        type: "work_item_report_delivery_queued",
+        level: "info",
+        message: `${item.localRef} confirmed report queued for ${row.target.provider} delivery.`,
+        data: {
+          workItemId: item.id,
+          reportDraftId: draft.id,
+          reportDeliveryId: row.id,
+          channelId: row.target.channelId,
+          conversationId: row.target.conversationId,
+          channelDeliveryIds: queued.deliveryIds,
+          actorTeamId: item.ownerTeamId,
+        },
+      });
+    });
+    return { ok: true, status: 202, body: { reportDelivery: deliveryView(row), replayed: false } };
+  }
+
+  return {
+    list,
+    get,
+    generate,
+    update,
+    confirm,
+    discard,
+    listDeliveries,
+    getDelivery,
+    previewDelivery,
+    sendDelivery,
+  };
 }

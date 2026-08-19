@@ -39,7 +39,10 @@ describe("notification center model (#1537)", () => {
   });
 
   it("uses durable seen ids so refresh does not create false unread results", () => {
-    const items = [{ id: "done-1", title: "One" }, { id: "done-2", title: "Two" }];
+    const items = [
+      { id: "done-1", title: "One", target: "work_item" as const },
+      { id: "done-2", title: "Two", target: "work_item" as const },
+    ];
     expect(unreadCompletionIds(items, new Set(["done-1", "done-2"]))).toEqual([]);
     expect(unreadCompletionIds(items, new Set(["done-1"]))).toEqual(["done-2"]);
   });
@@ -79,7 +82,7 @@ describe("notification center model (#1537)", () => {
     });
     expect(model.followUps).toEqual({
       count: 1,
-      items: [{ id: "followup:wfr_1", title: "Update customer" }],
+      items: [{ id: "followup:wfr_1", title: "Update customer", target: "work_item" }],
     });
     expect(model.eventIds).toContain("followup:wfr_1");
   });

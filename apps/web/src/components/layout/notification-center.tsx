@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Bell, BellRing, CheckCircle2, CircleAlert, ShieldCheck, WifiOff, X } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Bell, BellRing, CheckCircle2, CircleAlert, ShieldCheck, Sparkles, WifiOff, X } from "lucide-react";
 import { useConsoleState } from "@/data/use-console-state";
 import {
   isControlPlaneStreamConnected,
@@ -13,8 +14,11 @@ import { Button } from "@/components/ui/button";
 import {
   deriveNotificationCenterModel,
   unreadCompletionIds,
+  type NotificationItem,
 } from "@/components/layout/notification-center-model";
-import type { SectionKey } from "@/store/ui-store";
+import { useUiStore, type SectionKey } from "@/store/ui-store";
+import { workflowMemoryApi } from "@/features/workflow-memory/workflow-memory-api";
+import { formatNotificationCopy, notificationCenterCopy } from "@/components/layout/notification-center-copy";
 
 const COMPLETION_SEEN_KEY = "myagenttool-notification-completions-seen-v1";
 const DELIVERY_ENABLED_KEY = "myagenttool-browser-notifications-v1";
@@ -53,9 +57,12 @@ function notificationPermission(): NotificationPermission | "unsupported" {
 }
 
 export function NotificationCenter() {
-  const { t } = useAppTranslation();
+  const { i18n } = useAppTranslation();
+  const text = notificationCenterCopy(i18n.resolvedLanguage);
   const { data: state, isError, isLoading } = useConsoleState();
   const navigate = usePageNavigation();
+  const openWorkItem = useUiStore((store) => store.openWorkItem);
+  const setSelectedInvocationId = useUiStore((store) => store.setSelectedInvocationId);
   const liveUpdates = useSyncExternalStore(
     subscribeControlPlaneStream,
     isControlPlaneStreamConnected,
@@ -65,6 +72,21 @@ export function NotificationCenter() {
     () => deriveNotificationCenterModel(state, { isError, isLoading, liveUpdates }),
     [isError, isLoading, liveUpdates, state],
   );
+  const templateTasksQuery = useQuery({
+    queryKey: ["workflow-memory", "template-learning-tasks"],
+    queryFn: () => workflowMemoryApi.listTemplateLearningTasks(),
+    enabled: Boolean(state),
+    refetchInterval: 5_000,
+  });
+  const templateAlerts = (templateTasksQuery.data?.tasks ?? [])
+    .filter((task) => task.stage === "needs_case_review" || task.stage === "failed");
+  const templateItems: NotificationItem[] = templateAlerts.map((task) => ({
+    id: task.id,
+    title: task.stage === "failed"
+      ? `${task.name || text.templatesUntitled} · ${text.templatesFailed}`
+      : task.name || text.templatesUntitled,
+    target: "template",
+  }));
   const [open, setOpen] = useState(false);
   const [seenCompletionIds, setSeenCompletionIds] = useState<Set<string> | null>(null);
   const [deliveryEnabled, setDeliveryEnabled] = useState(readDeliveryEnabled);
@@ -88,35 +110,42 @@ export function NotificationCenter() {
     ? unreadCompletionIds(model.completions.items, seenCompletionIds)
     : [];
   const unreadCount = unreadIds.length;
-  const actionCount = model.approvals.count + model.failures.count + model.followUps.count + (model.offline ? 1 : 0);
-  const hasDanger = model.failures.count > 0 || model.offline;
+  const unreadCompletionItems = model.completions.items.filter((item) => unreadIds.includes(item.id));
+  const actionCount = model.approvals.count + model.failures.count + model.followUps.count + templateAlerts.length + (model.offline ? 1 : 0);
+  const hasDanger = model.failures.count > 0 || templateAlerts.some((task) => task.stage === "failed") || model.offline;
 
-  const eventSignature = model.eventIds.join("|");
+  const notificationEventIds = [
+    ...model.eventIds,
+    ...templateAlerts.map((task) => `template:${task.id}:${task.stage}`),
+  ];
+  const eventSignature = notificationEventIds.join("|");
   useEffect(() => {
     if (!state || !deliveryEnabled || permission !== "granted") return;
     const prior = readStringArray(DELIVERY_BASELINE_KEY);
     if (prior === null) {
-      writeStringArray(DELIVERY_BASELINE_KEY, model.eventIds);
+      writeStringArray(DELIVERY_BASELINE_KEY, notificationEventIds);
       return;
     }
     const priorSet = new Set(prior);
-    const newIds = model.eventIds.filter((id) => !priorSet.has(id));
-    writeStringArray(DELIVERY_BASELINE_KEY, model.eventIds);
+    const newIds = notificationEventIds.filter((id) => !priorSet.has(id));
+    writeStringArray(DELIVERY_BASELINE_KEY, notificationEventIds);
     if (newIds.length === 0) return;
     try {
-      const notice = new Notification(t("notificationCenter.browser.title"), {
-        body: t("notificationCenter.browser.body", { count: newIds.length }),
+      const notice = new Notification(text.browser.title, {
+        body: formatNotificationCopy(text.browser.body, { count: newIds.length }),
         tag: "myagenttool-notification-center",
       });
       notice.onclick = () => {
         window.focus();
-        navigate("workBoard");
+        navigate(newIds.some((id) => id.startsWith("template:")) ? "workflowMemory" : "workBoard");
         notice.close();
       };
     } catch {
       // The in-app center remains authoritative when OS delivery is unavailable.
     }
-  }, [deliveryEnabled, eventSignature, model.eventIds, navigate, permission, state, t]);
+  // eventSignature is the stable dependency for the derived list.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deliveryEnabled, eventSignature, navigate, permission, state, text.browser.body, text.browser.title]);
 
   useEffect(() => {
     if (!open) return;
@@ -160,6 +189,30 @@ export function NotificationCenter() {
     navigate(section);
   }
 
+  function openNotificationItem(item: NotificationItem, fallback: SectionKey) {
+    setOpen(false);
+    if (item.target === "work_item") {
+      navigate("task");
+      openWorkItem(item.id, { mode: "summary" });
+      return;
+    }
+    if (item.target === "invocation") {
+      setSelectedInvocationId(item.id);
+      navigate("invocations");
+      return;
+    }
+    if (item.target === "template") {
+      const task = templateAlerts.find((candidate) => candidate.id === item.id);
+      const url = new URL(window.location.href);
+      url.searchParams.set("section", "workflowMemory");
+      if (task?.stage === "needs_case_review") url.searchParams.set("sourceId", task.sourceId);
+      else url.searchParams.delete("sourceId");
+      window.location.assign(url.toString());
+      return;
+    }
+    navigate(fallback);
+  }
+
   function markResultsRead() {
     const next = new Set([...(seenCompletionIds ?? []), ...model.completions.items.map((item) => item.id)]);
     writeStringArray(COMPLETION_SEEN_KEY, next);
@@ -173,7 +226,7 @@ export function NotificationCenter() {
       : await Notification.requestPermission();
     setPermission(next);
     if (next === "granted") {
-      writeStringArray(DELIVERY_BASELINE_KEY, model.eventIds);
+      writeStringArray(DELIVERY_BASELINE_KEY, notificationEventIds);
       try {
         localStorage.setItem(DELIVERY_ENABLED_KEY, "true");
       } catch {
@@ -192,7 +245,7 @@ export function NotificationCenter() {
     setDeliveryEnabled(false);
   }
 
-  const accessibleLabel = t("notificationCenter.triggerLabel", {
+  const accessibleLabel = formatNotificationCopy(text.triggerLabel, {
     action: actionCount,
     unread: unreadCount,
   });
@@ -229,26 +282,26 @@ export function NotificationCenter() {
           id="notification-center"
           role="dialog"
           aria-modal="true"
-          aria-label={t("notificationCenter.title")}
+          aria-label={text.title}
           className="absolute right-0 top-12 z-50 flex w-[min(calc(100vw-1rem),24rem)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
           style={{ maxHeight: "min(calc(100vh - 4.5rem), 40rem)" }}
         >
           <div className="flex items-start gap-2 border-b border-border px-3 py-3">
             <div className="min-w-0 flex-1">
-              <h2 className="text-sm font-semibold">{t("notificationCenter.title")}</h2>
+              <h2 className="text-sm font-semibold">{text.title}</h2>
               <div className="mt-1 flex flex-wrap gap-1.5">
                 <Badge tone={hasDanger ? "danger" : actionCount > 0 ? "warning" : "neutral"}>
-                  {t("notificationCenter.actionCount", { count: actionCount })}
+                  {formatNotificationCopy(text.actionCount, { count: actionCount })}
                 </Badge>
                 <Badge tone={unreadCount > 0 ? "running" : "neutral"}>
-                  {t("notificationCenter.unreadCount", { count: unreadCount })}
+                  {formatNotificationCopy(text.unreadCount, { count: unreadCount })}
                 </Badge>
               </div>
             </div>
             <button
               ref={closeRef}
               type="button"
-              aria-label={t("notificationCenter.close")}
+              aria-label={text.close}
               onClick={() => {
                 setOpen(false);
                 triggerRef.current?.focus();
@@ -261,33 +314,54 @@ export function NotificationCenter() {
 
           <div className="overflow-y-auto p-2">
             {actionCount === 0 && unreadCount === 0 ? (
-              <p className="px-3 py-4 text-center text-sm text-muted-foreground">{t("notificationCenter.empty")}</p>
+              <p className="px-3 py-4 text-center text-sm text-muted-foreground">{text.empty}</p>
+            ) : null}
+            {templateAlerts.length > 0 ? (
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<Sparkles className="size-5 text-primary" />}
+                  title={text.templates}
+                  description={templateAlerts.some((task) => task.stage === "failed")
+                    ? text.templatesFailedHint
+                    : text.templatesHint}
+                  count={templateAlerts.length}
+                  tone={templateAlerts.some((task) => task.stage === "failed") ? "danger" : "warning"}
+                  onClick={() => openSection("workflowMemory")}
+                />
+                <NotificationItemLinks items={templateItems} onOpen={(item) => openNotificationItem(item, "workflowMemory")} />
+              </NotificationGroup>
             ) : null}
             {model.approvals.count > 0 ? (
-              <NotificationRow
-                icon={<ShieldCheck className="size-5 text-warning" />}
-                title={t("notificationCenter.approvals")}
-                description={t("notificationCenter.approvalsHint")}
-                count={model.approvals.count}
-                tone="warning"
-                onClick={() => openSection("approvals")}
-              />
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<ShieldCheck className="size-5 text-warning" />}
+                  title={text.approvals}
+                  description={text.approvalsHint}
+                  count={model.approvals.count}
+                  tone="warning"
+                  onClick={() => openSection("approvals")}
+                />
+                <NotificationItemLinks items={model.approvals.items} onOpen={(item) => openNotificationItem(item, "approvals")} />
+              </NotificationGroup>
             ) : null}
             {model.failures.count > 0 ? (
-              <NotificationRow
-                icon={<CircleAlert className="size-5 text-destructive" />}
-                title={t("notificationCenter.failures")}
-                description={t("notificationCenter.failuresHint")}
-                count={model.failures.count}
-                tone="danger"
-                onClick={() => openSection("autoRuns")}
-              />
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<CircleAlert className="size-5 text-destructive" />}
+                  title={text.failures}
+                  description={text.failuresHint}
+                  count={model.failures.count}
+                  tone="danger"
+                  onClick={() => openSection("workBoard")}
+                />
+                <NotificationItemLinks items={model.failures.items} onOpen={(item) => openNotificationItem(item, "workBoard")} />
+              </NotificationGroup>
             ) : null}
             {model.followUps.count > 0 ? (
               <NotificationRow
                 icon={<BellRing className="size-5 text-warning" />}
-                title={t("notificationCenter.followUps")}
-                description={t("notificationCenter.followUpsHint")}
+                title={text.followUps}
+                description={text.followUpsHint}
                 count={model.followUps.count}
                 tone="warning"
                 onClick={() => openSection("workBoard")}
@@ -296,53 +370,59 @@ export function NotificationCenter() {
             {model.offline ? (
               <NotificationRow
                 icon={<WifiOff className="size-5 text-destructive" />}
-                title={t("notificationCenter.executionOffline")}
-                description={t("notificationCenter.executionOfflineHint")}
+                title={text.executionOffline}
+                description={text.executionOfflineHint}
                 count={1}
                 tone="danger"
                 onClick={() => openSection("devices")}
               />
             ) : null}
             {unreadCount > 0 ? (
-              <NotificationRow
-                icon={<CheckCircle2 className="size-5 text-success" />}
-                title={t("notificationCenter.completions")}
-                description={t("notificationCenter.completionsHint")}
-                count={unreadCount}
-                tone="success"
-                onClick={() => {
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<CheckCircle2 className="size-5 text-success" />}
+                  title={text.completions}
+                  description={text.completionsHint}
+                  count={unreadCount}
+                  tone="success"
+                  onClick={() => {
+                    markResultsRead();
+                    openSection("workBoard");
+                  }}
+                />
+                <NotificationItemLinks items={unreadCompletionItems} onOpen={(item) => {
                   markResultsRead();
-                  openSection("invocations");
-                }}
-              />
+                  openNotificationItem(item, "workBoard");
+                }} />
+              </NotificationGroup>
             ) : null}
 
             <details className="mt-2 rounded-lg border border-border bg-background/40" open={model.offline || model.fallback}>
               <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-medium">
                 <CircleAlert className="size-4 text-muted-foreground" aria-hidden="true" />
-                {t("notificationCenter.status.title")}
+                {text.status.title}
                 <Badge className="ml-auto" tone={model.offline ? "danger" : model.fallback ? "warning" : "success"}>
                   {model.offline
-                    ? t("notificationCenter.status.offline")
+                    ? text.status.offline
                     : model.fallback
-                      ? t("notificationCenter.status.fallback")
-                      : t("notificationCenter.status.healthy")}
+                      ? text.status.fallback
+                      : text.status.healthy}
                 </Badge>
               </summary>
               <div className="space-y-2 border-t border-border px-3 py-3 text-xs">
                 <StatusLine
-                  label={t("notificationCenter.status.server")}
-                  value={isError ? t("notificationCenter.status.offline") : isLoading ? t("notificationCenter.status.connecting") : t("notificationCenter.status.connected")}
+                  label={text.status.server}
+                  value={isError ? text.status.offline : isLoading ? text.status.connecting : text.status.connected}
                 />
                 <StatusLine
-                  label={t("notificationCenter.status.computer")}
+                  label={text.status.computer}
                   value={state?.device
-                    ? `${state.device.name} · ${state.device.status === "online" ? t("notificationCenter.status.online") : t("notificationCenter.status.offline")}`
-                    : t("notificationCenter.status.unknown")}
+                    ? `${state.device.name} · ${state.device.status === "online" ? text.status.online : text.status.offline}`
+                    : text.status.unknown}
                 />
                 <StatusLine
-                  label={t("notificationCenter.status.updates")}
-                  value={liveUpdates ? t("notificationCenter.status.realtime") : t("notificationCenter.status.periodic")}
+                  label={text.status.updates}
+                  value={liveUpdates ? text.status.realtime : text.status.periodic}
                 />
               </div>
             </details>
@@ -351,12 +431,12 @@ export function NotificationCenter() {
               <div className="flex items-start gap-2">
                 <BellRing className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <div className="min-w-0 flex-1">
-                  <h3 className="text-sm font-medium">{t("notificationCenter.browser.titleSetting")}</h3>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{t("notificationCenter.browser.privacy")}</p>
+                  <h3 className="text-sm font-medium">{text.browser.titleSetting}</h3>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{text.browser.privacy}</p>
                   <div className="mt-2 flex items-center gap-2">
                     {deliveryEnabled ? (
                       <Button variant="secondary" size="sm" className="min-h-11" onClick={disableBrowserNotifications}>
-                        {t("notificationCenter.browser.disable")}
+                        {text.browser.disable}
                       </Button>
                     ) : (
                       <Button
@@ -367,10 +447,10 @@ export function NotificationCenter() {
                         onClick={() => void enableBrowserNotifications()}
                       >
                         {permission === "unsupported"
-                          ? t("notificationCenter.browser.unsupported")
+                          ? text.browser.unsupported
                           : permission === "denied"
-                            ? t("notificationCenter.browser.denied")
-                            : t("notificationCenter.browser.enable")}
+                            ? text.browser.denied
+                            : text.browser.enable}
                       </Button>
                     )}
                   </div>
@@ -381,6 +461,36 @@ export function NotificationCenter() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function NotificationGroup({ children }: { children: ReactNode }) {
+  return <section className="rounded-lg hover:bg-muted/20">{children}</section>;
+}
+
+function NotificationItemLinks({
+  items,
+  onOpen,
+}: {
+  items: NotificationItem[];
+  onOpen: (item: NotificationItem) => void;
+}) {
+  if (!items.length) return null;
+  return (
+    <ul className="space-y-1 px-3 pb-2 pl-11">
+      {items.slice(0, 4).map((item) => (
+        <li key={`${item.target}:${item.id}`}>
+          <button
+            type="button"
+            className="min-h-9 w-full truncate rounded-md px-2 text-left text-xs font-medium text-primary hover:bg-primary/10"
+            title={item.title}
+            onClick={() => onOpen(item)}
+          >
+            {item.title}
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

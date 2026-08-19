@@ -16,6 +16,8 @@ import type {
   ApplicationRegisterRequest,
   ApplicationSnapshot,
   ConsoleSnapshot,
+  ChannelInteraction,
+  ChannelDiagnostics,
   InvocationEventSnapshot,
   KnownApplicationCatalogEntry,
   ProjectTreeResponse,
@@ -26,6 +28,344 @@ import type {
   ToolInvocationRequest,
   ToolInvocationResponse,
 } from "@/lib/console-state";
+import {
+  ApiError,
+  apiBase,
+  csrfHeaders,
+  ensureSession,
+  request,
+  requestByteRange,
+  requestBytes,
+  requestRaw,
+  REQUEST_TIMEOUT_MS,
+  setSessionReady,
+  setSessionAnonymous,
+  setSessionUser,
+  type SessionUser,
+} from "@/lib/api/request";
+
+export {
+  ApiError,
+  ensureSession,
+  getSessionUser,
+  openControlPlaneEventStream,
+  request,
+  requestRaw,
+  resolveApiBase,
+  SESSION_CHANGED_EVENT,
+} from "@/lib/api/request";
+export type { SessionUser } from "@/lib/api/request";
+export type {
+  LocalContentCatalogStats,
+  LocalContentHealth,
+  LocalContentKind,
+  LocalContentPreview,
+  LocalContentRecord,
+  WorkItemContentReference,
+} from "@/features/local-content/local-content-types";
+
+export interface MailboxAccount {
+  id: string;
+  provider: string;
+  name: string;
+  status: "connected" | "needs_attention";
+  statusDetail: "ready" | "credential_not_authorized" | string;
+  canReceive: boolean;
+  canSend: boolean;
+  canOrganize?: boolean;
+  readApplicationId: string;
+  sendApplicationId: string | null;
+  organizeApplicationId?: string | null;
+  fetchCapability: string | null;
+  incrementalSync: boolean;
+  providerReadState: boolean;
+}
+
+export interface MailboxSync {
+  status: "idle" | "syncing" | "succeeded" | "failed";
+  invocationId: string | null;
+  lastCompletedAt: string | null;
+  lastSucceededAt: string | null;
+}
+
+export interface MailboxMessage {
+  id: string;
+  messageId: string;
+  from: string;
+  subject: string;
+  date: string | null;
+  body: string | null;
+  bodyHtml: string;
+  hasHtml: boolean;
+  bodyTruncated: boolean;
+  bodyContentVersion: number;
+  preview: string;
+  unread: boolean;
+  folderId: string;
+  folderPath: string;
+  fetched: boolean;
+  inReplyTo: string | null;
+  references: string[];
+  attachments: Array<{ id: string; name: string; contentType: string; size: number; sha256: string | null; previewable: boolean; localAvailable?: boolean; contentId?: string }>;
+  attachmentMetadataLoaded: boolean;
+  archive: { version: 1; ref?: string; availability: "available" | "unavailable"; sha256?: string; size?: number; archivedAt?: string | null; reason?: string } | null;
+  applicationId: string | null;
+  issueNumber: number | null;
+  task: { id: string; localRef: string; title: string; projectId: string } | null;
+  createdAt: string | null;
+  classification?: MailClassification | null;
+}
+
+export interface MailClassification {
+  attention: "action_required" | "reply_expected" | "important" | "routine" | "low_value" | "unknown";
+  mailType: "human_conversation" | "customer_or_project" | "transaction" | "account_security" | "calendar" | "system_notification" | "newsletter" | "marketing" | "personal" | "other" | "unknown";
+  suggestedAction: "reply" | "create_task" | "review_attachment" | "read" | "archive_candidate" | "none";
+  label: string;
+  explanation: string;
+  uncertain: boolean;
+  confirmationState: "proposed" | "confirmed" | "corrected" | "dismissed";
+  revision: number;
+  source?: "header" | "semantic" | "rule" | "manual";
+  ruleId?: string;
+}
+
+export interface MailClassificationTarget {
+  attention: MailClassification["attention"];
+  mailType: MailClassification["mailType"];
+  suggestedAction: MailClassification["suggestedAction"];
+}
+
+export interface MailClassificationRule {
+  id: string;
+  accountId: string;
+  status: "active" | "paused" | "revoked";
+  matchKind: "sender" | "domain";
+  matchValue: string;
+  target: MailClassificationTarget;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MailClassificationRuleSuggestion {
+  id: string;
+  accountId: string;
+  matchKind: "sender" | "domain";
+  matchValue: string;
+  target: MailClassificationTarget;
+  evidenceCount: number;
+  affectedCount: number;
+  samples: Array<{ messageId: string; from: string; subject: string; date: string | null }>;
+}
+
+export interface MailFolderDestination {
+  kind: "existing" | "new";
+  folderId: string | null;
+  folderPath: string | null;
+  name: string | null;
+  category: "subscriptions" | "notifications";
+}
+
+export interface MailFolderSuggestion {
+  id: string;
+  accountId: string;
+  classificationRuleId: string;
+  classificationRuleRevision: number;
+  matchKind: "sender" | "domain";
+  matchValue: string;
+  destinationCategory: "subscriptions" | "notifications";
+  affectedCount: number;
+  protectedCount: number;
+  proposedDestination: MailFolderDestination;
+  folderOptions: MailFolderDestination[];
+  samples: Array<{ messageId: string; from: string; subject: string; date: string | null; folderId: string }>;
+}
+
+export interface MailFolderMovePreview {
+  id: string;
+  accountId: string;
+  suggestionId: string;
+  destination: MailFolderDestination;
+  totalMatched: number;
+  selectedCount: number;
+  remainingCount: number;
+  status: "previewed";
+  purpose?: "manual" | "automatic" | "recovery";
+  recoveryOfJobId?: string | null;
+  revision: number;
+  expiresAt: string;
+  samples: MailFolderSuggestion["samples"];
+  approvalTarget: string;
+  movesSupported: boolean;
+}
+
+export interface MailFolderMoveJob {
+  id: string;
+  accountId: string;
+  previewId: string;
+  destination: MailFolderDestination;
+  requestedCount: number;
+  movedCount: number;
+  missingCount: number;
+  conflictCount?: number;
+  pendingCount?: number;
+  unknownCount?: number;
+  mode?: "manual" | "automatic" | "recovery";
+  automationId?: string | null;
+  recoveryOfJobId?: string | null;
+  status: "moving" | "succeeded" | "unconfirmed" | "recoverable" | "conflict";
+  conflictType?: string | null;
+  revision: number;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  items?: Array<{ messageId: string; sourceFolderPath: string; status: "pending" | "moved" | "missing" | "conflict" | "unknown"; reason: string | null }>;
+}
+
+export interface MailFolderAutomation {
+  id: string;
+  accountId: string;
+  classificationRuleId: string;
+  classificationRuleRevision: number;
+  suggestionId: string;
+  destination: MailFolderDestination;
+  status: "active" | "paused" | "revoked";
+  pauseReason: string | null;
+  batchSize: number;
+  revision: number;
+  enabledAt: string;
+  lastRunAt: string | null;
+  lastJobId: string | null;
+  lastSuccessfulAt: string | null;
+  consecutiveSuccessfulBatches: number;
+  lastCheckedAt: string | null;
+  nextAction: "none" | "resume_when_ready" | "sync_and_review" | "review_classification_quality" | "enable_rollout" | "reauthorize" | "create_new_authorization";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MailFolderAutomationDryRun {
+  automationId: string;
+  checkedAt: string;
+  providerCalled: false;
+  successCountersChanged: false;
+  accountId?: string;
+  destination?: MailFolderDestination;
+  selectedCount: number;
+  matchedCount: number;
+  excludedCount: number;
+  exclusions?: { protected: number; batchLimit: number };
+  exclusionReasons: string[];
+}
+
+export type MailSmartView = "all" | "needs_attention" | "important" | "notifications" | "subscriptions" | "other";
+
+export interface MailClassificationJob {
+  id: string;
+  scope: string;
+  mode: "header" | "semantic";
+  status: "queued" | "running" | "cancelling" | "succeeded" | "degraded" | "cancelled" | "interrupted";
+  total: number;
+  processed: number;
+  classified: number;
+  failed: number;
+  cancelled?: number;
+  provider?: string | null;
+  model?: string | null;
+}
+
+export interface MailQualityMetric {
+  numerator: number;
+  denominator: number;
+  value: number | null;
+  target: number;
+  direction: "at_least" | "at_most";
+}
+
+export interface MailClassificationQuality {
+  status: "collecting" | "healthy" | "needs_attention";
+  generatedAt: string;
+  sampleSize: number;
+  minimumSample: number;
+  signals: Array<"insufficient_sample" | "low_coverage" | "high_unknown_rate" | "high_correction_rate" | "high_job_failure_rate" | "stale_classifier_results">;
+  metrics: {
+    coverage: MailQualityMetric;
+    unknown: MailQualityMetric;
+    corrections: MailQualityMetric;
+    jobFailures: MailQualityMetric;
+    semantic: { count: number };
+    stale: { count: number };
+  };
+  organization: {
+    status: "collecting" | "healthy" | "needs_attention";
+    completedBatches: number;
+    unconfirmedBatches: number;
+    unconfirmedRate: number | null;
+    minimumSample: number;
+  };
+  privacy: { localOnly: true; includesMessageContent: false; includesSenderIdentity: false };
+}
+
+export interface MailSemanticPreview {
+  available: boolean;
+  reason: "not_configured" | "circuit_open" | null;
+  eligible: number;
+  pending: number;
+  limit: number;
+  newestDate: string | null;
+  oldestDate: string | null;
+  readsUnopenedBodies: false;
+  externalModel: false;
+  provider: string | null;
+  model: string | null;
+  circuitRemainingMs: number;
+}
+
+export interface MailboxDraft {
+  id: string;
+  status: "draft" | "sending" | "sent" | "send_unconfirmed" | string;
+  revision: number;
+  origin: "user" | "reply" | "legacy" | string;
+  to: string;
+  subject: string;
+  body: string;
+  inReplyTo: string | null;
+  references: string[];
+  attachments: MailDraftAttachment[];
+  createdAt: string | null;
+  updatedAt: string | null;
+  sentAt: string | null;
+  sendError: string | null;
+  approvalTarget: string;
+}
+
+export interface MailDraftAttachment {
+  ref: string;
+  name: string;
+  contentType: string;
+  size: number;
+}
+
+export interface MailboxSnapshot {
+  accounts: MailboxAccount[];
+  connection: { status: "connected" | "not_connected" | "needs_attention"; message: string };
+  sync: MailboxSync;
+  folders: Array<{ id: string; name?: string; kind?: "provider"; specialUse?: string | null; count: number; unread?: number; cursorReset?: boolean; syncError?: boolean }>;
+  messages: MailboxMessage[];
+  query: string;
+  selectedFolder: string;
+  selectedView?: MailSmartView;
+  classificationSummary?: {
+    counts: Record<MailSmartView, number>;
+    classified: number;
+    pending: number;
+    classifierVersion: number;
+  } | null;
+  pagination: { page: number; pageSize: number; total: number; totalPages: number; hasPrevious: boolean; hasNext: boolean };
+  drafts: MailboxDraft[];
+  updatedAt: string | null;
+}
 
 export interface LoopRefusalsResponse {
   refusals: RefusalRow[];
@@ -106,6 +446,7 @@ export interface LocalScheduleCapacityResponse {
     status: string;
     unlinkState: string;
     bridgeAvailable: boolean;
+    timeZone?: string;
   };
   capacity: {
     maxConcurrency: number;
@@ -274,6 +615,10 @@ export interface WorkflowSource {
   id: string;
   projectId: string;
   name: string;
+  purpose?: "template_learning" | string;
+  templateId?: string;
+  templateLearningTaskId?: string;
+  selectedFileCount?: number;
   relativePath: string;
   readMode: "metadata" | "supported_text";
   state: "active" | "revoked";
@@ -360,6 +705,11 @@ export type BusinessDocumentType =
   | "price_list"
   | "customer_reference"
   | "other_reference"
+  | "contract_review"
+  | "purchase_request"
+  | "customer_complaint"
+  | "weekly_report"
+  | "project_acceptance"
   | "unknown";
 
 export interface BusinessFieldProposal {
@@ -490,17 +840,38 @@ export interface BusinessRoutineDiscoveryStep {
   configuration: Record<string, unknown>;
 }
 
+export interface MyTemplateContract {
+  version: number;
+  inputSummary: string;
+  inputFormats: string[];
+  inputArtifactIds: string[];
+  outputSummary: string;
+  outputFormat: string;
+  outputFileName: string;
+  outputArtifactIds: string[];
+  outputColumns: string[];
+  fieldMappings: Array<{
+    column: string;
+    source: string;
+    confidence: "supported" | "needs_confirmation";
+  }>;
+  uncertainFields: string[];
+}
+
 export interface BusinessRoutineDiscoveryCandidate {
   id: string;
   familyId: string;
   projectId: string;
   sourceId: string;
   name: string;
+  description?: string | null;
   version: number;
   state: "candidate" | "superseded";
   triggerDocumentTypes: BusinessDocumentType[];
   confirmedCaseIds: string[];
   minimumCaseCount: number;
+  templateMaturity?: "trial" | "stable";
+  templateContract?: MyTemplateContract | null;
   mandatoryCoverageThreshold: number;
   steps: BusinessRoutineDiscoveryStep[];
   confidence: number;
@@ -524,6 +895,63 @@ export interface BusinessRoutineStep {
   configuration: Record<string, unknown>;
 }
 
+export interface BusinessDataRequirement {
+  id: string;
+  kind: "contact" | "order" | "account" | "publish_target" | "file" | string;
+  label: string;
+  fields: string[];
+  required: boolean;
+  multiple: boolean;
+  description: string | null;
+}
+
+export interface BusinessDataRelation {
+  id: string;
+  type: "lookup" | "join";
+  fromRequirementId: string;
+  fromField: string;
+  toRequirementId: string;
+  toField: string;
+  required: boolean;
+  description: string | null;
+}
+
+export interface BusinessMutationPolicy {
+  operations: Array<"update" | "insert" | "delete" | string>;
+  targetRequirementIds: string[];
+  keyFields: string[];
+  mutableFields: string[];
+  allowMultipleSources: boolean;
+  allowMultipleRows: boolean;
+  maxRows: number;
+  requireUserConfirmation: boolean;
+  writeMode: "safe_copy_replace" | string;
+}
+
+export interface MyTemplateDraft {
+  id: string;
+  projectId: string;
+  name: string;
+  typicalInput: string;
+  expectedOutput: string;
+  applicability: string;
+  steps: string[];
+  state: "learning" | "needs_review" | "ready" | "rejected";
+  caseCount: number;
+  casesRequired: number;
+  revision: number;
+  origin: { kind: "work_item"; workItemId: string; localRef: string | null; title: string };
+  activation?: {
+    definitionId: string;
+    familyId: string;
+    version: number;
+    confirmedAt: string;
+    confirmedBy: string;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface BusinessRoutineDefinition {
   id: string;
   familyId: string;
@@ -537,7 +965,14 @@ export interface BusinessRoutineDefinition {
   historicalCaseIds: string[];
   triggerDocumentTypes: BusinessDocumentType[];
   steps: BusinessRoutineStep[];
+  dataRequirements?: BusinessDataRequirement[];
+  relations?: BusinessDataRelation[];
+  mutationPolicy?: BusinessMutationPolicy | null;
   confidence: number;
+  templateScope?: "team";
+  templateMaturity?: "trial" | "stable";
+  templateContract?: MyTemplateContract | null;
+  templateLearningTaskId?: string;
   supersedesId: string | null;
   supersededById: string | null;
   evidenceHealth: {
@@ -1003,112 +1438,6 @@ export interface WorktreeDiffSnapshot {
   truncated: boolean;
 }
 
-// The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
-const SERVER_PORT = "5001";
-const FALLBACK_API_BASE = `http://127.0.0.1:${SERVER_PORT}`;
-
-export class ApiError extends Error {
-  constructor(public readonly code: string, message: string, public readonly status: number) {
-    super(message);
-    this.name = "ApiError";
-  }
-}
-
-/**
- * Resolve the API base. Priority:
- *   1. `?api=<url>` override (any host — LAN / custom setups).
- *   2. Same host the console was loaded from, on the server port — so both
- *      localhost:5000 and <lan-ip>:5000 reach their server with no query param.
- */
-export function resolveApiBase(): string {
-  if (typeof window === "undefined") return FALLBACK_API_BASE;
-  const override = new URLSearchParams(window.location.search).get("api");
-  if (override) {
-    try {
-      return new URL(override).origin;
-    } catch {
-      /* fall through to the location-derived default */
-    }
-  }
-  const { protocol, hostname } = window.location;
-  if (!hostname) return FALLBACK_API_BASE;
-  return `${protocol}//${hostname}:${SERVER_PORT}`;
-}
-
-export async function openControlPlaneEventStream(
-  onEvent: (event: { id: string | null; event: string; data: Record<string, unknown> }) => void,
-  signal: AbortSignal,
-  lastEventId?: string | null,
-): Promise<void> {
-  await ensureSession();
-  const response = await fetch(`${apiBase}/api/events/stream`, {
-    headers: {
-      ...(lastEventId ? { "Last-Event-ID": lastEventId } : {}),
-    },
-    credentials: "include",
-    signal,
-  });
-  if (response.status === 401) {
-    sessionReady = false;
-    throw new ApiError("unauthenticated", "Session expired.", 401);
-  }
-  if (!response.ok || !response.body) throw new ApiError("stream_unavailable", "Live updates unavailable.", response.status);
-  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-  let buffer = "";
-  while (!signal.aborted) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += value;
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      if (!frame || frame.startsWith(":")) continue;
-      let event = "message";
-      let id: string | null = null;
-      let data = "{}";
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("id:")) id = line.slice(3).trim();
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        if (line.startsWith("data:")) data = line.slice(5).trim();
-      }
-      onEvent({ id, event, data: JSON.parse(data) as Record<string, unknown> });
-    }
-  }
-}
-
-const apiBase = resolveApiBase();
-const REQUEST_TIMEOUT_MS = 15_000;
-
-// --- ADR 0021 I2: server-side session cookie + CSRF -----------------------
-// The browser never receives or persists the session secret in JavaScript.
-export const SESSION_CHANGED_EVENT = "myagenttool:session-changed";
-
-export interface SessionUser {
-  id: string;
-  name?: string;
-  teamId?: string;
-  role?: "owner" | "admin" | "operator" | "viewer";
-}
-
-let memoryUser: SessionUser | null = null;
-let sessionReady = false;
-let sessionPromise: Promise<boolean> | null = null;
-
-function setUser(user: SessionUser | null): void {
-  memoryUser = user;
-  try {
-    window.localStorage.removeItem("myagenttool.token");
-    window.localStorage.removeItem("myagenttool.user");
-  } catch {
-    /* legacy storage may be unavailable; it is never read */
-  }
-  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(SESSION_CHANGED_EVENT));
-}
-
-/** The signed-in user (for display), or null if not logged in yet. */
-export function getSessionUser(): SessionUser | null {
-  return memoryUser;
-}
 
 export interface SessionInfo {
   id: string;
@@ -1188,38 +1517,6 @@ async function postSession(credentials: Record<string, unknown>): Promise<Sessio
   return (await response.json().catch(() => ({}))) as SessionResponse;
 }
 
-function csrfToken(): string | null {
-  if (typeof document === "undefined") return null;
-  const prefix = "myagenttool_csrf=";
-  const value = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
-  return value ? decodeURIComponent(value.slice(prefix.length)) : null;
-}
-
-function csrfHeaders(method: string): Record<string, string> {
-  if (!["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())) return {};
-  const token = csrfToken();
-  return token ? { "X-CSRF-Token": token } : {};
-}
-
-async function discoverSession(): Promise<boolean> {
-  try {
-    // One-way migration cleanup: legacy bearer/display records are never used.
-    window.localStorage.removeItem("myagenttool.token");
-    window.localStorage.removeItem("myagenttool.user");
-  } catch {
-    /* storage may be unavailable; no browser credential is read either way */
-  }
-  const current = await fetch(`${apiBase}/api/session`, { credentials: "include" }).catch(() => null);
-  if (current?.ok) {
-    const data = (await current.json().catch(() => ({}))) as SessionResponse;
-    setUser(data.user ?? null);
-    sessionReady = true;
-    return true;
-  }
-  setUser(null);
-  sessionReady = false;
-  return false;
-}
 
 export async function getIdentityOptions(): Promise<IdentityOptions> {
   const response = await fetch(`${apiBase}/api/identity/options`, { credentials: "include" });
@@ -1249,22 +1546,22 @@ export async function getIdentityOptions(): Promise<IdentityOptions> {
 export async function getCurrentSession(): Promise<SessionResponse | null> {
   const response = await fetch(`${apiBase}/api/session`, { credentials: "include" });
   if (response.status === 401) {
-    sessionReady = false;
-    setUser(null);
+    setSessionAnonymous();
+    setSessionUser(null);
     return null;
   }
   if (!response.ok) throw new ApiError("session_unavailable", "Session details are unavailable.", response.status);
   const data = await response.json() as SessionResponse;
-  sessionReady = Boolean(data.user);
-  setUser(data.user ?? null);
+  setSessionReady(Boolean(data.user));
+  setSessionUser(data.user ?? null);
   return data;
 }
 
 export async function loginLocal(): Promise<SessionUser> {
   const data = await postSession({ mode: "local" });
   if (!data?.user) throw new ApiError("local_sign_in_failed", "Local sign-in failed.", 401);
-  sessionReady = true;
-  setUser(data.user);
+  setSessionReady(true);
+  setSessionUser(data.user);
   return data.user;
 }
 
@@ -1278,8 +1575,8 @@ export async function loginWithCredentials(teamId: string, userId: string, passw
   if (!data?.user) {
     throw new Error("Sign in failed — check the user id and password.");
   }
-  sessionReady = true;
-  setUser(data.user ?? { id: userId });
+  setSessionReady(true);
+  setSessionUser(data.user ?? { id: userId });
   return data.user ?? { id: userId };
 }
 
@@ -1339,8 +1636,8 @@ export async function logout(): Promise<void> {
   if (!response.ok && response.status !== 204) {
     throw new ApiError("logout_failed", "Could not revoke this session.", response.status);
   }
-  sessionReady = false;
-  setUser(null);
+  setSessionAnonymous();
+  setSessionUser(null);
 }
 
 export async function logoutAllSessions(): Promise<void> {
@@ -1353,8 +1650,8 @@ export async function logoutAllSessions(): Promise<void> {
       throw new ApiError("logout_all_failed", "Could not sign out all devices.", response.status);
     }
   });
-  sessionReady = false;
-  setUser(null);
+  setSessionAnonymous();
+  setSessionUser(null);
 }
 
 export async function beginIdentityChallenge(provider: IdentityProviderCapability["provider"]): Promise<IdentityChallengeResponse> {
@@ -1384,78 +1681,50 @@ export async function cancelIdentityChallenge(challengeId: string): Promise<void
   if (!response.ok) throw new ApiError("identity_challenge_cancel_failed", "Could not cancel this sign-in request.", response.status);
 }
 
-/** Discover or explicitly enter local mode, de-duping concurrent first calls. */
-function ensureSession(): Promise<boolean> {
-  if (sessionReady) return Promise.resolve(true);
-  if (!sessionPromise) sessionPromise = discoverSession().finally(() => (sessionPromise = null));
-  return sessionPromise;
-}
 
-export async function request<T = unknown>(
-  method: string,
-  path: string,
-  body?: unknown,
-  retry = true,
-  timeoutMs = REQUEST_TIMEOUT_MS,
-): Promise<T> {
-  await ensureSession();
-  const headers: Record<string, string> = { ...csrfHeaders(method) };
-  if (body) headers["Content-Type"] = "application/json";
-  const response = await fetch(`${apiBase}${path}`, {
-    method,
-    headers: Object.keys(headers).length ? headers : undefined,
-    credentials: "include",
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  // Cookie rejected/expired: rediscover once, then replay the request.
-  if (response.status === 401 && retry) {
-    sessionReady = false;
-    await ensureSession();
-    return request<T>(method, path, body, false, timeoutMs);
-  }
-  if (response.status === 204) return undefined as T;
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const record = data as { message?: string; error?: string };
-    throw new ApiError(record.error ?? "request_failed", record.message ?? record.error ?? `${method} ${path} failed.`, response.status);
-  }
-  return data as T;
-}
+export type TaskMaterialAsset = {
+  id: string;
+  clientFileId: string;
+  originalName: string;
+  family: string;
+  mimeType: string | null;
+  size: number;
+  hash: string;
+  resourceClass: "small" | "medium" | "large";
+  activeContent: boolean;
+  readiness: { state: string; reason: string };
+};
 
-async function requestBytes(path: string, retry = true): Promise<ArrayBuffer> {
-  await ensureSession();
-  const response = await fetch(`${apiBase}${path}`, {
-    method: "GET",
-    credentials: "include",
-  });
-  if (response.status === 401 && retry) {
-    sessionReady = false;
-    await ensureSession();
-    return requestBytes(path, false);
-  }
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({})) as { message?: string; error?: string };
-    throw new ApiError(data.error ?? "request_failed", data.message ?? data.error ?? `GET ${path} failed.`, response.status);
-  }
-  return response.arrayBuffer();
-}
+export type TaskMaterialDraft = {
+  id: string;
+  projectId: string;
+  status: "draft" | "claimed" | "expired" | "purged";
+  revision: number;
+  workItemId: string | null;
+  assets: TaskMaterialAsset[];
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+};
 
-async function requestByteRange(path: string, start: number, end: number, retry = true): Promise<{ data: ArrayBuffer; total: number }> {
-  await ensureSession();
-  const response = await fetch(`${apiBase}${path}`, { method: "GET", credentials: "include", headers: { Range: `bytes=${start}-${end - 1}` } });
-  if (response.status === 401 && retry) { sessionReady = false; await ensureSession(); return requestByteRange(path, start, end, false); }
-  if (response.status !== 206) {
-    const detail = await response.json().catch(() => ({})) as { message?: string; error?: string };
-    throw new ApiError(detail.error ?? "pdf_range_failed", detail.message ?? "PDF server did not honor the byte-range request.", response.status);
-  }
-  const match = /\/(\d+)$/.exec(response.headers.get("Content-Range") ?? "");
-  if (!match) throw new ApiError("invalid_content_range", "PDF byte-range response omitted its total size.", 502);
-  return { data: await response.arrayBuffer(), total: Number(match[1]) };
-}
+export type TaskMaterialStorage = {
+  usedBytes: number;
+  limitBytes: number;
+  reclaimableBytes: number;
+  draftCount: number;
+  fileCount: number;
+  completedTaskCount: number;
+  expiredDraftCount: number;
+  retentionDays: number;
+  previewToken: string;
+};
+
+
 
 export function fetchState(): Promise<ConsoleSnapshot> {
-  return request<ConsoleSnapshot>("GET", "/api/state");
+  return request<ConsoleSnapshot>("GET", "/api/state", undefined, true, REQUEST_TIMEOUT_MS, {
+    Accept: "application/vnd.myagenttool.console-state+json",
+  });
 }
 
 export type GuidedSetupCommand = "start" | "resume" | "recheck" | "cancel";
@@ -1572,7 +1841,7 @@ async function requestResult(
     body: body ? JSON.stringify(body) : undefined,
   });
   if (response.status === 401 && retry) {
-    sessionReady = false;
+    setSessionReady(false);
     await ensureSession();
     return requestResult(method, path, body, false);
   }
@@ -1581,6 +1850,31 @@ async function requestResult(
 }
 
 export const api = {
+  syncMailbox: () => request<{ sync: MailboxSync; reused: boolean }>("POST", "/api/mailbox/sync"),
+  createMailTask: (messageId: string, body: {
+    projectId: string;
+    title: string;
+    description?: string;
+    attachmentIds?: string[];
+    materialDraftId?: string;
+    materialDraftRevision?: number;
+  }) => request<{ task: { id: string; localRef: string; title: string; projectId: string }; replayed: boolean }>(
+    "POST",
+    `/api/mailbox/messages/${encodeURIComponent(messageId)}/task`,
+    body,
+  ),
+  createMailDraft: (body: { to: string; subject: string; body: string; attachments?: MailDraftAttachment[]; inReplyTo?: string | null; references?: string[] }) =>
+    request<{ draft: MailboxDraft }>("POST", "/api/mail/drafts", body),
+  updateMailDraft: (id: string, body: { to: string; subject: string; body: string; attachments?: MailDraftAttachment[] }) =>
+    request<{ draft: MailboxDraft }>("PATCH", `/api/mail/drafts/${encodeURIComponent(id)}`, body),
+  deleteMailDraft: (id: string) =>
+    request<{ deleted: boolean; draftId: string }>("DELETE", `/api/mail/drafts/${encodeURIComponent(id)}`),
+  sendMailDraft: (id: string, approvalToken: string) =>
+    request<{ status: string; draftId: string; sendInvocationId: string }>(
+      "POST",
+      `/api/mail/drafts/${encodeURIComponent(id)}/send`,
+      { approvalToken },
+    ),
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
   reportWebPerformance: (payload: {
     name: "CLS" | "FCP" | "INP" | "LCP";
@@ -1865,8 +2159,20 @@ export const api = {
       "GET",
       `/api/projects/${encodeURIComponent(id)}/asset-capabilities?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
     ),
+  revealProjectAsset: (id: string, path: string, worktreeId?: string) =>
+    request<{ revealed: true; path: string }>(
+      "POST",
+      `/api/projects/${encodeURIComponent(id)}/asset-reveal`,
+      { path, ...(worktreeId ? { worktreeId } : {}) },
+    ),
+  openProjectAsset: (id: string, path: string, worktreeId?: string) =>
+    request<{ opened: true; path: string }>(
+      "POST",
+      `/api/projects/${encodeURIComponent(id)}/asset-open`,
+      { path, ...(worktreeId ? { worktreeId } : {}) },
+    ),
   projectAssetPreview: (id: string, path: string, worktreeId?: string) =>
-    request<{ path: string; family: "markdown"; text: string; size: number; truncated: boolean }>(
+    request<{ path: string; family: "markdown" | "text"; text: string; size: number; truncated: boolean }>(
       "GET",
       `/api/projects/${encodeURIComponent(id)}/asset-preview?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
     ),
@@ -1912,6 +2218,7 @@ export const api = {
       prNumber?: number;
       agentId?: string;
       startPoint?: string;
+      localIssueId?: string;
       link?: { type: "issue" | "pr"; number: number; title: string; url: string | null; state: string };
     },
   ) =>
@@ -1925,6 +2232,7 @@ export const api = {
       agentId?: string;
       name?: string;
       baseBranch?: string;
+      localIssueId?: string;
     },
   ) => request("POST", `/api/projects/${encodeURIComponent(projectId)}/auto-runs`, payload),
   // Creates a platform-managed bare repo and points the project's origin at it —
@@ -2051,6 +2359,48 @@ export const api = {
   ) => request("POST", "/api/work-items/attention/actions", { attentionIds, action, note, ...options }),
   getWorkItemGithubDiagnostics: () =>
     request("GET", "/api/work-items/github/diagnostics"),
+  getTaskMaterialStorage: () =>
+    request<TaskMaterialStorage>("GET", "/api/task-materials/storage"),
+  cleanupTaskMaterialStorage: (previewToken: string) =>
+    request<{ reclaimedBytes: number; fileCount: number; draftCount: number; usage: TaskMaterialStorage }>(
+      "POST",
+      "/api/task-materials/storage/cleanup",
+      { previewToken },
+    ),
+  createTaskMaterialDraft: (projectId: string) =>
+    request<{ draft: TaskMaterialDraft }>("POST", `/api/projects/${encodeURIComponent(projectId)}/task-material-drafts`, {}),
+  getTaskMaterialDraft: (projectId: string, draftId: string) =>
+    request<{ draft: TaskMaterialDraft }>("GET", `/api/projects/${encodeURIComponent(projectId)}/task-material-drafts/${encodeURIComponent(draftId)}`),
+  uploadTaskMaterialFile: (projectId: string, draftId: string, fileId: string, file: File, signal?: AbortSignal) =>
+    requestRaw<{ draft: TaskMaterialDraft; asset: TaskMaterialAsset }>(
+      "PUT",
+      `/api/projects/${encodeURIComponent(projectId)}/task-material-drafts/${encodeURIComponent(draftId)}/files/${encodeURIComponent(fileId)}?name=${encodeURIComponent(file.name || "reference-file")}`,
+      file,
+      file.type || "application/octet-stream",
+      true,
+      signal,
+    ),
+  removeTaskMaterialFile: (projectId: string, draftId: string, assetId: string, revision: number) =>
+    request<{ draft: TaskMaterialDraft }>("DELETE", `/api/projects/${encodeURIComponent(projectId)}/task-material-drafts/${encodeURIComponent(draftId)}/files/${encodeURIComponent(assetId)}?revision=${revision}`),
+  addWorkItemMaterials: (workItemId: string, payload: { expectedRevision: number; materialDraftId: string; materialDraftRevision: number }) =>
+    request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/materials`, payload),
+  removeWorkItemMaterial: (workItemId: string, assetId: string, expectedRevision: number) =>
+    request("DELETE", `/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}`, { expectedRevision }),
+  restoreWorkItemMaterial: (workItemId: string, assetId: string, expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}/restore`, { expectedRevision }),
+  taskMaterialContentUrl: (workItemId: string, assetId: string, download = false) =>
+    `${apiBase}/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}/content${download ? "?download=1" : ""}`,
+  revealTaskMaterial: (workItemId: string, assetId: string) =>
+    request<{ revealed: true; name: string | null }>(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}/reveal`,
+      {},
+    ),
+  previewTaskMaterialOffice: (workItemId: string, assetId: string) =>
+    request<{ path: string; content: string; mime: string; encoding: string; bytes: number }>(
+      "GET",
+      `/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}/office-preview`,
+    ),
   replayWorkItemGithubDelivery: (deliveryId: string) =>
     request("POST", `/api/work-items/github/deliveries/${encodeURIComponent(deliveryId)}/replay`),
   createWorkItem: (payload: {
@@ -2058,11 +2408,14 @@ export const api = {
     title: string;
     body?: string;
     type?: "task" | "bug" | "feature" | "initiative";
+    status?: "backlog" | "ready" | "in_progress" | "review" | "blocked" | "done";
     priority?: "p0" | "p1" | "p2" | "p3";
+    executionPolicy?: "inherit" | "auto" | "manual" | "paused";
     labels?: string[];
     acceptanceCriteria?: string[];
+    verificationSop?: string[];
     assigneeIds?: string[];
-    requesterRelation?: "boss" | "manager" | "customer" | "colleague" | "self" | "unknown";
+    requesterRelation?: "boss" | "manager" | "customer" | "child" | "colleague" | "self" | "unknown";
     requesterName?: string | null;
     requesterOrganization?: string | null;
     requesterUserId?: string | null;
@@ -2072,6 +2425,7 @@ export const api = {
     commitmentDate?: string | null;
     nextFollowUpAt?: string | null;
     dueDate?: string | null;
+    notBefore?: string | null;
     plannedDate?: string | null;
     carriedFromDate?: string | null;
     milestone?: string;
@@ -2083,10 +2437,94 @@ export const api = {
     businessCaseId?: string;
     businessKey?: string;
     triggerArtifactIds?: string[];
+    myTemplateBinding?: {
+      definitionId: string;
+      familyId: string;
+      version: number;
+      matchReasons: string[];
+      userConfirmedResult?: boolean;
+    };
+    inputAssets?: Array<{
+      id: string | null;
+      path: string;
+      family: string;
+      terminalId: string;
+      size?: number | null;
+      resourceClass?: "small" | "medium" | "large" | "unknown";
+      hash: string | null;
+      version: string | null;
+      worktreeId?: string | null;
+      capabilities: string[];
+      readiness: { state: "ready" | "waiting_capability"; reason: string };
+    }>;
+    materialDraftId?: string;
+    materialDraftRevision?: number;
   }) => request("POST", "/api/work-items", payload),
+  createWorkItemFromExternal: (payload: {
+    projectId: string;
+    provider: "github" | "gitlab" | "gitea";
+    issueNumber: number;
+    repository?: string;
+    relation?: "source" | "related" | "duplicate" | "parent" | "blocks";
+    isPrimary?: boolean;
+    syncPolicy?: "manual" | "webhook_pull" | "bidirectional";
+    type?: "task" | "bug" | "feature" | "initiative";
+    priority?: "p0" | "p1" | "p2" | "p3";
+    plannedDate?: string | null;
+    acceptanceCriteria?: string[];
+  }) => request("POST", "/api/work-items/from-external", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
-  suggestWorkItemDraft: (payload: { projectId: string; title: string; body?: string }) =>
+  suggestWorkItemDraft: (payload: {
+    projectId: string;
+    title: string;
+    body?: string;
+    materialDraftId?: string;
+    materialDraftRevision?: number;
+  }) =>
     request("POST", "/api/work-items/assist/draft", payload),
+  listMyTemplateDefinitions: () =>
+    request("GET", "/api/workflow-memory/business-routine-definitions"),
+  listMyTemplateLearning: (projectId?: string) =>
+    request("GET", `/api/work-items/my-template-learning${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  removeMyTemplateLearning: (feedbackId: string) =>
+    request("DELETE", `/api/work-items/my-template-learning/${encodeURIComponent(feedbackId)}`),
+  previewMyTemplateDraft: (workItemId: string) =>
+    request("GET", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-draft`),
+  listMyTemplateDrafts: (projectId?: string) =>
+    request("GET", `/api/work-items/my-template-drafts${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  listSimilarMyTemplateWorkItems: (draftId: string) =>
+    request("GET", `/api/work-items/my-template-drafts/${encodeURIComponent(draftId)}/similar-work-items`),
+  reviewMyTemplateDraft: (draftId: string) =>
+    request("GET", `/api/work-items/my-template-drafts/${encodeURIComponent(draftId)}/review`),
+  addMyTemplateLearningCase: (draftId: string, payload: {
+    workItemId: string;
+    expectedDraftRevision: number;
+    expectedWorkItemRevision: number;
+    confirm: true;
+  }) => request("POST", `/api/work-items/my-template-drafts/${encodeURIComponent(draftId)}/cases`, payload),
+  activateMyTemplateDraft: (draftId: string, payload: {
+    expectedDraftRevision: number;
+    confirm: boolean;
+    name?: string;
+    typicalInput?: string;
+    expectedOutput?: string;
+  }) => request("POST", `/api/work-items/my-template-drafts/${encodeURIComponent(draftId)}/activate`, payload),
+  createMyTemplateDraft: (workItemId: string, payload: {
+    expectedRevision: number;
+    confirm: true;
+    name: string;
+    typicalInput: string;
+    expectedOutput: string;
+    idempotencyKey?: string;
+  }) => request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-draft`, payload),
+  listMyTemplateOutcomes: (projectId?: string) =>
+    request("GET", `/api/work-items/my-template-outcomes${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  recordMyTemplateOutcomeFeedback: (workItemId: string, payload: {
+    outcome: "met_expectations" | "wrong_result" | "needs_quality_adjustment";
+    note?: string;
+  }) => request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-outcome-feedback`, payload),
+  resumeMyTemplateGovernanceObservation: (familyId: string, payload: { projectId: string; confirm: true }) =>
+    request("POST", `/api/work-items/my-template-governance/${encodeURIComponent(familyId)}/resume-observation`, payload),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
   claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>
@@ -2097,6 +2535,15 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/github/link`, payload),
   listWorkItemExternalProviders: () =>
     request("GET", "/api/work-items/providers"),
+  getWorkItemExternalIssueFunnel: (projectId?: string) =>
+    request("GET", `/api/work-items/external-funnel${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  listWorkItemExternalIssues: (payload: { provider: "gitlab" | "gitea"; projectId: string; repository: string; query?: string; page?: number; limit?: number }) => {
+    const query = new URLSearchParams({ provider: payload.provider, projectId: payload.projectId, repository: payload.repository });
+    if (payload.query) query.set("q", payload.query);
+    query.set("page", String(payload.page ?? 1));
+    query.set("limit", String(payload.limit ?? 20));
+    return request("GET", `/api/work-items/external-issues?${query}`);
+  },
   bindWorkItemExternalIssue: (id: string, payload: Record<string, unknown>) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/external-bindings`, payload),
   syncWorkItemExternalIssue: (id: string, provider: string, payload: Record<string, unknown>) =>
@@ -2148,7 +2595,10 @@ export const api = {
   createWorkItemWorktree: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/worktrees`, payload),
   startWorkItemAutoRun: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
-    request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, payload),
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, {
+      ...payload,
+      timezoneOffset: new Date().getTimezoneOffset(),
+    }),
   deliverWorkItem: (id: string, mode: "local_merge" | "pull_request", expectedRevision: number) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/delivery/${mode === "local_merge" ? "local" : "pull-request"}`, {
       expectedRevision,
@@ -2232,9 +2682,13 @@ export const api = {
     }),
   // U1: can this project run an auto-run, and what's missing?
   autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
-  // Retry a failed/blocked auto-run on its existing worktree.
-  retryAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`),
+  // Retry a failed/blocked run, or revise a completed local delivery, in its existing worktree.
+  retryAutoRun: (id: string, feedback?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`, {
+    timezoneOffset: new Date().getTimezoneOffset(),
+    ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
+  }),
   cancelAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/cancel`),
+  stopAutoRunDelivery: (id: string, reason?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/stop-delivery`, { reason }),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person
   // clicks Merge in the console; runs `gh pr merge` server-side).
   mergeAutoRunPr: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/merge`),
@@ -2245,8 +2699,8 @@ export const api = {
   designApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/design-approval`, { action, feedback }),
   // E3: answer a clarify run's questions (posted back to the issue).
-  answerClarify: (id: string, answers: string) =>
-    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers }),
+  answerClarify: (id: string, { answers, selectedAction, repoUrl, repoName }: { answers?: string; selectedAction?: string; repoUrl?: string; repoName?: string }) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers, selectedAction, repoUrl, repoName }),
   // Epic S3: the human decomposition gate — approve spawns the N governed child issues.
   decompositionApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/decomposition-approval`, { action, feedback }),
@@ -2293,6 +2747,32 @@ export const api = {
   queueLifecycleRollback: (id: string) =>
     request("POST", `/api/m3/lifecycle-rollbacks/${encodeURIComponent(id)}/queue`),
   /** Channel lifecycle (#1090). Enable/allowlist/delivery-retry are approval-gated. */
+  registerChannel: (provider: string, name: string) =>
+    request<{ channel: { id: string; provider: string; name: string } }>("POST", "/api/channels", { provider, name }),
+  listChannelInteractions: (channelId: string, params: { direction?: string; type?: string; status?: string; query?: string; conversationId?: string; cursor?: string | null; limit?: number } = {}) => {
+    const search = new URLSearchParams();
+    if (params.direction && params.direction !== "all") search.set("direction", params.direction);
+    if (params.type && params.type !== "all") search.set("type", params.type);
+    if (params.status && params.status !== "all") search.set("status", params.status);
+    if (params.query) search.set("q", params.query);
+    if (params.conversationId) search.set("conversationId", params.conversationId);
+    if (params.cursor) search.set("cursor", params.cursor);
+    search.set("limit", String(params.limit ?? 50));
+    const suffix = search.toString();
+    return request<{ interactions: ChannelInteraction[]; nextCursor: string | null; count: number }>("GET", `/api/channels/${encodeURIComponent(channelId)}/interactions${suffix ? `?${suffix}` : ""}`);
+  },
+  getChannelDiagnostics: (channelId: string) =>
+    request<ChannelDiagnostics>("GET", `/api/channels/${encodeURIComponent(channelId)}/diagnostics`),
+  startIlinkLogin: (channelId: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/login`, {}),
+  pollIlinkLogin: (channelId: string, verifyCode?: string) => {
+    const query = verifyCode?.trim() ? `?verify_code=${encodeURIComponent(verifyCode.trim())}` : "";
+    return request("GET", `/api/channels/${encodeURIComponent(channelId)}/ilink/login${query}`);
+  },
+  activateIlinkChannel: (channelId: string, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/activate`, { approvalToken }),
+  disconnectIlinkChannel: (channelId: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/disconnect`, {}),
   enableChannel: (id: string, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(id)}/enable`, { approvalToken }),
   disableChannel: (id: string) =>
@@ -2305,14 +2785,15 @@ export const api = {
     ),
   // Bind (projectId) or clear (null) the project /task files issues into, and the
   // auto-route mode. Approval-gated.
-  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, dailyLimit: number, approvalToken: string) =>
-    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, autoRoute, dailyLimit, approvalToken }),
+  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, dailyLimit: number, approvalToken: string, operationMode: "personal" | "team" = "personal", terminalId: string | null = null) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, terminalId: projectId ? terminalId : null, autoRoute, dailyLimit, operationMode, approvalToken }),
   // Promote a captured /task request into a tracked auto-run, or dismiss it.
   routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
   dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),
   retryChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/retry`),
   rerouteChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reroute`),
   takeoverChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/takeover`),
+  replyChannelTask: (id: string, content: string) => request<{ ok: boolean; deliveryId: string; threadId: string }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reply`, { content }),
   // Opt a channel into in-channel /approve (default off). Approval-gated.
   setChannelApprovalPolicy: (channelId: string, allowSelfApprove: boolean, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(channelId)}/approval-policy`, { allowSelfApprove, approvalToken }),

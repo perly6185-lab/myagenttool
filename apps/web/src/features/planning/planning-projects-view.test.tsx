@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PlanningProjectsView } from "@/features/planning/planning-projects-view";
 
-vi.mock("@/features/tasks/task-view", () => ({
+vi.mock("@/features/tasks/planning-projects-panel", () => ({
   PlanningProjectsPanel: () => <div>Planning panel content</div>,
 }));
 
