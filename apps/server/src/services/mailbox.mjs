@@ -27,6 +27,9 @@ const MAX_TASK_ATTACHMENTS = 6;
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 50;
 const ACTIVE_SYNC_STATUSES = new Set(["queued", "waiting_for_local_approval", "dispatching", "running", "cancelling"]);
+const ACTIVE_PREFETCH_STATUSES = new Set(["queued", "waiting_for_local_approval", "dispatching", "running", "cancelling"]);
+const MAX_BODY_PREFETCH_JOBS = 5_000;
+const MAX_BODY_PREFETCH_ATTEMPTS = 3;
 const MAIL_SMART_VIEWS = new Set(["all", "needs_attention", "important", "notifications", "subscriptions", "other"]);
 
 const cap = (value, max) => typeof value === "string" ? value.slice(0, max) : "";
@@ -114,8 +117,9 @@ export function createMailboxService({
       .filter((message) => matchesMailSearch(message, normalizedQuery));
     const allMessages = indexed ? null : folderMessages.filter((message) => classificationService?.matchesView(message, actor, selectedView) ?? true);
     const pagination = indexed?.pagination ?? mailboxPagination(allMessages.length, page, pageSize);
-    const messages = indexed?.messages ?? allMessages.slice(pagination.offset, pagination.offset + pagination.pageSize).map((message) => ({
+    const messages = (indexed?.messages ?? allMessages.slice(pagination.offset, pagination.offset + pagination.pageSize)).map((message) => ({
       ...publicMessage(message),
+      bodyFetch: publicBodyPrefetchStatus(message, state.mailBodyPrefetchJobs ?? [], teamId),
       ...(classificationEnabled && classificationService ? { classification: classificationService.publicFor(message, actor) } : {}),
     }));
     const providerFolders = indexed
@@ -386,6 +390,193 @@ export function createMailboxService({
     };
   }
 
+  function enqueueBodyPrefetch({ ownerTeamId = "team_local", applicationId = null, messages = [], commit = true, schedule = true } = {}) {
+    if (!applicationId || !Array.isArray(messages) || messages.length === 0) return { queued: 0 };
+    const actor = { teamId: ownerTeamId, userId: "system_mail_prefetch" };
+    const fetchedIds = new Set(messagesForActor(state, actor).filter(messageBodyPrefetchComplete).map((message) => message.messageId));
+    let queued = 0;
+    const addJobs = () => {
+      state.mailBodyPrefetchJobs ??= [];
+      const existingKeys = new Set(state.mailBodyPrefetchJobs.map(bodyPrefetchKey));
+      const ordered = [...messages].sort((left, right) => {
+        if ((left?.unread !== false) !== (right?.unread !== false)) return left?.unread !== false ? -1 : 1;
+        return timestampOf(right) - timestampOf(left);
+      });
+      for (const message of ordered) {
+        const messageId = cap(String(message?.messageId ?? "").trim(), MAX_RECIPIENT);
+        if (!messageId || fetchedIds.has(messageId)) continue;
+        const candidate = { ownerTeamId, applicationId, messageId };
+        if (existingKeys.has(bodyPrefetchKey(candidate))) continue;
+        const at = now();
+        state.mailBodyPrefetchJobs.push({
+          id: nextId("mailbody"), ownerTeamId, applicationId, messageId,
+          folderPath: cap(message?.folderPath, MAX_RECIPIENT) || "INBOX",
+          unread: message?.unread !== false,
+          messageDate: cap(message?.date, MAX_RECIPIENT) || null,
+          status: "queued", priority: "background", attempt: 0,
+          invocationId: null, nextAttemptAt: at, lastError: null,
+          createdAt: at, updatedAt: at, completedAt: null,
+        });
+        existingKeys.add(bodyPrefetchKey(candidate));
+        queued += 1;
+      }
+      state.mailBodyPrefetchJobs = boundBodyPrefetchJobs(state.mailBodyPrefetchJobs);
+    };
+    if (commit) runTx(addJobs);
+    else addJobs();
+    if (queued > 0 && schedule) queueMicrotask(() => sweepBodyPrefetch());
+    return { queued };
+  }
+
+  function backfillBodyPrefetch() {
+    const teams = new Set((state.applications ?? []).map((application) => application.ownerTeamId ?? "team_local"));
+    let queued = 0;
+    runTx(() => {
+      for (const ownerTeamId of teams) {
+        const actor = { teamId: ownerTeamId, userId: "system_mail_prefetch" };
+        const messages = messagesForActor(state, actor);
+        const byApplication = new Map();
+        for (const message of messages) {
+          if (messageBodyPrefetchComplete(message) || !message.applicationId) continue;
+          const list = byApplication.get(message.applicationId) ?? [];
+          list.push(message);
+          byApplication.set(message.applicationId, list);
+        }
+        for (const [applicationId, applicationMessages] of byApplication) {
+          queued += enqueueBodyPrefetch({ ownerTeamId, applicationId, messages: applicationMessages, commit: false, schedule: false }).queued;
+        }
+      }
+    });
+    if (queued > 0) {
+      queueMicrotask(() => sweepBodyPrefetch());
+    }
+    return { queued };
+  }
+
+  function prioritizeBodyPrefetch({ messageId, actor = null } = {}) {
+    const ownerTeamId = actor?.teamId ?? "team_local";
+    const normalizedId = cap(String(messageId ?? "").trim(), MAX_RECIPIENT);
+    if (!normalizedId) return { ok: false, status: 400, body: { error: "mail_message_invalid" } };
+    const message = messagesForActor(state, actor).find((candidate) => candidate.messageId === normalizedId);
+    if (!message) return { ok: false, status: 404, body: { error: "mail_message_not_found" } };
+    if (messageBodyPrefetchComplete(message)) return { ok: true, status: 200, body: { messageId: normalizedId, bodyFetch: { status: "ready", priority: "user" } } };
+    enqueueBodyPrefetch({ ownerTeamId, applicationId: message.applicationId, messages: [message] });
+    let job = null;
+    runTx(() => {
+      job = (state.mailBodyPrefetchJobs ?? []).find((candidate) => bodyPrefetchKey(candidate) === bodyPrefetchKey({ ownerTeamId, applicationId: message.applicationId, messageId: normalizedId })) ?? null;
+      if (!job) return;
+      job.priority = "user";
+      if (job.status === "failed") {
+        job.attempt = 0;
+        job.completedAt = null;
+        job.status = "queued";
+      } else if (job.status === "retry_wait") {
+        job.status = "queued";
+      }
+      job.nextAttemptAt = now();
+      job.updatedAt = now();
+    });
+    sweepBodyPrefetch();
+    return { ok: true, status: 202, body: { messageId: normalizedId, bodyFetch: publicBodyPrefetchJob(job) } };
+  }
+
+  function sweepBodyPrefetch() {
+    if (typeof createCapabilityInvocation !== "function") return { started: 0 };
+    const currentTime = now();
+    let dispatch = null;
+    runTx(() => {
+      for (const job of state.mailBodyPrefetchJobs ?? []) {
+        if (!["failed", "retry_wait"].includes(job.status) || !job.invocationId) continue;
+        const invocation = (state.invocations ?? []).find((candidate) => candidate.id === job.invocationId);
+        if (bodyPrefetchInvocationError(invocation) !== "mail_message_not_found") continue;
+        job.status = "unavailable";
+        job.lastError = "mail_message_not_found";
+        job.completedAt = currentTime;
+        job.updatedAt = currentTime;
+      }
+      for (const job of state.mailBodyPrefetchJobs ?? []) {
+        if (job.status !== "running") continue;
+        const actor = { teamId: job.ownerTeamId, userId: "system_mail_prefetch" };
+        const message = messagesForActor(state, actor).find((candidate) => candidate.messageId === job.messageId);
+        if (messageBodyPrefetchComplete(message)) {
+          job.status = "ready";
+          job.completedAt = currentTime;
+          job.updatedAt = currentTime;
+          continue;
+        }
+        const invocation = (state.invocations ?? []).find((candidate) => candidate.id === job.invocationId);
+        if (!invocation || ACTIVE_PREFETCH_STATUSES.has(invocation.status)) continue;
+        job.lastError = bodyPrefetchInvocationError(invocation);
+        if (job.lastError === "mail_message_not_found") {
+          job.status = "unavailable";
+          job.completedAt = currentTime;
+          job.updatedAt = currentTime;
+          continue;
+        }
+        if (job.attempt < MAX_BODY_PREFETCH_ATTEMPTS) {
+          job.status = "retry_wait";
+          job.nextAttemptAt = new Date(Date.parse(currentTime) + 5_000 * (2 ** Math.max(0, job.attempt - 1))).toISOString();
+        } else {
+          job.status = "failed";
+          job.completedAt = currentTime;
+        }
+        job.updatedAt = currentTime;
+      }
+      for (const job of state.mailBodyPrefetchJobs ?? []) {
+        if (job.status === "retry_wait" && dateTimestamp(job.nextAttemptAt) <= dateTimestamp(currentTime)) {
+          job.status = "queued";
+          job.updatedAt = currentTime;
+        }
+      }
+      const active = (state.mailBodyPrefetchJobs ?? []).some((job) => job.status === "running");
+      if (active) return;
+      const job = (state.mailBodyPrefetchJobs ?? [])
+        .filter((candidate) => candidate.status === "queued" && dateTimestamp(candidate.nextAttemptAt) <= dateTimestamp(currentTime))
+        .sort(compareBodyPrefetchPriority)[0] ?? null;
+      if (!job) return;
+      const application = (state.applications ?? []).find((candidate) => candidate.id === job.applicationId && !candidate.successorApplicationId)
+        ?? (state.applications ?? []).find((candidate) => providerOf(candidate) === providerOf((state.applications ?? []).find((item) => item.id === job.applicationId)) && !candidate.successorApplicationId);
+      const capability = application ? capabilityName(application, "mail_prefetch_body") : null;
+      if (!capability) {
+        // A desktop upgrade may still be registering the lightweight facade.
+        // Keep the durable job recoverable; never fall back to mail_fetch here,
+        // because that path downloads attachment bytes and archives full EML.
+        job.status = "retry_wait";
+        job.lastError = "mail_body_prefetch_capability_unavailable";
+        job.nextAttemptAt = new Date(Date.parse(currentTime) + 30_000).toISOString();
+        job.updatedAt = currentTime;
+        return;
+      }
+      dispatch = {
+        jobId: job.id,
+        capability,
+        input: { messageId: job.messageId, folderPath: job.folderPath },
+        actor: { teamId: job.ownerTeamId, userId: "system_mail_prefetch" },
+      };
+    });
+    if (!dispatch) return { started: 0 };
+
+    const result = createCapabilityInvocation(dispatch.capability, dispatch.input, dispatch.actor);
+    let started = 0;
+    runTx(() => {
+      const job = (state.mailBodyPrefetchJobs ?? []).find((candidate) => candidate.id === dispatch.jobId);
+      if (!job || job.status !== "queued") return;
+      job.attempt += 1;
+      job.updatedAt = currentTime;
+      if (result && result.status < 400 && result.body?.invocationId) {
+        job.status = "running";
+        job.invocationId = result.body.invocationId;
+        job.lastError = null;
+        started = 1;
+      } else {
+        job.status = job.attempt >= MAX_BODY_PREFETCH_ATTEMPTS ? "failed" : "retry_wait";
+        job.nextAttemptAt = new Date(Date.parse(currentTime) + 5_000 * (2 ** Math.max(0, job.attempt - 1))).toISOString();
+        job.lastError = cap(result?.body?.error, 500) || "mail_body_prefetch_dispatch_failed";
+      }
+    });
+    return { started };
+  }
+
   function createDraft({ to, subject, body, attachments = [], inReplyTo = null, references = [], actor = null } = {}) {
     const normalized = validateDraftFields({ to, subject, body, attachments });
     if (!normalized.ok) return normalized;
@@ -608,6 +799,7 @@ export function createMailboxService({
 
   return {
     snapshot, startSync, setMessageRead, createDraft, updateDraft, deleteDraft, createTaskFromMessage,
+    enqueueBodyPrefetch, backfillBodyPrefetch, prioritizeBodyPrefetch, sweepBodyPrefetch,
     startClassification, previewSemanticClassification, getClassificationJob, cancelClassificationJob, correctClassification,
     listClassificationRules, getClassificationQuality, createClassificationRule, updateClassificationRule,
     listFolderSuggestions, createFolderMovePreview, startFolderMove, getFolderMoveJob, listFolderMoveJobs,
@@ -666,6 +858,7 @@ function mailboxAccounts(applications, { sendEnabled = false, organizeEnabled = 
       organizeApplicationId: organize?.id ?? null,
       syncCapability: capabilityName(application, "mail_sync") ?? capabilityName(application, "mail_list_unread"),
       fetchCapability: capabilityName(application, "mail_fetch"),
+      bodyPrefetchCapability: capabilityName(application, "mail_prefetch_body"),
       incrementalSync: Boolean(capabilityName(application, "mail_sync")),
       providerReadState: Boolean(capabilityName(application, "mail_set_read")),
     });
@@ -696,6 +889,49 @@ function mailboxConnection(accounts) {
 function publicMailboxAccount(account) {
   const { syncCapability: _internalSyncCapability, ...publicAccount } = account;
   return publicAccount;
+}
+
+function bodyPrefetchKey(job) {
+  return `${job?.ownerTeamId ?? "team_local"}\0${job?.applicationId ?? "mail"}\0${job?.messageId ?? ""}`;
+}
+
+function compareBodyPrefetchPriority(left, right) {
+  if (left.priority !== right.priority) return left.priority === "user" ? -1 : 1;
+  if (left.unread !== right.unread) return left.unread !== false ? -1 : 1;
+  return dateTimestamp(right.messageDate) - dateTimestamp(left.messageDate)
+    || dateTimestamp(left.createdAt) - dateTimestamp(right.createdAt);
+}
+
+function publicBodyPrefetchJob(job) {
+  if (!job) return { status: "unavailable", priority: "background", attempt: 0, lastError: null };
+  return { status: job.status, priority: job.priority, attempt: job.attempt, lastError: job.lastError ?? null };
+}
+
+function publicBodyPrefetchStatus(message, jobs, teamId) {
+  if (messageBodyPrefetchComplete(message)) return { status: "ready", priority: "background", attempt: 0, lastError: null };
+  const job = jobs.find((candidate) =>
+    (teamId == null || (candidate.ownerTeamId ?? "team_local") === teamId)
+    && candidate.messageId === message?.messageId
+    && (!message?.applicationId || candidate.applicationId === message.applicationId));
+  return publicBodyPrefetchJob(job);
+}
+
+function messageBodyPrefetchComplete(message) {
+  return Boolean(message?.fetched && message?.bodyContentVersion >= 2 && message?.attachmentMetadataLoaded);
+}
+
+function boundBodyPrefetchJobs(jobs) {
+  const terminal = new Set(["ready", "failed", "unavailable"]);
+  const active = jobs.filter((job) => !terminal.has(job.status));
+  const completed = jobs.filter((job) => terminal.has(job.status)).sort((left, right) => dateTimestamp(right.updatedAt) - dateTimestamp(left.updatedAt));
+  return [...active, ...completed].slice(0, MAX_BODY_PREFETCH_JOBS);
+}
+
+function bodyPrefetchInvocationError(invocation) {
+  const output = String(invocation?.result?.output ?? "");
+  if (output.includes("mail_message_not_found")) return "mail_message_not_found";
+  return cap(invocation?.result?.error ?? invocation?.result?.summary ?? invocation?.summary ?? invocation?.status, 500)
+    || "mail_body_prefetch_failed";
 }
 
 function mailboxSync(invocations, accounts) {
@@ -806,7 +1042,7 @@ function mergeMessage(messages, input, record, unread, threads) {
     classificationHeaders: input?.classificationHeaders && typeof input.classificationHeaders === "object"
       ? input.classificationHeaders
       : previous.classificationHeaders ?? null,
-    fetched: Boolean(body || bodyHtml),
+    fetched: previous.fetched === true || Object.hasOwn(input ?? {}, "body") || Object.hasOwn(input ?? {}, "bodyHtml"),
     inReplyTo: cap(input?.inReplyTo, MAX_RECIPIENT) || previous.inReplyTo || null,
     references: Array.isArray(input?.references) ? input.references.slice(0, 50) : previous.references ?? [],
     attachments: Array.isArray(input?.attachments) ? input.attachments.slice(0, 50) : previous.attachments ?? [],
@@ -1147,6 +1383,11 @@ function compareRecent(left, right) {
 
 function timestampOf(value) {
   const parsed = Date.parse(value?.updatedAt ?? value?.createdAt ?? value?.date ?? "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function dateTimestamp(value) {
+  const parsed = Date.parse(String(value ?? ""));
   return Number.isFinite(parsed) ? parsed : 0;
 }
 

@@ -68,6 +68,8 @@ export async function handleLocalContentRoutes({
       yearMonth: url.searchParams.get("yearMonth"),
       availability: url.searchParams.get("availability"),
       indexStatus: url.searchParams.get("indexStatus"),
+      mailAccountId: url.searchParams.get("mailAccountId"),
+      mailFolderId: url.searchParams.get("mailFolderId"),
       limit: url.searchParams.get("limit"),
       offset: url.searchParams.get("offset"),
       cursor: url.searchParams.get("cursor"),

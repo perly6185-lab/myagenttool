@@ -23,7 +23,7 @@ function harness({ verifyCredential = async () => undefined, verifySendCredentia
     requestServer: async (method, path, body) => {
       requests.push({ method, path, body });
       if (path === "/api/applications/register" && body?.capabilityFacades?.some((facade) => facade.agentToolName === "mail_sync")) modernRegistered = true;
-      return path === "/api/mailbox" ? { accounts: existingApplicationId ? [{ provider: "netease", readApplicationId: existingApplicationId }] : modernRegistered ? [{ provider: "netease", readApplicationId: "app_163_mail", incrementalSync: true, providerReadState: true }] : [] } : {};
+      return path === "/api/mailbox" ? { accounts: existingApplicationId ? [{ provider: "netease", readApplicationId: existingApplicationId }] : modernRegistered ? [{ provider: "netease", readApplicationId: "app_163_mail", incrementalSync: true, providerReadState: true, bodyPrefetchCapability: "app.app_163_mail.prefetch_body" }] : [] } : {};
     },
     verifyCredential,
     verifySendCredential,
@@ -54,7 +54,7 @@ test("connect verifies first, registers the app, and persists only a protected s
   assert.deepEqual(JSON.parse(readFileSync(readinessPath, "utf8")), {
     applicationId: "app_163_mail",
     provider: "netease",
-    scope: "imap.mail",
+    scope: "imap.readonly",
     obtainedAt: "2026-08-13T08:00:00.000Z",
   });
 });
@@ -82,9 +82,10 @@ test("reconnection registers a full mailbox capability beside the legacy read-on
   const result = await handlers.get("mail:connect-163")(null, { email: "user@163.com", authorizationCode: "secret" });
   assert.equal(result.ok, true);
   const registration = requests.find((item) => item.path === "/api/applications/register");
-  assert.equal(registration.body.replacesApplicationId, undefined);
-  assert.equal(registration.body.id, "app_163_mail_v2_folders");
-  assert.equal(existsSync(join(root, "credential-readiness", "app_163_mail_v2_folders.json")), true);
+  assert.equal(registration.body.replacesApplicationId, "app_163_mail_v2");
+  assert.equal(registration.body.id, "app_163_mail_v2_body_prefetch");
+  assert.equal(registration.body.capabilityFacades.some((facade) => facade.agentToolName === "mail_prefetch_body"), true);
+  assert.equal(existsSync(join(root, "credential-readiness", "app_163_mail_v2_body_prefetch.json")), true);
 });
 
 test("send authorization is verified and stored as a separate write credential", async () => {

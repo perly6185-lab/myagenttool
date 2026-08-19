@@ -62,11 +62,17 @@ test("completes the Chinese mobile no-task flow without horizontal overflow", as
   await mockLocalLibraryApi(page, writes);
   await page.goto("/?section=localLibrary");
 
-  await expect(page.getByRole("heading", { name: "本地资料库" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "我的资料" })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "关联任务" })).toHaveCount(0);
   await page.getByRole("button", { name: "更多筛选" }).click();
   await expect(page.getByRole("combobox", { name: "关联任务" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  await page.getByRole("button", { name: "查看详情" }).click();
+  const detailDialog = page.getByRole("dialog", { name: "资料详情" });
+  await expect(detailDialog.getByText("原件只保存一份，任务只记录引用。")).toBeVisible();
+  await expect(detailDialog.getByText("docs/brief.md")).toBeVisible();
+  await detailDialog.getByRole("button", { name: "关闭", exact: true }).last().click();
 
   await page.getByRole("button", { name: "添加到任务" }).click();
   const dialog = page.getByRole("dialog", { name: "添加资料引用" });

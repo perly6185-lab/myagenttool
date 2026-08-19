@@ -7,6 +7,7 @@ import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
+import { DesktopHandoffLink } from "@/components/common/desktop-handoff";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
@@ -30,7 +31,7 @@ function riskTone(risk: string | undefined): "neutral" | "warning" | "danger" {
 
 /** Governed tool registry: discover /api/tools and run a bounded invocation. */
 export function ToolsView() {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedToolName = useUiStore((s) => s.selectedToolName);
   const setSelectedToolName = useUiStore((s) => s.setSelectedToolName);
@@ -54,11 +55,7 @@ export function ToolsView() {
         description={t("toolsPage.description")}
       />
 
-      {!deviceOnline ? (
-        <p className="text-xs text-warning">
-          {t("toolsPage.bridgeRequired")}
-        </p>
-      ) : null}
+      {!deviceOnline ? <div className="flex flex-wrap items-center gap-2"><p className="text-xs text-warning">{t("toolsPage.bridgeRequired")}</p><DesktopHandoffLink section="tools" action="open-desktop-page" compact>{i18n.resolvedLanguage?.startsWith("zh") ? "打开桌面版" : "Open desktop"}</DesktopHandoffLink></div> : null}
 
       {error ? (
         <EmptyState title={t("toolsPage.loadFailed")} hint={error instanceof Error ? error.message : t("toolsPage.requestFailed")} />

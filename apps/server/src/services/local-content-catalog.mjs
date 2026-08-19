@@ -531,7 +531,8 @@ export function createLocalContentCatalogService({
 
   async function search({
     query = "", kinds = [], projectId = null, workItemId = null, sourceType = null,
-    yearMonth = null, availability = null, indexStatus = null, limit = 30, offset = 0, cursor = null,
+    yearMonth = null, availability = null, indexStatus = null, mailAccountId = null, mailFolderId = null,
+    limit = 30, offset = 0, cursor = null,
   } = {}, actor = null) {
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
     const normalizedProjectId = projectId == null || projectId === "" ? null : String(projectId);
@@ -551,6 +552,11 @@ export function createLocalContentCatalogService({
     if (normalizedYearMonth && !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(normalizedYearMonth)) {
       return { status: 400, body: { error: "local_content_year_month_invalid" } };
     }
+    const normalizedMailAccountId = mailAccountId == null || mailAccountId === "" ? null : boundedText(mailAccountId, 200);
+    const normalizedMailFolderId = mailFolderId == null || mailFolderId === "" ? null : boundedText(mailFolderId, 100);
+    if (normalizedMailFolderId && !normalizedMailAccountId) {
+      return { status: 400, body: { error: "local_content_mail_account_required" } };
+    }
     const normalizedQuery = normalizeQuery(query);
     const boundedLimit = Math.min(MAX_SEARCH_LIMIT, Math.max(1, Number.parseInt(limit, 10) || 30));
     const db = await database();
@@ -563,6 +569,8 @@ export function createLocalContentCatalogService({
       yearMonth: normalizedYearMonth,
       availability: normalizedAvailability.value,
       indexStatus: normalizedIndexStatus.value,
+      mailAccountId: normalizedMailAccountId,
+      mailFolderId: normalizedMailFolderId,
       kinds: [...normalizedKinds.value].sort(),
       query: normalizedQuery,
       catalogRevision,
@@ -579,6 +587,8 @@ export function createLocalContentCatalogService({
       yearMonth: normalizedYearMonth,
       availability: normalizedAvailability.value,
       indexStatus: normalizedIndexStatus.value,
+      mailAccountId: normalizedMailAccountId,
+      mailFolderId: normalizedMailFolderId,
       kinds: normalizedKinds.value,
       query: normalizedQuery,
       limit: boundedLimit,

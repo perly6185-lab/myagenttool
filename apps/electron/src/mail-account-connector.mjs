@@ -9,7 +9,7 @@ const SEND_APPLICATION_ID = "app_163_mail_send";
 const ORGANIZE_AGENT_ID = "agt_mcp_163_mail_organize";
 const ORGANIZE_APPLICATION_ID = "app_163_mail_organize";
 const PROVIDER = "netease";
-const SCOPE = "imap.mail";
+const SCOPE = "imap.readonly";
 const EMAIL = /^[^\s@]+@163\.com$/i;
 
 export function registerMailAccountConnector({
@@ -30,10 +30,30 @@ export function registerMailAccountConnector({
   ipcMain.removeHandler("mail:connect-163-organize");
 
   const paths = credentialPaths(credentialRoot);
+  if (platform === "win32" && validCredentialMetadata(paths.credential)) {
+    // Existing users are upgraded without asking for the authorization code
+    // again. The protected credential stays untouched; only the agent/app
+    // descriptors and their non-secret readiness marker are refreshed.
+    queueMicrotask(async () => {
+      try {
+        const applicationId = await ensureMailApplication({ requestServer, runtimeRoot, nodeCommand });
+        const credential = readCredentialRecord(paths.credential);
+        writeJsonAtomic(join(credentialRoot, "credential-readiness", `${applicationId}.json`), {
+          applicationId,
+          provider: PROVIDER,
+          scope: SCOPE,
+          obtainedAt: credential?.obtainedAt ?? now(),
+        });
+      } catch {
+        // Connector status exposes upgradeNeeded; startup itself must remain
+        // available when the control plane is still booting.
+      }
+    });
+  }
   ipcMain.handle("mail:get-connector-status", async () => {
     const mailbox = await requestServer("GET", "/api/mailbox").catch(() => ({ accounts: [] }));
     const account = mailbox?.accounts?.find((item) => item.provider === PROVIDER) ?? null;
-    const fullMailboxReady = account?.incrementalSync === true && account?.providerReadState === true;
+    const fullMailboxReady = account?.incrementalSync === true && Boolean(account?.bodyPrefetchCapability);
     return {
       desktop: true,
       providers: [
@@ -164,7 +184,7 @@ export function protectForCurrentWindowsUser(secret, { spawn = spawnSync, platfo
   return String(result.stdout).trim();
 }
 
-async function ensureMailApplication({ requestServer, runtimeRoot, nodeCommand }) {
+export async function ensureMailApplication({ requestServer, runtimeRoot, nodeCommand }) {
   const mailbox = await requestServer("GET", "/api/mailbox").catch(() => ({ accounts: [] }));
   const existingApplicationId = mailbox?.accounts?.find((account) => account.provider === PROVIDER)?.readApplicationId ?? null;
   await requestServer("POST", "/api/agents", {
@@ -174,25 +194,26 @@ async function ensureMailApplication({ requestServer, runtimeRoot, nodeCommand }
     transport: "stdio",
     command: nodeCommand,
     args: [join(runtimeRoot, "tools", "mail-mcp", "src", "server.mjs")],
-    allowedTools: ["mail_sync", "mail_list_unread", "mail_fetch", "mail_set_read"],
+    allowedTools: ["mail_sync", "mail_list_unread", "mail_prefetch_body", "mail_fetch"],
     timeoutMs: 30_000,
     provider: PROVIDER,
     capabilityName: "mail.read",
     riskLevel: "medium",
-    riskTags: ["external_mailbox", "untrusted_input", "incremental_read", "provider_state_write"],
+    riskTags: ["external_mailbox", "untrusted_input", "incremental_read", "read_only"],
   });
   const existingAccount = mailbox?.accounts?.find((account) => account.provider === PROVIDER) ?? null;
-  if (existingApplicationId && existingAccount?.incrementalSync === true && existingAccount?.providerReadState === true) return existingApplicationId;
-  const nextApplicationId = existingApplicationId ? `${existingApplicationId}_folders` : APPLICATION_ID;
+  if (existingApplicationId && existingAccount?.incrementalSync === true && existingAccount?.bodyPrefetchCapability) return existingApplicationId;
+  const nextApplicationId = existingApplicationId ? `${existingApplicationId}_body_prefetch` : APPLICATION_ID;
   await requestServer("POST", "/api/applications/register", {
     id: nextApplicationId,
+    ...(existingApplicationId ? { replacesApplicationId: existingApplicationId } : {}),
     name: "163 Mail",
     kind: "manual",
     autoOnline: true,
     source: {
       type: "manual",
       credential: { provider: PROVIDER, scope: SCOPE },
-      manifest: { protocol: "IMAP", host: "imap.163.com", port: 993, tls: true, access: "mail_and_seen_state" },
+      manifest: { protocol: "IMAP", host: "imap.163.com", port: 993, tls: true, access: "read_only" },
     },
     capabilityFacades: [
       {
@@ -222,6 +243,19 @@ async function ensureMailApplication({ requestServer, runtimeRoot, nodeCommand }
         resultImport: { source: "mail_headers", kind: "unread_headers" },
       },
       {
+        id: "prefetch_body",
+        agentId: AGENT_ID,
+        agentToolName: "mail_prefetch_body",
+        displayName: "Prefetch one message body",
+        description: "Fetch only safe display text and HTML plus attachment metadata. Attachment bytes and the exact RFC 822 source remain on demand.",
+        riskLevel: "medium",
+        riskTags: ["read_only", "untrusted_input", "external_mailbox", "background_prefetch"],
+        requiresApproval: false,
+        inputSchema: { type: "object", additionalProperties: false, required: ["messageId"], properties: { messageId: { type: "string", maxLength: 998 }, folderPath: { type: "string", maxLength: 998 } } },
+        outputCollection: "mailIntake",
+        resultImport: { source: "mail_headers", kind: "message" },
+      },
+      {
         id: "fetch",
         agentId: AGENT_ID,
         agentToolName: "mail_fetch",
@@ -233,19 +267,6 @@ async function ensureMailApplication({ requestServer, runtimeRoot, nodeCommand }
         inputSchema: { type: "object", additionalProperties: false, required: ["messageId"], properties: { messageId: { type: "string", maxLength: 998 }, folderPath: { type: "string", maxLength: 998 } } },
         outputCollection: "mailIntake",
         resultImport: { source: "mail_headers", kind: "message" },
-      },
-      {
-        id: "set_read",
-        agentId: AGENT_ID,
-        agentToolName: "mail_set_read",
-        displayName: "Update read state",
-        description: "Update Seen state for one user-selected message at the mailbox provider.",
-        riskLevel: "medium",
-        riskTags: ["external_mailbox", "provider_state_write", "user_initiated"],
-        requiresApproval: false,
-        inputSchema: { type: "object", additionalProperties: false, required: ["messageId", "folderPath", "read"], properties: { messageId: { type: "string", maxLength: 998 }, folderPath: { type: "string", maxLength: 998 }, read: { type: "boolean" } } },
-        outputCollection: "mailIntake",
-        resultImport: { source: "mail_headers", kind: "read_state" },
       },
     ],
   });
@@ -284,7 +305,7 @@ function readCredentialRecord(path) {
 
 function validCredentialMetadata(path) {
   const record = readCredentialRecord(path);
-  return record?.provider === PROVIDER && record?.scope === SCOPE && EMAIL.test(String(record?.username ?? "")) && Boolean(record?.protectedAuthorizationCode);
+  return record?.provider === PROVIDER && [SCOPE, "imap.mail"].includes(record?.scope) && EMAIL.test(String(record?.username ?? "")) && Boolean(record?.protectedAuthorizationCode);
 }
 
 function credentialUsername(path) {

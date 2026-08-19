@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Select } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
+import { DesktopHandoffLink } from "@/components/common/desktop-handoff";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
@@ -54,7 +55,7 @@ interface ProbeRunResult {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function ConnectMcpServerCard() {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
   const setSection = useUiStore((s) => s.setSection);
   const { data: state } = useConsoleState();
@@ -223,7 +224,7 @@ export function ConnectMcpServerCard() {
             </span>
           ) : null}
         </div>
-        {offline ? <p className="text-xs text-warning">{t("mcp.bridgeRequired")}</p> : null}
+        {offline ? <div className="flex flex-wrap items-center gap-2"><p className="text-xs text-warning">{t("mcp.bridgeRequired")}</p><DesktopHandoffLink section="discovery" action="open-desktop-page" compact>{i18n.resolvedLanguage?.startsWith("zh") ? "在桌面版继续" : "Continue in desktop"}</DesktopHandoffLink></div> : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </CardContent>
     </Card>

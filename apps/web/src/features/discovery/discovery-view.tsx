@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { FactList } from "@/components/common/fact-list";
+import { DesktopHandoffLink } from "@/components/common/desktop-handoff";
 import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
@@ -41,7 +42,7 @@ function isCodex(candidate: DiscoveryCandidate): boolean {
 }
 
 export function DiscoveryView() {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
   const { data: state } = useConsoleState();
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
   const { execute, pending } = useAsyncAction();
@@ -125,9 +126,7 @@ export function DiscoveryView() {
               ? run.message
               : t(summaryKey)}
           </p>
-          {offline ? (
-            <p className="text-xs text-warning">{t("discovery.bridgeRequired")}</p>
-          ) : null}
+          {offline ? <div className="flex flex-wrap items-center gap-2"><p className="text-xs text-warning">{t("discovery.bridgeRequired")}</p><DesktopHandoffLink section="discovery" action="open-desktop-page" compact>{i18n.resolvedLanguage?.startsWith("zh") ? "打开桌面版" : "Open desktop"}</DesktopHandoffLink></div> : null}
         </CardContent>
       </Card>
 

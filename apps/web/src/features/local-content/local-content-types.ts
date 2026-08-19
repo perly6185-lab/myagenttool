@@ -56,6 +56,8 @@ export type LocalContentCatalogStats = {
     months: Array<{ value: string; count: number }>;
     availability: Array<{ value: string; count: number }>;
     indexStatuses: Array<{ value: string; count: number }>;
+    mailAccounts?: Array<{ value: string; label: string; count: number }>;
+    mailFolders?: Array<{ value: string; accountId: string; accountLabel: string; path: string; count: number }>;
     coverage?: Record<string, { limit: number; returned: number; truncated: boolean }>;
   };
   lastRebuiltAt: string | null;

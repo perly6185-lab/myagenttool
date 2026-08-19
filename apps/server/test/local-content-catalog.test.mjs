@@ -162,7 +162,8 @@ title: "本地资料库规划"
       result: { markdownPath: articlePath },
     }],
     applications: [
-      { id: "mail_app", ownerTeamId: "team_1" },
+      { id: "mail_app", ownerTeamId: "team_1", displayName: "Work Mail (legacy)", successorApplicationId: "mail_app_v2" },
+      { id: "mail_app_v2", ownerTeamId: "team_1", displayName: "Work Mail", predecessorApplicationId: "mail_app" },
       { id: "foreign_mail_app", ownerTeamId: "team_2" },
     ],
     applicationResults: [
@@ -178,6 +179,8 @@ title: "本地资料库规划"
           subject: "本地文件整理建议",
           body: "请把任务输入和输出都加入离线检索。",
           date: "2026-08-14T01:15:00.000Z",
+          folderId: "inbox",
+          folderPath: "INBOX",
           attachments: [],
         },
       },
@@ -237,6 +240,18 @@ test("rebuilds a local-only catalog across articles, mail, tasks, inputs, and ou
     assert.equal(readFileSync(fx.articleFile, "utf8"), articleBefore);
     assert.equal(statSync(fx.articleFile).mtimeMs, modifiedBefore);
     assert.equal(existsSync(localContentCatalogPath(fx.stateStorePath)), true);
+    assert.deepEqual(rebuilt.body.catalog.facets.mailAccounts, [
+      { value: "mail_app_v2", label: "Work Mail", count: 1 },
+    ]);
+    assert.deepEqual(rebuilt.body.catalog.facets.mailFolders, [
+      { value: "inbox", accountId: "mail_app_v2", accountLabel: "Work Mail", path: "INBOX", count: 1 },
+    ]);
+
+    const inbox = await fx.service.search({ kinds: ["mail"], mailAccountId: "mail_app_v2", mailFolderId: "inbox" }, actor);
+    assert.equal(inbox.body.results.length, 1);
+    const missingFolder = await fx.service.search({ kinds: ["mail"], mailAccountId: "mail_app_v2", mailFolderId: "sent" }, actor);
+    assert.equal(missingFolder.body.results.length, 0);
+    assert.equal((await fx.service.search({ mailFolderId: "inbox" }, actor)).status, 400);
 
     const article = await fx.service.search({ query: "可重建 离线索引" }, actor);
     assert.equal(article.status, 200);
@@ -1010,6 +1025,8 @@ test("local content routes bind bounded query parameters and rebuild requests", 
       yearMonth: null,
       availability: null,
       indexStatus: null,
+      mailAccountId: null,
+      mailFolderId: null,
       limit: "12",
       offset: "3",
       cursor: null,

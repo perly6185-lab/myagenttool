@@ -1,4 +1,4 @@
-import { Archive, Eye, FileInput, FileOutput, FileText, FolderOpen, Mail } from "lucide-react";
+import { Archive, Eye, FileInput, FileOutput, FileText, FolderOpen, Info, Mail } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -19,6 +19,7 @@ type LocalContentCardCopy = {
   locating: string;
   originalMissing: string;
   addToTask: string;
+  details: string;
 };
 
 type LocalContentCardProps = {
@@ -29,6 +30,7 @@ type LocalContentCardProps = {
   onPreview: () => void;
   onLocate: () => void;
   onChoose: () => void;
+  onDetails: () => void;
 };
 
 function kindIcon(kind: LocalContentKind) {
@@ -54,6 +56,7 @@ export function LocalContentCard({
   onPreview,
   onLocate,
   onChoose,
+  onDetails,
 }: LocalContentCardProps) {
   const Icon = kindIcon(record.kind);
   const source = displaySource(record);
@@ -62,7 +65,7 @@ export function LocalContentCard({
   return (
     <Card className="flex min-w-0 flex-col">
       <CardContent className="flex flex-1 flex-col gap-3 p-4">
-        <div className="flex min-w-0 items-start gap-3">
+        <button type="button" className="flex min-w-0 items-start gap-3 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onDetails}>
           <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Icon className="size-4" aria-hidden /></span>
           <div className="min-w-0 flex-1">
             <h3 className="line-clamp-2 text-sm font-semibold leading-snug">{record.title}</h3>
@@ -75,11 +78,12 @@ export function LocalContentCard({
               {record.sameContent ? <Badge tone="neutral">{copy.sameOriginal.replace("{{count}}", String(record.sameContent.appearances))}</Badge> : null}
             </div>
           </div>
-        </div>
-        {(record.matchSnippet || record.summary) ? <p className="line-clamp-3 text-sm leading-relaxed text-muted-foreground">{record.matchSnippet || record.summary}</p> : null}
+        </button>
+        {(record.matchSnippet || record.summary) ? <button type="button" className="line-clamp-3 rounded-sm text-left text-sm leading-relaxed text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" onClick={onDetails}>{record.matchSnippet || record.summary}</button> : null}
         <p className="mt-auto truncate text-xs text-muted-foreground" title={source}>{copy.source}: {source}</p>
         {related ? <p className="truncate text-xs text-muted-foreground">{copy.related}: {related.title}</p> : null}
         <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" onClick={onDetails}><Info aria-hidden />{copy.details}</Button>
           <Button size="sm" variant="secondary" disabled={!record.original.available} title={!record.original.available ? copy.originalMissing : undefined} onClick={onPreview}><Eye aria-hidden />{copy.preview}</Button>
           <Button size="sm" variant="ghost" disabled={!record.original.available || record.storageMode === "state_record" || locateDisabled} title={!record.original.available ? copy.originalMissing : undefined} onClick={onLocate}><FolderOpen aria-hidden />{locating ? copy.locating : copy.locate}</Button>
           <Button size="sm" variant="secondary" disabled={!record.original.available} title={!record.original.available ? copy.originalMissing : undefined} onClick={onChoose}>{copy.addToTask}</Button>

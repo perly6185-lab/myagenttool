@@ -193,6 +193,7 @@ function recordSignature(record) {
 
 export function searchCatalog(db, {
   teamId, projectId, workItemId, sourceType, yearMonth, availability, indexStatus,
+  mailAccountId, mailFolderId,
   kinds, query, limit, offset,
 }) {
   const filters = ["r.owner_team_id = ?"];
@@ -221,6 +222,14 @@ export function searchCatalog(db, {
   if (indexStatus) {
     filters.push("r.index_status = ?");
     params.push(indexStatus);
+  }
+  if (mailAccountId) {
+    filters.push("r.kind = 'mail' AND json_extract(r.metadata_json, '$.mailAccountId') = ?");
+    params.push(mailAccountId);
+  }
+  if (mailFolderId) {
+    filters.push("r.kind = 'mail' AND json_extract(r.metadata_json, '$.folderId') = ?");
+    params.push(mailFolderId);
   }
   const where = filters.join(" AND ");
   if (!query) {
@@ -420,6 +429,46 @@ function summarizeFacets(db, teamId) {
   const months = group("substr(COALESCE(occurred_at, imported_at, modified_at, indexed_at), 1, 7)");
   const availability = group("CASE WHEN original_available = 1 THEN 'available' ELSE 'unavailable' END");
   const indexStatuses = group("index_status");
+  const mailAccountRows = db.prepare(`
+    SELECT
+      json_extract(metadata_json, '$.mailAccountId') AS value,
+      MAX(COALESCE(json_extract(metadata_json, '$.accountLabel'), json_extract(metadata_json, '$.mailAccountId'))) AS label,
+      COUNT(*) AS count
+    FROM local_content_records
+    WHERE owner_team_id = ? AND kind = 'mail'
+    GROUP BY value
+    HAVING value IS NOT NULL AND value != ''
+    ORDER BY count DESC, label
+    LIMIT ?
+  `).all(teamId, limit + 1);
+  const mailFolderRows = db.prepare(`
+    SELECT
+      json_extract(metadata_json, '$.mailAccountId') AS account_id,
+      MAX(COALESCE(json_extract(metadata_json, '$.accountLabel'), json_extract(metadata_json, '$.mailAccountId'))) AS account_label,
+      json_extract(metadata_json, '$.folderId') AS value,
+      MAX(COALESCE(json_extract(metadata_json, '$.folderPath'), json_extract(metadata_json, '$.folderId'))) AS path,
+      COUNT(*) AS count
+    FROM local_content_records
+    WHERE owner_team_id = ? AND kind = 'mail'
+    GROUP BY account_id, value
+    HAVING account_id IS NOT NULL AND account_id != '' AND value IS NOT NULL AND value != ''
+    ORDER BY account_label, count DESC, path
+    LIMIT ?
+  `).all(teamId, limit + 1);
+  const mailAccounts = {
+    values: mailAccountRows.slice(0, limit).map((row) => ({ value: row.value, label: row.label, count: Number(row.count) })),
+    coverage: { limit, returned: Math.min(mailAccountRows.length, limit), truncated: mailAccountRows.length > limit },
+  };
+  const mailFolders = {
+    values: mailFolderRows.slice(0, limit).map((row) => ({
+      value: row.value,
+      accountId: row.account_id,
+      accountLabel: row.account_label,
+      path: row.path,
+      count: Number(row.count),
+    })),
+    coverage: { limit, returned: Math.min(mailFolderRows.length, limit), truncated: mailFolderRows.length > limit },
+  };
   return {
     projects: projects.values,
     workItems: workItems.values,
@@ -427,6 +476,8 @@ function summarizeFacets(db, teamId) {
     months: months.values,
     availability: availability.values,
     indexStatuses: indexStatuses.values,
+    mailAccounts: mailAccounts.values,
+    mailFolders: mailFolders.values,
     coverage: {
       projects: projects.coverage,
       workItems: workItems.coverage,
@@ -434,6 +485,8 @@ function summarizeFacets(db, teamId) {
       months: months.coverage,
       availability: availability.coverage,
       indexStatuses: indexStatuses.coverage,
+      mailAccounts: mailAccounts.coverage,
+      mailFolders: mailFolders.coverage,
     },
   };
 }

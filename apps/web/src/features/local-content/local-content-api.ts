@@ -17,6 +17,8 @@ export type LocalContentSearchQuery = {
   yearMonth?: string;
   availability?: "available" | "unavailable";
   indexStatus?: "ready" | "partial" | "metadata_only" | "missing";
+  mailAccountId?: string;
+  mailFolderId?: string;
   limit?: number;
   offset?: number;
   cursor?: string;
@@ -33,6 +35,8 @@ export const localContentApi = {
     if (query.yearMonth) params.set("yearMonth", query.yearMonth);
     if (query.availability) params.set("availability", query.availability);
     if (query.indexStatus) params.set("indexStatus", query.indexStatus);
+    if (query.mailAccountId) params.set("mailAccountId", query.mailAccountId);
+    if (query.mailFolderId) params.set("mailFolderId", query.mailFolderId);
     if (query.limit != null) params.set("limit", String(query.limit));
     if (query.offset != null) params.set("offset", String(query.offset));
     if (query.cursor) params.set("cursor", query.cursor);

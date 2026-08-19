@@ -102,6 +102,56 @@ export function messageRecordOf(message, parsed) {
   };
 }
 
+// Body-prefetch shaping deliberately accepts already-decoded text parts. It
+// never needs attachment bytes or the full RFC822 source, but still exposes
+// BODYSTRUCTURE metadata so the UI can tell the user which attachments exist.
+export function lightweightMessageRecordOf(message, { text = "", html = "", references = [], attachments = [], truncated = false } = {}) {
+  const header = headerOf(message);
+  if (!header) return null;
+  const rawHtml = typeof html === "string" ? html : "";
+  const rawText = typeof text === "string" && text ? text : rawHtml ? fallbackHtmlText(rawHtml) : "";
+  return {
+    ...header,
+    inReplyTo: message.envelope?.inReplyTo ?? null,
+    references: Array.isArray(references) ? references.filter(Boolean).slice(0, 50) : [],
+    body: rawText.slice(0, MAX_BODY),
+    bodyHtml: rawHtml.slice(0, MAX_HTML_BODY),
+    hasHtml: Boolean(rawHtml),
+    bodyTruncated: truncated || rawText.length > MAX_BODY || rawHtml.length > MAX_HTML_BODY,
+    bodyContentVersion: 2,
+    attachments: Array.isArray(attachments) ? attachments.slice(0, 50) : [],
+    attachmentMetadataLoaded: true,
+    lightweightBody: true,
+  };
+}
+
+export function attachmentMetadataFromStructure(structure) {
+  const nodes = flattenStructure(structure).filter((node) => {
+    if (!node?.type || String(node.type).startsWith("multipart/")) return false;
+    if (String(node.disposition ?? "").toLowerCase() === "attachment") return true;
+    return !["text/plain", "text/html", "text/x-amp-html"].includes(String(node.type).toLowerCase());
+  });
+  return nodes.slice(0, 50).map((node, index) => {
+    const contentType = String(node.type ?? "application/octet-stream").toLowerCase().slice(0, 127);
+    const name = String(node.dispositionParameters?.filename ?? node.parameters?.name ?? `attachment-${index + 1}`).slice(0, 255);
+    const contentId = normalizeContentId(node.id);
+    return {
+      id: `attachment-${index + 1}`,
+      name,
+      contentType,
+      size: Number.isFinite(node.size) ? Math.max(0, Number(node.size)) : 0,
+      sha256: null,
+      previewable: previewKind(contentType) !== null,
+      ...(contentId ? { contentId } : {}),
+    };
+  });
+}
+
+function flattenStructure(node) {
+  if (!node || typeof node !== "object") return [];
+  return [node, ...(node.childNodes ?? []).flatMap(flattenStructure)];
+}
+
 export function attachmentMetadataOf(attachment, index) {
   const name = String(attachment?.filename ?? `attachment-${Number(index) + 1}`).slice(0, 255);
   const contentType = String(attachment?.contentType ?? "application/octet-stream").toLowerCase().slice(0, 127);

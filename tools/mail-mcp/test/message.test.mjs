@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { simpleParser } from "mailparser";
 
-import { classificationHeadersOf, formatAddresses, headerOf, messageRecordOf } from "../src/message.mjs";
+import { attachmentMetadataFromStructure, classificationHeadersOf, formatAddresses, headerOf, lightweightMessageRecordOf, messageRecordOf } from "../src/message.mjs";
+import { selectDisplayBodyNodes } from "../src/imap-163.mjs";
 
 const envelope = {
   messageId: "<CAF8x9kQm2vZ@mail.163.com>",
@@ -139,4 +140,27 @@ test("formatAddresses keeps a bare address and joins multiple senders", () => {
     "A <a@163.com>, b@163.com",
   );
   assert.equal(formatAddresses(), "");
+});
+
+test("lightweight body records carry display content and structure metadata without attachment bytes", () => {
+  const structure = {
+    type: "multipart/mixed",
+    childNodes: [
+      { part: "1", type: "multipart/alternative", childNodes: [
+        { part: "1.1", type: "text/plain", size: 20 },
+        { part: "1.2", type: "text/html", size: 40 },
+      ] },
+      { part: "2", type: "application/pdf", size: 1234, disposition: "attachment", dispositionParameters: { filename: "quote.pdf" } },
+    ],
+  };
+  const selected = selectDisplayBodyNodes(structure);
+  assert.equal(selected.plain.part, "1.1");
+  assert.equal(selected.html.part, "1.2");
+  const attachments = attachmentMetadataFromStructure(structure);
+  assert.deepEqual(attachments, [{ id: "attachment-1", name: "quote.pdf", contentType: "application/pdf", size: 1234, sha256: null, previewable: true }]);
+  const record = lightweightMessageRecordOf({ envelope }, { text: "hello", html: "<p>hello</p>", attachments });
+  assert.equal(record.body, "hello");
+  assert.equal(record.lightweightBody, true);
+  assert.equal(record.attachmentMetadataLoaded, true);
+  assert.equal(JSON.stringify(record).includes("secret-binary"), false);
 });

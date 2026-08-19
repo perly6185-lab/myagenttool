@@ -24,6 +24,7 @@ function harness({ mailSendEnabled = () => false, mailClassificationEnabled = ()
         source: { credential: { provider: "netease", scope: "imap.readonly" } },
         capabilityFacades: [
           { id: "list_unread", agentToolName: "mail_list_unread" },
+          { id: "prefetch_body", agentToolName: "mail_prefetch_body" },
           { id: "fetch", agentToolName: "mail_fetch" },
         ],
       },
@@ -123,6 +124,28 @@ test("classification environment gate defaults on and fails closed only when exp
     if (previous === undefined) delete process.env.MYAGENTTOOL_MAIL_CLASSIFICATION_ENABLED;
     else process.env.MYAGENTTOOL_MAIL_CLASSIFICATION_ENABLED = previous;
   }
+});
+
+test("body prefetch queues once, prioritizes a selected message, and advances serially", () => {
+  const { service, state, capabilityCalls } = harness();
+  const queued = service.enqueueBodyPrefetch({
+    ownerTeamId: "team_a",
+    applicationId: "app_163_mail_v2",
+    messages: [{ messageId: "<two@example.com>", folderPath: "INBOX", unread: true, date: "2026-08-12T01:00:00.000Z" }],
+  });
+  assert.equal(queued.queued, 1);
+  service.sweepBodyPrefetch();
+  assert.equal(capabilityCalls.length, 1);
+  assert.equal(capabilityCalls[0].name, "app.app_163_mail_v2.prefetch_body");
+  assert.equal(state.mailBodyPrefetchJobs[0].status, "running");
+  assert.equal(state.mailBodyPrefetchJobs[0].attempt, 1);
+
+  const replay = service.enqueueBodyPrefetch({ ownerTeamId: "team_a", applicationId: "app_163_mail_v2", messages: [{ messageId: "<two@example.com>" }] });
+  assert.equal(replay.queued, 0, "the durable key deduplicates repeated sync results");
+  const priority = service.prioritizeBodyPrefetch({ messageId: "<two@example.com>", actor: { teamId: "team_a", userId: "user_a" } });
+  assert.equal(priority.status, 202);
+  assert.equal(state.mailBodyPrefetchJobs[0].priority, "user");
+  assert.equal(capabilityCalls.length, 1, "clicking does not dispatch a duplicate while the background job is active");
 });
 
 test("classification rollback rebuilds the derived index without classification payloads", async () => {

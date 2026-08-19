@@ -13,6 +13,7 @@ import { registerWorkflowCaseIntake } from "./workflow-case-intake.mjs";
 import { registerMailAccountConnector } from "./mail-account-connector.mjs";
 import { registerMailAttachmentHandler } from "./mail-attachment-handler.mjs";
 import { registerMailOutboundAttachmentHandler } from "./mail-outbound-attachment-handler.mjs";
+import { APP_PROTOCOL, desktopRouteFromArgv, rendererUrlForDesktopRoute } from "./mail-connector-deep-link.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -43,9 +44,16 @@ let mainWindow = null;
 let stopping = false;
 let failureReported = false;
 let logFile = null;
+let rendererBaseUrl = null;
+let pendingDesktopRoute = desktopRouteFromArgv(process.argv);
 const services = new Map();
 
 app.setName("MyAgentTool");
+if (process.defaultApp && process.argv[1]) {
+  app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, [resolve(process.argv[1])]);
+} else {
+  app.setAsDefaultProtocolClient(APP_PROTOCOL);
+}
 if (smokeMode) {
   app.setPath("userData", join(tmpdir(), "myagenttool-electron-smoke", String(process.pid)));
 }
@@ -53,7 +61,10 @@ if (smokeMode) {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    const route = desktopRouteFromArgv(argv);
+    appendLog("electron", route ? `desktop handoff: ${route.section}/${route.desktopAction ?? "mail-connect"}` : "desktop handoff ignored: unsupported route");
+    if (route) openDesktopRoute(route);
     if (!mainWindow) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
@@ -82,7 +93,10 @@ async function startApp() {
   appendLog("electron", `starting MyAgentTool from ${paths.runtimeRoot}`);
 
   const serverPort = await findOpenPort(serviceDefaults.serverPort);
-  const webPort = await findOpenPort(serviceDefaults.webPort === serverPort ? serviceDefaults.webPort + 1 : serviceDefaults.webPort);
+  let webPort = await findOpenPort(serviceDefaults.webPort === serverPort ? serviceDefaults.webPort + 1 : serviceDefaults.webPort);
+  // Both ports are chosen before either child binds. If the preferred web
+  // range walks onto the reserved server port, skip it explicitly.
+  if (webPort === serverPort) webPort = await findOpenPort(serverPort + 1);
   const serverUrl = `http://${host}:${serverPort}`;
   const webUrl = `http://${host}:${webPort}`;
   const mailMcpRuntime = nodeRuntime();
@@ -138,7 +152,19 @@ async function startApp() {
     },
   );
 
-  createMainWindow(`${webUrl}/?api=${encodeURIComponent(serverUrl)}`, serverUrl);
+  rendererBaseUrl = `${webUrl}/?api=${encodeURIComponent(serverUrl)}`;
+  const initialUrl = pendingDesktopRoute
+    ? rendererUrlForDesktopRoute(rendererBaseUrl, pendingDesktopRoute)
+    : rendererBaseUrl;
+  pendingDesktopRoute = null;
+  createMainWindow(initialUrl, serverUrl);
+}
+
+function openDesktopRoute(route) {
+  pendingDesktopRoute = route;
+  if (!mainWindow || !rendererBaseUrl) return;
+  pendingDesktopRoute = null;
+  void mainWindow.loadURL(rendererUrlForDesktopRoute(rendererBaseUrl, route));
 }
 
 function runtimePaths() {
@@ -378,7 +404,10 @@ function listenOnAnyPort() {
   });
 }
 
-async function waitForHttp(url, label, timeoutMs = 20_000) {
+// Packaged cold starts can spend tens of seconds loading native modules while
+// Windows Defender inspects the freshly extracted application. Keep polling
+// long enough for that first-run path instead of reporting a false failure.
+async function waitForHttp(url, label, timeoutMs = 180_000) {
   const startedAt = Date.now();
   let lastError = null;
 

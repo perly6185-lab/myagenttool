@@ -155,6 +155,9 @@ export function createServerState({ defaultProjectPath, now }) {
     applicationResults: [],
     mailDrafts: [],
     mailMessageStates: [],
+    // Durable body-prefetch queue. Message bodies are retrieved asynchronously
+    // after header sync; attachment bytes and RFC822 archives remain on-demand.
+    mailBodyPrefetchJobs: [],
     mailTaskLinks: [],
     mailClassifications: [],
     mailClassificationJobs: [],

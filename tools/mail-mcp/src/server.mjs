@@ -1,11 +1,11 @@
-import { fetch163ParsedMessage, with163Client, with163Inbox } from "./imap-163.mjs";
+import { fetch163BodyParts, fetch163ParsedMessage, with163Client, with163Inbox } from "./imap-163.mjs";
 import { archiveMailSource, unavailableMailArchive } from "./mail-archive.mjs";
-import { headerOf, messageRecordOf } from "./message.mjs";
+import { attachmentMetadataFromStructure, headerOf, lightweightMessageRecordOf, messageRecordOf } from "./message.mjs";
 import { send163Mail } from "./send-163.mjs";
 import { boundedFolder, folderIdOf, sync163Mailbox } from "./sync-163.mjs";
 import { organize163Batch } from "./organize-163.mjs";
 
-export const TOOL_NAMES = ["mail_sync", "mail_list_unread", "mail_fetch", "mail_set_read", "mail_send", "mail_organize_batch"];
+export const TOOL_NAMES = ["mail_sync", "mail_list_unread", "mail_prefetch_body", "mail_fetch", "mail_set_read", "mail_send", "mail_organize_batch"];
 
 const tools = [
   {
@@ -23,6 +23,11 @@ const tools = [
     name: "mail_list_unread",
     description: "List unread 163 Mail headers without changing Seen state.",
     inputSchema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 100 } } },
+  },
+  {
+    name: "mail_prefetch_body",
+    description: "Fetch only the displayable text and HTML body parts plus attachment metadata, without downloading attachment bytes or archiving the RFC822 source.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["messageId"], properties: { messageId: { type: "string", maxLength: 998 }, folderPath: { type: "string", maxLength: 998 } } },
   },
   {
     name: "mail_fetch",
@@ -80,6 +85,8 @@ async function handle(message) {
     send({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: `running ${name}` } });
     const result = name === "mail_fetch"
       ? await fetchMessage(args)
+      : name === "mail_prefetch_body"
+        ? await prefetchMessageBody(args)
       : name === "mail_sync"
         ? await sync163Mailbox(args)
         : name === "mail_send"
@@ -133,6 +140,24 @@ async function fetchMessage(args) {
       ...attachment,
       localAvailable: archive.availability === "available",
     })),
+    folderId: folderIdOf(folderPath),
+    folderPath,
+  };
+}
+
+async function prefetchMessageBody(args) {
+  const messageId = String(args.messageId ?? "").trim();
+  if (!messageId) throw new Error("messageId is required");
+  const folderPath = boundedFolder(args.folderPath ?? "INBOX");
+  const result = await fetch163BodyParts(messageId, folderPath);
+  return {
+    ...lightweightMessageRecordOf(result.message, {
+      text: result.text,
+      html: result.html,
+      references: result.references,
+      truncated: result.truncated,
+      attachments: attachmentMetadataFromStructure(result.message.bodyStructure),
+    }),
     folderId: folderIdOf(folderPath),
     folderPath,
   };

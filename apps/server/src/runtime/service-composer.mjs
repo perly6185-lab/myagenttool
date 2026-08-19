@@ -1228,6 +1228,7 @@ export function createServerRuntimeServices({
   // createInvocation (composed below), completion needs the fold here.
   let mailSendHooks = null;
   let mailFolderOrganizationHooks = null;
+  let mailBodyPrefetchHooks = null;
   // S5 (#1090): channel-originated invocations report their outcome back to the
   // originating conversation. Late-bound like the auto-run hook — the delivery
   // service composes after the invocation service.
@@ -1283,6 +1284,14 @@ export function createServerRuntimeServices({
             accountId: record.applicationId,
             triggerId: record.invocationId ?? record.id,
           }));
+          queueMicrotask(() => mailBodyPrefetchHooks?.enqueueBodyPrefetch?.({
+            ownerTeamId: record.ownerTeamId ?? "team_local",
+            applicationId: record.applicationId,
+            messages: record.data.messages ?? [],
+          }));
+        }
+        if (record.source === "mail_headers" && record.data?.kind === "message") {
+          queueMicrotask(() => mailBodyPrefetchHooks?.sweepBodyPrefetch?.());
         }
       }
       return records;
@@ -2283,6 +2292,10 @@ export function createServerRuntimeServices({
     ...mailFolderOrganizationService,
     onMailImported: ({ ownerTeamId, accountId, triggerId }) => mailboxService.runFolderAutomations({ teamId: ownerTeamId, accountId, triggerId }),
   };
+  mailBodyPrefetchHooks = mailboxService;
+  mailboxService.backfillBodyPrefetch();
+  const mailBodyPrefetchTimer = setInterval(() => mailboxService.sweepBodyPrefetch(), 2_000);
+  mailBodyPrefetchTimer.unref?.();
 
   // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
   // + fail-closed identity mappings. Readiness is env-presence booleans; enable
@@ -5960,6 +5973,7 @@ export function createServerRuntimeServices({
     sendConfirmedDraft,
     mailboxSnapshot: mailboxService.snapshot,
     startMailboxSync: mailboxService.startSync,
+    prioritizeMailboxBodyPrefetch: mailboxService.prioritizeBodyPrefetch,
     setMailboxMessageRead: mailboxService.setMessageRead,
     createMailboxDraft: mailboxService.createDraft,
     updateMailboxDraft: mailboxService.updateDraft,
@@ -6503,6 +6517,7 @@ export function createServerRuntimeServices({
     httpDependencies,
     startLocalContentIndexing: localContentCatalogService.start,
     closeRuntimeServices: async () => {
+      clearInterval(mailBodyPrefetchTimer);
       try {
         await localContentCatalogService.close();
       } finally {

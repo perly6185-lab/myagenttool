@@ -13,6 +13,7 @@ import {
   ListTodo,
   Mail,
   MailOpen,
+  MonitorUp,
   Paperclip,
   PenLine,
   RefreshCw,
@@ -26,6 +27,7 @@ import {
 } from "lucide-react";
 import { SectionHeading } from "@/components/common/section-heading";
 import { ConfirmModal } from "@/components/common/confirm-modal";
+import { DesktopHandoffLink } from "@/components/common/desktop-handoff";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { api, ApiError, type MailboxAccount, type MailboxDraft, type MailboxMessage, type MailClassification, type MailClassificationJob, type MailClassificationQuality, type MailClassificationRule, type MailClassificationRuleSuggestion, type MailFolderAutomation, type MailFolderMoveJob, type MailFolderMovePreview, type MailFolderSuggestion, type MailDraftAttachment, type MailSemanticPreview, type MailSmartView } from "@/lib/api-client";
@@ -61,7 +63,7 @@ const COPY = {
     deepEligible: "将处理 {{count}} 封已打开且正文已缓存的邮件。",
     deepRange: "范围：{{from}} 至 {{to}}",
     deepLocal: "正文只发送到本机模型，不会发往外部服务。",
-    deepCachedOnly: "不会下载尚未打开的正文，也不会读取附件。",
+    deepCachedOnly: "只分析后台已下载的正文，不会为深度整理读取附件。",
     deepNoActions: "只更新分类建议，不会移动、删除、回复或创建任务。",
     deepStart: "确认并开始",
     deepStarting: "正在开始…",
@@ -171,6 +173,17 @@ const COPY = {
     connectOrganize: "连接邮箱目录权限",
     connectOrganizeHint: "仅用于目录创建和邮件移动。手动移动每批最多 50 封并逐批确认；你另行启用的稳定自动规则每批最多 10 封，可随时暂停。",
     organizeConnected: "邮箱目录权限已连接",
+    setupRemaining: "还有 {{count}} 项功能可启用",
+    continueSetup: "继续设置",
+    chooseFeatureTitle: "接下来想使用什么？",
+    chooseFeatureHint: "收件已经可以正常使用，其余功能按需开启即可。",
+    organizeFeatureTitle: "整理邮箱目录",
+    organizeFeatureHint: "创建目录并整理邮件",
+    sendFeatureTitle: "发送和回复邮件",
+    sendFeatureHint: "在应用内写邮件、回复邮件",
+    recommended: "推荐",
+    optional: "可选",
+    backToFeatures: "返回功能选择",
     folderMoveRecoveryNotice: "有一批邮箱目录结果需要核对",
     folderMoveRecoveryHint: "系统不会自动重试。重新收取邮件后，请检查邮件的实际位置。",
     folderMoveReviewStatus: "查看状态",
@@ -249,8 +262,10 @@ const COPY = {
     emptyInboxHint: "点击“收取新邮件”，新的未读邮件会显示在这里。",
     emptyFolder: "这里还没有邮件",
     choose: "选择一封邮件查看内容",
-    loadingBody: "正在安全读取邮件正文…",
-    bodyUnavailable: "正文尚未下载。你可以重新收取邮件后再试。",
+    loadingBody: "正文正在后台下载，完成后会自动显示，无需重复操作。",
+    bodyUnavailable: "正文已加入后台下载队列，完成后会自动显示。",
+    bodyDownloadFailed: "正文自动下载暂未完成。再次点击这封邮件即可优先重试。",
+    bodyNoLongerAvailable: "邮箱服务商已找不到这封邮件，列表信息仍会保留。邮件可能已在其他设备上被移动或删除。",
     htmlTextNotice: "这封邮件包含 HTML。默认显示经过转换的安全文本，不会加载远程图片。",
     htmlTextNoticeCompact: "含 HTML，当前显示安全文本。",
     viewSafeHtml: "查看安全排版",
@@ -311,7 +326,10 @@ const COPY = {
     upgradeAction: "升级并测试收件",
     providerGmail: "Gmail",
     comingSoon: "即将支持",
-    desktopOnly: "请打开 MyAgentTool 桌面版，进入“我的邮箱”并再次点击“连接邮箱”。当前网页不会接触你的登录信息。",
+    desktopOnly: "为了保护邮箱授权码，这一步需要在 MyAgentTool 桌面版完成（当前支持 Windows）。桌面版会直接打开当前授权步骤，不需要重新寻找入口。",
+    platformUnsupported: "163 邮箱授权目前仅支持 Windows 桌面版。当前系统暂时不能完成此操作。",
+    continueOnDesktop: "在桌面版继续",
+    desktopLaunchHint: "如果桌面版没有自动打开，请先安装或启动 MyAgentTool 桌面版后重试。",
     accountEmail: "163 邮箱地址",
     authorizationCode: "客户端授权码",
     authorizationPlaceholder: "不是邮箱登录密码",
@@ -375,7 +393,7 @@ const COPY = {
     attachmentLimit: "最多 10 个附件，总计不超过 25 MB",
     removeAttachment: "移除 {{name}}",
     outboundAttachmentFailed: "无法添加附件。请确认文件总计不超过 25 MB 后重试。",
-    outboundDesktopOnly: "请在 MyAgentTool 桌面版中添加附件。",
+    outboundDesktopOnly: "附件需要桌面版；当前网页中尚未保存的内容不会自动带过去，请先保存草稿。",
     status: { draft: "草稿", sending: "发送中", sent: "已发送", send_unconfirmed: "请检查是否已发送" },
   },
   en: {
@@ -400,7 +418,7 @@ const COPY = {
     deepEligible: "This will process {{count}} opened messages with cached text.",
     deepRange: "Range: {{from}} to {{to}}",
     deepLocal: "Message text goes only to the local model, never an external service.",
-    deepCachedOnly: "Unopened bodies are not downloaded, and attachments are not read.",
+    deepCachedOnly: "Only bodies already downloaded in the background are analyzed; attachments are not read for deep organization.",
     deepNoActions: "Only suggestions change; mail is never moved, deleted, replied to, or turned into tasks.",
     deepStart: "Confirm and start",
     deepStarting: "Starting…",
@@ -510,6 +528,17 @@ const COPY = {
     connectOrganize: "Connect folder organization",
     connectOrganizeHint: "Used only for folder creation and moves. Manual batches are limited to 50 messages and confirmed each time; separately enabled stable automations move at most 10 per batch and can be paused anytime.",
     organizeConnected: "Folder organization connected",
+    setupRemaining: "{{count}} more feature(s) available",
+    continueSetup: "Continue setup",
+    chooseFeatureTitle: "What would you like to use next?",
+    chooseFeatureHint: "Receiving already works. Enable the other features only when you need them.",
+    organizeFeatureTitle: "Organize mailbox folders",
+    organizeFeatureHint: "Create folders and organize messages",
+    sendFeatureTitle: "Send and reply",
+    sendFeatureHint: "Write and reply to email in the app",
+    recommended: "Recommended",
+    optional: "Optional",
+    backToFeatures: "Back to feature choices",
     folderMoveRecoveryNotice: "A folder organization batch needs review",
     folderMoveRecoveryHint: "The system will not retry automatically. Sync mail and check the messages' actual location.",
     folderMoveReviewStatus: "View status",
@@ -588,8 +617,10 @@ const COPY = {
     emptyInboxHint: "Choose Get new mail to retrieve unread messages.",
     emptyFolder: "Nothing here yet",
     choose: "Choose an email to read it",
-    loadingBody: "Safely loading the message…",
-    bodyUnavailable: "The body has not been downloaded yet. Get new mail and try again.",
+    loadingBody: "The body is downloading in the background and will appear automatically.",
+    bodyUnavailable: "The body is queued for background download and will appear automatically.",
+    bodyDownloadFailed: "Automatic body download did not finish. Select this message again to retry it with priority.",
+    bodyNoLongerAvailable: "The provider can no longer find this message. Its list entry is kept; it may have been moved or deleted on another device.",
     htmlTextNotice: "This email contains HTML. Safe converted text is shown by default, without loading remote images.",
     htmlTextNoticeCompact: "HTML email · showing safe text",
     viewSafeHtml: "View safe layout",
@@ -650,7 +681,10 @@ const COPY = {
     upgradeAction: "Upgrade and test receiving",
     providerGmail: "Gmail",
     comingSoon: "Coming soon",
-    desktopOnly: "Open the MyAgentTool desktop app, go to My email, and choose Connect email again. This web page never handles your sign-in details.",
+    desktopOnly: "To protect your email authorization code, finish this step in the Windows desktop app. It opens directly at the step you selected.",
+    platformUnsupported: "163 Mail authorization currently requires the Windows desktop app and is unavailable on this system.",
+    continueOnDesktop: "Continue in desktop app",
+    desktopLaunchHint: "If the desktop app does not open automatically, install or start MyAgentTool and try again.",
     accountEmail: "163 email address",
     authorizationCode: "Client authorization code",
     authorizationPlaceholder: "Not your mailbox password",
@@ -714,10 +748,12 @@ const COPY = {
     attachmentLimit: "Up to 10 attachments, 25 MB total",
     removeAttachment: "Remove {{name}}",
     outboundAttachmentFailed: "Attachments could not be added. Check that the total is under 25 MB and try again.",
-    outboundDesktopOnly: "Add attachments in the MyAgentTool desktop app.",
+    outboundDesktopOnly: "Attachments require the desktop app. Save this draft first; unsaved browser text will not transfer automatically.",
     status: { draft: "Draft", sending: "Sending", sent: "Sent", send_unconfirmed: "Check whether sent" },
   },
 } as const;
+
+type MailConnectorIntent = "manage" | "send" | "organize";
 
 export function MailView() {
   const { i18n } = useAppTranslation();
@@ -740,9 +776,10 @@ export function MailView() {
   const [confirmComposeClose, setConfirmComposeClose] = useState(false);
   const [reviewDraft, setReviewDraft] = useState<MailboxDraft | null>(null);
   const [viewedDraft, setViewedDraft] = useState<MailboxDraft | null>(null);
-  const [busy, setBusy] = useState<"sync" | "fetch" | "save" | "send" | "delete" | "task" | "classify" | "deep" | "correct" | "rules" | null>(null);
+  const [busy, setBusy] = useState<"sync" | "save" | "send" | "delete" | "task" | "classify" | "deep" | "correct" | "rules" | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string; task?: NonNullable<MailboxMessage["task"]> } | null>(null);
   const [connectorOpen, setConnectorOpen] = useState(false);
+  const [connectorIntent, setConnectorIntent] = useState<MailConnectorIntent>("manage");
   const [pendingSyncId, setPendingSyncId] = useState<string | null>(null);
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview | null>(null);
   const [taskDraft, setTaskDraft] = useState<MailTaskDraft | null>(null);
@@ -765,6 +802,28 @@ export function MailView() {
   const [automationPreview, setAutomationPreview] = useState<MailFolderMovePreview | null>(null);
   const [automationPending, setAutomationPending] = useState(false);
   const [automationError, setAutomationError] = useState<string | null>(null);
+  const openConnector = (intent: MailConnectorIntent = "manage") => {
+    setConnectorIntent(intent);
+    setConnectorOpen(true);
+  };
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const intent = url.searchParams.get("mailConnect");
+    if (intent !== "manage" && intent !== "send" && intent !== "organize") return;
+    setConnectorIntent(intent);
+    setConnectorOpen(true);
+    url.searchParams.delete("mailConnect");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("desktopAction") !== "compose-attachment" || !window.myagenttoolDesktop?.pickOutboundMailAttachments) return;
+    const next: ComposeState = { id: null, to: "", subject: "", body: "", attachments: [], inReplyTo: null, references: [], sendError: null };
+    setCompose(next);
+    setComposeBaseline(composeFingerprint(next));
+    url.searchParams.delete("desktopAction");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
   const classificationRules = useQuery({
     queryKey: ["mail-classification-rules"],
     queryFn: mailApi.getClassificationRules,
@@ -816,6 +875,9 @@ export function MailView() {
   const data = mailbox.data;
   const classificationSummary = data?.classificationSummary ?? null;
   const account = data?.accounts.find((item) => item.canReceive) ?? data?.accounts[0] ?? null;
+  const remainingMailFeatures = account?.canReceive
+    ? Number(!account.canOrganize) + Number(!account.canSend)
+    : 0;
   const selectedMessage = data?.messages.find((message) => message.id === selectedMessageId) ?? null;
   const syncing = busy === "sync" || data?.sync?.status === "syncing";
   const providerFolders = (data?.folders ?? []).filter((item) => item.kind === "provider");
@@ -831,6 +893,28 @@ export function MailView() {
   const folderSuggestionCount = folderSuggestions.data?.suggestions.length ?? 0;
   const recoveryFolderJob = folderMoveJobs.data?.jobs?.find((job) => ["moving", "unconfirmed", "recoverable", "conflict"].includes(job.status)) ?? null;
   const organizeSuggestionCount = ruleSuggestionCount + folderSuggestionCount;
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("desktopAction") !== "mail-attachment" || !window.myagenttoolDesktop?.previewMailAttachment) return;
+    const requestedFolder = url.searchParams.get("folder")?.trim();
+    const requestedPage = Math.max(1, Math.min(10_000, Number(url.searchParams.get("page")) || 1));
+    const requestedView = url.searchParams.get("view") as MailSmartView | null;
+    const validRequestedView = requestedView && ["all", "needs_attention", "important", "notifications", "subscriptions", "other"].includes(requestedView) ? requestedView : null;
+    if (requestedFolder && (folder !== requestedFolder || page !== requestedPage || (validRequestedView && smartView !== validRequestedView))) {
+      setFolder(requestedFolder);
+      setPage(requestedPage);
+      if (validRequestedView) setSmartView(validRequestedView);
+      return;
+    }
+    const requested = url.searchParams.get("message");
+    const match = data?.messages.find((message) => message.id === requested || message.messageId === requested);
+    if (!match) return;
+    setSelectedMessageId(match.id);
+    setNotice({ tone: "info", text: copy === COPY.zh ? "已定位到邮件，请在附件旁继续预览或下载。" : "The message is ready. Continue beside the attachment." });
+    for (const key of ["desktopAction", "message", "attachment", "mode", "folder", "page", "view"]) url.searchParams.delete(key);
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [copy, data?.messages, folder, page, smartView]);
 
   useEffect(() => {
     if (!pendingSyncId || data?.sync?.invocationId !== pendingSyncId) return;
@@ -1160,15 +1244,12 @@ export function MailView() {
         .then(() => queryClient.invalidateQueries({ queryKey: ["mailbox"] }))
         .catch(() => setNotice({ tone: "error", text: copy.markReadFailed }));
     }
-    if ((message.fetched && message.attachmentMetadataLoaded && message.bodyContentVersion >= 2 && message.archive) || !account?.fetchCapability || busy === "fetch") return;
-    setBusy("fetch");
+    if (message.bodyFetch?.status === "ready" || (message.fetched && message.attachmentMetadataLoaded && message.bodyContentVersion >= 2)) return;
     try {
-      await api.invokeCapability(account.fetchCapability, account.incrementalSync ? { messageId: message.messageId, folderPath: message.folderPath } : { messageId: message.messageId });
-      window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 800);
+      await mailApi.prioritizeBodyPrefetch(message.messageId);
+      await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
     } catch {
       setNotice({ tone: "error", text: copy.bodyUnavailable });
-    } finally {
-      setBusy(null);
     }
   }
 
@@ -1458,13 +1539,17 @@ export function MailView() {
           <h2 className="mt-4 text-lg font-semibold">{copy.connectTitle}</h2>
           <p className="mx-auto mt-2 max-w-lg text-sm text-muted-foreground">{copy.connectHint}</p>
           <p className="mx-auto mt-1 max-w-lg text-xs text-muted-foreground">{copy.connectSimple}</p>
-          <Button className="mt-5" onClick={() => setConnectorOpen(true)}>{copy.connectAction}</Button>
+          <Button className="mt-5" onClick={() => openConnector()}>{copy.connectAction}</Button>
         </section>
       ) : (
         <>
-          <div className={cn("flex flex-nowrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm", account?.canReceive ? "bg-card" : "border-warning/40 bg-warning/10")}>
+          <div className={cn("flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm", account?.canReceive ? "bg-card" : "border-warning/40 bg-warning/10")}>
             <div className="flex min-w-0 items-center gap-2"><span className={cn("size-2 shrink-0 rounded-full", account?.canReceive ? "bg-emerald-500" : "bg-amber-500")} /><span className="shrink-0 font-medium">{account?.name}</span><span className="hidden text-muted-foreground sm:inline">{account?.canReceive ? copy.receiveReady : copy.attention}</span>{lastSyncText ? <span className="truncate text-[11px] text-muted-foreground sm:text-xs">{lastSyncText}</span> : null}</div>
-            <div className="flex shrink-0 items-center gap-2"><span className="hidden text-xs text-muted-foreground sm:inline">{account?.canSend ? copy.connected : copy.sendNotReady}</span><Button size="sm" variant="secondary" onClick={() => setConnectorOpen(true)}>{account?.canReceive && !account.canSend ? copy.connectSending : account?.canReceive ? copy.manageConnection : copy.attentionAction}</Button></div>
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+              {!account?.canReceive ? <Button size="sm" variant="secondary" onClick={() => openConnector()}>{copy.attentionAction}</Button> : null}
+              {account?.canReceive && remainingMailFeatures ? <><span className="hidden text-xs text-muted-foreground sm:inline">{copy.setupRemaining.replace("{{count}}", String(remainingMailFeatures))}</span><Button size="sm" variant="secondary" onClick={() => openConnector()}>{copy.continueSetup}</Button></> : null}
+              {account?.canReceive && !remainingMailFeatures ? <Button size="sm" variant="secondary" onClick={() => openConnector()}>{copy.manageConnection}</Button> : null}
+            </div>
           </div>
 
           {!systemFolder && classificationSummary ? <nav className="flex gap-2 overflow-x-auto pb-1" aria-label={copy.organize}>
@@ -1497,7 +1582,7 @@ export function MailView() {
             </section>
 
             <section className={cn("min-w-0", selectedMessage ? "block" : "hidden lg:block")} aria-label={selectedMessage?.subject ?? copy.choose}>
-              {selectedMessage ? <MessageDetail message={selectedMessage} copy={copy} canSend={Boolean(account?.canSend)} loading={busy === "fetch" && !selectedMessage.fetched} onBack={() => setSelectedMessageId(null)} onReply={() => startCompose(selectedMessage)} onCreateTask={() => startTask(selectedMessage)} onMarkUnread={() => void markUnread(selectedMessage)} onCorrectClassification={() => setClassificationCorrection({ message: selectedMessage, view: classificationViewOf(selectedMessage) })} onPreview={(attachment) => void previewAttachment(selectedMessage, attachment)} onDownload={(attachment) => void downloadAttachment(selectedMessage, attachment)} /> : <div className="grid h-full min-h-80 place-items-center p-8 text-center text-sm text-muted-foreground"><div><Mail className="mx-auto mb-3 size-8 opacity-40" />{copy.choose}</div></div>}
+              {selectedMessage ? <MessageDetail message={selectedMessage} copy={copy} canSend={Boolean(account?.canSend)} loading={!selectedMessage.fetched && ["queued", "running", "retry_wait"].includes(selectedMessage.bodyFetch?.status ?? "")} handoffContext={{ folder, page: String(page), view: smartView }} onBack={() => setSelectedMessageId(null)} onReply={() => startCompose(selectedMessage)} onCreateTask={() => startTask(selectedMessage)} onMarkUnread={() => void markUnread(selectedMessage)} onCorrectClassification={() => setClassificationCorrection({ message: selectedMessage, view: classificationViewOf(selectedMessage) })} onPreview={(attachment) => void previewAttachment(selectedMessage, attachment)} onDownload={(attachment) => void downloadAttachment(selectedMessage, attachment)} /> : <div className="grid h-full min-h-80 place-items-center p-8 text-center text-sm text-muted-foreground"><div><Mail className="mx-auto mb-3 size-8 opacity-40" />{copy.choose}</div></div>}
             </section>
           </div>
 
@@ -1509,7 +1594,7 @@ export function MailView() {
       <SendReviewModal copy={copy} draft={reviewDraft} pending={busy === "send"} onClose={() => setReviewDraft(null)} onSend={() => void sendDraft()} />
       <MailDraftDetailModal copy={copy} draft={viewedDraft} onClose={() => setViewedDraft(null)} />
       <ConfirmModal open={confirmComposeClose} title={copy.discardComposeTitle} description={copy.discardComposeDescription} confirmLabel={copy.discardComposeConfirm} destructive onClose={() => setConfirmComposeClose(false)} onConfirm={() => { setConfirmComposeClose(false); setCompose(null); setComposeBaseline(""); }} />
-      <MailConnectionModal copy={copy} open={connectorOpen} onClose={() => setConnectorOpen(false)} onConnected={() => {
+      <MailConnectionModal copy={copy} intent={connectorIntent} open={connectorOpen} onClose={() => setConnectorOpen(false)} onConnected={() => {
         void queryClient.invalidateQueries({ queryKey: ["mailbox"] });
         void queryClient.invalidateQueries({ queryKey: ["mail-folder-suggestions"] });
         window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 2_000);
@@ -1521,14 +1606,14 @@ export function MailView() {
       <DeepOrganizeModal copy={copy} open={deepOrganizeOpen} preview={deepPreview.data?.preview ?? null} previewLoading={deepPreview.isLoading} previewError={deepPreview.isError} job={deepJob.data?.job ?? null} jobLoading={Boolean(deepJobId) && deepJob.isLoading} jobError={deepJob.isError} pending={busy === "deep"} onClose={closeDeepOrganize} onStart={() => void startDeepOrganize()} onCancel={() => void cancelDeepOrganize()} />
       <ClassificationRulesModal copy={copy} open={rulesOpen} data={classificationRules.data ?? null} quality={classificationQuality.data?.quality ?? null} qualityLoading={classificationQuality.isLoading} qualityError={classificationQuality.isError} folderData={folderSuggestions.data ?? null} automationData={folderAutomations.data?.automations ?? []} historyJobs={folderMoveJobs.data?.jobs ?? []} accounts={data?.accounts ?? []} loading={classificationRules.isLoading} error={classificationRules.isError} folderLoading={folderSuggestions.isLoading} folderError={folderSuggestions.isError} pendingKey={rulePending} feedback={ruleFeedback} folderPending={folderPending} folderFeedback={folderFeedback} folderSelections={folderSelections} onFolderSelection={(id, value) => setFolderSelections((current) => ({ ...current, [id]: value }))} onFolderPreview={(suggestion) => void previewFolderSuggestion(suggestion)} onAutomationPreview={(suggestion) => void previewFolderAutomation(suggestion)} onAutomationAction={(automation, action) => void changeFolderAutomation(automation, action)} onAutomationDryRun={(automation) => void dryRunFolderAutomation(automation)} onClose={() => { setRulesOpen(false); setRuleFeedback(null); setFolderFeedback(null); }} onRetry={() => void classificationRules.refetch()} onQualityRetry={() => void classificationQuality.refetch()} onFolderRetry={() => void folderSuggestions.refetch()} onEnable={(id) => void enableClassificationRule(id)} onAction={(rule, action) => void changeClassificationRule(rule, action)} onEdit={(rule) => { setRuleFeedback(null); setFolderFeedback(null); setRulesOpen(false); setRuleEdit({ rule, view: classificationViewForTarget(rule.target) }); }} />
       <ClassificationRuleEditModal copy={copy} value={ruleEdit} accountName={ruleEdit ? accountLabel(ruleEdit.rule.accountId, data?.accounts ?? []) : null} pending={Boolean(ruleEdit && rulePending === `edit:${ruleEdit.rule.id}`)} feedback={ruleFeedback} onChange={setRuleEdit} onClose={() => { setRuleEdit(null); setRuleFeedback(null); setRulesOpen(true); }} onSave={() => void saveClassificationRule()} />
-      <FolderMovePreviewModal copy={copy} value={folderPreview} job={folderMoveJob.data?.job ?? null} pending={folderMovePending} error={folderMoveError} accounts={data?.accounts ?? []} onMove={() => void startFolderMove()} onConnect={() => { setFolderPreview(null); setFolderMoveJobId(null); setConnectorOpen(true); }} onSync={() => { setFolderPreview(null); setFolderMoveJobId(null); void syncMail(); }} onClose={() => { setFolderPreview(null); setFolderMoveJobId(null); setFolderMoveError(null); setRulesOpen(true); }} />
+      <FolderMovePreviewModal copy={copy} value={folderPreview} job={folderMoveJob.data?.job ?? null} pending={folderMovePending} error={folderMoveError} accounts={data?.accounts ?? []} onMove={() => void startFolderMove()} onConnect={() => { setFolderPreview(null); setFolderMoveJobId(null); openConnector("organize"); }} onSync={() => { setFolderPreview(null); setFolderMoveJobId(null); void syncMail(); }} onClose={() => { setFolderPreview(null); setFolderMoveJobId(null); setFolderMoveError(null); setRulesOpen(true); }} />
       <FolderAutomationPreviewModal copy={copy} value={automationPreview} pending={automationPending} error={automationError} accounts={data?.accounts ?? []} onEnable={() => void enableFolderAutomation()} onClose={() => { setAutomationPreview(null); setAutomationError(null); setRulesOpen(true); }} />
       <FolderMoveRecoveryModal copy={copy} value={folderRecoveryOpen ? recoveryFolderJob : null} pending={folderMovePending} error={folderMoveError} accounts={data?.accounts ?? []} onSync={() => { setFolderRecoveryOpen(false); void syncMail(); }} onReconcile={(job) => void reconcileFolderMove(job)} onClose={() => { setFolderRecoveryOpen(false); setFolderMoveError(null); }} />
     </div>
   );
 }
 
-function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeof COPY.zh | typeof COPY.en; open: boolean; onClose: () => void; onConnected: () => void }) {
+function MailConnectionModal({ copy, intent, open, onClose, onConnected }: { copy: typeof COPY.zh | typeof COPY.en; intent: MailConnectorIntent; open: boolean; onClose: () => void; onConnected: () => void }) {
   const bridge = window.myagenttoolDesktop;
   const [email, setEmail] = useState("");
   const [authorizationCode, setAuthorizationCode] = useState("");
@@ -1536,13 +1621,23 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
   const [sendConnected, setSendConnected] = useState(false);
   const [organizeConnected, setOrganizeConnected] = useState(false);
   const [upgradeNeeded, setUpgradeNeeded] = useState(false);
+  const [platformSupported, setPlatformSupported] = useState<boolean | null>(null);
+  const [activeIntent, setActiveIntent] = useState<MailConnectorIntent>(intent);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setActiveIntent(intent);
+    setAuthorizationCode("");
+    setError(null);
+  }, [intent, open]);
 
   useEffect(() => {
     if (!open || !bridge?.getMailConnectorStatus) return;
     void bridge.getMailConnectorStatus().then((status) => {
       const provider = status.providers.find((item) => item.id === "netease_163");
+      setPlatformSupported(provider?.available !== false);
       if (provider?.account) setEmail(provider.account);
       if (provider?.connected) setConnectedEmail(provider.account);
       setUpgradeNeeded(provider?.upgradeNeeded === true);
@@ -1561,7 +1656,6 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
       setError(copy.errors[result.error as keyof typeof copy.errors] ?? copy.errors.unavailable);
       return;
     }
-    setAuthorizationCode("");
     setConnectedEmail(result.account.email);
     setUpgradeNeeded(false);
     onConnected();
@@ -1591,8 +1685,41 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
     onConnected();
   }
 
-  return <Modal open={open} title={copy.connectorTitle} description={copy.connectorDescription} size="lg" onClose={onClose} closeDisabled={pending} footer={connectedEmail && sendConnected && organizeConnected ? <div className="flex justify-end"><Button onClick={onClose}>{copy.done}</Button></div> : undefined}>
-    {!bridge?.getMailConnectorStatus ? <div className="rounded-xl border bg-muted/40 p-4 text-sm text-muted-foreground">{copy.desktopOnly}</div> : connectedEmail ? <div className="space-y-4 text-center"><span className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-600"><ShieldCheck /></span><div><h3 className="font-semibold">{copy.connectSuccess}</h3><p className="mt-1 text-sm text-muted-foreground">{connectedEmail}</p></div>{sendConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.sendConnected}</div> : <div className="space-y-3 rounded-xl border bg-muted/20 p-4 text-left"><p className="text-sm font-medium">{copy.connectSend}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectSendHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectSend()} disabled={pending}><Send />{pending ? copy.testing : copy.connectSend}</Button></div>}{organizeConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.organizeConnected}</div> : <div className="space-y-3 rounded-xl border bg-muted/20 p-4 text-left"><p className="text-sm font-medium">{copy.connectOrganize}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectOrganizeHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectOrganize()} disabled={pending}><Folder />{pending ? copy.testing : copy.connectOrganize}</Button></div>}<Button variant="secondary" onClick={() => { setConnectedEmail(null); setSendConnected(false); setOrganizeConnected(false); setError(null); }}>{copy.reconnect}</Button></div> : <div className="space-y-4">
+  const selectFeature = (nextIntent: Exclude<MailConnectorIntent, "manage">) => {
+    setActiveIntent(nextIntent);
+    setError(null);
+  };
+  const closeModal = () => {
+    setAuthorizationCode("");
+    setError(null);
+    onClose();
+  };
+
+  return <Modal open={open} title={copy.connectorTitle} description={copy.connectorDescription} size="lg" onClose={closeModal} closeDisabled={pending} footer={connectedEmail && sendConnected && organizeConnected ? <div className="flex justify-end"><Button onClick={closeModal}>{copy.done}</Button></div> : undefined}>
+    {!bridge?.getMailConnectorStatus ? <div className="space-y-4 rounded-xl border bg-muted/20 p-5 text-center">
+      <span className="mx-auto grid size-12 place-items-center rounded-full bg-primary/10 text-primary"><MonitorUp /></span>
+      <p className="text-sm leading-6 text-muted-foreground">{copy.desktopOnly}</p>
+      <a href={`myagenttool://mail/connect?intent=${activeIntent}`} className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><MonitorUp />{copy.continueOnDesktop}</a>
+      <p className="text-xs leading-5 text-muted-foreground">{copy.desktopLaunchHint}</p>
+    </div> : platformSupported === false ? <div className="space-y-3 rounded-xl border border-amber-500/40 bg-amber-500/5 p-5 text-center"><AlertTriangle className="mx-auto size-8 text-amber-500" /><p className="text-sm text-muted-foreground">{copy.platformUnsupported}</p></div> : connectedEmail ? <div className="space-y-4 text-center">
+      <span className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-600"><ShieldCheck /></span>
+      <div><h3 className="font-semibold">{copy.connectSuccess}</h3><p className="mt-1 text-sm text-muted-foreground">{connectedEmail}</p></div>
+      {activeIntent === "manage" ? <div className="space-y-3 text-left">
+        <div><h4 className="font-medium">{copy.chooseFeatureTitle}</h4><p className="mt-1 text-xs leading-5 text-muted-foreground">{copy.chooseFeatureHint}</p></div>
+        {organizeConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.organizeConnected}</div> : <button type="button" className="flex w-full items-center gap-3 rounded-xl border border-primary/35 bg-primary/5 p-4 text-left transition-colors hover:bg-primary/10" onClick={() => selectFeature("organize")}><span className="grid size-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Folder /></span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2 font-medium">{copy.organizeFeatureTitle}<span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">{copy.recommended}</span></span><span className="mt-1 block text-xs text-muted-foreground">{copy.organizeFeatureHint}</span></span><ChevronRight className="size-4 shrink-0 text-muted-foreground" /></button>}
+        {sendConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.sendConnected}</div> : <button type="button" className="flex w-full items-center gap-3 rounded-xl border bg-muted/20 p-4 text-left transition-colors hover:bg-muted/50" onClick={() => selectFeature("send")}><span className="grid size-10 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground"><Send /></span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2 font-medium">{copy.sendFeatureTitle}<span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{copy.optional}</span></span><span className="mt-1 block text-xs text-muted-foreground">{copy.sendFeatureHint}</span></span><ChevronRight className="size-4 shrink-0 text-muted-foreground" /></button>}
+      </div> : null}
+      {activeIntent === "send" ? sendConnected
+        ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.sendConnected}</div>
+        : <div className="space-y-3 rounded-xl border bg-muted/20 p-4 text-left"><p className="text-sm font-medium">{copy.connectSend}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectSendHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectSend()} disabled={pending}><Send />{pending ? copy.testing : copy.connectSend}</Button></div>
+        : null}
+      {activeIntent === "organize" ? organizeConnected
+        ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.organizeConnected}</div>
+        : <div className="space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-4 text-left"><p className="text-sm font-medium">{copy.connectOrganize}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectOrganizeHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input autoFocus type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectOrganize()} disabled={pending}><Folder />{pending ? copy.testing : copy.connectOrganize}</Button></div>
+        : null}
+      {activeIntent !== "manage" && (!sendConnected || !organizeConnected) ? <Button variant="ghost" onClick={() => setActiveIntent("manage")}><ArrowLeft />{copy.backToFeatures}</Button> : null}
+      <Button variant="secondary" onClick={() => { setConnectedEmail(null); setSendConnected(false); setOrganizeConnected(false); setAuthorizationCode(""); setError(null); }}>{copy.reconnect}</Button>
+    </div> : <div className="space-y-4">
       <div className="grid gap-2 sm:grid-cols-2">
         <div className="rounded-xl border border-primary/40 bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.provider163}</span><span className={cn("rounded-full px-2 py-0.5 text-xs", upgradeNeeded ? "bg-amber-500/10 text-amber-700" : "bg-muted text-muted-foreground")}>{upgradeNeeded ? copy.upgradeBadge : copy.readyToConnect}</span></div><p className="mt-1 text-xs text-muted-foreground">{copy.provider163Hint}</p></div>
         <div className="rounded-xl border bg-muted/30 p-3 opacity-70"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.providerGmail}</span><span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{copy.comingSoon}</span></div></div>
@@ -1661,10 +1788,12 @@ function DraftRow({ draft, copy, onOpen }: { draft: MailboxDraft; copy: typeof C
   return onOpen ? <button type="button" onClick={() => onOpen(draft)} className="block w-full border-b p-3 text-left hover:bg-muted/50">{content}</button> : <article className="border-b p-3">{content}</article>;
 }
 
-function MessageDetail({ message, copy, canSend, loading, onBack, onReply, onCreateTask, onMarkUnread, onCorrectClassification, onPreview, onDownload }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; canSend: boolean; loading: boolean; onBack: () => void; onReply: () => void; onCreateTask: () => void; onMarkUnread: () => void; onCorrectClassification: () => void; onPreview: (attachment: MailboxMessage["attachments"][number]) => void; onDownload: (attachment: MailboxMessage["attachments"][number]) => void }) {
+function MessageDetail({ message, copy, canSend, loading, handoffContext, onBack, onReply, onCreateTask, onMarkUnread, onCorrectClassification, onPreview, onDownload }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; canSend: boolean; loading: boolean; handoffContext: Record<string, string>; onBack: () => void; onReply: () => void; onCreateTask: () => void; onMarkUnread: () => void; onCorrectClassification: () => void; onPreview: (attachment: MailboxMessage["attachments"][number]) => void; onDownload: (attachment: MailboxMessage["attachments"][number]) => void }) {
   const classificationView = classificationViewOf(message);
   const sender = mailboxSender(message.from);
   const archiveAvailable = message.archive?.availability === "available";
+  const canPreviewAttachment = Boolean(window.myagenttoolDesktop?.previewMailAttachment);
+  const canDownloadAttachment = Boolean(window.myagenttoolDesktop?.downloadMailAttachment);
   return <div className="flex h-full min-h-0 flex-col">
     <div className="border-b p-4">
       <Button className="mb-2 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button>
@@ -1693,7 +1822,7 @@ function MessageDetail({ message, copy, canSend, loading, onBack, onReply, onCre
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
       {loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : <MailMessageBody key={message.id} message={message} copy={copy} />}
-      {message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}{attachment.localAvailable ? ` · ${copy.attachmentLocal}` : ""}</p></div><div className="flex gap-2">{attachment.previewable ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}<Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button></div></article>)}</div></section> : null}
+      {message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}{attachment.localAvailable ? ` · ${copy.attachmentLocal}` : ""}</p></div><div className="flex gap-2">{attachment.previewable && canPreviewAttachment ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}{canDownloadAttachment ? <Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button> : <DesktopHandoffLink section="mail" action="mail-attachment" params={{ ...handoffContext, message: message.id, attachment: attachment.id, mode: attachment.previewable ? "preview" : "download" }} compact>{copy === COPY.zh ? "在桌面版查看" : "Open in desktop"}</DesktopHandoffLink>}</div></article>)}</div></section> : null}
     </div>
   </div>;
 }
@@ -1738,7 +1867,7 @@ function MailMessageBody({ message, copy }: { message: MailboxMessage; copy: typ
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2"><p className="min-w-0 flex-1 text-xs text-muted-foreground">{allowRemoteImages ? copy.remoteImagesLoaded : copy.remoteImagesBlocked}</p><Button size="sm" variant="ghost" onClick={() => setAllowRemoteImages((current) => !current)}>{allowRemoteImages ? copy.blockRemoteImages : copy.loadRemoteImages}</Button></div>
       {inlineImagesLoading ? <p role="status" className="text-xs text-muted-foreground">{copy.inlineImagesLoading}</p> : null}
       <SafeHtmlMailBody html={html} title={copy.safeHtmlTitle} allowRemoteImages={allowRemoteImages} cidImages={cidImages} />
-    </> : message.body ? <PlainMailBody body={message.body} /> : <p className="text-sm text-muted-foreground">{copy.bodyUnavailable}</p>}
+    </> : message.body ? <PlainMailBody body={message.body} /> : <p className="text-sm text-muted-foreground">{message.bodyFetch?.status === "failed" ? copy.bodyDownloadFailed : message.bodyFetch?.status === "unavailable" && message.bodyFetch.lastError === "mail_message_not_found" ? copy.bodyNoLongerAvailable : copy.bodyUnavailable}</p>}
   </div>;
 }
 
@@ -1752,6 +1881,7 @@ function MailTaskReviewModal({ copy, value, projects, pending, onChange, onClose
   onCreate: () => void;
 }) {
   if (!value) return null;
+  const canCopyAttachments = Boolean(window.myagenttoolDesktop?.readMailAttachmentForTask);
   const toggleAttachment = (id: string) => {
     const selected = value.attachmentIds.includes(id);
     if (!selected && value.attachmentIds.length >= 6) return;
@@ -1763,7 +1893,7 @@ function MailTaskReviewModal({ copy, value, projects, pending, onChange, onClose
       <label className="block text-sm font-medium">{copy.taskProject}<select autoFocus value={value.projectId} onChange={(event) => onChange({ ...value, projectId: event.target.value })} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring"><option value="">—</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
       <label className="block text-sm font-medium">{copy.taskTitle}<input value={value.title} maxLength={300} onChange={(event) => onChange({ ...value, title: event.target.value })} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>
       <label className="block text-sm font-medium">{copy.taskDescription}<textarea value={value.description} maxLength={20_000} onChange={(event) => onChange({ ...value, description: event.target.value })} placeholder={copy.taskDescriptionPlaceholder} className="mt-1 min-h-36 w-full resize-y rounded-md border bg-background px-3 py-2 font-normal leading-6 outline-none focus:ring-2 focus:ring-ring" /></label>
-      {value.message.attachments.length ? <fieldset className="rounded-lg border bg-muted/20 p-3"><legend className="px-1 text-sm font-medium">{copy.attachments}</legend><p className="mb-2 text-xs text-muted-foreground">{copy.taskAttachmentsHint}</p><div className="space-y-2">{value.message.attachments.map((attachment) => <label key={attachment.id} className="flex cursor-pointer items-center gap-3 rounded-md bg-background px-3 py-2"><input type="checkbox" checked={value.attachmentIds.includes(attachment.id)} disabled={!value.attachmentIds.includes(attachment.id) && value.attachmentIds.length >= 6} onChange={() => toggleAttachment(attachment.id)} /><Paperclip className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span></label>)}</div></fieldset> : null}
+      {value.message.attachments.length ? <fieldset className="rounded-lg border bg-muted/20 p-3"><legend className="px-1 text-sm font-medium">{copy.attachments}</legend><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-muted-foreground">{canCopyAttachments ? copy.taskAttachmentsHint : copy.taskAttachmentDesktopOnly}</p>{!canCopyAttachments ? <DesktopHandoffLink section="mail" action="mail-attachment" params={{ message: value.message.id, mode: "task" }} compact>{copy === COPY.zh ? "在桌面版添加附件" : "Add in desktop"}</DesktopHandoffLink> : null}</div><div className="space-y-2">{value.message.attachments.map((attachment) => <label key={attachment.id} className={cn("flex items-center gap-3 rounded-md bg-background px-3 py-2", canCopyAttachments ? "cursor-pointer" : "cursor-not-allowed opacity-60")}><input type="checkbox" checked={value.attachmentIds.includes(attachment.id)} disabled={!canCopyAttachments || (!value.attachmentIds.includes(attachment.id) && value.attachmentIds.length >= 6)} onChange={() => toggleAttachment(attachment.id)} /><Paperclip className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span></label>)}</div></fieldset> : null}
     </div>
   </Modal>;
 }
@@ -2050,8 +2180,9 @@ function AttachmentPreviewModal({ copy, preview, onClose }: { copy: typeof COPY.
 
 function ComposeModal({ copy, value, onChange, busy, canSend, onClose, onSave, onReview, onDelete, onPickAttachments, onPasteAttachments, onRemoveAttachment }: { copy: typeof COPY.zh | typeof COPY.en; value: ComposeState | null; onChange: (value: ComposeState | null) => void; busy: string | null; canSend: boolean; onClose: () => void; onSave: () => void; onReview: () => void; onDelete: () => void; onPickAttachments: () => void; onPasteAttachments: (files: File[]) => void; onRemoveAttachment: (ref: string) => void }) {
   if (!value) return null;
+  const canAddAttachments = Boolean(window.myagenttoolDesktop?.pickOutboundMailAttachments);
   const update = (field: "to" | "subject" | "body", next: string) => onChange({ ...value, [field]: next });
-  return <Modal open title={value.id ? copy.editDraftTitle : copy.composeTitle} description={copy.composeHint} size="lg" onClose={onClose} footer={<div className="flex flex-wrap items-center justify-between gap-2"><div>{value.id ? <Button variant="ghost" onClick={onDelete} disabled={busy === "delete"}>{copy.deleteDraft}</Button> : null}</div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={onSave} disabled={busy === "save"}>{busy === "save" ? copy.saving : copy.save}</Button><Button onClick={onReview} disabled={busy === "save" || !canSend}><Send />{copy.reviewSend}</Button></div></div>}><div className="space-y-3" onPaste={(event) => { const files = [...event.clipboardData.files]; if (files.length) { event.preventDefault(); onPasteAttachments(files); } }}>{value.sendError ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"><p className="font-medium text-destructive">{copy.sendProblem}</p><p className="mt-1 break-words text-xs text-muted-foreground">{value.sendError}</p></div> : null}<label className="block text-sm font-medium">{copy.to}<input autoFocus value={value.to} onChange={(event) => update("to", event.target.value)} placeholder={copy.toPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.subject}<input value={value.subject} onChange={(event) => update("subject", event.target.value)} placeholder={copy.subjectPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.body}<textarea value={value.body} onChange={(event) => update("body", event.target.value)} placeholder={copy.bodyPlaceholder} className="mt-1 min-h-64 w-full resize-y rounded-md border bg-background px-3 py-2 font-normal leading-6 outline-none focus:ring-2 focus:ring-ring" /></label><section className="rounded-lg border bg-muted/20 p-3" aria-label={copy.attachments}><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-medium">{copy.attachments}</p><p className="text-xs text-muted-foreground">{copy.pasteAttachments} · {copy.attachmentLimit}</p></div><Button type="button" size="sm" variant="secondary" onClick={onPickAttachments}><Paperclip />{copy.addAttachments}</Button></div>{value.attachments.length ? <div className="mt-3 space-y-2">{value.attachments.map((attachment) => <div key={attachment.ref} className="flex min-w-0 items-center gap-2 rounded-md bg-background px-3 py-2"><Paperclip className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span><button type="button" className="rounded p-1 hover:bg-muted" aria-label={copy.removeAttachment.replace("{{name}}", attachment.name)} onClick={() => onRemoveAttachment(attachment.ref)}><X className="size-4" /></button></div>)}</div> : null}</section>{!canSend ? <p className="text-xs text-muted-foreground">{copy.sendUnavailable}</p> : null}</div></Modal>;
+  return <Modal open title={value.id ? copy.editDraftTitle : copy.composeTitle} description={copy.composeHint} size="lg" onClose={onClose} footer={<div className="flex flex-wrap items-center justify-between gap-2"><div>{value.id ? <Button variant="ghost" onClick={onDelete} disabled={busy === "delete"}>{copy.deleteDraft}</Button> : null}</div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={onSave} disabled={busy === "save"}>{busy === "save" ? copy.saving : copy.save}</Button><Button onClick={onReview} disabled={busy === "save" || !canSend}><Send />{copy.reviewSend}</Button></div></div>}><div className="space-y-3" onPaste={(event) => { const files = [...event.clipboardData.files]; if (files.length && canAddAttachments) { event.preventDefault(); onPasteAttachments(files); } }}>{value.sendError ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"><p className="font-medium text-destructive">{copy.sendProblem}</p><p className="mt-1 break-words text-xs text-muted-foreground">{value.sendError}</p></div> : null}<label className="block text-sm font-medium">{copy.to}<input autoFocus value={value.to} onChange={(event) => update("to", event.target.value)} placeholder={copy.toPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.subject}<input value={value.subject} onChange={(event) => update("subject", event.target.value)} placeholder={copy.subjectPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.body}<textarea value={value.body} onChange={(event) => update("body", event.target.value)} placeholder={copy.bodyPlaceholder} className="mt-1 min-h-64 w-full resize-y rounded-md border bg-background px-3 py-2 font-normal leading-6 outline-none focus:ring-2 focus:ring-ring" /></label><section className="rounded-lg border bg-muted/20 p-3" aria-label={copy.attachments}><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-medium">{copy.attachments}</p><p className="text-xs text-muted-foreground">{canAddAttachments ? `${copy.pasteAttachments} · ${copy.attachmentLimit}` : copy.outboundDesktopOnly}</p></div>{canAddAttachments ? <Button type="button" size="sm" variant="secondary" onClick={onPickAttachments}><Paperclip />{copy.addAttachments}</Button> : <DesktopHandoffLink section="mail" action="compose-attachment" compact>{copy === COPY.zh ? "在桌面版添加附件" : "Add in desktop"}</DesktopHandoffLink>}</div>{value.attachments.length ? <div className="mt-3 space-y-2">{value.attachments.map((attachment) => <div key={attachment.ref} className="flex min-w-0 items-center gap-2 rounded-md bg-background px-3 py-2"><Paperclip className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span><button type="button" className="rounded p-1 hover:bg-muted" aria-label={copy.removeAttachment.replace("{{name}}", attachment.name)} onClick={() => onRemoveAttachment(attachment.ref)}><X className="size-4" /></button></div>)}</div> : null}</section>{!canSend ? <p className="text-xs text-muted-foreground">{copy.sendUnavailable}</p> : null}</div></Modal>;
 }
 
 function SendReviewModal({ copy, draft, pending, onClose, onSend }: { copy: typeof COPY.zh | typeof COPY.en; draft: MailboxDraft | null; pending: boolean; onClose: () => void; onSend: () => void }) {
