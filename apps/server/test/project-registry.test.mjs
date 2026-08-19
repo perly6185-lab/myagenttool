@@ -71,6 +71,18 @@ test("addProject captures git metadata on register + exposes activeCheckoutId", 
   assert.equal(target.defaultBranch, "main");
 });
 
+test("project automatic execution is opt-in and future pull-forward can be configured", () => {
+  const project = svc.addProject({ name: "Auto", path: repoDir });
+  assert.equal(project.autoExecutionEnabled, false, "existing and newly registered projects start safely disabled");
+  assert.equal(project.futurePullForwardEnabled, true);
+  const updated = svc.updateProject(project.id, {
+    autoExecutionEnabled: true,
+    futurePullForwardEnabled: false,
+  });
+  assert.equal(updated.autoExecutionEnabled, true);
+  assert.equal(updated.futurePullForwardEnabled, false);
+});
+
 test("addProject on a non-repo folder omits git metadata gracefully", () => {
   const p = svc.addProject({ name: "Plain", path: plainDir, ownerTeamId: "team_a" });
   assert.equal(p.git.isRepo, false);
@@ -133,6 +145,17 @@ test("searchProjectContent does NOT return contents of .gitignore'd or secret fi
   const paths = out.results.map((r) => r.path);
   assert.ok(paths.includes("app.js"), "a tracked source match is returned");
   assert.ok(!paths.includes(".env"), "the .gitignore'd .env is NOT searched/returned");
+});
+
+test("searchProjectContent matches several understanding terms in one bounded scan", async () => {
+  const { searchProjectContent } = await import("../src/services/projects.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "prj-search-multi-"));
+  execFileSync("git", ["init", "-b", "main", dir], { encoding: "utf8" });
+  writeFileSync(join(dir, "schedule.mjs"), "const timezone = terminal.timezone;\nconst preview = computePreview();\n");
+  const out = searchProjectContent({ id: "p", path: dir }, { queries: ["timezone", "preview"] });
+  assert.deepEqual(out.queries, ["timezone", "preview"]);
+  assert.deepEqual(out.results.map((result) => result.term), ["timezone", "preview"]);
+  assert.equal(out.stats.scannedFiles > 0, true);
 });
 
 test("readGitFacts reports null (not 'HEAD') for a detached HEAD (review F)", () => {

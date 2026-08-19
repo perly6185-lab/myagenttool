@@ -93,8 +93,10 @@ test("provision two tenants through the real APIs (team, user, multi-user login)
   ctx.teamAId = teamA.body.team.id;
   ctx.teamBId = teamB.body.team.id;
 
-  const userA = await call("/api/users", { token: local.body.token, method: "POST", body: { name: "Alice", teamId: ctx.teamAId } });
-  const userB = await call("/api/users", { token: local.body.token, method: "POST", body: { name: "Bob", teamId: ctx.teamBId } });
+  // Use administrators here so the cross-tenant assertions exercise resource
+  // isolation after professional configuration authorization has succeeded.
+  const userA = await call("/api/users", { token: local.body.token, method: "POST", body: { name: "Alice", teamId: ctx.teamAId, role: "admin" } });
+  const userB = await call("/api/users", { token: local.body.token, method: "POST", body: { name: "Bob", teamId: ctx.teamBId, role: "admin" } });
   assert.equal(userA.status, 201);
   assert.equal(userB.body.user.teamId, ctx.teamBId);
 

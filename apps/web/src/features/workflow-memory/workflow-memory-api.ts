@@ -1,5 +1,6 @@
 import {
   request,
+  requestRaw,
   type BusinessDocumentAnalysisJob,
   type BusinessDocumentClassification,
   type BusinessDocumentType,
@@ -20,6 +21,159 @@ import {
   type WorkflowRun,
   type WorkflowSource,
 } from "@/lib/api-client";
+
+export type TemplateLearningStage =
+  | "collecting_cases" | "analyzing" | "needs_case_review" | "failed" | "completed";
+
+export type ChannelObjectKind = "contact" | "order" | "quotation" | "shipment" | "after_sales" | "return" | "account" | "receivable" | "bank_transaction" | "publish_target";
+
+export interface ChannelObjectRecord {
+  id: string;
+  kind: ChannelObjectKind;
+  projectId: string;
+  label: string;
+  fields: Record<string, string>;
+  status: "active" | "disabled";
+  source: string;
+  sourceRef: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChannelObjectImportPreview {
+  id: string;
+  projectId: string;
+  kind: ChannelObjectKind;
+  sourceKind?: "local_file" | string;
+  format: "csv" | "json" | "xlsx";
+  fileName: string;
+  status: "preview" | "confirmed" | "expired" | string;
+  totalRows: number;
+  acceptedRows: number;
+  errorRows: number;
+  errors: Array<{ rowNumber: number; error: string }>;
+  previewRows: Array<{ rowNumber: number; label: string; businessKey: string; fields: Record<string, string>; change?: "create" | "update" | "unchanged" | string }>;
+  diff?: { created: number; updated: number; unchanged: number; removed: number };
+  createdAt: string;
+  expiresAt: string;
+  confirmedAt: string | null;
+}
+
+export interface ChannelObjectFileSource {
+  id: string;
+  projectId: string;
+  kind: ChannelObjectKind;
+  fileName: string;
+  sourceKind: "local_file" | string;
+  status: "active" | "disabled" | string;
+  rowCount: number;
+  contentHash: string;
+  revision: number;
+  lastImportId: string | null;
+  lastImportedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChannelMutationBinding {
+  id: string;
+  projectId: string;
+  ownerTeamId?: string;
+  fileSourceId: string;
+  ledgerDefinitionId: string;
+  status: "active" | "disabled" | string;
+  fileName: string;
+  format: string;
+  fileSourceRevision: number;
+  ledgerDefinitionRevision: number;
+  stale: boolean;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LedgerDefinitionSummary {
+  id: string;
+  projectId: string;
+  name: string;
+  state: "draft" | "active" | "disabled" | string;
+  format: "csv" | "xlsx" | string;
+  relativePath: string;
+  revision: number;
+}
+
+export interface ChannelObjectConnector {
+  id: string;
+  name: string;
+  mode: "read_only";
+  kinds: ChannelObjectKind[];
+  configured?: boolean;
+}
+
+export interface ChannelObjectConnectorConfig {
+  id: string;
+  projectId: string;
+  connectorId: string;
+  name: string;
+  kinds: ChannelObjectKind[];
+  status: "enabled" | "disabled";
+  credentialConfigured: boolean;
+  health: "unknown" | "ready" | "error" | string;
+  lastTestAt: string | null;
+  errorCode: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChannelObjectSyncPreview {
+  id: string;
+  projectId: string;
+  connectorId: string;
+  configId: string | null;
+  kind: ChannelObjectKind;
+  status: "preview" | "confirmed" | string;
+  creates: number;
+  updates: number;
+  unchanged: number;
+  totalRows: number;
+  sampleRows: Array<{ label: string; businessKey: string; change: "create" | "update" | "unchanged" | string }>;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface TemplateLearningTask {
+  id: string;
+  templateId: string;
+  sourceId: string;
+  workItemId: string;
+  name: string;
+  nameSuggested?: boolean;
+  stage: TemplateLearningStage;
+  progress: number;
+  lastError?: string | null;
+  allowCloudOcr?: boolean;
+  cases: Array<{
+    id: string;
+    files: Array<{
+      id: string;
+      role: "input" | "output" | "reference";
+      name: string;
+      extension: string;
+      contentType: string;
+      size: number;
+      hash: string;
+      relativePath: string;
+      copiedAt: string;
+    }>;
+  }>;
+  fileCount: number;
+  totalBytes: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
 
 export interface WorkflowIntakeObservation {
   id: string;
@@ -571,11 +725,91 @@ export interface AdaptiveWorkWorkbench {
   permissions: { canUse: boolean; canManage: boolean };
 }
 
+export type WorkflowMemoryInsights = {
+  pathGraph: {
+    nodes: Array<{
+      kind: "entry" | "reference" | "intermediate" | "final" | "ledger";
+      state: "confirmed" | "unknown";
+      paths: Array<{ path: string }>;
+    }>;
+    unknownKinds: string[];
+  } | null;
+  health: {
+    score: number | null;
+    status: "insufficient_data" | "healthy" | "watch" | "at_risk";
+    reasons: string[];
+    metrics: {
+      sampleCount: number;
+      duplicateRate: number | null;
+      manualCorrectionRate: number | null;
+      completionRate: number | null;
+      anomalyRate: number | null;
+    };
+  } | null;
+  memoryPackage: {
+    version: number;
+    summary: Record<string, { state: "confirmed" | "unknown"; value: unknown }>;
+  } | null;
+  previousMemoryPackage: { version: number } | null;
+  packageDiff: {
+    changes: Array<{ path: string; kind: string; before: unknown; after: unknown }>;
+  } | null;
+  routineSelection: { state: "matched" | "conflict" | "missing"; routineDefinitionId: string | null; count: number };
+  resultSuggestions: Array<{
+    id: string;
+    documentType: string;
+    evidenceCount: number;
+    changes: { added: string[]; removed: string[]; thresholdChanged: boolean };
+    evaluationPassed: boolean;
+  }>;
+  rollback: { available: boolean; ruleId: string | null; expectedRevision: number | null };
+};
+
 /**
  * Workflow Memory is route-lazy, so keep its sizeable API surface in the same
  * lazy chunk instead of charging every user for it during application boot.
  */
 export const workflowMemoryApi = {
+  listTemplateLearningTasks: () =>
+    request<{ tasks: TemplateLearningTask[] }>("GET", "/api/workflow-memory/template-learning"),
+  createTemplateLearningTask: (body: { name?: string; allowCloudOcr?: boolean }) =>
+    request<{ task: TemplateLearningTask; source: WorkflowSource; workItem: { id: string; localRef: string; title: string } }>(
+      "POST", "/api/workflow-memory/template-learning", body,
+    ),
+  uploadTemplateLearningFile: (
+    taskId: string,
+    caseId: string,
+    role: "input" | "output" | "reference",
+    file: File,
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams({ caseId, role, filename: file.name });
+    return requestRaw<{ task: TemplateLearningTask }>(
+      "POST",
+      `/api/workflow-memory/template-learning/${encodeURIComponent(taskId)}/files?${query}`,
+      file,
+      file.type || "application/octet-stream",
+      true,
+      signal,
+    );
+  },
+  startTemplateLearningTask: (taskId: string, body: { allowCloudOcr?: boolean } = {}) =>
+    request<{ task: TemplateLearningTask; source?: WorkflowSource; accepted?: boolean }>(
+      "POST", `/api/workflow-memory/template-learning/${encodeURIComponent(taskId)}/start`, body,
+    ),
+  completeTemplateLearningTask: (sourceId: string) =>
+    request<{ task: TemplateLearningTask }>(
+      "POST", "/api/workflow-memory/template-learning/complete", { sourceId },
+    ),
+  getWorkflowMemoryInsights: (projectId: string, sourceId: string, routineDefinitionId?: string) => {
+    const query = new URLSearchParams({ projectId, sourceId });
+    if (routineDefinitionId) query.set("routineDefinitionId", routineDefinitionId);
+    return (
+    request<WorkflowMemoryInsights>(
+      "GET",
+      `/api/workflow-memory/insights?${query}`,
+    ));
+  },
   getAdaptiveWorkWorkbench: (projectId: string, sourceId?: string) => {
     const query = new URLSearchParams({ projectId });
     if (sourceId) query.set("sourceId", sourceId);
@@ -605,6 +839,23 @@ export const workflowMemoryApi = {
   }) => request<{ monitor: AdaptiveWorkMonitor }>(
     "PUT",
     "/api/workflow-memory/adaptive-workbench/monitor",
+    body,
+  ),
+  updateAdaptiveWorkAutomation: (body: {
+    projectId: string;
+    sourceId: string;
+    expectedPolicyRevision: number;
+    expectedMonitorRevision: number;
+    enabled: boolean;
+    intervalMinutes: number;
+    confirmed?: true;
+  }) => request<{
+    enabled: boolean;
+    policy: AdaptiveWorkWorkbench["policy"];
+    monitor: AdaptiveWorkMonitor;
+  }>(
+    "PUT",
+    "/api/workflow-memory/adaptive-workbench/automation",
     body,
   ),
   runAdaptiveWorkMonitorNow: (body: { projectId: string; sourceId: string }) =>
@@ -694,8 +945,31 @@ export const workflowMemoryApi = {
       observed: number;
       prepared: number;
       autoCreated: number;
-      created: Array<{ suggestionId: string; workItemId: string; localRef: string; replayed: boolean }>;
-      failures: Array<{ suggestionId: string; error: string }>;
+      created: Array<{
+        suggestionId: string;
+        workItemId: string;
+        localRef: string;
+        replayed: boolean;
+        routineRunId: string | null;
+        executionStatus: string | null;
+        advancedStepKeys: string[];
+        assistance: {
+          kind: string;
+          reason: string;
+          stepKey: string | null;
+          stepLabel: string | null;
+          action: string;
+        } | null;
+      }>;
+      failures: Array<{
+        suggestionId: string;
+        error: string;
+        assistance: {
+          kind: string;
+          reason: string;
+          action: string;
+        };
+      }>;
       capped: boolean;
       workbench: AdaptiveWorkWorkbench;
     }>("POST", "/api/workflow-memory/adaptive-workbench/reconcile", body),
@@ -838,6 +1112,50 @@ export const workflowMemoryApi = {
     ),
   listWorkflowSources: () =>
     request<{ sources: WorkflowSource[] }>("GET", "/api/workflow-memory/sources"),
+  listChannelObjects: (params: { projectId?: string; kind?: ChannelObjectKind; status?: "active" | "disabled" } = {}) => {
+    const query = new URLSearchParams();
+    if (params.projectId) query.set("projectId", params.projectId);
+    if (params.kind) query.set("kind", params.kind);
+    if (params.status) query.set("status", params.status);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request<{ objects: ChannelObjectRecord[]; count: number }>("GET", `/api/channel-objects${suffix}`);
+  },
+  upsertChannelObject: (body: {
+    kind: ChannelObjectKind;
+    projectId: string;
+    label: string;
+    businessKey?: string;
+    fields: Record<string, string>;
+  }) => request<{ object: ChannelObjectRecord }>("POST", "/api/channel-objects", body),
+  setChannelObjectStatus: (id: string, body: { status: "active" | "disabled"; expectedRevision: number }) =>
+    request<{ object: ChannelObjectRecord }>("PATCH", `/api/channel-objects/${encodeURIComponent(id)}/status`, body),
+  previewChannelObjectImport: (body: {
+    projectId: string;
+    kind: ChannelObjectKind;
+    format: "csv" | "json" | "xlsx";
+    fileName: string;
+    content: string;
+  }) => request<{ import: ChannelObjectImportPreview; canConfirm: boolean }>("POST", "/api/channel-objects/import/preview", body),
+  confirmChannelObjectImport: (importId: string) =>
+    request<{ import: ChannelObjectImportPreview; objects?: ChannelObjectRecord[]; replayed: boolean }>("POST", "/api/channel-objects/import/confirm", { importId }),
+  listChannelObjectConnectors: (projectId?: string) => request<{ connectors: ChannelObjectConnector[] }>("GET", `/api/channel-objects/connectors${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  listChannelObjectConnectorConfigs: (projectId?: string) => request<{ configs: ChannelObjectConnectorConfig[]; count: number }>("GET", `/api/channel-objects/connector-configs${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  listChannelObjectFileSources: (projectId?: string, kind?: ChannelObjectKind) => request<{ sources: ChannelObjectFileSource[]; count: number }>("GET", `/api/channel-objects/file-sources?${new URLSearchParams({ ...(projectId ? { projectId } : {}), ...(kind ? { kind } : {}) }).toString()}`),
+  listChannelMutationBindings: (projectId?: string, fileSourceId?: string) => request<{ bindings: ChannelMutationBinding[]; count: number }>("GET", `/api/channel-objects/mutation-bindings?${new URLSearchParams({ ...(projectId ? { projectId } : {}), ...(fileSourceId ? { fileSourceId } : {}) }).toString()}`),
+  upsertChannelMutationBinding: (body: { id?: string; projectId: string; fileSourceId: string; ledgerDefinitionId: string; expectedRevision?: number }) => request<{ binding: ChannelMutationBinding }>("POST", "/api/channel-objects/mutation-bindings", body),
+  setChannelMutationBindingStatus: (id: string, body: { status: "active" | "disabled"; expectedRevision: number }) => request<{ binding: ChannelMutationBinding }>("PATCH", `/api/channel-objects/mutation-bindings/${encodeURIComponent(id)}/status`, body),
+  listLedgerDefinitions: () => request<{ ledgerDefinitions: LedgerDefinitionSummary[]; count: number }>("GET", "/api/workflow-memory/ledger-definitions"),
+  upsertChannelObjectConnectorConfig: (body: { id?: string; projectId: string; connectorId: string; name?: string; kinds: ChannelObjectKind[]; credentialRef?: string; status?: "enabled" | "disabled"; expectedRevision?: number }) =>
+    request<{ config: ChannelObjectConnectorConfig }>("POST", "/api/channel-objects/connector-configs", body),
+  setChannelObjectConnectorConfigStatus: (id: string, body: { status: "enabled" | "disabled"; expectedRevision: number }) =>
+    request<{ config: ChannelObjectConnectorConfig }>("PATCH", `/api/channel-objects/connector-configs/${encodeURIComponent(id)}/status`, body),
+  testChannelObjectConnectorConfig: (id: string) => request<{ config: ChannelObjectConnectorConfig; ok: boolean; error: string | null }>("POST", `/api/channel-objects/connector-configs/${encodeURIComponent(id)}/test`, {}),
+  previewChannelObjectConnectorSync: (body: { configId?: string; connectorId?: string; projectId?: string; kind: ChannelObjectKind }) =>
+    request<{ preview: ChannelObjectSyncPreview; canConfirm: boolean }>("POST", "/api/channel-objects/sync/preview", body),
+  confirmChannelObjectConnectorSync: (previewId: string) =>
+    request<{ preview: ChannelObjectSyncPreview; sync: { id: string; status: string; imported: number; failed: number }; replayed: boolean }>("POST", "/api/channel-objects/sync/confirm", { previewId }),
+  syncChannelObjectConnector: (body: { connectorId: string; projectId: string; kind?: ChannelObjectKind }) =>
+    request<{ sync: { id: string; status: string; imported: number; failed: number } }>("POST", "/api/channel-objects/sync", body),
   createWorkflowSource: (body: {
     projectId: string;
     relativePath?: string;
@@ -892,12 +1210,15 @@ export const workflowMemoryApi = {
       state: "ready" | "unavailable";
       providerId: string | null;
       reason: string | null;
-      localOnly: true;
+      localOnly: boolean;
+      requiresCloudConsent?: boolean;
+      local?: { state: "ready" | "unavailable"; providerId: string | null; reason: string | null } | null;
+      cloudFallback?: { state: "ready" | "unavailable"; providerId: string | null; reason: string | null } | null;
       supportedExtensions: string[];
     }>("GET", "/api/workflow-memory/ocr-readiness"),
   ocrWorkflowArtifact: (
     artifactId: string,
-    body: { expectedRevision: number; confirmed: true },
+    body: { expectedRevision: number; confirmed: true; allowCloudOcr?: boolean },
   ) => request<{ artifact: WorkflowArtifact; replayed: boolean }>(
     "POST",
     `/api/workflow-memory/artifacts/${encodeURIComponent(artifactId)}/ocr`,
@@ -1157,6 +1478,9 @@ export const workflowMemoryApi = {
       description?: string;
       triggerDocumentTypes?: BusinessDocumentType[];
       steps?: BusinessRoutineStep[];
+      dataRequirements?: BusinessRoutineDefinition["dataRequirements"];
+      relations?: BusinessRoutineDefinition["relations"];
+      mutationPolicy?: BusinessRoutineDefinition["mutationPolicy"];
     },
   ) => request<{ routineDefinition: BusinessRoutineDefinition }>(
     "POST",

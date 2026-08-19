@@ -57,6 +57,16 @@ jobs:
       - name: Run release-candidate gate
         run: pnpm release:candidate
 
+      - name: Build native desktop package
+        shell: bash
+        run: |
+          case "${RUNNER_OS}" in
+            Windows) pnpm desktop:pack ;;
+            macOS) pnpm desktop:pack:mac ;;
+            Linux) pnpm desktop:pack:linux ;;
+            *) echo "Unsupported runner: ${RUNNER_OS}" >&2; exit 1 ;;
+          esac
+
       - name: Upload candidate evidence
         if: always()
         uses: actions/upload-artifact@v4

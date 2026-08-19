@@ -4,6 +4,8 @@ import { executionUiTranslations } from "@/lib/i18n/execution-ui-resources";
 import { autoRunTranslations } from "@/lib/i18n/auto-run-resources";
 import { workProfileTranslations } from "@/lib/i18n/work-profile-resources";
 import { worktreeViewTranslations } from "@/lib/i18n/worktree-view-resources";
+import { notificationCenterTranslations } from "@/components/layout/notification-center-copy";
+import { channelTranslations } from "@/lib/i18n/channel-resources";
 
 function flatten(value: unknown, prefix = ""): Map<string, string> {
   const result = new Map<string, string>();
@@ -29,6 +31,8 @@ describe("translation resources", () => {
     ["autoRun", autoRunTranslations],
     ["workProfile", workProfileTranslations],
     ["worktreeView", worktreeViewTranslations],
+    ["notificationCenter", notificationCenterTranslations],
+    ["channel", channelTranslations],
   ])("keeps lazy %s resources complete and interpolation-compatible", (_name, translations) => {
     const english = flatten(translations["en-US"]);
     const chinese = flatten(translations["zh-CN"]);
@@ -60,19 +64,19 @@ describe("translation resources", () => {
     expect(zh.dashboard.trace).toBe("追踪编号（Trace ID）");
     expect(zh.me.trace).toBe("运行记录");
     expect(zh.workBoard.channel).toBe("消息渠道");
-    expect(zh.notificationCenter.status.updates).toBe("更新方式");
+    expect(notificationCenterTranslations["zh-CN"].status.updates).toBe("更新方式");
     expect(zh.shell.controlPlane).toBe("本地工作台");
     expect(zh.sessionHistory.title).toBe("任务记录");
 
     expect(zh.dashboard.cancel).toBe("取消任务");
     expect(zh.guidedSetup.actions.failed).toBe("打开恢复指引");
-    expect(zh.notificationCenter.approvals).toBe("待审批");
+    expect(notificationCenterTranslations["zh-CN"].approvals).toBe("待审批");
     expect(zh.actionError.retry).toBe("重试");
   });
 
   it("does not expose unexplained architecture nouns on ordinary zh-CN surfaces", () => {
     const zh = resources["zh-CN"].common;
-    const roots = ["todo", "me", "sessionHistory", "notificationCenter", "dashboard", "guidedSetup", "workBoard", "runRecords"] as const;
+    const roots = ["todo", "me", "sessionHistory", "dashboard", "guidedSetup", "workBoard", "runRecords"] as const;
     const allowedTechnicalDetails = new Set(["dashboard.trace"]);
     const forbidden = /\b(?:Agent|Application|Channel|Desktop Bridge|Issue|PR|Worktree|Invocation)\b/;
 
@@ -81,6 +85,9 @@ describe("translation resources", () => {
         if (allowedTechnicalDetails.has(key)) continue;
         expect(value, key).not.toMatch(forbidden);
       }
+    }
+    for (const [key, value] of flatten(notificationCenterTranslations["zh-CN"], "notificationCenter")) {
+      expect(value, key).not.toMatch(forbidden);
     }
     for (const key of ["controlPlane", "navLabel", "footer"] as const) {
       expect(zh.shell[key], `shell.${key}`).not.toMatch(forbidden);

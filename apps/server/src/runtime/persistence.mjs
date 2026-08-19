@@ -1,4 +1,4 @@
-import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { LOCAL_TEAM_ID, teamOf } from "./auth.mjs";
@@ -15,7 +15,7 @@ import { backfillWorkItemFollowUpContext } from "../services/work-item-follow-up
 // therefore always either the previous complete snapshot or the new one.
 function durableWriteFileSync(path, data) {
   const tmp = `${path}.tmp`;
-  const fd = openSync(tmp, "w");
+  const fd = openSync(tmp, "w", 0o600);
   try {
     writeSync(fd, data);
     fsyncSync(fd);
@@ -23,6 +23,10 @@ function durableWriteFileSync(path, data) {
     closeSync(fd);
   }
   renameSync(tmp, path);
+  // The state snapshot contains governed task context and local business
+  // metadata. Keep it private even when the process umask is permissive or an
+  // older snapshot was created with broader permissions.
+  chmodSync(path, 0o600);
   let dirFd;
   try {
     dirFd = openSync(dirname(path), "r");
@@ -69,6 +73,9 @@ export const persistedArrayKeys = [
   "deployments",
   "compareRuns",
   "worktreeReviews",
+  // Session-manager durable rows (one per registered site) — without this the
+  // SQLite backing silently drops probe/reseed history on restart.
+  "sessions",
   "events",
   "refusals",
   "traces",
@@ -100,12 +107,31 @@ export const persistedArrayKeys = [
   "codexExecChangeReviews",
   "claudeApplyAuthorizations",
   "applicationResults",
+  "mailDrafts",
+  "mailMessageStates",
+  "mailTaskLinks",
+  "mailClassifications",
+  "mailClassificationJobs",
+  "mailClassificationCorrections",
+  "mailClassificationRules",
+  "mailFolderMovePreviews",
+  "mailFolderMoveJobs",
+  "mailFolderMoveDeduplication",
+  "mailFolderAutomations",
+  "mailReplies",
   "budgets",
   "budgetReservations",
   "decisionSoftClaims",
   "issueClaims",
   "issueClaimEvents",
   "workItems",
+  "myTemplateRoutingFeedback",
+  "myTemplateOutcomeFeedback",
+  "myTemplateGovernanceInterventions",
+  "myTemplateDrafts",
+  "myTemplateLearningCases",
+  "templateLearningTasks",
+  "taskMaterialDrafts",
   "runtimeWorkSchedules",
   "workItemAutoRunBatches",
   "workItemComments",
@@ -135,6 +161,14 @@ export const persistedArrayKeys = [
   "businessDocumentClassifications",
   "businessDocumentAnalysisJobs",
   "businessEntities",
+  "channelObjectRecords",
+  "channelObjectImports",
+  "channelObjectFileSources",
+  "channelMutationBindings",
+  "channelObjectSyncs",
+  "channelObjectConnectorConfigs",
+  "channelObjectSyncPreviews",
+  "channelDataRelationConfirmations",
   "businessCaseCandidates",
   "businessCases",
   "routineDiscoveryCandidates",
@@ -142,6 +176,8 @@ export const persistedArrayKeys = [
   "routineRuns",
   "ledgerDefinitions",
   "ledgerUpsertPreviews",
+  "ledgerBatchUpsertPreviews",
+  "ledgerBatchMutationJournals",
   "ledgerMutationAudits",
   "businessPilotEvidenceReceipts",
   "businessPilotDrafts",
@@ -181,7 +217,10 @@ export const persistedArrayKeys = [
   "channelEvents",
   "channelConversations",
   "channelDeliveries",
+  "channelIntakeGroups",
+  "channelTaskThreads",
   "channelTaskRequests",
+  "ilinkAccounts",
 ];
 
 // NOTE: `devices` is deliberately absent from both key lists — it restores
@@ -210,6 +249,7 @@ export const persistedObjectKeys = [
   "reportSchedule",
   // When refusal recording began (work-report coverage-honesty anchor).
   "refusalStatsMeta",
+  "channelIntentMetrics",
 ];
 
 // Collections that carry BOTH a self-stamped owning team AND a project link. The
@@ -232,6 +272,12 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "workflowIntakeReceipts", owner: "ownerTeamId" },
   { key: "workflowAdaptivePolicies", owner: "ownerTeamId" },
   { key: "workflowAdaptiveFeedback", owner: "ownerTeamId" },
+  { key: "myTemplateRoutingFeedback", owner: "ownerTeamId" },
+  { key: "myTemplateOutcomeFeedback", owner: "ownerTeamId" },
+  { key: "myTemplateGovernanceInterventions", owner: "ownerTeamId" },
+  { key: "myTemplateDrafts", owner: "ownerTeamId" },
+  { key: "myTemplateLearningCases", owner: "ownerTeamId" },
+  { key: "templateLearningTasks", owner: "ownerTeamId" },
   { key: "workflowAdaptiveMonitors", owner: "ownerTeamId" },
   { key: "workflowAdaptiveOutcomes", owner: "ownerTeamId" },
   { key: "workflowAdaptiveLearningDrafts", owner: "ownerTeamId" },
@@ -240,6 +286,14 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "workItemReportDrafts", owner: "ownerTeamId" },
   { key: "workItemReportDeliveries", owner: "ownerTeamId" },
   { key: "businessEntities", owner: "ownerTeamId" },
+  { key: "channelObjectRecords", owner: "ownerTeamId" },
+  { key: "channelObjectImports", owner: "ownerTeamId" },
+  { key: "channelObjectFileSources", owner: "ownerTeamId" },
+  { key: "channelMutationBindings", owner: "ownerTeamId" },
+  { key: "channelObjectSyncs", owner: "ownerTeamId" },
+  { key: "channelObjectConnectorConfigs", owner: "ownerTeamId" },
+  { key: "channelObjectSyncPreviews", owner: "ownerTeamId" },
+  { key: "channelDataRelationConfirmations", owner: "ownerTeamId" },
   { key: "businessCaseCandidates", owner: "ownerTeamId" },
   { key: "businessCases", owner: "ownerTeamId" },
   { key: "routineDiscoveryCandidates", owner: "ownerTeamId" },
@@ -247,6 +301,8 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "routineRuns", owner: "ownerTeamId" },
   { key: "ledgerDefinitions", owner: "ownerTeamId" },
   { key: "ledgerUpsertPreviews", owner: "ownerTeamId" },
+  { key: "ledgerBatchUpsertPreviews", owner: "ownerTeamId" },
+  { key: "ledgerBatchMutationJournals", owner: "ownerTeamId" },
   { key: "ledgerMutationAudits", owner: "ownerTeamId" },
 ];
 

@@ -11,11 +11,12 @@ files:
   - package.json
   - apps/electron/src/**
   - node_modules/@openai/codex/**
-  - node_modules/@openai/codex-win32-x64/**
   - node_modules/@anthropic-ai/claude-code/**
   - node_modules/@anthropic-ai/claude-agent-sdk/**
   - node_modules/@anthropic-ai/sdk/**
   - node_modules/@modelcontextprotocol/sdk/**
+  - node_modules/imapflow/**
+  - node_modules/mailparser/**
   - node_modules/zod/**
   - apps/server/package.json
   - apps/server/src/**
@@ -30,22 +31,37 @@ files:
   - packages/adapters/package.json
   - packages/adapters/src/**
   - tools/agents/**
+  - tools/mail-mcp/package.json
+  - tools/mail-mcp/src/**
   - tools/ai/package.json
   - tools/ai/src/**
   - "!**/test/**"
   - "!**/*.test.*"
-
-extraResources:
-  - from: apps/electron/vendor/portable-git
-    to: portable-git
-    filter:
-      - "**/*"
 
 win:
   target:
     - target: nsis
       arch:
         - x64
+  extraResources:
+    - from: apps/electron/vendor/portable-git
+      to: portable-git
+      filter:
+        - "**/*"
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+        - arm64
+    - target: deb
+      arch:
+        - x64
+        - arm64
+  category: Utility
+  synopsis: Local agent control plane and channel workspace
+  description: Run MyAgentTool locally with a managed agent bridge and messaging channels.
 
 nsis:
   oneClick: false

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export function defaultCredentialPath(env = process.env) {
@@ -16,18 +16,31 @@ export function defaultCredentialPath(env = process.env) {
   return join(base, "myagenttool", "mail", "163.json");
 }
 
+export function defaultOrganizeCredentialPath(env = process.env) {
+  return join(dirname(defaultCredentialPath(env)), "163-organize.json");
+}
+
 export function readCredential(path = defaultCredentialPath()) {
   if (!existsSync(path)) {
     throw new Error(`not_authorized: run tools/mail-mcp/setup-163.ps1 on this device`);
   }
   const record = JSON.parse(readFileSync(path, "utf8"));
-  if (record.provider !== "netease" || record.scope !== "imap.readonly" || !record.username || !record.protectedAuthorizationCode) {
+  if (record.provider !== "netease" || !["imap.readonly", "imap.mail"].includes(record.scope) || !record.username || !record.protectedAuthorizationCode) {
     throw new Error("not_authorized: the 163 Mail credential record is invalid");
   }
   return {
     username: String(record.username),
     authorizationCode: unprotectForCurrentUser(String(record.protectedAuthorizationCode)),
   };
+}
+
+export function readOrganizeCredential(path = defaultOrganizeCredentialPath()) {
+  if (!existsSync(path)) throw new Error("not_authorized: connect folder organization on this device");
+  const record = JSON.parse(readFileSync(path, "utf8"));
+  if (record.provider !== "netease" || record.scope !== "imap.organize" || !record.username || !record.protectedAuthorizationCode) {
+    throw new Error("not_authorized: the 163 Mail organize credential record is invalid");
+  }
+  return { username: String(record.username), authorizationCode: unprotectForCurrentUser(String(record.protectedAuthorizationCode)) };
 }
 
 function unprotectForCurrentUser(protectedValue) {

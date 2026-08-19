@@ -23,6 +23,7 @@ import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-r
 import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
 import { assetCapabilityMatrix, deriveAssetRuntimeReadiness, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
 import { AssetPreviewError, readAssetPreview } from "../services/asset-preview.mjs";
+import { openAssetInSystemApplication, revealAssetInFileManager } from "../services/asset-reveal.mjs";
 
 const IMAGE_MIME = {
   ".png": "image/png",
@@ -33,6 +34,208 @@ const IMAGE_MIME = {
   ".svg": "image/svg+xml",
   ".avif": "image/avif",
 };
+
+function canonicalRepositoryUrl(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "")
+    .toLowerCase();
+}
+
+function continuationRunView(run) {
+  if (!run) return null;
+  return { id: run.autoRun?.id ?? run.id, status: run.autoRun?.status ?? run.status };
+}
+
+/**
+ * Continue a structured clarification in a repository selected by the user.
+ *
+ * The continuation is deliberately checkpointed on the source Auto-run. A
+ * retry therefore reuses the cloned project and governed Local Issue instead
+ * of creating duplicate repositories, tasks, or runs.
+ */
+export async function continueStructuredClarification({
+  state,
+  autoRunId,
+  result,
+  requestBody = {},
+  actor,
+  cloneProject,
+  createWorkItem,
+  startAutoRun,
+  persistStateSoon = () => {},
+} = {}) {
+  if (!result?.shouldRetry || !result?.repoUrl) {
+    return { retryRun: null, retryError: null, continuation: null };
+  }
+  const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+  if (!autoRun) {
+    return {
+      retryRun: null,
+      retryError: { code: "auto_run_not_found", message: "The answered AI run could not be found.", retryable: false },
+      continuation: null,
+    };
+  }
+  const selectedPath = ["evaluate", "develop"].includes(String(result.selectedAction ?? requestBody.selectedAction ?? ""))
+    ? String(result.selectedAction ?? requestBody.selectedAction)
+    : null;
+  if (!selectedPath) {
+    return {
+      retryRun: null,
+      retryError: { code: "invalid_structured_action", message: "Choose Evaluate or Develop before continuing.", retryable: true },
+      continuation: null,
+    };
+  }
+  if (typeof cloneProject !== "function" || typeof createWorkItem !== "function" || typeof startAutoRun !== "function") {
+    return {
+      retryRun: null,
+      retryError: { code: "structured_continuation_unavailable", message: "Repository continuation is not available on this server.", retryable: true },
+      continuation: null,
+    };
+  }
+
+  const requestedAt = autoRun.clarifyAnswer?.at ?? new Date().toISOString();
+  const operation = autoRun.clarificationContinuation ?? {
+    status: "pending",
+    action: selectedPath,
+    repoUrl: result.repoUrl,
+    requestedAt,
+    requestedBy: actor?.userId ?? "usr_local",
+    attemptCount: 0,
+  };
+  autoRun.clarificationContinuation = operation;
+  operation.action = selectedPath;
+  operation.repoUrl = result.repoUrl;
+  operation.attemptCount = Number(operation.attemptCount ?? 0) + 1;
+  operation.status = "processing";
+  operation.lastAttemptAt = new Date().toISOString();
+  operation.error = null;
+  persistStateSoon();
+
+  try {
+    const completedRun = operation.retryRunId
+      ? state.autoRuns.find((item) => item.id === operation.retryRunId)
+      : null;
+    if (completedRun) {
+      operation.status = "completed";
+      persistStateSoon();
+      return {
+        retryRun: continuationRunView(completedRun),
+        retryError: null,
+        continuation: { status: operation.status, projectId: operation.projectId ?? null, localIssueId: operation.localIssueId ?? null },
+      };
+    }
+
+    const expectedRepo = canonicalRepositoryUrl(result.repoUrl);
+    let project = operation.projectId
+      ? state.projects.find((item) => item.id === operation.projectId)
+      : null;
+    if (!project) {
+      project = state.projects.find((item) =>
+        (item.ownerTeamId ?? "team_local") === (actor?.teamId ?? "team_local")
+        && canonicalRepositoryUrl(item.git?.remoteUrl) === expectedRepo) ?? null;
+    }
+    if (!project) {
+      const parentPath = state.projects[0]?.path ?? process.cwd();
+      project = await cloneProject({
+        gitUrl: result.repoUrl,
+        parentPath,
+        name: requestBody.repoName ?? undefined,
+        ownerTeamId: actor?.teamId ?? "team_local",
+      });
+    }
+    operation.projectId = project.id;
+    persistStateSoon();
+
+    let localIssue = operation.localIssueId
+      ? (state.workItems ?? []).find((item) => item.id === operation.localIssueId && item.projectId === project.id)
+      : null;
+    if (!localIssue) {
+      const sourceWorkItem = (state.workItems ?? []).find((item) =>
+        item.id === autoRun.localIssueId
+        || item.id === autoRun.executionChainId
+        || (autoRun.link?.type === "local_issue" && item.localNumber === autoRun.link?.number));
+      const created = await createWorkItem({
+        projectId: project.id,
+        title: sourceWorkItem?.title ?? autoRun.link?.title ?? autoRun.name ?? "AI repository task",
+        body: sourceWorkItem?.body ?? autoRun.issueBody ?? "",
+        type: sourceWorkItem?.type ?? "task",
+        priority: sourceWorkItem?.priority ?? "p2",
+        labels: sourceWorkItem?.labels ?? [],
+        acceptanceCriteria: sourceWorkItem?.acceptanceCriteria ?? autoRun.executionPlan?.acceptanceCriteria ?? [],
+        verificationSop: sourceWorkItem?.verificationSop ?? autoRun.executionPlan?.verificationSop ?? [],
+        executionPolicy: "manual",
+        idempotencyKey: `structured-clarification:${autoRun.id}`,
+      }, actor);
+      if (!created?.ok) {
+        const error = new Error(created?.body?.message ?? created?.body?.error ?? "The target Local Issue could not be created.");
+        error.code = created?.body?.error ?? "local_issue_create_failed";
+        throw error;
+      }
+      localIssue = created.body.workItem;
+    }
+    operation.localIssueId = localIssue.id;
+    persistStateSoon();
+
+    const existingRun = state.autoRuns.find((item) =>
+      item.id !== autoRun.id
+      && item.projectId === project.id
+      && (item.localIssueId === localIssue.id || item.executionChainId === localIssue.id));
+    const fresh = existingRun ?? await startAutoRun({
+      projectId: project.id,
+      link: {
+        type: "local_issue",
+        number: localIssue.localNumber,
+        title: localIssue.title,
+        url: null,
+        state: "open",
+      },
+      agentId: autoRun.agentId,
+      name: localIssue.title,
+      issueBody: localIssue.body,
+      actor,
+      localIssueId: localIssue.id,
+      taskMaterialWorkItemId: localIssue.id,
+      executionChainId: localIssue.id,
+      terminalId: localIssue.terminalId ?? null,
+      autonomyProfile: autoRun.autonomyProfile ?? "standard",
+      decisionOverride: {
+        path: selectedPath,
+        confidence: 1,
+        rationale: `The user selected the structured ${selectedPath} action.`,
+        clarifyingQuestions: [],
+        suggestedActions: [],
+        decidedBy: "user",
+        via: "clarification",
+      },
+    });
+    const retryRun = continuationRunView(fresh);
+    operation.retryRunId = retryRun.id;
+    operation.status = "completed";
+    operation.completedAt = new Date().toISOString();
+    operation.error = null;
+    persistStateSoon();
+    return {
+      retryRun,
+      retryError: null,
+      continuation: { status: operation.status, projectId: project.id, localIssueId: localIssue.id },
+    };
+  } catch (error) {
+    operation.status = "failed";
+    operation.failedAt = new Date().toISOString();
+    operation.error = {
+      code: error?.code ?? "structured_continuation_failed",
+      message: errorMessage(error),
+    };
+    persistStateSoon();
+    return {
+      retryRun: null,
+      retryError: { ...operation.error, retryable: true },
+      continuation: { status: operation.status, projectId: operation.projectId ?? null, localIssueId: operation.localIssueId ?? null },
+    };
+  }
+}
 
 export async function handleProjectRoutes({
   req,
@@ -47,6 +250,7 @@ export async function handleProjectRoutes({
   currentProject,
   addProject,
   cloneProject,
+  createWorkItem,
   createBlankProject,
   createWorktree,
   createWorktreePr,
@@ -56,6 +260,7 @@ export async function handleProjectRoutes({
   retryAutoRun,
   reverifyAutoRun,
   cancelAutoRun,
+  stopAutoRunDelivery,
   mergeAutoRunPr,
   recordRoutingOverride,
   setReportSchedule,
@@ -157,6 +362,7 @@ export async function handleProjectRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/worktrees") {
     const body = await readJson(req);
+    if (rejectUnboundIssueDevelopment({ state, actor, projectId: body?.projectId, body, sendJson, res })) return true;
     await createWorktreeResponse({ body, createWorktree, sendJson, res });
     return true;
   }
@@ -252,7 +458,12 @@ export async function handleProjectRoutes({
     if (denyForeignAutoRun(decodeURIComponent(autoRunRetryMatch[1]))) return true;
     try {
       const body = await readJson(req);
-      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor, terminalId: body?.terminalId });
+      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), {
+        actor,
+        terminalId: body?.terminalId,
+        timezoneOffset: body?.timezoneOffset,
+        feedback: body?.feedback,
+      });
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
@@ -269,6 +480,19 @@ export async function handleProjectRoutes({
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_cancel_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  const autoRunStopDeliveryMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/stop-delivery$/);
+  if (autoRunStopDeliveryMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(autoRunStopDeliveryMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const result = stopAutoRunDelivery(decodeURIComponent(autoRunStopDeliveryMatch[1]), { actor, reason: body?.reason });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "auto_run_stop_delivery_failed", message: errorMessage(error) });
     }
     return true;
   }
@@ -353,9 +577,25 @@ export async function handleProjectRoutes({
   if (clarifyAnswerMatch && req.method === "POST") {
     if (denyForeignAutoRun(decodeURIComponent(clarifyAnswerMatch[1]))) return true;
     try {
-      const body = await readJson(req);
-      const result = await answerClarify(decodeURIComponent(clarifyAnswerMatch[1]), { actor, answers: body?.answers });
-      sendJson(res, 200, result);
+      const ranBody = await readJson(req);
+      const result = await answerClarify(decodeURIComponent(clarifyAnswerMatch[1]), {
+        actor,
+        answers: ranBody?.answers,
+        selectedAction: ranBody?.selectedAction,
+        repoUrl: ranBody?.repoUrl,
+      });
+      const continuation = await continueStructuredClarification({
+        state,
+        autoRunId: decodeURIComponent(clarifyAnswerMatch[1]),
+        result,
+        requestBody: ranBody,
+        actor,
+        cloneProject,
+        createWorkItem,
+        startAutoRun,
+        persistStateSoon,
+      });
+      sendJson(res, 200, { ...result, ...continuation });
     } catch (error) {
       sendJson(res, 400, { error: "clarify_answer_failed", message: errorMessage(error) });
     }
@@ -588,6 +828,7 @@ export async function handleProjectRoutes({
       const result = await startAutoRun({
         projectId,
         link: body.link,
+        localIssueId: body.localIssueId,
         agentId: body.agentId,
         name: body.name ?? body.branchName,
         baseBranch: body.baseBranch ?? body.startPoint,
@@ -595,7 +836,10 @@ export async function handleProjectRoutes({
       });
       sendJson(res, 201, result);
     } catch (error) {
-      sendJson(res, 400, { error: "auto_run_failed", message: errorMessage(error) });
+      sendJson(res, error?.code === "local_issue_required" ? 409 : 400, {
+        error: error?.code ?? "auto_run_failed",
+        message: errorMessage(error),
+      });
     }
     return true;
   }
@@ -656,6 +900,7 @@ export async function handleProjectRoutes({
       return true;
     }
     const body = await readJson(req);
+    if (rejectUnboundIssueDevelopment({ state, actor, projectId, body, sendJson, res })) return true;
     await createWorktreeResponse({
       body: {
         ...body,
@@ -769,6 +1014,50 @@ export async function handleProjectRoutes({
     return true;
   }
 
+  const assetRevealMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-reveal$/);
+  if (assetRevealMatch && req.method === "POST") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetRevealMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const body = await readJson(req);
+    const worktreeId = String(body.worktreeId ?? "").trim();
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const result = await revealAssetInFileManager({ projectRoot: root, relativePath: body.path });
+      sendJson(res, 200, result);
+    } catch (error) {
+      const code = error?.code ?? "asset_reveal_failed";
+      const status = code === "ENOENT" ? 404
+        : code === "asset_path_outside_project" || code === "invalid_asset_path" || code === "asset_not_file" ? 400 : 500;
+      sendJson(res, status, { error: code, message: "The file could not be located in the local file manager." });
+    }
+    return true;
+  }
+
+  const assetOpenMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-open$/);
+  if (assetOpenMatch && req.method === "POST") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetOpenMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const body = await readJson(req);
+    const worktreeId = String(body.worktreeId ?? "").trim();
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const result = await openAssetInSystemApplication({ projectRoot: root, relativePath: body.path });
+      sendJson(res, 200, result);
+    } catch (error) {
+      const code = error?.code ?? "asset_open_failed";
+      const status = code === "ENOENT" ? 404
+        : code === "asset_path_outside_project" || code === "invalid_asset_path" || code === "asset_not_file" ? 400 : 500;
+      sendJson(res, status, { error: code, message: "The file could not be opened with the system application." });
+    }
+    return true;
+  }
+
   const assetPreviewMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-preview$/);
   if (assetPreviewMatch && req.method === "GET") {
     const project = state.projects.find((item) => item.id === decodeURIComponent(assetPreviewMatch[1]));
@@ -785,7 +1074,7 @@ export async function handleProjectRoutes({
       res.setHeader("Cache-Control", "private, no-store");
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
-      if (preview.family === "markdown") {
+      if (preview.family === "markdown" || preview.family === "text") {
         sendJson(res, 200, {
           path: preview.path, family: preview.family, text: preview.text,
           size: preview.size, truncated: false,
@@ -1322,6 +1611,24 @@ async function createWorktreeResponse({ body, createWorktree, sendJson, res }) {
     return;
   }
   sendJson(res, 201, result);
+}
+
+function rejectUnboundIssueDevelopment({ state, actor, projectId, body, sendJson, res }) {
+  if (body?.link?.type !== "issue") return false;
+  const localIssueId = String(body?.localIssueId ?? "").trim();
+  const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+  const localIssue = (state.workItems ?? []).find((item) =>
+    item.id === localIssueId
+    && item.projectId === projectId
+    && (item.ownerTeamId ?? LOCAL_TEAM_ID) === teamId
+    && !item.archivedAt,
+  );
+  if (localIssue) return false;
+  sendJson(res, 409, {
+    error: "local_issue_required",
+    message: "Create or link a Local Issue before creating a development worktree for an external Issue.",
+  });
+  return true;
 }
 
 function projectForWorktree(state, worktree) {

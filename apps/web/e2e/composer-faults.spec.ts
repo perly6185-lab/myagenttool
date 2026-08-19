@@ -62,7 +62,7 @@ class ComposerFaultRoutes {
   ) {}
 
   async install(page: Page) {
-    await page.route("**/api/**", async (route) => this.handle(route));
+    await page.route("http://127.0.0.1:5001/api/**", async (route) => this.handle(route));
   }
 
   private state() {

@@ -14,6 +14,7 @@ Result: pass for PR 6 report review UI
 ## Scenario checks
 
 - An ordinary draft exposes audience, tone, editable content, bounded source summaries, regenerate, discard, save, and explicit confirmation.
+- Generation metadata identifies the current deterministic structured template and explicitly says that no language model was used.
 - A stale draft clearly identifies the source revision change, disables edit and confirm, and retains regeneration from current progress.
 - A confirmed draft is read-only and explains that confirmation neither sends the report nor closes the task.
 - The report history can represent draft, confirmed, discarded, and superseded versions without creating another task status.
@@ -46,3 +47,5 @@ The command writes its full report to `.myagenttool/visual-qa/latest.md` and
 Confirmation saves the server-owned immutable reviewed snapshot only. Reminder
 delivery and actual external sending remain separate PR 7 and PR 8 work under
 #1608, with their own recipient, credential, preview, and receipt gates.
+The PR 6 generator is a locale-aware deterministic structured template; it does
+not claim model-generated prose.

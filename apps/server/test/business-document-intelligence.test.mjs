@@ -193,6 +193,11 @@ test("supported business formats produce proposals without persisting secret or 
     ["inquiry-ledger.xlsx", "询价台账\n询价编号：RFQ-001", "inquiry_ledger"],
     ["prices.pdf", "产品价格表\n币种：CNY", "price_list"],
     ["customer.html", "客户资料\n客户名称：星海科技", "customer_reference"],
+    ["contract-review.docx", "合同审查\n客户名称：星海科技\n日期：2026-08-11", "contract_review"],
+    ["purchase-request.xlsx", "采购申请\n产品名称：工作站\n日期：2026-08-11", "purchase_request"],
+    ["complaint.md", "客户投诉\n客户名称：星海科技\n产品名称：控制器", "customer_complaint"],
+    ["weekly-report.docx", "本周工作\n下周计划", "weekly_report"],
+    ["acceptance.xlsx", "项目验收\n验收清单", "project_acceptance"],
   ];
   for (const [relativePath, content, expected] of fixtures) {
     const result = analyzeBusinessDocumentDeterministically({

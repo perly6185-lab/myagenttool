@@ -60,9 +60,7 @@ function compareCandidates(left, right, horizon) {
 function planRevision(capacity, horizon, assumptions) {
   const input = {
     terminalId: capacity.terminal?.id ?? null,
-    terminalStatus: capacity.terminal?.status ?? null,
     maxConcurrency: capacity.capacity.maxConcurrency,
-    inFlight: capacity.capacity.inFlight,
     horizon,
     assumptions,
     workItems: capacity.work.items.map((item) => ({
@@ -71,7 +69,6 @@ function planRevision(capacity, horizon, assumptions) {
       sourceId: item.sourceId ?? item.workItemId,
       revision: item.revision,
       status: item.status,
-      runtimeState: item.runtimeState ?? null,
       priority: item.priority,
       dueDate: item.dueDate,
       plannedDate: item.plannedDate,
@@ -79,7 +76,6 @@ function planRevision(capacity, horizon, assumptions) {
       schedulePlanSource: item.schedulePlanSource,
       manuallyPinned: item.manuallyPinned,
       estimate: item.estimate,
-      readiness: item.readiness,
     })),
   };
   return createHash("sha256").update(JSON.stringify(input)).digest("hex").slice(0, 24);

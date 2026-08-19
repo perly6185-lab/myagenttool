@@ -1,7 +1,7 @@
 export type ArticleInspection = {
   canonicalUrl: string;
-  provider: "wechat" | "xiaohongshu" | "zhihu" | "juejin" | "jianshu" | "web";
-  contentType: "article" | "note";
+  provider: "wechat" | "xiaohongshu" | "zhihu" | "qichacha" | "juejin" | "jianshu" | "web";
+  contentType: "article" | "note" | "company";
   title: string;
   author: string | null;
   publishedAt: string | null;

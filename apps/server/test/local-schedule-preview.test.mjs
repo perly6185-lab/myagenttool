@@ -50,7 +50,7 @@ test("preserves an in-horizon pinned date and never charges attention work to ca
   const preview = computeLocalSchedulePreview(capacity([
     item("pinned", { plannedDate: "2026-08-01", schedulePlanSource: "manual", manuallyPinned: true, estimate: { minutes: 120, confidence: "medium" } }),
     item("blocked", { status: "blocked", category: "attention", readiness: { state: "blocked", reason: "work_item_blocked" }, estimate: { minutes: 400, confidence: "low" } }),
-  ]), { now: () => NOW, utilization: 1, urgentReserve: 0 });
+  ]), { now: () => NOW, utilization: 1, urgentReserve: 0, timeZone: "UTC" });
 
   assert.deepEqual(preview.days[0].items, []);
   assert.deepEqual(preview.days[1].items.map((row) => row.workItemId), ["pinned"]);
@@ -93,4 +93,26 @@ test("uses the terminal timezone when UTC and the local calendar are on differen
   });
   assert.deepEqual(shanghai.horizon, { yesterday: "2026-07-30", today: "2026-07-31", tomorrow: "2026-08-01" });
   assert.deepEqual(losAngeles.horizon, { yesterday: "2026-07-29", today: "2026-07-30", tomorrow: "2026-07-31" });
+});
+
+test("#1614: planRevision ignores dispatch churn but tracks schedule content", () => {
+  const opts = { now: () => NOW, timeZone: "UTC" };
+  const base = computeLocalSchedulePreview(capacity([item("a"), item("b")]), opts);
+  const churned = capacity([
+    item("a", { readiness: { state: "waiting_capacity", reason: "terminal_at_capacity" } }),
+    item("b"),
+  ]);
+  churned.capacity.inFlight = 1;
+  churned.terminal.status = "offline";
+  assert.equal(computeLocalSchedulePreview(churned, opts).planRevision, base.planRevision);
+
+  const bumped = computeLocalSchedulePreview(capacity([item("a", { revision: 2 }), item("b")]), opts);
+  const moved = computeLocalSchedulePreview(capacity([item("a", { plannedDate: "2026-08-01" }), item("b")]), opts);
+  const resized = computeLocalSchedulePreview(
+    capacity([item("a", { estimate: { minutes: 120, source: "history", confidence: "high", sampleSize: 3 } }), item("b")]),
+    opts,
+  );
+  const widened = computeLocalSchedulePreview(capacity([item("a"), item("b")], 2), opts);
+  const revisions = [base, bumped, moved, resized, widened].map((preview) => preview.planRevision);
+  assert.equal(new Set(revisions).size, revisions.length);
 });

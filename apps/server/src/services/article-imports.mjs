@@ -10,6 +10,11 @@ import { parse } from "parse5";
 
 import { actorCanAccessProject } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { importFeishuDocToWorktree } from "./feishu-doc-imports.mjs";
+import { renderZhihuArticle } from "./zhihu-imports.mjs";
+import { renderQichachaPage } from "./qichacha-imports.mjs";
+import { renderXiaohongshuPage } from "./xiaohongshu-imports.mjs";
+import { renderJianshuPage } from "./jianshu-imports.mjs";
 import { validateExternalWebhookTarget } from "./auto-run-alerts.mjs";
 
 export const ARTICLE_IMPORT_LIMITS = Object.freeze({
@@ -48,7 +53,7 @@ const MEDIA_EXTENSIONS = new Map([
   ["video/quicktime", ".mov"],
 ]);
 
-const ARTICLE_PROVIDERS = new Set(["wechat", "xiaohongshu", "zhihu", "juejin", "jianshu", "web"]);
+const ARTICLE_PROVIDERS = new Set(["feishu", "wechat", "xiaohongshu", "zhihu", "qichacha", "juejin", "jianshu", "web"]);
 const ARTICLE_SIMILARITY_INDEX_SCHEMA_VERSION = 1;
 const ARTICLE_SIMILARITY_INDEX_MAX_BYTES = 64 * 1024 * 1024;
 const ARTICLE_DERIVATIVE_KINDS = new Set(["article_rewrite", "video_script"]);
@@ -139,14 +144,26 @@ const ARTICLE_DERIVATIVE_AGE_PRESETS = new Set(Object.keys(ARTICLE_DERIVATIVE_AG
 const SKIPPED_TAGS = new Set(["script", "style", "noscript", "svg", "nav", "button", "form", "input", "iframe"]);
 const BLOCK_TAGS = new Set(["p", "div", "section", "figure", "figcaption"]);
 const TRACKING_PARAMS = new Set(["from", "isappinstalled", "scene", "clicktime", "enterid"]);
+// WeChat share links always carry src= (timeline/singlemsg/…) — share-source
+// metadata, not content identity. Without stripping it, the share variant and
+// the bare /s/ link canonicalize differently and import dedup (keyed on
+// canonicalUrl) records the same article twice. Scoped to wechat because src
+// is a generic name that may carry meaning on other sites.
+const WECHAT_TRACKING_PARAMS = new Set(["src"]);
 
 export function detectArticleSource(value) {
   const hostname = new URL(value).hostname.toLowerCase();
+  if (hostname === "feishu.cn" || hostname.endsWith(".feishu.cn") || hostname === "larksuite.com" || hostname.endsWith(".larksuite.com")) {
+    return "feishu";
+  }
   if (hostname === "mp.weixin.qq.com" || hostname.endsWith(".weixin.qq.com")) return "wechat";
   if (hostname === "xiaohongshu.com" || hostname.endsWith(".xiaohongshu.com") || hostname === "xhslink.com") {
     return "xiaohongshu";
   }
   if (hostname === "zhihu.com" || hostname.endsWith(".zhihu.com")) return "zhihu";
+  if (hostname === "qcc.com" || hostname.endsWith(".qcc.com") || hostname === "qichacha.com" || hostname.endsWith(".qichacha.com")) {
+    return "qichacha";
+  }
   if (hostname === "juejin.cn" || hostname.endsWith(".juejin.cn")) return "juejin";
   if (hostname === "jianshu.com" || hostname.endsWith(".jianshu.com")) return "jianshu";
   return "web";
@@ -156,8 +173,13 @@ export function canonicalizeArticleUrl(value) {
   const url = new URL(String(value ?? "").trim());
   if (url.protocol !== "https:" || url.username || url.password) throw articleError("article_url_refused");
   url.hash = "";
+  const provider = detectArticleSource(url.toString());
   for (const key of [...url.searchParams.keys()]) {
-    if (key.toLowerCase().startsWith("utm_") || TRACKING_PARAMS.has(key.toLowerCase())) url.searchParams.delete(key);
+    const normalized = key.toLowerCase();
+    const wechatExtra = provider === "wechat" && WECHAT_TRACKING_PARAMS.has(normalized);
+    if (normalized.startsWith("utm_") || TRACKING_PARAMS.has(normalized) || wechatExtra) {
+      url.searchParams.delete(key);
+    }
   }
   url.hostname = url.hostname.toLowerCase();
   return url.toString();
@@ -180,6 +202,131 @@ export async function inspectArticle({
   limits = ARTICLE_IMPORT_LIMITS,
 } = {}) {
   const canonicalUrl = canonicalizeArticleUrl(url);
+  if (detectArticleSource(canonicalUrl) === "feishu") {
+    // Feishu docs are JS-rendered SPAs; the plain-HTTP preview cannot read them
+    // and launching a browser here would block the preview for ~a minute. Return
+    // a synthetic inspection; the real title and media are resolved at import.
+    return {
+      sourceUrl: String(url),
+      canonicalUrl,
+      resolvedUrl: canonicalUrl,
+      provider: "feishu",
+      contentType: "document",
+      title: "Feishu document",
+      author: null,
+      publishedAt: null,
+      publishedAtSource: "imported",
+      textLength: 0,
+      media: [],
+      mediaCounts: { images: 0, audio: 0, video: 0 },
+      markdownPreview: "",
+      fetchedAt: new Date().toISOString(),
+      _document: { media: [] },
+    };
+  }
+  if (detectArticleSource(canonicalUrl) === "zhihu") {
+    // Zhihu content pages sit behind the secng/zse-ck JS-challenge WAF; the
+    // plain-HTTP preview cannot read them and launching a browser here would
+    // block the preview for ~a minute. Return a synthetic inspection; the real
+    // title and media are resolved at import (inspectZhihuArticle renders the
+    // page in a browser subprocess and reuses this pipeline's download+write).
+    return {
+      sourceUrl: String(url),
+      canonicalUrl,
+      resolvedUrl: canonicalUrl,
+      provider: "zhihu",
+      contentType: "article",
+      title: "Zhihu article",
+      author: null,
+      publishedAt: null,
+      publishedAtSource: "imported",
+      textLength: 0,
+      media: [],
+      mediaCounts: { images: 0, audio: 0, video: 0 },
+      markdownPreview: "",
+      fetchedAt: new Date().toISOString(),
+      _document: { media: [] },
+    };
+  }
+  if (detectArticleSource(canonicalUrl) === "qichacha") {
+    // Qichacha content sits behind a login wall with anti-crawl on top; a
+    // plain-HTTP preview would eat the wall (and polling it looks like a bot),
+    // while launching a browser here would block the preview for ~a minute —
+    // and a logged-in render spends view quota. Return a synthetic
+    // inspection; the real title and media are resolved at import
+    // (inspectQichachaArticle renders the page in a browser subprocess via the
+    // seeded profile and reuses this pipeline's download+write).
+    return {
+      sourceUrl: String(url),
+      canonicalUrl,
+      resolvedUrl: canonicalUrl,
+      provider: "qichacha",
+      contentType: "company",
+      title: "Qichacha company page",
+      author: null,
+      publishedAt: null,
+      publishedAtSource: "imported",
+      textLength: 0,
+      media: [],
+      mediaCounts: { images: 0, audio: 0, video: 0 },
+      markdownPreview: "",
+      fetchedAt: new Date().toISOString(),
+      _document: { media: [] },
+    };
+  }
+  if (detectArticleSource(canonicalUrl) === "xiaohongshu") {
+    // Xiaohongshu note data is login-gated at the DATA layer (live matrix
+    // 2026-08-17, issue #1703): an anonymous plain-HTTP note fetch 302s into
+    // /404/sec_<rand> (error_code=300031) and the importer would SILENTLY
+    // archive the /404 shell as a "note". Return a synthetic inspection; the
+    // real title and media are resolved at import (inspectXiaohongshuArticle
+    // renders the page in a browser subprocess via the seeded profile and
+    // reuses this pipeline's download+write).
+    return {
+      sourceUrl: String(url),
+      canonicalUrl,
+      resolvedUrl: canonicalUrl,
+      provider: "xiaohongshu",
+      contentType: "note",
+      title: "Xiaohongshu note",
+      author: null,
+      publishedAt: null,
+      publishedAtSource: "imported",
+      textLength: 0,
+      media: [],
+      mediaCounts: { images: 0, audio: 0, video: 0 },
+      markdownPreview: "",
+      fetchedAt: new Date().toISOString(),
+      _document: { media: [] },
+    };
+  }
+  if (detectArticleSource(canonicalUrl) === "jianshu") {
+    // Jianshu is a Next.js SPA: the full body ships in __NEXT_DATA__, NOT in
+    // the SSR DOM (the superseded in-process attempt, PR #1664 / issue #1661,
+    // documented this; plugin conversion per issue #1705). A plain anonymous
+    // fetch here would silently preview the TRUNCATED intro as if it were the
+    // article. Return a synthetic inspection — the real title and media are
+    // resolved at import (inspectJianshuArticle renders via the plugin
+    // subprocess, which extracts __NEXT_DATA__ server-side of the server, and
+    // reuses this pipeline's download+write).
+    return {
+      sourceUrl: String(url),
+      canonicalUrl,
+      resolvedUrl: canonicalUrl,
+      provider: "jianshu",
+      contentType: "article",
+      title: "Jianshu article",
+      author: null,
+      publishedAt: null,
+      publishedAtSource: "imported",
+      textLength: 0,
+      media: [],
+      mediaCounts: { images: 0, audio: 0, video: 0 },
+      markdownPreview: "",
+      fetchedAt: new Date().toISOString(),
+      _document: { media: [] },
+    };
+  }
   const page = await fetchPublicResource(canonicalUrl, {
     fetchImpl,
     resolveHostname,
@@ -195,6 +342,7 @@ export async function inspectArticle({
   }
   const html = page.bytes.toString("utf8");
   const provider = detectArticleSource(page.url);
+  assertArticlePage(html, page.url, provider);
   const parsed = parseArticleDocument(html, page.url, provider, limits.mediaCount);
   return {
     sourceUrl: String(url),
@@ -215,6 +363,202 @@ export async function inspectArticle({
   };
 }
 
+/**
+ * Inspect a public Zhihu article by rendering it in a browser subprocess (to
+ * clear the secng/zse-ck JS-challenge WAF that 403s plain-HTTP clients), then
+ * parsing the rendered HTML with the shared parseArticleDocument — whose zhihu
+ * selectors (Post-RichTextContainer / RichContent-inner / Post-Title /
+ * AuthorInfo-name) finally hit real content. Returns the same inspection shape
+ * as inspectArticle so importArticleToWorktree's downloadMedia + write pipeline
+ * is reused unchanged (zhimg images are fetched with Referer = resolvedUrl).
+ *
+ * @param {{ url: string, signal?: AbortSignal, limits?: object }} args
+ * @returns {Promise<object>} the inspection shape (with `_document`).
+ */
+export async function inspectZhihuArticle({ url, signal, limits = ARTICLE_IMPORT_LIMITS } = {}) {
+  const canonicalUrl = canonicalizeArticleUrl(url);
+  const { resolvedUrl, html } = await renderZhihuArticle(canonicalUrl, { signal });
+  const parsed = parseArticleDocument(html, resolvedUrl, "zhihu", limits.mediaCount);
+  return {
+    sourceUrl: String(url),
+    canonicalUrl,
+    resolvedUrl,
+    provider: "zhihu",
+    contentType: "article",
+    title: parsed.title,
+    author: parsed.author,
+    publishedAt: parsed.publishedAt,
+    publishedAtSource: parsed.publishedAt ? "source" : "imported",
+    textLength: parsed.plainText.length,
+    media: parsed.media.map(({ token, ...item }) => item),
+    mediaCounts: countMedia(parsed.media),
+    markdownPreview: parsed.markdown.slice(0, 2_000),
+    fetchedAt: new Date().toISOString(),
+    _document: parsed,
+  };
+}
+
+/**
+ * Inspect a Qichacha company page by rendering it in a browser subprocess
+ * (behind the login wall, via the seeded persistent profile — see
+ * qichacha-imports.mjs), then parsing the rendered HTML with the shared
+ * parseArticleDocument. Returns the same inspection shape as inspectArticle so
+ * importArticleToWorktree's downloadMedia + write pipeline is reused unchanged.
+ *
+ * A firm page has no author and no publish date — both stay null (the import
+ * pipeline stamps the import date). Extraction is generic-first: the qichacha
+ * selectors below (header/company name) are finalized by the live pass; table
+ * fidelity beyond flattening is deliberately NOT special-cased until a real
+ * page proves it unreadable (Stage B, provider-gated).
+ *
+ * @param {{ url: string, signal?: AbortSignal, limits?: object }} args
+ * @returns {Promise<object>} the inspection shape (with `_document`).
+ */
+export async function inspectQichachaArticle({ url, signal, limits = ARTICLE_IMPORT_LIMITS } = {}) {
+  const canonicalUrl = canonicalizeArticleUrl(url);
+  const { resolvedUrl, html } = await renderQichachaPage(canonicalUrl, { signal });
+  const parsed = parseArticleDocument(html, resolvedUrl, "qichacha", limits.mediaCount);
+  return {
+    sourceUrl: String(url),
+    canonicalUrl,
+    resolvedUrl,
+    provider: "qichacha",
+    contentType: "company",
+    title: parsed.title,
+    author: null,
+    publishedAt: parsed.publishedAt ?? null,
+    publishedAtSource: parsed.publishedAt ? "source" : "imported",
+    textLength: parsed.plainText.length,
+    media: parsed.media.map(({ token, ...item }) => item),
+    mediaCounts: countMedia(parsed.media),
+    markdownPreview: parsed.markdown.slice(0, 2_000),
+    fetchedAt: new Date().toISOString(),
+    _document: parsed,
+  };
+}
+
+/**
+ * Inspect a Xiaohongshu note by rendering it in a browser subprocess behind
+ * the seeded login profile (note data is login-gated at the data layer — see
+ * inspectArticle's xiaohongshu short-circuit), then parsing the rendered HTML
+ * with the shared parseArticleDocument — whose xiaohongshu branch reads the
+ * SSR `__INITIAL_STATE__` note object (title/desc/imageList/video/user/time)
+ * with #detail-desc / .note-content as DOM fallback. Returns the same
+ * inspection shape as inspectArticle so importArticleToWorktree's
+ * downloadMedia + write pipeline is reused unchanged.
+ *
+ * Short-link canonicalization: xhslink.com share links resolve to the note's
+ * canonical URL inside the RENDER (the browser follows the redirect chain,
+ * carrying the share's xsec_token). canonicalizeArticleUrl(url) alone would
+ * key dedupe/hash on the SHORT link — two different short links to the same
+ * note would import twice. When the render landed on a xiaohongshu note URL,
+ * canonicalUrl is recomputed from that final URL (tracking params still
+ * stripped; xsec_token is not in the strip list); sourceUrl keeps what the
+ * user pasted.
+ *
+ * @param {{ url: string, signal?: AbortSignal, limits?: object }} args
+ * @returns {Promise<object>} the inspection shape (with `_document`).
+ */
+export async function inspectXiaohongshuArticle({ url, signal, limits = ARTICLE_IMPORT_LIMITS } = {}) {
+  const inputCanonicalUrl = canonicalizeArticleUrl(url);
+  const { resolvedUrl, html } = await renderXiaohongshuPage(inputCanonicalUrl, { signal });
+  let canonicalUrl = inputCanonicalUrl;
+  try {
+    if (detectArticleSource(resolvedUrl) === "xiaohongshu") {
+      canonicalUrl = canonicalizeArticleUrl(resolvedUrl);
+    }
+  } catch {
+    /* a non-canonicalizable final URL (e.g. an error interstitial) keeps the input canonical */
+  }
+  const parsed = parseArticleDocument(html, resolvedUrl, "xiaohongshu", limits.mediaCount);
+  return {
+    sourceUrl: String(url),
+    canonicalUrl,
+    resolvedUrl,
+    provider: "xiaohongshu",
+    contentType: "note",
+    title: parsed.title,
+    author: parsed.author,
+    publishedAt: parsed.publishedAt ?? null,
+    publishedAtSource: parsed.publishedAt ? "source" : "imported",
+    textLength: parsed.plainText.length,
+    media: parsed.media.map(({ token, ...item }) => item),
+    mediaCounts: countMedia(parsed.media),
+    markdownPreview: parsed.markdown.slice(0, 2_000),
+    fetchedAt: new Date().toISOString(),
+    _document: parsed,
+  };
+}
+
+/**
+ * Inspect a Jianshu article by rendering it in a browser subprocess (the full
+ * body ships in the page's __NEXT_DATA__ JSON, not the SSR DOM — see
+ * inspectArticle's jianshu short-circuit). The renderer returns a COMPOSED
+ * document (title h1 / author line / date line / free_content body) plus
+ * authoritative {title, author, publishedAt} metadata extracted in-page; this
+ * parses the composed doc with the shared parseArticleDocument and applies the
+ * metadata as field overrides. Returns the same inspection shape as
+ * inspectArticle so importArticleToWorktree's downloadMedia + write pipeline
+ * is reused unchanged (a missing/empty note payload already failed loudly
+ * inside the renderer — a shell never reaches this parse).
+ *
+ * Slug canonicalization: jianshu may redirect slug aliases to the canonical
+ * /p/<slug> inside the RENDER. When it did, canonicalUrl is recomputed from
+ * that final URL so dedupe keys on the canonical article; sourceUrl keeps what
+ * the user pasted.
+ *
+ * @param {{ url: string, signal?: AbortSignal, limits?: object }} args
+ * @returns {Promise<object>} the inspection shape (with `_document`).
+ */
+export async function inspectJianshuArticle({ url, signal, limits = ARTICLE_IMPORT_LIMITS } = {}) {
+  const inputCanonicalUrl = canonicalizeArticleUrl(url);
+  const { resolvedUrl, html, meta } = await renderJianshuPage(inputCanonicalUrl, { signal });
+  let canonicalUrl = inputCanonicalUrl;
+  try {
+    if (detectArticleSource(resolvedUrl) === "jianshu") {
+      canonicalUrl = canonicalizeArticleUrl(resolvedUrl);
+    }
+  } catch {
+    /* a non-canonicalizable final URL (e.g. an error page) keeps the input canonical */
+  }
+  const parsed = parseArticleDocument(html, resolvedUrl, "jianshu", limits.mediaCount);
+  // The __NEXT_DATA__ metadata is authoritative; the composed doc carries the
+  // same values via jianshu's own title/author classes, so the DOM parse agrees
+  // — but meta wins on any divergence.
+  const title = meta.title ?? parsed.title;
+  const author = meta.author ?? parsed.author;
+  const publishedAt = meta.publishedAt ?? parsed.publishedAt ?? null;
+  return {
+    sourceUrl: String(url),
+    canonicalUrl,
+    resolvedUrl,
+    provider: "jianshu",
+    contentType: "article",
+    title,
+    author,
+    publishedAt,
+    publishedAtSource: publishedAt ? "source" : "imported",
+    textLength: parsed.plainText.length,
+    media: parsed.media.map(({ token, ...item }) => item),
+    mediaCounts: countMedia(parsed.media),
+    markdownPreview: parsed.markdown.slice(0, 2_000),
+    fetchedAt: new Date().toISOString(),
+    _document: { ...parsed, title, author, publishedAt },
+  };
+}
+
+function assertArticlePage(html, pageUrl, provider) {
+  if (provider !== "wechat") return;
+  const path = new URL(pageUrl).pathname.toLowerCase();
+  const challengePage = path.includes("wappoc_appmsgcaptcha")
+    || path.includes("verifycode")
+    || /wappoc_appmsgcaptcha|poc_token|完成验证后即可继续访问|环境异常/i.test(html);
+  if (challengePage) throw articleError("article_download_challenge");
+  const hasArticleRoot = /\bid\s*=\s*["']js_content["']/i.test(html)
+    || /\bclass\s*=\s*["'][^"']*\brich_media_content\b/i.test(html);
+  if (!hasArticleRoot) throw articleError("article_content_incomplete");
+}
+
 export async function importArticleToWorktree({
   url,
   worktreePath,
@@ -225,7 +569,36 @@ export async function importArticleToWorktree({
   signal,
   limits = ARTICLE_IMPORT_LIMITS,
 } = {}) {
-  const inspection = await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
+  // Feishu public docs (JS-rendered SPA), Zhihu (secng/zse-ck JS-challenge
+  // WAF), Qichacha (login wall + view quota), Xiaohongshu (login-gated note
+  // data), and Jianshu (Next.js SPA — the body ships in __NEXT_DATA__, not the
+  // SSR DOM) all need a real browser; the plain-HTTP importer cannot read
+  // them. Feishu delegates entirely to its own fetch+write bundle
+  // (feishu-doc-imports.mjs). The others only need the browser to RENDER the
+  // page — they then reuse this same download+write pipeline, so below we
+  // swap a browser-rendered inspection (inspectZhihuArticle /
+  // inspectQichachaArticle / inspectXiaohongshuArticle /
+  // inspectJianshuArticle) for the plain-HTTP one.
+  // A malformed URL throws in detectArticleSource; we route it to the generic
+  // path so inspectArticle's canonicalizeArticleUrl raises article_url_refused.
+  let source;
+  try {
+    source = detectArticleSource(url);
+  } catch {
+    source = "web";
+  }
+  if (source === "feishu") {
+    return importFeishuDocToWorktree({ url, worktreePath, workItemId, importedAt, signal });
+  }
+  const inspection = source === "zhihu"
+    ? await inspectZhihuArticle({ url, signal, limits })
+    : source === "qichacha"
+      ? await inspectQichachaArticle({ url, signal, limits })
+      : source === "xiaohongshu"
+        ? await inspectXiaohongshuArticle({ url, signal, limits })
+        : source === "jianshu"
+          ? await inspectJianshuArticle({ url, signal, limits })
+          : await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
   const publishedAt = inspection.publishedAt ?? importedAt.slice(0, 10);
   const relativeDirectory = buildArticleRelativeDirectory({
     provider: inspection.provider,
@@ -1684,11 +2057,15 @@ export function createArticleImportService({
       ];
       const providerLabel = `source:${result.inspection.provider}`;
       const contentLabel = `content:${result.inspection.contentType}`;
+      const readyForReview = stored.state !== "closed"
+        && !stored.archivedAt
+        && ["backlog", "ready", "in_progress", "review"].includes(stored.status);
       const updated = workItemService.updateWorkItem({
         workItemId: stored.id,
         expectedRevision: stored.revision,
         labels: [...new Set([...(stored.labels ?? []), providerLabel, contentLabel])],
         outputAssets,
+        ...(readyForReview ? { status: "review", waitingOn: "me" } : {}),
       }, job.actor);
       if (!updated.ok) throw articleError(updated.body?.error ?? "article_import_asset_binding_failed");
       workItemService.createComment({ workItemId: stored.id, body: [
@@ -2025,6 +2402,11 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
 function providerFieldText(document, provider, field) {
   const classes = {
     zhihu: field === "title" ? ["Post-Title"] : ["AuthorInfo-name"],
+    // qichacha firm pages: the company name is the page's <h1 class="copy-value">
+    // — live pass 2026-08-17 confirmed it is the FIRST copy-value node in
+    // document order (og:title is absent, so this feeds the title chain). A
+    // firm page has no author worth extracting (author stays null).
+    qichacha: field === "title" ? ["copy-value"] : [],
     juejin: field === "title" ? ["article-title"] : ["author-name"],
     jianshu: field === "title" ? ["_1RuRku"] : ["_22gUMi"],
   }[provider] ?? [];
@@ -2050,6 +2432,17 @@ function findProviderContent(document, provider) {
     zhihu: [
       (node) => hasClass(node, "Post-RichTextContainer"),
       (node) => hasClass(node, "RichContent-inner"),
+    ],
+    // qichacha firm pages: content root — live pass 2026-08-17. The firm page
+    // wraps the company header card + every detail section (15 on the sample
+    // page: 基本信息 cominfo, 股东 partner, 对外投资 touzilist, …) in
+    // `.company-detail`; a bare `.data-section` is the partial fallback. No
+    // <main>/<article> exists on these pages. Tables flatten to text rows;
+    // Stage B adds provider-gated table rendering only if a real page proves
+    // that unreadable.
+    qichacha: [
+      (node) => hasClass(node, "company-detail"),
+      (node) => hasClass(node, "data-section"),
     ],
     juejin: [
       (node) => hasClass(node, "article-content"),
@@ -2120,6 +2513,9 @@ function renderMedia(node, type, context) {
   const rawUrl = firstNonEmpty(
     attr(node, "data-src"),
     attr(node, "data-original"),
+    // Jianshu's lazy-load attribute on free_content images (issue #1705; the
+    // same gap the superseded in-process PR #1664 fixed).
+    attr(node, "data-original-src"),
     attr(node, "data-url"),
     attr(node, type === "audio" ? "data-audio-url" : "data-video-url"),
     attr(node, "src"),
@@ -2247,7 +2643,16 @@ function collectStructuredFields(value, result, pageUrl, depth = 0) {
         result.publishedAt = normalizeStructuredDate(entry);
       }
       if (/(?:url|src)/.test(key)) {
-        const sourceUrl = resolveHttpUrl(text, pageUrl);
+        let sourceUrl = resolveHttpUrl(text, pageUrl);
+        // XHS hydration carries some imageList entries over plain http (live
+        // pass 2026-08-17, issue #1703: sns-webpic-qc.xhscdn.com/…) while the
+        // media fetch layer speaks https only — an http registration would be
+        // refused as article_url_refused. The CDN serves the same path over
+        // https (verified 200 + image bytes, referer-independent), so upgrade
+        // xhscdn hosts before registering.
+        if (/^http:\/\/(?:[^/]+\.)?xhscdn\.com\//i.test(sourceUrl ?? "")) {
+          sourceUrl = sourceUrl.replace(/^http:/i, "https:");
+        }
         const type = /video/.test(key) ? "video" : /audio/.test(key) ? "audio" : /image|img|cover|urldefault|urlpre/.test(key) ? "image" : null;
         if (sourceUrl && type && !result.media.some((item) => item.sourceUrl === sourceUrl)) {
           result.media.push({ type, sourceUrl, alt: type });
@@ -2667,7 +3072,8 @@ function articleFailure(error) {
   const code = String(error?.code ?? error?.message ?? "article_import_failed");
   const status = code === "work_item_not_found" ? 404
     : code.includes("already_active") || code.includes("conflict") ? 409
-      : code.includes("timeout") || code.includes("download_http_5") ? 503
+      : code.includes("timeout") || code.includes("download_http_5")
+        || code.includes("download_challenge") || code.includes("content_incomplete") ? 503
         : 400;
   return { ok: false, status, body: { error: code } };
 }

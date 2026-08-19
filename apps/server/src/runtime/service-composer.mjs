@@ -5,6 +5,7 @@ import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
+import { currentDeviceTimeZone, findDevice, listDevices } from "./device.mjs";
 import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
@@ -16,7 +17,8 @@ import {
 } from "../services/agents.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, dirname, resolve, sep } from "node:path";
 import { mergeFileAccesses } from "../read-models/file-ledger.mjs";
 import { sanitizeRequestContext } from "../read-models/request-context.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
@@ -28,12 +30,54 @@ import { createApplicationStatsRuntime } from "../services/application-stats.mjs
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
-import { createMailSendService } from "../services/mail-send.mjs";
-import { createChannelService } from "../services/channels.mjs";
+import { createMailSendService, isMailSendEnabled } from "../services/mail-send.mjs";
+import { createMailClassificationService } from "../services/mail-classification.mjs";
+import { createMailFolderSuggestionService } from "../services/mail-folder-suggestions.mjs";
+import { createMailFolderOrganizationService, isMailAutomaticOrganizationEnabled, isMailOrganizationEnabled } from "../services/mail-folder-organization.mjs";
+import { createLocalMailSemanticAdapter, resolveMailSemanticConfig } from "../services/mail-semantic-classifier.mjs";
+import { createMailboxService, isMailClassificationEnabled } from "../services/mailbox.mjs";
+import { createLocalContentCatalogService } from "../services/local-content-catalog.mjs";
+import {
+  createLocalContentRetrievalAuthorizer,
+  createLocalContentRetrievalService,
+} from "../services/local-content-retrieval.mjs";
+import { createChannelService, defaultReadinessProbes } from "../services/channels.mjs";
 import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
 import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
+import { createChannelIntentAdapter, resolveChannelIntentConfig } from "../services/channel-intent-adapter.mjs";
+import { createChannelConsultationAdapter, resolveChannelConsultationConfig } from "../services/channel-consultation-adapter.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
+import {
+  channelObjectValidationMatches,
+  channelObjectValidationSummary,
+  resolveChannelObjectRequests,
+} from "../services/channel-object-resolver.mjs";
+import { createChannelObjectRegistryService } from "../services/channel-object-registry.mjs";
+import { createChannelObjectImportService } from "../services/channel-object-imports.mjs";
+import { createChannelObjectConnectorService } from "../services/channel-object-connectors.mjs";
+import { createChannelMutationBindingService } from "../services/channel-mutation-bindings.mjs";
+import {
+  channelLedgerMutationFieldHint,
+  parseLedgerMutationPlan,
+  parseSingleRecordLedgerMutation,
+} from "../services/channel-ledger-mutation.mjs";
+import {
+  buildRuntimeDataPlan,
+  dataPlanMatchesCurrent,
+  dataPlanMissingLabels,
+} from "../services/data-plan-contract.mjs";
+import {
+  buildDataRelationPreview,
+  dataRelationPreviewMatchesCurrent,
+} from "../services/data-relation-preview.mjs";
+import {
+  buildDataMutationPreview,
+    dataMutationPreviewMatchesCurrent,
+} from "../services/data-mutation-contract.mjs";
+import { buildWorkModeSnapshot } from "../services/work-mode-runtime.mjs";
+import { buildPaymentReconciliationPreview } from "../services/channel-payment-reconciliation.mjs";
+import { createIlinkRuntime } from "../gateway/ilink-runtime.mjs";
 import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
@@ -42,6 +86,11 @@ import { createClaudeApplyImportService } from "../services/claude-apply-imports
 import { isGovernedClaudeApplyAgent } from "../services/claude-apply-agent.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
+import {
+  CODEX_REVIEW_TOOL_CONTRACT,
+  createCodexReviewAgentRegistration,
+  isGovernedCodexReviewAgent,
+} from "../services/codex-agent.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
 import {
   createLocalWorkflowEmbeddingAdapter,
@@ -52,6 +101,11 @@ import {
   resolveWorkflowOcrConfig,
 } from "../services/workflow-ocr-adapter.mjs";
 import {
+  createCodexVisionOcrAdapter,
+  createFallbackWorkflowOcrAdapter,
+  resolveCodexVisionOcrConfig,
+} from "../services/workflow-codex-vision-ocr-adapter.mjs";
+import {
   createLocalWorkflowBusinessSemanticAdapter,
   resolveWorkflowBusinessSemanticConfig,
 } from "../services/workflow-business-semantic-adapter.mjs";
@@ -61,7 +115,7 @@ import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationEventService } from "../services/invocation-events.mjs";
 import { createInvocationRefusalService } from "../services/invocation-refusals.mjs";
 import { createInvocationTraceService } from "../services/invocation-trace.mjs";
-import { createInvocationService } from "../services/invocations.mjs";
+import { createInvocationService, selectDefaultAgent } from "../services/invocations.mjs";
 import { createCancellationSignal } from "../services/cancellation-signal.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
@@ -69,15 +123,21 @@ import { convergeAutoRunTerminalState, createAutoRunService } from "../services/
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
+import { createTaskMaterialService } from "../services/task-materials.mjs";
 import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
+import { createWorkItemAutoRunUnderstandingService, workItemTemplateInstructions } from "../services/work-item-auto-run-understanding.mjs";
+import { createWorkItemAutoSchedulerService } from "../services/work-item-auto-scheduler.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
 import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
 import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive-work.mjs";
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
-import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
+import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree } from "../services/article-imports.mjs";
+import { createSessionManager } from "../services/session-manager.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
+import { createTemplateLearningService } from "../services/template-learning.mjs";
+import { createWorkflowMemoryInsightsService } from "../services/workflow-memory-insights.mjs";
 import { createInquiryIntakeTriggerService } from "../services/inquiry-intake-triggers.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import {
@@ -88,7 +148,7 @@ import {
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
-import { ingestChannelAttachmentCandidates } from "../services/channel-attachment-ingestion.mjs";
+import { ingestChannelAttachmentBytes, ingestChannelAttachmentCandidates } from "../services/channel-attachment-ingestion.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
 import { refreshEpicChildStates } from "../services/auto-run-epic.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
@@ -122,6 +182,12 @@ export function createServerRuntimeServices({
   // in-memory `state` stays the live view, its commit MIRRORS to SQLite, and boot
   // hydrates `state` from SQLite. null (default) = today's JSON-snapshot backing.
   sqliteStore = null,
+  mailQueryIndex = null,
+  // Optional provider seams used by integration tests; production leaves these
+  // unset and uses the real encrypted credential store and iLink client.
+  ilinkCredentialStore = null,
+  ilinkClientFactory = undefined,
+  channelObjectConnectorAdapters = {},
 }) {
   let idCounter = 1;
   let invocationService = null;
@@ -409,9 +475,33 @@ export function createServerRuntimeServices({
   let resolveWorkItemApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null });
   let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
   let syncAdaptiveWorkItemOutcome = () => {};
+  let requestWorkItemAutoSchedulerSweep = () => {};
   let enqueueWorkItemReportDeliveryBatch = () => ({ ok: false, reason: "delivery_unavailable" });
+  const localContentCatalogService = createLocalContentCatalogService({
+    state, stateStorePath, now, autoIndex: true,
+  });
+  const localContentRetrievalService = createLocalContentRetrievalService({
+    browseDirectories: localContentCatalogService.browseDirectories,
+    searchLocalContent: localContentCatalogService.search,
+    readLocalContentText: localContentCatalogService.readTextChunk,
+    authorizeRetrieval: createLocalContentRetrievalAuthorizer({ state, teamOf }),
+    appendEvent,
+  });
+  const persistIndexedContentStateSoon = (sources, reason) => (...args) => {
+    const result = persistStateSoon(...args);
+    void localContentCatalogService.requestAutomaticIncremental({ reason, sources }).catch(() => {});
+    return result;
+  };
+  const persistTaskMaterialStateSoon = persistIndexedContentStateSoon(["work_items"], "task_material_changed");
+  const persistWorkItemStateSoon = persistIndexedContentStateSoon(["work_items", "articles"], "work_item_changed");
+  const persistArticleStateSoon = persistIndexedContentStateSoon(["articles", "work_items"], "article_changed");
+  const persistMailboxStateSoon = persistIndexedContentStateSoon(["mail", "work_items"], "mail_changed");
+  const taskMaterialService = createTaskMaterialService({
+    state, stateStorePath, now, nextId, persistStateSoon: persistTaskMaterialStateSoon, appendEvent, store,
+    resolveLocalContentReference: localContentCatalogService.resolveOriginal,
+  });
   const workItemService = createWorkItemService({
-    state, now, nextId, appendEvent, persistStateSoon, store,
+    state, now, nextId, appendEvent, persistStateSoon: persistWorkItemStateSoon, store,
     sendAlert: alertOutbox.enqueue,
     retryAlert: alertOutbox.retry,
     budgetStatusFor: (projectId) => resolveWorkItemProjectBudget(projectId),
@@ -421,7 +511,14 @@ export function createServerRuntimeServices({
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
     enqueueChannelDeliveryBatch: (input) => enqueueWorkItemReportDeliveryBatch(input),
     validateApprovalToken,
-    onWorkItemChanged: (item, actor) => syncAdaptiveWorkItemOutcome(item, actor),
+    onWorkItemChanged: (item, actor) => {
+      syncAdaptiveWorkItemOutcome(item, actor);
+      requestWorkItemAutoSchedulerSweep();
+    },
+    claimTaskMaterialDraft: taskMaterialService.claimDraft,
+    inspectTaskMaterialDraft: taskMaterialService.getDraft,
+    resolveClaimedTaskMaterial: taskMaterialService.resolveClaimedAsset,
+    resolveLocalContentReference: localContentCatalogService.resolveOriginal,
   });
   let releaseRoutineLedgerReservations = () => {};
   const businessRoutineService = createBusinessRoutineService({
@@ -436,6 +533,46 @@ export function createServerRuntimeServices({
       releaseRoutineLedgerReservations(input, actor),
     store,
   });
+  let refreshChannelMutationSourceIdentity = null;
+  const channelObjectRegistryService = createChannelObjectRegistryService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+  });
+  const channelObjectImportService = createChannelObjectImportService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    upsertChannelObject: channelObjectRegistryService.upsertChannelObject,
+    setChannelObjectStatus: channelObjectRegistryService.setChannelObjectStatus,
+    onFileSourceConfirmed: (identity, actor) => refreshChannelMutationSourceIdentity?.(identity, actor),
+  });
+  const channelObjectConnectorService = createChannelObjectConnectorService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    upsertChannelObject: channelObjectRegistryService.upsertChannelObject,
+    adapters: channelObjectConnectorAdapters,
+  });
+  const channelMutationBindingService = createChannelMutationBindingService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+  });
+  refreshChannelMutationSourceIdentity = (identity, actor) =>
+    channelMutationBindingService.refreshSourceIdentity(identity, actor);
   const ledgerUpsertService = createLedgerUpsertService({
     state,
     now,
@@ -464,7 +601,7 @@ export function createServerRuntimeServices({
     maxConcurrent: articleImportConfig.maxConcurrent,
     maxPending: articleImportConfig.maxPending,
     limits: articleImportConfig.limits,
-    persistStateSoon,
+    persistStateSoon: persistArticleStateSoon,
     createInvocation: (task, agent, options) => {
       if (!invocationService) throw new Error("article_derivative_agent_unavailable");
       return invocationService.createInvocation(task, agent, options);
@@ -472,6 +609,24 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed: (invocation, agent) =>
       invocationService?.startInvocationIfAllowed(invocation, agent),
     store,
+  });
+  // Session manager: login-state observability + keep-alive for profile-backed
+  // site plugins (zhihu today). Dormant by design — the sweep only runs when
+  // index.mjs is gated on via MYAGENTTOOL_SESSION_MANAGER_ENABLED.
+  const sessionManagerService = createSessionManager({
+    state,
+    now,
+    appendEvent,
+    persistStateSoon,
+    sendAlert: alertOutbox.enqueue,
+  });
+  const workflowOcrAdapter = createFallbackWorkflowOcrAdapter({
+    localAdapter: createLocalWorkflowOcrAdapter({
+      config: resolveWorkflowOcrConfig(),
+    }),
+    codexAdapter: createCodexVisionOcrAdapter({
+      config: resolveCodexVisionOcrConfig(),
+    }),
   });
   const workflowMemoryService = createWorkflowMemoryService({
     state,
@@ -482,9 +637,7 @@ export function createServerRuntimeServices({
     embeddingAdapter: createLocalWorkflowEmbeddingAdapter({
       config: resolveWorkflowEmbeddingConfig(),
     }),
-    ocrAdapter: createLocalWorkflowOcrAdapter({
-      config: resolveWorkflowOcrConfig(),
-    }),
+    ocrAdapter: workflowOcrAdapter,
     createWorkItem: workItemService.createWorkItem,
     recordWorkItemVerification: workItemService.recordVerification,
     // Lazy execution bridge: Auto-run is composed below, but this callback is
@@ -517,6 +670,7 @@ export function createServerRuntimeServices({
       };
       const issueBody = [
         item.body,
+        workItemTemplateInstructions(item),
         item.acceptanceCriteria?.length
           ? `Acceptance criteria:\n${item.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}`
           : "",
@@ -527,13 +681,15 @@ export function createServerRuntimeServices({
       const result = await startAutoRun({
         projectId: item.projectId,
         link,
-        name: `local-${item.localNumber}-${slug}${attemptSuffix}`,
+        localIssueId: item.id,
+        name: `local-${item.localNumber}-${slug}-autorun-${Number(item.revision) || 0}${attemptSuffix}`,
         baseBranch,
         agentId,
         actor,
         issueBody,
         executionChainId: item.id,
         terminalId: item.terminalId,
+        taskMaterialWorkItemId: item.id,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"
           : item.planningProjects?.some((project) => project.autonomyProfile === "high")
@@ -578,6 +734,7 @@ export function createServerRuntimeServices({
     createBusinessEntity: businessRoutineService.createBusinessEntity,
     store,
   });
+  let inquiryIntakeTriggerService = null;
   const workflowAdaptiveWorkService = createWorkflowAdaptiveWorkService({
     state,
     now,
@@ -586,6 +743,102 @@ export function createServerRuntimeServices({
     persistStateSoon,
     store,
     createWorkItem: workItemService.createWorkItem,
+    materializeRoutineSuggestion: async (suggestion, actor) => {
+      const selected = businessRoutineService.selectPublishedRoutineForTrigger({
+        projectId: suggestion.projectId,
+        sourceId: suggestion.sourceId,
+        documentType: suggestion.documentType,
+      }, actor);
+      if (selected.status >= 400) return selected;
+      const selectedDefinition = selected.body.routineDefinition;
+      if (suggestion.documentType !== "inquiry") {
+        const materialized = businessRoutineService.materializeAdaptiveRoutineSuggestion({
+          projectId: suggestion.projectId,
+          sourceId: suggestion.sourceId,
+          observationId: suggestion.observationId,
+          artifactId: suggestion.artifact?.id,
+          documentType: suggestion.documentType,
+        }, actor);
+        if (materialized.status >= 400) return materialized;
+        const advanced = businessRoutineService.advanceRoutineWorkItem({
+          workItemId: materialized.body.workItem.id,
+        }, actor);
+        if (advanced.status >= 400) return advanced;
+        return {
+          status: materialized.status,
+          body: {
+            ...materialized.body,
+            executionStatus: advanced.body.execution.run.status,
+            advancedStepKeys: advanced.body.advancedStepKeys,
+            assistance: advanced.body.assistance,
+            routineRunId: materialized.body.execution.run.id,
+          },
+        };
+      }
+      if (!inquiryIntakeTriggerService) {
+        return { status: 503, body: { error: "workflow_intake_service_unavailable" } };
+      }
+      const inspected = await inquiryIntakeTriggerService.inspect({
+        observationId: suggestion.observationId,
+      }, actor);
+      if (inspected.status >= 400) {
+        return inspected;
+      }
+      const routines = inspected.body.routines ?? [];
+      if (!routines.some((routine) => routine.id === selectedDefinition.id)) {
+        return {
+          status: 409,
+          body: {
+            error: "workflow_intake_routine_not_available",
+            routineCount: 0,
+            recovery: "请重新检查已发布流程与当前文件的触发类型，然后再试。",
+            assistance: {
+              kind: "workflow_setup",
+              reason: "workflow_intake_routine_not_available",
+              action: "review_workflow",
+              title: "已发布流程目前不能处理这份文件",
+              explanation: "流程虽然匹配工作类型，但当前文件检查没有通过。",
+              instruction: "请检查文件识别结果和流程证据是否仍然有效。",
+              continuation: "检查通过后，AI 会自动创建 Local Issue 并继续执行。",
+            },
+          },
+        };
+      }
+      const accepted = await inquiryIntakeTriggerService.accept({
+        observationId: suggestion.observationId,
+        expectedRevision: inspected.body.observation.revision,
+        idempotencyKey: `adaptive-execute:${suggestion.id}:${selectedDefinition.id}`,
+        routineDefinitionId: selectedDefinition.id,
+        confirmed: true,
+        fieldCorrections: {},
+        excludedFieldKeys: [],
+        supportingObservationIds: [],
+        supportingObservationRoles: {},
+      }, actor);
+      if (accepted.status >= 400) return accepted;
+      const receipt = accepted.body.receipt;
+      const workItem = state.workItems.find((row) =>
+        row.id === receipt.workItemId && row.ownerTeamId === (actor?.teamId ?? "team_local"));
+      if (!workItem) {
+        return { status: 502, body: { error: "workflow_intake_materialized_issue_missing" } };
+      }
+      const advanced = businessRoutineService.advanceRoutineWorkItem({
+        workItemId: workItem.id,
+      }, actor);
+      if (advanced.status >= 400) return advanced;
+      return {
+        status: accepted.status,
+        body: {
+          workItem,
+          replayed: Boolean(accepted.body.replayed),
+          receipt,
+          routineRunId: receipt.routineRunId,
+          executionStatus: advanced.body.execution.run.status,
+          advancedStepKeys: advanced.body.advancedStepKeys,
+          assistance: advanced.body.assistance,
+        },
+      };
+    },
     runIntakeCycle: async ({ projectId, sourceId }, actor) => {
       const scan = await workflowMemoryService.scanIncrementalIntake({ sourceId }, actor);
       if (scan.status >= 400) return scan;
@@ -594,7 +847,7 @@ export function createServerRuntimeServices({
         .map((row) => row.artifactId))].slice(0, 10);
       const analysis = await Promise.all(artifactIds.map((artifactId) =>
         businessDocumentIntelligenceService.analyzeArtifact({ artifactId }, actor)));
-      const adaptiveWork = workflowAdaptiveWorkService.reconcile({ projectId, sourceId }, actor);
+      const adaptiveWork = await workflowAdaptiveWorkService.reconcile({ projectId, sourceId }, actor);
       return {
         status: 200,
         body: {
@@ -620,7 +873,7 @@ export function createServerRuntimeServices({
     createBusinessCase: businessRoutineService.createBusinessCase,
     store,
   });
-  const inquiryIntakeTriggerService = createInquiryIntakeTriggerService({
+  inquiryIntakeTriggerService = createInquiryIntakeTriggerService({
     state,
     now,
     nextId,
@@ -634,6 +887,58 @@ export function createServerRuntimeServices({
     verifyEvidence: workflowMemoryService.verifyIntakeEvidence,
     store,
   });
+  const templateLearningService = createTemplateLearningService({
+    state,
+    stateStorePath,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    createWorkflowSource: workflowMemoryService.createSource,
+    scanWorkflowSource: workflowMemoryService.scanSource,
+    ocrWorkflowArtifact: workflowMemoryService.ocrArtifact,
+    analyzeBusinessDocuments: businessDocumentIntelligenceService.analyzeSource,
+    confirmBusinessDocumentClassification: businessDocumentIntelligenceService.confirmClassification,
+    discoverBusinessCases: businessCaseDiscoveryService.discoverBusinessCases,
+    reviewBusinessCaseCandidate: businessCaseDiscoveryService.reviewBusinessCaseCandidate,
+    discoverBusinessRoutine: businessCaseDiscoveryService.discoverRoutine,
+    createRoutineDraft: businessRoutineService.createRoutineDraftFromDiscovery,
+    createWorkItem: workItemService.createWorkItem,
+    updateWorkItem: workItemService.updateWorkItem,
+    store,
+  });
+  const workflowMemoryInsightsService = createWorkflowMemoryInsightsService({ state });
+  const continueRoutineAfterAction = (action, input, actor) => {
+    const result = action(input, actor);
+    if (result?.status >= 400 || !input?.workItemId) return result;
+    const workItem = state.workItems.find((row) => row.id === input.workItemId);
+    const run = state.routineRuns.find((row) => row.workItemId === input.workItemId);
+    const sourcePolicy = state.workflowAdaptivePolicies.find((row) =>
+      row.projectId === workItem?.projectId
+      && row.sourceId === run?.sourceId
+      && row.ownerTeamId === workItem?.ownerTeamId);
+    const projectPolicy = state.workflowAdaptivePolicies.find((row) =>
+      row.projectId === workItem?.projectId
+      && row.sourceId == null
+      && row.ownerTeamId === workItem?.ownerTeamId);
+    if ((sourcePolicy ?? projectPolicy)?.mode !== "execute") return result;
+    const continued = businessRoutineService.advanceRoutineWorkItem({
+      workItemId: input.workItemId,
+    }, actor);
+    if (continued.status >= 400) return result;
+    return {
+      ...result,
+      body: {
+        ...result.body,
+        execution: continued.body.execution,
+        automaticContinuation: {
+          advancedStepKeys: continued.body.advancedStepKeys,
+          assistance: continued.body.assistance,
+          completed: continued.body.completed,
+        },
+      },
+    };
+  };
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
   });
@@ -680,6 +985,23 @@ export function createServerRuntimeServices({
     nextBridgeHealthCheck,
     registerAgent,
   } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon, store });
+  // The delivery-review stage is product behavior, not an operator-only tool
+  // setup step. Register its fixed read-only wrapper automatically whenever the
+  // local installation contains it. The wrapper invokes the user's existing
+  // local Codex CLI, so no second sign-in or separate credentials are needed.
+  const codexReviewWrapperPath = resolve("tools/agents/codex-review-wrapper.mjs");
+  if (
+    persistenceEnabled
+    && existsSync(codexReviewWrapperPath)
+    && !(state.agents ?? []).some(isGovernedCodexReviewAgent)
+  ) {
+    const reviewDevice = listDevices(state)[0] ?? null;
+    const reviewOwner = reviewDevice?.ownerUserId ?? "usr_local";
+    registerAgent(createCodexReviewAgentRegistration({
+      wrapperScriptPath: codexReviewWrapperPath,
+      costOwner: reviewOwner,
+    }), { userId: reviewOwner });
+  }
 
   const {
     closeClaudeSession,
@@ -905,10 +1227,13 @@ export function createServerRuntimeServices({
   // #1147: same late-binding for the mail send fold — the send service needs
   // createInvocation (composed below), completion needs the fold here.
   let mailSendHooks = null;
+  let mailFolderOrganizationHooks = null;
   // S5 (#1090): channel-originated invocations report their outcome back to the
   // originating conversation. Late-bound like the auto-run hook — the delivery
   // service composes after the invocation service.
   let channelDeliveryHook = null;
+  let channelThreadHook = null;
+  let channelConsultationHook = null;
   let approvalAutoRunHook = null;
   let denialAutoRunHook = null;
   // Same late-binding for orchestration auto-recovery: it reuses the recovery
@@ -944,9 +1269,24 @@ export function createServerRuntimeServices({
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
     recordClaudeApplyResult,
-    recordMailSendResult: (args) => mailSendHooks?.recordMailSendResult(args) ?? null,
+    recordMailSendResult: (args) => {
+      mailSendHooks?.recordMailSendResult(args);
+      return mailFolderOrganizationHooks?.recordResult(args) ?? null;
+    },
     recordCodexExecChanges,
-    recordApplicationResult,
+    recordApplicationResult: (args) => {
+      const records = recordApplicationResult(args);
+      for (const record of records) {
+        if (record.source === "mail_headers" && record.data?.kind === "mailbox_sync") {
+          queueMicrotask(() => mailFolderOrganizationHooks?.onMailImported?.({
+            ownerTeamId: record.ownerTeamId,
+            accountId: record.applicationId,
+            triggerId: record.invocationId ?? record.id,
+          }));
+        }
+      }
+      return records;
+    },
     currentProject,
     worktreeForProject,
     createWorktree,
@@ -980,6 +1320,10 @@ export function createServerRuntimeServices({
     // #1084: transcript count-cap evictions spill to the retention archive.
     capWithArchive: retentionArchive.capWithArchive,
     onInvocationCompleted: (invocation) => {
+      localContentRetrievalService.releaseInvocation(invocation.id);
+      void localContentCatalogService.requestAutomaticIncremental({ reason: "invocation_completed" }).catch(() => {
+        /* local search keeps the previous valid index when an incremental pass fails */
+      });
       advanceAutoRunHook?.(invocation);
       try {
         recordApplicationExecutionStat(invocation);
@@ -990,6 +1334,16 @@ export function createServerRuntimeServices({
         orchestrationAutoRecoveryHook?.(invocation);
       } catch {
         /* auto-recovery is best-effort; completion must never fail because of it */
+      }
+      try {
+        channelThreadHook?.(invocation);
+      } catch {
+        /* task-thread state is best-effort; completion must never fail because of it */
+      }
+      try {
+        channelConsultationHook?.(invocation);
+      } catch {
+        /* consultation delivery is best-effort; completion must never fail because of it */
       }
       try {
         channelDeliveryHook?.(invocation);
@@ -1007,6 +1361,7 @@ export function createServerRuntimeServices({
       reconcileClaudeApplyTermination(invocation);
       // #1147: same for a denied send — the draft must read send_unconfirmed.
       mailSendHooks?.reconcileMailSendTermination(invocation);
+      mailFolderOrganizationHooks?.reconcileTermination(invocation);
       denialAutoRunHook?.(invocation);
     },
   });
@@ -1314,7 +1669,7 @@ export function createServerRuntimeServices({
     return { ok: true, ...result };
   }
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, stopAutoRunDelivery, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -1330,6 +1685,9 @@ export function createServerRuntimeServices({
     // it when the run settles.
     claimIssueForRun: claimIssue,
     releaseIssueClaimsForAutoRun,
+    // Development execution is admitted only from a durable Local Issue.
+    // External GitHub/GitLab issues remain intake/context records.
+    requireLocalIssueForDevelopment: true,
     // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
     sendAlert: alertOutbox.enqueue,
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
@@ -1354,6 +1712,7 @@ export function createServerRuntimeServices({
     destroyWorktree,
     findAgent,
     defaultAgent,
+    importArticleToWorktree,
     createInvocation,
     startInvocationIfAllowed,
     commitWorktreeChanges,
@@ -1403,6 +1762,7 @@ export function createServerRuntimeServices({
       const commands = resolveAutoRunVerificationPlan({
         verifyCommandName: project?.verifyCommandName ?? null,
         changedPaths,
+        repositoryRoot: worktree?.path ?? null,
       });
       if (!commands.length || !worktree?.path) {
         return { passed: true, verified: false, summary: "No verification command configured — PR opened unverified." };
@@ -1431,7 +1791,11 @@ export function createServerRuntimeServices({
     decideIssuePath: (() => {
       const command = resolveDeciderCommand(autoRunEnv);
       return command
-        ? async ({ link, issueBody }) => runDeciderCommand({ command, input: { link, issueBody }, timeoutMs: deciderTimeoutMs(autoRunEnv) })
+        ? async ({ link, issueBody, projectContext }) => runDeciderCommand({
+            command,
+            input: { link, issueBody, projectContext },
+            timeoutMs: deciderTimeoutMs(autoRunEnv),
+          })
         : undefined;
     })(),
     // Decision confidence gate + fast-path (settings overlaid on env); passed so
@@ -1504,6 +1868,50 @@ export function createServerRuntimeServices({
         return { review, diffLines, files };
       };
     })(),
+    // Every completed local code delivery gets a second, read-only Codex pass.
+    // This is the same governed reviewer exposed by the tool registry, so it
+    // inherits the Desktop Bridge's local Codex login and cannot modify files.
+    startDeliveryReview: async ({ autoRun, worktree }) => {
+      const reviewer = (state.agents ?? []).find(isGovernedCodexReviewAgent) ?? null;
+      if (!reviewer || reviewer.status === "disabled" || reviewer.health?.status === "unhealthy") {
+        throw new Error("The governed Codex reviewer is not available on this device.");
+      }
+      const reviewerDevice = reviewer.location?.type === "local_device"
+        ? findDevice(state, reviewer.location.deviceId)
+        : null;
+      if (reviewer.location?.type === "local_device" && reviewerDevice?.unlinkState !== "linked") {
+        throw new Error("The local device is not connected, so Codex review cannot start yet.");
+      }
+      const taskContext = [
+        `Review the completed delivery for local task ${autoRun.link?.number ?? autoRun.id}: ${autoRun.link?.title ?? "Untitled task"}.`,
+        "Judge whether the committed change solves the task, introduces regressions, and includes adequate tests.",
+        autoRun.issueBody ? `Task and acceptance context:\n${String(autoRun.issueBody).slice(0, 850)}` : null,
+      ].filter(Boolean).join("\n\n").slice(0, 1200);
+      const invocation = createInvocation(`Review the completed local task delivery for ${autoRun.link?.title ?? autoRun.id}.`, reviewer, {
+        actor: { userId: autoRun.requestedBy ?? "usr_local", teamId: autoRun.teamId ?? "team_local", role: "operator" },
+        requestedBy: autoRun.requestedBy ?? "usr_local",
+        metadata: {
+          tool: CODEX_REVIEW_TOOL_CONTRACT.name,
+          toolVersion: CODEX_REVIEW_TOOL_CONTRACT.version,
+          projectId: autoRun.projectId,
+          worktreeId: worktree.id,
+          severityFloor: "medium",
+          instruction: taskContext,
+          ...(typeof worktree.baseCommit === "string" && /^[0-9a-f]{40}$/i.test(worktree.baseCommit)
+            ? { reviewBaseRef: worktree.baseCommit.toLowerCase() }
+            : {}),
+          autoRunId: autoRun.id,
+          role: "delivery_review",
+        },
+        // Native Codex review can inspect call sites and tests beyond the patch.
+        // Keep it asynchronous and allow the same turn budget as a coding run;
+        // the UI polls progress and the retry policy prevents runaway attempts.
+        timeoutSeconds: 900,
+      });
+      startInvocationIfAllowed(invocation, reviewer);
+      return invocation;
+    },
+    submitDeliveryReview: submitWorktreeReview,
     // Read a small text file from a worktree (e.g. design/BRIEF.md) — used to
     // surface the FULL design/prototype brief in the report, not just the thin
     // terminal summary. Null if absent/oversized.
@@ -1581,7 +1989,19 @@ export function createServerRuntimeServices({
     // Self-healing (H2): file the auto-labeled remediation issue after a failed
     // deploy (gh issue create; gated at call-time on remediateOnDeployFailure).
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
+    materializeTaskMaterials: taskMaterialService.materialize,
     store,
+  });
+  const workItemAutoRunUnderstandingService = createWorkItemAutoRunUnderstandingService({
+    state,
+    getWorkItem: workItemService.getWorkItem,
+    prepareExecutionContract: workItemService.prepareExecutionContract,
+    decideReservedAutoRun,
+    attachAutoRunExecutionPlan,
+    failAutoRunUnderstanding,
+    deferAutoRunUnderstanding,
+    startAutoRun,
+    searchProjectContent,
   });
   const workItemAutoRunBatchService = createWorkItemAutoRunBatchService({
     state,
@@ -1593,9 +2013,26 @@ export function createServerRuntimeServices({
     beginExecution: workItemService.beginExecution,
     abortExecution: workItemService.abortExecution,
     recordExecutionBinding: workItemService.recordExecutionBinding,
-    startAutoRun,
+    reserveAutoRun,
+    enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
     store,
   });
+  const workItemAutoSchedulerService = createWorkItemAutoSchedulerService({
+    state,
+    now,
+    appendEvent,
+    getWorkItem: workItemService.getWorkItem,
+    beginExecution: workItemService.beginExecution,
+    abortExecution: workItemService.abortExecution,
+    recordExecutionBinding: workItemService.recordExecutionBinding,
+    reserveAutoRun,
+    enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
+    failAutoRunUnderstanding,
+    timeZone: () => currentDeviceTimeZone(state),
+  });
+  requestWorkItemAutoSchedulerSweep = () => {
+    setImmediate(() => void workItemAutoSchedulerService.sweep().catch(() => {}));
+  };
   const codexApprovalRecovery = createCodexApprovalRecoveryService({
     state,
     now,
@@ -1610,6 +2047,7 @@ export function createServerRuntimeServices({
   advanceAutoRunHook = async (invocation) => {
     const result = await advanceAutoRunForInvocation(invocation);
     await codexApprovalRecovery.resumeForSettledInvocation(invocation);
+    requestWorkItemAutoSchedulerSweep();
     return result;
   };
   approvalAutoRunHook = syncAutoRunOnApproval;
@@ -1621,6 +2059,14 @@ export function createServerRuntimeServices({
   queueMicrotask(() => {
     void codexApprovalRecovery.reconcilePendingRecoveries().catch(() => {});
   });
+  queueMicrotask(() => {
+    void workItemAutoRunUnderstandingService.reconcile().catch(() => {});
+  });
+  // Let the HTTP listener bind before historical delivery review reconciliation;
+  // this work may create and persist an invocation on a large local state file.
+  setTimeout(() => {
+    void reconcileDeliveryReviews({ ignoreRetryDelay: true }).catch(() => {});
+  }, 1_000).unref?.();
 
   // Routing-evaluation disposition refresh (slice 5): bounded, throttled,
   // read-only gh; persists only when something changed.
@@ -1711,6 +2157,7 @@ export function createServerRuntimeServices({
     ledgerSummary,
     budgetStatuses,
     expireCodexApprovalBrokerRequests,
+    channelReadiness: (channel) => channelService.readiness(channel),
   });
 
   const {
@@ -1797,12 +2244,57 @@ export function createServerRuntimeServices({
   mailSendHooks = mailSendService;
   const { sendConfirmedDraft } = mailSendService;
 
+  // Ordinary-user mailbox surface. This is a read model over imported mail and
+  // a bounded store for user-authored drafts; credentials remain device-local.
+  const mailClassificationService = createMailClassificationService({
+    state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
+    semanticAdapter: createLocalMailSemanticAdapter({ config: resolveMailSemanticConfig() }),
+  });
+  const mailFolderSuggestionService = createMailFolderSuggestionService({
+    state, now, nextId, persistStateSoon: persistMailboxStateSoon, store,
+    classificationService: mailClassificationService,
+  });
+  const mailFolderOrganizationService = createMailFolderOrganizationService({
+    state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
+    folderSuggestionService: mailFolderSuggestionService,
+    automaticEnabled: isMailAutomaticOrganizationEnabled,
+    qualitySummary: (messages, actor) => mailClassificationService.qualitySummary(messages, actor),
+    validateApprovalToken,
+    createInvocation: (task, agent, options) => createInvocation(task, agent, options),
+    startInvocationIfAllowed: (invocation, agent) => startInvocationIfAllowed(invocation, agent),
+    findAgent,
+    findApplication,
+  });
+  const mailboxService = createMailboxService({
+    state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
+    mailSendEnabled: isMailSendEnabled,
+    mailOrganizeEnabled: isMailOrganizationEnabled,
+    mailAutoOrganizeEnabled: isMailAutomaticOrganizationEnabled,
+    mailClassificationEnabled: isMailClassificationEnabled,
+    createCapabilityInvocation,
+    createWorkItem: workItemService.createWorkItem,
+    inspectTaskMaterialDraft: taskMaterialService.getDraft,
+    classificationService: mailClassificationService,
+    folderSuggestionService: mailFolderSuggestionService,
+    folderOrganizationService: mailFolderOrganizationService,
+    mailQueryIndex,
+  });
+  mailFolderOrganizationHooks = {
+    ...mailFolderOrganizationService,
+    onMailImported: ({ ownerTeamId, accountId, triggerId }) => mailboxService.runFolderAutomations({ teamId: ownerTeamId, accountId, triggerId }),
+  };
+
   // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
   // + fail-closed identity mappings. Readiness is env-presence booleans; enable
   // is approval-gated like every other side-effecting action. Import denials
   // (S3) go through the refuse() chokepoint like every other veto.
+  let ilinkRuntime = null;
   const channelService = createChannelService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken, refuse,
+    readinessProbes: {
+      ...defaultReadinessProbes,
+      wechat_ilink: (channel) => ilinkRuntime?.readiness(channel) ?? { account: false, session: false, worker: false },
+    },
   });
 
   // Conversation execution (S4): imported events dispatch into GOVERNED
@@ -1811,10 +2303,363 @@ export function createServerRuntimeServices({
   // /task enters the SAME local Work Item service as the single-terminal Entry.
   // GitHub/GitLab/Gitea bindings remain optional synchronization edges; Channel
   // intake never needs an external tracker in order to become queued local work.
+  const inferChannelTaskDomain = (text) => {
+    const value = String(text ?? "").toLowerCase();
+    if (/(代码|开发|修复|bug|接口|部署|测试|仓库|分支|编译|程序)/i.test(value)) return "development";
+    if (/(文章|图片|视频|音频|配图|短视频|公众号|小红书|素材|脚本|剪辑|创作)/i.test(value)) return "content";
+    if (/(报价|客户|订单|发货|物流|汇款|付款|收款|采购|库存|合同|报销|邮件|表格|对账)/i.test(value)) return "office";
+    return "general";
+  };
+  const inferChannelTaskRiskLevel = (text) => {
+    const value = String(text ?? "").toLowerCase();
+    if (/(汇款|付款|支付|转账|收款账户|银行卡)/i.test(value)) return "financial";
+    if (/(删除|清空|覆盖|批量修改|销毁)/i.test(value)) return "destructive";
+    if (/(发送给|发给客户|对外发送|发布|发货|提交订单)/i.test(value)) return "external_communication";
+    if (/(修改|编辑|生成|导出|部署|合并|提交代码|改写|剪辑)/i.test(value)) return "local_change";
+    return "low";
+  };
+  const buildChannelExecutionPreview = ({
+    title, description, riskLevel, inputAssets = [], projectId = null, ownerTeamId = null,
+  }) => {
+    const text = String(description ?? title ?? "").replace(/\s+/g, " ").trim();
+    const targetMatch = text.match(/(?:发给|发送给|发布到|提交给|通知)\s*([^，,。；;！!？?]+)/i);
+    const payeeMatch = text.match(/(?:给|转给|汇给|付款给)\s*([^，,。；;！!？?]+)/i);
+    const amountMatch = text.match(/(?:金额|汇款|付款|支付)\s*(?:为|：|:)??\s*([¥￥]?\s*\d+(?:\.\d+)?\s*(?:元|人民币|美元|USD|CNY)?)/i);
+    const scopeMatch = text.match(/(?:删除|清空|覆盖|批量修改|销毁)\s*([^，,。；;！!？?]+)/i);
+    const target = targetMatch?.[1]?.trim() || payeeMatch?.[1]?.trim() || null;
+    const amount = amountMatch?.[1]?.replace(/\s+/g, " ").trim() || null;
+    const scope = scopeMatch?.[1]?.trim() || null;
+    const action = {
+      external_communication: "对外发送或发布",
+      financial: "财务操作",
+      destructive: "删除、覆盖或批量修改",
+      local_change: "修改本地内容",
+      low: "整理、分析或咨询",
+    }[riskLevel] ?? "任务处理";
+    const inputs = inputAssets.slice(0, 20).map((asset) => ({
+      name: asset?.originalName ?? asset?.name ?? String(asset?.path ?? "").replaceAll("\\", "/").split("/").at(-1) ?? "附件",
+      family: asset?.family ?? "file",
+    }));
+    const hasContent = inputs.length > 0
+      || /(报价|报价单|报告|通知|邮件|合同|文件|图片|视频|文章|内容|附件)/i.test(text);
+    const unknownFields = [];
+    const requiredFields = [];
+    if (riskLevel === "external_communication") {
+      if (!target) {
+        unknownFields.push("收件人或发布位置");
+        requiredFields.push("收件人或发布位置");
+      }
+      if (!hasContent) {
+        unknownFields.push("最终发送内容或附件");
+        requiredFields.push("最终发送内容或附件");
+      } else {
+        unknownFields.push("最终发送内容和附件");
+      }
+    } else if (riskLevel === "financial") {
+      if (!amount) {
+        unknownFields.push("金额");
+        requiredFields.push("金额");
+      }
+      if (!target) {
+        unknownFields.push("收款方");
+        requiredFields.push("收款方");
+      }
+      unknownFields.push("付款账户");
+      requiredFields.push("付款账户");
+    } else if (riskLevel === "destructive") {
+      if (!scope) {
+        unknownFields.push("具体删除或覆盖范围");
+        requiredFields.push("具体删除或覆盖范围");
+      }
+      unknownFields.push("是否需要保留备份");
+    }
+    const objectValidation = resolveChannelObjectRequests({
+      state,
+      projectId,
+      ownerTeamId,
+      text,
+      riskLevel,
+      inputAssets,
+    });
+    const objectRequiredFields = riskLevel === "external_communication" || riskLevel === "financial" || riskLevel === "destructive"
+      ? objectValidation.requiredFields
+      : [];
+    for (const field of objectRequiredFields) {
+      if (!requiredFields.includes(field)) requiredFields.push(field);
+      if (!unknownFields.includes(field)) unknownFields.push(field);
+    }
+    const preview = {
+      schemaVersion: 1,
+      action,
+      target: target || "尚未明确",
+      targetStatus: target ? "inferred" : "unknown",
+      amount,
+      scope,
+      inputs,
+      impact: riskLevel === "financial"
+        ? "可能产生资金或财务数据变更"
+        : riskLevel === "destructive"
+          ? "可能覆盖或删除已有数据"
+          : riskLevel === "external_communication"
+            ? "可能向外部对象发送或发布内容"
+            : "主要影响本地任务产物",
+      unknownFields,
+      requiredFields,
+      previewReady: requiredFields.length === 0,
+      objectValidation: channelObjectValidationSummary(objectValidation),
+    };
+    const previewDigest = createHash("sha256").update(JSON.stringify({
+      riskLevel,
+      goal: text,
+      preview,
+    })).digest("hex");
+    return { ...preview, digest: previewDigest };
+  };
+  const attachDataRelationConfirmation = ({ workItem, dataPlan, dataRelationPreview, channelId, requestId = null, threadId = null, mode }) => {
+    if (!workItem || dataRelationPreview?.status !== "ready" || !(dataRelationPreview.relations ?? []).length) return null;
+    state.channelDataRelationConfirmations ??= [];
+    const existing = state.channelDataRelationConfirmations.find((record) =>
+      record.workItemId === workItem.id && record.status === "verified");
+    if (existing) return existing;
+    const timestamp = now();
+    const record = {
+      id: nextId("drc"),
+      schemaVersion: 1,
+      ownerTeamId: workItem.ownerTeamId ?? workItem.teamId ?? LOCAL_TEAM_ID,
+      projectId: workItem.projectId,
+      channelId,
+      channelTaskRequestId: requestId,
+      threadId,
+      workItemId: workItem.id,
+      status: "verified",
+      confirmationMode: mode === "user_confirmation" ? "user_confirmation" : "runtime_verified",
+      planDigest: dataPlan?.digest ?? null,
+      relationDigest: dataRelationPreview.digest ?? null,
+      objectSnapshot: (dataRelationPreview.objectSnapshot ?? []).slice(0, 2_000),
+      objectSnapshotCount: (dataRelationPreview.objectSnapshot ?? []).length,
+      confirmedAt: timestamp,
+      confirmedBy: typeof workItem.createdBy === "string"
+        ? workItem.createdBy
+        : workItem.createdBy?.userId ?? null,
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    state.channelDataRelationConfirmations.push(record);
+    workItem.channelTaskContract.dataRelationConfirmation = {
+      schemaVersion: 1,
+      id: record.id,
+      status: record.status,
+      confirmationMode: record.confirmationMode,
+      planDigest: record.planDigest,
+      relationDigest: record.relationDigest,
+      objectSnapshotCount: record.objectSnapshotCount,
+      confirmedAt: record.confirmedAt,
+      confirmedBy: record.confirmedBy,
+    };
+    appendEvent?.({
+      invocationId: null,
+      type: "channel_data_relation_verified",
+      level: "info",
+      message: `Channel data relation verified for ${workItem.localRef ?? workItem.id}.`,
+      data: {
+        channelId,
+        channelTaskRequestId: requestId,
+        threadId,
+        workItemId: workItem.id,
+        confirmationId: record.id,
+        confirmationMode: record.confirmationMode,
+        objectSnapshotCount: record.objectSnapshotCount,
+      },
+    });
+    return record;
+  };
+  function channelLedgerEvidence(definition, actor) {
+    const artifact = (state.workflowArtifacts ?? [])
+      .filter((candidate) => candidate.ownerTeamId === (actor?.teamId ?? LOCAL_TEAM_ID)
+        && candidate.projectId === definition?.projectId
+        && candidate.sourceId === definition?.sourceId
+        && candidate.availability === "available"
+        && candidate.exclusion !== true)
+      .find((candidate) => basename(String(candidate.relativePath ?? "")).toLocaleLowerCase()
+        === basename(String(definition?.relativePath ?? "")).toLocaleLowerCase());
+    return artifact?.id ? [{ artifactId: artifact.id, field: null }] : [];
+  }
+
+  async function prepareChannelLedgerMutation({
+    text, projectId, dataMutationPreview, dataMutationBinding, dataMutationBindings = [], actor,
+  } = {}) {
+    if (!dataMutationPreview || dataMutationPreview.status === "not_required") {
+      return { ok: false, reason: "not_required" };
+    }
+    const requestedBindings = dataMutationBindings.length
+      ? dataMutationBindings
+      : dataMutationBinding ? [dataMutationBinding] : [];
+    if (!requestedBindings.length) {
+      return { ok: false, reason: "binding_required" };
+    }
+    const currentBindings = requestedBindings.map((binding) => {
+      const current = channelMutationBindingService.resolveBinding({
+        projectId,
+        fileSourceId: binding.fileSourceId,
+      }, actor);
+      return current.ok && current.binding.id === binding.id ? current : null;
+    });
+    if (currentBindings.some((binding) => !binding)) {
+      return { ok: false, reason: "binding_stale" };
+    }
+    const definitions = currentBindings.map((binding) => binding.definition);
+    const isBatch = String(text ?? "").split(/[；;]/).filter((clause) => clause.trim()).length > 1;
+    if (isBatch) {
+      const policy = dataMutationPreview.templatePolicy;
+      if (!policy || !policy.allowMultipleRows
+        || (definitions.length > 1 && !policy.allowMultipleSources)) {
+        return { ok: false, reason: "mutation_policy_batch_not_allowed" };
+      }
+      const parsedPlan = parseLedgerMutationPlan(text, definitions);
+      if (!parsedPlan.ok) return { ok: false, reason: parsedPlan.reason };
+      const operations = [];
+      const identities = [];
+      for (const parsed of parsedPlan.operations) {
+        const currentBinding = currentBindings.find((binding) => binding.definition.id === parsed.definition.id);
+        const source = currentBinding.source;
+        const targetIdentity = await ledgerUpsertService.inspectTargetIdentity({
+          ledgerDefinitionId: parsed.definition.id,
+        }, actor);
+        if (targetIdentity.status !== 200) {
+          return { ok: false, reason: targetIdentity.body?.error ?? "ledger_target_identity_unavailable" };
+        }
+        if (!source?.contentHash || source.contentHash !== targetIdentity.body.identity.contentHash) {
+          return {
+            ok: false,
+            reason: "channel_mutation_source_identity_mismatch",
+            details: {
+              fileSourceId: source?.id ?? null,
+              expectedContentHash: source?.contentHash ?? null,
+              actualContentHash: targetIdentity.body.identity.contentHash,
+            },
+          };
+        }
+        const sourceEvidence = channelLedgerEvidence(parsed.definition, actor);
+        if (!sourceEvidence.length) return { ok: false, reason: "source_evidence_required" };
+        operations.push({
+          ledgerDefinitionId: parsed.definition.id,
+          businessKey: parsed.businessKey,
+          fields: parsed.fields,
+          sourceEvidence,
+          allowPartialUpdate: true,
+        });
+        identities.push(targetIdentity.body.identity);
+      }
+      const result = await ledgerUpsertService.previewBatchUpsert({ operations }, actor);
+      if (![200, 201, 202].includes(result.status)) {
+        return { ok: false, reason: result.body?.error ?? "ledger_batch_preview_failed", details: result.body ?? null };
+      }
+      return {
+        ok: true,
+        batch: true,
+        parsedPlan,
+        preview: result.body?.batchPreview ?? null,
+        targetIdentities: identities,
+        replayed: result.body?.replayed === true,
+      };
+    }
+    const currentBinding = currentBindings[0];
+    const definition = currentBinding.definition;
+    const source = currentBinding.source;
+    const targetIdentity = await ledgerUpsertService.inspectTargetIdentity({
+      ledgerDefinitionId: definition.id,
+    }, actor);
+    if (targetIdentity.status !== 200) {
+      return {
+        ok: false,
+        reason: targetIdentity.body?.error ?? "ledger_target_identity_unavailable",
+        details: targetIdentity.body ?? null,
+      };
+    }
+    if (!source?.contentHash || source.contentHash !== targetIdentity.body.identity.contentHash) {
+      return {
+        ok: false,
+        reason: "channel_mutation_source_identity_mismatch",
+        details: {
+          fileSourceId: source?.id ?? dataMutationBinding.fileSourceId,
+          expectedContentHash: source?.contentHash ?? null,
+          actualContentHash: targetIdentity.body.identity.contentHash,
+          targetRevision: targetIdentity.body.identity.targetRevision,
+        },
+      };
+    }
+    const parsed = parseSingleRecordLedgerMutation(text, definition);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        reason: parsed.reason,
+        fieldHint: channelLedgerMutationFieldHint(definition),
+      };
+    }
+    const sourceEvidence = channelLedgerEvidence(definition, actor);
+    if (!sourceEvidence.length) return { ok: false, reason: "source_evidence_required" };
+    const result = await ledgerUpsertService.previewUpsert({
+      ledgerDefinitionId: definition.id,
+      businessKey: parsed.businessKey,
+      fields: parsed.fields,
+      sourceEvidence,
+      allowPartialUpdate: true,
+    }, actor);
+    if (![200, 201, 202].includes(result.status)) {
+      return {
+        ok: false,
+        reason: result.body?.error ?? "ledger_preview_failed",
+        details: result.body ?? null,
+      };
+    }
+    return {
+      ok: true,
+      parsed,
+      preview: result.body?.preview ?? null,
+      targetIdentity: targetIdentity.body.identity,
+      replayed: result.body?.replayed === true,
+    };
+  };
+
+  async function refreshChannelMutationSourcesAfterCommit(bindings = [], actor = null) {
+    const refreshed = [];
+    const failures = [];
+    for (const binding of bindings) {
+      if (!binding?.fileSourceId || !binding?.ledgerDefinitionId) continue;
+      const identity = await ledgerUpsertService.inspectTargetIdentity({
+        ledgerDefinitionId: binding.ledgerDefinitionId,
+      }, actor);
+      if (identity.status !== 200 || !identity.body?.identity?.contentHash) {
+        failures.push({
+          fileSourceId: binding.fileSourceId,
+          ledgerDefinitionId: binding.ledgerDefinitionId,
+          reason: identity.body?.error ?? "channel_mutation_source_refresh_failed",
+        });
+        continue;
+      }
+      const synced = channelMutationBindingService.refreshSourceIdentity({
+        fileSourceId: binding.fileSourceId,
+        contentHash: identity.body.identity.contentHash,
+      }, actor);
+      if (!synced.ok) failures.push({ ...synced, fileSourceId: binding.fileSourceId });
+      else refreshed.push(synced.source);
+    }
+    if (failures.length) {
+      appendEvent?.({
+        invocationId: null,
+        type: "channel_mutation_source_refresh_failed",
+        level: "warn",
+        message: "Channel Ledger write committed, but the local source snapshot needs refresh.",
+        data: { failures },
+      });
+    }
+    return { refreshed, failures };
+  }
   const createChannelTaskIssue = async ({
     projectId, channelOwnerTeamId, title, description, channelId, externalUserId,
     injectionSuspicious = false, autoRoute = false, inputAssets = [], terminalId,
-    channelTaskContext,
+    channelTaskContext, threadId = null, idempotencyKey = null, dataMutationScope = null,
   }) => {
     const project = (state.projects ?? []).find((p) => p.id === projectId);
     if (!project) return { ok: false, reason: "project_not_resolvable" };
@@ -1827,21 +2672,410 @@ export function createServerRuntimeServices({
     if (!principal || (principal.teamId ?? LOCAL_TEAM_ID) !== (channelOwnerTeamId ?? LOCAL_TEAM_ID)) {
       return { ok: false, reason: "channel_principal_invalid" };
     }
+    const workItemActor = { userId: principal.id, teamId: principal.teamId, role: "member", deviceId: terminalId };
+    const assisted = typeof workItemService.suggestWorkItemDraft === "function"
+      ? workItemService.suggestWorkItemDraft({ projectId, title, body: description, inputAssets }, workItemActor)
+      : null;
+    const assistedDraft = assisted?.ok ? assisted.body?.draft ?? null : null;
+    const selectedTemplate = assistedDraft?.templateMatch?.selected ?? null;
+    const selectedDefinition = selectedTemplate
+      ? (state.routineDefinitions ?? []).find((definition) => definition.id === selectedTemplate.definitionId)
+      : null;
+    const templateMatch = selectedTemplate ? {
+      state: assistedDraft.templateMatch.state,
+      decision: assistedDraft.templateMatch.decision?.reason ?? assistedDraft.templateMatch.decision?.kind ?? null,
+      definitionId: selectedTemplate.definitionId,
+      familyId: selectedTemplate.templateId,
+      version: selectedTemplate.version,
+      reasons: selectedTemplate.reasons ?? [],
+    } : {
+      state: assistedDraft?.templateMatch?.state ?? "missing",
+      decision: assistedDraft?.templateMatch?.decision?.reason ?? assistedDraft?.templateMatch?.decision?.kind ?? null,
+      definitionId: null,
+      familyId: null,
+      version: null,
+      reasons: [],
+    };
+    const dataPlan = buildRuntimeDataPlan({
+      state,
+      projectId,
+      ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
+      dataRequirements: selectedDefinition?.dataRequirements ?? [],
+      relations: selectedDefinition?.relations ?? [],
+      mutationPolicy: selectedDefinition?.mutationPolicy ?? null,
+    });
+    const dataRelationPreview = buildDataRelationPreview({
+      state,
+      plan: dataPlan,
+      projectId,
+      ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
+    });
+    const paymentRequirements = dataPlan.requirements?.filter((requirement) =>
+      ["receivable", "bank_transaction"].includes(requirement.kind),
+    ) ?? [];
+    let paymentReconciliationPreview = null;
+    if (dataPlan.status === "ready"
+      && paymentRequirements.some((requirement) => requirement.kind === "receivable")
+      && paymentRequirements.some((requirement) => requirement.kind === "bank_transaction")) {
+      const sourceIds = new Set(paymentRequirements.map((requirement) => requirement.sourceId).filter(Boolean));
+      const objects = (state.channelObjectRecords ?? []).filter((record) =>
+        record.ownerTeamId === (channelOwnerTeamId ?? LOCAL_TEAM_ID)
+        && record.projectId === projectId
+        && sourceIds.has(record.sourceId)
+        && ["receivable", "bank_transaction"].includes(record.kind),
+      );
+      const receivables = objects.filter((record) => record.kind === "receivable");
+      const bankTransactions = objects.filter((record) => record.kind === "bank_transaction");
+      paymentReconciliationPreview = buildPaymentReconciliationPreview({ receivables, bankTransactions });
+      paymentReconciliationPreview.sources = paymentRequirements.map((requirement) => ({
+        requirementId: requirement.id,
+        kind: requirement.kind,
+        sourceId: requirement.sourceId,
+        fileName: dataPlan.sources?.find((source) => source.sourceId === requirement.sourceId)?.fileName ?? null,
+      }));
+      paymentReconciliationPreview.digest = createHash("sha256")
+        .update(JSON.stringify(paymentReconciliationPreview))
+        .digest("hex");
+    }
+    let dataMutationPreview = buildDataMutationPreview({
+      state,
+      projectId,
+      ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
+      text: `${title}\n${description}`,
+      dataPlan,
+      dataMutationScope,
+    });
+    const dataMutationBindings = (dataMutationPreview?.targetSourceIds ?? []).map((fileSourceId) =>
+      channelMutationBindingService.resolveBinding({ projectId, fileSourceId }, workItemActor));
+    const dataMutationBinding = dataMutationBindings.length === 1
+      ? dataMutationBindings[0]
+      : dataMutationBindings.length > 1 && dataMutationBindings.every((binding) => binding.ok)
+        ? dataMutationBindings[0]
+        : { ok: false, reason: "channel_mutation_binding_missing" };
+    let ledgerMutationPreview = null;
+    let ledgerMutationPreparation = { ok: false, reason: "not_required" };
+    if (dataMutationPreview?.status && dataMutationPreview.status !== "not_required"
+      && dataMutationBinding.ok
+      && dataMutationBindings.length > 0
+      && dataMutationBindings.every((binding) => binding.ok)) {
+      ledgerMutationPreparation = await prepareChannelLedgerMutation({
+        text: description,
+        projectId,
+        dataMutationPreview,
+        dataMutationBinding: dataMutationBinding.binding,
+        dataMutationBindings: dataMutationBindings.map((binding) => binding.binding),
+        actor: workItemActor,
+      });
+      if (ledgerMutationPreparation.ok) {
+        ledgerMutationPreview = ledgerMutationPreparation.preview;
+        if (ledgerMutationPreparation.batch) {
+          const operations = ledgerMutationPreparation.parsedPlan.operations;
+          const sourceById = new Map((dataMutationPreview.targetSources ?? []).map((source) => [source.sourceId, source]));
+          const targets = operations.map((operation) => {
+            const binding = dataMutationBindings.find((candidate) =>
+              candidate.binding?.ledgerDefinitionId === operation.definition.id)?.binding;
+            const source = sourceById.get(binding?.fileSourceId);
+            const criteriaDigest = createHash("sha256").update(JSON.stringify(operation.businessKey)).digest("hex");
+            return {
+              sourceId: binding?.fileSourceId ?? null,
+              revision: source?.revision ?? null,
+              contentHash: source?.contentHash ?? null,
+              selector: {
+                field: operation.definition.businessKeyField,
+                operator: "equals",
+                criteriaDigest,
+                matchCount: 1,
+                allMatching: false,
+              },
+              expectedRows: 1,
+            };
+          });
+          const fields = [...new Set(operations.map((operation) => operation.field).filter(Boolean))];
+          const batchPolicy = {
+            ...(dataMutationPreview.templatePolicy ?? {}),
+            requireUserConfirmation: true,
+            writeMode: "safe_copy_replace",
+          };
+          const scoped = {
+            ...dataMutationPreview,
+            status: "ready",
+            targetStatus: "explicit",
+            templatePolicy: batchPolicy,
+            rowSelector: targets.map((target) => ({ sourceId: target.sourceId, revision: target.revision, ...target.selector })),
+            fieldChanges: fields.map((field) => ({ field, operation: "set", valueProvided: true })),
+            dataMutationScope: {
+              schemaVersion: 1,
+              operation: "update",
+              targets,
+              changes: fields.map((field) => ({ field, operation: "set", valueDigest: null, valueProvided: true })),
+              expectedAffectedRows: targets.length,
+              allowAllMatching: false,
+            },
+            estimatedAffectedRows: targets.length,
+            requiredFields: [],
+            writeMode: "safe_copy_replace",
+            executionMode: "ledger_batch",
+          };
+          scoped.digest = createHash("sha256").update(JSON.stringify({ ...scoped, digest: undefined })).digest("hex");
+          dataMutationPreview = scoped;
+        } else {
+        const parsed = ledgerMutationPreparation.parsed;
+        const targetSource = dataMutationPreview.targetSources?.find((source) =>
+          source.sourceId === dataMutationPreview.targetSourceIds?.[0]);
+        const keyField = dataMutationBinding.definition?.businessKeyField ?? null;
+        const criteriaDigest = createHash("sha256").update(JSON.stringify(parsed.businessKey)).digest("hex");
+        const valueDigest = createHash("sha256").update(JSON.stringify(parsed.fields[parsed.field])).digest("hex");
+        const singleRecordPolicy = {
+          operations: ["update"],
+          targetRequirementIds: [],
+          keyFields: keyField ? [keyField] : [],
+          mutableFields: [parsed.field],
+          allowMultipleSources: false,
+          allowMultipleRows: false,
+          maxRows: 1,
+          requireUserConfirmation: true,
+          writeMode: "safe_copy_replace",
+        };
+        const scoped = {
+          ...dataMutationPreview,
+          status: "ready",
+          targetStatus: "explicit",
+          templatePolicy: singleRecordPolicy,
+          rowSelector: [{
+            sourceId: targetSource?.sourceId ?? dataMutationPreview.targetSourceIds?.[0] ?? null,
+            revision: targetSource?.revision ?? null,
+            field: keyField,
+            operator: "equals",
+            criteriaDigest,
+            matchCount: 1,
+            allMatching: false,
+          }],
+          fieldChanges: [{
+            field: parsed.field,
+            operation: "set",
+            valueDigest: createHash("sha256").update(JSON.stringify(parsed.fields[parsed.field])).digest("hex"),
+            valueProvided: true,
+          }],
+          dataMutationScope: {
+            schemaVersion: 1,
+            operation: "update",
+            targets: [{
+              sourceId: targetSource?.sourceId ?? dataMutationPreview.targetSourceIds?.[0] ?? null,
+              revision: targetSource?.revision ?? null,
+              contentHash: targetSource?.contentHash ?? null,
+              selector: {
+                field: keyField,
+                operator: "equals",
+                criteriaDigest,
+                matchCount: 1,
+                allMatching: false,
+              },
+              expectedRows: 1,
+            }],
+            changes: [{
+              field: parsed.field,
+              operation: "set",
+              valueDigest,
+              valueProvided: true,
+            }],
+            expectedAffectedRows: 1,
+            allowAllMatching: false,
+          },
+          estimatedAffectedRows: 1,
+          requiredFields: [],
+          writeMode: "safe_copy_replace",
+          executionMode: "ledger_single_record",
+        };
+        scoped.digest = createHash("sha256").update(JSON.stringify({ ...scoped, digest: undefined })).digest("hex");
+        dataMutationPreview = scoped;
+        }
+      }
+    }
+    // A matched receivable/bank-transaction template is a read-only
+    // reconciliation, not a payment instruction. Keep “汇款/付款” wording
+    // from accidentally routing it through the financial side-effect gate.
+    const riskLevel = paymentReconciliationPreview
+      ? "low"
+      : inferChannelTaskRiskLevel(`${title}\n${description}`);
+    const executionPreview = buildChannelExecutionPreview({
+      title,
+      description,
+      riskLevel,
+      inputAssets,
+      projectId,
+      ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
+    });
+    const dataLabels = dataPlanMissingLabels(dataPlan);
+    if (dataLabels.length) {
+      executionPreview.unknownFields = [...new Set([
+        ...(executionPreview.unknownFields ?? []),
+        `数据来源：${dataLabels.join("、")}`,
+      ])].slice(0, 10);
+      executionPreview.requiredFields = [...new Set([
+        ...(executionPreview.requiredFields ?? []),
+        ...dataLabels.map((label) => `数据来源：${label}`),
+      ])].slice(0, 10);
+      executionPreview.previewReady = false;
+    }
+    if (dataRelationPreview.status === "needs_review") {
+      executionPreview.unknownFields = [...new Set([
+        ...(executionPreview.unknownFields ?? []),
+        "数据关联结果需要复核",
+      ])].slice(0, 10);
+      executionPreview.requiredFields = [...new Set([
+        ...(executionPreview.requiredFields ?? []),
+        "数据关联结果确认",
+      ])].slice(0, 10);
+      executionPreview.previewReady = false;
+    }
+    if (dataMutationPreview?.status && dataMutationPreview.status !== "not_required") {
+      if (ledgerMutationPreview) {
+        executionPreview.unknownFields = [...new Set([
+          ...(executionPreview.unknownFields ?? []),
+          ledgerMutationPreparation.batch ? "批量文件变更等待确认" : "单条文件变更等待确认",
+        ])].slice(0, 10);
+      } else {
+        executionPreview.unknownFields = [...new Set([
+          ...(executionPreview.unknownFields ?? []),
+          "文件变更范围需要复核",
+        ])].slice(0, 10);
+        executionPreview.requiredFields = [...new Set([
+          ...(executionPreview.requiredFields ?? []),
+          ...dataMutationPreview.requiredFields,
+        ])].slice(0, 10);
+        executionPreview.previewReady = false;
+      }
+      if (dataMutationPreview.status === "ready" && !dataMutationBinding.ok) {
+        executionPreview.requiredFields = [...new Set([
+          ...(executionPreview.requiredFields ?? []),
+          "需要在桌面端为该文件配置安全写回规则",
+        ])].slice(0, 10);
+      }
+      if (!ledgerMutationPreview && dataMutationBinding.ok) {
+        const reason = ledgerMutationPreparation.reason;
+        const reasonText = reason === "source_evidence_required"
+          ? "需要先扫描并确认 Ledger 文件来源"
+          : reason === "mutable_field_required"
+            ? "需要明确要修改的字段"
+            : reason === "business_key_required"
+              ? "需要明确唯一记录编号"
+          : reason === "new_value_required"
+                ? "需要明确修改后的新值"
+          : reason === "ledger_field_transition_not_allowed"
+                ? "当前状态不允许直接跳转到这个状态，请按业务流程先完成前置步骤"
+          : reason === "ledger_insert_not_allowed"
+                ? "没有找到对应的现有记录；当前模板只允许修改已有记录，请先导入或建立这条业务记录"
+          : reason === "single_record_only"
+            ? "当前 Channel 只支持单条记录更新，暂不执行批量或删除操作"
+            : reason === "mutation_policy_batch_not_allowed"
+              ? "当前任务模板未允许多记录或多文件变更，请先调整模板边界"
+              : reason === "batch_file_scope_required"
+                ? "批量变更时请在每一段中写明文件名，例如：customers.csv …；orders.csv …"
+            : "需要补充单条记录的修改表达，例如：把文件里的 1001 的客户改成 Acme";
+        // Preserve the Ledger parser's concrete refusal on the user-facing
+        // data preview as well. Otherwise an unknown business key falls back
+        // to a generic "please specify the file" prompt and hides the fact
+        // that the template deliberately refuses implicit inserts.
+        dataMutationPreview = {
+          ...dataMutationPreview,
+          requiredFields: [...new Set([...(dataMutationPreview.requiredFields ?? []), reasonText])].slice(0, 10),
+        };
+        executionPreview.requiredFields = [...new Set([
+          ...(executionPreview.requiredFields ?? []),
+          reasonText,
+        ])].slice(0, 10);
+      }
+    }
+    executionPreview.digest = createHash("sha256").update(JSON.stringify({
+      riskLevel,
+      goal: description,
+      preview: executionPreview,
+      dataPlanDigest: dataPlan.digest,
+    })).digest("hex");
+    const workMode = buildWorkModeSnapshot({
+      goal: description,
+      outputExpectation: selectedTemplate?.expectedOutput ?? null,
+      selectedTemplate,
+      templateMatch: assistedDraft?.templateMatch ?? null,
+      selectedDefinition,
+      dataPlan,
+      dataRelationPreview,
+      dataMutationPreview,
+      riskLevel,
+      executionPreview,
+      generatedAt: now(),
+    });
+    const channelTaskContract = {
+      schemaVersion: 1,
+      source: "channel",
+      domain: inferChannelTaskDomain(`${title}\n${description}`),
+      riskLevel,
+      goal: description,
+      outputExpectation: selectedTemplate?.expectedOutput ?? null,
+      dataSources: inputAssets.slice(0, 100).map((asset) => ({
+        kind: "channel_attachment",
+        id: asset?.id ?? null,
+        name: asset?.originalName ?? asset?.name ?? String(asset?.path ?? "").replaceAll("\\", "/").split("/").at(-1) ?? null,
+        version: asset?.version ?? null,
+        hash: asset?.hash ?? null,
+      })),
+      templateMatch,
+      workMode,
+      dataPlan,
+      dataRelationPreview,
+      paymentReconciliationPreview,
+      dataMutationPreview,
+      dataMutationBinding: dataMutationBinding.ok ? dataMutationBinding.binding : null,
+      dataMutationBindings: dataMutationBindings.filter((binding) => binding.ok).map((binding) => binding.binding),
+      ledgerMutationPreview,
+      ledgerMutationPreparation: {
+        ok: ledgerMutationPreparation.ok === true,
+        reason: ledgerMutationPreparation.reason ?? null,
+      },
+      executionPreview,
+      // Keep the normalized object snapshot at the contract level as well as
+      // inside the human-readable preview so route-time revalidation survives
+      // contract normalization and old read models can inspect it directly.
+      generatedAt: now(),
+    };
+    channelTaskContract.objectValidation = channelTaskContract.executionPreview.objectValidation;
+    // Personal channels are self-operated, but external side effects still
+    // need an explicit second confirmation. Team channels keep the existing
+    // administrator route and therefore do not use this in-channel gate.
+    const requiresChannelConfirmation = autoRoute
+      && ["external_communication", "financial", "destructive"].includes(channelTaskContract.riskLevel);
+    const requiresDataPlan = ["needs_sources", "ambiguous", "stale"].includes(dataPlan.status);
+    const requiresDataReview = dataRelationPreview.status === "needs_review";
+    const requiresDataMutationReview = Boolean(dataMutationPreview?.status && dataMutationPreview.status !== "not_required");
+    const effectiveAutoRoute = autoRoute && !requiresChannelConfirmation && !requiresDataPlan && !requiresDataReview && !requiresDataMutationReview;
+    const myTemplateBinding = selectedTemplate && assistedDraft?.templateMatch?.decision?.kind === "auto_apply"
+      ? {
+        definitionId: selectedTemplate.definitionId,
+        familyId: selectedTemplate.templateId,
+        version: selectedTemplate.version,
+        matchReasons: selectedTemplate.reasons ?? [],
+      }
+      : undefined;
     const created = workItemService.createWorkItem({
       projectId,
       title,
       body: description,
       type: "task",
-      status: autoRoute ? "ready" : "backlog",
+      status: effectiveAutoRoute ? "ready" : "backlog",
       priority: "p3",
       labels: ["channel", UNTRUSTED_INPUT_LABEL, ...(injectionSuspicious ? ["needs-triage"] : [])],
       inputAssets,
       requiredCapabilities: [],
-      idempotencyKey: `channel:${channelId}:${channelTaskContext?.messageId ?? "unknown"}`,
-    }, { userId: principal.id, teamId: principal.teamId, role: "member", deviceId: terminalId });
+      ...(assistedDraft?.acceptanceCriteria?.length ? { acceptanceCriteria: assistedDraft.acceptanceCriteria } : {}),
+      ...(assistedDraft?.verificationSop?.length ? { verificationSop: assistedDraft.verificationSop } : {}),
+      ...(myTemplateBinding ? { myTemplateBinding } : {}),
+      channelTaskContract,
+      idempotencyKey: idempotencyKey ?? `channel:${channelId}:${channelTaskContext?.messageId ?? "unknown"}`,
+    }, workItemActor);
     if (!created.ok) return { ok: false, reason: created.body?.error ?? "work_item_create_failed" };
     const workItem = created.body.workItem;
     const storedWorkItem = (state.workItems ?? []).find((candidate) => candidate.id === workItem.id);
+    let attachedDataRelationConfirmation = null;
     if (storedWorkItem) {
       storedWorkItem.channelOrigin = {
         channelId,
@@ -1849,7 +3083,45 @@ export function createServerRuntimeServices({
         messageId: channelTaskContext?.messageId ?? null,
         principalId: principal.id,
         traceId: workItem.id,
+        threadId,
       };
+      if (effectiveAutoRoute && dataRelationPreview.status === "ready") {
+        attachDataRelationConfirmation({
+          workItem: storedWorkItem,
+          dataPlan,
+          dataRelationPreview,
+          channelId,
+          threadId,
+          mode: "runtime_verified",
+        });
+      }
+      attachedDataRelationConfirmation = storedWorkItem.channelTaskContract?.dataRelationConfirmation ?? null;
+      if (paymentReconciliationPreview) {
+        const verification = workItemService.recordVerification({
+          workItemId: storedWorkItem.id,
+          expectedRevision: storedWorkItem.revision,
+          kind: "manual",
+          status: "passed",
+          summary: "已按本地应收与银行流水文件完成只读对账，差异已列出，未修改原始文件。",
+          acceptanceResults: (storedWorkItem.acceptanceCriteria ?? []).map((criterion) => ({
+            criterion,
+            status: "passed",
+            note: "对账预览已生成并保留来源文件与结果摘要。",
+          })),
+          evidence: [{
+            kind: "log",
+            ref: `payment-reconciliation:${paymentReconciliationPreview.digest}`,
+            summary: "Read-only payment reconciliation result",
+          }],
+        }, workItemActor);
+        if (verification.ok) {
+          workItemService.updateWorkItem({
+            workItemId: storedWorkItem.id,
+            expectedRevision: verification.body.workItem.revision,
+            status: "done",
+          }, workItemActor);
+        }
+      }
     }
     return {
       ok: true,
@@ -1858,6 +3130,25 @@ export function createServerRuntimeServices({
       workItemId: workItem.id,
       url: `/?section=tasks&workItem=${encodeURIComponent(workItem.id)}`,
       replayed: Boolean(created.body.replayed),
+      autoRoute: effectiveAutoRoute,
+      requiresChannelConfirmation,
+      requiresDataPlan,
+      requiresDataReview,
+      riskLevel: channelTaskContract.riskLevel,
+      workMode: channelTaskContract.workMode,
+      executionPreview: channelTaskContract.executionPreview,
+      dataPlan: channelTaskContract.dataPlan,
+      dataRelationPreview: channelTaskContract.dataRelationPreview,
+      paymentReconciliationPreview: channelTaskContract.paymentReconciliationPreview,
+      dataMutationPreview: channelTaskContract.dataMutationPreview,
+      dataMutationBinding: channelTaskContract.dataMutationBinding,
+      dataMutationBindings: channelTaskContract.dataMutationBindings,
+      ledgerMutationPreview: channelTaskContract.ledgerMutationPreview,
+      dataRelationConfirmation: attachedDataRelationConfirmation ?? channelTaskContract.dataRelationConfirmation ?? null,
+      requiresDataMutationReview,
+      previewDigest: channelTaskContract.executionPreview.digest,
+      previewReady: channelTaskContract.executionPreview.previewReady,
+      objectValidation: channelTaskContract.executionPreview.objectValidation,
     };
   };
 
@@ -1879,6 +3170,276 @@ export function createServerRuntimeServices({
     if (req.workItemId) {
       const item = (state.workItems ?? []).find((candidate) => candidate.id === req.workItemId);
       if (!item) return { status: 404, body: { error: "work_item_not_found" } };
+      const requestChannel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
+      const storedDataMutationPreview = item.channelTaskContract?.dataMutationPreview ?? null;
+      const storedLedgerMutationPreview = item.channelTaskContract?.ledgerMutationPreview ?? null;
+      const isReadyLocalMutation = storedDataMutationPreview?.status === "ready"
+        && Boolean(storedLedgerMutationPreview);
+      const storedValidation = item.channelTaskContract?.executionPreview?.objectValidation ?? null;
+      // Object validation is required for an external recipient/account/etc.
+      // It is not a prerequisite for a local Ledger writeback: the file
+      // source, row selector, fields, versions and batch digest are validated
+      // by the data-mutation path below. This also prevents words like
+      // “发货” from turning an explicitly scoped local file change into a
+      // false “missing external order object” refusal.
+      if (storedValidation && !isReadyLocalMutation) {
+        const channel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
+        const currentValidation = resolveChannelObjectRequests({
+          state,
+          projectId: item.projectId ?? req.projectId,
+          ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+          text: item.channelTaskContract?.goal ?? item.body ?? item.title,
+          riskLevel: item.channelTaskContract?.riskLevel ?? req.riskLevel ?? "low",
+          inputAssets: item.inputAssets ?? req.inputAssets ?? [],
+        });
+        const currentSummary = channelObjectValidationSummary(currentValidation);
+        if (currentValidation.state !== "verified") {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_object_validation_required",
+              objectValidation: currentSummary,
+              requiredFields: currentSummary.requiredFields,
+            },
+          };
+        }
+        if (!channelObjectValidationMatches(storedValidation, currentSummary)) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_object_validation_changed",
+              objectValidation: currentSummary,
+            },
+          };
+        }
+      }
+      const storedDataPlan = item.channelTaskContract?.dataPlan ?? null;
+      if (storedDataPlan) {
+        const channel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
+        const currentPlan = dataPlanMatchesCurrent({
+          state,
+          plan: storedDataPlan,
+          projectId: item.projectId ?? req.projectId,
+          ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+        });
+        if (!currentPlan.ok && ["needs_sources", "ambiguous", "stale"].includes(currentPlan.current?.status)) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_plan_required",
+              dataPlan: currentPlan.current,
+            },
+          };
+        }
+        if (!currentPlan.ok) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_plan_changed",
+              dataPlan: currentPlan.current,
+            },
+          };
+        }
+      }
+      const storedDataRelationPreview = item.channelTaskContract?.dataRelationPreview ?? null;
+      if (storedDataRelationPreview && storedDataPlan) {
+        const channel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
+        const currentPlan = dataPlanMatchesCurrent({
+          state,
+          plan: storedDataPlan,
+          projectId: item.projectId ?? req.projectId,
+          ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+        });
+        const currentRelationPreview = dataRelationPreviewMatchesCurrent({
+          state,
+          preview: storedDataRelationPreview,
+          plan: currentPlan.current ?? storedDataPlan,
+          projectId: item.projectId ?? req.projectId,
+          ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+        });
+        if (!currentRelationPreview.ok && currentRelationPreview.current.status === "needs_review") {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_relation_required",
+              dataRelationPreview: currentRelationPreview.current,
+            },
+          };
+        }
+        if (!currentRelationPreview.ok) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_relation_changed",
+              dataRelationPreview: currentRelationPreview.current,
+            },
+          };
+        }
+      }
+      if (storedDataMutationPreview && storedDataMutationPreview.status !== "not_required") {
+        const channel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
+        const currentMutationPreview = dataMutationPreviewMatchesCurrent({
+          state,
+          preview: storedDataMutationPreview,
+          projectId: item.projectId ?? req.projectId,
+          ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+        });
+        if (!currentMutationPreview.ok) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_mutation_changed",
+              dataMutationPreview: currentMutationPreview.current,
+            },
+          };
+        }
+        if (currentMutationPreview.current.status !== "ready") {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_mutation_required",
+              dataMutationPreview: currentMutationPreview.current,
+            },
+          };
+        }
+        const storedMutationBinding = item.channelTaskContract?.dataMutationBinding ?? null;
+        if (!storedMutationBinding) {
+          return {
+            status: 409,
+            body: { error: "channel_task_data_mutation_binding_required" },
+          };
+        }
+        const currentMutationBinding = channelMutationBindingService.resolveBinding({
+          projectId: item.projectId ?? req.projectId,
+          fileSourceId: storedMutationBinding.fileSourceId,
+        }, actor);
+        if (!currentMutationBinding.ok || currentMutationBinding.binding.id !== storedMutationBinding.id) {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_mutation_binding_changed",
+              dataMutationBinding: currentMutationBinding.binding ?? null,
+            },
+          };
+        }
+        if (currentMutationPreview.current.writeMode !== "safe_copy_replace") {
+          return {
+            status: 409,
+            body: {
+              error: "channel_task_data_mutation_executor_unavailable",
+              dataMutationPreview: currentMutationPreview.current,
+            },
+          };
+        }
+      }
+      if (storedLedgerMutationPreview) {
+        if (requestChannel?.operationMode !== "personal") {
+          return {
+            status: 409,
+            body: { error: "channel_task_mutation_personal_confirmation_required" },
+          };
+        }
+        const committed = storedLedgerMutationPreview.kind === "batch"
+          ? await ledgerUpsertService.commitBatchPreview({
+            batchPreviewId: storedLedgerMutationPreview.id,
+            expectedRevision: storedLedgerMutationPreview.revision,
+            approved: true,
+          }, actor)
+          : await ledgerUpsertService.commitPreview({
+            previewId: storedLedgerMutationPreview.id,
+            expectedRevision: storedLedgerMutationPreview.revision,
+            approved: true,
+          }, actor);
+        if (committed.status !== 200) {
+          return {
+            status: committed.status,
+            body: {
+              ...(committed.body ?? { error: "ledger_mutation_commit_failed" }),
+              dataMutationPreview: storedDataMutationPreview,
+              ledgerMutationPreview: committed.body?.batchPreview ?? committed.body?.preview ?? storedLedgerMutationPreview,
+            },
+          };
+        }
+        const sourceRefresh = await refreshChannelMutationSourcesAfterCommit(
+          item.channelTaskContract?.dataMutationBindings
+            ?? (item.channelTaskContract?.dataMutationBinding ? [item.channelTaskContract.dataMutationBinding] : []),
+          actor,
+        );
+        const verified = workItemService.recordVerification({
+          workItemId: item.id,
+          expectedRevision: item.revision,
+          kind: "manual",
+          status: "passed",
+          summary: storedLedgerMutationPreview.kind === "batch"
+            ? "Ledger 批量安全写回已完成，文件版本和批次审计记录已生成。"
+            : "Ledger 安全写回已完成，文件版本和审计记录已生成。",
+          acceptanceResults: (item.acceptanceCriteria ?? []).map((criterion) => ({
+            criterion,
+            status: "passed",
+            note: "已由 Ledger 原子写回结果验证。",
+          })),
+          evidence: [{
+            kind: "log",
+            ref: `ledger-mutation:${committed.body?.mutation?.id ?? committed.body?.batchPreview?.id ?? storedLedgerMutationPreview.id}`,
+            summary: "Ledger mutation audit record",
+          }],
+        }, actor);
+        if (!verified.ok) return { status: verified.status, body: verified.body };
+        const completed = workItemService.updateWorkItem({
+          workItemId: item.id,
+          expectedRevision: item.revision,
+          status: "done",
+        }, actor);
+        if (!completed.ok) return { status: completed.status, body: completed.body };
+        channelTaskRunTx(() => {
+          req.status = "completed";
+          req.decidedAt = now();
+          req.decidedBy = actor?.userId ?? null;
+          req.mutationId = committed.body?.mutation?.id ?? null;
+          const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+            candidate.workItemId === req.workItemId || candidate.id === req.threadId);
+          if (thread) {
+            thread.waitingFor = null;
+            thread.resultSummary = storedLedgerMutationPreview.kind === "batch"
+              ? `已安全写回 ${committed.body?.batchPreview?.operationCount ?? storedLedgerMutationPreview.operationCount ?? "批量"} 条记录，相关文件版本已更新。`
+              : `已安全写回 ${committed.body?.mutation?.changedFields?.join("、") || "指定字段"}，文件版本已更新。`;
+            thread.statusHistory = [...(thread.statusHistory ?? []), {
+              status: "succeeded",
+              reason: "channel_mutation_committed",
+              at: now(),
+            }].slice(-30);
+            thread.status = "succeeded";
+            thread.lastActivityAt = now();
+            thread.updatedAt = now();
+          }
+        });
+        appendEvent({
+          invocationId: null,
+          type: "channel_task_mutation_committed",
+          level: "info",
+          message: `Channel task ${req.id} committed a Ledger mutation.`,
+          data: {
+            channelTaskRequestId: req.id,
+            workItemId: req.workItemId,
+            mutationId: committed.body?.mutation?.id ?? null,
+            batchPreviewId: storedLedgerMutationPreview.kind === "batch" ? storedLedgerMutationPreview.id : null,
+            previewId: storedLedgerMutationPreview.kind === "batch" ? null : storedLedgerMutationPreview.id,
+          },
+        });
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            workItemId: req.workItemId,
+            localRef: req.localRef ?? null,
+            dataMutationCommitted: true,
+            mutation: committed.body?.mutation ?? null,
+            mutations: committed.body?.results ?? null,
+            ledgerMutationPreview: committed.body?.batchPreview ?? committed.body?.preview ?? null,
+            sourceRefresh,
+          },
+        };
+      }
       const updated = workItemService.updateWorkItem({
         workItemId: item.id,
         expectedRevision: item.revision,
@@ -1886,9 +3447,27 @@ export function createServerRuntimeServices({
       }, actor);
       if (!updated.ok) return { status: updated.status, body: updated.body };
       channelTaskRunTx(() => {
+        attachDataRelationConfirmation({
+          workItem: item,
+          dataPlan: storedDataPlan,
+          dataRelationPreview: storedDataRelationPreview,
+          channelId: req.channelId,
+          requestId: req.id,
+          threadId: req.threadId ?? null,
+          mode: "user_confirmation",
+        });
         req.status = "routed";
         req.decidedAt = now();
         req.decidedBy = actor?.userId ?? null;
+        const thread = (state.channelTaskThreads ?? []).find((candidate) => candidate.workItemId === req.workItemId || candidate.id === req.threadId);
+        if (thread) {
+          thread.statusHistory = [...(thread.statusHistory ?? []), { status: "queued", reason: "console_routed", at: now() }].slice(-30);
+          thread.status = "queued";
+          thread.waitingFor = null;
+          thread.expiresAt = new Date(Date.parse(now()) + 24 * 60 * 60 * 1000).toISOString();
+          thread.lastActivityAt = now();
+          thread.updatedAt = now();
+        }
       });
       appendEvent({
         invocationId: null,
@@ -1899,7 +3478,13 @@ export function createServerRuntimeServices({
       });
       return {
         status: 200,
-        body: { ok: true, workItemId: req.workItemId, localRef: req.localRef ?? null },
+        body: {
+          ok: true,
+          workItemId: req.workItemId,
+          localRef: req.localRef ?? null,
+          dataMutationPreview: item.channelTaskContract?.dataMutationPreview ?? null,
+          dataRelationConfirmation: item.channelTaskContract?.dataRelationConfirmation ?? null,
+        },
       };
     }
     let result;
@@ -1922,7 +3507,7 @@ export function createServerRuntimeServices({
     // auto-run carries its channel ORIGIN — so evidence/audit and the console can
     // tie the run (and its actions) back to the originating channel, conversation,
     // and untrusted sender without a manual issue-number join.
-    const origin = { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, externalUserId: req.externalUserId ?? null, issueNumber: req.issueNumber };
+    const origin = { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, threadId: req.threadId ?? null, externalUserId: req.externalUserId ?? null, issueNumber: req.issueNumber };
     channelTaskRunTx(() => {
       req.status = "routed";
       req.autoRunId = autoRunId;
@@ -1937,17 +3522,60 @@ export function createServerRuntimeServices({
         invocation.options = invocation.options ?? {};
         invocation.options.metadata = {
           ...invocation.options.metadata,
-          channel: { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id },
+          channel: { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, threadId: req.threadId ?? null },
           riskTags: [...new Set([...(invocation.options.metadata?.riskTags ?? []), UNTRUSTED_INPUT_TAG])],
         };
         const conv = (state.channelConversations ?? []).find((c) => c.id === req.conversationId);
         if (conv) conv.invocationIds = [...new Set([...(conv.invocationIds ?? []), invocation.id])];
       }
+      const thread = (state.channelTaskThreads ?? []).find((candidate) => candidate.workItemId === req.workItemId || candidate.id === req.threadId);
+      if (thread) {
+        thread.autoRunId = autoRunId;
+        thread.invocationId = invocation?.id ?? autoRun.invocationId ?? thread.invocationId ?? null;
+        thread.statusHistory = [...(thread.statusHistory ?? []), { status: "queued", reason: "console_routed", at: now() }].slice(-30);
+        thread.status = "queued";
+        thread.waitingFor = null;
+        thread.expiresAt = new Date(Date.parse(now()) + 24 * 60 * 60 * 1000).toISOString();
+        thread.lastActivityAt = now();
+        thread.updatedAt = now();
+      }
     });
+    if (result?.invocation) channelThreadHook?.(result.invocation);
     appendEvent({ invocationId: null, type: "channel_task_routed", level: "info", message: `Channel task ${req.id} routed → auto-run ${autoRunId}.`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber, autoRunId } });
     return { status: 200, body: { ok: true, autoRunId, issueNumber: req.issueNumber } };
   };
-  const dismissChannelTask = async (id, actor) => {
+  const syncDismissedChannelTask = (req, actor, { notifyUser = true } = {}) => {
+    const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+      (req.workItemId && candidate.workItemId === req.workItemId)
+      || (req.threadId && candidate.id === req.threadId));
+    if (!thread) return;
+    channelTaskRunTx(() => {
+      thread.statusHistory = [...(thread.statusHistory ?? []), { status: "cancelled", reason: "console_dismissed", at: now() }].slice(-30);
+      thread.status = "cancelled";
+      thread.waitingFor = null;
+      thread.resultSummary = "管理员已忽略此任务，未开始执行。";
+      thread.expiresAt = null;
+      thread.updatedAt = now();
+      thread.lastActivityAt = now();
+    });
+    if (notifyUser) {
+      channelDeliveryService.enqueueChannelDelivery({
+        channelId: thread.channelId,
+        conversationId: thread.conversationId,
+        content: "任务已被管理员忽略，未开始执行。",
+        taskContext: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, workItemId: thread.workItemId ?? null, traceId: thread.workItemId ?? thread.id },
+      });
+    }
+    appendEvent({
+      invocationId: null,
+      type: "channel_task_dismissed_user_notified",
+      level: "info",
+      message: `Channel task ${thread.shortRef ?? thread.id} dismissal was sent to the user.`,
+      data: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, channelTaskRequestId: req.id, actorId: actor?.userId ?? null },
+    });
+  };
+
+  const dismissChannelTask = async (id, actor, { notifyUser = true } = {}) => {
     const req = findPendingChannelTask(id, actor);
     if (!req) return { status: 404, body: { error: "channel_task_not_found" } };
     if (req.workItemId) {
@@ -1964,6 +3592,7 @@ export function createServerRuntimeServices({
         req.decidedAt = now();
         req.decidedBy = actor?.userId ?? null;
       });
+      syncDismissedChannelTask(req, actor, { notifyUser });
       appendEvent({
         invocationId: null,
         type: "channel_task_dismissed",
@@ -1982,6 +3611,7 @@ export function createServerRuntimeServices({
       req.decidedAt = now();
       req.decidedBy = actor?.userId ?? null;
     });
+    syncDismissedChannelTask(req, actor, { notifyUser });
     appendEvent({ invocationId: null, type: "channel_task_dismissed", level: "info", message: `Channel task ${req.id} dismissed (issue #${req.issueNumber} closed).`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber } });
     return { status: 200, body: { ok: true } };
   };
@@ -2033,18 +3663,186 @@ export function createServerRuntimeServices({
       req.lastAction = "takeover";
       req.lastActionAt = now();
       req.lastActionBy = actor?.userId ?? null;
+      const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+        (req.workItemId && candidate.workItemId === req.workItemId)
+        || (req.threadId && candidate.id === req.threadId));
+      if (thread && thread.status !== "human_takeover") {
+        thread.statusHistory = [...(thread.statusHistory ?? []), { status: "human_takeover", reason: "console_takeover", at: now() }].slice(-30);
+        thread.status = "human_takeover";
+        thread.waitingFor = "human";
+        thread.handoffRequestedAt = now();
+        thread.handoffRequestedBy = actor?.userId ?? null;
+        thread.resultSummary = "已转人工跟进。";
+        thread.expiresAt = null;
+        thread.lastActivityAt = now();
+        thread.updatedAt = now();
+      }
     });
     appendEvent({ invocationId: autoRun.invocationId ?? null, type: "channel_task_human_takeover", level: "warn", message: `Channel task ${req.id} moved to human takeover.`, data: { channelTaskRequestId: req.id, autoRunId: autoRun.id } });
+    alertOutbox.enqueue({
+      kind: "channel_human_takeover",
+      severity: "warning",
+      message: `Channel task ${req.id} requires human attention.`,
+      data: {
+        teamId: (state.channels ?? []).find((channel) => channel.id === req.channelId)?.ownerTeamId ?? LOCAL_TEAM_ID,
+        channelId: req.channelId,
+        conversationId: req.conversationId,
+        threadId: req.threadId ?? null,
+        workItemId: req.workItemId ?? null,
+        channelTaskRequestId: req.id,
+        autoRunId: autoRun.id,
+        reason: "console_takeover",
+      },
+    });
     return { status: 200, body: { ok: true, autoRunId: autoRun.id, status: req.status } };
   };
 
+  const replyChannelTask = (id, content, actor) => {
+    const ref = String(id ?? "").trim();
+    const text = String(content ?? "").trim().slice(0, 4_000);
+    if (!text) return { status: 400, body: { error: "channel_task_reply_required" } };
+    const request = (state.channelTaskRequests ?? []).find((candidate) => candidate.id === ref) ?? null;
+    const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+      candidate.id === ref
+      || String(candidate.shortRef ?? "").toUpperCase() === ref.toUpperCase()
+      || (request?.threadId && candidate.id === request.threadId)
+      || (request?.workItemId && candidate.workItemId === request.workItemId)) ?? null;
+    if (!thread) return { status: 404, body: { error: "channel_task_not_found" } };
+    const channel = (state.channels ?? []).find((candidate) => candidate.id === thread.channelId);
+    if (!channel || (actor?.teamId != null && (channel.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId)) {
+      return { status: 404, body: { error: "channel_task_not_found" } };
+    }
+    if (thread.status !== "human_takeover") {
+      return { status: 409, body: { error: "channel_task_reply_unavailable", reason: `thread_${thread.status}` } };
+    }
+    const queued = channelDeliveryService.enqueueChannelDelivery({
+      channelId: thread.channelId,
+      conversationId: thread.conversationId,
+      content: text,
+      taskContext: {
+        channelId: thread.channelId,
+        conversationId: thread.conversationId,
+        threadId: thread.id,
+        workItemId: thread.workItemId ?? null,
+        traceId: thread.workItemId ?? thread.id,
+      },
+    });
+    if (!queued?.ok) return { status: 409, body: { error: "channel_task_reply_enqueue_failed", reason: queued?.reason ?? "delivery_unavailable" } };
+    channelTaskRunTx(() => {
+      thread.lastHumanReplyAt = now();
+      thread.lastHumanReplyBy = actor?.userId ?? null;
+      thread.resultSummary = "人工已回复用户，等待后续消息。";
+      thread.statusHistory = [...(thread.statusHistory ?? []), { status: "human_takeover", reason: "human_reply", at: now() }].slice(-30);
+      thread.updatedAt = now();
+      if (request) {
+        request.lastAction = "human_reply";
+        request.lastActionAt = now();
+        request.lastActionBy = actor?.userId ?? null;
+      }
+    });
+    appendEvent({
+      invocationId: null,
+      type: "channel_task_human_reply",
+      level: "info",
+      message: `Channel task ${thread.shortRef ?? thread.id} received a human reply.`,
+      data: { channelId: thread.channelId, conversationId: thread.conversationId, threadId: thread.id, channelTaskRequestId: request?.id ?? null, deliveryId: queued.deliveryId },
+    });
+    return { status: 200, body: { ok: true, deliveryId: queued.deliveryId, threadId: thread.id } };
+  };
+
+  let channelReplySender = null;
+  let channelResendDelivery = null;
+  const recordChannelIntentBridgeMetric = ({ status, latencyMs, circuitOpen, circuitOpenUntil, failureStreak, circuitTrips } = {}) => {
+    const current = state.channelIntentMetrics ?? {
+      total: 0,
+      byIntent: {},
+      bySource: {},
+      lowConfidence: 0,
+      ambiguous: 0,
+      updatedAt: null,
+    };
+    const bridge = current.bridge ?? {
+      attempts: 0,
+      succeeded: 0,
+      failed: 0,
+      busy: 0,
+      timeouts: 0,
+      lastLatencyMs: null,
+      averageLatencyMs: null,
+      circuitOpen: false,
+      circuitOpenUntil: null,
+      failureStreak: 0,
+      circuitTrips: 0,
+      updatedAt: null,
+    };
+    bridge.attempts = Number(bridge.attempts ?? 0) + 1;
+    if (status === "succeeded") bridge.succeeded = Number(bridge.succeeded ?? 0) + 1;
+    else if (status === "busy") bridge.busy = Number(bridge.busy ?? 0) + 1;
+    else {
+      bridge.failed = Number(bridge.failed ?? 0) + 1;
+      if (status === "timeout") bridge.timeouts = Number(bridge.timeouts ?? 0) + 1;
+    }
+    bridge.circuitOpen = Boolean(circuitOpen);
+    bridge.circuitOpenUntil = circuitOpenUntil ?? null;
+    bridge.failureStreak = Number(failureStreak ?? bridge.failureStreak ?? 0);
+    bridge.circuitTrips = Number(circuitTrips ?? bridge.circuitTrips ?? 0);
+    if (Number.isFinite(Number(latencyMs))) {
+      const previous = Number(bridge.averageLatencyMs);
+      bridge.lastLatencyMs = Math.round(Number(latencyMs));
+      bridge.averageLatencyMs = Number.isFinite(previous)
+        ? Math.round((previous * (bridge.attempts - 1) + Number(latencyMs)) / bridge.attempts)
+        : Math.round(Number(latencyMs));
+    }
+    bridge.updatedAt = now();
+    state.channelIntentMetrics = { ...current, bridge, updatedAt: current.updatedAt ?? null };
+    persistStateSoon();
+  };
+  const channelConsultationAdapter = createChannelConsultationAdapter({
+    config: resolveChannelConsultationConfig(),
+    state,
+    findAgent,
+    createInvocation: (...args) => invocationService?.createInvocation(...args),
+    now,
+  });
   const channelConversationService = createChannelConversationService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
-    createCapabilityInvocation, cancelInvocation, createChannelTaskIssue,
+    createCapabilityInvocation, cancelInvocation, createChannelTaskIssue, routeChannelTask, dismissChannelTask,
+    answerClarify, retryAutoRun, cancelAutoRun,
+    classifyIntent: createChannelIntentAdapter({
+      config: resolveChannelIntentConfig(),
+      state,
+      findAgent,
+      createInvocation: (...args) => invocationService?.createInvocation(...args),
+      cancelInvocation: (...args) => invocationService?.cancelInvocation(...args),
+      now,
+      onMetric: recordChannelIntentBridgeMetric,
+    })?.classify,
+    createConsultation: channelConsultationAdapter?.enqueue,
+    resendDelivery: (args) => channelResendDelivery?.(args),
+    replySender: (args) => channelReplySender?.(args),
+    notifyHumanTakeover: ({ thread, request, reason }) => {
+      const channel = (state.channels ?? []).find((candidate) => candidate.id === thread?.channelId);
+      return alertOutbox.enqueue({
+        kind: "channel_human_takeover",
+        severity: "warning",
+        message: `Channel task ${thread?.shortRef ?? thread?.id ?? "unknown"} requires human attention.`,
+        data: {
+          teamId: channel?.ownerTeamId ?? LOCAL_TEAM_ID,
+          channelId: thread?.channelId ?? null,
+          conversationId: thread?.conversationId ?? null,
+          threadId: thread?.id ?? null,
+          workItemId: thread?.workItemId ?? null,
+          channelTaskRequestId: request?.id ?? null,
+          reason: reason ?? "human_takeover",
+        },
+      });
+    },
     // S6: in-channel /approve mints + consumes a single-use grant, then flips
     // the SAME approval the console acts on.
     mintDecisionGrant, validateApprovalToken, approveInvocation, denyInvocation,
   });
+  channelThreadHook = channelConversationService.syncTaskThreadFromInvocation;
+  channelConsultationHook = channelConversationService.syncConsultationFromInvocation;
   // Outbound delivery (S5/#1110): provider senders are late-bound by index.mjs
   // when each gateway is configured — this service never sees any provider
   // secret. Keyed by provider so a WeCom and a Feishu delivery route to their
@@ -2056,7 +3854,68 @@ export function createServerRuntimeServices({
     validateApprovalToken,
   });
   enqueueWorkItemReportDeliveryBatch = channelDeliveryService.enqueueChannelDeliveryBatch;
+  channelReplySender = ({ channelId, conversationId, content, threadId = null, invocationId = null, dedupeKey = null }) => channelDeliveryService.enqueueChannelDelivery({
+    channelId,
+    conversationId,
+    invocationId,
+    dedupeKey,
+    content,
+    taskContext: threadId
+      ? { channelId, conversationId, threadId }
+      : null,
+  });
+  channelResendDelivery = channelDeliveryService.resendChannelDelivery;
+  channelDeliveryService.recoverThreadDeliveryState?.();
+  channelConversationService.recoverTaskThreads?.();
+  channelConversationService.recoverConsultations?.();
+  channelConversationService.resumeIntake?.();
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
+
+  // Inbound events are durable before dispatch. A crash between those two
+  // steps must be recoverable on the next process start, and a replay must not
+  // create a second outbound row for the same event.
+  async function deliverChannelEventReply(event) {
+    if (!event) return { ok: false, reason: "channel_event_not_found" };
+    // Legacy settled events predate the durable reply marker. They are kept for
+    // history but must not be replayed automatically after an upgrade.
+    if (event.replyRecoveryPending !== true) return { ok: true, skipped: true, reason: "legacy_or_settled_event" };
+    let settled = null;
+    if (event.status === "imported") {
+      settled = await channelConversationService.dispatchImportedChannelEvent({ eventId: event.id });
+    } else if (event.status === "dispatched" || event.status === "refused") {
+      settled = { reply: event.replyText ?? null, invocationId: event.invocationId ?? null };
+    }
+    if (!settled?.reply) {
+      event.replyRecoveryPending = false;
+      persistStateSoon();
+      return { ok: true, status: event.status, replyQueued: false };
+    }
+    const queued = channelDeliveryService.enqueueChannelDelivery({
+      channelId: event.channelId,
+      conversationId: event.conversationId,
+      invocationId: settled.invocationId ?? event.invocationId ?? null,
+      content: settled.reply,
+      dedupeKey: `channel-event:${event.id}:reply`,
+    });
+    if (!queued?.ok) {
+      throw Object.assign(new Error("channel_event_reply_enqueue_failed"), {
+        code: queued?.reason ?? "channel_event_reply_enqueue_failed",
+      });
+    }
+    event.replyDeliveryId = queued.deliveryId ?? event.replyDeliveryId ?? null;
+    event.replyRecoveryPending = false;
+    persistStateSoon();
+    return { ok: true, status: event.status, replyQueued: true, deduplicated: Boolean(queued.deduplicated) };
+  }
+
+  async function recoverChannelEventReplies() {
+    const pending = (state.channelEvents ?? [])
+      .filter((event) => ["imported", "dispatched", "refused"].includes(event.status))
+      .slice(-200);
+    for (const event of pending) {
+      try { await deliverChannelEventReply(event); } catch { /* retry on the next recovery/sweep */ }
+    }
+  }
 
   // Scheduled work-report → channel push. Closes over the delivery service's
   // enqueue so a due schedule lands in the same durable outbound pipeline as an
@@ -2075,33 +3934,78 @@ export function createServerRuntimeServices({
     if (Array.isArray(payload?.attachmentCandidates) && payload.attachmentCandidates.length) {
       const channel = (state.channels ?? []).find((row) => row.id === payload.channelId);
       const project = (state.projects ?? []).find((row) => row.id === channel?.taskProjectId);
-      try {
-        const attachmentAssets = await ingestChannelAttachmentCandidates({
-          candidates: payload.attachmentCandidates,
-          projectPath: project?.path,
-          projectId: channel?.taskProjectId,
-          terminalId: channel?.taskTerminalId,
-        });
-        normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets };
-      } catch (error) {
-        return { ok: false, refused: true, reason: error?.code ?? "channel_attachment_ingestion_failed" };
+      const attachmentBindingAvailable = Boolean(channel?.taskProjectId && channel?.taskTerminalId && project?.path);
+      // Media is optional enrichment. A channel with /task disabled must still
+      // retain the inbound interaction and its bounded text/media description;
+      // refusing the whole event here made ordinary image/voice/file messages
+      // disappear before they reached the interaction center.
+      if (!attachmentBindingAvailable) {
+        normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets: [] };
+      } else {
+        try {
+          const byteCandidates = payload.attachmentCandidates.filter((candidate) => candidate && candidate.bytes != null);
+          const remoteCandidates = payload.attachmentCandidates.filter((candidate) => !candidate || candidate.bytes == null);
+          const attachmentAssets = [];
+          if (remoteCandidates.length) {
+            attachmentAssets.push(...await ingestChannelAttachmentCandidates({
+              candidates: remoteCandidates,
+              projectPath: project?.path,
+              projectId: channel?.taskProjectId,
+              terminalId: channel?.taskTerminalId,
+            }));
+          }
+          for (const candidate of byteCandidates) {
+            attachmentAssets.push(await ingestChannelAttachmentBytes({
+              filename: candidate.filename,
+              bytes: candidate.bytes,
+              contentType: candidate.contentType,
+              projectPath: project?.path,
+              projectId: channel?.taskProjectId,
+              terminalId: channel?.taskTerminalId,
+            }));
+          }
+          normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets };
+        } catch (error) {
+          const code = error?.code ?? "channel_attachment_ingestion_failed";
+          normalizedPayload = {
+            ...payload,
+            attachmentCandidates: undefined,
+            attachmentAssets: [],
+            mediaFailure: {
+              total: payload.attachmentCandidates.length,
+              failed: payload.attachmentCandidates.slice(0, 20).map((candidate) => ({
+                kind: candidate?.kind ?? "file",
+                filename: candidate?.filename ?? "附件",
+                code,
+              })),
+            },
+          };
+        }
       }
     }
     const imported = channelService.importChannelEvent(normalizedPayload);
-    if (imported?.ok && !imported.duplicate) {
-      const dispatched = await channelConversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
-      // Staged command replies become durable outbound deliveries.
-      if (dispatched?.reply) {
-        channelDeliveryService.enqueueChannelDelivery({
-          channelId: payload?.channelId,
-          conversationId: imported.conversationId,
-          invocationId: dispatched.invocationId ?? null,
-          content: dispatched.reply,
-        });
-      }
+    if (imported?.ok) {
+      const event = (state.channelEvents ?? []).find((candidate) => candidate.id === imported.eventId);
+      await deliverChannelEventReply(event);
     }
     return imported;
   };
+
+  ilinkRuntime = createIlinkRuntime({
+    state,
+    stateStorePath,
+    now,
+    nextId,
+    persistStateSoon,
+    appendEvent,
+    importChannelEvent: receiveChannelEvent,
+    mapChannelIdentity: channelService.mapChannelIdentity,
+    enableChannel: channelService.enableChannel,
+    disableChannel: channelService.disableChannel,
+    credentialStore: ilinkCredentialStore ?? undefined,
+    clientFactory: ilinkClientFactory,
+  });
+  void recoverChannelEventReplies();
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
     const application = findApplication(applicationId);
@@ -3350,7 +5254,7 @@ export function createServerRuntimeServices({
   }
 
   function defaultAgent() {
-    return invocationService?.defaultAgent() ?? state.agents.find((item) => item.id === "agt_demo_cli") ?? state.agents.find((item) => item.adapter.type !== "platform") ?? state.agents[0] ?? null;
+    return invocationService?.defaultAgent() ?? selectDefaultAgent(state.agents);
   }
 
   function uniqueStrings(values) {
@@ -4002,24 +5906,39 @@ export function createServerRuntimeServices({
     addProject,
     cloneProject,
     createBlankProject,
+    createTaskMaterialDraft: taskMaterialService.createDraft,
+    getTaskMaterialDraft: taskMaterialService.getDraft,
+    uploadTaskMaterialFile: taskMaterialService.uploadFile,
+    removeTaskMaterialFile: taskMaterialService.removeFile,
+    readTaskMaterialContent: taskMaterialService.readContent,
+    previewTaskMaterialCleanup: taskMaterialService.cleanupPreview,
+    executeTaskMaterialCleanup: taskMaterialService.executeCleanup,
     createWorktree,
     createWorktreePr,
     publishWorktreeBranch,
     promoteWorktreeToBase,
     promoteWorktreeToPullRequest,
     ensureLocalOrigin,
+    enqueueWorkItemAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
+    reconcileWorkItemAutoRunUnderstanding: workItemAutoRunUnderstandingService.reconcile,
+    reserveAutoRun,
+    attachAutoRunExecutionPlan,
+    failAutoRunUnderstanding,
     startAutoRun,
     retryAutoRun,
     reverifyAutoRun,
     recoverTimedOutCodexApproval: codexApprovalRecovery.recoverTimedOutApproval,
     processPlanningRecommendedActions,
     cancelAutoRun,
+    stopAutoRunDelivery,
     reapStuckAutoRuns,
     sweepWorkItemAutoRunBatches: workItemAutoRunBatchService.sweepBatches,
+    sweepWorkItemAutoScheduler: workItemAutoSchedulerService.sweep,
     sweepExpiredClaims,
     sweepAutoRunSloAlerts,
     sweepAlertOutbox: alertOutbox.sweep,
     sweepWorkItemOperationalAlerts: workItemService.sweepOperationalAlerts,
+    sweepTaskMaterialDrafts: taskMaterialService.sweepExpired,
     flushTraceExport,
     requestObservabilityDeletion,
     autoMergeSweep,
@@ -4038,11 +5957,54 @@ export function createServerRuntimeServices({
     replyOnIssue,
     confirmReplyDraft,
     sendConfirmedDraft,
+    mailboxSnapshot: mailboxService.snapshot,
+    startMailboxSync: mailboxService.startSync,
+    setMailboxMessageRead: mailboxService.setMessageRead,
+    createMailboxDraft: mailboxService.createDraft,
+    updateMailboxDraft: mailboxService.updateDraft,
+    deleteMailboxDraft: mailboxService.deleteDraft,
+    createMailboxTask: mailboxService.createTaskFromMessage,
+    startMailClassification: mailboxService.startClassification,
+    previewMailSemanticClassification: mailboxService.previewSemanticClassification,
+    getMailClassificationJob: mailboxService.getClassificationJob,
+    cancelMailClassificationJob: mailboxService.cancelClassificationJob,
+    correctMailClassification: mailboxService.correctClassification,
+    listMailClassificationRules: mailboxService.listClassificationRules,
+    getMailClassificationQuality: mailboxService.getClassificationQuality,
+    createMailClassificationRule: mailboxService.createClassificationRule,
+    updateMailClassificationRule: mailboxService.updateClassificationRule,
+    listMailFolderSuggestions: mailboxService.listFolderSuggestions,
+    createMailFolderMovePreview: mailboxService.createFolderMovePreview,
+    startMailFolderMove: mailboxService.startFolderMove,
+    getMailFolderMoveJob: mailboxService.getFolderMoveJob,
+    listMailFolderMoveJobs: mailboxService.listFolderMoveJobs,
+    reconcileMailFolderMoveJob: mailboxService.reconcileFolderMoveJob,
+    createMailFolderRecoveryPreview: mailboxService.createFolderRecoveryPreview,
+    createMailFolderAutomationPreview: mailboxService.createFolderAutomationPreview,
+    enableMailFolderAutomation: mailboxService.enableFolderAutomation,
+    updateMailFolderAutomation: mailboxService.updateFolderAutomation,
+    listMailFolderAutomations: mailboxService.listFolderAutomations,
+    dryRunMailFolderAutomation: mailboxService.dryRunFolderAutomation,
+    rebuildLocalContentCatalog: localContentCatalogService.rebuild,
+    searchLocalContent: localContentCatalogService.search,
+    browseLocalContentDirectories: localContentCatalogService.browseDirectories,
+    describeLocalContentRetrieval: localContentRetrievalService.describe,
+    retrieveLocalContentDirectories: localContentRetrievalService.directory,
+    retrieveLocalContentSummaries: localContentRetrievalService.summaries,
+    readRetrievedLocalContent: localContentRetrievalService.read,
+    getLocalContentCatalogStats: localContentCatalogService.stats,
+    previewLocalContent: localContentCatalogService.preview,
+    refreshLocalContent: localContentCatalogService.refresh,
+    getLocalContentHealth: localContentCatalogService.health,
+    resolveLocalContentOriginal: localContentCatalogService.resolveOriginal,
+    resolveLocalContentContainer: localContentCatalogService.resolveContainer,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
+    listChannelInteractions: channelService.listChannelInteractions,
     enableChannel: channelService.enableChannel,
     disableChannel: channelService.disableChannel,
     channelHealth: channelService.channelHealth,
+    channelDiagnostics: channelService.channelDiagnostics,
     mapChannelIdentity: channelService.mapChannelIdentity,
     removeChannelIdentity: channelService.removeChannelIdentity,
     listChannelIdentities: channelService.listChannelIdentities,
@@ -4059,6 +6021,13 @@ export function createServerRuntimeServices({
     listWorkItemAttention: workItemService.listAttention,
     getWorkItem: workItemService.getWorkItem,
     createWorkItem: workItemService.createWorkItem,
+    createWorkItemFromExternal: workItemService.createWorkItemFromExternal,
+    addWorkItemMaterials: workItemService.addMaterials,
+    removeWorkItemMaterial: workItemService.removeMaterial,
+    captureWorkItemDataContext: workItemService.captureDataContextSnapshot,
+    restoreWorkItemMaterial: workItemService.restoreMaterial,
+    addWorkItemContentReference: workItemService.addContentReference,
+    removeWorkItemContentReference: workItemService.removeContentReference,
     updateWorkItem: workItemService.updateWorkItem,
     recordWorkItemProgress: workItemService.recordWorkItemProgress,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,
@@ -4076,6 +6045,7 @@ export function createServerRuntimeServices({
     recordWorkItemExecutionBinding: workItemService.recordExecutionBinding,
     createWorkItemAutoRunBatch: workItemAutoRunBatchService.createBatch,
     listWorkItemAutoRunBatches: workItemAutoRunBatchService.listBatches,
+    previewWorkItemAutoScheduler: workItemAutoSchedulerService.preview,
     claimWorkItem: workItemService.claimWorkItem,
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
     assignWorkItemToSelf: workItemService.assignWorkItemToSelf,
@@ -4084,6 +6054,7 @@ export function createServerRuntimeServices({
     bindExternalIssue: workItemService.bindExternalIssue,
     syncExternalIssue: workItemService.syncExternalIssue,
     listWorkItemExternalProviders: workItemService.listExternalProviders,
+    getWorkItemExternalIssueFunnel: workItemService.getExternalIssueFunnel,
     recordWorkItemVerification: workItemService.recordVerification,
     recordWorkItemAssetOperation: workItemService.recordAssetOperation,
     startWorkItemApplicationExecution: workItemService.startApplicationExecution,
@@ -4097,6 +6068,19 @@ export function createServerRuntimeServices({
     updateWorkItemAttention: workItemService.updateAttention,
     getWorkItemGithubSyncDiagnostics: workItemService.githubSyncDiagnostics,
     suggestWorkItemDraft: workItemService.suggestWorkItemDraft,
+    listMyTemplateRoutingFeedback: workItemService.listMyTemplateRoutingFeedback,
+    removeMyTemplateRoutingFeedback: workItemService.removeMyTemplateRoutingFeedback,
+    previewMyTemplateDraft: workItemService.previewMyTemplateDraft,
+    listMyTemplateDrafts: workItemService.listMyTemplateDrafts,
+    reviewMyTemplateDraft: workItemService.reviewMyTemplateDraft,
+    listSimilarMyTemplateWorkItems: workItemService.listSimilarMyTemplateWorkItems,
+    createMyTemplateDraft: workItemService.createMyTemplateDraft,
+    addMyTemplateLearningCase: workItemService.addMyTemplateLearningCase,
+    activateMyTemplateDraft: workItemService.activateMyTemplateDraft,
+    listMyTemplateOutcomeFeedback: workItemService.listMyTemplateOutcomeFeedback,
+    recordMyTemplateOutcomeFeedback: workItemService.recordMyTemplateOutcomeFeedback,
+    resumeMyTemplateGovernanceObservation: workItemService.resumeMyTemplateGovernanceObservation,
+    prepareWorkItemExecutionContract: workItemService.prepareExecutionContract,
     listWorkItemReportDrafts: workItemService.listReportDrafts,
     getWorkItemReportDraft: workItemService.getReportDraft,
     generateWorkItemReportDraft: workItemService.generateReportDraft,
@@ -4113,6 +6097,26 @@ export function createServerRuntimeServices({
     applyLocalScheduleUrgent: workItemService.applyLocalScheduleUrgent,
     recordBusinessDocumentClassification: businessRoutineService.recordDocumentClassification,
     createBusinessEntity: businessRoutineService.createBusinessEntity,
+    listChannelObjects: channelObjectRegistryService.listChannelObjects,
+    upsertChannelObject: channelObjectRegistryService.upsertChannelObject,
+    setChannelObjectStatus: channelObjectRegistryService.setChannelObjectStatus,
+    previewChannelObjectImport: channelObjectImportService.previewChannelObjectImport,
+    confirmChannelObjectImport: channelObjectImportService.confirmChannelObjectImport,
+    listChannelObjectImports: channelObjectImportService.listChannelObjectImports,
+    listChannelObjectFileSources: channelObjectImportService.listChannelObjectFileSources,
+    listChannelMutationBindings: channelMutationBindingService.listBindings,
+    upsertChannelMutationBinding: channelMutationBindingService.upsertBinding,
+    setChannelMutationBindingStatus: channelMutationBindingService.setBindingStatus,
+    listChannelObjectConnectors: channelObjectConnectorService.listChannelObjectConnectors,
+    listChannelObjectConnectorConfigs: channelObjectConnectorService.listChannelObjectConnectorConfigs,
+    upsertChannelObjectConnectorConfig: channelObjectConnectorService.upsertChannelObjectConnectorConfig,
+    setChannelObjectConnectorConfigStatus: channelObjectConnectorService.setChannelObjectConnectorConfigStatus,
+    testChannelObjectConnectorConfig: channelObjectConnectorService.testChannelObjectConnectorConfig,
+    previewChannelObjectConnectorSync: channelObjectConnectorService.previewChannelObjectConnectorSync,
+    confirmChannelObjectConnectorSync: channelObjectConnectorService.confirmChannelObjectConnectorSync,
+    syncChannelObjectConnector: channelObjectConnectorService.syncChannelObjectConnector,
+    retryChannelObjectConnectorSync: channelObjectConnectorService.retryChannelObjectConnectorSync,
+    listChannelObjectSyncs: channelObjectConnectorService.listChannelObjectSyncs,
     createBusinessCase: businessRoutineService.createBusinessCase,
     createRoutineDefinition: businessRoutineService.createRoutineDefinition,
     createRoutineDraftFromDiscovery: businessRoutineService.createRoutineDraftFromDiscovery,
@@ -4126,7 +6130,13 @@ export function createServerRuntimeServices({
     activateLedgerDefinition: ledgerUpsertService.activateDefinition,
     disableLedgerDefinition: ledgerUpsertService.disableDefinition,
     previewLedgerUpsert: ledgerUpsertService.previewUpsert,
+    inspectLedgerTargetIdentity: ledgerUpsertService.inspectTargetIdentity,
     commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
+    previewLedgerBatchUpsert: ledgerUpsertService.previewBatchUpsert,
+    commitLedgerBatchUpsertPreview: ledgerUpsertService.commitBatchPreview,
+    retryLedgerBatchUpsertPreview: ledgerUpsertService.retryBatchPreview,
+    listLedgerBatchUpsertPreviews: ledgerUpsertService.listBatchPreviews,
+    listLedgerBatchMutationJournals: ledgerUpsertService.listBatchMutationJournals,
     listLedgerUpsertPreviews: ledgerUpsertService.listPreviews,
     listLedgerMutations: ledgerUpsertService.listMutations,
     collectBusinessPilotEvidence: businessPilotEvidenceService.collect,
@@ -4143,8 +6153,10 @@ export function createServerRuntimeServices({
     exportBusinessPilotCollection: businessPilotEvidenceService.exportWorkbenchCollection,
     revokeBusinessPilotCollection: businessPilotEvidenceService.revokeWorkbenchCollection,
     getWorkflowAdaptiveWorkbench: workflowAdaptiveWorkService.getWorkbench,
+    getWorkflowMemoryInsights: workflowMemoryInsightsService.getOverview,
     updateWorkflowAdaptivePolicy: workflowAdaptiveWorkService.updatePolicy,
     updateWorkflowAdaptiveMonitor: workflowAdaptiveWorkService.updateMonitor,
+    updateWorkflowAdaptiveAutomation: workflowAdaptiveWorkService.updateAutomation,
     sweepWorkflowAdaptiveMonitors: workflowAdaptiveWorkService.sweepMonitors,
     runWorkflowAdaptiveMonitorNow: workflowAdaptiveWorkService.runMonitorNow,
     syncWorkflowAdaptiveOutcomes: workflowAdaptiveWorkService.syncOutcomes,
@@ -4164,13 +6176,24 @@ export function createServerRuntimeServices({
     createRoutineRun: businessRoutineService.createRoutineRun,
     getRoutineWorkItemExecution: businessRoutineService.getRoutineWorkItemExecution,
     listRoutineWorkQueue: businessRoutineService.listRoutineWorkQueue,
-    startRoutineWorkItem: businessRoutineService.startRoutineWorkItem,
-    executeRoutineStep: businessRoutineService.executeRoutineStep,
-    confirmQuotationInputs: businessRoutineService.confirmQuotationInputs,
-    completeRoutineStep: businessRoutineService.completeRoutineStep,
-    retryRoutineStep: businessRoutineService.retryRoutineStep,
-    decideRoutineApproval: businessRoutineService.decideRoutineApproval,
-    decideRoutineCondition: businessRoutineService.decideRoutineCondition,
+    startRoutineWorkItem: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.startRoutineWorkItem, input, actor),
+    executeRoutineStep: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.executeRoutineStep, input, actor),
+    confirmQuotationInputs: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.confirmQuotationInputs, input, actor),
+    bindRoutineLedger: businessRoutineService.bindRoutineLedger,
+    requestRoutineStepReview: businessRoutineService.requestRoutineStepReview,
+    resumeRoutineRecovery: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.resumeRoutineRecovery, input, actor),
+    completeRoutineStep: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.completeRoutineStep, input, actor),
+    retryRoutineStep: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.retryRoutineStep, input, actor),
+    decideRoutineApproval: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.decideRoutineApproval, input, actor),
+    decideRoutineCondition: (input, actor) =>
+      continueRoutineAfterAction(businessRoutineService.decideRoutineCondition, input, actor),
     cancelRoutineWorkItem: businessRoutineService.cancelRoutineWorkItem,
     transitionRoutineStep: businessRoutineService.transitionRoutineStep,
     analyzeWorkflowBusinessDocuments: businessDocumentIntelligenceService.analyzeSource,
@@ -4190,12 +6213,22 @@ export function createServerRuntimeServices({
     getArticleImport: articleImportService.get,
     cancelArticleImport: articleImportService.cancel,
     analyzeArticleImport: articleImportService.analyze,
+    listSessions: sessionManagerService.listSessions,
+    probeSessionSite: sessionManagerService.probeSite,
+    reseedSessionSite: sessionManagerService.seedLogin,
+    sessionHealthSweep: sessionManagerService.sessionHealthSweep,
+    acquireSessionProfile: sessionManagerService.acquireProfile,
     findSimilarArticleImports: articleImportService.findSimilar,
     createArticleDerivative: articleImportService.createDerivative,
     listArticleDerivatives: articleImportService.listDerivatives,
     getArticleDerivative: articleImportService.getDerivative,
     listWorkflowSources: workflowMemoryService.listSources,
     createWorkflowSource: workflowMemoryService.createSource,
+    listTemplateLearningTasks: templateLearningService.listTasks,
+    createTemplateLearningTask: templateLearningService.createTask,
+    stageTemplateLearningFile: templateLearningService.stageFile,
+    startTemplateLearningTask: templateLearningService.startTask,
+    completeTemplateLearningTask: templateLearningService.completeTask,
     scanWorkflowSource: workflowMemoryService.scanSource,
     scanWorkflowIncrementalIntake: workflowMemoryService.scanIncrementalIntake,
     listWorkflowIntakeObservations: workflowMemoryService.listIntakeObservations,
@@ -4257,6 +6290,8 @@ export function createServerRuntimeServices({
       const result = await createExternalIssueProviderClient({ provider }).fetchIssue({ repository, issueNumber });
       return result.ok ? result.issue : result;
     },
+    listWorkItemExternalIssues: ({ provider, repository, query, page, perPage }) =>
+      createExternalIssueProviderClient({ provider }).listIssues({ repository, query, page, perPage }),
     pushWorkItemExternalIssue: ({ provider, repository, issueNumber, payload }) =>
       createExternalIssueProviderClient({ provider }).updateIssue({ repository, issueNumber, payload }),
     listPlanningProjects: planningProjectService.listProjects,
@@ -4271,15 +6306,28 @@ export function createServerRuntimeServices({
     suggestPlanningPlan: planningProjectService.suggestPlan,
     executePlanningRecommendedAction: planningProjectService.executeRecommendedAction,
     decidePlanningRecommendedAction: planningProjectService.decideRecommendedAction,
+    createChannelTaskIssue,
     routeChannelTask,
     dismissChannelTask,
     retryChannelTask,
     rerouteChannelTask,
     takeoverChannelTask,
+    replyChannelTask,
     // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
+    sweepChannelTaskThreads: channelConversationService.sweepTaskThreads,
+    recoverChannelTaskThreads: channelConversationService.recoverTaskThreads,
     retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
+    beginIlinkLogin: ilinkRuntime.beginLogin,
+    pollIlinkLogin: ilinkRuntime.pollLogin,
+    activateIlinkChannel: ilinkRuntime.activate,
+    disconnectIlinkChannel: ilinkRuntime.disconnect,
+    sendIlinkApplicationMessage: ilinkRuntime.sendApplicationMessage,
+    startIlink: ilinkRuntime.start,
+    stopIlink: ilinkRuntime.stop,
+    syncIlinkWorkers: ilinkRuntime.syncWorkers,
+    onIlinkChannelStateChanged: ilinkRuntime.onChannelStateChanged,
     // Scheduled work-report post: the slow-tick sweep (index.mjs), the manual
     // "post now", and the config setter (routes).
     sweepReportSchedule: reportScheduleService.sweepReportSchedule,
@@ -4452,6 +6500,14 @@ export function createServerRuntimeServices({
 
   return {
     httpDependencies,
+    startLocalContentIndexing: localContentCatalogService.start,
+    closeRuntimeServices: async () => {
+      try {
+        await localContentCatalogService.close();
+      } finally {
+        mailQueryIndex?.close();
+      }
+    },
     savePersistentState,
     // #1084: the retention sweep (index.mjs) leaves an audit event per reap batch.
     appendEvent,

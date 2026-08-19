@@ -7,10 +7,24 @@
 - Enable persistent state and place the state store on backed-up storage.
 - Configure GitHub to send only `issues` events to
   `/api/webhooks/github/work-items`.
+- For GitLab, set `MYAGENTTOOL_GITLAB_BASE_URL`,
+  `MYAGENTTOOL_GITLAB_TOKEN`, and (for webhooks)
+  `MYAGENTTOOL_GITLAB_WEBHOOK_SECRET`.
+- For Gitea, set `MYAGENTTOOL_GITEA_BASE_URL`, `MYAGENTTOOL_GITEA_TOKEN`, and
+  (for webhooks) `MYAGENTTOOL_GITEA_WEBHOOK_SECRET`.
+- In Settings, review each project's external Issue switches. Keep automatic
+  execution off for the first canary and verify the emergency stop before go-live.
 
 Before rollout, `GET /api/work-items/github/diagnostics` must report
 `secretConfigured: true`. The attention queue must report zero unexplained SLA
 breaches.
+
+For every enabled provider, `GET /api/work-items/providers` must report
+`apiSync: true`. From the Tasks import dialog, run a read-only search against a
+canary repository, import one disposable Issue, complete it locally, and test
+both completion choices: local-only and explicit provider writeback. Verify a
+writeback failure leaves the Local Issue completed and visible as pending in
+the external Issue funnel.
 
 Run the offline configuration gate with the same environment that will start
 the service:
@@ -57,6 +71,9 @@ report and exits non-zero when a required check fails.
 - Attention SLA breaches: alert when greater than zero for 10 minutes.
 - Webhook failure rate: warn above 1%; page above 5% over 15 minutes.
 - Pending approvals: warn when the oldest item exceeds four hours.
+- External intake not started and review waiting: warn after 24 hours.
+- Completed Local Issues pending provider writeback: warn immediately and page
+  if the backlog grows continuously for 30 minutes.
 - Queue backlog: establish the initial baseline during canary and alert at
   twice the seven-day median.
 

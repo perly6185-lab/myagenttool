@@ -1,6 +1,6 @@
 # 首页关系人跟进与 AI 执行工作台设计
 
-Status: accepted; implementation complete through PR 8 controlled report delivery
+Status: accepted; implemented through PR 6's deterministic report review UI and PR 8's governed report delivery.
 
 Related: `docs/engineering/HOME_WORKBENCH_INFORMATION_ARCHITECTURE_PLAN.md`
 
@@ -275,7 +275,7 @@ Issue 详情的“关系与交付”卡和“AI 执行”卡保持分离：
 ### 后续：汇报闭环
 
 - 记录一次进展及下次跟进；
-- AI 生成面向 Boss、上级、客户或同事的汇报草稿；
+- 当前由固定结构化模板生成面向 Boss、上级、客户或同事的汇报草稿；若后续接入语言模型，必须单独标识模型与策略版本；
 - 人工确认后才能外发或关闭任务。
 
 汇报草稿是 Issue 所有的独立、版本化资源，而不是新的任务状态。首阶段服务端契约为：

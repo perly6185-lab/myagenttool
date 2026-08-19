@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { eventsForRun, failoverSummary, localQueueSnapshot, runLane } from "./auto-runs-view";
-import type { AutoRunRecord } from "./auto-runs-view";
+import { eventsForRun, failoverSummary, localQueueSnapshot, runLane } from "./auto-run-model";
+import type { AutoRunRecord } from "./auto-run-model";
 
 const run = (over: Partial<AutoRunRecord>): AutoRunRecord => ({ id: "ar", status: "running", ...over });
 

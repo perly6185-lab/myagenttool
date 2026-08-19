@@ -4,7 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
+import { QuotationDraftPreview } from "./quotation-draft-preview";
 import {
+  routineRecoveryMessage,
   useRoutineWorkLabels,
   type LedgerUpsertPreview,
   type RoutineWorkExecution,
@@ -29,6 +31,49 @@ function needsConfirmedOrder(step: RoutineWorkExecution["steps"][number]) {
   return /order/i.test(`${step.key} ${step.label} ${String(step.configuration.condition ?? "")}`);
 }
 
+type HumanAttention = {
+  kind: "quotation" | "approval" | "condition" | "ledger_review"
+    | "ledger_configuration" | "extraction_review" | "failed" | "waiting";
+  step: RoutineWorkExecution["steps"][number] | null;
+  ledgerPreview?: LedgerUpsertPreview;
+};
+
+function findHumanAttention(
+  execution: RoutineWorkExecution,
+  ledgerPreviews: Record<string, LedgerUpsertPreview>,
+): HumanAttention | null {
+  if (terminalRunStates.has(execution.run.status)) return null;
+  for (const step of execution.steps) {
+    if (step.run.state === "failed" && step.run.errorCode?.startsWith("routine_extract_")) {
+      return { kind: "extraction_review", step };
+    }
+    if (step.run.state === "failed") return { kind: "failed", step };
+    if (step.kind === "generate"
+      && step.run.state === "running"
+      && step.run.quotationReview?.status === "needs_input") {
+      return { kind: "quotation", step };
+    }
+    if (step.run.state === "awaiting_approval") return { kind: "approval", step };
+    if (step.run.state === "awaiting_condition") return { kind: "condition", step };
+    if (step.kind === "ledger_upsert" && step.run.state === "running") {
+      const ledgerDefinitionId = typeof step.configuration.ledgerDefinitionId === "string"
+        ? step.configuration.ledgerDefinitionId
+        : null;
+      if (!ledgerDefinitionId) return { kind: "ledger_configuration", step };
+      const ledgerPreview = ledgerPreviews[step.key];
+      if (!ledgerPreview || ledgerPreview.state === "pending") {
+        return { kind: "ledger_review", step, ledgerPreview };
+      }
+    }
+  }
+  if (execution.run.waitingReason
+    && execution.run.waitingReason !== "device_capacity"
+    && execution.run.waitingReason !== "ledger_write_waiting") {
+    return { kind: "waiting", step: null };
+  }
+  return null;
+}
+
 export function RoutineWorkPanel({
   execution,
   pending,
@@ -40,9 +85,11 @@ export function RoutineWorkPanel({
   onComplete,
   onPreviewLedger,
   onCommitLedger,
+  onBindLedger,
   onRetry,
   onApproval,
   onCondition,
+  onOpenWorkflowMemory,
 }: {
   execution: RoutineWorkExecution;
   pending: boolean;
@@ -58,12 +105,18 @@ export function RoutineWorkPanel({
   onComplete: RoutineStepAction;
   onPreviewLedger: (stepKey: string, ledgerDefinitionId: string) => void;
   onCommitLedger: (stepKey: string, preview: LedgerUpsertPreview) => void;
+  onBindLedger: (stepKey: string, ledgerDefinitionId: string) => void;
   onRetry: RoutineStepAction;
   onApproval: (stepKey: string, approved: boolean) => void;
   onCondition: (stepKey: string, outcome: boolean, triggerArtifactIds: string[]) => void;
+  onOpenWorkflowMemory: (
+    anchor: "workflow-file-review" | "workflow-routine-library",
+    retryStepKey?: string,
+  ) => void;
 }) {
   const text = useRoutineWorkLabels();
   const [selectedOrderArtifactId, setSelectedOrderArtifactId] = useState("");
+  const [selectedLedgerDefinitionId, setSelectedLedgerDefinitionId] = useState("");
   const [confirmation, setConfirmation] = useState<{
     type: "ledger" | "approval" | "quotation";
     stepKey: string;
@@ -71,8 +124,6 @@ export function RoutineWorkPanel({
   const [quotationTemplateArtifactId, setQuotationTemplateArtifactId] = useState("");
   const [quotationAnswers, setQuotationAnswers] = useState<Record<string, string>>({});
   const active = !terminalRunStates.has(execution.run.status);
-  const conditionStep = execution.steps.find((step) => step.run.state === "awaiting_condition");
-  const orderRequired = conditionStep ? needsConfirmedOrder(conditionStep) : false;
   const completedCount = execution.steps.filter(
     (step) => step.run.state === "succeeded" || step.run.state === "skipped",
   ).length;
@@ -80,6 +131,19 @@ export function RoutineWorkPanel({
     () => Math.round((completedCount / Math.max(execution.steps.length, 1)) * 100),
     [completedCount, execution.steps.length],
   );
+  const attention = findHumanAttention(execution, ledgerPreviews);
+
+  const openQuotationReview = (step: RoutineWorkExecution["steps"][number]) => {
+    const quotationReview = step.run.quotationReview;
+    if (!quotationReview) return;
+    setQuotationTemplateArtifactId(quotationReview.selectedTemplate?.artifactId ?? "");
+    setQuotationAnswers(Object.fromEntries(
+      quotationReview.fields
+        .filter((field) => field.state !== "confirmed")
+        .map((field) => [field.key, ""]),
+    ));
+    setConfirmation({ type: "quotation", stepKey: step.key });
+  };
 
   useEffect(() => {
     if (selectedOrderArtifactId
@@ -115,7 +179,176 @@ export function RoutineWorkPanel({
         <div className="h-full bg-primary transition-[width] motion-reduce:transition-none" style={{ width: `${progress}%` }} />
       </div>
       <p className="mt-1 text-xs text-muted-foreground">{completedCount}/{execution.steps.length} · {progress}%</p>
-      {execution.run.waitingReason ? (
+      {attention ? (() => {
+        const step = attention.step;
+        const orderDecision = attention.kind === "condition" && step
+          ? needsConfirmedOrder(step)
+          : false;
+        const copy = attention.kind === "quotation"
+          ? text.help.quotation
+          : attention.kind === "approval"
+            ? text.help.approval
+            : attention.kind === "condition"
+              ? orderDecision ? text.help.orderCondition : text.help.condition
+              : attention.kind === "ledger_review"
+                ? text.help.ledgerReview
+                : attention.kind === "ledger_configuration"
+                  ? text.help.ledgerConfiguration
+                  : attention.kind === "extraction_review"
+                    ? text.help.extractionReview
+                  : attention.kind === "failed"
+                    ? text.help.failed
+                    : text.help.waiting;
+        const action = attention.kind === "failed"
+          ? routineRecoveryMessage(step?.run.errorCode ?? "failed", text)
+          : "action" in copy ? copy.action : "";
+        const technicalValues = [
+          step?.run.errorCode
+            ? `${text.technicalErrorCode}: ${step.run.errorCode}`
+            : null,
+          execution.run.waitingReason
+            ? `${text.technicalWaitingReason}: ${execution.run.waitingReason}`
+            : null,
+        ].filter(Boolean);
+        const ledgerDefinitionId = step && typeof step.configuration.ledgerDefinitionId === "string"
+          ? step.configuration.ledgerDefinitionId
+          : null;
+        return (
+          <div className="mt-3 rounded-md border border-warning/50 bg-warning/5 p-3"
+            role="status" aria-label={text.helpTitle}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-medium text-warning">
+                  {text.helpTitle}
+                </p>
+                <p className="mt-0.5 text-sm font-semibold">{copy.title}</p>
+              </div>
+              {step ? <Badge tone="warning">{step.label}</Badge> : null}
+            </div>
+            <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+              <div>
+                <dt className="font-medium">{text.helpBlockedAt}</dt>
+                <dd className="mt-0.5 text-muted-foreground">{step?.label ?? execution.definition.name}</dd>
+              </div>
+              <div>
+                <dt className="font-medium">{text.helpWhy}</dt>
+                <dd className="mt-0.5 text-muted-foreground">{copy.why}</dd>
+              </div>
+              <div>
+                <dt className="font-medium">{text.helpAction}</dt>
+                <dd className="mt-0.5 text-muted-foreground">{action}</dd>
+              </div>
+              <div>
+                <dt className="font-medium">{text.helpAfter}</dt>
+                <dd className="mt-0.5 text-muted-foreground">{copy.after}</dd>
+              </div>
+            </dl>
+            {step ? (
+              <div className="mt-3 flex flex-wrap items-end gap-2">
+                {attention.kind === "quotation" ? (
+                  <Button size="sm" disabled={pending} onClick={() => openQuotationReview(step)}>
+                    {text.reviewQuotationInputs}
+                  </Button>
+                ) : null}
+                {attention.kind === "approval" ? (
+                  <>
+                    <Button size="sm" disabled={pending}
+                      onClick={() => setConfirmation({ type: "approval", stepKey: step.key })}>
+                      {text.reviewResult}
+                    </Button>
+                    <Button size="sm" variant="secondary" disabled={pending}
+                      onClick={() => onApproval(step.key, false)}>{text.reject}</Button>
+                  </>
+                ) : null}
+                {attention.kind === "condition" ? (
+                  <>
+                    {orderDecision ? (
+                      <label className="min-w-56 text-xs font-medium">
+                        {text.selectOrder}
+                        <Select className="mt-1" value={selectedOrderArtifactId}
+                          onChange={(event) => setSelectedOrderArtifactId(event.target.value)}>
+                          <option value="">—</option>
+                          {execution.availableOrderTriggers.map((trigger) => (
+                            <option key={trigger.artifactId} value={trigger.artifactId}>{trigger.label}</option>
+                          ))}
+                        </Select>
+                      </label>
+                    ) : null}
+                    <Button size="sm" disabled={pending || (orderDecision && !selectedOrderArtifactId)}
+                      onClick={() => onCondition(
+                        step.key,
+                        true,
+                        selectedOrderArtifactId ? [selectedOrderArtifactId] : [],
+                      )}>
+                      {orderDecision ? text.orderReceived : text.conditionYes}
+                    </Button>
+                    <Button size="sm" variant="secondary" disabled={pending}
+                      onClick={() => onCondition(step.key, false, [])}>
+                      {orderDecision ? text.noOrder : text.conditionNo}
+                    </Button>
+                  </>
+                ) : null}
+                {attention.kind === "ledger_review" && ledgerDefinitionId ? (
+                  <Button size="sm" disabled={pending || attention.ledgerPreview?.state === "waiting"}
+                    onClick={() => {
+                      setConfirmation({ type: "ledger", stepKey: step.key });
+                      if (!attention.ledgerPreview) onPreviewLedger(step.key, ledgerDefinitionId);
+                    }}>
+                    {attention.ledgerPreview ? text.reviewAndConfirm : text.reviewLedger}
+                  </Button>
+                ) : null}
+                {attention.kind === "ledger_configuration" ? (
+                  (execution.availableLedgers?.length ?? 0) > 0 ? (
+                    <>
+                      <label className="min-w-64 text-xs font-medium">
+                        {text.selectLedger}
+                        <Select className="mt-1" value={selectedLedgerDefinitionId}
+                          onChange={(event) => setSelectedLedgerDefinitionId(event.target.value)}>
+                          <option value="">—</option>
+                          {execution.availableLedgers?.map((ledger) => (
+                            <option key={ledger.id} value={ledger.id}>
+                              {ledger.name} · {text.ledgerTypes[ledger.documentType]} · {ledger.relativePath}
+                            </option>
+                          ))}
+                        </Select>
+                      </label>
+                      <Button size="sm" disabled={pending || !selectedLedgerDefinitionId}
+                        onClick={() => onBindLedger(step.key, selectedLedgerDefinitionId)}>
+                        {text.useLedger}
+                      </Button>
+                    </>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="max-w-xl text-xs text-muted-foreground">{text.noAvailableLedgers}</p>
+                      <Button size="sm" variant="secondary" disabled={pending}
+                        onClick={() => onOpenWorkflowMemory("workflow-file-review")}>
+                        {text.findLedger}
+                      </Button>
+                    </div>
+                  )
+                ) : null}
+                {attention.kind === "extraction_review" ? (
+                  <Button size="sm" disabled={pending}
+                    onClick={() => onOpenWorkflowMemory("workflow-file-review", step.key)}>
+                    {text.reviewRecognizedInformation}
+                  </Button>
+                ) : null}
+                {attention.kind === "failed" ? (
+                  <Button size="sm" disabled={pending || !active} onClick={() => onRetry(step.key)}>
+                    {text.retry}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+            {technicalValues.length ? (
+              <details className="mt-3 text-xs text-muted-foreground">
+                <summary className="cursor-pointer font-medium">{text.technicalDetails}</summary>
+                {technicalValues.map((value) => <p key={value} className="mt-1 font-mono">{value}</p>)}
+              </details>
+            ) : null}
+          </div>
+        );
+      })() : execution.run.waitingReason ? (
         <p className="mt-2 rounded bg-muted p-2 text-xs text-muted-foreground">
           {execution.run.waitingReason === "device_capacity"
             ? `${text.waitingCapacity}${
@@ -127,16 +360,12 @@ export function RoutineWorkPanel({
               ? text.interruptedRecovery
               : execution.run.waitingReason === "routine_quotation_facts_required"
                 ? text.quotationFactsRequired
-              : execution.run.waitingReason}
+                : text.help.waiting.title}
         </p>
       ) : null}
 
       <ol className="mt-3 space-y-2">
         {execution.steps.map((step, index) => {
-          const ledgerDefinitionId = typeof step.configuration.ledgerDefinitionId === "string"
-            ? step.configuration.ledgerDefinitionId
-            : null;
-          const ledgerPreview = ledgerPreviews[step.key];
           return (
           <li key={step.key} className={cn(
             "rounded-md border p-3",
@@ -156,7 +385,10 @@ export function RoutineWorkPanel({
             </div>
 
             {step.run.errorCode ? (
-              <p className="mt-2 text-xs text-destructive">{step.run.errorCode}</p>
+              <details className="mt-2 text-xs text-muted-foreground">
+                <summary className="cursor-pointer">{text.technicalDetails}</summary>
+                <p className="mt-1 font-mono">{text.technicalErrorCode}: {step.run.errorCode}</p>
+              </details>
             ) : null}
             {step.run.outputRefs.length ? (
               <ul className="mt-2 list-inside list-disc text-xs text-muted-foreground">
@@ -168,6 +400,7 @@ export function RoutineWorkPanel({
 
             {step.run.state === "running" && step.kind !== "ledger_upsert" ? (() => {
               const quotationReview = step.kind === "generate" ? step.run.quotationReview : null;
+              if (quotationReview?.status === "needs_input") return null;
               if (quotationReview) {
                 return (
                   <Button className="mt-2" size="sm" disabled={pending}
@@ -176,15 +409,7 @@ export function RoutineWorkPanel({
                         onExecute(step.key);
                         return;
                       }
-                      setQuotationTemplateArtifactId(
-                        quotationReview.selectedTemplate?.artifactId ?? "",
-                      );
-                      setQuotationAnswers(Object.fromEntries(
-                        quotationReview.fields
-                          .filter((field) => field.state !== "confirmed")
-                          .map((field) => [field.key, ""]),
-                      ));
-                      setConfirmation({ type: "quotation", stepKey: step.key });
+                      openQuotationReview(step);
                     }}>
                     {quotationReview.status === "ready"
                       ? text.generateQuotation
@@ -201,92 +426,6 @@ export function RoutineWorkPanel({
                 </Button>
               );
             })() : null}
-            {step.run.state === "running" && step.kind === "ledger_upsert" ? (
-              <div className="mt-2 space-y-2">
-                {!ledgerDefinitionId ? (
-                  <p className="rounded bg-muted p-2 text-xs text-muted-foreground">
-                    {text.ledgerConfigurationMissing}
-                  </p>
-                ) : !ledgerPreview ? (
-                  <Button size="sm" disabled={pending}
-                    onClick={() => {
-                      setConfirmation({ type: "ledger", stepKey: step.key });
-                      onPreviewLedger(step.key, ledgerDefinitionId);
-                    }}>
-                    {text.reviewLedger}
-                  </Button>
-                ) : (
-                  <div className="rounded-md border border-border bg-background p-3">
-                    {ledgerPreview.state === "waiting" ? (
-                      <p className="mb-2 rounded bg-muted p-2 text-xs text-muted-foreground" role="status">
-                        {text.waitingLedger}
-                        {ledgerPreview.queue.position
-                          ? ` ${text.waitingLedgerPosition} ${ledgerPreview.queue.position}.`
-                          : ""}
-                      </p>
-                    ) : null}
-                    <p className="text-sm font-medium">
-                      {ledgerPreview.action === "insert"
-                        ? text.ledgerInsert
-                        : ledgerPreview.action === "update"
-                          ? text.ledgerUpdate
-                          : text.ledgerNoOp}
-                      {ledgerPreview.rowNumber ? ` · ${text.row} ${ledgerPreview.rowNumber}` : ""}
-                    </p>
-                    <Button className="mt-3" size="sm"
-                      disabled={pending || ledgerPreview.state === "waiting"}
-                      onClick={() => setConfirmation({ type: "ledger", stepKey: step.key })}>
-                      {text.reviewAndConfirm}
-                    </Button>
-                  </div>
-                )}
-              </div>
-            ) : null}
-            {step.run.state === "failed" ? (
-              <Button className="mt-2" size="sm" disabled={pending || !active} onClick={() => onRetry(step.key)}>
-                {text.retry}
-              </Button>
-            ) : null}
-            {step.run.state === "awaiting_approval" ? (
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Button size="sm" disabled={pending}
-                  onClick={() => setConfirmation({ type: "approval", stepKey: step.key })}>
-                  {text.approve}
-                </Button>
-                <Button size="sm" variant="secondary" disabled={pending}
-                  onClick={() => onApproval(step.key, false)}>{text.reject}</Button>
-              </div>
-            ) : null}
-            {step.run.state === "awaiting_condition" ? (
-              <div className="mt-2 space-y-2">
-                {orderRequired ? (
-                  <label className="block text-xs font-medium">
-                    {text.selectOrder}
-                    <Select className="mt-1" value={selectedOrderArtifactId}
-                      onChange={(event) => setSelectedOrderArtifactId(event.target.value)}>
-                      <option value="">—</option>
-                      {execution.availableOrderTriggers.map((trigger) => (
-                        <option key={trigger.artifactId} value={trigger.artifactId}>{trigger.label}</option>
-                      ))}
-                    </Select>
-                  </label>
-                ) : null}
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" disabled={pending || (orderRequired && !selectedOrderArtifactId)}
-                    onClick={() => onCondition(
-                      step.key,
-                      true,
-                      selectedOrderArtifactId ? [selectedOrderArtifactId] : [],
-                    )}>
-                    {text.orderReceived}
-                  </Button>
-                  <Button size="sm" variant="secondary" disabled={pending}
-                    onClick={() => onCondition(step.key, false, [])}>
-                    {text.noOrder}
-                  </Button>
-                </div>
-              </div>
-            ) : null}
           </li>
           );
         })}
@@ -516,9 +655,7 @@ export function RoutineWorkPanel({
                 {quotationReview?.draftPreview ? (
                   <div className="mt-3">
                     <p className="text-xs font-medium">{text.quotationDraftPreview}</p>
-                    <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap rounded border bg-background p-2 text-xs">
-                      {quotationReview.draftPreview}
-                    </pre>
+                    <QuotationDraftPreview preview={quotationReview.draftPreview} />
                   </div>
                 ) : null}
                 {outputs.length ? (

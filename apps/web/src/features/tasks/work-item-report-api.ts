@@ -3,6 +3,7 @@ import type {
   WorkItemReportAudience,
   WorkItemReportDelivery,
   WorkItemReportDraft,
+  WorkItemReportLocale,
   WorkItemReportTone,
 } from "./work-item-report-types";
 
@@ -22,6 +23,7 @@ export const workItemReportApi = {
     idempotencyKey: string;
     audience: WorkItemReportAudience;
     tone: WorkItemReportTone;
+    locale: WorkItemReportLocale;
   }) => request<{ reportDraft: WorkItemReportDraft; replayed: boolean }>("POST", base(workItemId), payload),
   update: (workItemId: string, draftId: string, payload: {
     expectedRevision: number;

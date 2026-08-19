@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -16,6 +16,7 @@ import {
   resolveVerificationInvocation,
   runWorktreeVerification,
   runWorktreeVerificationPlan,
+  verificationFailureIsRepairable,
 } from "../src/services/worktree-verify.mjs";
 import { startVerificationProcessGuardian } from "../src/runtime/verification-process-guardian.mjs";
 
@@ -116,6 +117,55 @@ test("automatic verification uses the deterministic docs check for Markdown-only
     changedPaths: ["README.md"],
     env: {},
   }), []);
+});
+
+test("automatic verification leaves a plain business-document repository unverified instead of inventing code checks", () => {
+  const repositoryRoot = mkdtempSync(join(tmpdir(), "myagenttool-business-docs-"));
+  try {
+    mkdirSync(join(repositoryRoot, "deliverables"), { recursive: true });
+    writeFileSync(join(repositoryRoot, "deliverables", "quotation.md"), "# Quotation\n");
+    assert.deepEqual(resolveAutoRunVerificationPlan({
+      repositoryRoot,
+      changedPaths: ["deliverables/quotation.md"],
+      env: { MYAGENTTOOL_AUTORUN_VERIFY_AUTO: "1" },
+    }), []);
+    assert.deepEqual(resolveAutoRunVerificationPlan({
+      repositoryRoot,
+      changedPaths: ["business-data.json"],
+      env: { MYAGENTTOOL_AUTORUN_VERIFY_AUTO: "1" },
+    }), []);
+  } finally {
+    rmSync(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("automatic Markdown verification requires the repository-owned checker to exist", () => {
+  const repositoryRoot = mkdtempSync(join(tmpdir(), "myagenttool-docs-check-"));
+  try {
+    mkdirSync(join(repositoryRoot, "tools", "docs"), { recursive: true });
+    writeFileSync(join(repositoryRoot, "tools", "docs", "check-markdown-links.ps1"), "exit 0\n");
+    assert.deepEqual(resolveAutoRunVerificationPlan({
+      repositoryRoot,
+      changedPaths: ["README.md"],
+      env: { MYAGENTTOOL_AUTORUN_VERIFY_AUTO: "1" },
+    }), [[
+      "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+      "-File", "tools/docs/check-markdown-links.ps1",
+    ]]);
+  } finally {
+    rmSync(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("missing verifier infrastructure is not classified as agent-repairable", () => {
+  assert.equal(verificationFailureIsRepairable({
+    command: "pnpm install --offline --frozen-lockfile",
+    summary: "ERR_PNPM_NO_PKG_MANIFEST No package.json found",
+  }), false);
+  assert.equal(verificationFailureIsRepairable({
+    command: "node --test focused.test.mjs",
+    summary: "AssertionError: expected quotation total to match",
+  }), true);
 });
 
 test("automatic verification still falls back to repository CI for unclassified changes", () => {

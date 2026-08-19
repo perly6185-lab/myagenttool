@@ -27,6 +27,7 @@ export function WorkItemExternalSync({
         <Badge tone={binding.conflict ? "danger" : "success"}>
           {providerLabel} #{binding.number} · {t(binding.conflict ? "taskLocal.github.conflict" : "taskLocal.github.synced")}
         </Badge>
+        <Badge tone="neutral">{binding.isPrimary ? "source" : (binding.relation ?? "related")}</Badge>
         {binding.url ? <a className="text-primary hover:underline" href={binding.url} target="_blank" rel="noreferrer">{t("taskLocal.github.open")}</a> : null}
         <Button variant="secondary" disabled={pending} onClick={() => onSync("pull")}>{t("taskLocal.github.pull")}</Button>
         <Button variant="secondary" disabled={pending || Boolean(binding.conflict)} onClick={() => onSync("push")}>{t("taskLocal.github.push")}</Button>

@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +23,7 @@ import {
 
 const ACTOR = { userId: "usr_commercial", teamId: "team_commercial" };
 
-function harness() {
+function harness({ serviceOptions = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ledger-upserts-"));
   let id = 0;
   let clock = Date.parse("2026-07-29T00:00:00.000Z");
@@ -82,6 +84,7 @@ function harness() {
       completions.push(input);
       return { ok: true };
     },
+    ...serviceOptions,
   });
   return {
     root,
@@ -205,6 +208,45 @@ test("CSV ledger previews and commits insert, no-op, and update idempotently", a
   }
 });
 
+test("configured business status transitions fail closed before preview creation", async () => {
+  const h = harness();
+  try {
+    const path = join(h.root, "ledgers/orders.csv");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "Order No,Customer,Status\r\nORD-001,Acme,已发货\r\n");
+    const definition = await activate(h, createCsvDefinition(h, {
+      relativePath: "ledgers/orders.csv",
+      documentType: "inquiry_ledger",
+      businessKeyField: "order_number",
+      fieldMappings: { order_number: "Order No", customer: "Customer", status: "Status" },
+      requiredFields: ["order_number", "customer"],
+      writePolicy: {
+        approval: "always",
+        allowInsert: false,
+        allowUpdate: true,
+        fieldTransitions: { status: { 已发货: ["已完成"] } },
+      },
+    }));
+    const rejected = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: definition.id,
+      fields: { order_number: "ORD-001", customer: "Acme", status: "已下单" },
+      sourceEvidence: [{ artifactId: "wfa_order", field: "order_number" }],
+    }, ACTOR);
+    assert.equal(rejected.status, 400);
+    assert.equal(rejected.body.error, "ledger_field_transition_not_allowed");
+    assert.equal(h.state.ledgerUpsertPreviews.length, 0);
+
+    const allowed = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: definition.id,
+      fields: { order_number: "ORD-001", customer: "Acme", status: "已完成" },
+      sourceEvidence: [{ artifactId: "wfa_order", field: "order_number" }],
+    }, ACTOR);
+    assert.equal(allowed.status, 201);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("same-ledger previews serialize durably while independent ledgers remain available", async () => {
   const h = harness();
   try {
@@ -276,6 +318,315 @@ test("same-ledger previews serialize durably while independent ledgers remain av
     }, ACTOR);
     assert.equal(committedSecond.status, 200);
     assert.equal(readFileSync(inquiryPath, "utf8").match(/RFQ-Q-/g).length, 2);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("batch previews update multiple rows and fields through one confirmation", async () => {
+  const h = harness();
+  try {
+    const path = join(h.root, "ledgers/inquiries.csv");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "Inquiry No,Customer,Amount\nRFQ-001,Old A,10\nRFQ-002,Old B,20\n");
+    const definition = await activate(h, createCsvDefinition(h));
+    const preview = await h.ledgerService.previewBatchUpsert({
+      operations: [
+        { ledgerDefinitionId: definition.id, businessKey: "RFQ-001", fields: { customer: "New A", amount: 11 }, sourceEvidence: [{ artifactId: "wfa_inquiry" }] },
+        { ledgerDefinitionId: definition.id, businessKey: "RFQ-002", fields: { customer: "New B", amount: 22 }, sourceEvidence: [{ artifactId: "wfa_inquiry" }] },
+      ],
+      idempotencyKey: "batch-rows-1",
+    }, ACTOR);
+    assert.equal(preview.status, 202);
+    assert.equal(preview.body.batchPreview.operationCount, 2);
+    assert.equal(preview.body.batchPreview.targetCount, 1);
+    assert.equal(preview.body.batchPreview.children[1].state, "waiting");
+    const foreignActor = { userId: "usr_other", teamId: "team_other" };
+    assert.equal((await h.ledgerService.commitBatchPreview({
+      batchPreviewId: preview.body.batchPreview.id,
+      expectedRevision: preview.body.batchPreview.revision,
+      approved: true,
+    }, foreignActor)).status, 404);
+    assert.deepEqual(h.ledgerService.listBatchMutationJournals({}, foreignActor).body.journals, []);
+    assert.equal((await h.ledgerService.retryBatchPreview({
+      batchPreviewId: preview.body.batchPreview.id,
+    }, ACTOR)).body.error, "ledger_batch_retry_not_available");
+    assert.equal((await h.ledgerService.commitPreview({
+      previewId: preview.body.batchPreview.children[0].id,
+      expectedRevision: preview.body.batchPreview.children[0].revision,
+      approved: true,
+    }, ACTOR)).body?.error, "ledger_preview_requires_batch_commit");
+
+    const committed = await h.ledgerService.commitBatchPreview({
+      batchPreviewId: preview.body.batchPreview.id,
+      expectedRevision: preview.body.batchPreview.revision,
+      approved: true,
+    }, ACTOR);
+    assert.equal(committed.status, 200, JSON.stringify(committed.body));
+    assert.equal(committed.body.batchPreview.state, "committed");
+    assert.match(readFileSync(path, "utf8"), /RFQ-001,New A,11/);
+    assert.match(readFileSync(path, "utf8"), /RFQ-002,New B,22/);
+    assert.equal(h.state.ledgerMutationAudits.length, 2);
+    assert.equal(h.state.ledgerBatchMutationJournals.at(-1).status, "committed");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("batch preview coordinates independent files without claiming cross-file atomicity", async () => {
+  const h = harness();
+  try {
+    const inquiryPath = join(h.root, "ledgers/inquiries.csv");
+    const quotationPath = join(h.root, "ledgers/quotations.csv");
+    mkdirSync(dirname(inquiryPath), { recursive: true });
+    writeFileSync(inquiryPath, "Inquiry No,Customer,Amount\nRFQ-101,Old Inquiry,1\n");
+    writeFileSync(quotationPath, "Inquiry No,Customer,Amount\nRFQ-102,Old Quote,2\n");
+    const inquiry = await activate(h, createCsvDefinition(h));
+    const quotation = await activate(h, createCsvDefinition(h, { relativePath: "ledgers/quotations.csv" }));
+    const preview = await h.ledgerService.previewBatchUpsert({
+      operations: [
+        { ledgerDefinitionId: inquiry.id, businessKey: "RFQ-101", fields: { customer: "New Inquiry" }, sourceEvidence: [{ artifactId: "wfa_inquiry" }] },
+        { ledgerDefinitionId: quotation.id, businessKey: "RFQ-102", fields: { customer: "New Quote" }, sourceEvidence: [{ artifactId: "wfa_order" }] },
+      ],
+    }, ACTOR);
+    assert.equal(preview.status, 201);
+    assert.equal(preview.body.batchPreview.targetCount, 2);
+    const committed = await h.ledgerService.commitBatchPreview({
+      batchPreviewId: preview.body.batchPreview.id,
+      expectedRevision: preview.body.batchPreview.revision,
+      approved: true,
+    }, ACTOR);
+    assert.equal(committed.status, 200);
+    assert.match(readFileSync(inquiryPath, "utf8"), /RFQ-101,New Inquiry,1/);
+    assert.match(readFileSync(quotationPath, "utf8"), /RFQ-102,New Quote,2/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("failed batch compensates applied files from durable rollback snapshots", async () => {
+  let secondDefinitionId = null;
+  const h = harness({
+    serviceOptions: {
+      onBatchChildCommitted: async () => {
+        h.state.ledgerDefinitions.find((row) => row.id === secondDefinitionId).state = "disabled";
+      },
+    },
+  });
+  try {
+    const inquiryPath = join(h.root, "ledgers/inquiries.csv");
+    const quotationPath = join(h.root, "ledgers/quotations.csv");
+    mkdirSync(dirname(inquiryPath), { recursive: true });
+    const inquiryBefore = "Inquiry No,Customer,Amount\nRFQ-201,Old Inquiry,1\n";
+    const quotationBefore = "Inquiry No,Customer,Amount\nRFQ-202,Old Quote,2\n";
+    writeFileSync(inquiryPath, inquiryBefore);
+    writeFileSync(quotationPath, quotationBefore);
+    const inquiry = await activate(h, createCsvDefinition(h));
+    const quotation = await activate(h, createCsvDefinition(h, { relativePath: "ledgers/quotations.csv" }));
+    secondDefinitionId = quotation.id;
+    const preview = await h.ledgerService.previewBatchUpsert({
+      operations: [
+        { ledgerDefinitionId: inquiry.id, businessKey: "RFQ-201", fields: { customer: "New Inquiry" }, sourceEvidence: [{ artifactId: "wfa_inquiry" }] },
+        { ledgerDefinitionId: quotation.id, businessKey: "RFQ-202", fields: { customer: "New Quote" }, sourceEvidence: [{ artifactId: "wfa_order" }] },
+      ],
+    }, ACTOR);
+    const result = await h.ledgerService.commitBatchPreview({
+      batchPreviewId: preview.body.batchPreview.id,
+      expectedRevision: preview.body.batchPreview.revision,
+      approved: true,
+    }, ACTOR);
+    assert.equal(result.status, 409);
+    assert.equal(result.body.error, "ledger_batch_commit_rolled_back");
+    assert.equal(result.body.batchPreview.state, "rolled_back");
+    assert.equal(readFileSync(inquiryPath, "utf8"), inquiryBefore);
+    assert.equal(readFileSync(quotationPath, "utf8"), quotationBefore);
+    const journal = h.state.ledgerBatchMutationJournals.at(-1);
+    assert.equal(journal.status, "rolled_back");
+    assert.equal(journal.rollback.restoredTargets, 2);
+    assert.equal(journal.cleanupStatus, "cleaned");
+    assert.equal(h.ledgerService.listBatchMutationJournals({ batchPreviewId: preview.body.batchPreview.id }, ACTOR).body.journals[0].snapshots[0].targetPath, undefined);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("compensation stops at externally changed files and requires manual recovery", async () => {
+  let secondDefinitionId = null;
+  let inquiryPath = null;
+  const h = harness({
+    serviceOptions: {
+      onBatchChildCommitted: async () => {
+        writeFileSync(inquiryPath, "Inquiry No,Customer,Amount\nRFQ-211,External Change,9\n");
+        h.state.ledgerDefinitions.find((row) => row.id === secondDefinitionId).state = "disabled";
+      },
+    },
+  });
+  try {
+    inquiryPath = join(h.root, "ledgers/inquiries.csv");
+    const quotationPath = join(h.root, "ledgers/quotations.csv");
+    mkdirSync(dirname(inquiryPath), { recursive: true });
+    writeFileSync(inquiryPath, "Inquiry No,Customer,Amount\nRFQ-211,Old Inquiry,1\n");
+    writeFileSync(quotationPath, "Inquiry No,Customer,Amount\nRFQ-212,Old Quote,2\n");
+    const inquiry = await activate(h, createCsvDefinition(h));
+    const quotation = await activate(h, createCsvDefinition(h, { relativePath: "ledgers/quotations.csv" }));
+    secondDefinitionId = quotation.id;
+    const preview = await h.ledgerService.previewBatchUpsert({
+      operations: [
+        { ledgerDefinitionId: inquiry.id, businessKey: "RFQ-211", fields: { customer: "New Inquiry" }, sourceEvidence: [{ artifactId: "wfa_inquiry" }] },
+        { ledgerDefinitionId: quotation.id, businessKey: "RFQ-212", fields: { customer: "New Quote" }, sourceEvidence: [{ artifactId: "wfa_order" }] },
+      ],
+    }, ACTOR);
+    const result = await h.ledgerService.commitBatchPreview({
+      batchPreviewId: preview.body.batchPreview.id,
+      expectedRevision: preview.body.batchPreview.revision,
+      approved: true,
+    }, ACTOR);
+    assert.equal(result.status, 409);
+    assert.equal(result.body.error, "ledger_batch_commit_partial");
+    assert.equal(result.body.batchPreview.state, "needs_attention");
+    assert.match(readFileSync(inquiryPath, "utf8"), /External Change/);
+    assert.equal(h.state.ledgerBatchMutationJournals.at(-1).status, "needs_attention");
+    assert.equal((await h.ledgerService.retryBatchPreview({ batchPreviewId: preview.body.batchPreview.id }, ACTOR)).status, 409);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("committing batch resumes after interruption and does not duplicate applied children", async () => {
+  let interrupted = false;
+  const h = harness({
+    serviceOptions: {
+      onBatchChildCommitted: async () => {
+        if (!interrupted) {
+          interrupted = true;
+          throw Object.assign(new Error("simulated interruption"), { code: "ledger_process_interrupted" });
+        }
+      },
+    },
+  });
+  try {
+    const inquiryPath = join(h.root, "ledgers/inquiries.csv");
+    const quotationPath = join(h.root, "ledgers/quotations.csv");
+    mkdirSync(dirname(inquiryPath), { recursive: true });
+    writeFileSync(inquiryPath, "Inquiry No,Customer,Amount\nRFQ-221,Old Inquiry,1\n");
+    writeFileSync(quotationPath, "Inquiry No,Customer,Amount\nRFQ-222,Old Quote,2\n");
+    const inquiry = await activate(h, createCsvDefinition(h));
+    const quotation = await activate(h, createCsvDefinition(h, { relativePath: "ledgers/quotations.csv" }));
+    const preview = await h.ledgerService.previewBatchUpsert({
+      operations: [
+        { ledgerDefinitionId: inquiry.id, businessKey: "RFQ-221", fields: { customer: "New Inquiry" }, sourceEvidence: [{ artifactId: "wfa_inquiry" }] },
+        { ledgerDefinitionId: quotation.id, businessKey: "RFQ-222", fields: { customer: "New Quote" }, sourceEvidence: [{ artifactId: "wfa_order" }] },
+      ],
+    }, ACTOR);
+    const first = await h.ledgerService.commitBatchPreview({
+      batchPreviewId: preview.body.batchPreview.id,
+      expectedRevision: preview.body.batchPreview.revision,
+      approved: true,
+    }, ACTOR);
+    assert.equal(first.status, 503);
+    assert.equal(first.body.error, "ledger_batch_commit_recovery_required");
+    const resumed = await h.ledgerService.retryBatchPreview({
+      batchPreviewId: preview.body.batchPreview.id,
+    }, ACTOR);
+    assert.equal(resumed.status, 200, JSON.stringify(resumed.body));
+    assert.equal(h.state.ledgerMutationAudits.length, 2);
+    assert.equal(readFileSync(inquiryPath, "utf8").match(/RFQ-221/g).length, 1);
+    assert.equal(readFileSync(quotationPath, "utf8").match(/RFQ-222/g).length, 1);
+    assert.equal(h.state.ledgerBatchMutationJournals.at(-1).status, "committed");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("target identity uses raw content hash and detects source drift", async () => {
+  const h = harness();
+  try {
+    const path = join(h.root, "ledgers/inquiries.csv");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "Inquiry No,Customer,Amount\n");
+    const definition = await activate(h, createCsvDefinition(h));
+    const identity = await h.ledgerService.inspectTargetIdentity({ ledgerDefinitionId: definition.id }, ACTOR);
+    assert.equal(identity.status, 200);
+    assert.equal(identity.body.identity.contentHash.length, 64);
+    writeFileSync(path, "Inquiry No,Customer,Amount\nRFQ-DRIFT,Changed,1\n");
+    const changed = await h.ledgerService.inspectTargetIdentity({ ledgerDefinitionId: definition.id }, ACTOR);
+    assert.notEqual(changed.body.identity.contentHash, identity.body.identity.contentHash);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("public ledger diffs redact sensitive field values while preserving internal execution data", async () => {
+  const h = harness();
+  try {
+    const path = join(h.root, "ledgers/secrets.csv");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "Inquiry No,Account Number,Customer\nRFQ-301,123456789,Acme\n");
+    const definition = await activate(h, createCsvDefinition(h, {
+      relativePath: "ledgers/secrets.csv",
+      fieldMappings: {
+        inquiry_number: "Inquiry No",
+        account_number: "Account Number",
+        customer: "Customer",
+      },
+      requiredFields: ["inquiry_number", "customer"],
+    }));
+    const preview = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: definition.id,
+      businessKey: "RFQ-301",
+      fields: { account_number: "987654321", customer: "Acme" },
+      sourceEvidence: [{ artifactId: "wfa_inquiry" }],
+    }, ACTOR);
+    assert.equal(preview.status, 201);
+    assert.deepEqual(preview.body.preview.changedCells.find((cell) => cell.field === "account_number"), {
+      field: "account_number",
+      column: "Account Number",
+      before: "[redacted]",
+      after: "[redacted]",
+    });
+    const internal = h.state.ledgerUpsertPreviews.find((row) => row.id === preview.body.preview.id);
+    assert.equal(internal.fieldValues.account_number, "987654321");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("batch rollback snapshots use private permissions and are removed after compensation", async () => {
+  let secondDefinitionId = null;
+  let inquiryPath = null;
+  let snapshotMode = null;
+  const h = harness({
+    serviceOptions: {
+      onBatchChildCommitted: async () => {
+        const rollback = readdirSync(dirname(inquiryPath)).find((name) => name.endsWith(".rollback"));
+        snapshotMode = rollback ? statSync(join(dirname(inquiryPath), rollback)).mode & 0o777 : null;
+        h.state.ledgerDefinitions.find((row) => row.id === secondDefinitionId).state = "disabled";
+      },
+    },
+  });
+  try {
+    inquiryPath = join(h.root, "ledgers/inquiries.csv");
+    const quotationPath = join(h.root, "ledgers/quotations.csv");
+    mkdirSync(dirname(inquiryPath), { recursive: true });
+    writeFileSync(inquiryPath, "Inquiry No,Customer,Amount\nRFQ-311,Old Inquiry,1\n");
+    writeFileSync(quotationPath, "Inquiry No,Customer,Amount\nRFQ-312,Old Quote,2\n");
+    const inquiry = await activate(h, createCsvDefinition(h));
+    const quotation = await activate(h, createCsvDefinition(h, { relativePath: "ledgers/quotations.csv" }));
+    secondDefinitionId = quotation.id;
+    const preview = await h.ledgerService.previewBatchUpsert({
+      operations: [
+        { ledgerDefinitionId: inquiry.id, businessKey: "RFQ-311", fields: { customer: "New Inquiry" }, sourceEvidence: [{ artifactId: "wfa_inquiry" }] },
+        { ledgerDefinitionId: quotation.id, businessKey: "RFQ-312", fields: { customer: "New Quote" }, sourceEvidence: [{ artifactId: "wfa_order" }] },
+      ],
+    }, ACTOR);
+    const result = await h.ledgerService.commitBatchPreview({
+      batchPreviewId: preview.body.batchPreview.id,
+      expectedRevision: preview.body.batchPreview.revision,
+      approved: true,
+    }, ACTOR);
+    assert.equal(result.status, 409);
+    assert.equal(snapshotMode, 0o600);
+    assert.equal(readdirSync(dirname(inquiryPath)).some((name) => name.endsWith(".rollback")), false);
   } finally {
     h.cleanup();
   }

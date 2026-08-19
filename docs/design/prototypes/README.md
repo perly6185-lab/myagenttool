@@ -3,6 +3,13 @@
 This folder contains low-fidelity, repo-owned prototypes used before production
 Web Console implementation.
 
+## Local Tasks And External Work
+
+- [local-task-external-work-separation.md](local-task-external-work-separation.md)
+
+The contract keeps the ordinary Tasks page local and moves code-host Issues and
+pull/merge requests into a separate External work surface.
+
 ## Home Stakeholder And AI Workbench
 
 Files:

@@ -13,7 +13,7 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { mobileTodoCounts } from "@/components/layout/mobile-navigation-model";
 
-// The Status board: six lenses over the same work (server read-model `workBoard`)
+// The Task status board: six lenses over the same work (server read-model `workBoard`)
 // so a supervisor can see, on one screen, what is 待决策 / 在等待 / 正在做 / 已做完 /
 // 已失败 / 要跟进 without hopping between Approvals, Auto-runs, and Evidence. Every
 // row deep-links to its native surface for the rich context and any action.
@@ -62,7 +62,7 @@ const EMPTY_BOARD: WorkBoard["states"] = {
 export function WorkBoardView() {
   const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
-  const setSection = useUiStore((s) => s.setSection);
+  const openWorkItem = useUiStore((s) => s.openWorkItem);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
   const navigate = usePageNavigation();
@@ -72,13 +72,19 @@ export function WorkBoardView() {
   const total = LENS_ORDER.reduce((n, key) => n + (board[key]?.count ?? 0), 0);
   const todoCounts = mobileTodoCounts(state);
 
-  // Land on the native surface for context/action. Follow-up refusal rows and
-  // 待决策 rows carry an invocation/application target; select it so the user
-  // arrives on the right row rather than a cold list.
+  const visibleLenses = LENS_ORDER.filter((key) => (board[key]?.count ?? 0) > 0);
+
+  // Prefer the ordinary task summary whenever the status row is linked to a
+  // durable task. Native execution and approval pages remain the fallback for
+  // legacy or system-only rows.
   const open = (item: WorkItem) => {
+    if (item.workItemId) {
+      openWorkItem(item.workItemId, { mode: "summary" });
+      return;
+    }
     if (item.section === "invocations" && item.targetId) setSelectedInvocationId(item.targetId);
     if (item.section === "applications" && item.targetId) setSelectedApplicationId(item.targetId);
-    setSection(item.section as SectionKey);
+    navigate(item.section as SectionKey);
   };
 
   return (
@@ -86,8 +92,7 @@ export function WorkBoardView() {
       <div className="flex items-center gap-2">
         <KanbanSquare className="size-5 text-muted-foreground" />
         <h1 className="shrink-0 whitespace-nowrap text-lg font-semibold">
-          <span className="md:hidden">{t("todo.title")}</span>
-          <span className="hidden md:inline">{t("workBoard.title")}</span>
+          {t("workBoard.title")}
         </h1>
         <Badge tone="neutral">{t("workBoard.items", { count: total })}</Badge>
         <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">{t("workBoard.subtitle")}</span>
@@ -96,7 +101,7 @@ export function WorkBoardView() {
       <div className="grid grid-cols-2 gap-2 md:hidden" aria-label={t("todo.summary")}>
         <button
           type="button"
-          onClick={() => navigate("autoRuns")}
+          onClick={() => navigate("task")}
           className="flex min-h-16 min-w-0 items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-left hover:bg-muted/50"
         >
           <ListTodo className="size-5 shrink-0 text-primary" aria-hidden="true" />
@@ -107,7 +112,7 @@ export function WorkBoardView() {
         </button>
         <button
           type="button"
-          onClick={() => navigate("approvals")}
+          onClick={() => navigate("task")}
           className="flex min-h-16 min-w-0 items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-left hover:bg-muted/50"
         >
           <UserCheck className="size-5 shrink-0 text-warning" aria-hidden="true" />
@@ -119,19 +124,11 @@ export function WorkBoardView() {
       </div>
 
       {report ? <WorkReportStrip report={report} /> : null}
-      {state?.reportSchedule ? (
-        <ReportSchedulePanel
-          schedule={state.reportSchedule}
-          channels={(state.channelOperations ?? []).map((c) => ({ id: c.id, name: c.name }))}
-          conversations={state.channelConversations ?? []}
-        />
-      ) : null}
-
       {total === 0 ? (
         <EmptyState title={t("workBoard.emptyTitle")} hint={t("workBoard.emptyHint")} />
       ) : (
         <div className="grid min-h-0 flex-1 auto-rows-min gap-3 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
-          {LENS_ORDER.map((key) => (
+          {visibleLenses.map((key) => (
             <LensColumn key={key} state={key} lens={board[key] ?? { count: 0, items: [] }} onOpen={open} />
           ))}
         </div>
@@ -147,7 +144,7 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 // when the server exposes `reportSchedule`, i.e. an unscoped/local viewer). Posts
 // to a conversation's user — WeCom has no group broadcast here, so the target is
 // picked from conversations someone has already opened with the bot.
-function ReportSchedulePanel({
+export function ReportSchedulePanel({
   schedule,
   channels,
   conversations,

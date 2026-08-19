@@ -35,7 +35,6 @@ export function WorkItemSectionNav({
           variant={activeSection === section ? "secondary" : "ghost"}
           size="sm"
           aria-selected={activeSection === section}
-          tabIndex={activeSection === section ? 0 : -1}
           onClick={() => onSectionChange(section)}
         >
           {label}

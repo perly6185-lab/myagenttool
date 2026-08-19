@@ -41,17 +41,21 @@ try {
   // affordances survived the React migration.
   const consoleSource = await waitFor(async () => {
     const source = await fetchConsoleSource(webUrl);
-    return source.includes("What should your computer do?") ? source : false;
+    return source.includes("Describe the outcome you want") ? source : false;
   }, "web console bundle");
   assert(consoleSource.includes("Run on this computer"), "web console should offer a plain-language run action");
   assert(
     ["Safety", "Data", "Cost", "Cancellation"].every((label) => consoleSource.includes(label)),
     "web console should show pre-run review categories",
   );
-  assert(consoleSource.includes("Technical details"), "web console should hide advanced details behind disclosure");
+  assert(consoleSource.includes("What to know before running"), "web console should hide advanced details behind disclosure");
 
   const offlineCreated = await request("POST", "/api/invocations", {
+    // This scenario verifies reconnect delivery, not canonical Agent choice.
+    // Pin the deterministic demo adapter so a default Codex approval gate cannot
+    // park the queued invocation before the bridge reconnects.
     task: "Run the M0 acceptance offline queue test.",
+    agentId: "agt_demo_cli",
   });
   const offlineInvocationId = offlineCreated.invocation.id;
   const queuedState = await request("GET", "/api/state");
@@ -86,18 +90,44 @@ try {
     projectId: linkedState.currentProject.id,
   });
   const gitInvocationId = gitRun.invocation.id;
-  const gitState = await waitFor(async () => {
+  let gitState;
+  try {
+    gitState = await waitFor(async () => {
+      const state = await request("GET", "/api/state");
+      const invocation = state.invocations.find((item) => item.id === gitInvocationId);
+      const application = state.applications.find((item) => item.id === "app_git");
+      const evidence = state.evidenceCenterRecords.find((item) => item.invocationId === gitInvocationId && item.type === "application_result");
+      return invocation?.status === "succeeded"
+        && application?.latestResult?.invocationId === gitInvocationId
+        && application.latestResult.importedRecordCount >= 1
+        && evidence
+        ? { state, evidence }
+        : false;
+    }, "Git Application result and evidence import");
+  } catch (error) {
     const state = await request("GET", "/api/state");
     const invocation = state.invocations.find((item) => item.id === gitInvocationId);
     const application = state.applications.find((item) => item.id === "app_git");
-    const evidence = state.evidenceCenterRecords.find((item) => item.invocationId === gitInvocationId && item.type === "application_result");
-    return invocation?.status === "succeeded"
-      && application?.latestResult?.invocationId === gitInvocationId
-      && application.latestResult.importedRecordCount >= 1
-      && evidence
-      ? { state, evidence }
-      : false;
-  }, "Git Application result and evidence import");
+    const events = state.events.filter((item) => item.invocationId === gitInvocationId).slice(-12);
+    console.error("[acceptance] Git Application diagnostic", JSON.stringify({
+      invocation: invocation ? {
+        id: invocation.id,
+        status: invocation.status,
+        errorCode: invocation.errorCode ?? null,
+        summary: invocation.summary ?? null,
+        result: invocation.result ?? null,
+      } : null,
+      application: application ? {
+        status: application.status,
+        latestResult: application.latestResult ?? null,
+      } : null,
+      activeInvocations: state.invocations
+        .filter((item) => [offlineInvocationId, gitInvocationId].includes(item.id))
+        .map((item) => ({ id: item.id, status: item.status, delivery: item.delivery ?? null, errorCode: item.errorCode ?? null, summary: item.summary ?? null })),
+      events: events.map((item) => ({ type: item.type, level: item.level, message: item.message, data: item.data ?? null })),
+    }));
+    throw error;
+  }
   const gitInvocation = gitState.state.invocations.find((item) => item.id === gitInvocationId);
   assert(gitInvocation.result?.applicationResult?.invocationId === gitInvocationId, "Git invocation should link its imported Application result");
   assert(gitState.evidence.source === "imported_application_result", "Git Application result should enter the Evidence Center");
@@ -282,9 +312,26 @@ async function fetchText(url) {
 // inspect the bundled product strings instead of the near-empty index.html.
 async function fetchConsoleSource(baseUrl) {
   const html = await fetchText(baseUrl);
-  const assetPaths = [...html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g)].map((match) => match[1]);
+  const assetPaths = new Set([...html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g)].map((match) => match[1]));
+  // Vite code-splits translations and feature views into dynamic chunks that
+  // are not present in index.html. Include the manifest's transitive assets so
+  // product-string assertions inspect the same bundle a browser can load.
+  try {
+    const manifest = JSON.parse(await fetchText(new URL("/.vite/manifest.json", baseUrl).toString()));
+    const visit = (entry) => {
+      if (!entry || typeof entry !== "object") return;
+      for (const path of [entry.file, ...(entry.css ?? []), ...(entry.assets ?? [])]) {
+        if (typeof path === "string") assetPaths.add(`/${path.replace(/^\/+/, "")}`);
+      }
+      for (const imported of entry.imports ?? []) visit(manifest[imported]);
+    };
+    for (const entry of Object.values(manifest)) visit(entry);
+  } catch {
+    // Older/non-Vite bundles may not expose a manifest; index assets remain a
+    // valid fallback for those builds.
+  }
   const assets = await Promise.all(
-    assetPaths.map((path) => fetchText(new URL(path, baseUrl).toString()).catch(() => "")),
+    [...assetPaths].map((path) => fetchText(new URL(path, baseUrl).toString()).catch(() => "")),
   );
   return html + assets.join("");
 }

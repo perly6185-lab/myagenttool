@@ -19,6 +19,8 @@ import {
 
 export type SectionKey =
   | "dashboard"
+  | "mail"
+  | "localLibrary"
   | "me"
   | "workBoard"
   | "workspace"
@@ -29,6 +31,7 @@ export type SectionKey =
   | "projects"
   | "planning"
   | "task"
+  | "externalWork"
   | "autoRuns"
   | "approvals"
   | "evidence"
@@ -45,6 +48,7 @@ export type SectionKey =
   | "review"
   | "applications"
   | "channels"
+  | "sessions"
   | "economics"
   | "audit"
   | "settings";
@@ -62,6 +66,10 @@ export interface PendingLocalDocumentRegistration {
 
 export type PlanningProjectView = "list" | "board" | "roadmap" | "insights" | "executions";
 export type WorkItemSection = "overview" | "process" | "assets" | "verification" | "report" | "trace";
+export type TaskArea = "overview" | "process" | "assets" | "verification" | "trace";
+export type ExternalWorkTab = "issue" | "pr";
+export type SettingsCategoryKey = "execution" | "connections" | "automation" | "governance" | "resources" | "diagnostics";
+export type WorkItemDetailMode = "summary" | "expert";
 export type InvocationStatusFilter = "all" | "active" | "completed" | "failed";
 export interface PlanningProjectFilters {
   status: string;
@@ -85,7 +93,20 @@ interface UiState {
   selectedArtifactId: string | null;
   selectedProjectId: string | null;
   selectedWorkItemId: string | null;
+  selectedWorkItemMode: WorkItemDetailMode;
+  workItemDetailPreference: WorkItemDetailMode;
   selectedWorkItemSection: WorkItemSection;
+  /** URL-backed section inside the ordinary Tasks workspace. */
+  taskArea: TaskArea;
+  /** Restored filter inside External work so task-page shortcuts land precisely. */
+  selectedExternalWorkTab: ExternalWorkTab;
+  /** Restored low-frequency settings context. */
+  settingsDialogOpen: boolean;
+  settingsCategory: SettingsCategoryKey | null;
+  settingsQuery: string;
+  settingsScrollTop: number;
+  recentSettingsSections: SectionKey[];
+  favoriteSettingsSections: SectionKey[];
   selectedPlanningProjectId: string | null;
   planningProjectView: PlanningProjectView;
   planningProjectFilters: PlanningProjectFilters;
@@ -124,7 +145,19 @@ interface UiState {
   setSelectedArtifactId: (id: string | null) => void;
   setSelectedProjectId: (id: string | null) => void;
   setSelectedWorkItemId: (id: string | null) => void;
+  openWorkItem: (id: string, options?: { mode?: WorkItemDetailMode; section?: WorkItemSection }) => void;
+  closeWorkItem: () => void;
+  setSelectedWorkItemMode: (mode: WorkItemDetailMode) => void;
+  setWorkItemDetailPreference: (mode: WorkItemDetailMode) => void;
   setSelectedWorkItemSection: (section: WorkItemSection) => void;
+  setTaskArea: (area: TaskArea) => void;
+  setSelectedExternalWorkTab: (tab: ExternalWorkTab) => void;
+  setSettingsDialogOpen: (open: boolean) => void;
+  setSettingsCategory: (category: SettingsCategoryKey | null) => void;
+  setSettingsQuery: (query: string) => void;
+  setSettingsScrollTop: (scrollTop: number) => void;
+  recordRecentSettingsSection: (section: SectionKey) => void;
+  toggleFavoriteSettingsSection: (section: SectionKey) => void;
   setSelectedPlanningProjectId: (id: string | null) => void;
   setPlanningProjectView: (view: PlanningProjectView) => void;
   setPlanningProjectFilters: (filters: PlanningProjectFilters) => void;
@@ -157,6 +190,8 @@ export const UI_STORE_PERSIST_KEY = LOCALE_STORAGE_KEY;
 export const SECTION_KEYS: SectionKey[] = [
   "settings",
   "dashboard",
+  "mail",
+  "localLibrary",
   "me",
   "workBoard",
   "workspace",
@@ -167,6 +202,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "projects",
   "planning",
   "task",
+  "externalWork",
   "autoRuns",
   "approvals",
   "evidence",
@@ -183,6 +219,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "review",
   "applications",
   "channels",
+  "sessions",
   "economics",
   "audit",
 ];
@@ -197,7 +234,13 @@ export interface UrlNavigationState {
   selectedAutomationId?: string | null;
   selectedPlanningProjectId?: string | null;
   selectedWorkItemId?: string | null;
+  selectedWorkItemMode?: WorkItemDetailMode;
   selectedWorkItemSection?: WorkItemSection;
+  taskArea?: TaskArea;
+  selectedExternalWorkTab?: ExternalWorkTab;
+  settingsCategory?: SettingsCategoryKey | null;
+  settingsDialogOpen?: boolean;
+  settingsQuery?: string;
   planningProjectView?: PlanningProjectView;
   planningProjectFilters?: PlanningProjectFilters;
 }
@@ -205,7 +248,7 @@ export interface UrlNavigationState {
 const NAVIGATION_SEARCH_KEYS = [
   "section", "invocation", "application", "routine", "run", "evidence", "automation",
   "planningProject", "planningView", "planningStatus", "planningPriority", "planningMilestone", "planningDue",
-  "task", "taskView",
+  "task", "taskMode", "taskView", "taskArea", "externalTab", "settingsOpen", "settingsCategory", "settingsQuery",
 ] as const;
 
 function stringParam(params: URLSearchParams, key: string): string | null {
@@ -233,7 +276,11 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   const planningViewParam = stringParam(params, "planningView");
   const planningDueParam = stringParam(params, "planningDue");
   const workItemId = stringParam(params, "task");
+  const workItemModeParam = stringParam(params, "taskMode");
   const workItemSectionParam = stringParam(params, "taskView");
+  const taskAreaParam = stringParam(params, "taskArea");
+  const externalTabParam = stringParam(params, "externalTab");
+  const settingsCategoryParam = stringParam(params, "settingsCategory");
   const navigation: UrlNavigationState = {};
   if (section) navigation.section = section;
   navigation.selectedInvocationId = invocationId;
@@ -243,11 +290,23 @@ export function navigationFromSearch(search: string): UrlNavigationState {
     : null;
   navigation.selectedEvidenceId = evidenceId;
   navigation.selectedAutomationId = automationId;
-  if (section === "task" || params.has("task") || params.has("taskView")) {
-    navigation.selectedWorkItemId = workItemId;
-    navigation.selectedWorkItemSection = ["process", "assets", "verification", "report", "trace"].includes(workItemSectionParam ?? "")
-      ? workItemSectionParam as WorkItemSection
-      : "overview";
+  navigation.selectedWorkItemId = workItemId;
+  navigation.selectedWorkItemMode = workItemModeParam === "expert" ? "expert" : "summary";
+  navigation.selectedWorkItemSection = ["process", "assets", "verification", "report", "trace"].includes(workItemSectionParam ?? "")
+    ? workItemSectionParam as WorkItemSection
+    : "overview";
+  navigation.taskArea = ["process", "assets", "verification", "trace"].includes(taskAreaParam ?? "")
+    ? taskAreaParam as TaskArea
+    : "overview";
+  if (section === "externalWork" || params.has("externalTab")) {
+    navigation.selectedExternalWorkTab = externalTabParam === "pr" ? "pr" : "issue";
+  }
+  if (section === "me" || section === "settings" || params.get("settingsOpen") === "true" || params.has("settingsCategory") || params.has("settingsQuery")) {
+    navigation.settingsDialogOpen = true;
+    navigation.settingsCategory = ["execution", "connections", "automation", "governance", "resources", "diagnostics"].includes(settingsCategoryParam ?? "")
+      ? settingsCategoryParam as SettingsCategoryKey
+      : null;
+    navigation.settingsQuery = stringParam(params, "settingsQuery") ?? "";
   }
   if (section === "planning" || NAVIGATION_SEARCH_KEYS.some((key) => key.startsWith("planning") && params.has(key))) {
     navigation.selectedPlanningProjectId = planningProjectId;
@@ -278,7 +337,13 @@ function applyUrlNavigation<T extends Partial<UiState>>(state: T, navigation: Ur
   if (navigation.selectedEvidenceId !== undefined) state.selectedEvidenceId = navigation.selectedEvidenceId;
   if (navigation.selectedAutomationId !== undefined) state.selectedAutomationId = navigation.selectedAutomationId;
   if (navigation.selectedWorkItemId !== undefined) state.selectedWorkItemId = navigation.selectedWorkItemId;
+  if (navigation.selectedWorkItemMode !== undefined) state.selectedWorkItemMode = navigation.selectedWorkItemMode;
   if (navigation.selectedWorkItemSection !== undefined) state.selectedWorkItemSection = navigation.selectedWorkItemSection;
+  if (navigation.taskArea !== undefined) state.taskArea = navigation.taskArea;
+  if (navigation.selectedExternalWorkTab !== undefined) state.selectedExternalWorkTab = navigation.selectedExternalWorkTab;
+  if (navigation.settingsDialogOpen !== undefined) state.settingsDialogOpen = navigation.settingsDialogOpen;
+  if (navigation.settingsCategory !== undefined) state.settingsCategory = navigation.settingsCategory;
+  if (navigation.settingsQuery !== undefined) state.settingsQuery = navigation.settingsQuery;
   if (navigation.selectedPlanningProjectId !== undefined) state.selectedPlanningProjectId = navigation.selectedPlanningProjectId;
   if (navigation.planningProjectView !== undefined) state.planningProjectView = navigation.planningProjectView;
   if (navigation.planningProjectFilters !== undefined) state.planningProjectFilters = navigation.planningProjectFilters;
@@ -301,7 +366,13 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   | "planningProjectView"
   | "planningProjectFilters"
   | "selectedWorkItemId"
+  | "selectedWorkItemMode"
   | "selectedWorkItemSection"
+  | "taskArea"
+  | "selectedExternalWorkTab"
+  | "settingsDialogOpen"
+  | "settingsCategory"
+  | "settingsQuery"
 >>): string {
   const params = new URLSearchParams(search);
   for (const key of NAVIGATION_SEARCH_KEYS) params.delete(key);
@@ -315,10 +386,24 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   }
   if (state.selectedEvidenceId) params.set("evidence", state.selectedEvidenceId);
   if (state.selectedAutomationId) params.set("automation", state.selectedAutomationId);
-  if (state.section === "task" && state.selectedWorkItemId) {
+  if (state.selectedWorkItemId) {
     params.set("task", state.selectedWorkItemId);
+    if (state.selectedWorkItemMode === "expert") params.set("taskMode", "expert");
     const workItemSection = state.selectedWorkItemSection ?? "overview";
     if (workItemSection !== "overview") params.set("taskView", workItemSection);
+  }
+  if (state.section === "task" && state.taskArea && state.taskArea !== "overview") {
+    params.set("taskArea", state.taskArea);
+  }
+  if (state.section === "externalWork" && state.selectedExternalWorkTab === "pr") {
+    params.set("externalTab", "pr");
+  }
+  if (state.settingsDialogOpen && state.section !== "me" && state.section !== "settings") {
+    params.set("settingsOpen", "true");
+  }
+  if (state.settingsDialogOpen || state.section === "settings") {
+    if (state.settingsCategory) params.set("settingsCategory", state.settingsCategory);
+    if (state.settingsQuery?.trim()) params.set("settingsQuery", state.settingsQuery.trim());
   }
   if (state.section === "planning") {
     if (state.selectedPlanningProjectId) params.set("planningProject", state.selectedPlanningProjectId);
@@ -341,7 +426,7 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
  */
 export const useUiStore = create<UiState>()(
   persist(
-    (set) => {
+    (set, get) => {
       const initialNavigation = navigationFromCurrentUrl();
       return {
         section: initialNavigation.section ?? "dashboard",
@@ -351,7 +436,17 @@ export const useUiStore = create<UiState>()(
         selectedArtifactId: null,
         selectedProjectId: null,
         selectedWorkItemId: initialNavigation.selectedWorkItemId ?? null,
+        selectedWorkItemMode: initialNavigation.selectedWorkItemMode ?? "summary",
+        workItemDetailPreference: "summary",
         selectedWorkItemSection: initialNavigation.selectedWorkItemSection ?? "overview",
+        taskArea: initialNavigation.taskArea ?? "overview",
+        selectedExternalWorkTab: initialNavigation.selectedExternalWorkTab ?? "issue",
+        settingsDialogOpen: initialNavigation.settingsDialogOpen ?? false,
+        settingsCategory: initialNavigation.settingsCategory ?? null,
+        settingsQuery: initialNavigation.settingsQuery ?? "",
+        settingsScrollTop: 0,
+        recentSettingsSections: [],
+        favoriteSettingsSections: [],
         selectedPlanningProjectId: initialNavigation.selectedPlanningProjectId ?? null,
         planningProjectView: initialNavigation.planningProjectView ?? "list",
         planningProjectFilters: initialNavigation.planningProjectFilters ?? { ...DEFAULT_PLANNING_PROJECT_FILTERS },
@@ -383,9 +478,32 @@ export const useUiStore = create<UiState>()(
         setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
         setSelectedWorkItemId: (selectedWorkItemId) => set({
           selectedWorkItemId,
+          selectedWorkItemMode: selectedWorkItemId ? get().workItemDetailPreference : get().selectedWorkItemMode,
           selectedWorkItemSection: "overview",
         }),
+        openWorkItem: (selectedWorkItemId, options) => set({
+          selectedWorkItemId,
+          selectedWorkItemMode: options?.mode ?? get().workItemDetailPreference,
+          selectedWorkItemSection: options?.section ?? "overview",
+        }),
+        closeWorkItem: () => set({ selectedWorkItemId: null }),
+        setSelectedWorkItemMode: (selectedWorkItemMode) => set({ selectedWorkItemMode }),
+        setWorkItemDetailPreference: (workItemDetailPreference) => set({ workItemDetailPreference }),
         setSelectedWorkItemSection: (selectedWorkItemSection) => set({ selectedWorkItemSection }),
+        setTaskArea: (taskArea) => set({ taskArea }),
+        setSelectedExternalWorkTab: (selectedExternalWorkTab) => set({ selectedExternalWorkTab }),
+        setSettingsDialogOpen: (settingsDialogOpen) => set({ settingsDialogOpen }),
+        setSettingsCategory: (settingsCategory) => set({ settingsCategory }),
+        setSettingsQuery: (settingsQuery) => set({ settingsQuery }),
+        setSettingsScrollTop: (settingsScrollTop) => set({ settingsScrollTop: Math.max(0, settingsScrollTop) }),
+        recordRecentSettingsSection: (section) => set((state) => ({
+          recentSettingsSections: [section, ...state.recentSettingsSections.filter((item) => item !== section)].slice(0, 5),
+        })),
+        toggleFavoriteSettingsSection: (section) => set((state) => ({
+          favoriteSettingsSections: state.favoriteSettingsSections.includes(section)
+            ? state.favoriteSettingsSections.filter((item) => item !== section)
+            : [...state.favoriteSettingsSections, section],
+        })),
         setSelectedPlanningProjectId: (selectedPlanningProjectId) => set({ selectedPlanningProjectId }),
         setPlanningProjectView: (planningProjectView) => set({ planningProjectView }),
         setPlanningProjectFilters: (planningProjectFilters) => set({ planningProjectFilters }),
@@ -422,7 +540,16 @@ export const useUiStore = create<UiState>()(
         selectedArtifactId: state.selectedArtifactId,
         selectedProjectId: state.selectedProjectId,
         selectedWorkItemId: state.selectedWorkItemId,
+        selectedWorkItemMode: state.selectedWorkItemMode,
+        workItemDetailPreference: state.workItemDetailPreference,
         selectedWorkItemSection: state.selectedWorkItemSection,
+        taskArea: state.taskArea,
+        selectedExternalWorkTab: state.selectedExternalWorkTab,
+        settingsCategory: state.settingsCategory,
+        settingsQuery: state.settingsQuery,
+        settingsScrollTop: state.settingsScrollTop,
+        recentSettingsSections: state.recentSettingsSections,
+        favoriteSettingsSections: state.favoriteSettingsSections,
         selectedPlanningProjectId: state.selectedPlanningProjectId,
         planningProjectView: state.planningProjectView,
         planningProjectFilters: state.planningProjectFilters,
@@ -461,12 +588,29 @@ export const useUiStore = create<UiState>()(
         // Old blobs have no locale and keep the system-detected current value;
         // stale/unsupported saved values never escape into i18next or the DOM.
         if (!isSupportedLocale(saved.locale)) merged.locale = current.locale;
+        if (!['summary', 'expert'].includes(merged.selectedWorkItemMode)) merged.selectedWorkItemMode = "summary";
+        if (!['summary', 'expert'].includes(merged.workItemDetailPreference)) merged.workItemDetailPreference = "summary";
         if (!["list", "board", "roadmap", "insights", "executions"].includes(merged.planningProjectView)) {
           merged.planningProjectView = "list";
         }
-          if (!["overview", "process", "assets", "verification", "report", "trace"].includes(merged.selectedWorkItemSection)) {
+        if (!["overview", "process", "assets", "verification", "report", "trace"].includes(merged.selectedWorkItemSection)) {
           merged.selectedWorkItemSection = "overview";
         }
+        if (!["overview", "process", "assets", "verification", "trace"].includes(merged.taskArea)) {
+          merged.taskArea = "overview";
+        }
+        if (!["issue", "pr"].includes(merged.selectedExternalWorkTab)) merged.selectedExternalWorkTab = "issue";
+        if (merged.settingsCategory && !["execution", "connections", "automation", "governance", "resources", "diagnostics"].includes(merged.settingsCategory)) {
+          merged.settingsCategory = null;
+        }
+        if (typeof merged.settingsQuery !== "string") merged.settingsQuery = "";
+        if (!Number.isFinite(merged.settingsScrollTop) || merged.settingsScrollTop < 0) merged.settingsScrollTop = 0;
+        merged.recentSettingsSections = Array.isArray(merged.recentSettingsSections)
+          ? merged.recentSettingsSections.filter((section) => SECTION_KEYS.includes(section)).slice(0, 5)
+          : [];
+        merged.favoriteSettingsSections = Array.isArray(merged.favoriteSettingsSections)
+          ? merged.favoriteSettingsSections.filter((section) => SECTION_KEYS.includes(section))
+          : [];
         if (!merged.planningProjectFilters || typeof merged.planningProjectFilters !== "object") {
           merged.planningProjectFilters = { ...DEFAULT_PLANNING_PROJECT_FILTERS };
         }
