@@ -367,8 +367,23 @@ export function createChannelConversationService({
     return EXPLICIT_TASK_REQUEST.test(normalizedText(text));
   }
 
+  function isDeterministicFileMutation(text) {
+    const operationIntent = analyzeChannelOperationIntent(normalizedText(text));
+    return operationIntent.mutatesExistingData
+      && ["tabular_files", "files"].includes(operationIntent.resource)
+      && operationIntent.confidence >= 0.85;
+  }
+
   function isLikelyTaskRequest(text) {
-    return /^(?:请(?:帮我|协助我|先|直接)?\s*)?(?:把|恢复|先处理|继续处理|对外发送|再看看|再检查|看看|看下|读取|只读(?:取)?|列出|列举|查看|显示|罗列|查找|找出|处理|整理|分析|检查|生成|创建|修改|导出|汇总|总结|翻译|写|做|执行|运行|发送|下载|对比|审核|修复|规划|开发|实现|统计|跟踪|报价|发货|回款|售后)/i.test(normalizedText(text));
+    const value = normalizedText(text);
+    if (/^(?:请(?:帮我|协助我|先|直接)?\s*(?:重新)?\s*)?(?:把|恢复|先处理|继续处理|对外发送|再看看|再检查|看看|看下|读取|只读(?:取)?|列出|列举|查看|显示|罗列|查找|找出|处理|整理|分析|检查|生成|创建|修改|导出|汇总|总结|翻译|写|做|执行|运行|发送|下载|对比|审核|修复|规划|开发|实现|统计|跟踪|报价|发货|回款|售后)/i.test(value)) return true;
+    // A request may begin with business context ("客户已确认，…") or use
+    // natural location wording ("请在 quotations.csv 里…").  Once the
+    // shared operation analyser has found an explicit mutation against a file,
+    // treating it as ambiguous only adds a dead end for the user.  Questions
+    // are still classified as consultations before this fallback, and explicit
+    // read-only/negated writes never set mutatesExistingData.
+    return isDeterministicFileMutation(value);
   }
 
   function isConsultationRequest(text) {
@@ -850,7 +865,7 @@ export function createChannelConversationService({
       ...active.map(threadRef),
       ...(revisionCandidate ? [threadRef(revisionCandidate)] : []),
     ]);
-    if (typeof classifyIntent !== "function" || control || revisionRequested || isConfirmation(value) || isCancellation(value) || isGreeting(value) || isExplicitTaskRequest(value) || isNewTask(value) || (revisionThread && isThreadRevision(value)) || isConsultationRequest(value)) {
+    if (typeof classifyIntent !== "function" || control || revisionRequested || isConfirmation(value) || isCancellation(value) || isGreeting(value) || isExplicitTaskRequest(value) || isNewTask(value) || (revisionThread && isThreadRevision(value)) || isConsultationRequest(value) || isDeterministicFileMutation(value)) {
       return normalizeChannelIntentResult(fallback, { fallback, activeRefs: knownRefs });
     }
     recordIntentAdapterMetric("call");
@@ -2479,9 +2494,11 @@ export function createChannelConversationService({
       }
       return settle(event, { status: "dispatched", reply: `${control.friendly ? "当前任务" : threadRef(referenced)} 当前${taskThreadStatus(referenced)}，请在控制台任务详情中取消。`, data: { taskThreadId: referenced.id, status: referenced.status, reason: "console_action_required" } });
     }
-    if (!thread && isConfirmation(text)) {
-      const group = (state.channelIntakeGroups ?? []).find((row) =>
-        row.conversationId === conversation.id && row.status === "collecting");
+    if (isConfirmation(text)) {
+      const group = collectingIntakeGroup(conversation);
+      // The latest words the user is still composing take precedence over an
+      // older blocked preview.  Otherwise a plain "确认" can accidentally
+      // retry stale work instead of confirming the replacement request.
       if (group) thread = finalizeIntakeGroup(group.id, { sendProposal: false });
     }
     if (thread?.status === "waiting_user"
@@ -2492,9 +2509,8 @@ export function createChannelConversationService({
       && (explicitlySelectedThread || intent.intent !== "ambiguous")) {
       return answerTaskThread(event, conversation, thread, actor);
     }
-    if (!thread && (isCancellation(text) || intent.intent === "cancel")) {
-      const group = (state.channelIntakeGroups ?? []).find((row) =>
-        row.conversationId === conversation.id && row.status === "collecting");
+    if (isCancellation(text) || intent.intent === "cancel") {
+      const group = collectingIntakeGroup(conversation);
       if (group) {
         const timer = intakeTimers.get(group.id);
         if (timer) clearTimeout(timer);
