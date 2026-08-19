@@ -81,6 +81,7 @@ export async function handleWorkItemRoutes({
   restoreMaterial,
   addContentReference,
   removeContentReference,
+  captureDataContextSnapshot,
 }) {
   if (url.pathname === "/api/work-item-auto-scheduler" && req.method === "GET") {
     sendJson(res, 200, previewAutoScheduler({ teamId: actor?.teamId ?? null }));
@@ -566,6 +567,20 @@ export async function handleWorkItemRoutes({
       remote,
     }, actor);
     sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const dataContextMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/data-context$/);
+  if (dataContextMatch && (req.method === "GET" || req.method === "POST")) {
+    const workItemId = decodeURIComponent(dataContextMatch[1]);
+    const result = req.method === "GET"
+      ? getWorkItem({ workItemId }, actor)
+      : captureDataContextSnapshot({ workItemId, ...(await readJson(req)) }, actor);
+    if (req.method === "GET" && result.ok) {
+      sendJson(res, result.status, { dataContext: result.body.workItem.dataContext });
+    } else {
+      sendJson(res, result.status, result.body);
+    }
     return true;
   }
 

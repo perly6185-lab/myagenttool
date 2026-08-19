@@ -73,9 +73,15 @@ export async function handleWorkflowMemoryRoutes({
   listLedgerDefinitions,
   activateLedgerDefinition,
   disableLedgerDefinition,
+  inspectLedgerTargetIdentity,
   previewLedgerUpsert,
+  previewLedgerBatchUpsert,
   commitLedgerUpsertPreview,
+  commitLedgerBatchUpsertPreview,
+  retryLedgerBatchUpsertPreview,
   listLedgerUpsertPreviews,
+  listLedgerBatchUpsertPreviews,
+  listLedgerBatchMutationJournals,
   listLedgerMutations,
   collectBusinessPilotEvidence,
   verifyBusinessPilotEvidence,
@@ -688,6 +694,45 @@ export async function handleWorkflowMemoryRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/workflow-memory/ledger-batch-upsert-previews" && req.method === "GET") {
+    const states = url.searchParams.get("states")?.split(",").map((value) => value.trim()).filter(Boolean);
+    const result = listLedgerBatchUpsertPreviews({ states, limit: url.searchParams.get("limit") }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/ledger-batch-mutation-journals" && req.method === "GET") {
+    const statuses = url.searchParams.get("statuses")?.split(",").map((value) => value.trim()).filter(Boolean);
+    const result = listLedgerBatchMutationJournals({
+      batchPreviewId: url.searchParams.get("batchPreviewId"),
+      statuses,
+      limit: url.searchParams.get("limit"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/ledger-batch-upsert-previews" && req.method === "POST") {
+    const body = await readJson(req);
+    const result = await previewLedgerBatchUpsert({
+      operations: body?.operations,
+      idempotencyKey: body?.idempotencyKey,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const ledgerIdentity = url.pathname.match(
+    /^\/api\/workflow-memory\/ledger-definitions\/([^/]+)\/target-identity$/,
+  );
+  if (ledgerIdentity && req.method === "GET") {
+    const result = await inspectLedgerTargetIdentity({
+      ledgerDefinitionId: decodeURIComponent(ledgerIdentity[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   const ledgerDefinitionAction = url.pathname.match(
     /^\/api\/workflow-memory\/ledger-definitions\/([^/]+)\/(activate|disable|preview-upsert)$/,
   );
@@ -728,6 +773,33 @@ export async function handleWorkflowMemoryRoutes({
       previewId: decodeURIComponent(ledgerPreviewCommit[1]),
       expectedRevision: body?.expectedRevision,
       approved: body?.approved,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const ledgerBatchPreviewCommit = url.pathname.match(
+    /^\/api\/workflow-memory\/ledger-batch-upsert-previews\/([^/]+)\/commit$/,
+  );
+  if (ledgerBatchPreviewCommit && req.method === "POST") {
+    const body = await readJson(req);
+    const result = await commitLedgerBatchUpsertPreview({
+      batchPreviewId: decodeURIComponent(ledgerBatchPreviewCommit[1]),
+      expectedRevision: body?.expectedRevision,
+      approved: body?.approved,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const ledgerBatchPreviewRetry = url.pathname.match(
+    /^\/api\/workflow-memory\/ledger-batch-upsert-previews\/([^/]+)\/retry$/,
+  );
+  if (ledgerBatchPreviewRetry && req.method === "POST") {
+    const body = await readJson(req);
+    const result = await retryLedgerBatchUpsertPreview({
+      batchPreviewId: decodeURIComponent(ledgerBatchPreviewRetry[1]),
+      approved: body?.approved !== false,
     }, actor);
     sendJson(res, result.status, result.body);
     return true;
@@ -908,6 +980,9 @@ export async function handleWorkflowMemoryRoutes({
         description: body?.description,
         triggerDocumentTypes: body?.triggerDocumentTypes,
         steps: body?.steps,
+        dataRequirements: body?.dataRequirements,
+        relations: body?.relations,
+        mutationPolicy: body?.mutationPolicy,
       }, actor);
     } else if (action === "publish") {
       result = publishBusinessRoutineDefinition({

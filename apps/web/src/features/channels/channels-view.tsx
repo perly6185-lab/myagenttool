@@ -8,7 +8,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
 import { useConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
-import type { ChannelConversation, ChannelDelivery, ChannelDiagnostics, ChannelInteraction, ChannelOperations, ChannelTaskRequest, ChannelTaskThread, DeviceSnapshot, ProjectSnapshot } from "@/lib/console-state";
+import type { ChannelConversation, ChannelDelivery, ChannelDiagnostics, ChannelInteraction, ChannelLifecycleSummary, ChannelOperations, ChannelTaskRequest, ChannelTaskThread, DeviceSnapshot, ProjectSnapshot } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 import { installChannelTranslations } from "@/lib/i18n/channel-resources";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
@@ -109,6 +109,9 @@ const taskThreadStatusLabels: Record<string, string> = {
 
 function taskThreadStatusLabel(status: string, waitingFor?: string | null): string {
   if (status === "waiting_approval" && waitingFor === "approval") return "等待桌面审批";
+  if (status === "waiting_approval" && waitingFor === "data_sources") return "等待数据文件";
+  if (status === "waiting_approval" && waitingFor === "data_review") return "等待数据复核";
+  if (status === "waiting_approval" && waitingFor === "data_mutation") return "等待变更范围";
   return taskThreadStatusLabels[status] ?? status.replaceAll("_", " ");
 }
 
@@ -116,6 +119,9 @@ function waitingForLabel(value: string): string {
   if (value === "confirmation") return "你确认";
   if (value === "approval") return "桌面审批";
   if (value === "user_input") return "你补充信息";
+  if (value === "data_sources") return "选择数据文件";
+  if (value === "data_review") return "确认数据关联";
+  if (value === "data_mutation") return "明确文件变更范围";
   if (value === "attention") return "等待任务恢复";
   if (value === "human") return "人工处理";
   return value.replaceAll("_", " ");
@@ -183,6 +189,7 @@ export function ChannelsView() {
               projects={(state?.projects ?? []).filter((p) => p.status !== "archived")}
               tasks={(state?.channelTaskRequests ?? []).filter((task) => task.channelId === channel.id)}
               threads={(state?.channelTaskThreads ?? []).filter((thread) => thread.channelId === channel.id)}
+              lifecycleSummaries={(state?.channelLifecycleSummaries ?? []).filter((summary) => summary.projectId === channel.taskProjectId)}
               onReconnect={(channelId) => openSetup(channelId)}
             />
           ))}
@@ -459,7 +466,7 @@ function IlinkSetupPanel({ channelId = null, existingChannelId = null, onClose }
   );
 }
 
-function ChannelCard({ channel, conversations, devices, deliveries, projects, tasks, threads, onReconnect }: { channel: ChannelOperations; conversations: ChannelConversation[]; devices: DeviceSnapshot[]; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[]; tasks: ChannelTaskRequest[]; threads: ChannelTaskThread[]; onReconnect: (channelId: string) => void }) {
+function ChannelCard({ channel, conversations, devices, deliveries, projects, tasks, threads, lifecycleSummaries, onReconnect }: { channel: ChannelOperations; conversations: ChannelConversation[]; devices: DeviceSnapshot[]; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[]; tasks: ChannelTaskRequest[]; threads: ChannelTaskThread[]; lifecycleSummaries: ChannelLifecycleSummary[]; onReconnect: (channelId: string) => void }) {
   const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const [taskProject, setTaskProject] = useState(channel.taskProjectId ?? "");
@@ -684,6 +691,33 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           ) : null}
           {diagnosticError ? <p className="mt-1 text-destructive">诊断导出失败，请稍后重试。</p> : null}
         </div>
+
+        {channel.taskProjectId && lifecycleSummaries.length > 0 ? (
+          <details className="rounded-md border border-border px-3 py-2 text-xs" data-testid="channel-lifecycle-summary">
+            <summary className="cursor-pointer font-medium">业务链快照（本地文件最近导入）</summary>
+            <div className="mt-2 space-y-2">
+              {lifecycleSummaries.slice(0, 8).map((summary) => (
+                <div key={`${summary.projectId}:${summary.label}`} className="rounded border border-border bg-muted/20 px-2 py-1.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{summary.customer ?? summary.label}</span>
+                    {summary.orderNumber ? <span className="text-muted-foreground">订单 {summary.orderNumber}</span> : null}
+                    <Badge tone={summary.state === "closed" ? "success" : "neutral"}>{summary.state === "closed" ? "已完结" : summary.state === "active" ? "处理中" : "待补充标识"}</Badge>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">
+                    {Object.values(summary.stages).map((stage) => `${stage.label}${stage.count && stage.count > 1 ? ` ${stage.count}条` : ""}：${stage.status ?? "待确认"}`).join(" · ")}
+                  </p>
+                  {summary.totals && (summary.totals.receivableAmount || summary.totals.collectedAmount || summary.totals.returnAmount || summary.totals.shipmentQuantity || summary.totals.returnQuantity) ? (
+                    <p className="mt-1 text-muted-foreground">
+                      金额：应收 {summary.totals.receivableAmount ?? 0}，已收 {summary.totals.collectedAmount ?? 0}，退货 {summary.totals.returnAmount ?? 0}；数量：已发 {summary.totals.shipmentQuantity ?? 0}，退货 {summary.totals.returnQuantity ?? 0}
+                    </p>
+                  ) : null}
+                  {summary.warnings?.length ? <p className="mt-1 text-amber-600">需确认：{summary.warnings.join("；")}</p> : null}
+                  {summary.sources.length > 0 ? <p className="mt-1 text-[11px] text-muted-foreground">来源：{summary.sources.join("、")}</p> : null}
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
 
         {channel.capabilityAllowlist.length > 0 && (
           <p className="text-xs text-muted-foreground">

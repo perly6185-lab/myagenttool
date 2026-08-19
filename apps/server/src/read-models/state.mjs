@@ -10,6 +10,7 @@ import { scheduleHealthReadModel } from "./schedule-health.mjs";
 import { withLocalApplicationReadiness } from "../services/application-readiness.mjs";
 import { deriveGuidedReadiness } from "../services/guided-readiness.mjs";
 import { publicInvocationEvent } from "../services/invocation-events.mjs";
+import { businessLifecycleSummaries } from "./business-lifecycle.mjs";
 
 export const CONSOLE_STATE_MEDIA_TYPE = "application/vnd.myagenttool.console-state+json";
 
@@ -289,6 +290,14 @@ export function buildPublicState({
   const channelDeliveries = byChannel(state.channelDeliveries);
   const channelIntakeGroups = byChannel(state.channelIntakeGroups);
   const channelTaskThreads = byChannel(state.channelTaskThreads);
+  const channelObjectRecords = (state.channelObjectRecords ?? []).filter((record) =>
+    (teamId == null || (record?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId) && projectVisible(record?.projectId));
+  const channelObjectFileSources = (state.channelObjectFileSources ?? []).filter((source) =>
+    (teamId == null || (source?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId) && projectVisible(source?.projectId));
+  const channelLifecycleSummaries = businessLifecycleSummaries({
+    records: channelObjectRecords,
+    sources: channelObjectFileSources,
+  });
   // A compare run is visible when it spans at least one invocation the team can
   // see; unscoped mode passes everything through.
   const byCompareRun = (rows) =>
@@ -777,6 +786,7 @@ export function buildPublicState({
     channelIntakeGroups,
     channelTaskThreads,
     channelTaskRequests,
+    channelLifecycleSummaries,
     channelIntentMetrics: isAdminScope ? state.channelIntentMetrics ?? null : null,
     channelOperations: channelOperations({
       channels,

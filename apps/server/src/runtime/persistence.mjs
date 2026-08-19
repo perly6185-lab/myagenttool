@@ -1,4 +1,4 @@
-import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { LOCAL_TEAM_ID, teamOf } from "./auth.mjs";
@@ -15,7 +15,7 @@ import { backfillWorkItemFollowUpContext } from "../services/work-item-follow-up
 // therefore always either the previous complete snapshot or the new one.
 function durableWriteFileSync(path, data) {
   const tmp = `${path}.tmp`;
-  const fd = openSync(tmp, "w");
+  const fd = openSync(tmp, "w", 0o600);
   try {
     writeSync(fd, data);
     fsyncSync(fd);
@@ -23,6 +23,10 @@ function durableWriteFileSync(path, data) {
     closeSync(fd);
   }
   renameSync(tmp, path);
+  // The state snapshot contains governed task context and local business
+  // metadata. Keep it private even when the process umask is permissive or an
+  // older snapshot was created with broader permissions.
+  chmodSync(path, 0o600);
   let dirFd;
   try {
     dirFd = openSync(dirname(path), "r");
@@ -156,6 +160,14 @@ export const persistedArrayKeys = [
   "businessDocumentClassifications",
   "businessDocumentAnalysisJobs",
   "businessEntities",
+  "channelObjectRecords",
+  "channelObjectImports",
+  "channelObjectFileSources",
+  "channelMutationBindings",
+  "channelObjectSyncs",
+  "channelObjectConnectorConfigs",
+  "channelObjectSyncPreviews",
+  "channelDataRelationConfirmations",
   "businessCaseCandidates",
   "businessCases",
   "routineDiscoveryCandidates",
@@ -163,6 +175,8 @@ export const persistedArrayKeys = [
   "routineRuns",
   "ledgerDefinitions",
   "ledgerUpsertPreviews",
+  "ledgerBatchUpsertPreviews",
+  "ledgerBatchMutationJournals",
   "ledgerMutationAudits",
   "businessPilotEvidenceReceipts",
   "businessPilotDrafts",
@@ -269,6 +283,14 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "workflowAdaptiveRules", owner: "ownerTeamId" },
   { key: "workflowAdaptiveNotifications", owner: "ownerTeamId" },
   { key: "businessEntities", owner: "ownerTeamId" },
+  { key: "channelObjectRecords", owner: "ownerTeamId" },
+  { key: "channelObjectImports", owner: "ownerTeamId" },
+  { key: "channelObjectFileSources", owner: "ownerTeamId" },
+  { key: "channelMutationBindings", owner: "ownerTeamId" },
+  { key: "channelObjectSyncs", owner: "ownerTeamId" },
+  { key: "channelObjectConnectorConfigs", owner: "ownerTeamId" },
+  { key: "channelObjectSyncPreviews", owner: "ownerTeamId" },
+  { key: "channelDataRelationConfirmations", owner: "ownerTeamId" },
   { key: "businessCaseCandidates", owner: "ownerTeamId" },
   { key: "businessCases", owner: "ownerTeamId" },
   { key: "routineDiscoveryCandidates", owner: "ownerTeamId" },
@@ -276,6 +298,8 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "routineRuns", owner: "ownerTeamId" },
   { key: "ledgerDefinitions", owner: "ownerTeamId" },
   { key: "ledgerUpsertPreviews", owner: "ownerTeamId" },
+  { key: "ledgerBatchUpsertPreviews", owner: "ownerTeamId" },
+  { key: "ledgerBatchMutationJournals", owner: "ownerTeamId" },
   { key: "ledgerMutationAudits", owner: "ownerTeamId" },
 ];
 

@@ -25,6 +25,124 @@ import {
 export type TemplateLearningStage =
   | "collecting_cases" | "analyzing" | "needs_case_review" | "failed" | "completed";
 
+export type ChannelObjectKind = "contact" | "order" | "quotation" | "shipment" | "after_sales" | "return" | "account" | "receivable" | "bank_transaction" | "publish_target";
+
+export interface ChannelObjectRecord {
+  id: string;
+  kind: ChannelObjectKind;
+  projectId: string;
+  label: string;
+  fields: Record<string, string>;
+  status: "active" | "disabled";
+  source: string;
+  sourceRef: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChannelObjectImportPreview {
+  id: string;
+  projectId: string;
+  kind: ChannelObjectKind;
+  sourceKind?: "local_file" | string;
+  format: "csv" | "json" | "xlsx";
+  fileName: string;
+  status: "preview" | "confirmed" | "expired" | string;
+  totalRows: number;
+  acceptedRows: number;
+  errorRows: number;
+  errors: Array<{ rowNumber: number; error: string }>;
+  previewRows: Array<{ rowNumber: number; label: string; businessKey: string; fields: Record<string, string>; change?: "create" | "update" | "unchanged" | string }>;
+  diff?: { created: number; updated: number; unchanged: number; removed: number };
+  createdAt: string;
+  expiresAt: string;
+  confirmedAt: string | null;
+}
+
+export interface ChannelObjectFileSource {
+  id: string;
+  projectId: string;
+  kind: ChannelObjectKind;
+  fileName: string;
+  sourceKind: "local_file" | string;
+  status: "active" | "disabled" | string;
+  rowCount: number;
+  contentHash: string;
+  revision: number;
+  lastImportId: string | null;
+  lastImportedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChannelMutationBinding {
+  id: string;
+  projectId: string;
+  ownerTeamId?: string;
+  fileSourceId: string;
+  ledgerDefinitionId: string;
+  status: "active" | "disabled" | string;
+  fileName: string;
+  format: string;
+  fileSourceRevision: number;
+  ledgerDefinitionRevision: number;
+  stale: boolean;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LedgerDefinitionSummary {
+  id: string;
+  projectId: string;
+  name: string;
+  state: "draft" | "active" | "disabled" | string;
+  format: "csv" | "xlsx" | string;
+  relativePath: string;
+  revision: number;
+}
+
+export interface ChannelObjectConnector {
+  id: string;
+  name: string;
+  mode: "read_only";
+  kinds: ChannelObjectKind[];
+  configured?: boolean;
+}
+
+export interface ChannelObjectConnectorConfig {
+  id: string;
+  projectId: string;
+  connectorId: string;
+  name: string;
+  kinds: ChannelObjectKind[];
+  status: "enabled" | "disabled";
+  credentialConfigured: boolean;
+  health: "unknown" | "ready" | "error" | string;
+  lastTestAt: string | null;
+  errorCode: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChannelObjectSyncPreview {
+  id: string;
+  projectId: string;
+  connectorId: string;
+  configId: string | null;
+  kind: ChannelObjectKind;
+  status: "preview" | "confirmed" | string;
+  creates: number;
+  updates: number;
+  unchanged: number;
+  totalRows: number;
+  sampleRows: Array<{ label: string; businessKey: string; change: "create" | "update" | "unchanged" | string }>;
+  expiresAt: string;
+  createdAt: string;
+}
+
 export interface TemplateLearningTask {
   id: string;
   templateId: string;
@@ -994,6 +1112,50 @@ export const workflowMemoryApi = {
     ),
   listWorkflowSources: () =>
     request<{ sources: WorkflowSource[] }>("GET", "/api/workflow-memory/sources"),
+  listChannelObjects: (params: { projectId?: string; kind?: ChannelObjectKind; status?: "active" | "disabled" } = {}) => {
+    const query = new URLSearchParams();
+    if (params.projectId) query.set("projectId", params.projectId);
+    if (params.kind) query.set("kind", params.kind);
+    if (params.status) query.set("status", params.status);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request<{ objects: ChannelObjectRecord[]; count: number }>("GET", `/api/channel-objects${suffix}`);
+  },
+  upsertChannelObject: (body: {
+    kind: ChannelObjectKind;
+    projectId: string;
+    label: string;
+    businessKey?: string;
+    fields: Record<string, string>;
+  }) => request<{ object: ChannelObjectRecord }>("POST", "/api/channel-objects", body),
+  setChannelObjectStatus: (id: string, body: { status: "active" | "disabled"; expectedRevision: number }) =>
+    request<{ object: ChannelObjectRecord }>("PATCH", `/api/channel-objects/${encodeURIComponent(id)}/status`, body),
+  previewChannelObjectImport: (body: {
+    projectId: string;
+    kind: ChannelObjectKind;
+    format: "csv" | "json" | "xlsx";
+    fileName: string;
+    content: string;
+  }) => request<{ import: ChannelObjectImportPreview; canConfirm: boolean }>("POST", "/api/channel-objects/import/preview", body),
+  confirmChannelObjectImport: (importId: string) =>
+    request<{ import: ChannelObjectImportPreview; objects?: ChannelObjectRecord[]; replayed: boolean }>("POST", "/api/channel-objects/import/confirm", { importId }),
+  listChannelObjectConnectors: (projectId?: string) => request<{ connectors: ChannelObjectConnector[] }>("GET", `/api/channel-objects/connectors${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  listChannelObjectConnectorConfigs: (projectId?: string) => request<{ configs: ChannelObjectConnectorConfig[]; count: number }>("GET", `/api/channel-objects/connector-configs${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  listChannelObjectFileSources: (projectId?: string, kind?: ChannelObjectKind) => request<{ sources: ChannelObjectFileSource[]; count: number }>("GET", `/api/channel-objects/file-sources?${new URLSearchParams({ ...(projectId ? { projectId } : {}), ...(kind ? { kind } : {}) }).toString()}`),
+  listChannelMutationBindings: (projectId?: string, fileSourceId?: string) => request<{ bindings: ChannelMutationBinding[]; count: number }>("GET", `/api/channel-objects/mutation-bindings?${new URLSearchParams({ ...(projectId ? { projectId } : {}), ...(fileSourceId ? { fileSourceId } : {}) }).toString()}`),
+  upsertChannelMutationBinding: (body: { id?: string; projectId: string; fileSourceId: string; ledgerDefinitionId: string; expectedRevision?: number }) => request<{ binding: ChannelMutationBinding }>("POST", "/api/channel-objects/mutation-bindings", body),
+  setChannelMutationBindingStatus: (id: string, body: { status: "active" | "disabled"; expectedRevision: number }) => request<{ binding: ChannelMutationBinding }>("PATCH", `/api/channel-objects/mutation-bindings/${encodeURIComponent(id)}/status`, body),
+  listLedgerDefinitions: () => request<{ ledgerDefinitions: LedgerDefinitionSummary[]; count: number }>("GET", "/api/workflow-memory/ledger-definitions"),
+  upsertChannelObjectConnectorConfig: (body: { id?: string; projectId: string; connectorId: string; name?: string; kinds: ChannelObjectKind[]; credentialRef?: string; status?: "enabled" | "disabled"; expectedRevision?: number }) =>
+    request<{ config: ChannelObjectConnectorConfig }>("POST", "/api/channel-objects/connector-configs", body),
+  setChannelObjectConnectorConfigStatus: (id: string, body: { status: "enabled" | "disabled"; expectedRevision: number }) =>
+    request<{ config: ChannelObjectConnectorConfig }>("PATCH", `/api/channel-objects/connector-configs/${encodeURIComponent(id)}/status`, body),
+  testChannelObjectConnectorConfig: (id: string) => request<{ config: ChannelObjectConnectorConfig; ok: boolean; error: string | null }>("POST", `/api/channel-objects/connector-configs/${encodeURIComponent(id)}/test`, {}),
+  previewChannelObjectConnectorSync: (body: { configId?: string; connectorId?: string; projectId?: string; kind: ChannelObjectKind }) =>
+    request<{ preview: ChannelObjectSyncPreview; canConfirm: boolean }>("POST", "/api/channel-objects/sync/preview", body),
+  confirmChannelObjectConnectorSync: (previewId: string) =>
+    request<{ preview: ChannelObjectSyncPreview; sync: { id: string; status: string; imported: number; failed: number }; replayed: boolean }>("POST", "/api/channel-objects/sync/confirm", { previewId }),
+  syncChannelObjectConnector: (body: { connectorId: string; projectId: string; kind?: ChannelObjectKind }) =>
+    request<{ sync: { id: string; status: string; imported: number; failed: number } }>("POST", "/api/channel-objects/sync", body),
   createWorkflowSource: (body: {
     projectId: string;
     relativePath?: string;
@@ -1316,6 +1478,9 @@ export const workflowMemoryApi = {
       description?: string;
       triggerDocumentTypes?: BusinessDocumentType[];
       steps?: BusinessRoutineStep[];
+      dataRequirements?: BusinessRoutineDefinition["dataRequirements"];
+      relations?: BusinessRoutineDefinition["relations"];
+      mutationPolicy?: BusinessRoutineDefinition["mutationPolicy"];
     },
   ) => request<{ routineDefinition: BusinessRoutineDefinition }>(
     "POST",

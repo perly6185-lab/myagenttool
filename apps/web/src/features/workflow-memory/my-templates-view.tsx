@@ -12,6 +12,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { buildMyTemplateSummaries, type MyTemplateState } from "@/features/workflow-memory/my-template-model";
 import { MyTemplateSetupWizard } from "@/features/workflow-memory/my-template-setup-wizard";
 import { workflowMemoryApi, type TemplateLearningTask } from "@/features/workflow-memory/workflow-memory-api";
+import { ChannelObjectRegistryCard } from "@/features/workflow-memory/channel-object-registry-card";
 import { WorkflowMemoryView } from "@/features/workflow-memory/workflow-memory-view";
 import type { MyTemplateDraft } from "@/lib/api-client";
 
@@ -143,6 +144,47 @@ function emptyTemplateCase(index: number): LocalTemplateCase {
 
 const TEMPLATE_FILE_ACCEPT = ".csv,.docx,.jpeg,.jpg,.json,.md,.pdf,.png,.pptx,.txt,.webp,.xlsx";
 const TEMPLATE_IMAGE_EXTENSIONS = new Set(["jpeg", "jpg", "png", "webp"]);
+
+function WorkModeGuideCard({ readyCount, attentionCount, onCreate }: { readyCount: number; attentionCount: number; onCreate: () => void }) {
+  return (
+    <Card className="border-primary/20 bg-primary/[0.02]" aria-labelledby="work-mode-guide-heading">
+      <CardContent className="p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 id="work-mode-guide-heading" className="font-semibold">让系统按你的工作方式帮忙</h2>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+              你只要说清楚想得到什么，系统会自己找资料、整理步骤，并在需要修改文件或对外发送前请你确认。
+            </p>
+          </div>
+          <Button size="sm" variant="secondary" onClick={onCreate}><Plus />教它一项常做的工作</Button>
+        </div>
+        <div className="mt-4 grid gap-2 md:grid-cols-3">
+          {[
+            ["1", "说目标", "例如：帮我跟进海棠科技这个订单。"],
+            ["2", "看资料", "系统会列出找到的文件和对应记录；不确定时只问你一个选择。"],
+            ["3", "确认结果", "执行前先告诉你会改什么，完成后保留结果和依据。"],
+          ].map(([number, title, description]) => (
+            <div key={number} className="rounded-lg border bg-background p-3 text-sm">
+              <div className="flex items-center gap-2 font-medium"><span className="grid size-5 place-items-center rounded-full bg-primary/10 text-xs text-primary">{number}</span>{title}</div>
+              <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <Badge tone="success">{readyCount} 项已能直接使用</Badge>
+          {attentionCount ? <Badge tone="warning">{attentionCount} 项等你确认</Badge> : null}
+          <span>你说“这个不对”，系统会保留原结果，按你的反馈重新做。</span>
+        </div>
+        <details className="mt-3 rounded-lg border bg-background/70 p-3 text-sm">
+          <summary className="cursor-pointer font-medium">专业用户：查看系统依据</summary>
+          <p className="mt-2 text-xs text-muted-foreground">
+            这里可以追溯本次使用的资料、记录如何对应、采用的工作方式版本、确认范围和最终检查结果。普通使用不需要理解这些设置。
+          </p>
+        </details>
+      </CardContent>
+    </Card>
+  );
+}
 
 function fileExtension(file: File) {
   return file.name.split(".").pop()?.toLowerCase() ?? "";
@@ -623,6 +665,9 @@ export function MyTemplatesView() {
         </div>
         <Button onClick={() => setCreateOpen(true)}><Plus /> 创建我的模板</Button>
       </header>
+
+      <WorkModeGuideCard readyCount={readyCount} attentionCount={attentionCount} onCreate={() => setCreateOpen(true)} />
+      <ChannelObjectRegistryCard />
 
       {templates.length || taskDrafts.length ? (
         <div className="flex flex-wrap gap-2 text-sm">

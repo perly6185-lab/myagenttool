@@ -36,6 +36,10 @@ import {
   textSimilarity,
 } from "./work-item-template-matching.mjs";
 import { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
+import { normalizeRuntimeDataPlan } from "./data-plan-contract.mjs";
+import { normalizeDataRelationPreview } from "./data-relation-preview.mjs";
+import { normalizeDataMutationPreview } from "./data-mutation-contract.mjs";
+import { normalizeWorkModeSnapshot } from "./work-mode-runtime.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -44,6 +48,9 @@ const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
 const PRIORITIES = new Set(["p0", "p1", "p2", "p3"]);
 const EXECUTION_POLICIES = new Set(["inherit", "auto", "manual", "paused"]);
+const CHANNEL_TASK_DOMAINS = new Set(["general", "office", "development", "content"]);
+const CHANNEL_TASK_RISK_LEVELS = new Set(["low", "local_change", "external_communication", "financial", "destructive"]);
+const DATA_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1;
 // Friendly aliases normalized to canonical p0–p3 before validation, so callers
 // may pass "critical"/"high"/"medium"/"low" etc. (mirrors the alias→canonical
 // pattern in normalizeClaudePermissionMode). Invalid values still reject.
@@ -236,6 +243,11 @@ function validateDraft(input, { partial = false } = {}) {
     }
     value.requiredCapabilities = capabilities;
   }
+  if (Object.hasOwn(input, "channelTaskContract")) {
+    const contract = normalizeChannelTaskContract(input.channelTaskContract);
+    if (!contract.ok) return { error: contract.error };
+    value.channelTaskContract = contract.value;
+  }
   if (!partial || Object.hasOwn(input, "outputAssets")) {
     const assets = normalizeAssetRefs(input.outputAssets ?? []);
     if (!assets) return { error: "invalid_work_item_output_assets" };
@@ -273,6 +285,412 @@ function validateDraft(input, { partial = false } = {}) {
     };
   }
   return { value };
+}
+
+function normalizeChannelTaskContract(input) {
+  if (input == null) return { ok: true, value: null };
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, error: "invalid_channel_task_contract" };
+  }
+  const domain = String(input.domain ?? "general").trim().toLowerCase();
+  const riskLevel = String(input.riskLevel ?? "low").trim().toLowerCase();
+  if (!CHANNEL_TASK_DOMAINS.has(domain)) return { ok: false, error: "invalid_channel_task_domain" };
+  if (!CHANNEL_TASK_RISK_LEVELS.has(riskLevel)) return { ok: false, error: "invalid_channel_task_risk_level" };
+  const boundedText = (value, max) => String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max);
+  const sources = Array.isArray(input.dataSources) ? input.dataSources.slice(0, 100).map((source) => ({
+    kind: boundedText(source?.kind, 80) || "unknown",
+    id: boundedText(source?.id, 200) || null,
+    name: boundedText(source?.name, 300) || null,
+    version: boundedText(source?.version, 200) || null,
+    hash: boundedText(source?.hash, 200) || null,
+  })) : [];
+  const templateMatch = input.templateMatch && typeof input.templateMatch === "object"
+    ? {
+      state: boundedText(input.templateMatch.state, 40) || "missing",
+      decision: boundedText(input.templateMatch.decision, 80) || null,
+      definitionId: boundedText(input.templateMatch.definitionId, 200) || null,
+      familyId: boundedText(input.templateMatch.familyId, 200) || null,
+      version: Number.isInteger(Number(input.templateMatch.version)) ? Number(input.templateMatch.version) : null,
+      reasons: Array.isArray(input.templateMatch.reasons)
+        ? input.templateMatch.reasons.slice(0, 10).map((reason) => boundedText(reason, 500)).filter(Boolean)
+        : [],
+    }
+    : null;
+  const executionPreview = input.executionPreview && typeof input.executionPreview === "object"
+    ? {
+      schemaVersion: 1,
+      action: boundedText(input.executionPreview.action, 200) || "任务处理",
+      target: boundedText(input.executionPreview.target, 300) || "尚未明确",
+      targetStatus: ["explicit", "inferred", "unknown"].includes(input.executionPreview.targetStatus)
+        ? input.executionPreview.targetStatus
+        : "unknown",
+      amount: boundedText(input.executionPreview.amount, 100) || null,
+      scope: boundedText(input.executionPreview.scope, 500) || null,
+      inputs: Array.isArray(input.executionPreview.inputs)
+        ? input.executionPreview.inputs.slice(0, 20).map((asset) => ({
+          name: boundedText(asset?.name, 300) || "附件",
+          family: boundedText(asset?.family, 80) || "file",
+        }))
+        : [],
+      impact: boundedText(input.executionPreview.impact, 300) || "任务处理可能产生变更",
+      unknownFields: Array.isArray(input.executionPreview.unknownFields)
+        ? input.executionPreview.unknownFields.slice(0, 10).map((field) => boundedText(field, 200)).filter(Boolean)
+        : [],
+      requiredFields: Array.isArray(input.executionPreview.requiredFields)
+        ? input.executionPreview.requiredFields.slice(0, 10).map((field) => boundedText(field, 200)).filter(Boolean)
+        : [],
+      previewReady: input.executionPreview.previewReady === true,
+      digest: boundedText(input.executionPreview.digest, 128) || null,
+    }
+    : null;
+  const objectValidation = input.objectValidation && typeof input.objectValidation === "object"
+    ? {
+      schemaVersion: 1,
+      state: ["verified", "not_found", "ambiguous", "stale", "forbidden"].includes(input.objectValidation.state)
+        ? input.objectValidation.state
+        : "not_found",
+      verifiedObjects: Array.isArray(input.objectValidation.verifiedObjects)
+        ? input.objectValidation.verifiedObjects.slice(0, 20).map((object) => ({
+          kind: boundedText(object?.kind, 60) || "unknown",
+          id: boundedText(object?.id, 200) || null,
+          label: boundedText(object?.label, 300) || null,
+          projectId: boundedText(object?.projectId, 200) || null,
+          sourceId: boundedText(object?.sourceId, 200) || null,
+          revision: Number.isInteger(Number(object?.revision)) ? Number(object.revision) : null,
+          fingerprint: boundedText(object?.fingerprint, 200) || null,
+          metadata: object?.metadata && typeof object.metadata === "object"
+            ? Object.fromEntries(Object.entries(object.metadata).slice(0, 10).map(([key, value]) => [
+              boundedText(key, 80), boundedText(value, 160),
+            ]).filter(([key, value]) => key && value))
+            : {},
+        }))
+        : [],
+      snapshot: Array.isArray(input.objectValidation.snapshot)
+        ? input.objectValidation.snapshot.slice(0, 20).map((object) => ({
+          kind: boundedText(object?.kind, 60) || "unknown",
+          id: boundedText(object?.id, 200) || null,
+          revision: Number.isInteger(Number(object?.revision)) ? Number(object.revision) : null,
+          fingerprint: boundedText(object?.fingerprint, 200) || null,
+        }))
+        : [],
+      requiredFields: Array.isArray(input.objectValidation.requiredFields)
+        ? input.objectValidation.requiredFields.slice(0, 10).map((field) => boundedText(field, 200)).filter(Boolean)
+        : [],
+      digest: boundedText(input.objectValidation.digest, 128) || null,
+    }
+    : null;
+  const dataPlan = normalizeRuntimeDataPlan(input.dataPlan);
+  const dataRelationPreview = normalizeDataRelationPreview(input.dataRelationPreview);
+  const dataMutationPreview = normalizeDataMutationPreview(input.dataMutationPreview);
+  const workMode = normalizeWorkModeSnapshot(input.workMode);
+  const dataMutationBinding = input.dataMutationBinding && typeof input.dataMutationBinding === "object"
+    ? {
+      schemaVersion: 1,
+      id: boundedText(input.dataMutationBinding.id, 200) || null,
+      projectId: boundedText(input.dataMutationBinding.projectId, 200) || null,
+      fileSourceId: boundedText(input.dataMutationBinding.fileSourceId, 200) || null,
+      ledgerDefinitionId: boundedText(input.dataMutationBinding.ledgerDefinitionId, 200) || null,
+      fileName: boundedText(input.dataMutationBinding.fileName, 300) || null,
+      format: boundedText(input.dataMutationBinding.format, 20) || null,
+      fileSourceRevision: Number.isInteger(Number(input.dataMutationBinding.fileSourceRevision))
+        ? Number(input.dataMutationBinding.fileSourceRevision) : null,
+      ledgerDefinitionRevision: Number.isInteger(Number(input.dataMutationBinding.ledgerDefinitionRevision))
+        ? Number(input.dataMutationBinding.ledgerDefinitionRevision) : null,
+      stale: input.dataMutationBinding.stale === true,
+    }
+    : null;
+  const dataMutationBindings = Array.isArray(input.dataMutationBindings)
+    ? input.dataMutationBindings.slice(0, 20).map((binding) => ({
+      schemaVersion: 1,
+      id: boundedText(binding?.id, 200) || null,
+      projectId: boundedText(binding?.projectId, 200) || null,
+      fileSourceId: boundedText(binding?.fileSourceId, 200) || null,
+      ledgerDefinitionId: boundedText(binding?.ledgerDefinitionId, 200) || null,
+      fileName: boundedText(binding?.fileName, 300) || null,
+      format: boundedText(binding?.format, 20) || null,
+      fileSourceRevision: Number.isInteger(Number(binding?.fileSourceRevision)) ? Number(binding.fileSourceRevision) : null,
+      ledgerDefinitionRevision: Number.isInteger(Number(binding?.ledgerDefinitionRevision)) ? Number(binding.ledgerDefinitionRevision) : null,
+      stale: binding?.stale === true,
+    })).filter((binding) => binding.id && binding.fileSourceId && binding.ledgerDefinitionId)
+    : [];
+  const ledgerBatchMutationPreview = input.ledgerMutationPreview?.kind === "batch"
+    ? {
+      schemaVersion: 1,
+      kind: "batch",
+      id: boundedText(input.ledgerMutationPreview.id, 200) || null,
+      targetCount: Math.max(0, Math.min(50, Number(input.ledgerMutationPreview.targetCount) || 0)),
+      operationCount: Math.max(0, Math.min(50, Number(input.ledgerMutationPreview.operationCount) || 0)),
+      state: ["pending", "waiting", "committing", "partial", "committed", "rolled_back", "needs_attention", "invalidated"].includes(input.ledgerMutationPreview.state)
+        ? input.ledgerMutationPreview.state : "pending",
+      revision: Number.isInteger(Number(input.ledgerMutationPreview.revision))
+        ? Number(input.ledgerMutationPreview.revision) : null,
+      journal: input.ledgerMutationPreview.journal && typeof input.ledgerMutationPreview.journal === "object"
+        ? {
+          id: boundedText(input.ledgerMutationPreview.journal.id, 200) || null,
+          status: boundedText(input.ledgerMutationPreview.journal.status, 40) || null,
+          appliedCount: Array.isArray(input.ledgerMutationPreview.journal.appliedPreviewIds)
+            ? Math.min(50, input.ledgerMutationPreview.journal.appliedPreviewIds.length) : 0,
+          snapshotCount: Array.isArray(input.ledgerMutationPreview.journal.snapshots)
+            ? Math.min(50, input.ledgerMutationPreview.journal.snapshots.length) : 0,
+          rollback: input.ledgerMutationPreview.journal.rollback && typeof input.ledgerMutationPreview.journal.rollback === "object"
+            ? {
+              restoredTargets: Math.max(0, Number(input.ledgerMutationPreview.journal.rollback.restoredTargets) || 0),
+              blockedTargets: Math.max(0, Number(input.ledgerMutationPreview.journal.rollback.blockedTargets) || 0),
+            } : null,
+        } : null,
+      children: Array.isArray(input.ledgerMutationPreview.children)
+        ? input.ledgerMutationPreview.children.slice(0, 50).map((child) => ({
+          id: boundedText(child?.id, 200) || null,
+          ledgerDefinitionId: boundedText(child?.ledgerDefinitionId, 200) || null,
+          businessKey: boundedText(child?.businessKey, 300) || null,
+          action: ["insert", "update", "no_op"].includes(child?.action) ? child.action : "update",
+          rowNumber: Number.isInteger(Number(child?.rowNumber)) ? Number(child.rowNumber) : null,
+          changedCells: Array.isArray(child?.changedCells) ? child.changedCells.slice(0, 50).map((cell) => ({
+            field: boundedText(cell?.field, 120) || null,
+            column: boundedText(cell?.column, 200) || null,
+            before: cell?.before == null ? null : boundedText(cell.before, 2_000),
+            after: cell?.after == null ? null : boundedText(cell.after, 2_000),
+          })).filter((cell) => cell.field && cell.column) : [],
+          state: ["pending", "waiting", "committed", "rolled_back", "invalidated", "expired"].includes(child?.state)
+            ? child.state : "pending",
+          revision: Number.isInteger(Number(child?.revision)) ? Number(child.revision) : null,
+          queue: child?.queue && typeof child.queue === "object" ? {
+            state: boundedText(child.queue.state, 30) || null,
+            position: Number.isInteger(Number(child.queue.position)) ? Number(child.queue.position) : null,
+          } : null,
+        })) : [],
+    }
+    : null;
+  const ledgerMutationPreparation = input.ledgerMutationPreparation && typeof input.ledgerMutationPreparation === "object"
+    ? {
+      ok: input.ledgerMutationPreparation.ok === true,
+      reason: boundedText(input.ledgerMutationPreparation.reason, 120) || null,
+    }
+    : null;
+  const ledgerMutationPreview = !ledgerBatchMutationPreview && input.ledgerMutationPreview && typeof input.ledgerMutationPreview === "object"
+    ? {
+      schemaVersion: 1,
+      id: boundedText(input.ledgerMutationPreview.id, 200) || null,
+      ledgerDefinitionId: boundedText(input.ledgerMutationPreview.ledgerDefinitionId, 200) || null,
+      action: ["insert", "update", "no_op"].includes(input.ledgerMutationPreview.action)
+        ? input.ledgerMutationPreview.action
+        : "update",
+      rowNumber: Number.isInteger(Number(input.ledgerMutationPreview.rowNumber))
+        ? Number(input.ledgerMutationPreview.rowNumber) : null,
+      changedCells: Array.isArray(input.ledgerMutationPreview.changedCells)
+        ? input.ledgerMutationPreview.changedCells.slice(0, 20).map((cell) => ({
+          field: boundedText(cell?.field, 120) || null,
+          column: boundedText(cell?.column, 200) || null,
+          before: cell?.before == null ? null : boundedText(cell.before, 2_000),
+          after: cell?.after == null ? null : boundedText(cell.after, 2_000),
+        })).filter((cell) => cell.field && cell.column)
+        : [],
+      targetRevision: boundedText(input.ledgerMutationPreview.targetRevision, 128) || null,
+      targetContentHash: boundedText(input.ledgerMutationPreview.targetContentHash, 128) || null,
+      proposedTargetRevision: boundedText(input.ledgerMutationPreview.proposedTargetRevision, 128) || null,
+      sourceEvidence: Array.isArray(input.ledgerMutationPreview.sourceEvidence)
+        ? input.ledgerMutationPreview.sourceEvidence.slice(0, 20).map((evidence) => ({
+          artifactId: boundedText(evidence?.artifactId, 200) || null,
+          field: boundedText(evidence?.field, 120) || null,
+        })).filter((evidence) => evidence.artifactId)
+        : [],
+      approvalRequired: input.ledgerMutationPreview.approvalRequired === true,
+      state: ["pending", "waiting", "committed", "invalidated"].includes(input.ledgerMutationPreview.state)
+        ? input.ledgerMutationPreview.state
+        : "pending",
+      queue: input.ledgerMutationPreview.queue && typeof input.ledgerMutationPreview.queue === "object"
+        ? {
+          state: boundedText(input.ledgerMutationPreview.queue.state, 30) || null,
+          position: Number.isInteger(Number(input.ledgerMutationPreview.queue.position))
+            ? Number(input.ledgerMutationPreview.queue.position) : null,
+        }
+        : null,
+      expiresAt: boundedText(input.ledgerMutationPreview.expiresAt, 50) || null,
+      revision: Number.isInteger(Number(input.ledgerMutationPreview.revision))
+        ? Number(input.ledgerMutationPreview.revision) : null,
+    }
+    : null;
+  const dataRelationConfirmation = input.dataRelationConfirmation && typeof input.dataRelationConfirmation === "object"
+    ? {
+      schemaVersion: 1,
+      id: boundedText(input.dataRelationConfirmation.id, 200) || null,
+      status: ["verified", "pending", "stale"].includes(input.dataRelationConfirmation.status)
+        ? input.dataRelationConfirmation.status
+        : "pending",
+      confirmationMode: ["runtime_verified", "user_confirmation"].includes(input.dataRelationConfirmation.confirmationMode)
+        ? input.dataRelationConfirmation.confirmationMode
+        : "runtime_verified",
+      planDigest: boundedText(input.dataRelationConfirmation.planDigest, 128) || null,
+      relationDigest: boundedText(input.dataRelationConfirmation.relationDigest, 128) || null,
+      objectSnapshotCount: Number.isInteger(Number(input.dataRelationConfirmation.objectSnapshotCount))
+        ? Math.max(0, Math.min(2_000, Number(input.dataRelationConfirmation.objectSnapshotCount)))
+        : 0,
+      confirmedAt: boundedText(input.dataRelationConfirmation.confirmedAt, 50) || null,
+      confirmedBy: boundedText(input.dataRelationConfirmation.confirmedBy, 200) || null,
+    }
+    : null;
+  if (executionPreview && objectValidation) executionPreview.objectValidation = objectValidation;
+  return {
+    ok: true,
+    value: {
+      schemaVersion: 1,
+      source: boundedText(input.source, 40) || "channel",
+      domain,
+      riskLevel,
+      goal: boundedText(input.goal, 4_000),
+      outputExpectation: boundedText(input.outputExpectation, 1_000) || null,
+      dataSources: sources,
+      templateMatch,
+      workMode,
+      dataPlan,
+      dataRelationPreview,
+      dataMutationPreview,
+      dataMutationBinding,
+      dataMutationBindings,
+      ledgerMutationPreview: ledgerBatchMutationPreview ?? ledgerMutationPreview,
+      ledgerMutationPreparation,
+      dataRelationConfirmation,
+      executionPreview,
+      objectValidation,
+      generatedAt: boundedText(input.generatedAt, 50) || null,
+    },
+  };
+}
+
+function dataContextSourceKey(source) {
+  return String(source?.sourceId ?? source?.path ?? source?.name ?? "unknown").slice(0, 300);
+}
+
+function dataContextSourceFingerprint(source) {
+  return source?.version || source?.hash || null;
+}
+
+function buildDataContextSnapshot({
+  workItemId,
+  workItemRevision,
+  capturedAt,
+  inputAssets = [],
+  localContentRefs = [],
+  channelTaskContract = null,
+} = {}) {
+  const channelOrigin = channelTaskContract?.source === "channel";
+  const sources = [];
+  for (const asset of Array.isArray(inputAssets) ? inputAssets.slice(0, 100) : []) {
+    const sourceId = asset?.id ?? asset?.path ?? asset?.originalName ?? null;
+    if (!sourceId) continue;
+    sources.push({
+      sourceId: String(sourceId).slice(0, 300),
+      kind: "asset",
+      origin: channelOrigin ? "channel_attachment" : "work_item_input",
+      name: String(asset?.originalName ?? asset?.path ?? "输入材料").replace(/[\r\n\t]/g, " ").slice(0, 300),
+      path: asset?.path ? String(asset.path).replaceAll("\\", "/").slice(0, 1_000) : null,
+      family: asset?.family ? String(asset.family).slice(0, 80) : null,
+      version: asset?.version ? String(asset.version).slice(0, 200) : null,
+      hash: asset?.hash ? String(asset.hash).slice(0, 200) : null,
+      purpose: "required_input",
+      trust: "untrusted_reference",
+    });
+  }
+  for (const reference of Array.isArray(localContentRefs) ? localContentRefs.slice(0, 20) : []) {
+    const sourceId = reference?.contentId ?? reference?.id ?? null;
+    if (!sourceId) continue;
+    sources.push({
+      sourceId: String(sourceId).slice(0, 300),
+      kind: "local_content",
+      origin: "local_content_reference",
+      name: String(reference?.title ?? "本地内容").replace(/[\r\n\t]/g, " ").slice(0, 300),
+      path: null,
+      family: reference?.kind ? String(reference.kind).slice(0, 80) : null,
+      version: reference?.selectedFingerprint ? String(reference.selectedFingerprint).slice(0, 200) : null,
+      hash: reference?.selectedFingerprint ? String(reference.selectedFingerprint).slice(0, 200) : null,
+      purpose: ["reference", "required_input"].includes(reference?.purpose) ? reference.purpose : "reference",
+      trust: "untrusted_reference",
+    });
+  }
+  const uniqueSources = [...new Map(sources.map((source) => [
+    `${source.kind}:${dataContextSourceKey(source)}`,
+    source,
+  ])).values()].slice(0, 120);
+  const canonical = uniqueSources.map((source) => ({
+    sourceId: source.sourceId,
+    kind: source.kind,
+    origin: source.origin,
+    name: source.name,
+    path: source.path,
+    family: source.family,
+    version: source.version,
+    hash: source.hash,
+    purpose: source.purpose,
+  }));
+  const digest = createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+  const hasUnversioned = uniqueSources.some((source) => !dataContextSourceFingerprint(source));
+  return {
+    schemaVersion: DATA_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+    id: `dcs:${String(workItemId ?? "unknown")}:${Number(workItemRevision) || 1}`,
+    workItemId: workItemId ? String(workItemId) : null,
+    workItemRevision: Number.isInteger(workItemRevision) ? workItemRevision : null,
+    capturedAt: String(capturedAt ?? new Date(0).toISOString()),
+    status: uniqueSources.length === 0 ? "empty" : hasUnversioned ? "partial" : "captured",
+    sources: uniqueSources,
+    sourceCount: uniqueSources.length,
+    digest,
+  };
+}
+
+function compareDataContextSnapshot(item) {
+  const baseline = item?.dataContextSnapshot ?? buildDataContextSnapshot({
+    workItemId: item?.id,
+    workItemRevision: item?.revision,
+    capturedAt: item?.createdAt ?? item?.updatedAt,
+    inputAssets: item?.inputAssets,
+    localContentRefs: item?.localContentRefs,
+    channelTaskContract: item?.channelTaskContract,
+  });
+  const current = buildDataContextSnapshot({
+    workItemId: item?.id,
+    workItemRevision: item?.revision,
+    capturedAt: baseline.capturedAt,
+    inputAssets: item?.inputAssets,
+    localContentRefs: item?.localContentRefs,
+    channelTaskContract: item?.channelTaskContract,
+  });
+  const baselineByKey = new Map((baseline.sources ?? []).map((source) => [
+    `${source.kind}:${dataContextSourceKey(source)}`,
+    source,
+  ]));
+  const currentByKey = new Map((current.sources ?? []).map((source) => [
+    `${source.kind}:${dataContextSourceKey(source)}`,
+    source,
+  ]));
+  const changes = [];
+  for (const [key, source] of baselineByKey) {
+    const next = currentByKey.get(key);
+    if (!next) {
+      changes.push({ kind: "removed", sourceId: source.sourceId, name: source.name });
+      continue;
+    }
+    if (dataContextSourceFingerprint(source) !== dataContextSourceFingerprint(next)) {
+      changes.push({
+        kind: "changed", sourceId: source.sourceId, name: source.name,
+        previous: dataContextSourceFingerprint(source), current: dataContextSourceFingerprint(next),
+      });
+    }
+  }
+  for (const [key, source] of currentByKey) {
+    if (!baselineByKey.has(key)) changes.push({ kind: "added", sourceId: source.sourceId, name: source.name });
+  }
+  const status = changes.length
+    ? "stale"
+    : current.status === "partial" || baseline.status === "partial"
+      ? baseline.confirmedAt ? "current" : "unknown"
+      : baseline.status === "empty" ? "empty" : "current";
+  return {
+    status,
+    baseline,
+    current,
+    changes: changes.slice(0, 100),
+    requiresConfirmation: status === "stale" || status === "unknown",
+  };
 }
 
 function normalizeAssetRefs(input) {
@@ -401,6 +819,8 @@ export function createWorkItemService({
       description: definition.description,
       expectedOutput: learnedTemplateOutput(definition),
       ...(definition.templateContract ? { templateContract: definition.templateContract } : {}),
+      ...(definition.dataRequirements?.length ? { dataRequirements: definition.dataRequirements } : {}),
+      ...(definition.relations?.length ? { relations: definition.relations } : {}),
       steps: (definition.steps ?? []).map((step) => ({
         key: step.key,
         kind: step.kind,
@@ -656,6 +1076,12 @@ export function createWorkItemService({
       autoRunId: contract.autoRunId ?? latestRun?.id ?? null,
       acceptanceCriteria: [...(contract.acceptanceCriteria ?? [])],
       verificationSop: [...(contract.verificationSop ?? [])],
+      dataContextSnapshot: contract.dataContextSnapshot
+        ? {
+          ...contract.dataContextSnapshot,
+          sources: (contract.dataContextSnapshot.sources ?? []).map((source) => ({ ...source })),
+        }
+        : null,
       confirmedBy: contract.confirmedBy ?? null,
       confirmedAt: contract.confirmedAt ?? null,
       digest: contract.digest ?? null,
@@ -900,6 +1326,7 @@ export function createWorkItemService({
       feedback.ownerTeamId === actorTeam(actor) && feedback.workItemId === item.id) ?? null;
     return {
       ...publicItem,
+      dataContext: dataContextView(item),
       localContentRefs: (item.localContentRefs ?? []).map(contentReferenceView),
       acceptanceCriteria: visibleAcceptanceCriteria,
       acceptanceCriteriaSource: (publicItem.acceptanceCriteria ?? []).length
@@ -982,6 +1409,18 @@ export function createWorkItemService({
           autonomyProfile: project.autonomyProfile ?? "standard",
         } : null;
       }).filter(Boolean),
+    };
+  }
+
+  function dataContextView(item) {
+    const comparison = compareDataContextSnapshot(item);
+    return {
+      snapshot: comparison.baseline,
+      status: comparison.status,
+      currentDigest: comparison.current.digest,
+      currentSourceCount: comparison.current.sourceCount,
+      requiresConfirmation: comparison.requiresConfirmation,
+      changes: comparison.changes,
     };
   }
 
@@ -1963,7 +2402,15 @@ export function createWorkItemService({
         return { ok: false, status: 409, body: { error: "task_material_revision_conflict", currentRevision: materialDraft.revision } };
       }
     }
-    const attachments = materialDraft?.assets ?? [];
+    const channelAttachments = Array.isArray(input.inputAssets)
+      ? input.inputAssets.slice(0, 100).map((asset) => ({
+        ...asset,
+        originalName: asset?.originalName
+          ?? asset?.name
+          ?? String(asset?.path ?? "").replaceAll("\\", "/").split("/").at(-1),
+      }))
+      : [];
+    const attachments = channelAttachments.length ? channelAttachments : (materialDraft?.assets ?? []);
     const attachmentNames = attachments.map((asset) => asset.originalName).filter(Boolean).join("\n");
     const templateMatch = matchPublishedMyTemplate({
       definitions: (state.routineDefinitions ?? []).filter((definition) => definition.ownerTeamId === actorTeam(actor)),
@@ -1998,6 +2445,10 @@ export function createWorkItemService({
         : businessLike && chinese ? [
           `已生成可查看、可继续使用的${expectedOutput}`,
           "结果中的关键信息与输入文件一致，无法确认的内容没有被猜测填充",
+        ] : chinese ? [
+          `已完成“${title}”并生成可查看的结果。`,
+          "结果与用户提供的目标和材料一致，无法确认的内容没有被猜测填充。",
+          ...(type === "bug" ? ["已复现原问题，并通过回归验证。"] : []),
         ] : [
           `The requested outcome for “${title}” is demonstrably complete.`,
           "Automated verification covers the primary success path.",
@@ -2029,7 +2480,7 @@ export function createWorkItemService({
             policyVersion: "local-work-item-draft-v1",
             modelVersion: null,
             inputDigest: createHash("sha256").update(JSON.stringify({
-              projectId, title, body, attachments: attachments.map((asset) => ({ name: asset.originalName, hash: asset.hash })),
+              projectId, title, body, attachments: attachments.map((asset) => ({ name: asset.originalName, hash: asset.hash, version: asset.version })),
             })).digest("hex"),
             confidence: body.length >= 120 ? 0.78 : body.length >= 40 ? 0.65 : 0.45,
           },
@@ -3415,6 +3866,15 @@ export function createWorkItemService({
       workItem.materialDraftId = materialDraftId;
       workItem.inputAssets = claimed.assets;
     }
+    workItem.dataContextSnapshot = buildDataContextSnapshot({
+      workItemId: workItem.id,
+      workItemRevision: workItem.revision,
+      capturedAt: timestamp,
+      inputAssets: workItem.inputAssets,
+      localContentRefs: workItem.localContentRefs,
+      channelTaskContract: workItem.channelTaskContract,
+    });
+    workItem.dataContextSnapshotHistory = [];
     const assetReadiness = evaluateAssetRequirements(
       workItem.inputAssets,
       workItem.requiredCapabilities,
@@ -3438,6 +3898,39 @@ export function createWorkItemService({
       recordActivity(workItem, actor, "created", {
         title: workItem.title, type: workItem.type, status: workItem.status, priority: workItem.priority,
         followUpContext: workItemFollowUpContextView(workItem),
+        ...(workItem.channelTaskContract ? {
+          channelTaskContract: {
+            schemaVersion: workItem.channelTaskContract.schemaVersion,
+            source: workItem.channelTaskContract.source,
+            domain: workItem.channelTaskContract.domain,
+            riskLevel: workItem.channelTaskContract.riskLevel,
+            dataSourceCount: workItem.channelTaskContract.dataSources.length,
+            dataPlan: workItem.channelTaskContract.dataPlan
+              ? {
+                status: workItem.channelTaskContract.dataPlan.status,
+                sourceCount: workItem.channelTaskContract.dataPlan.sources.length,
+                digest: workItem.channelTaskContract.dataPlan.digest,
+              }
+              : null,
+            dataRelationConfirmation: workItem.channelTaskContract.dataRelationConfirmation
+              ? {
+                status: workItem.channelTaskContract.dataRelationConfirmation.status,
+                confirmationMode: workItem.channelTaskContract.dataRelationConfirmation.confirmationMode,
+                objectSnapshotCount: workItem.channelTaskContract.dataRelationConfirmation.objectSnapshotCount,
+                id: workItem.channelTaskContract.dataRelationConfirmation.id,
+              }
+              : null,
+            templateMatch: workItem.channelTaskContract.templateMatch
+              ? {
+                state: workItem.channelTaskContract.templateMatch.state,
+                decision: workItem.channelTaskContract.templateMatch.decision,
+                definitionId: workItem.channelTaskContract.templateMatch.definitionId,
+                familyId: workItem.channelTaskContract.templateMatch.familyId,
+                version: workItem.channelTaskContract.templateMatch.version,
+              }
+              : null,
+          },
+        } : {}),
         ...(workItem.routineDefinitionId ? {
           routineDefinitionId: workItem.routineDefinitionId,
           routineVersion: workItem.routineVersion,
@@ -3480,6 +3973,25 @@ export function createWorkItemService({
         data: {
           workItemId: workItem.id, localRef: workItem.localRef, projectId,
           terminalId: workItem.terminalId, actorTeamId: teamId,
+          ...(workItem.channelTaskContract ? {
+            channelTaskContract: {
+              schemaVersion: workItem.channelTaskContract.schemaVersion,
+              source: workItem.channelTaskContract.source,
+              domain: workItem.channelTaskContract.domain,
+              riskLevel: workItem.channelTaskContract.riskLevel,
+              dataSourceCount: workItem.channelTaskContract.dataSources.length,
+              dataPlanStatus: workItem.channelTaskContract.dataPlan?.status ?? "not_required",
+              dataRelationConfirmation: workItem.channelTaskContract.dataRelationConfirmation
+                ? {
+                  status: workItem.channelTaskContract.dataRelationConfirmation.status,
+                  confirmationMode: workItem.channelTaskContract.dataRelationConfirmation.confirmationMode,
+                  objectSnapshotCount: workItem.channelTaskContract.dataRelationConfirmation.objectSnapshotCount,
+                  id: workItem.channelTaskContract.dataRelationConfirmation.id,
+                }
+                : null,
+              templateMatchState: workItem.channelTaskContract.templateMatch?.state ?? "missing",
+            },
+          } : {}),
           ...(workItem.routineDefinitionId ? {
             routineDefinitionId: workItem.routineDefinitionId,
             routineVersion: workItem.routineVersion,
@@ -5322,6 +5834,69 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
   }
 
+  function captureDataContextSnapshot({ workItemId, expectedRevision, confirm = false } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const comparison = compareDataContextSnapshot(item);
+    if (comparison.requiresConfirmation && confirm !== true) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "data_context_confirmation_required",
+          dataContext: {
+            status: comparison.status,
+            snapshot: comparison.baseline,
+            currentDigest: comparison.current.digest,
+            changes: comparison.changes,
+            requiresConfirmation: true,
+          },
+        },
+      };
+    }
+    if (item.dataContextSnapshot && comparison.status === "current") {
+      return { ok: true, status: 200, body: { refreshed: false, workItem: workItemView(item, actor) } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      const previous = item.dataContextSnapshot ?? comparison.baseline;
+      item.dataContextSnapshotHistory = [
+        previous,
+        ...(item.dataContextSnapshotHistory ?? []),
+      ].slice(0, 5);
+      item.revision += 1;
+      item.dataContextSnapshot = {
+        ...buildDataContextSnapshot({
+          workItemId: item.id,
+          workItemRevision: item.revision,
+          capturedAt: timestamp,
+          inputAssets: item.inputAssets,
+          localContentRefs: item.localContentRefs,
+          channelTaskContract: item.channelTaskContract,
+        }),
+        confirmedAt: confirm === true ? timestamp : null,
+        confirmedBy: confirm === true ? actorUser(actor) : null,
+      };
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      item.materialChangesPending = false;
+      recordActivity(item, actor, "data_context_snapshot_captured", {
+        snapshotId: item.dataContextSnapshot.id,
+        digest: item.dataContextSnapshot.digest,
+        sourceCount: item.dataContextSnapshot.sourceCount,
+        confirmed: confirm === true,
+        changes: comparison.changes,
+      });
+    });
+    return { ok: true, status: 200, body: { refreshed: true, workItem: workItemView(item, actor) } };
+  }
+
   function restoreMaterial({ workItemId, assetId, expectedRevision } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
@@ -5457,6 +6032,7 @@ export function createWorkItemService({
     applyLocalScheduleUrgent,
     addMaterials,
     removeMaterial,
+    captureDataContextSnapshot,
     restoreMaterial,
     addContentReference,
     removeContentReference,

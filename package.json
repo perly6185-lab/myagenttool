@@ -13,7 +13,7 @@
       "brace-expansion": "5.0.9",
       "uuid": "11.1.1",
       "nanoid": "3.3.18",
-      "deepmerge-ts": "8.0.0"
+      "deepmerge-ts": "8.0.1"
     },
     "onlyBuiltDependencies": [
       "electron",
@@ -66,6 +66,8 @@
     "audit:prod": "pnpm audit --prod --audit-level high",
     "release:candidate:check": "node tools/release/src/candidate.mjs --check",
     "release:candidate": "node tools/release/src/candidate.mjs",
+    "release:p4-14:check": "node tools/release/src/p4-14.mjs --check",
+    "release:p4-14": "node tools/release/src/p4-14.mjs",
     "docs:check": "pwsh -NoProfile -ExecutionPolicy Bypass -File tools/docs/check-markdown-links.ps1",
     "ai:check": "node tools/ai/src/index.mjs --check",
     "ai:intake": "node tools/ai/src/index.mjs intake-brief",
@@ -226,6 +228,9 @@
     "smoke:session-history": "node tools/dev/session-history-smoke.mjs",
     "smoke:port": "node tools/dev/agent-skills-smoke.mjs && node tools/dev/dispatch-concurrency-smoke.mjs && node tools/dev/automation-scheduler-smoke.mjs && node tools/dev/claude-agent-smoke.mjs && node tools/dev/ccusage-agent-smoke.mjs && node tools/dev/tool-registry-contract-smoke.mjs && node tools/dev/cost-attribution-smoke.mjs && node tools/dev/tenancy-smoke.mjs && node tools/dev/worktree-diff-smoke.mjs && node tools/dev/mcp-agent-smoke.mjs && node tools/dev/mail-agent-smoke.mjs && node tools/dev/mail-163-application-smoke.mjs && node tools/dev/codex-capability-caller-smoke.mjs",
     "acceptance:m0": "node tools/dev/m0-acceptance.mjs",
+    "test:p0:real-scenarios": "node tools/dev/p0-real-scenarios.mjs",
+    "test:p0:real-excel": "node --test apps/server/test/p0-real-excel-e2e.test.mjs",
+    "test:p1:real-scenarios": "node tools/dev/p1-real-scenarios.mjs",
     "test:ci": "pnpm -r --filter \"!@myagenttool/desktop\" test && pnpm --filter @myagenttool/desktop test:unit",
     "test:refusal-strict": "node tools/dev/run-refusal-strict-tests.mjs",
     "ci:simulate": "node tools/dev/ci-simulate.mjs",

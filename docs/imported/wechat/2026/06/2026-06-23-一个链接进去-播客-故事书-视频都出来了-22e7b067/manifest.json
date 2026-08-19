@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 2,
+  "status": "complete",
+  "title": "一个链接进去，播客、故事书、视频都出来了",
+  "sourceProvider": "wechat",
+  "contentType": "article",
+  "sourceUrl": "https://mp.weixin.qq.com/s/nPnH7XvxKOZLMVtzjkuJPw",
+  "canonicalUrl": "https://mp.weixin.qq.com/s/nPnH7XvxKOZLMVtzjkuJPw",
+  "resolvedUrl": "https://mp.weixin.qq.com/s/nPnH7XvxKOZLMVtzjkuJPw",
+  "author": "F哥漫谈",
+  "publishedAt": "2026-06-23",
+  "publishedAtSource": "source",
+  "importedAt": "2026-07-29T00:11:40.241Z",
+  "localIssueId": "manual_verification",
+  "outputs": {
+    "markdown": "article.md",
+    "html": "article.html",
+    "manifest": "manifest.json"
+  },
+  "media": [
+    {
+      "type": "image",
+      "sourceUrl": "https://mmbiz.qpic.cn/mmbiz_png/C5D6DHqeYomm7v2VbLGaPVJic4SHwvNrEqq3LnACEj0IquMFO8WdlQjQdf6876CK3RX0gTekbsicibDV7qaicuPdicp67uqE5ZfoDOdyHz1icYFkc/640?wx_fmt=png&from=appmsg",
+      "alt": "slide_1",
+      "status": "downloaded",
+      "path": "assets/001-a655181332e2.png",
+      "mimeType": "image/png",
+      "size": 567325,
+      "hash": "sha256:a655181332e2ba201a88c948f861db7a0e499f6a556afe97c8821b2393b95d8f"
+    },
+    {
+      "type": "image",
+      "sourceUrl": "https://mmbiz.qpic.cn/sz_mmbiz_png/C5D6DHqeYonKPLiaMVqkRAFErmZ3J6eVA3djJeshvVuK4mVQt8veyLATCfgfGwr0hr7rCNmtIVvN2V6hAhMoWgyqsn60AkMfocEy3s9FKricM/640?wx_fmt=png&from=appmsg",
+      "alt": "slide_2",
+      "status": "downloaded",
+      "path": "assets/002-729bded4d46d.png",
+      "mimeType": "image/png",
+      "size": 940900,
+      "hash": "sha256:729bded4d46d9a45e5edf43cec59fb46f043fb676455e1e42222d29614ca4092"
+    },
+    {
+      "type": "image",
+      "sourceUrl": "https://mmbiz.qpic.cn/sz_mmbiz_png/C5D6DHqeYokDB7ICEt0J05rlialJcXt7eaeVKHuhxrMmmLMfEFL9Dm4DrouW0L1pibtFxoqkVPYqKs1HbAO0VIcPKyR2ibBddN21GIKlLZuzDw/640?wx_fmt=png&from=appmsg",
+      "alt": "slide_3",
+      "status": "downloaded",
+      "path": "assets/003-4ca33f6eafda.png",
+      "mimeType": "image/png",
+      "size": 764239,
+      "hash": "sha256:4ca33f6eafda44a985b8db9d2c182986a351bb9ebc74790e4b025571a3e38c87"
+    }
+  ],
+  "warnings": []
+}
