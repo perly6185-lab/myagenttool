@@ -8,11 +8,13 @@ import { Input, Select, Textarea } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { useSafeNavigation } from "@/hooks/use-safe-navigation";
 import { ApiError } from "@/lib/api-client";
+import type { ChannelConversation, ChannelOperations } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { installWorkItemFollowUpTranslations } from "@/lib/i18n/work-item-follow-up-resources";
 import { installWorkItemReportTranslations } from "@/lib/i18n/work-item-report-resources";
 import type { LocalWorkItem, WorkItemRequesterRelation } from "./task-view-types";
 import { workItemReportApi } from "./work-item-report-api";
+import { WorkItemReportDeliveryPanel } from "./work-item-report-delivery";
 import type {
   WorkItemReportAudience,
   WorkItemReportDraft,
@@ -93,10 +95,14 @@ export function WorkItemReportSection({
   item,
   onChanged,
   onDirtyChange,
+  channels = [],
+  conversations = [],
 }: {
   item: LocalWorkItem;
   onChanged?: () => void | Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
+  channels?: ChannelOperations[];
+  conversations?: ChannelConversation[];
 }) {
   const { t: typedT, i18n } = useAppTranslation();
   const t = typedT as unknown as (key: string, options?: Record<string, unknown>) => string;
@@ -589,6 +595,16 @@ export function WorkItemReportSection({
             </div>
           </div>
         </div>
+      ) : null}
+
+      {selected.status === "confirmed" ? (
+        <WorkItemReportDeliveryPanel
+          itemId={item.id}
+          draft={selected}
+          channels={channels}
+          conversations={conversations}
+          onSent={onChanged}
+        />
       ) : null}
 
       {audienceFields}

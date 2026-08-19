@@ -308,6 +308,20 @@ test("home workbench exposes compact report status without report content", () =
   assert.equal(JSON.stringify(result.items[0]).includes("Private report body"), false);
 });
 
+test("home workbench exposes compact report status without report content", () => {
+  const result = model([item({ revision: 3 })], {
+    workItemReportDrafts: [{
+      id: "wrd_1", workItemId: "lwi_1", ownerTeamId: undefined,
+      status: "draft", source: { workItemRevision: 2 },
+      content: "Private report body", createdAt: NOW, updatedAt: NOW,
+    }],
+  });
+  assert.deepEqual(result.items[0].report, {
+    id: "wrd_1", status: "draft", stale: true, updatedAt: NOW,
+  });
+  assert.equal(JSON.stringify(result.items[0]).includes("Private report body"), false);
+});
+
 test("home workbench sorts severely overdue work before approvals and failures", () => {
   const result = model([
     item({ id: "failed", executionState: "running", executionBindings: [{ kind: "auto_run", targetId: "aur_failed" }] }),

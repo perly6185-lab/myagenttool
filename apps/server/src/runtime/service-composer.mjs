@@ -476,6 +476,7 @@ export function createServerRuntimeServices({
   let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
   let syncAdaptiveWorkItemOutcome = () => {};
   let requestWorkItemAutoSchedulerSweep = () => {};
+  let enqueueWorkItemReportDeliveryBatch = () => ({ ok: false, reason: "delivery_unavailable" });
   const localContentCatalogService = createLocalContentCatalogService({
     state, stateStorePath, now, autoIndex: true,
   });
@@ -508,6 +509,8 @@ export function createServerRuntimeServices({
     resolveApplicationCapability: (input, actor) => resolveWorkItemApplicationCapability(input, actor),
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
+    enqueueChannelDeliveryBatch: (input) => enqueueWorkItemReportDeliveryBatch(input),
+    validateApprovalToken,
     onWorkItemChanged: (item, actor) => {
       syncAdaptiveWorkItemOutcome(item, actor);
       requestWorkItemAutoSchedulerSweep();
@@ -3850,6 +3853,7 @@ export function createServerRuntimeServices({
     resolveSender: (provider) => channelSenders[provider] ?? null,
     validateApprovalToken,
   });
+  enqueueWorkItemReportDeliveryBatch = channelDeliveryService.enqueueChannelDeliveryBatch;
   channelReplySender = ({ channelId, conversationId, content, threadId = null, invocationId = null, dedupeKey = null }) => channelDeliveryService.enqueueChannelDelivery({
     channelId,
     conversationId,
@@ -6083,6 +6087,10 @@ export function createServerRuntimeServices({
     updateWorkItemReportDraft: workItemService.updateReportDraft,
     confirmWorkItemReportDraft: workItemService.confirmReportDraft,
     discardWorkItemReportDraft: workItemService.discardReportDraft,
+    listWorkItemReportDeliveries: workItemService.listReportDeliveries,
+    getWorkItemReportDelivery: workItemService.getReportDelivery,
+    previewWorkItemReportDelivery: workItemService.previewReportDelivery,
+    sendWorkItemReportDelivery: workItemService.sendReportDelivery,
     retryWorkItemAlert: workItemService.retryWorkItemAlert,
     applyLocalSchedulePlan: workItemService.applyLocalSchedulePlan,
     applyLocalScheduleRollover: workItemService.applyLocalScheduleRollover,

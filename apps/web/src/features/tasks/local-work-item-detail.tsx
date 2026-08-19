@@ -780,7 +780,14 @@ export function LocalWorkItemDetail({
           className="rounded-md border border-border p-3"
         >
           <Suspense fallback={<p className="text-sm text-muted-foreground">{t("tasks.loading")}</p>}>
-            <WorkItemReportSection key={item.id} item={item} onChanged={onChanged} onDirtyChange={setReportDirty} />
+            <WorkItemReportSection
+              key={item.id}
+              item={item}
+              channels={consoleState?.channelOperations ?? []}
+              conversations={consoleState?.channelConversations ?? []}
+              onChanged={onChanged}
+              onDirtyChange={setReportDirty}
+            />
           </Suspense>
         </section>
       ) : null}

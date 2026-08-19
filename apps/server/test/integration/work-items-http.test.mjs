@@ -1222,7 +1222,7 @@ test("planning fields, bulk updates, and project ordering are wired over HTTP", 
   assert.deepEqual(reordered.body.project.items.map((row) => row.workItem.id), [second.id, first.id]);
 });
 
-test("governed report drafts are wired through HTTP without sending or closing work", async () => {
+test("governed report drafts preview an exact target and send with a durable receipt without closing work", async () => {
   const created = await call("/api/work-items", {
     method: "POST",
     body: {
@@ -1283,6 +1283,64 @@ test("governed report drafts are wired through HTTP without sending or closing w
   const listed = await call(`/api/work-items/${item.id}/report-drafts`);
   assert.equal(listed.status, 200);
   assert.equal(listed.body.count, 1);
+
+  runtimeState.channels.push({
+    id: "chn_http_report",
+    ownerTeamId: "team_a",
+    provider: "wecom",
+    name: "HTTP customer updates",
+    status: "enabled",
+  });
+  runtimeState.channelConversations.push({
+    id: "ccv_http_customer",
+    channelId: "chn_http_report",
+    ownerTeamId: "team_a",
+    externalUserId: "wx_http_customer",
+    status: "active",
+  });
+  const previewed = await call(`/api/work-items/${item.id}/report-drafts/${confirmed.body.reportDraft.id}/deliveries`, {
+    method: "POST",
+    body: {
+      channelId: "chn_http_report",
+      conversationId: "ccv_http_customer",
+      idempotencyKey: "http-report-preview",
+    },
+  });
+  assert.equal(previewed.status, 201);
+  assert.equal(previewed.body.reportDelivery.status, "preview");
+  assert.equal(previewed.body.reportDelivery.target.recipientId, "wx_http_customer");
+  assert.equal((await call(
+    `/api/work-items/${item.id}/report-drafts/${confirmed.body.reportDraft.id}/deliveries`,
+    { token: "tok_b" },
+  )).status, 404);
+  const grant = await call("/api/approvals/grants", {
+    method: "POST",
+    body: { action: "work_item.report.deliver", targetId: previewed.body.reportDelivery.id },
+  });
+  assert.equal(grant.status, 201);
+  const sent = await call(
+    `/api/work-items/${item.id}/report-drafts/${confirmed.body.reportDraft.id}/deliveries/${previewed.body.reportDelivery.id}/send`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: previewed.body.reportDelivery.revision,
+        idempotencyKey: "http-report-send",
+        approvalToken: grant.body.token,
+      },
+    },
+  );
+  assert.equal(sent.status, 202);
+  assert.equal(sent.body.reportDelivery.status, "queued");
+  assert.equal(sent.body.reportDelivery.receipt.status, "queued");
+  assert.ok(sent.body.reportDelivery.channelDeliveryIds.length > 0);
+  assert.ok(sent.body.reportDelivery.channelDeliveryIds.every((id) =>
+    runtimeState.channelDeliveries.some((delivery) =>
+      delivery.id === id
+      && delivery.sourceContext?.reportDeliveryId === previewed.body.reportDelivery.id)));
+  const stillOpen = await call(`/api/work-items/${item.id}`);
+  assert.equal(stillOpen.body.workItem.status, "review");
+  assert.equal(stillOpen.body.workItem.state, "open");
+  assert.equal(stillOpen.body.workItem.revision, item.revision);
 });
 
 test("local content search and task references are tenant-scoped through the real HTTP server", async () => {

@@ -39,6 +39,16 @@ The review covers ordinary draft, stale-source, and confirmed states in the
 canonical Local Issue report section. Home remains a compact status and
 navigation surface and does not own a second report editor.
 
+## Work Item Report Delivery
+
+Production browser visual QA:
+
+- [work-item-report-delivery.visual-qa.md](work-item-report-delivery.visual-qa.md)
+
+The delivery review covers the exact channel and conversation recipient,
+immutable confirmed content, explicit external-send boundary, governed send,
+and provider receipt without adding task completion or closure controls.
+
 ## Local Issue Follow-up Fields
 
 Files:

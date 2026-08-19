@@ -1,10 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "@/lib/api-client";
+import { api, ApiError } from "@/lib/api-client";
 import { i18n } from "@/lib/i18n";
 import { WorkItemReportSection } from "./work-item-report-section";
 import type { LocalWorkItem } from "./task-view-types";
-import type { WorkItemReportDraft } from "./work-item-report-types";
+import type { WorkItemReportDelivery, WorkItemReportDraft } from "./work-item-report-types";
 
 const apiMocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -12,9 +12,16 @@ const apiMocks = vi.hoisted(() => ({
   update: vi.fn(),
   confirm: vi.fn(),
   discard: vi.fn(),
+  listDeliveries: vi.fn(),
+  previewDelivery: vi.fn(),
+  getDelivery: vi.fn(),
+  sendDelivery: vi.fn(),
 }));
 
-vi.mock("./work-item-report-api", () => ({ workItemReportApi: apiMocks }));
+vi.mock("./work-item-report-api", () => ({
+  WORK_ITEM_REPORT_DELIVERY_ACTION: "work_item.report.deliver",
+  workItemReportApi: apiMocks,
+}));
 
 const item: LocalWorkItem = {
   id: "lwi_report",
@@ -81,9 +88,40 @@ function draft(overrides: Partial<WorkItemReportDraft> = {}): WorkItemReportDraf
   };
 }
 
+function delivery(overrides: Partial<WorkItemReportDelivery> = {}): WorkItemReportDelivery {
+  return {
+    id: "wrdl_1",
+    schemaVersion: 1,
+    workItemId: item.id,
+    reportDraftId: "wrd_1",
+    status: "preview",
+    revision: 1,
+    confirmedReportRevision: 3,
+    content: "Launch plan is ready for review.",
+    contentDigest: "content-digest",
+    chunkCount: 1,
+    target: {
+      channelId: "chn_1",
+      channelName: "Customer updates",
+      provider: "wecom",
+      conversationId: "cnv_1",
+      recipientId: "alex.external",
+    },
+    canSend: true,
+    channelDeliveryIds: [],
+    createdBy: "usr_1",
+    createdAt: "2026-08-03T12:07:00.000Z",
+    sentBy: null,
+    sentAt: null,
+    receipt: null,
+    ...overrides,
+  };
+}
+
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
   vi.clearAllMocks();
+  apiMocks.listDeliveries.mockResolvedValue({ reportDeliveries: [], count: 0 });
 });
 afterEach(cleanup);
 
@@ -406,5 +444,111 @@ describe("WorkItemReportSection", () => {
 
     await waitFor(() => expect(apiMocks.generate).toHaveBeenCalledWith(item.id, expect.objectContaining({ locale: "zh-CN" })));
     expect(await screen.findByDisplayValue("客户进展更新 — 发布计划")).toBeTruthy();
+  });
+
+  it("previews the exact target and content, requires approval, and renders the provider receipt without closing work", async () => {
+    const confirmed = draft({
+      status: "confirmed",
+      revision: 3,
+      canEdit: false,
+      canConfirm: false,
+      confirmedAt: "2026-08-03T12:06:00.000Z",
+      confirmedBy: "usr_1",
+      confirmedSnapshot: {
+        revision: 3,
+        audience: { relation: "customer", name: "Alex", organization: "Acme", userId: null },
+        tone: "concise",
+        content: "Launch plan is ready for review.",
+        source: draft().source,
+        contentDigest: "content-digest",
+        confirmedAt: "2026-08-03T12:06:00.000Z",
+        confirmedBy: "usr_1",
+      },
+    });
+    const previewed = delivery();
+    const sent = delivery({
+      status: "delivered",
+      revision: 2,
+      canSend: false,
+      channelDeliveryIds: ["cdl_1"],
+      sentBy: "usr_1",
+      sentAt: "2026-08-03T12:08:00.000Z",
+      receipt: {
+        status: "delivered",
+        channelDeliveryIds: ["cdl_1"],
+        deliveredChunks: 1,
+        failedChunks: 0,
+        attempts: 1,
+        providerReceiptIds: ["wecom-receipt-77"],
+        lastErrorCodes: [],
+        updatedAt: "2026-08-03T12:08:01.000Z",
+      },
+    });
+    let deliveryRows: WorkItemReportDelivery[] = [];
+    apiMocks.list.mockResolvedValue({ reportDrafts: [confirmed], count: 1 });
+    apiMocks.listDeliveries.mockImplementation(async () => ({ reportDeliveries: deliveryRows, count: deliveryRows.length }));
+    apiMocks.previewDelivery.mockImplementation(async () => {
+      deliveryRows = [previewed];
+      return { reportDelivery: previewed, replayed: false };
+    });
+    apiMocks.sendDelivery.mockImplementation(async () => {
+      deliveryRows = [sent];
+      return { reportDelivery: sent, replayed: false };
+    });
+    const approval = vi.spyOn(api, "issueApprovalGrant").mockResolvedValue({
+      grantId: "apg_1",
+      token: "approval-token",
+      expiresAt: "2026-08-03T12:13:00.000Z",
+    });
+
+    render(<WorkItemReportSection
+      item={item}
+      channels={[{
+        id: "chn_1",
+        name: "Customer updates",
+        provider: "wecom",
+        status: "enabled",
+        readiness: {},
+        ready: true,
+        health: "ok",
+        capabilityAllowlist: [],
+        counts: { identities: 1, conversations: 1, events: 0, deliveries: 0, failedDeliveries: 0, injectionFlagged: 0 },
+      }]}
+      conversations={[{ id: "cnv_1", channelId: "chn_1", externalUserId: "alex.external" }]}
+    />);
+
+    expect(await screen.findByText("External delivery")).toBeTruthy();
+    const previewButton = screen.getByRole("button", { name: "Preview recipient and message" });
+    await waitFor(() => expect((previewButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(previewButton);
+    await waitFor(() => expect(apiMocks.previewDelivery).toHaveBeenCalledWith(item.id, confirmed.id, expect.objectContaining({
+      channelId: "chn_1",
+      conversationId: "cnv_1",
+      idempotencyKey: expect.any(String),
+    })));
+
+    const targetPreview = await screen.findByTestId("report-delivery-preview");
+    expect(targetPreview.textContent).toContain("Customer updates · wecom");
+    expect(targetPreview.textContent).toContain("alex.external");
+    expect(targetPreview.textContent).toContain("Launch plan is ready for review.");
+    fireEvent.click(within(targetPreview).getByRole("button", { name: "Send confirmed report" }));
+    const dialog = screen.getByRole("dialog", { name: "Send this report externally?" });
+    expect(dialog.textContent).toContain("Customer updates");
+    expect(dialog.textContent).toContain("alex.external");
+    expect(dialog.textContent).toContain("task will remain open");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send confirmed report" }));
+
+    await waitFor(() => expect(approval).toHaveBeenCalledWith("work_item.report.deliver", previewed.id));
+    expect(apiMocks.sendDelivery).toHaveBeenCalledWith(item.id, confirmed.id, previewed.id, expect.objectContaining({
+      expectedRevision: 1,
+      approvalToken: "approval-token",
+      idempotencyKey: expect.any(String),
+    }));
+    const receipt = await screen.findByTestId("report-delivery-receipt");
+    expect(receipt.textContent).toContain("1 of 1 message parts delivered");
+    expect(receipt.textContent).toContain("wecom-receipt-77");
+    expect(screen.queryByRole("button", { name: /close task/i })).toBeNull();
+    expect(item.state).toBe("open");
+    expect(item.revision).toBe(4);
   });
 });

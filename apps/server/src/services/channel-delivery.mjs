@@ -155,6 +155,93 @@ export function createChannelDeliveryService({
     if (retained.length < rows.length) state.channelDeliveries = retained;
   }
 
+  function deliveryRow({
+    channel, conversation, invocationId, content, taskContext, mediaAssets, dedupeKey, sourceContext,
+  }) {
+    const timestamp = now();
+    return {
+      id: nextId(channelIdPrefixes.delivery),
+      channelId: channel.id,
+      conversationId: conversation.id,
+      ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
+      invocationId: invocationId ? String(invocationId) : null,
+      taskContext: taskContext?.channelId === channel.id && taskContext?.conversationId === conversation.id ? {
+        messageId: taskContext.messageId ?? null,
+        principalId: taskContext.principalId ?? null,
+        terminalId: taskContext.terminalId ?? null,
+        projectId: taskContext.projectId ?? null,
+        workItemId: taskContext.workItemId ?? null,
+        threadId: taskContext.threadId ?? null,
+        traceId: taskContext.traceId ?? null,
+      } : null,
+      // Immutable provenance for governed report deliveries: which confirmed
+      // snapshot a chunk came from and where it sits in the chunk sequence.
+      sourceContext: sourceContext?.kind === "work_item_report" ? {
+        kind: "work_item_report",
+        workItemId: sourceContext.workItemId ?? null,
+        reportDraftId: sourceContext.reportDraftId ?? null,
+        reportDeliveryId: sourceContext.reportDeliveryId ?? null,
+        contentDigest: sourceContext.contentDigest ?? null,
+        chunkIndex: sourceContext.chunkIndex ?? null,
+        chunkCount: sourceContext.chunkCount ?? null,
+      } : null,
+      // Reply target: a provider whose reply address differs from the sender
+      // identity (Teams, #1135) stamps `replyContext` on the conversation; the
+      // sender receives it verbatim. Others reply to the sender's id as before.
+      toUser: conversation.externalUserId,
+      replyContext: conversation.replyContext ?? null,
+      content: content.slice(0, MAX_CONTENT_CHARS),
+      mediaAssets,
+      dedupeKey,
+      status: "queued",
+      attempts: 0,
+      nextAttemptAt: timestamp,
+      providerReceiptId: null,
+      lastErrorCode: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+  }
+
+  /** Queue a bounded set of chunks atomically before any provider send attempt. */
+  function enqueueChannelDeliveryBatch({
+    channelId,
+    conversationId,
+    invocationId = null,
+    contents,
+    taskContext = null,
+    sourceContext = null,
+  } = {}) {
+    const channel = findChannel(String(channelId ?? ""));
+    const conversation = findConversation(String(conversationId ?? ""));
+    const chunks = Array.isArray(contents) ? contents.map((content) => String(content ?? "")) : [];
+    if (!channel || !conversation || conversation.channelId !== channel.id
+      || !chunks.length || chunks.length > 50
+      || chunks.some((content) => !content.trim() || content.length > MAX_CONTENT_CHARS)) {
+      return { ok: false, reason: "invalid_delivery" };
+    }
+    const deliveries = chunks.map((content, index) => deliveryRow({
+      channel,
+      conversation,
+      invocationId,
+      // Batch callers (notably immutable report previews) retain exact chunk
+      // boundaries, so the content is stored verbatim rather than re-trimmed.
+      content,
+      taskContext,
+      mediaAssets: [],
+      dedupeKey: null,
+      sourceContext: sourceContext?.kind === "work_item_report"
+        ? { ...sourceContext, chunkIndex: index + 1, chunkCount: chunks.length }
+        : null,
+    }));
+    runTx(() => {
+      state.channelDeliveries.push(...deliveries);
+      for (const delivery of deliveries) updateThreadDelivery(delivery, "queued");
+      pruneDeliveryHistory();
+    });
+    return { ok: true, deliveryIds: deliveries.map((delivery) => delivery.id) };
+  }
+
   /** Queue one outbound message to a conversation. Durable before any send attempt. */
   function enqueueChannelDelivery({ channelId, conversationId, invocationId = null, content, taskContext = null, mediaAssets = [], dedupeKey = null } = {}) {
     const channel = findChannel(String(channelId ?? ""));
@@ -174,37 +261,16 @@ export function createChannelDeliveryService({
       );
       if (existing) return { ok: true, deliveryId: existing.id, deduplicated: true };
     }
-    const delivery = {
-      id: nextId(channelIdPrefixes.delivery),
-      channelId: channel.id,
-      conversationId: conversation.id,
-      ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
-      invocationId: invocationId ? String(invocationId) : null,
-      taskContext: taskContext?.channelId === channel.id && taskContext?.conversationId === conversation.id ? {
-        messageId: taskContext.messageId ?? null,
-        principalId: taskContext.principalId ?? null,
-        terminalId: taskContext.terminalId ?? null,
-        projectId: taskContext.projectId ?? null,
-        workItemId: taskContext.workItemId ?? null,
-        threadId: taskContext.threadId ?? null,
-        traceId: taskContext.traceId ?? null,
-      } : null,
-      // Reply target: a provider whose reply address differs from the sender
-      // identity (Teams, #1135) stamps `replyContext` on the conversation; the
-      // sender receives it verbatim. Others reply to the sender's id as before.
-      toUser: conversation.externalUserId,
-      replyContext: conversation.replyContext ?? null,
-      content: text.slice(0, MAX_CONTENT_CHARS),
+    const delivery = deliveryRow({
+      channel,
+      conversation,
+      invocationId,
+      content: text,
+      taskContext,
       mediaAssets: normalizedMediaAssets,
       dedupeKey: normalizedDedupeKey,
-      status: "queued",
-      attempts: 0,
-      nextAttemptAt: now(),
-      providerReceiptId: null,
-      lastErrorCode: null,
-      createdAt: now(),
-      updatedAt: now(),
-    };
+      sourceContext: null,
+    });
     runTx(() => {
       state.channelDeliveries.push(delivery);
       updateThreadDelivery(delivery, "queued");
@@ -535,5 +601,5 @@ export function createChannelDeliveryService({
     return { ...queued, sourceDeliveryId: source.id };
   }
 
-  return { enqueueChannelDelivery, sweepChannelDeliveries, notifyInvocationCompleted, attemptDelivery, retryChannelDelivery, resendChannelDelivery, recoverThreadDeliveryState };
+  return { enqueueChannelDelivery, enqueueChannelDeliveryBatch, sweepChannelDeliveries, notifyInvocationCompleted, attemptDelivery, retryChannelDelivery, resendChannelDelivery, recoverThreadDeliveryState };
 }

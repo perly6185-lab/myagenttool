@@ -415,9 +415,25 @@ function visualScenarios(baseline) {
       invocationId: "inv_visual_waiting_for_local_approval",
     },
     { name: "runtime-health", state: structuredClone(ready), invocationId: null, section: "devices" },
-    ...["draft", "stale", "confirmed"].map((reportStatus) => ({
+    ...["draft", "stale", "confirmed", "delivery"].map((reportStatus) => ({
       name: `report-${reportStatus}`,
-      state: structuredClone(ready),
+      state: reportStatus === "delivery"
+        ? {
+            ...structuredClone(ready),
+            channelOperations: [{
+              id: "chn_visual_report",
+              provider: "wecom",
+              name: "Customer updates",
+              status: "enabled",
+              readiness: { callback_token: true, encoding_aes_key: true, corp_secret: true },
+              ready: true,
+              health: "ok",
+              capabilityAllowlist: [],
+              counts: { identities: 1, conversations: 1, events: 1, deliveries: 1, failedDeliveries: 0, injectionFlagged: 0 },
+            }],
+            channelConversations: [{ id: "cnv_visual_report", channelId: "chn_visual_report", externalUserId: "alex.external" }],
+          }
+        : structuredClone(ready),
       invocationId: null,
       section: "task",
       reportFixture: reportVisualFixture(reportStatus, ready.projects?.[0]?.id ?? "prj_visual"),
@@ -497,10 +513,15 @@ async function assertVisualState(page, scenario) {
     await page.getByText("Stakeholder report", { exact: true }).waitFor();
     const expected = scenario.name === "report-stale"
       ? "Source progress changed"
-      : scenario.name === "report-confirmed"
-        ? "Confirmed means reviewed. It has not been sent and the task has not been closed."
-        : "Confirm report";
+      : scenario.name === "report-delivery"
+        ? "Delivery receipt"
+        : scenario.name === "report-confirmed"
+          ? "Confirmed means reviewed. It has not been sent and the task has not been closed."
+          : "Confirm report";
     await page.getByText(expected, { exact: scenario.name !== "report-draft" }).first().waitFor();
+    if (scenario.name === "report-delivery") {
+      await page.getByTestId("report-delivery-preview").scrollIntoViewIfNeeded();
+    }
     if (scenario.name === "report-stale") {
       const reportPanel = page.locator(`[id="work-item-report-${scenario.reportFixture.workItem.id}"]`);
       const controls = reportPanel.locator("select, input, textarea");
@@ -927,8 +948,8 @@ function reportVisualFixture(status, projectId) {
     id: "wrd_visual_report",
     schemaVersion: 1,
     workItemId: workItem.id,
-    status: status === "confirmed" ? "confirmed" : "draft",
-    revision: status === "confirmed" ? 3 : 2,
+    status: status === "confirmed" || status === "delivery" ? "confirmed" : "draft",
+    revision: status === "confirmed" || status === "delivery" ? 3 : 2,
     audience: { relation: "customer", name: "Alex", organization: "Acme", userId: null },
     tone: "concise",
     content: "Alex update — Confirm the customer launch plan\n\nCurrent progress: QA and release checks passed.\nWaiting on: our next action.",
@@ -947,11 +968,56 @@ function reportVisualFixture(status, projectId) {
     updatedBy: "usr_visual",
     createdAt: now,
     updatedAt: now,
-    confirmedAt: status === "confirmed" ? now : null,
-    confirmedBy: status === "confirmed" ? "usr_visual" : null,
-    confirmedSnapshot: null,
+    confirmedAt: status === "confirmed" || status === "delivery" ? now : null,
+    confirmedBy: status === "confirmed" || status === "delivery" ? "usr_visual" : null,
+    confirmedSnapshot: status === "confirmed" || status === "delivery" ? {
+      revision: 3,
+      audience: { relation: "customer", name: "Alex", organization: "Acme", userId: null },
+      tone: "concise",
+      content: "Alex update — Confirm the customer launch plan\n\nCurrent progress: QA and release checks passed.\nWaiting on: our next action.",
+      source: null,
+      contentDigest: "visual-report-content",
+      confirmedAt: now,
+      confirmedBy: "usr_visual",
+    } : null,
   };
-  return { workItem, reportDraft };
+  if (reportDraft.confirmedSnapshot) reportDraft.confirmedSnapshot.source = structuredClone(reportDraft.source);
+  const reportDelivery = status === "delivery" ? {
+    id: "wrdl_visual_report",
+    schemaVersion: 1,
+    workItemId: workItem.id,
+    reportDraftId: reportDraft.id,
+    status: "delivered",
+    revision: 2,
+    confirmedReportRevision: 3,
+    content: reportDraft.content,
+    contentDigest: "visual-report-content",
+    chunkCount: 1,
+    target: {
+      channelId: "chn_visual_report",
+      channelName: "Customer updates",
+      provider: "wecom",
+      conversationId: "cnv_visual_report",
+      recipientId: "alex.external",
+    },
+    canSend: false,
+    channelDeliveryIds: ["cdl_visual_report"],
+    createdBy: "usr_visual",
+    createdAt: now,
+    sentBy: "usr_visual",
+    sentAt: now,
+    receipt: {
+      status: "delivered",
+      channelDeliveryIds: ["cdl_visual_report"],
+      deliveredChunks: 1,
+      failedChunks: 0,
+      attempts: 1,
+      providerReceiptIds: ["wecom-visual-receipt-77"],
+      lastErrorCodes: [],
+      updatedAt: now,
+    },
+  } : null;
+  return { workItem, reportDraft, reportDelivery };
 }
 
 function fulfillReportFixture(route, fixture) {
@@ -970,6 +1036,9 @@ function fulfillReportFixture(route, fixture) {
     body = { activities: [] };
   } else if (path === `${itemPath}/report-drafts`) {
     body = { reportDrafts: [fixture.reportDraft], count: 1 };
+  } else if (path === `${itemPath}/report-drafts/${fixture.reportDraft.id}/deliveries`) {
+    const reportDeliveries = fixture.reportDelivery ? [fixture.reportDelivery] : [];
+    body = { reportDeliveries, count: reportDeliveries.length };
   }
   return body
     ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })

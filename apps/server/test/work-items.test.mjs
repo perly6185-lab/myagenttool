@@ -32,6 +32,8 @@ function harness({
   resolveApplicationCapability,
   invokeResolvedCapability,
   issueApplicationApprovalGrant,
+  enqueueChannelDeliveryBatch,
+  validateApprovalToken,
   onWorkItemChanged,
   claimTaskMaterialDraft,
   inspectTaskMaterialDraft,
@@ -73,6 +75,8 @@ function harness({
     resolveApplicationCapability,
     invokeResolvedCapability,
     issueApplicationApprovalGrant,
+    enqueueChannelDeliveryBatch,
+    validateApprovalToken,
     onWorkItemChanged,
     claimTaskMaterialDraft,
     inspectTaskMaterialDraft,
@@ -3699,6 +3703,171 @@ test("report draft discard is revision gated and idempotent without touching wor
   assert.equal(item.revision, created.revision);
   assert.equal(item.status, "backlog");
   assert.equal(item.state, "open");
+});
+
+test("confirmed reports require recipient preview and an issued grant before durable delivery receipts", () => {
+  const queued = [];
+  const approvals = [];
+  const { service, state } = harness({
+    enqueueChannelDeliveryBatch: (input) => {
+      queued.push(input);
+      return { ok: true, deliveryIds: input.contents.map((_, index) => `chd_report_${index + 1}`) };
+    },
+    validateApprovalToken: (token, context) => {
+      approvals.push({ token, context });
+      return token === "issued-grant"
+        ? { approved: true, mode: "grant", grantId: "apg_report" }
+        : { approved: false, reason: "grant_required" };
+    },
+  });
+  state.channels = [{
+    id: "chn_customer",
+    ownerTeamId: ACTOR_A.teamId,
+    provider: "wecom",
+    name: "Customer updates",
+    status: "enabled",
+  }];
+  state.channelConversations = [{
+    id: "ccv_alex",
+    channelId: "chn_customer",
+    ownerTeamId: ACTOR_A.teamId,
+    externalUserId: "wx_alex",
+  }];
+  state.channelDeliveries = [];
+
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Launch update" }, ACTOR_A).body.workItem;
+  const generated = service.generateReportDraft({
+    workItemId: item.id,
+    expectedWorkItemRevision: item.revision,
+    idempotencyKey: "delivery-generate",
+    audience: { relation: "customer", name: "Alex" },
+  }, ACTOR_A).body.reportDraft;
+  const edited = service.updateReportDraft({
+    workItemId: item.id,
+    draftId: generated.id,
+    expectedRevision: generated.revision,
+    content: "报".repeat(2_000),
+  }, ACTOR_A).body.reportDraft;
+  const confirmed = service.confirmReportDraft({
+    workItemId: item.id,
+    draftId: edited.id,
+    expectedRevision: edited.revision,
+    idempotencyKey: "delivery-confirm",
+  }, ACTOR_A).body.reportDraft;
+
+  const previewed = service.previewReportDelivery({
+    workItemId: item.id,
+    draftId: confirmed.id,
+    channelId: "chn_customer",
+    conversationId: "ccv_alex",
+    idempotencyKey: "delivery-preview",
+  }, ACTOR_A);
+  assert.equal(previewed.status, 201);
+  assert.equal(previewed.body.reportDelivery.status, "preview");
+  assert.equal(previewed.body.reportDelivery.target.recipientId, "wx_alex");
+  assert.ok(previewed.body.reportDelivery.chunkCount > 1);
+  assert.equal(service.listReportDeliveries({ workItemId: item.id, draftId: confirmed.id }, ACTOR_B).status, 404);
+  const replayedPreview = service.previewReportDelivery({
+    workItemId: item.id,
+    draftId: confirmed.id,
+    channelId: "chn_customer",
+    conversationId: "ccv_alex",
+    idempotencyKey: "delivery-preview",
+  }, ACTOR_A);
+  assert.equal(replayedPreview.body.replayed, true);
+
+  const delivery = previewed.body.reportDelivery;
+  const refused = service.sendReportDelivery({
+    workItemId: item.id,
+    draftId: confirmed.id,
+    deliveryId: delivery.id,
+    expectedRevision: delivery.revision,
+    idempotencyKey: "delivery-send",
+  }, ACTOR_A);
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, "approval_required");
+  assert.equal(queued.length, 0);
+
+  state.channelConversations[0].externalUserId = "wx_alex_changed";
+  const changedTarget = service.sendReportDelivery({
+    workItemId: item.id,
+    draftId: confirmed.id,
+    deliveryId: delivery.id,
+    expectedRevision: delivery.revision,
+    idempotencyKey: "delivery-send",
+    approvalToken: "issued-grant",
+  }, ACTOR_A);
+  assert.equal(changedTarget.status, 409);
+  assert.equal(changedTarget.body.error, "work_item_report_delivery_target_changed");
+  assert.equal(queued.length, 0);
+  state.channelConversations[0].externalUserId = "wx_alex";
+
+  const sent = service.sendReportDelivery({
+    workItemId: item.id,
+    draftId: confirmed.id,
+    deliveryId: delivery.id,
+    expectedRevision: delivery.revision,
+    idempotencyKey: "delivery-send",
+    approvalToken: "issued-grant",
+  }, ACTOR_A);
+  assert.equal(sent.status, 202);
+  assert.equal(sent.body.reportDelivery.status, "queued");
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].contents.join(""), "报".repeat(2_000));
+  assert.deepEqual(queued[0].sourceContext, {
+    kind: "work_item_report",
+    workItemId: item.id,
+    reportDraftId: confirmed.id,
+    reportDeliveryId: delivery.id,
+    contentDigest: delivery.contentDigest,
+  });
+  assert.equal(approvals.at(-1).context.action, "work_item.report.deliver");
+  assert.equal(approvals.at(-1).context.targetId, delivery.id);
+  assert.equal(approvals.at(-1).context.allowLegacy, false);
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.state, "open");
+
+  state.channelDeliveries.push(...sent.body.reportDelivery.channelDeliveryIds.map((id, index) => ({
+    id,
+    ownerTeamId: ACTOR_A.teamId,
+    status: "delivered",
+    attempts: 1,
+    providerReceiptId: `provider_${index + 1}`,
+    lastErrorCode: null,
+    updatedAt: "2026-07-24T00:01:00.000Z",
+  })));
+  const receipt = service.getReportDelivery({
+    workItemId: item.id,
+    draftId: confirmed.id,
+    deliveryId: delivery.id,
+  }, ACTOR_A).body.reportDelivery;
+  assert.equal(receipt.status, "delivered");
+  assert.equal(receipt.receipt.deliveredChunks, receipt.chunkCount);
+  assert.equal(receipt.receipt.providerReceiptIds.length, receipt.chunkCount);
+  state.channelDeliveries[0].status = "failed_terminal";
+  state.channelDeliveries[0].lastErrorCode = "provider_rejected";
+  const failedReceipt = service.getReportDelivery({
+    workItemId: item.id,
+    draftId: confirmed.id,
+    deliveryId: delivery.id,
+  }, ACTOR_A).body.reportDelivery;
+  assert.equal(failedReceipt.status, "failed");
+  assert.equal(failedReceipt.receipt.failedChunks, 1);
+  assert.deepEqual(failedReceipt.receipt.lastErrorCodes, ["provider_rejected"]);
+  const replayedSend = service.sendReportDelivery({
+    workItemId: item.id,
+    draftId: confirmed.id,
+    deliveryId: delivery.id,
+    expectedRevision: delivery.revision,
+    idempotencyKey: "delivery-send",
+    approvalToken: "already-consumed",
+  }, ACTOR_A);
+  assert.equal(replayedSend.status, 200);
+  assert.equal(replayedSend.body.replayed, true);
+  assert.equal(queued.length, 1);
+  assert.deepEqual(
+    state.workItemActivities.slice(0, 2).map((activity) => activity.action),
+    ["report_delivery_sent", "report_delivery_previewed"],
+  );
 });
 
 test("report generation includes bounded result summaries but excludes transcripts and side-effect fields", () => {
