@@ -226,6 +226,17 @@ export function createServerState({ defaultProjectPath, now }) {
     businessDocumentClassifications: [],
     businessDocumentAnalysisJobs: [],
     businessEntities: [],
+    // Connector-normalized, non-secret business object metadata used by
+    // Channel execution previews (accounts and publication targets currently
+    // have no legacy business-entity type, so they live here).
+    channelObjectRecords: [],
+    channelObjectImports: [],
+    channelObjectFileSources: [],
+    channelMutationBindings: [],
+    channelObjectSyncs: [],
+    channelObjectConnectorConfigs: [],
+    channelObjectSyncPreviews: [],
+    channelDataRelationConfirmations: [],
     businessCaseCandidates: [],
     businessCases: [],
     routineDiscoveryCandidates: [],
@@ -233,6 +244,8 @@ export function createServerState({ defaultProjectPath, now }) {
     routineRuns: [],
     ledgerDefinitions: [],
     ledgerUpsertPreviews: [],
+    ledgerBatchUpsertPreviews: [],
+    ledgerBatchMutationJournals: [],
     ledgerMutationAudits: [],
     businessPilotEvidenceReceipts: [],
     businessPilotDrafts: [],
@@ -429,6 +442,14 @@ export function resetStateForSelfCheck({ state, now }) {
   state.channelDeliveries = [];
   state.channelIntakeGroups = [];
   state.channelTaskThreads = [];
+  state.channelTaskRequests = [];
+  state.channelObjectRecords = [];
+  state.channelObjectImports = [];
+  state.channelObjectFileSources = [];
+  state.channelObjectSyncs = [];
+  state.channelObjectConnectorConfigs = [];
+  state.channelObjectSyncPreviews = [];
+  state.channelDataRelationConfirmations = [];
   state.channelIntentMetrics = {
     policyVersion: "ilink-intent-v2",
     total: 0,

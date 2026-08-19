@@ -1120,11 +1120,23 @@ export function createAutoRunService({
       throw new Error("A confirmed execution contract is required before implementation starts.");
     }
     const confirmedBy = executionPlan.confirmedBy ?? "ai_policy";
+    const localWorkItem = (state.workItems ?? []).find((item) =>
+      item.id === (autoRun.localIssueId ?? autoRun.executionChainId));
+    const dataContextSnapshot = localWorkItem?.dataContextSnapshot
+      ? {
+        ...localWorkItem.dataContextSnapshot,
+        sources: (localWorkItem.dataContextSnapshot.sources ?? []).map((source) => ({ ...source })),
+      }
+      : null;
+    const frozenDataContextDigest = autoRun.executionContract
+      ? autoRun.executionContract.dataContextSnapshot?.digest ?? null
+      : dataContextSnapshot?.digest ?? null;
     const digest = createHash("sha256").update(JSON.stringify({
       autoRunId: autoRun.id,
       workItemId: autoRun.localIssueId ?? autoRun.executionChainId ?? null,
       acceptanceCriteria: criteria,
       verificationSop: sop,
+      dataContextDigest: frozenDataContextDigest,
       confirmedBy,
       confirmedAt: executionPlan.confirmedAt,
     })).digest("hex");
@@ -1155,6 +1167,7 @@ export function createAutoRunService({
         autoRunId: autoRun.id,
         acceptanceCriteria: criteria,
         verificationSop: sop,
+        dataContextSnapshot,
         confirmedBy,
         confirmedAt: executionPlan.confirmedAt,
         digest,

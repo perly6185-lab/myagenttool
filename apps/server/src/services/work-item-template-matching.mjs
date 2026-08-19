@@ -7,6 +7,9 @@ const TEMPLATE_TRIGGER_TERMS = Object.freeze({
   customer_complaint: ["投诉", "客诉", "complaint"],
   weekly_report: ["周报", "weekly report"],
   project_acceptance: ["验收", "acceptance"],
+  payment_reconciliation: ["对账", "汇款对账", "收款核对", "reconciliation"],
+  payment_confirmation: ["回款确认", "确认回款", "已回款", "核销回款", "payment confirmation"],
+  after_sales: ["售后", "投诉", "维修", "退换货", "服务单", "after sales"],
   other_reference: ["技术协议", "设备协议", "技术规格书", "技术要求书", "reference"],
 });
 
@@ -18,6 +21,9 @@ const TEMPLATE_OUTPUT_TERMS = Object.freeze({
   customer_complaint: ["投诉处理", "客诉处理", "complaint response"],
   weekly_report: ["周报", "weekly report"],
   project_acceptance: ["验收报告", "acceptance report"],
+  payment_reconciliation: ["对账", "对账结果", "reconciliation"],
+  payment_confirmation: ["回款确认", "回款已到账", "已回款", "payment confirmation"],
+  after_sales: ["售后处理", "售后结果", "服务单", "after sales"],
   procurement_list: ["采购清单", "采购表", "采购明细表", "采购明细", "设备清单", "采购用excel"],
 });
 

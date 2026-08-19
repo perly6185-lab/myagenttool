@@ -14,6 +14,19 @@ const mocks = vi.hoisted(() => ({
   startTemplateLearningTask: vi.fn(),
   listTemplateLearningTasks: vi.fn(),
   getWorkflowOcrReadiness: vi.fn(),
+  listChannelObjects: vi.fn(),
+  upsertChannelObject: vi.fn(),
+  setChannelObjectStatus: vi.fn(),
+  previewChannelObjectImport: vi.fn(),
+  confirmChannelObjectImport: vi.fn(),
+  listChannelObjectConnectors: vi.fn(),
+  listChannelObjectConnectorConfigs: vi.fn(),
+  listChannelObjectFileSources: vi.fn(),
+  upsertChannelObjectConnectorConfig: vi.fn(),
+  previewChannelObjectConnectorSync: vi.fn(),
+  confirmChannelObjectConnectorSync: vi.fn(),
+  testChannelObjectConnectorConfig: vi.fn(),
+  syncChannelObjectConnector: vi.fn(),
   bindProject: vi.fn(),
   listLearning: vi.fn(),
   removeLearning: vi.fn(),
@@ -56,6 +69,19 @@ vi.mock("@/features/workflow-memory/workflow-memory-api", () => ({
     startTemplateLearningTask: mocks.startTemplateLearningTask,
     listTemplateLearningTasks: mocks.listTemplateLearningTasks,
     getWorkflowOcrReadiness: mocks.getWorkflowOcrReadiness,
+    listChannelObjects: mocks.listChannelObjects,
+    upsertChannelObject: mocks.upsertChannelObject,
+    setChannelObjectStatus: mocks.setChannelObjectStatus,
+    previewChannelObjectImport: mocks.previewChannelObjectImport,
+    confirmChannelObjectImport: mocks.confirmChannelObjectImport,
+    listChannelObjectConnectors: mocks.listChannelObjectConnectors,
+    listChannelObjectConnectorConfigs: mocks.listChannelObjectConnectorConfigs,
+    listChannelObjectFileSources: mocks.listChannelObjectFileSources,
+    upsertChannelObjectConnectorConfig: mocks.upsertChannelObjectConnectorConfig,
+    previewChannelObjectConnectorSync: mocks.previewChannelObjectConnectorSync,
+    confirmChannelObjectConnectorSync: mocks.confirmChannelObjectConnectorSync,
+    testChannelObjectConnectorConfig: mocks.testChannelObjectConnectorConfig,
+    syncChannelObjectConnector: mocks.syncChannelObjectConnector,
   },
 }));
 vi.mock("@/features/workflow-memory/workflow-memory-view", () => ({
@@ -98,6 +124,10 @@ beforeEach(() => {
   window.myagenttoolDesktop = undefined;
   mocks.listSources.mockResolvedValue({ sources: [source] });
   mocks.listDefinitions.mockResolvedValue({ routineDefinitions: [definition], count: 1 });
+  mocks.listChannelObjects.mockResolvedValue({ objects: [], count: 0 });
+  mocks.listChannelObjectConnectors.mockResolvedValue({ connectors: [] });
+  mocks.listChannelObjectConnectorConfigs.mockResolvedValue({ configs: [], count: 0 });
+  mocks.listChannelObjectFileSources.mockResolvedValue({ sources: [], count: 0 });
   mocks.listLearning.mockResolvedValue({ feedback: [], count: 0 });
   mocks.removeLearning.mockResolvedValue({ removed: { id: "feedback-1" }, affectsFutureMatchesOnly: true });
   mocks.listOutcomes.mockResolvedValue({ feedback: [], summaries: [], count: 0 });
@@ -127,6 +157,10 @@ describe("MyTemplatesView", () => {
   it("shows ordinary users what each learned template receives and produces", async () => {
     renderView();
     expect(await screen.findByRole("heading", { name: "我的模板" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "让系统按你的工作方式帮忙" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /教它一项常做的工作/ })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "工作资料" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "查看专业设置" })).toBeTruthy();
     expect(await screen.findByText("客户询价报价")).toBeTruthy();
     expect(screen.getByText("客户询价单")).toBeTruthy();
     expect(screen.getByText("报价单 Excel")).toBeTruthy();

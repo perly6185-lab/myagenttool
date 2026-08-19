@@ -895,6 +895,39 @@ export interface BusinessRoutineStep {
   configuration: Record<string, unknown>;
 }
 
+export interface BusinessDataRequirement {
+  id: string;
+  kind: "contact" | "order" | "account" | "publish_target" | "file" | string;
+  label: string;
+  fields: string[];
+  required: boolean;
+  multiple: boolean;
+  description: string | null;
+}
+
+export interface BusinessDataRelation {
+  id: string;
+  type: "lookup" | "join";
+  fromRequirementId: string;
+  fromField: string;
+  toRequirementId: string;
+  toField: string;
+  required: boolean;
+  description: string | null;
+}
+
+export interface BusinessMutationPolicy {
+  operations: Array<"update" | "insert" | "delete" | string>;
+  targetRequirementIds: string[];
+  keyFields: string[];
+  mutableFields: string[];
+  allowMultipleSources: boolean;
+  allowMultipleRows: boolean;
+  maxRows: number;
+  requireUserConfirmation: boolean;
+  writeMode: "safe_copy_replace" | string;
+}
+
 export interface MyTemplateDraft {
   id: string;
   projectId: string;
@@ -932,6 +965,9 @@ export interface BusinessRoutineDefinition {
   historicalCaseIds: string[];
   triggerDocumentTypes: BusinessDocumentType[];
   steps: BusinessRoutineStep[];
+  dataRequirements?: BusinessDataRequirement[];
+  relations?: BusinessDataRelation[];
+  mutationPolicy?: BusinessMutationPolicy | null;
   confidence: number;
   templateScope?: "team";
   templateMaturity?: "trial" | "stable";

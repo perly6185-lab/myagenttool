@@ -1443,8 +1443,42 @@ export interface ConsoleSnapshot {
   channelTaskRequests?: ChannelTaskRequest[];
   channelIntakeGroups?: ChannelIntakeGroup[];
   channelTaskThreads?: ChannelTaskThread[];
+  channelLifecycleSummaries?: ChannelLifecycleSummary[];
   channelIntentMetrics?: ChannelIntentMetrics | null;
   channelInteractions?: ChannelInteraction[];
+}
+
+export interface ChannelLifecycleStage {
+  label: string;
+  count?: number;
+  status?: string | null;
+  businessKey?: string | null;
+  source?: string | null;
+  updatedAt?: string | null;
+  records?: Array<{
+    id?: string | null;
+    businessKey?: string | null;
+    status?: string | null;
+    amount?: number;
+    paidAmount?: number;
+    quantity?: number;
+    source?: string | null;
+    updatedAt?: string | null;
+  }>;
+}
+
+export interface ChannelLifecycleSummary {
+  projectId: string;
+  orderNumber?: string | null;
+  customer?: string | null;
+  label: string;
+  state: "closed" | "active" | "needs_identity" | string;
+  stages: Record<string, ChannelLifecycleStage>;
+  totals?: Record<string, number>;
+  counts?: Record<string, number>;
+  warnings?: string[];
+  sources: string[];
+  updatedAt?: string | null;
 }
 
 export interface ChannelIntentMetrics {

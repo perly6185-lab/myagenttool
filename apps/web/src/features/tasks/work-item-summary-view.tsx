@@ -735,22 +735,22 @@ export function WorkItemSummaryView({
         const manualObservation = assisted.draft.templateMatch.clarification?.reason === "manual_resume_observation";
         setSyncNotice(manualObservation
           ? (language === "zh"
-              ? "你已将这个模板恢复到观察期。本次确认后才会使用，积累新的成功结果后才恢复自动套用。"
+              ? "这项处理方式已进入观察期。本次确认后才会使用，积累新的成功结果后才恢复自动采用。"
               : "You returned this template to observation. Confirm it for now; automatic use resumes after new successful results.")
           : governancePaused
           ? (language === "zh"
-              ? "这个模板近期多次产生错误结果类型，已暂停自动套用。你仍可确认本次使用。"
+              ? "这项处理方式近期多次产生错误结果类型，已暂停自动采用。你仍可确认本次使用。"
               : "This template repeatedly produced the wrong result type, so automatic matching is paused. You can still confirm it for this task.")
           : governanceWatch
             ? (language === "zh"
-                ? "这个模板近期出现过多次结果类型不符，系统已降低推荐优先级。本次确认后才会使用。"
+                ? "这项处理方式近期出现过多次结果类型不符，系统已降低推荐优先级。本次确认后才会使用。"
                 : "This template recently produced several wrong result types. It will be used only after you confirm.")
             : learnedConflict
           ? (language === "zh"
               ? "你以前对此类任务选择过不同结果。请确认这次想得到什么，系统不会擅自猜测。"
               : "You previously chose different results for this kind of task. Confirm this result so the system does not guess.")
           : (language === "zh"
-              ? "系统找到了多种可能结果。请只确认这次想得到什么，不需要选择模板。"
+              ? "系统找到了多种可能结果。请只确认这次想得到什么，不需要了解处理方式。"
               : "Several results may fit. Confirm only the result you want; you do not need to choose a template."));
         return;
       }
@@ -1439,6 +1439,241 @@ export function WorkItemSummaryView({
         </div>
       ) : null}
 
+      {item.channelTaskContract?.workMode ? (
+        <section
+          className={`rounded-xl border p-4 ${item.channelTaskContract.workMode.state === "needs_confirmation" ? "border-warning/35 bg-warning/[0.05]" : "border-primary/25 bg-primary/[0.035]"}`}
+          aria-label={language === "zh" ? "我会这样处理" : "How this task will be handled"}
+          data-testid="work-mode-summary"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Bot className="size-4 text-primary" aria-hidden />
+            <h4 className="text-sm font-semibold">{language === "zh" ? "我会这样处理" : "How I’ll handle this"}</h4>
+            <Badge tone={item.channelTaskContract.workMode.state === "matched" ? "success" : "warning"}>
+              {item.channelTaskContract.workMode.state === "matched"
+                ? (language === "zh" ? "已整理" : "Ready")
+                : item.channelTaskContract.workMode.state === "needs_confirmation"
+                  ? (language === "zh" ? "等你确认" : "Needs confirmation")
+                  : (language === "zh" ? "按本次要求" : "This request")}
+            </Badge>
+          </div>
+          <p className="mt-2 text-sm font-medium">
+            {item.channelTaskContract.workMode.state === "needs_confirmation"
+              ? (language === "zh" ? "我还不能确定具体怎么处理。" : "I need your confirmation before choosing how to handle this.")
+              : item.channelTaskContract.workMode.name}
+          </p>
+          {item.channelTaskContract.workMode.expectedOutput ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {language === "zh" ? "预期结果：" : "Expected result: "}{item.channelTaskContract.workMode.expectedOutput}
+            </p>
+          ) : null}
+          {item.channelTaskContract.workMode.data.sources.length ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {language === "zh" ? "本次使用：" : "Using: "}
+              {item.channelTaskContract.workMode.data.sources.map((source) => `${source.fileName ?? "本地资料"}${source.revision != null ? `（第${source.revision}版）` : ""}`).join("、")}
+            </p>
+          ) : null}
+          {item.channelTaskContract.workMode.confirmationRequired ? (
+            <p className="mt-2 text-xs text-warning-foreground">
+              {language === "zh" ? "涉及资料选择、文件修改或对外操作，开始前会先让你确认。" : "Source selection, file changes, or external actions require confirmation before starting."}
+            </p>
+          ) : null}
+          {item.channelTaskContract.workMode.state === "needs_confirmation" && item.channelTaskContract.workMode.candidates.length ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {language === "zh" ? "可能的方式：" : "Possible modes: "}
+              {item.channelTaskContract.workMode.candidates.map((candidate) => candidate.name ?? candidate.expectedOutput).filter(Boolean).join("、")}
+            </p>
+          ) : null}
+          <details className="mt-3 rounded-lg border border-border/70 bg-background/50 px-3 py-2 text-xs">
+            <summary className="cursor-pointer font-medium">{language === "zh" ? "查看处理依据" : "View supporting details"}</summary>
+            <div className="mt-2 space-y-1 text-muted-foreground">
+              <p>{language === "zh" ? "处理依据：" : "Basis: "}{item.channelTaskContract.workMode.source === "my_template" ? (language === "zh" ? "参考了之前确认过的做法" : "A previously confirmed approach") : item.channelTaskContract.workMode.source === "suggested" ? (language === "zh" ? "等待本次确认" : "Awaiting confirmation") : (language === "zh" ? "本次临时整理" : "This request")}{item.channelTaskContract.workMode.version != null ? ` · v${item.channelTaskContract.workMode.version}` : ""}</p>
+              <p>{language === "zh" ? "资料检查记录：" : "Source check: "}{item.channelTaskContract.workMode.trace.dataPlanDigest ?? "—"}</p>
+              <p>{language === "zh" ? "处理记录：" : "Processing record: "}{item.channelTaskContract.workMode.digest}</p>
+            </div>
+          </details>
+        </section>
+      ) : null}
+
+      {item.channelTaskContract?.dataPlan && item.channelTaskContract.dataPlan.status !== "not_required" ? (
+        <section
+          className={`rounded-xl border p-4 ${item.channelTaskContract.dataPlan.status === "ready" ? "border-success/30 bg-success/[0.04]" : "border-warning/35 bg-warning/[0.05]"}`}
+          aria-label={language === "zh" ? "资料检查结果" : "Source check results"}
+        >
+          <h4 className="text-sm font-semibold">{language === "zh" ? "资料检查结果" : "Source check results"}</h4>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {item.channelTaskContract.dataPlan.status === "ready"
+              ? (language === "zh" ? "以下资料会用于本次处理，开始前还会再次检查。" : "These sources will be used for this task and checked again before starting.")
+              : (language === "zh" ? "还缺少部分资料，补齐或选择来源后才能继续。" : "Some sources are still missing. Add or choose them before continuing.")}
+          </p>
+          {item.channelTaskContract.dataPlan.sources.length ? (
+            <ul className="mt-3 space-y-1 text-xs">
+              {item.channelTaskContract.dataPlan.sources.map((source) => (
+                <li key={source.sourceId}>
+                  <span className="font-medium">{source.fileName ?? source.sourceId}</span>
+                  {source.revision != null ? <span className="ml-1 text-muted-foreground">· v{source.revision}</span> : null}
+                  {source.rowCount != null ? <span className="ml-1 text-muted-foreground">· {source.rowCount} rows</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {item.channelTaskContract.dataPlan.requirements.filter((requirement) => requirement.state !== "ready").map((requirement) => (
+            <p key={requirement.id} className="mt-2 text-xs text-warning-foreground">
+              {language === "zh" ? "还需要：" : "Needed: "}{requirement.label}{requirement.state === "ambiguous" ? (language === "zh" ? "（来源不唯一）" : " (multiple sources)") : ""}
+            </p>
+          ))}
+          {item.channelTaskContract.dataPlan.relations.length ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {language === "zh" ? "资料对应关系：" : "Source relationships: "}
+              {item.channelTaskContract.dataPlan.relations.map((relation) => `${relation.fromRequirementId}.${relation.fromField} → ${relation.toRequirementId}.${relation.toField}`).join("；")}
+            </p>
+          ) : null}
+          {item.channelTaskContract.dataRelationPreview?.relations.length ? (
+            <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+              {item.channelTaskContract.dataRelationPreview.relations.map((relation) => (
+                <li key={relation.id}>
+                  {relation.fromRequirementId}.{relation.fromField} → {relation.toRequirementId}.{relation.toField}：
+                  {relation.state === "ready"
+                    ? (language === "zh" ? `已对应 ${relation.matchedRows} 条` : `${relation.matchedRows} matched`)
+                    : (language === "zh" ? `还需确认，${relation.unmatchedRows} 条未对应` : `review needed, ${relation.unmatchedRows} unmatched`)}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {item.channelTaskContract.dataRelationConfirmation ? (
+            <div className="mt-3 rounded-lg border border-success/25 bg-success/[0.04] p-3 text-xs">
+              <p className="font-medium text-success-foreground">
+                {item.channelTaskContract.dataRelationConfirmation.status === "verified"
+                  ? (language === "zh" ? "资料对应关系已检查并记录" : "Source relationships checked and recorded")
+                  : (language === "zh" ? "资料对应关系检查状态：" : "Source relationship check: ") + item.channelTaskContract.dataRelationConfirmation.status}
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {item.channelTaskContract.dataRelationConfirmation.confirmationMode === "user_confirmation"
+                  ? (language === "zh" ? "由本次确认完成检查" : "Checked by this confirmation")
+                  : (language === "zh" ? "由系统在开始前完成检查" : "Checked by the system before starting")}
+                {item.channelTaskContract.dataRelationConfirmation.objectSnapshotCount > 0
+                  ? (language === "zh"
+                    ? ` · 已记录 ${item.channelTaskContract.dataRelationConfirmation.objectSnapshotCount} 个对象版本`
+                    : ` · ${item.channelTaskContract.dataRelationConfirmation.objectSnapshotCount} object versions recorded`)
+                  : ""}
+              </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {item.channelTaskContract?.dataMutationPreview && item.channelTaskContract.dataMutationPreview.status !== "not_required" ? (
+        <section
+          className="rounded-xl border border-warning/35 bg-warning/[0.05] p-4"
+          aria-label={language === "zh"
+            ? (item.channelTaskContract.ledgerMutationPreview?.kind === "batch" ? "批量文件修改预览" : item.channelTaskContract.ledgerMutationPreview ? "单条文件修改预览" : "文件修改预览")
+            : (item.channelTaskContract.ledgerMutationPreview ? "Single-record file change preview" : "File change preview")}
+        >
+          <h4 className="text-sm font-semibold">
+            {language === "zh"
+              ? (item.channelTaskContract.ledgerMutationPreview?.kind === "batch" ? "批量文件修改预览" : item.channelTaskContract.ledgerMutationPreview ? "单条文件修改预览" : "文件修改预览")
+              : (item.channelTaskContract.ledgerMutationPreview ? "Single-record file change preview" : "File change preview")}
+          </h4>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {item.channelTaskContract.ledgerMutationPreview
+              ? (language === "zh"
+                ? (item.channelTaskContract.ledgerMutationPreview.kind === "batch"
+                  ? "已生成批量文件修改预览；回复“确认执行”后按文件顺序处理，部分失败会保留可恢复记录。"
+                  : "已生成文件修改预览；回复“确认执行”后才会修改，桌面端会保留处理记录。")
+                : "A file change preview is ready. Personal Channel confirmation is required before changes are applied.")
+              : (language === "zh"
+                ? item.channelTaskContract.dataMutationPreview.status === "ready"
+                  ? "修改范围预览已生成，但还不会直接修改原文件。"
+                  : "目前只整理了修改范围，还需要明确文件、记录范围和修改内容。"
+                : item.channelTaskContract.dataMutationPreview.status === "ready"
+                  ? "The change scope is previewed, but source files will not be modified yet."
+                  : "Only the change scope is recorded. Confirm the files, rows, and changes before continuing.")}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {item.channelTaskContract.dataMutationBinding
+              ? (language === "zh"
+                ? "文件保护设置已准备好"
+                : "File protection is ready")
+              : (language === "zh" ? "还需要检查文件保护设置" : "File protection still needs checking")}
+          </p>
+          {item.channelTaskContract.dataMutationPreview.targetSources.length ? (
+            <ul className="mt-3 space-y-1 text-xs">
+              {item.channelTaskContract.dataMutationPreview.targetSources.map((source) => (
+                <li key={source.sourceId}>
+                  <span className="font-medium">{source.fileName ?? source.sourceId}</span>
+                  {source.revision != null ? <span className="ml-1 text-muted-foreground">· v{source.revision}</span> : null}
+                  {source.rowCount != null ? <span className="ml-1 text-muted-foreground">· {source.rowCount} rows</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {item.channelTaskContract.dataMutationPreview.dataMutationScope ? (
+            <div className="mt-3 rounded-lg border border-warning/25 bg-background/40 p-3 text-xs">
+              <p className="font-medium">
+                {language === "zh" ? "修改范围已固定" : "Change scope fixed"}
+                <span className="ml-2 text-muted-foreground">
+                  {language === "zh"
+                    ? `${item.channelTaskContract.dataMutationPreview.dataMutationScope.targets.length} 个文件 · 预计 ${item.channelTaskContract.dataMutationPreview.dataMutationScope.expectedAffectedRows} 条`
+                    : `${item.channelTaskContract.dataMutationPreview.dataMutationScope.targets.length} files · ${item.channelTaskContract.dataMutationPreview.dataMutationScope.expectedAffectedRows} rows`}
+                </span>
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {language === "zh" ? "系统只保留必要的处理记录，不保存原始筛选内容。" : "Only necessary processing records are kept; raw filters are not persisted."}
+              </p>
+              {item.channelTaskContract.dataMutationPreview.dataMutationScope.changes.length ? (
+                <p className="mt-1 text-muted-foreground">
+                  {language === "zh" ? "字段：" : "Fields: "}
+                  {item.channelTaskContract.dataMutationPreview.dataMutationScope.changes.map((change) => change.field).join("、")}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {item.channelTaskContract.ledgerMutationPreview ? (
+            <div className="mt-3 rounded-lg border border-success/25 bg-success/[0.04] p-3 text-xs">
+              <p className="font-medium text-success-foreground">
+                {item.channelTaskContract.ledgerMutationPreview.state === "rolled_back"
+                  ? (language === "zh" ? "修改已安全撤回" : "Changes rolled back safely")
+                  : item.channelTaskContract.ledgerMutationPreview.state === "needs_attention"
+                    ? (language === "zh" ? "需要检查文件" : "File needs attention")
+                    : item.channelTaskContract.ledgerMutationPreview.state === "committing"
+                      ? (language === "zh" ? "正在恢复修改进度" : "Recovering change progress")
+                      : (language === "zh" ? "文件修改预览已生成" : "File change preview ready")}
+                <span className="ml-2 text-muted-foreground">
+                  {item.channelTaskContract.ledgerMutationPreview.state === "waiting"
+                    ? (language === "zh" ? "排队等待处理" : "queued behind another change")
+                    : item.channelTaskContract.ledgerMutationPreview.state === "rolled_back"
+                      ? (language === "zh" ? "未保留任何部分修改" : "no partial changes kept")
+                      : item.channelTaskContract.ledgerMutationPreview.state === "needs_attention"
+                        ? (language === "zh" ? "检测到文件被其他程序修改" : "file changed elsewhere")
+                        : item.channelTaskContract.ledgerMutationPreview.state === "committing"
+                          ? (language === "zh" ? "已完成项不会重复修改" : "completed items will not repeat")
+                    : (language === "zh" ? "等待 Channel 确认" : "awaiting Channel confirmation")}
+                </span>
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {item.channelTaskContract.ledgerMutationPreview.kind === "batch"
+                  ? `${language === "zh" ? "涉及：" : "Scope: "}${item.channelTaskContract.ledgerMutationPreview.targetCount ?? 0} ${language === "zh" ? "个文件，" : "files, "}${item.channelTaskContract.ledgerMutationPreview.operationCount ?? item.channelTaskContract.ledgerMutationPreview.children?.length ?? 0} ${language === "zh" ? "条记录" : "operations"}`
+                  : item.channelTaskContract.ledgerMutationPreview.changedCells.length
+                    ? `${language === "zh" ? "字段：" : "Fields: "}${item.channelTaskContract.ledgerMutationPreview.changedCells.map((cell) => cell.field).filter(Boolean).join("、")}`
+                    : (language === "zh" ? "没有检测到实际字段变化" : "No field difference detected")}
+                {item.channelTaskContract.ledgerMutationPreview.kind !== "batch" && item.channelTaskContract.ledgerMutationPreview.rowNumber != null
+                  ? ` · ${language === "zh" ? "第" : "row "}${item.channelTaskContract.ledgerMutationPreview.rowNumber}${language === "zh" ? "行" : ""}`
+                  : ""}
+              </p>
+              {item.channelTaskContract.ledgerMutationPreview.kind === "batch" && item.channelTaskContract.ledgerMutationPreview.journal ? (
+                <p className="mt-1 text-muted-foreground">
+                  {language === "zh"
+                    ? `处理记录：已完成 ${item.channelTaskContract.ledgerMutationPreview.journal.appliedCount} 项、保留 ${item.channelTaskContract.ledgerMutationPreview.journal.snapshotCount} 个文件备份`
+                    : `Processing record: ${item.channelTaskContract.ledgerMutationPreview.journal.appliedCount} completed, ${item.channelTaskContract.ledgerMutationPreview.journal.snapshotCount} file backups`}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {item.channelTaskContract.dataMutationPreview.requiredFields.map((field) => (
+            <p key={field} className="mt-2 text-xs text-warning-foreground">{language === "zh" ? "还需要：" : "Needed: "}{field}</p>
+          ))}
+        </section>
+      ) : null}
+
       {pendingTemplateClarification ? (
         <section id="task-template-result-question" className="rounded-xl border border-warning/40 bg-warning/[0.06] p-4" aria-label={language === "zh" ? "这次你希望最终得到什么？" : "What result do you want this time?"}>
           <h4 className="text-sm font-semibold">{language === "zh" ? "这次你希望最终得到什么？" : "What result do you want this time?"}</h4>
@@ -1801,7 +2036,7 @@ export function WorkItemSummaryView({
                 {language === "zh" ? "预计得到：" : "Expected result: "}{item.myTemplateBinding.expectedOutput}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {language === "zh" ? "来自我的模板：" : "From My templates: "}{item.myTemplateBinding.name}
+                {language === "zh" ? "处理依据：参考了你之前确认过的做法" : "Basis: a previously confirmed approach"}
               </p>
             </div>
             {canCorrectMyTemplate && !templateCorrectionOpen ? (
@@ -1813,8 +2048,8 @@ export function WorkItemSummaryView({
           {learnedTemplateMatch ? (
             <p className="mt-3 rounded-lg border border-primary/20 bg-background/70 p-2.5 text-xs leading-relaxed text-muted-foreground">
               {language === "zh"
-                ? "系统发现这项任务与之前由你纠正过的任务相似，因此优先采用这个结果。你可以在“我的模板”中的“系统记住的选择”查看或撤销。"
-                : "This task looks similar to one you corrected before, so that result was preferred. You can review or remove the preference in My templates under Learned choices."}
+                ? "系统发现这项任务与之前由你纠正过的任务相似，因此优先采用这个结果。你可以在设置中查看或撤销系统记住的选择。"
+                : "This task looks similar to one you corrected before, so that result was preferred. You can review or remove the remembered choice in settings."}
             </p>
           ) : null}
           {item.myTemplateBinding.matchReasons.length ? (

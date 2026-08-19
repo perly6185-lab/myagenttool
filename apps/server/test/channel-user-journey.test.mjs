@@ -10,7 +10,7 @@ import { createChannelService } from "../src/services/channels.mjs";
 const NOW = "2026-08-14T00:00:00.000Z";
 const OWNER = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeJourneyHarness({ retryAutoRun = null } = {}) {
+function makeJourneyHarness({ retryAutoRun = null, riskTask = false, routeChannelTask = null, dismissChannelTask = null } = {}) {
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
   const events = [];
   const replies = [];
@@ -41,7 +41,28 @@ function makeJourneyHarness({ retryAutoRun = null } = {}) {
         projectId,
         outputAssets: [],
       });
-      return { ok: true, number: taskCalls.length, localRef: `LOCAL-${taskCalls.length}`, workItemId };
+      return {
+        ok: true,
+        number: taskCalls.length,
+        localRef: `LOCAL-${taskCalls.length}`,
+        workItemId,
+        ...(riskTask ? {
+          autoRoute: false,
+          requiresChannelConfirmation: true,
+          riskLevel: "external_communication",
+          executionPreview: {
+            schemaVersion: 1,
+            action: "对外发送或发布",
+            target: "客户",
+            targetStatus: "inferred",
+            impact: "可能向外部对象发送或发布内容",
+            unknownFields: ["最终发送内容和附件"],
+            inputs: [],
+            digest: "preview-digest-1",
+          },
+          previewDigest: "preview-digest-1",
+        } : {}),
+      };
     },
     answerClarify: async (autoRunId, input) => {
       answerCalls.push({ autoRunId, input });
@@ -52,6 +73,8 @@ function makeJourneyHarness({ retryAutoRun = null } = {}) {
       };
     },
     retryAutoRun,
+    routeChannelTask,
+    dismissChannelTask,
     replySender: (reply) => replies.push(reply),
     intakeQuietMs: 1,
   });
@@ -214,6 +237,107 @@ test("iLink ordinary-user journey keeps image, voice, and file inputs in one tas
   assert.equal(confirmed.status, "dispatched");
   assert.deepEqual(harness.taskCalls[0].inputAssets.map((asset) => asset.id), ["asset_image", "asset_voice", "asset_file"]);
   assert.equal(harness.state.channelTaskThreads[0].messages.length, 1);
+});
+
+test("iLink high-risk task pauses before execution and resumes from the same channel confirmation", async () => {
+  const routeCalls = [];
+  const harness = makeJourneyHarness({
+    riskTask: true,
+    routeChannelTask: async (requestId) => {
+      routeCalls.push(requestId);
+      const request = harness.state.channelTaskRequests.find((candidate) => candidate.id === requestId);
+      request.status = "routed";
+      return { status: 200, body: { ok: true, workItemId: request.workItemId } };
+    },
+  });
+
+  harness.receive("请把报价单发给客户");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const created = await harness.receive("确认").dispatched;
+  const thread = harness.state.channelTaskThreads[0];
+
+  assert.equal(created.status, "dispatched");
+  assert.equal(thread.status, "waiting_approval");
+  assert.equal(thread.waitingFor, "channel_confirmation");
+  assert.match(created.reply, /确认执行/);
+  assert.match(created.reply, /对象：客户/);
+  assert.equal(thread.riskPreviewDigest, "preview-digest-1");
+  assert.equal(harness.state.channelTaskRequests[0].status, "pending");
+
+  harness.state.channelTaskRequests[0].previewDigest = "changed-after-preview";
+  const stale = await harness.receive("确认执行").dispatched;
+  assert.equal(stale.status, "refused");
+  assert.match(stale.reply, /预览已经变化/);
+  assert.equal(thread.status, "waiting_approval");
+  harness.state.channelTaskRequests[0].previewDigest = "preview-digest-1";
+  const resumed = await harness.receive("确认执行").dispatched;
+  assert.equal(resumed.status, "dispatched");
+  assert.equal(thread.status, "queued");
+  assert.equal(thread.waitingFor, null);
+  assert.equal(routeCalls.length, 1);
+  assert.match(resumed.reply, /任务已收录|即将开始/);
+
+  const duplicate = await harness.receive("确认执行").dispatched;
+  assert.equal(duplicate.status, "dispatched");
+  assert.match(duplicate.reply, /已经在执行队列|进度/);
+  assert.equal(routeCalls.length, 1);
+});
+
+test("iLink high-risk task cancellation clears the pending route", async () => {
+  const dismissCalls = [];
+  const harness = makeJourneyHarness({
+    riskTask: true,
+    dismissChannelTask: async (requestId) => {
+      dismissCalls.push(requestId);
+      const request = harness.state.channelTaskRequests.find((candidate) => candidate.id === requestId);
+      request.status = "dismissed";
+      return { status: 200, body: { ok: true } };
+    },
+  });
+
+  harness.receive("请把报价单发给客户");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await harness.receive("确认").dispatched;
+  assert.equal(harness.state.channelTaskThreads[0].waitingFor, "channel_confirmation");
+  const cancelled = await harness.receive("取消").dispatched;
+
+  assert.equal(cancelled.status, "dispatched");
+  assert.equal(dismissCalls.length, 1);
+  assert.equal(harness.state.channelTaskThreads[0].status, "cancelled");
+  assert.equal(harness.state.channelTaskRequests[0].status, "dismissed");
+  assert.match(cancelled.reply, /已取消/);
+});
+
+test("iLink high-risk preview is invalidated when the user changes the request", async () => {
+  const dismissCalls = [];
+  const harness = makeJourneyHarness({
+    riskTask: true,
+    dismissChannelTask: async (requestId) => {
+      dismissCalls.push(requestId);
+      const request = harness.state.channelTaskRequests.find((candidate) => candidate.id === requestId);
+      request.status = "dismissed";
+      return { status: 200, body: { ok: true } };
+    },
+  });
+
+  harness.receive("请把报价单发给客户");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await harness.receive("确认").dispatched;
+  const revised = await harness.receive("补充一下，收件人改为供应商").dispatched;
+  const thread = harness.state.channelTaskThreads[0];
+
+  assert.equal(revised.status, "dispatched");
+  assert.equal(thread.status, "awaiting_confirmation");
+  assert.equal(thread.taskRevision, 1);
+  assert.equal(harness.state.channelTaskRequests[0].status, "dismissed");
+  assert.equal(dismissCalls.length, 1);
+  assert.match(revised.reply, /预览已失效/);
+
+  await harness.receive("确认").dispatched;
+  assert.equal(harness.taskCalls.length, 2);
+  assert.equal(thread.status, "waiting_approval");
+  assert.equal(thread.riskPreviewDigest, "preview-digest-1");
+  assert.equal(harness.state.channelTaskRequests.filter((request) => request.status === "pending").length, 1);
 });
 
 test("iLink multi-task results stay correlated when tasks complete out of order", async () => {

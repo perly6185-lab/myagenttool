@@ -116,7 +116,10 @@ function terminateTree(child) {
 async function runRound(round, timeoutMs) {
   const startedAt = new Date();
   const started = performance.now();
-  const child = spawn(process.execPath, ["--test", ...testFiles], {
+  // The parser below consumes Node's TAP summary. Pin the reporter here so
+  // running this tool directly cannot inherit the default spec reporter and
+  // falsely report a healthy round as 0/0 tests.
+  const child = spawn(process.execPath, ["--test", "--test-reporter=tap", ...testFiles], {
     cwd: root,
     detached: process.platform !== "win32",
     env: process.env,

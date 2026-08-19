@@ -175,7 +175,7 @@ describe("work item summary presentation", () => {
     const template = await screen.findByTestId("work-item-template-binding");
     expect(template.textContent).toContain("How this task will produce its result");
     expect(template.textContent).toContain("Selected from the result");
-    expect(template.textContent).toContain("Customer quotation");
+    expect(template.textContent).toContain("Basis: a previously confirmed approach");
     expect(template.textContent).toContain("Quotation workbook");
     expect(template.textContent).toContain("The requested result matches a quotation workbook");
     expect(screen.queryByRole("combobox", { name: /template/i })).toBeNull();
@@ -184,6 +184,45 @@ describe("work item summary presentation", () => {
     fireEvent.click(within(template).getByText("View processing steps"));
     expect(template.textContent).toContain("Extract inquiry items");
     expect(template.textContent).toContain("Generate quotation");
+  });
+
+  it("shows the ordinary-user work mode and keeps professional trace collapsed", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        channelTaskContract: {
+          schemaVersion: 1,
+          source: "channel",
+          domain: "office",
+          riskLevel: "low",
+          goal: "整理订单",
+          workMode: {
+            schemaVersion: 1,
+            state: "matched",
+            source: "my_template",
+            name: "订单跟进",
+            version: 2,
+            confidence: "high",
+            goal: "整理订单",
+            expectedOutput: "订单跟进结果",
+            inputs: "订单资料",
+            data: { status: "ready", requirements: [], sources: [{ sourceId: "orders", fileName: "订单.xlsx", revision: 3, fingerprint: "hash" }], relations: [], relationStatus: "ready" },
+            mutation: { required: false, status: "not_required", targetCount: 0, digest: null },
+            confirmationRequired: false,
+            candidates: [],
+            trace: { templateDefinitionId: "def", templateFamilyId: "family", templateVersion: 2, templateMatchReason: "strong", dataPlanDigest: "plan", relationDigest: "relation", executionDigest: "execution" },
+            digest: "snapshot",
+            generatedAt: "2026-08-05T00:00:00.000Z",
+          },
+        },
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const mode = await screen.findByTestId("work-mode-summary");
+    expect(mode.textContent).toContain("How I’ll handle this");
+    expect(mode.textContent).toContain("订单跟进");
+    expect(mode.textContent).toContain("订单.xlsx");
+    expect(within(mode).getByText("View supporting details").closest("details")?.open).toBe(false);
   });
 
   it("lets an ordinary user correct an unstarted task by choosing the desired result", async () => {
@@ -282,7 +321,7 @@ describe("work item summary presentation", () => {
     const template = await screen.findByTestId("work-item-template-binding");
     expect(template.textContent).toContain("Learned from your correction");
     expect(template.textContent).toContain("similar to one you corrected before");
-    expect(template.textContent).toContain("My templates under Learned choices");
+    expect(template.textContent).toContain("remembered choice in settings");
   });
 
   it("turns a completed result into a reusable task or follow-up draft", async () => {

@@ -110,6 +110,216 @@ export type LocalWorkItem = {
   localContentRefs?: WorkItemContentReference[];
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
+  channelTaskContract?: {
+    schemaVersion: number;
+    source: string;
+    domain: string;
+    riskLevel: string;
+    goal: string;
+    workMode?: {
+      schemaVersion: number;
+      state: "matched" | "needs_confirmation" | "generic" | string;
+      source: "my_template" | "suggested" | "generic" | string;
+      name: string;
+      version: number | null;
+      confidence: string;
+      goal: string;
+      expectedOutput: string | null;
+      inputs: string | null;
+      data: {
+        status: string;
+        requirements: Array<{
+          id: string | null;
+          label: string;
+          kind: string | null;
+          required: boolean;
+          multiple: boolean;
+          state: string;
+          sourceId: string | null;
+          fields: string[];
+        }>;
+        sources: Array<{ sourceId: string | null; fileName: string | null; revision: number | null; fingerprint: string | null }>;
+        relations: Array<{ id: string | null; fromRequirementId: string | null; fromField: string | null; toRequirementId: string | null; toField: string | null; state: string }>;
+        relationStatus: string;
+      };
+      mutation: { required: boolean; status: string; targetCount: number | null; digest: string | null };
+      confirmationRequired: boolean;
+      candidates: Array<{ name: string | null; expectedOutput: string | null; definitionId: string | null; version: number | null }>;
+      trace: { templateDefinitionId: string | null; templateFamilyId: string | null; templateVersion: number | null; templateMatchReason: string | null; dataPlanDigest: string | null; relationDigest: string | null; executionDigest: string | null };
+      digest: string;
+      generatedAt: string | null;
+    } | null;
+    dataPlan?: {
+      status: "not_required" | "needs_sources" | "ambiguous" | "ready" | "stale" | string;
+      digest: string | null;
+      requirements: Array<{
+        id: string;
+        label: string;
+        kind: string;
+        fields: string[];
+        required: boolean;
+        state: "missing" | "ready" | "ambiguous" | string;
+        sourceId: string | null;
+      }>;
+      relations: Array<{
+        id: string;
+        fromRequirementId: string;
+        fromField: string;
+        toRequirementId: string;
+        toField: string;
+        state: string;
+      }>;
+      sources: Array<{
+        sourceId: string;
+        fileName: string | null;
+        revision: number | null;
+        rowCount: number | null;
+        fingerprint: string | null;
+      }>;
+    } | null;
+    dataRelationPreview?: {
+      status: "not_required" | "waiting_for_data_plan" | "ready" | "needs_review" | "stale" | string;
+      relations: Array<{
+        id: string;
+        state: string;
+        fromRequirementId: string;
+        fromField: string;
+        toRequirementId: string;
+        toField: string;
+        matchedRows: number;
+        unmatchedRows: number;
+      }>;
+      digest: string | null;
+    } | null;
+    dataMutationPreview?: {
+      status: "needs_sources" | "needs_review" | "ready" | "stale" | "not_required" | string;
+      operation: "update" | "insert" | "delete" | string;
+      targetSourceIds: string[];
+      targetSources: Array<{
+        sourceId: string;
+        fileName: string | null;
+        revision: number | null;
+        contentHash: string | null;
+        rowCount: number | null;
+      }>;
+      targetStatus: "explicit" | "single_candidate" | "ambiguous" | string;
+      dataMutationScope?: {
+        schemaVersion: number;
+        operation: "update" | "insert" | "delete" | string;
+        targets: Array<{
+          sourceId: string;
+          revision: number | null;
+          contentHash: string | null;
+          selector: {
+            field: string | null;
+            operator: string;
+            criteriaDigest: string | null;
+            matchCount: number;
+            allMatching: boolean;
+          };
+          expectedRows: number;
+        }>;
+        changes: Array<{
+          field: string;
+          operation: string;
+          valueDigest: string | null;
+          valueProvided: boolean;
+        }>;
+        expectedAffectedRows: number;
+        allowAllMatching: boolean;
+      } | null;
+      rowSelector?: Array<{
+        sourceId: string;
+        revision: number | null;
+        field: string | null;
+        operator: string;
+        criteriaDigest: string | null;
+        matchCount: number;
+        allMatching: boolean;
+      }> | null;
+      fieldChanges: Array<{
+        field: string;
+        operation: string;
+        valueDigest: string | null;
+        valueProvided: boolean;
+      }>;
+      requiredFields: string[];
+      estimatedAffectedRows: number | null;
+      maxAffectedRows: number | null;
+      writeMode: string;
+      digest: string | null;
+    } | null;
+    dataMutationBinding?: {
+      id: string | null;
+      projectId: string | null;
+      fileSourceId: string | null;
+      ledgerDefinitionId: string | null;
+      fileName: string | null;
+      format: string | null;
+      fileSourceRevision: number | null;
+      ledgerDefinitionRevision: number | null;
+      stale: boolean;
+    } | null;
+    dataMutationBindings?: Array<{
+      id: string | null;
+      projectId: string | null;
+      fileSourceId: string | null;
+      ledgerDefinitionId: string | null;
+      fileName: string | null;
+      format: string | null;
+      fileSourceRevision: number | null;
+      ledgerDefinitionRevision: number | null;
+      stale: boolean;
+    }>;
+    ledgerMutationPreview?: {
+      kind?: "batch";
+      id: string | null;
+      ledgerDefinitionId: string | null;
+      targetCount?: number;
+      operationCount?: number;
+      journal?: {
+        id: string | null;
+        status: string | null;
+        appliedCount: number;
+        snapshotCount: number;
+        rollback: { restoredTargets: number; blockedTargets: number } | null;
+      } | null;
+      children?: Array<{
+        id: string | null;
+        ledgerDefinitionId: string | null;
+        businessKey?: string | null;
+        action: "insert" | "update" | "no_op" | string;
+        rowNumber: number | null;
+        changedCells: Array<{ field: string | null; column: string | null; before: string | null; after: string | null }>;
+        state: string;
+        revision: number | null;
+        queue: { state: string | null; position: number | null } | null;
+      }>;
+      action: "insert" | "update" | "no_op" | string;
+      rowNumber: number | null;
+      changedCells: Array<{ field: string | null; column: string | null; before: string | null; after: string | null }>;
+      targetRevision: string | null;
+      targetContentHash?: string | null;
+      proposedTargetRevision: string | null;
+      sourceEvidence: Array<{ artifactId: string | null; field: string | null }>;
+      approvalRequired: boolean;
+      state: "pending" | "waiting" | "committed" | "invalidated" | string;
+      queue: { state: string | null; position: number | null } | null;
+      expiresAt: string | null;
+      revision: number | null;
+    } | null;
+    dataRelationConfirmation?: {
+      schemaVersion: number;
+      id: string | null;
+      status: "verified" | "pending" | "stale" | string;
+      confirmationMode: "runtime_verified" | "user_confirmation" | string;
+      planDigest: string | null;
+      relationDigest: string | null;
+      objectSnapshotCount: number;
+      confirmedAt: string | null;
+      confirmedBy: string | null;
+    } | null;
+  };
   requiredCapabilities?: string[];
   assetReadiness?: { state: "ready" | "waiting_capability" | "refused"; reason: string; terminalId: string };
   queueReadiness?: {
