@@ -15,7 +15,8 @@
   "outputs": {
     "markdown": "article.md",
     "html": "article.html",
-    "manifest": "manifest.json"
+    "manifest": "manifest.json",
+    "analysis": "analysis.md"
   },
   "media": [],
   "warnings": []
