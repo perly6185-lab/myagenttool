@@ -25,6 +25,13 @@ function compareVictims(left, right) {
   return String(right.workItemId).localeCompare(String(left.workItemId));
 }
 
+/*
+ * #1614: like planRevision, digest only what changes the insertion/displacement
+ * CONTENT. availableSlots/inFlight and per-item readiness only affect the
+ * activation label (immediate vs next_eligible), which apply recomputes
+ * server-side at POST time anyway — hashing them made every dispatch
+ * start/finish a spurious 409 urgent_plan_stale.
+ */
 function revisionFor(capacity, schedulePreview, urgentItems) {
   return createHash("sha256").update(JSON.stringify({
     terminalId: capacity?.terminal?.id ?? null,

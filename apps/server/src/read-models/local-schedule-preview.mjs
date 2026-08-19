@@ -57,6 +57,15 @@ function compareCandidates(left, right, horizon) {
   return String(left.workItemId).localeCompare(String(right.workItemId));
 }
 
+/*
+ * #1614: hash only the fields that change what the plan CONTAINS. Volatile
+ * dispatch state — inFlight, terminal online/offline, per-item readiness and
+ * runtimeState — used to be part of the digest, so any invocation starting or
+ * finishing between preview and apply produced a spurious 409
+ * schedule_plan_stale even though nothing schedule-relevant moved. Real
+ * conflicts stay caught twice over: every schedule-relevant item field is
+ * still hashed here, and apply re-checks each item's expectedRevision.
+ */
 function planRevision(capacity, horizon, assumptions) {
   const input = {
     terminalId: capacity.terminal?.id ?? null,
