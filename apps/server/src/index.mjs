@@ -18,6 +18,7 @@ import { createServerRuntimeServices } from "./runtime/service-composer.mjs";
 import { createServerState } from "./runtime/state-factory.mjs";
 import { acquireStateLock } from "./runtime/state-lock.mjs";
 import { applyRetentionPolicies } from "./services/retention.mjs";
+import { createMailQueryIndex, mailQueryIndexPath, openMailQueryIndexDatabase } from "./services/mail-query-index.mjs";
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
@@ -70,6 +71,27 @@ if (persistenceEnabled && (process.env.MYAGENTTOOL_STORE ?? "sqlite").toLowerCas
   }
 }
 
+// M7: a separate, derived mailbox read index. It is never the source of truth;
+// failure only disables the large-mailbox fast path and leaves the mailbox on
+// its existing in-memory projection.
+let mailQueryIndex = null;
+if (persistenceEnabled && process.env.MYAGENTTOOL_MAIL_QUERY_INDEX !== "0") {
+  const queryPath = mailQueryIndexPath(stateStorePath);
+  try {
+    const database = await openMailQueryIndexDatabase({ path: queryPath });
+    mailQueryIndex = createMailQueryIndex({
+      database,
+      now: () => new Date().toISOString(),
+      onDiagnostic: ({ kind, reason, errorCode }) => console.warn(
+        `[mail-query] ${kind}: ${reason}${errorCode ? ` (${errorCode})` : ""}; rebuilding from local facts.`,
+      ),
+    });
+    console.log(`[mail-query] derived index at ${queryPath}`);
+  } catch (error) {
+    console.warn(`[mail-query] index unavailable (${error?.message ?? error}); using the in-memory mailbox projection.`);
+  }
+}
+
 const { defaultProject, state } = createServerState({ defaultProjectPath, now });
 const {
   httpDependencies,
@@ -91,6 +113,7 @@ const {
   dispatchLeaseMs,
   now,
   sqliteStore,
+  mailQueryIndex,
 });
 
 if (isSelfCheck) {

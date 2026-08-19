@@ -80,4 +80,16 @@ describe("TaskContentReferences", () => {
     fireEvent.click(screen.getByRole("button", { name: "Locate original or containing folder: Customer brief.eml" }));
     await waitFor(() => expect(mocks.revealContainer).toHaveBeenCalledWith(task.localContentRefs![0].contentId));
   });
+
+  it("makes a failed health check visible and lets the user retry it", async () => {
+    mocks.health.mockRejectedValueOnce(new Error("offline"));
+    renderReferences({ onUpdated: vi.fn() });
+
+    expect(await screen.findByText("Status unknown")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Check reference status again" }));
+
+    await waitFor(() => expect(mocks.health).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Original available")).toBeTruthy();
+    expect(screen.queryByText("Status unknown")).toBeNull();
+  });
 });

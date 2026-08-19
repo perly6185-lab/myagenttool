@@ -36,7 +36,7 @@ import { type SectionKey, type WorkItemSection } from "@/store/ui-store";
 import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item-progress-dialog";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
-import { readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
+import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
 import { myTemplateExpectedOutput } from "@/features/workflow-memory/my-template-model";
 import type { BusinessRoutineDefinition } from "@/lib/api-client";
 import type { LocalWorkItem, LocalWorkItemObservability, WorkItemComment, WorkItemOutcomeFile } from "./task-view-types";
@@ -694,8 +694,8 @@ export function WorkItemSummaryView({
       }) as { workItem: LocalWorkItem };
       setItem(prepared.workItem);
       setSyncNotice(language === "zh"
-        ? "重新执行所需的完成标准和 SOP 已建立。请先核对内容，再选择“让 AI 继续修改”启动新一轮执行；旧结果仍不能据此审核通过。"
-        : "The criteria and SOP for a new run are ready. Review them, then choose Ask AI to revise to start a new run. The old result still cannot be approved against this later contract.");
+        ? "重新执行所需的完成标准和检查步骤已建立。请先核对内容，再选择“让 AI 继续修改”启动新一轮执行；旧结果仍不能据此确认通过。"
+        : "The criteria and verification steps for a new run are ready. Review them, then choose Ask AI to revise to start a new run. The old result still cannot be approved against these later requirements.");
     } catch {
       setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
     } finally {
@@ -769,8 +769,8 @@ export function WorkItemSummaryView({
       }) as { workItem: LocalWorkItem };
       setItem(prepared.workItem);
       setSyncNotice(language === "zh"
-        ? "执行方案已生成。请核对任务目标、完成标准和验证 SOP；确认无误后，再次选择“让 AI 开始”。"
-        : "The execution plan is ready. Review the goal, completion criteria, and verification SOP, then choose Let AI start again to confirm.");
+        ? "执行方案已生成。请核对任务目标、完成标准和检查步骤；确认无误后，再次选择“让 AI 开始”。"
+        : "The execution plan is ready. Review the goal, completion criteria, and verification steps, then choose Let AI start again to confirm.");
     } catch {
       setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
     } finally {
@@ -1110,7 +1110,7 @@ export function WorkItemSummaryView({
     if (actionPending) return;
     if (!executionContractReady) {
       setActionError(language === "zh"
-        ? "这次执行开始前没有确认完整的验收标准和 SOP，不能形成正式审核结论。请补全执行方案后重新运行。"
+        ? "这次执行开始前没有确认完整的完成标准和检查步骤，不能形成正式审核结论。请补全后重新运行。"
         : "This run did not start with confirmed acceptance criteria and a verification SOP, so it cannot produce a formal approval result. Complete the execution plan and rerun it.");
       return;
     }
@@ -1230,7 +1230,7 @@ export function WorkItemSummaryView({
         setItem(prepared.workItem);
         setRetryOpen(false);
         setSyncNotice(language === "zh"
-          ? "执行方案已生成但尚未重试。请先核对完成标准和 SOP，再次点击重试。"
+          ? "执行方案已生成但尚未重试。请先核对完成标准和检查步骤，再次点击重试。"
           : "The execution plan is ready, but the retry has not started. Review the criteria and SOP, then retry again.");
         return;
       }
@@ -1250,7 +1250,7 @@ export function WorkItemSummaryView({
     <div className="space-y-4" data-testid="work-item-summary-view">
       <header className="pr-8">
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span className="font-mono">{item.localRef}</span>
+          <span>{language === "zh" ? "任务编号" : "Task ID"}: <span className="font-mono">{item.localRef}</span></span>
           <Badge tone={status === "completed" ? "success" : ["needs_action", "blocked"].includes(status) ? "warning" : status === "ai_working" ? "running" : "neutral"}>
             {copy.status[status]}
           </Badge>
@@ -1334,7 +1334,7 @@ export function WorkItemSummaryView({
                   <p className="text-xs text-muted-foreground">{language === "zh" ? "计划验证方式" : "Planned verification"}</p>
                   <p className="mt-1 font-medium [overflow-wrap:anywhere]">{understandingContext.verificationCommand.length
                     ? understandingContext.verificationCommand.join(" ")
-                    : language === "zh" ? "将按任务的验收 SOP 验证" : "The task acceptance SOP will be used"}</p>
+                    : language === "zh" ? "将按任务的检查步骤验证" : "The task verification steps will be used"}</p>
                 </div>
               </div>
               {understandingContext.truncated || (understandingContext.redactions ?? 0) > 0 ? (
@@ -1416,14 +1416,15 @@ export function WorkItemSummaryView({
             <div className="min-w-0">
               <h4 className={`text-sm font-semibold ${readinessBlocked ? "text-destructive" : ""}`}>{readinessBlocked ? copy.readinessBlocked : copy.readinessWarning}</h4>
               <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-                {readiness.checks.filter((check) => check.status === (readinessBlocked ? "blocked" : "warn")).map((check) => (
-                  <li key={check.key}><span className="font-medium text-foreground">{check.label}:</span> {check.detail}</li>
-                ))}
+                {readiness.checks.filter((check) => check.status === (readinessBlocked ? "blocked" : "warn")).map((check) => {
+                  const readable = readableAutoRunReadinessCheck(check, language);
+                  return <li key={check.key}><span className="font-medium text-foreground">{readable.label}:</span> {readable.detail}</li>;
+                })}
               </ul>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button size="sm" variant="ghost" onClick={() => { setReadiness(null); setRefreshVersion((version) => version + 1); }}>{copy.readinessRetry}</Button>
-              <Button size="sm" variant="secondary" onClick={() => { if (onOpenSetup) onOpenSetup(readinessSetupSection(readiness)); else onOpenExpert("process"); }}>{copy.readinessFix}</Button>
+              <Button size="sm" variant="secondary" onClick={() => { if (onOpenSetup) onOpenSetup(readinessSetupSection(readiness)); else onOpenExpert("process"); }}>{readinessFixLabel(readiness, language)}</Button>
             </div>
           </div>
         </section>
@@ -1922,14 +1923,14 @@ export function WorkItemSummaryView({
           <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.reviewDecisionHint}</p>
           {!executionContractReady ? (
             <div className="mt-3 rounded-lg border border-warning/40 bg-warning/[0.08] px-3 py-2.5 text-sm" role="alert">
-              <p className="font-semibold">{language === "zh" ? "本次结果缺少执行前验收依据，暂不能审核通过" : "This result has no pre-execution acceptance basis and cannot be approved"}</p>
+              <p className="font-semibold">{language === "zh" ? "本次结果缺少事先确认的完成要求，暂不能确认通过" : "This result has no pre-confirmed completion requirements and cannot be approved"}</p>
               <p className="mt-1 leading-relaxed text-muted-foreground">
                 {executionContractDefined
                   ? language === "zh"
-                    ? "完成标准和 SOP 是在这次结果产生后才建立的，因此只能用于下一轮执行。请让 AI 重新执行；新结果才可按这份方案验收。"
+                    ? "完成标准和检查步骤是在这次结果产生后才建立的，因此只能用于下一轮执行。请让 AI 重新执行；新结果才可按这份要求确认。"
                     : "The criteria and SOP were established after this result, so they apply only to the next run. Rerun the task; only the new result can be reviewed against this plan."
                   : language === "zh"
-                    ? "验收标准和 SOP 必须在 AI 开始前确定。本次历史运行没有完整执行契约，请先建立方案并重新执行；系统不会在审核阶段倒推标准。"
+                    ? "完成标准和检查步骤必须在 AI 开始前确定。本次历史运行缺少完整要求，请先补全并重新执行；系统不会在确认结果时倒推标准。"
                     : "Acceptance criteria and the SOP must be confirmed before AI starts. This historical run has no complete execution contract; establish the plan and rerun. The system will not infer criteria during review."}
               </p>
               {!executionContractDefined ? <Button className="mt-2" size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void prepareReviewExecutionPlan()}>{language === "zh" ? "建立重新执行方案" : "Prepare rerun plan"}</Button> : null}
@@ -2001,16 +2002,16 @@ export function WorkItemSummaryView({
           <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{item.body?.trim() || copy.noGoal}</p>
         </section>
         <section className={`rounded-xl border p-4 ${executionContractReady ? "border-border" : "border-warning/35 bg-warning/[0.035]"}`}>
-          <div className="flex flex-wrap items-center gap-2"><CheckCircle2 className="size-4 text-primary" aria-hidden /><h4 className="text-sm font-semibold">{language === "zh" ? "执行与验收依据" : "Execution and acceptance basis"}</h4><Badge tone={executionContractReady ? "success" : "warning"}>{executionContractReady ? language === "zh" ? "执行前已确认" : "Confirmed before execution" : language === "zh" ? "尚未建立" : "Not established"}</Badge></div>
-          {item.acceptanceCriteriaSource === "body_unstructured" ? <p className="mt-2 text-xs leading-relaxed text-warning">{language === "zh" ? "系统在原任务正文中找到了验收标准，但本次运行开始前没有把它与 SOP 一起确认为执行契约。" : "Acceptance criteria were found in the original task body, but they were not confirmed together with an SOP before this run."}</p> : null}
+          <div className="flex flex-wrap items-center gap-2"><CheckCircle2 className="size-4 text-primary" aria-hidden /><h4 className="text-sm font-semibold">{language === "zh" ? "完成要求" : "Completion requirements"}</h4><Badge tone={executionContractReady ? "success" : "warning"}>{executionContractReady ? language === "zh" ? "AI 启动前已确认" : "Confirmed before AI starts" : language === "zh" ? "交给 AI 前待补充" : "Add before handing to AI"}</Badge></div>
+          {item.acceptanceCriteriaSource === "body_unstructured" ? <p className="mt-2 text-xs leading-relaxed text-warning">{language === "zh" ? "系统在原任务正文中找到了完成标准，但本次运行开始前没有与检查步骤一起确认。" : "Completion criteria were found in the original task body, but they were not confirmed together with verification steps before this run."}</p> : null}
           <p className="mt-3 text-xs font-medium text-muted-foreground">{copy.acceptance}</p>
           {reviewAcceptanceCriteria.length ? (
             <ul className="mt-2 space-y-1.5 text-sm">{reviewAcceptanceCriteria.map((criterion) => <li key={criterion} className="flex gap-2"><span aria-hidden>✓</span><span>{criterion}</span></li>)}</ul>
           ) : <p className="mt-2 text-sm text-muted-foreground">{copy.noAcceptance}</p>}
-          <p className="mt-4 text-xs font-medium text-muted-foreground">{language === "zh" ? "验收 SOP" : "Verification SOP"}</p>
+          <p className="mt-4 text-xs font-medium text-muted-foreground">{language === "zh" ? "检查步骤" : "Verification steps"}</p>
           {reviewVerificationSop.length ? (
             <ol className="mt-2 space-y-1.5 text-sm">{reviewVerificationSop.map((step, index) => <li key={`${index}-${step}`} className="flex gap-2"><span className="text-primary">{index + 1}.</span><span>{step}</span></li>)}</ol>
-          ) : <p className="mt-2 text-sm text-muted-foreground">{language === "zh" ? "尚未设置验收 SOP。AI 自动执行前必须先补全。" : "No verification SOP is set. Complete it before AI execution."}</p>}
+          ) : <p className="mt-2 text-sm text-muted-foreground">{language === "zh" ? "还没有检查步骤。仅保存任务时可以不填，交给 AI 前再补充。" : "No verification steps yet. They are optional when saving and required before handing the task to AI."}</p>}
         </section>
       </div>
 

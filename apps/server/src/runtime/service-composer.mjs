@@ -31,7 +31,11 @@ import { createCapabilityService } from "../services/capabilities.mjs";
 import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
 import { createMailSendService, isMailSendEnabled } from "../services/mail-send.mjs";
-import { createMailboxService } from "../services/mailbox.mjs";
+import { createMailClassificationService } from "../services/mail-classification.mjs";
+import { createMailFolderSuggestionService } from "../services/mail-folder-suggestions.mjs";
+import { createMailFolderOrganizationService, isMailAutomaticOrganizationEnabled, isMailOrganizationEnabled } from "../services/mail-folder-organization.mjs";
+import { createLocalMailSemanticAdapter, resolveMailSemanticConfig } from "../services/mail-semantic-classifier.mjs";
+import { createMailboxService, isMailClassificationEnabled } from "../services/mailbox.mjs";
 import { createLocalContentCatalogService } from "../services/local-content-catalog.mjs";
 import {
   createLocalContentRetrievalAuthorizer,
@@ -178,6 +182,7 @@ export function createServerRuntimeServices({
   // in-memory `state` stays the live view, its commit MIRRORS to SQLite, and boot
   // hydrates `state` from SQLite. null (default) = today's JSON-snapshot backing.
   sqliteStore = null,
+  mailQueryIndex = null,
   // Optional provider seams used by integration tests; production leaves these
   // unset and uses the real encrypted credential store and iLink client.
   ilinkCredentialStore = null,
@@ -477,7 +482,7 @@ export function createServerRuntimeServices({
   const localContentRetrievalService = createLocalContentRetrievalService({
     browseDirectories: localContentCatalogService.browseDirectories,
     searchLocalContent: localContentCatalogService.search,
-    previewLocalContent: localContentCatalogService.preview,
+    readLocalContentText: localContentCatalogService.readTextChunk,
     authorizeRetrieval: createLocalContentRetrievalAuthorizer({ state, teamOf }),
     appendEvent,
   });
@@ -1219,6 +1224,7 @@ export function createServerRuntimeServices({
   // #1147: same late-binding for the mail send fold — the send service needs
   // createInvocation (composed below), completion needs the fold here.
   let mailSendHooks = null;
+  let mailFolderOrganizationHooks = null;
   // S5 (#1090): channel-originated invocations report their outcome back to the
   // originating conversation. Late-bound like the auto-run hook — the delivery
   // service composes after the invocation service.
@@ -1260,9 +1266,24 @@ export function createServerRuntimeServices({
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
     recordClaudeApplyResult,
-    recordMailSendResult: (args) => mailSendHooks?.recordMailSendResult(args) ?? null,
+    recordMailSendResult: (args) => {
+      mailSendHooks?.recordMailSendResult(args);
+      return mailFolderOrganizationHooks?.recordResult(args) ?? null;
+    },
     recordCodexExecChanges,
-    recordApplicationResult,
+    recordApplicationResult: (args) => {
+      const records = recordApplicationResult(args);
+      for (const record of records) {
+        if (record.source === "mail_headers" && record.data?.kind === "mailbox_sync") {
+          queueMicrotask(() => mailFolderOrganizationHooks?.onMailImported?.({
+            ownerTeamId: record.ownerTeamId,
+            accountId: record.applicationId,
+            triggerId: record.invocationId ?? record.id,
+          }));
+        }
+      }
+      return records;
+    },
     currentProject,
     worktreeForProject,
     createWorktree,
@@ -1337,6 +1358,7 @@ export function createServerRuntimeServices({
       reconcileClaudeApplyTermination(invocation);
       // #1147: same for a denied send — the draft must read send_unconfirmed.
       mailSendHooks?.reconcileMailSendTermination(invocation);
+      mailFolderOrganizationHooks?.reconcileTermination(invocation);
       denialAutoRunHook?.(invocation);
     },
   });
@@ -2221,13 +2243,43 @@ export function createServerRuntimeServices({
 
   // Ordinary-user mailbox surface. This is a read model over imported mail and
   // a bounded store for user-authored drafts; credentials remain device-local.
+  const mailClassificationService = createMailClassificationService({
+    state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
+    semanticAdapter: createLocalMailSemanticAdapter({ config: resolveMailSemanticConfig() }),
+  });
+  const mailFolderSuggestionService = createMailFolderSuggestionService({
+    state, now, nextId, persistStateSoon: persistMailboxStateSoon, store,
+    classificationService: mailClassificationService,
+  });
+  const mailFolderOrganizationService = createMailFolderOrganizationService({
+    state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
+    folderSuggestionService: mailFolderSuggestionService,
+    automaticEnabled: isMailAutomaticOrganizationEnabled,
+    qualitySummary: (messages, actor) => mailClassificationService.qualitySummary(messages, actor),
+    validateApprovalToken,
+    createInvocation: (task, agent, options) => createInvocation(task, agent, options),
+    startInvocationIfAllowed: (invocation, agent) => startInvocationIfAllowed(invocation, agent),
+    findAgent,
+    findApplication,
+  });
   const mailboxService = createMailboxService({
     state, now, nextId, appendEvent, persistStateSoon: persistMailboxStateSoon, store,
     mailSendEnabled: isMailSendEnabled,
+    mailOrganizeEnabled: isMailOrganizationEnabled,
+    mailAutoOrganizeEnabled: isMailAutomaticOrganizationEnabled,
+    mailClassificationEnabled: isMailClassificationEnabled,
     createCapabilityInvocation,
     createWorkItem: workItemService.createWorkItem,
     inspectTaskMaterialDraft: taskMaterialService.getDraft,
+    classificationService: mailClassificationService,
+    folderSuggestionService: mailFolderSuggestionService,
+    folderOrganizationService: mailFolderOrganizationService,
+    mailQueryIndex,
   });
+  mailFolderOrganizationHooks = {
+    ...mailFolderOrganizationService,
+    onMailImported: ({ ownerTeamId, accountId, triggerId }) => mailboxService.runFolderAutomations({ teamId: ownerTeamId, accountId, triggerId }),
+  };
 
   // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
   // + fail-closed identity mappings. Readiness is env-presence booleans; enable
@@ -5908,6 +5960,27 @@ export function createServerRuntimeServices({
     updateMailboxDraft: mailboxService.updateDraft,
     deleteMailboxDraft: mailboxService.deleteDraft,
     createMailboxTask: mailboxService.createTaskFromMessage,
+    startMailClassification: mailboxService.startClassification,
+    previewMailSemanticClassification: mailboxService.previewSemanticClassification,
+    getMailClassificationJob: mailboxService.getClassificationJob,
+    cancelMailClassificationJob: mailboxService.cancelClassificationJob,
+    correctMailClassification: mailboxService.correctClassification,
+    listMailClassificationRules: mailboxService.listClassificationRules,
+    getMailClassificationQuality: mailboxService.getClassificationQuality,
+    createMailClassificationRule: mailboxService.createClassificationRule,
+    updateMailClassificationRule: mailboxService.updateClassificationRule,
+    listMailFolderSuggestions: mailboxService.listFolderSuggestions,
+    createMailFolderMovePreview: mailboxService.createFolderMovePreview,
+    startMailFolderMove: mailboxService.startFolderMove,
+    getMailFolderMoveJob: mailboxService.getFolderMoveJob,
+    listMailFolderMoveJobs: mailboxService.listFolderMoveJobs,
+    reconcileMailFolderMoveJob: mailboxService.reconcileFolderMoveJob,
+    createMailFolderRecoveryPreview: mailboxService.createFolderRecoveryPreview,
+    createMailFolderAutomationPreview: mailboxService.createFolderAutomationPreview,
+    enableMailFolderAutomation: mailboxService.enableFolderAutomation,
+    updateMailFolderAutomation: mailboxService.updateFolderAutomation,
+    listMailFolderAutomations: mailboxService.listFolderAutomations,
+    dryRunMailFolderAutomation: mailboxService.dryRunFolderAutomation,
     rebuildLocalContentCatalog: localContentCatalogService.rebuild,
     searchLocalContent: localContentCatalogService.search,
     browseLocalContentDirectories: localContentCatalogService.browseDirectories,
@@ -6420,7 +6493,13 @@ export function createServerRuntimeServices({
   return {
     httpDependencies,
     startLocalContentIndexing: localContentCatalogService.start,
-    closeRuntimeServices: localContentCatalogService.close,
+    closeRuntimeServices: async () => {
+      try {
+        await localContentCatalogService.close();
+      } finally {
+        mailQueryIndex?.close();
+      }
+    },
     savePersistentState,
     // #1084: the retention sweep (index.mjs) leaves an audit event per reap batch.
     appendEvent,

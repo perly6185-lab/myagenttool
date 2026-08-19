@@ -399,8 +399,8 @@ test("keeps the Local Issue selected while fixing preflight and rechecks after r
   };
   await page.goto("/?section=task&task=lwi_1");
   const detail = page.getByRole("dialog", { name: "Local issue details" });
-  await expect(detail.getByRole("alert", { name: "Preflight" })).toContainText("No default agent is configured");
-  await detail.getByRole("button", { name: "Open setup and fix" }).click();
+  await expect(detail.getByRole("alert", { name: "Preflight" })).toContainText("does not have an available task assistant");
+  await detail.getByRole("button", { name: "Choose task assistant" }).click();
 
   await expect(page).toHaveURL(/section=autoRuns.*task=lwi_1/);
   await expect(page.getByRole("heading", { name: "Auto-runs" })).toBeVisible();

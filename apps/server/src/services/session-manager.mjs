@@ -1,6 +1,6 @@
 // Local session manager: keeps logged-in site profiles alive and observable.
 //
-// Sites that need a login (zhihu, qichacha today) are rendered by their plugin CLI
+// Sites that need a login (zhihu, qichacha, xiaohongshu, jianshu today) are rendered by their plugin CLI
 // (tools/<site>-imports) reusing a persistent browser profile. This service is
 // the single owner of "is that profile still logged in?": it probes on demand,
 // reseeds via an interactive --login, and (opt-in) sweeps on a slow interval —
@@ -81,6 +81,30 @@ const SESSION_SITES = Object.freeze([
     heartbeatTier: "manual",
     heartbeatIntervalMinutes: null,
     profileDir: resolveProfileDir("qichacha"),
+  },
+  {
+    // Manual tier for xiaohongshu (live matrix 2026-08-17, issue #1703): note
+    // data is login-gated AND the site runs aggressive behavioral risk control
+    // — an automated heartbeat is exactly the traffic pattern to avoid, so the
+    // profile is probed only on demand.
+    site: "xiaohongshu",
+    displayName: "小红书 (Xiaohongshu)",
+    authMethod: "persistent_profile",
+    heartbeatTier: "manual",
+    heartbeatIntervalMinutes: null,
+    profileDir: resolveProfileDir("xiaohongshu"),
+  },
+  {
+    // Manual tier for jianshu (issue #1705): public articles render fine
+    // anonymously, but the station runs profiled (purchased paid articles may
+    // need the session; anti-bot future-proofing) and the sweep stays off per
+    // the risk discipline — the profile is probed only on demand.
+    site: "jianshu",
+    displayName: "简书 (Jianshu)",
+    authMethod: "persistent_profile",
+    heartbeatTier: "manual",
+    heartbeatIntervalMinutes: null,
+    profileDir: resolveProfileDir("jianshu"),
   },
 ]);
 

@@ -277,47 +277,22 @@ test("rejects an incomplete WeChat shell without the real article body", async (
 });
 
 test("recovers Xiaohongshu note metadata and direct media from hydration data", async () => {
+  // Xiaohongshu note data is login-gated (issue #1703) — inspectArticle
+  // short-circuits to a synthetic preview and the hydration path is exercised
+  // end-to-end (through the renderer shim) in xiaohongshu-imports.test.mjs.
+  // Here only the short-circuit contract is pinned: no network, no wall.
   const result = await inspectArticle({
     url: "https://www.xiaohongshu.com/explore/note-1",
     resolveHostname: PUBLIC_DNS,
-    fetchImpl: async () => htmlResponse(`<!doctype html><html><body>
-      <div class="note-content"><p>页面正文</p><img data-src="https://sns-img.example/note.jpg"></div>
-      <script>window.__INITIAL_STATE__ = ${JSON.stringify({
-        note: {
-          title: "结构化笔记",
-          desc: "结构化说明",
-          user: { nickname: "红薯作者" },
-          publishTime: Date.parse("2026-07-20T10:00:00+08:00"),
-          imageList: [{ urlDefault: "https://sns-img.example/note.jpg" }],
-          video: { videoUrl: "https://sns-video.example/note.mp4" },
-        },
-        recommendations: [{
-          title: "不应导入的推荐笔记",
-          desc: "推荐内容",
-          imageList: [{ urlDefault: "https://sns-img.example/unrelated.jpg" }],
-        }],
-      })};</script>
-    </body></html>`),
+    fetchImpl: async () => {
+      throw new Error("the xiaohongshu preview must never fetch (anonymous fetch eats the /404 wall)");
+    },
   });
   assert.equal(result.provider, "xiaohongshu");
   assert.equal(result.contentType, "note");
-  assert.equal(result.title, "结构化笔记");
-  assert.equal(result.author, "红薯作者");
-  assert.equal(result.publishedAt, "2026-07-20");
-  assert.deepEqual(result.mediaCounts, { images: 1, audio: 0, video: 1 });
-});
-
-test("uses Xiaohongshu hydration description when the page has no visible article body", async () => {
-  const result = await inspectArticle({
-    url: "https://www.xiaohongshu.com/explore/note-hydrated",
-    resolveHostname: PUBLIC_DNS,
-    fetchImpl: async () => htmlResponse(`<html><body><script>window.__INITIAL_STATE__ = ${JSON.stringify({
-      note: { title: "仅结构化笔记", desc: "这是结构化正文", user: { nickname: "作者" } },
-    })};</script></body></html>`),
-  });
-  assert.equal(result.title, "仅结构化笔记");
-  assert.equal(result.textLength, "这是结构化正文".length);
-  assert.match(result.markdownPreview, /这是结构化正文/);
+  assert.equal(result.title, "Xiaohongshu note");
+  assert.equal(result.textLength, 0);
+  assert.deepEqual(result.mediaCounts, { images: 0, audio: 0, video: 0 });
 });
 
 test("uses provider-specific article roots and metadata for Juejin", async () => {

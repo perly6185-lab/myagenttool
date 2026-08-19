@@ -386,6 +386,12 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
 
+  tools/jianshu-imports:
+    dependencies:
+      '@myagenttool/session-engine':
+        specifier: workspace:*
+        version: link:../session-engine
+
   tools/mail-mcp:
     dependencies:
       imapflow:
@@ -411,6 +417,12 @@ importers:
         version: 5.9.3
 
   tools/session-engine: {}
+
+  tools/xiaohongshu-imports:
+    dependencies:
+      '@myagenttool/session-engine':
+        specifier: workspace:*
+        version: link:../session-engine
 
   tools/zhihu-imports:
     dependencies:

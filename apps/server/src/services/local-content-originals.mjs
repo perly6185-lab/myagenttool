@@ -225,6 +225,21 @@ export function readFilePrefix(path, length) {
   }
 }
 
+export function readFileRange(path, offset, length) {
+  const start = Math.max(0, Number(offset) || 0);
+  const buffer = Buffer.alloc(Math.max(0, Number(length) || 0));
+  let fd;
+  try {
+    fd = openSync(path, "r");
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, start);
+    return buffer.subarray(0, bytesRead);
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
+}
+
 export function safeMarkupPreview(value) {
   return String(value ?? "")
     .replace(/<script\b[\s\S]*?<\/script>/gi, "")

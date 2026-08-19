@@ -125,7 +125,7 @@ export type DashboardSurface = "overview" | "workspace";
 
 export function DashboardView({ surface = "overview" }: { surface?: DashboardSurface } = {}) {
   const { t } = useAppTranslation();
-  const { data: state } = useConsoleState();
+  const { data: state, isError: stateUnavailable } = useConsoleState();
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
@@ -225,7 +225,10 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   }, []);
 
   useEffect(() => {
-    if (surface !== "overview") return undefined;
+    // Wait for the shared console snapshot before loading its dependent home
+    // sources. Starting all six calls during initial hydration briefly showed
+    // a failure banner even though the local server was healthy.
+    if (surface !== "overview" || !state) return undefined;
     let cancelled = false;
     setDailyLoading(true);
     const workItems = import("@/features/dashboard/dashboard-work-items");
@@ -763,7 +766,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                 }}
                 worktreeId={attachmentWorktree?.id}
                 terminalId={state?.device?.id}
-                unavailable={!state}
+                unavailable={stateUnavailable}
                 readOnly={!canOperate}
                 showTrigger={false}
                 onCreated={() => setDailyRefreshVersion((version) => version + 1)}

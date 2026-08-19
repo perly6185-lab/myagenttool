@@ -32,6 +32,25 @@ export function useLocalContentFilters() {
     setPage((value) => value + 1);
   }, [page]);
 
+  const resetFilters = useCallback(() => {
+    setQuery("");
+    setKind("all");
+    setProjectId("all");
+    setWorkItemId("all");
+    setSourceType("all");
+    setYearMonth("all");
+    setAvailability("all");
+    setIndexStatus("all");
+    resetPage();
+  }, [resetPage]);
+
+  const advancedFilterCount = [workItemId, sourceType, yearMonth, availability, indexStatus]
+    .filter((value) => value !== "all").length;
+  const activeFilterCount = advancedFilterCount
+    + (kind === "all" ? 0 : 1)
+    + (projectId === "all" ? 0 : 1)
+    + (query.trim() ? 1 : 0);
+
   const searchQuery = useMemo<LocalContentSearchQuery>(() => ({
     q: deferredQuery || undefined,
     kinds: kind === "all" ? undefined : [kind],
@@ -66,6 +85,9 @@ export function useLocalContentFilters() {
     resetPage,
     previousPage,
     nextPage,
+    resetFilters,
+    advancedFilterCount,
+    activeFilterCount,
     searchQuery,
   };
 }

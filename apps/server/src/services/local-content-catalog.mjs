@@ -53,6 +53,7 @@ import {
   DOCUMENT_PREVIEW_EXTENSIONS,
   inspectOriginal,
   originalNameFor,
+  readFileRange,
   readFilePrefix,
   resolveCatalogOriginal,
   resolveStateRecord,
@@ -73,6 +74,7 @@ export {
 const MAX_SEARCH_LIMIT = 100;
 const MAX_DIRECTORY_LIMIT = 100;
 const MAX_PREVIEW_BYTES = 1024 * 1024;
+const MAX_RETRIEVAL_CHUNK_CHARACTERS = 32 * 1024;
 const DEFAULT_INDEX_DEBOUNCE_MS = 250;
 const MAX_ORIGINAL_WATCH_DIRECTORIES = 512;
 
@@ -436,6 +438,97 @@ export function createLocalContentCatalogService({
     };
   }
 
+  async function readTextChunk({ contentId, offset = 0, limit = 8_192 } = {}, actor = null) {
+    const boundedOffset = Math.max(0, Number.parseInt(offset, 10) || 0);
+    const boundedLimit = Math.min(MAX_RETRIEVAL_CHUNK_CHARACTERS, Math.max(1, Number.parseInt(limit, 10) || 8_192));
+    const resolved = await resolveOriginal({ contentId }, actor);
+    if (!resolved.ok) return { status: resolved.status, body: { error: resolved.error } };
+    const mimeType = String(resolved.record?.mimeType ?? "").toLowerCase();
+    const extension = extname(resolved.originalName ?? "").toLowerCase();
+    const requiresExtraction = (resolved.record?.kind === "mail" && mimeType === "message/rfc822")
+      || (resolved.sourceType === "file" && DOCUMENT_PREVIEW_EXTENSIONS.has(extension));
+    if (requiresExtraction) {
+      const result = await preview({ contentId }, actor);
+      if (result.status !== 200) return result;
+      const extracted = Array.from(String(result.body.preview.text ?? ""));
+      const textCharacters = extracted.slice(boundedOffset, boundedOffset + boundedLimit);
+      const text = textCharacters.join("");
+      const nextOffset = boundedOffset + textCharacters.length;
+      const reachedExtractionEnd = nextOffset >= extracted.length;
+      const sourceTruncated = Boolean(result.body.preview.truncated);
+      return {
+        status: 200,
+        body: {
+          chunk: {
+            contentId: result.body.preview.contentId,
+            title: result.body.preview.title,
+            kind: result.body.preview.kind,
+            mimeType: result.body.preview.mimeType,
+            format: "plain_text",
+            offset: boundedOffset,
+            text,
+            nextOffset: reachedExtractionEnd ? null : nextOffset,
+            eof: reachedExtractionEnd && !sourceTruncated,
+            sourceTruncated,
+            continuationUnavailable: reachedExtractionEnd && sourceTruncated,
+          },
+        },
+      };
+    }
+    const previewable = mimeType.startsWith("text/")
+      || ["application/json", "application/xml"].includes(mimeType)
+      || [".md", ".markdown", ".txt", ".log", ".json", ".csv", ".tsv", ".xml", ".yaml", ".yml", ".html", ".htm"].includes(extension);
+    if (!previewable) return { status: 415, body: { error: "local_content_preview_unsupported" } };
+    const totalBytes = resolved.sourceType === "bytes" ? resolved.bytes.length : resolved.size;
+    if (boundedOffset >= totalBytes) {
+      return { status: 200, body: { chunk: {
+        contentId: resolved.record.id, title: resolved.record.title, kind: resolved.record.kind,
+        mimeType: resolved.record.mimeType, format: "plain_text", offset: boundedOffset,
+        text: "", nextOffset: null, eof: true, sourceTruncated: false, continuationUnavailable: false,
+      } } };
+    }
+    const readLength = Math.min(boundedLimit * 4, totalBytes - boundedOffset);
+    const bytes = resolved.sourceType === "bytes"
+      ? resolved.bytes.subarray(boundedOffset, boundedOffset + readLength)
+      : readFileRange(resolved.localPath, boundedOffset, readLength);
+    if (!bytes || bytes.includes(0)) return { status: 415, body: { error: "local_content_preview_unsupported" } };
+    if (bytes.length && (bytes[0] & 0xc0) === 0x80) {
+      return { status: 400, body: { error: "local_content_retrieval_offset_invalid" } };
+    }
+    const safeLength = utf8SafePrefixLength(bytes);
+    if (!safeLength && bytes.length) return { status: 415, body: { error: "local_content_preview_unsupported" } };
+    let decoded;
+    try {
+      decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, safeLength));
+    } catch {
+      return { status: 415, body: { error: "local_content_preview_unsupported" } };
+    }
+    const sourceText = Array.from(decoded).slice(0, boundedLimit).join("");
+    const consumed = Buffer.byteLength(sourceText, "utf8");
+    if (!consumed && bytes.length) return { status: 415, body: { error: "local_content_preview_unsupported" } };
+    let text = sourceText;
+    if (mimeType.includes("html") || [".html", ".htm"].includes(extension)) text = safeMarkupPreview(text);
+    const nextOffset = boundedOffset + consumed;
+    return {
+      status: 200,
+      body: {
+        chunk: {
+          contentId: resolved.record.id,
+          title: resolved.record.title,
+          kind: resolved.record.kind,
+          mimeType: resolved.record.mimeType,
+          format: "plain_text",
+          offset: boundedOffset,
+          text,
+          nextOffset: nextOffset < totalBytes ? nextOffset : null,
+          eof: nextOffset >= totalBytes,
+          sourceTruncated: false,
+          continuationUnavailable: false,
+        },
+      },
+    };
+  }
+
   async function search({
     query = "", kinds = [], projectId = null, workItemId = null, sourceType = null,
     yearMonth = null, availability = null, indexStatus = null, limit = 30, offset = 0, cursor = null,
@@ -636,8 +729,17 @@ export function createLocalContentCatalogService({
   }
 
   const service = {
-    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, browseDirectories, get, preview, refresh, health,
+    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, browseDirectories, get, preview, readTextChunk, refresh, health,
     resolveOriginal, resolveContainer, stats, start, close, databasePath,
   };
   return service;
+}
+
+function utf8SafePrefixLength(bytes) {
+  let start = bytes.length - 1;
+  while (start >= 0 && (bytes[start] & 0xc0) === 0x80) start -= 1;
+  if (start < 0) return 0;
+  const lead = bytes[start];
+  const expected = lead < 0x80 ? 1 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : lead < 0xf8 ? 4 : 1;
+  return start + expected <= bytes.length ? bytes.length : start;
 }

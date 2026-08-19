@@ -650,9 +650,10 @@ describe("work item summary presentation", () => {
     const onOpenSetup = vi.fn();
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onOpenSetup={onOpenSetup} />);
 
-    expect((await screen.findByRole("alert", { name: "Preflight" })).textContent).toContain("No default agent is configured");
+    expect((await screen.findByRole("alert", { name: "Preflight" })).textContent).toContain("does not have an available task assistant");
+    expect(screen.queryByText(/No default agent/)).toBeNull();
     expect((screen.getByRole("button", { name: "Let AI start" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Open setup and fix" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose task assistant" }));
     expect(onOpenSetup).toHaveBeenCalledWith("autoRuns");
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
   });
@@ -666,7 +667,7 @@ describe("work item summary presentation", () => {
       .mockResolvedValueOnce({ readiness: { ready: true, checks: [] } });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    expect((await screen.findByRole("alert", { name: "Preflight" })).textContent).toContain("could not be completed");
+    expect((await screen.findByRole("alert", { name: "Preflight" })).textContent).toContain("could not be confirmed");
     fireEvent.click(screen.getByRole("button", { name: "Recheck" }));
 
     await waitFor(() => expect(mocks.autoRunReadiness).toHaveBeenCalledTimes(2));
@@ -1229,9 +1230,9 @@ describe("work item summary presentation", () => {
     mocks.getWorkItem.mockResolvedValue({ workItem: withoutCriteria });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    expect(await screen.findByText(/no pre-execution acceptance basis/i)).toBeTruthy();
+    expect(await screen.findByText(/no pre-confirmed completion requirements/i)).toBeTruthy();
     expect(screen.queryByText(/AI-suggested completion criteria/i)).toBeNull();
-    expect(screen.getByText("Not established")).toBeTruthy();
+    expect(screen.getByText("Add before handing to AI")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Approve and complete task" }) as HTMLButtonElement).disabled).toBe(true);
     expect(mocks.updateWorkItem).not.toHaveBeenCalled();
   });

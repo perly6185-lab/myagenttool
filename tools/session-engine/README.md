@@ -1,9 +1,9 @@
 # @myagenttool/session-engine
 
 Shared Playwright browser pipeline for **session-backed site plugins** — the
-workspace packages under `tools/<site>-imports/` (zhihu, qichacha today) that
-render login-walled / WAF-protected sites by reusing a logged-in persistent
-browser profile.
+workspace packages under `tools/<site>-imports/` (zhihu, qichacha, xiaohongshu,
+jianshu today) that render login-walled / WAF-protected sites by reusing a
+logged-in persistent browser profile.
 
 The product bundles no browser and the server never imports playwright; only
 these tool packages do, via the hoisted root devDependency.
@@ -43,16 +43,50 @@ health URL, auth cookie, content selectors) live ONLY in
 |---|---|---|---|
 | `--login` | headed | (no JSON; stderr progress) | 0 / 2 |
 | `--probe` | headless | `{"ok":true,"loggedIn":true,"detail":"z_c0 present"}` | 0 / 2 |
-| `<url>` | headless | `{"ok":true,"url":"<resolved>","html":"<rendered>"}` | 0 / 2 |
+| `<url>` | headless | `{"ok":true,"url":"<resolved>","html":"<composed>","meta":{…}}` (see below) | 0 / 2 |
 
 exit: `0` success · `1` usage error · `2` render/fetch/login failure.
 Environment equivalents (`<SITE>_PROFILE_DIR`, `<SITE>_CHANNEL`, …) mirror the
 flags, mirroring `tools/zhihu-imports/src/config.mjs`.
 
+## The canonical render form: composed document + meta (jianshu onward)
+
+Since `tools/jianshu-imports`, the canonical `<url>` render returns a
+**composed** document — the plugin extracts the site's data structure in-page
+(hydration JSON / state scripts) and returns a clean `<article>` document —
+plus an optional `meta` object the server applies as authoritative field
+overrides:
+
+```json
+{"ok":true,"url":"<resolved>","html":"<composed article>",
+ "meta":{"title":"…","author":"…","publishedAt":"YYYY-MM-DD"}}
+```
+
+- Extraction lives ONLY plugin-side; the server parses the composed doc with
+  generic selectors. The composed doc may reuse the site's own classes so the
+  server's provider hints still hit — belt and braces, `meta` wins.
+- Differentiated failures: a missing/empty payload exits 2 with a distinct
+  message (deleted article / layout changed / empty body) — a plugin never
+  returns a shell page for the server to silently archive (the xiaohongshu
+  lesson, issue #1703).
+- Older plugins are grandfathered: zhihu/qichacha return the rendered DOM and
+  rely on server-side provider selectors; xiaohongshu's state-script parsing
+  still lives server-side. Migrating those to the canonical form (plus a
+  shared document-extractor package) is tracked in issue #1706.
+
+## When a site becomes a plugin (promotion trigger)
+
+The plugin boundary exists to keep playwright OUT of the server process — not
+to make every site a plugin. A site earns a package the day it needs a
+browser: a login wall, a WAF, or its body shipped in hydration JSON instead of
+SSR DOM. Plain-HTML sites reachable by anonymous fetch (wechat, juejin, the
+generic `web` fallback) stay in-process in article-imports.mjs.
+
 ## Adding a new site (recipe)
 
-1. Copy `tools/zhihu-imports/` to `tools/<site>-imports/` and edit
-   `src/site.mjs` (loginUrl, healthUrl, authCookie, content selectors) plus
+1. Copy `tools/jianshu-imports/` (the canonical template: composed document +
+   meta + differentiated failures) to `tools/<site>-imports/` and edit
+   `src/site.mjs` (loginUrl, healthUrl, login marker, content selector) plus
    `src/parse-url.mjs` (host rules). `cli.mjs`, the renderer, login, and probe
    are reusable — they delegate to this engine and read `site.mjs`.
 2. Add one line to `SESSION_SITES` in
@@ -61,8 +95,8 @@ flags, mirroring `tools/zhihu-imports/src/config.mjs`.
    logged-in views spend the site's daily quota) is probe-on-demand only and
    the sweep skips it entirely.
 3. Add a render branch in `apps/server/src/services/article-imports.mjs`
-   (mirror the zhihu/feishu branch) calling a `<site>-imports.mjs` adapter.
-4. Write SHIM unit tests (mirror `apps/server/test/session-manager.test.mjs`).
+   (mirror the jianshu adapter + `inspectJianshuArticle` branch).
+4. Write SHIM unit tests (mirror `apps/server/test/jianshu-imports.test.mjs`).
 
 No changes to `http-server.mjs` / `state-factory.mjs` / `index.mjs` are needed —
 the registry plus the uniform CLI contract is the whole seam.
