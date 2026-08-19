@@ -431,22 +431,23 @@ export function createMailboxService({
   function backfillBodyPrefetch() {
     const teams = new Set((state.applications ?? []).map((application) => application.ownerTeamId ?? "team_local"));
     let queued = 0;
-    for (const ownerTeamId of teams) {
-      const actor = { teamId: ownerTeamId, userId: "system_mail_prefetch" };
-      const messages = messagesForActor(state, actor);
-      const byApplication = new Map();
-      for (const message of messages) {
-        if (messageBodyPrefetchComplete(message) || !message.applicationId) continue;
-        const list = byApplication.get(message.applicationId) ?? [];
-        list.push(message);
-        byApplication.set(message.applicationId, list);
+    runTx(() => {
+      for (const ownerTeamId of teams) {
+        const actor = { teamId: ownerTeamId, userId: "system_mail_prefetch" };
+        const messages = messagesForActor(state, actor);
+        const byApplication = new Map();
+        for (const message of messages) {
+          if (messageBodyPrefetchComplete(message) || !message.applicationId) continue;
+          const list = byApplication.get(message.applicationId) ?? [];
+          list.push(message);
+          byApplication.set(message.applicationId, list);
+        }
+        for (const [applicationId, applicationMessages] of byApplication) {
+          queued += enqueueBodyPrefetch({ ownerTeamId, applicationId, messages: applicationMessages, commit: false, schedule: false }).queued;
+        }
       }
-      for (const [applicationId, applicationMessages] of byApplication) {
-        queued += enqueueBodyPrefetch({ ownerTeamId, applicationId, messages: applicationMessages, commit: false, schedule: false }).queued;
-      }
-    }
+    });
     if (queued > 0) {
-      persistStateSoon();
       queueMicrotask(() => sweepBodyPrefetch());
     }
     return { queued };
@@ -482,97 +483,97 @@ export function createMailboxService({
   function sweepBodyPrefetch() {
     if (typeof createCapabilityInvocation !== "function") return { started: 0 };
     const currentTime = now();
-    let changed = false;
-    for (const job of state.mailBodyPrefetchJobs ?? []) {
-      if (!["failed", "retry_wait"].includes(job.status) || !job.invocationId) continue;
-      const invocation = (state.invocations ?? []).find((candidate) => candidate.id === job.invocationId);
-      if (bodyPrefetchInvocationError(invocation) !== "mail_message_not_found") continue;
-      job.status = "unavailable";
-      job.lastError = "mail_message_not_found";
-      job.completedAt = currentTime;
-      job.updatedAt = currentTime;
-      changed = true;
-    }
-    for (const job of state.mailBodyPrefetchJobs ?? []) {
-      if (job.status !== "running") continue;
-      const actor = { teamId: job.ownerTeamId, userId: "system_mail_prefetch" };
-      const message = messagesForActor(state, actor).find((candidate) => candidate.messageId === job.messageId);
-      if (messageBodyPrefetchComplete(message)) {
-        job.status = "ready";
-        job.completedAt = currentTime;
-        job.updatedAt = currentTime;
-        changed = true;
-        continue;
-      }
-      const invocation = (state.invocations ?? []).find((candidate) => candidate.id === job.invocationId);
-      if (!invocation || ACTIVE_PREFETCH_STATUSES.has(invocation.status)) continue;
-      job.lastError = bodyPrefetchInvocationError(invocation);
-      if (job.lastError === "mail_message_not_found") {
+    let dispatch = null;
+    runTx(() => {
+      for (const job of state.mailBodyPrefetchJobs ?? []) {
+        if (!["failed", "retry_wait"].includes(job.status) || !job.invocationId) continue;
+        const invocation = (state.invocations ?? []).find((candidate) => candidate.id === job.invocationId);
+        if (bodyPrefetchInvocationError(invocation) !== "mail_message_not_found") continue;
         job.status = "unavailable";
+        job.lastError = "mail_message_not_found";
         job.completedAt = currentTime;
         job.updatedAt = currentTime;
-        changed = true;
-        continue;
       }
-      if (job.attempt < MAX_BODY_PREFETCH_ATTEMPTS) {
-        job.status = "retry_wait";
-        job.nextAttemptAt = new Date(Date.parse(currentTime) + 5_000 * (2 ** Math.max(0, job.attempt - 1))).toISOString();
-      } else {
-        job.status = "failed";
-        job.completedAt = currentTime;
-      }
-      job.updatedAt = currentTime;
-      changed = true;
-    }
-    for (const job of state.mailBodyPrefetchJobs ?? []) {
-      if (job.status === "retry_wait" && dateTimestamp(job.nextAttemptAt) <= dateTimestamp(currentTime)) {
-        job.status = "queued";
+      for (const job of state.mailBodyPrefetchJobs ?? []) {
+        if (job.status !== "running") continue;
+        const actor = { teamId: job.ownerTeamId, userId: "system_mail_prefetch" };
+        const message = messagesForActor(state, actor).find((candidate) => candidate.messageId === job.messageId);
+        if (messageBodyPrefetchComplete(message)) {
+          job.status = "ready";
+          job.completedAt = currentTime;
+          job.updatedAt = currentTime;
+          continue;
+        }
+        const invocation = (state.invocations ?? []).find((candidate) => candidate.id === job.invocationId);
+        if (!invocation || ACTIVE_PREFETCH_STATUSES.has(invocation.status)) continue;
+        job.lastError = bodyPrefetchInvocationError(invocation);
+        if (job.lastError === "mail_message_not_found") {
+          job.status = "unavailable";
+          job.completedAt = currentTime;
+          job.updatedAt = currentTime;
+          continue;
+        }
+        if (job.attempt < MAX_BODY_PREFETCH_ATTEMPTS) {
+          job.status = "retry_wait";
+          job.nextAttemptAt = new Date(Date.parse(currentTime) + 5_000 * (2 ** Math.max(0, job.attempt - 1))).toISOString();
+        } else {
+          job.status = "failed";
+          job.completedAt = currentTime;
+        }
         job.updatedAt = currentTime;
-        changed = true;
       }
-    }
-    const active = (state.mailBodyPrefetchJobs ?? []).some((job) => job.status === "running");
-    let started = 0;
-    if (!active) {
+      for (const job of state.mailBodyPrefetchJobs ?? []) {
+        if (job.status === "retry_wait" && dateTimestamp(job.nextAttemptAt) <= dateTimestamp(currentTime)) {
+          job.status = "queued";
+          job.updatedAt = currentTime;
+        }
+      }
+      const active = (state.mailBodyPrefetchJobs ?? []).some((job) => job.status === "running");
+      if (active) return;
       const job = (state.mailBodyPrefetchJobs ?? [])
         .filter((candidate) => candidate.status === "queued" && dateTimestamp(candidate.nextAttemptAt) <= dateTimestamp(currentTime))
         .sort(compareBodyPrefetchPriority)[0] ?? null;
-      if (job) {
-        const application = (state.applications ?? []).find((candidate) => candidate.id === job.applicationId && !candidate.successorApplicationId)
-          ?? (state.applications ?? []).find((candidate) => providerOf(candidate) === providerOf((state.applications ?? []).find((item) => item.id === job.applicationId)) && !candidate.successorApplicationId);
-        const capability = application ? capabilityName(application, "mail_prefetch_body") : null;
-        if (!capability) {
-          // A desktop upgrade may still be registering the lightweight facade.
-          // Keep the durable job recoverable; never fall back to mail_fetch here,
-          // because that path downloads attachment bytes and archives full EML.
-          job.status = "retry_wait";
-          job.lastError = "mail_body_prefetch_capability_unavailable";
-          job.nextAttemptAt = new Date(Date.parse(currentTime) + 30_000).toISOString();
-          job.updatedAt = currentTime;
-          changed = true;
-        } else {
-          const actor = { teamId: job.ownerTeamId, userId: "system_mail_prefetch" };
-          const result = createCapabilityInvocation(capability, { messageId: job.messageId, folderPath: job.folderPath }, actor);
-          if (result && result.status < 400 && result.body?.invocationId) {
-            job.status = "running";
-            job.invocationId = result.body.invocationId;
-            job.attempt += 1;
-            job.updatedAt = currentTime;
-            job.lastError = null;
-            started = 1;
-            changed = true;
-          } else {
-            job.attempt += 1;
-            job.status = job.attempt >= MAX_BODY_PREFETCH_ATTEMPTS ? "failed" : "retry_wait";
-            job.nextAttemptAt = new Date(Date.parse(currentTime) + 5_000 * (2 ** Math.max(0, job.attempt - 1))).toISOString();
-            job.lastError = cap(result?.body?.error, 500) || "mail_body_prefetch_dispatch_failed";
-            job.updatedAt = currentTime;
-            changed = true;
-          }
-        }
+      if (!job) return;
+      const application = (state.applications ?? []).find((candidate) => candidate.id === job.applicationId && !candidate.successorApplicationId)
+        ?? (state.applications ?? []).find((candidate) => providerOf(candidate) === providerOf((state.applications ?? []).find((item) => item.id === job.applicationId)) && !candidate.successorApplicationId);
+      const capability = application ? capabilityName(application, "mail_prefetch_body") : null;
+      if (!capability) {
+        // A desktop upgrade may still be registering the lightweight facade.
+        // Keep the durable job recoverable; never fall back to mail_fetch here,
+        // because that path downloads attachment bytes and archives full EML.
+        job.status = "retry_wait";
+        job.lastError = "mail_body_prefetch_capability_unavailable";
+        job.nextAttemptAt = new Date(Date.parse(currentTime) + 30_000).toISOString();
+        job.updatedAt = currentTime;
+        return;
       }
-    }
-    if (changed) persistStateSoon();
+      dispatch = {
+        jobId: job.id,
+        capability,
+        input: { messageId: job.messageId, folderPath: job.folderPath },
+        actor: { teamId: job.ownerTeamId, userId: "system_mail_prefetch" },
+      };
+    });
+    if (!dispatch) return { started: 0 };
+
+    const result = createCapabilityInvocation(dispatch.capability, dispatch.input, dispatch.actor);
+    let started = 0;
+    runTx(() => {
+      const job = (state.mailBodyPrefetchJobs ?? []).find((candidate) => candidate.id === dispatch.jobId);
+      if (!job || job.status !== "queued") return;
+      job.attempt += 1;
+      job.updatedAt = currentTime;
+      if (result && result.status < 400 && result.body?.invocationId) {
+        job.status = "running";
+        job.invocationId = result.body.invocationId;
+        job.lastError = null;
+        started = 1;
+      } else {
+        job.status = job.attempt >= MAX_BODY_PREFETCH_ATTEMPTS ? "failed" : "retry_wait";
+        job.nextAttemptAt = new Date(Date.parse(currentTime) + 5_000 * (2 ** Math.max(0, job.attempt - 1))).toISOString();
+        job.lastError = cap(result?.body?.error, 500) || "mail_body_prefetch_dispatch_failed";
+      }
+    });
     return { started };
   }
 
