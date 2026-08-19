@@ -140,6 +140,7 @@ export function buildPublicState({
   budgetStatuses,
   teamBudgetStatuses,
   channelReadiness = null,
+  channelRuntimeAccount = null,
   actor = null,
 }) {
   // Tenancy scoping. With no actor (or one whose team owns everything, i.e.
@@ -288,8 +289,11 @@ export function buildPublicState({
   const channelEvents = byChannel(state.channelEvents);
   const channelConversations = byChannel(state.channelConversations);
   const channelDeliveries = byChannel(state.channelDeliveries);
+  const channelNotificationPolicies = byChannel(state.channelNotificationPolicies);
+  const channelNotificationBatches = byChannel(state.channelNotificationBatches);
   const channelIntakeGroups = byChannel(state.channelIntakeGroups);
   const channelTaskThreads = byChannel(state.channelTaskThreads);
+  const channelTaskRevisions = byChannel(state.channelTaskRevisions);
   const channelObjectRecords = (state.channelObjectRecords ?? []).filter((record) =>
     (teamId == null || (record?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId) && projectVisible(record?.projectId));
   const channelObjectFileSources = (state.channelObjectFileSources ?? []).filter((source) =>
@@ -803,8 +807,11 @@ export function buildPublicState({
     channelEvents,
     channelConversations,
     channelDeliveries,
+    channelNotificationPolicies,
+    channelNotificationBatches,
     channelIntakeGroups,
     channelTaskThreads,
+    channelTaskRevisions,
     channelTaskRequests,
     channelLifecycleSummaries,
     channelIntentMetrics: isAdminScope ? state.channelIntentMetrics ?? null : null,
@@ -816,6 +823,7 @@ export function buildPublicState({
       channelDeliveries,
       channelTaskThreads,
       readinessForChannel: channelReadiness,
+      runtimeAccountForChannel: channelRuntimeAccount,
     }),
   };
 }

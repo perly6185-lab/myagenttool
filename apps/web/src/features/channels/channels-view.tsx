@@ -8,7 +8,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
 import { useConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
-import type { ChannelConversation, ChannelDelivery, ChannelDiagnostics, ChannelInteraction, ChannelLifecycleSummary, ChannelOperations, ChannelTaskRequest, ChannelTaskThread, DeviceSnapshot, ProjectSnapshot } from "@/lib/console-state";
+import type { ChannelConversation, ChannelDelivery, ChannelDiagnostics, ChannelInteraction, ChannelLifecycleSummary, ChannelNotificationPolicy, ChannelOperations, ChannelTaskRequest, ChannelTaskRevision, ChannelTaskThread, DeviceSnapshot, ProjectSnapshot } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 import { installChannelTranslations } from "@/lib/i18n/channel-resources";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
@@ -53,6 +53,41 @@ function ilinkConnectionLabel(t: Translate, channel: ChannelOperations): string 
   return t("channelsPage.connectionUnregistered");
 }
 
+function ilinkRuntimeStatusLabel(account: ChannelOperations["ilinkAccount"]): string {
+  const labels: Record<string, string> = {
+    disconnected: "未连接",
+    waiting_scan: "等待扫码",
+    scanned: "已扫码，等待确认",
+    verification_required: "等待验证码",
+    authenticated: "已授权，等待启动",
+    reconnecting: "重新连接中",
+    pairing: "等待绑定",
+    connected: "已绑定并在线",
+    error: "连接异常",
+    reauth_required: "需要重新授权",
+    expired: "二维码已过期",
+    stopped: "已停止",
+  };
+  const status = String(account?.status ?? "").trim();
+  return labels[status] ?? (status || "未建立连接");
+}
+
+function ilinkRuntimeErrorLabel(error: string | null | undefined): string | null {
+  if (!error) return null;
+  const labels: Record<string, string> = {
+    network_error: "无法连接腾讯 iLink 服务，请检查网络后重试",
+    timeout: "连接腾讯 iLink 服务超时，请稍后重试",
+    ilink_qr_expired: "二维码已过期，请重新扫码",
+    ilink_already_bound: "该账号已绑定其他 ClawBot，请先解除原连接",
+    ilink_verify_code_required: "需要输入微信返回的验证码",
+    ilink_verify_code_blocked: "验证码尝试次数已用完，请重新扫码",
+    auth_expired: "授权已失效，请重新扫码授权",
+    message_processing_failed: "上一条消息处理失败，系统正在自动重试",
+    worker_error: "消息接收服务异常，系统正在自动重试",
+  };
+  return labels[error] ?? `最近连接提示：${error}`;
+}
+
 function readableChannelError(error: string | null, t: Translate): string | null {
   if (!error) return null;
   if (error.includes("channel_already_registered")) return t("channelsPage.channelAlreadyRegistered");
@@ -79,7 +114,10 @@ function taskDeviceLabel(t: Translate, device: DeviceSnapshot): string {
   const status = device.status === "online"
     ? t("channelsPage.healthOk")
     : `${t("channelsPage.healthAttention")} · ${t("channelsPage.queued")}`;
-  return `${device.name} · ${status}`;
+  const runtimes = device.runtimeReadiness ?? [];
+  const bridgeReady = runtimes.some((runtime) => runtime.status === "available" && runtime.authenticationStatus !== "unauthenticated");
+  const bridgeLabel = runtimes.length === 0 ? "Bridge 状态未知" : bridgeReady ? "Bridge 可用" : "Bridge 待准备";
+  return `${device.name} · ${status} · ${bridgeLabel}`;
 }
 
 function interactionStatusTone(status: string): Tone {
@@ -125,6 +163,28 @@ function waitingForLabel(value: string): string {
   if (value === "attention") return "等待任务恢复";
   if (value === "human") return "人工处理";
   return value.replaceAll("_", " ");
+}
+
+function revisionTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    data_correction: "数据修正",
+    interpretation_correction: "理解修正",
+    template_correction: "模板修正",
+    execution_correction: "执行修正",
+    output_style_correction: "输出格式",
+    acceptance_correction: "验收标准",
+  };
+  return labels[type] ?? type.replaceAll("_", " ");
+}
+
+function revisionStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    awaiting_confirmation: "待确认",
+    confirmed: "已确认",
+    cancelled: "已取消",
+    failed: "处理失败",
+  };
+  return labels[status] ?? status.replaceAll("_", " ");
 }
 
 function translateDynamic(t: Translate, key: string): string {
@@ -189,6 +249,8 @@ export function ChannelsView() {
               projects={(state?.projects ?? []).filter((p) => p.status !== "archived")}
               tasks={(state?.channelTaskRequests ?? []).filter((task) => task.channelId === channel.id)}
               threads={(state?.channelTaskThreads ?? []).filter((thread) => thread.channelId === channel.id)}
+              revisions={(state?.channelTaskRevisions ?? []).filter((revision) => revision.channelId === channel.id)}
+              notificationPolicies={(state?.channelNotificationPolicies ?? []).filter((policy) => policy.channelId === channel.id)}
               lifecycleSummaries={(state?.channelLifecycleSummaries ?? []).filter((summary) => summary.projectId === channel.taskProjectId)}
               onReconnect={(channelId) => openSetup(channelId)}
             />
@@ -466,7 +528,7 @@ function IlinkSetupPanel({ channelId = null, existingChannelId = null, onClose }
   );
 }
 
-function ChannelCard({ channel, conversations, devices, deliveries, projects, tasks, threads, lifecycleSummaries, onReconnect }: { channel: ChannelOperations; conversations: ChannelConversation[]; devices: DeviceSnapshot[]; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[]; tasks: ChannelTaskRequest[]; threads: ChannelTaskThread[]; lifecycleSummaries: ChannelLifecycleSummary[]; onReconnect: (channelId: string) => void }) {
+function ChannelCard({ channel, conversations, devices, deliveries, projects, tasks, threads, revisions, notificationPolicies, lifecycleSummaries, onReconnect }: { channel: ChannelOperations; conversations: ChannelConversation[]; devices: DeviceSnapshot[]; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[]; tasks: ChannelTaskRequest[]; threads: ChannelTaskThread[]; revisions: ChannelTaskRevision[]; notificationPolicies: ChannelNotificationPolicy[]; lifecycleSummaries: ChannelLifecycleSummary[]; onReconnect: (channelId: string) => void }) {
   const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const [taskProject, setTaskProject] = useState(channel.taskProjectId ?? "");
@@ -487,11 +549,37 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
   const [interactionError, setInteractionError] = useState(false);
   const [diagnosticLoading, setDiagnosticLoading] = useState(false);
   const [diagnosticError, setDiagnosticError] = useState(false);
+  const [notificationConversationId, setNotificationConversationId] = useState(conversations[0]?.id ?? "");
+  const [notificationMode, setNotificationMode] = useState<ChannelNotificationPolicy["mode"]>("important");
+  const [notificationInterval, setNotificationInterval] = useState(10);
+  const [notificationQuiet, setNotificationQuiet] = useState(false);
   const [humanReplyDrafts, setHumanReplyDrafts] = useState<Record<string, string>>({});
   const today = new Date().toISOString().slice(0, 10);
   const usedToday = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
   const connectionLabel = ilinkConnectionLabel(t, channel);
   const selectedTaskDevice = devices.find((device) => device.id === taskTerminalId) ?? null;
+
+  useEffect(() => {
+    if (!notificationConversationId && conversations[0]?.id) setNotificationConversationId(conversations[0].id);
+    const saved = notificationPolicies.find((policy) => policy.conversationId === notificationConversationId && !policy.threadId);
+    if (saved) {
+      setNotificationMode(saved.mode);
+      setNotificationInterval(saved.progressIntervalMinutes);
+      setNotificationQuiet(Boolean(saved.quietHours?.enabled));
+    }
+  }, [conversations, notificationConversationId, notificationPolicies]);
+
+  useEffect(() => {
+    if (!taskProject) {
+      if (taskTerminalId) setTaskTerminalId("");
+      return;
+    }
+    if (!taskTerminalId) {
+      const online = devices.filter((device) => device.status === "online");
+      const automatic = online.length === 1 ? online[0] : devices.length === 1 ? devices[0] : null;
+      if (automatic) setTaskTerminalId(automatic.id);
+    }
+  }, [devices, taskProject, taskTerminalId]);
 
   useEffect(() => {
     if (!interactionsOpen) return undefined;
@@ -580,6 +668,18 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
   async function saveTaskProject() {
     const grant = await api.issueApprovalGrant("channel.taskProject", channel.id);
     await execute(() => api.setChannelTaskProject(channel.id, taskProject || null, autoRoute, dailyLimit, grant.token, operationMode, taskTerminalId || null));
+  }
+
+  async function saveNotificationPolicy() {
+    if (!notificationConversationId) return;
+    await execute(() => api.setChannelNotificationPolicy(channel.id, {
+      conversationId: notificationConversationId,
+      patch: {
+        mode: notificationMode,
+        progressIntervalMinutes: notificationInterval,
+        quietHours: { enabled: notificationQuiet, start: "22:00", end: "08:00", timezone: "local" },
+      },
+    }));
   }
 
   function resetInteractionCursor() {
@@ -692,6 +792,31 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           {diagnosticError ? <p className="mt-1 text-destructive">诊断导出失败，请稍后重试。</p> : null}
         </div>
 
+        {channel.provider === "wechat_ilink" ? (
+          <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs" data-testid="ilink-runtime-summary">
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              <span>iLink：{ilinkRuntimeStatusLabel(channel.ilinkAccount)}</span>
+              <span>最近轮询：{diagnosticTime(channel.ilinkAccount?.lastPollAt)}</span>
+              <span>最近收消息：{diagnosticTime(channel.ilinkAccount?.lastMessageAt)}</span>
+              {channel.ilinkAccount?.workerFailureCount ? <span className="text-amber-600">连续重试：{channel.ilinkAccount.workerFailureCount} 次</span> : null}
+            </div>
+            {ilinkRuntimeErrorLabel(channel.ilinkAccount?.lastError) ? <p className="mt-1 text-amber-600">{ilinkRuntimeErrorLabel(channel.ilinkAccount?.lastError)}</p> : null}
+            {channel.ilinkAccount?.nextRetryAt ? <p className="mt-1 text-muted-foreground">预计下次自动重试：{diagnosticTime(channel.ilinkAccount.nextRetryAt)}</p> : null}
+          </div>
+        ) : null}
+
+        <details className="rounded-md border border-border px-3 py-2" data-testid="channel-notification-settings">
+          <summary className="cursor-pointer text-sm font-medium">任务提醒</summary>
+          <div className="mt-3 grid gap-3 text-xs sm:grid-cols-[minmax(0,1fr)_180px_120px_auto] sm:items-end">
+            <label className="space-y-1"><span className="text-muted-foreground">会话</span><select className="h-9 w-full rounded-md border border-border bg-background px-2" value={notificationConversationId} onChange={(event) => setNotificationConversationId(event.target.value)} disabled={!conversations.length || pending}><option value="">暂无会话</option>{conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.externalUserId ?? conversation.id}</option>)}</select></label>
+            <label className="space-y-1"><span className="text-muted-foreground">提醒方式</span><select className="h-9 w-full rounded-md border border-border bg-background px-2" value={notificationMode} onChange={(event) => setNotificationMode(event.target.value as ChannelNotificationPolicy["mode"])} disabled={!notificationConversationId || pending}><option value="important">重要节点</option><option value="progress">包含进展</option><option value="digest">进展汇总</option><option value="off">关闭主动提醒</option></select></label>
+            <label className="space-y-1"><span className="text-muted-foreground">进展间隔（分钟）</span><Input type="number" min={5} max={240} value={notificationInterval} onChange={(event) => setNotificationInterval(Math.max(5, Math.min(240, Number(event.target.value) || 10)))} disabled={!notificationConversationId || pending} /></label>
+            <Button size="sm" onClick={() => void saveNotificationPolicy()} disabled={!notificationConversationId || pending}>保存</Button>
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={notificationQuiet} onChange={(event) => setNotificationQuiet(event.target.checked)} disabled={!notificationConversationId || pending} />晚上 22:00 至次日 08:00 免打扰（重要消息结束后补发）</label>
+          <p className="mt-2 text-xs text-muted-foreground">普通用户也可以在微信里直接说“有进展就告诉我”“只告诉我完成和失败”或“停止提醒”。</p>
+        </details>
+
         {channel.taskProjectId && lifecycleSummaries.length > 0 ? (
           <details className="rounded-md border border-border px-3 py-2 text-xs" data-testid="channel-lifecycle-summary">
             <summary className="cursor-pointer font-medium">业务链快照（本地文件最近导入）</summary>
@@ -771,19 +896,30 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
-          {taskProject && devices.length > 1 ? (
+          {taskProject ? (
             <select
               className="h-7 rounded-md border border-border bg-background px-1.5"
               value={taskTerminalId}
               onChange={(e) => setTaskTerminalId(e.target.value)}
-              disabled={pending}
+              disabled={pending || devices.length === 0}
               aria-label={t("channelsPage.taskDevice")}
+              data-testid="channel-task-device"
             >
-              <option value="">— {t("channelsPage.taskDevicePlaceholder")} —</option>
+              <option value="">{devices.length === 0 ? t("channelsPage.taskDeviceRequired") : `— ${t("channelsPage.taskDevicePlaceholder")} —`}</option>
               {devices.map((device) => <option key={device.id} value={device.id}>{taskDeviceLabel(t, device)}</option>)}
             </select>
-          ) : null}
+          ) : <select
+            className="h-7 rounded-md border border-border bg-background px-1.5"
+            value=""
+            disabled
+            aria-label={t("channelsPage.taskDevice")}
+            data-testid="channel-task-device"
+          >
+            <option value="">{t("channelsPage.taskProjectHint")}</option>
+          </select>}
+          {taskProject && devices.length === 1 ? <span className="text-muted-foreground">（仅一台设备，已自动选择）</span> : null}
           {taskProject && devices.length > 1 && !taskTerminalId ? <span className="w-full text-amber-600 sm:w-auto">{t("channelsPage.taskDeviceRequired")}</span> : null}
+          {taskProject && devices.length === 0 ? <span className="w-full text-amber-600 sm:w-auto">{t("channelsPage.taskDeviceRequired")}</span> : null}
           {taskProject && selectedTaskDevice && selectedTaskDevice.status !== "online" ? <span className="w-full text-amber-600 sm:w-auto">{t("channelsPage.healthAttention")}：{t("channelsPage.queued")}，设备上线后自动开始。</span> : null}
           {!taskProject ? <span className="w-full text-amber-600 sm:w-auto">{t("channelsPage.taskProjectHint")}</span> : null}
           <label className="flex items-center gap-1 text-muted-foreground">
@@ -856,6 +992,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                 {(() => {
                   const task = taskByThreadId.get(thread.id);
                   const threadDelivery = deliveryByThreadId.get(thread.id);
+                  const threadRevisions = revisions.filter((revision) => revision.threadId === thread.id).sort((left, right) => right.revision - left.revision);
                   return (
                     <>
                 <div className="flex flex-wrap items-center gap-2">
@@ -876,6 +1013,14 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                 {thread.nextAction ? <p className="mt-1 text-muted-foreground">下一步：{thread.nextAction}</p> : null}
                 {thread.lastDeliveryStatus ? <p className="mt-1 text-muted-foreground">消息：{thread.lastDeliveryStatus === "delivered" ? "已发送" : thread.lastDeliveryStatus === "retrying" ? "发送失败，自动重试中" : thread.lastDeliveryStatus === "failed_terminal" ? "发送失败，请重试" : thread.lastDeliveryStatus === "queued" ? "等待发送" : thread.lastDeliveryStatus}</p> : null}
                 {thread.resultSummary ? <p className="mt-1 line-clamp-3 text-muted-foreground">{thread.resultSummary}</p> : null}
+                {threadRevisions.length > 0 ? (
+                  <details className="mt-2 text-[11px] text-muted-foreground">
+                    <summary className="cursor-pointer">修订记录（{threadRevisions.length}）</summary>
+                    <div className="mt-1 space-y-1 border-l border-border pl-2">
+                      {threadRevisions.slice(0, 8).map((revision) => <p key={revision.id}>第 {revision.revision} 次 · {revisionTypeLabel(revision.type)} · {revisionStatusLabel(revision.status)}{revision.feedback ? ` · ${revision.feedback}` : ""}</p>)}
+                    </div>
+                  </details>
+                ) : null}
                 {threadDelivery?.status === "failed_terminal" ? (
                   <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-destructive">
                     <span>结果消息未送达：{threadDelivery.lastErrorCode ?? thread.lastDeliveryError ?? "发送失败"}</span>

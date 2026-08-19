@@ -259,6 +259,30 @@ test("task thread keeps delivery failure state and can resend the latest result"
   assert.equal(harness.state.channelDeliveries.at(-1).content, "任务已完成\n结果内容");
 });
 
+test("exported channel result can be resent even when its original delivery row is absent", () => {
+  const harness = makeDeliveryHarness();
+  const conversation = harness.state.channelConversations.find((candidate) => candidate.id === harness.conversationId);
+  const asset = {
+    id: "asset_channel_result",
+    projectId: harness.state.channels.find((candidate) => candidate.id === harness.channelId).taskProjectId ?? "project-local",
+    path: "channel-results/result.csv",
+    name: "result.csv",
+    family: "text",
+    mimeType: "text/csv",
+    size: 32,
+    hash: "sha256:" + "a".repeat(64),
+  };
+  harness.state.channelTaskThreads.push({
+    id: "cth_exported", channelId: harness.channelId, conversationId: conversation.id,
+    status: "succeeded", summary: "查询订单", workItemId: "wi_exported",
+    resultSummary: "已生成查询结果：result.csv", exportedAsset: asset,
+  });
+  const resent = harness.service.resendChannelDelivery({ channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_exported" });
+  assert.equal(resent.ok, true);
+  assert.equal(harness.state.channelDeliveries.at(-1).mediaAssets[0].id, asset.id);
+  assert.equal(harness.state.channelDeliveries.at(-1).mediaAssets[0].path, asset.path);
+});
+
 test("delivery recovery rebuilds the task snapshot after restart", () => {
   const harness = makeDeliveryHarness();
   harness.state.channelTaskThreads.push({
@@ -394,6 +418,32 @@ test("notifyInvocationCompleted queues a result message only for channel-origina
   assert.doesNotMatch(delivery.content, /task-1|Trace:/);
   assert.equal(delivery.mediaAssets[0].projectId, "prj_media");
   assert.equal(delivery.mediaAssets[0].path, "result.pdf");
+});
+
+test("restart reconciliation re-enqueues a terminal task result when the completion row was missing", () => {
+  const harness = makeDeliveryHarness();
+  const thread = {
+    id: "cth_restart_done",
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    status: "succeeded",
+    summary: "重启恢复任务",
+    lastNotificationKey: null,
+  };
+  const invocation = {
+    id: "inv_restart_done",
+    status: "succeeded",
+    result: { summary: "已完成" },
+    options: { metadata: { channel: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: thread.id } } },
+  };
+  harness.state.channelTaskThreads.push(thread);
+  harness.state.invocations.push(invocation);
+  const first = harness.service.recoverCompletedNotifications();
+  assert.deepEqual(first, { checked: 1, queued: 1 });
+  assert.equal(harness.state.channelDeliveries.length, 1);
+  const second = harness.service.recoverCompletedNotifications();
+  assert.deepEqual(second, { checked: 1, queued: 0 });
+  assert.equal(harness.state.channelDeliveries.length, 1);
 });
 
 test("outbound delivery dedupe keys survive repeated enqueue attempts", () => {

@@ -47,6 +47,7 @@ export function createChannelDeliveryService({
   sendMessage = null, // async ({ toUser, content }) => { ok, msgid } | { ok:false, retryable, errcode }
   resolveSender = null, // (provider) => sendMessage | null
   validateApprovalToken = null,
+  notifyTaskEvent = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   let sweepInFlight = false;
@@ -473,6 +474,28 @@ export function createChannelDeliveryService({
       invocation.result?.output?.outputAssets,
       workItem?.outputAssets,
     ].find((assets) => Array.isArray(assets) && assets.length) ?? [];
+    if (typeof notifyTaskEvent === "function") {
+      const notified = notifyTaskEvent({
+        channelId: channelContext.channelId,
+        conversationId: channelContext.conversationId,
+        threadId: thread?.id ?? channelContext.threadId ?? null,
+        invocationId: invocation.id,
+        event: thread?.status === "succeeded" ? "succeeded"
+          : thread?.status === "failed" ? "failed"
+            : thread?.status === "cancelled" ? "cancelled"
+              : thread?.status === "waiting_user" ? "waiting_user"
+                : thread?.status === "waiting_approval" ? "waiting_approval"
+                  : thread?.status === "needs_attention" ? "needs_attention"
+                    : thread?.status === "human_takeover" ? "human_takeover" : "progress",
+        content: lines.join("\n"),
+        mediaAssets: resultAssets.map((asset) => ({
+          ...asset,
+          projectId: asset?.projectId ?? channelContext.projectId ?? workItem?.projectId ?? null,
+        })),
+        dedupeKey: notificationKey ? `channel-task:${notificationKey}` : null,
+      });
+      if (notified?.ok || notified?.suppressed || notified?.batched) return notified;
+    }
     let queued;
     try {
       queued = enqueueChannelDelivery({
@@ -502,6 +525,26 @@ export function createChannelDeliveryService({
       });
     }
     return queued;
+  }
+
+  /**
+   * Reconcile terminal channel invocations after boot.  A process can stop
+   * after the invocation became terminal and the task thread was synced, but
+   * before the completion delivery row was written.  The thread's notification
+   * key plus delivery dedupe make this safe to run on every restart.
+   */
+  function recoverCompletedNotifications() {
+    let checked = 0;
+    let queued = 0;
+    for (const invocation of state.invocations ?? []) {
+      if (!invocation?.options?.metadata?.channel) continue;
+      if (invocation?.options?.metadata?.channelConsultation) continue;
+      if (!["succeeded", "completed", "failed", "cancelled", "timed_out"].includes(invocation.status)) continue;
+      checked += 1;
+      const result = notifyInvocationCompleted(invocation);
+      if (result?.ok || result?.batched) queued += 1;
+    }
+    return { checked, queued };
   }
 
   function normalizedResultStatus(status) {
@@ -571,7 +614,7 @@ export function createChannelDeliveryService({
    * it does not bypass the normal outbound retry/audit pipeline.
    */
   function resendChannelDelivery({ channelId, conversationId, threadId } = {}) {
-    const source = (state.channelDeliveries ?? [])
+    let source = (state.channelDeliveries ?? [])
       .filter((delivery) => delivery.channelId === String(channelId ?? "")
         && delivery.conversationId === String(conversationId ?? "")
         && delivery.taskContext?.threadId === String(threadId ?? "")
@@ -579,6 +622,28 @@ export function createChannelDeliveryService({
         && ["delivered", "failed_terminal", "retrying", "queued"].includes(delivery.status)
         && (delivery.content || delivery.mediaAssets?.length))
       .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? "")))[0] ?? null;
+    if (!source) {
+      const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+        candidate.id === String(threadId ?? "")
+        && candidate.channelId === String(channelId ?? "")
+        && candidate.conversationId === String(conversationId ?? "")
+        && candidate.exportedAsset?.path);
+      if (thread) {
+        source = {
+          channelId: thread.channelId,
+          conversationId: thread.conversationId,
+          invocationId: null,
+          content: thread.resultSummary ?? "已重新发送任务结果。",
+          mediaAssets: [thread.exportedAsset],
+          taskContext: {
+            channelId: thread.channelId,
+            conversationId: thread.conversationId,
+            threadId: thread.id,
+            workItemId: thread.workItemId ?? null,
+          },
+        };
+      }
+    }
     if (!source) return { ok: false, reason: "no_result" };
     const queued = enqueueChannelDelivery({
       channelId: source.channelId,
@@ -601,5 +666,15 @@ export function createChannelDeliveryService({
     return { ...queued, sourceDeliveryId: source.id };
   }
 
-  return { enqueueChannelDelivery, enqueueChannelDeliveryBatch, sweepChannelDeliveries, notifyInvocationCompleted, attemptDelivery, retryChannelDelivery, resendChannelDelivery, recoverThreadDeliveryState };
+  return {
+    enqueueChannelDelivery,
+    enqueueChannelDeliveryBatch,
+    sweepChannelDeliveries,
+    notifyInvocationCompleted,
+    recoverCompletedNotifications,
+    attemptDelivery,
+    retryChannelDelivery,
+    resendChannelDelivery,
+    recoverThreadDeliveryState,
+  };
 }

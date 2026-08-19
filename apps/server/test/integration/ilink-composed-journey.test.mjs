@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,6 +12,9 @@ const OWNER = { userId: "usr_local", teamId: "team_local", role: "owner", authen
 
 test("composed iLink journey: poll → import → channel reply queue → provider send", async () => {
   const projectPath = await mkdtemp(join(tmpdir(), "myagenttool-ilink-composed-"));
+  await writeFile(join(projectPath, "alpha.txt"), "alpha\n", "utf8");
+  await writeFile(join(projectPath, "beta.txt"), "beta\n", "utf8");
+  await writeFile(join(projectPath, "gamma.txt"), "gamma\n", "utf8");
   const { state, defaultProject } = createServerState({ defaultProjectPath: projectPath, now: () => NOW });
   let firstPoll = true;
   const sent = [];
@@ -101,14 +104,14 @@ test("composed iLink journey: poll → import → channel reply queue → provid
   const imported = state.channelEvents.find((event) => event.providerMessageId === "101");
   assert.ok(imported);
   assert.equal(imported.status, "dispatched");
-  assert.match(imported.replyText, /你可以直接发送/);
+  assert.match(imported.replyText, /直接发送文字、图片、语音或文件/);
   assert.equal(state.channelDeliveries.length, 1);
   assert.equal(state.channelDeliveries[0].replyContext.contextToken, "ctx-composed");
 
   await deps.sweepChannelDeliveries();
   assert.equal(state.channelDeliveries[0].status, "delivered");
   assert.equal(sent.length, 1);
-  assert.match(sent[0].content, /你可以直接发送/);
+  assert.match(sent[0].content, /直接发送文字、图片、语音或文件/);
   assert.equal(sent[0].contextToken, "ctx-composed");
   assert.equal(sent[0].clientId, state.channelDeliveries[0].id);
 
@@ -126,6 +129,44 @@ test("composed iLink journey: poll → import → channel reply queue → provid
   assert.ok(channelWorkItem.acceptanceCriteria.length >= 2);
   assert.ok(channelWorkItem.verificationSop.length >= 2);
   assert.equal(channelWorkItem.channelOrigin.channelId, channel.id);
+
+  const filesBeforeReadOnlyTask = (await readdir(projectPath, { withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
+  const contentsBeforeReadOnlyTask = await Promise.all(filesBeforeReadOnlyTask.map(async (name) => [
+    name,
+    await readFile(join(projectPath, name), "utf8"),
+  ]));
+  const readOnlyImported = await deps.importChannelEvent({
+    channelId: channel.id,
+    providerMessageId: "102-read-only",
+    externalUserId: "wx-composed",
+    content: "帮我只读取当前项目目录，列出 3 个文件，不要修改任何文件",
+  });
+  assert.equal(readOnlyImported.ok, true);
+  const readOnlyEvent = state.channelEvents.find((event) => event.id === readOnlyImported.eventId);
+  const readOnlyWorkItem = state.workItems.find((item) => item.channelOrigin?.messageId === readOnlyImported.eventId);
+  const readOnlyThread = state.channelTaskThreads.find((thread) => thread.workItemId === readOnlyWorkItem?.id);
+  assert.match(readOnlyEvent.replyText, /只读方式/);
+  assert.match(readOnlyEvent.replyText, /不会创建、修改、删除、移动或重命名文件/);
+  assert.equal(readOnlyWorkItem.channelTaskContract.operationIntent.accessMode, "read_only");
+  assert.equal(readOnlyWorkItem.channelTaskContract.riskLevel, "low");
+  assert.equal(readOnlyWorkItem.channelTaskContract.executionStrategy.strategy, "governed_bridge");
+  assert.equal(readOnlyWorkItem.channelTaskContract.executionStrategy.safeToAutoRoute, true);
+  assert.equal(readOnlyWorkItem.channelTaskContract.dataMutationPreview, null);
+  assert.equal(readOnlyThread.status, "queued");
+  assert.equal(readOnlyThread.waitingFor, null);
+  const filesAfterReadOnlyTask = (await readdir(projectPath, { withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
+  const contentsAfterReadOnlyTask = await Promise.all(filesAfterReadOnlyTask.map(async (name) => [
+    name,
+    await readFile(join(projectPath, name), "utf8"),
+  ]));
+  assert.deepEqual(filesAfterReadOnlyTask, filesBeforeReadOnlyTask);
+  assert.deepEqual(contentsAfterReadOnlyTask, contentsBeforeReadOnlyTask);
 
   const highRiskImported = await deps.importChannelEvent({
     channelId: channel.id,

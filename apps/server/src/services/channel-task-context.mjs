@@ -8,6 +8,7 @@ export function createChannelTaskContext({
   workItemId = null,
   invocationIds = [],
   deliveryIds = [],
+  fileDiscoveries = event.attachmentDiscoveries,
   traceId = null,
 } = {}) {
   if (!channel?.id || !conversation?.id || !event?.id || !identity?.userId) throw contextError("channel_context_identity_required");
@@ -16,6 +17,7 @@ export function createChannelTaskContext({
   }
   if (!terminalId || !projectId) throw contextError("channel_task_binding_required");
   const attachments = normalizeChannelAttachmentAssets(event.attachmentAssets, { terminalId, projectId });
+  const discoveries = normalizeChannelFileDiscoveries(fileDiscoveries, { attachments });
   return Object.freeze({
     version: 1,
     channelId: channel.id,
@@ -30,7 +32,41 @@ export function createChannelTaskContext({
     invocationIds: boundedIds(invocationIds),
     deliveryIds: boundedIds(deliveryIds),
     attachmentAssets: attachments,
+    fileDiscoveries: discoveries,
     traceId: traceId ?? workItemId ?? event.id,
+  });
+}
+
+export function normalizeChannelFileDiscoveries(discoveries, { attachments = [] } = {}) {
+  const assetIds = new Set((Array.isArray(attachments) ? attachments : []).map((asset) => String(asset.id)));
+  return (Array.isArray(discoveries) ? discoveries : []).slice(0, 20).map((discovery) => {
+    const assetId = String(discovery?.assetId ?? "");
+    if (!assetIds.has(assetId)) throw contextError("channel_file_discovery_scope_mismatch");
+    return {
+      status: ["ready", "stale", "unsupported", "unavailable", "forbidden"].includes(discovery?.status)
+        ? discovery.status : "unavailable",
+      assetId,
+      fileName: String(discovery?.fileName ?? "本地文件").slice(0, 300),
+      format: String(discovery?.format ?? "").slice(0, 12) || null,
+      size: Number.isFinite(Number(discovery?.size)) ? Math.max(0, Math.min(16 * 1024 * 1024, Number(discovery.size))) : null,
+      contentHash: String(discovery?.contentHash ?? "").slice(0, 80) || null,
+      rowCount: Number.isInteger(Number(discovery?.rowCount)) ? Math.max(0, Math.min(5_000, Number(discovery.rowCount))) : null,
+      columnCount: Number.isInteger(Number(discovery?.columnCount)) ? Math.max(0, Math.min(100, Number(discovery.columnCount))) : null,
+      recognizedFields: Array.isArray(discovery?.recognizedFields)
+        ? discovery.recognizedFields.slice(0, 40).map((field) => String(field).slice(0, 80)).filter(Boolean)
+        : [],
+      keyCandidates: Array.isArray(discovery?.keyCandidates)
+        ? discovery.keyCandidates.slice(0, 20).map((key) => ({
+          name: String(key?.name ?? "").slice(0, 160),
+          field: String(key?.field ?? "").slice(0, 80),
+        })).filter((key) => key.name)
+        : [],
+      likelyKinds: Array.isArray(discovery?.likelyKinds)
+        ? discovery.likelyKinds.slice(0, 10).map((kind) => String(kind).slice(0, 80))
+        : [],
+      readOnly: true,
+      reason: String(discovery?.reason ?? "").slice(0, 120) || null,
+    };
   });
 }
 

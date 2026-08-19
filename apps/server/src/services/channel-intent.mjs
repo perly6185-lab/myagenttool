@@ -11,6 +11,7 @@ export const CHANNEL_INTENT_KINDS = Object.freeze([
   "consultation",
   "new_task",
   "supplement",
+  "revision",
   "confirm",
   "cancel",
   "query",

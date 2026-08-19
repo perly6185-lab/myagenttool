@@ -34,6 +34,7 @@ const sources = [
 
 test("data mutation intent detects file write requests but ignores read-only work", () => {
   assert.equal(detectsDataMutationIntent("统计 customers.csv 中的客户数量"), false);
+  assert.equal(detectsDataMutationIntent("只读取 customers.csv，不要修改任何文件"), false);
   assert.equal(detectsDataMutationIntent("批量修改 customers.csv 和 orders.xlsx 的客户字段"), true);
   const fromFilePlan = buildDataMutationPreview({
     state: { channelObjectFileSources: [] },

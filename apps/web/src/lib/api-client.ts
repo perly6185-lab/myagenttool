@@ -2771,6 +2771,15 @@ export const api = {
   },
   getChannelDiagnostics: (channelId: string) =>
     request<ChannelDiagnostics>("GET", `/api/channels/${encodeURIComponent(channelId)}/diagnostics`),
+  getChannelNotificationPolicy: (channelId: string, conversationId?: string, threadId?: string | null) => {
+    const search = new URLSearchParams();
+    if (conversationId) search.set("conversationId", conversationId);
+    if (threadId) search.set("threadId", threadId);
+    const suffix = search.toString();
+    return request("GET", `/api/channels/${encodeURIComponent(channelId)}/notification-policy${suffix ? `?${suffix}` : ""}`);
+  },
+  setChannelNotificationPolicy: (channelId: string, payload: { conversationId: string; threadId?: string | null; patch: Record<string, unknown> }) =>
+    request("PUT", `/api/channels/${encodeURIComponent(channelId)}/notification-policy`, payload),
   startIlinkLogin: (channelId: string) =>
     request("POST", `/api/channels/${encodeURIComponent(channelId)}/ilink/login`, {}),
   pollIlinkLogin: (channelId: string, verifyCode?: string) => {

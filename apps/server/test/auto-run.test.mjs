@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { before, beforeEach, test } from "node:test";
 
 import { createProjectService } from "../src/services/projects.mjs";
-import { createAutoRunService, extractChangeFailureRef } from "../src/services/auto-run.mjs";
+import { autoRunPermissionOptions, createAutoRunService, extractChangeFailureRef } from "../src/services/auto-run.mjs";
 import { MAX_FAILOVERS } from "../src/services/invocations/agent-failover.mjs";
 import { createM3Service } from "../src/services/m3.mjs";
 
@@ -36,6 +36,20 @@ function fakeAgent(overrides = {}) {
     ...overrides,
   };
 }
+
+test("read-only Channel work maps to native provider write protection", () => {
+  const readOnly = { accessMode: "read_only" };
+  assert.deepEqual(autoRunPermissionOptions(fakeAgent({ adapter: { type: "cli", command: "codex" } }), readOnly), {
+    approvalMode: "read_only",
+    permissionMode: "read_only",
+  });
+  assert.deepEqual(autoRunPermissionOptions(fakeAgent({ adapter: { type: "cli", command: "claude" } }), readOnly), {
+    permissionMode: "plan",
+  });
+  assert.deepEqual(autoRunPermissionOptions(fakeAgent({ adapter: { type: "cli", command: "codex" } }), { accessMode: "write" }), {
+    approvalMode: "auto",
+  });
+});
 
 // Build an auto-run service over the real project service, capturing what it
 // hands the invocation layer. `invocationStatus` controls the gate outcome.

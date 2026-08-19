@@ -17,6 +17,10 @@ const asset = {
 const event = {
   id: "event-1", channelId: "channel-1", conversationId: "conversation-1",
   providerMessageId: "provider-message-1", attachmentAssets: [asset],
+  attachmentDiscoveries: [{
+    assetId: "asset-1", status: "ready", fileName: "source.xlsx", format: "xlsx",
+    contentHash: "sha256:x", rowCount: 2, recognizedFields: ["order_number"],
+  }],
 };
 
 test("binds Channel identity, message, terminal, project, attachments, task, invocation, delivery, and trace", () => {
@@ -29,6 +33,8 @@ test("binds Channel identity, message, terminal, project, attachments, task, inv
   assert.equal(completed.principalId, "user-1");
   assert.equal(completed.terminalId, "terminal-1");
   assert.equal(completed.attachmentAssets[0].id, "asset-1");
+  assert.equal(completed.fileDiscoveries[0].assetId, "asset-1");
+  assert.deepEqual(completed.fileDiscoveries[0].recognizedFields, ["order_number"]);
   assert.equal(completed.workItemId, "task-1");
   assert.deepEqual(completed.invocationIds, ["invocation-1"]);
   assert.deepEqual(completed.deliveryIds, ["delivery-1"]);
@@ -45,6 +51,15 @@ test("attachments must already be governed assets on the bound project and termi
   assert.throws(() => normalizeChannelAttachmentAssets([{ ...asset, readiness: { state: "waiting_capability" } }], {
     terminalId: "terminal-1", projectId: "project-1",
   }), /channel_attachment_not_ready/);
+});
+
+test("file discoveries must belong to the already-ingested attachment set", () => {
+  assert.throws(() => createChannelTaskContext({
+    channel, conversation, event: {
+      ...event,
+      attachmentDiscoveries: [{ ...event.attachmentDiscoveries[0], assetId: "other-asset" }],
+    }, identity, terminalId: "terminal-1", projectId: "project-1",
+  }), /channel_file_discovery_scope_mismatch/);
 });
 
 test("context refuses identity drift and missing explicit task binding", () => {

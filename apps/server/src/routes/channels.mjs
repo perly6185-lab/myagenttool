@@ -36,6 +36,9 @@ export async function handleChannelRoutes({
   activateIlinkChannel,
   disconnectIlinkChannel,
   onIlinkChannelStateChanged,
+  getChannelNotificationPolicy,
+  listChannelNotificationPolicies,
+  setChannelNotificationPolicy,
 }) {
   if (!url.pathname.startsWith("/api/channels") && !url.pathname.startsWith("/api/channel-tasks/")) return false;
 
@@ -65,6 +68,30 @@ export async function handleChannelRoutes({
       limit: url.searchParams.get("limit") ?? 50,
     }, actor);
     sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const notificationPolicy = url.pathname.match(/^\/api\/channels\/([^/]+)\/notification-policy$/);
+  if (notificationPolicy && req.method === "GET" && typeof getChannelNotificationPolicy === "function") {
+    const channelId = decodeURIComponent(notificationPolicy[1]);
+    const conversationId = url.searchParams.get("conversationId");
+    const threadId = url.searchParams.get("threadId");
+    const result = conversationId
+      ? getChannelNotificationPolicy({ channelId, conversationId, threadId: threadId || null }, actor)
+      : (typeof listChannelNotificationPolicies === "function" ? listChannelNotificationPolicies({ channelId }, actor) : { policies: [] });
+    sendJson(res, 200, result);
+    return true;
+  }
+  if (notificationPolicy && req.method === "PUT" && typeof setChannelNotificationPolicy === "function") {
+    const body = await readJson(req);
+    const result = setChannelNotificationPolicy({
+      channelId: decodeURIComponent(notificationPolicy[1]),
+      conversationId: body?.conversationId,
+      threadId: body?.threadId ?? null,
+      patch: body?.patch ?? body,
+      actorId: actor?.userId ?? null,
+    });
+    sendJson(res, result.ok ? 200 : 400, result);
     return true;
   }
 

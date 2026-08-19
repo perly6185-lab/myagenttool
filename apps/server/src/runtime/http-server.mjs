@@ -80,6 +80,9 @@ export function createHttpServer({
   recordRoutingOverride,
   setReportSchedule,
   postReportNow,
+  getChannelNotificationPolicy,
+  listChannelNotificationPolicies,
+  setChannelNotificationPolicy,
   claimIssue,
   beginWorkItemExecution,
   abortWorkItemExecution,
@@ -882,6 +885,9 @@ export function createHttpServer({
         activateIlinkChannel,
         disconnectIlinkChannel,
         onIlinkChannelStateChanged,
+        getChannelNotificationPolicy,
+        listChannelNotificationPolicies,
+        setChannelNotificationPolicy,
       })) {
         return;
       }

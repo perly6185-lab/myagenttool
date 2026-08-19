@@ -21,7 +21,7 @@ const manageRules = [
   /^\/api\/integration-retention$/,
   /^\/api\/integration-builder\/draft$/,
   /^\/api\/channels$/,
-  /^\/api\/channels\/[^/]+\/(?:allowlist|task-project|approval-policy|enable|disable)$/,
+  /^\/api\/channels\/[^/]+\/(?:allowlist|task-project|approval-policy|notification-policy|enable|disable)$/,
   /^\/api\/channels\/[^/]+\/identities(?:\/[^/]+)?$/,
   /^\/api\/budgets$/,
   /^\/api\/automations$/,

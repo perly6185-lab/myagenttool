@@ -41,6 +41,9 @@ import { normalizeRuntimeDataPlan } from "./data-plan-contract.mjs";
 import { normalizeDataRelationPreview } from "./data-relation-preview.mjs";
 import { normalizeDataMutationPreview } from "./data-mutation-contract.mjs";
 import { normalizeWorkModeSnapshot } from "./work-mode-runtime.mjs";
+import { normalizeChannelExecutionStrategy } from "./channel-execution-strategy.mjs";
+import { normalizeChannelOperationIntent } from "./channel-operation-intent.mjs";
+import { normalizeChannelDataOperationPreview } from "./channel-data-operation-preview.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -381,9 +384,38 @@ function normalizeChannelTaskContract(input) {
     }
     : null;
   const dataPlan = normalizeRuntimeDataPlan(input.dataPlan);
+  const dataOperationPreview = normalizeChannelDataOperationPreview(input.dataOperationPreview);
+  const fileDiscoveries = Array.isArray(input.fileDiscoveries)
+    ? input.fileDiscoveries.slice(0, 20).map((discovery) => ({
+      status: ["ready", "stale", "unsupported", "unavailable", "forbidden"].includes(discovery?.status)
+        ? discovery.status : "unavailable",
+      assetId: boundedText(discovery?.assetId, 200) || null,
+      fileName: boundedText(discovery?.fileName, 300) || "本地文件",
+      format: boundedText(discovery?.format, 12) || null,
+      contentHash: boundedText(discovery?.contentHash, 80) || null,
+      rowCount: Number.isInteger(Number(discovery?.rowCount)) ? Math.max(0, Math.min(5_000, Number(discovery.rowCount))) : null,
+      columnCount: Number.isInteger(Number(discovery?.columnCount)) ? Math.max(0, Math.min(100, Number(discovery.columnCount))) : null,
+      recognizedFields: Array.isArray(discovery?.recognizedFields)
+        ? discovery.recognizedFields.slice(0, 40).map((field) => boundedText(field, 80)).filter(Boolean)
+        : [],
+      keyCandidates: Array.isArray(discovery?.keyCandidates)
+        ? discovery.keyCandidates.slice(0, 20).map((key) => ({
+          name: boundedText(key?.name, 160) || null,
+          field: boundedText(key?.field, 80) || null,
+        })).filter((key) => key.name)
+        : [],
+      likelyKinds: Array.isArray(discovery?.likelyKinds)
+        ? discovery.likelyKinds.slice(0, 10).map((kind) => boundedText(kind, 80)).filter(Boolean)
+        : [],
+      readOnly: true,
+      reason: boundedText(discovery?.reason, 120) || null,
+    }))
+    : [];
   const dataRelationPreview = normalizeDataRelationPreview(input.dataRelationPreview);
   const dataMutationPreview = normalizeDataMutationPreview(input.dataMutationPreview);
   const workMode = normalizeWorkModeSnapshot(input.workMode);
+  const executionStrategy = normalizeChannelExecutionStrategy(input.executionStrategy);
+  const operationIntent = normalizeChannelOperationIntent(input.operationIntent);
   const dataMutationBinding = input.dataMutationBinding && typeof input.dataMutationBinding === "object"
     ? {
       schemaVersion: 1,
@@ -543,7 +575,11 @@ function normalizeChannelTaskContract(input) {
       dataSources: sources,
       templateMatch,
       workMode,
+      operationIntent,
+      executionStrategy,
       dataPlan,
+      dataOperationPreview,
+      fileDiscoveries,
       dataRelationPreview,
       dataMutationPreview,
       dataMutationBinding,

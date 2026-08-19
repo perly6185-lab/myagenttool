@@ -14,6 +14,7 @@ export function channelOperations({
   channelDeliveries = [],
   channelTaskThreads = [],
   readinessForChannel = null,
+  runtimeAccountForChannel = null,
 } = {}) {
   const byChannel = (rows, channelId) => rows.filter((row) => row?.channelId === channelId);
 
@@ -41,6 +42,9 @@ export function channelOperations({
       + taskSummary.needsAttention
       + taskSummary.humanTakeover;
     const readiness = typeof readinessForChannel === "function" ? readinessForChannel(channel) : (channel.readiness ?? {});
+    const runtimeAccount = typeof runtimeAccountForChannel === "function"
+      ? runtimeAccountForChannel(channel)
+      : null;
     const readinessValues = Object.values(readiness);
     const ready = readinessValues.length > 0 && readinessValues.every(Boolean);
     const lastActivityAt = [
@@ -73,6 +77,22 @@ export function channelOperations({
       readiness,
       ready,
       health,
+      // Keep the provider runtime summary explicitly allowlisted. The runtime
+      // callback already returns a public view, but this prevents credentials,
+      // cursors, or future private fields from reaching the browser.
+      ilinkAccount: runtimeAccount ? {
+        status: runtimeAccount.status ?? null,
+        botId: runtimeAccount.botId ?? null,
+        lastPollAt: runtimeAccount.lastPollAt ?? null,
+        lastMessageAt: runtimeAccount.lastMessageAt ?? null,
+        lastError: runtimeAccount.lastError ?? null,
+        pairingStatus: runtimeAccount.pairingStatus ?? null,
+        workerFailureCount: Number(runtimeAccount.workerFailureCount ?? 0),
+        nextRetryAt: runtimeAccount.nextRetryAt ?? null,
+        connectedAt: runtimeAccount.connectedAt ?? null,
+        updatedAt: runtimeAccount.updatedAt ?? null,
+        pairingExpiresAt: runtimeAccount.pairingExpiresAt ?? null,
+      } : null,
       capabilityAllowlist: channel.capabilityAllowlist ?? [],
       statusCapability: channel.statusCapability ?? null,
       // The project /task files issues into (null = /task disabled for this channel).

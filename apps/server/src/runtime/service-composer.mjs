@@ -45,9 +45,12 @@ import { createChannelService, defaultReadinessProbes } from "../services/channe
 import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
 import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
+import { analyzeChannelOperationIntent } from "../services/channel-operation-intent.mjs";
+import { discoverChannelFileAsset } from "../services/channel-file-discovery.mjs";
 import { createChannelIntentAdapter, resolveChannelIntentConfig } from "../services/channel-intent-adapter.mjs";
 import { createChannelConsultationAdapter, resolveChannelConsultationConfig } from "../services/channel-consultation-adapter.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
+import { createChannelNotificationService } from "../services/channel-notifications.mjs";
 import {
   channelObjectValidationMatches,
   channelObjectValidationSummary,
@@ -64,6 +67,7 @@ import {
 } from "../services/channel-ledger-mutation.mjs";
 import {
   buildRuntimeDataPlan,
+  buildAttachmentDataPlan,
   dataPlanMatchesCurrent,
   dataPlanMissingLabels,
 } from "../services/data-plan-contract.mjs";
@@ -76,7 +80,9 @@ import {
     dataMutationPreviewMatchesCurrent,
 } from "../services/data-mutation-contract.mjs";
 import { buildWorkModeSnapshot } from "../services/work-mode-runtime.mjs";
+import { selectChannelExecutionStrategy } from "../services/channel-execution-strategy.mjs";
 import { buildPaymentReconciliationPreview } from "../services/channel-payment-reconciliation.mjs";
+import { buildChannelDataOperationPreview } from "../services/channel-data-operation-preview.mjs";
 import { createIlinkRuntime } from "../gateway/ilink-runtime.mjs";
 import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
@@ -2171,6 +2177,7 @@ export function createServerRuntimeServices({
     budgetStatuses,
     expireCodexApprovalBrokerRequests,
     channelReadiness: (channel) => channelService.readiness(channel),
+    channelRuntimeAccount: (channel) => ilinkRuntime?.publicAccount?.(channel?.id) ?? null,
   });
 
   const {
@@ -2327,8 +2334,9 @@ export function createServerRuntimeServices({
     if (/(报价|客户|订单|发货|物流|汇款|付款|收款|采购|库存|合同|报销|邮件|表格|对账)/i.test(value)) return "office";
     return "general";
   };
-  const inferChannelTaskRiskLevel = (text) => {
+  const inferChannelTaskRiskLevel = (text, operationIntent = null) => {
     const value = String(text ?? "").toLowerCase();
+    if (operationIntent?.accessMode === "read_only") return "low";
     if (/(汇款|付款|支付|转账|收款账户|银行卡)/i.test(value)) return "financial";
     if (/(删除|清空|覆盖|批量修改|销毁)/i.test(value)) return "destructive";
     if (/(发送给|发给客户|对外发送|发布|发货|提交订单)/i.test(value)) return "external_communication";
@@ -2336,7 +2344,7 @@ export function createServerRuntimeServices({
     return "low";
   };
   const buildChannelExecutionPreview = ({
-    title, description, riskLevel, inputAssets = [], projectId = null, ownerTeamId = null,
+    title, description, riskLevel, operationIntent = null, inputAssets = [], projectId = null, ownerTeamId = null,
   }) => {
     const text = String(description ?? title ?? "").replace(/\s+/g, " ").trim();
     const targetMatch = text.match(/(?:发给|发送给|发布到|提交给|通知)\s*([^，,。；;！!？?]+)/i);
@@ -2346,13 +2354,15 @@ export function createServerRuntimeServices({
     const target = targetMatch?.[1]?.trim() || payeeMatch?.[1]?.trim() || null;
     const amount = amountMatch?.[1]?.replace(/\s+/g, " ").trim() || null;
     const scope = scopeMatch?.[1]?.trim() || null;
-    const action = {
+    const action = operationIntent?.accessMode === "read_only"
+      ? "只读查看或分析"
+      : ({
       external_communication: "对外发送或发布",
       financial: "财务操作",
       destructive: "删除、覆盖或批量修改",
       local_change: "修改本地内容",
       low: "整理、分析或咨询",
-    }[riskLevel] ?? "任务处理";
+      }[riskLevel] ?? "任务处理");
     const inputs = inputAssets.slice(0, 20).map((asset) => ({
       name: asset?.originalName ?? asset?.name ?? String(asset?.path ?? "").replaceAll("\\", "/").split("/").at(-1) ?? "附件",
       family: asset?.family ?? "file",
@@ -2413,7 +2423,9 @@ export function createServerRuntimeServices({
       amount,
       scope,
       inputs,
-      impact: riskLevel === "financial"
+      impact: operationIntent?.accessMode === "read_only"
+        ? "只读取现有内容，不创建、修改、删除、移动或重命名文件"
+        : riskLevel === "financial"
         ? "可能产生资金或财务数据变更"
         : riskLevel === "destructive"
           ? "可能覆盖或删除已有数据"
@@ -2676,7 +2688,7 @@ export function createServerRuntimeServices({
   const createChannelTaskIssue = async ({
     projectId, channelOwnerTeamId, title, description, channelId, externalUserId,
     injectionSuspicious = false, autoRoute = false, inputAssets = [], terminalId,
-    channelTaskContext, threadId = null, idempotencyKey = null, dataMutationScope = null,
+    channelTaskContext, fileDiscoveries = [], threadId = null, idempotencyKey = null, dataMutationScope = null,
   }) => {
     const project = (state.projects ?? []).find((p) => p.id === projectId);
     if (!project) return { ok: false, reason: "project_not_resolvable" };
@@ -2698,6 +2710,7 @@ export function createServerRuntimeServices({
     const selectedDefinition = selectedTemplate
       ? (state.routineDefinitions ?? []).find((definition) => definition.id === selectedTemplate.definitionId)
       : null;
+    const operationIntent = analyzeChannelOperationIntent(`${title}\n${description}`);
     const templateMatch = selectedTemplate ? {
       state: assistedDraft.templateMatch.state,
       decision: assistedDraft.templateMatch.decision?.reason ?? assistedDraft.templateMatch.decision?.kind ?? null,
@@ -2713,7 +2726,7 @@ export function createServerRuntimeServices({
       version: null,
       reasons: [],
     };
-    const dataPlan = buildRuntimeDataPlan({
+    const templateDataPlan = buildRuntimeDataPlan({
       state,
       projectId,
       ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
@@ -2721,6 +2734,23 @@ export function createServerRuntimeServices({
       relations: selectedDefinition?.relations ?? [],
       mutationPolicy: selectedDefinition?.mutationPolicy ?? null,
     });
+    const attachmentDataPlan = buildAttachmentDataPlan({
+      discoveries: channelTaskContext?.fileDiscoveries ?? fileDiscoveries,
+      attachments: inputAssets,
+    });
+    const dataPlan = selectedDefinition
+      ? templateDataPlan
+      : attachmentDataPlan.status !== "not_required"
+        ? attachmentDataPlan
+        : templateDataPlan;
+    const dataOperationPreview = dataPlan.origin === "channel_attachment"
+      ? await buildChannelDataOperationPreview({
+        text: [title, description].join("\n"),
+        plan: dataPlan,
+        attachments: inputAssets,
+        projectPath: project.path,
+      })
+      : null;
     const dataRelationPreview = buildDataRelationPreview({
       state,
       plan: dataPlan,
@@ -2754,14 +2784,17 @@ export function createServerRuntimeServices({
         .update(JSON.stringify(paymentReconciliationPreview))
         .digest("hex");
     }
-    let dataMutationPreview = buildDataMutationPreview({
+    let dataMutationPreview = dataPlan.origin === "channel_attachment"
+      ? null
+      : buildDataMutationPreview({
       state,
       projectId,
       ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
       text: `${title}\n${description}`,
+      operationIntent,
       dataPlan,
       dataMutationScope,
-    });
+      });
     const dataMutationBindings = (dataMutationPreview?.targetSourceIds ?? []).map((fileSourceId) =>
       channelMutationBindingService.resolveBinding({ projectId, fileSourceId }, workItemActor));
     const dataMutationBinding = dataMutationBindings.length === 1
@@ -2913,15 +2946,39 @@ export function createServerRuntimeServices({
     // from accidentally routing it through the financial side-effect gate.
     const riskLevel = paymentReconciliationPreview
       ? "low"
-      : inferChannelTaskRiskLevel(`${title}\n${description}`);
+      : inferChannelTaskRiskLevel(`${title}\n${description}`, operationIntent);
+    const executionStrategy = selectChannelExecutionStrategy({
+      goal: `${title}\n${description}`,
+      selectedTemplate,
+      selectedDefinition,
+      dataPlan,
+      dataMutationPreview,
+      ledgerMutationPreview,
+      paymentReconciliationPreview,
+      operationIntent,
+      riskLevel,
+      generatedAt: now(),
+    });
     const executionPreview = buildChannelExecutionPreview({
       title,
       description,
       riskLevel,
+      operationIntent,
       inputAssets,
       projectId,
       ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
     });
+    if (executionStrategy.strategy === "blocked") {
+      executionPreview.unknownFields = [...new Set([
+        ...(executionPreview.unknownFields ?? []),
+        "尚未匹配到可复用的安全文件操作",
+      ])].slice(0, 10);
+      executionPreview.requiredFields = [...new Set([
+        ...(executionPreview.requiredFields ?? []),
+        "请先确认文件字段、记录定位方式和允许的修改范围",
+      ])].slice(0, 10);
+      executionPreview.previewReady = false;
+    }
     const dataLabels = dataPlanMissingLabels(dataPlan);
     if (dataLabels.length) {
       executionPreview.unknownFields = [...new Set([
@@ -2942,6 +2999,17 @@ export function createServerRuntimeServices({
       executionPreview.requiredFields = [...new Set([
         ...(executionPreview.requiredFields ?? []),
         "数据关联结果确认",
+      ])].slice(0, 10);
+      executionPreview.previewReady = false;
+    }
+    if (dataOperationPreview?.status && dataOperationPreview.status !== "ready") {
+      executionPreview.unknownFields = [...new Set([
+        ...(executionPreview.unknownFields ?? []),
+        dataOperationPreview.status === "stale" ? "文件在执行前发生变化" : "只读数据预览尚未准备好",
+      ])].slice(0, 10);
+      executionPreview.requiredFields = [...new Set([
+        ...(executionPreview.requiredFields ?? []),
+        dataOperationPreview.status === "stale" ? "请重新上传最新文件" : "请补充可读取的数据文件",
       ])].slice(0, 10);
       executionPreview.previewReady = false;
     }
@@ -3006,6 +3074,7 @@ export function createServerRuntimeServices({
     executionPreview.digest = createHash("sha256").update(JSON.stringify({
       riskLevel,
       goal: description,
+      operationIntent,
       preview: executionPreview,
       dataPlanDigest: dataPlan.digest,
     })).digest("hex");
@@ -3028,6 +3097,7 @@ export function createServerRuntimeServices({
       domain: inferChannelTaskDomain(`${title}\n${description}`),
       riskLevel,
       goal: description,
+      operationIntent,
       outputExpectation: selectedTemplate?.expectedOutput ?? null,
       dataSources: inputAssets.slice(0, 100).map((asset) => ({
         kind: "channel_attachment",
@@ -3036,12 +3106,15 @@ export function createServerRuntimeServices({
         version: asset?.version ?? null,
         hash: asset?.hash ?? null,
       })),
+      fileDiscoveries: (channelTaskContext?.fileDiscoveries ?? fileDiscoveries).slice(0, 20),
       templateMatch,
       workMode,
       dataPlan,
+      dataOperationPreview,
       dataRelationPreview,
       paymentReconciliationPreview,
       dataMutationPreview,
+      executionStrategy,
       dataMutationBinding: dataMutationBinding.ok ? dataMutationBinding.binding : null,
       dataMutationBindings: dataMutationBindings.filter((binding) => binding.ok).map((binding) => binding.binding),
       ledgerMutationPreview,
@@ -3063,8 +3136,17 @@ export function createServerRuntimeServices({
       && ["external_communication", "financial", "destructive"].includes(channelTaskContract.riskLevel);
     const requiresDataPlan = ["needs_sources", "ambiguous", "stale"].includes(dataPlan.status);
     const requiresDataReview = dataRelationPreview.status === "needs_review";
+    const requiresDataOperationReview = ["stale", "needs_sources", "blocked"].includes(dataOperationPreview?.status);
     const requiresDataMutationReview = Boolean(dataMutationPreview?.status && dataMutationPreview.status !== "not_required");
-    const effectiveAutoRoute = autoRoute && !requiresChannelConfirmation && !requiresDataPlan && !requiresDataReview && !requiresDataMutationReview;
+    const requiresExecutionStrategyReview = executionStrategy.strategy === "blocked";
+    const effectiveAutoRoute = autoRoute
+      && executionStrategy.safeToAutoRoute
+      && !requiresChannelConfirmation
+      && !requiresDataPlan
+      && !requiresDataReview
+      && !requiresDataOperationReview
+      && !requiresDataMutationReview
+      && !requiresExecutionStrategyReview;
     const myTemplateBinding = selectedTemplate && assistedDraft?.templateMatch?.decision?.kind === "auto_apply"
       ? {
         definitionId: selectedTemplate.definitionId,
@@ -3151,10 +3233,13 @@ export function createServerRuntimeServices({
       requiresChannelConfirmation,
       requiresDataPlan,
       requiresDataReview,
+      requiresDataOperationReview,
       riskLevel: channelTaskContract.riskLevel,
+      operationIntent: channelTaskContract.operationIntent,
       workMode: channelTaskContract.workMode,
       executionPreview: channelTaskContract.executionPreview,
       dataPlan: channelTaskContract.dataPlan,
+      dataOperationPreview: channelTaskContract.dataOperationPreview,
       dataRelationPreview: channelTaskContract.dataRelationPreview,
       paymentReconciliationPreview: channelTaskContract.paymentReconciliationPreview,
       dataMutationPreview: channelTaskContract.dataMutationPreview,
@@ -3163,6 +3248,8 @@ export function createServerRuntimeServices({
       ledgerMutationPreview: channelTaskContract.ledgerMutationPreview,
       dataRelationConfirmation: attachedDataRelationConfirmation ?? channelTaskContract.dataRelationConfirmation ?? null,
       requiresDataMutationReview,
+      requiresExecutionStrategyReview,
+      executionStrategy: channelTaskContract.executionStrategy,
       previewDigest: channelTaskContract.executionPreview.digest,
       previewReady: channelTaskContract.executionPreview.previewReady,
       objectValidation: channelTaskContract.executionPreview.objectValidation,
@@ -3190,6 +3277,17 @@ export function createServerRuntimeServices({
       const requestChannel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
       const storedDataMutationPreview = item.channelTaskContract?.dataMutationPreview ?? null;
       const storedLedgerMutationPreview = item.channelTaskContract?.ledgerMutationPreview ?? null;
+      const storedExecutionStrategy = item.channelTaskContract?.executionStrategy ?? null;
+      if (storedExecutionStrategy?.strategy === "blocked") {
+        return {
+          status: 409,
+          body: {
+            error: "channel_task_execution_strategy_required",
+            executionStrategy: storedExecutionStrategy,
+            requiredFields: item.channelTaskContract?.executionPreview?.requiredFields ?? [],
+          },
+        };
+      }
       const isReadyLocalMutation = storedDataMutationPreview?.status === "ready"
         && Boolean(storedLedgerMutationPreview);
       const storedValidation = item.channelTaskContract?.executionPreview?.objectValidation ?? null;
@@ -3231,6 +3329,7 @@ export function createServerRuntimeServices({
         }
       }
       const storedDataPlan = item.channelTaskContract?.dataPlan ?? null;
+      const storedDataOperationPreview = item.channelTaskContract?.dataOperationPreview ?? null;
       if (storedDataPlan) {
         const channel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
         const currentPlan = dataPlanMatchesCurrent({
@@ -3238,7 +3337,39 @@ export function createServerRuntimeServices({
           plan: storedDataPlan,
           projectId: item.projectId ?? req.projectId,
           ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+          inputAssets: item.inputAssets ?? req.inputAssets ?? [],
         });
+        if (currentPlan.ok && storedDataPlan.origin === "channel_attachment") {
+          const project = (state.projects ?? []).find((candidate) => candidate.id === (item.projectId ?? req.projectId));
+          const assetsById = new Map((item.inputAssets ?? req.inputAssets ?? [])
+            .filter((asset) => asset?.id)
+            .map((asset) => [String(asset.id), asset]));
+          const checks = await Promise.all((storedDataPlan.sources ?? []).map(async (source) => {
+            const asset = assetsById.get(String(source.sourceId));
+            if (!asset || !project?.path) return { ok: false, sourceId: source.sourceId, reason: "attachment_binding_missing" };
+            const discovery = await discoverChannelFileAsset({
+              asset,
+              projectPath: project.path,
+              projectId: project.id,
+            });
+            return {
+              ok: discovery.status === "ready" && discovery.contentHash === source.fingerprint,
+              sourceId: source.sourceId,
+              reason: discovery.status === "ready" ? "attachment_hash_changed" : discovery.reason,
+            };
+          }));
+          const changed = checks.filter((check) => !check.ok);
+          if (changed.length) {
+            return {
+              status: 409,
+              body: {
+                error: "channel_task_data_plan_changed",
+                dataPlan: { ...storedDataPlan, status: "stale" },
+                changedSources: changed.slice(0, 10),
+              },
+            };
+          }
+        }
         if (!currentPlan.ok && ["needs_sources", "ambiguous", "stale"].includes(currentPlan.current?.status)) {
           return {
             status: 409,
@@ -3258,6 +3389,15 @@ export function createServerRuntimeServices({
           };
         }
       }
+      if (storedDataOperationPreview && storedDataOperationPreview.status !== "ready") {
+        return {
+          status: 409,
+          body: {
+            error: "channel_task_data_operation_preview_required",
+            dataOperationPreview: storedDataOperationPreview,
+          },
+        };
+      }
       const storedDataRelationPreview = item.channelTaskContract?.dataRelationPreview ?? null;
       if (storedDataRelationPreview && storedDataPlan) {
         const channel = (state.channels ?? []).find((candidate) => candidate.id === req.channelId);
@@ -3266,6 +3406,7 @@ export function createServerRuntimeServices({
           plan: storedDataPlan,
           projectId: item.projectId ?? req.projectId,
           ownerTeamId: channel?.ownerTeamId ?? req.channelTaskContext?.ownerTeamId ?? actor?.teamId ?? LOCAL_TEAM_ID,
+          inputAssets: item.inputAssets ?? req.inputAssets ?? [],
         });
         const currentRelationPreview = dataRelationPreviewMatchesCurrent({
           state,
@@ -3769,6 +3910,8 @@ export function createServerRuntimeServices({
 
   let channelReplySender = null;
   let channelResendDelivery = null;
+  let channelDeliveryService = null;
+  let channelNotificationService = null;
   const recordChannelIntentBridgeMetric = ({ status, latencyMs, circuitOpen, circuitOpenUntil, failureStreak, circuitTrips } = {}) => {
     const current = state.channelIntentMetrics ?? {
       total: 0,
@@ -3837,6 +3980,11 @@ export function createServerRuntimeServices({
     createConsultation: channelConsultationAdapter?.enqueue,
     resendDelivery: (args) => channelResendDelivery?.(args),
     replySender: (args) => channelReplySender?.(args),
+    enqueueChannelDelivery: (args) => channelDeliveryService?.enqueueChannelDelivery(args),
+    notifyTaskEvent: (args) => channelNotificationService?.notifyTaskEvent(args),
+    setNotificationPolicy: (args) => channelNotificationService?.setPolicy(args),
+    updateWorkItem: workItemService.updateWorkItem,
+    resolveProjectPath: (projectId) => (state.projects ?? []).find((project) => project.id === projectId)?.path ?? null,
     notifyHumanTakeover: ({ thread, request, reason }) => {
       const channel = (state.channels ?? []).find((candidate) => candidate.id === thread?.channelId);
       return alertOutbox.enqueue({
@@ -3865,10 +4013,15 @@ export function createServerRuntimeServices({
   // secret. Keyed by provider so a WeCom and a Feishu delivery route to their
   // own client (delivery picks by channel.provider).
   const channelSenders = {};
-  const channelDeliveryService = createChannelDeliveryService({
+  channelDeliveryService = createChannelDeliveryService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
     resolveSender: (provider) => channelSenders[provider] ?? null,
     validateApprovalToken,
+    notifyTaskEvent: (args) => channelNotificationService?.notifyTaskEvent(args),
+  });
+  channelNotificationService = createChannelNotificationService({
+    state, now, nextId, appendEvent, persistStateSoon, store,
+    enqueueChannelDelivery: (args) => channelDeliveryService.enqueueChannelDelivery(args),
   });
   enqueueWorkItemReportDeliveryBatch = channelDeliveryService.enqueueChannelDeliveryBatch;
   channelReplySender = ({ channelId, conversationId, content, threadId = null, invocationId = null, dedupeKey = null }) => channelDeliveryService.enqueueChannelDelivery({
@@ -3883,7 +4036,9 @@ export function createServerRuntimeServices({
   });
   channelResendDelivery = channelDeliveryService.resendChannelDelivery;
   channelDeliveryService.recoverThreadDeliveryState?.();
+  channelNotificationService.sweep?.();
   channelConversationService.recoverTaskThreads?.();
+  channelDeliveryService.recoverCompletedNotifications?.();
   channelConversationService.recoverConsultations?.();
   channelConversationService.resumeIntake?.();
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
@@ -3998,6 +4153,15 @@ export function createServerRuntimeServices({
             },
           };
         }
+      }
+    }
+    if (normalizedPayload.attachmentAssets?.length) {
+      const channel = (state.channels ?? []).find((row) => row.id === normalizedPayload.channelId);
+      const project = (state.projects ?? []).find((row) => row.id === channel?.taskProjectId);
+      if (project?.path) {
+        const discoveries = await Promise.all(normalizedPayload.attachmentAssets.map((asset) =>
+          discoverChannelFileAsset({ asset, projectPath: project.path, projectId: project.id })));
+        normalizedPayload = { ...normalizedPayload, attachmentDiscoveries: discoveries };
       }
     }
     const imported = channelService.importChannelEvent(normalizedPayload);
@@ -6336,6 +6500,10 @@ export function createServerRuntimeServices({
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
     sweepChannelTaskThreads: channelConversationService.sweepTaskThreads,
+    sweepChannelNotifications: channelNotificationService.sweep,
+    getChannelNotificationPolicy: channelNotificationService.getPolicy,
+    listChannelNotificationPolicies: channelNotificationService.listPolicies,
+    setChannelNotificationPolicy: channelNotificationService.setPolicy,
     recoverChannelTaskThreads: channelConversationService.recoverTaskThreads,
     retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
     beginIlinkLogin: ilinkRuntime.beginLogin,

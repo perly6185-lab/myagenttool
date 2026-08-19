@@ -272,6 +272,7 @@ export function createChannelService({
           externalUserId: row.externalUserId,
           providerMessageId: row.providerMessageId,
           injectionSuspicious: Boolean(row.injectionSuspicious),
+          fileDiscoveries: Array.isArray(row.attachmentDiscoveries) ? row.attachmentDiscoveries : [],
           mediaFailure: row.mediaFailure
             ? {
               total: row.mediaFailure.total ?? 0,
@@ -710,6 +711,7 @@ export function createChannelService({
     providerCreateTime = null,
     agentId = null,
     attachmentAssets = [],
+    attachmentDiscoveries = [],
     mediaFailure = null,
     // Optional per-provider reply target (#1135): providers whose reply address
     // differs from the sender identity (Teams: {serviceUrl, conversationId})
@@ -760,6 +762,32 @@ export function createChannelService({
     } catch (error) {
       return { ok: false, refused: true, reason: error?.code ?? "invalid_channel_attachment" };
     }
+    const normalizedDiscoveries = (Array.isArray(attachmentDiscoveries) ? attachmentDiscoveries : [])
+      .slice(0, 10)
+      .map((discovery) => ({
+        status: ["ready", "stale", "unsupported", "unavailable", "forbidden"].includes(discovery?.status)
+          ? discovery.status : "unavailable",
+        assetId: String(discovery?.assetId ?? "").slice(0, 200) || null,
+        fileName: String(discovery?.fileName ?? "本地文件").slice(0, 300),
+        format: String(discovery?.format ?? "").slice(0, 12) || null,
+        size: Number.isFinite(Number(discovery?.size)) ? Math.max(0, Math.min(16 * 1024 * 1024, Number(discovery.size))) : null,
+        contentHash: String(discovery?.contentHash ?? "").slice(0, 80) || null,
+        rowCount: Number.isInteger(Number(discovery?.rowCount)) ? Math.max(0, Math.min(5_000, Number(discovery.rowCount))) : null,
+        columnCount: Number.isInteger(Number(discovery?.columnCount)) ? Math.max(0, Math.min(100, Number(discovery.columnCount))) : null,
+        columns: Array.isArray(discovery?.columns) ? discovery.columns.slice(0, 100).map((column, index) => ({
+          name: String(column?.name ?? `第${index + 1}列`).slice(0, 160),
+          index: Number.isInteger(Number(column?.index)) ? Number(column.index) : index + 1,
+          field: String(column?.field ?? "").slice(0, 80) || null,
+        })) : [],
+        recognizedFields: Array.isArray(discovery?.recognizedFields) ? discovery.recognizedFields.slice(0, 40).map((field) => String(field).slice(0, 80)) : [],
+        keyCandidates: Array.isArray(discovery?.keyCandidates) ? discovery.keyCandidates.slice(0, 20).map((key) => ({
+          name: String(key?.name ?? "").slice(0, 160),
+          field: String(key?.field ?? "").slice(0, 80),
+        })).filter((key) => key.name) : [],
+        likelyKinds: Array.isArray(discovery?.likelyKinds) ? discovery.likelyKinds.slice(0, 10).map((kind) => String(kind).slice(0, 80)) : [],
+        readOnly: true,
+        reason: String(discovery?.reason ?? "").slice(0, 120) || null,
+      }));
 
     // Preserved, not scrubbed (ADR 0011 rule 3): injection markers flag the
     // event for a human; the verbatim text stays data.
@@ -803,6 +831,7 @@ export function createChannelService({
         providerCreateTime: providerCreateTime ? String(providerCreateTime) : null,
         agentId: agentId ? String(agentId) : null,
         attachmentAssets: normalizedAttachments,
+        attachmentDiscoveries: normalizedDiscoveries,
         mediaFailure: mediaFailure && typeof mediaFailure === "object"
           ? {
             total: Math.max(0, Math.min(20, Number(mediaFailure.total) || 0)),

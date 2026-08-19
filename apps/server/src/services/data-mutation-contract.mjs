@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { analyzeChannelOperationIntent, normalizeChannelOperationIntent } from "./channel-operation-intent.mjs";
 
 const FILE_HINT_RE = /(?:\.csv\b|\.xlsx?\b|excel|表格|工作簿|sheet|数据表|清单)/i;
 const MUTATION_RE = /(?:修改|更新|改(?:一下|为|成)|替换|回填|写入|写回|批量|删除|清空|新增|追加|覆盖|调整|纠正|同步回)/i;
@@ -166,15 +167,22 @@ export function normalizeDataMutationScope(input, options = {}) {
   return validateDataMutationScope(input, options).value;
 }
 
-export function detectsDataMutationIntent(text) {
+export function detectsDataMutationIntent(text, operationIntent = null) {
   const value = String(text ?? "");
+  const intent = normalizeChannelOperationIntent(operationIntent) ?? analyzeChannelOperationIntent(value);
+  if (intent.accessMode === "read_only") return false;
+  if (intent.mutatesExistingData && FILE_HINT_RE.test(value)) return true;
   return FILE_HINT_RE.test(value) && MUTATION_RE.test(value);
 }
 
-export function buildDataMutationPreview({ state, projectId, ownerTeamId, text, dataPlan = null, dataMutationScope = null } = {}) {
+export function buildDataMutationPreview({ state, projectId, ownerTeamId, text, operationIntent = null, dataPlan = null, dataMutationScope = null } = {}) {
   const value = clean(text, 4_000) ?? "";
+  const normalizedOperationIntent = normalizeChannelOperationIntent(operationIntent)
+    ?? analyzeChannelOperationIntent(value);
+  if (normalizedOperationIntent.accessMode === "read_only") return null;
   const filePlanDetected = (dataPlan?.sources ?? []).some((source) => source.kind === "file");
-  if (!detectsDataMutationIntent(value) && !(filePlanDetected && MUTATION_RE.test(value))) return null;
+  if (!detectsDataMutationIntent(value, normalizedOperationIntent)
+    && !(filePlanDetected && normalizedOperationIntent.mutatesExistingData)) return null;
   const sources = (state?.channelObjectFileSources ?? [])
     .filter((source) => source.ownerTeamId === ownerTeamId
       && source.projectId === projectId

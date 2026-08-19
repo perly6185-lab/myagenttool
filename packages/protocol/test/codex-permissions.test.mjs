@@ -9,6 +9,13 @@ import {
 } from "@myagenttool/protocol/codex-permissions";
 
 test("Codex permission modes normalize to the official sandbox and reviewer combinations", () => {
+  assert.deepEqual(codexPermissionProfile("read_only"), {
+    mode: "read_only",
+    sandboxMode: "read-only",
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+    bypassApprovalsAndSandbox: false,
+  });
   assert.deepEqual(codexPermissionProfile("ask"), {
     mode: "ask",
     sandboxMode: "workspace-write",
@@ -27,6 +34,7 @@ test("Codex permission modes normalize to the official sandbox and reviewer comb
 });
 
 test("Codex exec flags encode the same permission profiles", () => {
+  assert.ok(codexExecPermissionArgs("read_only").includes("read-only"));
   assert.deepEqual(codexExecPermissionArgs("ask"), [
     "--sandbox",
     "workspace-write",
@@ -41,7 +49,7 @@ test("Codex exec flags encode the same permission profiles", () => {
 
 test("legacy sandbox values migrate conservatively", () => {
   assert.equal(codexPermissionModeFromLegacySandbox("workspace-write"), "ask");
-  assert.equal(codexPermissionModeFromLegacySandbox("read-only"), "ask");
+  assert.equal(codexPermissionModeFromLegacySandbox("read-only"), "read_only");
   assert.equal(codexPermissionModeFromLegacySandbox("danger-full-access"), "full");
   assert.equal(normalizeCodexPermissionMode("unexpected"), "ask");
 });
