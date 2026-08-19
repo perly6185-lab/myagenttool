@@ -14,15 +14,15 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useUiStore } from "@/store/ui-store";
 import type { LocalWorkItem, LocalWorkItemResult } from "@/features/tasks/task-view-types";
 import { localContentApi } from "./local-content-api";
-import { LocalContentDirectory } from "./local-content-directory";
 import type { LocalContentKind, LocalContentRecord } from "./local-content-types";
-import { LocalContentCard } from "./local-content-card";
 import { COPY } from "./local-library-copy";
 import { useLocalContentFilters } from "./use-local-content-filters";
 
 const AddToTaskModal = lazy(() => import("./local-library-modals").then((module) => ({ default: module.AddToTaskModal })));
 const PreviewModal = lazy(() => import("./local-library-modals").then((module) => ({ default: module.PreviewModal })));
 const LocalContentDetailModal = lazy(() => import("./local-library-modals").then((module) => ({ default: module.LocalContentDetailModal })));
+const LocalContentDirectory = lazy(() => import("./local-content-directory").then((module) => ({ default: module.LocalContentDirectory })));
+const LocalContentCard = lazy(() => import("./local-content-card").then((module) => ({ default: module.LocalContentCard })));
 
 const KINDS: LocalContentKind[] = ["article", "mail", "task", "task_input", "task_output"];
 const TASK_PAGE_SIZE = 200;
@@ -355,7 +355,7 @@ export function LocalLibraryView() {
       </div> : null}
 
       <div className={cn(hasIndexedContent && "grid items-start gap-4 xl:grid-cols-[17rem_minmax(0,1fr)]")}>
-        {hasIndexedContent && catalog ? <LocalContentDirectory
+        {hasIndexedContent && catalog ? <Suspense fallback={<div className="h-64 animate-pulse rounded-xl border border-border bg-muted/40" />}><LocalContentDirectory
           copy={copy}
           catalog={catalog}
           projects={projects}
@@ -394,7 +394,7 @@ export function LocalLibraryView() {
             setMailFolderId(folderId);
             resetPage();
           }}
-        /> : null}
+        /></Suspense> : null}
         <div className="min-w-0 space-y-4">
           {stats.isError || content.isError ? (
             <EmptyState title={copy.loadFailed} action={<Button size="sm" variant="secondary" onClick={() => { void stats.refetch(); void content.refetch(); }}>{copy.retry}</Button>} />
@@ -409,7 +409,7 @@ export function LocalLibraryView() {
               ? <Button size="sm" variant="secondary" onClick={resetFilters}><X aria-hidden />{copy.clearFilters}</Button>
               : undefined} />
           ) : (
-            <div className="grid gap-3 md:grid-cols-2">
+            <Suspense fallback={<div className="grid gap-3 md:grid-cols-2" aria-busy="true">{[0, 1].map((item) => <div key={item} className="h-36 animate-pulse rounded-xl border border-border bg-muted/40" />)}</div>}><div className="grid gap-3 md:grid-cols-2">
               {records.map((record) => <LocalContentCard
                 key={record.id}
                 record={record}
@@ -421,7 +421,7 @@ export function LocalLibraryView() {
                 onLocate={() => void locateOriginal(record)}
                 onChoose={() => choose(record)}
               />)}
-            </div>
+            </div></Suspense>
           )}
 
           {hasIndexedContent && records.length ? (
