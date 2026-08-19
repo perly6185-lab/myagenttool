@@ -1,5 +1,9 @@
 appId: com.myagenttool.desktop
 productName: MyAgentTool
+protocols:
+  - name: MyAgentTool
+    schemes:
+      - myagenttool
 copyright: Copyright (c) 2026 MyAgentTool
 asar: false
 npmRebuild: false

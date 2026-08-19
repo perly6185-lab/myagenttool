@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getMailbox: vi.fn(),
   syncMailbox: vi.fn(),
   setMailMessageRead: vi.fn(),
+  prioritizeBodyPrefetch: vi.fn(),
   classifyMailbox: vi.fn(),
   getSemanticPreview: vi.fn(),
   startDeepOrganize: vi.fn(),
@@ -56,6 +57,7 @@ vi.mock("@/features/mail/mail-api", () => ({
   mailApi: {
     getMailbox: mocks.getMailbox,
     setMessageRead: mocks.setMailMessageRead,
+    prioritizeBodyPrefetch: mocks.prioritizeBodyPrefetch,
     classifyMailbox: mocks.classifyMailbox,
     getSemanticPreview: mocks.getSemanticPreview,
     startDeepOrganize: mocks.startDeepOrganize,
@@ -88,7 +90,7 @@ vi.mock("@/data/use-console-state", () => ({
 const connectedMailbox = {
   accounts: [{
     id: "app_163_mail_v2", provider: "netease", name: "163 Mail", status: "connected", statusDetail: "ready",
-    canReceive: true, canSend: true, readApplicationId: "app_163_mail_v2", sendApplicationId: "app_gmail_send",
+    canReceive: true, canSend: true, canOrganize: true, readApplicationId: "app_163_mail_v2", sendApplicationId: "app_gmail_send",
     fetchCapability: "app.app_163_mail_v2.fetch", incrementalSync: true, providerReadState: true,
   }],
   connection: { status: "connected", message: "163 Mail" },
@@ -118,6 +120,7 @@ beforeEach(async () => {
   mocks.getMailbox.mockResolvedValue(connectedMailbox);
   mocks.syncMailbox.mockResolvedValue({ sync: { status: "syncing", invocationId: "inv_sync", lastCompletedAt: null, lastSucceededAt: null }, reused: false });
   mocks.setMailMessageRead.mockResolvedValue({ messageId: "<one@example.com>", unread: false });
+  mocks.prioritizeBodyPrefetch.mockResolvedValue({ messageId: "<one@example.com>", bodyFetch: { status: "queued", priority: "user", attempt: 0, lastError: null } });
   mocks.classifyMailbox.mockResolvedValue({ job: { id: "mailclsjob_1", status: "succeeded", total: 1, processed: 1, classified: 0, replayed: 1, failed: 0 } });
   mocks.getSemanticPreview.mockResolvedValue({ preview: {
     available: true, reason: null, eligible: 1, pending: 1, limit: 20,
@@ -195,6 +198,7 @@ beforeEach(async () => {
   mocks.createTaskMaterialDraft.mockResolvedValue({ draft: { id: "tmd_1", revision: 0, assets: [] } });
   mocks.uploadTaskMaterialFile.mockResolvedValue({ draft: { id: "tmd_1", revision: 1, assets: [] }, asset: {} });
   delete window.myagenttoolDesktop;
+  window.history.replaceState({}, "", "/");
 });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -243,7 +247,7 @@ describe("MailView ordinary-user flow", () => {
     const dialog = await screen.findByRole("dialog", { name: "深度整理最近邮件" });
     expect(await within(dialog).findByText(/将处理 1 封已打开且正文已缓存/)).toBeTruthy();
     expect(within(dialog).getByText(/正文只发送到本机模型/)).toBeTruthy();
-    expect(within(dialog).getByText(/不会下载尚未打开的正文/)).toBeTruthy();
+    expect(within(dialog).getByText(/只分析后台已下载的正文/)).toBeTruthy();
     expect(within(dialog).getByText(/不会移动、删除、回复或创建任务/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "确认并开始" }));
     await waitFor(() => expect(mocks.startDeepOrganize).toHaveBeenCalledWith(20));
@@ -505,14 +509,15 @@ describe("MailView ordinary-user flow", () => {
     expect(screen.getByRole("button", { name: "查看任务" })).toBeTruthy();
   });
 
-  it("enriches a previously fetched legacy body once so HTML metadata is not permanently missing", async () => {
+  it("prioritizes a legacy body through the server queue instead of dispatching Bridge work from the click", async () => {
     mocks.getMailbox.mockResolvedValue({
       ...connectedMailbox,
       messages: [{ ...connectedMailbox.messages[0], bodyContentVersion: 1 }],
     });
     renderView();
     fireEvent.click(await screen.findByText("Project update"));
-    await waitFor(() => expect(mocks.invokeCapability).toHaveBeenCalledWith("app.app_163_mail_v2.fetch", { messageId: "<one@example.com>", folderPath: "INBOX" }));
+    await waitFor(() => expect(mocks.prioritizeBodyPrefetch).toHaveBeenCalledWith("<one@example.com>"));
+    expect(mocks.invokeCapability).not.toHaveBeenCalled();
   });
 
   it("linkifies safe URLs and renders HTML only in the user-controlled isolated preview", async () => {
@@ -674,7 +679,17 @@ describe("MailView ordinary-user flow", () => {
     expect(screen.getByText(/不需要在这里填写 IMAP、SMTP/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "打开邮箱连接设置" }));
     expect(screen.getByRole("dialog", { name: "连接邮箱" })).toBeTruthy();
-    expect(screen.getByText(/请打开 MyAgentTool 桌面版/)).toBeTruthy();
+    expect(screen.getByText(/这一步需要在 MyAgentTool 桌面版完成/)).toBeTruthy();
+    const desktopLink = screen.getByRole("link", { name: "在桌面版继续" });
+    expect(desktopLink.getAttribute("href")).toBe("myagenttool://mail/connect?intent=manage");
+  });
+
+  it("preserves the selected authorization step when handing off from browser to desktop", async () => {
+    window.history.replaceState({}, "", "/?section=mail&mailConnect=organize");
+    renderView();
+    const dialog = await screen.findByRole("dialog", { name: "连接邮箱" });
+    expect(within(dialog).getByRole("link", { name: "在桌面版继续" }).getAttribute("href")).toBe("myagenttool://mail/connect?intent=organize");
+    expect(new URLSearchParams(window.location.search).get("mailConnect")).toBeNull();
   });
 
   it("guides a desktop user through local 163 verification and reports receive/send separately", async () => {
@@ -694,7 +709,9 @@ describe("MailView ordinary-user flow", () => {
     fireEvent.change(screen.getByLabelText("客户端授权码"), { target: { value: "local-code" } });
     fireEvent.click(screen.getByRole("button", { name: "连接并测试收件" }));
     expect(await screen.findByText("收件连接成功")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /发送和回复邮件/ }));
     expect(screen.getByText(/发件授权与收件分开保存/)).toBeTruthy();
+    expect((screen.getByLabelText("客户端授权码") as HTMLInputElement).value).toBe("local-code");
     expect(mocks.connect163Mail).toHaveBeenCalledWith({ email: "user@163.com", authorizationCode: "local-code" });
   });
 
@@ -715,15 +732,22 @@ describe("MailView ordinary-user flow", () => {
 
   it("connects folder organization as a separate desktop permission", async () => {
     mocks.getMailConnectorStatus.mockResolvedValue({ desktop: true, providers: [
-      { id: "netease_163", name: "163 邮箱", available: true, connected: true, sendConnected: true, organizeConnected: false, account: "user@163.com" },
+      { id: "netease_163", name: "163 邮箱", available: true, connected: true, sendConnected: false, organizeConnected: false, account: "user@163.com" },
       { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
     ] });
     mocks.connect163MailOrganize.mockResolvedValue({ ok: true, account: { provider: "netease", email: "user@163.com", canOrganize: true } });
     window.myagenttoolDesktop = { getMailConnectorStatus: mocks.getMailConnectorStatus, connect163MailOrganize: mocks.connect163MailOrganize };
+    mocks.getMailbox.mockResolvedValue({
+      ...connectedMailbox,
+      accounts: connectedMailbox.accounts.map((account) => ({ ...account, canSend: false, canOrganize: false })),
+    });
     renderView();
-    fireEvent.click(await screen.findByRole("button", { name: "管理邮箱连接" }));
+    expect(await screen.findByText("还有 2 项功能可启用")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "继续设置" }));
     const dialog = await screen.findByRole("dialog", { name: "连接邮箱" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /整理邮箱目录/ }));
     expect(within(dialog).getByText(/每批最多 50 封/)).toBeTruthy();
+    expect(within(dialog).queryByText(/发件授权与收件分开保存/)).toBeNull();
     fireEvent.change(within(dialog).getByLabelText("客户端授权码"), { target: { value: "organize-code" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "连接邮箱目录权限" }));
     await waitFor(() => expect(mocks.connect163MailOrganize).toHaveBeenCalledWith({ email: "user@163.com", authorizationCode: "organize-code" }));

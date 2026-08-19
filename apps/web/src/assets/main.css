@@ -211,6 +211,16 @@
   .app-titlebar :is(button, a, select, input, textarea, label, [role="button"]) {
     -webkit-app-region: no-drag;
   }
+  /*
+   * Portalled dialogs can visually cover the draggable titlebar while Chromium
+   * still treats that screen area as a window-drag target. Explicitly remove
+   * the whole modal subtree from the drag region so header controls receive
+   * pointer input in the Windows desktop shell.
+   */
+  .app-modal-layer,
+  .app-modal-layer * {
+    -webkit-app-region: no-drag;
+  }
   .app-wco-spacer {
     flex: none;
     align-self: stretch;

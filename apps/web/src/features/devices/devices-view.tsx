@@ -5,13 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { FactList } from "@/components/common/fact-list";
+import { DesktopHandoffLink } from "@/components/common/desktop-handoff";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { readableDeviceStatus, shortTime } from "@/lib/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 export function DevicesView() {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending } = useAsyncAction();
   const device = state?.device;
@@ -70,9 +71,7 @@ export function DevicesView() {
               </p>
             </Field>
           </>
-        ) : (
-          <p className="text-sm text-muted-foreground">{t("devicesPage.startBridge")}</p>
-        )}
+        ) : <div className="space-y-3"><p className="text-sm text-muted-foreground">{t("devicesPage.startBridge")}</p><DesktopHandoffLink section="devices" action="open-desktop-page">{i18n.resolvedLanguage?.startsWith("zh") ? "打开桌面版并连接本机" : "Open desktop and connect this device"}</DesktopHandoffLink></div>}
       </CardContent>
     </Card>
     </div>

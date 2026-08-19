@@ -1,4 +1,5 @@
-import { FolderOpen, ShieldCheck } from "lucide-react";
+import { Eye, FolderOpen, Link2, ShieldCheck } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { Field } from "@/components/common/field";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,121 @@ import { Modal } from "@/components/ui/modal";
 import type { LocalContentPreview, LocalContentRecord } from "./local-content-types";
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
 import type { LocalLibraryCopy } from "./local-library-copy";
+
+function formatBytes(value: number | null, locale: string) {
+  if (value == null) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: unit ? 1 : 0 }).format(amount)} ${units[unit]}`;
+}
+
+function formatDate(value: string | null, locale: string) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function metadataText(metadata: Record<string, unknown>, key: string) {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function DetailField({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-0.5 text-sm [overflow-wrap:anywhere]">{value}</dd></div>;
+}
+
+export function LocalContentDetailModal({
+  target,
+  copy,
+  locale,
+  onClose,
+  onPreview,
+  onLocate,
+  onChoose,
+}: {
+  target: LocalContentRecord | null;
+  copy: LocalLibraryCopy;
+  locale: string;
+  onClose: () => void;
+  onPreview: (record: LocalContentRecord) => void;
+  onLocate: (record: LocalContentRecord) => void;
+  onChoose: (record: LocalContentRecord) => void;
+}) {
+  if (!target) return null;
+  const taskName = metadataText(target.metadata, "taskTitle") ?? target.relations.find((relation) => relation.title)?.title ?? "—";
+  const projectName = metadataText(target.metadata, "projectName") ?? target.projectId ?? "—";
+  const sender = metadataText(target.metadata, "from");
+  const account = metadataText(target.metadata, "accountLabel");
+  const attachmentCount = typeof target.metadata.attachmentCount === "number" ? String(target.metadata.attachmentCount) : null;
+  const location = target.relativePath?.replaceAll("\\", "/") ?? target.sourceLabel ?? target.source.id ?? "—";
+  const storageLabels: Record<LocalContentRecord["storageMode"], string> = {
+    managed: locale.startsWith("zh") ? "本机托管" : "Managed locally",
+    referenced: locale.startsWith("zh") ? "原件引用" : "Original reference",
+    snapshot: locale.startsWith("zh") ? "安全快照" : "Safe snapshot",
+    state_record: locale.startsWith("zh") ? "应用记录" : "Application record",
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={copy.detailsTitle}
+      description={target.title}
+      size="2xl"
+      footer={<div className="flex flex-wrap justify-end gap-2">
+        <Button variant="ghost" onClick={onClose}>{copy.closeDetails}</Button>
+        {target.original.available ? <Button variant="secondary" onClick={() => onPreview(target)}><Eye aria-hidden />{copy.preview}</Button> : null}
+        {target.original.available && target.storageMode !== "state_record" ? <Button variant="ghost" onClick={() => onLocate(target)}><FolderOpen aria-hidden />{copy.locate}</Button> : null}
+        {target.original.available ? <Button onClick={() => onChoose(target)}>{copy.addToTask}</Button> : null}
+      </div>}
+    >
+      <div className="space-y-5">
+        <div className="flex flex-wrap gap-1.5">
+          <Badge tone="neutral">{copy.kinds[target.kind]}</Badge>
+          <Badge tone={target.original.available ? "success" : "warning"}>{target.original.available ? copy.available : copy.unavailable}</Badge>
+          <Badge tone={target.indexStatus === "ready" ? "success" : "warning"}>{target.indexStatus === "ready" ? copy.ready : target.indexStatus === "metadata_only" ? copy.metadataOnly : target.indexStatus === "missing" ? copy.missing : copy.partial}</Badge>
+        </div>
+        <section>
+          <h3 className="text-sm font-semibold">{copy.detailsSummary}</h3>
+          <p className="mt-2 whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/30 p-3 text-sm leading-relaxed text-muted-foreground">{target.summary || target.matchSnippet || "—"}</p>
+        </section>
+        <section>
+          <h3 className="text-sm font-semibold">{copy.detailsInfo}</h3>
+          <dl className="mt-2 grid gap-x-5 gap-y-3 rounded-lg border border-border p-3 sm:grid-cols-2">
+            {sender ? <DetailField label={copy.sender} value={sender} /> : null}
+            {account ? <DetailField label={copy.mailAccount} value={account} /> : null}
+            {attachmentCount ? <DetailField label={copy.attachments} value={attachmentCount} /> : null}
+            <DetailField label={copy.source} value={target.sourceLabel ?? target.source.type ?? "—"} />
+            <DetailField label={copy.projectName} value={projectName} />
+            <DetailField label={copy.taskName} value={taskName} />
+            <DetailField label={copy.fileName} value={location} />
+            <DetailField label={copy.fileType} value={target.mimeType ?? "—"} />
+            <DetailField label={copy.fileSize} value={formatBytes(target.size, locale)} />
+            <DetailField label={copy.storageMode} value={storageLabels[target.storageMode]} />
+            <DetailField label={copy.originalStatus} value={target.original.available ? copy.available : copy.unavailable} />
+            <DetailField label={copy.indexStateValue} value={target.indexStatus === "ready" ? copy.ready : target.indexStatus === "metadata_only" ? copy.metadataOnly : target.indexStatus === "missing" ? copy.missing : copy.partial} />
+            <DetailField label={copy.contentTime} value={formatDate(target.occurredAt ?? target.importedAt, locale)} />
+            <DetailField label={copy.modifiedTime} value={formatDate(target.modifiedAt, locale)} />
+          </dl>
+        </section>
+        <section>
+          <h3 className="flex items-center gap-2 text-sm font-semibold"><Link2 className="size-4" aria-hidden />{copy.detailsRelations}</h3>
+          {target.relations.length ? <ul className="mt-2 space-y-2">{target.relations.map((relation) => (
+            <li key={`${relation.direction}:${relation.type}:${relation.contentId}`} className="rounded-lg border border-border px-3 py-2 text-sm">
+              <p className="font-medium">{relation.title ?? relation.contentId}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{relation.type.replaceAll("_", " ")}</p>
+            </li>
+          ))}</ul> : <p className="mt-2 text-sm text-muted-foreground">{copy.noRelations}</p>}
+        </section>
+      </div>
+    </Modal>
+  );
+}
 
 type AddToTaskModalProps = {
   open: boolean;

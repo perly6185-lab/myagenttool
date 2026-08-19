@@ -14,6 +14,7 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useUiStore } from "@/store/ui-store";
 import type { LocalWorkItem, LocalWorkItemResult } from "@/features/tasks/task-view-types";
 import { localContentApi } from "./local-content-api";
+import { LocalContentDirectory } from "./local-content-directory";
 import type { LocalContentKind, LocalContentRecord } from "./local-content-types";
 import { LocalContentCard } from "./local-content-card";
 import { COPY } from "./local-library-copy";
@@ -21,6 +22,7 @@ import { useLocalContentFilters } from "./use-local-content-filters";
 
 const AddToTaskModal = lazy(() => import("./local-library-modals").then((module) => ({ default: module.AddToTaskModal })));
 const PreviewModal = lazy(() => import("./local-library-modals").then((module) => ({ default: module.PreviewModal })));
+const LocalContentDetailModal = lazy(() => import("./local-library-modals").then((module) => ({ default: module.LocalContentDetailModal })));
 
 const KINDS: LocalContentKind[] = ["article", "mail", "task", "task_input", "task_output"];
 const TASK_PAGE_SIZE = 200;
@@ -54,8 +56,8 @@ export function LocalLibraryView() {
   const language = i18n.language.startsWith("zh") ? "zh" : "en";
   const copy = COPY[language];
   const sourceLabels: Record<string, string> = language === "zh"
-    ? { article_import: "导入文章", mail_archive: "归档邮件", work_item: "任务", task_material: "任务资料", task_output: "任务结果" }
-    : { article_import: "Imported article", mail_archive: "Archived mail", work_item: "Task", task_material: "Task material", task_output: "Task result" };
+    ? { article_import: "导入文章", mail_archive: "归档邮件", mail_cache: "邮件缓存", local_task: "任务", work_item: "任务", task_input: "任务输入", task_material: "任务资料", task_output: "任务结果" }
+    : { article_import: "Imported article", mail_archive: "Archived mail", mail_cache: "Mail cache", local_task: "Task", work_item: "Task", task_input: "Task input", task_material: "Task material", task_output: "Task result" };
   const { data: consoleState } = useConsoleState();
   const navigate = usePageNavigation();
   const selectedWorkItemId = useUiStore((state) => state.selectedWorkItemId);
@@ -63,7 +65,8 @@ export function LocalLibraryView() {
   const {
     query, setQuery, kind, setKind, projectId, setProjectId, workItemId, setWorkItemId,
     sourceType, setSourceType, yearMonth, setYearMonth, availability, setAvailability,
-    indexStatus, setIndexStatus, page, resetPage, previousPage, nextPage, resetFilters,
+    indexStatus, setIndexStatus, mailAccountId, setMailAccountId, mailFolderId, setMailFolderId,
+    page, resetPage, previousPage, nextPage, resetFilters,
     advancedFilterCount, activeFilterCount, searchQuery,
   } = useLocalContentFilters();
   const [selected, setSelected] = useState<LocalContentRecord | null>(null);
@@ -74,6 +77,7 @@ export function LocalLibraryView() {
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildError, setRebuildError] = useState<string | null>(null);
   const [previewTarget, setPreviewTarget] = useState<LocalContentRecord | null>(null);
+  const [detailTarget, setDetailTarget] = useState<LocalContentRecord | null>(null);
   const [locatingId, setLocatingId] = useState<string | null>(null);
   const [locateFeedback, setLocateFeedback] = useState<string | null>(null);
   const [locateError, setLocateError] = useState<string | null>(null);
@@ -281,7 +285,15 @@ export function LocalLibraryView() {
           </div>
         </Field>
         <Field label={copy.kind}>
-          <Select value={kind} onChange={(event) => { setKind(event.target.value as typeof kind); resetPage(); }}>
+          <Select value={kind} onChange={(event) => {
+            const value = event.target.value as typeof kind;
+            setKind(value);
+            if (value !== "mail") {
+              setMailAccountId("all");
+              setMailFolderId("all");
+            }
+            resetPage();
+          }}>
             <option value="all">{copy.allKinds}</option>
             {KINDS.map((value) => <option key={value} value={value}>{copy.kinds[value]}</option>)}
           </Select>
@@ -342,40 +354,85 @@ export function LocalLibraryView() {
         </Field>
       </div> : null}
 
-      {stats.isError || content.isError ? (
-        <EmptyState title={copy.loadFailed} action={<Button size="sm" variant="secondary" onClick={() => { void stats.refetch(); void content.refetch(); }}>{copy.retry}</Button>} />
-      ) : content.isLoading || stats.isLoading ? (
-        <div className="grid gap-3 md:grid-cols-2" aria-label={copy.rebuilding} aria-busy="true">
-          {[0, 1, 2, 3].map((item) => <div key={item} className="h-36 animate-pulse rounded-xl border border-border bg-muted/40" />)}
-        </div>
-      ) : !hasIndexedContent ? (
-        <EmptyState title={copy.empty} hint={copy.emptyHint} action={<Button size="sm" disabled={rebuilding} onClick={() => void rebuild()}><Library aria-hidden />{copy.build}</Button>} />
-      ) : !records.length ? (
-        <EmptyState title={copy.noMatches} hint={copy.noMatchesHint} action={activeFilterCount
-          ? <Button size="sm" variant="secondary" onClick={resetFilters}><X aria-hidden />{copy.clearFilters}</Button>
-          : undefined} />
-      ) : (
-        <div className="grid gap-3 md:grid-cols-2">
-          {records.map((record) => <LocalContentCard
-            key={record.id}
-            record={record}
-            copy={copy}
-            locating={locatingId === record.id}
-            locateDisabled={Boolean(locatingId)}
-            onPreview={() => setPreviewTarget(record)}
-            onLocate={() => void locateOriginal(record)}
-            onChoose={() => choose(record)}
-          />)}
-        </div>
-      )}
+      <div className={cn(hasIndexedContent && "grid items-start gap-4 xl:grid-cols-[17rem_minmax(0,1fr)]")}>
+        {hasIndexedContent && catalog ? <LocalContentDirectory
+          copy={copy}
+          catalog={catalog}
+          projects={projects}
+          sourceLabels={sourceLabels}
+          kind={kind}
+          projectId={projectId}
+          sourceType={sourceType}
+          yearMonth={yearMonth}
+          mailAccountId={mailAccountId}
+          mailFolderId={mailFolderId}
+          onAll={() => { setKind("all"); setProjectId("all"); setSourceType("all"); setYearMonth("all"); setMailAccountId("all"); setMailFolderId("all"); resetPage(); }}
+          onKind={(value) => {
+            setKind(value);
+            if (value !== "mail") {
+              setMailAccountId("all");
+              setMailFolderId("all");
+            }
+            resetPage();
+          }}
+          onProject={(value) => { setProjectId(value); resetPage(); }}
+          onSource={(value) => { setSourceType(value); resetPage(); }}
+          onMonth={(value) => { setYearMonth(value); resetPage(); }}
+          onMailAccount={(accountId) => {
+            setKind("mail");
+            setProjectId("all");
+            setWorkItemId("all");
+            setMailAccountId(accountId);
+            setMailFolderId("all");
+            resetPage();
+          }}
+          onMailFolder={(accountId, folderId) => {
+            setKind("mail");
+            setProjectId("all");
+            setWorkItemId("all");
+            setMailAccountId(accountId);
+            setMailFolderId(folderId);
+            resetPage();
+          }}
+        /> : null}
+        <div className="min-w-0 space-y-4">
+          {stats.isError || content.isError ? (
+            <EmptyState title={copy.loadFailed} action={<Button size="sm" variant="secondary" onClick={() => { void stats.refetch(); void content.refetch(); }}>{copy.retry}</Button>} />
+          ) : content.isLoading || stats.isLoading ? (
+            <div className="grid gap-3 md:grid-cols-2" aria-label={copy.rebuilding} aria-busy="true">
+              {[0, 1, 2, 3].map((item) => <div key={item} className="h-36 animate-pulse rounded-xl border border-border bg-muted/40" />)}
+            </div>
+          ) : !hasIndexedContent ? (
+            <EmptyState title={copy.empty} hint={copy.emptyHint} action={<Button size="sm" disabled={rebuilding} onClick={() => void rebuild()}><Library aria-hidden />{copy.build}</Button>} />
+          ) : !records.length ? (
+            <EmptyState title={copy.noMatches} hint={copy.noMatchesHint} action={activeFilterCount
+              ? <Button size="sm" variant="secondary" onClick={resetFilters}><X aria-hidden />{copy.clearFilters}</Button>
+              : undefined} />
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2">
+              {records.map((record) => <LocalContentCard
+                key={record.id}
+                record={record}
+                copy={copy}
+                locating={locatingId === record.id}
+                locateDisabled={Boolean(locatingId)}
+                onDetails={() => setDetailTarget(record)}
+                onPreview={() => setPreviewTarget(record)}
+                onLocate={() => void locateOriginal(record)}
+                onChoose={() => choose(record)}
+              />)}
+            </div>
+          )}
 
-      {hasIndexedContent && records.length ? (
-        <div className="flex items-center justify-center gap-3">
-          <Button size="sm" variant="ghost" disabled={page === 0 || content.isFetching} onClick={previousPage}><ChevronLeft aria-hidden />{copy.previous}</Button>
-          <span className="text-xs text-muted-foreground">{copy.page.replace("{{page}}", String(page + 1))}</span>
-          <Button size="sm" variant="ghost" disabled={!content.data?.nextCursor || content.isFetching} onClick={() => nextPage(content.data?.nextCursor)}>{copy.next}<ChevronRight aria-hidden /></Button>
+          {hasIndexedContent && records.length ? (
+            <div className="flex items-center justify-center gap-3">
+              <Button size="sm" variant="ghost" disabled={page === 0 || content.isFetching} onClick={previousPage}><ChevronLeft aria-hidden />{copy.previous}</Button>
+              <span className="text-xs text-muted-foreground">{copy.page.replace("{{page}}", String(page + 1))}</span>
+              <Button size="sm" variant="ghost" disabled={!content.data?.nextCursor || content.isFetching} onClick={() => nextPage(content.data?.nextCursor)}>{copy.next}<ChevronRight aria-hidden /></Button>
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </div>
 
       {selected ? <Suspense fallback={null}><AddToTaskModal
         open={Boolean(selected)}
@@ -418,6 +475,16 @@ export function LocalLibraryView() {
         onRetry={() => void preview.refetch()}
         onLocate={(record) => void locateOriginal(record)}
         onChoose={(record) => { setPreviewTarget(null); choose(record); }}
+      /></Suspense> : null}
+
+      {detailTarget ? <Suspense fallback={null}><LocalContentDetailModal
+        target={detailTarget}
+        copy={copy}
+        locale={i18n.language}
+        onClose={() => setDetailTarget(null)}
+        onPreview={(record) => { setDetailTarget(null); setPreviewTarget(record); }}
+        onLocate={(record) => void locateOriginal(record)}
+        onChoose={(record) => { setDetailTarget(null); choose(record); }}
       /></Suspense> : null}
     </div>
   );

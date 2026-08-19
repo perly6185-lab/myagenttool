@@ -13,6 +13,10 @@ export const mailApi = {
     `/api/mailbox/messages/${encodeURIComponent(messageId)}/read`,
     { read },
   ),
+  prioritizeBodyPrefetch: (messageId: string) => request<{ messageId: string; bodyFetch: MailboxSnapshot["messages"][number]["bodyFetch"] }>(
+    "POST",
+    `/api/mailbox/messages/${encodeURIComponent(messageId)}/body-prefetch`,
+  ),
   classifyMailbox: (scope: "new_mail" | "rebuild" = "new_mail") => request<{
     job: MailClassificationJob;
   }>("POST", "/api/mailbox/classification-jobs", { scope }),

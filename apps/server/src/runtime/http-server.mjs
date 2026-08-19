@@ -472,6 +472,7 @@ export function createHttpServer({
   sendConfirmedDraft,
   mailboxSnapshot,
   startMailboxSync,
+  prioritizeMailboxBodyPrefetch,
   setMailboxMessageRead,
   createMailboxDraft,
   updateMailboxDraft,
@@ -829,7 +830,7 @@ export function createHttpServer({
       if (await handleMailRoutes({
         req, res, url, sendJson, readJson, actor,
         createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft,
-        mailboxSnapshot, startMailboxSync, setMailboxMessageRead, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft, createMailboxTask,
+        mailboxSnapshot, startMailboxSync, prioritizeMailboxBodyPrefetch, setMailboxMessageRead, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft, createMailboxTask,
         startMailClassification, previewMailSemanticClassification, getMailClassificationJob, cancelMailClassificationJob, correctMailClassification,
         listMailClassificationRules, getMailClassificationQuality, createMailClassificationRule, updateMailClassificationRule,
         listMailFolderSuggestions, createMailFolderMovePreview, startMailFolderMove, getMailFolderMoveJob, listMailFolderMoveJobs,

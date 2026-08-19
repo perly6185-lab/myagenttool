@@ -111,7 +111,7 @@ export function Modal({
   if (!open) return null;
 
   return createPortal(
-    <div className={`fixed inset-0 z-50 flex items-center justify-center ${size === "full" ? "p-0 sm:p-4" : size === "viewport" ? "p-2 sm:p-4" : "p-4"}`}>
+    <div className={`app-modal-layer fixed inset-0 z-50 flex items-center justify-center ${size === "full" ? "p-0 sm:p-4" : size === "viewport" ? "p-2 sm:p-4" : "p-4"}`}>
       <div
         className="absolute inset-0 bg-black/50"
         onClick={closeDisabled ? undefined : onClose}
@@ -130,13 +130,13 @@ export function Modal({
             : size === "2xl" ? "max-w-6xl rounded-xl" : size === "xl" ? "max-w-5xl rounded-xl" : size === "lg" ? "max-w-lg rounded-xl" : "max-w-md rounded-xl"
         } border border-border bg-card p-4 shadow-xl sm:p-5`}
       >
-        <div className="absolute right-3 top-3 flex items-center gap-1">
+        <div className="absolute right-2 top-2 z-20 flex items-center gap-1">
           <button
             type="button"
             onClick={closeDisabled ? undefined : onClose}
             disabled={closeDisabled}
             aria-label={t("shell.close")}
-            className="order-2 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="order-2 grid size-9 touch-manipulation place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <X className="size-4" />
           </button>

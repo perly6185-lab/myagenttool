@@ -6,6 +6,7 @@ import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-stat
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { OfficeDocumentFrame } from "@/components/common/office-document-frame";
+import { DesktopHandoffLink } from "@/components/common/desktop-handoff";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
@@ -98,6 +99,7 @@ export function DocumentsView() {
   const requestedProjectId = urlParam("project");
   const requestedDocumentPath = urlParam("document");
   const requestedWorktreeId = urlParam("worktree");
+  const requestedDesktopAction = urlParam("desktopAction");
   const projectWorktrees = useMemo(() => (state?.worktrees ?? []).filter((worktree) => worktree.projectId === projectId), [state?.worktrees, projectId]);
 
   useEffect(() => {
@@ -193,6 +195,14 @@ export function DocumentsView() {
     } catch (caught) { setOpenLocalError(caught instanceof Error ? caught.message : t("documents.openFailed")); }
   };
 
+  useEffect(() => {
+    if (requestedDesktopAction !== "open-local-document" || !window.myagenttoolDesktop?.pickLocalOfficeDocument) return;
+    clearDesktopActionUrl();
+    void openLocalDocument();
+    // The protocol action is consumed once after the desktop renderer mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedDesktopAction]);
+
   if (state && projects.length === 0) return <DocumentsEmptyProjects />;
 
   return (
@@ -261,7 +271,9 @@ export function DocumentsView() {
           <Search className="pointer-events-none absolute left-2.5 top-2 size-3.5 text-muted-foreground" />
           <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("documents.search")} className="h-8 pl-8" />
         </label>
-        <Button size="sm" variant="secondary" disabled={!projectId} onClick={() => void openLocalDocument()}><FolderOpen className="mr-1 size-3.5" /> {t("documents.openLocal")}</Button>
+        {window.myagenttoolDesktop?.pickLocalOfficeDocument
+          ? <Button size="sm" variant="secondary" disabled={!projectId} onClick={() => void openLocalDocument()}><FolderOpen className="mr-1 size-3.5" /> {t("documents.openLocal")}</Button>
+          : <DesktopHandoffLink section="documents" action="open-local-document" compact>{i18n.resolvedLanguage?.startsWith("zh") ? "在桌面版打开本地文档" : "Open a local document in desktop"}</DesktopHandoffLink>}
         <Button size="sm" variant="secondary" disabled={!projectId} onClick={() => setSection("workflowMemory")}><BrainCircuit className="mr-1 size-3.5" /> {t("sections.workflowMemory.label")}</Button>
         <Button size="sm" disabled={!projectId} onClick={() => setCreateOpen(true)}><FilePlus2 className="mr-1 size-3.5" /> {t("documents.new")}</Button>
       </header>
@@ -399,6 +411,8 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
           onOpenApplications={() => setSection("applications")}
           onRetry={() => void preview.refetch()}
           onOpenSystem={window.myagenttoolDesktop?.openContainedOfficeDocument ? () => window.myagenttoolDesktop!.openContainedOfficeDocument!({ projectId, relativePath: document.path, ...(document.worktreeId ? { worktreeId: document.worktreeId } : {}) }) : undefined}
+          projectId={projectId}
+          document={document}
         />
         : preview.data ? <OfficeDocumentFrame title={document.path} content={preview.data.content} className="min-h-[32rem] flex-1" /> : null}
     </section>
@@ -526,10 +540,11 @@ function AssetPreviewNotice({ projectId, document, message }: { projectId?: stri
 }
 
 function ExternalAssetOpenButton({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
   const [error, setError] = useState(false);
   const bridge = window.myagenttoolDesktop?.openContainedAsset;
-  if (!bridge || !document.capabilities?.includes("open_external")) return null;
+  if (!document.capabilities?.includes("open_external")) return null;
+  if (!bridge) return <DesktopHandoffLink section="documents" action="open-system-document" params={{ project: projectId, document: document.path, worktree: document.worktreeId }} compact>{i18n.resolvedLanguage?.startsWith("zh") ? "在桌面版打开" : "Open in desktop"}</DesktopHandoffLink>;
   const open = async () => {
     setError(false);
     try {
@@ -566,8 +581,8 @@ export function previewFailureCopy(error: Error, t?: Translate): { title: string
   }
 }
 
-function PreviewFailure({ error, onOpenApplications, onRetry, onOpenSystem }: { error: Error; onOpenApplications: () => void; onRetry: () => void; onOpenSystem?: () => Promise<{ opened: true }> }) {
-  const { t } = useAppTranslation();
+function PreviewFailure({ error, onOpenApplications, onRetry, onOpenSystem, projectId, document }: { error: Error; onOpenApplications: () => void; onRetry: () => void; onOpenSystem?: () => Promise<{ opened: true }>; projectId: string; document: ProjectDocumentEntry }) {
+  const { t, i18n } = useAppTranslation();
   const copy = previewFailureCopy(error, t);
   const encrypted = error instanceof ApiError && (error.code === "office_password_required" || error.code === "office_encryption_unsupported");
   const [opening, setOpening] = useState(false);
@@ -579,11 +594,18 @@ function PreviewFailure({ error, onOpenApplications, onRetry, onOpenSystem }: { 
     catch { setOpenError(t("documentsFailure.systemOpenFailed")); }
     finally { setOpening(false); }
   };
-  return <div className="space-y-3 p-4"><div><p className="text-sm font-medium text-destructive">{copy.title}</p><p className="mt-1 text-xs text-muted-foreground">{copy.detail}</p>{encrypted && !onOpenSystem ? <p className="mt-1 text-xs text-muted-foreground">{t("documentsFailure.desktopHint")}</p> : null}{openError ? <p role="alert" className="mt-1 text-xs text-destructive">{openError}</p> : null}</div><div className="flex gap-2">{encrypted && onOpenSystem ? <Button size="sm" variant="secondary" onClick={() => void openSystem()} disabled={opening}>{t(opening ? "documentsFailure.opening" : "documentsFailure.openSystem")}</Button> : <Button size="sm" variant="secondary" onClick={onRetry}>{t("documentsFailure.retry")}</Button>}{copy.showApplications ? <Button size="sm" variant="secondary" onClick={onOpenApplications}>{t("documentsFailure.openApplications")}</Button> : null}</div></div>;
+  return <div className="space-y-3 p-4"><div><p className="text-sm font-medium text-destructive">{copy.title}</p><p className="mt-1 text-xs text-muted-foreground">{copy.detail}</p>{encrypted && !onOpenSystem ? <p className="mt-1 text-xs text-muted-foreground">{t("documentsFailure.desktopHint")}</p> : null}{openError ? <p role="alert" className="mt-1 text-xs text-destructive">{openError}</p> : null}</div><div className="flex flex-wrap gap-2">{encrypted && onOpenSystem ? <Button size="sm" variant="secondary" onClick={() => void openSystem()} disabled={opening}>{t(opening ? "documentsFailure.opening" : "documentsFailure.openSystem")}</Button> : encrypted ? <DesktopHandoffLink section="documents" action="open-system-document" params={{ project: projectId, document: document.path, worktree: document.worktreeId }} compact>{i18n.resolvedLanguage?.startsWith("zh") ? "在桌面版用系统应用打开" : "Open with desktop app"}</DesktopHandoffLink> : <Button size="sm" variant="secondary" onClick={onRetry}>{t("documentsFailure.retry")}</Button>}{copy.showApplications ? <Button size="sm" variant="secondary" onClick={onOpenApplications}>{t("documentsFailure.openApplications")}</Button> : null}</div></div>;
 }
 
 function urlParam(name: string): string {
   return typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get(name)?.trim() ?? "";
+}
+
+function clearDesktopActionUrl() {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete("desktopAction");
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
 function writeDocumentUrl(projectId: string, path: string, worktreeId?: string) {

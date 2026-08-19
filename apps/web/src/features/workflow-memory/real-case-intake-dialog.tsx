@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, FilePlus2, Loader2, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import {
 } from "@/features/workflow-memory/workflow-memory-api";
 import type { WorkflowSource } from "@/lib/api-client";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { DesktopHandoffLink } from "@/components/common/desktop-handoff";
 
 type PickedCase = {
   selectionId: string;
@@ -56,6 +57,7 @@ const COPY = {
     retryReview: "Retry review",
     cancel: "Cancel",
     desktopOnly: "Adding local files is available in the desktop app.",
+    continueDesktop: "Add in desktop",
     selectPrimary: "Choose one primary inquiry that can be read as text.",
     empty: "Choose at least one file or paste some text.",
     genericError: "The case could not be added.",
@@ -86,6 +88,7 @@ const COPY = {
     retryReview: "重试检查",
     cancel: "取消",
     desktopOnly: "添加本地文件需要使用桌面应用。",
+    continueDesktop: "在桌面版添加",
     selectPrimary: "请选择一份能够读取文字的资料作为主询价。",
     empty: "请至少选择一个文件或粘贴一段文字。",
     genericError: "无法添加该案例。",
@@ -132,6 +135,16 @@ export function RealCaseIntakeDialog({
       readiness: "ready" as const,
     }] : []),
   ], [copy.textItem, pastedText, selection]);
+
+  useEffect(() => {
+    if (!bridge?.stageWorkflowCase || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("desktopAction") !== "add-real-case" || url.searchParams.get("source") !== source.id) return;
+    url.searchParams.delete("desktopAction");
+    url.searchParams.delete("source");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    setOpen(true);
+  }, [bridge?.stageWorkflowCase, source.id]);
 
   const reset = () => {
     setSelection(null);
@@ -226,16 +239,15 @@ export function RealCaseIntakeDialog({
 
   return (
     <>
-      <Button
-        size="sm"
-        variant="secondary"
-        disabled={!bridge?.stageWorkflowCase || source.state !== "active" || source.readMode !== "supported_text"}
-        title={!bridge?.stageWorkflowCase ? copy.desktopOnly : undefined}
-        onClick={() => setOpen(true)}
-      >
-        <FilePlus2 />
-        {copy.add}
-      </Button>
+      {bridge?.stageWorkflowCase ? <Button
+          size="sm"
+          variant="secondary"
+          disabled={source.state !== "active" || source.readMode !== "supported_text"}
+          onClick={() => setOpen(true)}
+        >
+          <FilePlus2 />
+          {copy.add}
+        </Button> : source.state === "active" && source.readMode === "supported_text" ? <DesktopHandoffLink section="workflowMemory" action="add-real-case" params={{ source: source.id }} compact>{copy.continueDesktop}</DesktopHandoffLink> : <Button size="sm" variant="secondary" disabled><FilePlus2 />{copy.add}</Button>}
       <Modal
         open={open}
         onClose={() => {

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { DesktopHandoffLink } from "@/components/common/desktop-handoff";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
@@ -726,7 +727,9 @@ export function WorkflowMemoryView({
     queryFn: () => workflowApi.listWorkflowSources(),
   });
   const sources = sourcesQuery.data?.sources ?? [];
-  const requestedSourceId = new URLSearchParams(window.location.search).get("sourceId")?.trim() ?? "";
+  const requestedSourceId = new URLSearchParams(window.location.search).get("sourceId")?.trim()
+    || new URLSearchParams(window.location.search).get("source")?.trim()
+    || "";
   const [selectedSourceId, setSelectedSourceId] = useState(requestedSourceId);
   const selectedSource = sources.find((source) => source.id === selectedSourceId) ?? sources[0] ?? null;
   const activeSourceId = selectedSource?.id ?? "";
@@ -1109,6 +1112,16 @@ export function WorkflowMemoryView({
     </div>
   );
 
+  useEffect(() => {
+    if (!hasDesktopFolderPicker || new URLSearchParams(window.location.search).get("desktopAction") !== "choose-source-folder") return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("desktopAction");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    chooseFolder();
+    // Consume the one-shot desktop action after the native bridge is ready.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasDesktopFolderPicker]);
+
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-3 sm:p-6">
       <header className="flex flex-wrap items-start gap-3">
@@ -1171,7 +1184,11 @@ export function WorkflowMemoryView({
                   </span>
                   {selectedSource ? <span className="shrink-0 text-xs text-primary">{copy.changeFolder}</span> : null}
                 </Button>
-              ) : selectedSource ? null : manualSourceForm}
+              ) : selectedSource ? null : (
+                <DesktopHandoffLink section="workflowMemory" action="choose-source-folder" className="w-full">
+                  {language === "zh" ? "在桌面版选择文件夹" : "Choose folder in desktop"}
+                </DesktopHandoffLink>
+              )}
               {selectedSource ? (
                 <div className="rounded-md border border-primary/40 bg-primary/5 p-3">
                   <span className="flex items-center justify-between gap-2">
@@ -1186,13 +1203,11 @@ export function WorkflowMemoryView({
                   </span>
                 </div>
               ) : null}
-              {hasDesktopFolderPicker || selectedSource ? (
-                <details className="rounded-md border bg-muted/20 p-3">
-                  <summary className="cursor-pointer text-sm font-medium">{copy.advancedSourceSettings}</summary>
-                  <p className="mb-3 mt-1 text-xs text-muted-foreground">{copy.advancedSourceSettingsHint}</p>
-                  {manualSourceForm}
-                </details>
-              ) : null}
+              <details className="rounded-md border bg-muted/20 p-3">
+                <summary className="cursor-pointer text-sm font-medium">{copy.advancedSourceSettings}</summary>
+                <p className="mb-3 mt-1 text-xs text-muted-foreground">{copy.advancedSourceSettingsHint}</p>
+                {manualSourceForm}
+              </details>
             </CardContent>
           </Card>
           {selectedSource ? (

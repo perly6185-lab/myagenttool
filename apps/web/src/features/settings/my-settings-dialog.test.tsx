@@ -44,6 +44,7 @@ describe("MySettingsDialog", () => {
     render(<MySettingsDialog />);
 
     const dialog = screen.getByRole("dialog", { name: "My settings" });
+    expect(dialog.closest(".app-modal-layer")).toBeTruthy();
     expect(within(dialog).getByText("General preferences panel")).toBeTruthy();
     const executionCategory = within(dialog).getByRole("button", { name: /Execution & Agents/ });
     fireEvent.click(executionCategory);
@@ -55,7 +56,9 @@ describe("MySettingsDialog", () => {
     expect(within(dialog).getByText("Embedded agents page")).toBeTruthy();
     expect(useUiStore.getState().recentSettingsSections).toContain("agents");
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    const closeButton = within(dialog).getByRole("button", { name: "Close" });
+    expect(closeButton.className).toContain("size-9");
+    fireEvent.click(closeButton);
     expect(useUiStore.getState().section).toBe("task");
     expect(useUiStore.getState().settingsDialogOpen).toBe(false);
   });

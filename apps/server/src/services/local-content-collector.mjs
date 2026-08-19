@@ -251,7 +251,10 @@ export async function collectLocalContent({
       indexStatus: archived ? "ready" : "partial",
       metadata: {
         from: mail.from ?? null,
-        folderId: mail.folderId ?? null,
+        applicationId: mail.applicationId ?? null,
+        mailAccountId: mail.mailAccountId ?? mail.applicationId ?? null,
+        folderId: mail.folderId ?? "unknown",
+        folderPath: mail.folderPath ?? null,
         hasHtml: Boolean(mail.bodyHtml),
         attachmentCount: mail.attachments?.length ?? 0,
         attachmentNames: (mail.attachments ?? []).slice(0, 50).map((attachment) => boundedText(attachment?.filename ?? attachment?.name, 240)).filter(Boolean),
@@ -434,6 +437,7 @@ function collectMailMessages(state) {
     Date.parse(left.createdAt ?? 0) - Date.parse(right.createdAt ?? 0));
   for (const record of results) {
     const application = (state.applications ?? []).find((candidate) => candidate.id === record.applicationId);
+    const accountApplication = canonicalMailApplication(state, application ?? { id: record.applicationId, ownerTeamId: record.ownerTeamId });
     const ownerTeamId = record.ownerTeamId ?? application?.ownerTeamId ?? LOCAL_TEAM_ID;
     const candidates = record.data?.kind === "message"
       ? [record.data]
@@ -453,7 +457,10 @@ function collectMailMessages(state) {
         messageId,
         ownerTeamId,
         applicationId: application?.id ?? record.applicationId ?? null,
-        accountLabel: application?.displayName ?? application?.name ?? null,
+        mailAccountId: accountApplication?.id ?? application?.id ?? record.applicationId ?? null,
+        accountLabel: accountApplication?.displayName ?? accountApplication?.name ?? application?.displayName ?? application?.name ?? null,
+        folderId: candidate.folderId ?? previous.folderId ?? null,
+        folderPath: candidate.folderPath ?? previous.folderPath ?? null,
         recordId: record.id,
         createdAt: record.createdAt ?? previous.createdAt ?? null,
         updatedAt: record.updatedAt ?? record.createdAt ?? previous.updatedAt ?? null,
@@ -465,4 +472,19 @@ function collectMailMessages(state) {
     }
   }
   return messages;
+}
+
+function canonicalMailApplication(state, application) {
+  let current = application;
+  const visited = new Set();
+  for (let depth = 0; current?.id && depth < 20 && !visited.has(current.id); depth += 1) {
+    visited.add(current.id);
+    const successorId = current.successorApplicationId;
+    if (!successorId) break;
+    const successor = (state.applications ?? []).find((candidate) =>
+      candidate.id === successorId && candidate.ownerTeamId === current.ownerTeamId);
+    if (!successor) break;
+    current = successor;
+  }
+  return current;
 }

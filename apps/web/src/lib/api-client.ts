@@ -77,6 +77,7 @@ export interface MailboxAccount {
   sendApplicationId: string | null;
   organizeApplicationId?: string | null;
   fetchCapability: string | null;
+  bodyPrefetchCapability?: string | null;
   incrementalSync: boolean;
   providerReadState: boolean;
 }
@@ -104,6 +105,12 @@ export interface MailboxMessage {
   folderId: string;
   folderPath: string;
   fetched: boolean;
+  bodyFetch?: {
+    status: "unavailable" | "queued" | "running" | "retry_wait" | "ready" | "failed";
+    priority: "background" | "user";
+    attempt: number;
+    lastError: string | null;
+  };
   inReplyTo: string | null;
   references: string[];
   attachments: Array<{ id: string; name: string; contentType: string; size: number; sha256: string | null; previewable: boolean; localAvailable?: boolean; contentId?: string }>;

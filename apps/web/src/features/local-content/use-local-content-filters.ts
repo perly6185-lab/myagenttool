@@ -14,6 +14,8 @@ export function useLocalContentFilters() {
   const [yearMonth, setYearMonth] = useState("all");
   const [availability, setAvailability] = useState<"all" | "available" | "unavailable">("all");
   const [indexStatus, setIndexStatus] = useState<"all" | "ready" | "partial" | "metadata_only" | "missing">("all");
+  const [mailAccountId, setMailAccountId] = useState("all");
+  const [mailFolderId, setMailFolderId] = useState("all");
   const [page, setPage] = useState(0);
   const [cursors, setCursors] = useState<Array<string | null>>([null]);
 
@@ -41,6 +43,8 @@ export function useLocalContentFilters() {
     setYearMonth("all");
     setAvailability("all");
     setIndexStatus("all");
+    setMailAccountId("all");
+    setMailFolderId("all");
     resetPage();
   }, [resetPage]);
 
@@ -49,6 +53,8 @@ export function useLocalContentFilters() {
   const activeFilterCount = advancedFilterCount
     + (kind === "all" ? 0 : 1)
     + (projectId === "all" ? 0 : 1)
+    + (mailAccountId === "all" ? 0 : 1)
+    + (mailFolderId === "all" ? 0 : 1)
     + (query.trim() ? 1 : 0);
 
   const searchQuery = useMemo<LocalContentSearchQuery>(() => ({
@@ -60,9 +66,11 @@ export function useLocalContentFilters() {
     yearMonth: yearMonth === "all" ? undefined : yearMonth,
     availability: availability === "all" ? undefined : availability,
     indexStatus: indexStatus === "all" ? undefined : indexStatus,
+    mailAccountId: mailAccountId === "all" ? undefined : mailAccountId,
+    mailFolderId: mailFolderId === "all" ? undefined : mailFolderId,
     limit: PAGE_SIZE,
     cursor: cursors[page] ?? undefined,
-  }), [availability, cursors, deferredQuery, indexStatus, kind, page, projectId, sourceType, workItemId, yearMonth]);
+  }), [availability, cursors, deferredQuery, indexStatus, kind, mailAccountId, mailFolderId, page, projectId, sourceType, workItemId, yearMonth]);
 
   return {
     query,
@@ -81,6 +89,10 @@ export function useLocalContentFilters() {
     setAvailability,
     indexStatus,
     setIndexStatus,
+    mailAccountId,
+    setMailAccountId,
+    mailFolderId,
+    setMailFolderId,
     page,
     resetPage,
     previousPage,

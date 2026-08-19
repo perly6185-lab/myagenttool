@@ -46,7 +46,7 @@ describe("local library task targeting", () => {
       schemaVersion: 1,
       total: 1,
       available: 1,
-      byKind: {},
+      byKind: { article: { count: 1, available: 1 } },
       facets: {
         projects: [{ value: "project-a", count: 1 }],
         workItems: [{ value: "open-a", count: 1 }],
@@ -54,6 +54,8 @@ describe("local library task targeting", () => {
         months: [{ value: "2026-08", count: 1 }],
         availability: [{ value: "available", count: 1 }],
         indexStatuses: [{ value: "ready", count: 1 }],
+        mailAccounts: [{ value: "mail_app", label: "Work Mail", count: 4 }],
+        mailFolders: [{ value: "inbox", accountId: "mail_app", accountLabel: "Work Mail", path: "INBOX", count: 4 }],
       },
       lastRebuiltAt: null,
       rebuildable: true,
@@ -248,5 +250,57 @@ describe("local library task targeting", () => {
       availability: "available",
       indexStatus: "ready",
     })));
+  });
+
+  it("shows persistent library folders and filters from the directory", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
+
+    const directory = await screen.findByRole("complementary", { name: "Library folders" });
+    expect(within(directory).getByText("By type")).toBeTruthy();
+    expect(within(directory).getByText("By project")).toBeTruthy();
+    expect(within(directory).getByText("By source")).toBeTruthy();
+    expect(within(directory).getByText("By date")).toBeTruthy();
+    expect(within(directory).getByText("Original mail folders")).toBeTruthy();
+    expect(within(directory).getByText("Work Mail")).toBeTruthy();
+    expect(within(directory).getByText("Inbox")).toBeTruthy();
+    fireEvent.click(within(directory).getByRole("button", { name: /Article/ }));
+
+    await waitFor(() => expect(mocks.search).toHaveBeenLastCalledWith(expect.objectContaining({
+      kinds: ["article"],
+    })));
+
+    fireEvent.click(within(directory).getByRole("button", { name: /Inbox/ }));
+    await waitFor(() => expect(mocks.search).toHaveBeenLastCalledWith(expect.objectContaining({
+      kinds: ["mail"],
+      mailAccountId: "mail_app",
+      mailFolderId: "inbox",
+    })));
+  });
+
+  it("opens useful details even when the original is unavailable", async () => {
+    const baseline = await mocks.search();
+    mocks.search.mockClear();
+    mocks.search.mockResolvedValue({
+      ...baseline,
+      results: baseline.results.map((record: LocalContentRecord) => ({
+        ...record,
+        kind: "mail",
+        mimeType: null,
+        storageMode: "state_record",
+        original: { available: false, reason: "mail_original_not_archived" },
+        indexStatus: "partial",
+        metadata: { from: "sender@example.com", accountLabel: "Work mail", attachmentCount: 2 },
+      })),
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
+
+    fireEvent.click(await screen.findByRole("button", { name: "View details" }));
+    const dialog = await screen.findByRole("dialog", { name: "Content details" });
+    expect(within(dialog).getByText("sender@example.com")).toBeTruthy();
+    expect(within(dialog).getByText("Work mail")).toBeTruthy();
+    expect(within(dialog).getAllByText("Partial content index")).toHaveLength(2);
+    expect(within(dialog).queryByRole("button", { name: "Safe preview" })).toBeNull();
   });
 });

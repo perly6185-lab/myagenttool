@@ -127,7 +127,7 @@ export function parseMailApplicationResult({ text }) {
       attachments: archive?.availability === "available"
         ? attachments.map((attachment) => ({ ...attachment, localAvailable: true }))
         : attachments,
-      attachmentMetadataLoaded: true,
+      attachmentMetadataLoaded: payload.attachmentMetadataLoaded !== false,
       archive,
     };
   }

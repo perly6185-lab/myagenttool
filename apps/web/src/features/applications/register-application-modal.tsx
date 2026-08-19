@@ -5,6 +5,7 @@ import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
+import { DesktopHandoffLink } from "@/components/common/desktop-handoff";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
@@ -17,7 +18,7 @@ type SetupPhase = "detect" | "plan" | "approval" | "installing" | "probing" | "r
 const SETUP_STEPS: Array<Exclude<SetupPhase, "failed" | "cancelled" | "login">> = ["detect", "plan", "approval", "installing", "probing", "registering", "ready"];
 
 export function RegisterApplicationModal({ open, onClose, initialApplication = "" }: { open: boolean; onClose: () => void; initialApplication?: string }) {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
   const { data: state } = useConsoleState();
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
   const { execute, pending, error } = useAsyncAction();
@@ -302,7 +303,7 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
               <div className="min-w-0">
                 <p className="font-medium">{t(`applicationRegister.phases.${setupPhase}` as never)}</p>
                 <p className="mt-0.5 text-muted-foreground">{setupMessage}</p>
-                {setupError ? <p className="mt-1 text-destructive">{setupError}</p> : null}
+                {setupError ? <><p className="mt-1 text-destructive">{setupError}</p>{!selectedDevice || selectedDevice.status !== "online" ? <DesktopHandoffLink section="applications" action="open-desktop-page" className="mt-2" compact>{i18n.resolvedLanguage?.startsWith("zh") ? "在桌面版继续" : "Continue in desktop"}</DesktopHandoffLink> : null}</> : null}
                 {authenticationLoginCommand ? (
                   <Button type="button" size="sm" variant="secondary" className="mt-2" onClick={() => void copyAuthenticationLoginCommand()}>
                     <Copy className="size-3.5" aria-hidden /> {t("applicationRegister.copyLogin")}

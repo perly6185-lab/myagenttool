@@ -17,6 +17,7 @@ export async function handleMailRoutes({
   sendConfirmedDraft,
   mailboxSnapshot,
   startMailboxSync,
+  prioritizeMailboxBodyPrefetch,
   setMailboxMessageRead,
   createMailboxDraft,
   updateMailboxDraft,
@@ -220,6 +221,13 @@ export async function handleMailRoutes({
       return true;
     }
     const result = setMailboxMessageRead({ messageId: decodeURIComponent(readMatch[1]), read: body.read, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const bodyPrefetchMatch = url.pathname.match(/^\/api\/mailbox\/messages\/([^/]+)\/body-prefetch$/);
+  if (req.method === "POST" && bodyPrefetchMatch && typeof prioritizeMailboxBodyPrefetch === "function") {
+    const result = prioritizeMailboxBodyPrefetch({ messageId: decodeURIComponent(bodyPrefetchMatch[1]), actor });
     sendJson(res, result.status, result.body);
     return true;
   }
