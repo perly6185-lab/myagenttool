@@ -35,6 +35,17 @@ export function workItemTemplateInstructions(workItem) {
   ].filter(Boolean).join("\n");
 }
 
+export function workItemOperationInstructions(workItem) {
+  const intent = workItem?.channelTaskContract?.operationIntent;
+  if (intent?.accessMode !== "read_only") return "";
+  return [
+    "Execution boundary (enforced for this run): READ ONLY.",
+    "You may inspect, search, list, and analyze existing project content.",
+    "Do not create, modify, delete, move, or rename files; do not run commands that can change project or external state.",
+    "Return the requested result in the final response. If it cannot be completed without a write, stop and explain what additional action would be required.",
+  ].join("\n");
+}
+
 export function createWorkItemAutoRunUnderstandingService({
   state,
   getWorkItem,
@@ -151,6 +162,7 @@ export function createWorkItemAutoRunUnderstandingService({
 
       const issueBody = [
         workItem.body,
+        workItemOperationInstructions(workItem),
         workItemTemplateInstructions(workItem),
         `Acceptance criteria (frozen for this run):\n${workItem.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}`,
         `Owner verification SOP (frozen for this run):\n${workItem.verificationSop.map((value, index) => `${index + 1}. ${value}`).join("\n")}`,
@@ -170,6 +182,7 @@ export function createWorkItemAutoRunUnderstandingService({
         autonomyProfile: autoRun.autonomyProfile,
         existingAutoRunId: autoRun.id,
         executionPlan: frozen.executionPlan,
+        operationIntent: workItem.channelTaskContract?.operationIntent ?? null,
       });
       return { ok: true, ...result };
     } catch (error) {

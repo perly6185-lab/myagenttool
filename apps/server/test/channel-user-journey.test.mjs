@@ -259,7 +259,7 @@ test("iLink high-risk task pauses before execution and resumes from the same cha
   assert.equal(created.status, "dispatched");
   assert.equal(thread.status, "waiting_approval");
   assert.equal(thread.waitingFor, "channel_confirmation");
-  assert.match(created.reply, /确认执行/);
+  assert.match(created.reply, /确认无误回复“确认”/);
   assert.match(created.reply, /对象：客户/);
   assert.equal(thread.riskPreviewDigest, "preview-digest-1");
   assert.equal(harness.state.channelTaskRequests[0].status, "pending");

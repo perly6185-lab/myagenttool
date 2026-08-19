@@ -33,6 +33,7 @@ describe("ChannelsView task operations", () => {
   it("shows trace links, understandable failure state, and recovery actions", async () => {
     render(<ChannelsView />);
     expect(screen.getByTestId("channel-diagnostics-summary").textContent).toContain("最后入站");
+    expect((screen.getByTestId("channel-task-device") as HTMLSelectElement).disabled).toBe(true);
     expect(screen.getByTestId("channel-diagnostics-summary").textContent).toContain("入站 已接收 1");
     expect(screen.getByText("run failed")).toBeTruthy();
     expect(screen.getByText("Issue #42")).toBeTruthy();

@@ -1,4 +1,4 @@
-export const codexPermissionModes = ["ask", "auto", "full"];
+export const codexPermissionModes = ["read_only", "ask", "auto", "full"];
 
 export function normalizeCodexPermissionMode(value, fallback = "ask") {
   const normalized = String(value ?? "").trim().toLowerCase();
@@ -10,7 +10,8 @@ export function normalizeCodexPermissionMode(value, fallback = "ask") {
 export function codexPermissionModeFromLegacySandbox(value, fallback = "ask") {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (normalized === "danger-full-access") return "full";
-  if (normalized === "workspace-write" || normalized === "read-only") return "ask";
+  if (normalized === "read-only") return "read_only";
+  if (normalized === "workspace-write") return "ask";
   return normalizeCodexPermissionMode(value, fallback);
 }
 
@@ -23,6 +24,15 @@ export function codexPermissionProfile(value) {
       approvalPolicy: "never",
       approvalsReviewer: "user",
       bypassApprovalsAndSandbox: true,
+    };
+  }
+  if (mode === "read_only") {
+    return {
+      mode,
+      sandboxMode: "read-only",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      bypassApprovalsAndSandbox: false,
     };
   }
   return {

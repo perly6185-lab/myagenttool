@@ -1440,12 +1440,40 @@ export interface ConsoleSnapshot {
   /** Channel subsystem (#1090): operational rollup per channel, team-scoped. */
   channelOperations?: ChannelOperations[];
   channelDeliveries?: ChannelDelivery[];
+  channelNotificationPolicies?: ChannelNotificationPolicy[];
+  channelNotificationBatches?: ChannelNotificationBatch[];
   channelTaskRequests?: ChannelTaskRequest[];
   channelIntakeGroups?: ChannelIntakeGroup[];
   channelTaskThreads?: ChannelTaskThread[];
+  channelTaskRevisions?: ChannelTaskRevision[];
   channelLifecycleSummaries?: ChannelLifecycleSummary[];
   channelIntentMetrics?: ChannelIntentMetrics | null;
   channelInteractions?: ChannelInteraction[];
+}
+
+export interface ChannelNotificationPolicy {
+  id?: string;
+  channelId: string;
+  conversationId: string;
+  threadId?: string | null;
+  mode: "important" | "progress" | "digest" | "off";
+  progressIntervalMinutes: number;
+  progressStartAfterMinutes: number;
+  maxPerHour: number;
+  digestWindowSeconds: number;
+  events: Record<string, boolean>;
+  quietHours: { enabled: boolean; start: string; end: string; timezone: string };
+  source?: string;
+  updatedAt?: string | null;
+}
+
+export interface ChannelNotificationBatch {
+  id: string;
+  channelId: string;
+  conversationId: string;
+  dueAt: string;
+  status: string;
+  items?: Array<{ threadId?: string | null; content?: string; event?: string }>;
 }
 
 export interface ChannelLifecycleStage {
@@ -1549,6 +1577,20 @@ export interface ChannelTaskThread {
   lastDeliveryError?: string | null;
 }
 
+export interface ChannelTaskRevision {
+  id: string;
+  channelId: string;
+  conversationId: string;
+  threadId: string;
+  revision: number;
+  type: string;
+  status: string;
+  feedback?: string | null;
+  createdAt?: string | null;
+  confirmedAt?: string | null;
+  cancelledAt?: string | null;
+}
+
 export interface ChannelTaskRequest {
   id: string;
   channelId: string;
@@ -1599,6 +1641,20 @@ export interface ChannelOperations {
   readiness: Record<string, boolean>;
   ready: boolean;
   health: "ok" | "attention" | "idle" | string;
+  /** Sanitized iLink provider runtime state; never contains tokens or cursors. */
+  ilinkAccount?: {
+    status?: string | null;
+    botId?: string | null;
+    lastPollAt?: string | null;
+    lastMessageAt?: string | null;
+    lastError?: string | null;
+    pairingStatus?: string | null;
+    workerFailureCount?: number;
+    nextRetryAt?: string | null;
+    connectedAt?: string | null;
+    updatedAt?: string | null;
+    pairingExpiresAt?: string | null;
+  } | null;
   capabilityAllowlist: string[];
   statusCapability?: string | null;
   /** The project `/task` files GitHub issues into (null = /task disabled). */

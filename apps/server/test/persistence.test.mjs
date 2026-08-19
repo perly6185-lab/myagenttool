@@ -1551,6 +1551,11 @@ test("persistence restores channel drafts, operation mode, and queued task threa
       summary: "继续整理", status: "queued", queueAheadCount: 0, queuePosition: 1,
       createdAt: now(), updatedAt: now(),
     });
+    first.state.channelTaskRevisions.push({
+      id: "ctrev_restart", channelId: "chn_restart", conversationId: "chcv_restart", threadId: "cth_restart",
+      revision: 1, type: "data_correction", status: "awaiting_confirmation", feedback: "客户弄错了",
+      previous: { status: "succeeded", summary: "原结果", resultSummary: "原汇总" }, createdAt: now(),
+    });
 
     createPersistenceRuntime({ state: first.state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject: first.defaultProject, sameProjectPath }).savePersistentState();
 
@@ -1559,6 +1564,7 @@ test("persistence restores channel drafts, operation mode, and queued task threa
     assert.equal(second.state.channels.find((channel) => channel.id === "chn_restart")?.operationMode, "personal");
     assert.equal(second.state.channelIntakeGroups.find((group) => group.id === "cig_restart")?.status, "collecting");
     assert.equal(second.state.channelTaskThreads.find((thread) => thread.id === "cth_restart")?.queuePosition, 1);
+    assert.equal(second.state.channelTaskRevisions.find((revision) => revision.id === "ctrev_restart")?.status, "awaiting_confirmation");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

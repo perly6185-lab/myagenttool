@@ -309,8 +309,12 @@ export function createServerState({ defaultProjectPath, now }) {
     channelEvents: [],
     channelConversations: [],
     channelDeliveries: [],
+    channelNotificationPolicies: [],
+    channelNotificationBatches: [],
+    channelNotificationLog: [],
     channelIntakeGroups: [],
     channelTaskThreads: [],
+    channelTaskRevisions: [],
     // iLink account metadata only. Bot tokens live in the credential store, not
     // in the durable public state snapshot.
     ilinkAccounts: [],
@@ -453,8 +457,12 @@ export function resetStateForSelfCheck({ state, now }) {
   state.channelEvents = [];
   state.channelConversations = [];
   state.channelDeliveries = [];
+  state.channelNotificationPolicies = [];
+  state.channelNotificationBatches = [];
+  state.channelNotificationLog = [];
   state.channelIntakeGroups = [];
   state.channelTaskThreads = [];
+  state.channelTaskRevisions = [];
   state.channelTaskRequests = [];
   state.channelObjectRecords = [];
   state.channelObjectImports = [];

@@ -1,10 +1,10 @@
-export const codexPermissionModes = ["ask", "auto", "full"] as const;
+export const codexPermissionModes = ["read_only", "ask", "auto", "full"] as const;
 
 export type CodexPermissionMode = (typeof codexPermissionModes)[number];
 
 export interface CodexPermissionProfile {
   mode: CodexPermissionMode;
-  sandboxMode: "workspace-write" | "danger-full-access";
+  sandboxMode: "read-only" | "workspace-write" | "danger-full-access";
   approvalPolicy: "on-request" | "never";
   approvalsReviewer: "user" | "auto_review";
   bypassApprovalsAndSandbox: boolean;
@@ -27,7 +27,8 @@ export function codexPermissionModeFromLegacySandbox(
 ): CodexPermissionMode {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (normalized === "danger-full-access") return "full";
-  if (normalized === "workspace-write" || normalized === "read-only") return "ask";
+  if (normalized === "read-only") return "read_only";
+  if (normalized === "workspace-write") return "ask";
   return normalizeCodexPermissionMode(value, fallback);
 }
 
@@ -40,6 +41,15 @@ export function codexPermissionProfile(value: unknown): CodexPermissionProfile {
       approvalPolicy: "never",
       approvalsReviewer: "user",
       bypassApprovalsAndSandbox: true,
+    };
+  }
+  if (mode === "read_only") {
+    return {
+      mode,
+      sandboxMode: "read-only",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      bypassApprovalsAndSandbox: false,
     };
   }
   return {

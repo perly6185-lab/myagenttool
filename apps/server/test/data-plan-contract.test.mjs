@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildAttachmentDataPlan,
   buildRuntimeDataPlan,
   dataPlanMatchesCurrent,
   normalizeDataContract,
@@ -9,6 +10,60 @@ import {
   buildDataRelationPreview,
   dataRelationPreviewMatchesCurrent,
 } from "../src/services/data-relation-preview.mjs";
+
+test("channel attachment discovery becomes a read-only plan and detects replacement", () => {
+  const attachments = [{
+    id: "asset-1",
+    hash: "sha256:one",
+    version: "v1",
+  }];
+  const plan = buildAttachmentDataPlan({
+    attachments,
+    discoveries: [{
+      assetId: "asset-1",
+      status: "ready",
+      fileName: "orders.csv",
+      format: "csv",
+      contentHash: "sha256:one",
+      rowCount: 3,
+      recognizedFields: ["order_number", "customer", "amount"],
+    }],
+  });
+  assert.equal(plan.status, "ready");
+  assert.equal(plan.origin, "channel_attachment");
+  assert.equal(plan.requirements[0].state, "ready");
+  assert.equal(plan.sources[0].sourceId, "asset-1");
+  assert.equal(plan.mutationPolicy, null);
+  assert.equal(JSON.stringify(plan).includes("customer"), true);
+  assert.equal(JSON.stringify(plan).includes("sha256:one"), true);
+  assert.equal(dataPlanMatchesCurrent({ plan, inputAssets: attachments }).ok, true);
+  assert.equal(dataPlanMatchesCurrent({
+    plan,
+    inputAssets: [{ ...attachments[0], hash: "sha256:two" }],
+  }).ok, false);
+});
+
+test("an unsupported or stale attachment does not become an executable data source", () => {
+  const plan = buildAttachmentDataPlan({
+    attachments: [{ id: "asset-2", hash: "sha256:two" }],
+    discoveries: [{
+      assetId: "asset-2",
+      status: "stale",
+      fileName: "orders.csv",
+      format: "csv",
+      contentHash: "sha256:old",
+      recognizedFields: ["order_number"],
+    }, {
+      assetId: "asset-3",
+      status: "ready",
+      fileName: "photo.png",
+      format: "png",
+    }],
+  });
+  assert.equal(plan.status, "stale");
+  assert.equal(plan.sources.length, 0);
+  assert.equal(plan.requirements[0].state, "missing");
+});
 
 const requirement = {
   id: "customers",

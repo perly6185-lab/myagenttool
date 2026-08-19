@@ -152,6 +152,14 @@ server.listen(port, host, () => {
     sweep();
     setInterval(sweep, 15_000).unref?.();
   };
+  let channelNotificationSweepStarted = false;
+  const startChannelNotificationSweep = () => {
+    if (channelNotificationSweepStarted || typeof httpDependencies.sweepChannelNotifications !== "function") return;
+    channelNotificationSweepStarted = true;
+    const sweep = () => Promise.resolve(httpDependencies.sweepChannelNotifications()).catch(() => {});
+    sweep();
+    setInterval(sweep, 30_000).unref?.();
+  };
 
   // WeCom (#1090).
   const wecomConfig = wecomGatewayConfigFromEnv();
@@ -159,6 +167,7 @@ server.listen(port, host, () => {
   // is skipped when it's unset (#channel-audit), so a missing WECOM_CORP_ID would
   // silently run with cross-corp isolation disabled. Fail closed — don't start.
   if (wecomConfig.port && wecomConfig.token && wecomConfig.encodingAesKey && wecomConfig.channelId && wecomConfig.receiveId) {
+    startChannelNotificationSweep();
     createWecomGateway({
       token: wecomConfig.token,
       encodingAesKey: wecomConfig.encodingAesKey,
@@ -257,6 +266,7 @@ server.listen(port, host, () => {
   // One delivery sweep serves every provider (delivery routes by channel.provider).
   if (anySenderBound) {
     startChannelDeliverySweep(); // restart recovery: resume queued/retrying deliveries on boot
+    startChannelNotificationSweep();
   }
 
   // WeChat ClawBot / iLink is a client-side long-poll channel, not a public
@@ -265,6 +275,7 @@ server.listen(port, host, () => {
   if (typeof httpDependencies.sendIlinkApplicationMessage === "function") {
     httpDependencies.setChannelDeliverySender("wechat_ilink", httpDependencies.sendIlinkApplicationMessage);
     startChannelDeliverySweep();
+    startChannelNotificationSweep();
   }
   httpDependencies.startIlink?.();
 }

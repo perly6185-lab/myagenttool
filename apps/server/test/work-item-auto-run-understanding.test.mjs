@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createWorkItemAutoRunUnderstandingService,
+  workItemOperationInstructions,
   workItemTemplateInstructions,
 } from "../src/services/work-item-auto-run-understanding.mjs";
 
@@ -43,7 +44,16 @@ test("formats a pinned My template as frozen run instructions", () => {
   assert.equal(workItemTemplateInstructions({}), "");
 });
 
-function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce = false } = {}) {
+test("formats an enforced read-only boundary for Channel work", () => {
+  const instructions = workItemOperationInstructions({
+    channelTaskContract: { operationIntent: { accessMode: "read_only" } },
+  });
+  assert.match(instructions, /READ ONLY/);
+  assert.match(instructions, /Do not create, modify, delete, move, or rename files/);
+  assert.equal(workItemOperationInstructions({ channelTaskContract: { operationIntent: { accessMode: "write" } } }), "");
+});
+
+function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce = false, readOnly = false } = {}) {
   const workItem = {
     id: "wi_1",
     ownerTeamId: "team_a",
@@ -57,6 +67,9 @@ function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce =
     executionContractSource: null,
     terminalId: "dev_a",
     executionBindings: [{ kind: "auto_run", targetId: "aur_1" }],
+    channelTaskContract: readOnly ? {
+      operationIntent: { accessMode: "read_only", forbiddenActions: ["create", "modify", "delete", "move", "rename", "write"] },
+    } : null,
   };
   const autoRun = {
     id: "aur_1",
@@ -81,7 +94,7 @@ function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce =
     invocationId: null,
   };
   const state = { autoRuns: [autoRun], workItems: [workItem] };
-  const calls = { prepare: 0, attach: 0, start: 0, fail: 0, defer: 0, projectContext: null, contextSummary: null };
+  const calls = { prepare: 0, attach: 0, start: 0, fail: 0, defer: 0, projectContext: null, contextSummary: null, startInput: null };
   const scheduled = [];
   const service = createWorkItemAutoRunUnderstandingService({
     state,
@@ -125,6 +138,7 @@ function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce =
     },
     startAutoRun: async (input) => {
       calls.start += 1;
+      calls.startInput = input;
       if (capacityOnce && calls.start === 1) throw new Error("At capacity: 1/1 auto-runs active.");
       assert.equal(input.existingAutoRunId, autoRun.id);
       autoRun.worktreeId = "wtr_1";
@@ -162,6 +176,14 @@ test("enqueue returns immediately and advances the persisted Run in background",
   assert.equal(calls.contextSummary.digest, calls.projectContext.digest);
   assert.equal("documents" in calls.contextSummary, false);
   assert.equal(autoRun.executionPlan.contextSummary.digest, calls.projectContext.digest);
+});
+
+test("read-only Channel work carries its boundary into the real auto-run start", async () => {
+  const { service, autoRun, calls } = fixture({ readOnly: true });
+  const result = await service.processRun(autoRun.id);
+  assert.equal(result.ok, true);
+  assert.equal(calls.startInput.operationIntent.accessMode, "read_only");
+  assert.match(calls.startInput.issueBody, /Execution boundary.*READ ONLY/);
 });
 
 test("restart reconciliation resumes an unfinished understanding Run", async () => {

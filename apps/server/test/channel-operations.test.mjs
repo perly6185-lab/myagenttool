@@ -80,6 +80,39 @@ test("channelOperations can use runtime readiness instead of stale state fields"
   assert.equal(rows[0].health, "ok");
 });
 
+test("channelOperations exposes only a sanitized iLink runtime summary", () => {
+  const rows = channelOperations({
+    channels: [{ id: "chn_ilink", provider: "wechat_ilink", status: "enabled" }],
+    readinessForChannel: () => ({ account: true, session: true, worker: false }),
+    runtimeAccountForChannel: () => ({
+      status: "error",
+      botId: "bot_1",
+      lastPollAt: "2026-08-19T12:00:00.000Z",
+      lastMessageAt: "2026-08-19T11:59:00.000Z",
+      lastError: "network_error",
+      workerFailureCount: 2,
+      nextRetryAt: "2026-08-19T12:00:30.000Z",
+      botToken: "must-not-leak",
+      cursor: "must-not-leak",
+    }),
+  });
+  assert.deepEqual(rows[0].ilinkAccount, {
+    status: "error",
+    botId: "bot_1",
+    lastPollAt: "2026-08-19T12:00:00.000Z",
+    lastMessageAt: "2026-08-19T11:59:00.000Z",
+    lastError: "network_error",
+    pairingStatus: null,
+    workerFailureCount: 2,
+    nextRetryAt: "2026-08-19T12:00:30.000Z",
+    connectedAt: null,
+    updatedAt: null,
+    pairingExpiresAt: null,
+  });
+  assert.equal("botToken" in rows[0].ilinkAccount, false);
+  assert.equal("cursor" in rows[0].ilinkAccount, false);
+});
+
 test("channelTaskOperations joins Issue, auto-run, Invocation, result, delivery, and recovery actions", () => {
   const rows = channelTaskOperations({
     requests: [

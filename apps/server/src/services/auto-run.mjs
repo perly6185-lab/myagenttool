@@ -54,6 +54,15 @@ function codexAutoApprovalOptions(agent) {
   return isCodexAgent(agent) ? { approvalMode: "auto" } : {};
 }
 
+export function autoRunPermissionOptions(agent, operationIntent = null) {
+  if (operationIntent?.accessMode === "read_only") {
+    return isCodexAgent(agent)
+      ? { approvalMode: "read_only", permissionMode: "read_only" }
+      : { permissionMode: "plan" };
+  }
+  return isCodexAgent(agent) ? { approvalMode: "auto" } : {};
+}
+
 function localDateKeyForOffset(value, timezoneOffset = 0) {
   const normalizedOffset = Number(timezoneOffset);
   if (!Number.isInteger(normalizedOffset) || normalizedOffset < -840 || normalizedOffset > 840) {
@@ -1229,7 +1238,7 @@ export function createAutoRunService({
     projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody,
     executionChainId = null, autonomyProfile = "standard", terminalId = null,
     taskMaterialWorkItemId = null, localIssueId = null,
-    existingAutoRunId = null, decisionOverride = null, executionPlan = null,
+    existingAutoRunId = null, decisionOverride = null, executionPlan = null, operationIntent = null,
   } = {}) {
     const resolvedAutonomyProfile = ["cautious", "standard", "high"].includes(autonomyProfile)
       ? autonomyProfile
@@ -1680,9 +1689,13 @@ export function createAutoRunService({
       const verifyCmdArr = resolveAutoRunVerifyCommandFor({ verifyCommandName: verifyProject?.verifyCommandName ?? null });
       const verifyCommand = Array.isArray(verifyCmdArr) && verifyCmdArr.length ? verifyCmdArr.join(" ") : null;
       const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody, verifyCommand });
+      const readOnlyExecution = operationIntent?.accessMode === "read_only";
+      const permissionOptions = autoRunPermissionOptions(agent, operationIntent);
       invocation = createInvocation(task, agent, {
         actor,
-        ...codexAutoApprovalOptions(agent),
+        ...(permissionOptions.approvalMode
+          ? { approvalMode: permissionOptions.approvalMode }
+          : codexAutoApprovalOptions(agent)),
         timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
         // role carries the decided path so role-restricted agent-skills render
         // for this run (creation.mjs → renderAgentSkillsIntoWorktree).
@@ -1693,6 +1706,10 @@ export function createAutoRunService({
           role: decision.path,
           executionChainId: autoRun.executionChainId,
           autonomyProfile: autoRun.autonomyProfile,
+          ...(readOnlyExecution ? {
+            permissionMode: permissionOptions.permissionMode,
+            operationIntent,
+          } : {}),
         },
       });
       startInvocationIfAllowed(invocation, agent);

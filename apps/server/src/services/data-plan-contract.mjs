@@ -132,13 +132,84 @@ function sourceFingerprint(source) {
 
 function sourceView(source) {
   return {
-    sourceId: text(source?.id, 200),
+    sourceId: text(source?.id ?? source?.sourceId, 200),
     kind: text(source?.kind, 60),
+    sourceKind: text(source?.sourceKind, 60),
     fileName: text(source?.fileName ?? source?.name, 300),
     revision: Number.isInteger(Number(source?.revision)) ? Number(source.revision) : null,
     fingerprint: text(sourceFingerprint(source), 200),
     rowCount: Number.isInteger(Number(source?.rowCount)) ? Number(source.rowCount) : null,
   };
+}
+
+/**
+ * Turn an already-authorized channel attachment discovery into a read-only
+ * runtime data plan. An uploaded file is a usable query source, but it is not
+ * automatically a business record source and cannot authorize a writeback.
+ */
+export function buildAttachmentDataPlan({ discoveries = [], attachments = [] } = {}) {
+  const assetById = new Map((Array.isArray(attachments) ? attachments : [])
+    .filter((asset) => asset?.id)
+    .map((asset) => [String(asset.id), asset]));
+  const rows = (Array.isArray(discoveries) ? discoveries : [])
+    .slice(0, 20)
+    .map((discovery, index) => {
+      const asset = discovery?.assetId ? assetById.get(String(discovery.assetId)) : null;
+      const fileName = text(discovery?.fileName ?? asset?.originalName ?? asset?.name, 300) || ("附件" + (index + 1));
+      const format = text(discovery?.format, 20)?.toLowerCase();
+      if (!["csv", "xlsx", "xls", "json"].includes(format)) return null;
+      const sourceId = text(discovery?.assetId ?? asset?.id, 200);
+      const fields = fieldList(discovery?.recognizedFields ?? []);
+      const state = discovery?.status === "ready" && sourceId && fields ? "ready" : "missing";
+      return {
+        source: {
+          sourceId,
+          kind: "file",
+          sourceKind: "channel_attachment",
+          fileName,
+          fingerprint: text(discovery?.contentHash ?? asset?.hash, 200),
+          rowCount: Number.isInteger(Number(discovery?.rowCount)) ? Number(discovery.rowCount) : null,
+        },
+        requirement: {
+          id: requirementId(sourceId, "attachment_" + (index + 1)),
+          kind: "file",
+          label: fileName,
+          fields: fields ?? [],
+          required: true,
+          multiple: false,
+          description: "来自当前频道附件的只读文件来源",
+          state,
+          sourceId: state === "ready" ? sourceId : null,
+          candidateSourceIds: sourceId ? [sourceId] : [],
+        },
+      };
+    })
+    .filter(Boolean);
+  if (!rows.length) {
+    const empty = {
+      schemaVersion: 1,
+      status: "not_required",
+      origin: "channel_attachment",
+      requirements: [],
+      relations: [],
+      sources: [],
+      mutationPolicy: null,
+    };
+    return { ...empty, digest: digest(empty) };
+  }
+  const requirements = rows.map((row) => row.requirement);
+  const sources = rows.filter((row) => row.requirement.state === "ready").map((row) => row.source);
+  const status = requirements.some((requirement) => requirement.state !== "ready") ? "stale" : "ready";
+  const plan = {
+    schemaVersion: 1,
+    status,
+    origin: "channel_attachment",
+    requirements,
+    relations: [],
+    mutationPolicy: null,
+    sources,
+  };
+  return { ...plan, digest: digest(plan) };
 }
 
 function requirementCandidates(requirement, sources) {
@@ -241,6 +312,7 @@ export function normalizeRuntimeDataPlan(input) {
   return {
     schemaVersion: 1,
     status,
+    origin: text(input.origin, 60),
     requirements,
     relations,
     mutationPolicy: input.mutationPolicy && typeof input.mutationPolicy === "object"
@@ -255,8 +327,21 @@ function digest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-export function dataPlanMatchesCurrent({ state, plan, projectId, ownerTeamId } = {}) {
+export function dataPlanMatchesCurrent({ state, plan, projectId, ownerTeamId, inputAssets = [] } = {}) {
   if (!plan || plan.status === "not_required") return { ok: true, current: plan };
+  if (plan.origin === "channel_attachment") {
+    const byId = new Map((Array.isArray(inputAssets) ? inputAssets : [])
+      .filter((asset) => asset?.id)
+      .map((asset) => [String(asset.id), asset]));
+    const stale = (plan.sources ?? []).length === 0
+      || (plan.sources ?? []).some((source) => {
+        const asset = byId.get(String(source.sourceId));
+        return !asset || !source.fingerprint || String(asset.hash ?? "") !== String(source.fingerprint);
+      });
+    return stale
+      ? { ok: false, current: { ...plan, status: "stale" } }
+      : { ok: true, current: plan };
+  }
   const current = buildRuntimeDataPlan({
     state,
     projectId,

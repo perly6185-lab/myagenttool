@@ -224,8 +224,12 @@ export const persistedArrayKeys = [
   "channelEvents",
   "channelConversations",
   "channelDeliveries",
+  "channelNotificationPolicies",
+  "channelNotificationBatches",
+  "channelNotificationLog",
   "channelIntakeGroups",
   "channelTaskThreads",
+  "channelTaskRevisions",
   "channelTaskRequests",
   "ilinkAccounts",
 ];
