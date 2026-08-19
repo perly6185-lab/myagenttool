@@ -111,7 +111,7 @@ export function NotificationCenter() {
     : [];
   const unreadCount = unreadIds.length;
   const unreadCompletionItems = model.completions.items.filter((item) => unreadIds.includes(item.id));
-  const actionCount = model.approvals.count + model.failures.count + templateAlerts.length + (model.offline ? 1 : 0);
+  const actionCount = model.approvals.count + model.failures.count + model.followUps.count + templateAlerts.length + (model.offline ? 1 : 0);
   const hasDanger = model.failures.count > 0 || templateAlerts.some((task) => task.stage === "failed") || model.offline;
 
   const notificationEventIds = [
@@ -356,6 +356,16 @@ export function NotificationCenter() {
                 />
                 <NotificationItemLinks items={model.failures.items} onOpen={(item) => openNotificationItem(item, "workBoard")} />
               </NotificationGroup>
+            ) : null}
+            {model.followUps.count > 0 ? (
+              <NotificationRow
+                icon={<BellRing className="size-5 text-warning" />}
+                title={text.followUps}
+                description={text.followUpsHint}
+                count={model.followUps.count}
+                tone="warning"
+                onClick={() => openSection("workBoard")}
+              />
             ) : null}
             {model.offline ? (
               <NotificationRow

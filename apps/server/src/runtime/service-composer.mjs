@@ -5938,6 +5938,7 @@ export function createServerRuntimeServices({
     sweepAutoRunSloAlerts,
     sweepAlertOutbox: alertOutbox.sweep,
     sweepWorkItemOperationalAlerts: workItemService.sweepOperationalAlerts,
+    sweepWorkItemFollowUpReminders: workItemService.sweepFollowUpReminders,
     sweepTaskMaterialDrafts: taskMaterialService.sweepExpired,
     flushTraceExport,
     requestObservabilityDeletion,

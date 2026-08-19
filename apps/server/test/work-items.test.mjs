@@ -438,6 +438,87 @@ test("validates progress input and optimistic concurrency", () => {
   assert.equal(record({ waitingOn: "requester" }).body.error, "work_item_waiting_on_requester_requires_requester");
 });
 
+test("materializes one revision-deduplicated due reminder and resolves it after progress", () => {
+  let timestamp = "2026-07-24T00:00:00.000Z";
+  const { service, state, events } = harness({ clock: () => timestamp });
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Send customer checkpoint",
+    requesterRelation: "customer",
+    requesterName: "Alex",
+    nextFollowUpAt: "2026-07-24T01:00:00.000Z",
+  }, ACTOR_A).body.workItem;
+  assert.equal("followUpScheduleRevision" in created, false, "internal reminder generation is not public");
+
+  assert.deepEqual(service.sweepFollowUpReminders(), { created: 0, resolved: 0 });
+  timestamp = "2026-07-24T01:00:00.000Z";
+  assert.deepEqual(service.sweepFollowUpReminders(), { created: 1, resolved: 0 });
+  assert.equal(service.listFollowUpReminders(ACTOR_A, { status: "due" }).length, 1);
+  assert.equal(service.listFollowUpReminders(ACTOR_B, { status: "due" }).length, 0, "foreign team cannot list the reminder");
+  const reminder = state.workItemFollowUpReminders[0];
+  assert.equal(reminder.sourceRevision, 1);
+  assert.equal(reminder.scheduleRevision, 1);
+
+  const updated = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    title: "Send concise customer checkpoint",
+  }, ACTOR_A).body.workItem;
+  assert.deepEqual(service.sweepFollowUpReminders(), { created: 0, resolved: 0 });
+  assert.equal(state.workItemFollowUpReminders.length, 1, "an unrelated Issue revision does not duplicate the reminder");
+
+  const progressed = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: updated.revision,
+    idempotencyKey: "resolve-due-reminder",
+    summary: "Customer checkpoint prepared.",
+  }, ACTOR_A);
+  assert.equal(progressed.status, 201);
+  assert.equal(reminder.status, "resolved");
+  assert.equal(reminder.resolution, "progress_recorded");
+  assert.deepEqual(service.sweepFollowUpReminders(), { created: 0, resolved: 0 });
+  assert.equal(state.workItemActivities.filter((row) => row.action === "follow_up_reminder_due").length, 1);
+  assert.equal(state.workItemActivities.filter((row) => row.action === "follow_up_reminder_resolved").length, 1);
+  assert.equal(events.filter((event) => event.type === "work_item_follow_up_reminder_due").length, 1);
+});
+
+test("rescheduling creates a new reminder generation and completion resolves it", () => {
+  let timestamp = "2026-07-24T00:00:00.000Z";
+  const { service, state } = harness({ clock: () => timestamp });
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Manager follow-up",
+    requesterRelation: "manager",
+    requesterName: "Morgan",
+    nextFollowUpAt: "2026-07-24T01:00:00.000Z",
+  }, ACTOR_A).body.workItem;
+  timestamp = "2026-07-24T01:00:00.000Z";
+  service.sweepFollowUpReminders();
+
+  const rescheduled = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    nextFollowUpAt: "2026-07-24T02:00:00.000Z",
+  }, ACTOR_A).body.workItem;
+  assert.equal(state.workItemFollowUpReminders[0].status, "resolved");
+  assert.equal(state.workItemFollowUpReminders[0].resolution, "rescheduled");
+
+  timestamp = "2026-07-24T02:00:00.000Z";
+  assert.deepEqual(service.sweepFollowUpReminders(), { created: 1, resolved: 0 });
+  const due = service.listFollowUpReminders(ACTOR_A, { status: "due" })[0];
+  assert.equal(due.scheduleRevision, 2);
+  assert.notEqual(due.dedupeKey, state.workItemFollowUpReminders[1].dedupeKey);
+
+  const completed = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: rescheduled.revision,
+    status: "done",
+  }, ACTOR_A);
+  assert.equal(completed.status, 200);
+  assert.equal(due.status, "resolved");
+  assert.equal(due.resolution, "completed");
+});
+
 test("backfills legacy work-item follow-up context without inventing requester identity", () => {
   const state = {
     workItems: [
@@ -3360,6 +3441,7 @@ test("work items survive a persistent-state restart", () => {
       ownerTeamId: "team_local", projectId: first.defaultProject.id,
       title: "Persist me", body: "", type: "task", status: "backlog", priority: "p2",
       labels: [], assigneeIds: [], acceptanceCriteria: [], dueDate: "2026-08-15", milestone: "M3",
+      nextFollowUpAt: "2026-07-24T00:00:00.000Z", followUpScheduleRevision: 1,
       revision: 1, state: "open",
       archivedAt: null, externalBindings: [], executionBindings: [], createdAt: now(), updatedAt: now(),
       createdBy: "usr_local", lastModifiedBy: "usr_local",
@@ -3381,6 +3463,13 @@ test("work items survive a persistent-state restart", () => {
       audience: { relation: "unknown", name: null, organization: null, userId: null },
       tone: "concise", content: "Persisted report draft", source: { workItemRevision: 1 },
       createdAt: now(), updatedAt: now(), createdBy: "usr_local", updatedBy: "usr_local",
+    });
+    first.state.workItemFollowUpReminders.push({
+      id: "wfr_1", schemaVersion: 1, dedupeKey: "lwi_1:1",
+      workItemId: "lwi_1", ownerTeamId: "team_local", projectId: first.defaultProject.id,
+      scheduleRevision: 1, sourceRevision: 1, scheduledFor: "2026-07-24T00:00:00.000Z",
+      status: "due", createdAt: now(), createdBy: "usr_follow_up_reminder",
+      resolvedAt: null, resolvedBy: null, resolution: null,
     });
     first.state.workItemAttentionOperations.push({
       attentionId: "github_conflict:lwi_1", ownerTeamId: "team_local",
@@ -3423,6 +3512,7 @@ test("work items survive a persistent-state restart", () => {
     assert.equal(second.state.workItemComments[0].body, "Still here");
     assert.equal(second.state.workItemActivities[0].action, "commented");
     assert.equal(second.state.workItemReportDrafts[0].content, "Persisted report draft");
+    assert.equal(second.state.workItemFollowUpReminders[0].dedupeKey, "lwi_1:1");
     assert.equal(second.state.workItemAttentionOperations[0].handling.actorId, "usr_local");
     assert.equal(second.state.githubWorkItemWebhookDeliveries[0].id, "delivery-persisted");
     assert.equal(second.state.githubWorkItemWebhookFailures[0].reason, "invalid_signature");

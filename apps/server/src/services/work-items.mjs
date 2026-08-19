@@ -23,6 +23,7 @@ import {
   workItemFollowUpContextView,
 } from "./work-item-follow-up.mjs";
 import { createWorkItemReportDraftService } from "./work-item-report-drafts.mjs";
+import { createWorkItemFollowUpReminderService } from "./work-item-follow-up-reminders.mjs";
 import { resolveWorkItemExecution } from "./work-item-execution.mjs";
 import { projectWorkItemOutcome } from "./work-item-outcome.mjs";
 import {
@@ -946,6 +947,9 @@ export function createWorkItemService({
     enqueueChannelDeliveryBatch,
     validateApprovalToken,
   });
+  const followUpReminderService = createWorkItemFollowUpReminderService({
+    state, now, nextId, runTx, recordActivity, appendEvent, actorTeam, actorUser,
+  });
 
   function resolveFollowUpContext(context, actor, { input = {} } = {}) {
     const value = workItemFollowUpContextView(context);
@@ -1314,7 +1318,11 @@ export function createWorkItemService({
   }
 
   function workItemView(item, actor) {
-    const { createIdempotencyKey: _createIdempotencyKey, ...publicItem } = item;
+    const {
+      createIdempotencyKey: _createIdempotencyKey,
+      followUpScheduleRevision: _followUpScheduleRevision,
+      ...publicItem
+    } = item;
     const bodyAcceptanceCriteria = (item.acceptanceCriteria ?? []).length
       ? []
       : extractAcceptanceCriteriaFromBody(item.body);
@@ -3844,6 +3852,7 @@ export function createWorkItemService({
       dependencyIds: [],
       parentId,
       createIdempotencyKey: idempotencyKey,
+      followUpScheduleRevision: validated.value.nextFollowUpAt ? 1 : 0,
       revision: 1,
       state: "open",
       archivedAt: null,
@@ -4205,6 +4214,8 @@ export function createWorkItemService({
       validated.value.parentId = parentId;
     }
     const nextValues = { ...validated.value };
+    const followUpScheduleChanged = Object.hasOwn(validated.value, "nextFollowUpAt")
+      && validated.value.nextFollowUpAt !== item.nextFollowUpAt;
     if (Object.hasOwn(validated.value, "plannedDate")) {
       nextValues.schedulePlanSource = validated.value.plannedDate ? "manual" : null;
       nextValues.scheduleReason = validated.value.plannedDate ? "manual_schedule" : null;
@@ -4214,6 +4225,13 @@ export function createWorkItemService({
     }
     const previous = Object.fromEntries(Object.keys(nextValues).map((key) => [key, item[key] ?? null]));
     runTx(() => {
+      if (followUpScheduleChanged) {
+        followUpReminderService.scheduleChanged(item, actor, {
+          reason: validated.value.status === "done"
+            ? "completed"
+            : validated.value.nextFollowUpAt ? "rescheduled" : "schedule_cleared",
+        });
+      }
       Object.assign(item, nextValues, {
         revision: item.revision + 1,
         updatedAt: timestamp,
@@ -4222,6 +4240,9 @@ export function createWorkItemService({
       if (validated.value.acceptanceCriteria) {
         item.acceptanceResults = (item.acceptanceResults ?? [])
           .filter((result) => validated.value.acceptanceCriteria.includes(result.criterion));
+      }
+      if (validated.value.status === "done") {
+        followUpReminderService.resolveAllDue(item, actor, "completed");
       }
       recordActivity(item, actor, "updated", {
         changes: Object.fromEntries(Object.entries(nextValues).map(([key, value]) => [
@@ -4330,8 +4351,17 @@ export function createWorkItemService({
       waitingOn: item.waitingOn ?? "none",
       nextFollowUpAt: item.nextFollowUpAt ?? null,
     };
+    const followUpScheduleChanged = Object.hasOwn(normalized.value, "nextFollowUpAt")
+      && normalized.value.nextFollowUpAt !== item.nextFollowUpAt;
     let activity;
     runTx(() => {
+      if (followUpScheduleChanged) {
+        followUpReminderService.scheduleChanged(item, actor, {
+          reason: normalized.value.nextFollowUpAt ? "rescheduled" : "schedule_cleared",
+        });
+      } else {
+        followUpReminderService.resolveCurrentDue(item, actor, "progress_recorded");
+      }
       Object.assign(item, normalized.value, {
         lastProgressAt: timestamp,
         lastProgressSummary: normalizedSummary,
@@ -4429,6 +4459,9 @@ export function createWorkItemService({
           updatedAt: timestamp,
           lastModifiedBy: actorUser(actor),
         });
+        if (validated.value.status === "done") {
+          followUpReminderService.resolveAllDue(item, actor, "completed");
+        }
         recordActivity(item, actor, "bulk_updated", {
           changes: Object.fromEntries(Object.entries(nextValues).map(([key, value]) => [
             key, { from: previous[key], to: value },
@@ -4470,6 +4503,9 @@ export function createWorkItemService({
     const pastTense = { close: "closed", reopen: "reopened", archive: "archived", restore: "restored" }[action];
     runTx(() => {
       const transitionAt = now();
+      if (["close", "archive"].includes(action)) {
+        followUpReminderService.resolveAllDue(item, actor, action === "archive" ? "archived" : "completed");
+      }
       if (action === "close") {
         item.state = "closed";
         item.completedAt = item.completedAt ?? transitionAt;
@@ -6030,6 +6066,8 @@ export function createWorkItemService({
     updateReportDraft: reportDraftService.update,
     confirmReportDraft: reportDraftService.confirm,
     discardReportDraft: reportDraftService.discard,
+    listFollowUpReminders: followUpReminderService.list,
+    sweepFollowUpReminders: followUpReminderService.sweep,
     listReportDeliveries: reportDraftService.listDeliveries,
     getReportDelivery: reportDraftService.getDelivery,
     previewReportDelivery: reportDraftService.previewDelivery,

@@ -63,6 +63,10 @@ This companion prototype freezes the PR 0 form and detail design before the
 structured follow-up fields are added to production. Review create-self,
 edit-customer, delivery detail, historical unknown, and validation-error scenes.
 
+Reminder-loop production visual QA:
+
+- [work-item-follow-up-reminder.visual-qa.md](work-item-follow-up-reminder.visual-qa.md)
+
 ## Prototype Canvas
 
 [canvas/](canvas/) defines the planned infinite-canvas workflow for reviewing

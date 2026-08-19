@@ -65,4 +65,25 @@ describe("WorkBoardView localization", () => {
     expect(useUiStore.getState().selectedWorkItemId).toBe("lwi_1");
     expect(useUiStore.getState().selectedWorkItemMode).toBe("summary");
   });
+
+  it("localizes and opens a due follow-up reminder in its canonical Local Issue", async () => {
+    await i18n.changeLanguage("zh-CN");
+    useUiStore.setState({ section: "workBoard", selectedWorkItemId: null });
+    mocks.state = {
+      reportSchedule: { enabled: false },
+      workBoard: {
+        states: {
+          pending_decision: { count: 0, items: [] },
+          follow_up: { count: 1, items: [{ id: "followup:wfr_1", kind: "work_item_follow_up_reminder", title: "Update customer", reason: "Scheduled stakeholder follow-up is due", section: "task", targetId: "lwi_1" }] },
+          in_progress: { count: 0, items: [] }, waiting: { count: 0, items: [] }, failed: { count: 0, items: [] }, done: { count: 0, items: [] },
+        },
+      },
+    };
+    render(<WorkBoardView />);
+    expect(screen.getByText("关系人跟进时间已到")).toBeTruthy();
+    expect(screen.queryByText("Scheduled stakeholder follow-up is due")).toBeNull();
+    fireEvent.click(screen.getByText("Update customer"));
+    expect(useUiStore.getState().selectedWorkItemId).toBe("lwi_1");
+    expect(useUiStore.getState().section).toBe("task");
+  });
 });

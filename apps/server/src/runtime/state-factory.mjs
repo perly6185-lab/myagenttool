@@ -206,6 +206,7 @@ export function createServerState({ defaultProjectPath, now }) {
     workItemOperationalAlerts: [],
     workItemActivities: [],
     workItemReportDrafts: [],
+    workItemFollowUpReminders: [],
     workItemReportDeliveries: [],
     planningProjects: [],
     planningProjectItems: [],

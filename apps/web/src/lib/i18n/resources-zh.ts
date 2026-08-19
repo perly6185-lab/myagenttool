@@ -119,6 +119,7 @@ export const zhCNResources = {
       actionError: { cause: "原因", impact: "影响", remedy: "处理方法", retry: "重试" },
       workBoard: {
         title: "任务状态", items: "{{count}} 项", subtitle: "按生命周期状态查看任务 · 最新优先", emptyTitle: "尚无任务状态", emptyHint: "任务进入决策、执行、复核和完成阶段后，会按状态汇总到这里。", none: "无", more: "另有 {{count}} 项",
+        followUpReminderReason: "关系人跟进时间已到",
         lens: { pending_decision: "待决策", follow_up: "需跟进", in_progress: "进行中", waiting: "等待中", failed: "已失败", done: "已完成" },
         schedule: "定时发送到消息渠道", on: "开启", off: "关闭", next: "下次 {{time}}", last: "上次 {{time}}", close: "关闭", configure: "配置", noChannels: "尚未添加消息渠道，请先添加企业微信。", noConversations: "尚无会话；需要有人先向机器人发送消息，才能投递报告。", enabled: "启用", channel: "消息渠道", to: "接收人", report: "报告", cover: "范围", cadence: "频率", day: "星期", time: "时间", pick: "— 选择 —", previous: "上一周期", current: "当前周期", daily: "每天", weekly: "每周", save: "保存", postNow: "立即发送", postTitle: "立即将已配置的报告发送到消息渠道", posted_one: "已发送（{{count}} 条消息）", posted_other: "已发送（{{count}} 条消息）", notPosted: "未发送：{{reason}}", serverTime: "时间以服务器本地时区为准；每周期仅发送一次。",
         period: { day: "日", week: "周", month: "月", quarter: "季度" }, since: "自 {{date}} 起", copyTitle: "复制本周期 Markdown 报告", copied: "已复制", copy: "复制报告", opened: "新增", completed: "完成", failed: "失败", refusals: "拒绝", refusalsPartial: "拒绝*", refusalHint: "这是下限值；持久化汇总在本时间窗口开始后才启用", aging: "超过 24 小时",

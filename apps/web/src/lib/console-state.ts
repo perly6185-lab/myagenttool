@@ -310,7 +310,7 @@ export type WorkState = "pending_decision" | "in_progress" | "waiting" | "done" 
 export interface WorkItem {
   id: string;
   state: WorkState;
-  /** Underlying kind: "auto_run", "refusal", or a PendingDecisionKind for 待决策 rows. */
+  /** Underlying kind: "auto_run", "refusal", "work_item_follow_up_reminder", or a PendingDecisionKind. */
   kind: string;
   title: string;
   subtitle?: string;

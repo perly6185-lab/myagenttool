@@ -1607,6 +1607,9 @@ test("normalizeLoadedState: shared boot normalization (SQLite hydrate parity wit
     assert.equal(state.invocations.filter((i) => i.id === "inv_dup").length, 1, "duplicate id collapsed");
     assert(res.duplicateIdsRepaired >= 1, "the repair was counted");
     assert.equal(res.workItemFollowUpBackfilled, 1, "legacy work-item follow-up context was counted");
+    assert.equal(res.workItemFollowUpReminderBackfilled, 1, "legacy reminder schedule revision was backfilled");
+    assert.deepEqual(state.workItemFollowUpReminders, []);
+    assert.equal(state.workItems[0].followUpScheduleRevision, 0);
     assert.equal(state.workItems[0].requesterRelation, "unknown");
     assert.equal(state.workItems[0].intakeChannel, "unknown");
     assert.equal(state.workItems[0].waitingOn, "none");

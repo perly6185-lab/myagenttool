@@ -56,9 +56,13 @@ function scenarioState() {
       { id: "cld_b", invocationId: "inv_b", claudeSessionId: "provider-secret-b", status: "completed" },
     ],
     workItems: [
-      { id: "wi_a_open", ownerTeamId: TEAM_A, state: "open", status: "in_progress", executionState: "running", updatedAt: "2026-07-24T10:00:00.000Z", executionBindings: [{ kind: "auto_run", targetId: "aur_a" }] },
+      { id: "wi_a_open", localRef: "LOCAL-A", title: "Team A customer update", projectId: "proj_a", ownerTeamId: TEAM_A, state: "open", status: "in_progress", executionState: "running", updatedAt: "2026-07-24T10:00:00.000Z", executionBindings: [{ kind: "auto_run", targetId: "aur_a" }] },
       { id: "wi_a_blocked", ownerTeamId: TEAM_A, state: "open", status: "blocked", executionState: "unclaimed", updatedAt: "2026-07-24T11:00:00.000Z" },
-      { id: "wi_b", ownerTeamId: TEAM_B, state: "closed", status: "done", executionState: "completed", updatedAt: "2026-07-24T12:00:00.000Z" },
+      { id: "wi_b", localRef: "LOCAL-B", title: "Team B private follow-up", projectId: "proj_b", ownerTeamId: TEAM_B, state: "closed", status: "done", executionState: "completed", updatedAt: "2026-07-24T12:00:00.000Z" },
+    ],
+    workItemFollowUpReminders: [
+      { id: "wfr_a", workItemId: "wi_a_open", ownerTeamId: TEAM_A, status: "due", scheduledFor: "2026-07-24T09:00:00.000Z", sourceRevision: 1, scheduleRevision: 1, createdAt: "2026-07-24T09:00:00.000Z" },
+      { id: "wfr_b", workItemId: "wi_b", ownerTeamId: TEAM_B, status: "due", scheduledFor: "2026-07-24T09:00:00.000Z", sourceRevision: 1, scheduleRevision: 1, createdAt: "2026-07-24T09:00:00.000Z" },
     ],
     alertOutbox: [
       { id: "aob_a", alert: { data: { autoRunId: "aur_a" } }, status: "queued", attempts: 1, lastError: "offline", createdAt: "2026-07-24T10:00:00.000Z", sentAt: null },
@@ -175,6 +179,16 @@ test("work item summary is bounded and scoped without publishing item details", 
       sentAt: null,
     }],
   });
+});
+
+test("due follow-up reminders are tenant scoped and publish no reminder internals", () => {
+  const teamA = build({ teamId: TEAM_A });
+  const reminders = teamA.workBoard.states.follow_up.items.filter((row) => row.kind === "work_item_follow_up_reminder");
+  assert.deepEqual(reminders.map((row) => row.id), ["followup:wfr_a"]);
+  assert.equal(reminders[0].targetId, "wi_a_open");
+  assert.equal(JSON.stringify(teamA).includes("Team B private follow-up"), false);
+  assert.equal(JSON.stringify(teamA).includes("wfr_b"), false);
+  assert.equal(teamA.workItemFollowUpReminders, undefined);
 });
 
 test("home workbench version advances when a bound execution changes", () => {

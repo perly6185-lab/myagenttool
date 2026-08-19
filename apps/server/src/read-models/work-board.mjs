@@ -19,10 +19,10 @@
 //   done              已做完 — a terminal success.
 //   failed            已失败 — a terminal failure.
 //   follow_up         要跟进 — a CROSS-CUTTING attention list, NOT a sixth
-//                     exclusive bucket: failed auto-runs (someone must triage or
-//                     retry) plus recent device refusals (a veto a person should
-//                     see). It overlaps `failed` by design; the count is the size
-//                     of the attention queue, ordered most-recent first.
+//                     exclusive bucket: failed auto-runs, recent device refusals,
+//                     and durable due Local Issue follow-up reminders. It overlaps
+//                     `failed` by design; the count is the size of the attention
+//                     queue, ordered most-recent first.
 
 // Auto-run statuses that mean the run is actively moving (autoRunStates in
 // services/auto-run.mjs). plan_proposed/report_posted/pr_open are deliberately
@@ -104,10 +104,18 @@ function byNewest(a, b) {
  * @param {Array<object>} [sources.autoRuns]
  * @param {Array<object>} [sources.pendingDecisions] - the computed queue (reused verbatim)
  * @param {Array<object>} [sources.refusals]
+ * @param {Array<object>} [sources.followUpReminders] - due, team-scoped Local Issue reminders
  * @param {number} [sources.now] - epoch ms, for the refusal attention window (injectable for tests)
  * @returns {{ generatedAt: number, states: Record<string, {count: number, items: object[]}> }}
  */
-export function workBoard({ autoRuns = [], pendingDecisions = [], refusals = [], schedules = [], now = Date.now() } = {}) {
+export function workBoard({
+  autoRuns = [],
+  pendingDecisions = [],
+  refusals = [],
+  followUpReminders = [],
+  schedules = [],
+  now = Date.now(),
+} = {}) {
   // Any auto-run with a live gate is represented by its pendingDecisions row, so
   // exclude it from the lifecycle buckets — otherwise the same run would show as
   // both "待决策" and "正在做".
@@ -182,6 +190,24 @@ export function workBoard({ autoRuns = [], pendingDecisions = [], refusals = [],
       projectId: null,
       updatedAt: r.at ?? null,
       reason: "device refusal — review the veto",
+    });
+  }
+
+  // Due Local Issue follow-ups are durable reminders, projected as a bounded
+  // attention row. The reminder id is stable across refreshes and its owner
+  // surface remains the Local Issue; this board never becomes a second editor.
+  for (const reminder of followUpReminders.filter((row) => row?.status === "due")) {
+    buckets.follow_up.push({
+      id: `followup:${reminder.id}`,
+      state: "follow_up",
+      kind: "work_item_follow_up_reminder",
+      title: truncate(reminder.workItemTitle || reminder.localRef || reminder.workItemId),
+      subtitle: truncate(`Follow-up due · ${reminder.localRef ?? reminder.workItemId}`),
+      section: "task",
+      targetId: reminder.workItemId,
+      projectId: reminder.projectId ?? null,
+      updatedAt: reminder.scheduledFor ?? reminder.createdAt ?? null,
+      reason: "scheduled stakeholder follow-up is due",
     });
   }
 

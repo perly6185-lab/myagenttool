@@ -374,6 +374,18 @@ if (typeof httpDependencies.sweepWorkItemOperationalAlerts === "function") {
   setInterval(sweepWorkItemAlerts, 60_000).unref?.();
 }
 
+if (typeof httpDependencies.sweepWorkItemFollowUpReminders === "function") {
+  const sweepFollowUpReminders = () => {
+    try {
+      httpDependencies.sweepWorkItemFollowUpReminders();
+    } catch {
+      /* best-effort due reminder sweep */
+    }
+  };
+  sweepFollowUpReminders();
+  setInterval(sweepFollowUpReminders, 60_000).unref?.();
+}
+
 if (typeof httpDependencies.sweepAlertOutbox === "function") {
   const sweepAlerts = () => httpDependencies.sweepAlertOutbox().catch(() => {});
   sweepAlerts();

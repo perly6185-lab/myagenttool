@@ -439,6 +439,41 @@ function visualScenarios(baseline) {
       reportFixture: reportVisualFixture(reportStatus, ready.projects?.[0]?.id ?? "prj_visual"),
     })),
     {
+      name: "follow-up-reminder",
+      section: "workBoard",
+      invocationId: null,
+      state: {
+        ...structuredClone(ready),
+        workReport: null,
+        reportSchedule: null,
+        workBoard: {
+          generatedAt: Date.now(),
+          states: {
+            pending_decision: { count: 0, items: [] },
+            follow_up: {
+              count: 1,
+              items: [{
+                id: "followup:wfr_visual",
+                state: "follow_up",
+                kind: "work_item_follow_up_reminder",
+                title: "Update the customer launch owner",
+                subtitle: "Follow-up due · LOCAL-77",
+                section: "task",
+                targetId: "lwi_visual_follow_up",
+                projectId: ready.projects?.[0]?.id ?? null,
+                updatedAt: now,
+                reason: "scheduled stakeholder follow-up is due",
+              }],
+            },
+            in_progress: { count: 0, items: [] },
+            waiting: { count: 0, items: [] },
+            failed: { count: 0, items: [] },
+            done: { count: 0, items: [] },
+          },
+        },
+      },
+    },
+    {
       name: "channel-task-failed",
       section: "channels",
       invocationId: null,
@@ -484,6 +519,14 @@ async function assertVisualState(page, scenario) {
     for (const label of ["Issue #42", "Retry", "Reroute", "Take over"]) await page.getByText(label, { exact: true }).waitFor();
     return;
   }
+  if (scenario.name === "follow-up-reminder") {
+    await page.getByText("Update the customer launch owner", { exact: true }).waitFor({ timeout: 15_000 });
+    await page.locator('button[aria-controls="notification-center"]').click();
+    await page.getByText("Follow-ups due", { exact: true }).waitFor();
+    await page.getByText("Stakeholder work ready for progress or rescheduling", { exact: true }).waitFor();
+    return;
+  }
+
   if (scenario.name === "local-task-center") {
     await page.getByRole("heading", { name: "Tasks", exact: true }).waitFor({ timeout: 15_000 });
     const title = page.getByText("Confirm the overdue customer launch commitment and publish the recovery timeline", { exact: true });
@@ -783,6 +826,7 @@ async function assertVisualState(page, scenario) {
       if (body.includes(internal)) throw new Error(`home-workbench exposes internal status ${internal}`);
     }
   }
+
   const expectedHomeState = {
     empty: "idle",
     ready: "idle",
