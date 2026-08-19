@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const APPLICATION_ID = "app_163_mail";
@@ -10,6 +11,7 @@ const ORGANIZE_AGENT_ID = "agt_mcp_163_mail_organize";
 const ORGANIZE_APPLICATION_ID = "app_163_mail_organize";
 const PROVIDER = "netease";
 const SCOPE = "imap.readonly";
+const SHARED_CREDENTIAL_SCOPE = "imap.mail";
 const EMAIL = /^[^\s@]+@163\.com$/i;
 
 export function registerMailAccountConnector({
@@ -28,22 +30,21 @@ export function registerMailAccountConnector({
   ipcMain.removeHandler("mail:connect-163");
   ipcMain.removeHandler("mail:connect-163-send");
   ipcMain.removeHandler("mail:connect-163-organize");
+  ipcMain.removeHandler("mail:disconnect-163");
 
   const paths = credentialPaths(credentialRoot);
+  let setupPromise = null;
+  const provisionSharedCredential = () => {
+    setupPromise ??= ensureUnifiedMailSetup({ credentialRoot, credentialPath: paths.credential, requestServer, runtimeRoot, nodeCommand, now })
+      .finally(() => { setupPromise = null; });
+    return setupPromise;
+  };
   if (platform === "win32" && validCredentialMetadata(paths.credential)) {
-    // Existing users are upgraded without asking for the authorization code
-    // again. The protected credential stays untouched; only the agent/app
-    // descriptors and their non-secret readiness marker are refreshed.
+    // One verified client authorization code is shared by receive, organize,
+    // and send. Existing users are upgraded without asking for it again.
     queueMicrotask(async () => {
       try {
-        const applicationId = await ensureMailApplication({ requestServer, runtimeRoot, nodeCommand });
-        const credential = readCredentialRecord(paths.credential);
-        writeJsonAtomic(join(credentialRoot, "credential-readiness", `${applicationId}.json`), {
-          applicationId,
-          provider: PROVIDER,
-          scope: SCOPE,
-          obtainedAt: credential?.obtainedAt ?? now(),
-        });
+        await provisionSharedCredential();
       } catch {
         // Connector status exposes upgradeNeeded; startup itself must remain
         // available when the control plane is still booting.
@@ -51,13 +52,26 @@ export function registerMailAccountConnector({
     });
   }
   ipcMain.handle("mail:get-connector-status", async () => {
+    const hasCredential = validCredentialMetadata(paths.credential);
+    let setupFailed = false;
+    if (platform === "win32" && hasCredential) {
+      try {
+        await provisionSharedCredential();
+      } catch {
+        setupFailed = true;
+      }
+    }
     const mailbox = await requestServer("GET", "/api/mailbox").catch(() => ({ accounts: [] }));
     const account = mailbox?.accounts?.find((item) => item.provider === PROVIDER) ?? null;
-    const fullMailboxReady = account?.incrementalSync === true && Boolean(account?.bodyPrefetchCapability);
+    const receiveConnected = hasCredential && account?.canReceive === true;
+    const sendConnected = hasCredential && account?.canSend === true;
+    const organizeConnected = hasCredential && account?.canOrganize === true;
+    const readStateConnected = hasCredential && account?.providerReadState === true;
+    const fullMailboxReady = receiveConnected && account?.incrementalSync === true && Boolean(account?.bodyPrefetchCapability) && readStateConnected && sendConnected && organizeConnected;
     return {
       desktop: true,
       providers: [
-        { id: "netease_163", name: "163 邮箱", available: platform === "win32", connected: validCredentialMetadata(paths.credential) && fullMailboxReady, upgradeNeeded: validCredentialMetadata(paths.credential) && !fullMailboxReady, sendConnected: validSendCredentialMetadata(paths.sendCredential), organizeConnected: validOrganizeCredentialMetadata(paths.organizeCredential), account: credentialUsername(paths.credential) },
+        { id: "netease_163", name: "163 邮箱", available: platform === "win32", connected: receiveConnected, credentialStored: hasCredential, upgradeNeeded: hasCredential && (setupFailed || !fullMailboxReady), sendConnected, organizeConnected, readStateConnected, account: credentialUsername(paths.credential) },
         { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
       ],
     };
@@ -72,64 +86,83 @@ export function registerMailAccountConnector({
 
     try {
       await verifyCredential({ username, authorizationCode });
+      await verifySendCredential({ username, authorizationCode });
     } catch {
       return failure("verification_failed");
     }
 
     try {
-      const applicationId = await ensureMailApplication({ requestServer, runtimeRoot, nodeCommand });
       const protectedAuthorizationCode = protectSecret(authorizationCode);
       const obtainedAt = now();
+      const applicationIds = await ensureUnifiedMailApplications({ requestServer, runtimeRoot, nodeCommand });
       writeJsonAtomic(paths.credential, {
         provider: PROVIDER,
-        scope: SCOPE,
+        scope: SHARED_CREDENTIAL_SCOPE,
         username,
         protectedAuthorizationCode,
         obtainedAt,
       });
-      writeJsonAtomic(join(credentialRoot, "credential-readiness", `${applicationId}.json`), {
-        applicationId,
-        provider: PROVIDER,
-        scope: SCOPE,
-        obtainedAt,
-      });
-      return { ok: true, account: { provider: PROVIDER, email: username, canReceive: true, canSend: false } };
+      writeUnifiedReadiness({ credentialRoot, applicationIds, obtainedAt, accountId: accountIdOf(username) });
+      return { ok: true, account: { provider: PROVIDER, email: username, canReceive: true, canSend: true, canOrganize: true } };
     } catch {
       return failure("save_failed");
     }
   });
 
-  ipcMain.handle("mail:connect-163-send", async (_event, input) => {
-    const username = String(input?.email ?? "").trim().toLowerCase();
-    const authorizationCode = String(input?.authorizationCode ?? "").trim();
-    if (platform !== "win32") return failure("platform_not_supported");
-    if (!EMAIL.test(username)) return failure("invalid_email");
-    if (!authorizationCode || authorizationCode.length > 256) return failure("invalid_authorization_code");
-    try { await verifySendCredential({ username, authorizationCode }); } catch { return failure("verification_failed"); }
-    try {
-      const applicationId = await ensureMailSendApplication({ requestServer, runtimeRoot, nodeCommand });
-      const obtainedAt = now();
-      writeJsonAtomic(paths.sendCredential, { provider: PROVIDER, scope: "smtp.send", username, protectedAuthorizationCode: protectSecret(authorizationCode), obtainedAt });
-      writeJsonAtomic(join(credentialRoot, "credential-readiness", `${applicationId}.json`), { applicationId, provider: PROVIDER, scope: "smtp.send", obtainedAt });
-      return { ok: true, account: { provider: PROVIDER, email: username, canReceive: validCredentialMetadata(paths.credential), canSend: true } };
-    } catch { return failure("save_failed"); }
+  // Compatibility for an older renderer: these actions now only repair the
+  // shared setup and never accept or persist another authorization code.
+  ipcMain.handle("mail:connect-163-send", async () => {
+    return completeSharedSetup();
   });
 
-  ipcMain.handle("mail:connect-163-organize", async (_event, input) => {
-    const username = String(input?.email ?? "").trim().toLowerCase();
-    const authorizationCode = String(input?.authorizationCode ?? "").trim();
-    if (platform !== "win32") return failure("platform_not_supported");
-    if (!EMAIL.test(username)) return failure("invalid_email");
-    if (!authorizationCode || authorizationCode.length > 256) return failure("invalid_authorization_code");
-    try { await verifyCredential({ username, authorizationCode }); } catch { return failure("verification_failed"); }
-    try {
-      const applicationId = await ensureMailOrganizeApplication({ requestServer, runtimeRoot, nodeCommand });
-      const obtainedAt = now();
-      writeJsonAtomic(paths.organizeCredential, { provider: PROVIDER, scope: "imap.organize", username, protectedAuthorizationCode: protectSecret(authorizationCode), obtainedAt });
-      writeJsonAtomic(join(credentialRoot, "credential-readiness", `${applicationId}.json`), { applicationId, provider: PROVIDER, scope: "imap.organize", obtainedAt });
-      return { ok: true, account: { provider: PROVIDER, email: username, canOrganize: true } };
-    } catch { return failure("save_failed"); }
+  ipcMain.handle("mail:connect-163-organize", async () => {
+    return completeSharedSetup();
   });
+
+  ipcMain.handle("mail:disconnect-163", async () => {
+    if (platform !== "win32") return failure("platform_not_supported");
+    const applicationIds = await currentMailApplicationIds(requestServer);
+    let removed = true;
+    for (const applicationId of applicationIds) {
+      removed = removeIfPresent(join(credentialRoot, "credential-readiness", `${applicationId}.json`)) && removed;
+    }
+    for (const path of readinessPathsForProvider(credentialRoot, PROVIDER)) removed = removeIfPresent(path) && removed;
+    removed = removeIfPresent(paths.credential) && removed;
+    if (!removed) return failure("save_failed");
+    return { ok: true, disconnected: true };
+  });
+
+  async function completeSharedSetup() {
+    if (platform !== "win32") return failure("platform_not_supported");
+    if (!validCredentialMetadata(paths.credential)) return failure("not_authorized");
+    try {
+      await provisionSharedCredential();
+      const email = credentialUsername(paths.credential);
+      return { ok: true, account: { provider: PROVIDER, email, canReceive: true, canSend: true, canOrganize: true } };
+    } catch {
+      return failure("save_failed");
+    }
+  }
+}
+
+async function ensureUnifiedMailSetup({ credentialRoot, credentialPath, requestServer, runtimeRoot, nodeCommand, now }) {
+  const credential = readCredentialRecord(credentialPath);
+  const applicationIds = await ensureUnifiedMailApplications({ requestServer, runtimeRoot, nodeCommand });
+  writeUnifiedReadiness({ credentialRoot, applicationIds, obtainedAt: credential?.obtainedAt ?? now(), accountId: accountIdOf(credential?.username) });
+}
+
+async function ensureUnifiedMailApplications({ requestServer, runtimeRoot, nodeCommand }) {
+  const read = await ensureMailApplication({ requestServer, runtimeRoot, nodeCommand });
+  const send = await ensureMailSendApplication({ requestServer, runtimeRoot, nodeCommand });
+  const organize = await ensureMailOrganizeApplication({ requestServer, runtimeRoot, nodeCommand });
+  return { read, send, organize };
+}
+
+function writeUnifiedReadiness({ credentialRoot, applicationIds, obtainedAt, accountId }) {
+  for (const [kind, applicationId] of Object.entries(applicationIds)) {
+    const scope = kind === "read" ? SCOPE : kind === "send" ? "smtp.send" : "imap.organize";
+    writeJsonAtomic(join(credentialRoot, "credential-readiness", `${applicationId}.json`), { applicationId, provider: PROVIDER, scope, accountId, obtainedAt });
+  }
 }
 
 async function ensureMailOrganizeApplication({ requestServer, runtimeRoot, nodeCommand }) {
@@ -194,7 +227,7 @@ export async function ensureMailApplication({ requestServer, runtimeRoot, nodeCo
     transport: "stdio",
     command: nodeCommand,
     args: [join(runtimeRoot, "tools", "mail-mcp", "src", "server.mjs")],
-    allowedTools: ["mail_sync", "mail_list_unread", "mail_prefetch_body", "mail_fetch"],
+    allowedTools: ["mail_sync", "mail_list_unread", "mail_prefetch_body", "mail_fetch", "mail_set_read"],
     timeoutMs: 30_000,
     provider: PROVIDER,
     capabilityName: "mail.read",
@@ -202,8 +235,8 @@ export async function ensureMailApplication({ requestServer, runtimeRoot, nodeCo
     riskTags: ["external_mailbox", "untrusted_input", "incremental_read", "read_only"],
   });
   const existingAccount = mailbox?.accounts?.find((account) => account.provider === PROVIDER) ?? null;
-  if (existingApplicationId && existingAccount?.incrementalSync === true && existingAccount?.bodyPrefetchCapability) return existingApplicationId;
-  const nextApplicationId = existingApplicationId ? `${existingApplicationId}_body_prefetch` : APPLICATION_ID;
+  if (existingApplicationId && existingAccount?.incrementalSync === true && existingAccount?.bodyPrefetchCapability && existingAccount?.providerReadState === true) return existingApplicationId;
+  const nextApplicationId = existingApplicationId ? `${existingApplicationId}_mail_v3` : APPLICATION_ID;
   await requestServer("POST", "/api/applications/register", {
     id: nextApplicationId,
     ...(existingApplicationId ? { replacesApplicationId: existingApplicationId } : {}),
@@ -213,7 +246,7 @@ export async function ensureMailApplication({ requestServer, runtimeRoot, nodeCo
     source: {
       type: "manual",
       credential: { provider: PROVIDER, scope: SCOPE },
-      manifest: { protocol: "IMAP", host: "imap.163.com", port: 993, tls: true, access: "read_only" },
+      manifest: { protocol: "IMAP", host: "imap.163.com", port: 993, tls: true, access: "read_and_seen_state" },
     },
     capabilityFacades: [
       {
@@ -225,9 +258,22 @@ export async function ensureMailApplication({ requestServer, runtimeRoot, nodeCo
         riskLevel: "medium",
         riskTags: ["untrusted_input", "external_mailbox", "incremental_read"],
         requiresApproval: false,
-        inputSchema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 100 }, cursors: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["folderPath", "uidValidity", "lastUid"], properties: { folderPath: { type: "string", maxLength: 998 }, uidValidity: { type: "string", maxLength: 30 }, lastUid: { type: "integer", minimum: 0 } } } } } },
+        inputSchema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 100 }, cursors: { type: "array", maxItems: 200, items: { type: "object", additionalProperties: false, required: ["folderPath", "uidValidity", "lastUid"], properties: { folderPath: { type: "string", maxLength: 998 }, uidValidity: { type: "string", maxLength: 30 }, lastUid: { type: "integer", minimum: 0 } } } } } },
         outputCollection: "mailIntake",
         resultImport: { source: "mail_headers", kind: "mailbox_sync" },
+      },
+      {
+        id: "set_read",
+        agentId: AGENT_ID,
+        agentToolName: "mail_set_read",
+        displayName: "Update message read state",
+        description: "Synchronize the Seen flag for one explicitly opened message.",
+        riskLevel: "medium",
+        riskTags: ["external_mailbox", "provider_state_write"],
+        requiresApproval: false,
+        inputSchema: { type: "object", additionalProperties: false, required: ["messageId", "folderPath", "read"], properties: { messageId: { type: "string", maxLength: 998 }, folderPath: { type: "string", maxLength: 998 }, read: { type: "boolean" } } },
+        outputCollection: "mailIntake",
+        resultImport: { source: "mail_headers", kind: "read_state" },
       },
       {
         id: "list_unread",
@@ -276,19 +322,7 @@ export async function ensureMailApplication({ requestServer, runtimeRoot, nodeCo
 function credentialPaths(root) {
   return {
     credential: join(root, "mail", "163.json"),
-    sendCredential: join(root, "mail", "163-send.json"),
-    organizeCredential: join(root, "mail", "163-organize.json"),
   };
-}
-
-function validSendCredentialMetadata(path) {
-  const record = readCredentialRecord(path);
-  return record?.provider === PROVIDER && record?.scope === "smtp.send" && EMAIL.test(String(record?.username ?? "")) && Boolean(record?.protectedAuthorizationCode);
-}
-
-function validOrganizeCredentialMetadata(path) {
-  const record = readCredentialRecord(path);
-  return record?.provider === PROVIDER && record?.scope === "imap.organize" && EMAIL.test(String(record?.username ?? "")) && Boolean(record?.protectedAuthorizationCode);
 }
 
 function writeJsonAtomic(path, value) {
@@ -305,12 +339,40 @@ function readCredentialRecord(path) {
 
 function validCredentialMetadata(path) {
   const record = readCredentialRecord(path);
-  return record?.provider === PROVIDER && [SCOPE, "imap.mail"].includes(record?.scope) && EMAIL.test(String(record?.username ?? "")) && Boolean(record?.protectedAuthorizationCode);
+  return record?.provider === PROVIDER && [SCOPE, SHARED_CREDENTIAL_SCOPE].includes(record?.scope) && EMAIL.test(String(record?.username ?? "")) && Boolean(record?.protectedAuthorizationCode);
 }
 
 function credentialUsername(path) {
   const record = readCredentialRecord(path);
   return validCredentialMetadata(path) ? String(record.username) : null;
+}
+
+function accountIdOf(username) {
+  const normalized = String(username ?? "").trim().toLowerCase();
+  return normalized ? `netease:${createHash("sha256").update(normalized).digest("hex").slice(0, 16)}` : null;
+}
+
+async function currentMailApplicationIds(requestServer) {
+  const mailbox = await requestServer("GET", "/api/mailbox").catch(() => ({ accounts: [] }));
+  const account = mailbox?.accounts?.find((item) => item.provider === PROVIDER);
+  return [...new Set([account?.readApplicationId, account?.sendApplicationId, account?.organizeApplicationId, APPLICATION_ID, SEND_APPLICATION_ID, ORGANIZE_APPLICATION_ID].filter(Boolean))];
+}
+
+function removeIfPresent(path) {
+  try {
+    if (existsSync(path)) unlinkSync(path);
+    return !existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
+function readinessPathsForProvider(root, provider) {
+  const directory = join(root, "credential-readiness");
+  if (!existsSync(directory)) return [];
+  return readdirSync(directory).filter((name) => name.endsWith(".json")).map((name) => join(directory, name)).filter((path) => {
+    try { return JSON.parse(readFileSync(path, "utf8"))?.provider === provider; } catch { return false; }
+  });
 }
 
 function failure(error) { return { ok: false, error }; }

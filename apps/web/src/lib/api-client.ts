@@ -67,6 +67,7 @@ export type {
 export interface MailboxAccount {
   id: string;
   provider: string;
+  accountId?: string | null;
   name: string;
   status: "connected" | "needs_attention";
   statusDetail: "ready" | "credential_not_authorized" | string;

@@ -20,7 +20,7 @@ const MAX_FIELD = 998; // RFC 5322 line-length ceiling; generous but bounded.
 const MAX_BODY = 20000;
 const MAX_HTML_BODY = 50000;
 const MAX_ATTACHMENTS = 50;
-const MAX_FOLDERS = 20;
+const MAX_FOLDERS = 200;
 
 const cap = (value, max) => (typeof value === "string" ? value.slice(0, max) : null);
 
@@ -77,7 +77,8 @@ export function parseMailApplicationResult({ text }) {
     const messages = payload.messages.slice(0, MAX_HEADERS * MAX_FOLDERS).map(normalizeSyncedHeader).filter((header) => header && allowedPaths.has(header.folderPath));
     const cursors = payload.cursors.slice(0, MAX_FOLDERS).map(normalizeCursor).filter((cursor) => cursor && allowedPaths.has(cursor.folderPath));
     const readStates = Array.isArray(payload.readStates) ? payload.readStates.slice(0, MAX_HEADERS * MAX_FOLDERS).map(normalizeSyncedReadState).filter(Boolean) : [];
-    return { kind: "mailbox_sync", folders, messages, readStates, cursors };
+    const accountId = normalizeAccountId(payload.accountId);
+    return { kind: "mailbox_sync", ...(accountId ? { accountId } : {}), folders, messages, readStates, cursors, ...(payload.hasMore === true ? { hasMore: true } : {}) };
   }
 
   if (payload.readState && typeof payload.readState === "object") {
@@ -86,6 +87,7 @@ export function parseMailApplicationResult({ text }) {
     if (!messageId || !folderPath || typeof payload.readState.read !== "boolean") return null;
     return {
       kind: "read_state",
+      ...(normalizeAccountId(payload.accountId) ? { accountId: normalizeAccountId(payload.accountId) } : {}),
       messageId,
       folderId: cap(payload.readState.folderId, 100),
       folderPath,
@@ -114,6 +116,7 @@ export function parseMailApplicationResult({ text }) {
     const archive = normalizeArchive(payload.archive);
     return {
       kind: "message",
+      ...(normalizeAccountId(payload.accountId) ? { accountId: normalizeAccountId(payload.accountId) } : {}),
       ...header,
       folderId: cap(payload.folderId, 100) ?? "inbox",
       folderPath: cap(payload.folderPath, MAX_FIELD) ?? "INBOX",
@@ -133,6 +136,11 @@ export function parseMailApplicationResult({ text }) {
   }
 
   return null;
+}
+
+function normalizeAccountId(value) {
+  const text = cap(value, 80);
+  return /^[a-z][a-z0-9_.-]{0,31}:[a-f0-9]{16}$/.test(text ?? "") ? text : null;
 }
 
 function normalizeFolder(value) {

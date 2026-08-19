@@ -148,6 +148,29 @@ test("body prefetch queues once, prioritizes a selected message, and advances se
   assert.equal(capabilityCalls.length, 1, "clicking does not dispatch a duplicate while the background job is active");
 });
 
+test("a moved message revives an unavailable body job with its new folder", () => {
+  const { service, state } = harness();
+  service.enqueueBodyPrefetch({
+    ownerTeamId: "team_a",
+    applicationId: "app_163_mail_v2",
+    messages: [{ messageId: "<two@example.com>", folderPath: "INBOX", unread: true }],
+    schedule: false,
+  });
+  Object.assign(state.mailBodyPrefetchJobs[0], { status: "unavailable", attempt: 3, lastError: "mail_message_not_found", completedAt: "2026-08-13T03:00:00.000Z" });
+
+  const recovered = service.enqueueBodyPrefetch({
+    ownerTeamId: "team_a",
+    applicationId: "app_163_mail_v2",
+    messages: [{ messageId: "<two@example.com>", folderPath: "Subscriptions", unread: true }],
+    schedule: false,
+  });
+
+  assert.equal(recovered.queued, 1);
+  assert.equal(state.mailBodyPrefetchJobs[0].folderPath, "Subscriptions");
+  assert.equal(state.mailBodyPrefetchJobs[0].status, "queued");
+  assert.equal(state.mailBodyPrefetchJobs[0].attempt, 0);
+});
+
 test("classification rollback rebuilds the derived index without classification payloads", async () => {
   const database = await openMailQueryIndexDatabase({ path: ":memory:" });
   const index = createMailQueryIndex({ database });
@@ -231,6 +254,18 @@ test("mailbox snapshot turns imported mail into a deduplicated ordinary-user inb
   assert.equal(snapshot.messages[0].bodyContentVersion, 1, "legacy imported bodies are marked for one-time enrichment");
   assert.equal(snapshot.messages[0].issueNumber, 99);
   assert(!JSON.stringify(snapshot).includes("must not leak"), "foreign-team mail stays hidden");
+});
+
+test("switching the connected account hides facts belonging to the previous account", () => {
+  const { state, service } = harness();
+  state.device.applicationCredentialReadiness[0].accountId = "netease:2222222222222222";
+  state.applicationResults.push(
+    { id: "old_account", source: "mail_headers", applicationId: "app_163_mail_v2", ownerTeamId: "team_a", createdAt: "2026-08-13T02:30:00.000Z", data: { kind: "message", accountId: "netease:1111111111111111", messageId: "<old-account@example.com>", subject: "Old account" } },
+    { id: "current_account", source: "mail_headers", applicationId: "app_163_mail_v2", ownerTeamId: "team_a", createdAt: "2026-08-13T02:31:00.000Z", data: { kind: "message", accountId: "netease:2222222222222222", messageId: "<current-account@example.com>", subject: "Current account" } },
+  );
+  const subjects = service.snapshot({ actor: { teamId: "team_a" }, pageSize: 50 }).messages.map((message) => message.subject);
+  assert.equal(subjects.includes("Current account"), true);
+  assert.equal(subjects.includes("Old account"), false);
 });
 
 test("inbox pagination is bounded and local read state updates counts without provider mutation", () => {

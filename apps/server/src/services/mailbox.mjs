@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { listDevices } from "../runtime/device.mjs";
 import { MAIL_CLASSIFIER_VERSION, mailMessageKey } from "./mail-header-classifier.mjs";
+import { backfillMailFacts, mailFactRecords } from "./mail-facts.mjs";
 
 const MAX_RECIPIENT = 998;
 const MAX_SUBJECT = 400;
@@ -58,15 +59,12 @@ export function createMailboxService({
   mailQueryIndex = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
+  runTx(() => { backfillMailFacts(state); });
 
   function snapshot({ actor = null, page = 1, pageSize = DEFAULT_PAGE_SIZE, folder = "inbox", query = "", view = "all" } = {}) {
     const teamId = actor?.teamId ?? null;
     const applications = (state.applications ?? []).filter((application) =>
       teamId == null || (application.ownerTeamId ?? "team_local") === teamId,
-    );
-    const results = (state.applicationResults ?? []).filter((record) =>
-      record.source === "mail_headers"
-      && (teamId == null || (record.ownerTeamId ?? "team_local") === teamId),
     );
     const drafts = (state.mailDrafts ?? []).filter((draft) =>
       teamId == null || (draft.ownerTeamId ?? "team_local") === teamId,
@@ -76,6 +74,7 @@ export function createMailboxService({
       organizeEnabled: Boolean(mailOrganizeEnabled()),
       credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [],
     });
+    const results = filterActiveMailRecords(mailFactRecords(state, teamId), accounts);
     const normalizedQuery = normalizeSearchQuery(query);
     const classificationEnabled = Boolean(mailClassificationEnabled());
     const selectedView = classificationEnabled && MAIL_SMART_VIEWS.has(view) ? view : "all";
@@ -327,14 +326,16 @@ export function createMailboxService({
     const normalizedId = cap(String(messageId ?? "").trim(), MAX_RECIPIENT);
     const teamId = actor?.teamId ?? "team_local";
     if (!normalizedId) return { ok: false, status: 400, body: { error: "mail_message_invalid" } };
-    const teamResults = (state.applicationResults ?? []).filter((record) => record.source === "mail_headers" && (record.ownerTeamId ?? "team_local") === teamId);
+    const teamResults = filterActiveMailRecords(mailFactRecords(state, teamId), mailboxAccounts((state.applications ?? []).filter((item) => (item.ownerTeamId ?? "team_local") === teamId), { credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [] }));
     const message = mailboxMessages(teamResults, state.mailThreads ?? {}, []).find((item) => item.messageId === normalizedId);
     if (!message) return { ok: false, status: 404, body: { error: "mail_message_not_found" } };
-    const application = (state.applications ?? []).find((item) => item.id === message.applicationId && !item.successorApplicationId)
+    const messageApplication = (state.applications ?? []).find((item) => item.id === message.applicationId && !item.successorApplicationId);
+    const application = (messageApplication && capabilityName(messageApplication, "mail_set_read") ? messageApplication : null)
+      ?? (state.applications ?? []).find((item) => !item.successorApplicationId && providerOf(item) === providerOf(messageApplication) && capabilityName(item, "mail_set_read"))
       ?? (state.applications ?? []).find((item) => !item.successorApplicationId && capabilityName(item, "mail_set_read"));
     const capability = application ? capabilityName(application, "mail_set_read") : null;
     if (!capability || typeof createCapabilityInvocation !== "function") {
-      persistLocalReadState(normalizedId, read, teamId);
+      persistLocalReadState(normalizedId, read, teamId, message.accountId ?? null);
       return { ok: true, status: 200, body: { messageId: normalizedId, unread: read === false } };
     }
     const result = createCapabilityInvocation(capability, { messageId: normalizedId, folderPath: message.folderPath ?? "INBOX", read: read !== false }, actor);
@@ -342,12 +343,12 @@ export function createMailboxService({
     return { ok: true, status: 202, body: { messageId: normalizedId, unread: read === false, pending: true, invocationId: result.body?.invocationId ?? null } };
   }
 
-  function persistLocalReadState(messageId, read, teamId) {
+  function persistLocalReadState(messageId, read, teamId, accountId = null) {
     runTx(() => {
-      state.mailMessageStates = (state.mailMessageStates ?? []).filter((row) => !(row.messageId === messageId && (row.ownerTeamId ?? "team_local") === teamId));
+      state.mailMessageStates = (state.mailMessageStates ?? []).filter((row) => !(row.messageId === messageId && (row.ownerTeamId ?? "team_local") === teamId && (row.accountId ?? null) === accountId));
       if (read !== false) {
         const readAt = now();
-        state.mailMessageStates.unshift({ id: nextId("mailmsgstate"), messageId, ownerTeamId: teamId, readAt, createdAt: readAt, updatedAt: readAt });
+        state.mailMessageStates.unshift({ id: nextId("mailmsgstate"), messageId, accountId, ownerTeamId: teamId, readAt, createdAt: readAt, updatedAt: readAt });
         const ownRows = state.mailMessageStates.filter((row) => (row.ownerTeamId ?? "team_local") === teamId).slice(0, MAX_MESSAGE_STATES);
         const otherRows = state.mailMessageStates.filter((row) => (row.ownerTeamId ?? "team_local") !== teamId);
         state.mailMessageStates = [...ownRows, ...otherRows];
@@ -376,9 +377,7 @@ export function createMailboxService({
     if (typeof createCapabilityInvocation !== "function") {
       return { ok: false, status: 503, body: { error: "mail_sync_unavailable" } };
     }
-    const cursors = latestMailboxCursors((state.applicationResults ?? []).filter((record) =>
-      record.source === "mail_headers" && (teamId == null || (record.ownerTeamId ?? "team_local") === teamId),
-    ));
+    const cursors = latestMailboxCursors(filterActiveMailRecords(mailFactRecords(state, teamId), [account]));
     const result = createCapabilityInvocation(account.syncCapability, account.incrementalSync ? { limit: 50, cursors } : { limit: 50 }, actor);
     if (!result || result.status >= 400) {
       return { ok: false, status: 409, body: { error: "mail_sync_unavailable" } };
@@ -397,7 +396,7 @@ export function createMailboxService({
     let queued = 0;
     const addJobs = () => {
       state.mailBodyPrefetchJobs ??= [];
-      const existingKeys = new Set(state.mailBodyPrefetchJobs.map(bodyPrefetchKey));
+      const existingByKey = new Map(state.mailBodyPrefetchJobs.map((job) => [bodyPrefetchKey(job), job]));
       const ordered = [...messages].sort((left, right) => {
         if ((left?.unread !== false) !== (right?.unread !== false)) return left?.unread !== false ? -1 : 1;
         return timestampOf(right) - timestampOf(left);
@@ -405,19 +404,38 @@ export function createMailboxService({
       for (const message of ordered) {
         const messageId = cap(String(message?.messageId ?? "").trim(), MAX_RECIPIENT);
         if (!messageId || fetchedIds.has(messageId)) continue;
-        const candidate = { ownerTeamId, applicationId, messageId };
-        if (existingKeys.has(bodyPrefetchKey(candidate))) continue;
+        const candidate = { ownerTeamId, applicationId, accountId: message?.accountId ?? null, messageId };
+        const existing = existingByKey.get(bodyPrefetchKey(candidate));
+        const folderPath = cap(message?.folderPath, MAX_RECIPIENT) || "INBOX";
+        if (existing) {
+          if (existing.folderPath !== folderPath) {
+            existing.folderPath = folderPath;
+            existing.unread = message?.unread !== false;
+            existing.messageDate = cap(message?.date, MAX_RECIPIENT) || existing.messageDate;
+            if (["unavailable", "failed"].includes(existing.status)) {
+              existing.status = "queued";
+              existing.attempt = 0;
+              existing.invocationId = null;
+              existing.completedAt = null;
+              existing.lastError = null;
+              existing.nextAttemptAt = now();
+              queued += 1;
+            }
+            existing.updatedAt = now();
+          }
+          continue;
+        }
         const at = now();
         state.mailBodyPrefetchJobs.push({
-          id: nextId("mailbody"), ownerTeamId, applicationId, messageId,
-          folderPath: cap(message?.folderPath, MAX_RECIPIENT) || "INBOX",
+          id: nextId("mailbody"), ownerTeamId, applicationId, accountId: message?.accountId ?? null, messageId,
+          folderPath,
           unread: message?.unread !== false,
           messageDate: cap(message?.date, MAX_RECIPIENT) || null,
           status: "queued", priority: "background", attempt: 0,
           invocationId: null, nextAttemptAt: at, lastError: null,
           createdAt: at, updatedAt: at, completedAt: null,
         });
-        existingKeys.add(bodyPrefetchKey(candidate));
+        existingByKey.set(bodyPrefetchKey(candidate), state.mailBodyPrefetchJobs.at(-1));
         queued += 1;
       }
       state.mailBodyPrefetchJobs = boundBodyPrefetchJobs(state.mailBodyPrefetchJobs);
@@ -466,9 +484,11 @@ export function createMailboxService({
       job = (state.mailBodyPrefetchJobs ?? []).find((candidate) => bodyPrefetchKey(candidate) === bodyPrefetchKey({ ownerTeamId, applicationId: message.applicationId, messageId: normalizedId })) ?? null;
       if (!job) return;
       job.priority = "user";
-      if (job.status === "failed") {
+      if (["failed", "unavailable"].includes(job.status)) {
         job.attempt = 0;
         job.completedAt = null;
+        job.invocationId = null;
+        job.lastError = null;
         job.status = "queued";
       } else if (job.status === "retry_wait") {
         job.status = "queued";
@@ -537,6 +557,16 @@ export function createMailboxService({
       const application = (state.applications ?? []).find((candidate) => candidate.id === job.applicationId && !candidate.successorApplicationId)
         ?? (state.applications ?? []).find((candidate) => providerOf(candidate) === providerOf((state.applications ?? []).find((item) => item.id === job.applicationId)) && !candidate.successorApplicationId);
       const capability = application ? capabilityName(application, "mail_prefetch_body") : null;
+      const currentAccountId = application
+        ? (listDevices(state)[0]?.applicationCredentialReadiness ?? []).find((row) => row.applicationId === application.id)?.accountId ?? null
+        : null;
+      if (job.accountId && currentAccountId && job.accountId !== currentAccountId) {
+        job.status = "unavailable";
+        job.lastError = "mail_account_changed";
+        job.completedAt = currentTime;
+        job.updatedAt = currentTime;
+        return;
+      }
       if (!capability) {
         // A desktop upgrade may still be registering the lightweight facade.
         // Keep the durable job recoverable; never fall back to mail_fetch here,
@@ -685,22 +715,21 @@ export function createMailboxService({
     if (!normalizedId || !normalizedProjectId) {
       return { ok: false, status: 400, body: { error: "mail_task_invalid" } };
     }
-    const teamResults = (state.applicationResults ?? []).filter((record) =>
-      record.source === "mail_headers" && (record.ownerTeamId ?? "team_local") === teamId,
-    );
+    const teamResults = filterActiveMailRecords(mailFactRecords(state, teamId), mailboxAccounts((state.applications ?? []).filter((item) => (item.ownerTeamId ?? "team_local") === teamId), { credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [] }));
     const message = mailboxMessages(teamResults, state.mailThreads ?? {}, []).find((item) => item.messageId === normalizedId);
     if (!message) return { ok: false, status: 404, body: { error: "mail_message_not_found" } };
 
+    const messageAccountId = message.accountId ?? message.applicationId ?? null;
     const existing = (state.mailTaskLinks ?? []).find((row) =>
-      row.messageId === normalizedId && (row.ownerTeamId ?? "team_local") === teamId,
+      row.messageId === normalizedId && (row.ownerTeamId ?? "team_local") === teamId && (row.accountId ?? row.applicationId ?? null) === messageAccountId,
     );
     if (existing) return { ok: true, status: 200, body: { task: publicTaskLink(existing), replayed: true } };
-    const idempotencyKey = `mail:${createHash("sha256").update(`${teamId}\0${normalizedId}`).digest("hex")}`;
+    const idempotencyKey = `mail:${createHash("sha256").update(`${teamId}\0${messageAccountId ?? "legacy"}\0${normalizedId}`).digest("hex")}`;
     const recoveredWorkItem = (state.workItems ?? []).find((item) =>
       (item.ownerTeamId ?? "team_local") === teamId && item.createIdempotencyKey === idempotencyKey,
     );
     if (recoveredWorkItem) {
-      const recoveredLink = ensureMailTaskLink(normalizedId, recoveredWorkItem, teamId, actor);
+      const recoveredLink = ensureMailTaskLink(message, recoveredWorkItem, teamId, actor);
       return { ok: true, status: 200, body: { task: publicTaskLink(recoveredLink), replayed: true } };
     }
     if (typeof createWorkItem !== "function") {
@@ -771,15 +800,18 @@ export function createMailboxService({
     }, actor);
     if (!created?.ok) return created;
     const workItem = created.body.workItem;
-    const durableLink = ensureMailTaskLink(normalizedId, workItem, teamId, actor);
+    const durableLink = ensureMailTaskLink(message, workItem, teamId, actor);
     return { ok: true, status: created.status, body: { task: publicTaskLink(durableLink), replayed: created.body.replayed === true } };
   }
 
-  function ensureMailTaskLink(messageId, workItem, teamId, actor) {
+  function ensureMailTaskLink(message, workItem, teamId, actor) {
+    const messageId = message.messageId;
+    const accountId = message.accountId ?? message.applicationId ?? null;
     const timestamp = now();
     const link = {
       id: nextId("mailtask"),
       messageId,
+      accountId,
       workItemId: workItem.id,
       localRef: workItem.localRef,
       title: workItem.title,
@@ -791,10 +823,10 @@ export function createMailboxService({
     };
     runTx(() => {
       state.mailTaskLinks ??= [];
-      const replay = state.mailTaskLinks.find((row) => row.messageId === messageId && (row.ownerTeamId ?? "team_local") === teamId);
+      const replay = state.mailTaskLinks.find((row) => row.messageId === messageId && (row.ownerTeamId ?? "team_local") === teamId && (row.accountId ?? row.applicationId ?? null) === accountId);
       if (!replay) state.mailTaskLinks.unshift(link);
     });
-    return (state.mailTaskLinks ?? []).find((row) => row.messageId === messageId && (row.ownerTeamId ?? "team_local") === teamId) ?? link;
+    return (state.mailTaskLinks ?? []).find((row) => row.messageId === messageId && (row.ownerTeamId ?? "team_local") === teamId && (row.accountId ?? row.applicationId ?? null) === accountId) ?? link;
   }
 
   return {
@@ -838,10 +870,12 @@ function mailboxAccounts(applications, { sendEnabled = false, organizeEnabled = 
     const organize = organizeApps.find((candidate) => providerOf(candidate) === provider) ?? null;
     const active = ["active", "registered"].includes(application.status);
     const receiveCredentialReady = credentialReadyForApplication(application, credentialReadiness);
+    const receiveReadiness = credentialReadiness.find((row) => row.applicationId === application.id) ?? null;
     const canReceive = active && receiveCredentialReady;
     providers.set(provider, {
       id: application.id,
       provider,
+      accountId: receiveReadiness?.accountId ?? null,
       name: providerLabel(provider, application.name),
       status: canReceive ? "connected" : "needs_attention",
       statusDetail: !active ? String(application.status ?? "not_connected") : receiveCredentialReady ? "ready" : "credential_not_authorized",
@@ -892,7 +926,7 @@ function publicMailboxAccount(account) {
 }
 
 function bodyPrefetchKey(job) {
-  return `${job?.ownerTeamId ?? "team_local"}\0${job?.applicationId ?? "mail"}\0${job?.messageId ?? ""}`;
+  return `${job?.ownerTeamId ?? "team_local"}\0${job?.applicationId ?? "mail"}\0${job?.accountId ?? "legacy"}\0${job?.messageId ?? ""}`;
 }
 
 function compareBodyPrefetchPriority(left, right) {
@@ -912,7 +946,8 @@ function publicBodyPrefetchStatus(message, jobs, teamId) {
   const job = jobs.find((candidate) =>
     (teamId == null || (candidate.ownerTeamId ?? "team_local") === teamId)
     && candidate.messageId === message?.messageId
-    && (!message?.applicationId || candidate.applicationId === message.applicationId));
+    && (!message?.applicationId || candidate.applicationId === message.applicationId)
+    && (!message?.accountId || !candidate.accountId || candidate.accountId === message.accountId));
   return publicBodyPrefetchJob(job);
 }
 
@@ -981,12 +1016,12 @@ function mailboxMessages(results, threads, readStates = [], taskLinks = []) {
       if (existing) messages.set(record.data.messageId, { ...existing, unread: record.data.read !== true });
     }
   }
-  const readIds = new Set(readStates.filter((row) => row?.readAt).map((row) => row.messageId));
-  const linksByMessageId = new Map(taskLinks.map((row) => [row.messageId, publicTaskLink(row)]));
+  const readIds = new Set(readStates.filter((row) => row?.readAt).map((row) => `${row.accountId ?? "legacy"}\0${row.messageId}`));
+  const linksByMessageId = new Map(taskLinks.map((row) => [`${row.accountId ?? row.applicationId ?? "legacy"}\0${row.messageId}`, publicTaskLink(row)]));
   return [...messages.values()]
     .map((message) => ({
-      ...(readIds.has(message.messageId) ? { ...message, unread: false } : message),
-      task: linksByMessageId.get(message.messageId) ?? null,
+      ...(readIds.has(`${message.accountId ?? "legacy"}\0${message.messageId}`) ? { ...message, unread: false } : message),
+      task: linksByMessageId.get(`${message.accountId ?? message.applicationId ?? "legacy"}\0${message.messageId}`) ?? null,
     }))
     .sort(compareRecent);
 }
@@ -1049,21 +1084,22 @@ function mergeMessage(messages, input, record, unread, threads) {
     attachmentMetadataLoaded: input?.attachmentMetadataLoaded === true || previous.attachmentMetadataLoaded === true,
     archive: input?.archive && typeof input.archive === "object" ? input.archive : previous.archive ?? null,
     applicationId: record.applicationId ?? previous.applicationId ?? null,
+    accountId: input?.accountId ?? record.accountId ?? previous.accountId ?? null,
     issueNumber: threads?.[messageId]?.issueNumber ?? null,
     createdAt: record.createdAt ?? previous.createdAt ?? date,
   });
 }
 
 function publicMessage(message) {
-  const { providerUid: _providerUid, classificationHeaders: _classificationHeaders, ...value } = message;
+  const { providerUid: _providerUid, classificationHeaders: _classificationHeaders, accountId: _accountId, ...value } = message;
   return value;
 }
 
 function messagesForActor(state, actor) {
   const teamId = actor?.teamId ?? "team_local";
-  const results = (state.applicationResults ?? []).filter((record) =>
-    record.source === "mail_headers" && (record.ownerTeamId ?? "team_local") === teamId,
-  );
+  const applications = (state.applications ?? []).filter((item) => (item.ownerTeamId ?? "team_local") === teamId);
+  const accounts = mailboxAccounts(applications, { credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [] });
+  const results = filterActiveMailRecords(mailFactRecords(state, teamId), accounts);
   return mailboxMessages(
     results,
     state.mailThreads ?? {},
@@ -1074,8 +1110,9 @@ function messagesForActor(state, actor) {
 
 function folderContextsForActor(state, actor) {
   const teamId = actor?.teamId ?? "team_local";
-  const results = (state.applicationResults ?? [])
-    .filter((record) => record.source === "mail_headers" && (record.ownerTeamId ?? "team_local") === teamId)
+  const applications = (state.applications ?? []).filter((item) => (item.ownerTeamId ?? "team_local") === teamId);
+  const accounts = mailboxAccounts(applications, { credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [] });
+  const results = filterActiveMailRecords(mailFactRecords(state, teamId), accounts)
     .sort((left, right) => timestampOf(left) - timestampOf(right));
   const folders = new Map();
   for (const record of results) {
@@ -1158,7 +1195,13 @@ function latestMailboxCursors(results) {
     if (record.data?.kind !== "mailbox_sync") continue;
     for (const cursor of record.data.cursors ?? []) byPath.set(cursor.folderPath, cursor);
   }
-  return [...byPath.values()].slice(0, 20).map(({ folderPath, uidValidity, lastUid }) => ({ folderPath, uidValidity, lastUid }));
+  return [...byPath.values()].slice(0, 200).map(({ folderPath, uidValidity, lastUid }) => ({ folderPath, uidValidity, lastUid }));
+}
+
+function filterActiveMailRecords(results, accounts) {
+  const activeAccountIds = new Set((accounts ?? []).map((account) => account.accountId).filter(Boolean));
+  if (!activeAccountIds.size) return results;
+  return results.filter((record) => !record.accountId || activeAccountIds.has(record.accountId));
 }
 
 function normalizeSearchQuery(value) {

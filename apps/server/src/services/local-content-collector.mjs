@@ -2,6 +2,7 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { LOCAL_CONTENT_INDEX_SOURCES, normalizeIndexSources } from "./local-content-catalog-query.mjs";
+import { mailFactRecords } from "./mail-facts.mjs";
 import {
   DOCUMENT_PREVIEW_EXTENSIONS,
   fileDigest,
@@ -433,7 +434,10 @@ function contentRootFor(state, item, asset = {}) {
 
 function collectMailMessages(state) {
   const messages = new Map();
-  const results = [...(state.applicationResults ?? [])].sort((left, right) =>
+  // Durable facts are authoritative after the short operational history is
+  // evicted. Keep the latter as a compatibility overlay for legacy imports
+  // that predate the mail_headers source marker and for their original IDs.
+  const results = [...mailFactRecords(state), ...(state.applicationResults ?? [])].sort((left, right) =>
     Date.parse(left.createdAt ?? 0) - Date.parse(right.createdAt ?? 0));
   for (const record of results) {
     const application = (state.applications ?? []).find((candidate) => candidate.id === record.applicationId);
@@ -449,7 +453,7 @@ function collectMailMessages(state) {
     for (const candidate of candidates) {
       const messageId = String(candidate?.messageId ?? "").trim();
       if (!messageId) continue;
-      const key = `${ownerTeamId}:${messageId}`;
+      const key = `${ownerTeamId}:${record.accountId ?? record.data?.accountId ?? record.applicationId ?? "mail"}:${messageId}`;
       const previous = messages.get(key) ?? {};
       messages.set(key, {
         ...previous,

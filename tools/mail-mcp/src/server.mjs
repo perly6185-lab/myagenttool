@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { fetch163BodyParts, fetch163ParsedMessage, with163Client, with163Inbox } from "./imap-163.mjs";
 import { archiveMailSource, unavailableMailArchive } from "./mail-archive.mjs";
 import { attachmentMetadataFromStructure, headerOf, lightweightMessageRecordOf, messageRecordOf } from "./message.mjs";
@@ -15,7 +16,7 @@ const tools = [
       type: "object", additionalProperties: false,
       properties: {
         limit: { type: "integer", minimum: 1, maximum: 100 },
-        cursors: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["folderPath", "uidValidity", "lastUid"], properties: { folderPath: { type: "string", maxLength: 998 }, uidValidity: { type: "string", maxLength: 30 }, lastUid: { type: "integer", minimum: 0 } } } },
+        cursors: { type: "array", maxItems: 200, items: { type: "object", additionalProperties: false, required: ["folderPath", "uidValidity", "lastUid"], properties: { folderPath: { type: "string", maxLength: 998 }, uidValidity: { type: "string", maxLength: 30 }, lastUid: { type: "integer", minimum: 0 } } } },
       },
     },
   },
@@ -135,6 +136,7 @@ async function fetchMessage(args) {
   }
   return {
     ...record,
+    accountId: accountIdOf(identity?.username),
     archive,
     attachments: (record?.attachments ?? []).map((attachment) => ({
       ...attachment,
@@ -158,6 +160,7 @@ async function prefetchMessageBody(args) {
       truncated: result.truncated,
       attachments: attachmentMetadataFromStructure(result.message.bodyStructure),
     }),
+    accountId: accountIdOf(result.identity?.username),
     folderId: folderIdOf(folderPath),
     folderPath,
   };
@@ -167,7 +170,7 @@ async function setRead(args) {
   const messageId = String(args.messageId ?? "").trim();
   const folderPath = boundedFolder(args.folderPath);
   if (!messageId || !folderPath || typeof args.read !== "boolean") throw new Error("mail_read_state_invalid");
-  return with163Client(async (client) => {
+  return with163Client(async (client, identity) => {
     const lock = await client.getMailboxLock(folderPath, { readOnly: false });
     try {
       const uids = await client.search({ header: { "message-id": messageId } }, { uid: true });
@@ -176,11 +179,16 @@ async function setRead(args) {
         ? await client.messageFlagsAdd(uids, ["\\Seen"], { uid: true })
         : await client.messageFlagsRemove(uids, ["\\Seen"], { uid: true });
       if (!ok) throw new Error("mail_read_state_not_confirmed");
-      return { readState: { messageId, folderId: folderIdOf(folderPath), folderPath, read: args.read } };
+      return { accountId: accountIdOf(identity?.username), readState: { messageId, folderId: folderIdOf(folderPath), folderPath, read: args.read } };
     } finally {
       lock.release();
     }
   });
+}
+
+function accountIdOf(username) {
+  const normalized = String(username ?? "").trim().toLowerCase();
+  return normalized ? `netease:${createHash("sha256").update(normalized).digest("hex").slice(0, 16)}` : null;
 }
 
 function publicError(error) {

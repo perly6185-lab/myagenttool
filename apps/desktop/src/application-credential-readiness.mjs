@@ -47,7 +47,8 @@ export function collectApplicationCredentialReadiness(
     // vouch for. Dropped, not guessed — a fabricated "authorized" is worse than
     // no signal at all.
     if (!APPLICATION_ID.test(applicationId) || !PROVIDER.test(provider) || !SCOPE.test(scope)) return [];
-    return [{ applicationId, provider, scope, status: "present", checkedAt }];
+    const accountId = /^netease:[a-f0-9]{16}$/.test(String(record?.accountId ?? "")) ? String(record.accountId) : null;
+    return [{ applicationId, provider, scope, status: "present", ...(accountId ? { accountId } : {}), checkedAt }];
   });
 }
 

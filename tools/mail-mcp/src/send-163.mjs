@@ -78,16 +78,16 @@ export function defaultAttachmentRoot(env = process.env) {
 }
 
 export function readSendCredential(path = defaultSendCredentialPath()) {
-  if (!existsSync(path)) throw new Error("not_authorized: connect 163 Mail sending in MyAgentTool");
+  if (!existsSync(path)) throw new Error("not_authorized: connect 163 Mail in MyAgentTool");
   const record = JSON.parse(readFileSync(path, "utf8"));
-  if (record.provider !== "netease" || record.scope !== "smtp.send" || !record.username || !record.protectedAuthorizationCode) throw new Error("not_authorized: the 163 send credential is invalid");
+  if (record.provider !== "netease" || !["imap.readonly", "imap.mail", "smtp.send"].includes(record.scope) || !record.username || !record.protectedAuthorizationCode) throw new Error("not_authorized: the shared 163 Mail credential is invalid");
   return { username: String(record.username), authorizationCode: unprotect(String(record.protectedAuthorizationCode)) };
 }
 
-function defaultSendCredentialPath(env = process.env) {
+export function defaultSendCredentialPath(env = process.env) {
   const base = env.APPDATA || (env.USERPROFILE && join(env.USERPROFILE, "AppData", "Roaming"));
   if (!base) throw new Error("not_authorized: user profile is unavailable");
-  return join(base, "myagenttool", "mail", "163-send.json");
+  return join(base, "myagenttool", "mail", "163.json");
 }
 
 function createTransport({ username, authorizationCode }) {

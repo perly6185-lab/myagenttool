@@ -168,22 +168,9 @@ const COPY = {
     folderMoveSuccess: "已将 {{count}} 封邮件移入目标目录。",
     folderMoveUnconfirmed: "服务商没有返回完整结果。请先重新收取邮件，确认实际位置后再创建新预览；系统不会自动重试。",
     folderMoveFailed: "暂时无法更新邮箱目录，请重新生成预览后再试。",
-    folderMovePermission: "启用邮箱目录权限",
-    folderMovePermissionHint: "目录创建和移动使用独立授权，不影响正常收信和发信。",
-    connectOrganize: "连接邮箱目录权限",
-    connectOrganizeHint: "仅用于目录创建和邮件移动。手动移动每批最多 50 封并逐批确认；你另行启用的稳定自动规则每批最多 10 封，可随时暂停。",
-    organizeConnected: "邮箱目录权限已连接",
-    setupRemaining: "还有 {{count}} 项功能可启用",
-    continueSetup: "继续设置",
-    chooseFeatureTitle: "接下来想使用什么？",
-    chooseFeatureHint: "收件已经可以正常使用，其余功能按需开启即可。",
-    organizeFeatureTitle: "整理邮箱目录",
-    organizeFeatureHint: "创建目录并整理邮件",
-    sendFeatureTitle: "发送和回复邮件",
-    sendFeatureHint: "在应用内写邮件、回复邮件",
-    recommended: "推荐",
-    optional: "可选",
-    backToFeatures: "返回功能选择",
+    folderMovePermission: "检查邮箱连接",
+    folderMovePermissionHint: "目录创建和移动复用当前邮箱连接；每次实际移动仍会先让你确认。",
+    organizeConnected: "目录整理已连接",
     folderMoveRecoveryNotice: "有一批邮箱目录结果需要核对",
     folderMoveRecoveryHint: "系统不会自动重试。重新收取邮件后，请检查邮件的实际位置。",
     folderMoveReviewStatus: "查看状态",
@@ -306,7 +293,7 @@ const COPY = {
     securityDetails: "安全与保存详情",
     back: "返回邮件列表",
     connectTitle: "连接你的邮箱",
-    connectHint: "连接后即可在这里收件。登录信息只保存在这台电脑上。",
+    connectHint: "连接后即可收件、整理目录和发邮件。登录信息只保存在这台电脑上。",
     connectAction: "打开邮箱连接设置",
     connectSimple: "不需要在这里填写 IMAP、SMTP 或服务器地址。",
     attention: "邮箱需要重新连接",
@@ -314,16 +301,14 @@ const COPY = {
     manageConnection: "管理邮箱连接",
     receiveReady: "收件已连接",
     readyToConnect: "可连接",
-    sendNotReady: "发件尚未连接",
-    connectSending: "连接发件",
     connectorTitle: "连接邮箱",
-    connectorDescription: "跟着两步完成；系统会自动验证，不需要填写服务器地址。",
+    connectorDescription: "连接一次即可收件、整理目录和发邮件，不需要填写服务器地址。",
     provider163: "163 邮箱",
     provider163Hint: "支持邮箱目录、增量收取和服务商已读状态同步",
     upgradeBadge: "需要升级",
     upgradeTitle: "升级现有邮箱连接",
-    upgradeHint: "为了继续使用邮箱目录、增量收取和服务商已读同步，请重新输入一次客户端授权码。原有邮件和草稿不会丢失。",
-    upgradeAction: "升级并测试收件",
+    upgradeHint: "系统正在用现有授权自动补全收件、目录和发件能力，不需要再次输入授权码。",
+    upgradeAction: "检查并修复连接",
     providerGmail: "Gmail",
     comingSoon: "即将支持",
     desktopOnly: "为了保护邮箱授权码，这一步需要在 MyAgentTool 桌面版完成（当前支持 Windows）。桌面版会直接打开当前授权步骤，不需要重新寻找入口。",
@@ -336,19 +321,21 @@ const COPY = {
     authHelpTitle: "先在 163 邮箱中取得授权码",
     authHelp: "登录 163 网页邮箱，在设置中开启 IMAP 服务并新建客户端授权码，然后把授权码粘贴到这里。界面名称可能因账号版本略有不同。",
     localSecret: "授权码只保存在这台电脑，并由当前 Windows 用户加密保护。",
-    connectAndTest: "连接并测试收件",
+    connectAndTest: "连接并测试邮箱",
     testing: "正在验证…",
-    connectSuccess: "收件连接成功",
-    connectSuccessHint: "现在可以收取各邮箱目录的新邮件并同步已读状态；发件可在下一步单独连接。",
+    connectSuccess: "邮箱连接成功",
+    connectSuccessHint: "收件、目录整理和发件已共用这份本机加密授权；移动和发送前仍会让你确认。",
     done: "完成",
     reconnect: "重新连接",
-    connectSend: "连接发件权限",
-    connectSendHint: "发件授权与收件分开保存。连接后，每封邮件仍会在发送前要求你完整确认。",
-    sendConnected: "发件权限已连接",
+    disconnect: "断开邮箱",
+    disconnectConfirm: "确定断开此邮箱吗？本机保存的邮箱授权会被删除，已同步的资料和草稿会保留。",
+    disconnecting: "正在断开…",
+    capabilityPending: "尚未就绪",
+    sendConnected: "发件已连接",
     errors: {
       invalid_email: "请输入完整的 163 邮箱地址。",
       invalid_authorization_code: "请输入 163 客户端授权码。",
-      verification_failed: "验证失败。请确认 IMAP 服务已开启，并检查邮箱地址和授权码。",
+      verification_failed: "验证失败。请确认 IMAP/SMTP 服务已开启，并检查邮箱地址和授权码。",
       save_failed: "连接已验证，但本机保存失败。请稍后重试。",
       platform_not_supported: "当前连接助手仅支持 Windows 桌面版。",
       unavailable: "连接助手暂时不可用，请重新打开桌面版后再试。",
@@ -366,7 +353,7 @@ const COPY = {
     saving: "正在保存…",
     reviewSend: "检查并发送",
     deleteDraft: "删除草稿",
-    sendUnavailable: "可以继续保存草稿；连接发件权限后才能发送。",
+    sendUnavailable: "可以继续保存草稿；请检查邮箱连接后再发送。",
     missingSendFields: "请先填写有效的收件人和正文。",
     invalidRecipient: "请检查收件人邮箱地址。",
     saveFailed: "草稿保存失败，请稍后重试。",
@@ -523,22 +510,9 @@ const COPY = {
     folderMoveSuccess: "Moved {{count}} messages to the destination folder.",
     folderMoveUnconfirmed: "The provider did not return a complete result. Sync first and check the actual location before creating a new preview; the system will not retry automatically.",
     folderMoveFailed: "Folder organization could not start. Build a fresh preview and try again.",
-    folderMovePermission: "Enable folder organization",
-    folderMovePermissionHint: "Folder creation and moves use separate authorization and do not affect receiving or sending mail.",
-    connectOrganize: "Connect folder organization",
-    connectOrganizeHint: "Used only for folder creation and moves. Manual batches are limited to 50 messages and confirmed each time; separately enabled stable automations move at most 10 per batch and can be paused anytime.",
+    folderMovePermission: "Check email connection",
+    folderMovePermissionHint: "Folder creation and moves reuse the current email connection; every move is still reviewed first.",
     organizeConnected: "Folder organization connected",
-    setupRemaining: "{{count}} more feature(s) available",
-    continueSetup: "Continue setup",
-    chooseFeatureTitle: "What would you like to use next?",
-    chooseFeatureHint: "Receiving already works. Enable the other features only when you need them.",
-    organizeFeatureTitle: "Organize mailbox folders",
-    organizeFeatureHint: "Create folders and organize messages",
-    sendFeatureTitle: "Send and reply",
-    sendFeatureHint: "Write and reply to email in the app",
-    recommended: "Recommended",
-    optional: "Optional",
-    backToFeatures: "Back to feature choices",
     folderMoveRecoveryNotice: "A folder organization batch needs review",
     folderMoveRecoveryHint: "The system will not retry automatically. Sync mail and check the messages' actual location.",
     folderMoveReviewStatus: "View status",
@@ -661,7 +635,7 @@ const COPY = {
     securityDetails: "Security and storage details",
     back: "Back to message list",
     connectTitle: "Connect your email",
-    connectHint: "After connecting, new mail appears here. Sign-in details remain on this computer.",
+    connectHint: "Connect once to receive, organize, and send email. Sign-in details remain on this computer.",
     connectAction: "Open email connection settings",
     connectSimple: "You do not need to enter IMAP, SMTP, or server addresses here.",
     attention: "Your email needs to be reconnected",
@@ -669,16 +643,14 @@ const COPY = {
     manageConnection: "Manage connection",
     receiveReady: "Receiving connected",
     readyToConnect: "Available to connect",
-    sendNotReady: "Sending not connected",
-    connectSending: "Connect sending",
     connectorTitle: "Connect email",
-    connectorDescription: "Two guided steps; no server addresses are required.",
+    connectorDescription: "Connect once to receive, organize, and send email. No server addresses are required.",
     provider163: "163 Mail",
     provider163Hint: "Folders, incremental retrieval, and provider read-state sync are supported",
     upgradeBadge: "Upgrade needed",
     upgradeTitle: "Upgrade your existing connection",
-    upgradeHint: "Re-enter your client authorization code to keep using folders, incremental retrieval, and provider read-state sync. Existing mail and drafts are preserved.",
-    upgradeAction: "Upgrade and test receiving",
+    upgradeHint: "The app is completing receive, folder, and send setup with your existing authorization. No code needs to be entered again.",
+    upgradeAction: "Check and repair connection",
     providerGmail: "Gmail",
     comingSoon: "Coming soon",
     desktopOnly: "To protect your email authorization code, finish this step in the Windows desktop app. It opens directly at the step you selected.",
@@ -691,19 +663,21 @@ const COPY = {
     authHelpTitle: "Get an authorization code from 163 Mail first",
     authHelp: "Sign in to 163 webmail, enable IMAP in Settings, and create a client authorization code. Setting names may vary slightly by account version.",
     localSecret: "The code stays on this computer and is encrypted for the current Windows user.",
-    connectAndTest: "Connect and test receiving",
+    connectAndTest: "Connect and test email",
     testing: "Verifying…",
-    connectSuccess: "Receiving connected",
-    connectSuccessHint: "You can now retrieve folder updates and sync read state. Sending can be connected separately next.",
+    connectSuccess: "Email connected",
+    connectSuccessHint: "Receiving, folder organization, and sending share this locally encrypted authorization. Moves and sends still require review.",
     done: "Done",
     reconnect: "Reconnect",
-    connectSend: "Connect sending",
-    connectSendHint: "Sending permission is stored separately from receiving. Every message still requires a complete review before sending.",
+    disconnect: "Disconnect email",
+    disconnectConfirm: "Disconnect this mailbox? The locally stored authorization will be deleted. Synced content and drafts will be kept.",
+    disconnecting: "Disconnecting…",
+    capabilityPending: "Not ready",
     sendConnected: "Sending connected",
     errors: {
       invalid_email: "Enter a complete 163 Mail address.",
       invalid_authorization_code: "Enter the 163 client authorization code.",
-      verification_failed: "Verification failed. Check that IMAP is enabled, then verify the address and authorization code.",
+      verification_failed: "Verification failed. Check that IMAP/SMTP is enabled, then verify the address and authorization code.",
       save_failed: "The account was verified, but could not be saved on this computer. Try again.",
       platform_not_supported: "The connection assistant currently requires the Windows desktop app.",
       unavailable: "The connection assistant is unavailable. Reopen the desktop app and try again.",
@@ -721,7 +695,7 @@ const COPY = {
     saving: "Saving…",
     reviewSend: "Review and send",
     deleteDraft: "Delete draft",
-    sendUnavailable: "You can save drafts now; connect send permission before sending.",
+    sendUnavailable: "You can save drafts now; check the email connection before sending.",
     missingSendFields: "Add a valid recipient and message first.",
     invalidRecipient: "Check the recipient email address.",
     saveFailed: "The draft could not be saved. Try again.",
@@ -875,9 +849,6 @@ export function MailView() {
   const data = mailbox.data;
   const classificationSummary = data?.classificationSummary ?? null;
   const account = data?.accounts.find((item) => item.canReceive) ?? data?.accounts[0] ?? null;
-  const remainingMailFeatures = account?.canReceive
-    ? Number(!account.canOrganize) + Number(!account.canSend)
-    : 0;
   const selectedMessage = data?.messages.find((message) => message.id === selectedMessageId) ?? null;
   const syncing = busy === "sync" || data?.sync?.status === "syncing";
   const providerFolders = (data?.folders ?? []).filter((item) => item.kind === "provider");
@@ -1547,8 +1518,7 @@ export function MailView() {
             <div className="flex min-w-0 items-center gap-2"><span className={cn("size-2 shrink-0 rounded-full", account?.canReceive ? "bg-emerald-500" : "bg-amber-500")} /><span className="shrink-0 font-medium">{account?.name}</span><span className="hidden text-muted-foreground sm:inline">{account?.canReceive ? copy.receiveReady : copy.attention}</span>{lastSyncText ? <span className="truncate text-[11px] text-muted-foreground sm:text-xs">{lastSyncText}</span> : null}</div>
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
               {!account?.canReceive ? <Button size="sm" variant="secondary" onClick={() => openConnector()}>{copy.attentionAction}</Button> : null}
-              {account?.canReceive && remainingMailFeatures ? <><span className="hidden text-xs text-muted-foreground sm:inline">{copy.setupRemaining.replace("{{count}}", String(remainingMailFeatures))}</span><Button size="sm" variant="secondary" onClick={() => openConnector()}>{copy.continueSetup}</Button></> : null}
-              {account?.canReceive && !remainingMailFeatures ? <Button size="sm" variant="secondary" onClick={() => openConnector()}>{copy.manageConnection}</Button> : null}
+              {account?.canReceive ? <Button size="sm" variant="secondary" onClick={() => openConnector()}>{copy.manageConnection}</Button> : null}
             </div>
           </div>
 
@@ -1598,6 +1568,7 @@ export function MailView() {
         void queryClient.invalidateQueries({ queryKey: ["mailbox"] });
         void queryClient.invalidateQueries({ queryKey: ["mail-folder-suggestions"] });
         window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 2_000);
+        window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 16_000);
       }} />
       <AttachmentPreviewModal copy={copy} preview={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
       <MailTaskReviewModal copy={copy} value={taskDraft} projects={projects} pending={busy === "task"} onChange={setTaskDraft} onClose={() => setTaskDraft(null)} onCreate={() => void createTaskFromMail()} />
@@ -1618,20 +1589,19 @@ function MailConnectionModal({ copy, intent, open, onClose, onConnected }: { cop
   const [email, setEmail] = useState("");
   const [authorizationCode, setAuthorizationCode] = useState("");
   const [connectedEmail, setConnectedEmail] = useState<string | null>(null);
+  const [upgradeNeeded, setUpgradeNeeded] = useState(false);
+  const [receiveConnected, setReceiveConnected] = useState(false);
   const [sendConnected, setSendConnected] = useState(false);
   const [organizeConnected, setOrganizeConnected] = useState(false);
-  const [upgradeNeeded, setUpgradeNeeded] = useState(false);
   const [platformSupported, setPlatformSupported] = useState<boolean | null>(null);
-  const [activeIntent, setActiveIntent] = useState<MailConnectorIntent>(intent);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setActiveIntent(intent);
     setAuthorizationCode("");
     setError(null);
-  }, [intent, open]);
+  }, [open]);
 
   useEffect(() => {
     if (!open || !bridge?.getMailConnectorStatus) return;
@@ -1639,10 +1609,11 @@ function MailConnectionModal({ copy, intent, open, onClose, onConnected }: { cop
       const provider = status.providers.find((item) => item.id === "netease_163");
       setPlatformSupported(provider?.available !== false);
       if (provider?.account) setEmail(provider.account);
-      if (provider?.connected) setConnectedEmail(provider.account);
+      if (provider?.connected || provider?.credentialStored) setConnectedEmail(provider.account);
+      setReceiveConnected(provider?.connected === true);
+      setSendConnected(provider?.sendConnected ?? provider?.connected === true);
+      setOrganizeConnected(provider?.organizeConnected ?? provider?.connected === true);
       setUpgradeNeeded(provider?.upgradeNeeded === true);
-      setSendConnected(provider?.sendConnected === true);
-      setOrganizeConnected(provider?.organizeConnected === true);
     }).catch(() => setError(copy.errors.unavailable));
   }, [bridge, copy.errors.unavailable, open]);
 
@@ -1658,67 +1629,48 @@ function MailConnectionModal({ copy, intent, open, onClose, onConnected }: { cop
     }
     setConnectedEmail(result.account.email);
     setUpgradeNeeded(false);
-    onConnected();
-  }
-
-  async function connectSend() {
-    if (!bridge?.connect163MailSend) { setError(copy.errors.unavailable); return; }
-    setPending(true);
-    setError(null);
-    const result = await bridge.connect163MailSend({ email, authorizationCode }).catch(() => ({ ok: false as const, error: "unavailable" as const }));
-    setPending(false);
-    if (!result.ok) { setError(copy.errors[result.error as keyof typeof copy.errors] ?? copy.errors.unavailable); return; }
-    setAuthorizationCode("");
+    setReceiveConnected(true);
     setSendConnected(true);
+    setOrganizeConnected(true);
+    setAuthorizationCode("");
     onConnected();
   }
-
-  async function connectOrganize() {
-    if (!bridge?.connect163MailOrganize) { setError(copy.errors.unavailable); return; }
+  async function disconnect() {
+    if (!bridge?.disconnect163Mail || !window.confirm(copy.disconnectConfirm)) return;
     setPending(true);
     setError(null);
-    const result = await bridge.connect163MailOrganize({ email, authorizationCode }).catch(() => ({ ok: false as const, error: "unavailable" as const }));
+    const result = await bridge.disconnect163Mail().catch(() => ({ ok: false as const, error: "unavailable" as const }));
     setPending(false);
     if (!result.ok) { setError(copy.errors[result.error as keyof typeof copy.errors] ?? copy.errors.unavailable); return; }
-    setAuthorizationCode("");
-    setOrganizeConnected(true);
+    setConnectedEmail(null);
+    setEmail("");
+    setUpgradeNeeded(false);
+    setReceiveConnected(false);
+    setSendConnected(false);
+    setOrganizeConnected(false);
     onConnected();
   }
-
-  const selectFeature = (nextIntent: Exclude<MailConnectorIntent, "manage">) => {
-    setActiveIntent(nextIntent);
-    setError(null);
-  };
   const closeModal = () => {
     setAuthorizationCode("");
     setError(null);
     onClose();
   };
 
-  return <Modal open={open} title={copy.connectorTitle} description={copy.connectorDescription} size="lg" onClose={closeModal} closeDisabled={pending} footer={connectedEmail && sendConnected && organizeConnected ? <div className="flex justify-end"><Button onClick={closeModal}>{copy.done}</Button></div> : undefined}>
+  return <Modal open={open} title={copy.connectorTitle} description={copy.connectorDescription} size="lg" onClose={closeModal} closeDisabled={pending} footer={connectedEmail ? <div className="flex justify-end"><Button onClick={closeModal}>{copy.done}</Button></div> : undefined}>
     {!bridge?.getMailConnectorStatus ? <div className="space-y-4 rounded-xl border bg-muted/20 p-5 text-center">
       <span className="mx-auto grid size-12 place-items-center rounded-full bg-primary/10 text-primary"><MonitorUp /></span>
       <p className="text-sm leading-6 text-muted-foreground">{copy.desktopOnly}</p>
-      <a href={`myagenttool://mail/connect?intent=${activeIntent}`} className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><MonitorUp />{copy.continueOnDesktop}</a>
+      <a href={`myagenttool://mail/connect?intent=${intent}`} className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><MonitorUp />{copy.continueOnDesktop}</a>
       <p className="text-xs leading-5 text-muted-foreground">{copy.desktopLaunchHint}</p>
     </div> : platformSupported === false ? <div className="space-y-3 rounded-xl border border-amber-500/40 bg-amber-500/5 p-5 text-center"><AlertTriangle className="mx-auto size-8 text-amber-500" /><p className="text-sm text-muted-foreground">{copy.platformUnsupported}</p></div> : connectedEmail ? <div className="space-y-4 text-center">
       <span className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-600"><ShieldCheck /></span>
       <div><h3 className="font-semibold">{copy.connectSuccess}</h3><p className="mt-1 text-sm text-muted-foreground">{connectedEmail}</p></div>
-      {activeIntent === "manage" ? <div className="space-y-3 text-left">
-        <div><h4 className="font-medium">{copy.chooseFeatureTitle}</h4><p className="mt-1 text-xs leading-5 text-muted-foreground">{copy.chooseFeatureHint}</p></div>
-        {organizeConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.organizeConnected}</div> : <button type="button" className="flex w-full items-center gap-3 rounded-xl border border-primary/35 bg-primary/5 p-4 text-left transition-colors hover:bg-primary/10" onClick={() => selectFeature("organize")}><span className="grid size-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Folder /></span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2 font-medium">{copy.organizeFeatureTitle}<span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">{copy.recommended}</span></span><span className="mt-1 block text-xs text-muted-foreground">{copy.organizeFeatureHint}</span></span><ChevronRight className="size-4 shrink-0 text-muted-foreground" /></button>}
-        {sendConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.sendConnected}</div> : <button type="button" className="flex w-full items-center gap-3 rounded-xl border bg-muted/20 p-4 text-left transition-colors hover:bg-muted/50" onClick={() => selectFeature("send")}><span className="grid size-10 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground"><Send /></span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2 font-medium">{copy.sendFeatureTitle}<span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{copy.optional}</span></span><span className="mt-1 block text-xs text-muted-foreground">{copy.sendFeatureHint}</span></span><ChevronRight className="size-4 shrink-0 text-muted-foreground" /></button>}
-      </div> : null}
-      {activeIntent === "send" ? sendConnected
-        ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.sendConnected}</div>
-        : <div className="space-y-3 rounded-xl border bg-muted/20 p-4 text-left"><p className="text-sm font-medium">{copy.connectSend}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectSendHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectSend()} disabled={pending}><Send />{pending ? copy.testing : copy.connectSend}</Button></div>
-        : null}
-      {activeIntent === "organize" ? organizeConnected
-        ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.organizeConnected}</div>
-        : <div className="space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-4 text-left"><p className="text-sm font-medium">{copy.connectOrganize}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectOrganizeHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input autoFocus type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectOrganize()} disabled={pending}><Folder />{pending ? copy.testing : copy.connectOrganize}</Button></div>
-        : null}
-      {activeIntent !== "manage" && (!sendConnected || !organizeConnected) ? <Button variant="ghost" onClick={() => setActiveIntent("manage")}><ArrowLeft />{copy.backToFeatures}</Button> : null}
-      <Button variant="secondary" onClick={() => { setConnectedEmail(null); setSendConnected(false); setOrganizeConnected(false); setAuthorizationCode(""); setError(null); }}>{copy.reconnect}</Button>
+      <p className="text-sm leading-6 text-muted-foreground">{copy.connectSuccessHint}</p>
+      <div className="grid gap-2 text-left sm:grid-cols-3">
+        {[[copy.receiveReady, receiveConnected], [copy.organizeConnected, organizeConnected], [copy.sendConnected, sendConnected]].map(([label, ready]) => <div key={String(label)} className={cn("flex items-center gap-2 rounded-xl border p-3 text-sm", ready ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-700" : "border-amber-500/30 bg-amber-500/5 text-amber-700")}><ShieldCheck className="size-4 shrink-0" /><span>{label}</span>{ready ? null : <span>· {copy.capabilityPending}</span>}</div>)}
+      </div>
+      {upgradeNeeded ? <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3 text-left"><p className="text-sm font-medium">{copy.upgradeTitle}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{copy.upgradeHint}</p></div> : null}
+      <div className="flex flex-wrap justify-center gap-2"><Button variant="secondary" onClick={() => { setConnectedEmail(null); setAuthorizationCode(""); setError(null); }}>{copy.reconnect}</Button><Button variant="ghost" onClick={() => void disconnect()} disabled={pending}>{pending ? copy.disconnecting : copy.disconnect}</Button></div>
     </div> : <div className="space-y-4">
       <div className="grid gap-2 sm:grid-cols-2">
         <div className="rounded-xl border border-primary/40 bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.provider163}</span><span className={cn("rounded-full px-2 py-0.5 text-xs", upgradeNeeded ? "bg-amber-500/10 text-amber-700" : "bg-muted text-muted-foreground")}>{upgradeNeeded ? copy.upgradeBadge : copy.readyToConnect}</span></div><p className="mt-1 text-xs text-muted-foreground">{copy.provider163Hint}</p></div>
