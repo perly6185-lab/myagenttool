@@ -326,7 +326,8 @@ function normalizeApplicationCredentialReadiness(rows, checkedAt) {
     const scope = String(row?.scope ?? "").trim();
     if (!/^app_[a-z0-9_]{1,48}$/.test(applicationId)) return [];
     if (!/^[a-z][a-z0-9_.-]{0,31}$/.test(provider) || !/^[a-z][a-z0-9_.-]{0,63}$/.test(scope)) return [];
-    return [{ applicationId, provider, scope, status: "present", checkedAt }];
+    const accountId = /^[a-z][a-z0-9_.-]{0,31}:[a-f0-9]{16}$/.test(String(row?.accountId ?? "")) ? String(row.accountId) : null;
+    return [{ applicationId, provider, scope, status: "present", ...(accountId ? { accountId } : {}), checkedAt }];
   });
 }
 

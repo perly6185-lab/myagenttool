@@ -42,6 +42,8 @@ test("pasted file bytes are staged locally and bounded", async () => {
     assert.equal(ok.ok, true);
     const tooLarge = await handlers.get("mail:stage-pasted-attachments")(null, { files: [{ name: "huge.bin", contentType: "application/octet-stream", data: new ArrayBuffer(25 * 1024 * 1024 + 1) }] });
     assert.deepEqual(tooLarge, { ok: false, error: "attachment_too_large" });
+    const tooMany = await handlers.get("mail:stage-pasted-attachments")(null, { files: Array.from({ length: 11 }, (_, index) => ({ name: `${index}.txt`, contentType: "text/plain", data: new ArrayBuffer(1) })) });
+    assert.deepEqual(tooMany, { ok: false, error: "attachment_invalid" });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

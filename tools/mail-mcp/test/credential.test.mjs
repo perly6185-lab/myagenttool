@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { defaultCredentialPath, readCredential } from "../src/credential.mjs";
+import { defaultCredentialPath, defaultOrganizeCredentialPath, readCredential } from "../src/credential.mjs";
 
 test("credential path prefers APPDATA — matches where setup-163.ps1 writes (#1199)", () => {
   // Redirected/roaming APPDATA: the reader must follow it, not rebuild
@@ -17,6 +17,11 @@ test("credential path falls back to USERPROFILE when APPDATA is unset", () => {
     defaultCredentialPath({ USERPROFILE: "C:\\Users\\mail-user" }),
     join("C:\\Users\\mail-user", "AppData", "Roaming", "myagenttool", "mail", "163.json"),
   );
+});
+
+test("folder organization reuses the receiving credential path", () => {
+  const env = { APPDATA: "D:\\Redirected\\AppData\\Roaming" };
+  assert.equal(defaultOrganizeCredentialPath(env), defaultCredentialPath(env));
 });
 
 test("missing credential refuses with an actionable authorization state", () => {

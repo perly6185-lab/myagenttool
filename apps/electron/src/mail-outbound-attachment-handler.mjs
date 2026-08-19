@@ -24,7 +24,8 @@ export function registerMailOutboundAttachmentHandler({ ipcMain, dialog, getWind
     });
     if (chosen.canceled || !chosen.filePaths?.length) return { ok: true, attachments: [] };
     try {
-      const files = chosen.filePaths.slice(0, MAX_FILES).map((path) => {
+      if (chosen.filePaths.length > MAX_FILES) throw publicError("attachment_invalid");
+      const files = chosen.filePaths.map((path) => {
         const info = lstatSync(path);
         if (!info.isFile() || info.isSymbolicLink()) throw publicError("attachment_invalid");
         return { path: realpathSync(path), name: safeFilename(path), size: info.size, contentType: contentTypeOf(path) };
@@ -38,7 +39,8 @@ export function registerMailOutboundAttachmentHandler({ ipcMain, dialog, getWind
 
   ipcMain.handle("mail:stage-pasted-attachments", async (_event, input) => {
     try {
-      const incoming = Array.isArray(input?.files) ? input.files.slice(0, MAX_FILES) : [];
+      const incoming = Array.isArray(input?.files) ? input.files : [];
+      if (incoming.length > MAX_FILES) throw publicError("attachment_invalid");
       const files = incoming.map((file) => {
         const bytes = Buffer.from(file?.data instanceof ArrayBuffer ? file.data : new Uint8Array(file?.data ?? []));
         return { bytes, name: safeFilename(file?.name), size: bytes.length, contentType: boundedType(file?.contentType) };

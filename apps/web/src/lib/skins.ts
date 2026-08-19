@@ -147,10 +147,10 @@ declare global {
       revealContainedAsset?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ revealed: true }>;
       getMailConnectorStatus?: () => Promise<{
         desktop: true;
-        providers: Array<{ id: "netease_163" | "gmail"; name: string; available: boolean; connected: boolean; upgradeNeeded?: boolean; sendConnected?: boolean; organizeConnected?: boolean; account: string | null }>;
+        providers: Array<{ id: "netease_163" | "gmail"; name: string; available: boolean; connected: boolean; credentialStored?: boolean; upgradeNeeded?: boolean; sendConnected?: boolean; organizeConnected?: boolean; readStateConnected?: boolean; account: string | null }>;
       }>;
       connect163Mail?: (input: { email: string; authorizationCode: string }) => Promise<
-        | { ok: true; account: { provider: string; email: string; canReceive: true; canSend: false } }
+        | { ok: true; account: { provider: string; email: string; canReceive: true; canSend: true; canOrganize: true } }
         | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }
       >;
       previewMailAttachment?: (input: { messageId: string; folderPath?: string; attachmentId: string; archiveRef?: string }) => Promise<
@@ -165,13 +165,17 @@ declare global {
         | { ok: true; attachment: { id: string; name: string; contentType: string; size: number; sha256: string; data: ArrayBuffer } }
         | { ok: false; error: "attachment_not_found" | "download_too_large" | "attachment_unavailable" }
       >;
-      connect163MailSend?: (input: { email: string; authorizationCode: string }) => Promise<
-        | { ok: true; account: { provider: string; email: string; canReceive: boolean; canSend: true } }
-        | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }
+      connect163MailSend?: () => Promise<
+        | { ok: true; account: { provider: string; email: string; canReceive: true; canSend: true; canOrganize: true } }
+        | { ok: false; error: "platform_not_supported" | "not_authorized" | "save_failed" }
       >;
-      connect163MailOrganize?: (input: { email: string; authorizationCode: string }) => Promise<
-        | { ok: true; account: { provider: string; email: string; canOrganize: true } }
-        | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }
+      connect163MailOrganize?: () => Promise<
+        | { ok: true; account: { provider: string; email: string; canReceive: true; canSend: true; canOrganize: true } }
+        | { ok: false; error: "platform_not_supported" | "not_authorized" | "save_failed" }
+      >;
+      disconnect163Mail?: () => Promise<
+        | { ok: true; disconnected: true }
+        | { ok: false; error: "platform_not_supported" | "save_failed" }
       >;
       pickOutboundMailAttachments?: () => Promise<
         | { ok: true; attachments: Array<{ ref: string; name: string; contentType: string; size: number }> }

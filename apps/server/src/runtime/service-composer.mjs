@@ -1289,6 +1289,10 @@ export function createServerRuntimeServices({
             applicationId: record.applicationId,
             messages: record.data.messages ?? [],
           }));
+          if (record.data.hasMore === true) {
+            const continuation = setTimeout(() => mailboxService?.startSync?.({ actor: { teamId: record.ownerTeamId ?? "team_local", userId: "system_mail_sync" } }), 750);
+            continuation.unref?.();
+          }
         }
         if (record.source === "mail_headers" && record.data?.kind === "message") {
           queueMicrotask(() => mailBodyPrefetchHooks?.sweepBodyPrefetch?.());

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export function defaultCredentialPath(env = process.env) {
@@ -17,7 +17,7 @@ export function defaultCredentialPath(env = process.env) {
 }
 
 export function defaultOrganizeCredentialPath(env = process.env) {
-  return join(dirname(defaultCredentialPath(env)), "163-organize.json");
+  return defaultCredentialPath(env);
 }
 
 export function readCredential(path = defaultCredentialPath()) {
@@ -35,10 +35,10 @@ export function readCredential(path = defaultCredentialPath()) {
 }
 
 export function readOrganizeCredential(path = defaultOrganizeCredentialPath()) {
-  if (!existsSync(path)) throw new Error("not_authorized: connect folder organization on this device");
+  if (!existsSync(path)) throw new Error("not_authorized: connect 163 Mail on this device");
   const record = JSON.parse(readFileSync(path, "utf8"));
-  if (record.provider !== "netease" || record.scope !== "imap.organize" || !record.username || !record.protectedAuthorizationCode) {
-    throw new Error("not_authorized: the 163 Mail organize credential record is invalid");
+  if (record.provider !== "netease" || !["imap.readonly", "imap.mail", "imap.organize"].includes(record.scope) || !record.username || !record.protectedAuthorizationCode) {
+    throw new Error("not_authorized: the shared 163 Mail credential record is invalid");
   }
   return { username: String(record.username), authorizationCode: unprotectForCurrentUser(String(record.protectedAuthorizationCode)) };
 }

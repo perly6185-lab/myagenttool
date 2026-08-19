@@ -10,7 +10,7 @@ const ARCHIVE_REF = `mailarc_${"a".repeat(24)}_${"b".repeat(40)}`;
 const MAILBOX = {
   accounts: [{
     id: "app_163_mail_v2", provider: "netease", name: "163 Mail", status: "connected", statusDetail: "ready",
-    canReceive: true, canSend: false, canOrganize: false, readApplicationId: "app_163_mail_v2", sendApplicationId: null,
+    canReceive: true, canSend: true, canOrganize: true, readApplicationId: "app_163_mail_v2", sendApplicationId: "app_163_mail_send", organizeApplicationId: "app_163_mail_organize",
     fetchCapability: "app.app_163_mail_v2.fetch",
   }],
   connection: { status: "connected", message: "163 Mail" },
@@ -215,8 +215,8 @@ for (const fixture of [
 
     await expect(page.getByRole("heading", { name: "我的邮箱" })).toBeAttached();
     await expect(page.getByText("确认交付范围", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "继续设置" })).toBeVisible();
-    if (fixture.name === "desktop") await expect(page.getByText("还有 2 项功能可启用")).toBeVisible();
+    await expect(page.getByRole("button", { name: "管理邮箱连接" })).toBeVisible();
+    await expect(page.getByText(/还有 \d+ 项功能可启用/)).toHaveCount(0);
     await expect(page.getByRole("navigation", { name: "智能分类" })).toBeVisible();
     if (fixture.name === "mobile") {
       await page.getByRole("button", { name: "智能分类", exact: true }).click();
@@ -270,7 +270,7 @@ for (const fixture of [
     await expect(page.getByLabel("确认交付范围").getByText("你好，请确认本周交付范围。详情：https://example.com/delivery")).toBeVisible();
     await expect(page.getByRole("link", { name: "https://example.com/delivery" })).toHaveAttribute("rel", /noopener/);
     await expect(page.getByText(/2026年8月13日/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "写回复草稿" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "回复" })).toBeVisible();
     await page.getByText("安全显示 · 已保存在本机").click();
     await expect(page.getByText(/系统只把它当作内容展示/)).toBeVisible();
     await expect(page.getByText(/原始邮件和附件已安全保存在本机/)).toBeVisible();
@@ -295,7 +295,7 @@ for (const fixture of [
     await page.getByRole("button", { name: "写邮件" }).click();
     const dialog = page.getByRole("dialog", { name: "写邮件" });
     await expect(dialog.getByLabel("收件人")).toBeVisible();
-    await expect(dialog.getByText(/连接发件权限后才能发送/)).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "检查并发送" })).toBeEnabled();
     await dialog.getByRole("button", { name: "关闭" }).click();
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -381,11 +381,11 @@ for (const fixture of [
           { id: "netease_163", name: "163 邮箱", available: true, connected: false, account: null },
           { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
         ] }),
-        connect163Mail: async ({ email }: { email: string }) => ({ ok: true, account: { provider: "netease", email, canReceive: true, canSend: false } }),
+        connect163Mail: async ({ email }: { email: string }) => ({ ok: true, account: { provider: "netease", email, canReceive: true, canSend: true, canOrganize: true } }),
       };
     });
     await page.goto("/?section=mail");
-    const trigger = page.getByRole("button", { name: /管理邮箱连接|继续设置/ });
+    const trigger = page.getByRole("button", { name: "管理邮箱连接" });
     await trigger.focus();
     await page.keyboard.press("Enter");
     let dialog = page.getByRole("dialog", { name: "连接邮箱" });
@@ -399,12 +399,12 @@ for (const fixture of [
     await expect(dialog.getByText("即将支持")).toBeVisible();
     await dialog.getByLabel("163 邮箱地址").fill("user@163.com");
     await dialog.getByLabel("客户端授权码").fill("local-only-code");
-    await dialog.getByRole("button", { name: "连接并测试收件" }).click();
-    await expect(dialog.getByText("收件连接成功")).toBeVisible();
-    await expect(dialog.getByText("接下来想使用什么？")).toBeVisible();
-    await expect(dialog.getByRole("button", { name: /整理邮箱目录/ })).toBeVisible();
-    await dialog.getByRole("button", { name: /发送和回复邮件/ }).click();
-    await expect(dialog.getByText(/发件授权与收件分开保存/)).toBeVisible();
+    await dialog.getByRole("button", { name: "连接并测试邮箱" }).click();
+    await expect(dialog.getByText("邮箱连接成功")).toBeVisible();
+    await expect(dialog.getByText("收件已连接")).toBeVisible();
+    await expect(dialog.getByText("目录整理已连接")).toBeVisible();
+    await expect(dialog.getByText("发件已连接")).toBeVisible();
+    await expect(dialog.getByLabel("客户端授权码")).toHaveCount(0);
     await expectNoCriticalAccessibilityViolations(page);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);

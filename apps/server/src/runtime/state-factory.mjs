@@ -153,6 +153,10 @@ export function createServerState({ defaultProjectPath, now }) {
     // — the write itself (4b) is separate.
     claudeApplyAuthorizations: [],
     applicationResults: [],
+    mailMessages: [],
+    mailFolders: [],
+    mailCursors: [],
+    mailFactImportIds: [],
     mailDrafts: [],
     mailMessageStates: [],
     // Durable body-prefetch queue. Message bodies are retrieved asynchronously
@@ -394,6 +398,10 @@ export function resetStateForSelfCheck({ state, now }) {
   state.codexExecChangeReviews = [];
   state.claudeApplyAuthorizations = [];
   state.applicationResults = [];
+  state.mailMessages = [];
+  state.mailFolders = [];
+  state.mailCursors = [];
+  state.mailFactImportIds = [];
   state.mailDrafts = [];
   state.mailMessageStates = [];
   state.mailTaskLinks = [];

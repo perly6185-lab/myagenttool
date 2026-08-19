@@ -108,6 +108,11 @@ async function startApp() {
     MYAGENT_LOOPBACK_TOKEN: loopbackToken,
     MYAGENTTOOL_STATE_PATH: join(app.getPath("userData"), "state", "local-demo-state.json"),
     MYAGENTTOOL_PROJECT_PATH: process.env.MYAGENTTOOL_PROJECT_PATH ?? app.getPath("documents"),
+    // The desktop product exposes reviewed, user-initiated send and folder
+    // organization flows. Keep automatic organization opt-in, but make the two
+    // manual capabilities work in an installed build without hidden env setup.
+    MYAGENTTOOL_MAIL_SEND_ENABLED: process.env.MYAGENTTOOL_MAIL_SEND_ENABLED ?? "1",
+    MYAGENTTOOL_MAIL_ORGANIZE_MANUAL_ENABLED: process.env.MYAGENTTOOL_MAIL_ORGANIZE_MANUAL_ENABLED ?? "1",
   }, paths.runtimeRoot);
 
   await waitForHttp(`${serverUrl}/api/state`, "server");

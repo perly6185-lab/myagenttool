@@ -3,7 +3,7 @@
  *
  * The device reports what it HOLDS — application, provider, scope — and never a
  * credential. These tests hold that line from both ends: a well-formed sidecar
- * produces exactly four scalars, and a sidecar carrying a secret (a bug in the
+ * produces only approved non-secret scalars, and a sidecar carrying a secret (a bug in the
  * login flow, or a hostile file) cannot smuggle it onto the wire.
  */
 
@@ -51,6 +51,14 @@ test("a sidecar carrying a secret cannot smuggle it onto the wire", () => {
     assert.ok(!serialized.includes(secret), `"${secret}" must never reach a bridge report`);
   }
   assert.equal(rows[0].scope, "gmail.readonly", "the non-secret metadata still reports");
+});
+
+test("an opaque account identifier is reported for mailbox isolation", () => {
+  const rows = collectApplicationCredentialReadiness("/creds", options({
+    "mail.json": { applicationId: "app_163_mail", provider: "netease", scope: "imap.readonly", accountId: "netease:1234567890abcdef", username: "must-not-pass@example.com" },
+  }));
+  assert.equal(rows[0].accountId, "netease:1234567890abcdef");
+  assert.equal("username" in rows[0], false);
 });
 
 test("a record that does not describe itself cleanly is dropped, never guessed", () => {

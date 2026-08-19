@@ -54,3 +54,35 @@ test("one unavailable folder preserves its cursor without losing healthy folder 
   assert.equal(result.folders.find((folder) => folder.path === "Broken").syncError, true);
   assert.equal(result.cursors.find((cursor) => cursor.folderPath === "Broken").lastUid, 5);
 });
+
+test("large folders advance in oldest-first batches without skipping pending UIDs", async () => {
+  const allUids = Array.from({ length: 120 }, (_, index) => index + 1);
+  let cursor = null;
+  const fetchedBatches = [];
+  const client = {
+    mailbox: null,
+    list: async () => [{ path: "INBOX", name: "Inbox", flags: new Set(), status: { messages: 120, unseen: 120, uidValidity: 7n } }],
+    getMailboxLock: async () => { client.mailbox = { uidValidity: 7n, exists: 120 }; return { release() {} }; },
+    search: async (query) => query.all ? allUids : allUids.filter((uid) => uid >= Number(String(query.uid).split(":")[0])),
+    fetchAll: async (uids, query) => {
+      if (!query.envelope) return uids.map((uid) => ({ uid, flags: new Set() }));
+      fetchedBatches.push([...uids]);
+      return uids.map((uid) => ({ uid, flags: new Set(), envelope: { messageId: `<${uid}@example.com>`, from: [], subject: `Mail ${uid}`, date: new Date() } }));
+    },
+  };
+
+  const first = await sync163Mailbox({ limit: 50 }, async (action) => action(client, { username: "user@163.com" }));
+  cursor = first.cursors[0];
+  const second = await sync163Mailbox({ limit: 50, cursors: [cursor] }, async (action) => action(client, { username: "user@163.com" }));
+  cursor = second.cursors[0];
+  const third = await sync163Mailbox({ limit: 50, cursors: [cursor] }, async (action) => action(client, { username: "user@163.com" }));
+
+  assert.deepEqual(fetchedBatches.map((batch) => [batch[0], batch.at(-1)]), [[1, 50], [51, 100], [101, 120]]);
+  assert.equal(first.cursors[0].lastUid, 50);
+  assert.equal(second.cursors[0].lastUid, 100);
+  assert.equal(third.cursors[0].lastUid, 120);
+  assert.equal(first.hasMore, true);
+  assert.equal(second.hasMore, true);
+  assert.equal(third.hasMore, false);
+  assert.match(first.accountId, /^netease:[a-f0-9]{16}$/);
+});

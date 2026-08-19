@@ -692,12 +692,12 @@ describe("MailView ordinary-user flow", () => {
     expect(new URLSearchParams(window.location.search).get("mailConnect")).toBeNull();
   });
 
-  it("guides a desktop user through local 163 verification and reports receive/send separately", async () => {
+  it("connects receiving, folder organization, and sending with one local authorization", async () => {
     mocks.getMailConnectorStatus.mockResolvedValue({ desktop: true, providers: [
       { id: "netease_163", name: "163 邮箱", available: true, connected: false, account: null },
       { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
     ] });
-    mocks.connect163Mail.mockResolvedValue({ ok: true, account: { provider: "netease", email: "user@163.com", canReceive: true, canSend: false } });
+    mocks.connect163Mail.mockResolvedValue({ ok: true, account: { provider: "netease", email: "user@163.com", canReceive: true, canSend: true, canOrganize: true } });
     window.myagenttoolDesktop = { getMailConnectorStatus: mocks.getMailConnectorStatus, connect163Mail: mocks.connect163Mail };
     mocks.getMailbox.mockResolvedValue({ ...connectedMailbox, accounts: [], connection: { status: "not_connected", message: "" }, messages: [], folders: connectedMailbox.folders.map((folder) => ({ ...folder, count: 0 })) });
     renderView();
@@ -707,17 +707,18 @@ describe("MailView ordinary-user flow", () => {
     expect(screen.queryByText("收件已连接")).toBeNull();
     fireEvent.change(screen.getByLabelText("163 邮箱地址"), { target: { value: "user@163.com" } });
     fireEvent.change(screen.getByLabelText("客户端授权码"), { target: { value: "local-code" } });
-    fireEvent.click(screen.getByRole("button", { name: "连接并测试收件" }));
-    expect(await screen.findByText("收件连接成功")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /发送和回复邮件/ }));
-    expect(screen.getByText(/发件授权与收件分开保存/)).toBeTruthy();
-    expect((screen.getByLabelText("客户端授权码") as HTMLInputElement).value).toBe("local-code");
+    fireEvent.click(screen.getByRole("button", { name: "连接并测试邮箱" }));
+    expect(await screen.findByText("邮箱连接成功")).toBeTruthy();
+    expect(screen.getByText("收件已连接")).toBeTruthy();
+    expect(screen.getByText("目录整理已连接")).toBeTruthy();
+    expect(screen.getByText("发件已连接")).toBeTruthy();
+    expect(screen.queryByLabelText("客户端授权码")).toBeNull();
     expect(mocks.connect163Mail).toHaveBeenCalledWith({ email: "user@163.com", authorizationCode: "local-code" });
   });
 
-  it("explains legacy connection upgrades and offers one clear reauthorization action", async () => {
+  it("upgrades an existing receiving connection without asking for authorization again", async () => {
     mocks.getMailConnectorStatus.mockResolvedValue({ desktop: true, providers: [
-      { id: "netease_163", name: "163 邮箱", available: true, connected: false, upgradeNeeded: true, sendConnected: false, account: "legacy@163.com" },
+      { id: "netease_163", name: "163 邮箱", available: true, connected: true, upgradeNeeded: true, sendConnected: true, organizeConnected: true, account: "legacy@163.com" },
       { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
     ] });
     window.myagenttoolDesktop = { getMailConnectorStatus: mocks.getMailConnectorStatus };
@@ -725,33 +726,46 @@ describe("MailView ordinary-user flow", () => {
     await screen.findByText("Project update");
     fireEvent.click(screen.getByRole("button", { name: "管理邮箱连接" }));
     expect(await screen.findByText("升级现有邮箱连接")).toBeTruthy();
-    expect(screen.getByText(/原有邮件和草稿不会丢失/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "升级并测试收件" })).toBeTruthy();
-    expect((screen.getByLabelText("163 邮箱地址") as HTMLInputElement).value).toBe("legacy@163.com");
+    expect(screen.getByText(/不需要再次输入授权码/)).toBeTruthy();
+    expect(screen.queryByLabelText("客户端授权码")).toBeNull();
+    expect(screen.getByText("legacy@163.com")).toBeTruthy();
   });
 
-  it("connects folder organization as a separate desktop permission", async () => {
+  it("does not expose a second authorization flow for folder organization or sending", async () => {
     mocks.getMailConnectorStatus.mockResolvedValue({ desktop: true, providers: [
       { id: "netease_163", name: "163 邮箱", available: true, connected: true, sendConnected: false, organizeConnected: false, account: "user@163.com" },
       { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
     ] });
-    mocks.connect163MailOrganize.mockResolvedValue({ ok: true, account: { provider: "netease", email: "user@163.com", canOrganize: true } });
     window.myagenttoolDesktop = { getMailConnectorStatus: mocks.getMailConnectorStatus, connect163MailOrganize: mocks.connect163MailOrganize };
     mocks.getMailbox.mockResolvedValue({
       ...connectedMailbox,
       accounts: connectedMailbox.accounts.map((account) => ({ ...account, canSend: false, canOrganize: false })),
     });
     renderView();
-    expect(await screen.findByText("还有 2 项功能可启用")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "继续设置" }));
+    expect(await screen.findByRole("button", { name: "管理邮箱连接" })).toBeTruthy();
+    expect(screen.queryByText(/还有 2 项功能可启用/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "管理邮箱连接" }));
     const dialog = await screen.findByRole("dialog", { name: "连接邮箱" });
-    fireEvent.click(within(dialog).getByRole("button", { name: /整理邮箱目录/ }));
-    expect(within(dialog).getByText(/每批最多 50 封/)).toBeTruthy();
-    expect(within(dialog).queryByText(/发件授权与收件分开保存/)).toBeNull();
-    fireEvent.change(within(dialog).getByLabelText("客户端授权码"), { target: { value: "organize-code" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "连接邮箱目录权限" }));
-    await waitFor(() => expect(mocks.connect163MailOrganize).toHaveBeenCalledWith({ email: "user@163.com", authorizationCode: "organize-code" }));
-    expect(await within(dialog).findByText("邮箱目录权限已连接")).toBeTruthy();
+    expect(within(dialog).getByText("目录整理已连接")).toBeTruthy();
+    expect(within(dialog).getByText("发件已连接")).toBeTruthy();
+    expect(within(dialog).queryByLabelText("客户端授权码")).toBeNull();
+    expect(mocks.connect163MailOrganize).not.toHaveBeenCalled();
+  });
+
+  it("disconnects the unified mailbox authorization only after confirmation", async () => {
+    const disconnect163Mail = vi.fn().mockResolvedValue({ ok: true, disconnected: true });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    mocks.getMailConnectorStatus.mockResolvedValue({ desktop: true, providers: [
+      { id: "netease_163", name: "163 邮箱", available: true, connected: true, sendConnected: true, organizeConnected: true, account: "user@163.com" },
+      { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
+    ] });
+    window.myagenttoolDesktop = { getMailConnectorStatus: mocks.getMailConnectorStatus, disconnect163Mail };
+    renderView();
+    fireEvent.click(await screen.findByRole("button", { name: "管理邮箱连接" }));
+    fireEvent.click(await screen.findByRole("button", { name: "断开邮箱" }));
+    await waitFor(() => expect(disconnect163Mail).toHaveBeenCalledTimes(1));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
   });
 
   it("shows a retryable mailbox error instead of pretending the account is disconnected", async () => {

@@ -65,6 +65,7 @@ function unique(values, max = 8) {
 
 export function mailMessageKey(message) {
   return hash([
+    bounded(message?.accountId ?? "legacy", 80),
     bounded(message?.applicationId, 160),
     bounded(message?.folderId ?? "inbox", 100),
     bounded(message?.messageId, 998),

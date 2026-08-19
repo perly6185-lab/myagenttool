@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { resolveAttachments, send163Mail } from "../src/send-163.mjs";
+import { defaultSendCredentialPath, resolveAttachments, send163Mail } from "../src/send-163.mjs";
+
+test("sending reuses the receiving credential path", () => {
+  assert.equal(
+    defaultSendCredentialPath({ APPDATA: "D:\\Redirected\\AppData\\Roaming" }),
+    join("D:\\Redirected\\AppData\\Roaming", "myagenttool", "mail", "163.json"),
+  );
+});
 
 test("send resolves opaque attachment refs locally and returns only the provider receipt", async () => {
   const root = mkdtempSync(join(tmpdir(), "mat-mail-send-"));

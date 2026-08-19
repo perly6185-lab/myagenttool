@@ -18,6 +18,7 @@
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { gitCommandIdOf, parseGitApplicationResult } from "./git-result.mjs";
 import { parseMailApplicationResult } from "./mail-result.mjs";
+import { foldMailApplicationResult } from "./mail-facts.mjs";
 import { parsePdfcpuApplicationResult } from "./pdfcpu-result.mjs";
 
 const MAX_APPLICATION_RESULTS = 500;
@@ -99,6 +100,7 @@ export function createApplicationResultImportService({
     };
 
     runTx(() => {
+      foldMailApplicationResult(state, record);
       state.applicationResults = state.applicationResults ?? [];
       state.applicationResults.unshift(record);
       state.applicationResults = state.applicationResults.slice(0, MAX_APPLICATION_RESULTS);
