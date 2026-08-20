@@ -1,6 +1,6 @@
 import { UNTRUSTED_INPUT_LABEL, UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
 import { createOwnedAlertRuntime, enrichAlertOwnership } from "./alert-composition.mjs";
-import { teamOf } from "./auth.mjs";
+import { LOCAL_TEAM_ID, teamOf } from "./auth.mjs";
 import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
@@ -4094,6 +4094,101 @@ export function createServerRuntimeServices({
     createInvocation: (...args) => invocationService?.createInvocation(...args),
     now,
   });
+  const trackChannelKnowledgeCaptureTask = ({ thread, channel, conversation, event, urls = [], items = [] } = {}) => {
+    if (!thread?.id || !channel?.id || !conversation?.id) {
+      return { ok: false, reason: "channel_knowledge_task_context_required" };
+    }
+    const ownerTeamId = channel.ownerTeamId ?? LOCAL_TEAM_ID;
+    const project = (state.projects ?? []).find((candidate) => candidate.id === channel.taskProjectId)
+      ?? (state.projects ?? []).find((candidate) =>
+        (candidate.ownerTeamId ?? LOCAL_TEAM_ID) === ownerTeamId && candidate.hiddenFromNavigation !== true)
+      ?? null;
+    if (!project || (project.ownerTeamId ?? LOCAL_TEAM_ID) !== (channel.ownerTeamId ?? LOCAL_TEAM_ID)) {
+      return { ok: false, reason: "channel_knowledge_task_project_unavailable" };
+    }
+    const identity = (state.channelIdentities ?? []).find((candidate) =>
+      candidate.channelId === channel.id && candidate.externalUserId === thread.externalUserId) ?? null;
+    const principal = identity?.userId
+      ? (state.users ?? []).find((candidate) => candidate.id === identity.userId) ?? null
+      : null;
+    if (!principal || (principal.teamId ?? LOCAL_TEAM_ID) !== (channel.ownerTeamId ?? LOCAL_TEAM_ID)) {
+      return { ok: false, reason: "channel_knowledge_task_identity_unavailable" };
+    }
+    const actor = {
+      userId: principal.id,
+      teamId: principal.teamId ?? LOCAL_TEAM_ID,
+      role: "member",
+      deviceId: channel.taskTerminalId ?? null,
+    };
+    const uniqueUrls = [...new Set(urls.map(String).filter(Boolean))].slice(0, 3);
+    const locations = items.map((item) => channelKnowledgeService.getItemLocation({
+      itemId: item.knowledgeItemId,
+      ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
+    })).filter(Boolean);
+    const terminal = thread.status === "succeeded" || thread.status === "failed" || thread.status === "cancelled";
+    const title = items.length
+      ? `保存资料：${String(items.at(-1)?.title ?? "Channel 分享内容").slice(0, 100)}`
+      : String(thread.summary ?? "保存 Channel 分享资料").slice(0, 120);
+    const body = [
+      "从 Channel 接收分享链接，并保存为可检索的本地资料。",
+      uniqueUrls.length ? `\n来源链接：\n${uniqueUrls.map((url) => `- ${url}`).join("\n")}` : null,
+      terminal ? `\n处理结果：${thread.resultSummary || (thread.status === "succeeded" ? "已保存到本地资料库。" : "本次保存未完成。")}` : "\n处理状态：正在下载、识别并保存正文。",
+      locations.length ? `\n本地文件：\n${locations.map((location) => `- ${location.absolutePath}`).join("\n")}` : null,
+    ].filter(Boolean).join("\n").slice(0, 10_000);
+    const desiredStatus = thread.status === "succeeded"
+      ? "done"
+      : thread.status === "failed" || thread.status === "cancelled"
+        ? "blocked"
+        : "in_progress";
+    const idempotencyKey = `channel-knowledge-thread:${thread.id}`;
+    let stored = thread.workItemId
+      ? (state.workItems ?? []).find((candidate) => candidate.id === thread.workItemId) ?? null
+      : (state.workItems ?? []).find((candidate) =>
+        candidate.ownerTeamId === actor.teamId && candidate.createIdempotencyKey === idempotencyKey) ?? null;
+    if (!stored) {
+      const created = workItemService.createWorkItem({
+        projectId: project.id,
+        title,
+        body,
+        type: "task",
+        status: desiredStatus,
+        executionPolicy: "manual",
+        waitingOn: "none",
+        priority: "p3",
+        labels: ["channel", "knowledge-capture", "local-knowledge", UNTRUSTED_INPUT_LABEL],
+        requiredCapabilities: [],
+        idempotencyKey,
+      }, actor);
+      if (!created.ok) return { ok: false, reason: created.body?.error ?? "channel_knowledge_task_create_failed" };
+      stored = (state.workItems ?? []).find((candidate) => candidate.id === created.body.workItem.id) ?? null;
+    } else if (stored.title !== title || stored.body !== body || stored.status !== desiredStatus) {
+      const updated = workItemService.updateWorkItem({
+        workItemId: stored.id,
+        expectedRevision: stored.revision,
+        title,
+        body,
+        status: desiredStatus,
+      }, actor);
+      if (!updated.ok) return { ok: false, reason: updated.body?.error ?? "channel_knowledge_task_update_failed" };
+      stored = (state.workItems ?? []).find((candidate) => candidate.id === stored.id) ?? stored;
+    }
+    if (!stored) return { ok: false, reason: "channel_knowledge_task_not_found" };
+    const originChanged = stored.channelOrigin?.threadId !== thread.id;
+    if (originChanged) {
+      stored.channelOrigin = {
+        channelId: channel.id,
+        conversationId: conversation.id,
+        messageId: event?.id ?? thread.sourceEventIds?.[0] ?? null,
+        principalId: principal.id,
+        traceId: stored.id,
+        threadId: thread.id,
+      };
+      stored.revision = Number(stored.revision ?? 0) + 1;
+      stored.updatedAt = now();
+      persistStateSoon();
+    }
+    return { ok: true, workItemId: stored.id, localRef: stored.localRef ?? null };
+  };
   const channelConversationService = createChannelConversationService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
     createCapabilityInvocation, cancelInvocation, createChannelTaskIssue, routeChannelTask, dismissChannelTask,
@@ -4119,6 +4214,8 @@ export function createServerRuntimeServices({
       onMetric: recordChannelIntentBridgeMetric,
     })?.classify,
     createConsultation: channelConsultationAdapter?.enqueue,
+    trackKnowledgeCaptureTask: trackChannelKnowledgeCaptureTask,
+    resolveKnowledgeLocation: (input) => channelKnowledgeService.getItemLocation(input),
     inspectSharedLink: async (input) => {
       if (input.save === false) {
         const inspection = await inspectArticle({

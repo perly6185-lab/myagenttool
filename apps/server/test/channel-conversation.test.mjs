@@ -16,7 +16,7 @@ import { createChannelService } from "../src/services/channels.mjs";
 const NOW = "2026-07-15T00:00:00.000Z";
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, routeChannelTask, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, cancelAutoRun, classifyIntent, createConsultation, inspectSharedLink, notifyHumanTakeover, notifyTaskEvent, resendDelivery, setNotificationPolicy, operationMode = "team" } = {}) {
+function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, routeChannelTask, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, cancelAutoRun, classifyIntent, createConsultation, inspectSharedLink, trackKnowledgeCaptureTask, resolveKnowledgeLocation, notifyHumanTakeover, notifyTaskEvent, resendDelivery, setNotificationPolicy, operationMode = "team" } = {}) {
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
   const events = [];
   const refusals = [];
@@ -70,6 +70,8 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
       }
       : null,
     inspectSharedLink,
+    trackKnowledgeCaptureTask,
+    resolveKnowledgeLocation,
     resendDelivery,
     notifyHumanTakeover,
     notifyTaskEvent,
@@ -618,6 +620,52 @@ test("a bare WeChat article link creates and completes a tracked knowledge-captu
   assert.equal(harness.state.channelConversations[0].sharedContentContext.items.length, 1);
   assert.equal(harness.state.channelConversations[0].sharedContentContext.items[0].archiveStatus, "saved");
   assert.match(harness.replies[0].content, /正在读取并收纳/);
+});
+
+test("saved article capture is visible in My Tasks and a natural follow-up returns its local path", async () => {
+  const tracked = [];
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "wechat",
+      canonicalUrl: url,
+      title: "本地知识文章",
+      textLength: 800,
+      _document: { markdown: "这是一篇已经保存的文章。" },
+      knowledge: { status: "saved", itemId: "knowledge_local_path", replayed: false, warningCount: 0 },
+    }),
+    trackKnowledgeCaptureTask: ({ thread, items }) => {
+      tracked.push({ status: thread.status, itemIds: items.map((item) => item.knowledgeItemId) });
+      return { ok: true, workItemId: "lwi_knowledge_1", localRef: "LOCAL-8" };
+    },
+    resolveKnowledgeLocation: ({ itemId, ownerTeamId }) => {
+      assert.equal(itemId, "knowledge_local_path");
+      assert.equal(ownerTeamId, "team_local");
+      return {
+        title: "本地知识文章",
+        absolutePath: "/Users/test/Library/Application Support/MyAgentTool/state/knowledge/article.md",
+      };
+    },
+  });
+
+  const saved = await harness.receive("https://mp.weixin.qq.com/s/local-path").dispatched;
+  assert.match(saved.reply, /已记录到“我的任务”（LOCAL-8）/);
+  assert.match(saved.reply, /本地存放路径/);
+  assert.equal(harness.state.channelTaskThreads[0].workItemId, "lwi_knowledge_1");
+  assert.deepEqual(tracked.map((entry) => entry.status), ["running", "succeeded"]);
+  assert.deepEqual(tracked.at(-1).itemIds, ["knowledge_local_path"]);
+
+  const location = harness.receive("本地存放路径").dispatched;
+  assert.match(location.reply, /《本地知识文章》/);
+  assert.match(location.reply, /\/Users\/test\/Library\/Application Support\/MyAgentTool\/state\/knowledge\/article\.md/);
+  assert.match(location.reply, /“我的任务”（LOCAL-8）/);
+  assert.equal(location.data.action, "local_location");
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+
+  harness.state.channelTaskThreads[0].workItemId = null;
+  harness.state.channelTaskThreads[0].workItemLocalRef = null;
+  const recovered = harness.conversationService.recoverTaskThreads();
+  assert.equal(recovered.reconciled, 1);
+  assert.equal(harness.state.channelTaskThreads[0].workItemId, "lwi_knowledge_1");
 });
 
 test("a readable link degrades to preview when local knowledge saving fails", async () => {

@@ -275,7 +275,29 @@ export function createChannelKnowledgeService({
     }));
   }
 
-  return { capture, retryFailedForHosts };
+  function getItemLocation({ itemId, ownerTeamId = LOCAL_TEAM_ID } = {}) {
+    const item = (state.channelKnowledgeItems ?? []).find((candidate) =>
+      candidate.id === itemId
+      && candidate.ownerTeamId === ownerTeamId
+      && candidate.status === "ready") ?? null;
+    if (!item || !confinedManagedPath(item.markdownPath)) return null;
+    const absolutePath = resolve(dataRoot, item.markdownPath);
+    if (!existsSync(absolutePath)) return null;
+    return {
+      itemId: item.id,
+      title: item.title ?? "未命名资料",
+      relativePath: item.markdownPath,
+      absolutePath,
+      htmlPath: item.htmlPath && confinedManagedPath(item.htmlPath)
+        ? resolve(dataRoot, item.htmlPath)
+        : null,
+      manifestPath: item.manifestPath && confinedManagedPath(item.manifestPath)
+        ? resolve(dataRoot, item.manifestPath)
+        : null,
+    };
+  }
+
+  return { capture, retryFailedForHosts, getItemLocation };
 }
 
 function captureKey(ownerTeamId, projectId, canonicalUrl) {

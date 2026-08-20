@@ -77,6 +77,12 @@ test("a channel link is saved as managed local knowledge and reused without down
   assert.match(h.state.channelKnowledgeItems[0].markdownPath, /^knowledge\/channel-articles\//);
   assert.match(second._document.markdown, /可检索正文/);
 
+  const location = h.service.getItemLocation({ itemId: first.knowledge.itemId, ownerTeamId: "team_1" });
+  assert.equal(location.title, "已保存文章");
+  assert.match(location.relativePath, /^knowledge\/channel-articles\//);
+  assert.equal(location.absolutePath, join(h.root, location.relativePath));
+  assert.equal(h.service.getItemLocation({ itemId: first.knowledge.itemId, ownerTeamId: "team_2" }), null);
+
   const catalog = await collectLocalContent({
     state: h.state,
     stateStorePath: h.stateStorePath,

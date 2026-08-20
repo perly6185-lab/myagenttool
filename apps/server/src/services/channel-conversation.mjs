@@ -114,6 +114,7 @@ const SHARED_CONTENT_ACTIVE_MAX = 5;
 const SHARED_CONTENT_EXCERPT_CHARS = 4_000;
 const SHARED_CONTENT_URL_RE = /https?:\/\/[^\s<>\]\[()]+/giu;
 const SHARED_CONTENT_CONTINUE_RE = /^(?:继续(?:看看|看|分析|读|阅读)?|开始(?:分析|看看|阅读)|看看|看一下|分析一下|只总结|总结(?:一下|这篇|文章)?|提炼(?:一下|重点)?|对比一下|比较一下|和上一篇(?:对比|比较|一起看)(?:一下)?|把这几篇(?:一起|放一起)?(?:分析|总结|对比)(?:一下)?)?[。.!！?？]*$/i;
+const SHARED_CONTENT_LOCATION_RE = /(?:本地(?:存放|保存|访问)?(?:路径|位置)|保存到(?:哪里|哪儿|什么位置)|存放在(?:哪里|哪儿|什么位置)|(?:这篇|刚才|上篇|文章|资料|文件).*(?:路径|位置|在哪|哪里|哪儿|怎么打开)|(?:路径|位置|在哪|哪里|哪儿|怎么打开).*(?:这篇|刚才|上篇|文章|资料|文件))/i;
 const SHARED_CONTENT_NO_ARCHIVE_RE = /(?:不要|不用|别)(?:保存|收纳|下载)|只(?:预览|看看)(?:不保存)?|临时看看/i;
 const SHARED_CONTENT_NO_ARCHIVE_STRIP_RE = /(?:不要|不用|别)(?:保存|收纳|下载)|只(?:预览|看看)(?:不保存)?|临时看看/giu;
 const SHARED_CONTENT_TASK_RE = /(?:按|根据|结合|参考|把|将).{0,30}(?:这些|上述|前面|刚才|文章|资料|建议|分析).{0,30}(?:落实|落地|完善|实现|改进|开发|创建任务|列为任务|做进项目|加入项目)/i;
@@ -151,6 +152,8 @@ export function createChannelConversationService({
   classifyIntent = null,
   createConsultation = null,
   inspectSharedLink = null,
+  trackKnowledgeCaptureTask = null,
+  resolveKnowledgeLocation = null,
   replySender = null,
   resendDelivery = null,
   enqueueChannelDelivery = null,
@@ -283,6 +286,94 @@ export function createChannelConversationService({
     return activeSharedContents(conversation).length > 0 && SHARED_CONTENT_TASK_RE.test(normalizedText(text));
   }
 
+  function sharedContentLocationRequest(text, conversation) {
+    return Boolean(conversation?.sharedContentContext?.items?.length)
+      && SHARED_CONTENT_LOCATION_RE.test(normalizedText(text));
+  }
+
+  function sharedContentItemsForThread(thread, conversation) {
+    const ids = new Set(thread?.sharedContentIds ?? []);
+    const items = Array.isArray(conversation?.sharedContentContext?.items)
+      ? conversation.sharedContentContext.items
+      : [];
+    return ids.size ? items.filter((item) => ids.has(item.id)) : [];
+  }
+
+  function syncKnowledgeCaptureTaskRecord(thread) {
+    if (!thread || thread.workKind !== "knowledge_capture" || typeof trackKnowledgeCaptureTask !== "function") return null;
+    const channel = findChannel(thread.channelId);
+    const conversation = findConversation(thread.conversationId);
+    if (!channel || !conversation) return null;
+    const event = (thread.sourceEventIds ?? [])
+      .map((eventId) => (state.channelEvents ?? []).find((candidate) => candidate.id === eventId))
+      .find(Boolean) ?? null;
+    const items = sharedContentItemsForThread(thread, conversation);
+    let tracked;
+    try {
+      tracked = trackKnowledgeCaptureTask({
+        thread,
+        channel,
+        conversation,
+        event,
+        urls: [...(thread.sourceUrls ?? []), ...items.map((item) => item.sourceUrl ?? item.canonicalUrl)].filter(Boolean),
+        items,
+      });
+    } catch (error) {
+      tracked = { ok: false, reason: String(error?.code ?? error?.message ?? error).slice(0, 120) };
+    }
+    if (tracked?.workItemId) {
+      runTx(() => {
+        thread.workItemId = tracked.workItemId;
+        thread.workItemLocalRef = tracked.localRef ?? thread.workItemLocalRef ?? null;
+        thread.taskTrackingError = null;
+        thread.updatedAt = now();
+      });
+    } else if (tracked?.ok === false) {
+      runTx(() => {
+        thread.taskTrackingError = tracked.reason ?? "knowledge_capture_task_unavailable";
+        thread.updatedAt = now();
+      });
+    }
+    return tracked;
+  }
+
+  function sharedContentLocationReply(text, conversation, channel) {
+    const allItems = Array.isArray(conversation?.sharedContentContext?.items)
+      ? conversation.sharedContentContext.items.filter((item) => item.status === "ready" && item.archiveStatus === "saved")
+      : [];
+    const wantsAll = /(?:这些|全部|所有|几篇|多个)/.test(text);
+    const selected = wantsAll ? allItems.slice(-3) : allItems.slice(-1);
+    const locations = selected.map((item) => ({
+      item,
+      location: typeof resolveKnowledgeLocation === "function"
+        ? resolveKnowledgeLocation({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })
+        : null,
+    })).filter((entry) => entry.location?.absolutePath);
+    runTx(() => {
+      conversation.sharedContentContext = {
+        ...(conversation.sharedContentContext ?? {}),
+        lastActionAt: now(),
+        updatedAt: now(),
+      };
+      conversation.updatedAt = now();
+    });
+    if (!locations.length) {
+      return "我找到了刚才的资料记录，但本地文件目前不可访问，可能已被移动或删除。你可以重新发送原链接，我会复用记录并检查文件。";
+    }
+    const lines = locations.flatMap(({ item, location }, index) => [
+      `${locations.length > 1 ? `${index + 1}. ` : ""}《${item.title || location.title}》`,
+      `本地文件：${location.absolutePath}`,
+    ]);
+    const thread = [...(state.channelTaskThreads ?? [])].reverse().find((candidate) =>
+      candidate.conversationId === conversation.id
+      && candidate.workKind === "knowledge_capture"
+      && selected.some((item) => (candidate.sharedContentIds ?? []).includes(item.id)));
+    const taskLine = thread?.workItemId
+      ? `这次收纳也已记录到“我的任务”${thread.workItemLocalRef ? `（${thread.workItemLocalRef}）` : ""}，可以从任务详情继续查看来源和处理结果。`
+      : "这是一条较早的收纳记录；系统会在恢复时补入“我的任务”。";
+    return `${lines.join("\n")}\n\n${taskLine}`;
+  }
+
   function sharedContentTopic(item) {
     const excerpt = String(item?.excerpt ?? "")
       .replace(/@@MYAGENTTOOL_MEDIA_\d+@@/g, " ")
@@ -406,6 +497,7 @@ export function createChannelConversationService({
       setThreadStatus(thread, status, reason);
       thread.updatedAt = now();
     });
+    syncKnowledgeCaptureTaskRecord(thread);
   }
 
   function normalizeSharedInspection(inspection, sourceUrl, eventId) {
@@ -2534,9 +2626,11 @@ export function createChannelConversationService({
     if (captureThread) {
       runTx(() => {
         captureThread.workKind = "knowledge_capture";
+        captureThread.sourceUrls = [...urls];
         captureThread.lastProgressSummary = "正在下载并识别链接正文";
         captureThread.updatedAt = now();
       });
+      syncKnowledgeCaptureTaskRecord(captureThread);
     }
     if (typeof inspectSharedLink !== "function") {
       const failures = urls.map((url) => ({ url, reason: "article_text_unavailable" }));
@@ -2673,9 +2767,12 @@ export function createChannelConversationService({
       : newest.archiveStatus === "not_saved"
         ? "已读取正文，但这次未能保存到本地资料库；仍可继续分析。"
         : "已读取内容。";
+    const taskLine = captureThread?.workItemId
+      ? `\n这次处理已记录到“我的任务”${captureThread.workItemLocalRef ? `（${captureThread.workItemLocalRef}）` : ""}，可以在那里查看来源、保存位置和处理记录。`
+      : "";
     return settle(event, {
       status: "dispatched",
-      reply: `${archiveLine}\n《${newest.title}》${newest.author ? `（${newest.author}）` : ""}${topic ? `\n主要内容：${topic}${topic.length >= 180 ? "…" : ""}` : ""}${groupLine}${failureLine}${pluginLine}\n\n回复“继续”可提炼重点和启发；也可以说“只总结”“和上一篇对比”或“按这些资料创建任务”。`,
+      reply: `${archiveLine}\n《${newest.title}》${newest.author ? `（${newest.author}）` : ""}${topic ? `\n主要内容：${topic}${topic.length >= 180 ? "…" : ""}` : ""}${groupLine}${failureLine}${pluginLine}${taskLine}\n\n回复“继续”可提炼重点和启发；也可以问“本地存放路径”，或说“只总结”“和上一篇对比”“按这些资料创建任务”。`,
       data: { sharedContent: true, status: "ready", itemIds: event.sharedContentIds, activeCount: activeItems.length, failedCount: failures.length, taskThreadId: captureThread?.id ?? null, linkPluginProposalId: proposal?.id ?? null },
     });
   }
@@ -2864,6 +2961,13 @@ export function createChannelConversationService({
         analyze: Boolean(contentAction),
         requestText: contentAction,
         archive: !noArchive,
+      });
+    }
+    if (noActiveTask && !urls.length && sharedContentLocationRequest(text, conversation)) {
+      return settle(event, {
+        status: "dispatched",
+        reply: sharedContentLocationReply(text, conversation, channel),
+        data: { sharedContent: true, action: "local_location" },
       });
     }
     if (noActiveTask && !urls.length && sharedContentContinuation(text, conversation)) {
@@ -4811,6 +4915,12 @@ export function createChannelConversationService({
         if (!Object.prototype.hasOwnProperty.call(thread, "lastDeliveryError")) thread.lastDeliveryError = null;
       }
     });
+    for (const thread of state.channelTaskThreads ?? []) {
+      if (thread.workKind !== "knowledge_capture") continue;
+      const before = thread.workItemId;
+      const tracked = syncKnowledgeCaptureTaskRecord(thread);
+      if (!before && tracked?.workItemId) reconciled += 1;
+    }
     for (const thread of state.channelTaskThreads ?? []) {
       if (!activeStatuses.has(thread.status)) continue;
       const invocation = thread.invocationId
