@@ -38,6 +38,10 @@ export interface SessionUser {
   name?: string;
   teamId?: string;
   role?: "owner" | "admin" | "operator" | "viewer";
+  privateTutorChildMode?: {
+    learnerId: string;
+    enteredAt: string | null;
+  } | null;
 }
 
 let memoryUser: SessionUser | null = null;

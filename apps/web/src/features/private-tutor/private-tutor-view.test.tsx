@@ -3,7 +3,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrivateTutorView } from "@/features/private-tutor/private-tutor-view";
 
 vi.mock("@/hooks/use-session-user", () => ({
-  useSessionUser: () => ({ role: "viewer" }),
+  useSessionUser: () => ({
+    role: "viewer",
+    privateTutorChildMode: { learnerId: "learner-xiaohe", enteredAt: "2026-08-20T00:00:00.000Z" },
+  }),
+}));
+
+vi.mock("@/features/private-tutor/private-tutor-api", () => ({
+  getPrivateTutorSnapshot: () => Promise.reject(new Error("offline test fixture")),
+  listPrivateTutorLearners: () => Promise.resolve([]),
+  createPrivateTutorLearner: () => Promise.reject(new Error("not used")),
+  startPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
+  exitPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
+  recordPrivateTutorAttempt: () => Promise.reject(new Error("not used")),
 }));
 
 describe("My private tutor student information architecture", () => {

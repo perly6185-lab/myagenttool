@@ -20,7 +20,6 @@ import {
   TrendingUp,
   UserRound,
   Volume2,
-  LogOut,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -28,7 +27,7 @@ import { cn } from "@/lib/cn";
 import { useSessionUser } from "@/hooks/use-session-user";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import {
-  completeIndependentCheck,
+  createInitialLearnerState,
   DEMO_LEARNERS,
   strategyLabel,
   type LearnerTutorState,
@@ -36,6 +35,16 @@ import {
   type TutorTab,
 } from "@/features/private-tutor/private-tutor-model";
 import { loadLearnerState, saveLearnerState } from "@/features/private-tutor/private-tutor-storage";
+import {
+  createPrivateTutorLearner,
+  exitPrivateTutorChildMode,
+  getPrivateTutorSnapshot,
+  listPrivateTutorLearners,
+  recordPrivateTutorAttempt,
+  startPrivateTutorChildMode,
+  type PrivateTutorLearner,
+  type PrivateTutorSnapshot,
+} from "@/features/private-tutor/private-tutor-api";
 
 const STUDENT_TABS: Array<{ key: TutorTab; label: string; icon: typeof House }> = [
   { key: "today", label: "今日学习", icon: House },
@@ -63,18 +72,65 @@ type LessonPhase = "ready" | "explain" | "practice" | "complete";
 export function PrivateTutorView() {
   const sessionUser = useSessionUser();
   const navigate = usePageNavigation();
+  const childMode = sessionUser?.privateTutorChildMode ?? null;
+
+  if (!childMode) {
+    return <ParentTutorEntry signedIn={Boolean(sessionUser)} onOpenLogin={() => navigate("me")} />;
+  }
+
+  async function exitToParent(exitPin: string) {
+    try {
+      await exitPrivateTutorChildMode(exitPin);
+      navigate("dashboard");
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "家长验证失败，请重试。";
+    }
+  }
+
+  return <ChildTutorExperience learnerId={childMode.learnerId} onParentExit={exitToParent} />;
+}
+
+function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; onParentExit: (exitPin: string) => Promise<string | null> }) {
   const [tab, setTab] = useState<TutorTab>("today");
-  const [activeLearnerId, setActiveLearnerId] = useState(DEMO_LEARNERS[0].id);
   const learner = useMemo(
-    () => DEMO_LEARNERS.find((item) => item.id === activeLearnerId) ?? DEMO_LEARNERS[0],
-    [activeLearnerId],
+    () => DEMO_LEARNERS.find((item) => item.id === learnerId) ?? { ...DEMO_LEARNERS[0], id: learnerId },
+    [learnerId],
   );
   const [learnerState, setLearnerState] = useState<LearnerTutorState>(() => loadLearnerState(learner));
 
-  useEffect(() => setLearnerState(loadLearnerState(learner)), [learner]);
-  useEffect(() => saveLearnerState(learnerState), [learnerState]);
+  useEffect(() => {
+    let current = true;
+    setLearnerState(loadLearnerState(learner));
+    void getPrivateTutorSnapshot(learnerId)
+      .then(({ learner: profile, snapshot }) => {
+        if (current) setLearnerState(serverLearnerState(profile, snapshot));
+      })
+      .catch(() => {});
+    return () => { current = false; };
+  }, [learner, learnerId]);
+  useEffect(() => {
+    if (DEMO_LEARNERS.some((item) => item.id === learnerState.learner.id)) saveLearnerState(learnerState);
+  }, [learnerState]);
 
-  const isVerifiedWorkspaceAdult = sessionUser?.role === "owner" || sessionUser?.role === "admin";
+  // A parent commonly hands the already signed-in computer to a child. The
+  // platform account role therefore MUST NOT unlock adult spaces. A future
+  // server-issued parent re-verification result is the only valid source.
+  const isParentReverified = false;
+
+  async function recordIndependentCheck(idempotencyKey: string) {
+    const result = await recordPrivateTutorAttempt(learnerId, {
+      idempotencyKey,
+      knowledgeId: "balance",
+      questionRevisionId: "demo-balance-001-v1",
+      correct: true,
+      independent: true,
+      usedHint: false,
+      source: "screen",
+      durationSeconds: 180,
+    });
+    return applyServerSnapshot(learnerState, result.snapshot);
+  }
 
   return (
     <div className="mx-auto min-h-full max-w-7xl overflow-hidden rounded-3xl border border-emerald-100 bg-[linear-gradient(145deg,color-mix(in_oklab,var(--color-card)_94%,#ecfdf5),color-mix(in_oklab,var(--color-background)_93%,#fff7ed))] shadow-sm dark:border-emerald-950">
@@ -89,13 +145,10 @@ export function PrivateTutorView() {
               <p className="text-xs text-muted-foreground">每天 20 分钟，把真正不会的学会</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2 rounded-full border bg-card/80 py-1 pl-1 pr-3 text-sm shadow-sm">
-              <span className="grid size-8 place-items-center rounded-full bg-amber-100 font-semibold text-amber-800">{learner.avatar}</span>
-              <span className="font-medium">{learner.displayName}</span>
-              <span className="text-xs text-muted-foreground">{learner.grade}</span>
-            </div>
-            <button type="button" onClick={() => navigate("dashboard")} className="grid size-9 place-items-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground" aria-label="退出学习"><LogOut className="size-4" /></button>
+          <div className="flex items-center gap-2 rounded-full border bg-card/80 py-1 pl-1 pr-3 text-sm shadow-sm">
+            <span className="grid size-8 place-items-center rounded-full bg-amber-100 font-semibold text-amber-800">{learner.avatar}</span>
+            <span className="font-medium">{learner.displayName}</span>
+            <span className="text-xs text-muted-foreground">{learner.grade}</span>
           </div>
         </div>
       </header>
@@ -126,16 +179,17 @@ export function PrivateTutorView() {
       </nav>
 
       <div className="p-4 sm:p-7">
-        {tab === "today" ? <TodayLearning state={learnerState} onStateChange={setLearnerState} /> : null}
+        {tab === "today" ? <TodayLearning state={learnerState} onStateChange={setLearnerState} onIndependentCheck={recordIndependentCheck} /> : null}
         {tab === "map" ? <KnowledgeMap state={learnerState} /> : null}
         {tab === "errors" ? <ErrorBook state={learnerState} onStart={() => setTab("today")} /> : null}
         {tab === "growth" ? <Growth state={learnerState} /> : null}
         {tab === "settings" ? (
           <TutorSettings
             state={learnerState}
-            activeLearnerId={activeLearnerId}
-            onLearnerChange={setActiveLearnerId}
-            verifiedAdult={isVerifiedWorkspaceAdult}
+            activeLearnerId={learnerId}
+            onLearnerChange={() => {}}
+            verifiedAdult={isParentReverified}
+            onParentExit={onParentExit}
           />
         ) : null}
       </div>
@@ -143,13 +197,148 @@ export function PrivateTutorView() {
   );
 }
 
-function TodayLearning({ state, onStateChange }: { state: LearnerTutorState; onStateChange: (state: LearnerTutorState) => void }) {
+function ParentTutorEntry({ signedIn, onOpenLogin }: { signedIn: boolean; onOpenLogin: () => void }) {
+  const [learners, setLearners] = useState<PrivateTutorLearner[]>([]);
+  const [selectedLearnerId, setSelectedLearnerId] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [grade, setGrade] = useState("七年级");
+  const [exitPin, setExitPin] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (!signedIn) return;
+    let current = true;
+    void listPrivateTutorLearners()
+      .then((items) => {
+        if (!current) return;
+        setLearners(items);
+        setSelectedLearnerId((value) => value || items[0]?.id || "");
+      })
+      .catch((error) => current && setMessage(error instanceof Error ? error.message : "暂时无法读取孩子档案。"));
+    return () => { current = false; };
+  }, [signedIn]);
+
+  async function createLearner() {
+    if (!displayName.trim()) {
+      setMessage("请填写孩子的小名。正式姓名不是必需的。");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await createPrivateTutorLearner({ displayName: displayName.trim(), grade });
+      setLearners((items) => [result.learner, ...items]);
+      setSelectedLearnerId(result.learner.id);
+      setDisplayName("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "孩子档案创建失败。" );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function enterChildMode() {
+    if (!selectedLearnerId) {
+      setMessage("请先选择一个孩子。" );
+      return;
+    }
+    if (!/^\d{6,12}$/.test(exitPin)) {
+      setMessage("请设置 6–12 位数字家长 PIN，用于取回家长模式。" );
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      await startPrivateTutorChildMode(selectedLearnerId, exitPin);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "儿童模式启动失败。" );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto flex min-h-full max-w-4xl items-center justify-center p-3 sm:p-6">
+      <Card className="w-full overflow-hidden">
+        <div className="bg-emerald-600 p-6 text-white sm:p-8">
+          <span className="grid size-12 place-items-center rounded-2xl bg-white/15"><GraduationCap className="size-7" /></span>
+          <h1 className="mt-5 text-2xl font-bold">家长准备好，再交给孩子</h1>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-emerald-50">家长账号负责孩子档案和授权。进入儿童模式后，这台电脑只显示所选孩子的学习空间，取回家长模式需要重新输入家长 PIN。</p>
+        </div>
+        <div className="grid gap-6 p-6 sm:p-8">
+          {!signedIn ? (
+            <div className="rounded-2xl border border-dashed p-6 text-center">
+              <ShieldCheck className="mx-auto size-9 text-emerald-600" />
+              <h2 className="mt-3 font-semibold">请先登录家长账号</h2>
+              <p className="mt-2 text-sm text-muted-foreground">孩子不需要单独账号。登录后由家长选择孩子并启动儿童模式。</p>
+              <Button className="mt-5" onClick={onOpenLogin}>前往登录</Button>
+            </div>
+          ) : (
+            <>
+              <div>
+                <h2 className="font-semibold">1. 选择这次使用的孩子</h2>
+                {learners.length ? <div className="mt-3 grid gap-2 sm:grid-cols-2">{learners.map((item) => <button key={item.id} type="button" onClick={() => setSelectedLearnerId(item.id)} className={cn("rounded-xl border p-4 text-left", selectedLearnerId === item.id ? "border-emerald-400 bg-emerald-50 dark:bg-emerald-950" : "bg-card")}><span className="font-medium">{item.displayName}</span><span className="mt-1 block text-xs text-muted-foreground">{item.grade} · 独立学习空间</span></button>)}</div> : <p className="mt-2 text-sm text-muted-foreground">还没有孩子档案，先在下面创建一个。</p>}
+              </div>
+              <div className="rounded-2xl bg-muted/50 p-4">
+                <h2 className="font-semibold">添加孩子</h2>
+                <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_0.7fr_auto]">
+                  <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={40} placeholder="孩子的小名" aria-label="孩子的小名" className="h-10 rounded-lg border bg-card px-3 text-sm" />
+                  <select value={grade} onChange={(event) => setGrade(event.target.value)} aria-label="孩子年级" className="h-10 rounded-lg border bg-card px-3 text-sm"><option>六年级</option><option>七年级</option><option>八年级</option></select>
+                  <Button variant="secondary" disabled={busy} onClick={() => void createLearner()}>添加</Button>
+                </div>
+              </div>
+              <div>
+                <h2 className="font-semibold">2. 设置本次家长 PIN</h2>
+                <p className="mt-1 text-xs text-muted-foreground">仅用于退出本次儿童模式，不是孩子的登录密码。请不要告诉孩子。</p>
+                <div className="mt-3 flex flex-wrap gap-3"><input type="password" inputMode="numeric" value={exitPin} onChange={(event) => setExitPin(event.target.value.replace(/\D/g, "").slice(0, 12))} placeholder="6–12 位数字" aria-label="家长 PIN" className="h-10 min-w-52 rounded-lg border bg-card px-3 text-sm" /><Button disabled={busy || !selectedLearnerId} onClick={() => void enterChildMode()}>{busy ? "正在准备…" : "进入儿童模式"}</Button></div>
+              </div>
+            </>
+          )}
+          {message ? <p role="alert" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100">{message}</p> : null}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function serverLearnerState(learner: PrivateTutorLearner, snapshot: PrivateTutorSnapshot): LearnerTutorState {
+  const titles: Record<string, string> = { integer: "有理数运算", "equation-meaning": "等式与方程", balance: "等式两边同乘同除", "word-problem": "一元一次方程应用" };
+  const fallback = createInitialLearnerState({ id: learner.id, displayName: learner.displayName, grade: learner.grade, curriculum: learner.curriculumEditionId ?? "演示课程 · 方程基础", avatar: learner.displayName.slice(0, 1) || "学" });
+  return {
+    ...fallback,
+    dailyMinutes: snapshot.dailyMinutes,
+    completedSessions: snapshot.completedSessions,
+    independentAnswers: snapshot.independentAnswers,
+    knowledge: snapshot.knowledge.map((item) => ({ id: item.id, title: titles[item.id] ?? item.id, mastery: item.mastery, level: item.level, evidence: item.evidenceCount ? `${item.evidenceCount} 条学习证据` : "尚未测到" })),
+    errors: [],
+  };
+}
+
+function applyServerSnapshot(state: LearnerTutorState, snapshot: PrivateTutorSnapshot): LearnerTutorState {
+  const byId = new globalThis.Map(snapshot.knowledge.map((item) => [item.id, item]));
+  return {
+    ...state,
+    dailyMinutes: snapshot.dailyMinutes,
+    completedSessions: snapshot.completedSessions,
+    independentAnswers: snapshot.independentAnswers,
+    knowledge: state.knowledge.map((item) => {
+      const server = byId.get(item.id);
+      return server ? { ...item, mastery: server.mastery, level: server.level, evidence: server.evidenceCount ? `${server.evidenceCount} 条学习证据` : "尚未测到" } : item;
+    }),
+  };
+}
+
+function TodayLearning({ state, onStateChange, onIndependentCheck }: { state: LearnerTutorState; onStateChange: (state: LearnerTutorState) => void; onIndependentCheck: (idempotencyKey: string) => Promise<LearnerTutorState> }) {
   const [phase, setPhase] = useState<LessonPhase>("ready");
   const [pace, setPace] = useState<"easy" | "standard" | "review">("standard");
   const [answer, setAnswer] = useState<number | null>(null);
   const [voiceMessage, setVoiceMessage] = useState("点一下麦克风，也可以直接说");
   const [listening, setListening] = useState(false);
+  const [savingAnswer, setSavingAnswer] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const streamRef = useRef<MediaStream | null>(null);
+  const attemptKeyRef = useRef(`tutor-attempt-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`);
   const progress = Math.round((state.dailyMinutes / 20) * 100);
 
   useEffect(() => () => streamRef.current?.getTracks().forEach((track) => track.stop()), []);
@@ -175,12 +364,21 @@ function TodayLearning({ state, onStateChange }: { state: LearnerTutorState; onS
     }
   }
 
-  function chooseAnswer(value: number) {
+  async function chooseAnswer(value: number) {
     setAnswer(value);
     if (value === 5) {
-      const updated = completeIndependentCheck(state);
-      onStateChange(updated);
-      setPhase("complete");
+      setSavingAnswer(true);
+      setSaveError("");
+      try {
+        const updated = await onIndependentCheck(attemptKeyRef.current);
+        onStateChange(updated);
+        attemptKeyRef.current = `tutor-attempt-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
+        setPhase("complete");
+      } catch {
+        setSaveError("答案已经保留在当前页面，但还没有安全写入学习记录，请再点一次 5 重试。" );
+      } finally {
+        setSavingAnswer(false);
+      }
     }
   }
 
@@ -275,10 +473,11 @@ function TodayLearning({ state, onStateChange }: { state: LearnerTutorState; onS
               <p className="text-sm font-semibold">x + 3 = 8，所以 x = ?</p>
               <div className="mt-3 grid grid-cols-3 gap-3">
                 {[3, 5, 11].map((value) => (
-                  <button key={value} type="button" onClick={() => chooseAnswer(value)} className={cn("min-h-12 rounded-xl border-2 text-lg font-bold transition", answer === value && value !== 5 ? "border-amber-400 bg-amber-50 text-amber-800 dark:bg-amber-950" : "border-border bg-card hover:border-emerald-400")}>{value}</button>
+                  <button key={value} type="button" disabled={savingAnswer} onClick={() => void chooseAnswer(value)} className={cn("min-h-12 rounded-xl border-2 text-lg font-bold transition disabled:opacity-60", answer === value && value !== 5 ? "border-amber-400 bg-amber-50 text-amber-800 dark:bg-amber-950" : "border-border bg-card hover:border-emerald-400")}>{savingAnswer && value === 5 ? "保存中…" : value}</button>
                 ))}
               </div>
               {answer !== null && answer !== 5 ? <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100">没关系。不要猜答案：试着在右边的 8 里也拿走 3。</p> : null}
+              {saveError ? <p role="alert" className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-900 dark:bg-rose-950 dark:text-rose-100">{saveError}</p> : null}
             </div>
           )}
         </div>
@@ -357,6 +556,13 @@ function ErrorBook({ state, onStart }: { state: LearnerTutorState; onStart: () =
       <h1 className="mt-1 text-2xl font-bold">我的错题本</h1>
       <p className="mt-2 text-sm text-muted-foreground">不堆积做错的题，只保留真正需要攻克的错因和复习时间。</p>
       <div className="mt-6 grid gap-4">
+        {!state.errors.length ? (
+          <Card className="border-dashed p-6 text-center">
+            <BookHeart className="mx-auto size-8 text-emerald-600" />
+            <p className="mt-3 font-medium">现在还没有需要复习的错题</p>
+            <p className="mt-1 text-sm text-muted-foreground">以后遇到真正没弄懂的地方，我会帮你放到这里。</p>
+          </Card>
+        ) : null}
         {state.errors.map((item) => (
           <Card key={item.id} className="p-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
@@ -401,10 +607,14 @@ function GentleStat({ value, label }: { value: string; label: string }) {
   return <div><p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300">{value}</p><p className="mt-1 text-xs text-muted-foreground">{label}</p></div>;
 }
 
-function TutorSettings({ state, activeLearnerId, onLearnerChange, verifiedAdult }: { state: LearnerTutorState; activeLearnerId: string; onLearnerChange: (id: string) => void; verifiedAdult: boolean }) {
+function TutorSettings({ state, activeLearnerId, onLearnerChange, verifiedAdult, onParentExit }: { state: LearnerTutorState; activeLearnerId: string; onLearnerChange: (id: string) => void; verifiedAdult: boolean; onParentExit: (exitPin: string) => Promise<string | null> }) {
   const [space, setSpace] = useState<TutorSettingsSpace>("student");
   const [captions, setCaptions] = useState(true);
   const [reducedMotion, setReducedMotion] = useState(false);
+  const [parentGateRequested, setParentGateRequested] = useState(false);
+  const [parentPin, setParentPin] = useState("");
+  const [parentGateBusy, setParentGateBusy] = useState(false);
+  const [parentGateError, setParentGateError] = useState("");
   const effectiveSpace = verifiedAdult ? space : "student";
   const selected = SETTINGS_SPACES.find((item) => item.key === effectiveSpace) ?? SETTINGS_SPACES[0];
   const professional = effectiveSpace !== "student";
@@ -431,6 +641,28 @@ function TutorSettings({ state, activeLearnerId, onLearnerChange, verifiedAdult 
               <PreferenceToggle label="显示实时字幕" hint="语音教学时同步显示文字" checked={captions} onChange={setCaptions} />
               <PreferenceToggle label="减少动画" hint="使用静态图和单步切换，学习内容保持完整" checked={reducedMotion} onChange={setReducedMotion} />
               <div className="rounded-xl bg-muted/60 p-4"><p className="text-sm font-medium">当前学习档案</p><p className="mt-1 text-sm text-muted-foreground">{state.learner.displayName} · {state.learner.grade} · {state.learner.curriculum}</p></div>
+              <div className="rounded-xl border border-dashed p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div><p className="text-sm font-medium">家长入口</p><p className="mt-1 text-xs text-muted-foreground">切换孩子、查看周报或离开儿童模式前，需要重新验证家长身份。</p></div>
+                  <Button variant="secondary" onClick={() => setParentGateRequested(true)}><ShieldCheck />家长验证</Button>
+                </div>
+                {parentGateRequested ? (
+                  <div className="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-950">
+                    <label className="text-xs font-medium text-amber-900 dark:text-amber-100">输入家长设置的 PIN</label>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <input type="password" inputMode="numeric" value={parentPin} onChange={(event) => setParentPin(event.target.value.replace(/\D/g, "").slice(0, 12))} aria-label="退出儿童模式的家长 PIN" className="h-9 min-w-44 rounded-md border bg-card px-3 text-sm" />
+                      <Button size="sm" disabled={parentGateBusy || parentPin.length < 6} onClick={() => {
+                        setParentGateBusy(true);
+                        setParentGateError("");
+                        void onParentExit(parentPin).then((error) => {
+                          if (error) setParentGateError("PIN 不正确或暂时被锁定，请由家长稍后重试。");
+                        }).finally(() => setParentGateBusy(false));
+                      }}>{parentGateBusy ? "正在验证…" : "验证并退出"}</Button>
+                    </div>
+                    {parentGateError ? <p role="alert" className="mt-2 text-xs text-rose-700 dark:text-rose-300">{parentGateError}</p> : null}
+                  </div>
+                ) : null}
+              </div>
             </div>
           ) : verifiedAdult ? (
             <AdultSpacePreview space={effectiveSpace} activeLearnerId={activeLearnerId} onLearnerChange={onLearnerChange} />

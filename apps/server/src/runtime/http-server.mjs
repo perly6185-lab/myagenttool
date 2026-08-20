@@ -36,6 +36,7 @@ import { handleWorkflowMemoryRoutes } from "../routes/workflow-memory.mjs";
 import { handleChannelObjectRoutes } from "../routes/channel-objects.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
 import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
+import { handlePrivateTutorRoutes } from "../routes/private-tutor.mjs";
 import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
 import { terminalObservationReadModel } from "../read-models/terminal-observation.mjs";
 import { buildConsoleState, CONSOLE_STATE_MEDIA_TYPE } from "../read-models/state.mjs";
@@ -699,6 +700,21 @@ export function createHttpServer({
         return;
       }
 
+      // A parent commonly hands an already signed-in computer to a child. Once
+      // that browser session enters child mode, the server — not just the UI —
+      // confines it to My Private Tutor until parent re-verification succeeds.
+      const childModeSessionRead = req.method === "GET" && url.pathname === "/api/session";
+      if (actor.privateTutorLearnerId
+        && url.pathname.startsWith("/api/")
+        && !url.pathname.startsWith("/api/private-tutor/")
+        && !childModeSessionRead) {
+        sendJson(res, 403, {
+          error: "private_tutor_child_mode_restricted",
+          learnerId: actor.privateTutorLearnerId,
+        });
+        return;
+      }
+
       const professionalAuthority = authorizeProfessionalRequest(actor, req.method, url.pathname);
       if (!publicPath && !professionalAuthority.allowed) {
         sendJson(res, 403, professionalRoleForbiddenBody(professionalAuthority.capability));
@@ -826,6 +842,21 @@ export function createHttpServer({
       }
 
       if (await handleWorkProfileRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        actor,
+        now,
+        nextId,
+        persistStateSoon,
+      })) {
+        return;
+      }
+
+      if (await handlePrivateTutorRoutes({
         req,
         res,
         url,

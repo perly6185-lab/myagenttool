@@ -56,6 +56,15 @@ export function createServerState({ defaultProjectPath, now }) {
     // directories the user explicitly registered as projects.
     workProfileInferences: [createInitialWorkProfileInference(defaultProject, now)],
     workProfileAuditEvents: [],
+    // My Private Tutor keeps every learning object learner-scoped. Guardian
+    // links are the authorization boundary; platform owner/admin is not an
+    // implicit grant to a child's learning data.
+    privateTutorLearners: [],
+    privateTutorGuardianLinks: [],
+    privateTutorSnapshots: [],
+    privateTutorAttempts: [],
+    privateTutorIdempotencyRecords: [],
+    privateTutorAuditEvents: [],
     applications: [],
     applicationInstallRuns: [],
     applicationRecoveryActions: [],

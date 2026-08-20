@@ -87,7 +87,13 @@ export async function handleIdentityRoutes({
     const user = (state.users ?? []).find((item) => item.id === actor.userId);
     const session = (state.identitySessions ?? []).find((item) => item.id === actor.sessionId);
     sendJson(res, 200, {
-      user: safeUser(user),
+      user: {
+        ...safeUser(user),
+        privateTutorChildMode: actor.privateTutorLearnerId ? {
+          learnerId: actor.privateTutorLearnerId,
+          enteredAt: actor.privateTutorChildModeEnteredAt,
+        } : null,
+      },
       expiresAt: actor.sessionExpiresAt ?? null,
       session: session ? {
         id: session.id,
