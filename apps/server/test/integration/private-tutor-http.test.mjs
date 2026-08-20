@@ -311,6 +311,8 @@ test("the adaptive diagnostic is resumable, server-graded, idempotent, and produ
   let tutoringSession = startedSession.body.session;
   assert.equal(tutoringSession.plannedMinutes, 20);
   assert.deepEqual(tutoringSession.progress.map((item) => item.kind), ["recall", "explain", "guided_practice", "independent_check", "summary"]);
+  assert.equal(tutoringSession.currentActivity.visualScene.template, "equation_balance");
+  assert.equal(tutoringSession.currentActivity.visualScene.publication.mathValidated, true);
   assert.equal(JSON.stringify(tutoringSession).includes("expectedRational"), false);
 
   const bypassedSession = await call(`/api/private-tutor/learners/${learnerId}/attempts`, {
@@ -322,9 +324,10 @@ test("the adaptive diagnostic is resumable, server-graded, idempotent, and produ
 
   const recalled = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, {
     method: "POST",
-    body: { action: "answer", idempotencyKey: "session-recall-1", questionRevisionId: tutoringSession.currentActivity.question.revisionId, rawAnswer: "5", responseKind: "answer", source: "screen" },
+    body: { action: "answer", idempotencyKey: "session-recall-1", questionRevisionId: tutoringSession.currentActivity.question.revisionId, rawAnswer: "5", responseKind: "answer", source: "visual" },
   });
   assert.equal(recalled.status, 201);
+  assert.equal(runtimeState.privateTutorAttempts[0].source, "visual");
   tutoringSession = recalled.body.session;
   assert.equal(tutoringSession.currentActivity.kind, "explain");
 

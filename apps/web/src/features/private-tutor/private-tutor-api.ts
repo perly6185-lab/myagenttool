@@ -146,6 +146,34 @@ export interface PrivateTutorIntelligence {
 export type PrivateTutorSessionPace = "easy" | "standard" | "review";
 export type PrivateTutorSessionActivityKind = "recall" | "explain" | "guided_practice" | "independent_check" | "summary";
 
+export interface PrivateTutorVisualScene {
+  schemaVersion: 1;
+  revisionId: string;
+  template: "number_line" | "fraction_strip" | "equation_balance" | "bar_model" | "coordinate_plane" | "comparison";
+  title: string;
+  ariaLabel: string;
+  parameters: Record<string, unknown>;
+  steps: Array<{
+    id: string;
+    index: number;
+    startMs: number;
+    durationMs: number;
+    narration: string;
+    stateIndex: number;
+  }>;
+  interaction: {
+    kind: "select_value";
+    prompt: string;
+    choices: Array<{ id: string; label: string; value: string }>;
+  } | null;
+  publication: {
+    status: "engineering_preview";
+    contentVersion: string;
+    mathValidated: boolean;
+    reviewedAt: string | null;
+  };
+}
+
 export interface PrivateTutorSession {
   id: string;
   learnerId: string;
@@ -168,6 +196,7 @@ export interface PrivateTutorSession {
     instruction: string;
     question: PrivateTutorAssessmentQuestion | null;
     hint: string | null;
+    visualScene?: PrivateTutorVisualScene | null;
   } | null;
   teachingMethod: string;
   methodSwitchCount: number;
@@ -273,7 +302,7 @@ export async function actOnPrivateTutorSession(learnerId: string, sessionId: str
     questionRevisionId: string;
     rawAnswer: string;
     responseKind: "answer" | "dont_know";
-    source: "screen" | "voice_confirmed";
+    source: "screen" | "voice_confirmed" | "visual";
     recognitionConfidence?: number;
     voiceTurnId?: string;
   }) {

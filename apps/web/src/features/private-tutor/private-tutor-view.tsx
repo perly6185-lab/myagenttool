@@ -34,6 +34,7 @@ import {
   type TutorTab,
 } from "@/features/private-tutor/private-tutor-model";
 import { loadLearnerState, saveLearnerState } from "@/features/private-tutor/private-tutor-storage";
+import { PrivateTutorVisualBoard } from "@/features/private-tutor/private-tutor-visual-board";
 import {
   actOnPrivateTutorSession,
   createPrivateTutorVoiceTurn,
@@ -129,6 +130,8 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
   const [tutoringSession, setTutoringSession] = useState<PrivateTutorSession | null>(null);
   const [assessmentReady, setAssessmentReady] = useState(false);
   const [diagnosticDismissed, setDiagnosticDismissed] = useState(false);
+  const [captions, setCaptions] = useState(true);
+  const [reducedMotion, setReducedMotion] = useState(() => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true);
 
   useEffect(() => {
     let current = true;
@@ -304,7 +307,7 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
       </nav>
 
       <div className="p-4 sm:p-7">
-        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} strategyDecision={strategyDecision} session={tutoringSession} onReschedule={rescheduleToday} onStart={startLesson} onPause={pauseLesson} onResume={resumeLesson} onAction={actOnLesson} /> : null}
+        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} strategyDecision={strategyDecision} session={tutoringSession} captions={captions} reducedMotion={reducedMotion} onReschedule={rescheduleToday} onStart={startLesson} onPause={pauseLesson} onResume={resumeLesson} onAction={actOnLesson} /> : null}
         {tab === "map" ? <KnowledgeMap state={learnerState} learnerModel={learnerModel} /> : null}
         {tab === "errors" ? <ErrorBook state={learnerState} onStart={() => setTab("today")} /> : null}
         {tab === "growth" ? <Growth state={learnerState} /> : null}
@@ -315,6 +318,10 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
             onLearnerChange={() => {}}
             verifiedAdult={isParentReverified}
             onParentExit={onParentExit}
+            captions={captions}
+            onCaptionsChange={setCaptions}
+            reducedMotion={reducedMotion}
+            onReducedMotionChange={setReducedMotion}
           />
         ) : null}
       </div>
@@ -707,6 +714,8 @@ function TodayLearning({
   learningPlan,
   strategyDecision,
   session,
+  captions,
+  reducedMotion,
   onReschedule,
   onStart,
   onPause,
@@ -717,6 +726,8 @@ function TodayLearning({
   learningPlan: PrivateTutorLearningPlan | null;
   strategyDecision: PrivateTutorStrategyDecision | null;
   session: PrivateTutorSession | null;
+  captions: boolean;
+  reducedMotion: boolean;
   onReschedule: () => Promise<string | null>;
   onStart: (pace: PrivateTutorSessionPace) => Promise<string | null>;
   onPause: () => Promise<string | null>;
@@ -870,13 +881,32 @@ function TodayLearning({
   function speakCurrent(rate = speechRate) {
     if (!session?.currentActivity) return;
     const text = [session.currentActivity.instruction, session.currentActivity.question?.prompt].filter(Boolean).join("。 ");
-    setSubtitle(text);
+    setSubtitle(captions ? text : "");
     const started = speakPrivateTutorText(text, {
       rate,
       onStart: () => { setSpeaking(true); recordVoiceEvent("playback_started"); },
       onEnd: () => { setSpeaking(false); recordVoiceEvent("playback_completed"); },
     });
     if (!started) setVoiceMessage("当前设备不能语音播报，字幕仍然可以使用");
+  }
+
+  function narrateVisualStep(text: string, onEnd: () => void) {
+    setSubtitle(captions ? text : "");
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      setSpeaking(false);
+      recordVoiceEvent("playback_completed");
+      onEnd();
+    };
+    const started = speakPrivateTutorText(text, {
+      rate: speechRate,
+      onStart: () => { setSpeaking(true); recordVoiceEvent("playback_started"); },
+      onEnd: finish,
+    });
+    if (!started) setSpeaking(false);
+    return started;
   }
 
   function stopPlayback() {
@@ -915,7 +945,7 @@ function TodayLearning({
     setBusy(false);
   }
 
-  async function submit(responseKind: "answer" | "dont_know", rawAnswer = answer) {
+  async function submit(responseKind: "answer" | "dont_know", rawAnswer = answer, source: "screen" | "visual" = "screen") {
     const question = session?.currentActivity?.question;
     if (!question) return;
     if (responseKind === "answer" && !rawAnswer.trim()) {
@@ -930,7 +960,7 @@ function TodayLearning({
       questionRevisionId: question.revisionId,
       rawAnswer,
       responseKind,
-      source: "screen",
+      source,
     });
     if (result.error) setMessage(result.error);
     else if (result.correct === false) {
@@ -1055,8 +1085,16 @@ function TodayLearning({
           </div>
         </div>
         <div className="p-5 sm:p-7">
-          {current.kind === "explain" && session.targetKnowledgeId === "balance" ? <BalanceScene revealed /> : null}
-          {current.kind === "explain" && session.targetKnowledgeId !== "balance" ? <div className="grid min-h-48 place-items-center rounded-2xl border bg-sky-50 text-center dark:bg-sky-950/30"><div><BrainCircuit className="mx-auto size-10 text-sky-600" /><p className="mt-3 font-semibold">换成具体步骤来看</p></div></div> : null}
+          {current.visualScene ? (
+            <PrivateTutorVisualBoard
+              scene={current.visualScene}
+              reducedMotion={reducedMotion}
+              disabled={busy}
+              onNarrate={narrateVisualStep}
+              onStopNarration={stopPlayback}
+              onAnswer={(value) => void submit("answer", value, "visual")}
+            />
+          ) : <div className="grid min-h-48 place-items-center rounded-2xl border bg-sky-50 text-center dark:bg-sky-950/30"><div><BrainCircuit className="mx-auto size-10 text-sky-600" /><p className="mt-3 font-semibold">使用静态步骤继续学习</p></div></div>}
           <div className="mt-5 rounded-2xl bg-muted/60 p-4">
             <p className="flex gap-2 text-sm leading-6"><Volume2 className="mt-1 size-4 shrink-0 text-emerald-600" />{current.instruction}</p>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -1159,27 +1197,6 @@ function SevenDayPlan({ plan, onReschedule }: { plan: PrivateTutorLearningPlan; 
   );
 }
 
-function BalanceScene({ revealed }: { revealed: boolean }) {
-  return (
-    <div className="overflow-hidden rounded-2xl border bg-sky-50 p-3 dark:bg-sky-950/30">
-      <svg viewBox="0 0 640 300" role="img" aria-label={revealed ? "等式两边都减去三以后，x 等于五" : "天平左边是 x 加三，右边是八"} className="w-full">
-        <path d="M320 55 L250 245 H390 Z" fill="currentColor" className="text-slate-300 dark:text-slate-700" />
-        <circle cx="320" cy="72" r="18" fill="currentColor" className="text-emerald-500" />
-        <g className={cn("origin-center transition-transform duration-700", revealed ? "rotate-0" : "rotate-[-1deg]")}>
-          <rect x="105" y="82" width="430" height="12" rx="6" fill="currentColor" className="text-slate-600 dark:text-slate-300" />
-          <path d="M155 94 L110 190 H200 Z" fill="none" stroke="currentColor" strokeWidth="5" className="text-slate-500" />
-          <path d="M485 94 L440 190 H530 Z" fill="none" stroke="currentColor" strokeWidth="5" className="text-slate-500" />
-          <rect x="100" y="190" width="110" height="12" rx="6" fill="currentColor" className="text-amber-500" />
-          <rect x="430" y="190" width="110" height="12" rx="6" fill="currentColor" className="text-amber-500" />
-          <text x="155" y="160" textAnchor="middle" fontSize="34" fontWeight="700" fill="currentColor" className="text-slate-800 dark:text-slate-100">{revealed ? "x" : "x + 3"}</text>
-          <text x="485" y="160" textAnchor="middle" fontSize="34" fontWeight="700" fill="currentColor" className="text-slate-800 dark:text-slate-100">{revealed ? "5" : "8"}</text>
-        </g>
-        {revealed ? <text x="320" y="278" textAnchor="middle" fontSize="20" fontWeight="600" fill="currentColor" className="text-emerald-700 dark:text-emerald-300">两边同时减去 3，仍然平衡</text> : null}
-      </svg>
-    </div>
-  );
-}
-
 function KnowledgeMap({ state, learnerModel }: { state: LearnerTutorState; learnerModel: PrivateTutorLearnerModel | null }) {
   const tone = { mastered: "border-emerald-400 bg-emerald-50", learning: "border-sky-400 bg-sky-50", needs_support: "border-amber-400 bg-amber-50", unknown: "border-slate-300 bg-slate-50" };
   const label = { mastered: "已经掌握", learning: "正在学习", needs_support: "需要帮助", unknown: "尚未测到" };
@@ -1270,10 +1287,8 @@ function GentleStat({ value, label }: { value: string; label: string }) {
   return <div><p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300">{value}</p><p className="mt-1 text-xs text-muted-foreground">{label}</p></div>;
 }
 
-function TutorSettings({ state, activeLearnerId, onLearnerChange, verifiedAdult, onParentExit }: { state: LearnerTutorState; activeLearnerId: string; onLearnerChange: (id: string) => void; verifiedAdult: boolean; onParentExit: (exitPin: string) => Promise<string | null> }) {
+function TutorSettings({ state, activeLearnerId, onLearnerChange, verifiedAdult, onParentExit, captions, onCaptionsChange, reducedMotion, onReducedMotionChange }: { state: LearnerTutorState; activeLearnerId: string; onLearnerChange: (id: string) => void; verifiedAdult: boolean; onParentExit: (exitPin: string) => Promise<string | null>; captions: boolean; onCaptionsChange: (value: boolean) => void; reducedMotion: boolean; onReducedMotionChange: (value: boolean) => void }) {
   const [space, setSpace] = useState<TutorSettingsSpace>("student");
-  const [captions, setCaptions] = useState(true);
-  const [reducedMotion, setReducedMotion] = useState(false);
   const [parentGateRequested, setParentGateRequested] = useState(false);
   const [parentPin, setParentPin] = useState("");
   const [parentGateBusy, setParentGateBusy] = useState(false);
@@ -1301,8 +1316,8 @@ function TutorSettings({ state, activeLearnerId, onLearnerChange, verifiedAdult,
           <div className="flex items-start justify-between gap-3"><div><p className="text-xs text-muted-foreground">{selected.audience}空间</p><h2 className="mt-1 text-lg font-bold">{selected.title}</h2></div>{professional ? <ShieldCheck className="size-6 text-emerald-600" /> : <UserRound className="size-6 text-emerald-600" />}</div>
           {!professional ? (
             <div className="mt-6 grid gap-4">
-              <PreferenceToggle label="显示实时字幕" hint="语音教学时同步显示文字" checked={captions} onChange={setCaptions} />
-              <PreferenceToggle label="减少动画" hint="使用静态图和单步切换，学习内容保持完整" checked={reducedMotion} onChange={setReducedMotion} />
+              <PreferenceToggle label="显示实时字幕" hint="语音教学时同步显示文字" checked={captions} onChange={onCaptionsChange} />
+              <PreferenceToggle label="减少动画" hint="使用静态图和单步切换，学习内容保持完整" checked={reducedMotion} onChange={onReducedMotionChange} />
               <div className="rounded-xl bg-muted/60 p-4"><p className="text-sm font-medium">当前学习档案</p><p className="mt-1 text-sm text-muted-foreground">{state.learner.displayName} · {state.learner.grade} · {state.learner.curriculum}</p></div>
               <div className="rounded-xl border border-dashed p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">

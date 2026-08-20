@@ -1,4 +1,5 @@
 import { privateTutorQuestion, publicQuestion } from "./private-tutor-assessment.mjs";
+import { buildPrivateTutorVisualScene } from "./private-tutor-visual-scene.mjs";
 
 export const PRIVATE_TUTOR_SESSION_PACES = {
   easy: { totalMinutes: 5, budgets: [1, 1, 1, 1, 1] },
@@ -102,6 +103,12 @@ export function privateTutorSessionView(session) {
       instruction: instructionFor(activity.kind, contentDefinition, session.teachingMethod),
       question,
       hint: activity.hintLevel ? contentDefinition.hints[Math.min(activity.hintLevel, contentDefinition.hints.length) - 1] : null,
+      visualScene: buildPrivateTutorVisualScene({
+        knowledgeId: session.targetKnowledgeId,
+        activityKind: activity.kind,
+        teachingMethod: session.teachingMethod,
+        questionRevisionId: activity.questionRevisionId,
+      }),
     } : null,
     teachingMethod: session.teachingMethod,
     methodSwitchCount: session.methodSwitchCount,

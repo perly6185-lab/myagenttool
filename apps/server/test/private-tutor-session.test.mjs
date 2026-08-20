@@ -33,6 +33,8 @@ test("a standard session has the five teaching phases and exactly twenty planned
   assert.deepEqual(view.progress.map((item) => item.kind), ["recall", "explain", "guided_practice", "independent_check", "summary"]);
   assert.equal(view.progress.reduce((total, item) => total + item.budgetMinutes, 0), 20);
   assert.equal(view.currentActivity.question.revisionId, "tutor-bal-recall-001-v1");
+  assert.equal(view.currentActivity.visualScene.template, "equation_balance");
+  assert.equal(view.currentActivity.visualScene.publication.mathValidated, true);
   assert.equal(JSON.stringify(view).includes("expectedRational"), false);
 });
 

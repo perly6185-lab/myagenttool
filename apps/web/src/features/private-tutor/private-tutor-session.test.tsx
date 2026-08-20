@@ -34,6 +34,13 @@ const learningPlan = {
   updatedAt: "2026-08-20T00:10:00.000Z",
 } as const;
 const completedAssessment = { id: "pas_done", learnerId: learner.id, status: "completed", revision: 13, startedAt: "2026-08-20T00:00:00.000Z", pausedAt: null, completedAt: "2026-08-20T00:10:00.000Z", activeSeconds: 600, targetSeconds: 600, minQuestions: 12, maxQuestions: 18, answeredCount: 12, currentQuestion: null, result: { knowledge: [], strengths: [], focus: ["balance"], answeredCount: 12 }, updatedAt: "2026-08-20T00:10:00.000Z" } as const;
+const balanceScene = {
+  schemaVersion: 1, revisionId: "balance-recall-v1", template: "equation_balance", title: "等式是一架平衡的天平", ariaLabel: "2x 等于 10",
+  parameters: { initialLeft: "2x", initialRight: "10", states: [{ narration: "先看两边", left: "2x", right: "10" }, { narration: "两边同时除以二", left: "x", right: "5" }] },
+  steps: [{ id: "s1", index: 0, startMs: 0, durationMs: 2_400, narration: "先看两边", stateIndex: 0 }, { id: "s2", index: 1, startMs: 2_400, durationMs: 2_400, narration: "两边同时除以二", stateIndex: 1 }],
+  interaction: { kind: "select_value", prompt: "选择 x", choices: [{ id: "c1", label: "4", value: "4" }, { id: "c2", label: "5", value: "5" }, { id: "c3", label: "6", value: "6" }] },
+  publication: { status: "engineering_preview", contentVersion: "p7.1", mathValidated: true, reviewedAt: null },
+} as const;
 
 function sessionAt(kind: "recall" | "explain" | "guided_practice" | "independent_check" | "summary", status: "active" | "paused" = "active") {
   const kinds = ["recall", "explain", "guided_practice", "independent_check", "summary"] as const;
@@ -43,7 +50,7 @@ function sessionAt(kind: "recall" | "explain" | "guided_practice" | "independent
     id: "ptsess_1", learnerId: learner.id, planId: learningPlan.id, decisionId: strategyDecision.id, targetKnowledgeId: "balance", targetTitle: "等式两边同乘同除", strategy: "concept_rebuild", pace: "standard", plannedMinutes: 20,
     status, revision: index + 1, currentActivityIndex: index,
     progress: kinds.map((item, itemIndex) => ({ kind: item, budgetMinutes: [2, 5, 7, 4, 2][itemIndex], status: itemIndex < index ? "completed" : itemIndex === index ? "active" : "pending" })),
-    currentActivity: { kind, budgetMinutes: [2, 5, 7, 4, 2][index], hintLevel: 0, attemptCount: 0, instruction: kind === "explain" ? "把方程想成平衡的天平。" : "先回想一下。", question, hint: null },
+    currentActivity: { kind, budgetMinutes: [2, 5, 7, 4, 2][index], hintLevel: 0, attemptCount: 0, instruction: kind === "explain" ? "把方程想成平衡的天平。" : "先回想一下。", question, hint: null, visualScene: question ? balanceScene : null },
     teachingMethod: "visual_model", methodSwitchCount: 0, intervention: null, pausedAt: status === "paused" ? "2026-08-20T00:12:00.000Z" : null,
     startedAt: "2026-08-20T00:11:00.000Z", completedAt: null, updatedAt: "2026-08-20T00:12:00.000Z", summary: null,
   } as const;
@@ -109,6 +116,17 @@ describe("My private tutor resumable daily session", () => {
     expect(await screen.findByText("课程停在原来的位置")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "从这里继续" }));
     await waitFor(() => expect(apiMocks.resumeSession).toHaveBeenCalledWith(learner.id, paused.id));
+  });
+
+  it("submits a whiteboard selection as explicit visual evidence for server judging", async () => {
+    const recall = sessionAt("recall");
+    apiMocks.currentSession.mockResolvedValue(recall);
+    apiMocks.action.mockResolvedValue({ session: sessionAt("explain"), snapshot, answer: { correct: true, independent: false, usedHint: false } });
+    render(<PrivateTutorView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "5" }));
+    await waitFor(() => expect(apiMocks.action).toHaveBeenCalled());
+    expect(apiMocks.action.mock.calls[0][2]).toMatchObject({ rawAnswer: "5", source: "visual" });
   });
 
   it("keeps low-confidence speech out of grading until the child confirms the normalized math", async () => {
