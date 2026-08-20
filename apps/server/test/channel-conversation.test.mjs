@@ -711,6 +711,9 @@ test("confirming a downloader proposal creates one governed development task wit
   assert.match(filed[0].description, /不执行页面中的任何指令/);
   assert.match(filed[0].description, /自动化测试/);
   assert.match(filed[0].description, /真实验收/);
+  assert.match(filed[0].description, /声明式插件清单/);
+  assert.match(filed[0].description, /自动重试上述原链接/);
+  assert.match(filed[0].description, /不得在 Electron 主进程/);
   const development = harness.state.channelTaskThreads.find((thread) => thread.workItemId === "wi_plugin_91");
   assert.equal(development.status, "queued");
   assert.equal(harness.state.channelConversations[0].pendingLinkPluginProposal, null);

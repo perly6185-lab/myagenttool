@@ -13,6 +13,7 @@ import type { Tone } from "@/lib/readable-labels";
 import { installChannelTranslations } from "@/lib/i18n/channel-resources";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useUiStore } from "@/store/ui-store";
+import { ArticleExtractorPluginsPanel } from "./article-extractor-plugins-panel";
 
 installChannelTranslations();
 
@@ -239,6 +240,7 @@ export function ChannelsView() {
         </details>
       ) : null}
       {channels.length > 0 ? <QuickStartGuide /> : null}
+      <ArticleExtractorPluginsPanel />
       {channels.length === 0 ? (
         <EmptyState
           title={t("channelsPage.empty")}

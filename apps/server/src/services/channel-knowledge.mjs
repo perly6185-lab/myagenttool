@@ -183,6 +183,7 @@ export function createChannelKnowledgeService({
         worktreePath: absoluteRoot,
         workItemId: null,
         importedAt: now(),
+        ownerTeamId: input.ownerTeamId,
       });
       const inspection = result.inspection ?? {};
       const markdownPath = managedResultPath(knowledgeRoot, result.markdownPath);
@@ -245,7 +246,36 @@ export function createChannelKnowledgeService({
     return Boolean(lexical) && !lexical.startsWith("..") && !isAbsolute(lexical);
   }
 
-  return { capture };
+  async function retryFailedForHosts(hosts, ownerTeamId = LOCAL_TEAM_ID, retryKey = null) {
+    const allowed = new Set((hosts ?? []).map((host) => String(host).toLowerCase()));
+    const candidates = (state.channelKnowledgeItems ?? [])
+      .filter((item) => item.ownerTeamId === ownerTeamId
+        && item.status === "failed"
+        && allowed.has(hostnameOf(item.canonicalUrl))
+        && (!retryKey || item.lastPluginRetryKey !== retryKey))
+      .slice(-10);
+    return Promise.all(candidates.map(async (item) => {
+      if (retryKey) runTx(() => {
+        item.lastPluginRetryKey = retryKey;
+        item.updatedAt = now();
+      });
+      try {
+        const result = await capture({
+          url: item.sourceUrl,
+          ownerTeamId: item.ownerTeamId,
+          projectId: item.projectId,
+          channelId: item.channelId,
+          conversationId: item.conversationId,
+          eventId: item.eventId,
+        });
+        return { ok: true, item, result };
+      } catch (error) {
+        return { ok: false, item, error: String(error?.code ?? error?.message ?? error).slice(0, 120) };
+      }
+    }));
+  }
+
+  return { capture, retryFailedForHosts };
 }
 
 function captureKey(ownerTeamId, projectId, canonicalUrl) {
@@ -254,6 +284,14 @@ function captureKey(ownerTeamId, projectId, canonicalUrl) {
 
 function stableSegment(value) {
   return createHash("sha256").update(String(value)).digest("hex").slice(0, 16);
+}
+
+function hostnameOf(value) {
+  try {
+    return new URL(String(value)).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
 }
 
 function knowledgeReceipt(item, replayed) {

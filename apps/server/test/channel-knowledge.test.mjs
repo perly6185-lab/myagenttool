@@ -114,6 +114,48 @@ test("a failed save remains auditable and can be retried on the next share", asy
   assert.equal(h.state.channelKnowledgeItems[0].error, "disk_unavailable");
 });
 
+test("activating a matching extractor can retry failed original links without resending them", async () => {
+  let attempt = 0;
+  const h = await harness({
+    importArticle: async ({ url, worktreePath, ownerTeamId }) => {
+      attempt += 1;
+      assert.equal(ownerTeamId, "team_1");
+      if (attempt === 1) throw Object.assign(new Error("unsupported page"), { code: "article_content_incomplete" });
+      const directory = join(worktreePath, "docs/imported/web/2026/08/plugin-retry");
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "article.md"), "# 插件重试成功\n");
+      await writeFile(join(directory, "article.html"), "<h1>插件重试成功</h1>");
+      await writeFile(join(directory, "manifest.json"), "{}\n");
+      return {
+        replayed: false,
+        markdownPath: "docs/imported/web/2026/08/plugin-retry/article.md",
+        htmlPath: "docs/imported/web/2026/08/plugin-retry/article.html",
+        manifestPath: "docs/imported/web/2026/08/plugin-retry/manifest.json",
+        mediaCounts: { images: 0, audio: 0, video: 0 },
+        warnings: [],
+        inspection: {
+          sourceUrl: url, canonicalUrl: url, provider: "web", contentType: "article",
+          title: "插件重试成功", author: null, publishedAt: null, textLength: 20,
+          _document: { markdown: "# 插件重试成功", media: [] },
+        },
+      };
+    },
+  });
+  await assert.rejects(h.service.capture({
+    url: "https://news.example.com/post/1",
+    channelId: "chn_1",
+    conversationId: "conv_1",
+    eventId: "evt_1",
+  }), /unsupported page/);
+
+  const retried = await h.service.retryFailedForHosts(["news.example.com"], "team_1");
+  assert.equal(retried.length, 1);
+  assert.equal(retried[0].ok, true);
+  assert.equal(retried[0].result.title, "插件重试成功");
+  assert.equal(h.state.channelKnowledgeItems.at(-1).status, "ready");
+  assert.equal(attempt, 2);
+});
+
 test("restart recovery marks interrupted channel knowledge saves as failed", async () => {
   const h = await harness({
     items: [{ id: "knowledge_old", status: "saving", canonicalUrl: "https://example.com/old" }],

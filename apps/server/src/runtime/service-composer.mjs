@@ -141,6 +141,7 @@ import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
 import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree, inspectArticle } from "../services/article-imports.mjs";
+import { createArticleExtractorPluginService } from "../services/article-extractor-plugins.mjs";
 import { createChannelKnowledgeService } from "../services/channel-knowledge.mjs";
 import { createSessionManager } from "../services/session-manager.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
@@ -608,6 +609,17 @@ export function createServerRuntimeServices({
   });
   releaseRoutineLedgerReservations = ledgerUpsertService.cancelRoutineReservations;
   const articleImportConfig = resolveArticleImportConfig();
+  const articleExtractorPluginService = createArticleExtractorPluginService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon: persistArticleStateSoon,
+    validateApprovalToken,
+    store,
+  });
+  const resolveArticleExtractor = (url, ownerTeamId) =>
+    articleExtractorPluginService.resolveForUrl(url, ownerTeamId);
   const articleImportService = createArticleImportService({
     state,
     now,
@@ -623,6 +635,7 @@ export function createServerRuntimeServices({
     },
     startInvocationIfAllowed: (invocation, agent) =>
       invocationService?.startInvocationIfAllowed(invocation, agent),
+    resolveExtractorPlugin: resolveArticleExtractor,
     store,
   });
   const channelKnowledgeService = createChannelKnowledgeService({
@@ -633,6 +646,10 @@ export function createServerRuntimeServices({
     persistStateSoon: persistArticleStateSoon,
     maxConcurrent: articleImportConfig.maxConcurrent,
     maxPending: articleImportConfig.maxPending,
+    importArticle: (input) => importArticleToWorktree({
+      ...input,
+      extractorPlugin: resolveArticleExtractor(input.url, input.ownerTeamId),
+    }),
     store,
   });
   // Session manager: login-state observability + keep-alive for profile-backed
@@ -4104,13 +4121,19 @@ export function createServerRuntimeServices({
     createConsultation: channelConsultationAdapter?.enqueue,
     inspectSharedLink: async (input) => {
       if (input.save === false) {
-        const inspection = await inspectArticle({ url: input.url });
+        const inspection = await inspectArticle({
+          url: input.url,
+          extractorPlugin: resolveArticleExtractor(input.url, input.ownerTeamId ?? LOCAL_TEAM_ID),
+        });
         return { ...inspection, knowledge: { status: "preview" } };
       }
       try {
         return await channelKnowledgeService.capture(input);
       } catch (saveError) {
-        const inspection = await inspectArticle({ url: input.url });
+        const inspection = await inspectArticle({
+          url: input.url,
+          extractorPlugin: resolveArticleExtractor(input.url, input.ownerTeamId ?? LOCAL_TEAM_ID),
+        });
         return {
           ...inspection,
           knowledge: {
@@ -6559,6 +6582,49 @@ export function createServerRuntimeServices({
     createArticleDerivative: articleImportService.createDerivative,
     listArticleDerivatives: articleImportService.listDerivatives,
     getArticleDerivative: articleImportService.getDerivative,
+    listArticleExtractorPlugins: articleExtractorPluginService.list,
+    planArticleExtractorPluginInstall: articleExtractorPluginService.planInstall,
+    installArticleExtractorPlugin: (input, actor) => {
+      const result = articleExtractorPluginService.install(input, actor);
+      if (!result.ok) return result;
+      const retryVersion = result.body.plugin.activeVersion;
+      const retryKey = `${result.body.plugin.pluginId}:${retryVersion}`;
+      queueMicrotask(() => {
+        void channelKnowledgeService.retryFailedForHosts(
+          input?.manifest?.hosts,
+          actor?.teamId ?? LOCAL_TEAM_ID,
+          retryKey,
+        ).then((retries) => {
+          for (const retry of retries) {
+            if (!retry.item?.channelId || !retry.item?.conversationId) continue;
+            channelDeliveryService.enqueueChannelDelivery({
+              channelId: retry.item.channelId,
+              conversationId: retry.item.conversationId,
+              content: retry.ok
+                ? `新的网页采集能力已启用，我已重新读取原链接并保存为本地资料：${retry.result?.title ?? "未命名资料"}。`
+                : `新的网页采集能力已启用，但原链接重试后仍未读取成功（${retry.error}）。我会保留原链接，便于继续检查。`,
+              dedupeKey: `article-extractor-retry:${retry.item.id}:${retryVersion}`,
+              taskContext: { deliveryKind: "status_notification", notificationEvent: retry.ok ? "succeeded" : "failed" },
+            });
+          }
+        }).catch((error) => appendEvent({
+          invocationId: null,
+          type: "article_extractor_plugin_retry_failed",
+          level: "warn",
+          message: "Article extractor original-link retry could not be scheduled.",
+          data: { pluginId: result.body.plugin.pluginId, error: String(error?.code ?? error?.message ?? error).slice(0, 120) },
+        }));
+      });
+      return {
+        ...result,
+        body: {
+          ...result.body,
+          retry: { scheduled: true },
+        },
+      };
+    },
+    disableArticleExtractorPlugin: articleExtractorPluginService.disable,
+    activateArticleExtractorPlugin: articleExtractorPluginService.activate,
     listWorkflowSources: workflowMemoryService.listSources,
     createWorkflowSource: workflowMemoryService.createSource,
     listTemplateLearningTasks: templateLearningService.listTasks,

@@ -93,6 +93,9 @@ export function createServerState({ defaultProjectPath, now }) {
       updatedAt: null,
     },
     articleImportJobs: [],
+    // Runtime-loadable, declarative article extractors. Manifests contain only
+    // exact HTTPS hosts and a bounded selector subset — never executable code.
+    articleExtractorPlugins: [],
     // Links shared without instructions are saved as managed local knowledge,
     // independently of the formal task/worktree lifecycle.
     channelKnowledgeItems: [],
