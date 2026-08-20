@@ -2,6 +2,7 @@ import { lazy, type ComponentType } from "react";
 import type { SectionKey } from "@/store/ui-store";
 
 const DashboardView = lazy(() => import("@/features/dashboard/dashboard-view").then((m) => ({ default: m.DashboardView })));
+const PrivateTutorView = lazy(() => import("@/features/private-tutor/private-tutor-view").then((m) => ({ default: m.PrivateTutorView })));
 const MailView = lazy(() => import("@/features/mail/mail-view").then((m) => ({ default: m.MailView })));
 const LocalLibraryView = lazy(() => import("@/features/local-content/local-library-view").then((m) => ({ default: m.LocalLibraryView })));
 const WorkBoardView = lazy(() => import("@/features/work-board/work-board-view").then((m) => ({ default: m.WorkBoardView })));
@@ -40,6 +41,7 @@ const MeView = lazy(() => import("@/features/me/me-view").then((m) => ({ default
 export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   settings: SettingsHomeView,
   dashboard: DashboardView,
+  privateTutor: PrivateTutorView,
   mail: MailView,
   localLibrary: LocalLibraryView,
   me: MeView,

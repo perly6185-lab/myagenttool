@@ -11,6 +11,7 @@ describe("page ownership registry (#1505)", () => {
   it("keeps the ordinary shell focused while exposing email, local content, and My templates as first-class destinations", () => {
     expect(ENTRY_SECTIONS.map((page) => page.key)).toEqual([
       "dashboard",
+      "privateTutor",
       "mail",
       "localLibrary",
       "task",
