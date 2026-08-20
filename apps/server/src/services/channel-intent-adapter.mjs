@@ -1,3 +1,4 @@
+import { findDevice, listDevices } from "../runtime/device.mjs";
 import { CHANNEL_INTENT_KINDS } from "./channel-intent.mjs";
 
 // Classification is routing preflight, not user-visible work. Keep its Bridge
@@ -167,8 +168,10 @@ export function createChannelIntentAdapter({
       const startedAt = Date.now();
       try {
         const agent = findAgent(config.agentId);
-        if (!agent || agent.status === "disabled" || state?.device?.unlinkState === "unlinked"
-          || (state?.device?.status && state.device.status !== "online")) {
+        const agentDeviceId = agent?.location?.type === "local_device" ? agent.location.deviceId : null;
+        const device = (agentDeviceId ? findDevice(state, agentDeviceId) : null) ?? listDevices(state)[0] ?? null;
+        if (!agent || agent.status === "disabled" || !device || device.unlinkState === "unlinked"
+          || (device.status && device.status !== "online")) {
           throw new Error("channel_intent_bridge_agent_unavailable");
         }
         const formalWorkActive = (state?.invocations ?? []).some((invocation) =>

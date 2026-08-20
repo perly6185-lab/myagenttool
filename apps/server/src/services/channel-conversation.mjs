@@ -14,6 +14,7 @@
 import { parseChannelCommand } from "@myagenttool/protocol/channel";
 import { UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
 import { actorForUser, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
+import { findDevice, listDevices } from "../runtime/device.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { createChannelTaskContext, extendChannelTaskContext } from "./channel-task-context.mjs";
 import { fileDiscoveryReply } from "./channel-file-discovery.mjs";
@@ -4328,8 +4329,8 @@ export function createChannelConversationService({
       if (thread.status === "queued") {
         const workItem = (state.workItems ?? []).find((item) => item.id === thread.workItemId) ?? null;
         const device = workItem?.terminalId
-          ? ((state.devices ?? []).find((candidate) => candidate.id === workItem.terminalId) ?? (state.device?.id === workItem.terminalId ? state.device : null))
-          : state.device ?? (state.devices ?? [])[0] ?? null;
+          ? findDevice(state, workItem.terminalId)
+          : listDevices(state)[0] ?? null;
         const deviceOnline = device?.status === "online" && device?.unlinkState !== "unlinked";
         if (workItem?.status === "ready" && !deviceOnline) {
           const observationKey = `waiting_device:${device?.id ?? workItem.terminalId ?? "local"}:${device?.status ?? "offline"}:${device?.unlinkState ?? "unknown"}`;
