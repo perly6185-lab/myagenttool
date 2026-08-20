@@ -8,6 +8,8 @@ const apiMocks = vi.hoisted(() => ({
   pauseSession: vi.fn(),
   resumeSession: vi.fn(),
   action: vi.fn(),
+  createVoiceTurn: vi.fn(),
+  voiceEvent: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-session-user", () => ({
@@ -55,6 +57,8 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   pausePrivateTutorSession: apiMocks.pauseSession,
   resumePrivateTutorSession: apiMocks.resumeSession,
   actOnPrivateTutorSession: apiMocks.action,
+  createPrivateTutorVoiceTurn: apiMocks.createVoiceTurn,
+  recordPrivateTutorVoiceEvent: apiMocks.voiceEvent,
   rebalancePrivateTutorLearningPlan: () => Promise.reject(new Error("not used")),
   startPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
@@ -70,8 +74,13 @@ describe("My private tutor resumable daily session", () => {
   beforeEach(() => {
     window.localStorage.clear();
     apiMocks.currentSession.mockResolvedValue(null);
+    apiMocks.voiceEvent.mockResolvedValue({ event: { id: "event_1", type: "recognition_started", createdAt: "2026-08-20T00:00:00.000Z" } });
   });
-  afterEach(() => { cleanup(); vi.clearAllMocks(); });
+  afterEach(() => {
+    cleanup();
+    delete (window as typeof window & { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
+    vi.clearAllMocks();
+  });
 
   it("starts in one click and sends only the raw answer for server judging", async () => {
     const recall = sessionAt("recall");
@@ -100,6 +109,52 @@ describe("My private tutor resumable daily session", () => {
     expect(await screen.findByText("课程停在原来的位置")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "从这里继续" }));
     await waitFor(() => expect(apiMocks.resumeSession).toHaveBeenCalledWith(learner.id, paused.id));
+  });
+
+  it("keeps low-confidence speech out of grading until the child confirms the normalized math", async () => {
+    const recall = sessionAt("recall");
+    apiMocks.currentSession.mockResolvedValue(recall);
+    apiMocks.createVoiceTurn.mockResolvedValue({
+      replayed: false,
+      voiceTurn: {
+        id: "ptvt_1", learnerId: learner.id, sessionId: recall.id,
+        questionRevisionId: recall.currentActivity.question?.revisionId,
+        mode: "push_to_talk", provider: "browser_web_speech", transcript: "x 等于 五",
+        normalizedExpression: "x=5", confidence: 0.54, status: "confirmation_required",
+        requiresConfirmation: true, reasonCodes: ["low_confidence"], attemptId: null,
+        createdAt: "2026-08-20T00:00:00.000Z", confirmedAt: null,
+      },
+    });
+    apiMocks.action.mockResolvedValue({ session: sessionAt("explain"), snapshot, answer: { correct: true, independent: false, usedHint: false } });
+
+    class MockRecognition {
+      static latest: MockRecognition;
+      lang = "";
+      continuous = false;
+      interimResults = false;
+      maxAlternatives = 1;
+      onresult: ((event: never) => void) | null = null;
+      onerror = null;
+      onend: (() => void) | null = null;
+      constructor() { MockRecognition.latest = this; }
+      start() {}
+      stop() { this.onend?.(); }
+      abort() { this.onend?.(); }
+    }
+    (window as typeof window & { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition = MockRecognition;
+
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "开始说话" }));
+    MockRecognition.latest.onresult?.({
+      resultIndex: 0,
+      results: { length: 1, 0: { isFinal: true, length: 1, 0: { transcript: "x 等于 五", confidence: 0.54 } } },
+    } as never);
+
+    expect(await screen.findByText("数学表达：x=5")).toBeTruthy();
+    expect(apiMocks.action).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /就是这个/ }));
+    await waitFor(() => expect(apiMocks.action).toHaveBeenCalled());
+    expect(apiMocks.action.mock.calls[0][2]).toMatchObject({ source: "voice_confirmed", voiceTurnId: "ptvt_1", rawAnswer: "" });
   });
 
   it("summarizes independent completion, help used, and the next review without ranking", async () => {

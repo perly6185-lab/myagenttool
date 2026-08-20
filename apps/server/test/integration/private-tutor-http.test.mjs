@@ -351,10 +351,51 @@ test("the adaptive diagnostic is resumable, server-graded, idempotent, and produ
   assert.equal(tutoringSession.intervention.type, "method_switch");
   const hinted = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, { method: "POST", body: { action: "hint" } });
   assert.equal(hinted.body.session.currentActivity.hintLevel, 1);
+  const rejectedAudio = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/voice-turns`, {
+    method: "POST",
+    body: { clientTurnId: "voice-raw-audio", transcript: "五", confidence: 0.9, audioBase64: "not-accepted" },
+  });
+  assert.equal(rejectedAudio.status, 400);
+  assert.equal(rejectedAudio.body.error, "private_tutor_raw_audio_not_accepted");
+
+  const attemptsBeforeSessionVoice = runtimeState.privateTutorAttempts.length;
+  const snapshotBeforeSessionVoice = JSON.stringify(runtimeState.privateTutorSnapshots.find((row) => row.learnerId === learnerId));
+  const normalizedVoice = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/voice-turns`, {
+    method: "POST",
+    body: {
+      clientTurnId: "voice-guided-low-confidence",
+      transcript: "x 等于 五",
+      confidence: 0.54,
+      alternatives: ["x 等于 四"],
+      mode: "push_to_talk",
+      provider: "browser_web_speech",
+    },
+  });
+  assert.equal(normalizedVoice.status, 201);
+  assert.equal(normalizedVoice.body.voiceTurn.normalizedExpression, "x=5");
+  assert.equal(normalizedVoice.body.voiceTurn.status, "confirmation_required");
+  assert.deepEqual(normalizedVoice.body.voiceTurn.reasonCodes, ["low_confidence", "alternative_mismatch"]);
+  assert.equal(runtimeState.privateTutorAttempts.length, attemptsBeforeSessionVoice);
+  assert.equal(JSON.stringify(runtimeState.privateTutorSnapshots.find((row) => row.learnerId === learnerId)), snapshotBeforeSessionVoice);
+
+  const voiceConfirmPayload = {
+    action: "answer",
+    idempotencyKey: "session-guided-correct",
+    voiceTurnId: normalizedVoice.body.voiceTurn.id,
+    responseKind: "answer",
+  };
   const guided = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, {
     method: "POST",
-    body: { action: "answer", idempotencyKey: "session-guided-correct", questionRevisionId: guidedQuestionId, rawAnswer: "5", responseKind: "answer", source: "screen" },
+    body: voiceConfirmPayload,
   });
+  assert.equal(guided.status, 201);
+  assert.equal(guided.body.answer.correct, true);
+  assert.equal(guided.body.voiceTurn.status, "confirmed");
+  assert.equal(guided.body.voiceTurn.attemptId, runtimeState.privateTutorAttempts[0].id);
+  const replayedVoice = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, { method: "POST", body: voiceConfirmPayload });
+  assert.equal(replayedVoice.status, 200);
+  assert.equal(replayedVoice.body.replayed, true);
+  assert.equal(runtimeState.privateTutorAttempts.length, attemptsBeforeSessionVoice + 1);
   tutoringSession = guided.body.session;
   const independentQuestionId = tutoringSession.currentActivity.question.revisionId;
   assert.notEqual(independentQuestionId, guidedQuestionId);
@@ -382,6 +423,8 @@ test("parent-confirmed deletion removes every child data collection and leaves a
   const learnerId = runtimeState.testPrivateTutorLearnerIds[1];
   runtimeState.privateTutorSessions.push({ id: "ptsess_delete", learnerId, ownerTeamId: "team_family_a" });
   runtimeState.privateTutorSessionEvents.push({ id: "ptse_delete", learnerId, sessionId: "ptsess_delete", ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorVoiceTurns.push({ id: "ptvt_delete", learnerId, sessionId: "ptsess_delete", ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorVoiceEvents.push({ id: "ptve_delete", learnerId, sessionId: "ptsess_delete", ownerTeamId: "team_family_a" });
   const rejected = await call(`/api/private-tutor/learners/${learnerId}`, {
     method: "DELETE",
     body: { confirmDisplayName: "错误名字" },
@@ -405,6 +448,8 @@ test("parent-confirmed deletion removes every child data collection and leaves a
     "privateTutorLearningPlans",
     "privateTutorSessions",
     "privateTutorSessionEvents",
+    "privateTutorVoiceTurns",
+    "privateTutorVoiceEvents",
     "privateTutorIdempotencyRecords",
   ]) {
     assert.equal(runtimeState[key].some((row) => row.id === learnerId || row.learnerId === learnerId), false, key);

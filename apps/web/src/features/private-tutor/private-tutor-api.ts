@@ -187,6 +187,24 @@ export interface PrivateTutorSession {
   } | null;
 }
 
+export interface PrivateTutorVoiceTurn {
+  id: string;
+  learnerId: string;
+  sessionId: string;
+  questionRevisionId: string;
+  mode: "push_to_talk" | "hands_free";
+  provider: string;
+  transcript: string;
+  normalizedExpression: string | null;
+  confidence: number;
+  status: "ready" | "confirmation_required" | "unsupported" | "confirmed";
+  requiresConfirmation: boolean;
+  reasonCodes: Array<"low_confidence" | "alternative_mismatch" | "unsupported_math_expression">;
+  attemptId: string | null;
+  createdAt: string;
+  confirmedAt: string | null;
+}
+
 export async function listPrivateTutorLearners() {
   const result = await request<{ learners: PrivateTutorLearner[] }>("GET", "/api/private-tutor/learners");
   return result.learners;
@@ -257,15 +275,43 @@ export async function actOnPrivateTutorSession(learnerId: string, sessionId: str
     responseKind: "answer" | "dont_know";
     source: "screen" | "voice_confirmed";
     recognitionConfidence?: number;
+    voiceTurnId?: string;
   }) {
   return request<{
     session: PrivateTutorSession;
     snapshot?: PrivateTutorSnapshot;
     answer?: { correct: boolean; independent: boolean; usedHint: boolean };
+    voiceTurn?: PrivateTutorVoiceTurn | null;
     replayed?: boolean;
   } & Partial<PrivateTutorIntelligence>>(
     "POST",
     `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/tutoring-sessions/${encodeURIComponent(sessionId)}/actions`,
+    input,
+  );
+}
+
+export async function createPrivateTutorVoiceTurn(learnerId: string, sessionId: string, input: {
+  clientTurnId: string;
+  transcript: string;
+  confidence: number;
+  alternatives: string[];
+  mode: "push_to_talk" | "hands_free";
+  provider: "browser_web_speech";
+}) {
+  return request<{ voiceTurn: PrivateTutorVoiceTurn; replayed: boolean }>(
+    "POST",
+    `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/tutoring-sessions/${encodeURIComponent(sessionId)}/voice-turns`,
+    input,
+  );
+}
+
+export async function recordPrivateTutorVoiceEvent(learnerId: string, sessionId: string, input: {
+  type: "recognition_started" | "recognition_stopped" | "recognition_error" | "playback_started" | "playback_completed" | "playback_interrupted" | "mode_changed";
+  reason?: string;
+}) {
+  return request<{ event: { id: string; type: string; createdAt: string } }>(
+    "POST",
+    `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/tutoring-sessions/${encodeURIComponent(sessionId)}/voice-events`,
     input,
   );
 }

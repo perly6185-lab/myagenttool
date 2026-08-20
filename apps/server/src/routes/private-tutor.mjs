@@ -27,6 +27,10 @@ import {
   resumePrivateTutorSession,
   revealPrivateTutorHint,
 } from "../services/private-tutor-session.mjs";
+import {
+  normalizePrivateTutorSpeech,
+  privateTutorVoiceTurnView,
+} from "../services/private-tutor-voice.mjs";
 
 const LOCAL_TEAM_ID = "team_local";
 const LOCAL_USER_ID = "usr_local";
@@ -38,6 +42,16 @@ const ATTEMPT_SOURCES = new Set(["screen", "voice_confirmed", "visual"]);
 const EXIT_PIN_PATTERN = /^\d{6,12}$/;
 const EXIT_FAILURE_LIMIT = 5;
 const EXIT_LOCK_MS = 5 * 60 * 1000;
+const VOICE_MODES = new Set(["push_to_talk", "hands_free"]);
+const VOICE_EVENT_TYPES = new Set([
+  "recognition_started",
+  "recognition_stopped",
+  "recognition_error",
+  "playback_started",
+  "playback_completed",
+  "playback_interrupted",
+  "mode_changed",
+]);
 
 export async function handlePrivateTutorRoutes({
   req,
@@ -245,6 +259,32 @@ export async function handlePrivateTutorRoutes({
       learner,
       action: assessmentMatch[2],
       assessmentId: assessmentMatch[3] ? decodeURIComponent(assessmentMatch[3]) : null,
+      now,
+      nextId,
+      persistStateSoon,
+    });
+  }
+
+  const voiceMatch = url.pathname.match(/^\/api\/private-tutor\/learners\/([^/]+)\/tutoring-sessions\/([^/]+)\/(voice-turns|voice-events)$/);
+  if (voiceMatch) {
+    const learnerId = decodeURIComponent(voiceMatch[1]);
+    const learner = findAuthorizedLearner(state, actor, learnerId);
+    if (!learner) {
+      recordDeniedAccess(state, { learnerId, actor, method: req.method, resource: "tutoring-voice", now, nextId });
+      persistStateSoon();
+      sendJson(res, 404, learnerNotFound());
+      return true;
+    }
+    return handleTutoringVoiceRoute({
+      req,
+      res,
+      sendJson,
+      readJson,
+      state,
+      actor,
+      learner,
+      sessionId: decodeURIComponent(voiceMatch[2]),
+      resource: voiceMatch[3],
       now,
       nextId,
       persistStateSoon,
@@ -730,6 +770,142 @@ async function handleAssessmentRoute({
   return true;
 }
 
+async function handleTutoringVoiceRoute({
+  req,
+  res,
+  sendJson,
+  readJson,
+  state,
+  actor,
+  learner,
+  sessionId,
+  resource,
+  now,
+  nextId,
+  persistStateSoon,
+}) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "method_not_allowed" });
+    return true;
+  }
+  const session = state.privateTutorSessions.find((row) => row.id === sessionId && row.learnerId === learner.id);
+  if (!session) {
+    sendJson(res, 404, { error: "private_tutor_session_not_found" });
+    return true;
+  }
+  if (session.status !== "active") {
+    sendJson(res, 409, { error: "private_tutor_session_not_active" });
+    return true;
+  }
+  const body = await readJson(req).catch(() => ({}));
+  if (Object.keys(body ?? {}).some((key) => /^audio/i.test(key))) {
+    sendJson(res, 400, { error: "private_tutor_raw_audio_not_accepted" });
+    return true;
+  }
+
+  if (resource === "voice-events") {
+    const type = String(body?.type ?? "");
+    if (!VOICE_EVENT_TYPES.has(type)) {
+      sendJson(res, 400, { error: "invalid_private_tutor_voice_event" });
+      return true;
+    }
+    const createdAt = now();
+    const event = {
+      id: nextId("ptve"),
+      ownerTeamId: learner.ownerTeamId,
+      learnerId: learner.id,
+      sessionId: session.id,
+      actorId: actor?.userId ?? LOCAL_USER_ID,
+      type,
+      reason: String(body?.reason ?? "").slice(0, 80) || null,
+      createdAt,
+    };
+    state.privateTutorVoiceEvents.unshift(event);
+    persistStateSoon();
+    sendJson(res, 201, { event: { id: event.id, type: event.type, createdAt } });
+    return true;
+  }
+
+  const clientTurnId = String(body?.clientTurnId ?? "").trim();
+  const transcript = String(body?.transcript ?? "").trim();
+  const mode = String(body?.mode ?? "push_to_talk");
+  const provider = String(body?.provider ?? "browser_web_speech").slice(0, 60);
+  const alternatives = Array.isArray(body?.alternatives)
+    ? body.alternatives.map((value) => String(value ?? "").slice(0, 300)).slice(0, 3)
+    : [];
+  if (!clientTurnId || clientTurnId.length > MAX_IDEMPOTENCY_KEY_LENGTH || !transcript || transcript.length > 300 || !VOICE_MODES.has(mode)) {
+    sendJson(res, 400, { error: "invalid_private_tutor_voice_turn" });
+    return true;
+  }
+  const activity = currentPrivateTutorActivity(session);
+  const question = activity?.questionRevisionId ? privateTutorQuestion(activity.questionRevisionId) : null;
+  if (!question) {
+    sendJson(res, 409, { error: "private_tutor_voice_question_required" });
+    return true;
+  }
+  const requestValue = {
+    transcript,
+    confidence: body?.confidence,
+    alternatives,
+    mode,
+    provider,
+    questionRevisionId: question.id,
+  };
+  const requestHash = stableHash(requestValue);
+  const existing = state.privateTutorVoiceTurns.find((row) =>
+    row.learnerId === learner.id
+    && row.sessionId === session.id
+    && row.actorId === (actor?.userId ?? LOCAL_USER_ID)
+    && row.clientTurnId === clientTurnId);
+  if (existing) {
+    if (existing.requestHash !== requestHash) {
+      sendJson(res, 409, { error: "private_tutor_voice_turn_conflict" });
+      return true;
+    }
+    sendJson(res, 200, { voiceTurn: privateTutorVoiceTurnView(existing), replayed: true });
+    return true;
+  }
+  const normalization = normalizePrivateTutorSpeech({ ...requestValue, question });
+  if (!normalization.accepted) {
+    sendJson(res, 400, { error: normalization.error });
+    return true;
+  }
+  const createdAt = now();
+  const voiceTurn = {
+    id: nextId("ptvt"),
+    ownerTeamId: learner.ownerTeamId,
+    learnerId: learner.id,
+    sessionId: session.id,
+    actorId: actor?.userId ?? LOCAL_USER_ID,
+    clientTurnId,
+    requestHash,
+    questionRevisionId: question.id,
+    mode,
+    provider,
+    transcript: normalization.transcript,
+    normalizedExpression: normalization.normalizedExpression,
+    confidence: normalization.confidence,
+    status: normalization.status,
+    reasonCodes: normalization.reasonCodes,
+    attemptId: null,
+    createdAt,
+    confirmedAt: null,
+  };
+  state.privateTutorVoiceTurns.unshift(voiceTurn);
+  recordTutoringSessionEvent(state, {
+    learner,
+    actor,
+    session,
+    type: "voice_turn_normalized",
+    details: { voiceTurnId: voiceTurn.id, status: voiceTurn.status, reasonCodes: voiceTurn.reasonCodes },
+    now,
+    nextId,
+  });
+  persistStateSoon();
+  sendJson(res, 201, { voiceTurn: privateTutorVoiceTurnView(voiceTurn), replayed: false });
+  return true;
+}
+
 async function handleTutoringSessionRoute({
   req,
   res,
@@ -896,28 +1072,38 @@ async function handleTutoringSessionRoute({
     return true;
   }
   const idempotencyKey = String(body?.idempotencyKey ?? "").trim();
-  const questionRevisionId = String(body?.questionRevisionId ?? "").trim();
-  const source = String(body?.source ?? "screen").trim();
-  const recognitionConfidence = body?.recognitionConfidence == null ? null : Number(body.recognitionConfidence);
+  const voiceTurnId = String(body?.voiceTurnId ?? "").trim() || null;
+  const voiceTurn = voiceTurnId
+    ? state.privateTutorVoiceTurns.find((row) => row.id === voiceTurnId && row.learnerId === learner.id && row.sessionId === session.id)
+    : null;
+  const questionRevisionId = voiceTurn?.questionRevisionId ?? String(body?.questionRevisionId ?? "").trim();
+  const source = voiceTurn ? "voice_confirmed" : String(body?.source ?? "screen").trim();
+  const recognitionConfidence = voiceTurn?.confidence
+    ?? (body?.recognitionConfidence == null ? null : Number(body.recognitionConfidence));
   if (!idempotencyKey || idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
     sendJson(res, 400, { error: "invalid_private_tutor_idempotency_key" });
+    return true;
+  }
+  if (voiceTurnId && !voiceTurn) {
+    sendJson(res, 404, { error: "private_tutor_voice_turn_not_found" });
     return true;
   }
   if (!ATTEMPT_SOURCES.has(source)) {
     sendJson(res, 400, { error: "invalid_private_tutor_attempt_source" });
     return true;
   }
-  if (source === "voice_confirmed" && (!Number.isFinite(recognitionConfidence) || recognitionConfidence < 0.75)) {
+  if (!voiceTurn && source === "voice_confirmed" && (!Number.isFinite(recognitionConfidence) || recognitionConfidence < 0.75)) {
     sendJson(res, 409, { error: "private_tutor_voice_confirmation_required", minimumConfidence: 0.75 });
     return true;
   }
   const requestValue = {
     sessionId: session.id,
     questionRevisionId,
-    rawAnswer: String(body?.rawAnswer ?? ""),
+    rawAnswer: voiceTurn?.normalizedExpression ?? String(body?.rawAnswer ?? ""),
     responseKind: String(body?.responseKind ?? "answer"),
     source,
     recognitionConfidence: Number.isFinite(recognitionConfidence) ? recognitionConfidence : null,
+    voiceTurnId,
   };
   const requestHash = stableHash(requestValue);
   const existing = state.privateTutorIdempotencyRecords.find((row) =>
@@ -928,6 +1114,14 @@ async function handleTutoringSessionRoute({
       return true;
     }
     sendJson(res, 200, { ...existing.response, replayed: true });
+    return true;
+  }
+  if (voiceTurn && voiceTurn.status === "unsupported") {
+    sendJson(res, 422, { error: "private_tutor_voice_expression_unsupported" });
+    return true;
+  }
+  if (voiceTurn?.attemptId || voiceTurn?.status === "confirmed") {
+    sendJson(res, 409, { error: "private_tutor_voice_turn_already_confirmed" });
     return true;
   }
   if (!activity?.questionRevisionId) {
@@ -974,6 +1168,11 @@ async function handleTutoringSessionRoute({
   const snapshot = applyAttemptToSnapshot(state, learner, attempt, { now, nextId });
   const answerResult = recordPrivateTutorSessionAnswer(session, { correct: attempt.correct, attemptId: attempt.id, now });
   const intelligence = refreshPrivateTutorIntelligence(state, learner, { now, nextId, reason: "tutoring_session_evidence" });
+  if (voiceTurn) {
+    voiceTurn.status = "confirmed";
+    voiceTurn.confirmedAt = createdAt;
+    voiceTurn.attemptId = attempt.id;
+  }
   const response = {
     session: privateTutorSessionView(session),
     snapshot: snapshotView(snapshot),
@@ -982,6 +1181,7 @@ async function handleTutoringSessionRoute({
       independent: attempt.independent,
       usedHint: attempt.usedHint,
     },
+    voiceTurn: privateTutorVoiceTurnView(voiceTurn),
     ...intelligence,
   };
   state.privateTutorIdempotencyRecords.unshift({
@@ -1001,7 +1201,7 @@ async function handleTutoringSessionRoute({
     actor,
     session,
     type: attempt.correct ? "answer_correct" : answerResult.advanced ? "activity_completed" : "answer_incorrect",
-    details: { activity: attempt.activityKind, attemptId: attempt.id, usedHint: attempt.usedHint, independent: attempt.independent },
+    details: { activity: attempt.activityKind, attemptId: attempt.id, voiceTurnId, usedHint: attempt.usedHint, independent: attempt.independent },
     now,
     nextId,
   });
@@ -1210,6 +1410,8 @@ function ensureCollections(state) {
     "privateTutorLearningPlans",
     "privateTutorSessions",
     "privateTutorSessionEvents",
+    "privateTutorVoiceTurns",
+    "privateTutorVoiceEvents",
     "privateTutorIdempotencyRecords",
     "privateTutorAuditEvents",
   ]) {
@@ -1365,6 +1567,8 @@ function removeLearnerData(state, learnerId) {
     "privateTutorLearningPlans",
     "privateTutorSessions",
     "privateTutorSessionEvents",
+    "privateTutorVoiceTurns",
+    "privateTutorVoiceEvents",
     "privateTutorIdempotencyRecords",
   ]) {
     state[key] = state[key].filter((row) => row.learnerId !== learnerId && row.id !== learnerId);

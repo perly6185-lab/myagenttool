@@ -69,6 +69,8 @@ export function createServerState({ defaultProjectPath, now }) {
     privateTutorLearningPlans: [],
     privateTutorSessions: [],
     privateTutorSessionEvents: [],
+    privateTutorVoiceTurns: [],
+    privateTutorVoiceEvents: [],
     privateTutorIdempotencyRecords: [],
     privateTutorAuditEvents: [],
     applications: [],

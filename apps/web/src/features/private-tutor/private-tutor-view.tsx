@@ -36,6 +36,7 @@ import {
 import { loadLearnerState, saveLearnerState } from "@/features/private-tutor/private-tutor-storage";
 import {
   actOnPrivateTutorSession,
+  createPrivateTutorVoiceTurn,
   createPrivateTutorLearner,
   answerPrivateTutorAssessment,
   exitPrivateTutorChildMode,
@@ -45,6 +46,7 @@ import {
   listPrivateTutorLearners,
   pausePrivateTutorAssessment,
   pausePrivateTutorSession,
+  recordPrivateTutorVoiceEvent,
   rebalancePrivateTutorLearningPlan,
   resumePrivateTutorAssessment,
   resumePrivateTutorSession,
@@ -59,7 +61,16 @@ import {
   type PrivateTutorSessionPace,
   type PrivateTutorSnapshot,
   type PrivateTutorStrategyDecision,
+  type PrivateTutorVoiceTurn,
 } from "@/features/private-tutor/private-tutor-api";
+import {
+  browserSpeechRecognitionAvailable,
+  interruptPrivateTutorSpeech,
+  speakPrivateTutorText,
+  startPrivateTutorRecognition,
+  type PrivateTutorRecognitionController,
+  type PrivateTutorVoiceMode,
+} from "@/features/private-tutor/private-tutor-voice";
 
 const STUDENT_TABS: Array<{ key: TutorTab; label: string; icon: typeof House }> = [
   { key: "today", label: "今日学习", icon: House },
@@ -715,39 +726,162 @@ function TodayLearning({
   const [pace, setPace] = useState<PrivateTutorSessionPace>("standard");
   const [answer, setAnswer] = useState("");
   const [voiceMessage, setVoiceMessage] = useState("点一下麦克风，也可以直接说");
+  const [voiceMode, setVoiceMode] = useState<PrivateTutorVoiceMode>("push_to_talk");
+  const [interimTranscript, setInterimTranscript] = useState("");
+  const [pendingVoiceTurn, setPendingVoiceTurn] = useState<PrivateTutorVoiceTurn | null>(null);
   const [listening, setListening] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [speechRate, setSpeechRate] = useState(1);
+  const [subtitle, setSubtitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  const streamRef = useRef<MediaStream | null>(null);
+  const recognitionRef = useRef<PrivateTutorRecognitionController | null>(null);
   const attemptKeyRef = useRef(newClientKey("tutoring"));
   const dailyProgress = Math.round((state.dailyMinutes / 20) * 100);
 
-  useEffect(() => () => streamRef.current?.getTracks().forEach((track) => track.stop()), []);
+  useEffect(() => () => {
+    recognitionRef.current?.abort();
+    interruptPrivateTutorSpeech();
+  }, []);
   useEffect(() => {
     setAnswer("");
     setMessage("");
+    setInterimTranscript("");
+    setPendingVoiceTurn(null);
     attemptKeyRef.current = newClientKey("tutoring");
   }, [session?.currentActivity?.question?.revisionId]);
 
+  function recordVoiceEvent(type: Parameters<typeof recordPrivateTutorVoiceEvent>[2]["type"], reason?: string) {
+    if (!session) return;
+    void recordPrivateTutorVoiceEvent(state.learner.id, session.id, { type, reason }).catch(() => undefined);
+  }
+
+  function stopVoiceRecognition() {
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    setListening(false);
+    recordVoiceEvent("recognition_stopped");
+  }
+
   async function toggleVoice() {
     if (listening) {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-      setListening(false);
-      setVoiceMessage("已停止。本演示不保存原始音频");
+      stopVoiceRecognition();
+      setVoiceMessage("已停止。本站后端不接收或保存原始音频");
       return;
     }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setVoiceMessage("当前设备不支持麦克风，请使用屏幕作答");
+    const question = session?.currentActivity?.question;
+    if (!session || !question) {
+      setVoiceMessage("讲解时可以点“读给我听”；遇到题目后再用语音回答");
       return;
     }
-    try {
-      streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-      setListening(true);
-      setVoiceMessage("正在听…说完后再点一下。低置信度表达不会直接判错");
-    } catch {
-      setVoiceMessage("没有获得麦克风权限，仍可使用屏幕作答");
+    if (!browserSpeechRecognitionAvailable()) {
+      setVoiceMessage("当前浏览器没有语音识别能力，请直接写答案；学习不会中断");
+      return;
     }
+    if (interruptPrivateTutorSpeech()) recordVoiceEvent("playback_interrupted", "student_barge_in");
+    setSpeaking(false);
+    setSubtitle("");
+    setPendingVoiceTurn(null);
+    setInterimTranscript("");
+    const controller = startPrivateTutorRecognition({
+      mode: voiceMode,
+      onInterim: (transcript) => {
+        setInterimTranscript(transcript);
+        setVoiceMessage("正在听…你可以随时停下来");
+      },
+      onFinal: ({ transcript, confidence, alternatives }) => {
+        recognitionRef.current?.stop();
+        recognitionRef.current = null;
+        setInterimTranscript("");
+        setListening(false);
+        setVoiceMessage("正在把语音变成规范的数学表达…");
+        void createPrivateTutorVoiceTurn(state.learner.id, session.id, {
+          clientTurnId: newClientKey("voice"),
+          transcript,
+          confidence,
+          alternatives,
+          mode: voiceMode,
+          provider: "browser_web_speech",
+        }).then(({ voiceTurn }) => {
+          setPendingVoiceTurn(voiceTurn);
+          setAnswer(voiceTurn.normalizedExpression ?? "");
+          if (voiceTurn.status === "unsupported") {
+            setVoiceMessage("这句话还不能安全地变成数学答案，请再说一次或直接写答案");
+          } else if (voiceTurn.requiresConfirmation) {
+            setVoiceMessage("我不太确定，确认后才会判题，不会直接算错");
+          } else {
+            setVoiceMessage("我已经整理成数学表达，请看一眼再确认");
+          }
+          if (voiceMode === "hands_free" && !voiceTurn.requiresConfirmation && voiceTurn.normalizedExpression) {
+            void gradeVoiceTurn(voiceTurn);
+          }
+        }).catch(() => setVoiceMessage("语音暂时没有处理成功，请再说一次或直接写答案"));
+      },
+      onError: (error) => {
+        recognitionRef.current = null;
+        setListening(false);
+        setVoiceMessage(error === "not-allowed" ? "没有获得麦克风权限，请直接写答案" : "没有听清，请再试一次或直接写答案");
+        recordVoiceEvent("recognition_error", error);
+      },
+      onEnd: () => {
+        recognitionRef.current = null;
+        setListening(false);
+      },
+    });
+    if (!controller) {
+      setVoiceMessage("语音没有启动成功，请检查麦克风权限或直接写答案");
+      return;
+    }
+    recognitionRef.current = controller;
+    setListening(true);
+    setVoiceMessage(voiceMode === "hands_free" ? "自由对话已开启，说完一句后会显示识别结果" : "正在听…说出你的答案");
+    recordVoiceEvent("recognition_started");
+  }
+
+  async function gradeVoiceTurn(voiceTurn: PrivateTutorVoiceTurn) {
+    const question = session?.currentActivity?.question;
+    if (!question || !voiceTurn.normalizedExpression) return;
+    setBusy(true);
+    setMessage("");
+    const result = await onAction({
+      action: "answer",
+      idempotencyKey: attemptKeyRef.current,
+      questionRevisionId: question.revisionId,
+      rawAnswer: "",
+      responseKind: "answer",
+      source: "voice_confirmed",
+      recognitionConfidence: voiceTurn.confidence,
+      voiceTurnId: voiceTurn.id,
+    });
+    if (result.error) setMessage(result.error);
+    else {
+      setPendingVoiceTurn(null);
+      setAnswer("");
+      setVoiceMessage(result.correct ? "听对了，也答对了。继续下一小步吧" : "答案已经确认。没关系，我会换一种讲法");
+      if (result.correct === false) attemptKeyRef.current = newClientKey("tutoring");
+    }
+    setBusy(false);
+  }
+
+  async function confirmVoiceAnswer() {
+    if (pendingVoiceTurn) await gradeVoiceTurn(pendingVoiceTurn);
+  }
+
+  function speakCurrent(rate = speechRate) {
+    if (!session?.currentActivity) return;
+    const text = [session.currentActivity.instruction, session.currentActivity.question?.prompt].filter(Boolean).join("。 ");
+    setSubtitle(text);
+    const started = speakPrivateTutorText(text, {
+      rate,
+      onStart: () => { setSpeaking(true); recordVoiceEvent("playback_started"); },
+      onEnd: () => { setSpeaking(false); recordVoiceEvent("playback_completed"); },
+    });
+    if (!started) setVoiceMessage("当前设备不能语音播报，字幕仍然可以使用");
+  }
+
+  function stopPlayback() {
+    if (interruptPrivateTutorSpeech()) recordVoiceEvent("playback_interrupted", "student_stop");
+    setSpeaking(false);
   }
 
   async function start() {
@@ -758,6 +892,10 @@ function TodayLearning({
   }
 
   async function pause() {
+    recognitionRef.current?.abort();
+    recognitionRef.current = null;
+    setListening(false);
+    stopPlayback();
     setBusy(true);
     setMessage(await onPause() ?? "");
     setBusy(false);
@@ -921,6 +1059,11 @@ function TodayLearning({
           {current.kind === "explain" && session.targetKnowledgeId !== "balance" ? <div className="grid min-h-48 place-items-center rounded-2xl border bg-sky-50 text-center dark:bg-sky-950/30"><div><BrainCircuit className="mx-auto size-10 text-sky-600" /><p className="mt-3 font-semibold">换成具体步骤来看</p></div></div> : null}
           <div className="mt-5 rounded-2xl bg-muted/60 p-4">
             <p className="flex gap-2 text-sm leading-6"><Volume2 className="mt-1 size-4 shrink-0 text-emerald-600" />{current.instruction}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="secondary" onClick={() => speaking ? stopPlayback() : speakCurrent()}>{speaking ? <MicOff /> : <Volume2 />}{speaking ? "停止播放" : "读给我听"}</Button>
+              <button type="button" className="rounded-md px-3 text-xs text-muted-foreground hover:bg-muted" onClick={() => { const nextRate = speechRate === 1 ? 0.78 : 1; setSpeechRate(nextRate); }}>{speechRate < 1 ? "慢速" : "正常语速"}</button>
+            </div>
+            {subtitle ? <p aria-live="polite" className="mt-3 rounded-lg bg-card px-3 py-2 text-xs leading-5 text-muted-foreground">字幕：{subtitle}</p> : null}
           </div>
           {session.intervention ? <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100">{session.intervention.message}</p> : null}
           {current.kind === "explain" ? <Button className="mt-5" disabled={busy} onClick={() => void simpleAction("continue")}>我理解了，继续</Button> : null}
@@ -944,15 +1087,31 @@ function TodayLearning({
       <aside className="grid content-start gap-4">
         <Card className="p-5">
           <p className="text-sm font-semibold">可以说，也可以点</p>
-          <button type="button" onClick={() => void toggleVoice()} className={cn("mt-4 flex min-h-24 w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed transition", listening ? "border-rose-400 bg-rose-50 text-rose-700 dark:bg-rose-950" : "border-emerald-300 bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950")}>{listening ? <MicOff className="size-7" /> : <Mic className="size-7" />}<span className="text-sm font-medium">{listening ? "停止聆听" : "按住说话"}</span></button>
+          <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-muted/60 p-1" aria-label="语音交互模式">
+            {(["push_to_talk", "hands_free"] as const).map((mode) => <button key={mode} type="button" disabled={listening} onClick={() => { setVoiceMode(mode); recordVoiceEvent("mode_changed", mode); }} className={cn("rounded-lg px-2 py-2 text-xs font-medium", voiceMode === mode ? "bg-card text-foreground shadow-sm" : "text-muted-foreground")}>{mode === "push_to_talk" ? "点按说话" : "自由对话"}</button>)}
+          </div>
+          <button type="button" onClick={() => void toggleVoice()} className={cn("mt-4 flex min-h-24 w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed transition", listening ? "border-rose-400 bg-rose-50 text-rose-700 dark:bg-rose-950" : "border-emerald-300 bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950")}>{listening ? <MicOff className="size-7" /> : <Mic className="size-7" />}<span className="text-sm font-medium">{listening ? "停止聆听" : "开始说话"}</span></button>
+          {interimTranscript ? <p className="mt-3 rounded-lg bg-sky-50 p-3 text-sm text-sky-900 dark:bg-sky-950 dark:text-sky-100">正在识别：{interimTranscript}</p> : null}
           <p role="status" className="mt-3 text-xs leading-5 text-muted-foreground">{voiceMessage}</p>
+          {pendingVoiceTurn ? (
+            <div className={cn("mt-3 rounded-xl border p-3", pendingVoiceTurn.requiresConfirmation ? "border-amber-300 bg-amber-50 dark:bg-amber-950" : "border-emerald-300 bg-emerald-50 dark:bg-emerald-950")}>
+              <p className="text-xs text-muted-foreground">我听到：{pendingVoiceTurn.transcript}</p>
+              <p className="mt-1 text-base font-semibold">数学表达：{pendingVoiceTurn.normalizedExpression ?? "暂时无法确认"}</p>
+              {pendingVoiceTurn.requiresConfirmation ? <p className="mt-2 text-xs text-amber-800 dark:text-amber-200">识别把握不足或存在不同候选，确认前不会判题，也不会影响掌握度。</p> : null}
+              <div className="mt-3 flex gap-2">
+                <Button size="sm" disabled={busy || !pendingVoiceTurn.normalizedExpression} onClick={() => void confirmVoiceAnswer()}><Check />就是这个</Button>
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => { setPendingVoiceTurn(null); setAnswer(""); void toggleVoice(); }}>重新说</Button>
+              </div>
+            </div>
+          ) : null}
+          <p className="mt-3 text-[11px] leading-4 text-muted-foreground">本站后端不接收或保存原始音频；浏览器语音服务可能按设备设置处理音频。口音、音色和流利度不会作为掌握度证据。</p>
         </Card>
         <Card className="p-5">
           <p className="flex items-center gap-2 text-sm font-semibold"><Heart className="size-4 text-rose-500" />卡住了也没关系</p>
           <div className="mt-3 grid gap-2">
             {current.question ? <Button variant="secondary" className="justify-start" disabled={busy || current.hintLevel >= 3} onClick={() => void simpleAction("hint")}><BrainCircuit />给我一点提示</Button> : null}
             {current.question ? <Button variant="secondary" className="justify-start" disabled={busy} onClick={() => void submit("dont_know", "")}><Heart />我还不会</Button> : null}
-            <Button variant="secondary" className="justify-start" onClick={() => setVoiceMessage("已放慢讲解节奏。正式语音合成将在 P6 接入。") }><Volume2 />说慢一点</Button>
+            <Button variant="secondary" className="justify-start" onClick={() => { setSpeechRate(0.78); speakCurrent(0.78); }}><Volume2 />说慢一点</Button>
           </div>
           {current.kind === "independent_check" ? <p className="mt-3 text-xs leading-5 text-muted-foreground">这道题与刚才不同。看提示后仍会保留证据，但会记作辅助完成。</p> : null}
         </Card>
