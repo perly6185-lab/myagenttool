@@ -63,6 +63,7 @@ export function createServerState({ defaultProjectPath, now }) {
     privateTutorGuardianLinks: [],
     privateTutorSnapshots: [],
     privateTutorAttempts: [],
+    privateTutorAssessments: [],
     privateTutorIdempotencyRecords: [],
     privateTutorAuditEvents: [],
     applications: [],

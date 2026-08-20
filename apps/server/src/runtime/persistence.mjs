@@ -63,6 +63,7 @@ export const persistedArrayKeys = [
   "privateTutorGuardianLinks",
   "privateTutorSnapshots",
   "privateTutorAttempts",
+  "privateTutorAssessments",
   "privateTutorIdempotencyRecords",
   "privateTutorAuditEvents",
   "agents",

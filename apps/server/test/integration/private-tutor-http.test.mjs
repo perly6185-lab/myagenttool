@@ -128,7 +128,8 @@ test("attempt writes are learner-scoped, idempotent, and update explainable mast
     idempotencyKey: "attempt-client-001",
     knowledgeId: "balance",
     questionRevisionId: "demo-balance-001-v1",
-    correct: true,
+    rawAnswer: "x = 5",
+    responseKind: "answer",
     independent: true,
     usedHint: false,
     source: "screen",
@@ -150,7 +151,7 @@ test("attempt writes are learner-scoped, idempotent, and update explainable mast
 
   const conflict = await call(`/api/private-tutor/learners/${learnerId}/attempts`, {
     method: "POST",
-    body: { ...payload, correct: false },
+    body: { ...payload, rawAnswer: "4" },
   });
   assert.equal(conflict.status, 409);
   assert.equal(conflict.body.error, "private_tutor_idempotency_conflict");
@@ -166,7 +167,8 @@ test("low-confidence voice never enters grading or mastery evidence", async () =
       idempotencyKey: "voice-low-confidence-001",
       knowledgeId: "balance",
       questionRevisionId: "demo-balance-voice-v1",
-      correct: false,
+      rawAnswer: "4",
+      responseKind: "answer",
       independent: true,
       usedHint: false,
       source: "voice_confirmed",
@@ -178,6 +180,109 @@ test("low-confidence voice never enters grading or mastery evidence", async () =
   assert.equal(response.body.error, "private_tutor_voice_confirmation_required");
   assert.equal(runtimeState.privateTutorAttempts.length, beforeAttempts);
   assert.equal(JSON.stringify(runtimeState.privateTutorSnapshots.find((row) => row.learnerId === learnerId)), beforeSnapshot);
+});
+
+test("the adaptive diagnostic is resumable, server-graded, idempotent, and produces measured results", async () => {
+  const learnerId = runtimeState.testPrivateTutorLearnerIds[0];
+  const started = await call(`/api/private-tutor/learners/${learnerId}/assessments/start`, { method: "POST", body: {} });
+  assert.equal(started.status, 201);
+  let assessment = started.body.assessment;
+  assert.equal(assessment.status, "active");
+  assert.equal(assessment.currentQuestion.knowledgeId, "equation-meaning");
+  assert.equal(JSON.stringify(assessment.currentQuestion).includes("expected"), false);
+
+  const answerOracleBlocked = await call(`/api/private-tutor/learners/${learnerId}/attempts`, {
+    method: "POST",
+    body: {
+      idempotencyKey: "diagnostic-answer-oracle",
+      knowledgeId: assessment.currentQuestion.knowledgeId,
+      questionRevisionId: assessment.currentQuestion.revisionId,
+      rawAnswer: "5",
+      responseKind: "answer",
+      independent: true,
+      usedHint: false,
+      source: "screen",
+      durationSeconds: 1,
+    },
+  });
+  assert.equal(answerOracleBlocked.status, 400);
+  assert.equal(answerOracleBlocked.body.error, "invalid_private_tutor_attempt_reference");
+
+  const paused = await call(`/api/private-tutor/learners/${learnerId}/assessments/${assessment.id}/pause`, { method: "POST", body: {} });
+  assert.equal(paused.status, 200);
+  assert.equal(paused.body.assessment.status, "paused");
+  const current = await call(`/api/private-tutor/learners/${learnerId}/assessments/current`);
+  assert.equal(current.body.assessment.status, "paused");
+  const resumed = await call(`/api/private-tutor/learners/${learnerId}/assessments/${assessment.id}/resume`, { method: "POST", body: {} });
+  assert.equal(resumed.status, 200);
+  assessment = resumed.body.assessment;
+
+  const attemptsBeforeVoice = runtimeState.privateTutorAttempts.length;
+  const lowVoice = await call(`/api/private-tutor/learners/${learnerId}/assessments/${assessment.id}/answers`, {
+    method: "POST",
+    body: {
+      idempotencyKey: "diagnostic-low-voice",
+      questionRevisionId: assessment.currentQuestion.revisionId,
+      rawAnswer: "5",
+      responseKind: "answer",
+      source: "voice_confirmed",
+      recognitionConfidence: 0.4,
+      durationSeconds: 20,
+    },
+  });
+  assert.equal(lowVoice.status, 409);
+  assert.equal(runtimeState.privateTutorAttempts.length, attemptsBeforeVoice);
+
+  const answers = {
+    "diag-int-01-v1": "-3",
+    "diag-int-02-v1": "3",
+    "diag-int-03-v1": "13",
+    "diag-eqm-01-v1": "b",
+    "diag-eqm-02-v1": "x=5",
+    "diag-eqm-03-v1": "4",
+    "diag-bal-01-v1": "b",
+    "diag-bal-02-v1": "10/2",
+    "diag-bal-03-v1": "3",
+    "diag-word-01-v1": "5",
+    "diag-word-02-v1": "4",
+    "diag-word-03-v1": "3",
+  };
+  let firstResponse;
+  let index = 0;
+  while (assessment.status === "active") {
+    const questionRevisionId = assessment.currentQuestion.revisionId;
+    const payload = {
+      idempotencyKey: `diagnostic-answer-${index}`,
+      questionRevisionId,
+      rawAnswer: answers[questionRevisionId],
+      responseKind: "answer",
+      source: "screen",
+      durationSeconds: 45,
+      correct: false,
+    };
+    const answered = await call(`/api/private-tutor/learners/${learnerId}/assessments/${assessment.id}/answers`, { method: "POST", body: payload });
+    assert.equal(answered.status, 201, questionRevisionId);
+    if (index === 0) {
+      firstResponse = answered.body;
+      const replay = await call(`/api/private-tutor/learners/${learnerId}/assessments/${assessment.id}/answers`, { method: "POST", body: payload });
+      assert.equal(replay.status, 200);
+      assert.equal(replay.body.replayed, true);
+      assert.equal(replay.body.assessment.revision, firstResponse.assessment.revision);
+    }
+    assessment = answered.body.assessment;
+    index += 1;
+    assert.ok(index <= 18);
+  }
+
+  assert.equal(assessment.status, "completed");
+  assert.ok(assessment.answeredCount >= 12 && assessment.answeredCount <= 18);
+  assert.equal(assessment.result.knowledge.every((item) => item.level === "mastered"), true);
+  const diagnosticAttempts = runtimeState.privateTutorAttempts.filter((row) => row.assessmentId === assessment.id);
+  assert.equal(diagnosticAttempts.length, assessment.answeredCount);
+  assert.equal(diagnosticAttempts.every((row) => row.correct === true), true);
+  const snapshot = await call(`/api/private-tutor/learners/${learnerId}/snapshot`);
+  assert.equal(snapshot.body.snapshot.latestAssessmentId, assessment.id);
+  assert.equal(snapshot.body.snapshot.knowledge.every((item) => item.level !== "unknown"), true);
 });
 
 test("parent-confirmed deletion removes every child data collection and leaves an audit tombstone", async () => {
@@ -199,6 +304,7 @@ test("parent-confirmed deletion removes every child data collection and leaves a
     "privateTutorGuardianLinks",
     "privateTutorSnapshots",
     "privateTutorAttempts",
+    "privateTutorAssessments",
     "privateTutorIdempotencyRecords",
   ]) {
     assert.equal(runtimeState[key].some((row) => row.id === learnerId || row.learnerId === learnerId), false, key);

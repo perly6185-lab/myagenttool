@@ -37,11 +37,17 @@ import {
 import { loadLearnerState, saveLearnerState } from "@/features/private-tutor/private-tutor-storage";
 import {
   createPrivateTutorLearner,
+  answerPrivateTutorAssessment,
   exitPrivateTutorChildMode,
+  getCurrentPrivateTutorAssessment,
   getPrivateTutorSnapshot,
   listPrivateTutorLearners,
+  pausePrivateTutorAssessment,
   recordPrivateTutorAttempt,
+  resumePrivateTutorAssessment,
+  startPrivateTutorAssessment,
   startPrivateTutorChildMode,
+  type PrivateTutorAssessment,
   type PrivateTutorLearner,
   type PrivateTutorSnapshot,
 } from "@/features/private-tutor/private-tutor-api";
@@ -98,15 +104,29 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
     [learnerId],
   );
   const [learnerState, setLearnerState] = useState<LearnerTutorState>(() => loadLearnerState(learner));
+  const [assessment, setAssessment] = useState<PrivateTutorAssessment | null>(null);
+  const [assessmentReady, setAssessmentReady] = useState(false);
+  const [diagnosticDismissed, setDiagnosticDismissed] = useState(false);
 
   useEffect(() => {
     let current = true;
     setLearnerState(loadLearnerState(learner));
-    void getPrivateTutorSnapshot(learnerId)
-      .then(({ learner: profile, snapshot }) => {
-        if (current) setLearnerState(serverLearnerState(profile, snapshot));
-      })
-      .catch(() => {});
+    setAssessmentReady(false);
+    setDiagnosticDismissed(false);
+    void Promise.allSettled([getPrivateTutorSnapshot(learnerId), getCurrentPrivateTutorAssessment(learnerId)])
+      .then(([snapshotResult, assessmentResult]) => {
+        if (!current) return;
+        if (snapshotResult.status === "fulfilled") {
+          setLearnerState(serverLearnerState(snapshotResult.value.learner, snapshotResult.value.snapshot));
+        }
+        if (assessmentResult.status === "fulfilled") {
+          setAssessment(assessmentResult.value);
+          setDiagnosticDismissed(assessmentResult.value?.status === "completed");
+        } else {
+          setAssessment(null);
+        }
+        setAssessmentReady(true);
+      });
     return () => { current = false; };
   }, [learner, learnerId]);
   useEffect(() => {
@@ -123,13 +143,45 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
       idempotencyKey,
       knowledgeId: "balance",
       questionRevisionId: "demo-balance-001-v1",
-      correct: true,
+      rawAnswer: "5",
+      responseKind: "answer",
       independent: true,
       usedHint: false,
       source: "screen",
       durationSeconds: 180,
     });
     return applyServerSnapshot(learnerState, result.snapshot);
+  }
+
+  async function finishDiagnostic() {
+    try {
+      const result = await getPrivateTutorSnapshot(learnerId);
+      setLearnerState(serverLearnerState(result.learner, result.snapshot));
+      setDiagnosticDismissed(true);
+      setTab("map");
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "知识地图暂时无法读取，请稍后再试。";
+    }
+  }
+
+  const allKnowledgeUnknown = learnerState.knowledge.every((item) => item.level === "unknown");
+  if (!assessmentReady) {
+    return <div className="grid min-h-[65vh] place-items-center text-sm text-muted-foreground">正在准备专属于你的学习空间…</div>;
+  }
+  if ((!assessment && allKnowledgeUnknown)
+    || (assessment != null && assessment.status !== "completed")
+    || (assessment?.status === "completed" && !diagnosticDismissed)) {
+    return (
+      <DiagnosticExperience
+        learnerName={learnerState.learner.displayName}
+        learnerId={learnerId}
+        assessment={assessment}
+        onAssessmentChange={setAssessment}
+        onFinish={finishDiagnostic}
+        onParentExit={onParentExit}
+      />
+    );
   }
 
   return (
@@ -146,9 +198,9 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
             </div>
           </div>
           <div className="flex items-center gap-2 rounded-full border bg-card/80 py-1 pl-1 pr-3 text-sm shadow-sm">
-            <span className="grid size-8 place-items-center rounded-full bg-amber-100 font-semibold text-amber-800">{learner.avatar}</span>
-            <span className="font-medium">{learner.displayName}</span>
-            <span className="text-xs text-muted-foreground">{learner.grade}</span>
+            <span className="grid size-8 place-items-center rounded-full bg-amber-100 font-semibold text-amber-800">{learnerState.learner.avatar}</span>
+            <span className="font-medium">{learnerState.learner.displayName}</span>
+            <span className="text-xs text-muted-foreground">{learnerState.learner.grade}</span>
           </div>
         </div>
       </header>
@@ -195,6 +247,254 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
       </div>
     </div>
   );
+}
+
+const DIAGNOSTIC_KNOWLEDGE_LABELS: Record<string, string> = {
+  integer: "有理数运算",
+  "equation-meaning": "等式与方程",
+  balance: "等式平衡",
+  "word-problem": "方程应用",
+};
+
+function DiagnosticExperience({
+  learnerName,
+  learnerId,
+  assessment,
+  onAssessmentChange,
+  onFinish,
+  onParentExit,
+}: {
+  learnerName: string;
+  learnerId: string;
+  assessment: PrivateTutorAssessment | null;
+  onAssessmentChange: (assessment: PrivateTutorAssessment) => void;
+  onFinish: () => Promise<string | null>;
+  onParentExit: (exitPin: string) => Promise<string | null>;
+}) {
+  const [answer, setAnswer] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [showParentGate, setShowParentGate] = useState(false);
+  const [parentPin, setParentPin] = useState("");
+  const questionStartedAt = useRef(Date.now());
+  const answerKey = useRef(newClientKey("diagnostic"));
+
+  useEffect(() => {
+    setAnswer("");
+    setMessage("");
+    questionStartedAt.current = Date.now();
+    answerKey.current = newClientKey("diagnostic");
+  }, [assessment?.currentQuestion?.revisionId]);
+
+  async function start() {
+    setBusy(true);
+    setMessage("");
+    try {
+      onAssessmentChange(await startPrivateTutorAssessment(learnerId));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "摸底暂时无法开始，请稍后再试。" );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pause() {
+    if (!assessment) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      onAssessmentChange(await pausePrivateTutorAssessment(learnerId, assessment.id));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "暂时无法暂停。" );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resume() {
+    if (!assessment) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      onAssessmentChange(await resumePrivateTutorAssessment(learnerId, assessment.id));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "暂时无法继续。" );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submit(responseKind: "answer" | "dont_know") {
+    if (!assessment?.currentQuestion) return;
+    if (responseKind === "answer" && !answer.trim()) {
+      setMessage("先写下你的答案；如果现在不会，可以直接点“我暂时不会”。");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const next = await answerPrivateTutorAssessment(learnerId, assessment.id, {
+        idempotencyKey: answerKey.current,
+        questionRevisionId: assessment.currentQuestion.revisionId,
+        rawAnswer: responseKind === "answer" ? answer : "",
+        responseKind,
+        source: "screen",
+        durationSeconds: Math.max(1, Math.round((Date.now() - questionStartedAt.current) / 1000)),
+      });
+      onAssessmentChange(next);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "答案还没有保存，请再试一次。" );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function exitToParent() {
+    if (parentPin.length < 6) return;
+    setBusy(true);
+    setMessage("");
+    const error = await onParentExit(parentPin);
+    if (error) setMessage("PIN 不正确或暂时被锁定，请由家长稍后重试。");
+    setBusy(false);
+  }
+
+  async function finish() {
+    setBusy(true);
+    setMessage("");
+    const error = await onFinish();
+    if (error) setMessage(error);
+    setBusy(false);
+  }
+
+  const parentGate = showParentGate ? (
+    <div className="mt-3 flex flex-wrap justify-end gap-2">
+      <input
+        type="password"
+        inputMode="numeric"
+        value={parentPin}
+        onChange={(event) => setParentPin(event.target.value.replace(/\D/g, "").slice(0, 12))}
+        aria-label="摸底中的家长 PIN"
+        placeholder="家长 PIN"
+        className="h-9 w-40 rounded-lg border bg-card px-3 text-sm text-foreground"
+      />
+      <Button size="sm" variant="secondary" disabled={busy || parentPin.length < 6} onClick={() => void exitToParent()}>验证并退出</Button>
+    </div>
+  ) : null;
+
+  if (!assessment) {
+    return (
+      <div className="mx-auto flex min-h-full max-w-4xl items-center justify-center p-3 sm:p-6">
+        <Card className="w-full overflow-hidden">
+          <div className="bg-[linear-gradient(135deg,#059669,#0f766e)] p-7 text-white sm:p-10">
+            <div className="flex items-start justify-between gap-4">
+              <span className="grid size-14 place-items-center rounded-2xl bg-white/15"><BrainCircuit className="size-8" /></span>
+              <Button variant="secondary" size="sm" onClick={() => setShowParentGate((value) => !value)}><ShieldCheck />家长入口</Button>
+            </div>
+            {parentGate}
+            <p className="mt-7 text-sm text-emerald-100">你好，{learnerName}</p>
+            <h1 className="mt-2 text-3xl font-bold">先让我认识一下你会什么</h1>
+            <p className="mt-3 max-w-2xl leading-7 text-emerald-50">大约 10 分钟，没有排名，也不会因为答错扣分。我会根据每一步调整下一题，先找到你已经会的，再决定从哪里开始学。</p>
+          </div>
+          <div className="grid gap-4 p-6 sm:grid-cols-3 sm:p-8">
+            <DiagnosticPromise icon={Clock3} title="约 10 分钟" hint="中途可以暂停，下次接着做" />
+            <DiagnosticPromise icon={Heart} title="不会也可以说" hint="“我暂时不会”也是有用的信息" />
+            <DiagnosticPromise icon={Map} title="生成知识地图" hint="尚未测到不会被当成薄弱" />
+            <div className="sm:col-span-3 sm:text-center">
+              <Button size="lg" disabled={busy} onClick={() => void start()}>{busy ? "正在准备…" : "开始摸底"}</Button>
+              {message ? <p role="alert" className="mt-3 text-sm text-rose-600">{message}</p> : null}
+            </div>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (assessment.status === "paused") {
+    return (
+      <div className="mx-auto grid min-h-full max-w-2xl place-items-center p-4">
+        <Card className="w-full p-7 text-center">
+          <CirclePause className="mx-auto size-12 text-emerald-600" />
+          <h1 className="mt-4 text-2xl font-bold">已经帮你保存好了</h1>
+          <p className="mt-2 text-sm text-muted-foreground">目前完成 {assessment.answeredCount} 题。休息好以后，会从刚才的位置继续。</p>
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
+            <Button disabled={busy} onClick={() => void resume()}>继续摸底</Button>
+            <Button variant="secondary" onClick={() => setShowParentGate((value) => !value)}>家长入口</Button>
+          </div>
+          {parentGate}
+          {message ? <p role="alert" className="mt-3 text-sm text-rose-600">{message}</p> : null}
+        </Card>
+      </div>
+    );
+  }
+
+  if (assessment.status === "completed" && assessment.result) {
+    const measuredStrengths = assessment.result.strengths.map((id) => DIAGNOSTIC_KNOWLEDGE_LABELS[id] ?? id);
+    const focus = assessment.result.focus.map((id) => DIAGNOSTIC_KNOWLEDGE_LABELS[id] ?? id);
+    return (
+      <div className="mx-auto max-w-4xl p-4 sm:p-7">
+        <Card className="overflow-hidden">
+          <div className="bg-emerald-600 p-7 text-white sm:p-9">
+            <Star className="size-11 fill-amber-300 text-amber-300" />
+            <h1 className="mt-4 text-3xl font-bold">我已经更了解你了</h1>
+            <p className="mt-2 text-emerald-50">完成了 {assessment.result.answeredCount} 道自适应题。先看看你已经站稳的地方。</p>
+          </div>
+          <div className="grid gap-5 p-6 sm:grid-cols-2 sm:p-8">
+            <div className="rounded-2xl bg-emerald-50 p-5 dark:bg-emerald-950">
+              <p className="font-semibold text-emerald-800 dark:text-emerald-200">已经掌握</p>
+              <p className="mt-2 text-sm leading-6 text-emerald-900 dark:text-emerald-100">{measuredStrengths.length ? measuredStrengths.join("、") : "你认真完成了整次摸底，这本身就是很好的开始。"}</p>
+            </div>
+            <div className="rounded-2xl bg-amber-50 p-5 dark:bg-amber-950">
+              <p className="font-semibold text-amber-900 dark:text-amber-100">接下来优先学</p>
+              <p className="mt-2 text-sm leading-6 text-amber-900 dark:text-amber-100">{focus.length ? focus.join("、") : "继续用新题巩固正在学习的知识点。"}</p>
+            </div>
+            <div className="sm:col-span-2 text-center">
+              <Button size="lg" disabled={busy} onClick={() => void finish()}>{busy ? "正在生成…" : "看看我的知识地图"}</Button>
+              {message ? <p role="alert" className="mt-3 text-sm text-rose-600">{message}</p> : null}
+            </div>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  const question = assessment.currentQuestion;
+  if (!question) return null;
+  const progress = Math.min(96, Math.round((assessment.answeredCount / assessment.minQuestions) * 100));
+  return (
+    <div className="mx-auto max-w-4xl p-4 sm:p-7">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div><p className="text-sm font-semibold text-emerald-700">AI 摸底</p><p className="text-xs text-muted-foreground">第 {assessment.answeredCount + 1} 题 · 约 {assessment.minQuestions} 至 {assessment.maxQuestions} 题</p></div>
+        <div className="flex gap-2"><Button variant="secondary" size="sm" disabled={busy} onClick={() => void pause()}><CirclePause />暂停</Button><Button variant="ghost" size="sm" onClick={() => setShowParentGate((value) => !value)}><ShieldCheck />家长入口</Button></div>
+      </div>
+      {parentGate}
+      <div className="mb-6 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} /></div>
+      <Card className="p-6 sm:p-9">
+        <p className="text-xs font-medium text-muted-foreground">{DIAGNOSTIC_KNOWLEDGE_LABELS[question.knowledgeId] ?? "数学理解"}</p>
+        <h1 className="mt-3 text-2xl font-bold leading-relaxed">{question.prompt}</h1>
+        {question.kind === "choice" && question.options ? (
+          <div className="mt-7 grid gap-3">
+            {question.options.map((option) => <button key={option.id} type="button" onClick={() => setAnswer(option.id)} className={cn("rounded-xl border-2 p-4 text-left transition", answer === option.id ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950" : "hover:border-emerald-300")}><span className="mr-3 font-bold uppercase">{option.id}</span>{option.label}</button>)}
+          </div>
+        ) : (
+          <div className="mt-7"><label className="text-sm font-medium" htmlFor="diagnostic-answer">写下答案</label><input id="diagnostic-answer" value={answer} onChange={(event) => setAnswer(event.target.value.slice(0, 80))} onKeyDown={(event) => { if (event.key === "Enter") void submit("answer"); }} placeholder="例如：5、1/2 或 x=5" className="mt-2 h-14 w-full rounded-xl border-2 bg-card px-4 text-xl font-semibold outline-none focus:border-emerald-500" autoComplete="off" /></div>
+        )}
+        <div className="mt-7 flex flex-wrap items-center justify-between gap-3">
+          <Button variant="ghost" disabled={busy} onClick={() => void submit("dont_know")}>我暂时不会</Button>
+          <Button size="lg" disabled={busy || !answer.trim()} onClick={() => void submit("answer")}>{busy ? "正在保存…" : "提交并看下一题"}</Button>
+        </div>
+        <p className="mt-4 text-xs text-muted-foreground">答错不会扣分；系统只用它选择更合适的下一题，不会评价你聪明不聪明。</p>
+        {message ? <p role="alert" className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-200">{message}</p> : null}
+      </Card>
+    </div>
+  );
+}
+
+function DiagnosticPromise({ icon: Icon, title, hint }: { icon: typeof Clock3; title: string; hint: string }) {
+  return <div className="rounded-2xl bg-muted/50 p-4"><Icon className="size-5 text-emerald-600" /><p className="mt-3 text-sm font-semibold">{title}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{hint}</p></div>;
+}
+
+function newClientKey(prefix: string) {
+  return `${prefix}-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
 }
 
 function ParentTutorEntry({ signedIn, onOpenLogin }: { signedIn: boolean; onOpenLogin: () => void }) {

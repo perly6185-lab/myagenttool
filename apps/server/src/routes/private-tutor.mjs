@@ -1,5 +1,16 @@
 import { createHash } from "node:crypto";
 import { hashPassword, verifyPassword } from "../runtime/auth.mjs";
+import {
+  buildDiagnosticResult,
+  DIAGNOSTIC_MAX_QUESTIONS,
+  DIAGNOSTIC_MIN_QUESTIONS,
+  DIAGNOSTIC_TARGET_SECONDS,
+  initialDiagnosticQuestion,
+  judgePrivateTutorAnswer,
+  privateTutorQuestion,
+  publicQuestion,
+  selectNextDiagnosticQuestion,
+} from "../services/private-tutor-assessment.mjs";
 
 const LOCAL_TEAM_ID = "team_local";
 const LOCAL_USER_ID = "usr_local";
@@ -198,6 +209,32 @@ export async function handlePrivateTutorRoutes({
     return true;
   }
 
+  const assessmentMatch = url.pathname.match(/^\/api\/private-tutor\/learners\/([^/]+)\/assessments\/(current|start|([^/]+)\/(answers|pause|resume))$/);
+  if (assessmentMatch) {
+    const learnerId = decodeURIComponent(assessmentMatch[1]);
+    const learner = findAuthorizedLearner(state, actor, learnerId);
+    if (!learner) {
+      recordDeniedAccess(state, { learnerId, actor, method: req.method, resource: "assessment", now, nextId });
+      persistStateSoon();
+      sendJson(res, 404, learnerNotFound());
+      return true;
+    }
+    return handleAssessmentRoute({
+      req,
+      res,
+      sendJson,
+      readJson,
+      state,
+      actor,
+      learner,
+      action: assessmentMatch[2],
+      assessmentId: assessmentMatch[3] ? decodeURIComponent(assessmentMatch[3]) : null,
+      now,
+      nextId,
+      persistStateSoon,
+    });
+  }
+
   const match = url.pathname.match(/^\/api\/private-tutor\/learners\/([^/]+)(?:\/(snapshot|attempts|audit))?$/);
   if (!match) return false;
   const learnerId = decodeURIComponent(match[1]);
@@ -291,6 +328,9 @@ export async function handlePrivateTutorRoutes({
       usedHint: validation.value.usedHint,
       source: validation.value.source,
       recognitionConfidence: validation.value.recognitionConfidence,
+      responseKind: validation.value.responseKind,
+      normalizedAnswer: validation.value.normalizedAnswer,
+      judgementReason: validation.value.judgementReason,
       durationSeconds: validation.value.durationSeconds,
       createdAt,
     };
@@ -331,12 +371,314 @@ export async function handlePrivateTutorRoutes({
   return true;
 }
 
+async function handleAssessmentRoute({
+  req,
+  res,
+  sendJson,
+  readJson,
+  state,
+  actor,
+  learner,
+  action,
+  assessmentId,
+  now,
+  nextId,
+  persistStateSoon,
+}) {
+  const latest = state.privateTutorAssessments.find((row) => row.learnerId === learner.id) ?? null;
+  if (action === "current") {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    sendJson(res, 200, { assessment: assessmentView(latest) });
+    return true;
+  }
+
+  if (action === "start") {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    if (latest && ["active", "paused"].includes(latest.status)) {
+      sendJson(res, 200, { assessment: assessmentView(latest), resumed: true });
+      return true;
+    }
+    if (latest?.status === "completed" && body?.restart !== true) {
+      sendJson(res, 200, { assessment: assessmentView(latest), resumed: true });
+      return true;
+    }
+    if (latest?.status === "completed" && body?.restart === true && actor?.privateTutorLearnerId) {
+      sendJson(res, 403, { error: "private_tutor_parent_reverification_required" });
+      return true;
+    }
+    const startedAt = now();
+    const firstQuestion = initialDiagnosticQuestion();
+    const assessment = {
+      id: nextId("pas"),
+      ownerTeamId: learner.ownerTeamId,
+      learnerId: learner.id,
+      status: "active",
+      revision: 1,
+      startedAt,
+      pausedAt: null,
+      completedAt: null,
+      activeSeconds: 0,
+      targetSeconds: DIAGNOSTIC_TARGET_SECONDS,
+      minQuestions: DIAGNOSTIC_MIN_QUESTIONS,
+      maxQuestions: DIAGNOSTIC_MAX_QUESTIONS,
+      currentQuestionRevisionId: firstQuestion.revisionId,
+      questionPresentedAt: startedAt,
+      currentQuestionActiveSeconds: 0,
+      answerSummaries: [],
+      result: null,
+      updatedAt: startedAt,
+    };
+    state.privateTutorAssessments.unshift(assessment);
+    recordAudit(state, { learner, actor, action: "diagnostic_started", details: { assessmentId: assessment.id }, now, nextId });
+    persistStateSoon();
+    sendJson(res, 201, { assessment: assessmentView(assessment), resumed: false });
+    return true;
+  }
+
+  const assessment = state.privateTutorAssessments.find((row) => row.id === assessmentId && row.learnerId === learner.id);
+  if (!assessment) {
+    sendJson(res, 404, { error: "private_tutor_assessment_not_found" });
+    return true;
+  }
+
+  if (action.endsWith("/pause") || action === `${assessmentId}/pause`) {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    if (assessment.status !== "active") {
+      sendJson(res, 409, { error: "private_tutor_assessment_not_active" });
+      return true;
+    }
+    assessment.status = "paused";
+    assessment.pausedAt = now();
+    assessment.currentQuestionActiveSeconds += elapsedSeconds(assessment.questionPresentedAt, assessment.pausedAt);
+    assessment.questionPresentedAt = null;
+    assessment.updatedAt = assessment.pausedAt;
+    assessment.revision += 1;
+    recordAudit(state, { learner, actor, action: "diagnostic_paused", details: { assessmentId }, now, nextId });
+    persistStateSoon();
+    sendJson(res, 200, { assessment: assessmentView(assessment) });
+    return true;
+  }
+
+  if (action.endsWith("/resume") || action === `${assessmentId}/resume`) {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    if (assessment.status !== "paused") {
+      sendJson(res, 409, { error: "private_tutor_assessment_not_paused" });
+      return true;
+    }
+    assessment.status = "active";
+    assessment.pausedAt = null;
+    assessment.updatedAt = now();
+    assessment.questionPresentedAt = assessment.updatedAt;
+    assessment.revision += 1;
+    recordAudit(state, { learner, actor, action: "diagnostic_resumed", details: { assessmentId }, now, nextId });
+    persistStateSoon();
+    sendJson(res, 200, { assessment: assessmentView(assessment) });
+    return true;
+  }
+
+  if (!(action.endsWith("/answers") || action === `${assessmentId}/answers`) || req.method !== "POST") {
+    sendJson(res, 405, { error: "method_not_allowed" });
+    return true;
+  }
+  const body = await readJson(req).catch(() => ({}));
+  const idempotencyKey = String(body?.idempotencyKey ?? "").trim();
+  const questionRevisionId = String(body?.questionRevisionId ?? "").trim();
+  const source = String(body?.source ?? "screen").trim();
+  const recognitionConfidence = body?.recognitionConfidence == null ? null : Number(body.recognitionConfidence);
+  const durationSeconds = Math.max(0, Math.min(180, Number(body?.durationSeconds ?? 0) || 0));
+  if (!idempotencyKey || idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+    sendJson(res, 400, { error: "invalid_private_tutor_idempotency_key" });
+    return true;
+  }
+  if (!ATTEMPT_SOURCES.has(source)) {
+    sendJson(res, 400, { error: "invalid_private_tutor_attempt_source" });
+    return true;
+  }
+  if (source === "voice_confirmed" && (!Number.isFinite(recognitionConfidence) || recognitionConfidence < 0.75)) {
+    sendJson(res, 409, { error: "private_tutor_voice_confirmation_required", minimumConfidence: 0.75 });
+    return true;
+  }
+  const requestValue = {
+    assessmentId,
+    questionRevisionId,
+    rawAnswer: String(body?.rawAnswer ?? ""),
+    responseKind: String(body?.responseKind ?? "answer"),
+    source,
+    recognitionConfidence: Number.isFinite(recognitionConfidence) ? recognitionConfidence : null,
+    durationSeconds,
+  };
+  const requestHash = stableHash(requestValue);
+  const actorId = actor?.userId ?? LOCAL_USER_ID;
+  const existing = state.privateTutorIdempotencyRecords.find((row) =>
+    row.learnerId === learner.id && row.actorId === actorId && row.key === idempotencyKey);
+  if (existing) {
+    if (existing.requestHash !== requestHash || existing.operation !== "assessment_answer") {
+      sendJson(res, 409, { error: "private_tutor_idempotency_conflict" });
+      return true;
+    }
+    sendJson(res, 200, { ...existing.response, replayed: true });
+    return true;
+  }
+  if (assessment.status !== "active") {
+    sendJson(res, 409, { error: "private_tutor_assessment_not_active" });
+    return true;
+  }
+  if (questionRevisionId !== assessment.currentQuestionRevisionId) {
+    sendJson(res, 409, { error: "private_tutor_assessment_question_mismatch" });
+    return true;
+  }
+  const question = privateTutorQuestion(questionRevisionId);
+  if (!question || question.context !== "diagnostic") {
+    sendJson(res, 400, { error: "private_tutor_question_revision_not_found" });
+    return true;
+  }
+  const judgement = judgePrivateTutorAnswer(questionRevisionId, requestValue);
+  if (!judgement.accepted) {
+    sendJson(res, 422, { error: judgement.error });
+    return true;
+  }
+
+  const createdAt = now();
+  const serverDurationSeconds = Math.min(180,
+    assessment.currentQuestionActiveSeconds + elapsedSeconds(assessment.questionPresentedAt, createdAt));
+  const attempt = {
+    id: nextId("pta"),
+    ownerTeamId: learner.ownerTeamId,
+    learnerId: learner.id,
+    actorId,
+    assessmentId,
+    context: "diagnostic",
+    knowledgeId: question.knowledgeId,
+    questionRevisionId,
+    correct: judgement.correct,
+    independent: true,
+    usedHint: false,
+    source,
+    recognitionConfidence: Number.isFinite(recognitionConfidence) ? recognitionConfidence : null,
+    responseKind: judgement.responseKind,
+    normalizedAnswer: judgement.normalizedAnswer,
+    judgementReason: judgement.reason,
+    durationSeconds: serverDurationSeconds,
+    clientDurationSeconds: durationSeconds,
+    createdAt,
+  };
+  state.privateTutorAttempts.unshift(attempt);
+  assessment.answerSummaries.push({
+    attemptId: attempt.id,
+    questionRevisionId,
+    knowledgeId: question.knowledgeId,
+    difficulty: question.difficulty,
+    correct: attempt.correct,
+    responseKind: attempt.responseKind,
+  });
+  assessment.activeSeconds = Math.min(DIAGNOSTIC_TARGET_SECONDS, assessment.activeSeconds + serverDurationSeconds);
+  assessment.currentQuestionActiveSeconds = 0;
+  assessment.questionPresentedAt = createdAt;
+  assessment.revision += 1;
+  assessment.updatedAt = createdAt;
+  const nextQuestion = selectNextDiagnosticQuestion(assessment.answerSummaries);
+  assessment.currentQuestionRevisionId = nextQuestion?.revisionId ?? null;
+  if (!nextQuestion) {
+    assessment.status = "completed";
+    assessment.completedAt = createdAt;
+    assessment.questionPresentedAt = null;
+    assessment.result = buildDiagnosticResult(assessment.answerSummaries);
+    applyDiagnosticResultToSnapshot(state, learner, assessment, { now, nextId });
+    recordAudit(state, {
+      learner,
+      actor,
+      action: "diagnostic_completed",
+      details: { assessmentId, answeredCount: assessment.answerSummaries.length },
+      now,
+      nextId,
+    });
+  }
+  const response = { assessment: assessmentView(assessment) };
+  state.privateTutorIdempotencyRecords.unshift({
+    id: nextId("pti"),
+    ownerTeamId: learner.ownerTeamId,
+    learnerId: learner.id,
+    actorId,
+    key: idempotencyKey,
+    operation: "assessment_answer",
+    requestHash,
+    attemptId: attempt.id,
+    response,
+    createdAt,
+  });
+  persistStateSoon();
+  sendJson(res, 201, { ...response, replayed: false });
+  return true;
+}
+
+function assessmentView(assessment) {
+  if (!assessment) return null;
+  return {
+    id: assessment.id,
+    learnerId: assessment.learnerId,
+    status: assessment.status,
+    revision: assessment.revision,
+    startedAt: assessment.startedAt,
+    pausedAt: assessment.pausedAt,
+    completedAt: assessment.completedAt,
+    activeSeconds: assessment.activeSeconds,
+    targetSeconds: assessment.targetSeconds,
+    minQuestions: assessment.minQuestions,
+    maxQuestions: assessment.maxQuestions,
+    answeredCount: assessment.answerSummaries.length,
+    currentQuestion: assessment.currentQuestionRevisionId
+      ? publicQuestion(privateTutorQuestion(assessment.currentQuestionRevisionId))
+      : null,
+    result: assessment.status === "completed" ? assessment.result : null,
+    updatedAt: assessment.updatedAt,
+  };
+}
+
+function applyDiagnosticResultToSnapshot(state, learner, assessment, { now, nextId }) {
+  let snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
+  if (!snapshot) {
+    snapshot = createInitialSnapshot(learner, { now, nextId });
+    state.privateTutorSnapshots.unshift(snapshot);
+  }
+  for (const result of assessment.result.knowledge) {
+    const current = snapshot.knowledge.find((row) => row.id === result.knowledgeId);
+    if (!current) continue;
+    current.mastery = result.mastery;
+    current.level = result.level;
+    current.evidenceCount += result.evidenceCount;
+  }
+  snapshot.revision += 1;
+  snapshot.diagnosticCompletedAt = assessment.completedAt;
+  snapshot.latestAssessmentId = assessment.id;
+  snapshot.updatedAt = now();
+}
+
+function elapsedSeconds(start, end) {
+  const milliseconds = Date.parse(end) - Date.parse(start);
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return 1;
+  return Math.max(1, Math.ceil(milliseconds / 1000));
+}
+
 function ensureCollections(state) {
   for (const key of [
     "privateTutorLearners",
     "privateTutorGuardianLinks",
     "privateTutorSnapshots",
     "privateTutorAttempts",
+    "privateTutorAssessments",
     "privateTutorIdempotencyRecords",
     "privateTutorAuditEvents",
   ]) {
@@ -382,17 +724,31 @@ function validateAttemptInput(body) {
       body: { error: "private_tutor_voice_confirmation_required", minimumConfidence: 0.75 },
     };
   }
+  const question = privateTutorQuestion(questionRevisionId);
+  if (!question || question.context !== "practice" || question.knowledgeId !== knowledgeId) {
+    return { ok: false, status: 400, body: { error: "invalid_private_tutor_attempt_reference" } };
+  }
+  const judgement = judgePrivateTutorAnswer(questionRevisionId, {
+    rawAnswer: body?.rawAnswer,
+    responseKind: body?.responseKind,
+  });
+  if (!judgement.accepted) {
+    return { ok: false, status: 422, body: { error: judgement.error } };
+  }
   return {
     ok: true,
     value: {
       idempotencyKey,
       knowledgeId,
       questionRevisionId,
-      correct: body?.correct === true,
+      correct: judgement.correct,
       independent: body?.independent === true,
       usedHint: body?.usedHint === true,
       source,
       recognitionConfidence: Number.isFinite(recognitionConfidence) ? recognitionConfidence : null,
+      responseKind: judgement.responseKind,
+      normalizedAnswer: judgement.normalizedAnswer,
+      judgementReason: judgement.reason,
       durationSeconds,
     },
   };
@@ -429,6 +785,8 @@ function createInitialSnapshot(learner, { now, nextId }) {
     dailyMinutes: 0,
     completedSessions: 0,
     independentAnswers: 0,
+    diagnosticCompletedAt: null,
+    latestAssessmentId: null,
     knowledge: [
       { id: "integer", mastery: null, level: "unknown", evidenceCount: 0 },
       { id: "equation-meaning", mastery: null, level: "unknown", evidenceCount: 0 },
@@ -470,6 +828,7 @@ function removeLearnerData(state, learnerId) {
     "privateTutorGuardianLinks",
     "privateTutorSnapshots",
     "privateTutorAttempts",
+    "privateTutorAssessments",
     "privateTutorIdempotencyRecords",
   ]) {
     state[key] = state[key].filter((row) => row.learnerId !== learnerId && row.id !== learnerId);
@@ -497,6 +856,8 @@ function snapshotView(snapshot) {
     dailyMinutes: snapshot.dailyMinutes,
     completedSessions: snapshot.completedSessions,
     independentAnswers: snapshot.independentAnswers,
+    diagnosticCompletedAt: snapshot.diagnosticCompletedAt ?? null,
+    latestAssessmentId: snapshot.latestAssessmentId ?? null,
     knowledge: snapshot.knowledge.map((row) => ({ ...row })),
     updatedAt: snapshot.updatedAt,
   };
