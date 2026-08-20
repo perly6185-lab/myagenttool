@@ -307,9 +307,12 @@ test("indexes a managed Channel article as the producing task's governed output"
     const knowledgeId = "channel_knowledge_managed";
     const managedPath = "knowledge/channel-articles/team/project/docs/imported/wechat/managed/article.md";
     const managedFile = join(dirname(fx.stateStorePath), managedPath);
+    const managedImage = join(dirname(managedFile), "assets", "001-preview.png");
     const managedContentId = contentId("article", "team_1", knowledgeId);
     mkdirSync(dirname(managedFile), { recursive: true });
-    writeFileSync(managedFile, "# Channel 客户背调资料\n\n这是一份通过 iLink 收纳的本地文章。\n");
+    mkdirSync(dirname(managedImage), { recursive: true });
+    writeFileSync(managedFile, "# Channel 客户背调资料\n\n这是一份通过 iLink 收纳的本地文章。\n\n![配图](assets/001-preview.png)\n");
+    writeFileSync(managedImage, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     fx.state.channelKnowledgeItems = [{
       id: knowledgeId,
       ownerTeamId: "team_1",
@@ -341,6 +344,21 @@ test("indexes a managed Channel article as the producing task's governed output"
     assert.match(immediatePreview.body.preview.text, /通过 iLink 收纳/);
     const immediateHealth = await fx.service.health({ contentIds: [managedContentId] }, actor);
     assert.equal(immediateHealth.body.health[0].state, "ready");
+    const immediateImage = await fx.service.previewAsset({
+      contentId: managedContentId,
+      relativePath: "assets/001-preview.png",
+    }, actor);
+    assert.equal(immediateImage.status, 200);
+    assert.equal(immediateImage.mimeType, "image/png");
+    assert.deepEqual(immediateImage.bytes, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    assert.equal((await fx.service.previewAsset({
+      contentId: managedContentId,
+      relativePath: "../secret.png",
+    }, actor)).status, 400);
+    assert.equal((await fx.service.previewAsset({
+      contentId: managedContentId,
+      relativePath: "assets/001-preview.svg",
+    }, actor)).status, 415);
 
     await fx.service.rebuild({}, actor);
     const result = await fx.service.search({ query: "iLink 收纳" }, actor);
@@ -356,6 +374,10 @@ test("indexes a managed Channel article as the producing task's governed output"
       await fx.service.preview({ contentId: managedContentId }, { ...actor, teamId: "team_2" }),
       { status: 404, body: { error: "local_content_not_found" } },
     );
+    assert.equal((await fx.service.previewAsset({
+      contentId: managedContentId,
+      relativePath: "assets/001-preview.png",
+    }, { ...actor, teamId: "team_2" })).status, 404);
   } finally {
     await fx.cleanup();
   }
@@ -1144,6 +1166,32 @@ test("local content routes bind bounded query parameters and rebuild requests", 
   });
   assert.equal(previewHandled, true);
   assert.deepEqual(captured[3], { input: { contentId: "lc_preview" }, routeActor: actor });
+
+  let assetRequest = null;
+  let assetResponse = null;
+  const assetHandled = await handleLocalContentRoutes({
+    req: { method: "GET" },
+    res: {
+      writeHead: (status, headers) => { assetResponse = { status, headers, bytes: null }; },
+      end: (bytes) => { assetResponse.bytes = bytes; },
+    },
+    url: new URL("http://local/api/local-content/lc_preview/asset?path=assets%2F001.png"),
+    sendJson,
+    readJson: async () => ({}),
+    actor,
+    previewLocalContentAsset: async (input, routeActor) => {
+      assetRequest = { input, routeActor };
+      return { status: 200, bytes: Buffer.from([1, 2, 3]), mimeType: "image/png", originalName: "001.png" };
+    },
+  });
+  assert.equal(assetHandled, true);
+  assert.deepEqual(assetRequest, {
+    input: { contentId: "lc_preview", relativePath: "assets/001.png" },
+    routeActor: actor,
+  });
+  assert.equal(assetResponse.status, 200);
+  assert.equal(assetResponse.headers["Content-Type"], "image/png");
+  assert.deepEqual(assetResponse.bytes, Buffer.from([1, 2, 3]));
 
   const healthHandled = await handleLocalContentRoutes({
     req: { method: "POST" },

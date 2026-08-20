@@ -56,16 +56,18 @@ export function DeliveryMarkdownDocument({
   const [imageSources, setImageSources] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (!file.projectId || !file.path) return undefined;
+    if (!file.contentId && (!file.projectId || !file.path)) return undefined;
     let cancelled = false;
     const objectUrls: string[] = [];
     const references = markdownImageReferences(document.body);
     if (!references.length) return undefined;
     void Promise.all(references.map(async (reference) => {
-      const assetPath = resolveDeliveryAssetPath(file.path!, reference);
+      const assetPath = resolveDeliveryAssetPath(file.path ?? "article.md", reference);
       if (!assetPath) return null;
       try {
-        const bytes = await api.projectAssetPreviewBytes(file.projectId!, assetPath, file.worktreeId ?? undefined);
+        const bytes = file.contentId
+          ? await localContentApi.previewAssetBytes(file.contentId, assetPath)
+          : await api.projectAssetPreviewBytes(file.projectId!, assetPath, file.worktreeId ?? undefined);
         const source = URL.createObjectURL(new Blob([bytes], { type: imageMime(assetPath) }));
         objectUrls.push(source);
         return [reference, source] as const;
@@ -83,7 +85,7 @@ export function DeliveryMarkdownDocument({
       cancelled = true;
       for (const source of objectUrls) URL.revokeObjectURL(source);
     };
-  }, [document.body, file.path, file.projectId, file.worktreeId]);
+  }, [document.body, file.contentId, file.path, file.projectId, file.worktreeId]);
 
   const metadata = [
     document.metadata.author ? `${copy.deliverablePreviewAuthor}: ${document.metadata.author}` : null,

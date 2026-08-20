@@ -6507,6 +6507,7 @@ export function createServerRuntimeServices({
     readRetrievedLocalContent: localContentRetrievalService.read,
     getLocalContentCatalogStats: localContentCatalogService.stats,
     previewLocalContent: localContentCatalogService.preview,
+    previewLocalContentAsset: localContentCatalogService.previewAsset,
     refreshLocalContent: localContentCatalogService.refresh,
     getLocalContentHealth: localContentCatalogService.health,
     resolveLocalContentOriginal: localContentCatalogService.resolveOriginal,

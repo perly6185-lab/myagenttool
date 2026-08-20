@@ -16,6 +16,7 @@ export async function handleLocalContentRoutes({
   readRetrievedLocalContent,
   getLocalContentCatalogStats,
   previewLocalContent,
+  previewLocalContentAsset,
   refreshLocalContent,
   getLocalContentHealth,
   resolveLocalContentOriginal,
@@ -108,6 +109,29 @@ export async function handleLocalContentRoutes({
   if (req.method === "GET" && previewMatch) {
     const result = await previewLocalContent({ contentId: decodeURIComponent(previewMatch[1]) }, actor);
     sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const assetMatch = url.pathname.match(/^\/api\/local-content\/([^/]+)\/asset$/);
+  if (req.method === "GET" && assetMatch) {
+    const result = await previewLocalContentAsset({
+      contentId: decodeURIComponent(assetMatch[1]),
+      relativePath: url.searchParams.get("path"),
+    }, actor);
+    if (result.status !== 200) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    const encodedName = encodeURIComponent(result.originalName || "article-image");
+    res.writeHead(200, {
+      "Content-Type": result.mimeType,
+      "Content-Length": result.bytes.length,
+      "Content-Disposition": `inline; filename*=UTF-8''${encodedName}`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "sandbox; default-src 'none'",
+    });
+    res.end(result.bytes);
     return true;
   }
 

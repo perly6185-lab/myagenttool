@@ -4,7 +4,7 @@ import {
   readFileSync,
   watch as watchFileSystem,
 } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, posix, resolve } from "node:path";
 
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import {
@@ -76,8 +76,17 @@ const MAX_SEARCH_LIMIT = 100;
 const MAX_DIRECTORY_LIMIT = 100;
 const MAX_PREVIEW_BYTES = 1024 * 1024;
 const MAX_RETRIEVAL_CHUNK_CHARACTERS = 32 * 1024;
+const MAX_MANAGED_PREVIEW_ASSET_BYTES = 10 * 1024 * 1024;
 const DEFAULT_INDEX_DEBOUNCE_MS = 250;
 const MAX_ORIGINAL_WATCH_DIRECTORIES = 512;
+const MANAGED_PREVIEW_IMAGE_TYPES = new Map([
+  [".avif", "image/avif"],
+  [".gif", "image/gif"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+]);
 
 export function createLocalContentCatalogService({
   state,
@@ -679,6 +688,36 @@ export function createLocalContentCatalogService({
     };
   }
 
+  async function previewAsset({ contentId, relativePath } = {}, actor = null) {
+    const resolved = await resolveOriginal({ contentId }, actor);
+    if (!resolved.ok) return { status: resolved.status, error: resolved.error };
+    if (resolved.record?.kind !== "article" || resolved.sourceType !== "file" || !resolved.localPath) {
+      return { status: 409, error: "local_content_asset_not_supported" };
+    }
+    const requested = String(relativePath ?? "").replaceAll("\\", "/");
+    if (!requested || requested.length > 1_000 || requested.startsWith("/") || /^[a-z]:\//i.test(requested)
+      || requested.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
+      return { status: 400, error: "local_content_asset_path_invalid" };
+    }
+    const mimeType = MANAGED_PREVIEW_IMAGE_TYPES.get(posix.extname(requested).toLowerCase());
+    if (!mimeType) return { status: 415, error: "local_content_asset_type_unsupported" };
+    const inspected = inspectOriginal(dirname(resolved.localPath), requested);
+    if (!inspected.available) return { status: 404, error: "local_content_asset_not_found" };
+    if (inspected.size > MAX_MANAGED_PREVIEW_ASSET_BYTES) {
+      return { status: 413, error: "local_content_asset_too_large" };
+    }
+    try {
+      return {
+        status: 200,
+        bytes: readFileSync(inspected.absolutePath),
+        mimeType,
+        originalName: basename(inspected.absolutePath),
+      };
+    } catch {
+      return { status: 409, error: "local_content_asset_unreadable" };
+    }
+  }
+
   async function refresh({ contentId } = {}, actor = null) {
     const db = await database();
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
@@ -772,7 +811,7 @@ export function createLocalContentCatalogService({
   }
 
   const service = {
-    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, browseDirectories, get, preview, readTextChunk, refresh, health,
+    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, browseDirectories, get, preview, previewAsset, readTextChunk, refresh, health,
     resolveOriginal, resolveContainer, stats, start, close, databasePath,
   };
   return service;

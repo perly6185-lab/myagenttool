@@ -527,6 +527,7 @@ export function createHttpServer({
   readRetrievedLocalContent,
   getLocalContentCatalogStats,
   previewLocalContent,
+  previewLocalContentAsset,
   refreshLocalContent,
   getLocalContentHealth,
   resolveLocalContentOriginal,
@@ -865,7 +866,7 @@ export function createHttpServer({
         req, res, url, sendJson, readJson, actor,
         rebuildLocalContentCatalog, searchLocalContent, browseLocalContentDirectories, describeLocalContentRetrieval,
         retrieveLocalContentDirectories, retrieveLocalContentSummaries, readRetrievedLocalContent,
-        getLocalContentCatalogStats, previewLocalContent,
+        getLocalContentCatalogStats, previewLocalContent, previewLocalContentAsset,
         refreshLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
       })) {
         return;

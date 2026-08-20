@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   previewTaskMaterialOffice: vi.fn(),
   taskMaterialContentUrl: vi.fn((workItemId, assetId, download = false) => `/materials/${workItemId}/${assetId}${download ? "?download=1" : ""}`),
   previewLocalContent: vi.fn(),
+  previewLocalContentAsset: vi.fn(),
   revealLocalContent: vi.fn(),
 }));
 
@@ -86,6 +87,7 @@ vi.mock("@/data/use-console-actions", () => ({
 vi.mock("@/features/local-content/local-content-api", () => ({
   localContentApi: {
     preview: mocks.previewLocalContent,
+    previewAssetBytes: mocks.previewLocalContentAsset,
     reveal: mocks.revealLocalContent,
   },
 }));
@@ -161,6 +163,7 @@ beforeEach(async () => {
     },
   });
   mocks.revealLocalContent.mockResolvedValue({ revealed: true, name: "saved-article.md" });
+  mocks.previewLocalContentAsset.mockResolvedValue(new ArrayBuffer(8));
   window.myagenttoolDesktop = undefined;
 });
 
@@ -898,6 +901,22 @@ describe("work item summary presentation", () => {
 
   it("previews and reveals a managed local-knowledge deliverable without exposing its host path", async () => {
     const contentId = "lc_0123456789abcdef0123456789abcdef";
+    mocks.previewLocalContent.mockResolvedValueOnce({
+      preview: {
+        contentId,
+        title: "Saved article",
+        kind: "article",
+        format: "plain_text",
+        text: "# Saved article\n\nThe article is available locally.\n\n![Chart](assets/001-chart.png)",
+        truncated: false,
+        bytesRead: 90,
+        totalBytes: 90,
+        mimeType: "text/markdown",
+        originalName: "saved-article.md",
+        activeContentExecuted: false,
+        remoteResourcesLoaded: false,
+      },
+    });
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({ status: "done", executionState: "completed", waitingOn: "none" }),
       observability: {
@@ -924,6 +943,7 @@ describe("work item summary presentation", () => {
     const preview = await screen.findByRole("dialog", { name: "Saved article.md" });
     expect(within(preview).getByRole("heading", { name: "Saved article" })).toBeTruthy();
     expect(within(preview).getByText("The article is available locally.")).toBeTruthy();
+    await waitFor(() => expect(mocks.previewLocalContentAsset).toHaveBeenCalledWith(contentId, "assets/001-chart.png"));
     expect(mocks.projectAssetDescriptor).not.toHaveBeenCalled();
     fireEvent.click(within(preview).getByRole("button", { name: "Close" }));
 
