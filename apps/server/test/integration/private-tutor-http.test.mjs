@@ -283,6 +283,25 @@ test("the adaptive diagnostic is resumable, server-graded, idempotent, and produ
   const snapshot = await call(`/api/private-tutor/learners/${learnerId}/snapshot`);
   assert.equal(snapshot.body.snapshot.latestAssessmentId, assessment.id);
   assert.equal(snapshot.body.snapshot.knowledge.every((item) => item.level !== "unknown"), true);
+  assert.equal(snapshot.body.learnerModel.knowledge.every((item) => item.confidence > 0), true);
+  assert.equal(snapshot.body.strategyDecision.targetKnowledgeId, "balance");
+  assert.equal(snapshot.body.strategyDecision.strategy, "transfer_challenge");
+  assert.equal(snapshot.body.learningPlan.days.length, 7);
+  assert.equal(snapshot.body.learningPlan.days.every((day) => day.minutes === 20), true);
+
+  const plan = await call(`/api/private-tutor/learners/${learnerId}/learning-plan`);
+  assert.equal(plan.status, 200);
+  assert.equal(plan.body.learningPlan.id, snapshot.body.learningPlan.id);
+  const carriedKnowledgeId = plan.body.learningPlan.days[0].knowledgeId;
+  const rebalanced = await call(`/api/private-tutor/learners/${learnerId}/learning-plan/rebalance`, {
+    method: "POST",
+    body: { missedDayIndex: 1 },
+  });
+  assert.equal(rebalanced.status, 200);
+  assert.equal(rebalanced.body.learningPlan.revision, plan.body.learningPlan.revision + 1);
+  assert.equal(rebalanced.body.learningPlan.reason, "missed_day_rescheduled");
+  assert.equal(rebalanced.body.learningPlan.days[0].knowledgeId, carriedKnowledgeId);
+  assert.equal(rebalanced.body.learningPlan.studentReason.includes("失败"), false);
 });
 
 test("parent-confirmed deletion removes every child data collection and leaves an audit tombstone", async () => {
@@ -305,6 +324,9 @@ test("parent-confirmed deletion removes every child data collection and leaves a
     "privateTutorSnapshots",
     "privateTutorAttempts",
     "privateTutorAssessments",
+    "privateTutorLearnerModels",
+    "privateTutorStrategyDecisions",
+    "privateTutorLearningPlans",
     "privateTutorIdempotencyRecords",
   ]) {
     assert.equal(runtimeState[key].some((row) => row.id === learnerId || row.learnerId === learnerId), false, key);

@@ -72,6 +72,77 @@ export interface PrivateTutorAssessment {
   updatedAt: string;
 }
 
+export type PrivateTutorTeachingStrategy = "prerequisite_repair" | "concept_rebuild" | "fluency_practice" | "transfer_challenge";
+
+export interface PrivateTutorLearnerModel {
+  id: string;
+  learnerId: string;
+  revision: number;
+  sourceSnapshotRevision: number;
+  reason: string;
+  knowledge: Array<{
+    id: string;
+    title: string;
+    mastery: number | null;
+    level: "mastered" | "learning" | "needs_support" | "unknown";
+    confidence: number;
+    evidenceCount: number;
+    independentCorrect: number;
+    hintedCorrect: number;
+    incorrect: number;
+    hintDependency: number;
+    latestEvidenceAt: string | null;
+    forgettingRisk: number;
+    misconception: { id: string; label: string; evidenceCount: number } | null;
+    prerequisiteId: string | null;
+    prerequisiteGap: boolean;
+  }>;
+  updatedAt: string;
+}
+
+export interface PrivateTutorStrategyDecision {
+  id: string;
+  learnerId: string;
+  modelId: string;
+  targetKnowledgeId: string;
+  targetTitle: string;
+  strategy: PrivateTutorTeachingStrategy;
+  reasonCode: string;
+  studentReason: string;
+  misconception: { id: string; label: string } | null;
+  exitConditions: string[];
+  createdAt: string;
+}
+
+export interface PrivateTutorLearningPlan {
+  id: string;
+  learnerId: string;
+  revision: number;
+  status: "active";
+  reason: string;
+  studentReason: string;
+  generatedAt: string;
+  days: Array<{
+    dayIndex: number;
+    date: string;
+    status: "planned";
+    knowledgeId: string;
+    knowledgeTitle: string;
+    activity: string;
+    title: string;
+    minutes: number;
+    strategy: PrivateTutorTeachingStrategy;
+    rationale: string;
+  }>;
+  updatedAt: string;
+}
+
+export interface PrivateTutorIntelligence {
+  learnerModel: PrivateTutorLearnerModel | null;
+  strategyDecision: PrivateTutorStrategyDecision | null;
+  learningPlan: PrivateTutorLearningPlan | null;
+}
+
 export async function listPrivateTutorLearners() {
   const result = await request<{ learners: PrivateTutorLearner[] }>("GET", "/api/private-tutor/learners");
   return result.learners;
@@ -86,9 +157,17 @@ export async function createPrivateTutorLearner(input: { displayName: string; gr
 }
 
 export async function getPrivateTutorSnapshot(learnerId: string) {
-  return request<{ learner: PrivateTutorLearner; snapshot: PrivateTutorSnapshot }>(
+  return request<{ learner: PrivateTutorLearner; snapshot: PrivateTutorSnapshot } & PrivateTutorIntelligence>(
     "GET",
     `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/snapshot`,
+  );
+}
+
+export async function rebalancePrivateTutorLearningPlan(learnerId: string, missedDayIndex: number) {
+  return request<PrivateTutorIntelligence>(
+    "POST",
+    `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/learning-plan/rebalance`,
+    { missedDayIndex },
   );
 }
 
@@ -166,7 +245,7 @@ export async function recordPrivateTutorAttempt(learnerId: string, input: {
   recognitionConfidence?: number;
   durationSeconds: number;
 }) {
-  return request<{ snapshot: PrivateTutorSnapshot; replayed: boolean }>(
+  return request<{ snapshot: PrivateTutorSnapshot; replayed: boolean } & PrivateTutorIntelligence>(
     "POST",
     `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/attempts`,
     input,

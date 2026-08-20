@@ -24,6 +24,7 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   resumePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   recordPrivateTutorAttempt: () => Promise.reject(new Error("not used")),
+  rebalancePrivateTutorLearningPlan: () => Promise.reject(new Error("not used")),
 }));
 
 afterEach(() => {

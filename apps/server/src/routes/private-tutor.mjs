@@ -11,6 +11,11 @@ import {
   publicQuestion,
   selectNextDiagnosticQuestion,
 } from "../services/private-tutor-assessment.mjs";
+import {
+  buildPrivateTutorSevenDayPlan,
+  decidePrivateTutorStrategy,
+  derivePrivateTutorLearnerModel,
+} from "../services/private-tutor-learning-model.mjs";
 
 const LOCAL_TEAM_ID = "team_local";
 const LOCAL_USER_ID = "usr_local";
@@ -235,6 +240,51 @@ export async function handlePrivateTutorRoutes({
     });
   }
 
+  const learningPlanMatch = url.pathname.match(/^\/api\/private-tutor\/learners\/([^/]+)\/learning-plan(?:\/(rebalance))?$/);
+  if (learningPlanMatch) {
+    const learnerId = decodeURIComponent(learningPlanMatch[1]);
+    const learner = findAuthorizedLearner(state, actor, learnerId);
+    if (!learner) {
+      recordDeniedAccess(state, { learnerId, actor, method: req.method, resource: "learning-plan", now, nextId });
+      persistStateSoon();
+      sendJson(res, 404, learnerNotFound());
+      return true;
+    }
+    if (!learningPlanMatch[2] && req.method === "GET") {
+      sendJson(res, 200, currentPrivateTutorIntelligence(state, learner.id));
+      return true;
+    }
+    if (learningPlanMatch[2] === "rebalance" && req.method === "POST") {
+      const body = await readJson(req).catch(() => ({}));
+      const missedDayIndex = Number(body?.missedDayIndex);
+      const currentPlan = state.privateTutorLearningPlans.find((row) => row.learnerId === learner.id);
+      if (!currentPlan || !Number.isInteger(missedDayIndex) || missedDayIndex < 1 || missedDayIndex > 7) {
+        sendJson(res, 400, { error: "invalid_private_tutor_plan_rebalance" });
+        return true;
+      }
+      const carryForwardKnowledgeId = currentPlan.days.find((day) => day.dayIndex === missedDayIndex)?.knowledgeId ?? null;
+      const intelligence = refreshPrivateTutorIntelligence(state, learner, {
+        now,
+        nextId,
+        reason: "missed_day_rescheduled",
+        carryForwardKnowledgeId,
+      });
+      recordAudit(state, {
+        learner,
+        actor,
+        action: "learning_plan_rebalanced",
+        details: { missedDayIndex, planId: intelligence.learningPlan?.id ?? null },
+        now,
+        nextId,
+      });
+      persistStateSoon();
+      sendJson(res, 200, intelligence);
+      return true;
+    }
+    sendJson(res, 405, { error: "method_not_allowed" });
+    return true;
+  }
+
   const match = url.pathname.match(/^\/api\/private-tutor\/learners\/([^/]+)(?:\/(snapshot|attempts|audit))?$/);
   if (!match) return false;
   const learnerId = decodeURIComponent(match[1]);
@@ -288,7 +338,11 @@ export async function handlePrivateTutorRoutes({
       sendJson(res, 404, { error: "private_tutor_snapshot_not_found" });
       return true;
     }
-    sendJson(res, 200, { learner: learnerView(learner), snapshot: snapshotView(snapshot) });
+    sendJson(res, 200, {
+      learner: learnerView(learner),
+      snapshot: snapshotView(snapshot),
+      ...currentPrivateTutorIntelligence(state, learner.id),
+    });
     return true;
   }
 
@@ -311,7 +365,12 @@ export async function handlePrivateTutorRoutes({
       }
       const attempt = state.privateTutorAttempts.find((row) => row.id === existing.attemptId);
       const snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
-      sendJson(res, 200, { attempt, snapshot: snapshotView(snapshot), replayed: true });
+      sendJson(res, 200, {
+        attempt,
+        snapshot: snapshotView(snapshot),
+        ...currentPrivateTutorIntelligence(state, learner.id),
+        replayed: true,
+      });
       return true;
     }
 
@@ -336,6 +395,11 @@ export async function handlePrivateTutorRoutes({
     };
     state.privateTutorAttempts.unshift(attempt);
     const snapshot = applyAttemptToSnapshot(state, learner, attempt, { now, nextId });
+    const intelligence = refreshPrivateTutorIntelligence(state, learner, {
+      now,
+      nextId,
+      reason: "new_learning_evidence",
+    });
     state.privateTutorIdempotencyRecords.unshift({
       id: nextId("pti"),
       ownerTeamId: learner.ownerTeamId,
@@ -355,7 +419,7 @@ export async function handlePrivateTutorRoutes({
       nextId,
     });
     persistStateSoon();
-    sendJson(res, 201, { attempt, snapshot: snapshotView(snapshot), replayed: false });
+    sendJson(res, 201, { attempt, snapshot: snapshotView(snapshot), ...intelligence, replayed: false });
     return true;
   }
 
@@ -597,6 +661,11 @@ async function handleAssessmentRoute({
     assessment.questionPresentedAt = null;
     assessment.result = buildDiagnosticResult(assessment.answerSummaries);
     applyDiagnosticResultToSnapshot(state, learner, assessment, { now, nextId });
+    refreshPrivateTutorIntelligence(state, learner, {
+      now,
+      nextId,
+      reason: "diagnostic_completed",
+    });
     recordAudit(state, {
       learner,
       actor,
@@ -666,6 +735,146 @@ function applyDiagnosticResultToSnapshot(state, learner, assessment, { now, next
   snapshot.updatedAt = now();
 }
 
+function refreshPrivateTutorIntelligence(state, learner, {
+  now,
+  nextId,
+  reason,
+  carryForwardKnowledgeId = null,
+}) {
+  const snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
+  if (!snapshot) return currentPrivateTutorIntelligence(state, learner.id);
+  const attempts = state.privateTutorAttempts.filter((row) => row.learnerId === learner.id);
+  const previousModel = state.privateTutorLearnerModels.find((row) => row.learnerId === learner.id) ?? null;
+  const previousDecision = state.privateTutorStrategyDecisions.find((row) => row.learnerId === learner.id) ?? null;
+  const derived = derivePrivateTutorLearnerModel({ snapshot, attempts, now });
+  const learnerModel = {
+    id: nextId("ptm"),
+    ownerTeamId: learner.ownerTeamId,
+    learnerId: learner.id,
+    revision: (previousModel?.revision ?? 0) + 1,
+    sourceSnapshotRevision: snapshot.revision,
+    reason,
+    knowledge: derived.knowledge,
+    createdAt: derived.at,
+    updatedAt: derived.at,
+  };
+  state.privateTutorLearnerModels.unshift(learnerModel);
+
+  const decisionValue = decidePrivateTutorStrategy({ model: learnerModel, attempts, previousDecision });
+  if (!decisionValue) return currentPrivateTutorIntelligence(state, learner.id);
+  const strategyDecision = {
+    id: nextId("ptd"),
+    ownerTeamId: learner.ownerTeamId,
+    learnerId: learner.id,
+    modelId: learnerModel.id,
+    ...decisionValue,
+    createdAt: now(),
+  };
+  state.privateTutorStrategyDecisions.unshift(strategyDecision);
+
+  const planValue = buildPrivateTutorSevenDayPlan({
+    model: learnerModel,
+    decision: strategyDecision,
+    now,
+    reason,
+    carryForwardKnowledgeId,
+  });
+  const previousPlan = state.privateTutorLearningPlans.find((row) => row.learnerId === learner.id) ?? null;
+  const learningPlan = {
+    id: nextId("ptp"),
+    ownerTeamId: learner.ownerTeamId,
+    learnerId: learner.id,
+    modelId: learnerModel.id,
+    decisionId: strategyDecision.id,
+    revision: (previousPlan?.revision ?? 0) + 1,
+    status: "active",
+    ...planValue,
+    updatedAt: planValue.generatedAt,
+  };
+  state.privateTutorLearningPlans.unshift(learningPlan);
+  return {
+    learnerModel: learnerModelView(learnerModel),
+    strategyDecision: strategyDecisionView(strategyDecision),
+    learningPlan: learningPlanView(learningPlan),
+  };
+}
+
+function currentPrivateTutorIntelligence(state, learnerId) {
+  return {
+    learnerModel: learnerModelView(state.privateTutorLearnerModels.find((row) => row.learnerId === learnerId) ?? null),
+    strategyDecision: strategyDecisionView(state.privateTutorStrategyDecisions.find((row) => row.learnerId === learnerId) ?? null),
+    learningPlan: learningPlanView(state.privateTutorLearningPlans.find((row) => row.learnerId === learnerId) ?? null),
+  };
+}
+
+function learnerModelView(model) {
+  if (!model) return null;
+  return {
+    id: model.id,
+    learnerId: model.learnerId,
+    revision: model.revision,
+    sourceSnapshotRevision: model.sourceSnapshotRevision,
+    reason: model.reason,
+    knowledge: model.knowledge.map((item) => ({
+      id: item.id,
+      title: item.title,
+      mastery: item.mastery,
+      level: item.level,
+      confidence: item.confidence,
+      evidenceCount: item.evidenceCount,
+      independentCorrect: item.independentCorrect,
+      hintedCorrect: item.hintedCorrect,
+      incorrect: item.incorrect,
+      hintDependency: item.hintDependency,
+      latestEvidenceAt: item.latestEvidenceAt,
+      forgettingRisk: item.forgettingRisk,
+      misconception: item.misconception ? {
+        id: item.misconception.id,
+        label: item.misconception.label,
+        evidenceCount: item.misconception.evidenceCount,
+      } : null,
+      prerequisiteId: item.prerequisiteId,
+      prerequisiteGap: item.prerequisiteGap,
+    })),
+    updatedAt: model.updatedAt,
+  };
+}
+
+function strategyDecisionView(decision) {
+  if (!decision) return null;
+  return {
+    id: decision.id,
+    learnerId: decision.learnerId,
+    modelId: decision.modelId,
+    targetKnowledgeId: decision.targetKnowledgeId,
+    targetTitle: decision.targetTitle,
+    strategy: decision.strategy,
+    reasonCode: decision.reasonCode,
+    studentReason: decision.studentReason,
+    misconception: decision.misconception ? {
+      id: decision.misconception.id,
+      label: decision.misconception.label,
+    } : null,
+    exitConditions: [...decision.exitConditions],
+    createdAt: decision.createdAt,
+  };
+}
+
+function learningPlanView(plan) {
+  if (!plan) return null;
+  return {
+    id: plan.id,
+    learnerId: plan.learnerId,
+    revision: plan.revision,
+    status: plan.status,
+    reason: plan.reason,
+    studentReason: plan.studentReason,
+    generatedAt: plan.generatedAt,
+    days: plan.days.map((day) => ({ ...day })),
+    updatedAt: plan.updatedAt,
+  };
+}
+
 function elapsedSeconds(start, end) {
   const milliseconds = Date.parse(end) - Date.parse(start);
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return 1;
@@ -679,6 +888,9 @@ function ensureCollections(state) {
     "privateTutorSnapshots",
     "privateTutorAttempts",
     "privateTutorAssessments",
+    "privateTutorLearnerModels",
+    "privateTutorStrategyDecisions",
+    "privateTutorLearningPlans",
     "privateTutorIdempotencyRecords",
     "privateTutorAuditEvents",
   ]) {
@@ -829,6 +1041,9 @@ function removeLearnerData(state, learnerId) {
     "privateTutorSnapshots",
     "privateTutorAttempts",
     "privateTutorAssessments",
+    "privateTutorLearnerModels",
+    "privateTutorStrategyDecisions",
+    "privateTutorLearningPlans",
     "privateTutorIdempotencyRecords",
   ]) {
     state[key] = state[key].filter((row) => row.learnerId !== learnerId && row.id !== learnerId);

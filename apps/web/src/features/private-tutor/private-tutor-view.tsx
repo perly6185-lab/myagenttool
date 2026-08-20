@@ -43,13 +43,17 @@ import {
   getPrivateTutorSnapshot,
   listPrivateTutorLearners,
   pausePrivateTutorAssessment,
+  rebalancePrivateTutorLearningPlan,
   recordPrivateTutorAttempt,
   resumePrivateTutorAssessment,
   startPrivateTutorAssessment,
   startPrivateTutorChildMode,
   type PrivateTutorAssessment,
+  type PrivateTutorLearnerModel,
   type PrivateTutorLearner,
+  type PrivateTutorLearningPlan,
   type PrivateTutorSnapshot,
+  type PrivateTutorStrategyDecision,
 } from "@/features/private-tutor/private-tutor-api";
 
 const STUDENT_TABS: Array<{ key: TutorTab; label: string; icon: typeof House }> = [
@@ -105,6 +109,9 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
   );
   const [learnerState, setLearnerState] = useState<LearnerTutorState>(() => loadLearnerState(learner));
   const [assessment, setAssessment] = useState<PrivateTutorAssessment | null>(null);
+  const [learnerModel, setLearnerModel] = useState<PrivateTutorLearnerModel | null>(null);
+  const [strategyDecision, setStrategyDecision] = useState<PrivateTutorStrategyDecision | null>(null);
+  const [learningPlan, setLearningPlan] = useState<PrivateTutorLearningPlan | null>(null);
   const [assessmentReady, setAssessmentReady] = useState(false);
   const [diagnosticDismissed, setDiagnosticDismissed] = useState(false);
 
@@ -118,6 +125,9 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
         if (!current) return;
         if (snapshotResult.status === "fulfilled") {
           setLearnerState(serverLearnerState(snapshotResult.value.learner, snapshotResult.value.snapshot));
+          setLearnerModel(snapshotResult.value.learnerModel ?? null);
+          setStrategyDecision(snapshotResult.value.strategyDecision ?? null);
+          setLearningPlan(snapshotResult.value.learningPlan ?? null);
         }
         if (assessmentResult.status === "fulfilled") {
           setAssessment(assessmentResult.value);
@@ -150,6 +160,9 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
       source: "screen",
       durationSeconds: 180,
     });
+    setLearnerModel(result.learnerModel ?? null);
+    setStrategyDecision(result.strategyDecision ?? null);
+    setLearningPlan(result.learningPlan ?? null);
     return applyServerSnapshot(learnerState, result.snapshot);
   }
 
@@ -157,11 +170,26 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
     try {
       const result = await getPrivateTutorSnapshot(learnerId);
       setLearnerState(serverLearnerState(result.learner, result.snapshot));
+      setLearnerModel(result.learnerModel ?? null);
+      setStrategyDecision(result.strategyDecision ?? null);
+      setLearningPlan(result.learningPlan ?? null);
       setDiagnosticDismissed(true);
       setTab("map");
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : "知识地图暂时无法读取，请稍后再试。";
+    }
+  }
+
+  async function rescheduleToday() {
+    try {
+      const result = await rebalancePrivateTutorLearningPlan(learnerId, 1);
+      setLearnerModel(result.learnerModel ?? null);
+      setStrategyDecision(result.strategyDecision ?? null);
+      setLearningPlan(result.learningPlan ?? null);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "计划暂时无法调整，请稍后再试。";
     }
   }
 
@@ -231,8 +259,8 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
       </nav>
 
       <div className="p-4 sm:p-7">
-        {tab === "today" ? <TodayLearning state={learnerState} onStateChange={setLearnerState} onIndependentCheck={recordIndependentCheck} /> : null}
-        {tab === "map" ? <KnowledgeMap state={learnerState} /> : null}
+        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} strategyDecision={strategyDecision} onReschedule={rescheduleToday} onStateChange={setLearnerState} onIndependentCheck={recordIndependentCheck} /> : null}
+        {tab === "map" ? <KnowledgeMap state={learnerState} learnerModel={learnerModel} /> : null}
         {tab === "errors" ? <ErrorBook state={learnerState} onStart={() => setTab("today")} /> : null}
         {tab === "growth" ? <Growth state={learnerState} /> : null}
         {tab === "settings" ? (
@@ -629,7 +657,21 @@ function applyServerSnapshot(state: LearnerTutorState, snapshot: PrivateTutorSna
   };
 }
 
-function TodayLearning({ state, onStateChange, onIndependentCheck }: { state: LearnerTutorState; onStateChange: (state: LearnerTutorState) => void; onIndependentCheck: (idempotencyKey: string) => Promise<LearnerTutorState> }) {
+function TodayLearning({
+  state,
+  learningPlan,
+  strategyDecision,
+  onReschedule,
+  onStateChange,
+  onIndependentCheck,
+}: {
+  state: LearnerTutorState;
+  learningPlan: PrivateTutorLearningPlan | null;
+  strategyDecision: PrivateTutorStrategyDecision | null;
+  onReschedule: () => Promise<string | null>;
+  onStateChange: (state: LearnerTutorState) => void;
+  onIndependentCheck: (idempotencyKey: string) => Promise<LearnerTutorState>;
+}) {
   const [phase, setPhase] = useState<LessonPhase>("ready");
   const [pace, setPace] = useState<"easy" | "standard" | "review">("standard");
   const [answer, setAnswer] = useState<number | null>(null);
@@ -721,11 +763,12 @@ function TodayLearning({ state, onStateChange, onIndependentCheck }: { state: Le
             <p className="mt-3 text-xs leading-5 text-muted-foreground">随时可以暂停，明天会从这里继续，不会显示“失败”。</p>
           </Card>
           <Card className="p-5">
-            <p className="flex items-center gap-2 text-sm font-medium"><BrainCircuit className="size-4 text-violet-500" />今天为什么学这个？</p>
-            <p className="mt-2 text-sm leading-6 text-muted-foreground">最近两次作答都只改变了等式一边。AI 选择了“概念重建”，不是继续刷同类题。</p>
-            <span className="mt-3 inline-flex rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-200">{strategyLabel("concept_rebuild")}</span>
+            <p className="flex items-center gap-2 text-sm font-medium"><BrainCircuit className="size-4 text-violet-500" />计划为什么这样排？</p>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">{strategyDecision?.studentReason ?? "最近两次作答都只改变了等式一边。这次先用天平重新理解，而不是继续刷同类题。"}</p>
+            <span className="mt-3 inline-flex rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-200">{strategyLabel(strategyDecision?.strategy ?? "concept_rebuild")}</span>
           </Card>
         </div>
+        {learningPlan ? <SevenDayPlan plan={learningPlan} onReschedule={onReschedule} /> : null}
       </div>
     );
   }
@@ -802,6 +845,44 @@ function TodayLearning({ state, onStateChange, onIndependentCheck }: { state: Le
   );
 }
 
+function SevenDayPlan({ plan, onReschedule }: { plan: PrivateTutorLearningPlan; onReschedule: () => Promise<string | null> }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [hasError, setHasError] = useState(false);
+
+  async function reschedule() {
+    setBusy(true);
+    setMessage("");
+    const error = await onReschedule();
+    setHasError(Boolean(error));
+    setMessage(error ?? "已经顺延好了。今天没有失败，从最合适的位置继续就可以。" );
+    setBusy(false);
+  }
+
+  return (
+    <Card className="p-5 lg:col-span-2 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">我的 7 天计划</p>
+          <h2 className="mt-1 text-lg font-bold">每天只看今天这一小步</h2>
+          <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">{plan.studentReason}</p>
+        </div>
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => void reschedule()}>{busy ? "正在调整…" : "今天来不及，帮我顺延"}</Button>
+      </div>
+      <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-7">
+        {plan.days.map((day) => (
+          <div key={`${plan.id}-${day.dayIndex}`} className={cn("rounded-xl border p-3", day.dayIndex === 1 ? "border-emerald-400 bg-emerald-50 dark:bg-emerald-950" : "bg-card")}>
+            <p className="text-[11px] font-medium text-muted-foreground">{day.dayIndex === 1 ? "今天" : `第 ${day.dayIndex} 天`}</p>
+            <p className="mt-2 text-sm font-semibold leading-5">{day.title}</p>
+            <p className="mt-2 text-[11px] text-muted-foreground">{day.minutes} 分钟</p>
+          </div>
+        ))}
+      </div>
+      {message ? <p role="status" className={cn("mt-3 rounded-lg p-3 text-sm", hasError ? "bg-rose-50 text-rose-700 dark:bg-rose-950" : "bg-emerald-50 text-emerald-800 dark:bg-emerald-950")}>{message}</p> : null}
+    </Card>
+  );
+}
+
 function BalanceScene({ revealed }: { revealed: boolean }) {
   return (
     <div className="overflow-hidden rounded-2xl border bg-sky-50 p-3 dark:bg-sky-950/30">
@@ -823,7 +904,7 @@ function BalanceScene({ revealed }: { revealed: boolean }) {
   );
 }
 
-function KnowledgeMap({ state }: { state: LearnerTutorState }) {
+function KnowledgeMap({ state, learnerModel }: { state: LearnerTutorState; learnerModel: PrivateTutorLearnerModel | null }) {
   const tone = { mastered: "border-emerald-400 bg-emerald-50", learning: "border-sky-400 bg-sky-50", needs_support: "border-amber-400 bg-amber-50", unknown: "border-slate-300 bg-slate-50" };
   const label = { mastered: "已经掌握", learning: "正在学习", needs_support: "需要帮助", unknown: "尚未测到" };
   return (
@@ -832,18 +913,24 @@ function KnowledgeMap({ state }: { state: LearnerTutorState }) {
       <h1 className="mt-1 text-2xl font-bold">我的知识地图</h1>
       <p className="mt-2 text-sm text-muted-foreground">它不是成绩单，而是一张“下一步怎么学”的地图。没有证据的地方会显示尚未测到。</p>
       <div className="mt-6 grid gap-4 md:grid-cols-2">
-        {state.knowledge.map((node, index) => (
-          <Card key={node.id} className={cn("relative overflow-hidden border-2 p-5", tone[node.level])}>
-            <span className="absolute right-4 top-3 text-5xl font-black text-foreground/5">{index + 1}</span>
-            <div className="relative">
-              <span className="rounded-full bg-card/80 px-2.5 py-1 text-xs font-medium">{label[node.level]}</span>
-              <h2 className="mt-4 text-lg font-bold">{node.title}</h2>
-              <p className="mt-2 text-sm text-muted-foreground">{node.evidence}</p>
-              <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/70 dark:bg-black/20"><div className="h-full rounded-full bg-current opacity-55" style={{ width: node.mastery === null ? "0%" : `${Math.round(node.mastery * 100)}%` }} /></div>
-              <p className="mt-2 text-xs text-muted-foreground">{node.mastery === null ? "等待后续学习证据" : `当前证据 ${Math.round(node.mastery * 100)}%`}</p>
-            </div>
-          </Card>
-        ))}
+        {state.knowledge.map((node, index) => {
+          const modelNode = learnerModel?.knowledge.find((item) => item.id === node.id);
+          return (
+            <Card key={node.id} className={cn("relative overflow-hidden border-2 p-5", tone[node.level])}>
+              <span className="absolute right-4 top-3 text-5xl font-black text-foreground/5">{index + 1}</span>
+              <div className="relative">
+                <span className="rounded-full bg-card/80 px-2.5 py-1 text-xs font-medium">{label[node.level]}</span>
+                <h2 className="mt-4 text-lg font-bold">{node.title}</h2>
+                <p className="mt-2 text-sm text-muted-foreground">{node.evidence}</p>
+                {modelNode?.misconception ? <p className="mt-3 rounded-lg bg-card/70 p-3 text-sm">最近卡在：{modelNode.misconception.label}</p> : null}
+                {modelNode?.prerequisiteGap ? <p className="mt-2 text-sm font-medium text-amber-800 dark:text-amber-200">先补稳前面的知识，后面会更容易。</p> : null}
+                {modelNode && modelNode.forgettingRisk >= 0.5 ? <p className="mt-2 text-sm font-medium text-sky-800 dark:text-sky-200">到了回想复习的时间，花几分钟就好。</p> : null}
+                <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/70 dark:bg-black/20"><div className="h-full rounded-full bg-current opacity-55" style={{ width: node.mastery === null ? "0%" : `${Math.round(node.mastery * 100)}%` }} /></div>
+                <p className="mt-2 text-xs text-muted-foreground">{node.mastery === null ? "等待后续学习证据" : `当前掌握证据 ${Math.round(node.mastery * 100)}%${modelNode ? ` · 证据把握 ${Math.round(modelNode.confidence * 100)}%` : ""}`}</p>
+              </div>
+            </Card>
+          );
+        })}
       </div>
     </section>
   );

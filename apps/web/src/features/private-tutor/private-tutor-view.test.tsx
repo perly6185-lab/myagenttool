@@ -21,6 +21,7 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   startPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
   exitPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
   recordPrivateTutorAttempt: () => Promise.reject(new Error("not used")),
+  rebalancePrivateTutorLearningPlan: () => Promise.reject(new Error("not used")),
 }));
 
 describe("My private tutor student information architecture", () => {
