@@ -263,6 +263,7 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
     actor: { userId: "usr_x" },
     executionChainId: "wi_chain_12",
     autonomyProfile: "high",
+    channelOrigin: { channelId: "chn_12", conversationId: "conv_12", threadId: "cth_12", channelTaskRequestId: "ctr_12" },
   });
 
   // Real worktree on the issue branch, carrying the link.
@@ -279,6 +280,19 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.equal(created.options.metadata.role, "develop", "decided path seeded as role for skill selection");
   assert.equal(created.options.metadata.executionChainId, "wi_chain_12");
   assert.equal(created.options.metadata.autonomyProfile, "high");
+  assert.deepEqual(created.options.metadata.channel, {
+    channelId: "chn_12",
+    conversationId: "conv_12",
+    channelTaskRequestId: "ctr_12",
+    threadId: "cth_12",
+    externalUserId: null,
+    messageId: null,
+    principalId: null,
+    workItemId: "wi_chain_12",
+    autoRunId: autoRun.id,
+    projectId: sourceProjectId,
+  });
+  assert.ok(created.options.metadata.riskTags.includes("untrusted_input"));
   assert.equal(created.options.timeoutSeconds, 900, "invocation records the effective coding-agent turn timeout");
   assert.equal(created.agent.id, "agt_1");
   assert.equal(invocation.input.task, created.task, "invocation carries the seeded prompt");
@@ -1326,6 +1340,23 @@ test("no-diff change is still blocked (a change that produced nothing)", async (
   assert.equal(autoRun.intent, "change");
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
   assert.equal(autoRun.status, "blocked");
+});
+
+test("a no-diff read-only Channel request returns a report even if routing fell back to develop", async () => {
+  const { svc, calls } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 731, title: "帮我只读取当前目录并列出三个文件", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-731-read-only",
+    operationIntent: { accessMode: "read_only", forbiddenActions: ["write"] },
+  });
+  assert.equal(autoRun.decision.path, "develop", "the test exercises the deterministic fallback defence");
+  assert.match(calls.createInvocation[0].task, /read-only operations/);
+  assert.doesNotMatch(calls.createInvocation[0].task, /summary\/REPORT\.md|implement the change/);
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: { summary: "文件：README.md、package.json、pnpm-lock.yaml" } });
+  assert.equal(autoRun.status, "report_posted");
+  assert.match(autoRun.report, /README\.md/);
 });
 
 test("reaction fails when the commit itself errors (F1)", async () => {

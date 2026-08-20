@@ -69,12 +69,12 @@ test("channel intent adapter reuses the authorized Bridge Agent and bounds its p
   assert.deepEqual(result, { intent: "supplement", confidence: 0.91, ref: "T-LOCAL", source: "custom" });
 });
 
-test("channel intent is opt-in and uses the Bridge when enabled", () => {
+test("channel intent uses the authorized Bridge by default and can be disabled", () => {
   const config = resolveChannelIntentConfig({
     MYAGENTTOOL_CHANNEL_INTENT_AGENT_ID: "agt_claude_acceptEdits",
     MYAGENTTOOL_CHANNEL_INTENT_TIMEOUT_MS: "999999",
   });
-  assert.equal(config.enabled, false);
+  assert.equal(config.enabled, true);
   assert.equal(config.agentId, "agt_claude_acceptEdits");
   assert.equal(config.timeoutMs, 30_000);
   assert.equal(resolveChannelIntentConfig({ MYAGENTTOOL_CHANNEL_INTENT_ENABLED: "1" }).enabled, true);
@@ -104,6 +104,22 @@ test("Bridge intent classification has one bounded preflight slot and falls back
   firstInvocation.result = { output: { intent: "new_task", confidence: 0.9, ref: null } };
   await first;
   assert.equal(creates, 1);
+});
+
+test("Bridge intent classification never competes with formal task execution", async () => {
+  let creates = 0;
+  const adapter = createChannelIntentAdapter({
+    config: { enabled: true, providerId: "desktop_bridge", agentId: "agt_codex_cli", timeoutMs: 2_000 },
+    state: {
+      device: { unlinkState: "linked", status: "online" },
+      invocations: [{ id: "inv_work", status: "running", options: { metadata: {} } }],
+    },
+    findAgent: () => ({ id: "agt_codex_cli", status: "ready" }),
+    createInvocation: () => { creates += 1; return { id: "inv_classifier", status: "queued" }; },
+  });
+
+  await assert.rejects(() => adapter.classify({ text: "这句有点含糊" }), /channel_intent_bridge_busy/);
+  assert.equal(creates, 0);
 });
 
 test("Bridge intent adapter reports bounded health metrics without user text", async () => {

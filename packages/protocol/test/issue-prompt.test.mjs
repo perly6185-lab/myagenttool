@@ -69,6 +69,17 @@ test("roleAutoRunPrompt includes the issue body and the develop role instruction
   assert.match(prompt, /platform stages and commits the work/);
 });
 
+test("roleAutoRunPrompt gives read-only work a generic inspection contract", () => {
+  const prompt = roleAutoRunPrompt(
+    { type: "local_issue", number: 12, title: "列出项目文件" },
+    { path: "develop", readOnly: true, issueBody: "只读取当前目录，不要修改文件" },
+  );
+  assert.match(prompt, /read-only operations/);
+  assert.match(prompt, /never reinterpret the task as an article summary/);
+  assert.doesNotMatch(prompt, /implement the change/);
+  assert.doesNotMatch(prompt, /summary\/REPORT\.md/);
+});
+
 test("roleAutoRunPrompt gives every role the same bounded discovery contract", () => {
   for (const path of ["develop", "design", "prototype", "clarify", "decompose"]) {
     const prompt = roleAutoRunPrompt({ type: "local_issue", number: 9, title: "Bounded scan" }, { path });

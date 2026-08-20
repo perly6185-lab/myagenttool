@@ -67,7 +67,11 @@ function normalizeEvents(value, mode) {
 }
 
 export function normalizeChannelNotificationPolicy(input = {}, base = {}) {
-  const mode = CHANNEL_NOTIFICATION_MODES.includes(input.mode) ? input.mode : (base.mode ?? "important");
+  // A first-time personal user should not need to discover a hidden setting to
+  // learn that a long local task is alive. Progress remains rate-limited and
+  // starts only after five minutes; an explicit "important" policy still opts
+  // back out of periodic updates.
+  const mode = CHANNEL_NOTIFICATION_MODES.includes(input.mode) ? input.mode : (base.mode ?? "progress");
   const quiet = { ...DEFAULT_QUIET_HOURS, ...(base.quietHours ?? {}), ...(input.quietHours ?? {}) };
   return {
     mode,
@@ -111,7 +115,7 @@ function eventIsImportant(event) {
 
 function taskLabel(thread) {
   const summary = String(thread?.summary ?? "").replace(/\s+/g, " ").trim();
-  return summary ? `【${summary.slice(0, 80)}】` : "【当前任务】";
+  return summary ? `【${summary.slice(0, 36)}${summary.length > 36 ? "…" : ""}】` : "【当前任务】";
 }
 
 function chineseHour(value) {
@@ -156,7 +160,9 @@ export function parseChannelNotificationPolicyRequest(text) {
     const parsedHour = chineseHour(quiet[1]) ?? 10;
     const hour = parsedHour < 12 ? parsedHour + 12 : parsedHour;
     const start = `${String(Math.min(23, hour)).padStart(2, "0")}:00`;
-    return { patch: { quietHours: { enabled: true, start, end: "08:00", timezone: "local" } }, reply: `已设置免打扰时段：${start} 至次日 08:00。重要消息会在免打扰结束后补发。` };
+    const timezone = /北京时间|中国时间|上海时间/.test(value) ? "Asia/Shanghai" : "local";
+    const timezoneLabel = timezone === "Asia/Shanghai" ? "（北京时间）" : "（跟随这台电脑时间）";
+    return { patch: { quietHours: { enabled: true, start, end: "08:00", timezone } }, reply: `已设置免打扰时段：${start} 至次日 08:00${timezoneLabel}。重要消息会在免打扰结束后补发。` };
   }
   return null;
 }
@@ -209,7 +215,7 @@ export function createChannelNotificationService({ state, now, nextId, appendEve
   function recordLog({ channelId, conversationId, threadId, event, deliveryId, dedupeKey }) {
     const at = timestamp(now);
     runTx(() => {
-      state.channelNotificationLog = [...(state.channelNotificationLog ?? []), { id: nextId("cnl"), channelId, conversationId, threadId: threadId ?? null, event, deliveryId: deliveryId ?? null, dedupeKey: dedupeKey ?? null, createdAt: at }].slice(-MAX_LOG_ROWS);
+      state.channelNotificationLog = [...(state.channelNotificationLog ?? []), { id: nextId("cnl"), channelId, conversationId, threadId: threadId ?? null, event, deliveryId: deliveryId ?? null, deliveryStatus: "queued", dedupeKey: dedupeKey ?? null, createdAt: at, updatedAt: at }].slice(-MAX_LOG_ROWS);
     });
   }
 
@@ -218,7 +224,16 @@ export function createChannelNotificationService({ state, now, nextId, appendEve
   }
 
   function enqueueImmediate({ channelId, conversationId, threadId, invocationId, content, mediaAssets, dedupeKey, event }) {
-    const result = enqueueChannelDelivery?.({ channelId, conversationId, invocationId, content, mediaAssets, dedupeKey, taskContext: { channelId, conversationId, threadId: threadId ?? null, notificationEvent: event } }) ?? { ok: false, reason: "delivery_unavailable" };
+    const result = enqueueChannelDelivery?.({
+      channelId, conversationId, invocationId, content, mediaAssets, dedupeKey,
+      taskContext: {
+        channelId,
+        conversationId,
+        threadId: threadId ?? null,
+        notificationEvent: event,
+        deliveryKind: event === "succeeded" ? "result" : "status_notification",
+      },
+    }) ?? { ok: false, reason: "delivery_unavailable" };
     if (result?.ok && !result.deduplicated) recordLog({ channelId, conversationId, threadId, event, deliveryId: result.deliveryId, dedupeKey });
     return result;
   }
@@ -256,14 +271,22 @@ export function createChannelNotificationService({ state, now, nextId, appendEve
       if (Number.isFinite(last) && Number.isFinite(currentMs) && currentMs - last < policy.progressIntervalMinutes * 60_000) return { ok: true, suppressed: true, reason: "progress_throttled" };
       if (Number.isFinite(started) && Number.isFinite(currentMs) && currentMs - started < startAfter) return { ok: true, suppressed: true, reason: "progress_start_delay" };
     }
-    const activeTaskCount = (state.channelTaskThreads ?? []).filter((row) => row.channelId === channelId && row.conversationId === conversationId && ["queued", "running"].includes(row.status)).length;
+    const activeRows = (state.channelTaskThreads ?? []).filter((row) => row.channelId === channelId && row.conversationId === conversationId && ["queued", "running"].includes(row.status));
+    const activeTaskCount = activeRows.length;
     if (!force && !eventIsImportant(event) && (policy.mode === "digest" || (event === "progress" && activeTaskCount > 1))) {
       const dueAt = quietDueAt ?? new Date(currentMs + policy.digestWindowSeconds * 1_000).toISOString();
-      return queueBatch({ channelId, conversationId, threadId, invocationId, content: `${taskLabel(thread)} ${content}`, mediaAssets, event, dueAt, dedupeKey });
+      const result = queueBatch({ channelId, conversationId, threadId, invocationId, content: `${taskLabel(thread)} ${content}`, mediaAssets, event, dueAt, dedupeKey });
+      if (result?.ok && thread && event === "progress") runTx(() => { thread.lastProgressNotificationAt = timestamp(now); thread.updatedAt = timestamp(now); });
+      return result;
     }
-    if (!force && quietDueAt) return queueBatch({ channelId, conversationId, threadId, invocationId, content: `${taskLabel(thread)} ${content}`, mediaAssets, event, dueAt: quietDueAt, dedupeKey });
+    if (!force && quietDueAt) {
+      const result = queueBatch({ channelId, conversationId, threadId, invocationId, content: `${taskLabel(thread)} ${content}`, mediaAssets, event, dueAt: quietDueAt, dedupeKey });
+      if (result?.ok && thread && event === "progress") runTx(() => { thread.lastProgressNotificationAt = timestamp(now); thread.updatedAt = timestamp(now); });
+      return result;
+    }
     if (!force && !eventIsImportant(event) && Number.isFinite(currentMs) && recentCount(channelId, conversationId, currentMs) >= policy.maxPerHour) return { ok: true, suppressed: true, reason: "hourly_limit" };
-    const labeled = content.startsWith("【") ? content : `${taskLabel(thread)} ${content}`;
+    const relevantTaskCount = activeTaskCount + (thread && !activeRows.some((row) => row.id === thread.id) ? 1 : 0);
+    const labeled = content.startsWith("【") || relevantTaskCount <= 1 ? content : `${taskLabel(thread)} ${content}`;
     const result = enqueueImmediate({ channelId, conversationId, threadId, invocationId, content: labeled, mediaAssets, dedupeKey: dedupeKey ?? `channel-notify:${threadId ?? conversationId}:${event}:${Math.floor(currentMs / 60_000)}`, event });
     if (result?.ok && thread && event === "progress") {
       runTx(() => { thread.lastProgressNotificationAt = timestamp(now); thread.updatedAt = timestamp(now); });

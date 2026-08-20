@@ -108,6 +108,7 @@ export function createWorkItemAutoSchedulerService({
     const agents = state.agents ?? [];
     const allowed = (agent) => agent
       && agent.status !== "disabled"
+      && agent.status !== "unavailable"
       && agent.health?.status !== "unhealthy"
       && agent.id !== "agt_demo_cli"
       && agent.adapter?.type === "cli"
@@ -224,6 +225,7 @@ export function createWorkItemAutoSchedulerService({
         executionChainId: item.id,
         taskMaterialWorkItemId: item.id,
         terminalId: item.terminalId,
+        channelOrigin: item.channelOrigin ?? null,
         operationIntent: item.channelTaskContract?.operationIntent ?? null,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"

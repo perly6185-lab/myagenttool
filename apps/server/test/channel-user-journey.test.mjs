@@ -420,10 +420,12 @@ test("iLink failed task can be retried and its retry result is delivered once", 
   assert.match(harness.sent[0].content, /重试/);
 
   const retried = await harness.receive("重试").dispatched;
-  assert.match(retried.reply, /重新开始执行/);
+  assert.match(retried.reply, /正在重试这个任务/);
   assert.deepEqual(retryCalls, ["run_failed"]);
   assert.equal(task.thread.status, "running");
   assert.equal(task.thread.invocationId, "inv_retry");
+  assert.equal(task.thread.lastProgressNotificationKey, `${task.thread.id}:inv_retry:running`);
+  assert.equal(harness.state.channelIntentMetrics.experience.retryStartDuplicatesSuppressed, 1);
 
   harness.state.autoRuns[0].status = "succeeded";
   const retryInvocation = {

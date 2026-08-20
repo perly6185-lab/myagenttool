@@ -35,6 +35,7 @@ export declare function roleAutoRunPrompt(
     path?: "develop" | "design" | "prototype" | "clarify" | "decompose" | "evaluate" | "summarize";
     issueBody?: string | null;
     verifyCommand?: string | null;
+    readOnly?: boolean;
   },
 ): string;
 

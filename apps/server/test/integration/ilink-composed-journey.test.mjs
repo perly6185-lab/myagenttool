@@ -148,15 +148,25 @@ test("composed iLink journey: poll → import → channel reply queue → provid
   const readOnlyEvent = state.channelEvents.find((event) => event.id === readOnlyImported.eventId);
   const readOnlyWorkItem = state.workItems.find((item) => item.channelOrigin?.messageId === readOnlyImported.eventId);
   const readOnlyThread = state.channelTaskThreads.find((thread) => thread.workItemId === readOnlyWorkItem?.id);
-  assert.match(readOnlyEvent.replyText, /只读方式/);
-  assert.match(readOnlyEvent.replyText, /不会创建、修改、删除、移动或重命名文件/);
+  assert.match(readOnlyEvent.replyText, /已按只读方式查看/);
+  assert.match(readOnlyEvent.replyText, /没有修改任何文件/);
+  assert.match(readOnlyEvent.replyText, /alpha\.txt/);
+  assert.match(readOnlyEvent.replyText, /beta\.txt/);
+  assert.match(readOnlyEvent.replyText, /gamma\.txt/);
+  assert.doesNotMatch(readOnlyEvent.replyText, /\/private\/|\/var\/|## Result|What changed/);
   assert.equal(readOnlyWorkItem.channelTaskContract.operationIntent.accessMode, "read_only");
   assert.equal(readOnlyWorkItem.channelTaskContract.riskLevel, "low");
   assert.equal(readOnlyWorkItem.channelTaskContract.executionStrategy.strategy, "governed_bridge");
   assert.equal(readOnlyWorkItem.channelTaskContract.executionStrategy.safeToAutoRoute, true);
+  assert.equal(readOnlyWorkItem.status, "done");
+  assert.equal(readOnlyWorkItem.executionPolicy, "auto");
+  assert.equal(readOnlyWorkItem.waitingOn, "none");
   assert.equal(readOnlyWorkItem.channelTaskContract.dataMutationPreview, null);
-  assert.equal(readOnlyThread.status, "queued");
+  assert.equal(readOnlyThread.status, "succeeded");
   assert.equal(readOnlyThread.waitingFor, null);
+  assert.match(readOnlyThread.resultSummary, /找到以下 3 个文件/);
+  assert.equal(state.channelIntentMetrics.experience.directLocalReadOnlyResults, 1);
+  assert.equal(state.autoRuns.some((run) => run.localIssueId === readOnlyWorkItem.id), false);
   const filesAfterReadOnlyTask = (await readdir(projectPath, { withFileTypes: true }))
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name)
@@ -167,6 +177,71 @@ test("composed iLink journey: poll → import → channel reply queue → provid
   ]));
   assert.deepEqual(filesAfterReadOnlyTask, filesBeforeReadOnlyTask);
   assert.deepEqual(contentsAfterReadOnlyTask, contentsBeforeReadOnlyTask);
+
+  // The user-visible terminal notification must wait until the AutoRun reaction
+  // has projected the Invocation outcome. Otherwise an early "still running"
+  // delivery claims the dedupe key and the real failure/completion is lost.
+  const lifecycleThread = {
+    id: "cth_composed_lifecycle",
+    channelId: channel.id,
+    conversationId: readOnlyEvent.conversationId,
+    workItemId: "wi_composed_lifecycle",
+    autoRunId: "aur_composed_lifecycle",
+    invocationId: "inv_composed_lifecycle",
+    status: "running",
+    summary: "组合链路任务",
+    createdAt: NOW,
+    updatedAt: NOW,
+    lastProgressAt: NOW,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+  const lifecycleAutoRun = {
+    id: "aur_composed_lifecycle",
+    status: "running",
+    phase: "implementing",
+    projectId: defaultProject.id,
+    localIssueId: lifecycleThread.workItemId,
+    executionChainId: lifecycleThread.workItemId,
+    invocationId: "inv_composed_lifecycle",
+    link: { type: "local_issue", number: 999, title: lifecycleThread.summary, state: "open" },
+    channelOrigin: { channelId: channel.id, conversationId: readOnlyEvent.conversationId, threadId: lifecycleThread.id },
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const lifecycleInvocation = {
+    id: "inv_composed_lifecycle",
+    status: "running",
+    requestedBy: OWNER.userId,
+    options: { metadata: {
+      autoRunId: lifecycleAutoRun.id,
+      channel: {
+        channelId: channel.id,
+        conversationId: readOnlyEvent.conversationId,
+        threadId: lifecycleThread.id,
+        workItemId: lifecycleThread.workItemId,
+        autoRunId: lifecycleAutoRun.id,
+        projectId: defaultProject.id,
+      },
+    } },
+    delivery: { state: "acknowledged" },
+    cancellation: { state: "none" },
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  state.channelTaskThreads.push(lifecycleThread);
+  state.autoRuns.unshift(lifecycleAutoRun);
+  state.invocations.unshift(lifecycleInvocation);
+  deps.completeInvocation(lifecycleInvocation, { status: "failed", result: { summary: "执行检查失败" } });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(lifecycleAutoRun.status, "failed");
+  assert.equal(lifecycleThread.status, "failed");
+  const terminalDelivery = state.channelDeliveries.find((delivery) =>
+    delivery.taskContext?.threadId === lifecycleThread.id
+    && delivery.taskContext?.notificationEvent === "failed");
+  assert.ok(terminalDelivery);
+  assert.doesNotMatch(terminalDelivery.content, /继续执行中/);
+  await deps.sweepChannelDeliveries();
+  assert.equal(terminalDelivery.status, "delivered");
 
   const highRiskImported = await deps.importChannelEvent({
     channelId: channel.id,

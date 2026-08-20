@@ -12,6 +12,7 @@ import type { ChannelConversation, ChannelDelivery, ChannelDiagnostics, ChannelI
 import type { Tone } from "@/lib/readable-labels";
 import { installChannelTranslations } from "@/lib/i18n/channel-resources";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { useUiStore } from "@/store/ui-store";
 
 installChannelTranslations();
 
@@ -226,10 +227,12 @@ export function ChannelsView() {
       />
       {setupOpen ? <IlinkSetupPanel channelId={setupChannelId} existingChannelId={existingWechat?.id ?? null} onClose={() => { setSetupOpen(false); setSetupChannelId(null); }} /> : null}
       {state?.channelIntentMetrics && state.channelIntentMetrics.total > 0 ? (
-        <div className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground" data-testid="channel-intent-metrics">
-          意图识别：{state.channelIntentMetrics.total} 次，低置信度 {state.channelIntentMetrics.lowConfidence ?? 0} 次，需澄清 {state.channelIntentMetrics.ambiguous ?? 0} 次{state.channelIntentMetrics.policyVersion ? `，策略 ${state.channelIntentMetrics.policyVersion}` : ""}
-          {state.channelIntentMetrics.bridge?.attempts ? <span className="ml-2">Bridge：{state.channelIntentMetrics.bridge.succeeded ?? 0} 成功 / {state.channelIntentMetrics.bridge.failed ?? 0} 失败，平均 {state.channelIntentMetrics.bridge.averageLatencyMs ?? "—"} ms{state.channelIntentMetrics.bridge.circuitOpen ? "，已自动降级本地识别" : ""}</span> : null}
-        </div>
+        <details className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground" data-testid="channel-intent-metrics">
+          <summary className="cursor-pointer">高级诊断：意图理解</summary>
+          <p className="mt-2">意图识别：{state.channelIntentMetrics.total} 次，低置信度 {state.channelIntentMetrics.lowConfidence ?? 0} 次，需澄清 {state.channelIntentMetrics.ambiguous ?? 0} 次{state.channelIntentMetrics.policyVersion ? `，策略 ${state.channelIntentMetrics.policyVersion}` : ""}</p>
+          {state.channelIntentMetrics.bridge?.attempts ? <p className="mt-1">Bridge：{state.channelIntentMetrics.bridge.succeeded ?? 0} 成功 / {state.channelIntentMetrics.bridge.failed ?? 0} 失败，平均 {state.channelIntentMetrics.bridge.averageLatencyMs ?? "—"} ms{state.channelIntentMetrics.bridge.circuitOpen ? "，已自动降级本地识别" : ""}</p> : null}
+          {state.channelIntentMetrics.experience ? <p className="mt-1">体验闭环：针对性澄清 {state.channelIntentMetrics.experience.targetedClarifications ?? 0}，明确只读 {state.channelIntentMetrics.experience.directReadOnlyTasks ?? 0}（本地直达 {state.channelIntentMetrics.experience.directLocalReadOnlyResults ?? 0}），复用/清理重复任务 {(state.channelIntentMetrics.experience.duplicateTasksReused ?? 0) + (state.channelIntentMetrics.experience.staleDuplicatesReconciled ?? 0)}，执行后续补充 {state.channelIntentMetrics.experience.activeFollowUpsQueued ?? 0}，重试通知去重 {state.channelIntentMetrics.experience.retryStartDuplicatesSuppressed ?? 0}，媒体回执 {state.channelIntentMetrics.experience.mediaReceipts ?? 0}</p> : null}
+        </details>
       ) : null}
       {channels.length > 0 ? <QuickStartGuide /> : null}
       {channels.length === 0 ? (
@@ -267,8 +270,8 @@ function QuickStartGuide() {
       <summary className="cursor-pointer text-sm font-medium">快速上手：像聊天一样使用</summary>
       <div className="mt-3 grid gap-3 text-xs text-muted-foreground sm:grid-cols-3">
         <div><p className="font-medium text-foreground">1. 直接说需求</p><p className="mt-1">例如：帮我整理这份客户反馈。</p></div>
-        <div><p className="font-medium text-foreground">2. 确认后执行</p><p className="mt-1">系统整理好任务后，回复“确认”即可开始。</p></div>
-        <div><p className="font-medium text-foreground">3. 随时看进度</p><p className="mt-1">可以问“现在做到哪了”，也可以补充图片、语音或文件。</p></div>
+        <div><p className="font-medium text-foreground">2. 安全开始</p><p className="mt-1">明确的只读请求直接处理；修改或发送前会先展示影响并请你确认。</p></div>
+        <div><p className="font-medium text-foreground">3. 随时补充和看进度</p><p className="mt-1">可以问“现在做到哪了”，也可以继续发送文字、图片、语音或文件。</p></div>
       </div>
     </details>
   );
@@ -550,10 +553,13 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
   const [diagnosticLoading, setDiagnosticLoading] = useState(false);
   const [diagnosticError, setDiagnosticError] = useState(false);
   const [notificationConversationId, setNotificationConversationId] = useState(conversations[0]?.id ?? "");
-  const [notificationMode, setNotificationMode] = useState<ChannelNotificationPolicy["mode"]>("important");
+  const [notificationMode, setNotificationMode] = useState<ChannelNotificationPolicy["mode"]>("progress");
   const [notificationInterval, setNotificationInterval] = useState(10);
   const [notificationQuiet, setNotificationQuiet] = useState(false);
+  const [notificationTimezone, setNotificationTimezone] = useState("local");
   const [humanReplyDrafts, setHumanReplyDrafts] = useState<Record<string, string>>({});
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const setSection = useUiStore((state) => state.setSection);
   const today = new Date().toISOString().slice(0, 10);
   const usedToday = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
   const connectionLabel = ilinkConnectionLabel(t, channel);
@@ -566,6 +572,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
       setNotificationMode(saved.mode);
       setNotificationInterval(saved.progressIntervalMinutes);
       setNotificationQuiet(Boolean(saved.quietHours?.enabled));
+      setNotificationTimezone(saved.quietHours?.timezone || "local");
     }
   }, [conversations, notificationConversationId, notificationPolicies]);
 
@@ -677,7 +684,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
       patch: {
         mode: notificationMode,
         progressIntervalMinutes: notificationInterval,
-        quietHours: { enabled: notificationQuiet, start: "22:00", end: "08:00", timezone: "local" },
+        quietHours: { enabled: notificationQuiet, start: "22:00", end: "08:00", timezone: notificationTimezone },
       },
     }));
   }
@@ -733,10 +740,10 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
               <Badge tone={statusTone(channel.status)}>{connectionLabel ?? channel.status}</Badge>
               <Badge tone={healthTone(channel.health)}>{healthLabel(t, channel.health)}</Badge>
             </div>
-            <p className="text-xs text-muted-foreground">
+            {advancedOpen ? <p className="text-xs text-muted-foreground">
               {channel.counts.identities} identities · {channel.counts.conversations} conversations · {channel.counts.events} events
               {channel.counts.injectionFlagged > 0 ? ` · ${channel.counts.injectionFlagged} flagged` : ""}
-            </p>
+            </p> : null}
             {channel.taskSummary && channel.taskSummary.total > 0 ? (
               <p className="text-xs text-muted-foreground" data-testid="channel-task-summary">
                 任务：{taskSummaryParts.join(" · ")}
@@ -744,9 +751,9 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
             ) : null}
           </div>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1 text-xs text-muted-foreground" title={t("channelsPage.approveHint")}>
+            <label className="flex items-center gap-1 text-xs text-muted-foreground" title="允许本人在微信中确认普通授权；高风险操作仍必须在桌面端审批中心处理。">
               <input type="checkbox" checked={Boolean(channel.allowSelfApprove)} onChange={(e) => toggleSelfApprove(e.target.checked)} disabled={pending} />
-              {t("channelsPage.inChannelApprove")}
+              允许微信确认普通授权
             </label>
             {channel.provider === "wechat_ilink" && channel.status !== "enabled" ? null : channel.status === "enabled" ? (
               <Button variant="secondary" size="sm" onClick={disable} disabled={pending}>
@@ -759,25 +766,26 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
             )}
             {channel.provider === "wechat_ilink" && channel.status !== "enabled" ? <Button variant="secondary" size="sm" onClick={() => onReconnect(channel.id)} disabled={pending}>{t("channelsPage.reconnect")}</Button> : null}
             {channel.provider === "wechat_ilink" ? <Button variant="ghost" size="sm" onClick={disconnectWithConfirmation} disabled={pending}>{t("channelsPage.disconnect")}</Button> : null}
-            <Button variant="ghost" size="sm" onClick={() => void exportDiagnostics()} disabled={pending || diagnosticLoading}>
+            {advancedOpen ? <Button variant="ghost" size="sm" onClick={() => void exportDiagnostics()} disabled={pending || diagnosticLoading}>
               {diagnosticLoading ? "导出中…" : "导出诊断"}
-            </Button>
+            </Button> : null}
             <Button variant="secondary" size="sm" onClick={() => setInteractionsOpen((open) => !open)}>
               {interactionsOpen ? t("channelsPage.hideInteractions") : t("channelsPage.viewInteractions")}
             </Button>
+            <Button variant="ghost" size="sm" onClick={() => setAdvancedOpen((open) => !open)}>{advancedOpen ? "收起高级信息" : "高级信息"}</Button>
           </div>
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-3">
+        {advancedOpen ? <div className="grid gap-2 sm:grid-cols-3">
           {Object.entries(channel.readiness).filter(([scope]) => scope !== "workerHealthy").map(([scope, ok]) => (
             <div key={scope} className="flex items-center gap-2 text-xs">
               <Badge tone={ok ? "success" : "danger"}>{ok ? t("channelsPage.ready") : t("channelsPage.missing")}</Badge>
               <span className="text-muted-foreground">{readinessLabel(t, scope)}</span>
             </div>
           ))}
-        </div>
+        </div> : null}
 
-        <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs" data-testid="channel-diagnostics-summary">
+        {advancedOpen ? <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs" data-testid="channel-diagnostics-summary">
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
             <span>最后入站：{diagnosticTime(channel.lastInboundAt)}</span>
             <span>最后出站：{diagnosticTime(channel.lastOutboundAt)}</span>
@@ -790,9 +798,9 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
             </p>
           ) : null}
           {diagnosticError ? <p className="mt-1 text-destructive">诊断导出失败，请稍后重试。</p> : null}
-        </div>
+        </div> : null}
 
-        {channel.provider === "wechat_ilink" ? (
+        {advancedOpen && channel.provider === "wechat_ilink" ? (
           <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs" data-testid="ilink-runtime-summary">
             <div className="flex flex-wrap gap-x-4 gap-y-1">
               <span>iLink：{ilinkRuntimeStatusLabel(channel.ilinkAccount)}</span>
@@ -806,18 +814,20 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
         ) : null}
 
         <details className="rounded-md border border-border px-3 py-2" data-testid="channel-notification-settings">
-          <summary className="cursor-pointer text-sm font-medium">任务提醒</summary>
-          <div className="mt-3 grid gap-3 text-xs sm:grid-cols-[minmax(0,1fr)_180px_120px_auto] sm:items-end">
+          <summary className="cursor-pointer text-sm font-medium">任务提醒（长任务默认开启）</summary>
+          <div className="mt-3 grid gap-3 text-xs sm:grid-cols-[minmax(0,1fr)_160px_110px_140px_auto] sm:items-end">
             <label className="space-y-1"><span className="text-muted-foreground">会话</span><select className="h-9 w-full rounded-md border border-border bg-background px-2" value={notificationConversationId} onChange={(event) => setNotificationConversationId(event.target.value)} disabled={!conversations.length || pending}><option value="">暂无会话</option>{conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.externalUserId ?? conversation.id}</option>)}</select></label>
             <label className="space-y-1"><span className="text-muted-foreground">提醒方式</span><select className="h-9 w-full rounded-md border border-border bg-background px-2" value={notificationMode} onChange={(event) => setNotificationMode(event.target.value as ChannelNotificationPolicy["mode"])} disabled={!notificationConversationId || pending}><option value="important">重要节点</option><option value="progress">包含进展</option><option value="digest">进展汇总</option><option value="off">关闭主动提醒</option></select></label>
             <label className="space-y-1"><span className="text-muted-foreground">进展间隔（分钟）</span><Input type="number" min={5} max={240} value={notificationInterval} onChange={(event) => setNotificationInterval(Math.max(5, Math.min(240, Number(event.target.value) || 10)))} disabled={!notificationConversationId || pending} /></label>
+            <label className="space-y-1"><span className="text-muted-foreground">提醒时区</span><select className="h-9 w-full rounded-md border border-border bg-background px-2" value={notificationTimezone} onChange={(event) => setNotificationTimezone(event.target.value)} disabled={!notificationConversationId || pending}><option value="local">跟随电脑</option><option value="Asia/Shanghai">北京时间</option><option value="Asia/Hong_Kong">香港时间</option><option value="America/Los_Angeles">美国西部时间</option></select></label>
             <Button size="sm" onClick={() => void saveNotificationPolicy()} disabled={!notificationConversationId || pending}>保存</Button>
           </div>
-          <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={notificationQuiet} onChange={(event) => setNotificationQuiet(event.target.checked)} disabled={!notificationConversationId || pending} />晚上 22:00 至次日 08:00 免打扰（重要消息结束后补发）</label>
-          <p className="mt-2 text-xs text-muted-foreground">普通用户也可以在微信里直接说“有进展就告诉我”“只告诉我完成和失败”或“停止提醒”。</p>
+          <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={notificationQuiet} onChange={(event) => setNotificationQuiet(event.target.checked)} disabled={!notificationConversationId || pending} />晚上 22:00 至次日 08:00 免打扰（按所选时区，重要消息结束后补发）</label>
+          <p className="mt-2 text-xs text-muted-foreground">长任务超过 5 分钟后默认限频反馈，通常每 10 分钟最多一次；排队、等待设备、执行、完成和失败都会说明。MyAgentTool 需要保持运行。</p>
+          <p className="mt-1 text-xs text-muted-foreground">也可以在微信里直接说“每半小时告诉我进展”“只告诉我完成和失败”或“停止提醒”。</p>
         </details>
 
-        {channel.taskProjectId && lifecycleSummaries.length > 0 ? (
+        {advancedOpen && channel.taskProjectId && lifecycleSummaries.length > 0 ? (
           <details className="rounded-md border border-border px-3 py-2 text-xs" data-testid="channel-lifecycle-summary">
             <summary className="cursor-pointer font-medium">业务链快照（本地文件最近导入）</summary>
             <div className="mt-2 space-y-2">
@@ -844,7 +854,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           </details>
         ) : null}
 
-        {channel.capabilityAllowlist.length > 0 && (
+        {advancedOpen && channel.capabilityAllowlist.length > 0 && (
           <p className="text-xs text-muted-foreground">
             Allowlist: {channel.capabilityAllowlist.join(", ")}
             {channel.statusCapability ? ` · /status → ${channel.statusCapability}` : ""}
@@ -952,7 +962,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           )}
         </div>
 
-        {legacyTasks.length > 0 && (
+        {advancedOpen && legacyTasks.length > 0 && (
           <div className="space-y-2 border-t border-border pt-3" data-testid="channel-task-operations">
             <p className="text-xs font-medium">{t("channelsPage.tasks")}</p>
             {legacyTasks.slice().reverse().slice(0, 10).map((task) => (
@@ -1009,6 +1019,9 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                 <p className="mt-1 line-clamp-2 text-muted-foreground">{thread.summary}</p>
                 {thread.status === "awaiting_confirmation" ? <p className="mt-1 text-amber-600">请在微信回复“确认”开始，也可以继续补充或回复“取消”。</p> : null}
                 {thread.status === "waiting_user" ? <p className="mt-1 text-amber-600">等待你补充信息，直接在微信回复即可。</p> : null}
+                {thread.status === "waiting_approval" && ["approval", "delivery"].includes(thread.waitingFor ?? "") ? (
+                  <Button className="mt-2" variant="secondary" size="sm" onClick={() => setSection("approvals")}>前往审批</Button>
+                ) : null}
                 {thread.lastProgressSummary ? <p className="mt-1 text-muted-foreground">进展：{thread.lastProgressSummary}</p> : null}
                 {thread.nextAction ? <p className="mt-1 text-muted-foreground">下一步：{thread.nextAction}</p> : null}
                 {thread.lastDeliveryStatus ? <p className="mt-1 text-muted-foreground">消息：{thread.lastDeliveryStatus === "delivered" ? "已发送" : thread.lastDeliveryStatus === "retrying" ? "发送失败，自动重试中" : thread.lastDeliveryStatus === "failed_terminal" ? "发送失败，请重试" : thread.lastDeliveryStatus === "queued" ? "等待发送" : thread.lastDeliveryStatus}</p> : null}
@@ -1057,15 +1070,15 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
         {failed.length > 0 && (
           <div className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3">
             <p className="text-xs font-medium text-destructive">
-              {failed.length} failed {failed.length === 1 ? "delivery" : "deliveries"}
+              有 {failed.length} 条消息发送失败
             </p>
             {failed.map((delivery) => (
               <div key={delivery.id} className="flex items-center justify-between gap-2 text-xs">
                 <span className="font-mono text-muted-foreground">
-                  {delivery.id} · {delivery.attempts} attempts · errcode {delivery.lastErrorCode ?? "—"}
+                  已尝试 {delivery.attempts} 次{advancedOpen ? ` · ${delivery.id} · 错误 ${delivery.lastErrorCode ?? "—"}` : ""}
                 </span>
                 <Button variant="secondary" size="sm" onClick={() => retry(delivery.id)} disabled={pending}>
-                  Retry
+                  重试发送
                 </Button>
               </div>
             ))}

@@ -56,6 +56,13 @@ const USER_FACING_DELIVERY_INSTRUCTIONS =
   "contract is missing or contradictory, stop and request clarification instead of declaring a " +
   "final result.";
 
+const READ_ONLY_TASK_INSTRUCTIONS =
+  "Complete the requested inspection using read-only operations. Do not create, modify, delete, " +
+  "move, rename, stage, commit, or generate files, including report files. Return the requested " +
+  "answer directly in the final response. Keep it concise and use project-relative paths instead " +
+  "of absolute local paths. If the request cannot be completed without writing, stop and explain " +
+  "what additional permission would be needed; never reinterpret the task as an article summary.";
+
 /**
  * The task prompt an agent receives when it is pointed at a worktree created
  * from a GitHub issue/PR. `item` is the worktree link shape
@@ -216,7 +223,7 @@ export function detectPromptInjection(text) {
   return { suspicious: markers.length > 0, markers };
 }
 
-export function roleAutoRunPrompt(item, { path = "develop", issueBody = null, verifyCommand = null } = {}) {
+export function roleAutoRunPrompt(item, { path = "develop", issueBody = null, verifyCommand = null, readOnly = false } = {}) {
   const label = githubItemKindLabel(item?.type);
   const number = item?.number;
   const title = String(item?.title ?? "").trim();
@@ -224,7 +231,7 @@ export function roleAutoRunPrompt(item, { path = "develop", issueBody = null, ve
   const body = typeof issueBody === "string" && issueBody.trim()
     ? `\n\n${untrustedBodyBlock(label, issueBody.trim().slice(0, 6000))}`
     : "";
-  const instructions = ROLE_INSTRUCTIONS[path] ?? ROLE_INSTRUCTIONS.develop;
+  const instructions = readOnly ? READ_ONLY_TASK_INSTRUCTIONS : ROLE_INSTRUCTIONS[path] ?? ROLE_INSTRUCTIONS.develop;
   // Tell a code-writing run how it will be judged, so it can make the check pass
   // before finishing (pre-flight context). Only for paths that produce code.
   const verifyLine =

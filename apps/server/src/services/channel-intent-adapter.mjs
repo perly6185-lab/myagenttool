@@ -1,3 +1,4 @@
+import { findDevice, listDevices } from "../runtime/device.mjs";
 import { CHANNEL_INTENT_KINDS } from "./channel-intent.mjs";
 
 // Classification is routing preflight, not user-visible work. Keep its Bridge
@@ -73,10 +74,14 @@ export function sanitizeChannelIntentInvocationResult(result) {
 }
 
 export function resolveChannelIntentConfig(env = process.env) {
-  // Keep the ordinary channel path local and deterministic.  A Bridge-backed
-  // classifier is useful for experiments, but it is an optional enhancement,
-  // not a second queue that every inbound message must wait behind.
-  const enabled = String(env.MYAGENTTOOL_CHANNEL_INTENT_ENABLED ?? "0").trim() === "1";
+  // Obvious greetings, controls, questions and task requests are still handled
+  // locally before this adapter is called.  Enable the bounded Bridge fallback
+  // by default so an ordinary user does not need an environment variable to
+  // make colloquial/ambiguous messages understandable.  Operators can still
+  // disable it explicitly; timeout, busy and circuit-open paths immediately
+  // return to the deterministic decision instead of joining the task queue.
+  const rawEnabled = String(env.MYAGENTTOOL_CHANNEL_INTENT_ENABLED ?? "auto").trim().toLowerCase();
+  const enabled = !["0", "false", "off", "no", "disabled"].includes(rawEnabled);
   const agentId = String(env.MYAGENTTOOL_CHANNEL_INTENT_AGENT_ID ?? "agt_codex_cli").trim().slice(0, 120) || "agt_codex_cli";
   return {
     enabled,
@@ -163,8 +168,19 @@ export function createChannelIntentAdapter({
       const startedAt = Date.now();
       try {
         const agent = findAgent(config.agentId);
-        if (!agent || agent.status === "disabled" || state?.device?.unlinkState === "unlinked") {
+        const agentDeviceId = agent?.location?.type === "local_device" ? agent.location.deviceId : null;
+        const device = (agentDeviceId ? findDevice(state, agentDeviceId) : null) ?? listDevices(state)[0] ?? null;
+        if (!agent || agent.status === "disabled" || !device || device.unlinkState === "unlinked"
+          || (device.status && device.status !== "online")) {
           throw new Error("channel_intent_bridge_agent_unavailable");
+        }
+        const formalWorkActive = (state?.invocations ?? []).some((invocation) =>
+          !invocation?.options?.metadata?.channelIntentClassifier
+          && !["succeeded", "failed", "cancelled", "timed_out", "rejected"].includes(invocation?.status));
+        if (formalWorkActive) {
+          // Classification is optional. Never make it compete with a real user
+          // task for the Desktop Bridge execution slot.
+          throw new Error("channel_intent_bridge_busy");
         }
         const invocation = createInvocation(classifierPrompt({ text, activeThreads }), agent, {
           requestedBy: "usr_local",

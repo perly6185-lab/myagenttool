@@ -1516,6 +1516,17 @@ export interface ChannelIntentMetrics {
   bySource?: Record<string, number>;
   lowConfidence?: number;
   ambiguous?: number;
+  experience?: {
+    targetedClarifications?: number;
+    directReadOnlyTasks?: number;
+    directLocalReadOnlyResults?: number;
+    duplicateTasksReused?: number;
+    staleDuplicatesReconciled?: number;
+    activeFollowUpsQueued?: number;
+    retryStartDuplicatesSuppressed?: number;
+    mediaReceipts?: number;
+    updatedAt?: string | null;
+  } | null;
   bridge?: {
     attempts?: number;
     succeeded?: number;
@@ -1575,6 +1586,9 @@ export interface ChannelTaskThread {
   lastDeliveryStatus?: string | null;
   lastDeliveryId?: string | null;
   lastDeliveryError?: string | null;
+  parentThreadId?: string | null;
+  followUpKind?: string | null;
+  followUpSummary?: string | null;
 }
 
 export interface ChannelTaskRevision {

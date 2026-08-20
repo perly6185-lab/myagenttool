@@ -42,10 +42,12 @@ test("enabled mode admits one task, binds its reserved Run, and does not duplica
   Object.assign(state.workItems[0], {
     localNumber: 1, localRef: "LOCAL-1", title: "Implement queue", body: "", terminalId: "dev_local", createdBy: "usr_a",
     plannedDate: "2026-08-10",
+    channelOrigin: { channelId: "chn_1", conversationId: "conv_1", threadId: "cth_1" },
   });
   let beginCount = 0;
   let enqueueCount = 0;
   let reservedName = null;
+  let reservedChannelOrigin = null;
   const service = createWorkItemAutoSchedulerService({
     state,
     now: () => "2026-08-08T04:00:00.000Z",
@@ -53,8 +55,9 @@ test("enabled mode admits one task, binds its reserved Run, and does not duplica
     getWorkItem: ({ workItemId }) => ({ ok: true, body: { workItem: state.workItems.find((item) => item.id === workItemId) } }),
     beginExecution: () => ({ ok: true, body: { operation: { id: `weo_${++beginCount}` } } }),
     abortExecution: () => ({ ok: true }),
-    reserveAutoRun: async ({ name }) => {
+    reserveAutoRun: async ({ name, channelOrigin }) => {
       reservedName = name;
+      reservedChannelOrigin = channelOrigin;
       const autoRun = { id: "aur_1", status: "materializing", localIssueId: "lwi_1", executionChainId: "lwi_1" };
       state.autoRuns.push(autoRun);
       return { autoRun, worktree: null };
@@ -70,6 +73,7 @@ test("enabled mode admits one task, binds its reserved Run, and does not duplica
   assert.equal(beginCount, 1);
   assert.equal(enqueueCount, 1);
   assert.equal(reservedName, "local-1-implement-queue-autorun-0");
+  assert.deepEqual(reservedChannelOrigin, state.workItems[0].channelOrigin);
   assert.equal(service.preview({ teamId: "team_a" }).metrics.futurePullForwards, 1);
   await service.sweep();
   assert.equal(beginCount, 1, "an active Run prevents duplicate scheduler admission");
@@ -351,6 +355,28 @@ test("a permanently unavailable queue head does not starve the next task", async
 
   const result = await service.sweep();
   assert.deepEqual(result.starts.map((row) => row.reason ?? row.workItemId), ["repository_agent_unavailable", "lwi_2"]);
+});
+
+test("an offline local agent leaves the task queued for a later sweep", async () => {
+  const { state } = fixture("enabled");
+  state.agents[0].status = "unavailable";
+  Object.assign(state.workItems[0], { localNumber: 1, title: "Wait for desktop", terminalId: "dev_local" });
+  let admissions = 0;
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    getWorkItem: ({ workItemId }) => ({ ok: true, body: { workItem: state.workItems.find((item) => item.id === workItemId) } }),
+    beginExecution: () => { admissions += 1; return { ok: true, body: { operation: { id: "weo_offline" } } }; },
+    abortExecution: () => ({ ok: true }),
+    reserveAutoRun: async () => { throw new Error("must not reserve while offline"); },
+    recordExecutionBinding: () => ({ ok: true }),
+    enqueueAutoRunUnderstanding: () => true,
+  });
+  const first = await service.sweep();
+  assert.equal(first.starts[0].reason, "repository_agent_unavailable");
+  assert.equal(admissions, 0);
+  assert.equal(state.workItems[0].status, "ready");
+  assert.equal(state.autoRuns.length, 0);
 });
 
 test("a failed binding marks the reserved Run failed before reconciliation", async () => {
