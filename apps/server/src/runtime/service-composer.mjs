@@ -46,6 +46,7 @@ import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
 import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
 import { analyzeChannelOperationIntent } from "../services/channel-operation-intent.mjs";
+import { executeChannelReadonlyLocalOperation } from "../services/channel-readonly-local-operation.mjs";
 import { discoverChannelFileAsset } from "../services/channel-file-discovery.mjs";
 import { createChannelIntentAdapter, resolveChannelIntentConfig } from "../services/channel-intent-adapter.mjs";
 import { createChannelConsultationAdapter, resolveChannelConsultationConfig } from "../services/channel-consultation-adapter.mjs";
@@ -506,6 +507,10 @@ export function createServerRuntimeServices({
     state, stateStorePath, now, nextId, persistStateSoon: persistTaskMaterialStateSoon, appendEvent, store,
     resolveLocalContentReference: localContentCatalogService.resolveOriginal,
   });
+  // Channel services compose later because they depend on Work Items and
+  // Invocations. These narrow late-bound hooks preserve lifecycle projection.
+  let channelAutoRunHook = null;
+  let channelWorkItemHook = null;
   const workItemService = createWorkItemService({
     state, now, nextId, appendEvent, persistStateSoon: persistWorkItemStateSoon, store,
     sendAlert: alertOutbox.enqueue,
@@ -517,9 +522,12 @@ export function createServerRuntimeServices({
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
     enqueueChannelDeliveryBatch: (input) => enqueueWorkItemReportDeliveryBatch(input),
     validateApprovalToken,
-    onWorkItemChanged: (item, actor) => {
+    onWorkItemChanged: (item, actor, reason) => {
       syncAdaptiveWorkItemOutcome(item, actor);
       requestWorkItemAutoSchedulerSweep();
+      if (reason === "delivery_completed") {
+        try { channelWorkItemHook?.(item, { notify: true, reason: "work_item_delivery_completed" }); } catch { /* best-effort Channel projection */ }
+      }
     },
     claimTaskMaterialDraft: taskMaterialService.claimDraft,
     inspectTaskMaterialDraft: taskMaterialService.getDraft,
@@ -1343,7 +1351,7 @@ export function createServerRuntimeServices({
       void localContentCatalogService.requestAutomaticIncremental({ reason: "invocation_completed" }).catch(() => {
         /* local search keeps the previous valid index when an incremental pass fails */
       });
-      advanceAutoRunHook?.(invocation);
+      const autoRunAdvancement = advanceAutoRunHook?.(invocation);
       try {
         recordApplicationExecutionStat(invocation);
       } catch {
@@ -1355,25 +1363,40 @@ export function createServerRuntimeServices({
         /* auto-recovery is best-effort; completion must never fail because of it */
       }
       try {
-        channelThreadHook?.(invocation);
-      } catch {
-        /* task-thread state is best-effort; completion must never fail because of it */
-      }
-      try {
         channelConsultationHook?.(invocation);
       } catch {
         /* consultation delivery is best-effort; completion must never fail because of it */
       }
-      try {
-        channelDeliveryHook?.(invocation);
-      } catch {
-        /* channel notification is best-effort; completion must never fail because of it */
+      const finishChannelTask = () => {
+        try {
+          channelThreadHook?.(invocation);
+        } catch {
+          /* task-thread state is best-effort; completion must never fail because of it */
+        }
+        try {
+          channelDeliveryHook?.(invocation);
+        } catch {
+          /* channel notification is best-effort; completion must never fail because of it */
+        }
+      };
+      if (invocation.options?.metadata?.autoRunId && autoRunAdvancement?.then) {
+        // The Invocation result is not the user-visible AutoRun result yet:
+        // verification, repair, and local delivery may still change the final
+        // state. Wait for that durable reaction before claiming completion in
+        // the originating Channel; otherwise the early dedupe key suppresses
+        // the real terminal message.
+        void Promise.resolve(autoRunAdvancement).then(finishChannelTask, finishChannelTask);
+      } else {
+        finishChannelTask();
       }
       void articleImportService.reconcileDerivative(invocation).catch(() => {
         /* derivative reconciliation is retried by its status endpoint */
       });
     },
-    onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
+    onInvocationApproved: (invocation) => {
+      approvalAutoRunHook?.(invocation);
+      try { channelThreadHook?.(invocation); } catch { /* best-effort Channel status sync */ }
+    },
     onInvocationDenied: (invocation) => {
       // Deny skips the completion runtime, so an apply/rollback held at the local
       // gate and denied would strand its authorization at applying/rolling_back.
@@ -1382,6 +1405,8 @@ export function createServerRuntimeServices({
       mailSendHooks?.reconcileMailSendTermination(invocation);
       mailFolderOrganizationHooks?.reconcileTermination(invocation);
       denialAutoRunHook?.(invocation);
+      try { channelThreadHook?.(invocation); } catch { /* best-effort Channel status sync */ }
+      try { channelDeliveryHook?.(invocation); } catch { /* best-effort Channel denial notification */ }
     },
   });
 
@@ -1921,6 +1946,15 @@ export function createServerRuntimeServices({
             : {}),
           autoRunId: autoRun.id,
           role: "delivery_review",
+          ...(autoRun.channelOrigin?.channelId && autoRun.channelOrigin?.conversationId ? {
+            channel: {
+              ...autoRun.channelOrigin,
+              workItemId: autoRun.localIssueId ?? autoRun.executionChainId ?? null,
+              autoRunId: autoRun.id,
+              projectId: autoRun.projectId ?? null,
+            },
+            riskTags: [UNTRUSTED_INPUT_TAG],
+          } : {}),
         },
         // Native Codex review can inspect call sites and tests beyond the patch.
         // Keep it asynchronous and allow the same turn budget as a coding run;
@@ -2020,6 +2054,8 @@ export function createServerRuntimeServices({
     failAutoRunUnderstanding,
     deferAutoRunUnderstanding,
     startAutoRun,
+    onInvocationStarted: (invocation) => channelThreadHook?.(invocation),
+    onAutoRunUpdated: (autoRun, options) => channelAutoRunHook?.(autoRun, { notify: true, ...options }),
     searchProjectContent,
   });
   const workItemAutoRunBatchService = createWorkItemAutoRunBatchService({
@@ -3147,6 +3183,22 @@ export function createServerRuntimeServices({
       && !requiresDataOperationReview
       && !requiresDataMutationReview
       && !requiresExecutionStrategyReview;
+    let directReadOnlyResult = null;
+    if (effectiveAutoRoute) {
+      try {
+        directReadOnlyResult = executeChannelReadonlyLocalOperation({
+          text: description,
+          operationIntent,
+          project,
+          readProjectTree,
+          completedAt: now(),
+        });
+      } catch {
+        // A fast read is an optimization, never a weaker fallback. If the
+        // confined tree reader cannot complete, retain the governed Agent path.
+        directReadOnlyResult = null;
+      }
+    }
     const myTemplateBinding = selectedTemplate && assistedDraft?.templateMatch?.decision?.kind === "auto_apply"
       ? {
         definitionId: selectedTemplate.definitionId,
@@ -3160,7 +3212,13 @@ export function createServerRuntimeServices({
       title,
       body: description,
       type: "task",
-      status: effectiveAutoRoute ? "ready" : "backlog",
+      status: directReadOnlyResult ? "done" : effectiveAutoRoute ? "ready" : "backlog",
+      // The Channel thread and the work-item scheduler must agree about who
+      // starts the task.  Leaving this as `inherit` made projects without the
+      // optional project-wide auto-execution flag look queued in WeChat while
+      // the scheduler correctly treated the work item as manual forever.
+      executionPolicy: directReadOnlyResult || effectiveAutoRoute ? "auto" : "manual",
+      waitingOn: directReadOnlyResult ? "none" : effectiveAutoRoute ? "ai" : "none",
       priority: "p3",
       labels: ["channel", UNTRUSTED_INPUT_LABEL, ...(injectionSuspicious ? ["needs-triage"] : [])],
       inputAssets,
@@ -3221,6 +3279,25 @@ export function createServerRuntimeServices({
           }, workItemActor);
         }
       }
+      if (directReadOnlyResult) {
+        workItemService.recordVerification({
+          workItemId: storedWorkItem.id,
+          expectedRevision: storedWorkItem.revision,
+          kind: "automatic",
+          status: "passed",
+          summary: directReadOnlyResult.summary,
+          acceptanceResults: (storedWorkItem.acceptanceCriteria ?? []).map((criterion) => ({
+            criterion,
+            status: "passed",
+            note: "已通过受控的本地项目文件读取能力完成，只读取文件名且未修改项目。",
+          })),
+          evidence: [{
+            kind: "log",
+            ref: `channel-readonly:${storedWorkItem.id}`,
+            summary: `Local project tree returned ${directReadOnlyResult.resultCount} file(s).`,
+          }],
+        }, workItemActor);
+      }
     }
     return {
       ok: true,
@@ -3230,6 +3307,8 @@ export function createServerRuntimeServices({
       url: `/?section=tasks&workItem=${encodeURIComponent(workItem.id)}`,
       replayed: Boolean(created.body.replayed),
       autoRoute: effectiveAutoRoute,
+      directCompleted: Boolean(directReadOnlyResult),
+      directReadOnlyResult,
       requiresChannelConfirmation,
       requiresDataPlan,
       requiresDataReview,
@@ -3645,6 +3724,7 @@ export function createServerRuntimeServices({
         },
       };
     }
+    const origin = { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, threadId: req.threadId ?? null, externalUserId: req.externalUserId ?? null, issueNumber: req.issueNumber };
     let result;
     let error;
     try {
@@ -3652,6 +3732,7 @@ export function createServerRuntimeServices({
         projectId: req.projectId,
         link: { type: "issue", number: req.issueNumber, title: req.title, url: req.issueUrl, state: "open" },
         actor,
+        channelOrigin: origin,
       });
     } catch (e) {
       error = String(e?.message ?? e);
@@ -3665,7 +3746,6 @@ export function createServerRuntimeServices({
     // auto-run carries its channel ORIGIN — so evidence/audit and the console can
     // tie the run (and its actions) back to the originating channel, conversation,
     // and untrusted sender without a manual issue-number join.
-    const origin = { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, threadId: req.threadId ?? null, externalUserId: req.externalUserId ?? null, issueNumber: req.issueNumber };
     channelTaskRunTx(() => {
       req.status = "routed";
       req.autoRunId = autoRunId;
@@ -3967,7 +4047,18 @@ export function createServerRuntimeServices({
   const channelConversationService = createChannelConversationService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
     createCapabilityInvocation, cancelInvocation, createChannelTaskIssue, routeChannelTask, dismissChannelTask,
-    answerClarify, retryAutoRun, cancelAutoRun,
+    answerClarify,
+    retryAutoRun: async (autoRunId, options) => {
+      const run = (state.autoRuns ?? []).find((item) => item.id === autoRunId) ?? null;
+      if (run?.status === "failed" && !run.worktreeId && !run.invocationId && run.link?.type === "local_issue") {
+        const deferred = deferAutoRunUnderstanding(autoRunId, new Error("Retry requested before execution started."));
+        workItemAutoRunUnderstandingService.enqueue(autoRunId);
+        try { channelAutoRunHook?.(deferred, { notify: false, reason: "understanding_retry_requested" }); } catch { /* best-effort Channel projection */ }
+        return { autoRun: deferred, invocation: null, waitingUnderstanding: true };
+      }
+      return retryAutoRun(autoRunId, options);
+    },
+    cancelAutoRun,
     classifyIntent: createChannelIntentAdapter({
       config: resolveChannelIntentConfig(),
       state,
@@ -4007,6 +4098,8 @@ export function createServerRuntimeServices({
     mintDecisionGrant, validateApprovalToken, approveInvocation, denyInvocation,
   });
   channelThreadHook = channelConversationService.syncTaskThreadFromInvocation;
+  channelAutoRunHook = channelConversationService.syncTaskThreadFromAutoRun;
+  channelWorkItemHook = channelConversationService.syncTaskThreadFromWorkItem;
   channelConsultationHook = channelConversationService.syncConsultationFromInvocation;
   // Outbound delivery (S5/#1110): provider senders are late-bound by index.mjs
   // when each gateway is configured — this service never sees any provider

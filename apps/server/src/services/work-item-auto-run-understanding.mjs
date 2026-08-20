@@ -55,6 +55,8 @@ export function createWorkItemAutoRunUnderstandingService({
   failAutoRunUnderstanding,
   deferAutoRunUnderstanding,
   startAutoRun,
+  onInvocationStarted = null,
+  onAutoRunUpdated = null,
   searchProjectContent,
   schedule = (callback) => setImmediate(() => void callback()),
 } = {}) {
@@ -157,9 +159,13 @@ export function createWorkItemAutoRunUnderstandingService({
           confirmedAt: workItem.executionContractConfirmedAt,
         });
       if (autoRun.decision?.path === "clarify") {
+        if (typeof onAutoRunUpdated === "function") {
+          try { onAutoRunUpdated(frozen.autoRun, { reason: "understanding_needs_input" }); } catch { /* Channel status sync is best-effort. */ }
+        }
         return { ok: true, waitingForInput: true, autoRun: frozen.autoRun };
       }
 
+      const operationIntent = workItem.channelTaskContract?.operationIntent ?? null;
       const issueBody = [
         workItem.body,
         workItemOperationInstructions(workItem),
@@ -182,15 +188,26 @@ export function createWorkItemAutoRunUnderstandingService({
         autonomyProfile: autoRun.autonomyProfile,
         existingAutoRunId: autoRun.id,
         executionPlan: frozen.executionPlan,
-        operationIntent: workItem.channelTaskContract?.operationIntent ?? null,
+        operationIntent,
+        channelOrigin: workItem.channelOrigin ?? autoRun.channelOrigin ?? null,
       });
+      if (result?.invocation && typeof onInvocationStarted === "function") {
+        try { onInvocationStarted(result.invocation); } catch { /* Channel status sync is best-effort. */ }
+      }
       return { ok: true, ...result };
     } catch (error) {
-      if (String(error?.message ?? error).startsWith("At capacity:")) {
-        deferAutoRunUnderstanding?.(id, error);
+      const message = String(error?.message ?? error);
+      if (message.startsWith("At capacity:") || /No device is online to run this agent/i.test(message)) {
+        const deferred = deferAutoRunUnderstanding?.(id, error) ?? autoRun;
+        if (typeof onAutoRunUpdated === "function") {
+          try { onAutoRunUpdated(deferred, { reason: /No device is online/i.test(message) ? "waiting_device" : "waiting_capacity" }); } catch { /* Channel status sync is best-effort. */ }
+        }
         return { ok: true, waitingCapacity: true, autoRun };
       }
-      failAutoRunUnderstanding(id, error);
+      const failed = failAutoRunUnderstanding(id, error) ?? autoRun;
+      if (typeof onAutoRunUpdated === "function") {
+        try { onAutoRunUpdated(failed, { reason: "understanding_failed" }); } catch { /* Channel status sync is best-effort. */ }
+      }
       return { ok: false, reason: error instanceof Error ? error.message : String(error), autoRun };
     } finally {
       processing.delete(id);

@@ -30,8 +30,11 @@ vi.mock("@/data/use-console-actions", () => ({
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe("ChannelsView task operations", () => {
-  it("shows trace links, understandable failure state, and recovery actions", async () => {
+  it("defaults to a simple view and reveals diagnostics only on demand", async () => {
     render(<ChannelsView />);
+    expect(screen.queryByTestId("channel-diagnostics-summary")).toBeNull();
+    expect(screen.queryByText("Issue #42")).toBeNull();
+    fireEvent.click(screen.getByText("高级信息"));
     expect(screen.getByTestId("channel-diagnostics-summary").textContent).toContain("最后入站");
     expect((screen.getByTestId("channel-task-device") as HTMLSelectElement).disabled).toBe(true);
     expect(screen.getByTestId("channel-diagnostics-summary").textContent).toContain("入站 已接收 1");

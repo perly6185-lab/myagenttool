@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
+import { detectPromptInjection, roleAutoRunPrompt, UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
 
 import { teamOf } from "../runtime/auth.mjs";
 import { findDevice, listDevices } from "../runtime/device.mjs";
@@ -61,6 +61,34 @@ export function autoRunPermissionOptions(agent, operationIntent = null) {
       : { permissionMode: "plan" };
   }
   return isCodexAgent(agent) ? { approvalMode: "auto" } : {};
+}
+
+function normalizedChannelOrigin(origin) {
+  if (!origin?.channelId || !origin?.conversationId) return null;
+  return {
+    channelId: String(origin.channelId),
+    conversationId: String(origin.conversationId),
+    channelTaskRequestId: origin.channelTaskRequestId ? String(origin.channelTaskRequestId) : null,
+    threadId: origin.threadId ? String(origin.threadId) : null,
+    externalUserId: origin.externalUserId ? String(origin.externalUserId) : null,
+    messageId: origin.messageId ? String(origin.messageId) : null,
+    principalId: origin.principalId ? String(origin.principalId) : null,
+  };
+}
+
+function autoRunInvocationMetadata(autoRun, metadata = {}) {
+  const origin = normalizedChannelOrigin(autoRun?.channelOrigin);
+  if (!origin) return metadata;
+  return {
+    ...metadata,
+    channel: {
+      ...origin,
+      workItemId: autoRun.localIssueId ?? autoRun.executionChainId ?? null,
+      autoRunId: autoRun.id,
+      projectId: autoRun.projectId ?? null,
+    },
+    riskTags: [...new Set([...(metadata.riskTags ?? []), UNTRUSTED_INPUT_TAG])],
+  };
 }
 
 function localDateKeyForOffset(value, timezoneOffset = 0) {
@@ -954,7 +982,7 @@ export function createAutoRunService({
     projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody,
     executionChainId = null, autonomyProfile = "standard", terminalId = null,
     taskMaterialWorkItemId = null, localIssueId = null,
-    scheduler = null,
+    scheduler = null, channelOrigin = null,
   } = {}) {
     const normalizedLink = normalizeWorktreeLink(link);
     if (!normalizedLink) throw new Error("A GitHub issue or PR link is required to start an auto-run.");
@@ -1012,6 +1040,7 @@ export function createAutoRunService({
         priority: ["p0", "p1", "p2", "p3"].includes(scheduler.priority) ? scheduler.priority : "p2",
         rank: Array.isArray(scheduler.rank) ? scheduler.rank.slice(0, 6) : null,
       } : null,
+      channelOrigin: normalizedChannelOrigin(channelOrigin),
       errorCode: null,
       createdAt,
       updatedAt: createdAt,
@@ -1239,6 +1268,7 @@ export function createAutoRunService({
     executionChainId = null, autonomyProfile = "standard", terminalId = null,
     taskMaterialWorkItemId = null, localIssueId = null,
     existingAutoRunId = null, decisionOverride = null, executionPlan = null, operationIntent = null,
+    channelOrigin = null,
   } = {}) {
     const resolvedAutonomyProfile = ["cautious", "standard", "high"].includes(autonomyProfile)
       ? autonomyProfile
@@ -1634,6 +1664,10 @@ export function createAutoRunService({
       executionPlan: executionPlan ?? pendingAutoRun?.executionPlan ?? null,
       executionContract: pendingAutoRun?.executionContract ?? null,
       inputMaterialization: preparedInputMaterialization,
+      channelOrigin: normalizedChannelOrigin(channelOrigin ?? pendingAutoRun?.channelOrigin),
+      operationIntent: operationIntent && typeof operationIntent === "object"
+        ? structuredClone(operationIntent)
+        : pendingAutoRun?.operationIntent ?? null,
       phase: decision.path === "clarify"
         ? "understanding"
         : decision.path === "develop"
@@ -1688,8 +1722,8 @@ export function createAutoRunService({
       const verifyProject = state.projects.find((p) => p.id === (worktree.sourceProjectId ?? worktree.projectId ?? projectId ?? state.currentProjectId)) ?? null;
       const verifyCmdArr = resolveAutoRunVerifyCommandFor({ verifyCommandName: verifyProject?.verifyCommandName ?? null });
       const verifyCommand = Array.isArray(verifyCmdArr) && verifyCmdArr.length ? verifyCmdArr.join(" ") : null;
-      const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody, verifyCommand });
       const readOnlyExecution = operationIntent?.accessMode === "read_only";
+      const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody, verifyCommand, readOnly: readOnlyExecution });
       const permissionOptions = autoRunPermissionOptions(agent, operationIntent);
       invocation = createInvocation(task, agent, {
         actor,
@@ -1699,7 +1733,7 @@ export function createAutoRunService({
         timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
         // role carries the decided path so role-restricted agent-skills render
         // for this run (creation.mjs → renderAgentSkillsIntoWorktree).
-        metadata: {
+        metadata: autoRunInvocationMetadata(autoRun, {
           worktreeId: worktree.id,
           projectId: worktree.projectId,
           autoRunId,
@@ -1710,7 +1744,7 @@ export function createAutoRunService({
             permissionMode: permissionOptions.permissionMode,
             operationIntent,
           } : {}),
-        },
+        }),
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
@@ -1901,7 +1935,7 @@ export function createAutoRunService({
     // inherits approval must never pick up a subsequently edited issue body.
     const path = autoRun.decision?.path ?? "develop";
     const task =
-      `${roleAutoRunPrompt(autoRun.link, { path, issueBody: autoRun.issueBody ?? null })}\n\n` +
+      `${roleAutoRunPrompt(autoRun.link, { path, issueBody: autoRun.issueBody ?? null, readOnly: autoRun.operationIntent?.accessMode === "read_only" })}\n\n` +
       `Current recovery stage: ${stage}.\n` +
       continuationCheckpointPrompt(checkpoint);
     const continuationApproval = (state.codexApprovalBrokerRequests ?? []).find((request) =>
@@ -1922,7 +1956,7 @@ export function createAutoRunService({
         timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
         codexSessionMode: "continue_last",
         resumeFromInvocationId: invocation.id,
-        metadata: {
+        metadata: autoRunInvocationMetadata(autoRun, {
           worktreeId: worktree.id,
           projectId: worktree.projectId,
           autoRunId: autoRun.id,
@@ -1936,7 +1970,7 @@ export function createAutoRunService({
           ...(continuationApproval
             ? { codexApprovalContinuationRequestId: continuationApproval.id }
             : {}),
-        },
+        }),
       });
       if (continuationApproval) {
         runTx(() => {
@@ -2124,7 +2158,7 @@ export function createAutoRunService({
       : (state.invocations ?? []).find((item) => item.id === sourceInvocationId) ?? null;
     const path = autoRun.decision?.path ?? "develop";
     const task =
-      `${roleAutoRunPrompt(autoRun.link, { path, issueBody: autoRun.issueBody ?? null })}\n\n` +
+      `${roleAutoRunPrompt(autoRun.link, { path, issueBody: autoRun.issueBody ?? null, readOnly: autoRun.operationIntent?.accessMode === "read_only" })}\n\n` +
       "The previous launch stopped only because the selected model had no capacity. " +
       "Resume this exact task on the existing worktree. Preserve completed work and avoid repeating broad repository discovery.";
     const continuationApproval = (state.codexApprovalBrokerRequests ?? []).find((request) =>
@@ -2145,7 +2179,7 @@ export function createAutoRunService({
         idempotencyKey,
         codexSessionMode: "continue_last",
         resumeFromInvocationId: sourceInvocationId,
-        metadata: {
+        metadata: autoRunInvocationMetadata(autoRun, {
           worktreeId: worktree.id,
           projectId: worktree.projectId,
           autoRunId: autoRun.id,
@@ -2156,7 +2190,7 @@ export function createAutoRunService({
           ...(continuationApproval
             ? { codexApprovalContinuationRequestId: continuationApproval.id }
             : {}),
-        },
+        }),
       });
     } catch (error) {
       const launchFailures = Number(retry.launchFailures ?? 0) + 1;
@@ -2353,9 +2387,13 @@ export function createAutoRunService({
             // clarify run hands its questions back to a human; only a develop
             // run with no diff is blocked. Old persisted records without a
             // decision fall back to the legacy intent mapping.
-            const path = autoRun.decision?.path
+            const readOnlyOutcome = autoRun.operationIntent?.accessMode === "read_only"
+              || invocation.options?.metadata?.operationIntent?.accessMode === "read_only";
+            const path = readOnlyOutcome
+              ? "inspect"
+              : autoRun.decision?.path
               ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
-            if (path === "design" || path === "prototype" || path === "evaluate" || path === "summarize") {
+            if (path === "design" || path === "prototype" || path === "evaluate" || path === "summarize" || path === "inspect") {
               const reportFile = path === "summarize" ? "summary/REPORT.md" : (path === "evaluate" ? "evaluate/REPORT.md" : null);
               const fileReport = reportFile && typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, reportFile) : null;
               const summary = (fileReport && fileReport.trim()) || extractRunSummary(invocation) || "Investigation complete — no code change was needed.";
@@ -2513,7 +2551,7 @@ export function createAutoRunService({
               // (a TOCTOU that skips both the gate and the injection scan).
               const issueBody = autoRun.issueBody ?? null;
               const repairTask =
-                `${roleAutoRunPrompt(autoRun.link, { path: "develop", issueBody })}\n\n` +
+                `${roleAutoRunPrompt(autoRun.link, { path: "develop", issueBody, readOnly: autoRun.operationIntent?.accessMode === "read_only" })}\n\n` +
                 `Your previous attempt is ALREADY in this worktree but FAILED the verification check:\n\n` +
                 `${String(verification.summary ?? "").slice(0, 2000)}\n\n` +
                 `Fix the failing check without expanding scope. This is repair attempt ${autoRun.repairAttempts} of ${maxRepairs}.`;
@@ -2523,7 +2561,7 @@ export function createAutoRunService({
                   preApproved: true, // continuation of an already human-approved run on unchanged content — no re-gate
                   ...codexAutoApprovalOptions(agent),
                   timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
-                  metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts, scheduler: autoRun.scheduler },
+                  metadata: autoRunInvocationMetadata(autoRun, { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts, scheduler: autoRun.scheduler }),
                 });
               } catch {
                 repair = null;
@@ -2982,12 +3020,12 @@ export function createAutoRunService({
     const retryPath = autoRun.decision?.path ?? "develop";
     const reviewerFeedback = String(feedback ?? "").trim().slice(0, 4000);
     const baseTask = approvalRecoveryRequest
-      ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody })}\n\n` +
+      ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody, readOnly: autoRun.operationIntent?.accessMode === "read_only" })}\n\n` +
         "The earlier launch expired while waiting for approval. That exact task has now been approved. " +
         "Resume on this existing worktree without repeating broad repository discovery."
       : resumesExecutionTimeout
-        ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody })}\n\n${continuationCheckpointPrompt(retryCheckpoint)}`
-        : roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody });
+        ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody, readOnly: autoRun.operationIntent?.accessMode === "read_only" })}\n\n${continuationCheckpointPrompt(retryCheckpoint)}`
+        : roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody, readOnly: autoRun.operationIntent?.accessMode === "read_only" });
     const task = reviewerFeedback
       ? `${baseTask}\n\nThe delivered change was reviewed and needs another pass. Address this feedback without expanding scope:\n\n${reviewerFeedback}`
       : baseTask;
@@ -3008,7 +3046,7 @@ export function createAutoRunService({
           : {}),
         ...(idempotencyKey && !resumesExecutionTimeout ? { idempotencyKey: String(idempotencyKey).slice(0, 200) } : {}),
         // Same role seeding as the initial run so role-restricted skills render.
-        metadata: {
+        metadata: autoRunInvocationMetadata(autoRun, {
           worktreeId: worktree.id,
           projectId: worktree.projectId,
           autoRunId: autoRun.id,
@@ -3025,7 +3063,7 @@ export function createAutoRunService({
             : timeoutContinuationApproval
               ? { codexApprovalContinuationRequestId: timeoutContinuationApproval.id }
             : {}),
-        },
+        }),
       });
       runTx(() => {
         if (approvalRecoveryRequest) {
@@ -3286,13 +3324,13 @@ export function createAutoRunService({
 
     const issueBody = await maybeFetchIssueBody(autoRun.link, autoRun.projectId);
     const path = autoRun.decision?.path ?? "develop";
-    const task = roleAutoRunPrompt(autoRun.link, { path, issueBody });
+    const task = roleAutoRunPrompt(autoRun.link, { path, issueBody, readOnly: autoRun.operationIntent?.accessMode === "read_only" });
     let invocation;
     try {
       invocation = createInvocation(task, alternate, {
         ...codexAutoApprovalOptions(alternate),
         timeoutSeconds: autoRunTurnTimeoutSeconds(alternate),
-        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path, scheduler: autoRun.scheduler },
+        metadata: autoRunInvocationMetadata(autoRun, { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path, scheduler: autoRun.scheduler }),
       });
       startInvocationIfAllowed(invocation, alternate);
     } catch (error) {
@@ -4132,12 +4170,12 @@ export function createAutoRunService({
       const verifyProject = state.projects.find((project) => project.id === autoRun.projectId) ?? null;
       const verifyCmdArr = resolveAutoRunVerifyCommandFor({ verifyCommandName: verifyProject?.verifyCommandName ?? null });
       const verifyCommand = Array.isArray(verifyCmdArr) && verifyCmdArr.length ? verifyCmdArr.join(" ") : null;
-      const task = roleAutoRunPrompt(autoRun.link, { path: nextPath, issueBody: clarifiedIssueBody, verifyCommand });
+      const task = roleAutoRunPrompt(autoRun.link, { path: nextPath, issueBody: clarifiedIssueBody, verifyCommand, readOnly: autoRun.operationIntent?.accessMode === "read_only" });
       const invocation = createInvocation(task, agent, {
         actor,
         ...codexAutoApprovalOptions(agent),
         timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
-        metadata: {
+        metadata: autoRunInvocationMetadata(autoRun, {
           worktreeId: worktree.id,
           projectId: worktree.projectId,
           autoRunId: autoRun.id,
@@ -4146,7 +4184,7 @@ export function createAutoRunService({
           autonomyProfile: autoRun.autonomyProfile,
           scheduler: autoRun.scheduler,
           resumedFromClarification: true,
-        },
+        }),
       });
       runTx(() => {
         autoRun.clarificationResume = null;

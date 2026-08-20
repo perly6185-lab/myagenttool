@@ -35,12 +35,13 @@ test("自然语言提醒设置返回结构化策略，不创建任务", () => {
   assert.equal(parseChannelNotificationPolicyRequest("只告诉我完成和失败")?.patch.events.progress, false);
   assert.equal(parseChannelNotificationPolicyRequest("停止这个任务的提醒")?.patch.mode, "off");
   assert.equal(parseChannelNotificationPolicyRequest("晚上十点后不要提醒")?.patch.quietHours.start, "22:00");
+  assert.equal(parseChannelNotificationPolicyRequest("按北京时间晚上十点后不要提醒")?.patch.quietHours.timezone, "Asia/Shanghai");
 });
 
-test("重要节点立即发送，进展遵守间隔并带任务标题", () => {
+test("单任务重要节点不重复长标题，进展仍遵守间隔", () => {
   const { service, deliveries, state, setNow } = harness();
   assert.equal(service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "started", content: "任务已开始执行" }).ok, true);
-  assert.match(deliveries[0].content, /整理报价/);
+  assert.equal(deliveries[0].content, "任务已开始执行");
   assert.equal(service.setPolicy({ channelId: "chn_1", conversationId: "conv_1", patch: { mode: "progress", progressStartAfterMinutes: 0, progressIntervalMinutes: 10 } }).ok, true);
   setNow("2026-08-19T12:01:00.000Z");
   assert.equal(service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "progress", content: "已读取文件" }).suppressed, undefined);
@@ -48,14 +49,27 @@ test("重要节点立即发送，进展遵守间隔并带任务标题", () => {
   assert.equal(service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "progress", content: "继续处理" }).reason, "progress_throttled");
 });
 
-test("默认重要节点模式不发送普通进展，但仍发送完成结果", () => {
-  const { service, deliveries } = harness();
+test("并行任务的重要节点保留短标题用于区分", () => {
+  const { service, deliveries, state } = harness();
+  state.channelTaskThreads[0].status = "running";
+  state.channelTaskThreads.push({ id: "thread_2", channelId: "chn_1", conversationId: "conv_1", summary: "跟踪发货", status: "running", createdAt: "2026-08-19T11:00:00.000Z" });
+  service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "started", content: "任务已开始执行" });
+  assert.match(deliveries[0].content, /^【整理报价】/);
+});
+
+test("首次使用默认开启限频长任务进展，显式重要节点模式仍可关闭普通进展", () => {
+  const { service, deliveries, setNow } = harness();
   const progress = service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "progress", content: "已读取一半文件" });
   assert.equal(progress.suppressed, true);
-  assert.equal(progress.reason, "important_only");
+  assert.equal(progress.reason, "progress_start_delay");
   assert.equal(deliveries.length, 0);
-  assert.equal(service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "succeeded", content: "任务已完成" }).ok, true);
+  setNow("2026-08-19T12:06:00.000Z");
+  assert.equal(service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "progress", content: "仍在安全读取文件" }).ok, true);
   assert.equal(deliveries.length, 1);
+  assert.equal(service.setPolicy({ channelId: "chn_1", conversationId: "conv_1", patch: { mode: "important" } }).ok, true);
+  assert.equal(service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "progress", content: "继续读取" }).reason, "important_only");
+  assert.equal(service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "succeeded", content: "任务已完成" }).ok, true);
+  assert.equal(deliveries.length, 2);
 });
 
 test("汇总模式持久化批次，sweep 后只生成一条出站消息", () => {
@@ -76,6 +90,7 @@ test("同一会话有多个执行中任务时，普通进展自动合并", () =>
   state.channelTaskThreads[0].status = "running";
   service.setPolicy({ channelId: "chn_1", conversationId: "conv_1", patch: { mode: "progress", progressStartAfterMinutes: 0 } });
   service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "progress", content: "已读取报价" });
+  assert.equal(state.channelTaskThreads[0].lastProgressNotificationAt, "2026-08-19T12:00:00.000Z");
   setNow("2026-08-19T12:01:00.000Z");
   service.sweep();
   assert.equal(deliveries.length, 1);

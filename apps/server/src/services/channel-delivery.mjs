@@ -13,6 +13,7 @@
 import { channelIdPrefixes } from "@myagenttool/protocol/channel";
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { channelFailureCopy, channelResultCopy } from "./channel-user-copy.mjs";
 
 export const CHANNEL_DELIVERY_RETRY_ACTION = "channel.delivery.retry";
 export const MAX_DELIVERY_ATTEMPTS = 5;
@@ -79,6 +80,13 @@ export function createChannelDeliveryService({
   }
 
   function updateThreadDelivery(delivery, status, errorCode = null) {
+    const notificationLog = (state.channelNotificationLog ?? []).find((row) => row.deliveryId === delivery?.id) ?? null;
+    if (notificationLog) {
+      notificationLog.deliveryStatus = status;
+      notificationLog.deliveryError = errorCode ? String(errorCode).slice(0, 120) : null;
+      notificationLog.updatedAt = now();
+      if (status === "delivered") notificationLog.deliveredAt = now();
+    }
     const thread = threadForDelivery(delivery);
     if (!thread) return;
     thread.lastDeliveryId = delivery.id;
@@ -86,11 +94,13 @@ export function createChannelDeliveryService({
     thread.lastDeliveryError = errorCode ? String(errorCode).slice(0, 120) : null;
     thread.lastActivityAt = now();
     thread.updatedAt = now();
-    if (status === "failed_terminal") {
+    const resultDelivery = delivery.taskContext?.deliveryKind === "result"
+      || delivery.taskContext?.notificationEvent === "succeeded";
+    if (status === "failed_terminal" && resultDelivery) {
       thread.nextAction = "在控制台重试消息投递";
       thread.lastProgressAt = now();
       thread.lastProgressSummary = "任务结果已生成，但消息投递失败";
-    } else if (status === "delivered") {
+    } else if (status === "delivered" && resultDelivery) {
       thread.lastProgressAt = now();
       thread.lastProgressSummary = "任务结果已发送给你";
     }
@@ -174,6 +184,10 @@ export function createChannelDeliveryService({
         workItemId: taskContext.workItemId ?? null,
         threadId: taskContext.threadId ?? null,
         traceId: taskContext.traceId ?? null,
+        deliveryKind: ["result", "status_notification"].includes(taskContext.deliveryKind) ? taskContext.deliveryKind : null,
+        notificationEvent: ["queued", "started", "progress", "waiting_user", "waiting_approval", "needs_attention", "succeeded", "failed", "cancelled", "human_takeover"].includes(taskContext.notificationEvent)
+          ? taskContext.notificationEvent
+          : null,
       } : null,
       // Immutable provenance for governed report deliveries: which confirmed
       // snapshot a chunk came from and where it sits in the chunk sequence.
@@ -432,12 +446,31 @@ export function createChannelDeliveryService({
     // the answer text, not a generic "task completed" notification. They are
     // deliberately not task-thread work.
     if (invocation?.options?.metadata?.channelConsultation) return null;
-    const summary = typeof invocation.result === "string"
-      ? invocation.result
-      : invocation.result?.summary ?? invocation.result?.output ?? null;
     const thread = (state.channelTaskThreads ?? []).find((candidate) =>
       (channelContext.threadId && candidate.id === channelContext.threadId)
       || (channelContext.workItemId && candidate.workItemId === channelContext.workItemId));
+    const autoRunId = invocation?.options?.metadata?.autoRunId ?? channelContext.autoRunId ?? thread?.autoRunId ?? null;
+    const autoRun = autoRunId ? (state.autoRuns ?? []).find((run) => run.id === autoRunId) ?? null : null;
+    const invocationSummary = typeof invocation.result === "string"
+      ? invocation.result
+      : typeof invocation.result?.summary === "string"
+        ? invocation.result.summary
+        : typeof invocation.result?.output?.summary === "string"
+          ? invocation.result.output.summary
+          : typeof invocation.result?.output === "string"
+            ? invocation.result.output
+            : typeof invocation.result?.latestMessage === "string"
+              ? invocation.result.latestMessage
+              : null;
+    const rawSummary = thread?.resultSummary
+      ?? autoRun?.report
+      ?? autoRun?.deliveryReport?.summary
+      ?? invocationSummary;
+    const summary = thread?.status === "failed"
+      ? channelFailureCopy({ invocation, autoRun, summary: rawSummary })
+      : thread?.status === "succeeded"
+        ? channelResultCopy(rawSummary, { readOnly: thread?.operationIntent?.accessMode === "read_only" })
+        : rawSummary;
     const notificationKey = thread ? `${thread.id}:${invocation.id}:${invocation.status}` : null;
     if (thread && thread.lastNotificationKey === notificationKey) return null;
     if (thread) {
@@ -465,6 +498,7 @@ export function createChannelDeliveryService({
     const lines = [`任务${statusLabel}`];
     if (summary) lines.push(String(summary).slice(0, 1500));
     if (thread?.status === "waiting_user") lines.push("请直接回复需要补充的信息，或发送图片、语音、文件。");
+    if (thread?.status === "waiting_approval" && thread.waitingFor === "delivery") lines.push("请在桌面端查看变更并确认应用；应用完成后我会再通知你。");
     if (thread?.status === "failed") lines.push("你可以回复“重试”再次执行，或回复“转人工”。");
     if (thread?.status === "needs_attention") lines.push("任务暂时没有新进展。回复“进度”查看，回复“继续”继续观察，或回复“转人工”。");
     if (thread?.status === "human_takeover") lines.push("请等待人工处理，我会在有进展时通知你。");
@@ -502,7 +536,7 @@ export function createChannelDeliveryService({
         channelId: channelContext.channelId,
         conversationId: channelContext.conversationId,
         invocationId: invocation.id,
-        taskContext: channelContext.taskContext ?? channelContext,
+        taskContext: { ...(channelContext.taskContext ?? channelContext), deliveryKind: "result" },
         content: lines.join("\n"),
         dedupeKey: notificationKey ? `channel-task:${notificationKey}` : null,
         mediaAssets: resultAssets.map((asset) => ({
@@ -640,6 +674,7 @@ export function createChannelDeliveryService({
             conversationId: thread.conversationId,
             threadId: thread.id,
             workItemId: thread.workItemId ?? null,
+            deliveryKind: "result",
           },
         };
       }
@@ -651,7 +686,7 @@ export function createChannelDeliveryService({
       invocationId: source.invocationId,
       content: source.content,
       mediaAssets: source.mediaAssets ?? [],
-      taskContext: source.taskContext,
+      taskContext: { ...source.taskContext, deliveryKind: "result" },
     });
     if (!queued.ok) return queued;
     runTx(() => {

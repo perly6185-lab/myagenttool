@@ -147,6 +147,7 @@ test("a queued delivery sends, records the provider receipt, and leaves evidence
     channelId: harness.channelId, conversationId: harness.conversationId, content: "inv_0001: succeeded",
   });
   assert.equal(queued.ok, true);
+  harness.state.channelNotificationLog.push({ id: "cnl_delivery", deliveryId: queued.deliveryId, deliveryStatus: "queued" });
 
   const { processed } = await harness.service.sweepChannelDeliveries();
   assert.equal(processed, 1);
@@ -155,6 +156,8 @@ test("a queued delivery sends, records the provider receipt, and leaves evidence
   assert.equal(delivery.providerReceiptId, "wx_msg_1");
   assert.equal(delivery.toUser, "wx_alice");
   assert.equal(harness.events.at(-1).type, "channel_delivery_recorded");
+  assert.equal(harness.state.channelNotificationLog[0].deliveryStatus, "delivered");
+  assert.ok(harness.state.channelNotificationLog[0].deliveredAt);
 });
 
 test("a disabled channel pauses outbound delivery and resumes after re-enable", async () => {
@@ -245,7 +248,7 @@ test("task thread keeps delivery failure state and can resend the latest result"
     conversationId: harness.conversationId,
     invocationId: "inv_delivery",
     content: "任务已完成\n结果内容",
-    taskContext: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_delivery", workItemId: "wi_delivery" },
+    taskContext: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_delivery", workItemId: "wi_delivery", deliveryKind: "result" },
   });
   await harness.service.sweepChannelDeliveries();
   const thread = harness.state.channelTaskThreads[0];
@@ -293,7 +296,7 @@ test("delivery recovery rebuilds the task snapshot after restart", () => {
     id: "cdl_restart_delivery", channelId: harness.channelId, conversationId: harness.conversationId,
     status: "failed_terminal", attempts: 5, lastErrorCode: "network_error", content: "任务结果",
     mediaAssets: [], createdAt: "2026-08-14T00:00:00.000Z", updatedAt: "2026-08-14T00:00:01.000Z",
-    taskContext: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_restart_delivery", workItemId: "wi_restart" },
+    taskContext: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_restart_delivery", workItemId: "wi_restart", deliveryKind: "result" },
   });
   const restarted = createChannelDeliveryService({
     state: harness.state, now: () => "2026-08-14T00:00:02.000Z", nextId: () => "unused",
@@ -303,6 +306,30 @@ test("delivery recovery rebuilds the task snapshot after restart", () => {
   assert.equal(harness.state.channelTaskThreads[0].lastDeliveryStatus, "failed_terminal");
   assert.equal(harness.state.channelTaskThreads[0].lastDeliveryError, "network_error");
   assert.equal(harness.state.channelTaskThreads[0].nextAction, "在控制台重试消息投递");
+});
+
+test("a delivered status notification never masquerades as a delivered task result", async () => {
+  const harness = makeDeliveryHarness({ sendMessage: async () => ({ ok: true }) });
+  harness.state.channelTaskThreads.push({
+    id: "cth_status_notice", channelId: harness.channelId, conversationId: harness.conversationId,
+    status: "queued", summary: "排队任务", lastProgressSummary: "任务仍在排队",
+  });
+  harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    content: "任务暂时没有新进展",
+    taskContext: {
+      channelId: harness.channelId,
+      conversationId: harness.conversationId,
+      threadId: "cth_status_notice",
+      notificationEvent: "needs_attention",
+      deliveryKind: "status_notification",
+    },
+  });
+  await harness.service.sweepChannelDeliveries();
+  const thread = harness.state.channelTaskThreads[0];
+  assert.equal(thread.lastDeliveryStatus, "delivered");
+  assert.equal(thread.lastProgressSummary, "任务仍在排队");
 });
 
 test("retryable failures back off and exhaust into failed_terminal with an undeliverable refusal", async () => {
@@ -488,6 +515,27 @@ test("thread notifications are idempotent for the same completed invocation", ()
   assert.equal(harness.state.channelDeliveries.length, 1);
   assert.match(harness.state.channelDeliveries[0].content, /任务已完成/);
   assert.doesNotMatch(harness.state.channelDeliveries[0].content, /T-0001/);
+});
+
+test("completion delivery prefers the reconciled task result over raw invocation output", () => {
+  const harness = makeDeliveryHarness();
+  harness.state.channelTaskThreads.push({
+    id: "cth_final_summary", channelId: harness.channelId, conversationId: harness.conversationId,
+    workItemId: "task-final", status: "waiting_approval", waitingFor: "delivery",
+    resultSummary: "结果已通过复核，但尚未应用到原项目。",
+  });
+  const queued = harness.service.notifyInvocationCompleted({
+    id: "inv_final_summary", status: "succeeded", result: { summary: "raw model output" },
+    options: { metadata: { autoRunId: "aur_final_summary", channel: {
+      channelId: harness.channelId, conversationId: harness.conversationId,
+      threadId: "cth_final_summary", workItemId: "task-final",
+    } } },
+  });
+  assert.equal(queued.ok, true);
+  const content = harness.state.channelDeliveries.at(-1).content;
+  assert.match(content, /尚未应用到原项目/);
+  assert.doesNotMatch(content, /raw model output/);
+  assert.match(content, /桌面端查看变更/);
 });
 
 test("failed notification enqueue releases the dedupe claim for a later retry", () => {

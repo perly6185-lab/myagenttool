@@ -17,7 +17,7 @@ import { pendingDecisions } from "../src/read-models/pending-decisions.mjs";
 
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeHarness({ approveApplies = true, allowSelfApprove = true } = {}) {
+function makeHarness({ approveApplies = true, allowSelfApprove = true, riskLevel = "medium" } = {}) {
   let clockMs = 1_800_000_000_000;
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => new Date(clockMs).toISOString() });
   const now = () => new Date(clockMs).toISOString();
@@ -45,7 +45,7 @@ function makeHarness({ approveApplies = true, allowSelfApprove = true } = {}) {
       };
       state.invocations.push(invocation);
       state.approvalRequests.push({
-        id: nextId("apr"), invocationId: invocation.id, status: "pending", riskLevel: "high",
+        id: nextId("apr"), invocationId: invocation.id, status: "pending", riskLevel,
         summary: { risk: `${name} is a write` }, createdAt: now(),
       });
       return { status: 202, body: { invocation } };
@@ -103,12 +103,74 @@ test("by default (no opt-in) in-channel /approve is refused → the run must be 
   assert.equal(invocation.status, "waiting_for_local_approval", "still parked");
 });
 
-test("a write /run parks for approval and names the exact /approve reply", () => {
+test("a write /run parks for approval and gives ordinary natural-language actions", () => {
   const h = makeHarness();
   const { dispatched } = h.receive("/run deploy.app prod");
   const invocation = h.state.invocations.at(-1);
   assert.equal(invocation.status, "waiting_for_local_approval");
-  assert.match(dispatched.reply, new RegExp(`/approve ${invocation.id}`));
+  assert.match(dispatched.reply, /确认授权/);
+  assert.doesNotMatch(dispatched.reply, new RegExp(invocation.id));
+});
+
+test("the original requester can approve one pending operation with natural language and no invocation id", () => {
+  const h = makeHarness();
+  h.receive("/run deploy.app prod");
+  const invocation = h.state.invocations.at(-1);
+  const approved = h.receive("确认授权").dispatched;
+  assert.equal(approved.status, "dispatched");
+  assert.match(approved.reply, /授权成功/);
+  assert.equal(invocation.status, "queued");
+  assert.equal(h.approveCalls.length, 1);
+  assert.equal(h.grants[0].sourceDecisionId, h.state.channelEvents.at(-1).id);
+});
+
+test("a plain confirmation follows the single pending authorization when no business preview is waiting", () => {
+  const h = makeHarness();
+  h.receive("/run deploy.app prod");
+  const invocation = h.state.invocations.at(-1);
+  const approved = h.receive("确认").dispatched;
+  assert.match(approved.reply, /授权成功/);
+  assert.equal(invocation.status, "queued");
+  assert.equal(h.approveCalls.length, 1);
+});
+
+test("multiple pending approvals require a natural-language ordinal selection", () => {
+  const h = makeHarness();
+  h.receive("/run deploy.app first");
+  const first = h.state.invocations.at(-1);
+  h.receive("/run deploy.app second");
+  const second = h.state.invocations.at(-1);
+  const ambiguous = h.receive("确认授权").dispatched;
+  assert.match(ambiguous.reply, /1\./);
+  assert.match(ambiguous.reply, /2\./);
+  assert.equal(h.approveCalls.length, 0);
+  const approved = h.receive("确认第 2 项授权").dispatched;
+  assert.match(approved.reply, /授权成功/);
+  assert.equal(first.status, "waiting_for_local_approval");
+  assert.equal(second.status, "queued");
+});
+
+test("natural-language denial is always allowed and stops the pending operation", () => {
+  const h = makeHarness({ allowSelfApprove: false, riskLevel: "high" });
+  h.receive("/run deploy.app prod");
+  const invocation = h.state.invocations.at(-1);
+  const denied = h.receive("拒绝授权").dispatched;
+  assert.match(denied.reply, /已拒绝/);
+  assert.equal(invocation.status, "rejected");
+  assert.equal(h.denyCalls.length, 1);
+});
+
+test("high-risk approval stays in the desktop Approvals Center even after channel self-approval opt-in", () => {
+  const h = makeHarness({ riskLevel: "high" });
+  h.receive("/run deploy.app prod");
+  const invocation = h.state.invocations.at(-1);
+  const natural = h.receive("确认授权").dispatched;
+  assert.equal(natural.status, "refused");
+  assert.match(natural.reply, /高风险操作/);
+  assert.equal(invocation.status, "waiting_for_local_approval");
+  const command = h.receive(`/approve ${invocation.id}`).dispatched;
+  assert.equal(command.status, "refused");
+  assert.equal(h.approveCalls.length, 0);
 });
 
 test("/approve by the original requester mints + consumes a single-use grant and flips the approval", () => {
@@ -152,6 +214,9 @@ test("an expired confirmation is refused — resend required", () => {
   const invocation = h.state.invocations.at(-1);
 
   h.advance(11 * 60 * 1000); // past the 10-minute TTL
+  const natural = h.receive("确认授权");
+  assert.match(natural.dispatched.reply, /已过期/);
+  assert.equal(h.approveCalls.length, 0);
   const stale = h.receive(`/approve ${invocation.id}`);
   assert.match(stale.dispatched.reply, /expired/i);
   assert.equal(h.approveCalls.length, 0);

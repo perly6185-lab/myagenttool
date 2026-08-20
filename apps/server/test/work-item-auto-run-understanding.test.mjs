@@ -53,7 +53,7 @@ test("formats an enforced read-only boundary for Channel work", () => {
   assert.equal(workItemOperationInstructions({ channelTaskContract: { operationIntent: { accessMode: "write" } } }), "");
 });
 
-function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce = false, readOnly = false } = {}) {
+function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce = false, startError = null, readOnly = false, channel = false } = {}) {
   const workItem = {
     id: "wi_1",
     ownerTeamId: "team_a",
@@ -67,6 +67,7 @@ function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce =
     executionContractSource: null,
     terminalId: "dev_a",
     executionBindings: [{ kind: "auto_run", targetId: "aur_1" }],
+    channelOrigin: channel ? { channelId: "chn_1", conversationId: "conv_1", threadId: "cth_1" } : null,
     channelTaskContract: readOnly ? {
       operationIntent: { accessMode: "read_only", forbiddenActions: ["create", "modify", "delete", "move", "rename", "write"] },
     } : null,
@@ -94,7 +95,7 @@ function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce =
     invocationId: null,
   };
   const state = { autoRuns: [autoRun], workItems: [workItem] };
-  const calls = { prepare: 0, attach: 0, start: 0, fail: 0, defer: 0, projectContext: null, contextSummary: null, startInput: null };
+  const calls = { prepare: 0, attach: 0, start: 0, startedHook: 0, updatedHook: 0, fail: 0, defer: 0, projectContext: null, contextSummary: null, startInput: null };
   const scheduled = [];
   const service = createWorkItemAutoRunUnderstandingService({
     state,
@@ -140,6 +141,7 @@ function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce =
       calls.start += 1;
       calls.startInput = input;
       if (capacityOnce && calls.start === 1) throw new Error("At capacity: 1/1 auto-runs active.");
+      if (startError && calls.start === 1) throw new Error(startError);
       assert.equal(input.existingAutoRunId, autoRun.id);
       autoRun.worktreeId = "wtr_1";
       autoRun.invocationId = "inv_1";
@@ -148,6 +150,8 @@ function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce =
       return { autoRun, worktree: { id: "wtr_1" }, invocation: { id: "inv_1" } };
     },
     failAutoRunUnderstanding: () => { calls.fail += 1; },
+    onInvocationStarted: () => { calls.startedHook += 1; },
+    onAutoRunUpdated: () => { calls.updatedHook += 1; },
     deferAutoRunUnderstanding: () => {
       calls.defer += 1;
       autoRun.status = "waiting_capacity";
@@ -179,10 +183,14 @@ test("enqueue returns immediately and advances the persisted Run in background",
 });
 
 test("read-only Channel work carries its boundary into the real auto-run start", async () => {
-  const { service, autoRun, calls } = fixture({ readOnly: true });
+  const { service, autoRun, calls, workItem } = fixture({ readOnly: true, channel: true });
   const result = await service.processRun(autoRun.id);
   assert.equal(result.ok, true);
   assert.equal(calls.startInput.operationIntent.accessMode, "read_only");
+  assert.equal(calls.startInput.decisionOverride, undefined);
+  assert.equal(autoRun.decision.path, "develop", "read-only is an execution boundary, not the article-summary role");
+  assert.deepEqual(calls.startInput.channelOrigin, workItem.channelOrigin);
+  assert.equal(calls.startedHook, 1);
   assert.match(calls.startInput.issueBody, /Execution boundary.*READ ONLY/);
 });
 
@@ -204,6 +212,7 @@ test("background clarification prepares a draft and waits without materializing"
   assert.equal(calls.attach, 1);
   assert.equal(calls.start, 0);
   assert.equal(autoRun.status, "needs_input");
+  assert.equal(calls.updatedHook, 1);
   assert.equal(autoRun.worktreeId, null);
   assert.equal(workItem.executionContractConfirmedAt, null);
 });
@@ -222,6 +231,16 @@ test("capacity pressure parks the durable Run and a later sweep resumes it", asy
   assert.equal(calls.start, 2);
   assert.equal(autoRun.status, "running");
   assert.equal(autoRun.invocationId, "inv_1");
+});
+
+test("an offline desktop parks understanding for automatic recovery instead of failing the task", async () => {
+  const { service, autoRun, calls } = fixture({ startError: "No device is online to run this agent. Start the desktop bridge." });
+  const result = await service.processRun(autoRun.id);
+  assert.equal(result.waitingCapacity, true);
+  assert.equal(autoRun.status, "waiting_capacity");
+  assert.equal(calls.defer, 1);
+  assert.equal(calls.fail, 0);
+  assert.equal(calls.updatedHook, 1);
 });
 
 test("an unbound reserved Run is never reconciled into execution", async () => {
