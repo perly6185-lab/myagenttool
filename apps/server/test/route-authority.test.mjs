@@ -36,6 +36,7 @@ test("configuration and governance writes require professional management", () =
     ["PUT", "/api/auto-run-settings"],
     ["POST", "/api/capability-resolutions"],
     ["POST", "/api/users"],
+    ["POST", "/api/mail/task-policies"],
   ];
 
   for (const [method, pathname] of cases) {
@@ -58,6 +59,7 @@ test("execution, approval, recovery, and retry writes admit operators", () => {
     ["POST", "/api/report-schedule/post-now"],
     ["POST", "/api/applications/app-1/orchestrations/routine-1/run"],
     ["POST", "/api/applications/app-1/orchestrations/routine-1/runs/run-1/recovery/actions"],
+    ["POST", "/api/mail/task-policies/evaluate"],
   ];
 
   for (const [method, pathname] of cases) {

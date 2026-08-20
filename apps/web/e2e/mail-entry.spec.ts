@@ -31,6 +31,8 @@ async function mockMail(page: Page, options: { qualityHealthy?: boolean; recover
   let syncing = false;
   let folderRuleEnabled = false;
   let automationEnabled = false;
+  let linkedTask: { id: string; localRef: string; title: string; projectId: string; sourceStatus: string; sourceRevision: number; messageCount: number } | null = null;
+  let responsePackage: Record<string, unknown> | null = null;
   await page.route("http://127.0.0.1:5001/api/**", (route) => {
     const requestUrl = new URL(route.request().url());
     const path = requestUrl.pathname;
@@ -40,7 +42,23 @@ async function mockMail(page: Page, options: { qualityHealthy?: boolean; recover
       return route.fulfill({ json: { sync: { status: "syncing", invocationId: "inv_sync", lastCompletedAt: null, lastSucceededAt: MAILBOX.sync.lastSucceededAt }, reused: false } });
     }
     if (path.endsWith("/read")) return route.fulfill({ json: { messageId: "m1", unread: false } });
-    if (path.endsWith("/task")) return route.fulfill({ json: { task: { id: "lwi_42", localRef: "LOCAL-42", title: "确认交付范围", projectId: "project_1" }, replayed: false } });
+    if (path.endsWith("/task")) {
+      linkedTask = { id: "lwi_42", localRef: "LOCAL-42", title: "确认交付范围", projectId: "project_1", sourceStatus: "current", sourceRevision: 1, messageCount: 1 };
+      return route.fulfill({ json: { task: linkedTask, replayed: false } });
+    }
+    if (path === "/api/mail/response-packages" && route.request().method() === "GET") return route.fulfill({ json: { packages: responsePackage ? [responsePackage] : [] } });
+    if (path === "/api/mail/response-packages/materialize") {
+      responsePackage = { id: "mailresp_1", workItemId: "lwi_42", mailTaskLinkId: "mailtask_1", messageId: "m1", sourceRevision: 1, revision: 1, status: "ready_for_review", analysis: "客户希望确认本周交付范围。", requests: ["确认交付范围"], deadlines: [], risks: [], uncertainties: [], proposedReply: "您好，我们已确认本周交付范围，详见项目计划。", candidateAttachments: [], candidateOutputAssets: [], review: null, draftId: null, supersededBy: null, createdAt: "2026-08-13T03:00:00Z", updatedAt: "2026-08-13T03:00:00Z" };
+      return route.fulfill({ status: 201, json: { package: responsePackage } });
+    }
+    if (path === "/api/mail/response-packages/mailresp_1/review") {
+      responsePackage = { ...responsePackage, revision: 2, status: "approved", review: { decision: "approve", feedback: "", reviewedBy: "usr_local", reviewedAt: "2026-08-13T03:01:00Z" } };
+      return route.fulfill({ json: { package: responsePackage } });
+    }
+    if (path === "/api/mail/response-packages/mailresp_1/draft") {
+      responsePackage = { ...responsePackage, revision: 3, status: "draft_created", draftId: "draft_ai_1" };
+      return route.fulfill({ status: 201, json: { package: responsePackage, replayed: false, draft: { id: "draft_ai_1", status: "draft", revision: 1, origin: "work_item", to: "customer@example.com", subject: "Re: 确认交付范围", body: "您好，我们已确认本周交付范围，详见项目计划。", inReplyTo: "m1", references: ["m1"], attachments: [], createdAt: "2026-08-13T03:02:00Z", updatedAt: "2026-08-13T03:02:00Z", sentAt: null, sendError: null, approvalTarget: "draft_ai_1@1" } } });
+    }
     if (path === "/api/mailbox/semantic-classification-preview") return route.fulfill({ json: { preview: { available: true, reason: null, eligible: 1, pending: 1, limit: 20, newestDate: MAILBOX.messages[0].date, oldestDate: MAILBOX.messages[0].date, readsUnopenedBodies: false, externalModel: false, provider: "local_http", model: "mail-local-v1", circuitRemainingMs: 0 } } });
     if (path === "/api/mailbox/classification-rules" && route.request().method() === "GET") return route.fulfill({ json: {
       suggestions: [{ id: "mailrulesug_1", accountId: "app_163_mail_v2", matchKind: "sender", matchValue: "news@example.com", target: { attention: "low_value", mailType: "newsletter", suggestedAction: "archive_candidate" }, evidenceCount: 2, affectedCount: 1, samples: [{ messageId: "m2", from: MAILBOX.messages[1].from, subject: MAILBOX.messages[1].subject, date: MAILBOX.messages[1].date }] }],
@@ -137,7 +155,8 @@ async function mockMail(page: Page, options: { qualityHealthy?: boolean; recover
     if (path === "/api/mailbox") {
       const view = requestUrl.searchParams.get("view") ?? "all";
       const messages = view === "subscriptions" ? [MAILBOX.messages[1]] : view === "needs_attention" ? [MAILBOX.messages[0]] : MAILBOX.messages;
-      const response = { ...MAILBOX, selectedView: view, messages, pagination: { ...MAILBOX.pagination, total: messages.length } };
+      const projectedMessages = messages.map((message) => message.id === "m1" ? { ...message, task: linkedTask } : message);
+      const response = { ...MAILBOX, selectedView: view, messages: projectedMessages, pagination: { ...MAILBOX.pagination, total: projectedMessages.length } };
       if (!syncing) return route.fulfill({ json: response });
       syncing = false;
       return route.fulfill({ json: { ...response, sync: { status: "succeeded", invocationId: "inv_sync", lastCompletedAt: "2026-08-13T03:00:00.000Z", lastSucceededAt: "2026-08-13T03:00:00.000Z" } } });
@@ -202,6 +221,23 @@ async function expectNoCriticalAccessibilityViolations(page: Page) {
   });
   expect(violations).toEqual([]);
 }
+
+test("mail AI response requires review before it becomes an editable draft", async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await mockMail(page);
+  await page.goto("/?section=mail");
+  await page.getByText("确认交付范围", { exact: true }).click();
+  await page.getByRole("button", { name: "交给 AI 处理" }).click();
+  const taskDialog = page.getByRole("dialog", { name: "确认任务内容" });
+  await taskDialog.getByRole("button", { name: "创建并让 AI 处理" }).click();
+  await page.getByRole("button", { name: "读取 AI 结果" }).click();
+  await expect(page.getByText("客户希望确认本周交付范围。")).toBeVisible();
+  await page.getByRole("button", { name: "批准建议" }).click();
+  await expect(page.getByRole("button", { name: "转为邮件草稿" })).toBeVisible();
+  await page.getByRole("button", { name: "转为邮件草稿" }).click();
+  await expect(page.getByText("已生成草稿，可在草稿箱继续编辑和确认发送。")).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "邮件详情" })).toBeVisible();
+});
 
 for (const fixture of [
   { name: "desktop", viewport: { width: 1366, height: 768 } },
@@ -286,7 +322,7 @@ for (const fixture of [
     await expect(safeFrame).toHaveAttribute("srcdoc", /images\.example\.com\/tracker/);
     await page.getByRole("button", { name: "返回纯文本" }).click();
 
-    await page.getByRole("button", { name: "转为任务" }).click();
+    await page.getByRole("button", { name: "交给 AI 处理" }).click();
     const taskDialog = page.getByRole("dialog", { name: "确认任务内容" });
     await expect(taskDialog.getByLabel("所属项目")).toHaveValue("project_1");
     await expect(taskDialog.getByLabel(/范围说明\.txt/)).not.toBeChecked();

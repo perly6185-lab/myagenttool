@@ -107,6 +107,20 @@ test("persistence restores active control-plane records across runtime restart",
       createdAt: now(),
       updatedAt: now(),
     });
+    first.state.mailResponsePackages.push({
+      id: "mailresp_1", workItemId: "lwi_restart", mailTaskLinkId: "mailtask_1",
+      messageId: "<restart@example.com>", sourceRevision: 1, revision: 1,
+      status: "ready_for_review", analysis: "Persisted analysis", proposedReply: "Persisted reply",
+      ownerTeamId: "team_local", createdAt: now(), updatedAt: now(),
+    });
+    first.state.mailTaskPolicies.push({
+      id: "mailpolicy_1", projectId: first.defaultProject.id, mode: "shadow", enabled: true,
+      senderDomains: [], maxPerDay: 20, revision: 1, ownerTeamId: "team_local", createdAt: now(), updatedAt: now(),
+    });
+    first.state.mailTaskPolicyDecisions.push({
+      id: "maildecision_1", policyId: "mailpolicy_1", messageId: "<restart@example.com>",
+      action: "would_create", ownerTeamId: "team_local", createdAt: now(),
+    });
     first.state.retentionSettings.logsDays = 99;
 
     createPersistenceRuntime({
@@ -151,6 +165,9 @@ test("persistence restores active control-plane records across runtime restart",
     assert.equal(second.state.myTemplateLearningCases[0]?.id, "mtlc_1", "task-seeded learning case should restore");
     assert.equal(second.state.mailMessageStates[0]?.messageId, "<restart@example.com>", "local mail read state should restore");
     assert.equal(second.state.mailTaskLinks[0]?.workItemId, "lwi_restart", "mail-to-task links should restore");
+    assert.equal(second.state.mailResponsePackages[0]?.id, "mailresp_1", "mail response packages should restore");
+    assert.equal(second.state.mailTaskPolicies[0]?.id, "mailpolicy_1", "mail task policies should restore");
+    assert.equal(second.state.mailTaskPolicyDecisions[0]?.id, "maildecision_1", "mail task shadow decisions should restore");
     assert.equal(second.state.retentionSettings.logsDays, 99);
   } finally {
     rmSync(root, { recursive: true, force: true });

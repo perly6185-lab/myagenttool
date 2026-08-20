@@ -119,7 +119,15 @@ export interface MailboxMessage {
   archive: { version: 1; ref?: string; availability: "available" | "unavailable"; sha256?: string; size?: number; archivedAt?: string | null; reason?: string } | null;
   applicationId: string | null;
   issueNumber: number | null;
-  task: { id: string; localRef: string; title: string; projectId: string } | null;
+  task: {
+    id: string;
+    localRef: string;
+    title: string;
+    projectId: string;
+    sourceStatus?: "current" | "update_pending";
+    sourceRevision?: number;
+    messageCount?: number;
+  } | null;
   createdAt: string | null;
   classification?: MailClassification | null;
 }
@@ -346,6 +354,7 @@ export interface MailboxDraft {
   sentAt: string | null;
   sendError: string | null;
   approvalTarget: string;
+  provenance?: { packageId: string; packageRevision: number; workItemId: string; sourceRevision: number } | null;
 }
 
 export interface MailDraftAttachment {
@@ -353,6 +362,58 @@ export interface MailDraftAttachment {
   name: string;
   contentType: string;
   size: number;
+}
+
+export interface MailResponsePackage {
+  id: string;
+  workItemId: string;
+  mailTaskLinkId: string;
+  messageId: string;
+  sourceRevision: number;
+  revision: number;
+  status: "ready_for_review" | "approved" | "changes_requested" | "draft_created" | "sent" | "send_failed" | "send_unconfirmed" | "superseded";
+  analysis: string;
+  requests: string[];
+  deadlines: string[];
+  risks: string[];
+  uncertainties: string[];
+  proposedReply: string;
+  candidateAttachments: MailDraftAttachment[];
+  candidateOutputAssets?: Array<{
+    id: string | null;
+    projectId: string;
+    worktreeId: string | null;
+    relativePath: string;
+    name: string;
+    contentType: string;
+    size: number | null;
+    sha256: string;
+  }>;
+  review: { decision: "approve" | "request_changes"; feedback: string; reviewedBy: string | null; reviewedAt: string } | null;
+  draftId: string | null;
+  supersededBy: string | null;
+  sendReceipt?: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MailTaskPolicy {
+  id: string;
+  projectId: string;
+  mode: "off" | "shadow" | "create_only" | "create_and_run";
+  enabled: boolean;
+  senderDomains: string[];
+  maxPerDay: number;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MailTaskOperations {
+  generatedAt: string;
+  killSwitchOpen: boolean;
+  metrics: { linkedTasks: number; sourceUpdatesPending: number; awaitingReview: number; approved: number; draftsCreated: number; shadowMatches: number; automationCreated: number; recoveryRequired: number; knownCostUsd: number; unmeteredCostEntries: number };
+  timeline: Array<{ kind: "link" | "package" | "policy_decision"; id: string; workItemId: string | null; status: string; revision: number | null; at: string }>;
 }
 
 export interface MailboxSnapshot {
@@ -1866,11 +1927,41 @@ export const api = {
     attachmentIds?: string[];
     materialDraftId?: string;
     materialDraftRevision?: number;
+    executionMode?: "manual" | "auto";
   }) => request<{ task: { id: string; localRef: string; title: string; projectId: string }; replayed: boolean }>(
     "POST",
     `/api/mailbox/messages/${encodeURIComponent(messageId)}/task`,
     body,
   ),
+  getMailResponsePackages: (workItemId?: string) => request<{ packages: MailResponsePackage[] }>(
+    "GET",
+    `/api/mail/response-packages${workItemId ? `?workItemId=${encodeURIComponent(workItemId)}` : ""}`,
+  ),
+  createMailResponsePackage: (body: {
+    workItemId: string;
+    expectedSourceRevision?: number;
+    analysis: string;
+    requests?: string[];
+    deadlines?: string[];
+    risks?: string[];
+    uncertainties?: string[];
+    proposedReply: string;
+    candidateAttachments?: MailDraftAttachment[];
+  }) => request<{ package: MailResponsePackage }>("POST", "/api/mail/response-packages", body),
+  materializeMailResponsePackage: (workItemId: string, expectedSourceRevision?: number) => request<{ package: MailResponsePackage; replayed?: boolean }>(
+    "POST", "/api/mail/response-packages/materialize", { workItemId, ...(expectedSourceRevision ? { expectedSourceRevision } : {}) },
+  ),
+  reviewMailResponsePackage: (packageId: string, body: { expectedRevision: number; decision: "approve" | "request_changes"; feedback?: string }) =>
+    request<{ package: MailResponsePackage }>("POST", `/api/mail/response-packages/${encodeURIComponent(packageId)}/review`, body),
+  attachMailResponsePackageFiles: (packageId: string, expectedRevision: number, attachments: MailDraftAttachment[]) =>
+    request<{ package: MailResponsePackage }>("POST", `/api/mail/response-packages/${encodeURIComponent(packageId)}/attachments`, { expectedRevision, attachments }),
+  createDraftFromMailResponsePackage: (packageId: string, expectedRevision: number) =>
+    request<{ draft: MailboxDraft; package: MailResponsePackage; replayed: boolean }>("POST", `/api/mail/response-packages/${encodeURIComponent(packageId)}/draft`, { expectedRevision }),
+  getMailTaskPolicies: () => request<{ killSwitchOpen: boolean; policies: MailTaskPolicy[] }>("GET", "/api/mail/task-policies"),
+  upsertMailTaskPolicy: (body: { policyId?: string; projectId: string; mode: MailTaskPolicy["mode"]; enabled?: boolean; senderDomains?: string[]; maxPerDay?: number; expectedRevision?: number }) =>
+    request<{ policy: MailTaskPolicy; killSwitchOpen: boolean }>("POST", "/api/mail/task-policies", body),
+  evaluateMailTaskPolicies: (messageId: string) => request<{ decision: Record<string, unknown> }>("POST", "/api/mail/task-policies/evaluate", { messageId }),
+  getMailTaskOperations: () => request<MailTaskOperations>("GET", "/api/mail/task-operations"),
   createMailDraft: (body: { to: string; subject: string; body: string; attachments?: MailDraftAttachment[]; inReplyTo?: string | null; references?: string[] }) =>
     request<{ draft: MailboxDraft }>("POST", "/api/mail/drafts", body),
   updateMailDraft: (id: string, body: { to: string; subject: string; body: string; attachments?: MailDraftAttachment[] }) =>

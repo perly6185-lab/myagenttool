@@ -226,6 +226,7 @@ export function createWorkItemAutoSchedulerService({
         taskMaterialWorkItemId: item.id,
         terminalId: item.terminalId,
         channelOrigin: item.channelOrigin ?? null,
+        operationIntent: item.channelTaskContract?.operationIntent ?? null,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"
           : item.planningProjects?.some((project) => project.autonomyProfile === "high") ? "high" : "standard",

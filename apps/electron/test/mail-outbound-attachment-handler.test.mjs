@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,6 +48,33 @@ test("pasted file bytes are staged locally and bounded", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("task output attachments are resolved through the contained project boundary before staging", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mat-mail-task-output-"));
+  try {
+    const source = join(root, "result.csv");
+    const staging = join(root, "staging");
+    writeFileSync(source, "name,total\nA,1\n");
+    const handlers = new Map();
+    const resolutions = [];
+    registerMailOutboundAttachmentHandler({
+      ipcMain: { removeHandler() {}, handle(name, fn) { handlers.set(name, fn); } },
+      dialog: {}, getWindow: () => null, attachmentRoot: staging,
+      getState: async () => ({ projects: [{ id: "prj_1", path: root }] }),
+      resolveContainedFile: (_state, input) => {
+        resolutions.push(input);
+        if (input.projectId !== "prj_1" || input.relativePath !== "result.csv") throw new Error("outside");
+        return source;
+      },
+    });
+    const result = await handlers.get("mail:stage-task-output-attachments")(null, { files: [{ projectId: "prj_1", relativePath: "result.csv", name: "result.csv", contentType: "text/csv", sha256: createHash("sha256").update("name,total\nA,1\n").digest("hex") }] });
+    assert.equal(result.ok, true);
+    assert.deepEqual(resolutions, [{ projectId: "prj_1", worktreeId: undefined, relativePath: "result.csv" }]);
+    assert.equal(readFileSync(join(staging, `${result.attachments[0].ref}.bin`), "utf8"), "name,total\nA,1\n");
+    const refused = await handlers.get("mail:stage-task-output-attachments")(null, { files: [{ projectId: "wrong", relativePath: "../secret", name: "secret", contentType: "text/plain", sha256: "0".repeat(64) }] });
+    assert.deepEqual(refused, { ok: false, error: "attachment_stage_failed" });
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("staged attachment orphans older than the retention window are pruned safely", () => {

@@ -49,6 +49,15 @@ test("read-only Channel work maps to native provider write protection", () => {
   assert.deepEqual(autoRunPermissionOptions(fakeAgent({ adapter: { type: "cli", command: "codex" } }), { accessMode: "write" }), {
     approvalMode: "auto",
   });
+  assert.deepEqual(autoRunPermissionOptions(fakeAgent({ adapter: { type: "cli", command: "codex" } }), { accessMode: "write", source: "mail_response_restricted" }), {
+    approvalMode: "ask",
+    permissionMode: "ask",
+    executionProfile: "mail_response_restricted",
+  });
+  assert.deepEqual(autoRunPermissionOptions(fakeAgent({ adapter: { type: "cli", command: "claude" } }), { accessMode: "write", source: "mail_response_restricted" }), {
+    denied: true,
+    executionProfile: "mail_response_restricted",
+  });
 });
 
 // Build an auto-run service over the real project service, capturing what it
@@ -222,6 +231,24 @@ beforeEach(() => {
   const source = projectSvc.addProject({ name: "Repo", path: repoDir, ownerTeamId: "team_a" });
   sourceProjectId = source.id;
   state.currentProjectId = source.id;
+});
+
+test("restricted mail-response execution refuses a non-Codex agent before workspace creation", async () => {
+  const agent = fakeAgent({ adapter: { type: "cli", command: "claude" } });
+  const { svc, calls } = makeAutoRun({ agent });
+  await assert.rejects(() => svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 11, title: "Prepare mail response", url: "https://github.com/o/r/issues/11", state: "open" },
+    agentId: agent.id,
+    name: "mail-response-refused",
+    operationIntent: {
+      accessMode: "write",
+      source: "mail_response_restricted",
+      evidence: { mailSourceRevision: 1, mailSourceFingerprint: "a".repeat(64) },
+    },
+  }), (error) => error?.code === "mail_response_agent_unsupported");
+  assert.equal(state.worktrees.length, 0);
+  assert.equal(calls.createInvocation.length, 0);
 });
 
 test("startAutoRun materializes the worktree and starts an issue-seeded invocation", async () => {

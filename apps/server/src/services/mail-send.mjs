@@ -36,6 +36,7 @@ export function isMailSendEnabled() {
 export function createMailSendService({
   state,
   now,
+  nextId = (prefix) => `${prefix}_${Date.now()}`,
   appendEvent,
   persistStateSoon = () => {},
   store,
@@ -144,6 +145,7 @@ export function createMailSendService({
         draft.status = "send_unconfirmed";
         draft.sendError = `send dispatch was ${invocation.status} at creation (${invocation.result?.errorCode ?? "admission gate"})`;
         draft.sendInvocationId = invocation.id;
+        recordPackageSendOutcome(draft, "send_unconfirmed", { invocationId: invocation.id, error: draft.sendError, at: now() });
         appendEvent({
           invocationId: invocation.id,
           type: "mail_send_unconfirmed",
@@ -189,6 +191,7 @@ export function createMailSendService({
         draft.sendError = null;
         draft.receipt = { providerMessageId: receiptId, at: draft.sentAt };
         draft.send = { available: false, executed: true };
+        recordPackageSendOutcome(draft, "sent", { providerMessageId: receiptId, invocationId: invocation.id, at: draft.sentAt });
         appendEvent({
           invocationId: invocation.id,
           type: "mail_send_completed",
@@ -205,6 +208,7 @@ export function createMailSendService({
           draft.status = "draft";
           draft.sendError = stringOrNull(output?.error ?? result?.summary) ?? "the send agent reported failure";
           draft.send = { available: false, requires: ["approval (single-use grant per attempt)"] };
+          recordPackageSendOutcome(draft, "send_failed", { invocationId: invocation.id, error: draft.sendError, at: now() });
           appendEvent({
             invocationId: invocation.id,
             type: "mail_send_failed",
@@ -240,12 +244,30 @@ export function createMailSendService({
   function markSendUnconfirmed(draft, invocation, reason) {
     draft.status = "send_unconfirmed";
     draft.sendError = reason;
+    recordPackageSendOutcome(draft, "send_unconfirmed", { invocationId: invocation?.id ?? null, error: reason, at: now() });
     appendEvent({
       invocationId: invocation?.id ?? null,
       type: "mail_send_unconfirmed",
       level: "warn",
       message: `Draft ${draft.id} is UNCONFIRMED (${reason}); check the mailbox before deciding — mail may or may not have left. No automatic retry exists.`,
       data: { draftId: draft.id },
+    });
+  }
+
+  function recordPackageSendOutcome(draft, status, receipt) {
+    const packageId = draft?.provenance?.packageId ?? null;
+    if (!packageId) return;
+    const responsePackage = (state.mailResponsePackages ?? []).find((item) => item.id === packageId) ?? null;
+    if (!responsePackage || responsePackage.workItemId !== draft.provenance?.workItemId) return;
+    responsePackage.status = status;
+    responsePackage.sendReceipt = receipt;
+    responsePackage.revision = Number(responsePackage.revision ?? 0) + 1;
+    responsePackage.updatedAt = receipt.at;
+    (state.workItemActivities ??= []).unshift({
+      id: nextId("wia"), workItemId: responsePackage.workItemId, ownerTeamId: responsePackage.ownerTeamId,
+      projectId: (state.workItems ?? []).find((item) => item.id === responsePackage.workItemId)?.projectId ?? null,
+      action: `mail_${status}`, actorId: draft.createdBy ?? null, createdAt: receipt.at,
+      details: { packageId, draftId: draft.id, receipt },
     });
   }
 

@@ -28,6 +28,7 @@ This index lists accepted engineering decisions that guide implementation.
 - [ADR 0025: Mail credentials cross only a narrow desktop IPC boundary and are verified before local persistence](ADR_0025_DESKTOP_MAIL_CREDENTIAL_BOUNDARY.md)
 - [ADR 0028: Mail semantic classification is an explicit local, read-only analysis boundary](ADR_0028_MAIL_SEMANTIC_CLASSIFICATION.md)
 - [ADR 0029: Provider folder organization is a separately consented, revision-bound write operation](ADR_0029_MAIL_FOLDER_ORGANIZATION.md)
+- [ADR 0030: Mail analysis and reply preparation execute as governed Work Items](ADR_0030_MAIL_TASK_EXECUTION.md)
 
 ## Proposed
 

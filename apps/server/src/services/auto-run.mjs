@@ -47,6 +47,14 @@ function isCodexAgent(agent) {
     command === name || command.endsWith(`/${name}`) || command.endsWith(`\\${name}`));
 }
 
+function mailSourceBinding(operationIntent) {
+  if (operationIntent?.source !== "mail_response_restricted") return null;
+  const sourceRevision = Number(operationIntent.evidence?.mailSourceRevision);
+  const sourceFingerprint = String(operationIntent.evidence?.mailSourceFingerprint ?? "").toLowerCase();
+  if (!Number.isInteger(sourceRevision) || sourceRevision < 1 || !/^[a-f0-9]{64}$/.test(sourceFingerprint)) return null;
+  return { sourceRevision, sourceFingerprint };
+}
+
 function codexAutoApprovalOptions(agent) {
   // "auto" applies only to the in-run Codex approval broker: low-risk tool
   // requests proceed without parking the run, while sensitive requests still
@@ -55,6 +63,11 @@ function codexAutoApprovalOptions(agent) {
 }
 
 export function autoRunPermissionOptions(agent, operationIntent = null) {
+  if (operationIntent?.source === "mail_response_restricted") {
+    return isCodexAgent(agent)
+      ? { approvalMode: "ask", permissionMode: "ask", executionProfile: "mail_response_restricted" }
+      : { denied: true, executionProfile: "mail_response_restricted" };
+  }
   if (operationIntent?.accessMode === "read_only") {
     return isCodexAgent(agent)
       ? { approvalMode: "read_only", permissionMode: "read_only" }
@@ -982,7 +995,7 @@ export function createAutoRunService({
     projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody,
     executionChainId = null, autonomyProfile = "standard", terminalId = null,
     taskMaterialWorkItemId = null, localIssueId = null,
-    scheduler = null, channelOrigin = null,
+    scheduler = null, channelOrigin = null, operationIntent = null,
   } = {}) {
     const normalizedLink = normalizeWorktreeLink(link);
     if (!normalizedLink) throw new Error("A GitHub issue or PR link is required to start an auto-run.");
@@ -995,6 +1008,15 @@ export function createAutoRunService({
     if (agent.status === "disabled") throw new Error("The selected agent is disabled.");
     if (agent.health?.status === "unhealthy") {
       throw new Error(`The selected agent is unhealthy: ${agent.health.message ?? "run its health check and resolve the reported problem first."}`);
+    }
+    const restrictedMailExecution = operationIntent?.source === "mail_response_restricted";
+    const sourceBinding = mailSourceBinding(operationIntent);
+    if (restrictedMailExecution && (!isCodexAgent(agent) || !sourceBinding)) {
+      const error = new Error(!isCodexAgent(agent)
+        ? "Restricted mail-response runs require the Codex CLI approval sandbox."
+        : "Restricted mail-response runs require a current, immutable mail source binding.");
+      error.code = !isCodexAgent(agent) ? "mail_response_agent_unsupported" : "mail_response_source_binding_required";
+      throw error;
     }
     const agentTerminalId = agent.location?.type === "local_device" ? agent.location.deviceId ?? null : null;
     const owningTerminalId = terminalId ? String(terminalId) : agentTerminalId;
@@ -1019,6 +1041,8 @@ export function createAutoRunService({
       link: normalizedLink,
       localIssueId: localIssueId ?? taskMaterialWorkItemId ?? null,
       executionChainId: executionChainId ? String(executionChainId) : null,
+      sourceBinding,
+      executionProfile: restrictedMailExecution ? "mail_response_restricted" : null,
       autonomyProfile: ["cautious", "standard", "high"].includes(autonomyProfile) ? autonomyProfile : "standard",
       decision: null,
       intent: null,
@@ -1336,6 +1360,15 @@ export function createAutoRunService({
     if (agent.health?.status === "unhealthy") {
       throw new Error(`The selected agent is unhealthy: ${agent.health.message ?? "run its health check and resolve the reported problem first."}`);
     }
+    const restrictedMailProfile = operationIntent?.source === "mail_response_restricted";
+    const currentMailSourceBinding = mailSourceBinding(operationIntent);
+    if (restrictedMailProfile && (!isCodexAgent(agent) || !currentMailSourceBinding)) {
+      const error = new Error(!isCodexAgent(agent)
+        ? "Restricted mail-response runs require the Codex CLI approval sandbox."
+        : "Restricted mail-response runs require a current, immutable mail source binding.");
+      error.code = !isCodexAgent(agent) ? "mail_response_agent_unsupported" : "mail_response_source_binding_required";
+      throw error;
+    }
     // A local-device agent (Codex/Claude via the desktop bridge) is "unavailable"
     // when no bridge is online. Without this gate the auto-run is accepted but the
     // invocation stalls in "dispatching" forever — only the bridge polls
@@ -1634,6 +1667,8 @@ export function createAutoRunService({
       link: normalizedLink,
       localIssueId: resolvedLocalIssueId ? String(resolvedLocalIssueId) : null,
       executionChainId: executionChainId ? String(executionChainId) : null,
+      sourceBinding: currentMailSourceBinding,
+      executionProfile: restrictedMailProfile ? "mail_response_restricted" : null,
       autonomyProfile: resolvedAutonomyProfile,
       decision,
       // Legacy field, derived from the decision path for record continuity.
@@ -1724,6 +1759,7 @@ export function createAutoRunService({
       const verifyCommand = Array.isArray(verifyCmdArr) && verifyCmdArr.length ? verifyCmdArr.join(" ") : null;
       const readOnlyExecution = operationIntent?.accessMode === "read_only";
       const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody, verifyCommand, readOnly: readOnlyExecution });
+      const restrictedMailExecution = operationIntent?.source === "mail_response_restricted";
       const permissionOptions = autoRunPermissionOptions(agent, operationIntent);
       invocation = createInvocation(task, agent, {
         actor,
@@ -1740,10 +1776,11 @@ export function createAutoRunService({
           role: decision.path,
           executionChainId: autoRun.executionChainId,
           autonomyProfile: autoRun.autonomyProfile,
-          ...(readOnlyExecution ? {
+          ...(readOnlyExecution || restrictedMailExecution ? {
             permissionMode: permissionOptions.permissionMode,
             operationIntent,
           } : {}),
+          ...(restrictedMailExecution ? { executionProfile: "mail_response_restricted" } : {}),
         }),
       });
       startInvocationIfAllowed(invocation, agent);
