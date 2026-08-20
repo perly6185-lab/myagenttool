@@ -33,6 +33,7 @@ const manageRules = [
   /^\/api\/teams\/[^/]+\/alert-webhook$/,
   /^\/api\/users$/,
   /^\/api\/observability\/delete$/,
+  /^\/api\/mail\/task-policies$/,
 ];
 
 const operateRules = [
@@ -53,6 +54,7 @@ const operateRules = [
   /^\/api\/report-schedule\/post-now$/,
   /^\/api\/applications\/[^/]+\/orchestrations\/[^/]+\/run$/,
   /^\/api\/applications\/[^/]+\/orchestrations\/[^/]+\/runs\/[^/]+\/recovery\/actions$/,
+  /^\/api\/mail\/task-policies\/evaluate$/,
 ];
 
 /**

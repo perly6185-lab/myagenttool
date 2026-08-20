@@ -23,6 +23,16 @@ export async function handleMailRoutes({
   updateMailboxDraft,
   deleteMailboxDraft,
   createMailboxTask,
+  listMailResponsePackages,
+  createMailResponsePackage,
+  materializeMailResponsePackage,
+  reviewMailResponsePackage,
+  attachMailResponsePackageFiles,
+  createMailDraftFromResponsePackage,
+  listMailTaskPolicies,
+  upsertMailTaskPolicy,
+  evaluateMailTaskPolicies,
+  getMailTaskOperations,
   startMailClassification,
   previewMailSemanticClassification,
   getMailClassificationJob,
@@ -236,6 +246,78 @@ export async function handleMailRoutes({
   if (req.method === "POST" && taskMatch && typeof createMailboxTask === "function") {
     const body = await readJson(req);
     const result = createMailboxTask({ ...body, messageId: decodeURIComponent(taskMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/mail/response-packages" && typeof listMailResponsePackages === "function") {
+    const result = listMailResponsePackages({ workItemId: url.searchParams.get("workItemId"), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mail/response-packages" && typeof createMailResponsePackage === "function") {
+    const body = await readJson(req);
+    const result = createMailResponsePackage({ ...body, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mail/response-packages/materialize" && typeof materializeMailResponsePackage === "function") {
+    const body = await readJson(req);
+    const result = materializeMailResponsePackage({ workItemId: body?.workItemId, expectedSourceRevision: body?.expectedSourceRevision, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const responseReviewMatch = url.pathname.match(/^\/api\/mail\/response-packages\/([^/]+)\/review$/);
+  if (req.method === "POST" && responseReviewMatch && typeof reviewMailResponsePackage === "function") {
+    const body = await readJson(req);
+    const result = reviewMailResponsePackage({ ...body, packageId: decodeURIComponent(responseReviewMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const responseDraftMatch = url.pathname.match(/^\/api\/mail\/response-packages\/([^/]+)\/draft$/);
+  if (req.method === "POST" && responseDraftMatch && typeof createMailDraftFromResponsePackage === "function") {
+    const body = await readJson(req);
+    const result = createMailDraftFromResponsePackage({ ...body, packageId: decodeURIComponent(responseDraftMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const responseAttachmentsMatch = url.pathname.match(/^\/api\/mail\/response-packages\/([^/]+)\/attachments$/);
+  if (req.method === "POST" && responseAttachmentsMatch && typeof attachMailResponsePackageFiles === "function") {
+    const body = await readJson(req);
+    const result = attachMailResponsePackageFiles({
+      packageId: decodeURIComponent(responseAttachmentsMatch[1]),
+      expectedRevision: body?.expectedRevision,
+      attachments: body?.attachments,
+      actor,
+    });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/mail/task-policies" && typeof listMailTaskPolicies === "function") {
+    const result = listMailTaskPolicies({ actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (req.method === "POST" && url.pathname === "/api/mail/task-policies" && typeof upsertMailTaskPolicy === "function") {
+    const body = await readJson(req);
+    const result = upsertMailTaskPolicy({ ...body, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (req.method === "POST" && url.pathname === "/api/mail/task-policies/evaluate" && typeof evaluateMailTaskPolicies === "function") {
+    const body = await readJson(req);
+    const result = evaluateMailTaskPolicies({ messageId: body?.messageId, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (req.method === "GET" && url.pathname === "/api/mail/task-operations" && typeof getMailTaskOperations === "function") {
+    const result = getMailTaskOperations({ actor });
     sendJson(res, result.status, result.body);
     return true;
   }

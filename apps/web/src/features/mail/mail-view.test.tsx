@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   createTaskMaterialDraft: vi.fn(),
   uploadTaskMaterialFile: vi.fn(),
 }));
+const session = vi.hoisted(() => ({ role: undefined as "owner" | "admin" | "operator" | "viewer" | undefined }));
 
 const archiveRef = `mailarc_${"a".repeat(24)}_${"b".repeat(40)}`;
 
@@ -86,6 +87,9 @@ vi.mock("@/features/mail/mail-api", () => ({
 vi.mock("@/data/use-console-state", () => ({
   useConsoleState: () => ({ data: { projects: [{ id: "project_1", name: "客户项目", status: "active" }] } }),
 }));
+vi.mock("@/hooks/use-session-user", () => ({
+  useSessionUser: () => ({ id: "usr_test", role: session.role }),
+}));
 
 const connectedMailbox = {
   accounts: [{
@@ -116,6 +120,7 @@ function renderView() {
 }
 
 beforeEach(async () => {
+  session.role = undefined;
   await i18n.changeLanguage("zh-CN");
   mocks.getMailbox.mockResolvedValue(connectedMailbox);
   mocks.syncMailbox.mockResolvedValue({ sync: { status: "syncing", invocationId: "inv_sync", lastCompletedAt: null, lastSucceededAt: null }, reused: false });
@@ -204,6 +209,19 @@ beforeEach(async () => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe("MailView ordinary-user flow", () => {
+  it("hides the professional mail AI console from viewers", async () => {
+    session.role = "viewer";
+    renderView();
+    await screen.findByText("Project update");
+    expect(screen.queryByRole("button", { name: "AI 处理台" })).toBeNull();
+  });
+
+  it("keeps the mail AI console discoverable for operators", async () => {
+    session.role = "operator";
+    renderView();
+    await screen.findByText("Project update");
+    expect(screen.getByRole("button", { name: "AI 处理台" })).toBeTruthy();
+  });
   it("shows a first-class inbox and reads external content as plain text", async () => {
     renderView();
     expect(await screen.findByText("Project update")).toBeTruthy();
@@ -493,20 +511,32 @@ describe("MailView ordinary-user flow", () => {
   it("reviews an email as a manual local task and keeps attachments opt-in", async () => {
     renderView();
     fireEvent.click(await screen.findByText("Project update"));
-    fireEvent.click(screen.getByRole("button", { name: "转为任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "交给 AI 处理" }));
     expect(await screen.findByRole("dialog", { name: "确认任务内容" })).toBeTruthy();
     expect((screen.getByLabelText("所属项目") as HTMLSelectElement).value).toBe("project_1");
     expect((screen.getByLabelText(/notes\.txt/) as HTMLInputElement).checked).toBe(false);
     fireEvent.change(screen.getByLabelText("任务标题"), { target: { value: "跟进项目更新" } });
-    fireEvent.click(screen.getByRole("button", { name: "创建任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "只创建任务" }));
     await waitFor(() => expect(mocks.createMailTask).toHaveBeenCalledWith("<one@example.com>", expect.objectContaining({
       projectId: "project_1",
       title: "跟进项目更新",
       attachmentIds: [],
+      executionMode: "manual",
     })));
     expect(mocks.createTaskMaterialDraft).not.toHaveBeenCalled();
     expect(await screen.findByText("任务 LOCAL-42 已创建。")).toBeTruthy();
     expect(screen.getByRole("button", { name: "查看任务" })).toBeTruthy();
+  });
+
+  it("creates an AI-ready task from the same review without a separate start call", async () => {
+    renderView();
+    fireEvent.click(await screen.findByText("Project update"));
+    fireEvent.click(screen.getByRole("button", { name: "交给 AI 处理" }));
+    fireEvent.click(await screen.findByRole("button", { name: "创建并让 AI 处理" }));
+    await waitFor(() => expect(mocks.createMailTask).toHaveBeenCalledWith("<one@example.com>", expect.objectContaining({
+      projectId: "project_1",
+      executionMode: "auto",
+    })));
   });
 
   it("prioritizes a legacy body through the server queue instead of dispatching Bridge work from the click", async () => {
@@ -562,9 +592,9 @@ describe("MailView ordinary-user flow", () => {
     window.myagenttoolDesktop = { readMailAttachmentForTask };
     renderView();
     fireEvent.click(await screen.findByText("Project update"));
-    fireEvent.click(screen.getByRole("button", { name: "转为任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "交给 AI 处理" }));
     fireEvent.click(screen.getByLabelText(/notes\.txt/));
-    fireEvent.click(screen.getByRole("button", { name: "创建任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "只创建任务" }));
     await waitFor(() => expect(mocks.createMailTask).toHaveBeenCalledWith("<one@example.com>", expect.objectContaining({ attachmentIds: [] })));
     expect(mocks.uploadTaskMaterialFile).not.toHaveBeenCalled();
     expect(await screen.findByText(/1 个附件未能添加/)).toBeTruthy();
@@ -575,8 +605,8 @@ describe("MailView ordinary-user flow", () => {
     window.myagenttoolDesktop = { downloadMailAttachment };
     renderView();
     fireEvent.click(await screen.findByText("Project update"));
-    fireEvent.click(screen.getByRole("button", { name: "转为任务" }));
-    fireEvent.click(screen.getByRole("button", { name: "创建任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "交给 AI 处理" }));
+    fireEvent.click(screen.getByRole("button", { name: "只创建任务" }));
     expect(await screen.findByRole("button", { name: "查看任务" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "下载" }));
     expect(await screen.findByText("附件已保存：notes.txt")).toBeTruthy();

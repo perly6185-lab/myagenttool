@@ -257,6 +257,29 @@ test("the receipt fold: sent with receipt; provider refusal returns the draft to
   }
 });
 
+test("a package-derived draft writes the provider receipt back to its Work Item evidence", () => {
+  setSendFlag(true);
+  try {
+    const harness = sendHarness();
+    harness.state.mailDrafts[0].provenance = { packageId: "mailresp_1", packageRevision: 2, workItemId: "lwi_1", sourceRevision: 1 };
+    harness.state.mailDrafts[0].createdBy = "usr_a";
+    harness.state.mailResponsePackages = [{ id: "mailresp_1", workItemId: "lwi_1", ownerTeamId: "team_a", status: "draft_created", revision: 2 }];
+    harness.state.workItems = [{ id: "lwi_1", projectId: "prj_a" }];
+    harness.state.workItemActivities = [];
+    harness.service.sendConfirmedDraft({ draftId: "maildraft_1", approvalToken: harness.grantFor("maildraft_1"), actor: ACTOR });
+    harness.service.recordMailSendResult({
+      invocation: { ...harness.created[0], status: "succeeded" },
+      result: { output: { sentMessageId: "<mail-task-receipt@example.com>" } },
+    });
+    assert.equal(harness.state.mailResponsePackages[0].status, "sent");
+    assert.equal(harness.state.mailResponsePackages[0].sendReceipt.providerMessageId, "<mail-task-receipt@example.com>");
+    assert.equal(harness.state.workItemActivities[0].action, "mail_sent");
+    assert.equal(harness.state.workItemActivities[0].workItemId, "lwi_1");
+  } finally {
+    setSendFlag(false);
+  }
+});
+
 test("the crash model: timeout, deny, and gate-rejected dispatch all read UNCONFIRMED — never silently sent or lost", () => {
   setSendFlag(true);
   try {
@@ -279,10 +302,13 @@ test("the crash model: timeout, deny, and gate-rejected dispatch all read UNCONF
     const gateRejected = sendHarness({
       createInvocationImpl: (task, agent, options) => ({ id: "inv_gate", status: "rejected", agentId: agent.id, options, task, result: { errorCode: "over_budget" } }),
     });
+    gateRejected.state.mailDrafts[0].provenance = { packageId: "mailresp_gate", packageRevision: 2, workItemId: "lwi_gate", sourceRevision: 1 };
+    gateRejected.state.mailResponsePackages = [{ id: "mailresp_gate", workItemId: "lwi_gate", ownerTeamId: "team_a", status: "draft_created", revision: 2 }];
     const res = gateRejected.service.sendConfirmedDraft({ draftId: "maildraft_1", approvalToken: gateRejected.grantFor("maildraft_1"), actor: ACTOR });
     assert.equal(res.status, 409);
     assert.equal(res.body.error, "send_dispatch_rejected");
     assert.equal(gateRejected.state.mailDrafts[0].status, "send_unconfirmed");
+    assert.equal(gateRejected.state.mailResponsePackages[0].status, "send_unconfirmed");
     assert(gateRejected.events.some((e) => e.type === "mail_send_unconfirmed"));
   } finally {
     setSendFlag(false);

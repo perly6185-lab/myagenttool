@@ -696,6 +696,7 @@ export function createServerRuntimeServices({
         executionChainId: item.id,
         terminalId: item.terminalId,
         taskMaterialWorkItemId: item.id,
+        operationIntent: item.channelTaskContract?.operationIntent ?? null,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"
           : item.planningProjects?.some((project) => project.autonomyProfile === "high")
@@ -1289,6 +1290,7 @@ export function createServerRuntimeServices({
             ownerTeamId: record.ownerTeamId,
             accountId: record.applicationId,
             triggerId: record.invocationId ?? record.id,
+            messages: record.data.messages ?? [],
           }));
           queueMicrotask(() => mailBodyPrefetchHooks?.enqueueBodyPrefetch?.({
             ownerTeamId: record.ownerTeamId ?? "team_local",
@@ -2254,7 +2256,7 @@ export function createServerRuntimeServices({
   // + credential readiness + single-use grant. The completion fold and the deny
   // reconcile are late-bound into the invocation runtime above.
   const mailSendService = createMailSendService({
-    state, now, appendEvent, persistStateSoon, store,
+    state, now, nextId, appendEvent, persistStateSoon, store,
     validateApprovalToken,
     createInvocation: (task, agent, options) => createInvocation(task, agent, options),
     startInvocationIfAllowed: (invocation, agent) => startInvocationIfAllowed(invocation, agent),
@@ -2301,7 +2303,11 @@ export function createServerRuntimeServices({
   });
   mailFolderOrganizationHooks = {
     ...mailFolderOrganizationService,
-    onMailImported: ({ ownerTeamId, accountId, triggerId }) => mailboxService.runFolderAutomations({ teamId: ownerTeamId, accountId, triggerId }),
+    onMailImported: ({ ownerTeamId, accountId, triggerId, messages }) => {
+      const organization = mailboxService.runFolderAutomations({ teamId: ownerTeamId, accountId, triggerId });
+      const taskPolicies = mailboxService.evaluateImportedTaskPolicies({ teamId: ownerTeamId, accountId, triggerId, messages });
+      return { organization, taskPolicies };
+    },
   };
   mailBodyPrefetchHooks = mailboxService;
   mailboxService.backfillBodyPrefetch();
@@ -6147,6 +6153,16 @@ export function createServerRuntimeServices({
     updateMailboxDraft: mailboxService.updateDraft,
     deleteMailboxDraft: mailboxService.deleteDraft,
     createMailboxTask: mailboxService.createTaskFromMessage,
+    listMailResponsePackages: mailboxService.listResponsePackages,
+    createMailResponsePackage: mailboxService.createResponsePackage,
+    materializeMailResponsePackage: mailboxService.materializeResponsePackage,
+    reviewMailResponsePackage: mailboxService.reviewResponsePackage,
+    attachMailResponsePackageFiles: mailboxService.attachResponsePackageFiles,
+    createMailDraftFromResponsePackage: mailboxService.createDraftFromResponsePackage,
+    listMailTaskPolicies: mailboxService.listTaskPolicies,
+    upsertMailTaskPolicy: mailboxService.upsertTaskPolicy,
+    evaluateMailTaskPolicies: mailboxService.evaluateTaskPolicies,
+    getMailTaskOperations: mailboxService.taskOperations,
     startMailClassification: mailboxService.startClassification,
     previewMailSemanticClassification: mailboxService.previewSemanticClassification,
     getMailClassificationJob: mailboxService.getClassificationJob,
