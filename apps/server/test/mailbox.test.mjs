@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createMailboxService, isMailClassificationEnabled, mailSendApprovalTarget } from "../src/services/mailbox.mjs";
+import { createMailboxService, isMailClassificationEnabled, mailConversationKey, mailPublicMessageId, mailSendApprovalTarget, mailSourceFingerprint } from "../src/services/mailbox.mjs";
 import { createMailClassificationService } from "../src/services/mail-classification.mjs";
 import { createMailQueryIndex, openMailQueryIndexDatabase } from "../src/services/mail-query-index.mjs";
 
-function harness({ mailSendEnabled = () => false, mailClassificationEnabled = () => true, createWorkItem = null, inspectTaskMaterialDraft = null, mailQueryIndex = null } = {}) {
+function harness({ mailSendEnabled = () => false, mailClassificationEnabled = () => true, mailTaskAutomationEnabled = () => false, createWorkItem = null, inspectTaskMaterialDraft = null, mailQueryIndex = null } = {}) {
   let id = 0;
   const events = [];
   const capabilityCalls = [];
@@ -94,6 +94,8 @@ function harness({ mailSendEnabled = () => false, mailClassificationEnabled = ()
     persistStateSoon: () => {},
     mailSendEnabled,
     mailClassificationEnabled,
+    mailTaskAutomationEnabled,
+    mailTaskAutomationMode: () => mailTaskAutomationEnabled() ? "create_and_run" : "off",
     createCapabilityInvocation,
     createWorkItem,
     inspectTaskMaterialDraft,
@@ -124,6 +126,20 @@ test("classification environment gate defaults on and fails closed only when exp
     if (previous === undefined) delete process.env.MYAGENTTOOL_MAIL_CLASSIFICATION_ENABLED;
     else process.env.MYAGENTTOOL_MAIL_CLASSIFICATION_ENABLED = previous;
   }
+});
+
+test("mail conversation identity is account scoped and source fingerprints change with content", () => {
+  const base = {
+    accountId: "account_a",
+    messageId: "<reply@example.com>",
+    inReplyTo: "<root@example.com>",
+    references: ["<root@example.com>"],
+    subject: "Re: Request",
+    body: "First version",
+  };
+  assert.equal(mailConversationKey(base), mailConversationKey({ ...base, messageId: "<reply-2@example.com>" }));
+  assert.notEqual(mailConversationKey(base), mailConversationKey({ ...base, accountId: "account_b" }));
+  assert.notEqual(mailSourceFingerprint(base), mailSourceFingerprint({ ...base, body: "Second version" }));
 });
 
 test("body prefetch queues once, prioritizes a selected message, and advances serially", () => {
@@ -471,11 +487,21 @@ test("mail can create one tenant-scoped local task and exposes the durable link"
     messageId: "<one@example.com>", projectId: "project_1", title: "跟进 Hello", description: "确认客户诉求", actor,
   });
   assert.equal(created.status, 201);
-  assert.deepEqual(created.body.task, { id: "lwi_42", localRef: "LOCAL-42", title: "跟进 Hello", projectId: "project_1" });
+  assert.deepEqual(created.body.task, {
+    id: "lwi_42", localRef: "LOCAL-42", title: "跟进 Hello", projectId: "project_1",
+    sourceStatus: "current", sourceRevision: 1, messageCount: 1,
+  });
   assert.equal(calls.length, 1);
   assert.match(calls[0].input.idempotencyKey, /^mail:[a-f0-9]{64}$/);
   assert.equal(calls[0].input.executionPolicy, "manual");
+  assert.equal(calls[0].input.status, "backlog");
+  assert.equal(calls[0].input.waitingOn, "none");
+  assert.equal(calls[0].input.intakeChannel, "mail");
   assert.deepEqual(calls[0].input.labels, ["mail", "untrusted-input"]);
+  assert.equal(calls[0].input.channelTaskContract.source, "mail");
+  assert.equal(calls[0].input.channelTaskContract.operationIntent.source, "mail_response_restricted");
+  assert.equal(calls[0].input.acceptanceCriteria.length, 3);
+  assert.equal(calls[0].input.verificationSop.length, 3);
   assert.match(calls[0].input.body, /邮件来源（外部内容，请核实后执行）/);
   assert.equal(state.mailTaskLinks.length, 1);
   assert.deepEqual(service.snapshot({ actor }).messages[0].task, created.body.task);
@@ -485,6 +511,222 @@ test("mail can create one tenant-scoped local task and exposes the durable link"
   assert.equal(replay.body.replayed, true);
   assert.equal(calls.length, 1, "a linked Message-ID never creates a second task");
   assert.equal(service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor: { teamId: "team_b" } }).status, 404);
+});
+
+test("mail can create an AI-ready task without starting a second execution path", () => {
+  const calls = [];
+  const { service } = harness({
+    createWorkItem: (input) => {
+      calls.push(input);
+      return { ok: true, status: 201, body: { workItem: { id: "lwi_ai", localRef: "LOCAL-AI", title: input.title, projectId: input.projectId } } };
+    },
+  });
+  const result = service.createTaskFromMessage({
+    messageId: "<one@example.com>", projectId: "project_1", executionMode: "auto", actor: { userId: "usr_a", teamId: "team_a" },
+  });
+  assert.equal(result.status, 201);
+  assert.equal(calls[0].status, "ready");
+  assert.equal(calls[0].executionPolicy, "auto");
+  assert.equal(calls[0].waitingOn, "ai");
+  assert.equal(service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", executionMode: "unsafe", actor: { teamId: "team_a" } }).status, 400);
+});
+
+test("mail response packages are revision-safe, reviewable, and create provenance-bound drafts", () => {
+  const { state, service } = harness({
+    createWorkItem: (input) => ({ ok: true, status: 201, body: { workItem: { id: "lwi_pkg", localRef: "LOCAL-PKG", title: input.title, projectId: input.projectId } } }),
+  });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor });
+  state.workItems.push({
+    id: "lwi_pkg", projectId: "project_1", outputAssets: [{
+      id: "asset_reply", path: "out/reply.pdf", originalName: "reply.pdf", mimeType: "application/pdf", size: 123,
+      worktreeId: "wt_1", hash: "a".repeat(64), readiness: { state: "ready" },
+    }],
+  });
+  const created = service.createResponsePackage({
+    workItemId: "lwi_pkg", expectedSourceRevision: 1,
+    analysis: "客户希望确认交付日期。", requests: ["确认交付日期"], deadlines: ["本周五"],
+    risks: ["日期尚未内部确认"], uncertainties: ["最终负责人"],
+    proposedReply: "您好，我们正在核对交付日期，将于今天内回复。", actor,
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.package.status, "ready_for_review");
+  assert.equal(service.createDraftFromResponsePackage({ packageId: created.body.package.id, expectedRevision: 1, actor }).body.error, "mail_response_not_draftable");
+  assert.equal(service.reviewResponsePackage({ packageId: created.body.package.id, expectedRevision: 99, decision: "approve", actor }).status, 409);
+  const approved = service.reviewResponsePackage({ packageId: created.body.package.id, expectedRevision: 1, decision: "approve", actor });
+  assert.equal(approved.body.package.status, "approved");
+  assert.equal(approved.body.package.candidateOutputAssets[0].relativePath, "out/reply.pdf");
+  assert.equal(service.reviewResponsePackage({ packageId: created.body.package.id, expectedRevision: 2, decision: "request_changes", actor }).body.error, "mail_response_review_invalid");
+  const attachment = { ref: "mailatt_12345678-1234-1234-1234-123456789abc", name: "reply.pdf", contentType: "application/pdf", size: 123 };
+  const attached = service.attachResponsePackageFiles({ packageId: created.body.package.id, expectedRevision: 2, attachments: [attachment], actor });
+  assert.equal(attached.body.package.revision, 3);
+  const drafted = service.createDraftFromResponsePackage({ packageId: created.body.package.id, expectedRevision: 3, actor });
+  assert.equal(drafted.status, 201);
+  assert.equal(drafted.body.draft.origin, "work_item");
+  assert.equal(drafted.body.draft.to, "A <a@example.com>");
+  assert.equal(drafted.body.draft.provenance.workItemId, "lwi_pkg");
+  assert.deepEqual(drafted.body.draft.attachments, [attachment]);
+  assert.equal(state.mailDrafts[0].status, "draft");
+  assert.equal(state.mailResponsePackages[0].status, "draft_created");
+  assert.equal(service.createDraftFromResponsePackage({ packageId: created.body.package.id, expectedRevision: 4, actor }).body.replayed, true);
+});
+
+test("a later thread message makes an old package stale and a new package supersedes it", () => {
+  let createdInput = null;
+  const { state, service } = harness({
+    createWorkItem: (input) => {
+      createdInput = input;
+      return { ok: true, status: 201, body: { workItem: { id: "lwi_rev", localRef: "LOCAL-REV", title: input.title, projectId: input.projectId } } };
+    },
+  });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor });
+  state.workItems.push({ id: "lwi_rev", localRef: "LOCAL-REV", ownerTeamId: "team_a", revision: 1, ...createdInput, materialChangesPending: false });
+  const originalSource = { sourceRevision: state.mailTaskLinks[0].revision, sourceFingerprint: state.mailTaskLinks[0].sourceFingerprint };
+  const first = service.createResponsePackage({ workItemId: "lwi_rev", analysis: "初次分析", proposedReply: "初次回复", actor });
+  state.applicationResults.push({
+    id: "mail_reply_pkg", source: "mail_headers", applicationId: "app_163_mail_v2", ownerTeamId: "team_a", createdAt: "2026-08-14T05:00:00Z",
+    data: { kind: "message", accountId: "app_163_mail_v2", messageId: "<reply-package@example.com>", inReplyTo: "<one@example.com>", references: ["<one@example.com>"], from: "Alice <alice@example.com>", subject: "Re: Hello", date: "2026-08-14T05:00:00Z", body: "补充：请附报价。", attachments: [] },
+  });
+  service.createTaskFromMessage({ messageId: "<reply-package@example.com>", projectId: "project_1", actor });
+  assert.equal(state.workItems[0].revision, 2);
+  assert.equal(state.workItems[0].materialChangesPending, true);
+  assert.equal(state.workItems[0].channelTaskContract.operationIntent.evidence.mailSourceRevision, 2);
+  assert.match(state.workItems[0].body, /补充：请附报价/);
+  assert.equal(service.createResponsePackage({ workItemId: "lwi_rev", expectedSourceRevision: 1, analysis: "过期", proposedReply: "过期", actor }).status, 409);
+  state.autoRuns = [{
+    id: "aur_stale", localIssueId: "lwi_rev", status: "done", updatedAt: "2026-08-14T06:00:00Z", sourceBinding: originalSource,
+    report: "## 分析摘要\n旧分析\n\n## 建议回复\n旧回复",
+  }];
+  assert.equal(service.materializeResponsePackage({ workItemId: "lwi_rev", actor }).body.error, "mail_response_outcome_stale");
+  const second = service.createResponsePackage({ workItemId: "lwi_rev", expectedSourceRevision: 2, analysis: "包含补充要求", proposedReply: "已附报价", actor });
+  assert.equal(second.status, 201);
+  assert.equal(state.mailResponsePackages.find((item) => item.id === first.body.package.id).status, "superseded");
+});
+
+test("a completed governed run materializes its structured report exactly once", () => {
+  const { state, service } = harness({
+    createWorkItem: (input) => ({ ok: true, status: 201, body: { workItem: { id: "lwi_outcome", localRef: "LOCAL-OUT", title: input.title, projectId: input.projectId } } }),
+  });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor });
+  state.autoRuns = [{
+    id: "aur_mail", localIssueId: "lwi_outcome", executionChainId: "lwi_outcome", status: "done", updatedAt: "2026-08-14T00:00:00Z",
+    sourceBinding: { sourceRevision: state.mailTaskLinks[0].revision, sourceFingerprint: state.mailTaskLinks[0].sourceFingerprint },
+    report: "# 邮件处理结果\n\n## 分析摘要\n客户询问交期。\n\n## 请求\n- 确认交期\n\n## 风险\n- 尚未内部核实\n\n## 建议回复\n您好，我们将在今天内核实交期并回复。",
+  }];
+  const created = service.materializeResponsePackage({ workItemId: "lwi_outcome", expectedSourceRevision: 1, actor });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.package.analysis, "客户询问交期。");
+  assert.deepEqual(created.body.package.requests, ["确认交期"]);
+  assert.equal(created.body.package.proposedReply, "您好，我们将在今天内核实交期并回复。");
+  const replay = service.materializeResponsePackage({ workItemId: "lwi_outcome", expectedSourceRevision: 1, actor });
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+});
+
+test("outcome materialization refuses a report without an explicit proposed reply", () => {
+  const { state, service } = harness({
+    createWorkItem: (input) => ({ ok: true, status: 201, body: { workItem: { id: "lwi_bad_outcome", localRef: "LOCAL-BAD", title: input.title, projectId: input.projectId } } }),
+  });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor });
+  state.autoRuns = [{ id: "aur_bad_mail", localIssueId: "lwi_bad_outcome", status: "done", updatedAt: "2026-08-14T00:00:00Z", sourceBinding: { sourceRevision: state.mailTaskLinks[0].revision, sourceFingerprint: state.mailTaskLinks[0].sourceFingerprint }, report: "## 分析摘要\n只有分析，没有回复草稿。" }];
+  assert.equal(service.materializeResponsePackage({ workItemId: "lwi_bad_outcome", actor }).body.error, "mail_response_reply_missing");
+});
+
+test("mail task automation starts in shadow, obeys the kill switch, and exposes operations metrics", () => {
+  const calls = [];
+  const { service } = harness({
+    createWorkItem: (input) => {
+      calls.push(input);
+      return { ok: true, status: 201, body: { workItem: { id: "lwi_policy", localRef: "LOCAL-POLICY", title: input.title, projectId: input.projectId } } };
+    },
+  });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  const policy = service.upsertTaskPolicy({ projectId: "project_1", mode: "create_and_run", senderDomains: ["example.com"], actor });
+  assert.equal(policy.status, 201);
+  assert.equal(policy.body.killSwitchOpen, true);
+  const decision = service.evaluateTaskPolicies({ messageId: "<one@example.com>", actor });
+  assert.equal(decision.body.decision.effectiveMode, "shadow");
+  assert.equal(decision.body.decision.action, "would_create");
+  assert.equal(calls.length, 0);
+  const operations = service.taskOperations({ actor }).body;
+  assert.equal(operations.metrics.shadowMatches, 1);
+  assert.equal(operations.metrics.recoveryRequired, 0);
+  assert.equal(operations.metrics.knownCostUsd, 0);
+  assert.equal(operations.metrics.unmeteredCostEntries, 0);
+  assert.equal(operations.killSwitchOpen, true);
+});
+
+test("enabled mail task automation creates at most the governed action and remains never-send", () => {
+  const calls = [];
+  const { service } = harness({
+    mailTaskAutomationEnabled: () => true,
+    createWorkItem: (input) => {
+      calls.push(input);
+      return { ok: true, status: 201, body: { workItem: { id: "lwi_policy_live", localRef: "LOCAL-LIVE", title: input.title, projectId: input.projectId } } };
+    },
+  });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  service.upsertTaskPolicy({ projectId: "project_1", mode: "create_and_run", senderDomains: ["example.com"], maxPerDay: 1, actor });
+  const result = service.evaluateTaskPolicies({ messageId: "<one@example.com>", actor });
+  assert.equal(result.body.decision.action, "create_and_run");
+  assert.equal(calls[0].executionPolicy, "auto");
+  assert.equal(calls[0].channelTaskContract.operationIntent.source, "mail_response_restricted");
+  assert.equal(service.listTaskPolicies({ actor }).body.killSwitchOpen, false);
+  const replay = service.evaluateTaskPolicies({ messageId: "<one@example.com>", actor });
+  assert.equal(replay.body.replayed, true);
+  assert.equal(calls.length, 1);
+});
+
+test("mail import evaluates matching task policies automatically and idempotently", () => {
+  const calls = [];
+  const { service } = harness({
+    mailTaskAutomationEnabled: () => true,
+    createWorkItem: (input) => {
+      calls.push(input);
+      return { ok: true, status: 201, body: { workItem: { id: "lwi_import", localRef: "LOCAL-IMPORT", title: input.title, projectId: input.projectId } } };
+    },
+  });
+  const actor = { userId: "owner_a", teamId: "team_a" };
+  service.upsertTaskPolicy({ projectId: "project_1", mode: "create_only", senderDomains: ["example.com"], actor });
+  const first = service.evaluateImportedTaskPolicies({
+    teamId: "team_a", accountId: "app_163_mail_v2", triggerId: "sync_1", messages: [{ messageId: "<one@example.com>" }],
+  });
+  const replay = service.evaluateImportedTaskPolicies({
+    teamId: "team_a", accountId: "app_163_mail_v2", triggerId: "sync_1", messages: [{ messageId: "<one@example.com>" }],
+  });
+  assert.equal(first.body.evaluated, 1);
+  assert.equal(replay.body.results[0].body.replayed, true);
+  assert.equal(calls.length, 1);
+});
+
+test("public mail identity disambiguates the same Message-ID across accounts", () => {
+  const calls = [];
+  const { state, service } = harness({
+    createWorkItem: (input) => {
+      calls.push(input);
+      return { ok: true, status: 201, body: { workItem: { id: `lwi_multi_${calls.length}`, localRef: `LOCAL-${calls.length}`, title: input.title, projectId: input.projectId } } };
+    },
+  });
+  state.device.applicationCredentialReadiness.push({ applicationId: "app_gmail", provider: "gmail", scope: "gmail.readonly", status: "present" });
+  state.applications.push({
+    id: "app_gmail", name: "Gmail", status: "active", ownerTeamId: "team_a",
+    source: { credential: { provider: "gmail", scope: "gmail.readonly" } },
+    capabilityFacades: [{ id: "sync", agentToolName: "mail_sync" }],
+  });
+  state.applicationResults.push({
+    id: "gmail_duplicate", source: "mail_headers", applicationId: "app_gmail", ownerTeamId: "team_a", createdAt: "2026-08-14T00:00:00Z",
+    data: { kind: "message", messageId: "<one@example.com>", from: "Other <other@example.net>", subject: "Other account", body: "Separate account" },
+  });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  const messages = service.snapshot({ actor }).messages.filter((message) => message.messageId === "<one@example.com>");
+  assert.equal(messages.length, 2);
+  assert.equal(new Set(messages.map((message) => message.id)).size, 2);
+  assert.equal(messages.some((message) => message.id === mailPublicMessageId("app_gmail", "<one@example.com>")), true);
+  assert.equal(service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor }).status, 404, "ambiguous legacy identity fails closed");
+  assert.equal(service.createTaskFromMessage({ messageId: messages[0].id, projectId: "project_1", actor }).status, 201);
 });
 
 test("mailbox exposes additive smart views and revision-safe user corrections", () => {
@@ -560,6 +802,46 @@ test("mail task retry repairs a missing durable link without duplicating work ac
   assert.equal(retry.body.task.id, "lwi_recovered");
   assert.equal(calls.length, 1);
   assert.equal(state.mailTaskLinks.length, 1);
+});
+
+test("a later message in the same account-scoped conversation reuses and revisions the mail task link", () => {
+  const calls = [];
+  const { state, service, events } = harness({
+    createWorkItem: (input) => {
+      calls.push(input);
+      return { ok: true, status: 201, body: { workItem: { id: "lwi_thread", localRef: "LOCAL-88", title: input.title, projectId: input.projectId } } };
+    },
+  });
+  state.applicationResults.push({
+    id: "appres_thread_reply",
+    source: "mail_headers",
+    applicationId: "app_163_mail_v2",
+    ownerTeamId: "team_a",
+    createdAt: "2026-08-13T04:00:00.000Z",
+    data: {
+      kind: "message",
+      messageId: "<reply@example.com>",
+      inReplyTo: "<one@example.com>",
+      references: ["<one@example.com>"],
+      from: "A <a@example.com>",
+      subject: "Re: Hello",
+      body: "A later request",
+    },
+  });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  const first = service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor });
+  const later = service.createTaskFromMessage({ messageId: "<reply@example.com>", projectId: "project_1", actor });
+  assert.equal(first.status, 201);
+  assert.equal(later.status, 200);
+  assert.equal(later.body.sourceUpdated, true);
+  assert.equal(later.body.replayed, false);
+  assert.equal(later.body.task.id, "lwi_thread");
+  assert.equal(later.body.task.messageCount, 2);
+  assert.equal(later.body.task.sourceStatus, "update_pending");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(state.mailTaskLinks[0].messageIds, ["<one@example.com>", "<reply@example.com>"]);
+  assert.equal(state.mailTaskLinks[0].revision, 2);
+  assert.equal(events.some((event) => event.type === "mail_task_source_updated"), true);
 });
 
 test("mail task attachment claims must exactly match selected message metadata", () => {

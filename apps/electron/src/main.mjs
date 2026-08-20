@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { bundledAgentEnv } from "./bundled-agent-runtime.mjs";
 import { overlayFromChrome, readSkinSettings, registerSkinChrome } from "./skin-chrome.mjs";
-import { registerContainedAssetOpen, registerContainedAssetReveal, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, registerWorkflowSourceFolderPicker } from "./local-office-document-picker.mjs";
+import { registerContainedAssetOpen, registerContainedAssetReveal, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, registerWorkflowSourceFolderPicker, resolveContainedFile } from "./local-office-document-picker.mjs";
 import { registerWorkflowCaseIntake } from "./workflow-case-intake.mjs";
 import { registerMailAccountConnector } from "./mail-account-connector.mjs";
 import { registerMailAttachmentHandler } from "./mail-attachment-handler.mjs";
@@ -263,6 +263,8 @@ function createMainWindow(url, serverUrl) {
     dialog,
     getWindow: () => mainWindow,
     attachmentRoot: join(app.getPath("appData"), "myagenttool", "mail", "outbox-attachments"),
+    getState,
+    resolveContainedFile,
     getReferencedAttachmentRefs: async () => {
       const response = await fetch(`${serverUrl}/api/mailbox`, { headers: loopbackHeaders });
       if (!response.ok) throw new Error("mailbox_attachment_refs_unavailable");

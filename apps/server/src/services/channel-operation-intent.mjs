@@ -126,6 +126,12 @@ export function normalizeChannelOperationIntent(input) {
       negatedWriteTerms: Array.isArray(input.evidence?.negatedWriteTerms)
         ? input.evidence.negatedWriteTerms.slice(0, 10).map((term) => bounded(term, 40)).filter(Boolean)
         : [],
+      ...(Number.isInteger(Number(input.evidence?.mailSourceRevision)) && Number(input.evidence.mailSourceRevision) > 0
+        ? { mailSourceRevision: Number(input.evidence.mailSourceRevision) }
+        : {}),
+      ...(/^[a-f0-9]{64}$/i.test(String(input.evidence?.mailSourceFingerprint ?? ""))
+        ? { mailSourceFingerprint: String(input.evidence.mailSourceFingerprint).toLowerCase() }
+        : {}),
     },
     confidence: Number.isFinite(Number(input.confidence))
       ? Math.max(0, Math.min(1, Number(input.confidence)))

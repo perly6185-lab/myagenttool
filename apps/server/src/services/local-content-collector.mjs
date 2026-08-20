@@ -270,8 +270,11 @@ export async function collectLocalContent({
   for (const link of state.mailTaskLinks ?? []) {
     const task = tasks.get(link.workItemId);
     if (!task) continue;
-    const mailId = byKey.get(`mail:${task.ownerTeamId}:${link.messageId}`);
-    addRelation(task.ownerTeamId, mailId, task.contentId, "converted_to_task");
+    const messageIds = Array.isArray(link.messageIds) ? link.messageIds : [link.messageId].filter(Boolean);
+    for (const messageId of messageIds) {
+      const mailId = byKey.get(`mail:${task.ownerTeamId}:${messageId}`);
+      addRelation(task.ownerTeamId, mailId, task.contentId, "converted_to_task");
+    }
   }
 
   for (const task of tasks.values()) {

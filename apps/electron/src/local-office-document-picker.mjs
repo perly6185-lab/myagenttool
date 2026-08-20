@@ -122,6 +122,12 @@ export function resolveContainedOfficeDocument(state, input) {
 }
 
 export function resolveContainedAsset(state, input) {
+  const target = resolveContainedFile(state, input);
+  if (!ASSET_TYPES.has(extname(target).toLowerCase())) throw new Error("This asset type cannot be opened.");
+  return target;
+}
+
+export function resolveContainedFile(state, input) {
   const projectId = String(input?.projectId ?? "").trim();
   const worktreeId = String(input?.worktreeId ?? "").trim();
   const relativePath = String(input?.relativePath ?? "").trim().replaceAll("\\", "/");
@@ -143,7 +149,6 @@ export function resolveContainedAsset(state, input) {
   if (!realRel || realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) throw new Error("Requested document escapes its project root.");
   const stat = statSync(target);
   if (!stat.isFile()) throw new Error("Requested document is not a regular file.");
-  if (!ASSET_TYPES.has(extname(target).toLowerCase())) throw new Error("This asset type cannot be opened.");
   return target;
 }
 

@@ -185,6 +185,10 @@ declare global {
         | { ok: true; attachments: Array<{ ref: string; name: string; contentType: string; size: number }> }
         | { ok: false; error: "attachment_invalid" | "attachment_too_large" | "attachment_stage_failed" }
       >;
+      stageTaskOutputMailAttachments?: (input: { files: Array<{ projectId: string; worktreeId?: string | null; relativePath: string; name: string; contentType: string; sha256: string }> }) => Promise<
+        | { ok: true; attachments: Array<{ ref: string; name: string; contentType: string; size: number }> }
+        | { ok: false; error: "attachment_invalid" | "attachment_too_large" | "attachment_stage_failed" }
+      >;
     };
   }
 }

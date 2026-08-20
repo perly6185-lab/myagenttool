@@ -30,13 +30,15 @@ import { ConfirmModal } from "@/components/common/confirm-modal";
 import { DesktopHandoffLink } from "@/components/common/desktop-handoff";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import { api, ApiError, type MailboxAccount, type MailboxDraft, type MailboxMessage, type MailClassification, type MailClassificationJob, type MailClassificationQuality, type MailClassificationRule, type MailClassificationRuleSuggestion, type MailFolderAutomation, type MailFolderMoveJob, type MailFolderMovePreview, type MailFolderSuggestion, type MailDraftAttachment, type MailSemanticPreview, type MailSmartView } from "@/lib/api-client";
+import { api, ApiError, type MailboxAccount, type MailboxDraft, type MailboxMessage, type MailClassification, type MailClassificationJob, type MailClassificationQuality, type MailClassificationRule, type MailClassificationRuleSuggestion, type MailFolderAutomation, type MailFolderMoveJob, type MailFolderMovePreview, type MailFolderSuggestion, type MailDraftAttachment, type MailResponsePackage, type MailSemanticPreview, type MailSmartView, type MailTaskOperations, type MailTaskPolicy } from "@/lib/api-client";
 import { mailApi } from "@/features/mail/mail-api";
 import { normalizeCid, PlainMailBody, SafeHtmlMailBody } from "@/features/mail/safe-mail-content";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { cn } from "@/lib/cn";
 import { useUiStore } from "@/store/ui-store";
+import { canManageProfessionalSettings } from "@/app/page-access";
+import { useSessionUser } from "@/hooks/use-session-user";
 
 type FolderId = string;
 
@@ -268,21 +270,34 @@ const COPY = {
     reply: "回复",
     replyDraft: "写回复草稿",
     issue: "已关联任务来源 #{{number}}",
-    createTask: "转为任务",
+    createTask: "交给 AI 处理",
     linkedTask: "已关联 {{ref}}",
     taskReviewTitle: "确认任务内容",
-    taskReviewHint: "先确认项目和任务说明，再创建。本步骤不会自动执行邮件里的任何内容。",
+    taskReviewHint: "先确认项目和任务说明，再选择保存为待办，或让 AI 在受限环境中分析并准备结果。",
     taskProject: "所属项目",
     taskTitle: "任务标题",
     taskDescription: "任务说明",
     taskDescriptionPlaceholder: "补充需要完成的事项、交付结果或时间要求",
-    taskSourceHint: "邮件是外部内容。创建后任务默认进入待办、手动执行，你可以继续调整。",
+    taskSourceHint: "邮件是外部内容。AI 只会把它作为待分析资料，不会把邮件文字当成系统指令，也不会自动发送回复。",
     taskAttachmentsHint: "选择要一并带入任务的附件（可选，最多 6 个）",
-    createTaskNow: "创建任务",
+    createTaskNow: "只创建任务",
+    createAndHandle: "创建并让 AI 处理",
     creatingTask: "正在创建…",
     taskCreated: "任务 {{ref}} 已创建。",
     taskCreatedWithSkipped: "任务 {{ref}} 已创建，{{count}} 个附件未能添加，可稍后在任务中补充。",
     viewTask: "查看任务",
+    aiConsole: "AI 处理台",
+    aiConsoleTitle: "邮件 AI 处理台",
+    aiConsoleHint: "面向专业用户的任务关联、审核、影子规则和运行时间线。自动化总开关关闭时只记录影子判断。",
+    responseReady: "AI 回复建议",
+    responseAnalysis: "分析摘要",
+    responseReply: "建议回复",
+    responseApprove: "批准建议",
+    responseRevise: "让 AI 修改",
+    responseDraft: "转为邮件草稿",
+    responseDrafted: "已生成草稿，可在草稿箱继续编辑和确认发送。",
+    responseLoad: "读取 AI 结果",
+    responsePending: "AI 结果尚未完成，请稍后再试。",
     taskFailed: "暂时无法创建任务，请检查项目后重试。",
     taskProjectRequired: "请先选择一个项目。",
     taskTitleRequired: "请填写任务标题。",
@@ -610,21 +625,34 @@ const COPY = {
     reply: "Reply",
     replyDraft: "Draft reply",
     issue: "Linked task source #{{number}}",
-    createTask: "Turn into task",
+    createTask: "Let AI handle it",
     linkedTask: "Linked to {{ref}}",
     taskReviewTitle: "Review task details",
-    taskReviewHint: "Confirm the project and task notes first. Nothing in the email is executed automatically.",
+    taskReviewHint: "Confirm the project and task notes, then save it for later or let AI analyze it in a restricted environment.",
     taskProject: "Project",
     taskTitle: "Task title",
     taskDescription: "Task notes",
     taskDescriptionPlaceholder: "Add the work to do, expected result, or timing",
-    taskSourceHint: "Email is external content. The task starts in Backlog with manual execution, and can be edited later.",
+    taskSourceHint: "Email is external content. AI treats it only as material to analyze, never as system instructions, and never sends a reply automatically.",
     taskAttachmentsHint: "Choose attachments to copy into the task (optional, up to 6)",
-    createTaskNow: "Create task",
+    createTaskNow: "Create task only",
+    createAndHandle: "Create and let AI handle it",
     creatingTask: "Creating…",
     taskCreated: "Task {{ref}} was created.",
     taskCreatedWithSkipped: "Task {{ref}} was created; {{count}} attachment(s) could not be added and can be attached later.",
     viewTask: "View task",
+    aiConsole: "AI operations",
+    aiConsoleTitle: "Mail AI operations",
+    aiConsoleHint: "Professional task links, review packages, shadow rules, and execution timeline. With the automation kill switch open, rules only record shadow decisions.",
+    responseReady: "AI reply suggestion",
+    responseAnalysis: "Analysis",
+    responseReply: "Proposed reply",
+    responseApprove: "Approve suggestion",
+    responseRevise: "Ask AI to revise",
+    responseDraft: "Create email draft",
+    responseDrafted: "Draft created. Continue editing and explicitly confirm sending from Drafts.",
+    responseLoad: "Load AI result",
+    responsePending: "The AI result is not complete yet. Try again shortly.",
     taskFailed: "The task could not be created. Check the project and try again.",
     taskProjectRequired: "Choose a project first.",
     taskTitleRequired: "Add a task title.",
@@ -734,6 +762,9 @@ export function MailView() {
   const copy = i18n.language.startsWith("zh") ? COPY.zh : COPY.en;
   const queryClient = useQueryClient();
   const consoleState = useConsoleState();
+  const sessionUser = useSessionUser();
+  const canOperateMailAi = !sessionUser?.role || sessionUser.role !== "viewer";
+  const canManageMailAi = canManageProfessionalSettings(sessionUser?.role);
   const selectedProjectId = useUiStore((state) => state.selectedProjectId);
   const openWorkItem = useUiStore((state) => state.openWorkItem);
   const setSection = useUiStore((state) => state.setSection);
@@ -750,7 +781,7 @@ export function MailView() {
   const [confirmComposeClose, setConfirmComposeClose] = useState(false);
   const [reviewDraft, setReviewDraft] = useState<MailboxDraft | null>(null);
   const [viewedDraft, setViewedDraft] = useState<MailboxDraft | null>(null);
-  const [busy, setBusy] = useState<"sync" | "save" | "send" | "delete" | "task" | "classify" | "deep" | "correct" | "rules" | null>(null);
+  const [busy, setBusy] = useState<"sync" | "save" | "send" | "delete" | "task" | "response" | "classify" | "deep" | "correct" | "rules" | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string; task?: NonNullable<MailboxMessage["task"]> } | null>(null);
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [connectorIntent, setConnectorIntent] = useState<MailConnectorIntent>("manage");
@@ -776,6 +807,7 @@ export function MailView() {
   const [automationPreview, setAutomationPreview] = useState<MailFolderMovePreview | null>(null);
   const [automationPending, setAutomationPending] = useState(false);
   const [automationError, setAutomationError] = useState<string | null>(null);
+  const [operationsOpen, setOperationsOpen] = useState(false);
   const openConnector = (intent: MailConnectorIntent = "manage") => {
     setConnectorIntent(intent);
     setConnectorOpen(true);
@@ -845,6 +877,24 @@ export function MailView() {
     queryFn: () => mailApi.getClassificationJob(deepJobId!),
     enabled: Boolean(deepJobId),
     refetchInterval: (query) => isClassificationJobTerminal(query.state.data?.job.status) ? false : 500,
+  });
+  const selectedTaskId = mailbox.data?.messages.find((message) => message.id === selectedMessageId)?.task?.id ?? null;
+  const responsePackages = useQuery({
+    queryKey: ["mail-response-packages", selectedTaskId],
+    queryFn: () => api.getMailResponsePackages(selectedTaskId!),
+    enabled: Boolean(selectedTaskId),
+    refetchInterval: 4_000,
+  });
+  const taskOperations = useQuery({
+    queryKey: ["mail-task-operations"],
+    queryFn: () => api.getMailTaskOperations(),
+    enabled: operationsOpen,
+    refetchInterval: operationsOpen ? 4_000 : false,
+  });
+  const taskPolicies = useQuery({
+    queryKey: ["mail-task-policies"],
+    queryFn: () => api.getMailTaskPolicies(),
+    enabled: operationsOpen,
   });
   const data = mailbox.data;
   const classificationSummary = data?.classificationSummary ?? null;
@@ -997,7 +1047,7 @@ export function MailView() {
     const patch = classificationPatchForView(selected, currentType);
     setBusy("correct");
     try {
-      await mailApi.correctClassification(message.messageId, {
+      await mailApi.correctClassification(message.id, {
         folderId: message.folderId,
         expectedRevision: classification.revision,
         ...patch,
@@ -1211,13 +1261,13 @@ export function MailView() {
   async function openMessage(message: MailboxMessage) {
     setSelectedMessageId(message.id);
     if (message.unread) {
-      void mailApi.setMessageRead(message.messageId, true)
+      void mailApi.setMessageRead(message.id, true)
         .then(() => queryClient.invalidateQueries({ queryKey: ["mailbox"] }))
         .catch(() => setNotice({ tone: "error", text: copy.markReadFailed }));
     }
     if (message.bodyFetch?.status === "ready" || (message.fetched && message.attachmentMetadataLoaded && message.bodyContentVersion >= 2)) return;
     try {
-      await mailApi.prioritizeBodyPrefetch(message.messageId);
+      await mailApi.prioritizeBodyPrefetch(message.id);
       await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
     } catch {
       setNotice({ tone: "error", text: copy.bodyUnavailable });
@@ -1226,7 +1276,7 @@ export function MailView() {
 
   async function markUnread(message: MailboxMessage) {
     try {
-      await mailApi.setMessageRead(message.messageId, false);
+      await mailApi.setMessageRead(message.id, false);
       await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
       setSelectedMessageId(null);
     } catch {
@@ -1277,7 +1327,7 @@ export function MailView() {
     setNotice(null);
   }
 
-  async function createTaskFromMail() {
+  async function createTaskFromMail(executionMode: "manual" | "auto") {
     if (!taskDraft) return;
     if (!taskDraft.projectId) { setNotice({ tone: "error", text: copy.taskProjectRequired }); return; }
     if (!taskDraft.title.trim()) { setNotice({ tone: "error", text: copy.taskTitleRequired }); return; }
@@ -1330,11 +1380,12 @@ export function MailView() {
           }
         }
       }
-      const result = await api.createMailTask(taskDraft.message.messageId, {
+      const result = await api.createMailTask(taskDraft.message.id, {
         projectId: taskDraft.projectId,
         title: taskDraft.title.trim(),
         description: taskDraft.description,
         attachmentIds: uploadedIds,
+        executionMode,
         ...(uploadedIds.length && materialDraftId ? { materialDraftId, materialDraftRevision } : {}),
       });
       setTaskDraft(null);
@@ -1478,6 +1529,75 @@ export function MailView() {
     }
   }
 
+  async function reviewResponsePackage(item: MailResponsePackage, decision: "approve" | "request_changes") {
+    setBusy("response");
+    try {
+      await api.reviewMailResponsePackage(item.id, { expectedRevision: item.revision, decision, ...(decision === "request_changes" ? { feedback: "请根据最新邮件和人工审核意见继续修订。" } : {}) });
+      await responsePackages.refetch();
+    } catch {
+      setNotice({ tone: "error", text: copy.taskFailed });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function draftResponsePackage(item: MailResponsePackage) {
+    setBusy("response");
+    try {
+      let revision = item.revision;
+      if ((item.candidateOutputAssets?.length ?? 0) > 0 && !item.candidateAttachments.length) {
+        const stage = window.myagenttoolDesktop?.stageTaskOutputMailAttachments;
+        if (!stage) {
+          setNotice({ tone: "error", text: copy.outboundDesktopOnly });
+          return;
+        }
+        const staged = await stage({ files: (item.candidateOutputAssets ?? []).map((asset) => ({
+          projectId: asset.projectId,
+          worktreeId: asset.worktreeId,
+          relativePath: asset.relativePath,
+          name: asset.name,
+          contentType: asset.contentType,
+          sha256: asset.sha256,
+        })) });
+        if (!staged.ok) throw new Error(staged.error);
+        const attached = await api.attachMailResponsePackageFiles(item.id, revision, staged.attachments);
+        revision = attached.package.revision;
+      }
+      const result = await api.createDraftFromMailResponsePackage(item.id, revision);
+      await Promise.all([responsePackages.refetch(), queryClient.invalidateQueries({ queryKey: ["mailbox"] })]);
+      setNotice({ tone: "info", text: copy.responseDrafted });
+      setFolder("drafts");
+      setSelectedMessageId(null);
+      setViewedDraft(result.draft);
+    } catch {
+      setNotice({ tone: "error", text: copy.saveFailed });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function materializeResponsePackage(workItemId: string, sourceRevision?: number) {
+    setBusy("response");
+    try {
+      await api.materializeMailResponsePackage(workItemId, sourceRevision);
+      await responsePackages.refetch();
+    } catch {
+      setNotice({ tone: "error", text: copy.responsePending });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveTaskPolicy(input: { projectId: string; mode: MailTaskPolicy["mode"]; senderDomains: string[]; maxPerDay: number }) {
+    setBusy("response");
+    try {
+      await api.upsertMailTaskPolicy(input);
+      await Promise.all([taskPolicies.refetch(), taskOperations.refetch()]);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   if (mailbox.isLoading) return <div role="status" className="py-12 text-center text-sm text-muted-foreground">{copy.syncing}</div>;
   if (mailbox.isError && !data) return <div role="alert" className="mx-auto flex max-w-xl flex-col items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-8 text-center"><p className="text-sm font-medium">{copy.loadFailed}</p><Button variant="secondary" onClick={() => void mailbox.refetch()}><RefreshCw />{copy.retry}</Button></div>;
 
@@ -1491,6 +1611,7 @@ export function MailView() {
           {account?.canReceive && !systemFolder ? <Button className="hidden sm:inline-flex" variant="secondary" onClick={() => void organizeMail()} disabled={busy === "classify"}><Sparkles />{busy === "classify" ? copy.organizing : copy.organize}</Button> : null}
           {account?.canReceive && !systemFolder ? <Button className="hidden sm:inline-flex" variant="secondary" onClick={() => setDeepOrganizeOpen(true)}><ShieldCheck />{copy.deepOrganize}</Button> : null}
           {account?.canReceive && !systemFolder ? <Button className="hidden sm:inline-flex" variant="secondary" onClick={() => { setRuleFeedback(null); setFolderFeedback(null); setRulesOpen(true); }}><SlidersHorizontal />{copy.rules}{organizeSuggestionCount ? <span aria-hidden className="rounded-full bg-primary/15 px-1.5 text-xs text-primary">{organizeSuggestionCount}</span> : null}</Button> : null}
+          {account?.canReceive && canOperateMailAi ? <Button className="hidden sm:inline-flex" variant="secondary" onClick={() => setOperationsOpen(true)}><ListTodo />{copy.aiConsole}</Button> : null}
           {account?.canReceive && !systemFolder ? <Button size="sm" className="sm:hidden" variant="secondary" onClick={() => setOrganizeMenuOpen(true)}><SlidersHorizontal />{copy.organizeMenu}{organizeSuggestionCount ? <span aria-hidden className="rounded-full bg-primary/15 px-1.5 text-xs text-primary">{organizeSuggestionCount}</span> : null}</Button> : null}
           <Button size="sm" onClick={() => startCompose()}><PenLine />{copy.compose}</Button>
         </div>
@@ -1552,7 +1673,7 @@ export function MailView() {
             </section>
 
             <section className={cn("min-w-0", selectedMessage ? "block" : "hidden lg:block")} aria-label={selectedMessage?.subject ?? copy.choose}>
-              {selectedMessage ? <MessageDetail message={selectedMessage} copy={copy} canSend={Boolean(account?.canSend)} loading={!selectedMessage.fetched && ["queued", "running", "retry_wait"].includes(selectedMessage.bodyFetch?.status ?? "")} handoffContext={{ folder, page: String(page), view: smartView }} onBack={() => setSelectedMessageId(null)} onReply={() => startCompose(selectedMessage)} onCreateTask={() => startTask(selectedMessage)} onMarkUnread={() => void markUnread(selectedMessage)} onCorrectClassification={() => setClassificationCorrection({ message: selectedMessage, view: classificationViewOf(selectedMessage) })} onPreview={(attachment) => void previewAttachment(selectedMessage, attachment)} onDownload={(attachment) => void downloadAttachment(selectedMessage, attachment)} /> : <div className="grid h-full min-h-80 place-items-center p-8 text-center text-sm text-muted-foreground"><div><Mail className="mx-auto mb-3 size-8 opacity-40" />{copy.choose}</div></div>}
+              {selectedMessage ? <div className="max-h-[70vh] overflow-y-auto lg:max-h-[620px]"><MessageDetail message={selectedMessage} copy={copy} canSend={Boolean(account?.canSend)} loading={!selectedMessage.fetched && ["queued", "running", "retry_wait"].includes(selectedMessage.bodyFetch?.status ?? "")} handoffContext={{ folder, page: String(page), view: smartView }} onBack={() => setSelectedMessageId(null)} onReply={() => startCompose(selectedMessage)} onCreateTask={() => startTask(selectedMessage)} onMarkUnread={() => void markUnread(selectedMessage)} onCorrectClassification={() => setClassificationCorrection({ message: selectedMessage, view: classificationViewOf(selectedMessage) })} onPreview={(attachment) => void previewAttachment(selectedMessage, attachment)} onDownload={(attachment) => void downloadAttachment(selectedMessage, attachment)} />{selectedMessage.task ? <MailResponseReviewPanel copy={copy} workItemId={selectedMessage.task.id} sourceRevision={selectedMessage.task.sourceRevision} item={responsePackages.data?.packages.find((item) => item.status !== "superseded") ?? null} loading={responsePackages.isLoading} pending={busy === "response"} onMaterialize={(workItemId, sourceRevision) => void materializeResponsePackage(workItemId, sourceRevision)} onReview={(item, decision) => void reviewResponsePackage(item, decision)} onDraft={(item) => void draftResponsePackage(item)} /> : null}</div> : <div className="grid h-full min-h-80 place-items-center p-8 text-center text-sm text-muted-foreground"><div><Mail className="mx-auto mb-3 size-8 opacity-40" />{copy.choose}</div></div>}
             </section>
           </div>
 
@@ -1571,7 +1692,7 @@ export function MailView() {
         window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 16_000);
       }} />
       <AttachmentPreviewModal copy={copy} preview={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
-      <MailTaskReviewModal copy={copy} value={taskDraft} projects={projects} pending={busy === "task"} onChange={setTaskDraft} onClose={() => setTaskDraft(null)} onCreate={() => void createTaskFromMail()} />
+      <MailTaskReviewModal copy={copy} value={taskDraft} projects={projects} pending={busy === "task"} onChange={setTaskDraft} onClose={() => setTaskDraft(null)} onCreate={(mode) => void createTaskFromMail(mode)} />
       <ClassificationCorrectionModal copy={copy} value={classificationCorrection} pending={busy === "correct"} onChange={setClassificationCorrection} onClose={() => setClassificationCorrection(null)} onSave={() => void saveClassificationCorrection()} />
       <MailOrganizeMenuModal copy={copy} open={organizeMenuOpen} organizing={busy === "classify"} suggestionCount={organizeSuggestionCount} onClose={() => setOrganizeMenuOpen(false)} onBasic={() => { setOrganizeMenuOpen(false); void organizeMail(); }} onDeep={() => { setOrganizeMenuOpen(false); setDeepOrganizeOpen(true); }} onRules={() => { setOrganizeMenuOpen(false); setRuleFeedback(null); setFolderFeedback(null); setRulesOpen(true); }} />
       <DeepOrganizeModal copy={copy} open={deepOrganizeOpen} preview={deepPreview.data?.preview ?? null} previewLoading={deepPreview.isLoading} previewError={deepPreview.isError} job={deepJob.data?.job ?? null} jobLoading={Boolean(deepJobId) && deepJob.isLoading} jobError={deepJob.isError} pending={busy === "deep"} onClose={closeDeepOrganize} onStart={() => void startDeepOrganize()} onCancel={() => void cancelDeepOrganize()} />
@@ -1580,6 +1701,7 @@ export function MailView() {
       <FolderMovePreviewModal copy={copy} value={folderPreview} job={folderMoveJob.data?.job ?? null} pending={folderMovePending} error={folderMoveError} accounts={data?.accounts ?? []} onMove={() => void startFolderMove()} onConnect={() => { setFolderPreview(null); setFolderMoveJobId(null); openConnector("organize"); }} onSync={() => { setFolderPreview(null); setFolderMoveJobId(null); void syncMail(); }} onClose={() => { setFolderPreview(null); setFolderMoveJobId(null); setFolderMoveError(null); setRulesOpen(true); }} />
       <FolderAutomationPreviewModal copy={copy} value={automationPreview} pending={automationPending} error={automationError} accounts={data?.accounts ?? []} onEnable={() => void enableFolderAutomation()} onClose={() => { setAutomationPreview(null); setAutomationError(null); setRulesOpen(true); }} />
       <FolderMoveRecoveryModal copy={copy} value={folderRecoveryOpen ? recoveryFolderJob : null} pending={folderMovePending} error={folderMoveError} accounts={data?.accounts ?? []} onSync={() => { setFolderRecoveryOpen(false); void syncMail(); }} onReconcile={(job) => void reconcileFolderMove(job)} onClose={() => { setFolderRecoveryOpen(false); setFolderMoveError(null); }} />
+      <MailTaskOperationsModal copy={copy} open={operationsOpen} data={taskOperations.data ?? null} policies={taskPolicies.data?.policies ?? []} projects={projects} loading={taskOperations.isLoading || taskPolicies.isLoading} pending={busy === "response"} canManagePolicies={canManageMailAi} onSave={(input) => void saveTaskPolicy(input)} onClose={() => setOperationsOpen(false)} />
     </div>
   );
 }
@@ -1830,7 +1952,7 @@ function MailTaskReviewModal({ copy, value, projects, pending, onChange, onClose
   pending: boolean;
   onChange: (value: MailTaskDraft | null) => void;
   onClose: () => void;
-  onCreate: () => void;
+  onCreate: (mode: "manual" | "auto") => void;
 }) {
   if (!value) return null;
   const canCopyAttachments = Boolean(window.myagenttoolDesktop?.readMailAttachmentForTask);
@@ -1839,7 +1961,8 @@ function MailTaskReviewModal({ copy, value, projects, pending, onChange, onClose
     if (!selected && value.attachmentIds.length >= 6) return;
     onChange({ ...value, attachmentIds: selected ? value.attachmentIds.filter((item) => item !== id) : [...value.attachmentIds, id] });
   };
-  return <Modal open title={copy.taskReviewTitle} description={copy.taskReviewHint} size="lg" onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button onClick={onCreate} disabled={pending || !value.projectId || !value.title.trim()}><ListTodo />{pending ? copy.creatingTask : copy.createTaskNow}</Button></div>}>
+  const disabled = pending || !value.projectId || !value.title.trim();
+  return <Modal open title={copy.taskReviewTitle} description={copy.taskReviewHint} size="lg" onClose={onClose} closeDisabled={pending} footer={<div className="flex flex-wrap justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button variant="secondary" onClick={() => onCreate("manual")} disabled={disabled}><ListTodo />{pending ? copy.creatingTask : copy.createTaskNow}</Button><Button onClick={() => onCreate("auto")} disabled={disabled}>{pending ? copy.creatingTask : copy.createAndHandle}</Button></div>}>
     <div className="space-y-4">
       <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.taskSourceHint}</div>
       <label className="block text-sm font-medium">{copy.taskProject}<select autoFocus value={value.projectId} onChange={(event) => onChange({ ...value, projectId: event.target.value })} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring"><option value="">—</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
@@ -1847,6 +1970,69 @@ function MailTaskReviewModal({ copy, value, projects, pending, onChange, onClose
       <label className="block text-sm font-medium">{copy.taskDescription}<textarea value={value.description} maxLength={20_000} onChange={(event) => onChange({ ...value, description: event.target.value })} placeholder={copy.taskDescriptionPlaceholder} className="mt-1 min-h-36 w-full resize-y rounded-md border bg-background px-3 py-2 font-normal leading-6 outline-none focus:ring-2 focus:ring-ring" /></label>
       {value.message.attachments.length ? <fieldset className="rounded-lg border bg-muted/20 p-3"><legend className="px-1 text-sm font-medium">{copy.attachments}</legend><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-muted-foreground">{canCopyAttachments ? copy.taskAttachmentsHint : copy.taskAttachmentDesktopOnly}</p>{!canCopyAttachments ? <DesktopHandoffLink section="mail" action="mail-attachment" params={{ message: value.message.id, mode: "task" }} compact>{copy === COPY.zh ? "在桌面版添加附件" : "Add in desktop"}</DesktopHandoffLink> : null}</div><div className="space-y-2">{value.message.attachments.map((attachment) => <label key={attachment.id} className={cn("flex items-center gap-3 rounded-md bg-background px-3 py-2", canCopyAttachments ? "cursor-pointer" : "cursor-not-allowed opacity-60")}><input type="checkbox" checked={value.attachmentIds.includes(attachment.id)} disabled={!canCopyAttachments || (!value.attachmentIds.includes(attachment.id) && value.attachmentIds.length >= 6)} onChange={() => toggleAttachment(attachment.id)} /><Paperclip className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span></label>)}</div></fieldset> : null}
     </div>
+  </Modal>;
+}
+
+function MailResponseReviewPanel({ copy, workItemId, sourceRevision, item, loading, pending, onMaterialize, onReview, onDraft }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  workItemId: string;
+  sourceRevision?: number;
+  item: MailResponsePackage | null;
+  loading: boolean;
+  pending: boolean;
+  onMaterialize: (workItemId: string, sourceRevision?: number) => void;
+  onReview: (item: MailResponsePackage, decision: "approve" | "request_changes") => void;
+  onDraft: (item: MailResponsePackage) => void;
+}) {
+  if (loading) return <div className="mx-4 mb-4 rounded-xl border bg-muted/20 p-4 text-sm text-muted-foreground">{copy.creatingTask}</div>;
+  if (!item) return <div className="mx-4 mb-4 flex items-center justify-between gap-3 rounded-xl border bg-muted/20 p-4"><p className="text-sm text-muted-foreground">{copy.responsePending}</p><Button size="sm" variant="secondary" disabled={pending} onClick={() => onMaterialize(workItemId, sourceRevision)}>{copy.responseLoad}</Button></div>;
+  return <section className="mx-4 mb-4 space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-4" aria-label={copy.responseReady}>
+    <div className="flex items-center justify-between gap-2"><h3 className="font-semibold">{copy.responseReady}</h3><span className="rounded-full border bg-background px-2 py-0.5 text-xs text-muted-foreground">v{item.sourceRevision}.{item.revision}</span></div>
+    <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{copy.responseAnalysis}</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6">{item.analysis}</p></div>
+    {item.risks.length || item.uncertainties.length ? <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm"><AlertTriangle className="mr-1 inline size-4 text-amber-500" />{[...item.risks, ...item.uncertainties].join("；")}</div> : null}
+    <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{copy.responseReply}</p><div className="mt-1 whitespace-pre-wrap rounded-lg border bg-background p-3 text-sm leading-6">{item.proposedReply}</div></div>
+    {item.candidateOutputAssets?.length ? <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{copy.attachments}</p><div className="mt-1 space-y-1">{item.candidateOutputAssets.map((asset) => <div key={`${asset.worktreeId ?? "project"}:${asset.relativePath}`} className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm"><Paperclip className="size-4 text-muted-foreground" /><span className="min-w-0 flex-1 truncate">{asset.name}</span>{asset.size != null ? <span className="text-xs text-muted-foreground">{formatBytes(asset.size)}</span> : null}</div>)}</div></div> : null}
+    <div className="flex flex-wrap justify-end gap-2">
+      {item.status === "ready_for_review" ? <Button size="sm" variant="secondary" disabled={pending} onClick={() => onReview(item, "request_changes")}>{copy.responseRevise}</Button> : null}
+      {item.status === "ready_for_review" ? <Button size="sm" disabled={pending} onClick={() => onReview(item, "approve")}><ShieldCheck />{copy.responseApprove}</Button> : null}
+      {item.status === "approved" ? <Button size="sm" disabled={pending} onClick={() => onDraft(item)}><FilePenLine />{copy.responseDraft}</Button> : null}
+      {item.status === "draft_created" ? <span className="text-sm text-emerald-600">{copy.responseDrafted}</span> : null}
+    </div>
+  </section>;
+}
+
+function MailTaskOperationsModal({ copy, open, data, policies, projects, loading, pending, canManagePolicies, onSave, onClose }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  open: boolean;
+  data: MailTaskOperations | null;
+  policies: MailTaskPolicy[];
+  projects: Array<{ id: string; name: string }>;
+  loading: boolean;
+  pending: boolean;
+  canManagePolicies: boolean;
+  onSave: (input: { projectId: string; mode: MailTaskPolicy["mode"]; senderDomains: string[]; maxPerDay: number }) => void;
+  onClose: () => void;
+}) {
+  const [projectId, setProjectId] = useState("");
+  const [mode, setMode] = useState<MailTaskPolicy["mode"]>("shadow");
+  const [domain, setDomain] = useState("");
+  if (!open) return null;
+  const metrics = data?.metrics;
+  const cards = metrics ? [
+    [copy === COPY.zh ? "关联任务" : "Linked tasks", metrics.linkedTasks],
+    [copy === COPY.zh ? "待审核" : "Awaiting review", metrics.awaitingReview],
+    [copy === COPY.zh ? "需要恢复" : "Recovery needed", metrics.recoveryRequired],
+    [copy === COPY.zh ? "已知成本" : "Known cost", `$${metrics.knownCostUsd.toFixed(4)}${metrics.unmeteredCostEntries ? ` + ${metrics.unmeteredCostEntries} ${copy === COPY.zh ? "笔待计量" : "unmetered"}` : ""}`],
+    [copy === COPY.zh ? "影子命中" : "Shadow matches", metrics.shadowMatches],
+    [copy === COPY.zh ? "已生成草稿" : "Drafts created", metrics.draftsCreated],
+  ] : [];
+  return <Modal open title={copy.aiConsoleTitle} description={copy.aiConsoleHint} size="lg" onClose={onClose} footer={<Button onClick={onClose}>{copy.close}</Button>}>
+    {loading ? <p className="text-sm text-muted-foreground">{copy.syncing}</p> : <div className="space-y-4">
+      <div className={cn("rounded-lg border px-3 py-2 text-sm", data?.killSwitchOpen ? "border-amber-500/40 bg-amber-500/5" : "border-emerald-500/40 bg-emerald-500/5")}>{data?.killSwitchOpen ? (copy === COPY.zh ? "自动化总开关已关闭：规则仅运行影子判断。" : "Automation kill switch is open: rules run in shadow only.") : (copy === COPY.zh ? "自动化总开关已启用；发送邮件仍必须人工确认。" : "Automation is enabled; sending still requires human confirmation.")}</div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{cards.map(([label, value]) => <div key={String(label)} className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-xl font-semibold tabular-nums">{value}</p></div>)}</div>
+      <div className="space-y-2 rounded-lg border p-3"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">{copy === COPY.zh ? "自动处理规则" : "Automation policies"}</h3><span className="text-xs text-muted-foreground">{policies.length}</span></div>{policies.map((policy) => <div key={policy.id} className="flex items-center justify-between gap-2 rounded-md bg-muted/30 px-3 py-2 text-sm"><span className="truncate">{projects.find((project) => project.id === policy.projectId)?.name ?? policy.projectId}{policy.senderDomains.length ? ` · ${policy.senderDomains.join(", ")}` : ""}</span><span className="shrink-0 text-xs text-muted-foreground">{policy.mode} · {policy.maxPerDay}/{copy === COPY.zh ? "天" : "day"}</span></div>)}{canManagePolicies ? <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]"><select value={projectId} onChange={(event) => setProjectId(event.target.value)} className="rounded-md border bg-background px-2 py-2 text-sm"><option value="">{copy === COPY.zh ? "选择项目" : "Choose project"}</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><select value={mode} onChange={(event) => setMode(event.target.value as MailTaskPolicy["mode"])} className="rounded-md border bg-background px-2 py-2 text-sm"><option value="shadow">shadow</option><option value="create_only">create_only</option><option value="create_and_run">create_and_run</option><option value="off">off</option></select><input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder={copy === COPY.zh ? "发件域名（可选）" : "Sender domain (optional)"} className="rounded-md border bg-background px-2 py-2 text-sm" /><Button size="sm" disabled={pending || !projectId} onClick={() => onSave({ projectId, mode, senderDomains: domain.trim() ? [domain.trim()] : [], maxPerDay: 20 })}>{copy === COPY.zh ? "添加" : "Add"}</Button></div> : <p className="text-xs text-muted-foreground">{copy === COPY.zh ? "运营角色可查看运行情况；只有所有者或管理员可以修改规则。" : "Operators can inspect runs; only owners and admins can change policies."}</p>}</div>
+      <div><h3 className="mb-2 text-sm font-semibold">{copy === COPY.zh ? "最近时间线" : "Recent timeline"}</h3><div className="max-h-64 space-y-2 overflow-y-auto">{data?.timeline.length ? data.timeline.slice(0, 30).map((entry) => <div key={`${entry.kind}:${entry.id}`} className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm"><span className="min-w-0 truncate">{entry.kind} · {entry.workItemId ?? entry.id}</span><span className="shrink-0 text-xs text-muted-foreground">{entry.status} · r{entry.revision ?? "-"}</span></div>) : <p className="text-sm text-muted-foreground">{copy === COPY.zh ? "暂无邮件任务记录。" : "No mail task activity yet."}</p>}</div></div>
+    </div>}
   </Modal>;
 }
 

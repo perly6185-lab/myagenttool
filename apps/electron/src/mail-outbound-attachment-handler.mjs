@@ -1,14 +1,15 @@
-import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 const MAX_FILES = 10;
 const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
-export function registerMailOutboundAttachmentHandler({ ipcMain, dialog, getWindow, attachmentRoot, getReferencedAttachmentRefs = null }) {
+export function registerMailOutboundAttachmentHandler({ ipcMain, dialog, getWindow, attachmentRoot, getReferencedAttachmentRefs = null, getState = null, resolveContainedFile = null }) {
   ipcMain.removeHandler("mail:pick-outbound-attachments");
   ipcMain.removeHandler("mail:stage-pasted-attachments");
+  ipcMain.removeHandler("mail:stage-task-output-attachments");
   if (typeof getReferencedAttachmentRefs === "function") {
     void Promise.resolve()
       .then(() => getReferencedAttachmentRefs())
@@ -47,6 +48,39 @@ export function registerMailOutboundAttachmentHandler({ ipcMain, dialog, getWind
       });
       enforceLimits(files);
       return { ok: true, attachments: files.map((file) => stageBytes(attachmentRoot, file)) };
+    } catch (error) {
+      return { ok: false, error: publicCode(error) };
+    }
+  });
+
+  ipcMain.handle("mail:stage-task-output-attachments", async (_event, input) => {
+    try {
+      if (typeof getState !== "function" || typeof resolveContainedFile !== "function") throw publicError("attachment_stage_failed");
+      const incoming = Array.isArray(input?.files) ? input.files : [];
+      if (!incoming.length || incoming.length > MAX_FILES) throw publicError("attachment_invalid");
+      const currentState = await getState();
+      const files = incoming.map((file) => {
+        const path = resolveContainedFile(currentState, {
+          projectId: file?.projectId,
+          worktreeId: file?.worktreeId,
+          relativePath: file?.relativePath,
+        });
+        const info = lstatSync(path);
+        if (!info.isFile() || info.isSymbolicLink()) throw publicError("attachment_invalid");
+        const expectedSha256 = String(file?.sha256 ?? "").toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(expectedSha256)
+          || createHash("sha256").update(readFileSync(path)).digest("hex") !== expectedSha256) {
+          throw publicError("attachment_invalid");
+        }
+        return {
+          path,
+          name: safeFilename(file?.name ?? path),
+          size: info.size,
+          contentType: boundedType(file?.contentType ?? contentTypeOf(path)),
+        };
+      });
+      enforceLimits(files);
+      return { ok: true, attachments: files.map((file) => stageFile(attachmentRoot, file)) };
     } catch (error) {
       return { ok: false, error: publicCode(error) };
     }

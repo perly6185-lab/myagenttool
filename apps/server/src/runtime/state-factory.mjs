@@ -163,6 +163,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // after header sync; attachment bytes and RFC822 archives remain on-demand.
     mailBodyPrefetchJobs: [],
     mailTaskLinks: [],
+    mailResponsePackages: [],
+    mailTaskPolicies: [],
+    mailTaskPolicyDecisions: [],
     mailClassifications: [],
     mailClassificationJobs: [],
     mailClassificationCorrections: [],
@@ -409,6 +412,9 @@ export function resetStateForSelfCheck({ state, now }) {
   state.mailDrafts = [];
   state.mailMessageStates = [];
   state.mailTaskLinks = [];
+  state.mailResponsePackages = [];
+  state.mailTaskPolicies = [];
+  state.mailTaskPolicyDecisions = [];
   state.mailClassifications = [];
   state.mailClassificationJobs = [];
   state.mailClassificationCorrections = [];
