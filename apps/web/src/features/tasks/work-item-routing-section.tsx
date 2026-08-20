@@ -6,6 +6,17 @@ import type { LocalWorkItemAutoRun, LocalWorkItemObservability } from "./task-vi
 
 type SuggestedAction = NonNullable<NonNullable<LocalWorkItemAutoRun["decision"]>["suggestedActions"]>[number];
 
+const WORK_KIND_LABELS: Record<string, string> = {
+  development: "编程开发",
+  office: "办公与数据",
+  general: "通用处理",
+  product_design: "产品设计",
+  creative: "视觉创作",
+  content: "内容创作",
+  consultation: "咨询",
+  unknown: "待确认",
+};
+
 export function WorkItemRoutingSection({
   run,
   observability,
@@ -28,7 +39,10 @@ export function WorkItemRoutingSection({
     <section className="space-y-2 rounded-md border border-border p-3 text-xs">
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-semibold">{t("taskCockpit.routingTitle")}</h3>
-        <Badge tone={decision.confidence < 0.6 ? "warning" : "success"}>{decision.path}</Badge>
+        <Badge tone={decision.confidence < 0.6 ? "warning" : "success"}>
+          {decision.workKind ? WORK_KIND_LABELS[decision.workKind] ?? decision.workKind : decision.path}
+        </Badge>
+        {decision.workKind ? <span className="text-muted-foreground">执行路径：{decision.path}</span> : null}
         <span>{Math.round(decision.confidence * 100)}%</span>
         <span className="text-muted-foreground">{decision.via ?? decision.decidedBy}</span>
         {decision.latencyMs != null ? <span className="text-muted-foreground">{decision.latencyMs} ms</span> : null}

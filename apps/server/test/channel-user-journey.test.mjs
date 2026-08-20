@@ -342,8 +342,8 @@ test("iLink high-risk preview is invalidated when the user changes the request",
 
 test("iLink multi-task results stay correlated when tasks complete out of order", async () => {
   const harness = makeJourneyHarness();
-  const first = await createConfirmedTask(harness, "请整理第一批反馈");
-  const second = await createConfirmedTask(harness, "另外 第二批反馈");
+  const first = await createConfirmedTask(harness, "请写第一篇公众号文章");
+  const second = await createConfirmedTask(harness, "另外 写第二篇公众号文章");
   assert.equal(first.thread.status, "queued");
   assert.equal(second.thread.status, "queued");
 

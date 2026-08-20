@@ -12,7 +12,7 @@ import type { AgentSkillPath, AgentSkillSnapshot, AgentSkillTarget } from "@/lib
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 const ALL_TARGETS: AgentSkillTarget[] = ["claude", "codex"];
-const ALL_PATHS: AgentSkillPath[] = ["develop", "design", "prototype", "clarify"];
+const ALL_PATHS: AgentSkillPath[] = ["develop", "office", "general", "design", "creative", "content", "prototype", "clarify"];
 
 interface Draft {
   name: string;

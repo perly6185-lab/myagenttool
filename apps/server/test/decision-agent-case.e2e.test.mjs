@@ -257,7 +257,9 @@ test("[C] disposition refresh + routing evaluation score the chain fully aligned
   assert.equal(caseB.autoRun.prState, "MERGED");
 
   const summary = summarizeAutoRuns(state.autoRuns);
-  assert.deepEqual(summary.decisions.byPath, { develop: 1, design: 1, prototype: 0, clarify: 0 });
+  assert.deepEqual(summary.decisions.byPath, {
+    develop: 1, office: 0, general: 0, design: 1, creative: 0, content: 0, prototype: 0, clarify: 0,
+  });
   assert.equal(summary.decisions.byVia.agent, 2, "both decisions came from the real decider subprocess");
   assert.equal(summary.routing.alignmentRate, 1, "design→report and develop→PR: fully aligned routing");
   assert.equal(summary.routing.byPath.develop.prMerged, 1);

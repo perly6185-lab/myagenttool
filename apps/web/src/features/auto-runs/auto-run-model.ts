@@ -16,7 +16,7 @@ export interface AutoRunRecord {
   projectId?: string | null;
   link?: AutoRunLink | null;
   intent?: string | null;
-  decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null; via?: string | null; clarifyingQuestions?: string[] | null; evidence?: { policyVersion: string; modelVersion: string | null; minConfidence: number; inputDigest: string } | null } | null;
+  decision?: { path: string; workKind?: string | null; decidedBy: string; confidence: number; rationale?: string | null; via?: string | null; clarifyingQuestions?: string[] | null; evidence?: { policyVersion: string; modelVersion: string | null; minConfidence: number; inputDigest: string } | null } | null;
   routingOverride?: { recommendedPath: string | null; actualPath: string; reason: string; actorId: string; recordedAt: string; revision: number } | null;
   branchName?: string | null;
   worktreeId?: string | null;

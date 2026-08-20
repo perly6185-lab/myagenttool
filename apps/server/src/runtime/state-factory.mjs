@@ -93,6 +93,9 @@ export function createServerState({ defaultProjectPath, now }) {
       updatedAt: null,
     },
     articleImportJobs: [],
+    // Links shared without instructions are saved as managed local knowledge,
+    // independently of the formal task/worktree lifecycle.
+    channelKnowledgeItems: [],
     // Login-managed site sessions (session-manager.mjs): one durable row per
     // registered site — last probe / reseed observations only, never cookie
     // material. Empty until the first probe/reseed records a row.

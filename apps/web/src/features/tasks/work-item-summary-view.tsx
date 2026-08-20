@@ -384,7 +384,6 @@ export function WorkItemSummaryView({
   const phaseDescription = aiPhaseDescription(observability?.latestRun?.phase, language);
   const understandingContext = observability?.latestRun?.understandingContext ?? null;
   const pendingClarification = observability?.latestRun?.status === "needs_input"
-    && observability.latestRun.decision?.path === "clarify"
     && !observability.latestRun.clarifyAnswer;
   const clarificationSectionId = `work-item-human-action-${item.id}`;
   const firstClarificationQuestion = observability?.latestRun?.decision?.clarifyingQuestions?.find(Boolean) ?? null;
@@ -988,7 +987,7 @@ export function WorkItemSummaryView({
   const answerAiClarification = async () => {
     const run = observability?.latestRun;
     const answer = clarifyAnswer.trim();
-    if (!run || run.status !== "needs_input" || run.decision?.path !== "clarify" || !answer || clarifyPending) return;
+    if (!run || run.status !== "needs_input" || !answer || clarifyPending) return;
     setClarifyPending(true);
     setClarifyError(null);
     try {
@@ -1350,7 +1349,6 @@ export function WorkItemSummaryView({
       ) : null}
 
       {observability?.latestRun?.status === "needs_input"
-        && observability.latestRun.decision?.path === "clarify"
         && !observability.latestRun.clarifyAnswer ? (
           <section id={clarificationSectionId} className="rounded-xl border border-warning/35 bg-warning/[0.055] p-4" aria-label={language === "zh" ? "AI 等待你确认" : "AI is waiting for your answer"}>
             <div className="flex items-start gap-3">
@@ -1358,7 +1356,7 @@ export function WorkItemSummaryView({
               <div className="min-w-0 flex-1">
                 <h4 className="text-sm font-semibold">{language === "zh" ? "AI 需要你确认后才能继续" : "AI needs your decision before continuing"}</h4>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{language === "zh" ? "当前不会产生新的实质修改。回答后，AI 会在同一次任务运行中继续，不会创建重复任务。" : "No new material changes will be made while waiting. After you answer, AI continues in the same run without creating a duplicate task."}</p>
-                {observability.latestRun.decision.clarifyingQuestions?.length ? (
+                {observability.latestRun.decision?.clarifyingQuestions?.length ? (
                   <ol className="mt-3 space-y-2 text-sm">
                     {observability.latestRun.decision.clarifyingQuestions.map((question, index) => (
                       <li key={`${index}-${question}`} className="flex gap-2"><span className="font-medium text-warning">{index + 1}.</span><span>{question}</span></li>
@@ -1367,7 +1365,7 @@ export function WorkItemSummaryView({
                 ) : null}
                 {canOperate ? (
                   <>
-                    {observability.latestRun.decision.suggestedActions?.length ? (
+                    {observability.latestRun.decision?.suggestedActions?.length ? (
                       <div className="mt-3 flex flex-wrap gap-2" aria-label={language === "zh" ? "AI 建议" : "AI suggestions"}>
                         {observability.latestRun.decision.suggestedActions.map((suggestion) => (
                           <Button key={suggestion.id} size="sm" variant="secondary" onClick={() => setClarifyAnswer(suggestion.description ?? suggestion.label)}>

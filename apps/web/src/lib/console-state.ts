@@ -1304,7 +1304,7 @@ export interface ApplicationScheduleHealth {
 }
 
 export type AgentSkillTarget = "claude" | "codex";
-export type AgentSkillPath = "develop" | "design" | "prototype" | "clarify";
+export type AgentSkillPath = "develop" | "office" | "general" | "design" | "creative" | "content" | "prototype" | "clarify";
 
 export interface AgentSkillToolBinding {
   cli?: string;
@@ -1752,6 +1752,26 @@ export interface ChannelConversation {
   externalUserId: string;
   status?: string;
   updatedAt?: string | null;
+  sharedContentContext?: {
+    version?: number;
+    status?: "ready" | "analyzing" | "analyzed" | string;
+    activeItemIds?: string[];
+    lastSharedAt?: string | null;
+    lastAnalysisAt?: string | null;
+    items?: Array<{
+      id: string;
+      status?: string;
+      provider?: string;
+      title: string;
+      author?: string | null;
+      canonicalUrl: string;
+      publishedAt?: string | null;
+      addedAt?: string | null;
+      archiveStatus?: "saved" | "not_saved" | "preview" | string;
+      archiveReplayed?: boolean;
+      archiveWarningCount?: number;
+    }>;
+  };
 }
 
 export interface ChannelDelivery {

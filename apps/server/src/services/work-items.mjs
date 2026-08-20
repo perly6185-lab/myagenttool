@@ -52,7 +52,7 @@ const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
 const PRIORITIES = new Set(["p0", "p1", "p2", "p3"]);
 const EXECUTION_POLICIES = new Set(["inherit", "auto", "manual", "paused"]);
-const CHANNEL_TASK_DOMAINS = new Set(["general", "office", "development", "content"]);
+const CHANNEL_TASK_DOMAINS = new Set(["general", "office", "development", "design", "product_design", "creative", "content"]);
 const CHANNEL_TASK_RISK_LEVELS = new Set(["low", "local_change", "external_communication", "financial", "destructive"]);
 const DATA_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1;
 // Friendly aliases normalized to canonical p0–p3 before validation, so callers
@@ -1576,7 +1576,7 @@ export function createWorkItemService({
         title: item.title, createdAt: run.updatedAt ?? run.createdAt ?? item.updatedAt,
         details: { autoRunId: run.id, status: run.status },
       });
-      if (run?.status === "needs_input" && run.decision?.path === "clarify" && !run.clarifyAnswer) rows.push({
+      if (run?.status === "needs_input" && !run.clarifyAnswer) rows.push({
         id: `execution_input:${item.id}:${run.id}`, kind: "execution_input", severity: "high",
         workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
         title: item.title, createdAt: run.updatedAt ?? run.createdAt ?? item.updatedAt,
@@ -2299,12 +2299,16 @@ export function createWorkItemService({
     const selectedPath = latestRun?.decision?.path ?? null;
     const routeSignals = {
       develop: item.type === "bug" || item.type === "feature" ? "The issue requests a concrete product change." : "No stronger change signal.",
+      office: /台账|表格|excel|csv|报价|订单|合同|客户/i.test(`${item.title} ${item.body}`) ? "Office or business-data language is present." : "No office artifact signal.",
+      general: "A concrete task is present without a stronger specialist workflow signal.",
       design: /design|ux|ui|mockup|wireframe/i.test(`${item.title} ${item.body}`) ? "Design/UI language is present." : "No design artifact signal.",
+      creative: /海报|封面|插画|logo|poster|illustration|graphic design/i.test(`${item.title} ${item.body}`) ? "Visual creative language is present." : "No visual creative signal.",
+      content: /文章|文案|公众号|脚本|article|copywriting|newsletter/i.test(`${item.title} ${item.body}`) ? "Content-production language is present." : "No content deliverable signal.",
       prototype: /prototype|spike|experiment|proof of concept/i.test(`${item.title} ${item.body}`) ? "Experiment language is present." : "No experiment signal.",
       clarify: latestRun?.decision?.clarifyingQuestions?.length ? "The router identified unresolved questions." : "No unresolved questions were detected.",
       decompose: item.type === "initiative" ? "The item is an initiative and may require decomposition." : "The item is not classified as an initiative.",
     };
-    const routeCandidates = ["develop", "design", "prototype", "clarify", "decompose"].map((path, index) => ({
+    const routeCandidates = ["develop", "office", "general", "design", "creative", "content", "prototype", "clarify", "decompose"].map((path, index) => ({
       path,
       selected: path === selectedPath,
       score: path === selectedPath

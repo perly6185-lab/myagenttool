@@ -1092,7 +1092,7 @@ describe("work item summary presentation", () => {
     })));
   });
 
-  it("answers AI clarification from the task and resumes the same run", async () => {
+  it("answers an executor question from the task and resumes the same run", async () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({ executionState: "awaiting_approval", waitingOn: "me" }),
       observability: {
@@ -1102,7 +1102,7 @@ describe("work item summary presentation", () => {
           phase: "waiting_for_input",
           updatedAt: "2026-08-07T01:00:00.000Z",
           decision: {
-            path: "clarify",
+            path: "office",
             decidedBy: "agent",
             confidence: 0.8,
             clarifyingQuestions: ["Should an invalid timezone fall back to UTC or stop scheduling?"],

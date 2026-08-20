@@ -140,7 +140,8 @@ import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
-import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree } from "../services/article-imports.mjs";
+import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree, inspectArticle } from "../services/article-imports.mjs";
+import { createChannelKnowledgeService } from "../services/channel-knowledge.mjs";
 import { createSessionManager } from "../services/session-manager.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createTemplateLearningService } from "../services/template-learning.mjs";
@@ -622,6 +623,16 @@ export function createServerRuntimeServices({
     },
     startInvocationIfAllowed: (invocation, agent) =>
       invocationService?.startInvocationIfAllowed(invocation, agent),
+    store,
+  });
+  const channelKnowledgeService = createChannelKnowledgeService({
+    state,
+    stateStorePath,
+    now,
+    nextId,
+    persistStateSoon: persistArticleStateSoon,
+    maxConcurrent: articleImportConfig.maxConcurrent,
+    maxPending: articleImportConfig.maxPending,
     store,
   });
   // Session manager: login-state observability + keep-alive for profile-backed
@@ -2372,6 +2383,8 @@ export function createServerRuntimeServices({
   const inferChannelTaskDomain = (text) => {
     const value = String(text ?? "").toLowerCase();
     if (/(代码|开发|修复|bug|接口|部署|测试|仓库|分支|编译|程序)/i.test(value)) return "development";
+    if (/(界面设计|交互设计|产品设计|网页设计|应用设计|原型图|线框图|组件层级|页面流程|\b(?:ui|ux|product design|app design|web design|mockup|wireframe|prototype)\b)/i.test(value)) return "product_design";
+    if (/(视觉设计|平面设计|品牌设计|海报|封面|配色|排版|设计稿|效果图|图标|插画|logo|宣传图|横幅|缩略图|\b(?:poster|visual design|graphic design|illustration|banner|thumbnail|logo)\b)/i.test(value)) return "creative";
     if (/(文章|图片|视频|音频|配图|短视频|公众号|小红书|素材|脚本|剪辑|创作)/i.test(value)) return "content";
     if (/(报价|客户|订单|发货|物流|汇款|付款|收款|采购|库存|合同|报销|邮件|表格|对账)/i.test(value)) return "office";
     return "general";
@@ -2413,6 +2426,12 @@ export function createServerRuntimeServices({
       || /(报价|报价单|报告|通知|邮件|合同|文件|图片|视频|文章|内容|附件)/i.test(text);
     const unknownFields = [];
     const requiredFields = [];
+    const sourceDependentOfficeTask = /(?:整理|汇总|合并|转换|导入|提取|核对|清洗|统计|登记|更新|修改|补全|处理).{0,24}(?:资料|数据|反馈|台账|表格|工作簿|报价|订单|合同|发货|回款|售后|客户|名单|报表)|(?:资料|数据|反馈|台账|表格|工作簿|报价|订单|合同|发货|回款|售后|客户|名单|报表).{0,24}(?:整理|汇总|合并|转换|导入|提取|核对|清洗|统计|登记|更新|修改|补全|处理)/i.test(text);
+    const explicitlyBlankTemplate = /(?:空白|新建|从零|模板|示例).{0,12}(?:台账|表格|工作簿|报表)|(?:台账|表格|工作簿|报表).{0,12}(?:空白|新建|从零|模板|示例)/i.test(text);
+    if (sourceDependentOfficeTask && !explicitlyBlankTemplate && inputs.length === 0) {
+      unknownFields.push("要处理的原始文件");
+      requiredFields.push("请上传原始 CSV/Excel 文件，或说明文件在当前项目中的位置");
+    }
     if (riskLevel === "external_communication") {
       if (!target) {
         unknownFields.push("收件人或发布位置");
@@ -3181,7 +3200,14 @@ export function createServerRuntimeServices({
     const requiresDataOperationReview = ["stale", "needs_sources", "blocked"].includes(dataOperationPreview?.status);
     const requiresDataMutationReview = Boolean(dataMutationPreview?.status && dataMutationPreview.status !== "not_required");
     const requiresExecutionStrategyReview = executionStrategy.strategy === "blocked";
+    const requiresExecutionInput = executionPreview.previewReady === false
+      && !requiresDataPlan
+      && !requiresDataReview
+      && !requiresDataOperationReview
+      && !requiresDataMutationReview
+      && !requiresExecutionStrategyReview;
     const effectiveAutoRoute = autoRoute
+      && executionPreview.previewReady === true
       && executionStrategy.safeToAutoRoute
       && !requiresChannelConfirmation
       && !requiresDataPlan
@@ -3334,6 +3360,7 @@ export function createServerRuntimeServices({
       dataRelationConfirmation: attachedDataRelationConfirmation ?? channelTaskContract.dataRelationConfirmation ?? null,
       requiresDataMutationReview,
       requiresExecutionStrategyReview,
+      requiresExecutionInput,
       executionStrategy: channelTaskContract.executionStrategy,
       previewDigest: channelTaskContract.executionPreview.digest,
       previewReady: channelTaskContract.executionPreview.previewReady,
@@ -4075,6 +4102,24 @@ export function createServerRuntimeServices({
       onMetric: recordChannelIntentBridgeMetric,
     })?.classify,
     createConsultation: channelConsultationAdapter?.enqueue,
+    inspectSharedLink: async (input) => {
+      if (input.save === false) {
+        const inspection = await inspectArticle({ url: input.url });
+        return { ...inspection, knowledge: { status: "preview" } };
+      }
+      try {
+        return await channelKnowledgeService.capture(input);
+      } catch (saveError) {
+        const inspection = await inspectArticle({ url: input.url });
+        return {
+          ...inspection,
+          knowledge: {
+            status: "not_saved",
+            reason: String(saveError?.code ?? saveError?.message ?? saveError).slice(0, 120),
+          },
+        };
+      }
+    },
     resendDelivery: (args) => channelResendDelivery?.(args),
     replySender: (args) => channelReplySender?.(args),
     enqueueChannelDelivery: (args) => channelDeliveryService?.enqueueChannelDelivery(args),

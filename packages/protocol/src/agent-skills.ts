@@ -13,7 +13,7 @@ export type AgentSkillTarget = "claude" | "codex";
 // Auto-run decision roles. A skill may restrict itself to one or more roles so
 // a design-decided run gets design skills and a develop run gets coding skills,
 // instead of every run rendering every enabled skill. See `AgentSkill.paths`.
-export type AgentSkillPath = "develop" | "design" | "prototype" | "clarify";
+export type AgentSkillPath = "develop" | "office" | "general" | "design" | "creative" | "content" | "prototype" | "clarify";
 
 // Optional binding to an external capability the skill drives. The capability
 // logic lives in one place; claude reaches it via an MCP server, codex via the
