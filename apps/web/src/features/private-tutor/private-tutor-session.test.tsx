@@ -1,0 +1,131 @@
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PrivateTutorView } from "@/features/private-tutor/private-tutor-view";
+
+const apiMocks = vi.hoisted(() => ({
+  currentSession: vi.fn(),
+  startSession: vi.fn(),
+  pauseSession: vi.fn(),
+  resumeSession: vi.fn(),
+  action: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-session-user", () => ({
+  useSessionUser: () => ({ role: "viewer", privateTutorChildMode: { learnerId: "lrn_session", enteredAt: "2026-08-20T00:00:00.000Z" } }),
+}));
+
+const learner = { id: "lrn_session", displayName: "小满", grade: "七年级", curriculumEditionId: null, status: "active", createdAt: "2026-08-20T00:00:00.000Z", updatedAt: "2026-08-20T00:10:00.000Z" } as const;
+const snapshot = {
+  id: "pts_session", learnerId: learner.id, revision: 3, dailyMinutes: 0, completedSessions: 0, independentAnswers: 0,
+  diagnosticCompletedAt: "2026-08-20T00:10:00.000Z", latestAssessmentId: "pas_done",
+  knowledge: [
+    { id: "integer", mastery: 0.7, level: "learning", evidenceCount: 3 },
+    { id: "equation-meaning", mastery: 0.7, level: "learning", evidenceCount: 3 },
+    { id: "balance", mastery: 0.4, level: "needs_support", evidenceCount: 3 },
+    { id: "word-problem", mastery: null, level: "unknown", evidenceCount: 0 },
+  ], updatedAt: "2026-08-20T00:10:00.000Z",
+} as const;
+const strategyDecision = { id: "ptd_1", learnerId: learner.id, modelId: "ptm_1", targetKnowledgeId: "balance", targetTitle: "等式两边同乘同除", strategy: "concept_rebuild", reasonCode: "concept_not_stable", studentReason: "这次用天平重新理解，不继续刷同类题。", misconception: null, exitConditions: ["独立完成一道新题"], createdAt: "2026-08-20T00:10:00.000Z" } as const;
+const learningPlan = {
+  id: "ptp_1", learnerId: learner.id, revision: 1, status: "active", reason: "diagnostic_completed", studentReason: strategyDecision.studentReason, generatedAt: "2026-08-20T00:10:00.000Z",
+  days: Array.from({ length: 7 }, (_, index) => ({ dayIndex: index + 1, date: `2026-08-${21 + index}`, status: "planned", knowledgeId: "balance", knowledgeTitle: "等式两边同乘同除", activity: "practice", title: index === 0 ? "弄懂等式平衡" : `第 ${index + 1} 步`, minutes: 20, strategy: "concept_rebuild", rationale: "重建概念" })),
+  updatedAt: "2026-08-20T00:10:00.000Z",
+} as const;
+const completedAssessment = { id: "pas_done", learnerId: learner.id, status: "completed", revision: 13, startedAt: "2026-08-20T00:00:00.000Z", pausedAt: null, completedAt: "2026-08-20T00:10:00.000Z", activeSeconds: 600, targetSeconds: 600, minQuestions: 12, maxQuestions: 18, answeredCount: 12, currentQuestion: null, result: { knowledge: [], strengths: [], focus: ["balance"], answeredCount: 12 }, updatedAt: "2026-08-20T00:10:00.000Z" } as const;
+
+function sessionAt(kind: "recall" | "explain" | "guided_practice" | "independent_check" | "summary", status: "active" | "paused" = "active") {
+  const kinds = ["recall", "explain", "guided_practice", "independent_check", "summary"] as const;
+  const index = kinds.indexOf(kind);
+  const question = kind === "recall" ? { revisionId: "tutor-bal-recall-001-v1", knowledgeId: "balance", difficulty: 1, kind: "numeric", prompt: "2x = 10，x 是多少？", options: null } : null;
+  return {
+    id: "ptsess_1", learnerId: learner.id, planId: learningPlan.id, decisionId: strategyDecision.id, targetKnowledgeId: "balance", targetTitle: "等式两边同乘同除", strategy: "concept_rebuild", pace: "standard", plannedMinutes: 20,
+    status, revision: index + 1, currentActivityIndex: index,
+    progress: kinds.map((item, itemIndex) => ({ kind: item, budgetMinutes: [2, 5, 7, 4, 2][itemIndex], status: itemIndex < index ? "completed" : itemIndex === index ? "active" : "pending" })),
+    currentActivity: { kind, budgetMinutes: [2, 5, 7, 4, 2][index], hintLevel: 0, attemptCount: 0, instruction: kind === "explain" ? "把方程想成平衡的天平。" : "先回想一下。", question, hint: null },
+    teachingMethod: "visual_model", methodSwitchCount: 0, intervention: null, pausedAt: status === "paused" ? "2026-08-20T00:12:00.000Z" : null,
+    startedAt: "2026-08-20T00:11:00.000Z", completedAt: null, updatedAt: "2026-08-20T00:12:00.000Z", summary: null,
+  } as const;
+}
+
+vi.mock("@/features/private-tutor/private-tutor-api", () => ({
+  getPrivateTutorSnapshot: () => Promise.resolve({ learner, snapshot, learnerModel: null, strategyDecision, learningPlan }),
+  getCurrentPrivateTutorAssessment: () => Promise.resolve(completedAssessment),
+  getCurrentPrivateTutorSession: apiMocks.currentSession,
+  startPrivateTutorSession: apiMocks.startSession,
+  pausePrivateTutorSession: apiMocks.pauseSession,
+  resumePrivateTutorSession: apiMocks.resumeSession,
+  actOnPrivateTutorSession: apiMocks.action,
+  rebalancePrivateTutorLearningPlan: () => Promise.reject(new Error("not used")),
+  startPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
+  answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
+  pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
+  resumePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
+  listPrivateTutorLearners: () => Promise.resolve([]),
+  createPrivateTutorLearner: () => Promise.reject(new Error("not used")),
+  startPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
+  exitPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
+}));
+
+describe("My private tutor resumable daily session", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    apiMocks.currentSession.mockResolvedValue(null);
+  });
+  afterEach(() => { cleanup(); vi.clearAllMocks(); });
+
+  it("starts in one click and sends only the raw answer for server judging", async () => {
+    const recall = sessionAt("recall");
+    apiMocks.startSession.mockResolvedValue({ session: recall, resumedExisting: false });
+    apiMocks.action.mockResolvedValue({ session: sessionAt("explain"), snapshot, answer: { correct: true, independent: false, usedHint: false } });
+    render(<PrivateTutorView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /开始今天的学习/ }));
+    expect(await screen.findByText("2x = 10，x 是多少？")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("写下答案"), { target: { value: "x=5" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交答案" }));
+
+    await waitFor(() => expect(apiMocks.action).toHaveBeenCalled());
+    const input = apiMocks.action.mock.calls[0][2];
+    expect(input.rawAnswer).toBe("x=5");
+    expect(input).not.toHaveProperty("correct");
+    expect(await screen.findByText("把方程想成平衡的天平。")).toBeTruthy();
+  });
+
+  it("restores a paused lesson at the same step", async () => {
+    const paused = sessionAt("guided_practice", "paused");
+    apiMocks.currentSession.mockResolvedValue(paused);
+    apiMocks.resumeSession.mockResolvedValue({ session: { ...paused, status: "active", pausedAt: null } });
+    render(<PrivateTutorView />);
+
+    expect(await screen.findByText("课程停在原来的位置")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "从这里继续" }));
+    await waitFor(() => expect(apiMocks.resumeSession).toHaveBeenCalledWith(learner.id, paused.id));
+  });
+
+  it("summarizes independent completion, help used, and the next review without ranking", async () => {
+    const activeSummary = sessionAt("summary");
+    apiMocks.currentSession.mockResolvedValue({
+      ...activeSummary,
+      status: "completed",
+      currentActivityIndex: 5,
+      currentActivity: null,
+      progress: activeSummary.progress.map((item) => ({ ...item, status: "completed" })),
+      completedAt: "2026-08-20T00:20:00.000Z",
+      summary: {
+        learned: "今天完成了“等式两边同乘同除”的回想、理解和练习。",
+        independentCompleted: true,
+        hintedActivities: ["guided_practice"],
+        methodSwitchCount: 1,
+        evidenceCount: 4,
+        reviewAt: "2026-08-21T00:20:00.000Z",
+        nextStep: "明天用另一道题快速回想，确认还能独立做到。",
+      },
+    });
+    render(<PrivateTutorView />);
+
+    expect(await screen.findByText("今天这一小步完成了")).toBeTruthy();
+    expect(screen.getByText("独立完成")).toBeTruthy();
+    expect(screen.getByText("明天用另一道题快速回想，确认还能独立做到。")).toBeTruthy();
+    expect(screen.queryByText(/排名/)).toBeNull();
+  });
+});

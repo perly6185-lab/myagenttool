@@ -19,6 +19,7 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   exitPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
   getPrivateTutorSnapshot: () => Promise.reject(new Error("not used")),
   getCurrentPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
+  getCurrentPrivateTutorSession: () => Promise.resolve(null),
   startPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),

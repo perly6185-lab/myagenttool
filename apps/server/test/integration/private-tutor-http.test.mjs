@@ -302,10 +302,86 @@ test("the adaptive diagnostic is resumable, server-graded, idempotent, and produ
   assert.equal(rebalanced.body.learningPlan.reason, "missed_day_rescheduled");
   assert.equal(rebalanced.body.learningPlan.days[0].knowledgeId, carriedKnowledgeId);
   assert.equal(rebalanced.body.learningPlan.studentReason.includes("失败"), false);
+
+  const startedSession = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/start`, {
+    method: "POST",
+    body: { pace: "standard" },
+  });
+  assert.equal(startedSession.status, 201);
+  let tutoringSession = startedSession.body.session;
+  assert.equal(tutoringSession.plannedMinutes, 20);
+  assert.deepEqual(tutoringSession.progress.map((item) => item.kind), ["recall", "explain", "guided_practice", "independent_check", "summary"]);
+  assert.equal(JSON.stringify(tutoringSession).includes("expectedRational"), false);
+
+  const bypassedSession = await call(`/api/private-tutor/learners/${learnerId}/attempts`, {
+    method: "POST",
+    body: { idempotencyKey: "session-bypass", knowledgeId: "balance", questionRevisionId: tutoringSession.currentActivity.question.revisionId, rawAnswer: "5", responseKind: "answer", independent: true, usedHint: false, source: "screen", durationSeconds: 1 },
+  });
+  assert.equal(bypassedSession.status, 400);
+  assert.equal(bypassedSession.body.error, "invalid_private_tutor_attempt_reference");
+
+  const recalled = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, {
+    method: "POST",
+    body: { action: "answer", idempotencyKey: "session-recall-1", questionRevisionId: tutoringSession.currentActivity.question.revisionId, rawAnswer: "5", responseKind: "answer", source: "screen" },
+  });
+  assert.equal(recalled.status, 201);
+  tutoringSession = recalled.body.session;
+  assert.equal(tutoringSession.currentActivity.kind, "explain");
+
+  const pausedSession = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/pause`, { method: "POST", body: {} });
+  assert.equal(pausedSession.status, 200);
+  const restoredSession = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/current`);
+  assert.equal(restoredSession.body.session.status, "paused");
+  assert.equal(restoredSession.body.session.currentActivity.kind, "explain");
+  const resumedSession = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/resume`, { method: "POST", body: {} });
+  assert.equal(resumedSession.status, 200);
+
+  const explained = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, { method: "POST", body: { action: "continue" } });
+  tutoringSession = explained.body.session;
+  const guidedQuestionId = tutoringSession.currentActivity.question.revisionId;
+  for (const [attemptIndex, rawAnswer] of ["4", "6"].entries()) {
+    const wrong = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, {
+      method: "POST",
+      body: { action: "answer", idempotencyKey: `session-guided-wrong-${attemptIndex}`, questionRevisionId: guidedQuestionId, rawAnswer, responseKind: "answer", source: "screen" },
+    });
+    assert.equal(wrong.status, 201);
+    tutoringSession = wrong.body.session;
+  }
+  assert.equal(tutoringSession.methodSwitchCount, 1);
+  assert.equal(tutoringSession.intervention.type, "method_switch");
+  const hinted = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, { method: "POST", body: { action: "hint" } });
+  assert.equal(hinted.body.session.currentActivity.hintLevel, 1);
+  const guided = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, {
+    method: "POST",
+    body: { action: "answer", idempotencyKey: "session-guided-correct", questionRevisionId: guidedQuestionId, rawAnswer: "5", responseKind: "answer", source: "screen" },
+  });
+  tutoringSession = guided.body.session;
+  const independentQuestionId = tutoringSession.currentActivity.question.revisionId;
+  assert.notEqual(independentQuestionId, guidedQuestionId);
+  const independentPayload = { action: "answer", idempotencyKey: "session-independent-correct", questionRevisionId: independentQuestionId, rawAnswer: "5", responseKind: "answer", source: "screen" };
+  const attemptsBeforeIndependent = runtimeState.privateTutorAttempts.length;
+  const independent = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, {
+    method: "POST",
+    body: independentPayload,
+  });
+  assert.equal(independent.status, 201);
+  assert.equal(independent.body.session.currentActivity.kind, "summary");
+  const replayedIndependent = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, { method: "POST", body: independentPayload });
+  assert.equal(replayedIndependent.status, 200);
+  assert.equal(replayedIndependent.body.replayed, true);
+  assert.equal(runtimeState.privateTutorAttempts.length, attemptsBeforeIndependent + 1);
+  const completedSession = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, { method: "POST", body: { action: "continue" } });
+  assert.equal(completedSession.body.session.status, "completed");
+  assert.equal(completedSession.body.session.summary.independentCompleted, true);
+  assert.deepEqual(completedSession.body.session.summary.hintedActivities, ["guided_practice"]);
+  assert.equal(completedSession.body.snapshot.completedSessions, 1);
+  assert.equal(runtimeState.privateTutorSessionEvents.some((row) => row.sessionId === tutoringSession.id && row.type === "session_completed"), true);
 });
 
 test("parent-confirmed deletion removes every child data collection and leaves an audit tombstone", async () => {
   const learnerId = runtimeState.testPrivateTutorLearnerIds[1];
+  runtimeState.privateTutorSessions.push({ id: "ptsess_delete", learnerId, ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorSessionEvents.push({ id: "ptse_delete", learnerId, sessionId: "ptsess_delete", ownerTeamId: "team_family_a" });
   const rejected = await call(`/api/private-tutor/learners/${learnerId}`, {
     method: "DELETE",
     body: { confirmDisplayName: "错误名字" },
@@ -327,6 +403,8 @@ test("parent-confirmed deletion removes every child data collection and leaves a
     "privateTutorLearnerModels",
     "privateTutorStrategyDecisions",
     "privateTutorLearningPlans",
+    "privateTutorSessions",
+    "privateTutorSessionEvents",
     "privateTutorIdempotencyRecords",
   ]) {
     assert.equal(runtimeState[key].some((row) => row.id === learnerId || row.learnerId === learnerId), false, key);
@@ -389,6 +467,8 @@ test("a parent starts a learner-bound child mode that blocks the rest of the sig
 
   const blockedSibling = await fetch(`${base}/api/private-tutor/learners/${siblingLearnerId}/snapshot`, { headers: { cookie: cookieHeader } });
   assert.equal(blockedSibling.status, 404);
+  const blockedSiblingSession = await fetch(`${base}/api/private-tutor/learners/${siblingLearnerId}/tutoring-sessions/current`, { headers: { cookie: cookieHeader } });
+  assert.equal(blockedSiblingSession.status, 404);
 
   const blockedDelete = await fetch(`${base}/api/private-tutor/learners/${learnerId}`, {
     method: "DELETE",

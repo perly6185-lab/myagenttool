@@ -12,6 +12,7 @@ vi.mock("@/hooks/use-session-user", () => ({
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getPrivateTutorSnapshot: () => Promise.reject(new Error("offline test fixture")),
   getCurrentPrivateTutorAssessment: () => Promise.reject(new Error("offline test fixture")),
+  getCurrentPrivateTutorSession: () => Promise.resolve(null),
   startPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),

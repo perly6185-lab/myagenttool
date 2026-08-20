@@ -50,6 +50,7 @@ const learningPlan = {
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getPrivateTutorSnapshot: () => Promise.resolve({ learner, snapshot, learnerModel, strategyDecision, learningPlan }),
   getCurrentPrivateTutorAssessment: () => Promise.resolve({ id: "pas_done", learnerId: learner.id, status: "completed", revision: 13, startedAt: "2026-08-20T00:00:00.000Z", pausedAt: null, completedAt: "2026-08-20T00:10:00.000Z", activeSeconds: 600, targetSeconds: 600, minQuestions: 12, maxQuestions: 18, answeredCount: 12, currentQuestion: null, result: { knowledge: [], strengths: [], focus: ["balance"], answeredCount: 12 }, updatedAt: "2026-08-20T00:10:00.000Z" }),
+  getCurrentPrivateTutorSession: () => Promise.resolve(null),
   rebalancePrivateTutorLearningPlan: apiMocks.rebalance,
   startPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
@@ -72,7 +73,7 @@ describe("My private tutor personalized learning plan", () => {
   it("explains the seven-day plan and reschedules a missed day without blame", async () => {
     render(<PrivateTutorView />);
     expect(await screen.findByText("我的 7 天计划")).toBeTruthy();
-    expect(screen.getAllByText(strategyDecision.studentReason)).toHaveLength(2);
+    expect(screen.getAllByText(strategyDecision.studentReason)).toHaveLength(3);
     expect(screen.getAllByText("20 分钟")).toHaveLength(7);
 
     fireEvent.click(screen.getByRole("button", { name: "今天来不及，帮我顺延" }));

@@ -16,6 +16,17 @@ import {
   decidePrivateTutorStrategy,
   derivePrivateTutorLearnerModel,
 } from "../services/private-tutor-learning-model.mjs";
+import {
+  completePrivateTutorActivity,
+  createPrivateTutorSession,
+  currentPrivateTutorActivity,
+  pausePrivateTutorSession,
+  PRIVATE_TUTOR_SESSION_PACES,
+  privateTutorSessionView,
+  recordPrivateTutorSessionAnswer,
+  resumePrivateTutorSession,
+  revealPrivateTutorHint,
+} from "../services/private-tutor-session.mjs";
 
 const LOCAL_TEAM_ID = "team_local";
 const LOCAL_USER_ID = "usr_local";
@@ -234,6 +245,32 @@ export async function handlePrivateTutorRoutes({
       learner,
       action: assessmentMatch[2],
       assessmentId: assessmentMatch[3] ? decodeURIComponent(assessmentMatch[3]) : null,
+      now,
+      nextId,
+      persistStateSoon,
+    });
+  }
+
+  const tutoringSessionMatch = url.pathname.match(/^\/api\/private-tutor\/learners\/([^/]+)\/tutoring-sessions\/(current|start|([^/]+)\/(actions|pause|resume))$/);
+  if (tutoringSessionMatch) {
+    const learnerId = decodeURIComponent(tutoringSessionMatch[1]);
+    const learner = findAuthorizedLearner(state, actor, learnerId);
+    if (!learner) {
+      recordDeniedAccess(state, { learnerId, actor, method: req.method, resource: "tutoring-session", now, nextId });
+      persistStateSoon();
+      sendJson(res, 404, learnerNotFound());
+      return true;
+    }
+    return handleTutoringSessionRoute({
+      req,
+      res,
+      sendJson,
+      readJson,
+      state,
+      actor,
+      learner,
+      action: tutoringSessionMatch[2],
+      sessionId: tutoringSessionMatch[3] ? decodeURIComponent(tutoringSessionMatch[3]) : null,
       now,
       nextId,
       persistStateSoon,
@@ -693,6 +730,286 @@ async function handleAssessmentRoute({
   return true;
 }
 
+async function handleTutoringSessionRoute({
+  req,
+  res,
+  sendJson,
+  readJson,
+  state,
+  actor,
+  learner,
+  action,
+  sessionId,
+  now,
+  nextId,
+  persistStateSoon,
+}) {
+  const actorId = actor?.userId ?? LOCAL_USER_ID;
+  const sessions = state.privateTutorSessions.filter((row) => row.learnerId === learner.id);
+  const current = sessions.find((row) => row.status === "active" || row.status === "paused") ?? sessions[0] ?? null;
+
+  if (action === "current") {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    sendJson(res, 200, { session: privateTutorSessionView(current) });
+    return true;
+  }
+
+  if (action === "start") {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resumable = sessions.find((row) => row.status === "active" || row.status === "paused");
+    if (resumable) {
+      sendJson(res, 200, { session: privateTutorSessionView(resumable), resumedExisting: true });
+      return true;
+    }
+    const snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
+    const plan = state.privateTutorLearningPlans.find((row) => row.learnerId === learner.id);
+    const decision = state.privateTutorStrategyDecisions.find((row) => row.learnerId === learner.id);
+    if (!snapshot?.diagnosticCompletedAt || !plan || !decision) {
+      sendJson(res, 409, { error: "private_tutor_learning_plan_required" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    const pace = String(body?.pace ?? "standard");
+    if (!PRIVATE_TUTOR_SESSION_PACES[pace]) {
+      sendJson(res, 400, { error: "invalid_private_tutor_session_pace" });
+      return true;
+    }
+    const session = createPrivateTutorSession({
+      id: nextId("ptsess"),
+      ownerTeamId: learner.ownerTeamId,
+      learnerId: learner.id,
+      plan,
+      decision,
+      pace,
+      now,
+    });
+    if (!session) {
+      sendJson(res, 409, { error: "private_tutor_session_content_unavailable" });
+      return true;
+    }
+    state.privateTutorSessions.unshift(session);
+    recordTutoringSessionEvent(state, { learner, actor, session, type: "session_started", details: { pace }, now, nextId });
+    recordAudit(state, { learner, actor, action: "tutoring_session_started", details: { sessionId: session.id, pace }, now, nextId });
+    persistStateSoon();
+    sendJson(res, 201, { session: privateTutorSessionView(session), resumedExisting: false });
+    return true;
+  }
+
+  const session = state.privateTutorSessions.find((row) => row.id === sessionId && row.learnerId === learner.id);
+  if (!session) {
+    sendJson(res, 404, { error: "private_tutor_session_not_found" });
+    return true;
+  }
+
+  if (action.endsWith("/pause") || action === `${sessionId}/pause`) {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    if (!pausePrivateTutorSession(session, now)) {
+      sendJson(res, 409, { error: "private_tutor_session_not_active" });
+      return true;
+    }
+    recordTutoringSessionEvent(state, { learner, actor, session, type: "session_paused", details: { activity: currentPrivateTutorActivity(session)?.kind ?? null }, now, nextId });
+    persistStateSoon();
+    sendJson(res, 200, { session: privateTutorSessionView(session) });
+    return true;
+  }
+
+  if (action.endsWith("/resume") || action === `${sessionId}/resume`) {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    if (!resumePrivateTutorSession(session, now)) {
+      sendJson(res, 409, { error: "private_tutor_session_not_paused" });
+      return true;
+    }
+    recordTutoringSessionEvent(state, { learner, actor, session, type: "session_resumed", details: { activity: currentPrivateTutorActivity(session)?.kind ?? null }, now, nextId });
+    persistStateSoon();
+    sendJson(res, 200, { session: privateTutorSessionView(session) });
+    return true;
+  }
+
+  if (!(action.endsWith("/actions") || action === `${sessionId}/actions`) || req.method !== "POST") {
+    sendJson(res, 405, { error: "method_not_allowed" });
+    return true;
+  }
+  if (session.status !== "active") {
+    sendJson(res, 409, { error: "private_tutor_session_not_active" });
+    return true;
+  }
+  const body = await readJson(req).catch(() => ({}));
+  const actionType = String(body?.action ?? "");
+  const activity = currentPrivateTutorActivity(session);
+
+  if (actionType === "continue") {
+    if (!activity || !["explain", "summary"].includes(activity.kind)) {
+      sendJson(res, 409, { error: "private_tutor_session_answer_required" });
+      return true;
+    }
+    const completedKind = activity.kind;
+    const result = completePrivateTutorActivity(session, now);
+    if (result.completed) {
+      const snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
+      if (snapshot) {
+        snapshot.completedSessions += 1;
+        snapshot.dailyMinutes = Math.min(20, Math.max(snapshot.dailyMinutes, session.plannedMinutes));
+        snapshot.revision += 1;
+        snapshot.updatedAt = session.completedAt;
+      }
+      recordAudit(state, {
+        learner,
+        actor,
+        action: "tutoring_session_completed",
+        details: { sessionId: session.id, independentCompleted: session.summary.independentCompleted },
+        now,
+        nextId,
+      });
+    }
+    recordTutoringSessionEvent(state, { learner, actor, session, type: result.completed ? "session_completed" : "activity_completed", details: { activity: completedKind }, now, nextId });
+    persistStateSoon();
+    sendJson(res, 200, { session: privateTutorSessionView(session), snapshot: snapshotView(state.privateTutorSnapshots.find((row) => row.learnerId === learner.id)) });
+    return true;
+  }
+
+  if (actionType === "hint") {
+    const result = revealPrivateTutorHint(session, now);
+    if (!result.ok) {
+      sendJson(res, 409, { error: result.error });
+      return true;
+    }
+    recordTutoringSessionEvent(state, { learner, actor, session, type: "hint_revealed", details: { activity: activity.kind, level: activity.hintLevel }, now, nextId });
+    persistStateSoon();
+    sendJson(res, 200, { session: privateTutorSessionView(session) });
+    return true;
+  }
+
+  if (actionType !== "answer") {
+    sendJson(res, 400, { error: "invalid_private_tutor_session_action" });
+    return true;
+  }
+  const idempotencyKey = String(body?.idempotencyKey ?? "").trim();
+  const questionRevisionId = String(body?.questionRevisionId ?? "").trim();
+  const source = String(body?.source ?? "screen").trim();
+  const recognitionConfidence = body?.recognitionConfidence == null ? null : Number(body.recognitionConfidence);
+  if (!idempotencyKey || idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+    sendJson(res, 400, { error: "invalid_private_tutor_idempotency_key" });
+    return true;
+  }
+  if (!ATTEMPT_SOURCES.has(source)) {
+    sendJson(res, 400, { error: "invalid_private_tutor_attempt_source" });
+    return true;
+  }
+  if (source === "voice_confirmed" && (!Number.isFinite(recognitionConfidence) || recognitionConfidence < 0.75)) {
+    sendJson(res, 409, { error: "private_tutor_voice_confirmation_required", minimumConfidence: 0.75 });
+    return true;
+  }
+  const requestValue = {
+    sessionId: session.id,
+    questionRevisionId,
+    rawAnswer: String(body?.rawAnswer ?? ""),
+    responseKind: String(body?.responseKind ?? "answer"),
+    source,
+    recognitionConfidence: Number.isFinite(recognitionConfidence) ? recognitionConfidence : null,
+  };
+  const requestHash = stableHash(requestValue);
+  const existing = state.privateTutorIdempotencyRecords.find((row) =>
+    row.learnerId === learner.id && row.actorId === actorId && row.key === idempotencyKey);
+  if (existing) {
+    if (existing.requestHash !== requestHash || existing.operation !== "tutoring_session_answer") {
+      sendJson(res, 409, { error: "private_tutor_idempotency_conflict" });
+      return true;
+    }
+    sendJson(res, 200, { ...existing.response, replayed: true });
+    return true;
+  }
+  if (!activity?.questionRevisionId) {
+    sendJson(res, 400, { error: "invalid_private_tutor_session_action" });
+    return true;
+  }
+  if (questionRevisionId !== activity.questionRevisionId) {
+    sendJson(res, 409, { error: "private_tutor_session_question_mismatch" });
+    return true;
+  }
+  const question = privateTutorQuestion(questionRevisionId);
+  if (!question || question.context !== "tutoring" || question.knowledgeId !== session.targetKnowledgeId) {
+    sendJson(res, 400, { error: "private_tutor_question_revision_not_found" });
+    return true;
+  }
+  const judgement = judgePrivateTutorAnswer(questionRevisionId, requestValue);
+  if (!judgement.accepted) {
+    sendJson(res, 422, { error: judgement.error });
+    return true;
+  }
+  const createdAt = now();
+  const attempt = {
+    id: nextId("pta"),
+    ownerTeamId: learner.ownerTeamId,
+    learnerId: learner.id,
+    actorId,
+    sessionId: session.id,
+    context: "tutoring",
+    activityKind: activity.kind,
+    knowledgeId: session.targetKnowledgeId,
+    questionRevisionId,
+    correct: judgement.correct,
+    independent: activity.kind === "independent_check" && activity.hintLevel === 0,
+    usedHint: activity.hintLevel > 0,
+    source,
+    recognitionConfidence: Number.isFinite(recognitionConfidence) ? recognitionConfidence : null,
+    responseKind: judgement.responseKind,
+    normalizedAnswer: judgement.normalizedAnswer,
+    judgementReason: judgement.reason,
+    durationSeconds: Math.min(activity.budgetMinutes * 60, elapsedSeconds(activity.startedAt, createdAt)),
+    createdAt,
+  };
+  state.privateTutorAttempts.unshift(attempt);
+  const snapshot = applyAttemptToSnapshot(state, learner, attempt, { now, nextId });
+  const answerResult = recordPrivateTutorSessionAnswer(session, { correct: attempt.correct, attemptId: attempt.id, now });
+  const intelligence = refreshPrivateTutorIntelligence(state, learner, { now, nextId, reason: "tutoring_session_evidence" });
+  const response = {
+    session: privateTutorSessionView(session),
+    snapshot: snapshotView(snapshot),
+    answer: {
+      correct: attempt.correct,
+      independent: attempt.independent,
+      usedHint: attempt.usedHint,
+    },
+    ...intelligence,
+  };
+  state.privateTutorIdempotencyRecords.unshift({
+    id: nextId("pti"),
+    ownerTeamId: learner.ownerTeamId,
+    learnerId: learner.id,
+    actorId,
+    key: idempotencyKey,
+    operation: "tutoring_session_answer",
+    requestHash,
+    attemptId: attempt.id,
+    response,
+    createdAt,
+  });
+  recordTutoringSessionEvent(state, {
+    learner,
+    actor,
+    session,
+    type: attempt.correct ? "answer_correct" : answerResult.advanced ? "activity_completed" : "answer_incorrect",
+    details: { activity: attempt.activityKind, attemptId: attempt.id, usedHint: attempt.usedHint, independent: attempt.independent },
+    now,
+    nextId,
+  });
+  persistStateSoon();
+  sendJson(res, 201, { ...response, replayed: false });
+  return true;
+}
+
 function assessmentView(assessment) {
   if (!assessment) return null;
   return {
@@ -891,6 +1208,8 @@ function ensureCollections(state) {
     "privateTutorLearnerModels",
     "privateTutorStrategyDecisions",
     "privateTutorLearningPlans",
+    "privateTutorSessions",
+    "privateTutorSessionEvents",
     "privateTutorIdempotencyRecords",
     "privateTutorAuditEvents",
   ]) {
@@ -1044,6 +1363,8 @@ function removeLearnerData(state, learnerId) {
     "privateTutorLearnerModels",
     "privateTutorStrategyDecisions",
     "privateTutorLearningPlans",
+    "privateTutorSessions",
+    "privateTutorSessionEvents",
     "privateTutorIdempotencyRecords",
   ]) {
     state[key] = state[key].filter((row) => row.learnerId !== learnerId && row.id !== learnerId);
@@ -1090,6 +1411,22 @@ function recordAudit(state, { learner, actor, action, details, now, nextId }) {
   };
   state.privateTutorAuditEvents.unshift(audit);
   return audit;
+}
+
+function recordTutoringSessionEvent(state, { learner, actor, session, type, details, now, nextId }) {
+  const event = {
+    id: nextId("ptse"),
+    ownerTeamId: learner.ownerTeamId,
+    learnerId: learner.id,
+    sessionId: session.id,
+    actorId: actor?.userId ?? LOCAL_USER_ID,
+    type,
+    sessionRevision: session.revision,
+    details,
+    at: now(),
+  };
+  state.privateTutorSessionEvents.unshift(event);
+  return event;
 }
 
 function recordDeniedAccess(state, { learnerId, actor, method, resource, now, nextId }) {

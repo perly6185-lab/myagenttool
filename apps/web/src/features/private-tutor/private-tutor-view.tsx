@@ -12,7 +12,6 @@ import {
   Map,
   Mic,
   MicOff,
-  RotateCcw,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -36,22 +35,28 @@ import {
 } from "@/features/private-tutor/private-tutor-model";
 import { loadLearnerState, saveLearnerState } from "@/features/private-tutor/private-tutor-storage";
 import {
+  actOnPrivateTutorSession,
   createPrivateTutorLearner,
   answerPrivateTutorAssessment,
   exitPrivateTutorChildMode,
   getCurrentPrivateTutorAssessment,
+  getCurrentPrivateTutorSession,
   getPrivateTutorSnapshot,
   listPrivateTutorLearners,
   pausePrivateTutorAssessment,
+  pausePrivateTutorSession,
   rebalancePrivateTutorLearningPlan,
-  recordPrivateTutorAttempt,
   resumePrivateTutorAssessment,
+  resumePrivateTutorSession,
   startPrivateTutorAssessment,
   startPrivateTutorChildMode,
+  startPrivateTutorSession,
   type PrivateTutorAssessment,
   type PrivateTutorLearnerModel,
   type PrivateTutorLearner,
   type PrivateTutorLearningPlan,
+  type PrivateTutorSession,
+  type PrivateTutorSessionPace,
   type PrivateTutorSnapshot,
   type PrivateTutorStrategyDecision,
 } from "@/features/private-tutor/private-tutor-api";
@@ -76,8 +81,6 @@ const SETTINGS_SPACES: Array<{
   { key: "safety", title: "质量与安全", hint: "内容审核、儿童安全和质量评测", audience: "运营 / 安全" },
   { key: "system", title: "系统与 AI", hint: "模型、语音、成本与审计", audience: "技术管理员" },
 ];
-
-type LessonPhase = "ready" | "explain" | "practice" | "complete";
 
 export function PrivateTutorView() {
   const sessionUser = useSessionUser();
@@ -112,6 +115,7 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
   const [learnerModel, setLearnerModel] = useState<PrivateTutorLearnerModel | null>(null);
   const [strategyDecision, setStrategyDecision] = useState<PrivateTutorStrategyDecision | null>(null);
   const [learningPlan, setLearningPlan] = useState<PrivateTutorLearningPlan | null>(null);
+  const [tutoringSession, setTutoringSession] = useState<PrivateTutorSession | null>(null);
   const [assessmentReady, setAssessmentReady] = useState(false);
   const [diagnosticDismissed, setDiagnosticDismissed] = useState(false);
 
@@ -120,8 +124,8 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
     setLearnerState(loadLearnerState(learner));
     setAssessmentReady(false);
     setDiagnosticDismissed(false);
-    void Promise.allSettled([getPrivateTutorSnapshot(learnerId), getCurrentPrivateTutorAssessment(learnerId)])
-      .then(([snapshotResult, assessmentResult]) => {
+    void Promise.allSettled([getPrivateTutorSnapshot(learnerId), getCurrentPrivateTutorAssessment(learnerId), getCurrentPrivateTutorSession(learnerId)])
+      .then(([snapshotResult, assessmentResult, sessionResult]) => {
         if (!current) return;
         if (snapshotResult.status === "fulfilled") {
           setLearnerState(serverLearnerState(snapshotResult.value.learner, snapshotResult.value.snapshot));
@@ -135,6 +139,7 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
         } else {
           setAssessment(null);
         }
+        setTutoringSession(sessionResult.status === "fulfilled" ? sessionResult.value : null);
         setAssessmentReady(true);
       });
     return () => { current = false; };
@@ -147,24 +152,6 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
   // platform account role therefore MUST NOT unlock adult spaces. A future
   // server-issued parent re-verification result is the only valid source.
   const isParentReverified = false;
-
-  async function recordIndependentCheck(idempotencyKey: string) {
-    const result = await recordPrivateTutorAttempt(learnerId, {
-      idempotencyKey,
-      knowledgeId: "balance",
-      questionRevisionId: "demo-balance-001-v1",
-      rawAnswer: "5",
-      responseKind: "answer",
-      independent: true,
-      usedHint: false,
-      source: "screen",
-      durationSeconds: 180,
-    });
-    setLearnerModel(result.learnerModel ?? null);
-    setStrategyDecision(result.strategyDecision ?? null);
-    setLearningPlan(result.learningPlan ?? null);
-    return applyServerSnapshot(learnerState, result.snapshot);
-  }
 
   async function finishDiagnostic() {
     try {
@@ -190,6 +177,53 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : "计划暂时无法调整，请稍后再试。";
+    }
+  }
+
+  async function startLesson(pace: PrivateTutorSessionPace) {
+    try {
+      const result = await startPrivateTutorSession(learnerId, pace);
+      setTutoringSession(result.session);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "今天的课程暂时无法开始，请稍后再试。";
+    }
+  }
+
+  async function pauseLesson() {
+    if (!tutoringSession) return "没有可以暂停的课程。";
+    try {
+      const result = await pausePrivateTutorSession(learnerId, tutoringSession.id);
+      setTutoringSession(result.session);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "课程暂时无法暂停。";
+    }
+  }
+
+  async function resumeLesson() {
+    if (!tutoringSession) return "没有可以继续的课程。";
+    try {
+      const result = await resumePrivateTutorSession(learnerId, tutoringSession.id);
+      setTutoringSession(result.session);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "课程暂时无法继续。";
+    }
+  }
+
+  async function actOnLesson(input: Parameters<typeof actOnPrivateTutorSession>[2]) {
+    if (!tutoringSession) return { error: "课程还没有开始。", correct: null };
+    try {
+      const result = await actOnPrivateTutorSession(learnerId, tutoringSession.id, input);
+      setTutoringSession(result.session);
+      if (result.snapshot) setLearnerState(applyServerSnapshot(learnerState, result.snapshot));
+      if (result.learnerModel !== undefined) setLearnerModel(result.learnerModel ?? null);
+      if (result.strategyDecision !== undefined) setStrategyDecision(result.strategyDecision ?? null);
+      if (result.learningPlan !== undefined) setLearningPlan(result.learningPlan ?? null);
+      return { error: null, correct: result.answer?.correct ?? null };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : "这一步暂时没有保存，请重试。", correct: null };
     }
   }
 
@@ -259,7 +293,7 @@ function ChildTutorExperience({ learnerId, onParentExit }: { learnerId: string; 
       </nav>
 
       <div className="p-4 sm:p-7">
-        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} strategyDecision={strategyDecision} onReschedule={rescheduleToday} onStateChange={setLearnerState} onIndependentCheck={recordIndependentCheck} /> : null}
+        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} strategyDecision={strategyDecision} session={tutoringSession} onReschedule={rescheduleToday} onStart={startLesson} onPause={pauseLesson} onResume={resumeLesson} onAction={actOnLesson} /> : null}
         {tab === "map" ? <KnowledgeMap state={learnerState} learnerModel={learnerModel} /> : null}
         {tab === "errors" ? <ErrorBook state={learnerState} onStart={() => setTab("today")} /> : null}
         {tab === "growth" ? <Growth state={learnerState} /> : null}
@@ -661,29 +695,39 @@ function TodayLearning({
   state,
   learningPlan,
   strategyDecision,
+  session,
   onReschedule,
-  onStateChange,
-  onIndependentCheck,
+  onStart,
+  onPause,
+  onResume,
+  onAction,
 }: {
   state: LearnerTutorState;
   learningPlan: PrivateTutorLearningPlan | null;
   strategyDecision: PrivateTutorStrategyDecision | null;
+  session: PrivateTutorSession | null;
   onReschedule: () => Promise<string | null>;
-  onStateChange: (state: LearnerTutorState) => void;
-  onIndependentCheck: (idempotencyKey: string) => Promise<LearnerTutorState>;
+  onStart: (pace: PrivateTutorSessionPace) => Promise<string | null>;
+  onPause: () => Promise<string | null>;
+  onResume: () => Promise<string | null>;
+  onAction: (input: Parameters<typeof actOnPrivateTutorSession>[2]) => Promise<{ error: string | null; correct: boolean | null }>;
 }) {
-  const [phase, setPhase] = useState<LessonPhase>("ready");
-  const [pace, setPace] = useState<"easy" | "standard" | "review">("standard");
-  const [answer, setAnswer] = useState<number | null>(null);
+  const [pace, setPace] = useState<PrivateTutorSessionPace>("standard");
+  const [answer, setAnswer] = useState("");
   const [voiceMessage, setVoiceMessage] = useState("点一下麦克风，也可以直接说");
   const [listening, setListening] = useState(false);
-  const [savingAnswer, setSavingAnswer] = useState(false);
-  const [saveError, setSaveError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
   const streamRef = useRef<MediaStream | null>(null);
-  const attemptKeyRef = useRef(`tutor-attempt-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`);
-  const progress = Math.round((state.dailyMinutes / 20) * 100);
+  const attemptKeyRef = useRef(newClientKey("tutoring"));
+  const dailyProgress = Math.round((state.dailyMinutes / 20) * 100);
 
   useEffect(() => () => streamRef.current?.getTracks().forEach((track) => track.stop()), []);
+  useEffect(() => {
+    setAnswer("");
+    setMessage("");
+    attemptKeyRef.current = newClientKey("tutoring");
+  }, [session?.currentActivity?.question?.revisionId]);
 
   async function toggleVoice() {
     if (listening) {
@@ -706,33 +750,67 @@ function TodayLearning({
     }
   }
 
-  async function chooseAnswer(value: number) {
-    setAnswer(value);
-    if (value === 5) {
-      setSavingAnswer(true);
-      setSaveError("");
-      try {
-        const updated = await onIndependentCheck(attemptKeyRef.current);
-        onStateChange(updated);
-        attemptKeyRef.current = `tutor-attempt-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
-        setPhase("complete");
-      } catch {
-        setSaveError("答案已经保留在当前页面，但还没有安全写入学习记录，请再点一次 5 重试。" );
-      } finally {
-        setSavingAnswer(false);
-      }
-    }
+  async function start() {
+    setBusy(true);
+    setMessage("");
+    setMessage(await onStart(pace) ?? "");
+    setBusy(false);
   }
 
-  if (phase === "ready") {
+  async function pause() {
+    setBusy(true);
+    setMessage(await onPause() ?? "");
+    setBusy(false);
+  }
+
+  async function resume() {
+    setBusy(true);
+    setMessage(await onResume() ?? "");
+    setBusy(false);
+  }
+
+  async function simpleAction(action: "continue" | "hint") {
+    setBusy(true);
+    setMessage("");
+    const result = await onAction({ action });
+    setMessage(result.error ?? "");
+    setBusy(false);
+  }
+
+  async function submit(responseKind: "answer" | "dont_know", rawAnswer = answer) {
+    const question = session?.currentActivity?.question;
+    if (!question) return;
+    if (responseKind === "answer" && !rawAnswer.trim()) {
+      setMessage("先写下答案，或者点“我还不会”。");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    const result = await onAction({
+      action: "answer",
+      idempotencyKey: attemptKeyRef.current,
+      questionRevisionId: question.revisionId,
+      rawAnswer,
+      responseKind,
+      source: "screen",
+    });
+    if (result.error) setMessage(result.error);
+    else if (result.correct === false) {
+      setMessage("没关系，这次答案会帮助我换一种更合适的讲法。");
+      attemptKeyRef.current = newClientKey("tutoring");
+    }
+    setBusy(false);
+  }
+
+  if (!session) {
     return (
       <div className="grid gap-5 lg:grid-cols-[1.45fr_0.75fr]">
         <section className="rounded-3xl bg-emerald-600 p-6 text-white shadow-sm sm:p-8">
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm text-emerald-100">下午好，{state.learner.displayName}</p>
-              <h1 className="mt-2 max-w-xl text-2xl font-bold leading-tight sm:text-3xl">今天一起弄懂“等式两边为什么要做同样的事”</h1>
-              <p className="mt-3 max-w-2xl text-sm leading-6 text-emerald-50">不是因为你粗心，而是这个概念还没有真正站稳。我们会换成天平的方法来看。</p>
+              <h1 className="mt-2 max-w-xl text-2xl font-bold leading-tight sm:text-3xl">今天一起学会“{strategyDecision?.targetTitle ?? learningPlan?.days[0]?.knowledgeTitle ?? "今天这一小步"}”</h1>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-emerald-50">{strategyDecision?.studentReason ?? "我会从你现在最需要的一小步开始，随时可以暂停。"}</p>
             </div>
             <Sparkles className="size-9 shrink-0 text-amber-200" aria-hidden="true" />
           </div>
@@ -744,12 +822,12 @@ function TodayLearning({
                 onClick={() => setPace(value)}
                 className={cn("rounded-full px-3 py-1.5 text-xs font-medium transition", pace === value ? "bg-white text-emerald-800" : "bg-emerald-700/70 text-emerald-50 hover:bg-emerald-700")}
               >
-                {{ easy: "轻松学", standard: "标准 20 分钟", review: "今天只复习" }[value]}
+                {{ easy: "轻松学 5 分钟", standard: "标准 20 分钟", review: "今天只复习 10 分钟" }[value]}
               </button>
             ))}
           </div>
-          <button type="button" onClick={() => setPhase("explain")} className="mt-7 inline-flex min-h-12 items-center gap-2 rounded-xl bg-amber-300 px-5 font-semibold text-amber-950 shadow-sm transition hover:bg-amber-200">
-            开始今天的学习 <ChevronRight className="size-5" />
+          <button type="button" disabled={busy || !learningPlan} onClick={() => void start()} className="mt-7 inline-flex min-h-12 items-center gap-2 rounded-xl bg-amber-300 px-5 font-semibold text-amber-950 shadow-sm transition hover:bg-amber-200 disabled:opacity-60">
+            {busy ? "正在准备…" : "开始今天的学习"} <ChevronRight className="size-5" />
           </button>
         </section>
 
@@ -759,7 +837,7 @@ function TodayLearning({
               <span className="flex items-center gap-2 text-sm font-medium"><Clock3 className="size-4 text-emerald-600" />今日进度</span>
               <span className="text-sm font-bold text-emerald-700">{state.dailyMinutes} / 20 分钟</span>
             </div>
-            <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} /></div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${dailyProgress}%` }} /></div>
             <p className="mt-3 text-xs leading-5 text-muted-foreground">随时可以暂停，明天会从这里继续，不会显示“失败”。</p>
           </Card>
           <Card className="p-5">
@@ -768,61 +846,98 @@ function TodayLearning({
             <span className="mt-3 inline-flex rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-200">{strategyLabel(strategyDecision?.strategy ?? "concept_rebuild")}</span>
           </Card>
         </div>
+        {message ? <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 lg:col-span-2">{message}</p> : null}
         {learningPlan ? <SevenDayPlan plan={learningPlan} onReschedule={onReschedule} /> : null}
       </div>
     );
   }
 
-  if (phase === "complete") {
+  if (session.status === "completed" && session.summary) {
     return (
       <section className="mx-auto max-w-2xl py-6 text-center">
         <span className="mx-auto grid size-20 place-items-center rounded-full bg-emerald-100 text-emerald-700"><Star className="size-10 fill-current" /></span>
-        <h1 className="mt-5 text-2xl font-bold">这是你自己想出来的</h1>
-        <p className="mt-2 text-muted-foreground">不是记答案。你用“天平两边一起变化”解释了为什么 x = 5。</p>
+        <h1 className="mt-5 text-2xl font-bold">今天这一小步完成了</h1>
+        <p className="mt-2 text-muted-foreground">{session.summary.learned}</p>
         <Card className="mt-6 grid gap-4 p-5 text-left sm:grid-cols-3">
-          <GentleStat value="1" label="独立答对" />
-          <GentleStat value="+12%" label="当前证据" />
-          <GentleStat value="明天" label="换题复测" />
+          <GentleStat value={session.summary.independentCompleted ? "独立完成" : "辅助完成"} label="新题复测" />
+          <GentleStat value={`${session.summary.evidenceCount}`} label="新增学习证据" />
+          <GentleStat value={session.summary.methodSwitchCount ? `${session.summary.methodSwitchCount} 次` : "不需要"} label="换方法" />
         </Card>
-        <div className="mt-6 flex flex-wrap justify-center gap-3">
-          <Button onClick={() => { setAnswer(null); setPhase("practice"); }}>再挑战一道</Button>
-          <Button variant="secondary" onClick={() => setPhase("ready")}>今天先到这里</Button>
-        </div>
+        <p className="mt-5 rounded-xl bg-sky-50 p-4 text-sm text-sky-900 dark:bg-sky-950 dark:text-sky-100">{session.summary.nextStep}</p>
+        <Button variant="secondary" className="mt-5" disabled={busy} onClick={() => void start()}>{busy ? "正在准备…" : "再开始一节新的学习"}</Button>
       </section>
     );
   }
 
+  if (session.status === "paused") {
+    return (
+      <Card className="mx-auto max-w-2xl p-7 text-center">
+        <CirclePause className="mx-auto size-10 text-emerald-600" />
+        <h1 className="mt-4 text-2xl font-bold">课程停在原来的位置</h1>
+        <p className="mt-2 text-sm text-muted-foreground">回来时不用重做，也不会显示失败。</p>
+        <Button className="mt-6" disabled={busy} onClick={() => void resume()}>{busy ? "正在恢复…" : "从这里继续"}</Button>
+        {message ? <p role="alert" className="mt-4 text-sm text-rose-700">{message}</p> : null}
+      </Card>
+    );
+  }
+
+  const current = session.currentActivity;
+  if (!current) return null;
+  const activityLabels: Record<PrivateTutorSession["progress"][number]["kind"], string> = {
+    recall: "回想一下",
+    explain: "私教讲解",
+    guided_practice: "一起练习",
+    independent_check: "独立新题",
+    summary: "学习总结",
+  };
+  const completedActivities = session.progress.filter((item) => item.status === "completed").length;
+
   return (
-    <div className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
+    <div className="grid gap-5">
+      <Card className="p-4 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold text-emerald-700">{activityLabels[current.kind]} · 约 {current.budgetMinutes} 分钟</p>
+            <h1 className="mt-1 text-xl font-bold">{session.targetTitle}</h1>
+          </div>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => void pause()}><CirclePause />暂停一下</Button>
+        </div>
+        <div className="mt-4 grid grid-cols-5 gap-2" aria-label="今日课程进度">
+          {session.progress.map((item, index) => <div key={item.kind} className={cn("h-2 rounded-full", index < completedActivities ? "bg-emerald-500" : index === session.currentActivityIndex ? "bg-amber-400" : "bg-muted")} />)}
+        </div>
+      </Card>
+      <div className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
       <Card className="overflow-hidden">
         <div className="border-b bg-amber-50/70 px-5 py-4 dark:bg-amber-950/20">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">动态白板 · 第 2 步</p>
-              <h1 className="mt-1 text-xl font-bold">把方程想成一架平衡的天平</h1>
+              <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">{activityLabels[current.kind]}</p>
+              <h2 className="mt-1 text-xl font-bold">每天只完成眼前这一小步</h2>
             </div>
-            <button type="button" onClick={() => setPhase("ready")} className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted"><CirclePause className="size-4" />暂停</button>
           </div>
         </div>
         <div className="p-5 sm:p-7">
-          <BalanceScene revealed={phase === "practice"} />
+          {current.kind === "explain" && session.targetKnowledgeId === "balance" ? <BalanceScene revealed /> : null}
+          {current.kind === "explain" && session.targetKnowledgeId !== "balance" ? <div className="grid min-h-48 place-items-center rounded-2xl border bg-sky-50 text-center dark:bg-sky-950/30"><div><BrainCircuit className="mx-auto size-10 text-sky-600" /><p className="mt-3 font-semibold">换成具体步骤来看</p></div></div> : null}
           <div className="mt-5 rounded-2xl bg-muted/60 p-4">
-            <p className="flex gap-2 text-sm leading-6"><Volume2 className="mt-1 size-4 shrink-0 text-emerald-600" />{phase === "explain" ? "两边现在一样重。如果左边拿走 3，右边也要拿走 3，天平才不会歪。" : "现在两边都减去 3。左边只剩 x，右边还剩多少？"}</p>
+            <p className="flex gap-2 text-sm leading-6"><Volume2 className="mt-1 size-4 shrink-0 text-emerald-600" />{current.instruction}</p>
           </div>
-          {phase === "explain" ? (
-            <Button className="mt-5" onClick={() => setPhase("practice")}>我看懂了，试一试</Button>
-          ) : (
+          {session.intervention ? <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100">{session.intervention.message}</p> : null}
+          {current.kind === "explain" ? <Button className="mt-5" disabled={busy} onClick={() => void simpleAction("continue")}>我理解了，继续</Button> : null}
+          {current.kind === "summary" ? (
             <div className="mt-5">
-              <p className="text-sm font-semibold">x + 3 = 8，所以 x = ?</p>
-              <div className="mt-3 grid grid-cols-3 gap-3">
-                {[3, 5, 11].map((value) => (
-                  <button key={value} type="button" disabled={savingAnswer} onClick={() => void chooseAnswer(value)} className={cn("min-h-12 rounded-xl border-2 text-lg font-bold transition disabled:opacity-60", answer === value && value !== 5 ? "border-amber-400 bg-amber-50 text-amber-800 dark:bg-amber-950" : "border-border bg-card hover:border-emerald-400")}>{savingAnswer && value === 5 ? "保存中…" : value}</button>
-                ))}
-              </div>
-              {answer !== null && answer !== 5 ? <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100">没关系。不要猜答案：试着在右边的 8 里也拿走 3。</p> : null}
-              {saveError ? <p role="alert" className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-900 dark:bg-rose-950 dark:text-rose-100">{saveError}</p> : null}
+              <p className="text-sm text-muted-foreground">今天的答案已安全记入自己的学习记录。完成总结后，明天会从新的复习题继续。</p>
+              <Button className="mt-4" disabled={busy} onClick={() => void simpleAction("continue")}>{busy ? "正在保存…" : "完成今天的学习"}</Button>
             </div>
-          )}
+          ) : null}
+          {current.question ? (
+            <div className="mt-5">
+              <p className="text-base font-semibold">{current.question.prompt}</p>
+              {current.question.options ? <div className="mt-3 grid gap-2">{current.question.options.map((option) => <button key={option.id} type="button" disabled={busy} onClick={() => { setAnswer(option.id); void submit("answer", option.id); }} className="min-h-12 rounded-xl border-2 bg-card px-4 text-left text-sm font-medium hover:border-emerald-400 disabled:opacity-60">{option.label}</button>)}</div> : <div className="mt-3 flex flex-wrap gap-3"><input value={answer} onChange={(event) => setAnswer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void submit("answer"); }} aria-label="写下答案" className="h-12 min-w-48 flex-1 rounded-xl border bg-card px-4 text-lg" placeholder="写下你的答案" /><Button className="min-h-12" disabled={busy} onClick={() => void submit("answer")}>{busy ? "正在检查…" : "提交答案"}</Button></div>}
+              {current.hint ? <p className="mt-3 rounded-lg bg-sky-50 p-3 text-sm text-sky-900 dark:bg-sky-950 dark:text-sky-100">提示 {current.hintLevel}：{current.hint}</p> : null}
+              {message ? <p role="status" className="mt-3 rounded-lg bg-muted p-3 text-sm">{message}</p> : null}
+            </div>
+          ) : null}
         </div>
       </Card>
 
@@ -835,12 +950,14 @@ function TodayLearning({
         <Card className="p-5">
           <p className="flex items-center gap-2 text-sm font-semibold"><Heart className="size-4 text-rose-500" />卡住了也没关系</p>
           <div className="mt-3 grid gap-2">
-            <Button variant="secondary" className="justify-start"><RotateCcw />换一种讲法</Button>
-            <Button variant="secondary" className="justify-start"><Volume2 />说慢一点</Button>
-            <Button variant="secondary" className="justify-start"><BrainCircuit />我完全不会</Button>
+            {current.question ? <Button variant="secondary" className="justify-start" disabled={busy || current.hintLevel >= 3} onClick={() => void simpleAction("hint")}><BrainCircuit />给我一点提示</Button> : null}
+            {current.question ? <Button variant="secondary" className="justify-start" disabled={busy} onClick={() => void submit("dont_know", "")}><Heart />我还不会</Button> : null}
+            <Button variant="secondary" className="justify-start" onClick={() => setVoiceMessage("已放慢讲解节奏。正式语音合成将在 P6 接入。") }><Volume2 />说慢一点</Button>
           </div>
+          {current.kind === "independent_check" ? <p className="mt-3 text-xs leading-5 text-muted-foreground">这道题与刚才不同。看提示后仍会保留证据，但会记作辅助完成。</p> : null}
         </Card>
       </aside>
+      </div>
     </div>
   );
 }

@@ -48,6 +48,7 @@ const activeAssessment = {
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getPrivateTutorSnapshot: () => Promise.resolve({ learner: profile, snapshot }),
   getCurrentPrivateTutorAssessment: () => Promise.resolve(null),
+  getCurrentPrivateTutorSession: () => Promise.resolve(null),
   startPrivateTutorAssessment: apiMocks.start,
   answerPrivateTutorAssessment: apiMocks.answer,
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),

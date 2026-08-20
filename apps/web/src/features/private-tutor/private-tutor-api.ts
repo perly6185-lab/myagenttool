@@ -143,6 +143,50 @@ export interface PrivateTutorIntelligence {
   learningPlan: PrivateTutorLearningPlan | null;
 }
 
+export type PrivateTutorSessionPace = "easy" | "standard" | "review";
+export type PrivateTutorSessionActivityKind = "recall" | "explain" | "guided_practice" | "independent_check" | "summary";
+
+export interface PrivateTutorSession {
+  id: string;
+  learnerId: string;
+  planId: string | null;
+  decisionId: string | null;
+  targetKnowledgeId: string;
+  targetTitle: string;
+  strategy: PrivateTutorTeachingStrategy;
+  pace: PrivateTutorSessionPace;
+  plannedMinutes: number;
+  status: "active" | "paused" | "completed";
+  revision: number;
+  currentActivityIndex: number;
+  progress: Array<{ kind: PrivateTutorSessionActivityKind; budgetMinutes: number; status: "pending" | "active" | "completed" }>;
+  currentActivity: {
+    kind: PrivateTutorSessionActivityKind;
+    budgetMinutes: number;
+    hintLevel: number;
+    attemptCount: number;
+    instruction: string;
+    question: PrivateTutorAssessmentQuestion | null;
+    hint: string | null;
+  } | null;
+  teachingMethod: string;
+  methodSwitchCount: number;
+  intervention: { type: "gentle_hint" | "method_switch" | "prerequisite_reset"; message: string } | null;
+  pausedAt: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  updatedAt: string;
+  summary: {
+    learned: string;
+    independentCompleted: boolean;
+    hintedActivities: PrivateTutorSessionActivityKind[];
+    methodSwitchCount: number;
+    evidenceCount: number;
+    reviewAt: string;
+    nextStep: string;
+  } | null;
+}
+
 export async function listPrivateTutorLearners() {
   const result = await request<{ learners: PrivateTutorLearner[] }>("GET", "/api/private-tutor/learners");
   return result.learners;
@@ -168,6 +212,61 @@ export async function rebalancePrivateTutorLearningPlan(learnerId: string, misse
     "POST",
     `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/learning-plan/rebalance`,
     { missedDayIndex },
+  );
+}
+
+export async function getCurrentPrivateTutorSession(learnerId: string) {
+  const result = await request<{ session: PrivateTutorSession | null }>(
+    "GET",
+    `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/tutoring-sessions/current`,
+  );
+  return result.session;
+}
+
+export async function startPrivateTutorSession(learnerId: string, pace: PrivateTutorSessionPace) {
+  return request<{ session: PrivateTutorSession; resumedExisting: boolean }>(
+    "POST",
+    `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/tutoring-sessions/start`,
+    { pace },
+  );
+}
+
+export async function pausePrivateTutorSession(learnerId: string, sessionId: string) {
+  return request<{ session: PrivateTutorSession }>(
+    "POST",
+    `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/tutoring-sessions/${encodeURIComponent(sessionId)}/pause`,
+    {},
+  );
+}
+
+export async function resumePrivateTutorSession(learnerId: string, sessionId: string) {
+  return request<{ session: PrivateTutorSession }>(
+    "POST",
+    `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/tutoring-sessions/${encodeURIComponent(sessionId)}/resume`,
+    {},
+  );
+}
+
+export async function actOnPrivateTutorSession(learnerId: string, sessionId: string, input:
+  | { action: "continue" | "hint" }
+  | {
+    action: "answer";
+    idempotencyKey: string;
+    questionRevisionId: string;
+    rawAnswer: string;
+    responseKind: "answer" | "dont_know";
+    source: "screen" | "voice_confirmed";
+    recognitionConfidence?: number;
+  }) {
+  return request<{
+    session: PrivateTutorSession;
+    snapshot?: PrivateTutorSnapshot;
+    answer?: { correct: boolean; independent: boolean; usedHint: boolean };
+    replayed?: boolean;
+  } & Partial<PrivateTutorIntelligence>>(
+    "POST",
+    `/api/private-tutor/learners/${encodeURIComponent(learnerId)}/tutoring-sessions/${encodeURIComponent(sessionId)}/actions`,
+    input,
   );
 }
 

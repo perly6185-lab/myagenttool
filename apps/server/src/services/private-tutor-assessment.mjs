@@ -36,9 +36,29 @@ const DAILY_QUESTIONS = [
   numericQuestion("demo-balance-001-v1", "balance", 2, "x + 3 = 8，x 是多少？", "5", { allowVariableAssignment: true }),
 ];
 
+const TUTORING_QUESTIONS = [
+  numericQuestion("tutor-int-recall-001-v1", "integer", 1, "4 - 7 = ?", "-3"),
+  numericQuestion("tutor-int-guided-001-v1", "integer", 2, "-5 + 9 = ?", "4"),
+  numericQuestion("tutor-int-transfer-001-v1", "integer", 3, "12 - (-4) = ?", "16"),
+  choiceQuestion("tutor-eqm-recall-001-v1", "equation-meaning", 1, "下面哪一个含有未知数并且是等式？", [
+    { id: "a", label: "6 + 2 = 8" },
+    { id: "b", label: "x + 2 = 8" },
+    { id: "c", label: "9 > 3" },
+  ], "b"),
+  numericQuestion("tutor-eqm-guided-001-v1", "equation-meaning", 2, "x + 6 = 11，x 是多少？", "5", { allowVariableAssignment: true }),
+  numericQuestion("tutor-eqm-transfer-001-v1", "equation-meaning", 3, "4x = 28，x 是多少？", "7", { allowVariableAssignment: true }),
+  numericQuestion("tutor-bal-recall-001-v1", "balance", 1, "2x = 10，x 是多少？", "5", { allowVariableAssignment: true }),
+  numericQuestion("tutor-bal-guided-001-v1", "balance", 2, "x + 3 = 8，x 是多少？", "5", { allowVariableAssignment: true }),
+  numericQuestion("tutor-bal-transfer-001-v1", "balance", 3, "3x + 2 = 17，x 是多少？", "5", { allowVariableAssignment: true }),
+  numericQuestion("tutor-word-recall-001-v1", "word-problem", 1, "一个数加 4 等于 9，这个数是多少？", "5"),
+  numericQuestion("tutor-word-guided-001-v1", "word-problem", 2, "3 本相同的练习册共 18 元，每本多少元？", "6"),
+  numericQuestion("tutor-word-transfer-001-v1", "word-problem", 3, "一个数的 2 倍再加 3 等于 17，这个数是多少？", "7"),
+];
+
 const QUESTION_BY_ID = new Map([
   ...DIAGNOSTIC_QUESTIONS.map((question) => ({ ...question, context: "diagnostic" })),
   ...DAILY_QUESTIONS.map((question) => ({ ...question, context: "practice" })),
+  ...TUTORING_QUESTIONS.map((question) => ({ ...question, context: "tutoring" })),
 ].map((question) => [question.id, question]));
 
 export function privateTutorQuestion(revisionId) {
