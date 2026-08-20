@@ -29,6 +29,7 @@ import { Input, Textarea } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { api } from "@/data/use-console-actions";
+import { localContentApi } from "@/features/local-content/local-content-api";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useSessionUser } from "@/hooks/use-session-user";
@@ -55,6 +56,7 @@ import {
 import {
   DeliverableFileList,
   DeliveryMarkdownDocument,
+  deliverableFileKey,
   IMAGE_DELIVERY_EXTENSIONS,
   MARKDOWN_DELIVERY_EXTENSIONS,
 } from "./work-item-deliverable-files";
@@ -478,18 +480,31 @@ export function WorkItemSummaryView({
   ].filter(Boolean).join("\n")).join("\n\n");
 
   const openResultFile = async (file: WorkItemOutcomeFile) => {
-    if (!file.projectId || !file.path || (file.preview === "unsupported" && !file.worktreeId)) {
+    if (!file.contentId && (!file.projectId || !file.path || (file.preview === "unsupported" && !file.worktreeId))) {
       setResultFileError(copy.deliverableFileUnavailable);
       return;
     }
     const requestId = resultPreviewRequest.current + 1;
     resultPreviewRequest.current = requestId;
-    const key = `${file.projectId}:${file.worktreeId ?? "base"}:${file.path}`;
+    const key = deliverableFileKey(file);
     setResultPreviewFile(file);
     setResultPreview(null);
     setOpeningResultFileKey(key);
     setResultFileError(null);
     try {
+      if (file.contentId) {
+        const response = await localContentApi.preview(file.contentId);
+        if (requestId !== resultPreviewRequest.current) return;
+        const preview = response.preview;
+        const extension = deliveryExtension(file.name);
+        setResultPreview({
+          kind: MARKDOWN_DELIVERY_EXTENSIONS.has(extension) || preview.mimeType === "text/markdown" ? "markdown" : "text",
+          text: preview.text,
+          truncated: preview.truncated,
+        });
+        return;
+      }
+      if (!file.projectId || !file.path) throw new Error("deliverable_file_unavailable");
       await api.projectAssetDescriptor(file.projectId, file.path, file.worktreeId ?? undefined);
       if (requestId !== resultPreviewRequest.current) return;
       const extension = deliveryExtension(file.path);

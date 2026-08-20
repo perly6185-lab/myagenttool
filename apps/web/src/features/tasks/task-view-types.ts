@@ -418,6 +418,7 @@ export type LocalWorkItem = {
 };
 export type WorkItemAssetRef = {
   id: string | null;
+  contentId?: string | null;
   originalName?: string;
   path: string;
   family: string;
@@ -722,6 +723,7 @@ export type LocalWorkItemObservability = {
 export type WorkItemOutcomeFile = {
   name: string;
   path: string | null;
+  contentId?: string | null;
   projectId: string | null;
   worktreeId: string | null;
   status: "available" | "unavailable";

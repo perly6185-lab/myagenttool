@@ -74,8 +74,10 @@ export async function ingestChannelAttachmentBytes({
     id: `asset_${digest.slice(0, 24)}`,
     projectId,
     terminalId,
+    originalName: safeName,
     path: stored.path,
     family: classification.family,
+    mimeType: classification.mimeType ?? contentType ?? null,
     hash: `sha256:${digest}`,
     version: digest,
     size: buffer.length,
@@ -120,7 +122,11 @@ function storeConfinedAttachment({ projectPath, filename, bytes }) {
 function safeFilename(value) {
   const raw = String(value ?? "").trim();
   if (!raw || raw.includes("\0") || raw.includes("/") || raw.includes("\\")) return null;
-  const cleaned = basename(raw).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
+  const cleaned = basename(raw)
+    .normalize("NFC")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+    .trim()
+    .slice(0, 120);
   return cleaned && cleaned !== "." && cleaned !== ".." ? cleaned : null;
 }
 

@@ -14,6 +14,7 @@ import {
 } from "../src/services/local-content-catalog.mjs";
 import { parseWorkflowDocument } from "../src/services/workflow-document-parser.mjs";
 import { handleLocalContentRoutes } from "../src/routes/local-content.mjs";
+import { contentId } from "../src/services/local-content-records.mjs";
 
 const actor = { userId: "usr_1", teamId: "team_1", role: "owner" };
 
@@ -295,6 +296,66 @@ test("rebuilds a local-only catalog across articles, mail, tasks, inputs, and ou
     const secondPage = await fx.service.search({ query: "本地", limit: 1, offset: 1 }, actor);
     assert.equal(ranked.body.results.length > 1, true);
     assert.equal(secondPage.body.results[0].id, ranked.body.results[1].id);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("indexes a managed Channel article as the producing task's governed output", async () => {
+  const fx = fixture();
+  try {
+    const knowledgeId = "channel_knowledge_managed";
+    const managedPath = "knowledge/channel-articles/team/project/docs/imported/wechat/managed/article.md";
+    const managedFile = join(dirname(fx.stateStorePath), managedPath);
+    const managedContentId = contentId("article", "team_1", knowledgeId);
+    mkdirSync(dirname(managedFile), { recursive: true });
+    writeFileSync(managedFile, "# Channel 客户背调资料\n\n这是一份通过 iLink 收纳的本地文章。\n");
+    fx.state.channelKnowledgeItems = [{
+      id: knowledgeId,
+      ownerTeamId: "team_1",
+      projectId: "prj_1",
+      workItemId: "work_1",
+      channelId: "chn_1",
+      conversationId: "conv_1",
+      status: "ready",
+      title: "Channel 客户背调资料",
+      markdownPath: managedPath,
+      sourceUrl: "https://mp.weixin.qq.com/s/managed",
+      canonicalUrl: "https://mp.weixin.qq.com/s/managed",
+      completedAt: "2026-08-20T10:01:34.428Z",
+    }];
+    fx.state.workItems[0].outputAssets.push({
+      id: `asset_channel_knowledge_${knowledgeId}`,
+      contentId: managedContentId,
+      originalName: "Channel 客户背调资料.md",
+      path: managedPath,
+      family: "markdown",
+      mimeType: "text/markdown",
+      terminalId: "device_1",
+      capabilities: ["discover", "preview", "inspect", "open_external", "attach_evidence"],
+      readiness: { state: "ready", reason: "managed_channel_knowledge" },
+    });
+
+    const immediatePreview = await fx.service.preview({ contentId: managedContentId }, actor);
+    assert.equal(immediatePreview.status, 200);
+    assert.match(immediatePreview.body.preview.text, /通过 iLink 收纳/);
+    const immediateHealth = await fx.service.health({ contentIds: [managedContentId] }, actor);
+    assert.equal(immediateHealth.body.health[0].state, "ready");
+
+    await fx.service.rebuild({}, actor);
+    const result = await fx.service.search({ query: "iLink 收纳" }, actor);
+    const article = result.body.results.find((record) => record.id === managedContentId);
+    assert.ok(article);
+    assert.equal(article.workItemId, "work_1");
+    assert.deepEqual(article.root, { kind: "application_data", id: "channel-knowledge" });
+    assert.equal(article.relations.some((relation) => relation.type === "produces_output" && relation.contentId !== managedContentId), true);
+    const preview = await fx.service.preview({ contentId: managedContentId }, actor);
+    assert.equal(preview.status, 200);
+    assert.match(preview.body.preview.text, /通过 iLink 收纳/);
+    assert.deepEqual(
+      await fx.service.preview({ contentId: managedContentId }, { ...actor, teamId: "team_2" }),
+      { status: 404, body: { error: "local_content_not_found" } },
+    );
   } finally {
     await fx.cleanup();
   }

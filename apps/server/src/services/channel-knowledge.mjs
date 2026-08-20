@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { canonicalizeArticleUrl, importArticleToWorktree } from "./article-imports.mjs";
+import { contentId } from "./local-content-records.mjs";
 
 const MAX_ITEMS = 5_000;
 const MAX_PENDING = 50;
@@ -285,6 +286,7 @@ export function createChannelKnowledgeService({
     if (!existsSync(absolutePath)) return null;
     return {
       itemId: item.id,
+      contentId: contentId("article", item.ownerTeamId ?? LOCAL_TEAM_ID, item.id),
       title: item.title ?? "未命名资料",
       relativePath: item.markdownPath,
       absolutePath,

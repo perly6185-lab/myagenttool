@@ -9,12 +9,13 @@ import { createServerRuntimeServices } from "../src/runtime/service-composer.mjs
 
 const NOW = "2026-08-20T12:00:00.000Z";
 
-test("restart recovery backfills a completed Channel article capture into My Tasks", () => {
+test("restart recovery backfills a completed Channel article capture into My Tasks", async () => {
   const root = mkdtempSync(join(tmpdir(), "myagenttool-channel-knowledge-task-"));
   const projectPath = join(root, "project");
   const stateStorePath = join(root, "state", "local.json");
   mkdirSync(projectPath, { recursive: true });
   mkdirSync(dirname(stateStorePath), { recursive: true });
+  let runtime = null;
   try {
     const seeded = createServerState({ defaultProjectPath: projectPath, now: () => NOW });
     const relativePath = "knowledge/channel-articles/team/project/docs/imported/wechat/article.md";
@@ -83,7 +84,7 @@ test("restart recovery backfills a completed Channel article capture into My Tas
       updatedAt: NOW,
     });
 
-    createServerRuntimeServices({
+    runtime = createServerRuntimeServices({
       namespace: "test",
       protocolVersion: "0.0.0",
       state: seeded.state,
@@ -95,6 +96,8 @@ test("restart recovery backfills a completed Channel article capture into My Tas
       dispatchLeaseMs: 30_000,
       now: () => NOW,
     });
+    const indexing = await runtime.startLocalContentIndexing();
+    await runtime.flushLocalContentIndexing();
 
     const thread = seeded.state.channelTaskThreads.find((candidate) => candidate.id === "cth_knowledge_existing");
     const task = seeded.state.workItems.find((candidate) => candidate.id === thread.workItemId);
@@ -102,10 +105,25 @@ test("restart recovery backfills a completed Channel article capture into My Tas
     assert.equal(task.status, "done");
     assert.match(task.title, /保存资料：已保存文章/);
     assert.match(task.body, /mp\.weixin\.qq\.com\/s\/existing/);
-    assert.match(task.body, new RegExp(absolutePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(task.body, /已保存文章\.md（可在本任务的交付文件中打开）/);
+    assert.doesNotMatch(task.body, new RegExp(absolutePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.equal(task.channelOrigin.threadId, thread.id);
+    assert.equal(task.outputAssets.length, 1);
+    assert.equal(task.outputAssets[0].id, "asset_channel_knowledge_channel_knowledge_existing");
+    assert.match(task.outputAssets[0].contentId, /^lc_[a-f0-9]{32}$/);
+    assert.equal(task.outputAssets[0].path, relativePath);
+    assert.equal(task.outputAssets[0].originalName, "已保存文章.md");
+    assert.equal(seeded.state.channelKnowledgeItems[0].workItemId, task.id);
     assert.match(thread.workItemLocalRef, /^LOCAL-/);
+    const catalog = await runtime.httpDependencies.searchLocalContent({ query: "已保存文章" }, {
+      userId: "usr_local", teamId: "team_local", role: "owner",
+    });
+    const article = catalog.body.results.find((record) => record.id === task.outputAssets[0].contentId);
+    assert.ok(article, JSON.stringify({ indexing, catalog: catalog.body }));
+    assert.equal(article.workItemId, task.id);
+    assert.equal(article.relations.some((relation) => relation.type === "produces_output"), true);
   } finally {
+    await runtime?.closeRuntimeServices();
     rmSync(root, { recursive: true, force: true });
   }
 });

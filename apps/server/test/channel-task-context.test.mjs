@@ -11,6 +11,8 @@ const conversation = { id: "conversation-1", channelId: "channel-1" };
 const identity = { id: "identity-1", userId: "user-1" };
 const asset = {
   id: "asset-1", path: "inbox/source.xlsx", family: "excel",
+  originalName: "客户订单.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  size: 2048, resourceClass: "small", capabilities: ["preview", "inspect"],
   hash: "sha256:x", version: "v1", terminalId: "terminal-1", projectId: "project-1",
   readiness: { state: "ready" },
 };
@@ -33,6 +35,10 @@ test("binds Channel identity, message, terminal, project, attachments, task, inv
   assert.equal(completed.principalId, "user-1");
   assert.equal(completed.terminalId, "terminal-1");
   assert.equal(completed.attachmentAssets[0].id, "asset-1");
+  assert.equal(completed.attachmentAssets[0].originalName, "客户订单.xlsx");
+  assert.equal(completed.attachmentAssets[0].mimeType, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  assert.equal(completed.attachmentAssets[0].size, 2048);
+  assert.deepEqual(completed.attachmentAssets[0].capabilities, ["preview", "inspect"]);
   assert.equal(completed.fileDiscoveries[0].assetId, "asset-1");
   assert.deepEqual(completed.fileDiscoveries[0].recognizedFields, ["order_number"]);
   assert.equal(completed.workItemId, "task-1");

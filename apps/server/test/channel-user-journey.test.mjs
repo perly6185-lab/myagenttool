@@ -226,9 +226,9 @@ test("iLink ordinary-user journey stays understandable from intake through deliv
 test("iLink ordinary-user journey keeps image, voice, and file inputs in one task", async () => {
   const harness = makeJourneyHarness();
   const assets = [
-    { id: "asset_image", projectId: harness.projectId, terminalId: "dev_local", path: "inbox/photo.png", family: "image", hash: "sha256:image", version: "v1", readiness: { state: "ready" } },
-    { id: "asset_voice", projectId: harness.projectId, terminalId: "dev_local", path: "inbox/note.mp3", family: "audio", hash: "sha256:voice", version: "v1", readiness: { state: "ready" } },
-    { id: "asset_file", projectId: harness.projectId, terminalId: "dev_local", path: "inbox/data.csv", family: "file", hash: "sha256:file", version: "v1", readiness: { state: "ready" } },
+    { id: "asset_image", projectId: harness.projectId, terminalId: "dev_local", originalName: "现场照片.png", path: "inbox/photo.png", family: "image", mimeType: "image/png", size: 12, resourceClass: "small", capabilities: ["preview", "inspect"], hash: "sha256:image", version: "v1", readiness: { state: "ready" } },
+    { id: "asset_voice", projectId: harness.projectId, terminalId: "dev_local", originalName: "补充说明.mp3", path: "inbox/note.mp3", family: "audio", mimeType: "audio/mpeg", size: 24, resourceClass: "small", capabilities: ["preview", "inspect"], hash: "sha256:voice", version: "v1", readiness: { state: "ready" } },
+    { id: "asset_file", projectId: harness.projectId, terminalId: "dev_local", originalName: "客户数据.csv", path: "inbox/data.csv", family: "file", mimeType: "text/csv", size: 36, resourceClass: "small", capabilities: ["preview", "inspect"], hash: "sha256:file", version: "v1", readiness: { state: "ready" } },
   ];
   const received = harness.receive("请处理这些附件", assets);
   assert.equal(received.dispatched.status, "dispatched");
@@ -236,6 +236,9 @@ test("iLink ordinary-user journey keeps image, voice, and file inputs in one tas
   const confirmed = await harness.receive("确认").dispatched;
   assert.equal(confirmed.status, "dispatched");
   assert.deepEqual(harness.taskCalls[0].inputAssets.map((asset) => asset.id), ["asset_image", "asset_voice", "asset_file"]);
+  assert.deepEqual(harness.taskCalls[0].inputAssets.map((asset) => asset.originalName), ["现场照片.png", "补充说明.mp3", "客户数据.csv"]);
+  assert.deepEqual(harness.taskCalls[0].inputAssets.map((asset) => asset.mimeType), ["image/png", "audio/mpeg", "text/csv"]);
+  assert.equal(harness.taskCalls[0].inputAssets.every((asset) => asset.capabilities.includes("preview")), true);
   assert.equal(harness.state.channelTaskThreads[0].messages.length, 1);
 });
 

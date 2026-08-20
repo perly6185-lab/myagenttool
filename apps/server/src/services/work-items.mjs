@@ -738,10 +738,12 @@ function normalizeAssetRefs(input) {
     const path = String(candidate.path ?? "").replaceAll("\\", "/");
     const terminalId = String(candidate.terminalId ?? "");
     if (!path || path.startsWith("/") || path.split("/").includes("..") || path.length > 1_000 || !terminalId) return null;
+    if (candidate.contentId != null && !/^lc_[a-f0-9]{32}$/i.test(String(candidate.contentId))) return null;
     const capabilities = strings(candidate.capabilities ?? [], { limit: 20, maxLength: 40 });
     if (!capabilities || capabilities.some((verb) => !ASSET_CAPABILITY_VERBS.includes(verb))) return null;
     assets.push({
       id: String(candidate.id ?? "").slice(0, 100) || null,
+      ...(candidate.contentId ? { contentId: String(candidate.contentId).toLowerCase() } : {}),
       originalName: candidate.originalName ? String(candidate.originalName).replace(/[\r\n\t]/g, " ").slice(0, 200) : undefined,
       path,
       family: String(candidate.family ?? "unknown").slice(0, 40),
@@ -1278,6 +1280,7 @@ export function createWorkItemService({
   function taskTemplateLearningSnapshot(item) {
     const boundedAssetRef = (asset) => ({
       id: asset.id ?? null,
+      ...(asset.contentId ? { contentId: asset.contentId } : {}),
       name: asset.originalName ?? String(asset.path ?? "").replaceAll("\\", "/").split("/").pop() ?? null,
       path: asset.path ?? null,
       family: asset.family ?? null,

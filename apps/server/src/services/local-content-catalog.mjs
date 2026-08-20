@@ -43,6 +43,7 @@ import {
 } from "./local-content-catalog-store.mjs";
 import {
   boundedText,
+  contentId,
   parseJson,
 } from "./local-content-records.mjs";
 import {
@@ -99,6 +100,35 @@ export function createLocalContentCatalogService({
   const originalWatchers = new Map();
   let started = false;
   let closed = false;
+
+  const managedChannelKnowledgeRow = (requestedId, teamId) => {
+    const item = (state.channelKnowledgeItems ?? []).find((candidate) =>
+      candidate?.status === "ready"
+      && (candidate.ownerTeamId ?? LOCAL_TEAM_ID) === teamId
+      && contentId("article", candidate.ownerTeamId ?? LOCAL_TEAM_ID, candidate.id) === requestedId) ?? null;
+    if (!item?.markdownPath) return null;
+    return {
+      id: requestedId,
+      owner_team_id: teamId,
+      project_id: item.projectId ?? null,
+      work_item_id: item.workItemId ?? null,
+      kind: "article",
+      title: item.title ?? "未命名资料",
+      summary: item.title ?? "未命名资料",
+      storage_mode: "managed",
+      root_kind: "application_data",
+      root_id: "channel-knowledge",
+      relative_path: item.markdownPath,
+      state_collection: null,
+      state_id: null,
+      mime_type: "text/markdown",
+      size: null,
+      sha256: null,
+      source_type: "channel_article_import",
+      source_id: item.canonicalUrl ?? item.sourceUrl ?? item.id,
+      metadata_json: JSON.stringify({ channelKnowledgeItemId: item.id }),
+    };
+  };
 
   const database = () => {
     databasePromise ??= Promise.resolve(openDatabase({ path: databasePath }));
@@ -296,8 +326,9 @@ export function createLocalContentCatalogService({
   async function resolveOriginal({ contentId, projectId = null } = {}, actor = null) {
     const db = await database();
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const requestedId = String(contentId ?? "");
     const row = db.prepare("SELECT * FROM local_content_records WHERE id = ? AND owner_team_id = ?")
-      .get(String(contentId ?? ""), teamId);
+      .get(requestedId, teamId) ?? managedChannelKnowledgeRow(requestedId, teamId);
     if (!row) return { ok: false, status: 404, error: "local_content_not_found" };
     if (projectId && row.project_id && row.project_id !== String(projectId)) {
       return { ok: false, status: 404, error: "local_content_not_found" };
@@ -689,7 +720,7 @@ export function createLocalContentCatalogService({
       status: 200,
       body: {
         health: ids.map((id) => {
-          const row = byId.get(id);
+          const row = byId.get(id) ?? managedChannelKnowledgeRow(id, teamId);
           if (!row) return { contentId: id, state: "missing_record", available: false, reason: "local_content_not_found" };
           if (row.storage_mode === "state_record") {
             const resolved = resolveStateRecord(row, state);
@@ -698,7 +729,8 @@ export function createLocalContentCatalogService({
           const locator = catalogFileLocator({ row, state, stateStorePath, mailArchiveRoot });
           const inspected = inspectOriginal(locator?.rootPath, locator?.relativePath);
           if (!inspected.available) return { contentId: id, state: "missing", available: false, reason: inspected.reason, canRefresh: true, canReveal: Boolean(confinedExistingContainer(locator?.rootPath, locator?.relativePath)) };
-          const changed = Number(row.size) !== inspected.size || (row.modified_at && row.modified_at !== inspected.modifiedAt);
+          const changed = (row.size != null && Number(row.size) !== inspected.size)
+            || Boolean(row.modified_at && row.modified_at !== inspected.modifiedAt);
           return { contentId: id, state: changed ? "changed" : "ready", available: true, reason: changed ? "local_content_original_changed" : null, canRefresh: true, canReveal: true };
         }),
       },
@@ -708,8 +740,9 @@ export function createLocalContentCatalogService({
   async function resolveContainer({ contentId } = {}, actor = null) {
     const db = await database();
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const requestedId = String(contentId ?? "");
     const row = db.prepare("SELECT * FROM local_content_records WHERE id = ? AND owner_team_id = ?")
-      .get(String(contentId ?? ""), teamId);
+      .get(requestedId, teamId) ?? managedChannelKnowledgeRow(requestedId, teamId);
     if (!row) return { ok: false, status: 404, error: "local_content_not_found" };
     if (row.storage_mode === "state_record") return unresolved("local_content_original_not_file", 409);
     const locator = catalogFileLocator({ row, state, stateStorePath, mailArchiveRoot });

@@ -177,7 +177,7 @@ export async function collectLocalContent({
         id,
         ownerTeamId: item.ownerTeamId ?? LOCAL_TEAM_ID,
         projectId: item.projectId ?? null,
-        workItemId: null,
+        workItemId: item.workItemId ?? null,
         kind: "article",
         title,
         body,
@@ -241,6 +241,13 @@ export async function collectLocalContent({
       addRelation(task.ownerTeamId, task.contentId, id, "uses_input");
     }
     for (const asset of task.item.outputAssets ?? []) {
+      if (asset.contentId) {
+        const outputs = outputsByTask.get(task.item.id) ?? [];
+        outputs.push(asset.contentId);
+        outputsByTask.set(task.item.id, outputs);
+        addRelation(task.ownerTeamId, task.contentId, asset.contentId, "produces_output");
+        continue;
+      }
       const source = taskAssetSource(state, task.item, asset);
       const key = rootPathKey(source, source.relativePath);
       const articleId = articlePaths.get(key);

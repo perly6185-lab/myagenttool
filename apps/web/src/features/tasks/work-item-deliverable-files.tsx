@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { api } from "@/data/use-console-actions";
+import { localContentApi } from "@/features/local-content/local-content-api";
 import type { WorkItemOutcomeFile } from "./task-view-types";
 import {
   imageMime,
@@ -14,6 +15,12 @@ import {
 
 export const MARKDOWN_DELIVERY_EXTENSIONS = new Set([".md", ".mdx"]);
 export const IMAGE_DELIVERY_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif"]);
+
+export function deliverableFileKey(file: WorkItemOutcomeFile) {
+  return file.contentId
+    ? `local-content:${file.contentId}`
+    : `${file.projectId ?? "project"}:${file.worktreeId ?? "base"}:${file.path ?? file.name}`;
+}
 
 type DeliverableFileCopy = {
   noDeliverableFiles: string;
@@ -130,26 +137,29 @@ export function DeliverableFileList({
     <>
       <ul className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
         {visible.map((file) => {
-          const key = `${file.projectId ?? "project"}:${file.worktreeId ?? "base"}:${file.path ?? file.name}`;
+          const key = deliverableFileKey(file);
           const opening = openingKey === key;
           const canOpen = file.status === "available"
-            && Boolean(file.projectId && file.path)
-            && (file.preview === "document" || Boolean(file.worktreeId));
-          const canReveal = file.status === "available" && Boolean(file.projectId && file.path);
+            && (Boolean(file.contentId)
+              || (Boolean(file.projectId && file.path) && (file.preview === "document" || Boolean(file.worktreeId))));
+          const canReveal = file.status === "available" && Boolean(file.contentId || (file.projectId && file.path));
           const revealing = revealingKey === key;
           const reveal = async () => {
-            if (!file.projectId || !file.path) return;
             setRevealError(null);
             setRevealingKey(key);
             try {
-              if (revealBridge) {
+              if (file.contentId) {
+                await localContentApi.reveal(file.contentId);
+              } else if (file.projectId && file.path && revealBridge) {
                 await revealBridge({
                   projectId: file.projectId,
                   relativePath: file.path,
                   ...(file.worktreeId ? { worktreeId: file.worktreeId } : {}),
                 });
-              } else {
+              } else if (file.projectId && file.path) {
                 await api.revealProjectAsset(file.projectId, file.path, file.worktreeId ?? undefined);
+              } else {
+                throw new Error("deliverable_file_unavailable");
               }
             } catch {
               setRevealError(copy.deliverableFolderUnavailable);

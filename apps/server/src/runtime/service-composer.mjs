@@ -4121,10 +4121,17 @@ export function createServerRuntimeServices({
       deviceId: channel.taskTerminalId ?? null,
     };
     const uniqueUrls = [...new Set(urls.map(String).filter(Boolean))].slice(0, 3);
-    const locations = items.map((item) => channelKnowledgeService.getItemLocation({
+    const locations = [...new Map(items.map((item) => channelKnowledgeService.getItemLocation({
       itemId: item.knowledgeItemId,
       ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
-    })).filter(Boolean);
+    })).filter(Boolean).map((location) => [location.itemId, location])).values()];
+    const managedFileName = (location) => {
+      const safeTitle = String(location?.title ?? "本地资料")
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+        .trim()
+        .slice(0, 175) || "本地资料";
+      return /\.md$/i.test(safeTitle) ? safeTitle : `${safeTitle}.md`;
+    };
     const terminal = thread.status === "succeeded" || thread.status === "failed" || thread.status === "cancelled";
     const title = items.length
       ? `保存资料：${String(items.at(-1)?.title ?? "Channel 分享内容").slice(0, 100)}`
@@ -4133,7 +4140,9 @@ export function createServerRuntimeServices({
       "从 Channel 接收分享链接，并保存为可检索的本地资料。",
       uniqueUrls.length ? `\n来源链接：\n${uniqueUrls.map((url) => `- ${url}`).join("\n")}` : null,
       terminal ? `\n处理结果：${thread.resultSummary || (thread.status === "succeeded" ? "已保存到本地资料库。" : "本次保存未完成。")}` : "\n处理状态：正在下载、识别并保存正文。",
-      locations.length ? `\n本地文件：\n${locations.map((location) => `- ${location.absolutePath}`).join("\n")}` : null,
+      locations.length
+        ? `\n交付文件：\n${locations.map((location) => `- ${managedFileName(location)}（可在本任务的交付文件中打开）`).join("\n")}`
+        : null,
     ].filter(Boolean).join("\n").slice(0, 10_000);
     const desiredStatus = thread.status === "succeeded"
       ? "done"
@@ -4161,31 +4170,78 @@ export function createServerRuntimeServices({
       }, actor);
       if (!created.ok) return { ok: false, reason: created.body?.error ?? "channel_knowledge_task_create_failed" };
       stored = (state.workItems ?? []).find((candidate) => candidate.id === created.body.workItem.id) ?? null;
-    } else if (stored.title !== title || stored.body !== body || stored.status !== desiredStatus) {
+    }
+    if (!stored) return { ok: false, reason: "channel_knowledge_task_not_found" };
+    const managedOutputs = locations.map((location) => {
+      return {
+        id: `asset_channel_knowledge_${location.itemId}`.slice(0, 100),
+        contentId: location.contentId,
+        originalName: managedFileName(location),
+        path: location.relativePath,
+        family: "markdown",
+        mimeType: "text/markdown",
+        terminalId: stored.terminalId ?? channel.taskTerminalId,
+        size: null,
+        resourceClass: "small",
+        hash: null,
+        version: null,
+        capabilities: ["discover", "preview", "inspect", "open_external", "attach_evidence"],
+        readiness: { state: "ready", reason: "managed_channel_knowledge" },
+      };
+    }).filter((asset) => asset.terminalId);
+    const desiredOutputs = managedOutputs.length
+      ? [
+        ...(stored.outputAssets ?? []).filter((asset) => !String(asset.id ?? "").startsWith("asset_channel_knowledge_")),
+        ...managedOutputs,
+      ].slice(0, 100)
+      : stored.outputAssets ?? [];
+    const workItemNeedsUpdate = stored.title !== title
+      || stored.body !== body
+      || stored.status !== desiredStatus
+      || JSON.stringify(stored.outputAssets ?? []) !== JSON.stringify(desiredOutputs);
+    if (workItemNeedsUpdate) {
       const updated = workItemService.updateWorkItem({
         workItemId: stored.id,
         expectedRevision: stored.revision,
         title,
         body,
         status: desiredStatus,
+        outputAssets: desiredOutputs,
       }, actor);
       if (!updated.ok) return { ok: false, reason: updated.body?.error ?? "channel_knowledge_task_update_failed" };
       stored = (state.workItems ?? []).find((candidate) => candidate.id === stored.id) ?? stored;
     }
-    if (!stored) return { ok: false, reason: "channel_knowledge_task_not_found" };
     const originChanged = stored.channelOrigin?.threadId !== thread.id;
-    if (originChanged) {
-      stored.channelOrigin = {
-        channelId: channel.id,
-        conversationId: conversation.id,
-        messageId: event?.id ?? thread.sourceEventIds?.[0] ?? null,
-        principalId: principal.id,
-        traceId: stored.id,
-        threadId: thread.id,
-      };
-      stored.revision = Number(stored.revision ?? 0) + 1;
-      stored.updatedAt = now();
-      persistStateSoon();
+    const knowledgeLinksChanged = locations.some((location) => {
+      const knowledge = (state.channelKnowledgeItems ?? []).find((item) => item.id === location.itemId);
+      return knowledge && knowledge.workItemId !== stored.id;
+    });
+    if (originChanged || knowledgeLinksChanged) channelTaskRunTx(() => {
+      if (originChanged) {
+        stored.channelOrigin = {
+          channelId: channel.id,
+          conversationId: conversation.id,
+          messageId: event?.id ?? thread.sourceEventIds?.[0] ?? null,
+          principalId: principal.id,
+          traceId: stored.id,
+          threadId: thread.id,
+        };
+        stored.revision = Number(stored.revision ?? 0) + 1;
+        stored.updatedAt = now();
+      }
+      for (const location of locations) {
+        const knowledge = (state.channelKnowledgeItems ?? []).find((item) => item.id === location.itemId);
+        if (knowledge) {
+          knowledge.workItemId = stored.id;
+          knowledge.updatedAt = now();
+        }
+      }
+    });
+    if (terminal && locations.length) {
+      void localContentCatalogService.requestAutomaticIncremental({
+        reason: "channel_knowledge_capture_completed",
+        sources: ["articles", "work_items"],
+      }).catch(() => {});
     }
     return { ok: true, workItemId: stored.id, localRef: stored.localRef ?? null };
   };
@@ -7005,6 +7061,7 @@ export function createServerRuntimeServices({
   return {
     httpDependencies,
     startLocalContentIndexing: localContentCatalogService.start,
+    flushLocalContentIndexing: localContentCatalogService.flushIncremental,
     closeRuntimeServices: async () => {
       clearInterval(mailBodyPrefetchTimer);
       try {
