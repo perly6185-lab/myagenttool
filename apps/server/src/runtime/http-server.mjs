@@ -529,6 +529,7 @@ export function createHttpServer({
   previewLocalContent,
   previewLocalContentAsset,
   refreshLocalContent,
+  archiveLocalContent,
   getLocalContentHealth,
   resolveLocalContentOriginal,
   resolveLocalContentContainer,
