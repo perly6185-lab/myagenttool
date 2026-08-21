@@ -726,6 +726,31 @@ test("a restricted article link fails its capture task with a simple recovery me
   assert.equal(harness.state.channelIntakeGroups.length, 0);
 });
 
+test("a failed article link can be retried with a natural retry message", async () => {
+  let attempts = 0;
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error("article_download_challenge"), { code: "article_download_challenge" });
+      return {
+        provider: "wechat",
+        canonicalUrl: url,
+        title: "重试成功的文章",
+        _document: { markdown: "重试后可以读取正文。" },
+        knowledge: { status: "saved", itemId: "knowledge_retry", replayed: false, warningCount: 0 },
+      };
+    },
+  });
+
+  await harness.receive("https://mp.weixin.qq.com/s/retryable").dispatched;
+  const retried = await harness.receive("重试").dispatched;
+
+  assert.equal(attempts, 2);
+  assert.match(retried.reply, /已收纳到本地资料库/);
+  assert.equal(harness.state.channelConversations[0].sharedContentContext.retryUrls.length, 0);
+  assert.equal(harness.state.channelConversations[0].pendingLinkPluginProposal, null);
+});
+
 test("a security-refused article link never proposes a plugin that could bypass policy", async () => {
   const harness = makeHarness({
     inspectSharedLink: async () => { throw Object.assign(new Error("article_url_refused"), { code: "article_url_refused" }); },

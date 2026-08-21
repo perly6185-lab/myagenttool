@@ -277,9 +277,24 @@ export function createChannelConversationService({
     return context.items.filter((item) => activeIds.has(item.id) && item.status === "ready").slice(-SHARED_CONTENT_ACTIVE_MAX);
   }
 
-  function sharedContentContinuation(text, conversation) {
+function sharedContentContinuation(text, conversation) {
     if (!activeSharedContents(conversation).length) return false;
     return SHARED_CONTENT_CONTINUE_RE.test(normalizedText(text));
+  }
+
+  function retryableSharedContentUrls(conversation) {
+    const context = conversation?.sharedContentContext;
+    const failedAt = Date.parse(context?.lastFailedAt ?? "");
+    const currentAt = Date.parse(now());
+    if (!Number.isFinite(failedAt) || !Number.isFinite(currentAt) || currentAt - failedAt > SHARED_CONTENT_CONTEXT_TTL_MS) return [];
+    return [...new Set((context?.retryUrls ?? []).map((url) => {
+      try { return canonicalizeArticleUrl(url); } catch { return null; }
+    }).filter(Boolean))].slice(-3);
+  }
+
+  function sharedContentRetryRequest(text, conversation) {
+    return retryableSharedContentUrls(conversation).length > 0
+      && /^(?:重试|再试一次)(?:刚才|上次|失败的)?(?:链接|文章|资料|内容)?[。.!！?？]*$/i.test(normalizedText(text));
   }
 
   function sharedContentTaskRequest(text, conversation) {
@@ -2640,6 +2655,16 @@ export function createChannelConversationService({
         summary: "当前没有可用的链接下载识别能力。",
         reason: "knowledge_capture_unavailable",
       });
+      runTx(() => {
+        conversation.sharedContentContext = {
+          ...(conversation.sharedContentContext ?? {}),
+          status: "failed",
+          retryUrls: urls,
+          lastFailedAt: now(),
+          updatedAt: now(),
+        };
+        conversation.updatedAt = now();
+      });
       return settle(event, {
         status: "dispatched",
         reply: "我识别到这是资料链接，但当前无法读取正文。你可以稍后重试，或把正文、截图、文件直接发过来。",
@@ -2689,6 +2714,14 @@ export function createChannelConversationService({
       runTx(() => {
         event.sharedContentStatus = "failed";
         event.sharedContentFailures = failures;
+        conversation.sharedContentContext = {
+          ...(conversation.sharedContentContext ?? {}),
+          status: "failed",
+          retryUrls: failures.map((failure) => failure.url),
+          lastFailedAt: now(),
+          updatedAt: now(),
+        };
+        conversation.updatedAt = now();
       });
       finishKnowledgeCaptureThread(captureThread, {
         status: "failed",
@@ -2731,8 +2764,11 @@ export function createChannelConversationService({
         items: previousItems.slice(-SHARED_CONTENT_MAX_ITEMS),
         activeItemIds: activeIds.slice(-SHARED_CONTENT_ACTIVE_MAX),
         lastSharedAt: now(),
+        retryUrls: failures.map((failure) => failure.url),
+        lastFailedAt: failures.length ? now() : null,
         updatedAt: now(),
       };
+      conversation.pendingLinkPluginProposal = null;
       activeItems = activeSharedContents(conversation);
       event.sharedContentIds = acceptedIds;
       event.sharedContentStatus = "ready";
@@ -2969,6 +3005,9 @@ export function createChannelConversationService({
         reply: sharedContentLocationReply(text, conversation, channel),
         data: { sharedContent: true, action: "local_location" },
       });
+    }
+    if (noActiveTask && !urls.length && sharedContentRetryRequest(text, conversation)) {
+      return inspectSharedContentEvent(event, conversation, retryableSharedContentUrls(conversation), { archive: true });
     }
     if (noActiveTask && !urls.length && sharedContentContinuation(text, conversation)) {
       return startSharedContentConsultation(event, conversation, activeSharedContents(conversation), text);
