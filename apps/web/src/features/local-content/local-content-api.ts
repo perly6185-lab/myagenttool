@@ -78,6 +78,15 @@ export const localContentApi = {
     `/api/local-content/${encodeURIComponent(contentId)}/refresh`,
     {},
   ),
+  archive: (contentId: string) => request<{
+    archived: true;
+    originalDeleted: false;
+    contentId: string;
+  }>(
+    "POST",
+    `/api/local-content/${encodeURIComponent(contentId)}/archive`,
+    {},
+  ),
   health: (contentIds: string[]) => request<{ health: LocalContentHealth[] }>(
     "POST",
     "/api/local-content/health",

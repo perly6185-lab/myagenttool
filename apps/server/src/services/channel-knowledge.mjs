@@ -68,6 +68,15 @@ export function createChannelKnowledgeService({
         return capture(input);
       });
     }
+    const archived = archivedItem(ownerTeamId, projectId, canonicalUrl);
+    if (archived) {
+      runTx(() => {
+        archived.archivedAt = null;
+        archived.lastUsedAt = now();
+        archived.updatedAt = now();
+      });
+      return readCached(archived).catch(() => capture(input));
+    }
     if (queue.length + activeCount >= maxPending) {
       return Promise.reject(Object.assign(new Error("channel_knowledge_queue_full"), { code: "channel_knowledge_queue_full" }));
     }
@@ -92,6 +101,19 @@ export function createChannelKnowledgeService({
         && (item.projectId ?? null) === (projectId ?? null)
         && item.canonicalUrl === canonicalUrl
         && item.status === "ready"
+        && !item.archivedAt
+        && confinedManagedPath(item.markdownPath)
+        && existsSync(resolve(dataRoot, item.markdownPath)));
+  }
+
+  function archivedItem(ownerTeamId, projectId, canonicalUrl) {
+    return [...state.channelKnowledgeItems]
+      .reverse()
+      .find((item) => item.ownerTeamId === ownerTeamId
+        && (item.projectId ?? null) === (projectId ?? null)
+        && item.canonicalUrl === canonicalUrl
+        && item.status === "ready"
+        && item.archivedAt
         && confinedManagedPath(item.markdownPath)
         && existsSync(resolve(dataRoot, item.markdownPath)));
   }

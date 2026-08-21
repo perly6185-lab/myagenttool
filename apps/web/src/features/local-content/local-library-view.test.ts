@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   stats: vi.fn(),
   search: vi.fn(),
   rebuild: vi.fn(),
+  archive: vi.fn(),
   addToWorkItem: vi.fn(),
   preview: vi.fn(),
   reveal: vi.fn(),
@@ -74,7 +75,7 @@ describe("local library task targeting", () => {
         stateLocator: null,
         mimeType: "text/markdown",
         size: 100,
-        source: { type: "article", id: "article-1" },
+        source: { type: "channel_article_import", id: "article-1" },
         sourceLabel: "Project A · Prepare design",
         matchSnippet: null,
         occurredAt: null,
@@ -82,7 +83,7 @@ describe("local library task targeting", () => {
         modifiedAt: null,
         original: { available: true, reason: null },
         indexStatus: "ready",
-        metadata: {},
+        metadata: { channelKnowledgeItemId: "channel_knowledge_1" },
         relations: [],
       }],
       count: 1,
@@ -110,6 +111,7 @@ describe("local library task targeting", () => {
       remoteResourcesLoaded: false,
     } });
     mocks.reveal.mockResolvedValue({ revealed: true, name: "brief.md" });
+    mocks.archive.mockResolvedValue({ archived: true, originalDeleted: false, contentId: "lc_11111111111111111111111111111111" });
     mocks.createTask.mockResolvedValue({ workItem: {
       id: "created-a", projectId: "project-a", state: "open", status: "backlog",
       title: "Use Local architecture brief", revision: 1,
@@ -192,6 +194,15 @@ describe("local library task targeting", () => {
     await waitFor(() => expect(mocks.reveal).toHaveBeenCalledWith("lc_11111111111111111111111111111111"));
     expect(await screen.findByText(/Located “brief.md”/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("C:\\");
+  });
+
+  it("removes a shared article from the library without deleting its original", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove from library" }));
+    await waitFor(() => expect(mocks.archive).toHaveBeenCalledWith("lc_11111111111111111111111111111111"));
+    expect(await screen.findByText(/original article remains on this device/i)).toBeTruthy();
   });
 
   it("explains when a scanned PDF needs OCR instead of attempting an unsafe preview", async () => {

@@ -51,6 +51,12 @@ function openTasksFor(record: LocalContentRecord, workItems: LocalWorkItem[]) {
   return workItems.filter((item) => item.state === "open" && item.status !== "done" && (!record.projectId || item.projectId === record.projectId));
 }
 
+function canRemoveFromLibrary(record: LocalContentRecord) {
+  return record.kind === "article"
+    && record.source.type === "channel_article_import"
+    && typeof record.metadata.channelKnowledgeItemId === "string";
+}
+
 export function LocalLibraryView() {
   const { i18n } = useAppTranslation();
   const language = i18n.language.startsWith("zh") ? "zh" : "en";
@@ -81,6 +87,7 @@ export function LocalLibraryView() {
   const [locatingId, setLocatingId] = useState<string | null>(null);
   const [locateFeedback, setLocateFeedback] = useState<string | null>(null);
   const [locateError, setLocateError] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const [purpose, setPurpose] = useState<"reference" | "required_input">("required_input");
   const [createProjectId, setCreateProjectId] = useState("");
   const [createTaskTitle, setCreateTaskTitle] = useState("");
@@ -222,6 +229,25 @@ export function LocalLibraryView() {
       setLocateError(copy.locateFailed);
     } finally {
       setLocatingId(null);
+    }
+  }
+
+  async function removeFromLibrary(record: LocalContentRecord) {
+    if (!canRemoveFromLibrary(record) || removingId) return;
+    setRemovingId(record.id);
+    setLocateFeedback(null);
+    setLocateError(null);
+    try {
+      await localContentApi.archive(record.id);
+      setPreviewTarget((current) => current?.id === record.id ? null : current);
+      setDetailTarget((current) => current?.id === record.id ? null : current);
+      setLocateFeedback(copy.removedFromLibrary);
+      resetPage();
+      await Promise.all([stats.refetch(), content.refetch()]);
+    } catch {
+      setLocateError(copy.removeFailed);
+    } finally {
+      setRemovingId(null);
     }
   }
 
@@ -420,6 +446,9 @@ export function LocalLibraryView() {
                 onPreview={() => setPreviewTarget(record)}
                 onLocate={() => void locateOriginal(record)}
                 onChoose={() => choose(record)}
+                canRemove={canRemoveFromLibrary(record)}
+                removing={removingId === record.id}
+                onRemove={() => void removeFromLibrary(record)}
               />)}
             </div></Suspense>
           )}
@@ -475,6 +504,9 @@ export function LocalLibraryView() {
         onRetry={() => void preview.refetch()}
         onLocate={(record) => void locateOriginal(record)}
         onChoose={(record) => { setPreviewTarget(null); choose(record); }}
+        canRemove={canRemoveFromLibrary(previewTarget)}
+        removing={removingId === previewTarget.id}
+        onRemove={(record) => void removeFromLibrary(record)}
       /></Suspense> : null}
 
       {detailTarget ? <Suspense fallback={null}><LocalContentDetailModal
@@ -485,6 +517,9 @@ export function LocalLibraryView() {
         onPreview={(record) => { setDetailTarget(null); setPreviewTarget(record); }}
         onLocate={(record) => void locateOriginal(record)}
         onChoose={(record) => { setDetailTarget(null); choose(record); }}
+        canRemove={canRemoveFromLibrary(detailTarget)}
+        removing={removingId === detailTarget.id}
+        onRemove={(record) => void removeFromLibrary(record)}
       /></Suspense> : null}
     </div>
   );

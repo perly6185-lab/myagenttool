@@ -867,7 +867,7 @@ export function createHttpServer({
         rebuildLocalContentCatalog, searchLocalContent, browseLocalContentDirectories, describeLocalContentRetrieval,
         retrieveLocalContentDirectories, retrieveLocalContentSummaries, readRetrievedLocalContent,
         getLocalContentCatalogStats, previewLocalContent, previewLocalContentAsset,
-        refreshLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
+        refreshLocalContent, archiveLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
       })) {
         return;
       }

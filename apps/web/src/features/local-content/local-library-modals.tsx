@@ -1,4 +1,4 @@
-import { Check, Copy, Download, Eye, FolderOpen, Link2, ShieldCheck } from "lucide-react";
+import { Check, Copy, Download, Eye, FolderOpen, Link2, ShieldCheck, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
@@ -45,6 +45,9 @@ export function LocalContentDetailModal({
   onPreview,
   onLocate,
   onChoose,
+  canRemove,
+  removing,
+  onRemove,
 }: {
   target: LocalContentRecord | null;
   copy: LocalLibraryCopy;
@@ -53,6 +56,9 @@ export function LocalContentDetailModal({
   onPreview: (record: LocalContentRecord) => void;
   onLocate: (record: LocalContentRecord) => void;
   onChoose: (record: LocalContentRecord) => void;
+  canRemove: boolean;
+  removing: boolean;
+  onRemove: (record: LocalContentRecord) => void;
 }) {
   if (!target) return null;
   const taskName = metadataText(target.metadata, "taskTitle") ?? target.relations.find((relation) => relation.title)?.title ?? "—";
@@ -80,6 +86,7 @@ export function LocalContentDetailModal({
         {target.original.available ? <Button variant="secondary" onClick={() => onPreview(target)}><Eye aria-hidden />{copy.preview}</Button> : null}
         {target.original.available && target.storageMode !== "state_record" ? <Button variant="ghost" onClick={() => onLocate(target)}><FolderOpen aria-hidden />{copy.locate}</Button> : null}
         {target.original.available ? <Button onClick={() => onChoose(target)}>{copy.addToTask}</Button> : null}
+        {canRemove ? <Button variant="ghost" disabled={removing} onClick={() => onRemove(target)}><Trash2 aria-hidden />{removing ? copy.removing : copy.removeFromLibrary}</Button> : null}
       </div>}
     >
       <div className="space-y-5">
@@ -249,10 +256,13 @@ type PreviewModalProps = {
   errorMessage: string;
   preview: LocalContentPreview | null;
   locating: boolean;
+  canRemove: boolean;
+  removing: boolean;
   onClose: () => void;
   onRetry: () => void;
   onLocate: (record: LocalContentRecord) => void;
   onChoose: (record: LocalContentRecord) => void;
+  onRemove: (record: LocalContentRecord) => void;
 };
 
 export function PreviewModal({
@@ -268,6 +278,9 @@ export function PreviewModal({
   onRetry,
   onLocate,
   onChoose,
+  canRemove,
+  removing,
+  onRemove,
 }: PreviewModalProps) {
   const [copied, setCopied] = useState(false);
 
@@ -314,6 +327,7 @@ export function PreviewModal({
               <Button size="sm" variant="ghost" onClick={downloadText}><Download aria-hidden />{copy.downloadText}</Button>
               {target && target.storageMode !== "state_record" ? <Button size="sm" variant="ghost" disabled={locating} onClick={() => onLocate(target)}><FolderOpen aria-hidden />{copy.locate}</Button> : null}
               {target ? <Button size="sm" onClick={() => onChoose(target)}>{copy.addToTask}</Button> : null}
+              {canRemove && target ? <Button size="sm" variant="ghost" disabled={removing} onClick={() => onRemove(target)}><Trash2 aria-hidden />{removing ? copy.removing : copy.removeFromLibrary}</Button> : null}
             </div>
           </>
         ) : null}

@@ -487,7 +487,7 @@ export function createServerRuntimeServices({
   let requestWorkItemAutoSchedulerSweep = () => {};
   let enqueueWorkItemReportDeliveryBatch = () => ({ ok: false, reason: "delivery_unavailable" });
   const localContentCatalogService = createLocalContentCatalogService({
-    state, stateStorePath, now, autoIndex: true,
+    state, stateStorePath, now, persistStateSoon, store, autoIndex: true,
   });
   const localContentRetrievalService = createLocalContentRetrievalService({
     browseDirectories: localContentCatalogService.browseDirectories,
@@ -6509,6 +6509,7 @@ export function createServerRuntimeServices({
     previewLocalContent: localContentCatalogService.preview,
     previewLocalContentAsset: localContentCatalogService.previewAsset,
     refreshLocalContent: localContentCatalogService.refresh,
+    archiveLocalContent: localContentCatalogService.archive,
     getLocalContentHealth: localContentCatalogService.health,
     resolveLocalContentOriginal: localContentCatalogService.resolveOriginal,
     resolveLocalContentContainer: localContentCatalogService.resolveContainer,

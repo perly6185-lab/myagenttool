@@ -165,7 +165,7 @@ export async function collectLocalContent({
   }
 
   for (const item of state.channelKnowledgeItems ?? []) {
-    if (item.status !== "ready" || !item.markdownPath) continue;
+    if (item.status !== "ready" || item.archivedAt || !item.markdownPath) continue;
     const path = safeRelativePath(item.markdownPath);
     const id = contentId("article", item.ownerTeamId ?? LOCAL_TEAM_ID, item.id);
     if (selectedSources.has("articles")) {
