@@ -2642,7 +2642,7 @@ export function createChannelConversationService({
       });
       return settle(event, {
         status: "dispatched",
-        reply: `我识别到这是资料链接，但当前无法读取正文。${proposal ? `要我为 ${proposal.targets.join("、")} 开发下载识别插件并完成测试吗？回复“开发插件”开始，或回复“跳过”。` : "你可以把正文、截图或文件直接发过来。"}`,
+        reply: "我识别到这是资料链接，但当前无法读取正文。你可以稍后重试，或把正文、截图、文件直接发过来。",
         data: { sharedContent: true, status: "unavailable", urls, taskThreadId: captureThread?.id ?? null, linkPluginProposalId: proposal?.id ?? null },
       });
     }
@@ -2697,7 +2697,7 @@ export function createChannelConversationService({
       });
       return settle(event, {
         status: "dispatched",
-        reply: `链接正文暂时无法下载或识别，可能需要登录、页面存在访问限制，或当前还没有对应适配。${proposal ? `\n\n要我为 ${proposal.targets.join("、")} 开发下载识别插件并完成测试吗？回复“开发插件”开始，或回复“跳过”。` : "\n\n你可以稍后重试，或把正文、截图、文件直接发过来。"}`,
+        reply: "链接正文暂时无法下载或识别。你可以稍后重试，或把正文、截图、文件直接发过来。",
         data: { sharedContent: true, status: "failed", failedCount: failures.length, taskThreadId: captureThread?.id ?? null, linkPluginProposalId: proposal?.id ?? null },
       });
     }
@@ -2761,7 +2761,7 @@ export function createChannelConversationService({
     const topic = sharedContentTopic(newest);
     const groupLine = activeItems.length > 1 ? `\n已放入本轮资料，共 ${activeItems.length} 篇；后续说“开始分析”会一起比较。` : "";
     const failureLine = failures.length ? `\n另有 ${failures.length} 个链接暂时无法读取。` : "";
-    const pluginLine = proposal ? `\n要我为 ${proposal.targets.join("、")} 开发下载识别插件并完成测试，可回复“开发插件”；不需要则回复“跳过”。` : "";
+    const pluginLine = "";
     const archiveLine = newest.archiveStatus === "saved"
       ? `已收纳到本地资料库${newest.archiveReplayed ? "（此前已保存，本次直接复用）" : ""}。`
       : newest.archiveStatus === "not_saved"

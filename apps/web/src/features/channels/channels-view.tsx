@@ -240,7 +240,13 @@ export function ChannelsView() {
         </details>
       ) : null}
       {channels.length > 0 ? <QuickStartGuide /> : null}
-      <ArticleExtractorPluginsPanel />
+      <details className="rounded-lg border border-border px-4 py-3" data-testid="channel-advanced-settings">
+        <summary className="cursor-pointer text-sm font-medium">高级设置</summary>
+        <div className="mt-3 space-y-3">
+          <p className="text-xs text-muted-foreground">普通分享流程不需要配置这些选项。只有需要管理特殊站点时才打开。</p>
+          <ArticleExtractorPluginsPanel />
+        </div>
+      </details>
       {channels.length === 0 ? (
         <EmptyState
           title={t("channelsPage.empty")}
@@ -566,6 +572,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
   const [humanReplyDrafts, setHumanReplyDrafts] = useState<Record<string, string>>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const setSection = useUiStore((state) => state.setSection);
+  const openWorkItem = useUiStore((state) => state.openWorkItem);
   const today = new Date().toISOString().slice(0, 10);
   const usedToday = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
   const connectionLabel = ilinkConnectionLabel(t, channel);
@@ -845,7 +852,10 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                     </Badge>
                   </div>
                   <p className="mt-1 text-muted-foreground">{[item.author, item.publishedAt, item.provider].filter(Boolean).join(" · ")}</p>
-                  <a className="mt-1 block break-all text-primary hover:underline" href={item.canonicalUrl} target="_blank" rel="noreferrer">查看原文</a>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <a className="break-all text-primary hover:underline" href={item.canonicalUrl} target="_blank" rel="noreferrer">查看原文</a>
+                    {item.knowledgeItemId ? <Button variant="ghost" size="sm" onClick={() => setSection("localLibrary")}>查看我的资料</Button> : null}
+                  </div>
                 </div>
               ))}
             </div>
@@ -920,6 +930,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           onLoadMore={() => setInteractionCursor(interactionNextCursor)}
         /> : null}
 
+        {advancedOpen ? <>
         {/* /task target: the project inbound tasks are filed into as tracked
             GitHub issues. Approval-gated (mints a grant), same as enable. */}
         <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -1000,6 +1011,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
             <span className="text-muted-foreground">{t("channelsPage.unbound")}</span>
           )}
         </div>
+        </> : null}
 
         {advancedOpen && legacyTasks.length > 0 && (
           <div className="space-y-2 border-t border-border pt-3" data-testid="channel-task-operations">
@@ -1056,6 +1068,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                   {task?.actions.takeover ? <Button variant="ghost" size="sm" onClick={() => taskAction(task, "takeover")} disabled={pending}>{t("channelsPage.takeover")}</Button> : null}
                 </div>
                 <p className="mt-1 line-clamp-2 text-muted-foreground">{thread.summary}</p>
+                {thread.workItemId ? <Button className="mt-2" variant="secondary" size="sm" onClick={() => { openWorkItem(thread.workItemId!, { section: "overview" }); setSection("task"); }}>查看任务</Button> : null}
                 {thread.status === "awaiting_confirmation" ? <p className="mt-1 text-amber-600">请在微信回复“确认”开始，也可以继续补充或回复“取消”。</p> : null}
                 {thread.status === "waiting_user" ? <p className="mt-1 text-amber-600">等待你补充信息，直接在微信回复即可。</p> : null}
                 {thread.status === "waiting_approval" && ["approval", "delivery"].includes(thread.waitingFor ?? "") ? (

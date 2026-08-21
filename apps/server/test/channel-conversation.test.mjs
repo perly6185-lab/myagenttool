@@ -709,14 +709,15 @@ test("a user can naturally opt out of saving a shared link", async () => {
   assert.equal(harness.state.channelTaskThreads.length, 0);
 });
 
-test("a restricted article link fails its capture task and proposes a downloader plugin", async () => {
+test("a restricted article link fails its capture task with a simple recovery message", async () => {
   const harness = makeHarness({
     inspectSharedLink: async () => { throw Object.assign(new Error("article_download_challenge"), { code: "article_download_challenge" }); },
   });
 
   const result = await harness.receive("https://mp.weixin.qq.com/s/restricted").dispatched;
 
-  assert.match(result.reply, /开发下载识别插件并完成测试/);
+  assert.match(result.reply, /稍后重试/);
+  assert.doesNotMatch(result.reply, /插件|checksum|适配/);
   assert.equal(harness.state.channelEvents.at(-1).sharedContentStatus, "failed");
   assert.equal(harness.state.channelTaskThreads.length, 1);
   assert.equal(harness.state.channelTaskThreads[0].status, "failed");

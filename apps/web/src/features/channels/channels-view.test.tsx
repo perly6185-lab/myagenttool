@@ -24,7 +24,7 @@ vi.mock("@/data/use-console-state", () => ({ useConsoleState: () => ({ data: {
     id: "conv_1", channelId: "chn_1", externalUserId: "wx_alice", status: "active",
     sharedContentContext: {
       status: "analyzed", activeItemIds: ["sct_1"],
-      items: [{ id: "sct_1", status: "ready", provider: "wechat", title: "移动端知识助手", author: "示例作者", canonicalUrl: "https://mp.weixin.qq.com/s/example", publishedAt: "2026-08-14", archiveStatus: "saved" }],
+      items: [{ id: "sct_1", status: "ready", provider: "wechat", title: "移动端知识助手", author: "示例作者", canonicalUrl: "https://mp.weixin.qq.com/s/example", publishedAt: "2026-08-14", archiveStatus: "saved", knowledgeItemId: "content_1" }],
     },
   }],
   channelTaskRequests: [{ id: "ctr_1", channelId: "chn_1", projectId: "prj_1", issueNumber: 42, issueUrl: "https://example.test/42", title: "Repair failed release", status: "routed", stage: "run_failed", autoRunId: "run_1", runStatus: "failed", invocationId: "inv_1", invocationStatus: "failed", resultSummary: "Bridge disconnected", deliveryStatus: "failed_terminal", actions: { retry: true, reroute: true, takeover: true } }],
@@ -43,6 +43,7 @@ describe("ChannelsView task operations", () => {
     expect(screen.getByText("移动端知识助手")).toBeTruthy();
     expect(screen.getByText("已分析")).toBeTruthy();
     expect(screen.getByText("已收纳")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "查看我的资料" })).toBeTruthy();
     expect(screen.queryByTestId("channel-diagnostics-summary")).toBeNull();
     expect(screen.queryByText("Issue #42")).toBeNull();
     fireEvent.click(screen.getByText("高级信息"));

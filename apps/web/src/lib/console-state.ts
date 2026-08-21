@@ -1768,6 +1768,7 @@ export interface ChannelConversation {
       publishedAt?: string | null;
       addedAt?: string | null;
       archiveStatus?: "saved" | "not_saved" | "preview" | string;
+      knowledgeItemId?: string | null;
       archiveReplayed?: boolean;
       archiveWarningCount?: number;
     }>;
