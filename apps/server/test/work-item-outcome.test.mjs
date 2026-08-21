@@ -112,3 +112,31 @@ test("marks a terminal run without a readable result as missing", () => {
   assert.equal(outcome.status, "missing");
   assert.equal(outcome.fullReport, null);
 });
+
+test("projects a managed local-content output without exposing its application-data path", () => {
+  const outcome = projectWorkItemOutcome({
+    item: {
+      lastProgressSummary: "已收纳文章到本地资料库。",
+      outputAssets: [{
+        path: "knowledge/private/article.md",
+        originalName: "客户背调方法.md",
+        contentId: "lc_0123456789abcdef0123456789abcdef",
+      }],
+    },
+    latestRun: null,
+    fileContext: { projectId: "prj_1", worktreeId: null, scopes: [] },
+  });
+  assert.equal(outcome.status, "available");
+  assert.equal(outcome.summary, "已收纳文章到本地资料库。");
+  assert.deepEqual(outcome.files, ["客户背调方法.md"]);
+  assert.deepEqual(outcome.fileEntries, [{
+    name: "客户背调方法.md",
+    path: null,
+    contentId: "lc_0123456789abcdef0123456789abcdef",
+    projectId: "prj_1",
+    worktreeId: null,
+    status: "available",
+    preview: "document",
+  }]);
+  assert.doesNotMatch(JSON.stringify(outcome), /knowledge\/private/);
+});

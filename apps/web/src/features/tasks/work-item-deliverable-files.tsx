@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { api } from "@/data/use-console-actions";
+import { localContentApi } from "@/features/local-content/local-content-api";
 import type { WorkItemOutcomeFile } from "./task-view-types";
 import {
   imageMime,
@@ -14,6 +15,12 @@ import {
 
 export const MARKDOWN_DELIVERY_EXTENSIONS = new Set([".md", ".mdx"]);
 export const IMAGE_DELIVERY_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif"]);
+
+export function deliverableFileKey(file: WorkItemOutcomeFile) {
+  return file.contentId
+    ? `local-content:${file.contentId}`
+    : `${file.projectId ?? "project"}:${file.worktreeId ?? "base"}:${file.path ?? file.name}`;
+}
 
 type DeliverableFileCopy = {
   noDeliverableFiles: string;
@@ -49,16 +56,18 @@ export function DeliveryMarkdownDocument({
   const [imageSources, setImageSources] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (!file.projectId || !file.path) return undefined;
+    if (!file.contentId && (!file.projectId || !file.path)) return undefined;
     let cancelled = false;
     const objectUrls: string[] = [];
     const references = markdownImageReferences(document.body);
     if (!references.length) return undefined;
     void Promise.all(references.map(async (reference) => {
-      const assetPath = resolveDeliveryAssetPath(file.path!, reference);
+      const assetPath = resolveDeliveryAssetPath(file.path ?? "article.md", reference);
       if (!assetPath) return null;
       try {
-        const bytes = await api.projectAssetPreviewBytes(file.projectId!, assetPath, file.worktreeId ?? undefined);
+        const bytes = file.contentId
+          ? await localContentApi.previewAssetBytes(file.contentId, assetPath)
+          : await api.projectAssetPreviewBytes(file.projectId!, assetPath, file.worktreeId ?? undefined);
         const source = URL.createObjectURL(new Blob([bytes], { type: imageMime(assetPath) }));
         objectUrls.push(source);
         return [reference, source] as const;
@@ -76,7 +85,7 @@ export function DeliveryMarkdownDocument({
       cancelled = true;
       for (const source of objectUrls) URL.revokeObjectURL(source);
     };
-  }, [document.body, file.path, file.projectId, file.worktreeId]);
+  }, [document.body, file.contentId, file.path, file.projectId, file.worktreeId]);
 
   const metadata = [
     document.metadata.author ? `${copy.deliverablePreviewAuthor}: ${document.metadata.author}` : null,
@@ -130,26 +139,29 @@ export function DeliverableFileList({
     <>
       <ul className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
         {visible.map((file) => {
-          const key = `${file.projectId ?? "project"}:${file.worktreeId ?? "base"}:${file.path ?? file.name}`;
+          const key = deliverableFileKey(file);
           const opening = openingKey === key;
           const canOpen = file.status === "available"
-            && Boolean(file.projectId && file.path)
-            && (file.preview === "document" || Boolean(file.worktreeId));
-          const canReveal = file.status === "available" && Boolean(file.projectId && file.path);
+            && (Boolean(file.contentId)
+              || (Boolean(file.projectId && file.path) && (file.preview === "document" || Boolean(file.worktreeId))));
+          const canReveal = file.status === "available" && Boolean(file.contentId || (file.projectId && file.path));
           const revealing = revealingKey === key;
           const reveal = async () => {
-            if (!file.projectId || !file.path) return;
             setRevealError(null);
             setRevealingKey(key);
             try {
-              if (revealBridge) {
+              if (file.contentId) {
+                await localContentApi.reveal(file.contentId);
+              } else if (file.projectId && file.path && revealBridge) {
                 await revealBridge({
                   projectId: file.projectId,
                   relativePath: file.path,
                   ...(file.worktreeId ? { worktreeId: file.worktreeId } : {}),
                 });
-              } else {
+              } else if (file.projectId && file.path) {
                 await api.revealProjectAsset(file.projectId, file.path, file.worktreeId ?? undefined);
+              } else {
+                throw new Error("deliverable_file_unavailable");
               }
             } catch {
               setRevealError(copy.deliverableFolderUnavailable);

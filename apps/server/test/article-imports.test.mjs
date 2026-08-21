@@ -316,6 +316,56 @@ test("uses provider-specific article roots and metadata for Juejin", async () =>
   assert.doesNotMatch(result.markdownPreview, /推荐内容/);
 });
 
+test("applies an approved declarative extractor without widening network or code execution", async () => {
+  const extractorPlugin = {
+    checksum: "abc123",
+    manifest: {
+      schemaVersion: 1,
+      id: "example.article",
+      name: "Example articles",
+      version: "1.0.0",
+      kind: "article_extractor",
+      hosts: ["news.example.com"],
+      extraction: {
+        content: ["main.story"],
+        title: ["h1.headline"],
+        author: [".byline"],
+        publishedAt: ["time.published"],
+      },
+      minimumTextLength: 20,
+    },
+  };
+  const result = await inspectArticle({
+    url: "https://news.example.com/post/1",
+    resolveHostname: PUBLIC_DNS,
+    extractorPlugin,
+    fetchImpl: async () => htmlResponse(`
+      <title>Generic title</title>
+      <h1 class="headline">插件标题</h1>
+      <span class="byline">插件作者</span>
+      <time class="published" datetime="2026-08-19T12:00:00+08:00"></time>
+      <main class="story"><p>这是由动态采集规则精确选中的文章正文内容。</p></main>
+      <aside><p>不应进入结果的推荐内容</p></aside>
+    `),
+  });
+  assert.equal(result.title, "插件标题");
+  assert.equal(result.author, "插件作者");
+  assert.equal(result.publishedAt, "2026-08-19");
+  assert.match(result.markdownPreview, /动态采集规则/);
+  assert.doesNotMatch(result.markdownPreview, /推荐内容/);
+  assert.deepEqual(result.extractorPlugin, { id: "example.article", version: "1.0.0", checksum: "abc123" });
+
+  await assert.rejects(
+    inspectArticle({
+      url: "https://news.example.com/post/short",
+      resolveHostname: PUBLIC_DNS,
+      extractorPlugin,
+      fetchImpl: async () => htmlResponse('<main class="story"><p>太短</p></main>'),
+    }),
+    (error) => error.code === "article_plugin_content_incomplete",
+  );
+});
+
 test("writes sanitized standalone HTML with localized audio, video, and poster", async (t) => {
   const worktreePath = await mkdtemp(join(tmpdir(), "myagenttool-article-html-"));
   t.after(() => rm(worktreePath, { recursive: true, force: true }));

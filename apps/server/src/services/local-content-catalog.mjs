@@ -4,7 +4,7 @@ import {
   readFileSync,
   watch as watchFileSystem,
 } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, posix, resolve } from "node:path";
 
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import {
@@ -43,6 +43,7 @@ import {
 } from "./local-content-catalog-store.mjs";
 import {
   boundedText,
+  contentId,
   parseJson,
 } from "./local-content-records.mjs";
 import {
@@ -75,8 +76,17 @@ const MAX_SEARCH_LIMIT = 100;
 const MAX_DIRECTORY_LIMIT = 100;
 const MAX_PREVIEW_BYTES = 1024 * 1024;
 const MAX_RETRIEVAL_CHUNK_CHARACTERS = 32 * 1024;
+const MAX_MANAGED_PREVIEW_ASSET_BYTES = 10 * 1024 * 1024;
 const DEFAULT_INDEX_DEBOUNCE_MS = 250;
 const MAX_ORIGINAL_WATCH_DIRECTORIES = 512;
+const MANAGED_PREVIEW_IMAGE_TYPES = new Map([
+  [".avif", "image/avif"],
+  [".gif", "image/gif"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+]);
 
 export function createLocalContentCatalogService({
   state,
@@ -99,6 +109,35 @@ export function createLocalContentCatalogService({
   const originalWatchers = new Map();
   let started = false;
   let closed = false;
+
+  const managedChannelKnowledgeRow = (requestedId, teamId) => {
+    const item = (state.channelKnowledgeItems ?? []).find((candidate) =>
+      candidate?.status === "ready"
+      && (candidate.ownerTeamId ?? LOCAL_TEAM_ID) === teamId
+      && contentId("article", candidate.ownerTeamId ?? LOCAL_TEAM_ID, candidate.id) === requestedId) ?? null;
+    if (!item?.markdownPath) return null;
+    return {
+      id: requestedId,
+      owner_team_id: teamId,
+      project_id: item.projectId ?? null,
+      work_item_id: item.workItemId ?? null,
+      kind: "article",
+      title: item.title ?? "未命名资料",
+      summary: item.title ?? "未命名资料",
+      storage_mode: "managed",
+      root_kind: "application_data",
+      root_id: "channel-knowledge",
+      relative_path: item.markdownPath,
+      state_collection: null,
+      state_id: null,
+      mime_type: "text/markdown",
+      size: null,
+      sha256: null,
+      source_type: "channel_article_import",
+      source_id: item.canonicalUrl ?? item.sourceUrl ?? item.id,
+      metadata_json: JSON.stringify({ channelKnowledgeItemId: item.id }),
+    };
+  };
 
   const database = () => {
     databasePromise ??= Promise.resolve(openDatabase({ path: databasePath }));
@@ -296,8 +335,9 @@ export function createLocalContentCatalogService({
   async function resolveOriginal({ contentId, projectId = null } = {}, actor = null) {
     const db = await database();
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const requestedId = String(contentId ?? "");
     const row = db.prepare("SELECT * FROM local_content_records WHERE id = ? AND owner_team_id = ?")
-      .get(String(contentId ?? ""), teamId);
+      .get(requestedId, teamId) ?? managedChannelKnowledgeRow(requestedId, teamId);
     if (!row) return { ok: false, status: 404, error: "local_content_not_found" };
     if (projectId && row.project_id && row.project_id !== String(projectId)) {
       return { ok: false, status: 404, error: "local_content_not_found" };
@@ -648,6 +688,36 @@ export function createLocalContentCatalogService({
     };
   }
 
+  async function previewAsset({ contentId, relativePath } = {}, actor = null) {
+    const resolved = await resolveOriginal({ contentId }, actor);
+    if (!resolved.ok) return { status: resolved.status, error: resolved.error };
+    if (resolved.record?.kind !== "article" || resolved.sourceType !== "file" || !resolved.localPath) {
+      return { status: 409, error: "local_content_asset_not_supported" };
+    }
+    const requested = String(relativePath ?? "").replaceAll("\\", "/");
+    if (!requested || requested.length > 1_000 || requested.startsWith("/") || /^[a-z]:\//i.test(requested)
+      || requested.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
+      return { status: 400, error: "local_content_asset_path_invalid" };
+    }
+    const mimeType = MANAGED_PREVIEW_IMAGE_TYPES.get(posix.extname(requested).toLowerCase());
+    if (!mimeType) return { status: 415, error: "local_content_asset_type_unsupported" };
+    const inspected = inspectOriginal(dirname(resolved.localPath), requested);
+    if (!inspected.available) return { status: 404, error: "local_content_asset_not_found" };
+    if (inspected.size > MAX_MANAGED_PREVIEW_ASSET_BYTES) {
+      return { status: 413, error: "local_content_asset_too_large" };
+    }
+    try {
+      return {
+        status: 200,
+        bytes: readFileSync(inspected.absolutePath),
+        mimeType,
+        originalName: basename(inspected.absolutePath),
+      };
+    } catch {
+      return { status: 409, error: "local_content_asset_unreadable" };
+    }
+  }
+
   async function refresh({ contentId } = {}, actor = null) {
     const db = await database();
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
@@ -689,7 +759,7 @@ export function createLocalContentCatalogService({
       status: 200,
       body: {
         health: ids.map((id) => {
-          const row = byId.get(id);
+          const row = byId.get(id) ?? managedChannelKnowledgeRow(id, teamId);
           if (!row) return { contentId: id, state: "missing_record", available: false, reason: "local_content_not_found" };
           if (row.storage_mode === "state_record") {
             const resolved = resolveStateRecord(row, state);
@@ -698,7 +768,8 @@ export function createLocalContentCatalogService({
           const locator = catalogFileLocator({ row, state, stateStorePath, mailArchiveRoot });
           const inspected = inspectOriginal(locator?.rootPath, locator?.relativePath);
           if (!inspected.available) return { contentId: id, state: "missing", available: false, reason: inspected.reason, canRefresh: true, canReveal: Boolean(confinedExistingContainer(locator?.rootPath, locator?.relativePath)) };
-          const changed = Number(row.size) !== inspected.size || (row.modified_at && row.modified_at !== inspected.modifiedAt);
+          const changed = (row.size != null && Number(row.size) !== inspected.size)
+            || Boolean(row.modified_at && row.modified_at !== inspected.modifiedAt);
           return { contentId: id, state: changed ? "changed" : "ready", available: true, reason: changed ? "local_content_original_changed" : null, canRefresh: true, canReveal: true };
         }),
       },
@@ -708,8 +779,9 @@ export function createLocalContentCatalogService({
   async function resolveContainer({ contentId } = {}, actor = null) {
     const db = await database();
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const requestedId = String(contentId ?? "");
     const row = db.prepare("SELECT * FROM local_content_records WHERE id = ? AND owner_team_id = ?")
-      .get(String(contentId ?? ""), teamId);
+      .get(requestedId, teamId) ?? managedChannelKnowledgeRow(requestedId, teamId);
     if (!row) return { ok: false, status: 404, error: "local_content_not_found" };
     if (row.storage_mode === "state_record") return unresolved("local_content_original_not_file", 409);
     const locator = catalogFileLocator({ row, state, stateStorePath, mailArchiveRoot });
@@ -739,7 +811,7 @@ export function createLocalContentCatalogService({
   }
 
   const service = {
-    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, browseDirectories, get, preview, readTextChunk, refresh, health,
+    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, browseDirectories, get, preview, previewAsset, readTextChunk, refresh, health,
     resolveOriginal, resolveContainer, stats, start, close, databasePath,
   };
   return service;

@@ -56,6 +56,12 @@ const USER_FACING_DELIVERY_INSTRUCTIONS =
   "contract is missing or contradictory, stop and request clarification instead of declaring a " +
   "final result.";
 
+const MISSING_INPUT_INSTRUCTIONS =
+  "If required input, authorization, source material, or a business decision is missing, do not " +
+  "guess and do not create placeholder deliverables. Explain the exact missing items and end the " +
+  "final response with one machine-readable line: NeedsInput: {\"questions\":[\"specific question\"]}. " +
+  "Do not emit that line when the requested result was completed.";
+
 const READ_ONLY_TASK_INSTRUCTIONS =
   "Complete the requested inspection using read-only operations. Do not create, modify, delete, " +
   "move, rename, stage, commit, or generate files, including report files. Return the requested " +
@@ -92,6 +98,18 @@ const ROLE_INSTRUCTIONS = {
     "repository's existing style, and add or update tests where the change warrants them. Do not " +
     "create a Git commit; the platform stages and commits the work after your run succeeds. " +
     "Summarize what changed and how you verified it.",
+  office:
+    "Complete the requested office or business-data task using the supplied task materials. Treat " +
+    "CSV/Excel and other user files as the source of truth, preserve the originals, and place newly " +
+    "created deliverables under deliverables/office/. This is not a source-code implementation: do " +
+    "not invent application changes, tests, pull requests, or repository refactors. For a write or " +
+    "conversion, work only on governed copies and reopen the result to verify filenames, sheets, " +
+    "columns, row counts, formulas, and non-ASCII text as applicable. Report the output file clearly.",
+  general:
+    "Complete the concrete user request using the supplied materials and available governed capabilities. " +
+    "Do not reinterpret the task as software development and do not modify product source code unless the " +
+    "request explicitly asks for programming. Put any newly created user deliverables under " +
+    "deliverables/general/, verify the requested result, and explain it in ordinary user language.",
   design:
     "Do NOT implement a fix or feature. Explore the codebase and produce a detailed design: " +
     "the problem, two or three viable options with trade-offs, a recommended option with " +
@@ -104,6 +122,19 @@ const ROLE_INSTRUCTIONS = {
     "create self-contained HTML mockups under design/ (inline CSS only — no scripts, no external " +
     "resources) for a richer preview, but an HTML mockup NEVER replaces the ASCII wireframe in " +
     "BRIEF.md. design/ artifacts are not product code.",
+  creative:
+    "Create the requested visual, brand, or media-design deliverable. Do not reinterpret it as a " +
+    "software architecture or UI wireframe task, and do not explore or modify product code unless " +
+    "the user explicitly asked for that. Use available image/rendering tools when needed and save " +
+    "final assets plus a short manifest under deliverables/creative/. Verify dimensions, format, " +
+    "legibility, and that every requested variant exists. If the required visual tool or source " +
+    "material is unavailable, request it instead of returning a text-only substitute.",
+  content:
+    "Create the requested article, copy, social-media post, script, storyboard, or related content. " +
+    "Do not treat it as a code change. Use supplied references as evidence, distinguish facts from " +
+    "assumptions, preserve the user's requested voice and platform constraints, and save the final " +
+    "deliverable under deliverables/content/. Reopen it and verify structure, language, length, and " +
+    "required sections before reporting completion.",
   prototype:
     "Build a small, time-boxed, runnable prototype (a SPIKE) to reduce the uncertainty in this " +
     "issue. Spike code is throwaway — do not polish it or wire it into production paths. Write " +
@@ -238,5 +269,5 @@ export function roleAutoRunPrompt(item, { path = "develop", issueBody = null, ve
     verifyCommand && (path === "develop" || path === "prototype")
       ? `\n\nYour change will be verified by running: \`${String(verifyCommand).slice(0, 300)}\`. Make sure it passes before you finish.`
       : "";
-  return `${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}\n\n${USER_FACING_DELIVERY_INSTRUCTIONS}\n\n${SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS}${verifyLine}`;
+  return `${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}\n\n${MISSING_INPUT_INSTRUCTIONS}\n\n${USER_FACING_DELIVERY_INSTRUCTIONS}\n\n${SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS}${verifyLine}`;
 }

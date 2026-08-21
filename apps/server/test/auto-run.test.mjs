@@ -1015,6 +1015,74 @@ test("reaction blocks (no PR) when the agent produced no changes (F1)", async ()
   assert.equal(calls.pr.length, 0);
 });
 
+test("a no-diff agent request for missing business input waits for the user instead of reporting a PR failure", async () => {
+  const { svc, calls } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
+  const { invocation, autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 62, title: "Prepare the ledger", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-62-ledger",
+  });
+  await svc.advanceAutoRunForInvocation({
+    ...invocation,
+    status: "succeeded",
+    result: { output: { latestMessage: "我还需要你提供原始 Excel 文件；收到后才能可靠整理台账。" } },
+  });
+
+  assert.equal(autoRun.status, "needs_input");
+  assert.match(autoRun.report, /原始 Excel 文件/);
+  assert.equal(autoRun.error, null);
+  assert.equal(calls.publish.length, 0);
+  assert.equal(calls.pr.length, 0);
+});
+
+test("a structured NeedsInput marker parks any work path and can resume the same run", async () => {
+  const { svc, calls } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
+  const { invocation, autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 63, title: "Prepare the customer ledger", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-63-ledger",
+  });
+  await svc.advanceAutoRunForInvocation({
+    ...invocation,
+    status: "succeeded",
+    result: { output: { latestMessage: "I inspected the request but need the source workbook.\nNeedsInput: {\"questions\":[\"Please upload the source workbook\"]}" } },
+  });
+
+  assert.equal(autoRun.status, "needs_input");
+  assert.equal(autoRun.decision.path, "develop");
+  assert.deepEqual(autoRun.decision.clarifyingQuestions, ["Please upload the source workbook"]);
+  assert.doesNotMatch(autoRun.report, /NeedsInput:/);
+
+  const resumed = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use customers.xlsx in the project inputs." });
+  assert.equal(resumed.resumed, true);
+  assert.equal(autoRun.status, "running");
+  assert.equal(calls.createInvocation.length, 2);
+});
+
+test("a local office run delivers governed files without running code verification or opening a PR", async () => {
+  const { svc, calls } = makeAutoRun({
+    decideIssuePath: async () => ({ path: "office", workKind: "office", spawnChildIssues: false, confidence: 0.95, rationale: "Office workbook requested.", clarifyingQuestions: [] }),
+    commit: { committed: true, hasCommits: true },
+    listWorktreeChangedFiles: async () => ["deliverables/office/customer-ledger.xlsx"],
+  });
+  const { invocation, autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 64, title: "整理客户台账", url: null, state: "open" },
+    localIssueId: "wi_office_delivery",
+    agentId: "agt_1",
+    name: "local-64-office",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: { summary: "客户台账已生成并复核。" } });
+
+  assert.equal(autoRun.status, "done");
+  assert.deepEqual(autoRun.deliveryReport.changedFiles, ["deliverables/office/customer-ledger.xlsx"]);
+  assert.equal(calls.verify.length, 0);
+  assert.equal(calls.publish.length, 0);
+  assert.equal(calls.pr.length, 0);
+});
+
 test("startAutoRun records a heuristic decision (path + legacy intent) from the title", async () => {
   const { svc } = makeAutoRun();
   const { autoRun } = await svc.startAutoRun({
@@ -1357,6 +1425,24 @@ test("a no-diff read-only Channel request returns a report even if routing fell 
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: { summary: "文件：README.md、package.json、pnpm-lock.yaml" } });
   assert.equal(autoRun.status, "report_posted");
   assert.match(autoRun.report, /README\.md/);
+});
+
+test("a legitimate empty read-only result is not mistaken for a request for user input", async () => {
+  const { svc } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 732, title: "只读查找过期报价文件", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-732-read-only-empty",
+    operationIntent: { accessMode: "read_only", forbiddenActions: ["write"] },
+  });
+  await svc.advanceAutoRunForInvocation({
+    ...invocation,
+    status: "succeeded",
+    result: { summary: "未找到符合条件的文件，这是本次只读查询结果。" },
+  });
+  assert.equal(autoRun.status, "report_posted");
+  assert.match(autoRun.report, /未找到符合条件的文件/);
 });
 
 test("reaction fails when the commit itself errors (F1)", async () => {
@@ -2986,7 +3072,7 @@ test("E3: a reserved clarify Run waits without a worktree and materializes only 
   assert.ok(state.workItems[0].executionContractConfirmedAt);
 });
 
-test("E3: answerClarify refuses non-clarify / non-needs_input runs + empty answers", async () => {
+test("E3: answerClarify refuses runs that are not waiting for input + empty answers", async () => {
   const { svc } = makeAutoRun({ decideIssuePath: clarifyDecision, commit: { committed: false, hasCommits: false } });
   const { autoRun, invocation } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 111, title: "Add the cache layer", url: null, state: "open" }, agentId: "agt_1", name: "i-111" });
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
@@ -2994,7 +3080,7 @@ test("E3: answerClarify refuses non-clarify / non-needs_input runs + empty answe
   const { svc: svc2 } = makeAutoRun({ commit: { committed: true, hasCommits: true } });
   const r2 = await svc2.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 112, title: "Add the cache layer", url: null, state: "open" }, agentId: "agt_1", name: "i-112" });
   await svc2.advanceAutoRunForInvocation({ ...r2.invocation, status: "succeeded" });
-  await assert.rejects(() => svc2.answerClarify(r2.autoRun.id, { answers: "x" }), /Only a clarify run/);
+  await assert.rejects(() => svc2.answerClarify(r2.autoRun.id, { answers: "x" }), /Only a run awaiting input/);
 });
 
 test("E3: an unavailable agent does not consume the clarification answer", async () => {

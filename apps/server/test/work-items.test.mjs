@@ -1275,7 +1275,7 @@ test("adds and removes scoped local content references without copying bytes", a
   assert.deepEqual(removed.body.workItem.localContentRefs, []);
 });
 
-test("AI clarification is exposed as input work instead of an approval", () => {
+test("AI execution input is exposed as input work instead of an approval for any route", () => {
   const { service, state } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "Clarify scope" }, ACTOR_A).body.workItem;
   state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "ar_question" }];
@@ -1284,7 +1284,7 @@ test("AI clarification is exposed as input work instead of an approval", () => {
     status: "needs_input",
     phase: "waiting_for_input",
     createdAt: "2026-07-24T00:30:00.000Z",
-    decision: { path: "clarify", clarifyingQuestions: ["Include archived projects?"] },
+    decision: { path: "office", clarifyingQuestions: ["Include archived projects?"] },
   }];
 
   const attention = service.listAttention({}, ACTOR_A).body;

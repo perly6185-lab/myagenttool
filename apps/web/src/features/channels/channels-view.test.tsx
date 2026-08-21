@@ -20,6 +20,13 @@ const action = vi.hoisted(() => ({
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: () => ({ data: {
   channelOperations: [{ id: "chn_1", provider: "wecom", name: "Ops", status: "enabled", readiness: { callback: true }, ready: true, health: "ok", capabilityAllowlist: [], counts: { identities: 1, conversations: 1, events: 1, deliveries: 1, failedDeliveries: 0, injectionFlagged: 0 }, lastInboundAt: "2026-08-13T12:00:00.000Z", lastOutboundAt: "2026-08-13T12:01:00.000Z", lastDeliveredAt: "2026-08-13T12:01:00.000Z", pipeline: { inbound: { imported: 1 }, outbound: { delivered: 1 } } }],
   channelDeliveries: [], projects: [],
+  channelConversations: [{
+    id: "conv_1", channelId: "chn_1", externalUserId: "wx_alice", status: "active",
+    sharedContentContext: {
+      status: "analyzed", activeItemIds: ["sct_1"],
+      items: [{ id: "sct_1", status: "ready", provider: "wechat", title: "移动端知识助手", author: "示例作者", canonicalUrl: "https://mp.weixin.qq.com/s/example", publishedAt: "2026-08-14", archiveStatus: "saved" }],
+    },
+  }],
   channelTaskRequests: [{ id: "ctr_1", channelId: "chn_1", projectId: "prj_1", issueNumber: 42, issueUrl: "https://example.test/42", title: "Repair failed release", status: "routed", stage: "run_failed", autoRunId: "run_1", runStatus: "failed", invocationId: "inv_1", invocationStatus: "failed", resultSummary: "Bridge disconnected", deliveryStatus: "failed_terminal", actions: { retry: true, reroute: true, takeover: true } }],
 } }) }));
 vi.mock("@/data/use-console-actions", () => ({
@@ -32,6 +39,10 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 describe("ChannelsView task operations", () => {
   it("defaults to a simple view and reveals diagnostics only on demand", async () => {
     render(<ChannelsView />);
+    expect(screen.getByTestId("channel-shared-materials").textContent).toContain("最近分享的资料（1）");
+    expect(screen.getByText("移动端知识助手")).toBeTruthy();
+    expect(screen.getByText("已分析")).toBeTruthy();
+    expect(screen.getByText("已收纳")).toBeTruthy();
     expect(screen.queryByTestId("channel-diagnostics-summary")).toBeNull();
     expect(screen.queryByText("Issue #42")).toBeNull();
     fireEvent.click(screen.getByText("高级信息"));

@@ -8,6 +8,7 @@ import { validSessionCsrf } from "../services/identity-security.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
 import { handleApplicationRoutes } from "../routes/applications.mjs";
+import { handleArticleExtractorPluginRoutes } from "../routes/article-extractor-plugins.mjs";
 import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
@@ -152,6 +153,11 @@ export function createHttpServer({
   createArticleDerivative,
   listArticleDerivatives,
   getArticleDerivative,
+  listArticleExtractorPlugins,
+  planArticleExtractorPluginInstall,
+  installArticleExtractorPlugin,
+  disableArticleExtractorPlugin,
+  activateArticleExtractorPlugin,
   addWorkItemMaterials,
   removeWorkItemMaterial,
   restoreWorkItemMaterial,
@@ -521,6 +527,7 @@ export function createHttpServer({
   readRetrievedLocalContent,
   getLocalContentCatalogStats,
   previewLocalContent,
+  previewLocalContentAsset,
   refreshLocalContent,
   getLocalContentHealth,
   resolveLocalContentOriginal,
@@ -859,7 +866,7 @@ export function createHttpServer({
         req, res, url, sendJson, readJson, actor,
         rebuildLocalContentCatalog, searchLocalContent, browseLocalContentDirectories, describeLocalContentRetrieval,
         retrieveLocalContentDirectories, retrieveLocalContentSummaries, readRetrievedLocalContent,
-        getLocalContentCatalogStats, previewLocalContent,
+        getLocalContentCatalogStats, previewLocalContent, previewLocalContentAsset,
         refreshLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
       })) {
         return;
@@ -1288,6 +1295,22 @@ export function createHttpServer({
       }
 
       if (await handleApprovalGrantRoutes({ req, res, url, sendJson, readJson, actor, issueApprovalGrant })) {
+        return;
+      }
+
+      if (await handleArticleExtractorPluginRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        actor,
+        listPlugins: listArticleExtractorPlugins,
+        planInstall: planArticleExtractorPluginInstall,
+        installPlugin: installArticleExtractorPlugin,
+        disablePlugin: disableArticleExtractorPlugin,
+        activatePlugin: activateArticleExtractorPlugin,
+      })) {
         return;
       }
 

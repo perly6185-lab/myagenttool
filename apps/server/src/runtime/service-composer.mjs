@@ -1,6 +1,6 @@
 import { UNTRUSTED_INPUT_LABEL, UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
 import { createOwnedAlertRuntime, enrichAlertOwnership } from "./alert-composition.mjs";
-import { teamOf } from "./auth.mjs";
+import { LOCAL_TEAM_ID, teamOf } from "./auth.mjs";
 import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
@@ -140,7 +140,9 @@ import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
-import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree } from "../services/article-imports.mjs";
+import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree, inspectArticle } from "../services/article-imports.mjs";
+import { createArticleExtractorPluginService } from "../services/article-extractor-plugins.mjs";
+import { createChannelKnowledgeService } from "../services/channel-knowledge.mjs";
 import { createSessionManager } from "../services/session-manager.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createTemplateLearningService } from "../services/template-learning.mjs";
@@ -607,6 +609,17 @@ export function createServerRuntimeServices({
   });
   releaseRoutineLedgerReservations = ledgerUpsertService.cancelRoutineReservations;
   const articleImportConfig = resolveArticleImportConfig();
+  const articleExtractorPluginService = createArticleExtractorPluginService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon: persistArticleStateSoon,
+    validateApprovalToken,
+    store,
+  });
+  const resolveArticleExtractor = (url, ownerTeamId) =>
+    articleExtractorPluginService.resolveForUrl(url, ownerTeamId);
   const articleImportService = createArticleImportService({
     state,
     now,
@@ -622,6 +635,21 @@ export function createServerRuntimeServices({
     },
     startInvocationIfAllowed: (invocation, agent) =>
       invocationService?.startInvocationIfAllowed(invocation, agent),
+    resolveExtractorPlugin: resolveArticleExtractor,
+    store,
+  });
+  const channelKnowledgeService = createChannelKnowledgeService({
+    state,
+    stateStorePath,
+    now,
+    nextId,
+    persistStateSoon: persistArticleStateSoon,
+    maxConcurrent: articleImportConfig.maxConcurrent,
+    maxPending: articleImportConfig.maxPending,
+    importArticle: (input) => importArticleToWorktree({
+      ...input,
+      extractorPlugin: resolveArticleExtractor(input.url, input.ownerTeamId),
+    }),
     store,
   });
   // Session manager: login-state observability + keep-alive for profile-backed
@@ -2372,6 +2400,8 @@ export function createServerRuntimeServices({
   const inferChannelTaskDomain = (text) => {
     const value = String(text ?? "").toLowerCase();
     if (/(代码|开发|修复|bug|接口|部署|测试|仓库|分支|编译|程序)/i.test(value)) return "development";
+    if (/(界面设计|交互设计|产品设计|网页设计|应用设计|原型图|线框图|组件层级|页面流程|\b(?:ui|ux|product design|app design|web design|mockup|wireframe|prototype)\b)/i.test(value)) return "product_design";
+    if (/(视觉设计|平面设计|品牌设计|海报|封面|配色|排版|设计稿|效果图|图标|插画|logo|宣传图|横幅|缩略图|\b(?:poster|visual design|graphic design|illustration|banner|thumbnail|logo)\b)/i.test(value)) return "creative";
     if (/(文章|图片|视频|音频|配图|短视频|公众号|小红书|素材|脚本|剪辑|创作)/i.test(value)) return "content";
     if (/(报价|客户|订单|发货|物流|汇款|付款|收款|采购|库存|合同|报销|邮件|表格|对账)/i.test(value)) return "office";
     return "general";
@@ -2413,6 +2443,12 @@ export function createServerRuntimeServices({
       || /(报价|报价单|报告|通知|邮件|合同|文件|图片|视频|文章|内容|附件)/i.test(text);
     const unknownFields = [];
     const requiredFields = [];
+    const sourceDependentOfficeTask = /(?:整理|汇总|合并|转换|导入|提取|核对|清洗|统计|登记|更新|修改|补全|处理).{0,24}(?:资料|数据|反馈|台账|表格|工作簿|报价|订单|合同|发货|回款|售后|客户|名单|报表)|(?:资料|数据|反馈|台账|表格|工作簿|报价|订单|合同|发货|回款|售后|客户|名单|报表).{0,24}(?:整理|汇总|合并|转换|导入|提取|核对|清洗|统计|登记|更新|修改|补全|处理)/i.test(text);
+    const explicitlyBlankTemplate = /(?:空白|新建|从零|模板|示例).{0,12}(?:台账|表格|工作簿|报表)|(?:台账|表格|工作簿|报表).{0,12}(?:空白|新建|从零|模板|示例)/i.test(text);
+    if (sourceDependentOfficeTask && !explicitlyBlankTemplate && inputs.length === 0) {
+      unknownFields.push("要处理的原始文件");
+      requiredFields.push("请上传原始 CSV/Excel 文件，或说明文件在当前项目中的位置");
+    }
     if (riskLevel === "external_communication") {
       if (!target) {
         unknownFields.push("收件人或发布位置");
@@ -3181,7 +3217,14 @@ export function createServerRuntimeServices({
     const requiresDataOperationReview = ["stale", "needs_sources", "blocked"].includes(dataOperationPreview?.status);
     const requiresDataMutationReview = Boolean(dataMutationPreview?.status && dataMutationPreview.status !== "not_required");
     const requiresExecutionStrategyReview = executionStrategy.strategy === "blocked";
+    const requiresExecutionInput = executionPreview.previewReady === false
+      && !requiresDataPlan
+      && !requiresDataReview
+      && !requiresDataOperationReview
+      && !requiresDataMutationReview
+      && !requiresExecutionStrategyReview;
     const effectiveAutoRoute = autoRoute
+      && executionPreview.previewReady === true
       && executionStrategy.safeToAutoRoute
       && !requiresChannelConfirmation
       && !requiresDataPlan
@@ -3334,6 +3377,7 @@ export function createServerRuntimeServices({
       dataRelationConfirmation: attachedDataRelationConfirmation ?? channelTaskContract.dataRelationConfirmation ?? null,
       requiresDataMutationReview,
       requiresExecutionStrategyReview,
+      requiresExecutionInput,
       executionStrategy: channelTaskContract.executionStrategy,
       previewDigest: channelTaskContract.executionPreview.digest,
       previewReady: channelTaskContract.executionPreview.previewReady,
@@ -4050,6 +4094,157 @@ export function createServerRuntimeServices({
     createInvocation: (...args) => invocationService?.createInvocation(...args),
     now,
   });
+  const trackChannelKnowledgeCaptureTask = ({ thread, channel, conversation, event, urls = [], items = [] } = {}) => {
+    if (!thread?.id || !channel?.id || !conversation?.id) {
+      return { ok: false, reason: "channel_knowledge_task_context_required" };
+    }
+    const ownerTeamId = channel.ownerTeamId ?? LOCAL_TEAM_ID;
+    const project = (state.projects ?? []).find((candidate) => candidate.id === channel.taskProjectId)
+      ?? (state.projects ?? []).find((candidate) =>
+        (candidate.ownerTeamId ?? LOCAL_TEAM_ID) === ownerTeamId && candidate.hiddenFromNavigation !== true)
+      ?? null;
+    if (!project || (project.ownerTeamId ?? LOCAL_TEAM_ID) !== (channel.ownerTeamId ?? LOCAL_TEAM_ID)) {
+      return { ok: false, reason: "channel_knowledge_task_project_unavailable" };
+    }
+    const identity = (state.channelIdentities ?? []).find((candidate) =>
+      candidate.channelId === channel.id && candidate.externalUserId === thread.externalUserId) ?? null;
+    const principal = identity?.userId
+      ? (state.users ?? []).find((candidate) => candidate.id === identity.userId) ?? null
+      : null;
+    if (!principal || (principal.teamId ?? LOCAL_TEAM_ID) !== (channel.ownerTeamId ?? LOCAL_TEAM_ID)) {
+      return { ok: false, reason: "channel_knowledge_task_identity_unavailable" };
+    }
+    const actor = {
+      userId: principal.id,
+      teamId: principal.teamId ?? LOCAL_TEAM_ID,
+      role: "member",
+      deviceId: channel.taskTerminalId ?? null,
+    };
+    const uniqueUrls = [...new Set(urls.map(String).filter(Boolean))].slice(0, 3);
+    const locations = [...new Map(items.map((item) => channelKnowledgeService.getItemLocation({
+      itemId: item.knowledgeItemId,
+      ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
+    })).filter(Boolean).map((location) => [location.itemId, location])).values()];
+    const managedFileName = (location) => {
+      const safeTitle = String(location?.title ?? "本地资料")
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+        .trim()
+        .slice(0, 175) || "本地资料";
+      return /\.md$/i.test(safeTitle) ? safeTitle : `${safeTitle}.md`;
+    };
+    const terminal = thread.status === "succeeded" || thread.status === "failed" || thread.status === "cancelled";
+    const title = items.length
+      ? `保存资料：${String(items.at(-1)?.title ?? "Channel 分享内容").slice(0, 100)}`
+      : String(thread.summary ?? "保存 Channel 分享资料").slice(0, 120);
+    const body = [
+      "从 Channel 接收分享链接，并保存为可检索的本地资料。",
+      uniqueUrls.length ? `\n来源链接：\n${uniqueUrls.map((url) => `- ${url}`).join("\n")}` : null,
+      terminal ? `\n处理结果：${thread.resultSummary || (thread.status === "succeeded" ? "已保存到本地资料库。" : "本次保存未完成。")}` : "\n处理状态：正在下载、识别并保存正文。",
+      locations.length
+        ? `\n交付文件：\n${locations.map((location) => `- ${managedFileName(location)}（可在本任务的交付文件中打开）`).join("\n")}`
+        : null,
+    ].filter(Boolean).join("\n").slice(0, 10_000);
+    const desiredStatus = thread.status === "succeeded"
+      ? "done"
+      : thread.status === "failed" || thread.status === "cancelled"
+        ? "blocked"
+        : "in_progress";
+    const idempotencyKey = `channel-knowledge-thread:${thread.id}`;
+    let stored = thread.workItemId
+      ? (state.workItems ?? []).find((candidate) => candidate.id === thread.workItemId) ?? null
+      : (state.workItems ?? []).find((candidate) =>
+        candidate.ownerTeamId === actor.teamId && candidate.createIdempotencyKey === idempotencyKey) ?? null;
+    if (!stored) {
+      const created = workItemService.createWorkItem({
+        projectId: project.id,
+        title,
+        body,
+        type: "task",
+        status: desiredStatus,
+        executionPolicy: "manual",
+        waitingOn: "none",
+        priority: "p3",
+        labels: ["channel", "knowledge-capture", "local-knowledge", UNTRUSTED_INPUT_LABEL],
+        requiredCapabilities: [],
+        idempotencyKey,
+      }, actor);
+      if (!created.ok) return { ok: false, reason: created.body?.error ?? "channel_knowledge_task_create_failed" };
+      stored = (state.workItems ?? []).find((candidate) => candidate.id === created.body.workItem.id) ?? null;
+    }
+    if (!stored) return { ok: false, reason: "channel_knowledge_task_not_found" };
+    const managedOutputs = locations.map((location) => {
+      return {
+        id: `asset_channel_knowledge_${location.itemId}`.slice(0, 100),
+        contentId: location.contentId,
+        originalName: managedFileName(location),
+        path: location.relativePath,
+        family: "markdown",
+        mimeType: "text/markdown",
+        terminalId: stored.terminalId ?? channel.taskTerminalId,
+        size: null,
+        resourceClass: "small",
+        hash: null,
+        version: null,
+        capabilities: ["discover", "preview", "inspect", "open_external", "attach_evidence"],
+        readiness: { state: "ready", reason: "managed_channel_knowledge" },
+      };
+    }).filter((asset) => asset.terminalId);
+    const desiredOutputs = managedOutputs.length
+      ? [
+        ...(stored.outputAssets ?? []).filter((asset) => !String(asset.id ?? "").startsWith("asset_channel_knowledge_")),
+        ...managedOutputs,
+      ].slice(0, 100)
+      : stored.outputAssets ?? [];
+    const workItemNeedsUpdate = stored.title !== title
+      || stored.body !== body
+      || stored.status !== desiredStatus
+      || JSON.stringify(stored.outputAssets ?? []) !== JSON.stringify(desiredOutputs);
+    if (workItemNeedsUpdate) {
+      const updated = workItemService.updateWorkItem({
+        workItemId: stored.id,
+        expectedRevision: stored.revision,
+        title,
+        body,
+        status: desiredStatus,
+        outputAssets: desiredOutputs,
+      }, actor);
+      if (!updated.ok) return { ok: false, reason: updated.body?.error ?? "channel_knowledge_task_update_failed" };
+      stored = (state.workItems ?? []).find((candidate) => candidate.id === stored.id) ?? stored;
+    }
+    const originChanged = stored.channelOrigin?.threadId !== thread.id;
+    const knowledgeLinksChanged = locations.some((location) => {
+      const knowledge = (state.channelKnowledgeItems ?? []).find((item) => item.id === location.itemId);
+      return knowledge && knowledge.workItemId !== stored.id;
+    });
+    if (originChanged || knowledgeLinksChanged) channelTaskRunTx(() => {
+      if (originChanged) {
+        stored.channelOrigin = {
+          channelId: channel.id,
+          conversationId: conversation.id,
+          messageId: event?.id ?? thread.sourceEventIds?.[0] ?? null,
+          principalId: principal.id,
+          traceId: stored.id,
+          threadId: thread.id,
+        };
+        stored.revision = Number(stored.revision ?? 0) + 1;
+        stored.updatedAt = now();
+      }
+      for (const location of locations) {
+        const knowledge = (state.channelKnowledgeItems ?? []).find((item) => item.id === location.itemId);
+        if (knowledge) {
+          knowledge.workItemId = stored.id;
+          knowledge.updatedAt = now();
+        }
+      }
+    });
+    if (terminal && locations.length) {
+      void localContentCatalogService.requestAutomaticIncremental({
+        reason: "channel_knowledge_capture_completed",
+        sources: ["articles", "work_items"],
+      }).catch(() => {});
+    }
+    return { ok: true, workItemId: stored.id, localRef: stored.localRef ?? null };
+  };
   const channelConversationService = createChannelConversationService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
     createCapabilityInvocation, cancelInvocation, createChannelTaskIssue, routeChannelTask, dismissChannelTask,
@@ -4075,6 +4270,32 @@ export function createServerRuntimeServices({
       onMetric: recordChannelIntentBridgeMetric,
     })?.classify,
     createConsultation: channelConsultationAdapter?.enqueue,
+    trackKnowledgeCaptureTask: trackChannelKnowledgeCaptureTask,
+    resolveKnowledgeLocation: (input) => channelKnowledgeService.getItemLocation(input),
+    inspectSharedLink: async (input) => {
+      if (input.save === false) {
+        const inspection = await inspectArticle({
+          url: input.url,
+          extractorPlugin: resolveArticleExtractor(input.url, input.ownerTeamId ?? LOCAL_TEAM_ID),
+        });
+        return { ...inspection, knowledge: { status: "preview" } };
+      }
+      try {
+        return await channelKnowledgeService.capture(input);
+      } catch (saveError) {
+        const inspection = await inspectArticle({
+          url: input.url,
+          extractorPlugin: resolveArticleExtractor(input.url, input.ownerTeamId ?? LOCAL_TEAM_ID),
+        });
+        return {
+          ...inspection,
+          knowledge: {
+            status: "not_saved",
+            reason: String(saveError?.code ?? saveError?.message ?? saveError).slice(0, 120),
+          },
+        };
+      }
+    },
     resendDelivery: (args) => channelResendDelivery?.(args),
     replySender: (args) => channelReplySender?.(args),
     enqueueChannelDelivery: (args) => channelDeliveryService?.enqueueChannelDelivery(args),
@@ -6286,6 +6507,7 @@ export function createServerRuntimeServices({
     readRetrievedLocalContent: localContentRetrievalService.read,
     getLocalContentCatalogStats: localContentCatalogService.stats,
     previewLocalContent: localContentCatalogService.preview,
+    previewLocalContentAsset: localContentCatalogService.previewAsset,
     refreshLocalContent: localContentCatalogService.refresh,
     getLocalContentHealth: localContentCatalogService.health,
     resolveLocalContentOriginal: localContentCatalogService.resolveOriginal,
@@ -6514,6 +6736,49 @@ export function createServerRuntimeServices({
     createArticleDerivative: articleImportService.createDerivative,
     listArticleDerivatives: articleImportService.listDerivatives,
     getArticleDerivative: articleImportService.getDerivative,
+    listArticleExtractorPlugins: articleExtractorPluginService.list,
+    planArticleExtractorPluginInstall: articleExtractorPluginService.planInstall,
+    installArticleExtractorPlugin: (input, actor) => {
+      const result = articleExtractorPluginService.install(input, actor);
+      if (!result.ok) return result;
+      const retryVersion = result.body.plugin.activeVersion;
+      const retryKey = `${result.body.plugin.pluginId}:${retryVersion}`;
+      queueMicrotask(() => {
+        void channelKnowledgeService.retryFailedForHosts(
+          input?.manifest?.hosts,
+          actor?.teamId ?? LOCAL_TEAM_ID,
+          retryKey,
+        ).then((retries) => {
+          for (const retry of retries) {
+            if (!retry.item?.channelId || !retry.item?.conversationId) continue;
+            channelDeliveryService.enqueueChannelDelivery({
+              channelId: retry.item.channelId,
+              conversationId: retry.item.conversationId,
+              content: retry.ok
+                ? `新的网页采集能力已启用，我已重新读取原链接并保存为本地资料：${retry.result?.title ?? "未命名资料"}。`
+                : `新的网页采集能力已启用，但原链接重试后仍未读取成功（${retry.error}）。我会保留原链接，便于继续检查。`,
+              dedupeKey: `article-extractor-retry:${retry.item.id}:${retryVersion}`,
+              taskContext: { deliveryKind: "status_notification", notificationEvent: retry.ok ? "succeeded" : "failed" },
+            });
+          }
+        }).catch((error) => appendEvent({
+          invocationId: null,
+          type: "article_extractor_plugin_retry_failed",
+          level: "warn",
+          message: "Article extractor original-link retry could not be scheduled.",
+          data: { pluginId: result.body.plugin.pluginId, error: String(error?.code ?? error?.message ?? error).slice(0, 120) },
+        }));
+      });
+      return {
+        ...result,
+        body: {
+          ...result.body,
+          retry: { scheduled: true },
+        },
+      };
+    },
+    disableArticleExtractorPlugin: articleExtractorPluginService.disable,
+    activateArticleExtractorPlugin: articleExtractorPluginService.activate,
     listWorkflowSources: workflowMemoryService.listSources,
     createWorkflowSource: workflowMemoryService.createSource,
     listTemplateLearningTasks: templateLearningService.listTasks,
@@ -6797,6 +7062,7 @@ export function createServerRuntimeServices({
   return {
     httpDependencies,
     startLocalContentIndexing: localContentCatalogService.start,
+    flushLocalContentIndexing: localContentCatalogService.flushIncremental,
     closeRuntimeServices: async () => {
       clearInterval(mailBodyPrefetchTimer);
       try {

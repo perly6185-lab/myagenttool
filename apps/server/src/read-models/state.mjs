@@ -287,7 +287,7 @@ export function buildPublicState({
     (rows ?? []).filter((row) => teamId == null || visibleChannelIds.has(row?.channelId));
   const channelIdentities = byChannel(state.channelIdentities);
   const channelEvents = byChannel(state.channelEvents);
-  const channelConversations = byChannel(state.channelConversations);
+  const channelConversations = byChannel(state.channelConversations).map(publicChannelConversation);
   const channelDeliveries = byChannel(state.channelDeliveries);
   const channelNotificationPolicies = byChannel(state.channelNotificationPolicies);
   const channelNotificationBatches = byChannel(state.channelNotificationBatches);
@@ -825,6 +825,22 @@ export function buildPublicState({
       readinessForChannel: channelReadiness,
       runtimeAccountForChannel: channelRuntimeAccount,
     }),
+  };
+}
+
+function publicChannelConversation(conversation) {
+  if (!conversation?.sharedContentContext) return conversation;
+  const {
+    lastAnalysis: _lastAnalysis,
+    items = [],
+    ...sharedContentContext
+  } = conversation.sharedContentContext;
+  return {
+    ...conversation,
+    sharedContentContext: {
+      ...sharedContentContext,
+      items: items.map(({ excerpt: _excerpt, archiveFailureReason: _archiveFailureReason, ...item }) => item),
+    },
   };
 }
 

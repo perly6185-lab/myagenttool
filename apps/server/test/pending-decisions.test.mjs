@@ -41,7 +41,9 @@ test("auto-run gates: decomposition / design / clarify / merge each map to one r
   const autoRuns = [
     { id: "ar_dec", status: "plan_proposed", decision: { path: "decompose" }, link: { number: 25, title: "Epic" }, updatedAt: "2026-07-09T01:00:00Z" },
     { id: "ar_des", status: "report_posted", decision: { path: "design" }, link: { number: 30, title: "Design me" }, updatedAt: "2026-07-09T02:00:00Z" },
-    { id: "ar_clr", status: "needs_input", decision: { path: "clarify" }, link: { number: 31, title: "Which db?" }, updatedAt: "2026-07-09T03:00:00Z" },
+    // An executor may discover a missing input after routing.  It must remain
+    // answerable even though the original route was not `clarify`.
+    { id: "ar_clr", status: "needs_input", decision: { path: "office" }, link: { number: 31, title: "Which workbook?" }, updatedAt: "2026-07-09T03:00:00Z" },
     // mergeRisk is an OBJECT {level,reasons} in real data (computeMergeRisk) — not a bare string.
     { id: "ar_mrg", status: "pr_open", prNumber: 42, prState: "OPEN", mergeRisk: { level: "low", reasons: ["small diff"] }, decision: { path: "develop" }, link: { number: 32, title: "Add greet" }, updatedAt: "2026-07-09T04:00:00Z" },
   ];

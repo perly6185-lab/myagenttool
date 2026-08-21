@@ -1,4 +1,4 @@
-import { request } from "@/lib/api/request";
+import { request, requestBytes } from "@/lib/api/request";
 import type {
   LocalContentCatalogStats,
   LocalContentKind,
@@ -59,6 +59,9 @@ export const localContentApi = {
   preview: (contentId: string) => request<{ preview: LocalContentPreview }>(
     "GET",
     `/api/local-content/${encodeURIComponent(contentId)}/preview`,
+  ),
+  previewAssetBytes: (contentId: string, path: string) => requestBytes(
+    `/api/local-content/${encodeURIComponent(contentId)}/asset?path=${encodeURIComponent(path)}`,
   ),
   reveal: (contentId: string) => request<{ revealed: true; name: string | null }>(
     "POST",

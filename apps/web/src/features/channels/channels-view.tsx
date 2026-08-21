@@ -13,6 +13,7 @@ import type { Tone } from "@/lib/readable-labels";
 import { installChannelTranslations } from "@/lib/i18n/channel-resources";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useUiStore } from "@/store/ui-store";
+import { ArticleExtractorPluginsPanel } from "./article-extractor-plugins-panel";
 
 installChannelTranslations();
 
@@ -147,20 +148,24 @@ const taskThreadStatusLabels: Record<string, string> = {
 };
 
 function taskThreadStatusLabel(status: string, waitingFor?: string | null): string {
+  if (status === "awaiting_confirmation" && waitingFor === "draft_input") return "等待补充需求";
   if (status === "waiting_approval" && waitingFor === "approval") return "等待桌面审批";
   if (status === "waiting_approval" && waitingFor === "data_sources") return "等待数据文件";
   if (status === "waiting_approval" && waitingFor === "data_review") return "等待数据复核";
   if (status === "waiting_approval" && waitingFor === "data_mutation") return "等待变更范围";
+  if (status === "waiting_approval" && waitingFor === "execution_input") return "等待执行资料";
   return taskThreadStatusLabels[status] ?? status.replaceAll("_", " ");
 }
 
 function waitingForLabel(value: string): string {
   if (value === "confirmation") return "你确认";
+  if (value === "draft_input") return "补充任务要求";
   if (value === "approval") return "桌面审批";
   if (value === "user_input") return "你补充信息";
   if (value === "data_sources") return "选择数据文件";
   if (value === "data_review") return "确认数据关联";
   if (value === "data_mutation") return "明确文件变更范围";
+  if (value === "execution_input") return "补充执行资料";
   if (value === "attention") return "等待任务恢复";
   if (value === "human") return "人工处理";
   return value.replaceAll("_", " ");
@@ -235,6 +240,7 @@ export function ChannelsView() {
         </details>
       ) : null}
       {channels.length > 0 ? <QuickStartGuide /> : null}
+      <ArticleExtractorPluginsPanel />
       {channels.length === 0 ? (
         <EmptyState
           title={t("channelsPage.empty")}
@@ -564,6 +570,16 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
   const usedToday = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
   const connectionLabel = ilinkConnectionLabel(t, channel);
   const selectedTaskDevice = devices.find((device) => device.id === taskTerminalId) ?? null;
+  const sharedMaterials = useMemo(() => {
+    const rows = conversations.flatMap((conversation) => {
+      const context = conversation.sharedContentContext;
+      const activeIds = new Set(context?.activeItemIds ?? []);
+      return (context?.items ?? [])
+        .filter((item) => activeIds.has(item.id) && item.status !== "failed")
+        .map((item) => ({ ...item, contextStatus: context?.status ?? "ready", conversationId: conversation.id }));
+    });
+    return [...new Map(rows.map((item) => [item.canonicalUrl, item])).values()].slice(-5).reverse();
+  }, [conversations]);
 
   useEffect(() => {
     if (!notificationConversationId && conversations[0]?.id) setNotificationConversationId(conversations[0].id);
@@ -811,6 +827,29 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
             {ilinkRuntimeErrorLabel(channel.ilinkAccount?.lastError) ? <p className="mt-1 text-amber-600">{ilinkRuntimeErrorLabel(channel.ilinkAccount?.lastError)}</p> : null}
             {channel.ilinkAccount?.nextRetryAt ? <p className="mt-1 text-muted-foreground">预计下次自动重试：{diagnosticTime(channel.ilinkAccount.nextRetryAt)}</p> : null}
           </div>
+        ) : null}
+
+        {sharedMaterials.length ? (
+          <details className="rounded-md border border-border px-3 py-2" data-testid="channel-shared-materials">
+            <summary className="cursor-pointer text-sm font-medium">最近分享的资料（{sharedMaterials.length}）</summary>
+            <div className="mt-3 space-y-2">
+              {sharedMaterials.map((item) => (
+                <div key={`${item.conversationId}:${item.id}`} className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{item.title}</span>
+                    <Badge tone={item.contextStatus === "analyzing" ? "warning" : item.contextStatus === "analyzed" ? "success" : "neutral"}>
+                      {item.contextStatus === "analyzing" ? "分析中" : item.contextStatus === "analyzed" ? "已分析" : "已读取"}
+                    </Badge>
+                    <Badge tone={item.archiveStatus === "saved" ? "success" : item.archiveStatus === "not_saved" ? "warning" : "neutral"}>
+                      {item.archiveStatus === "saved" ? "已收纳" : item.archiveStatus === "not_saved" ? "未收纳" : "仅预览"}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">{[item.author, item.publishedAt, item.provider].filter(Boolean).join(" · ")}</p>
+                  <a className="mt-1 block break-all text-primary hover:underline" href={item.canonicalUrl} target="_blank" rel="noreferrer">查看原文</a>
+                </div>
+              ))}
+            </div>
+          </details>
         ) : null}
 
         <details className="rounded-md border border-border px-3 py-2" data-testid="channel-notification-settings">

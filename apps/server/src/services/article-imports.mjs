@@ -200,8 +200,10 @@ export async function inspectArticle({
   resolveHostname,
   signal,
   limits = ARTICLE_IMPORT_LIMITS,
+  extractorPlugin = null,
 } = {}) {
   const canonicalUrl = canonicalizeArticleUrl(url);
+  const extractorManifest = extractorManifestForUrl(extractorPlugin, canonicalUrl);
   if (detectArticleSource(canonicalUrl) === "feishu") {
     // Feishu docs are JS-rendered SPAs; the plain-HTTP preview cannot read them
     // and launching a browser here would block the preview for ~a minute. Return
@@ -343,7 +345,10 @@ export async function inspectArticle({
   const html = page.bytes.toString("utf8");
   const provider = detectArticleSource(page.url);
   assertArticlePage(html, page.url, provider);
-  const parsed = parseArticleDocument(html, page.url, provider, limits.mediaCount);
+  const parsed = parseArticleDocument(html, page.url, provider, limits.mediaCount, extractorManifest);
+  if (extractorManifest && parsed.plainText.length < extractorManifest.minimumTextLength) {
+    throw articleError("article_plugin_content_incomplete");
+  }
   return {
     sourceUrl: String(url),
     canonicalUrl,
@@ -358,6 +363,11 @@ export async function inspectArticle({
     media: parsed.media.map(({ token, ...item }) => item),
     mediaCounts: countMedia(parsed.media),
     markdownPreview: parsed.markdown.slice(0, 2_000),
+    extractorPlugin: extractorManifest ? {
+      id: extractorManifest.id,
+      version: extractorManifest.version,
+      checksum: extractorPlugin.checksum ?? null,
+    } : null,
     fetchedAt: new Date().toISOString(),
     _document: parsed,
   };
@@ -568,6 +578,7 @@ export async function importArticleToWorktree({
   resolveHostname,
   signal,
   limits = ARTICLE_IMPORT_LIMITS,
+  extractorPlugin = null,
 } = {}) {
   // Feishu public docs (JS-rendered SPA), Zhihu (secng/zse-ck JS-challenge
   // WAF), Qichacha (login wall + view quota), Xiaohongshu (login-gated note
@@ -598,7 +609,7 @@ export async function importArticleToWorktree({
         ? await inspectXiaohongshuArticle({ url, signal, limits })
         : source === "jianshu"
           ? await inspectJianshuArticle({ url, signal, limits })
-          : await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
+          : await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits, extractorPlugin });
   const publishedAt = inspection.publishedAt ?? importedAt.slice(0, 10);
   const relativeDirectory = buildArticleRelativeDirectory({
     provider: inspection.provider,
@@ -668,6 +679,7 @@ export async function importArticleToWorktree({
       publishedAt,
       publishedAtSource: inspection.publishedAt ? "source" : "imported",
       importedAt,
+      extractorPlugin: inspection.extractorPlugin ?? null,
       localIssueId: workItemId,
       outputs: {
         markdown: "article.md",
@@ -1353,6 +1365,7 @@ export function createArticleImportService({
   persistStateSoon = () => {},
   createInvocation = null,
   startInvocationIfAllowed = null,
+  resolveExtractorPlugin = () => null,
   store,
 } = {}) {
   const jobs = new Map();
@@ -1392,7 +1405,8 @@ export function createArticleImportService({
       return { ok: false, status: 404, body: { error: "project_not_found" } };
     }
     try {
-      const result = await inspectArticle({ url: input.url, fetchImpl, resolveHostname });
+      const extractorPlugin = resolveExtractorPlugin(input.url, actor?.teamId ?? "team_local");
+      const result = await inspectArticle({ url: input.url, fetchImpl, resolveHostname, extractorPlugin });
       delete result._document;
       return { ok: true, status: 200, body: { inspection: result } };
     } catch (error) {
@@ -1445,6 +1459,7 @@ export function createArticleImportService({
       result: null,
       controller: new AbortController(),
       actor,
+      ownerTeamId: actor?.teamId ?? "team_local",
       worktreePath: worktree.path ?? worktree.worktreePath,
     };
     const binding = workItemService.recordExecutionBinding({
@@ -2045,6 +2060,7 @@ export function createArticleImportService({
         resolveHostname,
         signal: job.controller.signal,
         limits,
+        extractorPlugin: resolveExtractorPlugin(job.sourceUrl, job.ownerTeamId ?? "team_local"),
       });
       const stored = (state.workItems ?? []).find((candidate) => candidate.id === job.workItemId);
       if (!stored) throw articleError("work_item_not_found");
@@ -2098,6 +2114,7 @@ export function createArticleImportService({
     state.articleImportJobs = [...jobs.values()].map((job) => ({
       ...jobView(job),
       sourceUrl: job.sourceUrl,
+      ownerTeamId: job.ownerTeamId ?? null,
     }));
   }
 
@@ -2343,10 +2360,11 @@ async function writeArticleAnalysisFiles({ root, jsonPath, markdownPath, analysi
   }
 }
 
-function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPORT_LIMITS.mediaCount) {
+function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPORT_LIMITS.mediaCount, extractorManifest = null) {
   const document = parse(html);
   const structured = extractStructuredArticleData(document, provider, pageUrl);
-  const content = findProviderContent(document, provider);
+  const content = findExtractorNode(document, extractorManifest?.extraction?.content)
+    ?? findProviderContent(document, provider);
   const root = content ?? findNode(document, (node) => node.tagName === "body") ?? document;
   const media = [];
   const context = { pageUrl, media };
@@ -2370,6 +2388,7 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
     cleanHtml = `${cleanHtml}\n${structuredTokens.map((item) => `<figure>${item.token}</figure>`).join("\n")}`.trim();
   }
   const title = firstNonEmpty(
+    extractorFieldText(document, extractorManifest?.extraction?.title),
     provider === "xiaohongshu" ? structured.title : "",
     metaContent(document, "property", "og:title"),
     metaContent(document, "name", "twitter:title"),
@@ -2380,6 +2399,7 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
     "Imported article",
   );
   const author = firstNonEmpty(
+    extractorFieldText(document, extractorManifest?.extraction?.author),
     metaContent(document, "name", "author"),
     metaContent(document, "property", "article:author"),
     metaContent(document, "property", "og:article:author"),
@@ -2387,7 +2407,9 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
     structured.author,
     provider === "wechat" ? textContent(findNode(document, (node) => attr(node, "id") === "js_name")) : "",
   ) || null;
-  const publishedAt = structured.publishedAt ?? extractPublishedAt(document, html, provider);
+  const publishedAt = extractExtractorPublishedAt(document, extractorManifest?.extraction?.publishedAt)
+    ?? structured.publishedAt
+    ?? extractPublishedAt(document, html, provider);
   return {
     title: cleanText(title),
     author: author ? cleanText(author) : null,
@@ -2415,6 +2437,46 @@ function providerFieldText(document, provider, field) {
     if (cleanText(value)) return value;
   }
   return "";
+}
+
+function extractorManifestForUrl(plugin, value) {
+  const manifest = plugin?.manifest;
+  if (!manifest || manifest.kind !== "article_extractor" || manifest.schemaVersion !== 1) return null;
+  const hostname = new URL(value).hostname.toLowerCase();
+  return Array.isArray(manifest.hosts) && manifest.hosts.includes(hostname) ? manifest : null;
+}
+
+function findExtractorNode(document, selectors) {
+  for (const selector of selectors ?? []) {
+    const node = findNode(document, (candidate) => matchesSimpleSelector(candidate, selector));
+    if (node) return node;
+  }
+  return null;
+}
+
+function extractorFieldText(document, selectors) {
+  return textContent(findExtractorNode(document, selectors));
+}
+
+function extractExtractorPublishedAt(document, selectors) {
+  const node = findExtractorNode(document, selectors);
+  if (!node) return null;
+  const value = firstNonEmpty(attr(node, "datetime"), attr(node, "content"), textContent(node));
+  if (!value) return null;
+  const dateOnly = String(value).match(/\d{4}-\d{2}-\d{2}/)?.[0];
+  if (dateOnly && isValidDateOnly(dateOnly)) return dateOnly;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
+
+function matchesSimpleSelector(node, selector) {
+  if (!node?.tagName) return false;
+  const match = String(selector).match(/^([a-z][a-z0-9-]*)?(?:#([A-Za-z_][\w-]*))?(?:\.([A-Za-z_][\w-]*))?$/);
+  if (!match) return false;
+  const [, tagName, id, className] = match;
+  return (!tagName || node.tagName === tagName)
+    && (!id || attr(node, "id") === id)
+    && (!className || hasClass(node, className));
 }
 
 function findProviderContent(document, provider) {

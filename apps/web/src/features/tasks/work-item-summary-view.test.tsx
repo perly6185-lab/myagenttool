@@ -38,6 +38,9 @@ const mocks = vi.hoisted(() => ({
   revealTaskMaterial: vi.fn(),
   previewTaskMaterialOffice: vi.fn(),
   taskMaterialContentUrl: vi.fn((workItemId, assetId, download = false) => `/materials/${workItemId}/${assetId}${download ? "?download=1" : ""}`),
+  previewLocalContent: vi.fn(),
+  previewLocalContentAsset: vi.fn(),
+  revealLocalContent: vi.fn(),
 }));
 
 vi.mock("@/data/use-console-state", () => ({
@@ -78,6 +81,14 @@ vi.mock("@/data/use-console-actions", () => ({
     revealTaskMaterial: mocks.revealTaskMaterial,
     previewTaskMaterialOffice: mocks.previewTaskMaterialOffice,
     taskMaterialContentUrl: mocks.taskMaterialContentUrl,
+  },
+}));
+
+vi.mock("@/features/local-content/local-content-api", () => ({
+  localContentApi: {
+    preview: mocks.previewLocalContent,
+    previewAssetBytes: mocks.previewLocalContentAsset,
+    reveal: mocks.revealLocalContent,
   },
 }));
 
@@ -135,6 +146,24 @@ beforeEach(async () => {
   mocks.projectAssetDescriptor.mockResolvedValue({ descriptor: { path: "summary/REPORT.md" } });
   mocks.projectAssetPreview.mockResolvedValue({ path: "summary/REPORT.md", text: "# Report\n\nThe report is ready.", size: 40, truncated: false });
   mocks.readWorktreeFile.mockResolvedValue({ content: "plain text", truncated: false });
+  mocks.previewLocalContent.mockResolvedValue({
+    preview: {
+      contentId: "lc_0123456789abcdef0123456789abcdef",
+      title: "Saved article",
+      kind: "article",
+      format: "plain_text",
+      text: "# Saved article\n\nThe article is available locally.",
+      truncated: false,
+      bytesRead: 55,
+      totalBytes: 55,
+      mimeType: "text/markdown",
+      originalName: "saved-article.md",
+      activeContentExecuted: false,
+      remoteResourcesLoaded: false,
+    },
+  });
+  mocks.revealLocalContent.mockResolvedValue({ revealed: true, name: "saved-article.md" });
+  mocks.previewLocalContentAsset.mockResolvedValue(new ArrayBuffer(8));
   window.myagenttoolDesktop = undefined;
 });
 
@@ -870,6 +899,59 @@ describe("work item summary presentation", () => {
     expect(useUiStore.getState().section).toBe("dashboard");
   });
 
+  it("previews and reveals a managed local-knowledge deliverable without exposing its host path", async () => {
+    const contentId = "lc_0123456789abcdef0123456789abcdef";
+    mocks.previewLocalContent.mockResolvedValueOnce({
+      preview: {
+        contentId,
+        title: "Saved article",
+        kind: "article",
+        format: "plain_text",
+        text: "# Saved article\n\nThe article is available locally.\n\n![Chart](assets/001-chart.png)",
+        truncated: false,
+        bytesRead: 90,
+        totalBytes: 90,
+        mimeType: "text/markdown",
+        originalName: "saved-article.md",
+        activeContentExecuted: false,
+        remoteResourcesLoaded: false,
+      },
+    });
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "done", executionState: "completed", waitingOn: "none" }),
+      observability: {
+        latestRun: null,
+        outcome: {
+          status: "available",
+          summary: "Saved one article to the local library.",
+          fullReport: "Saved one article to the local library.",
+          highlights: [], warnings: [], files: ["Saved article.md"],
+          fileEntries: [{
+            name: "Saved article.md", path: null, contentId, projectId: "prj_1", worktreeId: null,
+            status: "available", preview: "document",
+          }],
+          verification: null,
+          deliveredAt: "2026-08-20T10:01:34.428Z",
+        },
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View result" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Browse file: Saved article.md" }));
+    await waitFor(() => expect(mocks.previewLocalContent).toHaveBeenCalledWith(contentId));
+    const preview = await screen.findByRole("dialog", { name: "Saved article.md" });
+    expect(within(preview).getByRole("heading", { name: "Saved article" })).toBeTruthy();
+    expect(within(preview).getByText("The article is available locally.")).toBeTruthy();
+    await waitFor(() => expect(mocks.previewLocalContentAsset).toHaveBeenCalledWith(contentId, "assets/001-chart.png"));
+    expect(mocks.projectAssetDescriptor).not.toHaveBeenCalled();
+    fireEvent.click(within(preview).getByRole("button", { name: "Close" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open containing folder: Saved article.md" }));
+    await waitFor(() => expect(mocks.revealLocalContent).toHaveBeenCalledWith(contentId));
+    expect(document.body.textContent).not.toContain("Application Support");
+  });
+
   it("reveals a deliverable in its local folder without leaving the task", async () => {
     const revealContainedAsset = vi.fn().mockResolvedValue({ revealed: true });
     window.myagenttoolDesktop = { revealContainedAsset };
@@ -1092,7 +1174,7 @@ describe("work item summary presentation", () => {
     })));
   });
 
-  it("answers AI clarification from the task and resumes the same run", async () => {
+  it("answers an executor question from the task and resumes the same run", async () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({ executionState: "awaiting_approval", waitingOn: "me" }),
       observability: {
@@ -1102,7 +1184,7 @@ describe("work item summary presentation", () => {
           phase: "waiting_for_input",
           updatedAt: "2026-08-07T01:00:00.000Z",
           decision: {
-            path: "clarify",
+            path: "office",
             decidedBy: "agent",
             confidence: 0.8,
             clarifyingQuestions: ["Should an invalid timezone fall back to UTC or stop scheduling?"],

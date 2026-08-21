@@ -2069,6 +2069,27 @@ export const api = {
   /** Mint a single-use, action-scoped approval grant — the real token behind approvalToken (APPROVAL_GRANTS.md). */
   issueApprovalGrant: (action: string, targetId: string) =>
     request<{ grantId: string; token: string; expiresAt: string }>("POST", "/api/approvals/grants", { action, targetId }),
+  listArticleExtractorPlugins: () =>
+    request<{ plugins: Array<{ id: string; pluginId: string; name: string; enabled: boolean; activeVersion: string; hosts: string[]; versions: Array<{ version: string; checksum: string; installedAt: string; installedBy: string }>; createdAt: string; updatedAt: string }> }>(
+      "GET",
+      "/api/article-extractor-plugins",
+    ),
+  planArticleExtractorPluginInstall: (manifest: Record<string, unknown>) =>
+    request<{ manifest: Record<string, unknown>; checksum: string; approval: { action: string; targetId: string } }>(
+      "POST",
+      "/api/article-extractor-plugins/install-plan",
+      { manifest },
+    ),
+  installArticleExtractorPlugin: (manifest: Record<string, unknown>, approvalToken: string) =>
+    request<{ plugin: Record<string, unknown> }>("POST", "/api/article-extractor-plugins", { manifest, approvalToken }),
+  disableArticleExtractorPlugin: (pluginId: string, approvalToken: string) =>
+    request<{ plugin: Record<string, unknown> }>("POST", `/api/article-extractor-plugins/${encodeURIComponent(pluginId)}/disable`, { approvalToken }),
+  activateArticleExtractorPluginVersion: (pluginId: string, version: string, approvalToken: string) =>
+    request<{ plugin: Record<string, unknown> }>(
+      "POST",
+      `/api/article-extractor-plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/activate`,
+      { approvalToken },
+    ),
   /** Governed rollback of an applied Claude patch authorization (#914): requires a
    * fresh single-use grant for (rollback_patch, authorizationId). */
   rollbackClaudeApply: (authorizationId: string, approvalToken: string) =>
