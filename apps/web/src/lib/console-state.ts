@@ -1756,6 +1756,8 @@ export interface ChannelConversation {
     version?: number;
     status?: "ready" | "analyzing" | "analyzed" | string;
     activeItemIds?: string[];
+    retryUrls?: string[];
+    lastFailedAt?: string | null;
     lastSharedAt?: string | null;
     lastAnalysisAt?: string | null;
     items?: Array<{

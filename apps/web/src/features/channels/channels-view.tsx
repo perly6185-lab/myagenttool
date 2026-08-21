@@ -587,6 +587,18 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
     });
     return [...new Map(rows.map((item) => [item.canonicalUrl, item])).values()].slice(-5).reverse();
   }, [conversations]);
+  const failedSharedMaterials = useMemo(() => {
+    const rows = conversations.flatMap((conversation) => {
+      const context = conversation.sharedContentContext;
+      return (context?.retryUrls ?? []).map((canonicalUrl) => ({
+        id: `failed:${canonicalUrl}`,
+        title: "链接正文暂时无法读取",
+        canonicalUrl,
+        conversationId: conversation.id,
+      }));
+    });
+    return [...new Map(rows.map((item) => [item.canonicalUrl, item])).values()].slice(-5).reverse();
+  }, [conversations]);
 
   useEffect(() => {
     if (!notificationConversationId && conversations[0]?.id) setNotificationConversationId(conversations[0].id);
@@ -836,9 +848,9 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           </div>
         ) : null}
 
-        {sharedMaterials.length ? (
+        {sharedMaterials.length || failedSharedMaterials.length ? (
           <details className="rounded-md border border-border px-3 py-2" data-testid="channel-shared-materials">
-            <summary className="cursor-pointer text-sm font-medium">最近分享的资料（{sharedMaterials.length}）</summary>
+            <summary className="cursor-pointer text-sm font-medium">最近分享的资料（{sharedMaterials.length + failedSharedMaterials.length}）</summary>
             <div className="mt-3 space-y-2">
               {sharedMaterials.map((item) => (
                 <div key={`${item.conversationId}:${item.id}`} className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs">
@@ -855,6 +867,19 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <a className="break-all text-primary hover:underline" href={item.canonicalUrl} target="_blank" rel="noreferrer">查看原文</a>
                     {item.knowledgeItemId ? <Button variant="ghost" size="sm" onClick={() => setSection("localLibrary")}>查看我的资料</Button> : null}
+                  </div>
+                </div>
+              ))}
+              {failedSharedMaterials.map((item) => (
+                <div key={`${item.conversationId}:${item.id}`} className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{item.title}</span>
+                    <Badge tone="danger">读取失败</Badge>
+                  </div>
+                  <p className="mt-1 break-all text-muted-foreground">{item.canonicalUrl}</p>
+                  <p className="mt-1 text-amber-600">请在微信回复“重试”重新读取；原资料仍保留在本地。</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <a className="break-all text-primary hover:underline" href={item.canonicalUrl} target="_blank" rel="noreferrer">查看原文</a>
                   </div>
                 </div>
               ))}
@@ -1013,17 +1038,19 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
         </div>
         </> : null}
 
-        {advancedOpen && legacyTasks.length > 0 && (
+        {legacyTasks.length > 0 && (
           <div className="space-y-2 border-t border-border pt-3" data-testid="channel-task-operations">
             <p className="text-xs font-medium">{t("channelsPage.tasks")}</p>
             {legacyTasks.slice().reverse().slice(0, 10).map((task) => (
               <div key={task.id} className="grid gap-2 rounded-md border border-border p-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto]">
                 <div className="min-w-0 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone={task.stage.includes("failed") || task.stage === "run_blocked" ? "danger" : task.stage === "run_succeeded" ? "success" : "neutral"}>{task.stage.replaceAll("_", " ")}</Badge>
-                    <a className="text-primary underline-offset-2 hover:underline" href={task.issueUrl ?? undefined} target="_blank" rel="noreferrer">Issue #{task.issueNumber}</a>
-                    {task.invocationId ? <span className="font-mono text-muted-foreground">{task.invocationId}</span> : null}
-                    {task.deliveryStatus ? <span className="text-muted-foreground">delivery {task.deliveryStatus.replaceAll("_", " ")}</span> : null}
+                    <Badge tone={task.stage.includes("failed") || task.stage === "run_blocked" ? "danger" : task.stage === "run_succeeded" ? "success" : "neutral"}>{advancedOpen ? task.stage.replaceAll("_", " ") : task.stage.includes("failed") || task.stage === "run_blocked" ? "需要处理" : task.stage === "run_succeeded" ? "已完成" : "进行中"}</Badge>
+                    {advancedOpen ? <>
+                      <a className="text-primary underline-offset-2 hover:underline" href={task.issueUrl ?? undefined} target="_blank" rel="noreferrer">Issue #{task.issueNumber}</a>
+                      {task.invocationId ? <span className="font-mono text-muted-foreground">{task.invocationId}</span> : null}
+                      {task.deliveryStatus ? <span className="text-muted-foreground">delivery {task.deliveryStatus.replaceAll("_", " ")}</span> : null}
+                    </> : null}
                   </div>
                   <p className="truncate font-medium" title={task.title}>{task.title}</p>
                   {task.resultSummary ? <p className="line-clamp-2 text-muted-foreground">{task.resultSummary}</p> : null}
@@ -1031,7 +1058,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                 <div className="flex flex-wrap items-start gap-1.5">
                   {task.status === "pending" ? <><Button size="sm" onClick={() => taskAction(task, "route")} disabled={pending}>{t("channelsPage.route")}</Button><Button variant="ghost" size="sm" onClick={() => taskAction(task, "dismiss")} disabled={pending}>{t("channelsPage.dismiss")}</Button></> : null}
                   {task.actions.retry ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "retry")} disabled={pending}>{t("channelsPage.retry")}</Button> : null}
-                  {task.actions.reroute ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "reroute")} disabled={pending}>{t("channelsPage.reroute")}</Button> : null}
+                  {advancedOpen && task.actions.reroute ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "reroute")} disabled={pending}>{t("channelsPage.reroute")}</Button> : null}
                   {task.actions.takeover ? <Button variant="ghost" size="sm" onClick={() => taskAction(task, "takeover")} disabled={pending}>{t("channelsPage.takeover")}</Button> : null}
                 </div>
                 {task.status === "human_takeover" && (!task.threadId || !taskThreadIds.has(task.threadId)) ? <HumanReplyBox

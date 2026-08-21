@@ -23,7 +23,7 @@ vi.mock("@/data/use-console-state", () => ({ useConsoleState: () => ({ data: {
   channelConversations: [{
     id: "conv_1", channelId: "chn_1", externalUserId: "wx_alice", status: "active",
     sharedContentContext: {
-      status: "analyzed", activeItemIds: ["sct_1"],
+      status: "analyzed", activeItemIds: ["sct_1"], retryUrls: ["https://mp.weixin.qq.com/s/failed"], lastFailedAt: "2026-08-14T12:00:00.000Z",
       items: [{ id: "sct_1", status: "ready", provider: "wechat", title: "移动端知识助手", author: "示例作者", canonicalUrl: "https://mp.weixin.qq.com/s/example", publishedAt: "2026-08-14", archiveStatus: "saved", knowledgeItemId: "content_1" }],
     },
   }],
@@ -39,13 +39,18 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 describe("ChannelsView task operations", () => {
   it("defaults to a simple view and reveals diagnostics only on demand", async () => {
     render(<ChannelsView />);
-    expect(screen.getByTestId("channel-shared-materials").textContent).toContain("最近分享的资料（1）");
+    expect(screen.getByTestId("channel-shared-materials").textContent).toContain("最近分享的资料（2）");
     expect(screen.getByText("移动端知识助手")).toBeTruthy();
     expect(screen.getByText("已分析")).toBeTruthy();
     expect(screen.getByText("已收纳")).toBeTruthy();
+    expect(screen.getByText("链接正文暂时无法读取")).toBeTruthy();
+    expect(screen.getByText(/请在微信回复“重试”/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "查看我的资料" })).toBeTruthy();
     expect(screen.queryByTestId("channel-diagnostics-summary")).toBeNull();
     expect(screen.queryByText("Issue #42")).toBeNull();
+    expect(screen.getByTestId("channel-task-operations")).toBeTruthy();
+    expect(screen.getByText("Retry")).toBeTruthy();
+    expect(screen.queryByText("Reroute")).toBeNull();
     fireEvent.click(screen.getByText("高级信息"));
     expect(screen.getByTestId("channel-diagnostics-summary").textContent).toContain("最后入站");
     expect((screen.getByTestId("channel-task-device") as HTMLSelectElement).disabled).toBe(true);
