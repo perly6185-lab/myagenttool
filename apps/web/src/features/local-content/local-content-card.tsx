@@ -1,4 +1,4 @@
-import { Archive, Eye, FileInput, FileOutput, FileText, FolderOpen, Info, Mail, Trash2 } from "lucide-react";
+import { Archive, Eye, FileInput, FileOutput, FileText, FolderOpen, Info, Mail } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,8 +20,6 @@ type LocalContentCardCopy = {
   originalMissing: string;
   addToTask: string;
   details: string;
-  removeFromLibrary: string;
-  removing: string;
 };
 
 type LocalContentCardProps = {
@@ -33,9 +31,6 @@ type LocalContentCardProps = {
   onLocate: () => void;
   onChoose: () => void;
   onDetails: () => void;
-  canRemove: boolean;
-  removing: boolean;
-  onRemove: () => void;
 };
 
 function kindIcon(kind: LocalContentKind) {
@@ -62,9 +57,6 @@ export function LocalContentCard({
   onLocate,
   onChoose,
   onDetails,
-  canRemove,
-  removing,
-  onRemove,
 }: LocalContentCardProps) {
   const Icon = kindIcon(record.kind);
   const source = displaySource(record);
@@ -95,7 +87,6 @@ export function LocalContentCard({
           <Button size="sm" variant="secondary" disabled={!record.original.available} title={!record.original.available ? copy.originalMissing : undefined} onClick={onPreview}><Eye aria-hidden />{copy.preview}</Button>
           <Button size="sm" variant="ghost" disabled={!record.original.available || record.storageMode === "state_record" || locateDisabled} title={!record.original.available ? copy.originalMissing : undefined} onClick={onLocate}><FolderOpen aria-hidden />{locating ? copy.locating : copy.locate}</Button>
           <Button size="sm" variant="secondary" disabled={!record.original.available} title={!record.original.available ? copy.originalMissing : undefined} onClick={onChoose}>{copy.addToTask}</Button>
-          {canRemove ? <Button size="sm" variant="ghost" disabled={removing} onClick={onRemove}><Trash2 aria-hidden />{removing ? copy.removing : copy.removeFromLibrary}</Button> : null}
         </div>
       </CardContent>
     </Card>

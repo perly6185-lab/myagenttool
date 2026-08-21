@@ -63,9 +63,6 @@ describe("PreviewModal ordinary-user actions", () => {
       onRetry={vi.fn()}
       onLocate={vi.fn()}
       onChoose={vi.fn()}
-      canRemove={false}
-      removing={false}
-      onRemove={vi.fn()}
     />);
 
     fireEvent.click(screen.getByRole("button", { name: "复制文字" }));

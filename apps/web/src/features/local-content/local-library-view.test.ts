@@ -200,7 +200,8 @@ describe("local library task targeting", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from library" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View details" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Remove from library" }));
     await waitFor(() => expect(mocks.archive).toHaveBeenCalledWith("lc_11111111111111111111111111111111"));
     expect(await screen.findByText(/original article remains on this device/i)).toBeTruthy();
   });
