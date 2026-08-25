@@ -67,6 +67,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // Channel /task requests awaiting a human "route or dismiss" decision (the
     // capture-then-promote trust model). A routed request becomes an auto-run.
     channelTaskRequests: [],
+    // Privacy-bounded, reviewable examples of Channel expressions that needed
+    // clarification. Raw inbound text is never retained in this collection.
+    channelIntentLearningSamples: [],
     // Bounded natural-language routing counters. Raw classifier output is never
     // stored; the conversation service records only this normalized aggregate.
     channelIntentMetrics: {
@@ -88,6 +91,17 @@ export function createServerState({ defaultProjectPath, now }) {
         activeFollowUpsQueued: 0,
         retryStartDuplicatesSuppressed: 0,
         mediaReceipts: 0,
+        consultationAnswers: 0,
+        consultationAnswerMissing: 0,
+        consultationTimeouts: 0,
+        consultationAutoRetries: 0,
+        consultationAutoRetryRecovered: 0,
+        consultationAutoRetryExhausted: 0,
+        difficultSamples: 0,
+        pendingReviewSamples: 0,
+        resolvedCorrections: 0,
+        replayReadySamples: 0,
+        deduplicatedOccurrences: 0,
         updatedAt: null,
       },
       updatedAt: null,
@@ -103,6 +117,10 @@ export function createServerState({ defaultProjectPath, now }) {
     // registered site — last probe / reseed observations only, never cookie
     // material. Empty until the first probe/reseed records a row.
     sessions: [],
+    // Bounded, credential-free receipts for governed site operations. Browser
+    // profiles and cookies stay on the device; only task/account ids, operation
+    // outcomes, remote object references, and evidence refs are durable here.
+    siteOperationReceipts: [],
     // When this deployment began recording refusals — the honesty anchor so a
     // genuinely-zero window after this date reads as a trustworthy 0, not "unknown".
     refusalStatsMeta: { since: now().slice(0, 10) },
@@ -207,6 +225,13 @@ export function createServerState({ defaultProjectPath, now }) {
     // Local-first planning records. These are independent of GitHub Issues and
     // may later carry one or more external bindings.
     workItems: [],
+    // User-facing "one thing" containers. A goal may carry several explicit
+    // professional intents while each WorkItem remains independently runnable.
+    workGoals: [],
+    // Explicit ordinary-user preferences learned from Channel instructions.
+    // They are scoped to one conversation and only written by an explicit
+    // “记住” request; task execution may consume them as bounded context.
+    channelUserPreferences: [],
     myTemplateRoutingFeedback: [],
     myTemplateOutcomeFeedback: [],
     myTemplateGovernanceInterventions: [],
@@ -335,6 +360,7 @@ export function createServerState({ defaultProjectPath, now }) {
     channelIntakeGroups: [],
     channelTaskThreads: [],
     channelTaskRevisions: [],
+    workGoalChanges: [],
     // iLink account metadata only. Bot tokens live in the credential store, not
     // in the durable public state snapshot.
     ilinkAccounts: [],
@@ -486,7 +512,10 @@ export function resetStateForSelfCheck({ state, now }) {
   state.channelIntakeGroups = [];
   state.channelTaskThreads = [];
   state.channelTaskRevisions = [];
+  state.workGoalChanges = [];
   state.channelTaskRequests = [];
+  state.channelIntentLearningSamples = [];
+  state.siteOperationReceipts = [];
   state.channelObjectRecords = [];
   state.channelObjectImports = [];
   state.channelObjectFileSources = [];
@@ -513,6 +542,17 @@ export function resetStateForSelfCheck({ state, now }) {
       activeFollowUpsQueued: 0,
       retryStartDuplicatesSuppressed: 0,
       mediaReceipts: 0,
+      consultationAnswers: 0,
+      consultationAnswerMissing: 0,
+      consultationTimeouts: 0,
+      consultationAutoRetries: 0,
+      consultationAutoRetryRecovered: 0,
+      consultationAutoRetryExhausted: 0,
+      difficultSamples: 0,
+      pendingReviewSamples: 0,
+      resolvedCorrections: 0,
+      replayReadySamples: 0,
+      deduplicatedOccurrences: 0,
       updatedAt: null,
     },
     updatedAt: null,

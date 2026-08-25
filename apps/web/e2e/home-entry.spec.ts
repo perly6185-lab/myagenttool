@@ -345,6 +345,36 @@ test("creates a Home task, reviews its plan, then schedules AI from simple detai
     if (/^\/api\/projects\/[^/]+\/auto-run-readiness$/.test(pathname)) {
       return route.fulfill({ json: { readiness: { ready: true, checks: [] } } });
     }
+    if (pathname === "/api/work-items/assist/intent-plan" && request.method() === "POST") {
+      const body = request.postDataJSON() as Record<string, unknown>;
+      return route.fulfill({ json: {
+        plan: {
+          tasks: [{
+            key: "general", kind: "general", title: body.title,
+            outcome: "Produce a reviewable customer update", requires: [], approvalRequired: false,
+          }],
+          clarification: null,
+        },
+        summary: {
+          taskCount: 1, requiresRepository: false, approvalTaskCount: 0,
+          canCommit: true, canStartAi: true,
+          nextStep: "The task plan is ready. Confirm to save it.",
+        },
+      } });
+    }
+    if (pathname === "/api/work-items/assist/intent-plan/commit" && request.method() === "POST") {
+      createdPayload = request.postDataJSON() as Record<string, unknown>;
+      workItem = {
+        id: "lwi_home", localRef: "LOCAL-1", projectId: "project-1",
+        title: createdPayload.title, body: createdPayload.body, type: "task", priority: "p2",
+        status: "backlog", state: "open", labels: [], assigneeIds: [],
+        acceptanceCriteria: createdPayload.acceptanceCriteria ?? [], verificationSop: createdPayload.verificationSop ?? [],
+        waitingOn: "none", plannedDate: null, dueDate: createdPayload.dueDate ?? null,
+        executionState: "unclaimed", executionBindings: [], revision: 1, archivedAt: null,
+        updatedAt: "2026-08-06T00:00:00.000Z",
+      };
+      return route.fulfill({ status: 201, json: { workItems: [workItem] } });
+    }
     if (pathname === "/api/work-items" && request.method() === "POST") {
       createdPayload = request.postDataJSON() as Record<string, unknown>;
       workItem = {
@@ -422,13 +452,15 @@ test("creates a Home task, reviews its plan, then schedules AI from simple detai
 
   await page.getByRole("textbox", { name: "Create a task" }).fill("Prepare the weekly customer update");
   await page.getByRole("button", { name: "Save only" }).click();
+  await expect(page.getByTestId("home-intent-task-plan")).toBeVisible();
+  await page.getByRole("button", { name: "Confirm and save" }).click();
 
   await expect(page.getByText("Task created and added to your boards.")).toBeVisible();
   expect(createdPayload).toEqual(expect.objectContaining({
     projectId: "project-1",
     title: "Prepare the weekly customer update",
-    waitingOn: "none",
-    plannedDate: null,
+    mode: "task",
+    dueDate: null,
   }));
   expect(scheduled).toBe(false);
   await page.getByRole("button", { name: "View task" }).click();
@@ -443,6 +475,67 @@ test("creates a Home task, reviews its plan, then schedules AI from simple detai
   await detail.getByRole("button", { name: "Let AI start" }).click();
   await expect(detail.getByText(/set to automatic/i)).toBeVisible();
   expect(scheduled).toBe(true);
+});
+
+test("preserves reviewed source and per-task edits while the user configures a capability", async ({ page }) => {
+  await page.route("http://127.0.0.1:5001/api/**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === "/api/state") return route.fulfill({ json: READY_STATE });
+    if (pathname === "/api/work-items/assist/intent-plan" && request.method() === "POST") {
+      const body = request.postDataJSON() as Record<string, unknown>;
+      const selected = body.sourceWorkItemId === "source-1";
+      const excluded = new Set(Array.isArray(body.excludeTaskKeys) ? body.excludeTaskKeys : []);
+      const tasks = [
+        { key: "content_image", kind: "content_image", title: "Product images", outcome: "Create reviewable images", requires: [], approvalRequired: false, ...(selected ? { externalSource: { workItemId: "source-1", localRef: "LOCAL-8", title: "Approved product analysis", artifactKinds: ["analysis_report"] } } : {}) },
+        { key: "content_comic", kind: "content_comic", title: "Product comic", outcome: "Create a reviewable comic", requires: [], approvalRequired: false },
+      ].filter((task) => !excluded.has(task.key));
+      return route.fulfill({ json: {
+        plan: {
+          tasks,
+          clarification: null,
+          excludedTaskKeys: [...excluded],
+          sourceSelection: {
+            required: !selected,
+            selected: selected ? { workItemId: "source-1", localRef: "LOCAL-8", title: "Approved product analysis", completedAt: "2026-08-05T00:00:00.000Z", artifactKinds: ["analysis_report"], outputCount: 1 } : null,
+            candidates: [{ workItemId: "source-1", localRef: "LOCAL-8", title: "Approved product analysis", completedAt: "2026-08-05T00:00:00.000Z", artifactKinds: ["analysis_report"], outputCount: 1 }],
+            unavailable: false,
+          },
+        },
+        summary: {
+          taskCount: tasks.length,
+          requiresRepository: false,
+          approvalTaskCount: 0,
+          canCommit: selected,
+          canStartAi: false,
+          capabilityBlockers: [{ taskKind: "content_image", requiredCapability: "Image generation", reason: "specialized_capability_unavailable", setupSection: "applications" }],
+          nextStep: selected ? "Set up image generation before AI starts." : "Choose an existing result.",
+        },
+      } });
+    }
+    return fulfillDashboardFallback(route);
+  });
+  await page.addInitScript(() => {
+    window.localStorage.setItem("myagenttool-ui", JSON.stringify({
+      version: 1,
+      state: { section: "dashboard", locale: "en-US", selectedProjectId: "project-1" },
+    }));
+  });
+  await page.goto("/?section=dashboard");
+  await page.getByRole("textbox", { name: "Create a task" }).fill("Based on the approved analysis, create product images and a comic");
+  await page.getByRole("button", { name: "Save only" }).click();
+  await page.getByRole("button", { name: /Approved product analysis/ }).click();
+  await expect(page.getByText(/Will use: Approved product analysis/)).toBeVisible();
+  await page.getByRole("button", { name: "Remove Product comic" }).click();
+  await expect(page.getByRole("button", { name: "Restore Product comic" })).toBeVisible();
+  await page.getByRole("button", { name: "Set up capability" }).click();
+  await expect(page).toHaveURL(/section=applications/);
+
+  await page.goto("/?section=dashboard");
+  await expect(page.getByTestId("home-intent-task-plan")).toBeVisible();
+  await expect(page.getByText(/Will use: Approved product analysis/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Restore Product comic" })).toBeVisible();
+  await expect(page.getByTestId("home-intent-task-plan").getByText("Product images", { exact: true })).toBeVisible();
 });
 
 test("submits one Worktree snapshot with matching attachment and invocation idempotency", async ({ page }) => {

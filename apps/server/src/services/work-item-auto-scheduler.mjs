@@ -1,10 +1,14 @@
 import { resolveWorkItemExecution } from "./work-item-execution.mjs";
 import { autoExecutionDateKey, planAutoExecutionQueue } from "./work-item-auto-scheduler-policy.mjs";
+import { taskCapabilityReadiness } from "./task-capability-readiness.mjs";
 
 const MODES = new Set(["off", "shadow", "enabled"]);
 const ACTIVE_RUN_STATUSES = new Set([
   "materializing", "running", "waiting_capacity", "awaiting_approval", "verifying", "publishing",
   "needs_input", "plan_proposed", "pr_open", "report_posted",
+]);
+const REPOSITORY_TASK_KINDS = new Set([
+  "coding_digest", "software_analysis", "software_implementation", "software_verification", "software_deployment",
 ]);
 
 function modeFor(state) {
@@ -24,6 +28,7 @@ function publicDecision(decision) {
     reasons: decision.reasons,
     executionPolicy: decision.executionPolicy,
     unresolvedDependencyIds: decision.unresolvedDependencyIds,
+    unresolvedArtifactKinds: decision.unresolvedArtifactKinds,
     rank: decision.rank,
   };
 }
@@ -46,6 +51,7 @@ export function createWorkItemAutoSchedulerService({
   reserveAutoRun = null,
   enqueueAutoRunUnderstanding = null,
   failAutoRunUnderstanding = null,
+  startDirectInvocation = null,
   timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
 } = {}) {
   const signatures = new Map();
@@ -103,7 +109,7 @@ export function createWorkItemAutoSchedulerService({
     };
   }
 
-  function eligibleAgent(item) {
+  function eligibleAgent(item, { repositoryRequired = true } = {}) {
     const project = (state.projects ?? []).find((candidate) => candidate.id === item.projectId) ?? null;
     const agents = state.agents ?? [];
     const allowed = (agent) => agent
@@ -113,7 +119,7 @@ export function createWorkItemAutoSchedulerService({
       && agent.id !== "agt_demo_cli"
       && agent.adapter?.type === "cli"
       && agent.location?.type === "local_device"
-      && (agent.capabilities ?? []).some((capability) => String(capability?.name ?? "").endsWith("_repo_task"))
+      && (!repositoryRequired || (agent.capabilities ?? []).some((capability) => String(capability?.name ?? "").endsWith("_repo_task")))
       && (!item.terminalId || !agent.location?.deviceId || agent.location.deviceId === item.terminalId);
     const configured = project?.defaultAgentId
       ? agents.find((agent) => agent.id === project.defaultAgentId) ?? null
@@ -187,19 +193,68 @@ export function createWorkItemAutoSchedulerService({
   }
 
   async function startCandidate(candidate, decision = null) {
-    if (![getWorkItem, beginExecution, abortExecution, recordExecutionBinding, reserveAutoRun, enqueueAutoRunUnderstanding]
-      .every((dependency) => typeof dependency === "function")) {
+    if (typeof getWorkItem !== "function") {
       return { started: false, reason: "scheduler_dependencies_unavailable" };
     }
     const actor = actorFor(candidate);
     const detail = getWorkItem({ workItemId: candidate.id }, actor);
     if (!detail.ok) return { started: false, reason: detail.body?.error ?? "work_item_not_found" };
     const item = detail.body.workItem;
-    const agent = eligibleAgent(item);
-    if (!agent) return { started: false, reason: "repository_agent_unavailable" };
-    const admission = beginExecution({ workItemId: item.id, kind: "auto_run", agentId: agent.id }, actor);
+    const capabilityReadiness = taskCapabilityReadiness(state, item.taskKind);
+    if (!capabilityReadiness.ready) {
+      return {
+        started: false,
+        reason: `${capabilityReadiness.reason}:${capabilityReadiness.taskKind}`,
+        capabilityReadiness,
+      };
+    }
+    if (![beginExecution, abortExecution, recordExecutionBinding]
+      .every((dependency) => typeof dependency === "function")) {
+      return { started: false, reason: "scheduler_dependencies_unavailable" };
+    }
+    // Legacy work items predate taskKind and historically represented repository
+    // work; preserve that behavior. Explicit modern `general` tasks use the
+    // repository-free runner.
+    const repositoryRequired = !item.taskKind || REPOSITORY_TASK_KINDS.has(item.taskKind);
+    if (repositoryRequired && ![reserveAutoRun, enqueueAutoRunUnderstanding].every((dependency) => typeof dependency === "function")) {
+      return { started: false, reason: "scheduler_dependencies_unavailable" };
+    }
+    if (!repositoryRequired && typeof startDirectInvocation !== "function") {
+      return { started: false, reason: "direct_task_runner_unavailable" };
+    }
+    const agent = eligibleAgent(item, { repositoryRequired });
+    if (!agent) return { started: false, reason: repositoryRequired ? "repository_agent_unavailable" : "task_agent_unavailable" };
+    const executionKind = repositoryRequired ? "auto_run" : "application_invocation";
+    const admission = beginExecution({ workItemId: item.id, kind: executionKind, agentId: agent.id }, actor);
     if (!admission.ok) return { started: false, reason: admission.body?.error ?? "execution_refused" };
     const operationId = admission.body.operation.id;
+    if (!repositoryRequired) {
+      try {
+        const invocation = await startDirectInvocation({ item, agent, actor });
+        const recorded = recordExecutionBinding({
+          workItemId: item.id,
+          kind: "application_invocation",
+          targetId: invocation.id,
+          operationId,
+        }, actor);
+        if (!recorded.ok) throw new Error(recorded.body?.error ?? "work_item_execution_binding_failed");
+        metrics.starts += 1;
+        metrics.lastStartedAt = now();
+        appendEvent({
+          invocationId: invocation.id,
+          type: "work_item_direct_scheduler_started",
+          level: "info",
+          message: `Automatic scheduler started ${item.localRef ?? item.id} without a repository worktree.`,
+          data: { workItemId: item.id, invocationId: invocation.id, agentId: agent.id, taskKind: item.taskKind },
+        });
+        return { started: true, workItemId: item.id, invocationId: invocation.id, executionKind };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        abortExecution({ workItemId: item.id, operationId, reason: message }, actor);
+        metrics.startFailures += 1;
+        return { started: false, reason: message };
+      }
+    }
     const slug = String(item.title ?? "work").toLowerCase()
       .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "work";
     let reservedAutoRun = null;

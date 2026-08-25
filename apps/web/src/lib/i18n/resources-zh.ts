@@ -88,7 +88,7 @@ export const zhCNResources = {
           hint: { running: "查看当前进度；取消任务保留为次级控制。", approval: "任务已暂停，请先处理待确认的安全决策。", failed: "重试前先查看失败原因和恢复建议。", succeeded: "查看已完成的输出和验证证据。" },
           action: { view_progress: "查看执行进度", handle_approval: "处理审批", review_failure: "查看失败原因", view_result: "查看结果" },
         },
-        simpleRun: { title: "AI 正在处理", trackedHint: "这是一个持续跟踪的任务。打开任务即可查看进展、补充说明或确认结果，无需进入技术页面。", temporaryHint: "这是一次未加入任务看板的临时运行，仅在需要详细过程时查看执行进度。", openTask: "打开任务" },
+        simpleRun: { title: "AI 正在处理", trackedHint: "这是一个持续跟踪的任务。打开任务即可查看进展、补充说明或确认结果，无需进入技术页面。", temporaryHint: "这是一次未加入任务看板的临时运行，仅在需要详细过程时查看执行进度。", openTask: "打开任务" }, myTaskTimeline: { title: "我的任务时间线", hint: "本地任务和消息任务放在一起；每项都会显示当前状态和下一步。", openChannels: "打开消息任务", openTask: "打开任务" },
         activeTasks: "当前任务", parallelHint: "可以继续启动任务；不同隔离工作区会并行运行。", capacity: "运行中 {{count}}/{{total}}", untitledTask: "未命名任务", retryTask: "再次使用此任务", retryHint: "再次运行前，可以编辑任务内容或改选其他任务助手。", workbenchLoadFailed: "{{count}} 个首页数据源刷新失败，当前仍保留上次成功结果。", workbenchRetry: "重新刷新",
         safety: "安全", data: "数据", cost: "成本", cancellation: "取消能力", computer: "电脑", adapter: "连接方式（适配器）", lifecycle: "运行阶段（生命周期）", taskId: "任务运行编号", trace: "追踪编号（Trace ID）", state: "内部状态", noTask: "尚无任务", noTrace: "尚无追踪记录", noDelivery: "未投递",
         reviewAgent: "运行前请检查所选任务助手。", recorded: "任务输入和结果会被记录。",

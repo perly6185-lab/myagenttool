@@ -2550,6 +2550,15 @@ export const api = {
     carriedFromDate?: string | null;
     milestone?: string;
     estimatePoints?: number;
+    intentId?: string | null;
+    intentStatement?: string;
+    taskKind?: string;
+    workGoalId?: string | null;
+    artifactContract?: { consumes: string[]; produces: string[] };
+    platformTarget?: { id: string; label: string } | null;
+    dependencyIds?: string[];
+    creationBasis?: "explicit_user_intent" | "channel_ingest_rule" | "saved_automation" | "required_guard" | "imported";
+    planningHorizon?: "committed";
     parentId?: string | null;
     idempotencyKey?: string;
     routineDefinitionId?: string;
@@ -2594,6 +2603,8 @@ export const api = {
     acceptanceCriteria?: string[];
   }) => request("POST", "/api/work-items/from-external", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
+  createWorkItemResultRepair: (id: string) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/result-repair`, {}),
   suggestWorkItemDraft: (payload: {
     projectId: string;
     title: string;
@@ -2602,6 +2613,36 @@ export const api = {
     materialDraftRevision?: number;
   }) =>
     request("POST", "/api/work-items/assist/draft", payload),
+  previewWorkItemIntentPlan: (payload: {
+    projectId: string;
+    title: string;
+    body?: string;
+    materialDraftId?: string;
+    materialDraftRevision?: number;
+    sourceWorkItemId?: string;
+    excludeKinds?: string[];
+  }) => request("POST", "/api/work-items/assist/intent-plan", payload),
+  commitWorkItemIntentPlan: (payload: {
+    projectId: string;
+    title: string;
+    body?: string;
+    mode: "task" | "ai";
+    idempotencyKey: string;
+    dueDate?: string | null;
+    acceptanceCriteria?: string[];
+    verificationSop?: string[];
+    myTemplateBinding?: {
+      definitionId: string;
+      familyId: string;
+      version: number;
+      matchReasons: string[];
+      userConfirmedResult?: boolean;
+    };
+    materialDraftId?: string;
+    materialDraftRevision?: number;
+    sourceWorkItemId?: string;
+    excludeKinds?: string[];
+  }) => request("POST", "/api/work-items/assist/intent-plan/commit", payload),
   listMyTemplateDefinitions: () =>
     request("GET", "/api/workflow-memory/business-routine-definitions"),
   listMyTemplateLearning: (projectId?: string) =>
@@ -2920,6 +2961,12 @@ export const api = {
   routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
   dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),
   retryChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/retry`),
+  reconcileWechatDraftTask: (id: string, outcome: "confirmed_saved" | "confirmed_not_saved") =>
+    request<{ ok: boolean; reconciled?: boolean; invocationId?: string }>(
+      "POST",
+      `/api/channel-tasks/${encodeURIComponent(id)}/wechat-draft-reconciliation`,
+      { outcome },
+    ),
   rerouteChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reroute`),
   takeoverChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/takeover`),
   replyChannelTask: (id: string, content: string) => request<{ ok: boolean; deliveryId: string; threadId: string }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reply`, { content }),

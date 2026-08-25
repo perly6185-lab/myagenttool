@@ -15,6 +15,7 @@ export async function handleSessionRoutes({
   listSessions,
   probeSessionSite,
   reseedSessionSite,
+  actor = null,
 }) {
   if (req.method === "GET" && url.pathname === "/api/sessions") {
     sendJson(res, 200, { sessions: listSessions() });
@@ -38,10 +39,12 @@ export async function handleSessionRoutes({
   if (req.method === "POST" && reauthMatch) {
     const site = decodeURIComponent(reauthMatch[1]);
     try {
-      const result = await reseedSessionSite(site);
+      const result = await reseedSessionSite(site, {}, actor);
       sendJson(res, 200, result);
     } catch (error) {
-      const status = error?.code === "session_site_unknown" ? 404 : 502;
+      const status = Number.isInteger(error?.status)
+        ? error.status
+        : error?.code === "session_site_unknown" ? 404 : 502;
       sendJson(res, status, { error: error?.code ?? "session_login_failed", message: String(error?.message ?? error) });
     }
     return true;

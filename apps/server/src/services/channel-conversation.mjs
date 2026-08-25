@@ -13,6 +13,7 @@
 
 import { parseChannelCommand } from "@myagenttool/protocol/channel";
 import { UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
+import { createHash } from "node:crypto";
 import { actorForUser, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { findDevice, listDevices } from "../runtime/device.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
@@ -29,15 +30,61 @@ import {
 } from "./channel-intent.mjs";
 import { parseChannelNotificationPolicyRequest } from "./channel-notifications.mjs";
 import { analyzeChannelOperationIntent } from "./channel-operation-intent.mjs";
+import { contextualTaskControl, rememberChannelFocus } from "./channel-focus-memory.mjs";
+import {
+  channelIntentLearningSummary,
+  recordChannelIntentLearningSample,
+  resolveLatestChannelIntentLearningSample,
+} from "./channel-intent-learning.mjs";
 import { channelFailureCopy, channelResultCopy } from "./channel-user-copy.mjs";
+import {
+  channelPreferenceReply,
+  channelPreferenceRows,
+  parseChannelUserPreferenceRequest,
+  removeChannelUserPreferences,
+  saveChannelUserPreference,
+} from "./channel-user-preferences.mjs";
 import { classifyLocalWorkKind } from "./auto-run-decision.mjs";
 import { canonicalizeArticleUrl, detectArticleSource } from "./article-imports.mjs";
+import {
+  planDiscreteTasks,
+  platformTargetsIn,
+  proposeNextTasks,
+  publicationAssignmentsIn,
+} from "./discrete-task-planner.mjs";
+import {
+  snapshotTaskBasket,
+  taskBasketAction,
+  taskBasketExpired,
+  taskBasketPreviewRequested,
+  taskBasketReply,
+} from "./task-basket.mjs";
+import {
+  planWorkGoalChange,
+  taskKindLabel,
+  workGoalChangeAction,
+  workGoalChangeExpired,
+  workGoalChangeReply,
+} from "./work-goal-change-planner.mjs";
+import { validateTaskPlan } from "./task-plan-contract.mjs";
+import {
+  parseWechatDraftInvocationResult,
+  validateWechatDraftSuccessReceipt,
+} from "./wechat-draft-task-execution.mjs";
+import { verifyWorkItemResult } from "./work-item-result-verification.mjs";
+import { buildWorkGoalUserSummary } from "./work-goal-user-summary.mjs";
+import { buildResultRepairTaskSpec } from "./result-repair-task.mjs";
+import {
+  beginChannelExecutionAttempt,
+  finishChannelExecutionAttempt,
+  freezeChannelExecutionContract,
+} from "./channel-execution-contract.mjs";
 
 // Keep the fail-closed response generic, but make it actionable for the local
 // single-user setup. Do not reveal whether the sender was unmapped, disabled,
 // or blocked by an allowlist.
 const GENERIC_DENIED_REPLY = "当前消息暂时无法处理。请在桌面端打开“频道”，确认微信已绑定且处于在线状态；首次使用请复制绑定口令，在微信 ClawBot 对话中发送。";
-const USAGE_REPLY = `直接发送文字、图片、语音或文件即可。\n\n我会先理解你的需求：\n• 想了解：我先回答问题\n• 只读查看：范围明确时直接处理，不会修改文件\n• 修改、发送或其他有风险操作：先说明影响并请你确认\n• 任务处理中：可以问“进度”\n• 需要普通授权：按提示回复“确认授权”或“拒绝授权”\n• 结果不满意：直接说哪里需要修改\n\n常用操作：确认、取消、进度、确认授权、拒绝授权、重试、重发结果、转人工。`;
+const USAGE_REPLY = `直接发送文字、图片、语音或文件即可。\n\n我会先理解你的需求：\n• 想了解：我先回答问题\n• 只读查看：范围明确时直接处理，不会修改文件\n• 一句话包含多项工作：可以说“先规划……”，我会先列出任务篮，回复“确认执行”后才创建\n• 一件事进行中：可以说“文章改成 1500 字，图片不动”或“小红书改发视频”，我会先预览变化\n• 修改、发送或其他有风险操作：先说明影响并请你确认\n• 任务处理中：可以问“进度”\n• 想知道依据：回复“查看依据”或“为什么这样做”\n• 需要普通授权：按提示回复“确认授权”或“拒绝授权”\n• 结果不满意：直接说哪里需要修改\n• 想让我记住习惯：回复“记住：文章控制在 2000 字左右”；回复“我的偏好”查看\n\n常用操作：确认、取消、进度、查看依据、确认授权、拒绝授权、重试、重发结果、转人工。`;
 
 // A staged confirmation goes stale after this long — a fresh /run is required
 // (mirrors the approval-grant TTL: a confirm-click artifact, not a work queue).
@@ -83,7 +130,8 @@ const GREETING_TEXTS = new Set([
 // new-task signal and should not be attached to a waiting-user thread.
 const NEW_TASK_PREFIX = /^(?:(?:另外|另一个|还有一个|除此之外|新任务|另一个任务)(?=\s|[，,：:、。！!？?]|[\u3400-\u9fff]|$)|再帮我)/i;
 const THREAD_REVISION_REQUEST = /^(?:修改|改成|改为|更改|调整|补充|增加|加上|换成|替换|把|刚才|上一个|这个|那份|再加|还要|少了|去掉|改一下|完善|只看|只要|重点看|优先看|按)/i;
-const TASK_REVISION_FEEDBACK = /^(?:这个不对|结果不对|不对|做错了|弄错了|客户(?:弄错|选错|写错)|按上个月(?:那份|的)?|只改|格式保持(?:不变)?|重新检查(?:一遍)?|再改(?:一下)?|调整(?:一下)?|不满意|重做(?:一遍)?|换一版)/i;
+const TASK_REVISION_FEEDBACK = /^(?:这个不对|结果不对|不对|做错了|弄错了|客户(?:弄错|选错|写错)|按上个月(?:那份|的)?|只改|格式保持(?:不变)?|重新检查(?:一遍)?|再改(?:一下)?|调整(?:一下)?|不满意|重做(?:一遍)?|换一版|(?:是)?(?:客户|订单|收件人|对象|文件|资料|数据|价格|金额|标题|内容|格式|语气|排版|样式|版本|理解目标|理解|目标|验收|标准|完整)(?:不是|不对|错了|有误|弄错|选错|写错|不一致|不完整|太长|太短|改|换|按)|这个.*(?:错了|有误|不一致)|(?:结果|这版|刚才的结果).*(?:有问题|不对|错了|需要改))/i;
+const VAGUE_TASK_REVISION_FEEDBACK = /^(?:这个不对|结果不对|不对|做错了|不满意|重做(?:一遍)?)(?:[，,。.!！?？\s]*)$/i;
 const EXPLICIT_TASK_REQUEST = /^(?:请(?:帮我|协助我|处理|整理|分析|检查|读取|列出|查看|显示|查找|找出|生成|创建|修改|导出|汇总|总结|翻译|写|做|执行|运行|发送|下载|对比|审核|修复|规划|开发|实现)|(?:帮我|麻烦(?:帮我)?|请协助)(?:只读(?:取)?|读取|列出|列举|查看|显示|罗列|查找|找出|整理|分析|处理|检查|生成|创建|修改|导出|汇总|总结|翻译|写|做|执行|运行|发送|下载|对比|审核|修复|规划|开发|实现))/i;
 const CONSULTATION_REQUEST = /^(?:为什么|为何|怎么|如何|能否|是否|有没有|请问|什么是|有什么区别|你建议|推荐什么|应该怎么)/;
 const TASK_LIST_REQUESTS = new Set(["我的任务", "查看任务", "任务", "任务列表", "有哪些任务", "任务状态", "我的任务状态"]);
@@ -92,23 +140,28 @@ const TASK_QUERY_REQUEST = /^(?:(?:帮我|请|麻烦)[，,、\s]*)?(?:查|查看
 const TASK_EXISTENCE_QUERY = /^(?:(?:我(?:现在|目前|当前)?|现在|目前|当前)[，,、\s]*)?(?:有几个|有哪些|有没有|是否有|有没|是什么)(?:(?:正在|在|当前|现在)?(?:执行|运行|处理|排队)(?:中的?|的)?)?(?:任务|工作)(?:吗|呢)?[？?！!。]*$/i;
 const TASK_RUNNING_EXISTENCE_QUERY = /^(?:有没有|是否有|有没)[，,、\s]*(?:任务|工作)(?:在|正在)(?:执行|运行|跑|处理|排队)(?:吗|呢)?[？?！!。]*$/i;
 const TASK_HISTORY_REQUESTS = new Set(["历史", "历史记录", "聊天记录", "最近记录", "最近任务", "我刚才做了什么"]);
+const TASK_EXPLANATION_REQUESTS = new Set(["查看依据", "依据", "使用了哪些资料", "用了哪些资料", "为什么这样做", "为什么这么做", "哪里出错了", "错误在哪里"]);
 const TASK_PROGRESS_REQUESTS = new Set(["进度", "当前进度", "目前什么进度", "现在什么进度", "当前什么进度", "任务进度", "我的进度", "进度怎么样", "现在做到哪了", "现在什么情况", "还有多久", "排队情况", "排队到哪了", "任务进展", "进展如何", "做得怎么样"]);
 const TASK_PROGRESS_NATURAL = /^(?:(?:现在|目前|当前)?(?:任务|这个任务|刚才那个任务)?)(?:怎么样|什么情况|做完了吗|完成了吗|弄好了吗|处理好了吗|有结果了吗|结果出来了吗|到哪了|进展如何|还有多久)[？?！!。]*$/i;
 const TASK_PROGRESS_COLLOQUIAL = /^(?:(?:这个|当前|刚才(?:那个)?|上一个)?(?:任务|事情|工作)?(?:现在|目前)?(?:有进展(?:吗|没|没有|呢)?|还在(?:执行|运行|处理|跑)(?:吗|呢)?|做到哪(?:一步)?了?|到哪(?:一步)?了?|怎么样了?|好了吗|好了没|有结果(?:吗|没|没有)?|还要多久|怎么还没好))[？?！!。]*$/i;
 const TASK_RESULT_RESEND_REQUESTS = new Set(["重发结果", "再发一次", "再发一次结果", "把结果发我", "重新发送结果", "结果再发一次"]);
 const TASK_RESULT_RESEND_NATURAL = /^(?:(?:结果|消息|文件)?(?:没收到|没有收到|没看见|没看到)|(?:把)?(?:结果|消息|文件)?(?:再发|重新发|发给我|发我)(?:给我)?(?:一下|一遍|一份)?(?:结果|消息|文件)?)$/i;
 const TASK_RESULT_MISSING_NATURAL = /^(?:我)?(?:还)?(?:没收到|没有收到|没看见|没看到)(?:任务)?(?:结果|消息|文件)(?:呢|啊|呀)?[？?！!。]*$/i;
+const WECHAT_DRAFT_CONFIRMED_SAVED = /^(?:我)?(?:已经|已)?(?:在草稿箱(?:里|中)?|去草稿箱)?(?:找到|看见|看到)(?:了)?(?:这个|该|那篇)?(?:公众号)?草稿$|^(?:确认)?(?:已经|已)保存(?:成功)?$|^草稿箱(?:里|中)?(?:有|存在)(?:这个|该|那篇)?草稿$/i;
+const WECHAT_DRAFT_CONFIRMED_NOT_SAVED = /^(?:我)?(?:在草稿箱(?:里|中)?)?(?:没|没有|未)(?:找到|看见|看到)(?:这个|该|那篇)?(?:公众号)?草稿$|^(?:确认)?(?:没有|没|未)保存(?:成功)?$|^草稿箱(?:里|中)?(?:没有|没)(?:这个|该|那篇)?草稿$/i;
 const TASK_CANCEL_NATURAL = /^(?:(?:把)?(?:这个|当前|刚才|上一个)(?:的|那个)?(?:任务|事情|工作)?[，,、\s]*)?(?:不用做了|不要做了|别做了|取消掉|取消吧|作废)(?:吧)?[？?！!。]*$/i;
 const TASK_PAUSE_NATURAL = /^(?:(?:把)?(?:这个|当前|刚才|上一个)(?:的|那个)?(?:任务|事情|工作)?[，,、\s]*)?(?:先停一下|先暂停一下|暂停一下|先等等)(?:吧)?[？?！!。]*$/i;
 const HELP_REQUESTS = new Set([
   "帮助", "怎么用", "如何使用", "我能做什么", "你能做什么", "你可以做什么",
   "能帮我什么", "你会做什么", "你能帮我做什么", "help", "what can you do",
 ]);
-const TASK_THREAD_ACTIVE_STATUSES = new Set(["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user", "needs_attention"]);
+const TASK_THREAD_ACTIVE_STATUSES = new Set(["awaiting_confirmation", "waiting_upstream", "waiting_approval", "queued", "running", "waiting_user", "needs_attention"]);
 const MODEL_CONTROL_INTENTS = new Set(["confirm", "cancel", "retry", "pause", "resume", "resend", "select", "handoff"]);
 export const CHANNEL_INTENT_CONFIDENCE_THRESHOLD = 0.65;
 const SHARED_CONTENT_WINDOW_MS = 30 * 60 * 1000;
 const SHARED_CONTENT_CONTEXT_TTL_MS = 24 * 60 * 60 * 1000;
+const SHARED_CONTENT_ROUTE_TTL_MS = 30 * 60 * 1000;
+const CHANNEL_CONSULTATION_MAX_ATTEMPTS = 2;
 const SHARED_CONTENT_MAX_ITEMS = 12;
 const SHARED_CONTENT_ACTIVE_MAX = 5;
 const SHARED_CONTENT_EXCERPT_CHARS = 4_000;
@@ -117,15 +170,23 @@ const SHARED_CONTENT_CONTINUE_RE = /^(?:继续(?:看看|看|分析|读|阅读)?|
 const SHARED_CONTENT_LOCATION_RE = /(?:本地(?:存放|保存|访问)?(?:路径|位置)|保存到(?:哪里|哪儿|什么位置)|存放在(?:哪里|哪儿|什么位置)|(?:这篇|刚才|上篇|文章|资料|文件).*(?:路径|位置|在哪|哪里|哪儿|怎么打开)|(?:路径|位置|在哪|哪里|哪儿|怎么打开).*(?:这篇|刚才|上篇|文章|资料|文件))/i;
 const SHARED_CONTENT_NO_ARCHIVE_RE = /(?:不要|不用|别)(?:保存|收纳|下载)|只(?:预览|看看)(?:不保存)?|临时看看/i;
 const SHARED_CONTENT_NO_ARCHIVE_STRIP_RE = /(?:不要|不用|别)(?:保存|收纳|下载)|只(?:预览|看看)(?:不保存)?|临时看看/giu;
-const SHARED_CONTENT_TASK_RE = /(?:按|根据|结合|参考|把|将).{0,30}(?:这些|上述|前面|刚才|文章|资料|建议|分析).{0,30}(?:落实|落地|完善|实现|改进|开发|创建任务|列为任务|做进项目|加入项目)/i;
+const SHARED_CONTENT_TASK_RE = /(?:按|根据|结合|参考|把|将).{0,30}(?:这个|这些|这篇|上述|前面|刚才|链接|内容|文章|资料|建议|分析).{0,30}(?:落实|落地|完善|实现|改进|优化|开发|创建任务|列为任务|做进项目|加入项目)/i;
+const SHARED_CONTENT_ANALYSIS_CHOICE_RE = /^(?:(?:重新|再)(?:分析|总结)(?:一次|一下)?|(?:分析|总结|提炼|比较|对比)(?:一下)?(?:刚才|这些|这个|这篇|链接|内容|文章|资料)?)[。.!！?？]*$/i;
+const SHARED_CONTENT_ATTACH_CURRENT_RE = /^(?:(?:把|将)?(?:刚才|这个|这些|这篇|链接|内容|文章|资料)?(?:作为|加入|添加|补充|放进|关联到|附加到).{0,12}(?:当前|正在(?:执行|处理)的?)?(?:任务|工作)|(?:加入|补充)(?:到|进)?(?:当前|正在(?:执行|处理)的?)?(?:任务|工作)(?:资料|材料)?)[。.!！?？]*$/i;
+const SHARED_CONTENT_NEW_TASK_CHOICE_RE = /^(?:(?:按|根据|结合|参考)?(?:刚才|这个|这些|这篇|链接|内容|文章|资料)?(?:创建|新建|另建|生成)(?:一个|一项|独立)?(?:新)?任务|创建新任务)[。.!！?？]*$/i;
+const SHARED_CONTENT_ROUTE_DECLINE_RE = /^(?:先不处理|暂不处理|不用处理|取消关联|先放着)[。.!！?？]*$/i;
+const SHARED_CONTENT_CONTEXT_QUESTION_RE = /(?:(?:这个|这篇|这份|刚才(?:那个|的)?|上面(?:那个|的)?|最近(?:这篇|这份)?)(?:链接|文章|资料|内容)?(?:主要)?(?:讲了?什么|说了?什么|什么意思|怎么样|怎么看|有什么(?:问题|重点|建议|价值)|重点是什么|值不值得|靠谱吗|可信(?:吗|不)|能学到什么))|(?:你怎么看|帮我看看|说说)(?:这个|这篇|这份|刚才(?:那个|的)?|上面(?:那个|的)?)(?:链接|文章|资料|内容)?/i;
+const SHARED_CONTENT_ITEM_SELECTION_RE = /^(?:只)?(?:看|分析|总结|提炼|说说)(?:一下)?(?:第[一二三四五12345]篇|最后一篇)(?:[，,：:].*)?[。.!！?？]*$/i;
+const SHARED_CONTENT_BARE_REFERENCE_RE = /^(?:这个|这篇|这份|刚才那个|刚才的|上面那个|上面的)[。.!！?？]*$/i;
 const LINK_PLUGIN_CONFIRM_RE = /^(?:确认|同意|可以|好|好的|开始)?(?:开发|完善|修复)(?:这个|该|对应的)?(?:下载|正文|内容)?(?:识别|解析|抓取)?(?:适配)?插件(?:并测试|和测试)?[。.!！?？]*$/i;
 const LINK_PLUGIN_DECLINE_RE = /^(?:不用|不要|暂不|先不|跳过|取消)(?:开发|处理|这个插件)?[。.!！?？]*$/i;
 const LINK_PLUGIN_PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
+const TECHNICAL_CONSULTATION_STATUS_RE = /^(?:codex(?: cli| app-server turn)?|claude(?: cli| agent sdk)?) (?:completed|succeeded)\.?$/i;
 
 export function createChannelConversationService({
   state,
   now,
-  nextId, // reserved for S5 (delivery records); accepted so the composer wiring is uniform
+  nextId,
   appendEvent,
   refuse = null,
   persistStateSoon = () => {},
@@ -148,11 +209,14 @@ export function createChannelConversationService({
   denyInvocation = null,
   answerClarify = null,
   retryAutoRun = null,
+  retryDirectTask = null,
+  reconcileWechatDraftTask = null,
   cancelAutoRun = null,
   classifyIntent = null,
   createConsultation = null,
   inspectSharedLink = null,
   trackKnowledgeCaptureTask = null,
+  attachKnowledgeToWorkItem = null,
   resolveKnowledgeLocation = null,
   replySender = null,
   resendDelivery = null,
@@ -179,6 +243,80 @@ export function createChannelConversationService({
     (state.channelConversations ?? []).find((row) => row.id === conversationId) ?? null;
   const findInvocation = (invocationId) =>
     (state.invocations ?? []).find((row) => row.id === String(invocationId ?? "")) ?? null;
+
+  function rememberFocus(conversation, { goalId = null, taskThreadId = null, reason = "interaction" } = {}) {
+    return rememberChannelFocus(conversation, { goalId, taskThreadId, reason, at: now() });
+  }
+
+  function ensureWorkGoal(plan, event, channel, conversation) {
+    const ownerTeamId = channel.ownerTeamId ?? "team_local";
+    const projectId = channel.taskProjectId ?? null;
+    const requestedGoalId = String(plan?.goal?.id ?? plan?.intent?.id ?? `channel-goal:${event.id}`).slice(0, 200);
+    const idCollision = (state.workGoals ?? []).some((candidate) =>
+      candidate.id === requestedGoalId
+      && (candidate.ownerTeamId !== ownerTeamId || candidate.projectId !== projectId));
+    const goalId = idCollision ? `channel-goal:${nextId("wgl")}`.slice(0, 200) : requestedGoalId;
+    let goal = (state.workGoals ?? []).find((candidate) =>
+      candidate.id === goalId
+      && candidate.ownerTeamId === ownerTeamId
+      && candidate.projectId === projectId) ?? null;
+    if (goal) {
+      runTx(() => {
+        goal.sourceEventIds = [...new Set([...(goal.sourceEventIds ?? []), event.id])].slice(-50);
+        goal.domains = [...new Set([...(goal.domains ?? []), ...(plan?.goal?.domains ?? [])])];
+        goal.platforms = [...new Map([...(goal.platforms ?? []), ...(plan?.goal?.platforms ?? [])]
+          .map((platform) => [platform.id, platform])).values()];
+        goal.planVersion = Number(goal.planVersion ?? 1) + 1;
+        if (plan?.planContract) goal.planContract = plan.planContract.summary ?? plan.planContract;
+        if (Number.isFinite(plan?.intentConfidence)) goal.intentConfidence = plan.intentConfidence;
+        goal.updatedAt = now();
+        event.workGoalId = goal.id;
+        rememberFocus(conversation, { goalId: goal.id, reason: "goal_extended" });
+      });
+      return goal;
+    }
+    const timestamp = now();
+    goal = {
+      id: goalId,
+      ownerTeamId,
+      projectId,
+      conversationId: conversation.id,
+      sourceEventIds: [event.id],
+      title: plan?.goal?.title ?? plan?.intent?.statement ?? "一件待完成的工作",
+      statement: plan?.goal?.statement ?? plan?.intent?.statement ?? "",
+      outcome: plan?.goal?.outcome ?? "完成用户明确提出的多项专业任务",
+      planContract: plan?.planContract?.summary ?? plan?.planContract ?? null,
+      intentConfidence: Number.isFinite(plan?.intentConfidence) ? plan.intentConfidence : null,
+      domains: plan?.goal?.domains ?? [],
+      platforms: plan?.goal?.platforms ?? [],
+      status: "active",
+      planVersion: 1,
+      taskIds: [],
+      artifacts: [],
+      createdBy: event.externalUserId ?? null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    runTx(() => {
+      state.workGoals = [...(state.workGoals ?? []), goal];
+      event.workGoalId = goal.id;
+      rememberFocus(conversation, { goalId: goal.id, reason: "goal_created" });
+      conversation.updatedAt = timestamp;
+    });
+    return goal;
+  }
+
+  function workGoalIntentId(text, conversation, event) {
+    const activeGoal = conversation.activeWorkGoalId
+      ? (state.workGoals ?? []).find((candidate) =>
+        candidate.id === conversation.activeWorkGoalId
+        && candidate.conversationId === conversation.id
+        && ["active", "needs_repair"].includes(candidate.status)) ?? null
+      : null;
+    return activeGoal && /^(?:再|再把|另外|此外|顺便|还要|还需要|也|补充|同时|接着|然后|继续基于|基于(?:刚才|上述|这些)(?:结果|内容|资料|产物)?)/i.test(normalizedText(text))
+      ? activeGoal.id
+      : `channel-intent:${event.id}`;
+  }
 
   function settle(event, { status, reply, invocationId = null, data = {} }) {
     runTx(() => {
@@ -244,8 +382,36 @@ export function createChannelConversationService({
     return { nowMs, recentRuns, limited: recentRuns.length >= RUN_RATE_MAX };
   }
 
+  function reserveTaskBatch(channel, conversation, count) {
+    const requested = Math.max(0, Number(count) || 0);
+    const rate = runRateCheck(conversation);
+    if (rate.recentRuns.length + requested > RUN_RATE_MAX) {
+      return { ok: false, reason: "rate_limited", limit: RUN_RATE_MAX };
+    }
+    const today = String(now()).slice(0, 10);
+    const dayCount = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
+    const dailyLimit = Number.isInteger(channel.taskDailyLimit) ? channel.taskDailyLimit : TASK_DAILY_LIMIT_FALLBACK;
+    if (dayCount + requested > dailyLimit) {
+      return { ok: false, reason: "daily_limit_reached", limit: dailyLimit, remaining: Math.max(0, dailyLimit - dayCount) };
+    }
+    runTx(() => {
+      conversation.recentRuns = [...rate.recentRuns, ...Array.from({ length: requested }, () => rate.nowMs)];
+      channel.taskDayDate = today;
+      channel.taskDayCount = dayCount + requested;
+      conversation.updatedAt = now();
+    });
+    return { ok: true, count: requested };
+  }
+
   function normalizedText(value) {
     return String(value ?? "").replace(/\s+/g, " ").trim();
+  }
+
+  function wechatDraftReconciliationOutcome(value) {
+    const text = normalizedText(value).replace(/[!！。.,，?？~～]+$/g, "");
+    if (WECHAT_DRAFT_CONFIRMED_NOT_SAVED.test(text)) return "confirmed_not_saved";
+    if (WECHAT_DRAFT_CONFIRMED_SAVED.test(text)) return "confirmed_saved";
+    return null;
   }
 
   function sharedContentUrls(text) {
@@ -277,13 +443,144 @@ export function createChannelConversationService({
     return context.items.filter((item) => activeIds.has(item.id) && item.status === "ready").slice(-SHARED_CONTENT_ACTIVE_MAX);
   }
 
-  function sharedContentContinuation(text, conversation) {
+function sharedContentContinuation(text, conversation) {
     if (!activeSharedContents(conversation).length) return false;
     return SHARED_CONTENT_CONTINUE_RE.test(normalizedText(text));
   }
 
+  function retryableSharedContentUrls(conversation) {
+    const context = conversation?.sharedContentContext;
+    const failedAt = Date.parse(context?.lastFailedAt ?? "");
+    const currentAt = Date.parse(now());
+    if (!Number.isFinite(failedAt) || !Number.isFinite(currentAt) || currentAt - failedAt > SHARED_CONTENT_CONTEXT_TTL_MS) return [];
+    return [...new Set((context?.retryUrls ?? []).map((url) => {
+      try { return canonicalizeArticleUrl(url); } catch { return null; }
+    }).filter(Boolean))].slice(-3);
+  }
+
+  function sharedContentRetryRequest(text, conversation) {
+    return retryableSharedContentUrls(conversation).length > 0
+      && /^(?:重试|再试一次)(?:刚才|上次|失败的)?(?:链接|文章|资料|内容)?[。.!！?？]*$/i.test(normalizedText(text));
+  }
+
   function sharedContentTaskRequest(text, conversation) {
     return activeSharedContents(conversation).length > 0 && SHARED_CONTENT_TASK_RE.test(normalizedText(text));
+  }
+
+  function sharedContentContextQuestion(text, conversation) {
+    if (!activeSharedContents(conversation).length) return false;
+    const value = normalizedText(text);
+    return SHARED_CONTENT_CONTEXT_QUESTION_RE.test(value) || SHARED_CONTENT_ITEM_SELECTION_RE.test(value);
+  }
+
+  function sharedContentItemsForQuestion(text, conversation) {
+    const items = activeSharedContents(conversation);
+    const value = normalizedText(text);
+    if (/最后一篇/i.test(value)) return items.length ? [items.at(-1)] : [];
+    const ordinal = value.match(/第([一二三四五12345])篇/i)?.[1] ?? null;
+    const ordinalIndex = ordinal
+      ? ({ 一: 0, 二: 1, 三: 2, 四: 3, 五: 4 }[ordinal] ?? Number(ordinal) - 1)
+      : null;
+    return Number.isInteger(ordinalIndex) && ordinalIndex >= 0 && ordinalIndex < items.length
+      ? [items[ordinalIndex]]
+      : items;
+  }
+
+  function pendingSharedContentRoute(conversation) {
+    const pending = conversation?.pendingSharedContentRoute;
+    if (!pending) return null;
+    const expiresAt = Date.parse(pending.expiresAt ?? "");
+    const currentAt = Date.parse(now());
+    if ((Number.isFinite(expiresAt) && Number.isFinite(currentAt) && currentAt > expiresAt)
+      || !activeSharedContents(conversation).length) {
+      runTx(() => {
+        conversation.pendingSharedContentRoute = null;
+        conversation.updatedAt = now();
+      });
+      return null;
+    }
+    return pending;
+  }
+
+  function selectedActiveTaskThread(conversation) {
+    const active = activeTaskThreads(conversation);
+    return active.find((candidate) => candidate.id === conversation?.activeTaskThreadId)
+      ?? (active.length === 1 ? active[0] : null);
+  }
+
+  function sharedContentSourceEventId(conversation) {
+    return conversation?.sharedContentContext?.lastSourceEventId ?? null;
+  }
+
+  function recordSharedContentRoute(event, conversation, {
+    target,
+    reason,
+    status = "decided",
+    taskThreadId = null,
+    clearPending = true,
+  }) {
+    const items = activeSharedContents(conversation);
+    const decision = {
+      target,
+      status,
+      reason,
+      sourceEventId: sharedContentSourceEventId(conversation),
+      itemIds: items.map((item) => item.id).slice(-SHARED_CONTENT_ACTIVE_MAX),
+      activeTaskCount: activeTaskThreads(conversation).length,
+      taskThreadId,
+      decidedAt: now(),
+    };
+    runTx(() => {
+      event.sharedContentIds = [...decision.itemIds];
+      event.sharedContentRoute = decision;
+      conversation.sharedContentContext = {
+        ...(conversation.sharedContentContext ?? {}),
+        lastActionAt: now(),
+        updatedAt: now(),
+      };
+      if (clearPending) conversation.pendingSharedContentRoute = null;
+      conversation.updatedAt = now();
+    });
+    return decision;
+  }
+
+  function requestSharedContentRoute(event, conversation) {
+    const items = activeSharedContents(conversation);
+    const sourceEventId = sharedContentSourceEventId(conversation);
+    const pending = {
+      id: nextId("shared_content_route"),
+      sourceEventId,
+      itemIds: items.map((item) => item.id).slice(-SHARED_CONTENT_ACTIVE_MAX),
+      activeTaskIds: activeTaskThreads(conversation).map((thread) => thread.id).slice(0, 5),
+      status: "awaiting_confirmation",
+      createdAt: now(),
+      expiresAt: new Date(Date.parse(now()) + SHARED_CONTENT_ROUTE_TTL_MS).toISOString(),
+    };
+    runTx(() => {
+      conversation.pendingSharedContentRoute = pending;
+      conversation.updatedAt = now();
+    });
+    recordSharedContentRoute(event, conversation, {
+      target: "needs_confirmation",
+      reason: "shared_content_or_active_task_ambiguous",
+      status: "awaiting_confirmation",
+      clearPending: false,
+    });
+    return settle(event, {
+      status: "dispatched",
+      reply: "我已保留刚才的资料，但还不确定你想把它用于哪里。请回复“分析资料”“加入当前任务”或“创建新任务”。在你明确选择前，我不会修改当前任务。",
+      data: {
+        sharedContent: true,
+        route: "needs_confirmation",
+        sourceEventId,
+        activeTaskCount: pending.activeTaskIds.length,
+      },
+    });
+  }
+
+  function taskHasPriorityForGenericContinuation(conversation) {
+    return activeTaskThreads(conversation).some((thread) =>
+      ["awaiting_confirmation", "waiting_approval", "waiting_user", "needs_attention"].includes(thread.status));
   }
 
   function sharedContentLocationRequest(text, conversation) {
@@ -386,7 +683,7 @@ export function createChannelConversationService({
 
   function sharedContentPrompt(text, items) {
     const request = normalizedText(text);
-    const generic = /^(?:继续|继续看看|继续分析|开始分析|看看|看一下)[。.!！?？]*$/i.test(request);
+    const generic = /^(?:继续|继续看看|继续分析|开始分析|重新分析|再分析一次|看看|看一下)[。.!！?？]*$/i.test(request);
     const instruction = generic
       ? items.length > 1
         ? "请综合比较这些资料，提炼共同点、差异、值得关注的结论和可执行建议；区分原文信息与自己的推断。"
@@ -567,6 +864,30 @@ export function createChannelConversationService({
     thread.lastActivityAt = now();
   }
 
+  function upstreamDependencyCopy(thread) {
+    const titles = [...new Set((thread?.dependencyTaskTitles ?? []).map((value) => String(value).trim()).filter(Boolean))].slice(0, 4);
+    const artifactLabels = {
+      coding_digest: "编码成果",
+      analysis_report: "分析报告",
+      article_draft: "文章稿件",
+      image_set: "图片成品",
+      comic_package: "漫画成品",
+      voiceover_package: "口播成品",
+      video_package: "视频成品",
+      platform_package: "平台内容包",
+      wechat_article_package: "公众号文章包",
+      wechat_draft_receipt: "公众号草稿回执",
+    };
+    const artifacts = [...new Set((thread?.requiredArtifactKinds ?? [])
+      .map((kind) => artifactLabels[kind] ?? String(kind).replaceAll("_", " "))
+      .filter(Boolean))].slice(0, 4);
+    if (titles.length) {
+      return `正在等待“${titles.join("、")}”完成${artifacts.length ? `并交付${artifacts.join("、")}` : ""}；符合要求后会自动继续。`;
+    }
+    if (artifacts.length) return `正在等待前面的任务交付${artifacts.join("、")}；符合要求后会自动继续。`;
+    return "正在等待前面的任务交付所需成品；准备好后会自动继续。";
+  }
+
   function threadNextAction(status, thread = null) {
     const approvalInvocation = thread?.invocationId ? findInvocation(thread.invocationId) : null;
     const approval = approvalInvocation ? pendingApprovalFor(approvalInvocation) : null;
@@ -586,6 +907,10 @@ export function createChannelConversationService({
           ? "当前还没有可复用的安全文件操作，请补充文件字段、记录定位方式和修改范围"
         : thread?.waitingFor === "execution_input"
           ? "还缺少执行所需的对象、范围或内容，请按提示直接补充"
+        : thread?.waitingFor === "publication_review"
+          ? `请核对将发布到${thread?.publicationPreview?.platform?.label ?? "目标平台"}的最终文件，回复“确认发布”继续`
+        : thread?.waitingFor === "artifact_review"
+          ? "上游产物已准备好，请核对最终文件并回复“确认”继续"
         : thread?.waitingFor === "channel_confirmation"
           ? "任务已记录但尚未执行，回复“确认”开始，回复“取消”放弃"
         : thread?.waitingFor === "data_sources"
@@ -596,9 +921,12 @@ export function createChannelConversationService({
           ? "这是批量修改文件的任务，请先明确文件、记录范围和修改内容；我会先给你看修改预览"
           : "正在整理执行安排，完成后会自动开始",
       queued: "等待前面的任务完成，系统会自动开始",
+      waiting_upstream: upstreamDependencyCopy(thread),
       running: "等待执行完成，系统会自动通知",
       waiting_user: "请直接回复需要补充的信息",
-      needs_attention: "任务暂时没有新进展，回复“继续”继续观察，或回复“转人工”",
+      needs_attention: thread?.waitingFor === "upstream_unavailable"
+        ? thread?.nextAction ?? "先恢复或重试失败的上游任务"
+        : "任务暂时没有新进展，回复“继续”继续观察，或回复“转人工”",
       human_takeover: "等待人工回复",
       succeeded: "查看任务结果或继续描述新的需求",
       failed: "回复“重试”再次执行，或回复“转人工”",
@@ -635,7 +963,7 @@ export function createChannelConversationService({
     return (state.channelTaskThreads ?? [])
       .filter((thread) => thread.conversationId === conversation.id
         && thread.status === "waiting_approval"
-        && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input"].includes(thread.waitingFor))
+        && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input", "publication_review", "artifact_review"].includes(thread.waitingFor))
       .sort((left, right) => {
         if (left.id === preferredId) return -1;
         if (right.id === preferredId) return 1;
@@ -686,6 +1014,10 @@ export function createChannelConversationService({
 
   function isTaskRevisionFeedback(text) {
     return TASK_REVISION_FEEDBACK.test(normalizedText(text));
+  }
+
+  function isVagueTaskRevisionFeedback(text) {
+    return VAGUE_TASK_REVISION_FEEDBACK.test(normalizedText(text));
   }
 
   function taskRevisionType(text) {
@@ -750,6 +1082,327 @@ export function createChannelConversationService({
       .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? "")));
   }
 
+  function activeWorkGoal(conversation) {
+    const goalId = conversation?.focusMemory?.goalId ?? conversation?.activeWorkGoalId;
+    if (!goalId) return null;
+    return (state.workGoals ?? []).find((goal) =>
+      goal.id === goalId && goal.conversationId === conversation.id) ?? null;
+  }
+
+  function workGoalThreads(conversation, goal = activeWorkGoal(conversation)) {
+    if (!goal) return [];
+    const positions = new Map((goal.taskIds ?? []).map((id, index) => [id, index]));
+    return (state.channelTaskThreads ?? [])
+      .filter((thread) => thread.conversationId === conversation.id && thread.workGoalId === goal.id)
+      .sort((left, right) => {
+        const leftPosition = positions.get(left.workItemId) ?? Number.MAX_SAFE_INTEGER;
+        const rightPosition = positions.get(right.workItemId) ?? Number.MAX_SAFE_INTEGER;
+        return leftPosition - rightPosition
+          || String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""));
+      });
+  }
+
+  function taskDisplayTitle(thread) {
+    return normalizedText(thread?.taskTitle ?? thread?.summary ?? "未命名任务").split("\n")[0].slice(0, 120);
+  }
+
+  function workGoalChangeSnapshot(conversation, plan, { taskIds = null } = {}) {
+    const goal = activeWorkGoal(conversation);
+    const threads = workGoalThreads(conversation, goal);
+    const selectedIds = new Set(taskIds ?? [
+      ...(plan?.changes ?? []).flatMap((change) => change.targetIds ?? []),
+      ...(plan?.downstream ?? []).map((task) => task.id),
+      ...(plan?.changes ?? []).filter((change) => change.action === "rebind")
+        .flatMap((change) => threads.filter((thread) => thread.taskKind === change.taskKind).map((thread) => thread.id)),
+    ]);
+    const tasks = threads.filter((thread) => selectedIds.has(thread.id)).map((thread) => {
+      const item = (state.workItems ?? []).find((candidate) => candidate.id === thread.workItemId) ?? null;
+      const artifactDigest = createHash("sha256").update(JSON.stringify({
+        contract: item?.artifactContract ?? thread.artifactContract ?? null,
+        outputs: (item?.outputAssets ?? []).map((asset) => ({
+          id: asset.id ?? null,
+          version: asset.version ?? asset.hash ?? null,
+          path: asset.path ?? null,
+        })),
+      })).digest("hex");
+      return {
+        threadId: thread.id,
+        workItemId: thread.workItemId ?? null,
+        workItemRevision: Number.isInteger(item?.revision) ? item.revision : null,
+        status: thread.status,
+        dependencyIds: [...(item?.dependencyIds ?? [])].sort(),
+        artifactDigest,
+      };
+    }).sort((left, right) => left.threadId.localeCompare(right.threadId));
+    const value = {
+      goalId: goal?.id ?? null,
+      goalPlanVersion: Number(goal?.planVersion ?? 1),
+      tasks,
+    };
+    return {
+      ...value,
+      digest: createHash("sha256").update(JSON.stringify(value)).digest("hex"),
+      capturedAt: now(),
+    };
+  }
+
+  function saveWorkGoalChangeProposal(conversation, proposal) {
+    const rows = state.workGoalChanges ?? [];
+    const index = rows.findIndex((candidate) => candidate.id === proposal.id);
+    if (index >= 0) rows[index] = proposal;
+    else state.workGoalChanges = [...rows, proposal].slice(-500);
+    conversation.pendingWorkGoalChange = proposal;
+    conversation.updatedAt = now();
+  }
+
+  function workGoalChangeSnapshotConflict(conversation, proposal) {
+    const expected = proposal?.snapshot;
+    if (!expected) return null;
+    const current = workGoalChangeSnapshot(conversation, proposal, {
+      taskIds: expected.tasks.map((task) => task.threadId),
+    });
+    if (current.digest === expected.digest) return null;
+    const expectedById = new Map(expected.tasks.map((task) => [task.threadId, task]));
+    const currentById = new Map(current.tasks.map((task) => [task.threadId, task]));
+    const changedTitles = [...new Set([...expectedById.keys(), ...currentById.keys()])]
+      .filter((id) => JSON.stringify(expectedById.get(id) ?? null) !== JSON.stringify(currentById.get(id) ?? null))
+      .map((id) => taskDisplayTitle(workGoalThreads(conversation).find((thread) => thread.id === id) ?? { taskTitle: "相关任务" }));
+    return {
+      current,
+      goalChanged: current.goalPlanVersion !== expected.goalPlanVersion,
+      changedTitles,
+    };
+  }
+
+  function workGoalChangePlan(text, conversation) {
+    const goal = activeWorkGoal(conversation);
+    if (!goal || !["active", "needs_repair"].includes(goal.status ?? "active")) return null;
+    const itemsById = new Map((state.workItems ?? []).map((item) => [item.id, item]));
+    const plan = planWorkGoalChange({
+      text,
+      goal,
+      tasks: workGoalThreads(conversation, goal).map((thread) => ({
+        ...thread,
+        dependencyIds: itemsById.get(thread.workItemId)?.dependencyIds ?? [],
+      })),
+    });
+    return plan.matched ? plan : null;
+  }
+
+  function proposeWorkGoalChange(event, conversation, text) {
+    // Keep terse one-task controls immediate. The change preview is for
+    // compound adjustments and additions to an existing piece of work.
+    if (namedTaskControl(text, conversation)
+      || /^(?:暂停|继续|恢复|取消)(?:当前)?这件事[。.!！?？]*$/i.test(text)) return null;
+    const plan = workGoalChangePlan(text, conversation);
+    if (!plan || plan.materialChangeCount < 1) return null;
+    const proposal = {
+      ...plan,
+      id: nextId("wgc"),
+      channelId: event.channelId,
+      conversationId: conversation.id,
+      status: "awaiting_confirmation",
+      createdAt: now(),
+      sourceEventId: event.id,
+    };
+    proposal.snapshot = workGoalChangeSnapshot(conversation, proposal);
+    runTx(() => {
+      saveWorkGoalChangeProposal(conversation, proposal);
+      event.workGoalId = proposal.goalId;
+      event.workGoalChangeId = proposal.id;
+    });
+    return settle(event, {
+      status: "dispatched",
+      reply: workGoalChangeReply(proposal),
+      data: {
+        workGoalChange: true,
+        workGoalChangeId: proposal.id,
+        previewOnly: true,
+        changeCount: proposal.materialChangeCount,
+        downstreamImpactCount: proposal.downstream?.length ?? 0,
+        unchangedCount: proposal.unchanged.length,
+      },
+    });
+  }
+
+  function namedTaskControl(text, conversation) {
+    if (!conversation) return null;
+    const value = normalizedText(text).replace(/[。.!！?？]+$/u, "");
+    if (taskOrdinal(value)) return null;
+    const patterns = [
+      { kind: "pause", taskKind: "content_publish", regex: /^(.+?)(?:先)?不发(?:了)?$/i },
+      { kind: "pause", regex: /^(?:先)?(?:暂停|停一下)\s*(.+)$/i },
+      { kind: "pause", regex: /^(.+?)(?:先暂停|先停一下)$/i },
+      { kind: "cancel", regex: /^(?:取消|停止|不做|不要做)\s*(.+)$/i },
+      { kind: "cancel", regex: /^(.+?)(?:不做了|取消掉)$/i },
+      { kind: "resume", regex: /^(?:继续做|恢复)\s*(.+)$/i },
+      { kind: "prioritize", regex: /^(?:先做|优先做|优先处理)\s*(.+)$/i },
+      { kind: "prioritize", regex: /^(.+?)(?:优先|先做)$/i },
+    ];
+    const parsed = patterns.map((pattern) => ({ ...pattern, match: value.match(pattern.regex) })).find((candidate) => candidate.match?.[1]);
+    if (!parsed) return null;
+    const query = normalizedText(parsed.match[1])
+      .replace(/^(?:这个|那个|当前|刚才的?)/u, "")
+      .replace(/(?:的)?(?:任务|工作)$/u, "")
+      .trim();
+    if (!query || /^(?:这件事|整个事情|全部|所有)$/u.test(query)) return null;
+    const aliases = {
+      coding_digest: ["编码", "编码整理", "编码成果", "开发总结"],
+      content_article: ["文章", "文章创作", "写文章"],
+      content_image: ["图片", "配图", "图片制作"],
+      content_comic: ["漫画", "漫画制作"],
+      content_voiceover: ["口播", "口播稿"],
+      content_video: ["视频", "视频制作"],
+      platform_adaptation: ["平台适配", "适配"],
+      wechat_draft_sync: ["公众号草稿", "草稿箱"],
+      content_publish: ["发布", "发文"],
+      software_analysis: ["分析", "问题分析"],
+      software_implementation: ["开发", "编码", "实现", "修复"],
+      software_verification: ["测试", "构建", "验证"],
+      software_deployment: ["部署", "上线"],
+      business_research: ["调研", "资料整理"],
+      business_document: ["方案", "客户方案", "文档"],
+      business_communication: ["发送", "邮件", "客户沟通"],
+    };
+    const pool = workGoalThreads(conversation).length
+      ? workGoalThreads(conversation)
+      : recentTaskThreads(conversation).slice(0, 10);
+    const candidates = pool
+      .filter((thread) => !parsed.taskKind || thread.taskKind === parsed.taskKind)
+      .map((thread) => {
+        const title = taskDisplayTitle(thread);
+        const terms = [
+          title,
+          thread.platformTarget?.label,
+          thread.platformTarget?.id,
+          ...(aliases[thread.taskKind] ?? []),
+        ].map((term) => normalizedText(term).toLowerCase()).filter(Boolean);
+        const needle = query.toLowerCase();
+        const score = terms.reduce((best, term) => Math.max(best,
+          term === needle ? 100
+            : title.toLowerCase() === needle ? 95
+              : term.includes(needle) ? 75
+                : needle.includes(term) ? 60 : 0), 0);
+        return { thread, title, score };
+      })
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score || left.title.localeCompare(right.title, "zh-CN"));
+    if (!candidates.length) return {
+      kind: "named_task_not_found",
+      action: parsed.kind,
+      query,
+      friendly: true,
+    };
+    const best = candidates[0].score;
+    const bestMatches = candidates.filter((candidate) => candidate.score === best);
+    if (bestMatches.length > 1) return {
+      kind: "named_task_clarify",
+      action: parsed.kind,
+      query,
+      candidates: bestMatches.slice(0, 5).map(({ thread, title }) => ({ ref: threadRef(thread), title })),
+      friendly: true,
+    };
+    return { kind: parsed.kind, ref: threadRef(bestMatches[0].thread), friendly: true, named: true };
+  }
+
+  function updateBoundWorkItem(thread, changes, actor) {
+    if (!thread?.workItemId || typeof updateWorkItem !== "function") return { ok: true, skipped: true };
+    const item = (state.workItems ?? []).find((candidate) => candidate.id === thread.workItemId) ?? null;
+    if (!item || !Number.isInteger(item.revision)) return { ok: true, skipped: true };
+    try {
+      return updateWorkItem({ workItemId: item.id, expectedRevision: item.revision, ...changes }, actor);
+    } catch (error) {
+      return { ok: false, status: 500, body: { error: String(error?.message ?? error) } };
+    }
+  }
+
+  function dependentTaskThreads(sourceThread) {
+    if (!sourceThread?.workItemId || !sourceThread.workGoalId) return [];
+    const goalItems = (state.workItems ?? []).filter((item) => item.workGoalId === sourceThread.workGoalId);
+    const reached = new Set([sourceThread.workItemId]);
+    const descendants = [];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const item of goalItems) {
+        if (reached.has(item.id) || !(item.dependencyIds ?? []).some((id) => reached.has(id))) continue;
+        reached.add(item.id);
+        descendants.push(item);
+        changed = true;
+      }
+    }
+    const byWorkItemId = new Map((state.channelTaskThreads ?? [])
+      .filter((thread) => thread.workGoalId === sourceThread.workGoalId && thread.workItemId)
+      .map((thread) => [thread.workItemId, thread]));
+    return descendants.map((item) => byWorkItemId.get(item.id)).filter(Boolean);
+  }
+
+  function blockDependentTaskThreads(sourceThread, cause) {
+    const sourceTitle = taskDisplayTitle(sourceThread);
+    const candidates = dependentTaskThreads(sourceThread).filter((thread) =>
+      ["awaiting_confirmation", "waiting_upstream", "waiting_approval", "queued", "needs_attention"].includes(thread.status)
+      && !thread.autoRunId
+      && !thread.invocationId);
+    const affected = [];
+    runTx(() => {
+      for (const thread of candidates) {
+        const blockers = [...(thread.upstreamBlockers ?? []).filter((blocker) => blocker.sourceWorkItemId !== sourceThread.workItemId), {
+          sourceWorkItemId: sourceThread.workItemId,
+          title: sourceTitle,
+          cause,
+          at: now(),
+        }];
+        thread.upstreamBlockers = blockers.slice(-10);
+        thread.blockedFromStatus ??= thread.status;
+        setThreadStatus(thread, "needs_attention", `upstream_${cause}`);
+        thread.waitingFor = "upstream_unavailable";
+        thread.attentionReason = `upstream_${cause}`;
+        thread.resultSummary = `依赖的“${sourceTitle}”${cause === "cancelled" ? "已取消" : "执行失败"}，本任务暂时受阻；其他不依赖它的任务不受影响。`;
+        thread.nextAction = `先恢复或重试“${sourceTitle}”；成品可用后本任务会继续。`;
+        thread.updatedAt = now();
+        const request = (state.channelTaskRequests ?? []).find((candidate) =>
+          candidate.threadId === thread.id && ["pending", "waiting_artifacts"].includes(candidate.status));
+        if (request) {
+          request.blockedFromStatus ??= request.status;
+          request.status = "paused";
+          request.pauseReason = `upstream_${cause}`;
+          request.updatedAt = now();
+        }
+        affected.push(thread);
+      }
+    });
+    return affected;
+  }
+
+  function restoreDependentTaskThreads(sourceThread) {
+    const candidates = dependentTaskThreads(sourceThread).filter((thread) =>
+      (thread.upstreamBlockers ?? []).some((blocker) => blocker.sourceWorkItemId === sourceThread.workItemId));
+    const restored = [];
+    runTx(() => {
+      for (const thread of candidates) {
+        thread.upstreamBlockers = (thread.upstreamBlockers ?? [])
+          .filter((blocker) => blocker.sourceWorkItemId !== sourceThread.workItemId);
+        if (thread.upstreamBlockers.length) continue;
+        setThreadStatus(thread, "waiting_upstream", "upstream_retry_requested");
+        thread.waitingFor = "upstream_artifacts";
+        thread.attentionReason = null;
+        thread.resultSummary = `依赖的“${taskDisplayTitle(sourceThread)}”正在重新处理；成品可用后会自动继续。`;
+        thread.blockedFromStatus = null;
+        thread.updatedAt = now();
+        const request = (state.channelTaskRequests ?? []).find((candidate) =>
+          candidate.threadId === thread.id && candidate.status === "paused" && /^upstream_/.test(candidate.pauseReason ?? ""));
+        if (request) {
+          request.status = request.blockedFromStatus ?? "waiting_artifacts";
+          request.blockedFromStatus = null;
+          request.pauseReason = null;
+          request.updatedAt = now();
+        }
+        restored.push(thread);
+      }
+    });
+    return restored;
+  }
+
   function latestRevisionCandidate(conversation) {
     return recentTaskThreads(conversation).find((thread) =>
       ["succeeded", "failed", "cancelled"].includes(thread.status)
@@ -773,10 +1426,31 @@ export function createChannelConversationService({
       || /^(?:你好|您好)[，,\s]*(?:你能做什么|你可以做什么|能帮我什么|怎么用)[？?！!]?$/.test(value)) {
       return { kind: "help", ref: null };
     }
+    if (/^(?:取消|停止)(?:这件事|整个事情|全部步骤|整个任务)$/i.test(value)) return { kind: "goal_cancel", ref: null, friendly: true };
+    if (/^(?:暂停)(?:这件事|整个事情|全部步骤|整个任务)$/i.test(value)) return { kind: "goal_pause", ref: null, friendly: true };
+    if (/^(?:继续|恢复)(?:这件事|整个事情|全部步骤|整个任务)$/i.test(value)) return { kind: "goal_resume", ref: null, friendly: true };
+    if (conversation) {
+      const contextual = contextualTaskControl(value, conversation, recentTaskThreads(conversation).slice(0, 20));
+      if (contextual?.kind === "focus_missing") return { kind: "focus_missing", ref: null, friendly: true };
+      if (contextual?.kind === "focus_clarify") {
+        return {
+          kind: "named_task_clarify",
+          action: "select",
+          query: "刚才提到的任务",
+          candidates: contextual.candidates.map((thread) => ({ ref: threadRef(thread), title: taskDisplayTitle(thread) })),
+          friendly: true,
+        };
+      }
+      if (contextual?.threadId) {
+        const focused = recentTaskThreads(conversation).find((thread) => thread.id === contextual.threadId);
+        if (focused) return { kind: contextual.kind, ref: threadRef(focused), friendly: true, contextual: true };
+      }
+    }
     if (TASK_LIST_REQUESTS.has(value)) return { kind: "list", ref: null };
     const queryMode = taskQueryMode(value);
     if (queryMode) return { kind: "list", ref: null, activeOnly: queryMode === "active", friendly: true };
     if (TASK_HISTORY_REQUESTS.has(value)) return { kind: "history", ref: null };
+    if (TASK_EXPLANATION_REQUESTS.has(value)) return { kind: "explain", ref: null, friendly: true };
     const cancel = value.match(/^取消\s+(T-[a-z0-9_-]+)$/i);
     if (cancel) return { kind: "cancel", ref: cancel[1].toUpperCase() };
     const retry = value.match(/^(?:重试|再试一次)\s+(T-[a-z0-9_-]+)$/i);
@@ -800,16 +1474,20 @@ export function createChannelConversationService({
     const status = value.match(/^(?:查看|状态|继续)?\s*(T-[a-z0-9_-]+)$/i);
     if (status) return { kind: "status", ref: status[1].toUpperCase() };
     if (conversation) {
+      const named = namedTaskControl(value, conversation);
+      if (named) return named;
       const recent = recentTaskThreads(conversation);
       const latest = recent[0] ?? null;
       const current = recent.find((thread) => thread.id === conversation.activeTaskThreadId) ?? latest;
       if (TASK_PROGRESS_REQUESTS.has(value) || TASK_PROGRESS_NATURAL.test(value) || TASK_PROGRESS_COLLOQUIAL.test(value)) {
+        if (workGoalThreads(conversation).length > 1) return { kind: "goal_status", ref: null, friendly: true };
         return { kind: "status", ref: current ? threadRef(current) : null, friendly: true };
       }
       if (TASK_RESULT_RESEND_REQUESTS.has(value) || TASK_RESULT_RESEND_NATURAL.test(value) || TASK_RESULT_MISSING_NATURAL.test(value)) {
         return { kind: "resend", ref: current ? threadRef(current) : null, friendly: true };
       }
       if (TASK_CANCEL_NATURAL.test(value)) {
+        if (workGoalThreads(conversation).length > 1) return { kind: "goal_cancel_clarify", ref: null, friendly: true };
         return { kind: "cancel", ref: current ? threadRef(current) : null, friendly: true };
       }
       if (TASK_PAUSE_NATURAL.test(value)) {
@@ -844,9 +1522,11 @@ export function createChannelConversationService({
       if (current && ["暂停", "暂停任务"].includes(value) && TASK_THREAD_ACTIVE_STATUSES.has(current.status)) return { kind: "pause", ref: threadRef(current), friendly: true };
       if (current && ["继续", "继续执行", "恢复", "恢复任务"].includes(value) && ["paused", "needs_attention"].includes(current.status)) return { kind: "resume", ref: threadRef(current), friendly: true };
       if (current && value === "继续" && current.status === "paused") return { kind: "resume", ref: threadRef(current), friendly: true };
+      if (current && value === "取消" && workGoalThreads(conversation).length > 1) return { kind: "goal_cancel_clarify", ref: null, friendly: true };
       if (current && value === "取消" && TASK_THREAD_ACTIVE_STATUSES.has(current.status)) return { kind: "cancel", ref: threadRef(current), friendly: true };
       if (current && ["转人工", "人工处理", "人工"].includes(value) && TASK_THREAD_ACTIVE_STATUSES.has(current.status)) return { kind: "handoff", ref: threadRef(current), friendly: true };
       if (current && ["查看", "状态"].includes(value)) return { kind: "status", ref: threadRef(current), friendly: true };
+      if (current && TASK_EXPLANATION_REQUESTS.has(value)) return { kind: "explain", ref: threadRef(current), friendly: true };
       if (current && value === "继续") return { kind: "select", ref: threadRef(current), friendly: true };
       if (latest && /^(?:查看|看看)(?:一下)?(?:刚才|上一个)(?:的)?任务$/i.test(value)) return { kind: "status", ref: threadRef(latest), friendly: true };
       if (latest && /^(?:继续)(?:刚才|上一个)(?:的)?任务$/i.test(value)) return { kind: "select", ref: threadRef(latest), friendly: true };
@@ -891,6 +1571,76 @@ export function createChannelConversationService({
     });
   }
 
+  function syncIntentLearningMetrics() {
+    const summary = channelIntentLearningSummary(state.channelIntentLearningSamples ?? []);
+    const metrics = state.channelIntentMetrics ?? {};
+    metrics.learning = summary;
+    metrics.experience = {
+      ...(metrics.experience ?? {}),
+      difficultSamples: summary.difficultSamples,
+      pendingReviewSamples: summary.pendingReviewSamples,
+      resolvedCorrections: summary.resolvedCorrections,
+      replayReadySamples: summary.replayReadySamples,
+      deduplicatedOccurrences: summary.deduplicatedOccurrences,
+      updatedAt: summary.updatedAt ?? metrics.experience?.updatedAt ?? now(),
+    };
+    state.channelIntentMetrics = metrics;
+    return summary;
+  }
+
+  function recordIntentLearningSample(event, reason, prediction = null, resolution = null) {
+    let result;
+    runTx(() => {
+      result = recordChannelIntentLearningSample({
+        state,
+        now,
+        nextId,
+        channelId: event.channelId,
+        conversationId: event.conversationId,
+        eventId: event.id,
+        text: event.content,
+        reason,
+        prediction,
+        resolution,
+      });
+      if (result?.ok) syncIntentLearningMetrics();
+    });
+    if (result?.ok) appendEvent?.({
+      invocationId: null,
+      type: "channel_intent_learning_sample_recorded",
+      level: "info",
+      message: `Channel ${event.channelId}: a redacted intent sample was recorded for review.`,
+      data: {
+        channelId: event.channelId,
+        conversationId: event.conversationId,
+        sampleId: result.sample?.id ?? null,
+        reason,
+        status: result.sample?.status ?? null,
+        deduplicated: Boolean(result.deduplicated),
+      },
+    });
+    return result;
+  }
+
+  function resolveIntentLearningSample(event, referenced, controlKind) {
+    let result;
+    runTx(() => {
+      result = resolveLatestChannelIntentLearningSample({
+        state,
+        now,
+        conversationId: event.conversationId,
+        eventId: event.id,
+        resolution: {
+          intent: "task_control",
+          controlKind,
+          taskKind: referenced?.taskKind ?? null,
+        },
+      });
+      if (result?.resolved) syncIntentLearningMetrics();
+    });
+    return result;
+  }
+
   function withIntentTimeout(value, timeoutMs) {
     const boundedTimeout = Math.max(250, Number(timeoutMs) || CHANNEL_INTENT_TIMEOUT_MS);
     let timer;
@@ -912,19 +1662,24 @@ export function createChannelConversationService({
       .sort((left, right) => String(right.updatedAt ?? right.startedAt ?? "").localeCompare(String(left.updatedAt ?? left.startedAt ?? "")))[0] ?? null;
   }
 
+  function compareQueueThreads(left, right) {
+    if (left.status === "running" && right.status !== "running") return -1;
+    if (right.status === "running" && left.status !== "running") return 1;
+    const leftPriority = left.queuePriority === "p0" ? 0 : 1;
+    const rightPriority = right.queuePriority === "p0" ? 0 : 1;
+    return leftPriority - rightPriority
+      || String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""))
+      || String(left.id).localeCompare(String(right.id));
+  }
+
   function queueAheadCount(channelId, createdAt, excludeThreadId = null) {
-    const cutoff = Date.parse(createdAt ?? now());
-    if (!Number.isFinite(cutoff)) return 0;
-    return (state.channelTaskThreads ?? []).filter((candidate) => {
-      if (candidate.channelId !== channelId || candidate.id === excludeThreadId) return false;
-      if (!["queued", "running"].includes(candidate.status)) return false;
-      const candidateCreated = Date.parse(candidate.createdAt ?? candidate.updatedAt ?? "");
-      if (!Number.isFinite(candidateCreated)) return false;
-      // Test clocks and some persisted imports can share a timestamp. The
-      // generated id is the stable tie-breaker used by the queue sorter.
-      return candidateCreated < cutoff
-        || (candidateCreated === cutoff && String(candidate.id).localeCompare(String(excludeThreadId)) < 0);
-    }).length;
+    const queued = (state.channelTaskThreads ?? [])
+      .filter((candidate) => candidate.channelId === channelId && ["queued", "running"].includes(candidate.status))
+      .sort(compareQueueThreads);
+    const index = queued.findIndex((candidate) => candidate.id === excludeThreadId);
+    if (index >= 0) return index;
+    const probe = { id: excludeThreadId ?? "", status: "queued", createdAt: createdAt ?? now(), queuePriority: null };
+    return queued.filter((candidate) => compareQueueThreads(candidate, probe) < 0).length;
   }
 
   function queueMessage(thread) {
@@ -1132,7 +1887,7 @@ export function createChannelConversationService({
   function refreshQueuePositions(channelId, { notify = false } = {}) {
     const queued = (state.channelTaskThreads ?? [])
       .filter((thread) => thread.channelId === channelId && ["queued", "running"].includes(thread.status))
-      .sort((left, right) => String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? "")) || left.id.localeCompare(right.id));
+      .sort(compareQueueThreads);
     let ahead = 0;
     const notifications = [];
     runTx(() => {
@@ -1284,12 +2039,17 @@ export function createChannelConversationService({
   }
 
   function sendDeferredReply({ channelId, conversationId, content, threadId = null, invocationId = null, dedupeKey = null }) {
-    if (typeof replySender !== "function" || !content) return;
+    if (typeof replySender !== "function" || !content) return { ok: false, reason: "reply_sender_unavailable" };
     try {
       const result = replySender({ channelId, conversationId, content, threadId, invocationId, dedupeKey });
-      if (result?.catch) result.catch(() => {});
+      if (result?.catch) {
+        result.catch(() => {});
+        return { ok: true, async: true };
+      }
+      return result && typeof result === "object" ? result : { ok: true };
     } catch {
       // The durable event/thread remains authoritative if the provider is down.
+      return { ok: false, reason: "reply_enqueue_failed" };
     }
   }
 
@@ -1396,7 +2156,7 @@ export function createChannelConversationService({
     runTx(() => {
       thread.sourceEventIds = [...new Set([...(thread.sourceEventIds ?? []), event.id])].slice(-CHANNEL_INTAKE_MAX_EVENTS);
       thread.lastActivityAt = now();
-      conversation.activeTaskThreadId = thread.id;
+      rememberFocus(conversation, { goalId: thread.workGoalId ?? null, taskThreadId: thread.id, reason: "duplicate_task_reused" });
       conversation.updatedAt = now();
       event.taskThreadId = thread.id;
     });
@@ -1409,7 +2169,13 @@ export function createChannelConversationService({
     return settle(event, {
       status: "dispatched",
       reply,
-      data: { taskThreadId: thread.id, status: thread.status, duplicate: true },
+      data: {
+        taskThreadId: thread.id,
+        threadId: thread.id,
+        workItemId: thread.workItemId ?? null,
+        status: thread.status,
+        duplicate: true,
+      },
     });
   }
 
@@ -1484,7 +2250,18 @@ export function createChannelConversationService({
     thread.lastActivityAt = now();
   }
 
-  function createImmediateTaskThread(event, conversation, { summary, status = "queued", reason = "explicit_command" } = {}) {
+  function createImmediateTaskThread(event, conversation, {
+    summary,
+    status = "queued",
+    reason = "explicit_command",
+    taskTitle = null,
+    taskKind = "general",
+    workGoalId = null,
+    artifactContract = null,
+    platformTarget = null,
+    dependencyTaskTitles = [],
+    requiredArtifactKinds = [],
+  } = {}) {
     const timestamp = now();
     const normalizedSummary = normalizedText(summary || event.content).slice(0, 4000) || "执行这项任务";
     const thread = {
@@ -1503,6 +2280,13 @@ export function createChannelConversationService({
       statusHistory: [{ status, reason, at: timestamp }],
       waitingFor: status === "waiting_approval" ? "approval" : null,
       summary: normalizedSummary,
+      taskTitle: taskTitle ? normalizedText(taskTitle).slice(0, 200) : null,
+      taskKind,
+      workGoalId,
+      artifactContract,
+      platformTarget,
+      dependencyTaskTitles: [...new Set(dependencyTaskTitles.map((value) => normalizedText(value).slice(0, 160)).filter(Boolean))].slice(0, 10),
+      requiredArtifactKinds: [...new Set(requiredArtifactKinds.map((value) => normalizedText(value).slice(0, 100)).filter(Boolean))].slice(0, 20),
       createdAt: timestamp,
       updatedAt: timestamp,
       expiresAt: null,
@@ -1527,7 +2311,7 @@ export function createChannelConversationService({
     thread.shortRef = threadRef(thread);
     runTx(() => {
       state.channelTaskThreads = [...(state.channelTaskThreads ?? []), thread].slice(-500);
-      conversation.activeTaskThreadId = thread.id;
+      rememberFocus(conversation, { goalId: workGoalId, taskThreadId: thread.id, reason: "task_created" });
       conversation.updatedAt = timestamp;
       event.taskThreadId = thread.id;
     });
@@ -1538,6 +2322,16 @@ export function createChannelConversationService({
     runTx(() => {
       state.channelTaskThreads = (state.channelTaskThreads ?? []).filter((candidate) => candidate.id !== thread.id);
       if (conversation.activeTaskThreadId === thread.id) conversation.activeTaskThreadId = null;
+      if (conversation.focusMemory?.taskThreadId === thread.id) {
+        const nextTaskThreadId = (conversation.focusMemory.recentTaskThreadIds ?? []).find((id) => id !== thread.id) ?? null;
+        conversation.focusMemory = {
+          ...conversation.focusMemory,
+          taskThreadId: nextTaskThreadId,
+          recentTaskThreadIds: (conversation.focusMemory.recentTaskThreadIds ?? []).filter((id) => id !== thread.id),
+          reason: "discarded_task",
+          updatedAt: now(),
+        };
+      }
       if (event.taskThreadId === thread.id) event.taskThreadId = undefined;
     });
   }
@@ -1616,7 +2410,7 @@ export function createChannelConversationService({
     const mergedMessageCount = group.eventIds.length;
     runTx(() => {
       state.channelTaskThreads = [...(state.channelTaskThreads ?? []), thread].slice(-500);
-      conversation.activeTaskThreadId = thread.id;
+      rememberFocus(conversation, { taskThreadId: thread.id, reason: "task_draft_created" });
       group.status = "proposed";
       group.threadId = thread.id;
       group.updatedAt = timestamp;
@@ -1726,6 +2520,14 @@ export function createChannelConversationService({
       });
     }
     threadLocks.add(thread.id);
+    const taskRevision = Number.isInteger(thread.taskRevision) ? thread.taskRevision : 0;
+    const executionOperationKey = `channel-thread:${channel.id}:${thread.id}:${taskRevision}`;
+    runTx(() => {
+      thread.executionAttempt = beginChannelExecutionAttempt(thread.executionAttempt, {
+        operationKey: executionOperationKey,
+        startedAt: now(),
+      });
+    });
     runTx(() => {
       event.injectionSuspicious = Boolean(event.injectionSuspicious || thread.injectionSuspicious);
     });
@@ -1774,6 +2576,22 @@ export function createChannelConversationService({
         thread.riskPreviewDigest = result.data?.previewDigest ?? thread.riskPreviewDigest ?? null;
         thread.confirmedByEventId = event.id;
         thread.workItemId = result.data?.workItemId ?? null;
+        thread.executionAttempt = finishChannelExecutionAttempt(thread.executionAttempt, {
+          outcome: result.status === "dispatched" ? "accepted" : "failed",
+          finishedAt: now(),
+          error: result.status === "dispatched" ? null : result.data?.reason ?? result.reply,
+        });
+        if (result.status === "dispatched") {
+          thread.executionContract = freezeChannelExecutionContract({
+            thread,
+            resultData: result.data,
+            workItemId: thread.workItemId,
+            channelTaskRequestId: thread.channelTaskRequestId,
+            confirmedByEventId: event.id,
+            confirmedAt: now(),
+            idempotencyKey: executionOperationKey,
+          });
+        }
         thread.updatedAt = now();
         thread.lastProgressAt = now();
         thread.lastProgressSummary = result.status === "dispatched"
@@ -2052,11 +2870,47 @@ export function createChannelConversationService({
           data: { taskThreadId: thread.id, reason: "channel_task_preview_incomplete", requiredFields },
         });
       }
-      const result = await routeChannelTask(request.id, actor);
+      const routeOperationKey = request.routeOperationKey ?? `channel-route:${request.id}`;
+      runTx(() => {
+        request.routeOperationKey = routeOperationKey;
+        request.executionAttempt = beginChannelExecutionAttempt(request.executionAttempt, {
+          operationKey: routeOperationKey,
+          startedAt: now(),
+        });
+        thread.executionAttempt = beginChannelExecutionAttempt(thread.executionAttempt, {
+          operationKey: routeOperationKey,
+          startedAt: now(),
+        });
+      });
+      const result = await routeChannelTask(request.id, actor, { idempotencyKey: routeOperationKey });
       if (result?.status !== 200) {
+        runTx(() => {
+          request.executionAttempt = finishChannelExecutionAttempt(request.executionAttempt, {
+            outcome: "failed",
+            finishedAt: now(),
+            error: result?.body?.error ?? "channel_route_failed",
+          });
+          thread.executionAttempt = finishChannelExecutionAttempt(thread.executionAttempt, {
+            outcome: "failed",
+            finishedAt: now(),
+            error: result?.body?.error ?? "channel_route_failed",
+          });
+        });
         const routeError = result?.body?.error;
         const routeRequiredFields = result?.body?.requiredFields ?? [];
-        const reply = routeError === "channel_task_object_validation_changed"
+        const reply = routeError === "channel_wechat_draft_adapter_unavailable"
+          ? "公众号草稿任务已经保留，但这台电脑还没有可用的公众号草稿连接。请先在桌面端连接公众号；文章和图片不会丢失。"
+          : routeError === "channel_wechat_draft_artifacts_not_ready"
+            ? "公众号版本还没有准备完整，任务会继续等待；准备好后我会列出最终文件请你确认。"
+          : routeError === "channel_wechat_draft_preview_required"
+            ? "公众号草稿内容还没有生成可确认的预览，任务已经保留；内容准备好后会再次通知你。"
+          : routeError === "channel_publish_adapter_unavailable"
+          ? `发布任务已经保留，但${thread.platformTarget?.label ?? request.platformTarget?.label ?? "目标平台"}还没有可用的发布连接。请先在桌面端配置带审批的发布连接；文章和图片等前置结果不会丢失。`
+          : routeError === "channel_publish_artifacts_not_ready"
+            ? "最终发布成品还没有准备完整，任务会继续等待；成品齐备后我会重新列出文件请你确认。"
+          : ["channel_publish_preview_required", "channel_publish_preview_changed", "channel_task_artifact_preview_changed"].includes(routeError)
+            ? "最终文件或版本已经变化，刚才的确认已失效。任务已保留；我会按最新成品重新生成确认清单。"
+          : routeError === "channel_task_object_validation_changed"
           ? "确认前我重新检查了联系人、账户、文件或发布目标，发现内容已经变化，原确认已失效。请补充最新信息，我会重新整理。"
           : routeError === "channel_task_object_validation_required"
             ? `确认前还缺少${routeRequiredFields.length ? routeRequiredFields.join("、") : "必要资料"}。请补充后我会重新整理。`
@@ -2101,9 +2955,26 @@ export function createChannelConversationService({
         const changedFields = result.body?.mutation?.changedFields ?? [];
         const reply = `已完成文件修改：${changedFields.join("、") || "指定内容"}。文件已更新，处理记录已保存。`;
         runTx(() => {
+          request.executionAttempt = finishChannelExecutionAttempt(request.executionAttempt, {
+            outcome: "accepted",
+            finishedAt: now(),
+          });
+          thread.executionAttempt = finishChannelExecutionAttempt(thread.executionAttempt, {
+            outcome: "accepted",
+            finishedAt: now(),
+          });
           thread.confirmedByEventId = event.id;
           thread.channelTaskRequestId = request.id;
           thread.workItemId = result.body?.workItemId ?? thread.workItemId ?? null;
+          thread.executionContract = freezeChannelExecutionContract({
+            thread,
+            resultData: result.body,
+            workItemId: thread.workItemId,
+            channelTaskRequestId: request.id,
+            confirmedByEventId: event.id,
+            confirmedAt: now(),
+            idempotencyKey: routeOperationKey,
+          });
           thread.waitingFor = null;
           thread.resultSummary = reply;
           setThreadStatus(thread, "succeeded", "channel_mutation_committed");
@@ -2124,9 +2995,26 @@ export function createChannelConversationService({
         });
       }
       runTx(() => {
+        request.executionAttempt = finishChannelExecutionAttempt(request.executionAttempt, {
+          outcome: "accepted",
+          finishedAt: now(),
+        });
+        thread.executionAttempt = finishChannelExecutionAttempt(thread.executionAttempt, {
+          outcome: "accepted",
+          finishedAt: now(),
+        });
         thread.confirmedByEventId = event.id;
         thread.channelTaskRequestId = request.id;
         thread.workItemId = result.body?.workItemId ?? thread.workItemId ?? null;
+        thread.executionContract = freezeChannelExecutionContract({
+          thread,
+          resultData: result.body,
+          workItemId: thread.workItemId,
+          channelTaskRequestId: request.id,
+          confirmedByEventId: event.id,
+          confirmedAt: now(),
+          idempotencyKey: routeOperationKey,
+        });
         thread.autoRunId = result.body?.autoRunId ?? thread.autoRunId ?? null;
         thread.invocationId = result.body?.invocationId ?? thread.invocationId ?? null;
         thread.dataRelationConfirmation = result.body?.dataRelationConfirmation ?? thread.dataRelationConfirmation ?? null;
@@ -2322,6 +3210,57 @@ export function createChannelConversationService({
     });
   }
 
+  async function createResultRepairTask(event, channel, conversation, sourceThread) {
+    const sourceItem = (state.workItems ?? []).find((item) =>
+      item.id === sourceThread?.workItemId
+      && (item.ownerTeamId ?? LOCAL_TEAM_ID) === (channel.ownerTeamId ?? LOCAL_TEAM_ID)) ?? null;
+    if (!sourceItem) {
+      return settle(event, {
+        status: "dispatched",
+        reply: "原结果仍然保留，但暂时找不到它对应的任务记录。请直接说明需要修改的地方，我会重新整理。",
+        data: { resultRepair: true, reason: "source_work_item_missing" },
+      });
+    }
+    const verification = sourceItem.resultVerification ?? verifyWorkItemResult(sourceItem);
+    if (verification.status !== "failed" || !verification.repair?.suggestedRequest) {
+      return settle(event, {
+        status: "dispatched",
+        reply: "这项结果当前没有未通过的自动检查。请直接告诉我哪里不满意，我会按你的反馈处理。",
+        data: { resultRepair: true, reason: "no_failed_checks", taskThreadId: sourceThread.id },
+      });
+    }
+    const spec = buildResultRepairTaskSpec({ source: sourceItem, verification, at: now() });
+    const result = await dispatchExplicitTask(event, channel, conversation, spec.description, {
+      taskTitle: spec.title,
+      taskKind: spec.taskKind,
+      intentId: sourceThread.workGoalId ?? sourceItem.intentId ?? `channel-intent:${event.id}`,
+      intentStatement: spec.description,
+      workGoalId: sourceThread.workGoalId ?? sourceItem.workGoalId ?? null,
+      dependencyIds: spec.dependencyIds,
+      artifactContract: spec.artifactContract,
+      requiredArtifactKinds: spec.artifactContract.consumes,
+      attachmentAssets: spec.inputAssets.filter((asset) => asset?.terminalId),
+      resultRepairSpec: spec,
+    });
+    if (result?.status !== "dispatched") return result;
+    const repairThread = (state.channelTaskThreads ?? []).find((thread) => thread.id === event.taskThreadId) ?? null;
+    runTx(() => {
+      if (repairThread) {
+        repairThread.repairOfThreadId = sourceThread.id;
+        repairThread.repairOfWorkItemId = sourceItem.id;
+        repairThread.resultRepairReasons = verification.repair.reasons.slice(0, 10);
+        repairThread.updatedAt = now();
+      }
+      event.resultRepairOfThreadId = sourceThread.id;
+      event.replyText = `已根据检查结果创建独立返工任务“${taskDisplayTitle(sourceThread)}返工”。原结果已保留；返工只处理 ${verification.repair.reasons.length} 个未通过项，其他独立任务不受影响。`;
+    });
+    return {
+      ...result,
+      reply: event.replyText,
+      data: { ...(result.data ?? {}), resultRepair: true, repairOfThreadId: sourceThread.id, taskThreadId: repairThread?.id ?? result.data?.taskThreadId ?? null },
+    };
+  }
+
   function cancelTaskRevision(event, thread) {
     const record = (state.channelTaskRevisions ?? []).find((candidate) => candidate.id === thread.revisionId && candidate.threadId === thread.id);
     if (!record || record.status !== "awaiting_confirmation") return null;
@@ -2425,6 +3364,54 @@ export function createChannelConversationService({
   }
 
   async function retryTaskThread(event, thread, actor, { friendly = false } = {}) {
+    const directRequest = (state.channelTaskRequests ?? []).find((candidate) =>
+      candidate.id === thread.channelTaskRequestId
+      || candidate.threadId === thread.id
+      || (thread.workItemId && candidate.workItemId === thread.workItemId)) ?? null;
+    if (!thread.autoRunId && directRequest && typeof retryDirectTask === "function") {
+      if (!["failed", "needs_attention"].includes(thread.status)) {
+        return settle(event, { status: "dispatched", reply: `${friendly ? "当前任务" : threadRef(thread)} 当前${taskThreadStatus(thread)}，不需要重试。`, data: { taskThreadId: thread.id, status: thread.status } });
+      }
+      if (threadLocks.has(thread.id)) return settle(event, { status: "dispatched", reply: `${friendly ? "当前任务" : threadRef(thread)} 正在处理，请稍候。`, data: { taskThreadId: thread.id, status: "processing" } });
+      threadLocks.add(thread.id);
+      try {
+        const result = await retryDirectTask(directRequest.id, { actor, sourceDecisionId: event.id });
+        if (result?.status >= 400 || !result?.body?.invocationId) {
+          const error = result?.body?.error ?? "channel_direct_task_retry_failed";
+          const reply = error === "channel_wechat_login_required"
+            ? "公众号登录还没有恢复。请先在 MyAgentTool 的“网站登录”中扫码登录，完成后再回复“继续”。"
+            : error === "channel_wechat_draft_reconcile_required" || error === "channel_wechat_draft_retry_unsafe"
+              ? "上次保存可能已经生效，为避免生成重复草稿，我不会直接重试。请先到公众号草稿箱核对；确认未保存后，可重新创建保存草稿任务。"
+              : error === "channel_wechat_draft_plugin_update_required"
+                ? "公众号页面已变化，当前插件需要更新后才能继续。任务和文章版本都已保留，可转人工处理。"
+                : `任务暂时无法重试：${String(error).slice(0, 200)}`;
+          return settle(event, { status: "refused", reply, data: { taskThreadId: thread.id, reason: error } });
+        }
+        runTx(() => {
+          thread.invocationId = result.body.invocationId;
+          setThreadStatus(thread, "queued", "direct_retry_requested");
+          thread.waitingFor = null;
+          thread.attentionReason = null;
+          thread.resultSummary = "登录已恢复，正在继续保存原公众号草稿。";
+          thread.updatedAt = now();
+          event.taskThreadId = thread.id;
+        });
+        restoreDependentTaskThreads(thread);
+        return settle(event, {
+          status: "dispatched",
+          reply: "登录已恢复，正在继续保存原公众号草稿；完成后我会通知你。",
+          data: { taskThreadId: thread.id, status: thread.status, retried: true, invocationId: result.body.invocationId },
+        });
+      } catch (error) {
+        return settle(event, {
+          status: "refused",
+          reply: `任务重试失败：${String(error?.message ?? error).slice(0, 300)}`,
+          data: { taskThreadId: thread.id, reason: "direct_retry_failed" },
+        });
+      } finally {
+        threadLocks.delete(thread.id);
+      }
+    }
     if (typeof retryAutoRun !== "function" || !thread.autoRunId) {
       return settle(event, { status: "refused", reply: `${friendly ? "当前任务" : threadRef(thread)} 不能自动重试，请在控制台处理。`, data: { taskThreadId: thread.id, reason: "retry_unavailable" } });
     }
@@ -2434,6 +3421,7 @@ export function createChannelConversationService({
     if (threadLocks.has(thread.id)) return settle(event, { status: "dispatched", reply: `${friendly ? "当前任务" : threadRef(thread)} 正在处理，请稍候。`, data: { taskThreadId: thread.id, status: "processing" } });
     threadLocks.add(thread.id);
     try {
+      const retryingCancelledTask = thread.status === "cancelled";
       const retryIdempotencyKey = `channel-retry:${thread.id}:${thread.invocationId ?? thread.autoRunId}`;
       const sourceAutoRun = (state.autoRuns ?? []).find((run) => run.id === thread.autoRunId) ?? null;
       const reviewFeedback = thread.attentionReason === "delivery_review_changes_requested"
@@ -2459,6 +3447,10 @@ export function createChannelConversationService({
         thread.updatedAt = now();
         event.taskThreadId = thread.id;
       });
+      updateBoundWorkItem(thread, retryingCancelledTask
+        ? { executionPolicy: "inherit", status: "ready" }
+        : { executionPolicy: "inherit" }, actor);
+      restoreDependentTaskThreads(thread);
       if (suppressedDuplicateStart) recordExperienceMetric("retryStartDuplicatesSuppressed");
       const reply = result?.waitingUnderstanding
         ? `${friendly ? "任务已重新排队，正在重新理解需求。" : `${threadRef(thread)} 已重新排队，正在重新理解需求。`}`
@@ -2466,6 +3458,61 @@ export function createChannelConversationService({
       return settle(event, { status: "dispatched", reply, data: { taskThreadId: thread.id, status: thread.status, retried: true } });
     } catch (error) {
       return settle(event, { status: "refused", reply: `${friendly ? "任务重试失败" : `${threadRef(thread)} 重试失败`}：${String(error?.message ?? error).slice(0, 300)}`, data: { taskThreadId: thread.id, reason: "retry_failed" } });
+    } finally {
+      threadLocks.delete(thread.id);
+    }
+  }
+
+  async function reconcileWechatDraftThread(event, thread, actor, outcome) {
+    const directRequest = (state.channelTaskRequests ?? []).find((candidate) =>
+      candidate.id === thread.channelTaskRequestId
+      || candidate.threadId === thread.id
+      || (thread.workItemId && candidate.workItemId === thread.workItemId)) ?? null;
+    if (!directRequest || typeof reconcileWechatDraftTask !== "function") {
+      return settle(event, {
+        status: "refused",
+        reply: "当前任务还不能在微信里完成核对，请到桌面端“频道”中处理。",
+        data: { taskThreadId: thread.id, reason: "wechat_draft_reconciliation_unavailable" },
+      });
+    }
+    if (threadLocks.has(thread.id)) {
+      return settle(event, { status: "dispatched", reply: "正在处理你的核对结果，请稍候。", data: { taskThreadId: thread.id, status: "processing" } });
+    }
+    threadLocks.add(thread.id);
+    try {
+      const result = await reconcileWechatDraftTask(directRequest.id, outcome, { actor, sourceDecisionId: event.id });
+      if (result?.status >= 400 || !result?.body?.ok) {
+        const error = result?.body?.error ?? "channel_wechat_draft_reconciliation_failed";
+        return settle(event, {
+          status: "refused",
+          reply: `核对结果暂时无法应用：${String(error).slice(0, 200)}。请到桌面端“频道”中处理。`,
+          data: { taskThreadId: thread.id, reason: error },
+        });
+      }
+      runTx(() => {
+        event.taskThreadId = thread.id;
+        if (outcome === "confirmed_not_saved") {
+          thread.invocationId = result.body.invocationId ?? thread.invocationId;
+          setThreadStatus(thread, "queued", "wechat_draft_user_confirmed_not_saved");
+          thread.waitingFor = null;
+          thread.attentionReason = null;
+          thread.resultSummary = "你已确认草稿箱中没有该草稿，系统正在安全地重新保存。";
+          thread.updatedAt = now();
+        }
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: outcome === "confirmed_saved"
+          ? "已记录你的核对结果：草稿箱中存在该草稿，原任务已完成，不会重复保存。"
+          : "已记录你的核对结果：草稿箱中没有该草稿，正在重新保存；完成后我会通知你。",
+        data: { taskThreadId: thread.id, status: thread.status, reconciled: true, outcome, invocationId: result.body.invocationId ?? null },
+      });
+    } catch (error) {
+      return settle(event, {
+        status: "refused",
+        reply: `核对结果处理失败：${String(error?.message ?? error).slice(0, 300)}`,
+        data: { taskThreadId: thread.id, reason: "wechat_draft_reconciliation_failed" },
+      });
     } finally {
       threadLocks.delete(thread.id);
     }
@@ -2517,17 +3564,63 @@ export function createChannelConversationService({
   function consultationAnswer(invocation) {
     const result = invocation?.result;
     const candidates = [
-      typeof result === "string" ? result : null,
-      result?.summary,
-      result?.message,
-      result?.text,
+      result?.output?.latestMessage,
       typeof result?.output === "string" ? result.output : null,
       typeof result?.output?.text === "string" ? result.output.text : null,
       typeof result?.output?.summary === "string" ? result.output.summary : null,
+      result?.latestMessage,
+      result?.text,
+      result?.message,
+      typeof result === "string" ? result : null,
+      result?.summary,
     ];
-    const answer = candidates.find((value) => String(value ?? "").trim());
-    if (answer) return String(answer).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").trim().slice(0, 6000);
-    return "我暂时没有拿到有效答案。你可以换一种方式描述问题，或说“帮我……”让我整理成任务处理。";
+    for (const candidate of candidates) {
+      const answer = String(candidate ?? "")
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
+        .trim()
+        .slice(0, 6000);
+      if (answer && !TECHNICAL_CONSULTATION_STATUS_RE.test(answer)) return answer;
+    }
+    return null;
+  }
+
+  function sharedContentConsultationNextStep(conversation) {
+    if (activeTaskThreads(conversation).length > 0) {
+      return "你可以继续追问这份资料。如果要把建议用于工作，请回复“加入当前任务”或“创建新任务”；在你选择前，我不会改动现有任务。";
+    }
+    return "你可以继续追问这份资料。如果要把建议落实为工作，请回复“创建新任务”；我会先整理目标和验收标准，请你确认后再执行。";
+  }
+
+  function consultationHistory(event, conversation) {
+    return (state.channelEvents ?? [])
+      .filter((candidate) => candidate.conversationId === conversation.id && candidate.id !== event.id)
+      .sort((left, right) => String(left.receivedAt ?? "").localeCompare(String(right.receivedAt ?? "")))
+      .slice(-6)
+      .map((candidate) => ({ content: candidate.content, receivedAt: candidate.receivedAt }));
+  }
+
+  function enqueueConsultationAttempt(event, conversation, {
+    text,
+    attempt = 1,
+    retryReason = null,
+    retryOfInvocationId = null,
+  } = {}) {
+    const boundedAttempt = Math.max(1, Math.min(CHANNEL_CONSULTATION_MAX_ATTEMPTS, Math.floor(Number(attempt) || 1)));
+    const existing = (state.invocations ?? []).find((invocation) =>
+      invocation.options?.metadata?.channelConsultation
+      && invocation.options?.metadata?.channel?.eventId === event.id
+      && Number(invocation.options?.metadata?.channelConsultationAttempt ?? 1) === boundedAttempt);
+    if (existing) return existing;
+    return createConsultation({
+      text,
+      channelId: event.channelId,
+      conversationId: conversation.id,
+      eventId: event.id,
+      history: consultationHistory(event, conversation),
+      attempt: boundedAttempt,
+      retryReason,
+      retryOfInvocationId,
+    });
   }
 
   function startConsultation(event, conversation, { textOverride = null, receiptOverride = null } = {}) {
@@ -2556,22 +3649,18 @@ export function createChannelConversationService({
       });
     }
     try {
-      const history = (state.channelEvents ?? [])
-        .filter((candidate) => candidate.conversationId === conversation.id && candidate.id !== event.id)
-        .sort((left, right) => String(left.receivedAt ?? "").localeCompare(String(right.receivedAt ?? "")))
-        .slice(-6)
-        .map((candidate) => ({ content: candidate.content, receivedAt: candidate.receivedAt }));
-      const invocation = createConsultation({
-        text: textOverride ?? event.content,
-        channelId: event.channelId,
-        conversationId: conversation.id,
-        eventId: event.id,
-        history,
+      const requestText = textOverride ?? event.content;
+      const invocation = enqueueConsultationAttempt(event, conversation, {
+        text: requestText,
+        attempt: 1,
       });
       runTx(() => {
         event.consultationInvocationId = invocation?.id ?? null;
         event.consultationStatus = "queued";
         event.consultationQueuedAt = now();
+        event.consultationAttempt = 1;
+        event.consultationRequestText = String(requestText ?? "").slice(0, 8_000);
+        event.consultationInvocationHistory = invocation?.id ? [invocation.id] : [];
       });
       return settle(event, {
         status: "dispatched",
@@ -2616,6 +3705,38 @@ export function createChannelConversationService({
   }
 
   async function inspectSharedContentEvent(event, conversation, urls, { analyze = false, requestText = "", archive = true } = {}) {
+    const activeTaskCount = activeTaskThreads(conversation).length;
+    const activeTaskHint = activeTaskCount > 0
+      ? "当前有进行中的任务；我会先把链接作为资料处理，不会自动修改当前任务。"
+      : null;
+    runTx(() => {
+      event.sharedContentStatus = "inspecting";
+      event.sharedContentUrls = [...urls];
+      event.sharedContentActiveTaskCount = activeTaskCount;
+      event.sharedContentDetectedAt = event.sharedContentDetectedAt ?? event.receivedAt ?? now();
+      conversation.updatedAt = now();
+    });
+    // The acknowledgement must not wait for the extractor, network, or local
+    // archive. A channel user should always know that the message entered the
+    // link pipeline, even when the extractor is unavailable.
+    const acknowledgement = sendDeferredReply({
+      channelId: event.channelId,
+      conversationId: conversation.id,
+      content: archive
+        ? urls.length > 1
+          ? `收到 ${urls.length} 个链接，正在读取并收纳到本地资料库……${activeTaskHint ? `\n${activeTaskHint}` : ""}`
+          : `收到链接，正在读取并收纳到本地资料库……${activeTaskHint ? `\n${activeTaskHint}` : ""}`
+        : `收到链接，正在只读预览，不会保存……${activeTaskHint ? `\n${activeTaskHint}` : ""}`,
+      dedupeKey: `channel-shared-content:${event.id}:reading`,
+    });
+    runTx(() => {
+      event.sharedContentAcknowledgement = {
+        status: acknowledgement?.ok === false ? "failed" : "queued",
+        deliveryId: acknowledgement?.deliveryId ?? null,
+        failureCode: acknowledgement?.ok === false ? acknowledgement.reason ?? "reply_enqueue_failed" : null,
+        queuedAt: now(),
+      };
+    });
     const captureThread = archive
       ? createImmediateTaskThread(event, conversation, {
         summary: `收纳链接资料：${urls.map(pluginProposalTarget).join("、")}`,
@@ -2640,22 +3761,26 @@ export function createChannelConversationService({
         summary: "当前没有可用的链接下载识别能力。",
         reason: "knowledge_capture_unavailable",
       });
+      runTx(() => {
+        event.sharedContentStatus = "unavailable";
+        event.sharedContentFailures = failures;
+        event.sharedContentFailureCode = "article_text_unavailable";
+        event.sharedContentCompletedAt = now();
+        conversation.sharedContentContext = {
+          ...(conversation.sharedContentContext ?? {}),
+          status: "failed",
+          retryUrls: urls,
+          lastFailedAt: now(),
+          updatedAt: now(),
+        };
+        conversation.updatedAt = now();
+      });
       return settle(event, {
         status: "dispatched",
-        reply: `我识别到这是资料链接，但当前无法读取正文。${proposal ? `要我为 ${proposal.targets.join("、")} 开发下载识别插件并完成测试吗？回复“开发插件”开始，或回复“跳过”。` : "你可以把正文、截图或文件直接发过来。"}`,
+        reply: "我识别到这是资料链接，但当前无法读取正文。你可以稍后重试，或把正文、截图、文件直接发过来。",
         data: { sharedContent: true, status: "unavailable", urls, taskThreadId: captureThread?.id ?? null, linkPluginProposalId: proposal?.id ?? null },
       });
     }
-    sendDeferredReply({
-      channelId: event.channelId,
-      conversationId: conversation.id,
-      content: archive
-        ? urls.length > 1
-          ? `收到 ${urls.length} 个链接，正在读取并收纳到本地资料库……`
-          : "收到链接，正在读取并收纳到本地资料库……"
-        : "收到链接，正在只读预览，不会保存……",
-      dedupeKey: `channel-shared-content:${event.id}:reading`,
-    });
     const channel = findChannel(event.channelId);
     const inspected = await Promise.allSettled(urls.map((url) => inspectSharedLink({
       url,
@@ -2689,6 +3814,16 @@ export function createChannelConversationService({
       runTx(() => {
         event.sharedContentStatus = "failed";
         event.sharedContentFailures = failures;
+        event.sharedContentFailureCode = failures[0]?.reason ?? "inspect_failed";
+        event.sharedContentCompletedAt = now();
+        conversation.sharedContentContext = {
+          ...(conversation.sharedContentContext ?? {}),
+          status: "failed",
+          retryUrls: failures.map((failure) => failure.url),
+          lastFailedAt: now(),
+          updatedAt: now(),
+        };
+        conversation.updatedAt = now();
       });
       finishKnowledgeCaptureThread(captureThread, {
         status: "failed",
@@ -2697,7 +3832,7 @@ export function createChannelConversationService({
       });
       return settle(event, {
         status: "dispatched",
-        reply: `链接正文暂时无法下载或识别，可能需要登录、页面存在访问限制，或当前还没有对应适配。${proposal ? `\n\n要我为 ${proposal.targets.join("、")} 开发下载识别插件并完成测试吗？回复“开发插件”开始，或回复“跳过”。` : "\n\n你可以稍后重试，或把正文、截图、文件直接发过来。"}`,
+        reply: "链接正文暂时无法下载或识别。你可以稍后重试，或把正文、截图、文件直接发过来。",
         data: { sharedContent: true, status: "failed", failedCount: failures.length, taskThreadId: captureThread?.id ?? null, linkPluginProposalId: proposal?.id ?? null },
       });
     }
@@ -2731,12 +3866,29 @@ export function createChannelConversationService({
         items: previousItems.slice(-SHARED_CONTENT_MAX_ITEMS),
         activeItemIds: activeIds.slice(-SHARED_CONTENT_ACTIVE_MAX),
         lastSharedAt: now(),
+        lastSourceEventId: event.id,
+        retryUrls: failures.map((failure) => failure.url),
+        lastFailedAt: failures.length ? now() : null,
+        nextTaskProposals: proposeNextTasks({
+          domain: "content",
+          materials: previousItems.filter((item) => activeIds.includes(item.id)).map((item) => ({
+            id: item.knowledgeItemId,
+            contentId: resolveKnowledgeLocation?.({
+              itemId: item.knowledgeItemId,
+              ownerTeamId: channel?.ownerTeamId,
+            })?.contentId ?? null,
+            title: item.title,
+          })),
+        }),
         updatedAt: now(),
       };
+      conversation.pendingLinkPluginProposal = null;
       activeItems = activeSharedContents(conversation);
       event.sharedContentIds = acceptedIds;
       event.sharedContentStatus = "ready";
       event.sharedContentFailures = failures;
+      event.sharedContentFailureCode = failures[0]?.reason ?? null;
+      event.sharedContentCompletedAt = now();
       conversation.updatedAt = now();
     });
     const savedItems = ready.filter((item) => item.archiveStatus === "saved");
@@ -2756,12 +3908,37 @@ export function createChannelConversationService({
           reason: "knowledge_capture_save_failed",
         });
     }
-    if (analyze) return startSharedContentConsultation(event, conversation, activeItems, requestText || "继续看看");
+    if (analyze) {
+      const explicitPlan = planDiscreteTasks({
+        text: requestText,
+        domain: "content",
+        intentId: `channel-intent:${event.id}`,
+        materials: activeItems.map((item) => ({
+          id: item.knowledgeItemId,
+          contentId: resolveKnowledgeLocation?.({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })?.contentId ?? null,
+          title: item.title,
+        })),
+      });
+      if (explicitPlan.tasks.length) {
+        recordSharedContentRoute(event, conversation, {
+          target: "new_task",
+          reason: "inline_explicit_discrete_tasks",
+          status: "creating",
+        });
+        return dispatchPlannedSharedContentTasks(event, channel, conversation, requestText, explicitPlan);
+      }
+      recordSharedContentRoute(event, conversation, {
+        target: "analysis",
+        reason: "inline_link_instruction",
+        status: "queued",
+      });
+      return startSharedContentConsultation(event, conversation, activeItems, requestText || "继续看看");
+    }
     const newest = activeItems.at(-1);
     const topic = sharedContentTopic(newest);
     const groupLine = activeItems.length > 1 ? `\n已放入本轮资料，共 ${activeItems.length} 篇；后续说“开始分析”会一起比较。` : "";
     const failureLine = failures.length ? `\n另有 ${failures.length} 个链接暂时无法读取。` : "";
-    const pluginLine = proposal ? `\n要我为 ${proposal.targets.join("、")} 开发下载识别插件并完成测试，可回复“开发插件”；不需要则回复“跳过”。` : "";
+    const pluginLine = "";
     const archiveLine = newest.archiveStatus === "saved"
       ? `已收纳到本地资料库${newest.archiveReplayed ? "（此前已保存，本次直接复用）" : ""}。`
       : newest.archiveStatus === "not_saved"
@@ -2770,10 +3947,22 @@ export function createChannelConversationService({
     const taskLine = captureThread?.workItemId
       ? `\n这次处理已记录到“我的任务”${captureThread.workItemLocalRef ? `（${captureThread.workItemLocalRef}）` : ""}，可以在那里查看来源、保存位置和处理记录。`
       : "";
+    const routeLine = activeTaskCount > 0
+      ? "\n当前任务没有被修改。你可以明确说“把资料加入当前任务”，这只会添加资料，不会创建后续任务。"
+      : "";
     return settle(event, {
       status: "dispatched",
-      reply: `${archiveLine}\n《${newest.title}》${newest.author ? `（${newest.author}）` : ""}${topic ? `\n主要内容：${topic}${topic.length >= 180 ? "…" : ""}` : ""}${groupLine}${failureLine}${pluginLine}${taskLine}\n\n回复“继续”可提炼重点和启发；也可以问“本地存放路径”，或说“只总结”“和上一篇对比”“按这些资料创建任务”。`,
-      data: { sharedContent: true, status: "ready", itemIds: event.sharedContentIds, activeCount: activeItems.length, failedCount: failures.length, taskThreadId: captureThread?.id ?? null, linkPluginProposalId: proposal?.id ?? null },
+      reply: `${archiveLine}\n《${newest.title}》${newest.author ? `（${newest.author}）` : ""}${topic ? `\n主要内容：${topic}${topic.length >= 180 ? "…" : ""}` : ""}${groupLine}${failureLine}${pluginLine}${taskLine}${routeLine}\n\n本次资料收纳任务已经结束，没有自动开始二创。你可以另行说“深度分析”“写深度文章”“做漫画”“做口播”或“做视频”；每一种都会创建独立任务。问“本地存放路径”可查看文件位置。`,
+      data: {
+        sharedContent: true,
+        status: "ready",
+        itemIds: event.sharedContentIds,
+        activeCount: activeItems.length,
+        failedCount: failures.length,
+        taskThreadId: captureThread?.id ?? null,
+        nextTaskProposals: conversation.sharedContentContext?.nextTaskProposals ?? [],
+        linkPluginProposalId: proposal?.id ?? null,
+      },
     });
   }
 
@@ -2822,22 +4011,27 @@ export function createChannelConversationService({
     };
   }
 
-  async function queueActiveExecutionFollowUp(event, channel, conversation, currentThread) {
+  async function queueActiveExecutionFollowUp(event, channel, conversation, currentThread, {
+    description: descriptionOverride = null,
+    followUpKind = "user_adjustment",
+    reply: replyOverride = null,
+  } = {}) {
     const supplement = normalizedText(event.content);
     const attachmentNote = (event.attachmentAssets ?? []).length
       ? `已附上 ${(event.attachmentAssets ?? []).length} 份补充材料`
       : "";
-    const description = `在前一个任务“${String(currentThread.summary ?? "当前任务").slice(0, 500)}”完成后，继续处理这项补充要求：${[supplement, attachmentNote].filter(Boolean).join("；")}`;
+    const description = descriptionOverride
+      ?? `在前一个任务“${String(currentThread.summary ?? "当前任务").slice(0, 500)}”完成后，继续处理这项补充要求：${[supplement, attachmentNote].filter(Boolean).join("；")}`;
     const result = await dispatchExplicitTask(event, channel, conversation, description);
     if (result?.status !== "dispatched" || !result.data?.threadId) return result;
     const followUp = (state.channelTaskThreads ?? []).find((candidate) => candidate.id === result.data.threadId) ?? null;
-    const reply = currentThread.status === "running"
+    const reply = replyOverride ?? (currentThread.status === "running"
       ? "已把这条补充安排在当前任务之后，不会打断正在执行的步骤。当前结果完成后，系统会接着处理这项调整，并分别通知你。"
-      : "已把这条补充安排为当前任务之后的下一项工作。前一项完成后会自动继续，你不需要取消或重复发送。";
+      : "已把这条补充安排为当前任务之后的下一项工作。前一项完成后会自动继续，你不需要取消或重复发送。");
     runTx(() => {
       if (followUp) {
         followUp.parentThreadId = currentThread.id;
-        followUp.followUpKind = "user_adjustment";
+        followUp.followUpKind = followUpKind;
         followUp.followUpSummary = supplement.slice(0, 1200);
         followUp.updatedAt = now();
       }
@@ -2851,6 +4045,842 @@ export function createChannelConversationService({
     };
   }
 
+  function startRoutedSharedContentAnalysis(event, conversation, text, reason) {
+    const items = sharedContentItemsForQuestion(text, conversation);
+    recordSharedContentRoute(event, conversation, { target: "analysis", reason, status: "queued" });
+    return startSharedContentConsultation(event, conversation, items, text || "分析资料");
+  }
+
+  async function routeSharedContentToCurrentTask(event, channel, conversation, reason) {
+    const currentThread = selectedActiveTaskThread(conversation);
+    if (!currentThread) {
+      recordSharedContentRoute(event, conversation, {
+        target: "current_task",
+        reason: "active_task_selection_required",
+        status: "needs_task_selection",
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: activeTaskThreads(conversation).length > 1
+          ? `${candidateSelectionReply(activeTaskThreads(conversation))}\n选择后再回复“加入当前任务”。`
+          : "当前没有可关联的活动任务。你可以回复“分析资料”或“创建新任务”。",
+        data: { sharedContent: true, route: "current_task", reason: "active_task_selection_required" },
+      });
+    }
+    recordSharedContentRoute(event, conversation, {
+      target: "current_task",
+      reason,
+      status: "attaching",
+      taskThreadId: currentThread.id,
+    });
+    const knowledgeItemIds = activeSharedContents(conversation)
+      .map((item) => item.knowledgeItemId)
+      .filter(Boolean);
+    const result = typeof attachKnowledgeToWorkItem === "function"
+      ? attachKnowledgeToWorkItem({
+        workItemId: currentThread.workItemId,
+        channel,
+        externalUserId: event.externalUserId,
+        knowledgeItemIds,
+      })
+      : { ok: false, reason: "knowledge_attachment_unavailable" };
+    runTx(() => {
+      if (event.sharedContentRoute) {
+        event.sharedContentRoute.status = result?.ok ? "attached" : "failed";
+        event.sharedContentRoute.decidedAt = now();
+      }
+    });
+    return settle(event, {
+      status: result?.ok ? "dispatched" : "refused",
+      reply: result?.ok
+        ? `已把 ${result.attachedCount ?? knowledgeItemIds.length} 份本地资料加入当前任务。没有创建后续任务，也不会改变当前任务的执行顺序；再次运行时会使用这些资料。`
+        : "资料已保留，但暂时无法加入当前任务。你可以在“我的资料”中选择它，再添加到目标任务。",
+      data: {
+        sharedContent: true,
+        route: "current_task",
+        attachedCount: result?.attachedCount ?? 0,
+        workItemId: currentThread.workItemId ?? null,
+      },
+    });
+  }
+
+  async function dispatchPlannedSharedContentTasks(event, channel, conversation, text, plan, { forceDispatch = false, taskBasketId = null } = {}) {
+    if (taskBasketId) event.taskBasketId = taskBasketId;
+    if (["platform_targets", "platform_choice", "publication_content_mapping"].includes(plan?.clarification?.kind)) {
+      const intentId = String(plan?.goal?.id ?? plan?.intent?.id ?? `channel-intent:${event.id}`).slice(0, 200);
+      runTx(() => {
+        conversation.pendingTaskPlanClarification = {
+          kind: plan.clarification.kind,
+          originalText: text,
+          domain: plan.tasks[0]?.domain ?? null,
+          intentId,
+          options: plan.clarification.options ?? [],
+          platforms: plan.clarification.platforms ?? plan.goal?.platforms ?? [],
+          contentOptions: plan.clarification.contentOptions ?? [],
+          requestedAt: now(),
+        };
+        conversation.updatedAt = now();
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: plan.clarification.kind === "publication_content_mapping"
+          ? `${plan.clarification.prompt}\n我不会替你把所有成品绑定到所有平台；确认对应关系后，只创建必要的发布依赖。`
+          : `${plan.clarification.prompt}\n目前支持识别：公众号、小红书、抖音、哔哩哔哩、知乎和微博。`,
+        data: { needsClarification: true, clarificationKind: plan.clarification.kind, taskCount: 0 },
+      });
+    }
+    const planContract = validateTaskPlan(plan);
+    if (!planContract.ok) {
+      runTx(() => {
+        event.intentPlanContract = planContract.summary;
+        event.intentPlanContractErrors = planContract.errors;
+        conversation.updatedAt = now();
+      });
+      return settle(event, {
+        status: "refused",
+        reply: "我暂时没有把这组工作安全整理清楚，因此没有创建或执行任何任务。请换一种方式说明目标，或先分开描述每项工作。",
+        data: { reason: "invalid_intent_plan", planContract: planContract.summary, errors: planContract.errors },
+      });
+    }
+    runTx(() => {
+      event.intentPlanContract = planContract.summary;
+      event.intentConfidence = planContract.confidence;
+    });
+    if (!forceDispatch && plan.tasks.length > 1 && taskBasketPreviewRequested(text)) {
+      const basket = snapshotTaskBasket(plan, {
+        id: `task-basket:${event.id}`,
+        originalText: text,
+        createdAt: now(),
+      });
+      runTx(() => {
+        conversation.pendingTaskBasket = basket;
+        conversation.updatedAt = now();
+        event.taskBasketId = basket.id;
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: taskBasketReply(basket),
+        data: {
+          taskBasket: true,
+          taskBasketId: basket.id,
+          taskCount: 0,
+          plannedTaskCount: basket.tasks.length,
+          previewOnly: true,
+        },
+      });
+    }
+    const items = activeSharedContents(conversation);
+    const publishTasks = plan.tasks.filter((task) => task.gate === "approved_output_required");
+    const preparatoryTasks = plan.tasks.filter((task) => task.gate !== "approved_output_required");
+    const createsReviewableOutput = preparatoryTasks.some((task) =>
+      !["platform_adaptation", "wechat_draft_sync"].includes(task.kind));
+    if (!createsReviewableOutput && publishTasks.length && items.length) {
+      return settle(event, {
+        status: "dispatched",
+        reply: "当前选中的是原始资料，不是已审核的内容成品，因此没有创建发布任务。请先创建并确认文章、漫画、口播或视频任务，再从确认后的成品发起平台发布。",
+        data: { sharedContent: true, taskProposalOnly: true, gate: "approved_output_required" },
+      });
+    }
+    if (!channel.taskProjectId || typeof createChannelTaskIssue !== "function") {
+      return settle(event, {
+        status: "refused",
+        reply: "当前频道尚未绑定可创建任务的项目，请先在控制台完成项目和执行设备配置。",
+        data: { reason: "no_task_project", taskCount: 0 },
+      });
+    }
+    const admission = reserveTaskBatch(channel, conversation, plan.tasks.length);
+    if (!admission.ok) {
+      return settle(event, {
+        status: "refused",
+        reply: admission.reason === "rate_limited"
+          ? `这次需要创建 ${plan.tasks.length} 个任务，超过每分钟可接纳的剩余数量。没有创建任何任务，请稍后重试。`
+          : `这次需要创建 ${plan.tasks.length} 个任务，但今天只剩 ${admission.remaining} 个名额。没有创建任何任务。`,
+        data: { reason: admission.reason, taskCount: 0, requestedTaskCount: plan.tasks.length },
+      });
+    }
+    const intentId = String(plan?.goal?.id ?? plan?.intent?.id ?? `channel-intent:${event.id}`).slice(0, 200);
+    const goal = ensureWorkGoal({ ...plan, planContract, intentConfidence: planContract.confidence, goal: { ...plan.goal, id: intentId } }, event, channel, conversation);
+    const knowledgeItemIds = items.map((item) => item.knowledgeItemId).filter(Boolean);
+    const results = [];
+    const workItemByTaskKey = new Map();
+    for (const task of plan.tasks) {
+      const declaredDependencyIds = task.requires.map((key) => workItemByTaskKey.get(key)).filter(Boolean);
+      const inferredConsumes = task.artifactContract?.consumes?.length
+        ? task.artifactContract.consumes
+        : task.kind === "content_article" ? ["coding_digest"]
+          : task.kind === "content_image" ? ["article_draft"]
+            : task.kind === "platform_adaptation" ? ["article_draft"]
+              : [];
+      const priorGoalDependencyIds = (state.workItems ?? []).filter((candidate) =>
+        candidate.workGoalId === goal.id
+        && candidate.ownerTeamId === goal.ownerTeamId
+        && (candidate.artifactContract?.produces ?? []).some((kind) => inferredConsumes.includes(kind)))
+        .map((candidate) => candidate.id);
+      const dependencyIds = [...new Set([...declaredDependencyIds, ...priorGoalDependencyIds])];
+      // Fail closed if a prerequisite could not be created. The goal remains
+      // visible and can be repaired without inventing a disconnected task.
+      if (declaredDependencyIds.length !== task.requires.length) {
+        results.push({ task, result: { status: "refused", data: { reason: "goal_prerequisite_creation_failed" } } });
+        continue;
+      }
+      const description = [
+        task.outcome,
+        `所属事情：${goal.title}`,
+        `本任务专业边界：${task.title}`,
+        `用户完整目标（仅作为背景，不要执行其他任务）：${text}`,
+        items.length ? `使用已入库资料：${items.map((item) => `《${item.title}》`).join("、")}` : null,
+        task.artifactContract?.consumes?.length ? `需要的上游产物：${task.artifactContract.consumes.join("、")}` : null,
+        task.artifactContract?.produces?.length ? `本任务应交付：${task.artifactContract.produces.join("、")}` : null,
+        task.executionInstructions ? `交付格式要求：${task.executionInstructions}` : null,
+        "只完成本任务边界；不要代替同一事情中的其他任务。",
+      ].filter(Boolean).join("\n\n");
+      const result = await dispatchExplicitTask(event, channel, conversation, description, {
+        taskTitle: task.title,
+        taskKind: task.kind,
+        intentId,
+        intentStatement: text,
+        knowledgeItemIds,
+        workGoalId: goal.id,
+        dependencyIds,
+        artifactContract: task.artifactContract,
+        platformTarget: task.platform,
+        dependencyTaskTitles: task.requires.map((key) => plan.tasks.find((candidate) => candidate.key === key)?.title).filter(Boolean),
+        requiredArtifactKinds: task.artifactContract?.consumes ?? [],
+        deferExecution: task.approvalRequired === true,
+        deferUntilArtifacts: dependencyIds.length > 0,
+        batchRateReserved: true,
+      });
+      results.push({ task, result });
+      if (result?.status === "dispatched" && result.data?.workItemId) {
+        workItemByTaskKey.set(task.key, result.data.workItemId);
+      }
+    }
+    const created = results.filter(({ result }) => result?.status === "dispatched");
+    const failed = results.length - created.length;
+    const titleByKey = new Map(plan.tasks.map((task) => [task.key, task.title]));
+    const createdIndependent = created.filter(({ task }) => !(task.requires ?? []).length);
+    const createdWaiting = created.filter(({ task }) => (task.requires ?? []).length);
+    const reply = [
+      created.length
+        ? `已按你的要求创建 ${created.length} 个独立任务：`
+        : "这次没有成功创建任务。",
+      ...created.map(({ task }, index) => {
+        const dependencies = (task.requires ?? []).map((key) => titleByKey.get(key)).filter(Boolean);
+        return `${index + 1}. ${task.title}${dependencies.length ? `（需要“${dependencies.join("、")}”的成品）` : "（可独立开始）"}`;
+      }),
+      createdIndependent.length > 1
+        ? `可分别进行：${createdIndependent.map(({ task }) => task.title).join("、")}；其中一个失败或取消，不会自动停止其他任务。`
+        : null,
+      createdWaiting.length
+        ? `必要等待：${createdWaiting.map(({ task }) => `${task.title}等待${(task.requires ?? []).map((key) => titleByKey.get(key)).filter(Boolean).join("、")}`).join("；")}。`
+        : null,
+      created.length ? `没有自动创建你未要求的后续工作${items.length ? "；这些任务会使用你选中的本地资料" : ""}。` : null,
+      publishTasks.length ? `其中 ${publishTasks.length} 个发布任务已建立，但在上游成品完成并经你确认前不会执行。` : null,
+      failed ? `另有 ${failed} 个任务暂时未能创建，已在这件事中标记为待修复，不会把它们误报为完成。` : null,
+      created.length ? "目前不需要重复发送；需要你补充或确认时，我会明确告诉你。" : null,
+    ].filter(Boolean).join("\n");
+    runTx(() => {
+      event.taskThreadIds = created.map(({ result }) => result.data?.threadId).filter(Boolean);
+      event.intentId = intentId;
+      event.replyText = reply;
+      if (failed) {
+        goal.status = "needs_repair";
+        goal.failedSteps = results.filter(({ result }) => result?.status !== "dispatched").map(({ task, result }) => ({
+          key: task.key,
+          kind: task.kind,
+          title: task.title,
+          reason: result?.data?.reason ?? "task_creation_failed",
+          at: now(),
+        }));
+        goal.updatedAt = now();
+      }
+    });
+    return {
+      status: created.length ? "dispatched" : "refused",
+      reply,
+      data: {
+        sharedContent: items.length > 0,
+        intentId,
+        workGoalId: goal.id,
+        taskThreadIds: event.taskThreadIds ?? [],
+        taskCount: created.length,
+        failedCount: failed,
+        publishDeferred: publishTasks.length > 0,
+      },
+    };
+  }
+
+  function addedTaskPlan(change, proposal) {
+    const trigger = ({
+      coding_digest: "整理编码成果",
+      knowledge_analysis: "做深度分析",
+      content_article: "写一篇文章",
+      content_image: "制作图片",
+      content_comic: "制作漫画",
+      content_voiceover: "制作口播",
+      content_video: "制作视频",
+      software_analysis: "做需求分析",
+      software_implementation: "开发实现",
+      software_verification: "进行测试验证",
+      software_deployment: "部署上线",
+      business_research: "进行商务调研",
+      business_document: "准备商务方案",
+      business_communication: "发送邮件给客户",
+      business_scheduling: "安排会议",
+    })[change.taskKind];
+    if (!trigger) return null;
+    const plan = planDiscreteTasks({
+      text: `${trigger}。具体要求：${change.request}`,
+      domain: change.domain ?? null,
+      intentId: proposal.goalId,
+    });
+    const selected = plan.tasks.filter((task) => task.kind === change.taskKind);
+    if (!selected.length) return null;
+    return {
+      ...plan,
+      goal: { ...plan.goal, id: proposal.goalId, statement: proposal.requestedText },
+      intent: { ...plan.intent, id: proposal.goalId, statement: proposal.requestedText },
+      tasks: selected,
+      clarification: null,
+    };
+  }
+
+  function publicationRebindPlan(change, proposal, conversation) {
+    const contentLabel = taskKindLabel(change.taskKind);
+    const plan = planDiscreteTasks({
+      text: `${contentLabel}发布到${change.platform.label}。具体要求：${change.request}`,
+      domain: "content",
+      intentId: proposal.goalId,
+      platformTargets: [change.platform],
+      publicationAssignments: [{ platform: change.platform, contentKinds: [change.taskKind] }],
+    });
+    const existingProducer = workGoalThreads(conversation).find((thread) =>
+      thread.taskKind === change.taskKind && !["cancelled", "failed"].includes(thread.status));
+    const tasks = existingProducer
+      ? plan.tasks.filter((task) => task.kind !== change.taskKind).map((task) =>
+        task.kind === "platform_adaptation"
+          ? { ...task, requires: [] }
+          : task)
+      : plan.tasks;
+    return {
+      ...plan,
+      goal: { ...plan.goal, id: proposal.goalId, statement: proposal.requestedText },
+      intent: { ...plan.intent, id: proposal.goalId, statement: proposal.requestedText },
+      tasks,
+      clarification: null,
+    };
+  }
+
+  async function stopTaskForGoalChange(thread, event, actor, { pause = false, blockDependents = true } = {}) {
+    if (!thread || ["cancelled", "failed"].includes(thread.status)) return { ok: true, changed: false, affected: [] };
+    const durable = updateBoundWorkItem(thread, {
+      status: "blocked",
+      executionPolicy: "paused",
+    }, actor);
+    if (durable?.ok === false) return { ok: false, reason: durable.body?.error ?? "work_item_update_failed" };
+    if (thread.autoRunId && typeof cancelAutoRun === "function") {
+      try { await cancelAutoRun(thread.autoRunId, { actor, reason: pause ? "channel_goal_change_paused" : "channel_goal_change_cancelled" }); } catch { /* durable state remains authoritative */ }
+    }
+    if (thread.invocationId && typeof cancelInvocation === "function") {
+      const invocation = findInvocation(thread.invocationId);
+      if (invocation) {
+        try { await cancelInvocation(invocation, actor); } catch { /* durable state remains authoritative */ }
+      }
+    }
+    runTx(() => {
+      const request = (state.channelTaskRequests ?? []).find((candidate) =>
+        candidate.id === thread.channelTaskRequestId || candidate.threadId === thread.id);
+      if (request && ["pending", "waiting_artifacts", "paused"].includes(request.status)) {
+        request.pausedFromStatus ??= request.status;
+        request.status = pause ? "paused" : "dismissed";
+        request.pauseReason = pause ? "user_paused_goal_change" : null;
+        request.decidedAt = pause ? null : now();
+        request.updatedAt = now();
+      }
+      thread.pausedFromStatus ??= thread.status;
+      setThreadStatus(thread, pause ? "paused" : "cancelled", pause ? "user_paused_goal_change" : "user_cancelled_goal_change");
+      thread.waitingFor = null;
+      thread.cancelledByEventId = pause ? null : event.id;
+      thread.updatedAt = now();
+    });
+    const affected = !pause && blockDependents ? blockDependentTaskThreads(thread, "cancelled") : [];
+    return { ok: true, changed: true, affected };
+  }
+
+  async function modifyTaskForGoalChange(thread, change, proposal, event, channel, conversation, actor) {
+    const item = (state.workItems ?? []).find((candidate) => candidate.id === thread?.workItemId) ?? null;
+    if (!thread || !item) return { ok: false, reason: "task_not_found" };
+    const revisedDescription = [
+      String(item.body ?? thread.summary ?? taskDisplayTitle(thread)).slice(0, 12_000),
+      `用户已确认本次调整：${change.request}`,
+      "只更新这个任务；同一事情中的其他任务保持不变。",
+    ].filter(Boolean).join("\n\n");
+    if (thread.status === "running" || thread.autoRunId || thread.invocationId) {
+      const replacement = await dispatchExplicitTask(event, channel, conversation, revisedDescription, {
+        taskTitle: taskDisplayTitle(thread),
+        taskKind: thread.taskKind,
+        intentId: proposal.goalId,
+        intentStatement: proposal.requestedText,
+        workGoalId: proposal.goalId,
+        dependencyIds: item.dependencyIds ?? [],
+        artifactContract: item.artifactContract ?? thread.artifactContract,
+        platformTarget: item.platformTarget ?? thread.platformTarget,
+        dependencyTaskTitles: thread.dependencyTaskTitles ?? [],
+        requiredArtifactKinds: thread.requiredArtifactKinds ?? item.artifactContract?.consumes ?? [],
+        deferUntilArtifacts: (item.dependencyIds ?? []).length > 0,
+      });
+      if (replacement?.status !== "dispatched" || !replacement.data?.threadId) return { ok: false, reason: replacement?.data?.reason ?? "replacement_creation_failed" };
+      await stopTaskForGoalChange(thread, event, actor, { blockDependents: false });
+      runTx(() => {
+        thread.supersededByThreadId = replacement.data.threadId;
+        thread.resultSummary = "已由确认调整后的新版本替代。";
+      });
+      return { ok: true, changed: true, replacement: true };
+    }
+    const reopen = ["succeeded", "failed", "cancelled", "needs_attention"].includes(thread.status);
+    const changes = {
+      body: revisedDescription,
+      ...(reopen ? { status: "ready", executionPolicy: "inherit", outputAssets: [] } : {}),
+    };
+    const updated = updateBoundWorkItem(thread, changes, actor);
+    if (updated?.ok === false) return { ok: false, reason: updated.body?.error ?? "work_item_update_failed" };
+    runTx(() => {
+      thread.summary = revisedDescription;
+      thread.taskRevision = Number(thread.taskRevision ?? 0) + 1;
+      thread.resultSummary = null;
+      thread.exportedAsset = null;
+      thread.previousResultSummary = null;
+      thread.updatedAt = now();
+      if (reopen) {
+        const waits = (item.dependencyIds ?? []).length > 0;
+        setThreadStatus(thread, waits ? "waiting_upstream" : "queued", waits ? "goal_change_waiting_upstream" : "goal_change_requeued");
+        thread.waitingFor = waits ? "upstream_artifacts" : null;
+      }
+    });
+    return { ok: true, changed: true, replacement: false };
+  }
+
+  async function applyWorkGoalChange(event, channel, conversation, actor, proposal) {
+    const goal = activeWorkGoal(conversation);
+    if (!goal || goal.id !== proposal.goalId || !["active", "needs_repair"].includes(goal.status ?? "active")) {
+      runTx(() => { conversation.pendingWorkGoalChange = null; });
+      return settle(event, {
+        status: "dispatched",
+        reply: "当前这件事已经变化，刚才的调整预览没有执行。请重新说明要改什么。",
+        data: { workGoalChange: true, stale: true },
+      });
+    }
+    const conflict = workGoalChangeSnapshotConflict(conversation, proposal);
+    if (conflict) {
+      const refreshedPlan = workGoalChangePlan(proposal.requestedText, conversation);
+      let refreshed = null;
+      if (refreshedPlan?.materialChangeCount > 0) {
+        refreshed = {
+          ...refreshedPlan,
+          id: nextId("wgc"),
+          channelId: event.channelId,
+          conversationId: conversation.id,
+          status: "awaiting_confirmation",
+          createdAt: now(),
+          sourceEventId: event.id,
+          replacesChangeId: proposal.id,
+        };
+        refreshed.snapshot = workGoalChangeSnapshot(conversation, refreshed);
+      }
+      runTx(() => {
+        proposal.status = "stale";
+        proposal.staleAt = now();
+        proposal.staleReason = conflict.goalChanged ? "goal_plan_changed" : "task_snapshot_changed";
+        proposal.changedTitles = conflict.changedTitles;
+        if (refreshed) saveWorkGoalChangeProposal(conversation, refreshed);
+        else {
+          conversation.pendingWorkGoalChange = null;
+          conversation.updatedAt = now();
+        }
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: refreshed
+          ? [
+              `确认前任务状态发生了变化${conflict.changedTitles.length ? `：${conflict.changedTitles.slice(0, 4).join("、")}` : ""}，旧预览没有执行。`,
+              workGoalChangeReply(refreshed, { revised: true }),
+            ].join("\n")
+          : "确认前任务状态发生了变化，旧预览没有执行。当前已没有可安全应用的相同调整，请重新说明。",
+        data: {
+          workGoalChange: true,
+          stale: true,
+          workGoalChangeId: refreshed?.id ?? proposal.id,
+          refreshed: Boolean(refreshed),
+        },
+      });
+    }
+    const threadById = new Map(workGoalThreads(conversation, goal).map((thread) => [thread.id, thread]));
+    const failures = [];
+    const createdThreadIds = [];
+    const pendingRebindStops = [];
+    let added = 0;
+    let modified = 0;
+    let cancelled = 0;
+    let paused = 0;
+    let downstreamAffected = 0;
+
+    runTx(() => {
+      proposal.status = "applying";
+      proposal.applyAttempt = Number(proposal.applyAttempt ?? 0) + 1;
+      proposal.applyStartedAt = now();
+      proposal.appliedOperations ??= {};
+      proposal.goalBeforeApply ??= {
+        status: goal.status,
+        failedSteps: [...(goal.failedSteps ?? [])],
+      };
+      saveWorkGoalChangeProposal(conversation, proposal);
+    });
+
+    // Replacement work must exist before an old publication chain is retired.
+    for (const change of proposal.changes.filter((candidate) => ["add", "rebind"].includes(candidate.action))) {
+      const operationKey = `create:${change.action}:${change.platform?.id ?? change.taskKind}:${change.request}`;
+      const completed = proposal.appliedOperations[operationKey];
+      if (completed?.status === "completed") {
+        added += completed.taskCount ?? 0;
+        createdThreadIds.push(...(completed.taskThreadIds ?? []));
+        if (change.action === "rebind") pendingRebindStops.push(...(change.targetIds ?? []));
+        continue;
+      }
+      const plan = change.action === "add"
+        ? addedTaskPlan(change, proposal)
+        : publicationRebindPlan(change, proposal, conversation);
+      if (!plan?.tasks?.length) {
+        failures.push(`${change.label}：无法形成安全任务`);
+        continue;
+      }
+      const created = await dispatchPlannedSharedContentTasks(event, channel, conversation, proposal.requestedText, plan, { forceDispatch: true });
+      if (created?.status !== "dispatched" || !(created.data?.taskCount > 0) || (created.data?.failedCount ?? 0) > 0) {
+        createdThreadIds.push(...(created?.data?.taskThreadIds ?? []));
+        failures.push(`${change.label}：创建失败`);
+        continue;
+      }
+      added += created.data.taskCount;
+      const taskThreadIds = created.data.taskThreadIds ?? [];
+      createdThreadIds.push(...taskThreadIds);
+      if (change.action === "rebind") pendingRebindStops.push(...(change.targetIds ?? []));
+      runTx(() => {
+        proposal.appliedOperations[operationKey] = {
+          status: "completed",
+          taskCount: created.data.taskCount,
+          taskThreadIds,
+          completedAt: now(),
+        };
+      });
+    }
+
+    if (failures.length) {
+      let rolledBack = 0;
+      for (const threadId of [...new Set(createdThreadIds)]) {
+        const thread = (state.channelTaskThreads ?? []).find((candidate) => candidate.id === threadId);
+        const result = await stopTaskForGoalChange(thread, event, actor, { blockDependents: false });
+        if (result.ok && result.changed) rolledBack += 1;
+      }
+      runTx(() => {
+        proposal.status = "failed_rolled_back";
+        proposal.failedAt = now();
+        proposal.failures = failures;
+        proposal.rolledBackTaskCount = rolledBack;
+        goal.status = proposal.goalBeforeApply?.status ?? "active";
+        goal.failedSteps = [...(proposal.goalBeforeApply?.failedSteps ?? [])];
+        goal.updatedAt = now();
+        conversation.pendingWorkGoalChange = null;
+        conversation.updatedAt = now();
+      });
+      return settle(event, {
+        status: "refused",
+        reply: `这次调整没有完整建立，我已清理本次新增的 ${rolledBack} 个任务，原有任务保持不变。请稍后重试。`,
+        data: {
+          workGoalChange: true,
+          workGoalChangeId: proposal.id,
+          applied: false,
+          rolledBackTaskCount: rolledBack,
+          failureCount: failures.length,
+        },
+      });
+    }
+
+    for (const id of [...new Set(pendingRebindStops)]) {
+      const operationKey = `rebind-stop:${id}`;
+      if (proposal.appliedOperations[operationKey]?.status === "completed") continue;
+      const stopped = await stopTaskForGoalChange(threadById.get(id), event, actor, { blockDependents: false });
+      if (stopped.ok) {
+        if (stopped.changed) cancelled += 1;
+        runTx(() => {
+          proposal.appliedOperations[operationKey] = { status: "completed", changed: stopped.changed, completedAt: now() };
+        });
+      } else {
+        failures.push(`${taskDisplayTitle(threadById.get(id))}：旧任务未能停用`);
+      }
+    }
+
+    for (const change of proposal.changes.filter((candidate) => changeNotCreation(candidate))) {
+      for (const id of change.targetIds ?? []) {
+        const operationKey = `${change.action}:${id}`;
+        if (proposal.appliedOperations[operationKey]?.status === "completed") continue;
+        const thread = threadById.get(id);
+        if (!thread) {
+          failures.push(`${change.label}：原任务已不存在`);
+          continue;
+        }
+        if (change.action === "modify") {
+          const result = await modifyTaskForGoalChange(thread, change, proposal, event, channel, conversation, actor);
+          if (result.ok) {
+            modified += 1;
+            runTx(() => {
+              proposal.appliedOperations[operationKey] = { status: "completed", replacement: result.replacement, completedAt: now() };
+            });
+          }
+          else failures.push(`${change.label}：更新失败`);
+          continue;
+        }
+        const result = await stopTaskForGoalChange(thread, event, actor, { pause: change.action === "pause" });
+        if (!result.ok) {
+          failures.push(`${change.label}：状态更新失败`);
+          continue;
+        }
+        if (result.changed && change.action === "pause") paused += 1;
+        if (result.changed && change.action === "cancel") cancelled += 1;
+        downstreamAffected += result.affected?.length ?? 0;
+        runTx(() => {
+          proposal.appliedOperations[operationKey] = {
+            status: "completed",
+            changed: result.changed,
+            downstreamAffected: result.affected?.length ?? 0,
+            completedAt: now(),
+          };
+        });
+      }
+    }
+    runTx(() => {
+      proposal.status = failures.length ? "partially_applied" : "applied";
+      proposal.appliedAt = now();
+      proposal.failures = failures;
+      conversation.pendingWorkGoalChange = null;
+      conversation.updatedAt = now();
+      goal.planVersion = Number(goal.planVersion ?? 1) + 1;
+      goal.updatedAt = now();
+      event.workGoalId = goal.id;
+      event.workGoalChangeId = proposal.id;
+    });
+    refreshQueuePositions(channel.id, { notify: true });
+    const summary = [
+      added ? `新增 ${added} 个任务` : null,
+      modified ? `调整 ${modified} 个任务` : null,
+      paused ? `暂停 ${paused} 个任务` : null,
+      cancelled ? `取消或替换 ${cancelled} 个旧任务` : null,
+    ].filter(Boolean).join("，") || "没有任务需要实际改变";
+    return settle(event, {
+      status: failures.length ? "refused" : "dispatched",
+      reply: [
+        failures.length ? `调整已部分应用：${summary}。` : `调整已应用：${summary}。`,
+        downstreamAffected ? `${downstreamAffected} 个依赖旧任务的步骤已标记为受阻，其他独立任务继续。` : "未提到的任务保持不变。",
+        failures.length ? `未完成：${failures.slice(0, 4).join("；")}。你可以重新说明这些部分。` : "回复“进度”可以查看更新后的任务状态。",
+      ].join("\n"),
+      data: {
+        workGoalChange: true,
+        workGoalChangeId: proposal.id,
+        applied: failures.length === 0,
+        added,
+        modified,
+        paused,
+        cancelled,
+        downstreamAffected,
+        failureCount: failures.length,
+      },
+    });
+  }
+
+  function changeNotCreation(change) {
+    return ["modify", "cancel", "pause"].includes(change.action);
+  }
+
+  function handlePendingWorkGoalChange(event, channel, conversation, actor, text) {
+    const proposal = conversation.pendingWorkGoalChange;
+    if (!proposal) return null;
+    if (workGoalChangeExpired(proposal, now())) {
+      runTx(() => {
+        conversation.pendingWorkGoalChange = null;
+        conversation.updatedAt = now();
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: "刚才的调整预览已过期，我没有修改任何任务。请重新说明要调整什么。",
+        data: { workGoalChange: true, expired: true },
+      });
+    }
+    const action = workGoalChangeAction(text);
+    if (action === "cancel") {
+      runTx(() => {
+        proposal.status = "cancelled";
+        proposal.cancelledAt = now();
+        conversation.pendingWorkGoalChange = null;
+        conversation.updatedAt = now();
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: "已取消这次调整，现有任务保持原样。",
+        data: { workGoalChange: true, cancelled: true },
+      });
+    }
+    if (action === "confirm") return applyWorkGoalChange(event, channel, conversation, actor, proposal);
+    const revised = workGoalChangePlan(text, conversation);
+    if (revised?.materialChangeCount > 0) {
+      const next = {
+        ...revised,
+        id: proposal.id,
+        channelId: event.channelId,
+        conversationId: conversation.id,
+        status: "awaiting_confirmation",
+        createdAt: now(),
+        sourceEventId: event.id,
+      };
+      next.snapshot = workGoalChangeSnapshot(conversation, next);
+      runTx(() => {
+        saveWorkGoalChangeProposal(conversation, next);
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: workGoalChangeReply(next, { revised: true }),
+        data: { workGoalChange: true, workGoalChangeId: next.id, previewOnly: true, revised: true },
+      });
+    }
+    return settle(event, {
+      status: "dispatched",
+      reply: `${workGoalChangeReply(proposal)}\n\n我还没有执行。你也可以直接补充新的调整要求，我会更新这份预览。`,
+      data: { workGoalChange: true, workGoalChangeId: proposal.id, previewOnly: true, awaitingAction: true },
+    });
+  }
+
+  function handleRepeatedWorkGoalChangeDecision(event, conversation, text) {
+    if (!/^(?:确认调整|确认修改|应用调整|按这个调整|就这样改|取消调整|取消修改)[。.!！?？]*$/i.test(text)) return null;
+    const latest = (state.workGoalChanges ?? []).filter((candidate) => candidate.conversationId === conversation.id)
+      .sort((left, right) => String(right.appliedAt ?? right.cancelledAt ?? right.failedAt ?? right.createdAt ?? "")
+        .localeCompare(String(left.appliedAt ?? left.cancelledAt ?? left.failedAt ?? left.createdAt ?? "")))[0] ?? null;
+    if (!latest || workGoalChangeExpired(latest, now())) return null;
+    const reply = latest.status === "applied"
+      ? "刚才的调整已经应用，不会重复创建或修改任务。回复“进度”可以查看最新状态。"
+      : latest.status === "cancelled"
+        ? "刚才的调整已经取消，现有任务保持原样。"
+        : latest.status === "failed_rolled_back"
+          ? "刚才的调整没有成功，新增任务已经清理，不会重复执行。请重新说明后再试。"
+          : latest.status === "partially_applied"
+            ? "刚才的调整已结束，但有部分步骤需要处理。我不会重复执行；请回复“进度”查看当前状态。"
+            : null;
+    if (!reply) return null;
+    return settle(event, {
+      status: "dispatched",
+      reply,
+      data: { workGoalChange: true, workGoalChangeId: latest.id, duplicateDecision: true, status: latest.status },
+    });
+  }
+
+  function routeSharedContentToNewTask(event, conversation, reason) {
+    const taskText = sharedContentTaskText("基于刚才的资料创建一个独立任务，先整理目标和验收标准，再等待确认。", conversation);
+    recordSharedContentRoute(event, conversation, { target: "new_task", reason, status: "collecting" });
+    runTx(() => {
+      event.taskIntakeText = taskText;
+    });
+    return queueNaturalEvent(event, conversation, { textOverride: taskText });
+  }
+
+  function handleSharedContentRouteChoice(event, channel, conversation, text) {
+    const items = activeSharedContents(conversation);
+    if (!items.length) return null;
+    const pending = pendingSharedContentRoute(conversation);
+    if (SHARED_CONTENT_ROUTE_DECLINE_RE.test(text) && pending) {
+      recordSharedContentRoute(event, conversation, {
+        target: "none",
+        reason: "user_deferred_shared_content_route",
+        status: "deferred",
+      });
+      return settle(event, {
+        status: "dispatched",
+        reply: "好的，资料已保留，当前任务没有修改。以后仍可回复“分析资料”“加入当前任务”或“创建新任务”。",
+        data: { sharedContent: true, route: "none", deferred: true },
+      });
+    }
+    if (SHARED_CONTENT_ATTACH_CURRENT_RE.test(text)) {
+      return routeSharedContentToCurrentTask(event, channel, conversation, pending ? "confirmed_route_choice" : "explicit_current_task_attachment");
+    }
+    if (SHARED_CONTENT_NEW_TASK_CHOICE_RE.test(text)) {
+      return routeSharedContentToNewTask(event, conversation, pending ? "confirmed_route_choice" : "explicit_new_task_choice");
+    }
+    if (SHARED_CONTENT_ANALYSIS_CHOICE_RE.test(text)) {
+      return startRoutedSharedContentAnalysis(event, conversation, text, pending ? "confirmed_route_choice" : "explicit_analysis_choice");
+    }
+    return null;
+  }
+
+  function retryConsultationAfterEmptyResult(event, conversation, invocation, reason) {
+    if (!conversation || typeof createConsultation !== "function") return null;
+    const currentAttempt = Math.max(
+      1,
+      Number(event.consultationAttempt ?? 0),
+      Number(invocation.options?.metadata?.channelConsultationAttempt ?? 0),
+    );
+    if (currentAttempt >= CHANNEL_CONSULTATION_MAX_ATTEMPTS) return null;
+    const nextAttempt = currentAttempt + 1;
+    try {
+      const retryInvocation = enqueueConsultationAttempt(event, conversation, {
+        text: event.consultationRequestText ?? event.content,
+        attempt: nextAttempt,
+        retryReason: reason,
+        retryOfInvocationId: invocation.id,
+      });
+      if (!retryInvocation?.id || retryInvocation.id === invocation.id) return null;
+      runTx(() => {
+        event.consultationInvocationId = retryInvocation.id;
+        event.consultationInvocationHistory = [...new Set([
+          ...(event.consultationInvocationHistory ?? []),
+          invocation.id,
+          retryInvocation.id,
+        ].filter(Boolean))];
+        event.consultationAttempt = nextAttempt;
+        event.consultationStatus = "retrying";
+        event.consultationRetryReason = reason;
+        event.consultationRetriedAt = now();
+        if (event.sharedContentRoute?.target === "analysis") {
+          event.sharedContentRoute.status = "retrying";
+          event.sharedContentRoute.decidedAt = now();
+        }
+        if (event.sharedContentIds?.length) {
+          conversation.sharedContentContext = {
+            ...(conversation.sharedContentContext ?? {}),
+            status: "analyzing",
+            updatedAt: now(),
+          };
+          conversation.updatedAt = now();
+        }
+        appendEvent({
+          invocationId: retryInvocation.id,
+          type: "channel_consultation_auto_retried",
+          level: "warn",
+          message: `Channel ${event.channelId}: consultation automatically retried after ${reason}.`,
+          data: {
+            channelId: event.channelId,
+            conversationId: event.conversationId,
+            eventId: event.id,
+            attempt: nextAttempt,
+            retryReason: reason,
+            retryOfInvocationId: invocation.id,
+          },
+        });
+      });
+      recordExperienceMetric("consultationAutoRetries");
+      return retryInvocation;
+    } catch (error) {
+      runTx(() => {
+        event.consultationRetryError = String(error?.message ?? error).slice(0, 160);
+      });
+      return null;
+    }
+  }
+
   function syncConsultationFromInvocation(invocation) {
     const metadata = invocation?.options?.metadata;
     if (!metadata?.channelConsultation) return null;
@@ -2858,40 +4888,83 @@ export function createChannelConversationService({
     const event = eventId ? (state.channelEvents ?? []).find((candidate) => candidate.id === eventId) : null;
     if (!event) return null;
     if (["answered", "failed"].includes(event.consultationStatus)) return { event, status: event.consultationStatus };
+    if (event.consultationInvocationId && event.consultationInvocationId !== invocation.id) {
+      return { event, status: "superseded" };
+    }
     const conversation = findConversation(metadata.channel?.conversationId ?? event.conversationId);
     const terminal = ["succeeded", "failed", "cancelled", "timed_out"].includes(invocation.status);
     if (!terminal) return { event, status: "queued" };
-    const answer = invocation.status === "succeeded"
-      ? consultationAnswer(invocation)
-      : "这次咨询暂时没有完成，可能是本地助手正在忙或连接中断。你可以稍后重试，也可以说“帮我处理……”让我直接整理成任务。";
-    const deliveredAnswer = invocation.status === "succeeded" && event.sharedContentIds?.length
-      ? `${answer}\n\n如果希望把这些建议落实到当前项目，直接说“按这些建议完善当前项目”；我会先整理范围请你确认，不会直接修改。`
+    const extractedAnswer = invocation.status === "succeeded" ? consultationAnswer(invocation) : null;
+    const answerUsable = Boolean(extractedAnswer);
+    const attempt = Math.max(
+      1,
+      Number(event.consultationAttempt ?? 0),
+      Number(metadata.channelConsultationAttempt ?? 0),
+    );
+    if (invocation.status === "timed_out") recordExperienceMetric("consultationTimeouts");
+    const retryReason = invocation.status === "succeeded" ? "answer_missing" : `invocation_${invocation.status}`;
+    const retryEligible = !answerUsable && invocation.status !== "cancelled";
+    if (retryEligible && attempt < CHANNEL_CONSULTATION_MAX_ATTEMPTS) {
+      const retryInvocation = retryConsultationAfterEmptyResult(event, conversation, invocation, retryReason);
+      if (retryInvocation) {
+        return { event, status: "retrying", invocationId: retryInvocation.id, attempt: attempt + 1 };
+      }
+    }
+    if (answerUsable) {
+      recordExperienceMetric("consultationAnswers");
+      if (attempt > 1) recordExperienceMetric("consultationAutoRetryRecovered");
+    } else {
+      recordExperienceMetric("consultationAnswerMissing");
+      if (attempt > 1 || retryEligible) recordExperienceMetric("consultationAutoRetryExhausted");
+    }
+    const answer = invocation.status !== "succeeded"
+      ? "这次咨询暂时没有完成，可能是本地助手正在忙或连接中断。你可以稍后重试，也可以说“帮我处理……”让我直接整理成任务。"
+      : extractedAnswer
+        ?? (event.sharedContentIds?.length
+          ? "资料已经读取，但这次没有生成可用的分析内容。你可以回复“重新分析”，或直接告诉我最想了解的问题。"
+          : "这次没有生成可用的回答。你可以换一种方式描述问题，或稍后重试。");
+    const deliveredAnswer = invocation.status === "succeeded" && answerUsable && event.sharedContentIds?.length
+      ? `${answer}\n\n${sharedContentConsultationNextStep(conversation)}`
       : answer;
     runTx(() => {
       event.consultationStatus = invocation.status === "succeeded" ? "answered" : "failed";
       event.consultationAnswer = answer;
+      event.consultationAnswerUsable = invocation.status === "succeeded" ? answerUsable : false;
+      event.consultationAttempt = attempt;
       event.consultationCompletedAt = now();
+      if (event.sharedContentRoute?.target === "analysis") {
+        event.sharedContentRoute.status = invocation.status === "succeeded"
+          ? answerUsable ? "answered" : "answer_missing"
+          : "failed";
+        event.sharedContentRoute.decidedAt = now();
+      }
       if (conversation && event.sharedContentIds?.length) {
         conversation.sharedContentContext = {
           ...(conversation.sharedContentContext ?? {}),
-          status: invocation.status === "succeeded" ? "analyzed" : "ready",
-          lastAnalysis: invocation.status === "succeeded" ? answer.slice(0, 6_000) : conversation.sharedContentContext?.lastAnalysis ?? null,
-          lastAnalysisItemIds: [...event.sharedContentIds].slice(-SHARED_CONTENT_ACTIVE_MAX),
-          lastAnalysisAt: invocation.status === "succeeded" ? now() : conversation.sharedContentContext?.lastAnalysisAt ?? null,
+          status: invocation.status === "succeeded" && answerUsable ? "analyzed" : "ready",
+          lastAnalysis: invocation.status === "succeeded" && answerUsable ? answer.slice(0, 6_000) : conversation.sharedContentContext?.lastAnalysis ?? null,
+          lastAnalysisItemIds: invocation.status === "succeeded" && answerUsable
+            ? [...event.sharedContentIds].slice(-SHARED_CONTENT_ACTIVE_MAX)
+            : conversation.sharedContentContext?.lastAnalysisItemIds ?? [],
+          lastAnalysisAt: invocation.status === "succeeded" && answerUsable ? now() : conversation.sharedContentContext?.lastAnalysisAt ?? null,
           updatedAt: now(),
         };
         conversation.updatedAt = now();
       }
       appendEvent({
         invocationId: invocation.id,
-        type: invocation.status === "succeeded" ? "channel_consultation_answered" : "channel_consultation_failed",
-        level: invocation.status === "succeeded" ? "info" : "warn",
+        type: invocation.status === "succeeded"
+          ? answerUsable ? "channel_consultation_answered" : "channel_consultation_answer_missing"
+          : "channel_consultation_failed",
+        level: invocation.status === "succeeded" && answerUsable ? "info" : "warn",
         message: `Channel ${event.channelId}: consultation ${event.consultationStatus}.`,
         data: {
           channelId: event.channelId,
           conversationId: event.conversationId,
           eventId: event.id,
           consultationStatus: event.consultationStatus,
+          consultationAnswerUsable: event.consultationAnswerUsable,
+          consultationAttempt: attempt,
         },
       });
     });
@@ -2923,6 +4996,58 @@ export function createChannelConversationService({
 
   function handleNaturalEvent(event, channel, conversation, actor) {
     const text = normalizedText(event.content);
+    const pendingGoalChange = handlePendingWorkGoalChange(event, channel, conversation, actor, text);
+    if (pendingGoalChange) return pendingGoalChange;
+    const repeatedGoalChangeDecision = handleRepeatedWorkGoalChangeDecision(event, conversation, text);
+    if (repeatedGoalChangeDecision) return repeatedGoalChangeDecision;
+    const preferenceRequest = parseChannelUserPreferenceRequest(text);
+    if (preferenceRequest) {
+      if (preferenceRequest.kind === "list") {
+        return settle(event, {
+          status: "dispatched",
+          reply: channelPreferenceReply(channelPreferenceRows(state, { channelId: channel.id, conversationId: conversation.id })),
+          data: { userPreferences: true, action: "list" },
+        });
+      }
+      if (preferenceRequest.kind === "save") {
+        let saved;
+        runTx(() => {
+          saved = saveChannelUserPreference(state, {
+            channelId: channel.id,
+            conversationId: conversation.id,
+            externalUserId: event.externalUserId,
+            key: preferenceRequest.key,
+            value: preferenceRequest.value,
+            eventId: event.id,
+            timestamp: now(),
+          });
+          conversation.updatedAt = now();
+        });
+        return settle(event, {
+          status: "dispatched",
+          reply: `记住了：${saved.value}。以后遇到相同类型的任务，我会先按这个习惯处理；你随时可以说“我的偏好”查看，或说“忘记这个偏好”。`,
+          data: { userPreferences: true, action: "save", preference: { key: saved.key, value: saved.value } },
+        });
+      }
+      const removed = (() => {
+        let count = 0;
+        runTx(() => {
+          count = removeChannelUserPreferences(state, {
+            channelId: channel.id,
+            conversationId: conversation.id,
+            key: preferenceRequest.key,
+            timestamp: now(),
+          });
+          conversation.updatedAt = now();
+        });
+        return count;
+      })();
+      return settle(event, {
+        status: "dispatched",
+        reply: removed ? `已忘记 ${removed} 条偏好。` : "目前没有找到要删除的偏好。",
+        data: { userPreferences: true, action: "remove", removed },
+      });
+    }
     // Authorization is a deterministic local control, never an intent-model
     // decision. The message itself becomes the single-use decision evidence.
     let authorization = naturalApprovalControl(text);
@@ -2931,7 +5056,7 @@ export function createChannelConversationService({
         thread.conversationId === conversation.id
         && (thread.status === "awaiting_confirmation"
           || (thread.status === "waiting_approval"
-            && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input", "delivery"].includes(thread.waitingFor))));
+            && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input", "publication_review", "artifact_review", "delivery"].includes(thread.waitingFor))));
       if (!hasBusinessConfirmation && pendingApprovalsForConversation(conversation).length > 0) {
         authorization = { action: "approve", index: null };
       }
@@ -2949,29 +5074,273 @@ export function createChannelConversationService({
   }
 
   function handleNaturalEventWithoutPluginProposal(event, channel, conversation, actor, text) {
-    const noActiveTask = activeTaskThreads(conversation).length === 0 && !collectingIntakeGroup(conversation);
-    const urls = noActiveTask ? sharedContentUrls(text) : [];
+    const pendingBasket = conversation.pendingTaskBasket;
+    if (pendingBasket) {
+      if (taskBasketExpired(pendingBasket, now())) {
+        runTx(() => {
+          conversation.pendingTaskBasket = null;
+          conversation.updatedAt = now();
+        });
+        return settle(event, {
+          status: "dispatched",
+          reply: "刚才的任务规划已超过保留时间，我没有直接执行。请重新描述这件事，我会重新整理步骤。",
+          data: { taskBasket: true, taskBasketExpired: true },
+        });
+      }
+      const action = taskBasketAction(text);
+      if (action?.kind === "cancel") {
+        runTx(() => {
+          conversation.pendingTaskBasket = null;
+          conversation.updatedAt = now();
+        });
+        return settle(event, { status: "dispatched", reply: "已取消这次规划，没有创建任务。", data: { taskBasket: true, cancelled: true } });
+      }
+      if (action?.kind === "confirm") {
+        const plan = planDiscreteTasks({
+          text: pendingBasket.originalText,
+          domain: pendingBasket.domain,
+          intentId: pendingBasket.intentId,
+          excludeKinds: pendingBasket.excludedKinds,
+          materials: activeSharedContents(conversation).map((item) => ({
+            id: item.knowledgeItemId,
+            contentId: resolveKnowledgeLocation?.({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })?.contentId ?? null,
+            title: item.title,
+          })),
+        });
+        runTx(() => {
+          conversation.pendingTaskBasket = null;
+          conversation.updatedAt = now();
+          event.taskBasketId = pendingBasket.id;
+        });
+        return dispatchPlannedSharedContentTasks(event, channel, conversation, pendingBasket.originalText, plan, {
+          forceDispatch: true,
+          taskBasketId: pendingBasket.id,
+        });
+      }
+      if (action?.kind === "remove") {
+        const excludedKinds = [...new Set([...(pendingBasket.excludedKinds ?? []), ...action.kinds])];
+        const revisedPlan = planDiscreteTasks({
+          text: pendingBasket.originalText,
+          domain: pendingBasket.domain,
+          intentId: pendingBasket.intentId,
+          excludeKinds: excludedKinds,
+          materials: activeSharedContents(conversation).map((item) => ({
+            id: item.knowledgeItemId,
+            contentId: resolveKnowledgeLocation?.({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })?.contentId ?? null,
+            title: item.title,
+          })),
+        });
+        const revisedBasket = snapshotTaskBasket(revisedPlan, {
+          id: pendingBasket.id,
+          originalText: pendingBasket.originalText,
+          excludedKinds,
+          createdAt: pendingBasket.createdAt,
+        });
+        runTx(() => {
+          conversation.pendingTaskBasket = revisedBasket;
+          conversation.updatedAt = now();
+          event.taskBasketId = revisedBasket.id;
+        });
+        return settle(event, {
+          status: "dispatched",
+          reply: taskBasketReply(revisedBasket, { revised: true }),
+          data: { taskBasket: true, taskBasketId: revisedBasket.id, previewOnly: true, revised: true, plannedTaskCount: revisedBasket.tasks.length },
+        });
+      }
+      return settle(event, {
+        status: "dispatched",
+        reply: `${taskBasketReply(pendingBasket)}\n\n我还没执行。请回复“确认执行”、说明要去掉的内容，或“取消规划”。`,
+        data: { taskBasket: true, taskBasketId: pendingBasket.id, previewOnly: true, awaitingBasketAction: true },
+      });
+    }
+    const pendingPlan = conversation.pendingTaskPlanClarification;
+    if (["platform_targets", "platform_choice", "publication_content_mapping"].includes(pendingPlan?.kind)) {
+      if (/^(?:取消|算了|不用了|先不发|暂不发布)$/i.test(text)) {
+        runTx(() => {
+          conversation.pendingTaskPlanClarification = null;
+          conversation.updatedAt = now();
+        });
+        return settle(event, {
+          status: "dispatched",
+          reply: "已取消这次发布规划，没有创建任务。以后明确平台名称后可以重新发起。",
+          data: { planClarificationCancelled: true, kind: pendingPlan.kind },
+        });
+      }
+      if (pendingPlan.kind === "publication_content_mapping") {
+        const platforms = pendingPlan.platforms ?? [];
+        const contentKinds = (pendingPlan.contentOptions ?? []).map((option) => option.kind).filter(Boolean);
+        const publicationAssignments = publicationAssignmentsIn(text, { platforms, contentKinds });
+        if (!publicationAssignments.length) {
+          const contentLabels = (pendingPlan.contentOptions ?? []).map((option) => option.label).filter(Boolean).join("、") || "这些成品";
+          const platformLabels = platforms.map((platform) => platform.label).filter(Boolean).join("、") || "这些平台";
+          return settle(event, {
+            status: "dispatched",
+            reply: `我还没看出明确对应关系。请像“文章发公众号，图片发小红书”这样说明；如果${contentLabels}全部都要适配到${platformLabels}，回复“全部都发”。`,
+            data: { needsClarification: true, clarificationKind: pendingPlan.kind },
+          });
+        }
+        const resolvedPlan = planDiscreteTasks({
+          text: pendingPlan.originalText,
+          domain: pendingPlan.domain ?? null,
+          intentId: pendingPlan.intentId,
+          platformTargets: platforms,
+          publicationAssignments,
+          materials: activeSharedContents(conversation).map((item) => ({
+            id: item.knowledgeItemId,
+            contentId: resolveKnowledgeLocation?.({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })?.contentId ?? null,
+            title: item.title,
+          })),
+        });
+        if (resolvedPlan.clarification) {
+          return settle(event, {
+            status: "dispatched",
+            reply: resolvedPlan.clarification.prompt,
+            data: { needsClarification: true, clarificationKind: resolvedPlan.clarification.kind },
+          });
+        }
+        runTx(() => {
+          conversation.pendingTaskPlanClarification = null;
+          conversation.updatedAt = now();
+        });
+        return dispatchPlannedSharedContentTasks(event, channel, conversation, pendingPlan.originalText, resolvedPlan);
+      }
+      const selectedPlatforms = pendingPlan.kind === "platform_choice" && /^(?:都|全部|都发布|两个都发|全都要)$/i.test(text)
+        ? pendingPlan.options ?? []
+        : platformTargetsIn(text);
+      if (!selectedPlatforms.length) {
+        return settle(event, {
+          status: "dispatched",
+          reply: pendingPlan.kind === "platform_choice"
+            ? `我还没识别出你的选择。请回复 ${pendingPlan.options?.map((option) => `“${option.label}”`).join("、") || "一个平台名称"}，或回复“都发布”。`
+            : "我还没识别出平台名称。请直接回复公众号、小红书、抖音、哔哩哔哩、知乎或微博。",
+          data: { needsClarification: true, clarificationKind: pendingPlan.kind },
+        });
+      }
+      const resolvedPlan = planDiscreteTasks({
+        text: pendingPlan.originalText,
+        domain: pendingPlan.domain ?? null,
+        intentId: pendingPlan.intentId,
+        platformTargets: selectedPlatforms,
+        materials: activeSharedContents(conversation).map((item) => ({
+          id: item.knowledgeItemId,
+          contentId: resolveKnowledgeLocation?.({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })?.contentId ?? null,
+          title: item.title,
+        })),
+      });
+      if (resolvedPlan.clarification) {
+        runTx(() => {
+          conversation.pendingTaskPlanClarification = {
+            ...pendingPlan,
+            kind: resolvedPlan.clarification.kind,
+            options: resolvedPlan.clarification.options ?? [],
+            platforms: resolvedPlan.clarification.platforms ?? selectedPlatforms,
+            contentOptions: resolvedPlan.clarification.contentOptions ?? [],
+            requestedAt: now(),
+          };
+          conversation.updatedAt = now();
+        });
+        return settle(event, {
+          status: "dispatched",
+          reply: resolvedPlan.clarification.kind === "publication_content_mapping"
+            ? `${resolvedPlan.clarification.prompt}\n我不会替你把所有成品绑定到所有平台；确认对应关系后，只创建必要的发布依赖。`
+            : `${resolvedPlan.clarification.prompt}\n目前支持识别：公众号、小红书、抖音、哔哩哔哩、知乎和微博。`,
+          data: { needsClarification: true, clarificationKind: resolvedPlan.clarification.kind },
+        });
+      }
+      runTx(() => {
+        conversation.pendingTaskPlanClarification = null;
+        conversation.updatedAt = now();
+      });
+      return dispatchPlannedSharedContentTasks(event, channel, conversation, pendingPlan.originalText, resolvedPlan);
+    }
+    const activeTaskCount = activeTaskThreads(conversation).length;
+    const noActiveTask = activeTaskCount === 0 && !collectingIntakeGroup(conversation);
+    // A link is a first-class Channel input even while a task is running. The
+    // previous noActiveTask gate silently sent it through ordinary task intent
+    // handling, which made a pasted URL appear to receive no response.
+    const urls = sharedContentUrls(text);
     const remainder = urls.length ? sharedContentRemainder(text, urls) : "";
     const noArchive = SHARED_CONTENT_NO_ARCHIVE_RE.test(remainder);
     const contentAction = noArchive
       ? normalizedText(remainder.replace(SHARED_CONTENT_NO_ARCHIVE_STRIP_RE, "").replace(/^[，,。；;：:]+|[，,。；;：:]+$/g, ""))
       : remainder;
-    if (urls.length && (!contentAction || SHARED_CONTENT_CONTINUE_RE.test(contentAction))) {
+    if (urls.length) {
       return inspectSharedContentEvent(event, conversation, urls, {
         analyze: Boolean(contentAction),
         requestText: contentAction,
         archive: !noArchive,
       });
     }
-    if (noActiveTask && !urls.length && sharedContentLocationRequest(text, conversation)) {
+    const activeMaterials = activeSharedContents(conversation);
+    // Exact route choices answer the question we just asked. Resolve them
+    // before generic task planning so “分析资料” remains a read-only
+    // consultation and never starts requiring a task project by accident.
+    const routeChoice = handleSharedContentRouteChoice(event, channel, conversation, text);
+    if (routeChoice) return routeChoice;
+    const discretePlan = activeMaterials.length
+      ? planDiscreteTasks({
+        text,
+        domain: "content",
+        intentId: workGoalIntentId(text, conversation, event),
+        materials: activeMaterials.map((item) => ({
+          id: item.knowledgeItemId,
+          contentId: resolveKnowledgeLocation?.({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })?.contentId ?? null,
+          title: item.title,
+        })),
+      })
+      : null;
+    if (discretePlan?.tasks.length) {
+      return dispatchPlannedSharedContentTasks(event, channel, conversation, text, discretePlan);
+    }
+    if (sharedContentLocationRequest(text, conversation)) {
+      recordSharedContentRoute(event, conversation, {
+        target: "local_location",
+        reason: "explicit_location_request",
+      });
       return settle(event, {
         status: "dispatched",
         reply: sharedContentLocationReply(text, conversation, channel),
         data: { sharedContent: true, action: "local_location" },
       });
     }
-    if (noActiveTask && !urls.length && sharedContentContinuation(text, conversation)) {
-      return startSharedContentConsultation(event, conversation, activeSharedContents(conversation), text);
+    if (sharedContentRetryRequest(text, conversation)) {
+      recordSharedContentRoute(event, conversation, {
+        target: "retry",
+        reason: "explicit_retry_request",
+        status: "queueing",
+      });
+      return inspectSharedContentEvent(event, conversation, retryableSharedContentUrls(conversation), { archive: true });
+    }
+    if (SHARED_CONTENT_BARE_REFERENCE_RE.test(text) && activeSharedContents(conversation).length) {
+      recordSharedContentRoute(event, conversation, {
+        target: "needs_clarification",
+        reason: "bare_recent_reference",
+        status: "awaiting_user_detail",
+      });
+      recordExperienceMetric("targetedClarifications");
+      return settle(event, {
+        status: "dispatched",
+        reply: activeTaskCount > 0
+          ? "我记得刚才的资料，也看到当前有任务在处理。你是想“继续分析资料”，还是“查看当前任务”？"
+          : "我记得刚才的资料。你想了解哪一部分？也可以直接回复“总结一下”或“这个有什么问题”。",
+        data: { sharedContent: true, reason: "bare_recent_reference", needsClarification: true },
+      });
+    }
+    if (sharedContentContextQuestion(text, conversation)) {
+      return startRoutedSharedContentAnalysis(event, conversation, text, "contextual_material_question");
+    }
+    if (sharedContentContinuation(text, conversation)) {
+      const explicitlyMaterialScoped = /(?:资料|文章|链接|内容|总结|分析|提炼|比较|对比)/i.test(text);
+      if (!taskHasPriorityForGenericContinuation(conversation) || explicitlyMaterialScoped) {
+        return startRoutedSharedContentAnalysis(event, conversation, text, explicitlyMaterialScoped
+          ? "material_scoped_continuation"
+          : activeTaskCount > 0
+            ? "recent_shared_content_priority"
+            : "shared_content_continuation");
+      }
+    }
+    if (activeTaskCount > 0 && sharedContentTaskRequest(text, conversation)) {
+      return requestSharedContentRoute(event, conversation);
     }
     if (noActiveTask && sharedContentTaskRequest(text, conversation)) {
       runTx(() => {
@@ -2979,11 +5348,38 @@ export function createChannelConversationService({
         event.sharedContentAction = "create_task";
         event.taskIntakeText = sharedContentTaskText(text, conversation);
       });
+      recordSharedContentRoute(event, conversation, {
+        target: "new_task",
+        reason: "explicit_shared_content_task_request",
+        status: "collecting",
+      });
       return handleNaturalEventResolved(event, channel, conversation, actor, {
         intent: "new_task",
         confidence: 1,
         source: "deterministic",
       });
+    }
+    // Explicit task controls and contextual corrections belong to an existing
+    // discrete task. Route them before goal-change/new-task planning so phrases
+    // such as “不是文章，是视频” cannot accidentally create another video task.
+    const existingTaskControl = taskControl(text, conversation);
+    if (existingTaskControl) {
+      return handleNaturalEventResolved(event, channel, conversation, actor, {
+        intent: existingTaskControl.kind === "cancel" ? "cancel"
+          : existingTaskControl.kind === "retry" ? "supplement" : "query",
+        confidence: 1,
+        source: "deterministic",
+      });
+    }
+    const goalChange = proposeWorkGoalChange(event, conversation, text);
+    if (goalChange) return goalChange;
+    const crossDomainPlan = planDiscreteTasks({
+      text,
+      intentId: workGoalIntentId(text, conversation, event),
+    });
+    if (crossDomainPlan.tasks.length > 1
+      || (crossDomainPlan.tasks.length === 1 && crossDomainPlan.goal?.id === conversation.activeWorkGoalId)) {
+      return dispatchPlannedSharedContentTasks(event, channel, conversation, text, crossDomainPlan);
     }
     const classification = classifyNaturalIntent(text, conversation);
     if (classification && typeof classification.then === "function") {
@@ -3003,6 +5399,22 @@ export function createChannelConversationService({
       activeCount: activeTaskThreads(conversation).length,
       chosenThreadId: thread?.id ?? null,
     });
+    const draftReconciliationOutcome = wechatDraftReconciliationOutcome(text);
+    if (draftReconciliationOutcome) {
+      const candidates = activeTaskThreads(conversation).filter((candidate) =>
+        candidate.status === "needs_attention"
+        && candidate.waitingFor === "wechat_draft_reconcile");
+      if (candidates.length === 1) {
+        return reconcileWechatDraftThread(event, candidates[0], actor, draftReconciliationOutcome);
+      }
+      if (candidates.length > 1) {
+        return settle(event, {
+          status: "dispatched",
+          reply: `有 ${candidates.length} 个公众号草稿任务等待核对。请先回复“我的任务”选择对应任务，再发送核对结果。`,
+          data: { reason: "multiple_wechat_draft_reconciliations", count: candidates.length },
+        });
+      }
+    }
     const notificationRequest = parseChannelNotificationPolicyRequest(text);
     if (notificationRequest && typeof setNotificationPolicy === "function") {
       const notificationThread = thread
@@ -3028,6 +5440,26 @@ export function createChannelConversationService({
       ["succeeded", "failed", "cancelled"].includes(candidate.status)
       && (candidate.resultSummary || candidate.summary),
     );
+    const resultRepairRequested = /^(?:按|根据)(?:刚才的)?(?:检查|验收)(?:结果|问题)(?:进行)?(?:修改|修复|返工|重做)|^(?:修复|处理)(?:这些|刚才的)?(?:检查|验收)(?:问题|未通过项)$/i.test(text);
+    if (!thread && resultRepairRequested) {
+      const repairCandidates = terminalRevisionCandidates.filter((candidate) => {
+        const item = (state.workItems ?? []).find((workItem) => workItem.id === candidate.workItemId) ?? null;
+        return item && (item.resultVerification ?? verifyWorkItemResult(item)).status === "failed";
+      });
+      if (repairCandidates.length === 1) return createResultRepairTask(event, channel, conversation, repairCandidates[0]);
+      if (repairCandidates.length > 1) {
+        return settle(event, {
+          status: "dispatched",
+          reply: `有 ${repairCandidates.length} 项结果检查未通过。请先回复“我的任务”选择要返工的结果，再说“按检查结果修改”。`,
+          data: { resultRepair: true, needsClarification: true, clarificationKind: "result_repair_target" },
+        });
+      }
+      return settle(event, {
+        status: "dispatched",
+        reply: "目前没有找到检查未通过的结果。请直接告诉我哪项结果需要修改。",
+        data: { resultRepair: true, reason: "no_failed_result" },
+      });
+    }
     const hasNaturalTaskReference = /\bT-[a-z0-9_-]+\b/i.test(text)
       || /第\s*[一二三四五六七八九十0-9]+\s*(?:个|项|条)?任务/.test(text);
     if (!thread && isTaskRevisionFeedback(text) && terminalRevisionCandidates.length > 1 && !hasNaturalTaskReference) {
@@ -3035,6 +5467,14 @@ export function createChannelConversationService({
         status: "dispatched",
         reply: revisionCandidateSelectionReply(terminalRevisionCandidates),
         data: { intent: intent.intent, confidence: intent.confidence, reason: "multiple_revision_candidates" },
+      });
+    }
+    if (!thread && isVagueTaskRevisionFeedback(text) && terminalRevisionCandidates.length === 1 && !hasNaturalTaskReference) {
+      const candidate = terminalRevisionCandidates[0];
+      return settle(event, {
+        status: "dispatched",
+        reply: "我可以修改刚才的结果。请告诉我是资料/数据不对、理解目标不对，还是格式/样式不对？",
+        data: { intent: intent.intent, confidence: intent.confidence, reason: "revision_needs_clarification", taskThreadId: candidate.id },
       });
     }
     if (!thread && intent.intent === "revision" && intent.ref) {
@@ -3068,7 +5508,7 @@ export function createChannelConversationService({
         || (thread.status === "awaiting_confirmation" && thread.waitingFor === "draft_input")
         || (thread.status === "waiting_approval"
           && !newTaskIntent
-          && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input"].includes(thread.waitingFor)));
+          && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input", "publication_review", "artifact_review"].includes(thread.waitingFor)));
     const explicitlySelectedThread = thread
       && conversation.activeTaskThreadId === thread.id;
     const activeExecutionThreads = activeTaskThreads(conversation)
@@ -3111,6 +5551,30 @@ export function createChannelConversationService({
         status: "dispatched",
         reply: USAGE_REPLY,
         data: { help: true },
+      });
+    }
+    if (control?.kind === "explain") {
+      const explainCandidates = recentTaskThreads(conversation).filter((candidate) =>
+        candidate.status !== "cancelled" && (candidate.summary || candidate.resultSummary));
+      const referenced = control.ref
+        ? explainCandidates.find((candidate) => threadRef(candidate).toUpperCase() === String(control.ref).toUpperCase())
+        : conversation.activeTaskThreadId
+          ? explainCandidates.find((candidate) => candidate.id === conversation.activeTaskThreadId)
+          : explainCandidates.length === 1 ? explainCandidates[0] : explainCandidates[0] ?? null;
+      if (!referenced && explainCandidates.length === 0) {
+        return settle(event, { status: "dispatched", reply: taskExplanationReply(null), data: { taskExplanation: true, reason: "no_task" } });
+      }
+      if (!control.ref && !conversation.activeTaskThreadId && explainCandidates.length > 1) {
+        return settle(event, {
+          status: "dispatched",
+          reply: "你想查看哪件事的依据？请先回复“我的任务”选择对应任务，再回复“查看依据”。",
+          data: { taskExplanation: true, reason: "multiple_tasks" },
+        });
+      }
+      return settle(event, {
+        status: "dispatched",
+        reply: taskExplanationReply(referenced),
+        data: { taskExplanation: true, taskThreadId: referenced?.id ?? null },
       });
     }
     if (!control && intent.intent === "greeting") {
@@ -3166,8 +5630,57 @@ export function createChannelConversationService({
     if (collectingGroup && !control && !isNewTask(text) && !["greeting", "consultation", "confirm", "cancel"].includes(intent.intent)) {
       return queueNaturalEvent(event, conversation);
     }
+    if (control?.kind === "goal_status") {
+      const goal = activeWorkGoal(conversation);
+      if (goal) runTx(() => rememberFocus(conversation, { goalId: goal.id, reason: "goal_status_viewed" }));
+      return settle(event, {
+        status: "dispatched",
+        reply: goal ? workGoalStatusReply(conversation, goal) : "你还没有正在处理的事情。直接描述要做的事情，我会先帮你整理。",
+        data: { workGoalStatus: Boolean(goal), workGoalId: goal?.id ?? null },
+      });
+    }
+    if (control?.kind === "goal_cancel_clarify") {
+      return settle(event, {
+        status: "dispatched",
+        reply: "你当前处理的是一件包含多个步骤的事情。要停止全部步骤，请回复“取消这件事”；只取消某一步，请先回复“我的任务”再选择。",
+        data: { needsClarification: true, clarificationKind: "goal_cancel_scope" },
+      });
+    }
+    if (control?.kind === "goal_cancel") return cancelWorkGoal(event, conversation, actor);
+    if (control?.kind === "goal_pause" || control?.kind === "goal_resume") {
+      return pauseOrResumeWorkGoal(event, conversation, control.kind === "goal_resume", actor);
+    }
+    if (control?.kind === "named_task_not_found") {
+      return settle(event, {
+        status: "dispatched",
+        reply: `没有找到“${control.query}”对应的任务。回复“我的任务”可以查看当前任务名称。`,
+        data: { taskControl: control.action, reason: "named_task_not_found", query: control.query },
+      });
+    }
+    if (control?.kind === "focus_missing") {
+      recordIntentLearningSample(event, "focus_missing", intent);
+      return settle(event, {
+        status: "dispatched",
+        reply: "我还不能确定你说的“这个”是哪项任务。请先回复“我的任务”选择一次，之后就可以直接说“这个暂停”或“这个怎么样”。",
+        data: { needsClarification: true, clarificationKind: "conversation_focus" },
+      });
+    }
+    if (control?.kind === "named_task_clarify") {
+      recordIntentLearningSample(event, "focus_ambiguous", intent);
+      const actionLabels = { cancel: "取消", pause: "暂停", resume: "恢复", prioritize: "优先处理" };
+      return settle(event, {
+        status: "dispatched",
+        reply: [
+          `“${control.query}”对应多个任务，请告诉我具体要${actionLabels[control.action] ?? "处理"}哪一个：`,
+          ...control.candidates.map((candidate, index) => `${index + 1}. ${candidate.title}`),
+          `例如回复“${actionLabels[control.action] ?? "处理"}${control.candidates[0]?.title ?? control.query}”。`,
+        ].join("\n"),
+        data: { needsClarification: true, clarificationKind: "named_task_control", action: control.action, candidates: control.candidates },
+      });
+    }
     if (control?.kind === "status" && !control.ref) {
       const latest = recentTaskThreads(conversation)[0] ?? null;
+      if (latest) runTx(() => rememberFocus(conversation, { goalId: latest.workGoalId ?? null, taskThreadId: latest.id, reason: "task_status_viewed" }));
       return settle(event, {
         status: "dispatched",
         reply: latest ? taskStatusReply(latest, { label: "当前任务" }) : "你还没有正在处理的事情。直接描述要做的事情，我会先帮你整理。",
@@ -3181,6 +5694,14 @@ export function createChannelConversationService({
       return settle(event, { status: "dispatched", reply: "当前还没有可重发的任务结果。完成任务后可以回复“重发结果”。", data: { taskControl: control.kind, reason: "no_task" } });
     }
     if (control?.kind === "list") {
+      const goal = activeWorkGoal(conversation);
+      if (goal && workGoalThreads(conversation, goal).length > 1) {
+        return settle(event, {
+          status: "dispatched",
+          reply: workGoalStatusReply(conversation, goal),
+          data: { taskThreadList: true, groupedByGoal: true, workGoalId: goal.id, count: workGoalThreads(conversation, goal).length },
+        });
+      }
       const rows = control.activeOnly
         ? activeTaskThreads(conversation).filter((candidate) => ["queued", "running"].includes(candidate.status))
         : listTaskThreads(conversation);
@@ -3220,6 +5741,7 @@ export function createChannelConversationService({
     // that are simultaneously waiting for a decision.
     if (!control && pendingDrafts.length > 1
       && ["confirm", "cancel", "supplement"].includes(intent.intent)) {
+      recordIntentLearningSample(event, "multiple_pending_tasks", intent);
       return settle(event, {
         status: "dispatched",
         reply: candidateSelectionReply(pendingDrafts),
@@ -3231,6 +5753,7 @@ export function createChannelConversationService({
     if (!control && !explicitlySelectedThread && !hasPendingDraft
       && activeTaskThreads(conversation).length > 1
       && (intent.intent === "ambiguous" || ["confirm", "cancel", "supplement"].includes(intent.intent))) {
+      recordIntentLearningSample(event, "multiple_active_tasks", intent);
       return settle(event, { status: "dispatched", reply: candidateSelectionReply(activeTaskThreads(conversation)), data: { intent: intent.intent, confidence: intent.confidence, reason: "multiple_task_candidates" } });
     }
     // A file/image/voice message is concrete task material even when its text is
@@ -3241,51 +5764,124 @@ export function createChannelConversationService({
     }
     if (!control && !threadContinuation && channelIntentRequiresClarification(intent, CHANNEL_INTENT_CONFIDENCE_THRESHOLD)) {
       recordExperienceMetric("targetedClarifications");
+      recordIntentLearningSample(event, "low_confidence", intent);
       return settle(event, { status: "dispatched", reply: targetedClarificationReply(text, conversation), data: { intent: intent.intent, confidence: intent.confidence, reason: "low_confidence" } });
     }
     if (control?.ref) {
       const referenced = (state.channelTaskThreads ?? []).find((row) => row.conversationId === conversation.id && threadRef(row).toUpperCase() === control.ref);
       if (!referenced) return settle(event, { status: "dispatched", reply: `${control.ref} 不在当前会话的任务中。`, data: { taskThreadRef: control.ref, reason: "not_found" } });
+      resolveIntentLearningSample(event, referenced, control.kind);
+      if (control.contextual && /^(?:不是|是|我说的是|指的是)/.test(text)) {
+        recordIntentLearningSample(event, "user_correction", intent, {
+          intent: "task_control",
+          controlKind: control.kind,
+          taskKind: referenced.taskKind ?? null,
+        });
+      }
+      runTx(() => {
+        rememberFocus(conversation, { goalId: referenced.workGoalId ?? null, taskThreadId: referenced.id, reason: `task_${control.kind}` });
+        conversation.updatedAt = now();
+      });
       if (control.kind === "select") {
         runTx(() => {
-          conversation.activeTaskThreadId = referenced.id;
+          rememberFocus(conversation, { goalId: referenced.workGoalId ?? null, taskThreadId: referenced.id, reason: "task_selected" });
           conversation.updatedAt = now();
         });
         const selectionLabel = control.friendly ? "这个任务" : threadRef(referenced);
+        const selectionLead = control.friendly ? "已切换到这个任务" : `已切换到 ${selectionLabel}`;
         const selectionReply = referenced.status === "waiting_user"
-          ? `已切换到 ${selectionLabel}（${taskThreadStatus(referenced)}）。请直接回复需要补充的信息。`
+          ? `${selectionLead}（${taskThreadStatus(referenced)}）。请直接回复需要补充的信息。`
           : referenced.status === "running" || referenced.status === "queued"
-            ? `已切换到 ${selectionLabel}（${taskThreadStatus(referenced)}）。任务正在执行中，如需新任务请直接描述新的需求。`
+            ? `${selectionLead}（${taskThreadStatus(referenced)}）。任务正在执行中，如需新任务请直接描述新的需求。`
             : referenced.status === "human_takeover"
-              ? `已切换到 ${selectionLabel}（人工处理中）。请等待人工回复。`
-              : `已切换到 ${selectionLabel}（${taskThreadStatus(referenced)}）。如需继续，请直接描述下一步需求。`;
+              ? `${selectionLead}（人工处理中）。请等待人工回复。`
+              : `${selectionLead}（${taskThreadStatus(referenced)}）。如需继续，请直接描述下一步需求。`;
         return settle(event, { status: "dispatched", reply: selectionReply, data: { taskThreadId: referenced.id, selected: true } });
       }
       if (control.kind === "status") {
         const statusLabel = control.friendly ? "当前任务" : threadRef(referenced);
         return settle(event, { status: "dispatched", reply: taskStatusReply(referenced, { label: statusLabel }), data: { taskThreadId: referenced.id, status: referenced.status } });
       }
+      if (control.kind === "prioritize") {
+        if (!["queued", "waiting_upstream"].includes(referenced.status)) {
+          return settle(event, {
+            status: "dispatched",
+            reply: `“${taskDisplayTitle(referenced)}”当前${taskThreadStatus(referenced)}，现在不需要调整优先级。`,
+            data: { taskThreadId: referenced.id, status: referenced.status, reason: "priority_unavailable" },
+          });
+        }
+        const updated = updateBoundWorkItem(referenced, { priority: "p0" }, actor);
+        if (updated?.ok === false) {
+          return settle(event, {
+            status: "refused",
+            reply: "暂时无法调整这个任务的优先级，原执行顺序没有变化。",
+            data: { taskThreadId: referenced.id, reason: updated.body?.error ?? "priority_update_failed" },
+          });
+        }
+        runTx(() => {
+          referenced.queuePriority = "p0";
+          referenced.priorityRequestedAt = now();
+          referenced.priorityRequestedByEventId = event.id;
+          referenced.updatedAt = now();
+          event.taskThreadId = referenced.id;
+        });
+        refreshQueuePositions(referenced.channelId, { notify: true });
+        const dependencyHint = referenced.status === "waiting_upstream"
+          ? `已设为优先，但仍需先等“${(referenced.dependencyTaskTitles ?? []).join("、") || "上游任务"}”交付成品。`
+          : "已设为优先任务；不会中断正在执行的工作，排队中的任务会按新顺序处理。";
+        return settle(event, {
+          status: "dispatched",
+          reply: `已优先处理“${taskDisplayTitle(referenced)}”。${dependencyHint}`,
+          data: { taskThreadId: referenced.id, status: referenced.status, priority: "p0" },
+        });
+      }
       if (control.kind === "pause") {
         if (referenced.status === "paused") return settle(event, { status: "dispatched", reply: "这个任务已经暂停。回复“继续”恢复，或回复“取消”放弃。", data: { taskThreadId: referenced.id, status: referenced.status } });
-        if (referenced.status !== "queued") {
+        if (!["queued", "waiting_upstream", "waiting_approval", "awaiting_confirmation"].includes(referenced.status)) {
           const message = referenced.status === "running"
             ? "任务已经开始执行，当前不能安全暂停。回复“取消”可以停止它。"
             : `当前任务${taskThreadStatus(referenced)}，暂时不能暂停。`;
           return settle(event, { status: "dispatched", reply: message, data: { taskThreadId: referenced.id, status: referenced.status, reason: "pause_unavailable" } });
         }
+        const updated = updateBoundWorkItem(referenced, { executionPolicy: "paused" }, actor);
+        if (updated?.ok === false) return settle(event, {
+          status: "refused",
+          reply: "暂时无法安全暂停这个任务，当前执行状态没有改变。",
+          data: { taskThreadId: referenced.id, reason: updated.body?.error ?? "pause_update_failed" },
+        });
         runTx(() => {
+          referenced.pausedFromStatus = referenced.status;
+          referenced.pausedWaitingFor = referenced.waitingFor ?? null;
           setThreadStatus(referenced, "paused", "user_paused");
           referenced.waitingFor = "user";
           referenced.pausedAt = now();
           referenced.pausedByEventId = event.id;
           referenced.updatedAt = now();
           event.taskThreadId = referenced.id;
+          const request = (state.channelTaskRequests ?? []).find((candidate) =>
+            candidate.threadId === referenced.id && ["pending", "waiting_artifacts"].includes(candidate.status));
+          if (request) {
+            request.pausedFromStatus = request.status;
+            request.status = "paused";
+            request.pauseReason = "user_paused";
+            request.updatedAt = now();
+          }
         });
         refreshQueuePositions(referenced.channelId, { notify: true });
-        return settle(event, { status: "dispatched", reply: control.friendly ? "任务已暂停。回复“继续”恢复，或回复“取消”放弃。" : `${threadRef(referenced)} 已暂停。回复“继续”恢复。`, data: { taskThreadId: referenced.id, status: "paused" } });
+        return settle(event, { status: "dispatched", reply: control.friendly ? `“${taskDisplayTitle(referenced)}”已暂停；其他独立任务会继续。回复“继续做${taskDisplayTitle(referenced)}”可以恢复。` : `${threadRef(referenced)} 已暂停。回复“继续”恢复。`, data: { taskThreadId: referenced.id, status: "paused" } });
       }
       if (control.kind === "resume") {
         if (!["paused", "needs_attention"].includes(referenced.status)) return settle(event, { status: "dispatched", reply: `当前任务${taskThreadStatus(referenced)}，不需要恢复。`, data: { taskThreadId: referenced.id, status: referenced.status, reason: "resume_unavailable" } });
+        if (referenced.status === "needs_attention" && referenced.waitingFor === "wechat_login") {
+          return retryTaskThread(event, referenced, actor, { friendly: control.friendly });
+        }
+        if (referenced.status === "needs_attention" && ["wechat_draft_reconcile", "wechat_plugin_update"].includes(referenced.waitingFor)) {
+          return settle(event, {
+            status: "dispatched",
+            reply: taskStatusReply(referenced, { label: control.friendly ? "当前任务" : threadRef(referenced) }),
+            data: { taskThreadId: referenced.id, status: referenced.status, reason: referenced.attentionReason },
+          });
+        }
         const resumeInvocation = referenced.invocationId ? findInvocation(referenced.invocationId) : null;
         const resumeAutoRun = referenced.autoRunId
           ? (state.autoRuns ?? []).find((run) => run.id === referenced.autoRunId)
@@ -3297,25 +5893,44 @@ export function createChannelConversationService({
         }
         const resumedStatus = referenced.status === "needs_attention"
           ? recoveredThreadStatus({ autoRunStatus: resumeAutoRun?.status, invocationStatus: resumeInvocation?.status, fallback: "queued" })
-          : "queued";
+          : referenced.pausedFromStatus ?? "queued";
         if (["succeeded", "failed", "cancelled"].includes(resumedStatus)) {
           return settle(event, { status: "dispatched", reply: "这个任务已经没有可恢复的自动执行。回复“重试”再次执行，或回复“转人工”继续处理。", data: { taskThreadId: referenced.id, status: referenced.status, reason: "execution_finished" } });
         }
+        const updated = updateBoundWorkItem(referenced, { executionPolicy: "inherit" }, actor);
+        if (updated?.ok === false) return settle(event, {
+          status: "refused",
+          reply: "暂时无法恢复这个任务，当前暂停状态没有改变。",
+          data: { taskThreadId: referenced.id, reason: updated.body?.error ?? "resume_update_failed" },
+        });
         runTx(() => {
           setThreadStatus(referenced, resumedStatus, "user_resumed");
-          referenced.waitingFor = resumedStatus === "waiting_user" ? "user_input" : resumedStatus === "waiting_approval" ? "approval" : null;
+          referenced.waitingFor = referenced.pausedWaitingFor
+            ?? (resumedStatus === "waiting_user" ? "user_input" : resumedStatus === "waiting_approval" ? "approval" : null);
+          referenced.pausedFromStatus = null;
+          referenced.pausedWaitingFor = null;
           referenced.attentionReason = null;
           referenced.attentionAt = null;
           referenced.resumedAt = now();
           referenced.updatedAt = now();
           event.taskThreadId = referenced.id;
+          const request = (state.channelTaskRequests ?? []).find((candidate) =>
+            candidate.threadId === referenced.id && candidate.status === "paused" && candidate.pauseReason === "user_paused");
+          if (request) {
+            request.status = request.pausedFromStatus ?? "pending";
+            request.pausedFromStatus = null;
+            request.pauseReason = null;
+            request.updatedAt = now();
+          }
         });
         refreshQueuePositions(referenced.channelId);
         const resumedReply = resumedStatus === "waiting_user"
           ? "任务已恢复，请补充需要的信息。"
           : resumedStatus === "waiting_approval"
             ? "任务已恢复，等待桌面端审批后继续。"
-            : "任务已恢复，继续执行中；完成后我会通知你。";
+            : resumedStatus === "waiting_upstream"
+              ? `“${taskDisplayTitle(referenced)}”已恢复，正在等待所需成品；其他任务不受影响。`
+              : "任务已恢复，继续执行中；完成后我会通知你。";
         return settle(event, { status: "dispatched", reply: control.friendly ? resumedReply : `${threadRef(referenced)} ${resumedReply}`, data: { taskThreadId: referenced.id, status: resumedStatus } });
       }
       if (control.kind === "resend") {
@@ -3338,7 +5953,7 @@ export function createChannelConversationService({
         const restoredRevision = cancelTaskRevision(event, referenced);
         if (restoredRevision) return restoredRevision;
       }
-      if (control.kind === "cancel" && TASK_THREAD_ACTIVE_STATUSES.has(referenced.status)) {
+      if (control.kind === "cancel" && (TASK_THREAD_ACTIVE_STATUSES.has(referenced.status) || referenced.status === "paused")) {
         if (referenced.waitingFor === "channel_confirmation") {
           return cancelChannelRiskTask(event, referenced, actor);
         }
@@ -3351,6 +5966,7 @@ export function createChannelConversationService({
             try { cancelInvocation(invocation, actor); } catch { /* best effort */ }
           }
         }
+        updateBoundWorkItem(referenced, { status: "blocked", executionPolicy: "paused" }, actor);
         runTx(() => {
           setThreadStatus(referenced, "cancelled", "user_cancelled");
           referenced.waitingFor = null;
@@ -3358,7 +5974,16 @@ export function createChannelConversationService({
           referenced.updatedAt = now();
           event.taskThreadId = referenced.id;
         });
-        return settle(event, { status: "dispatched", reply: control.friendly ? "这个任务已取消。" : `${threadRef(referenced)} 已取消。`, data: { taskThreadId: referenced.id, status: "cancelled" } });
+        const affected = blockDependentTaskThreads(referenced, "cancelled");
+        const impact = affected.length
+          ? `受影响的 ${affected.length} 个下游任务已标记为受阻：${affected.map(taskDisplayTitle).slice(0, 4).join("、")}；其他独立任务继续。`
+          : "其他独立任务不受影响。";
+        const reply = control.named
+          ? `“${taskDisplayTitle(referenced)}”任务已取消。${impact}`
+          : control.friendly
+            ? affected.length ? `这个任务已取消。${impact}` : "这个任务已取消。"
+            : `${threadRef(referenced)} 已取消。${impact}`;
+        return settle(event, { status: "dispatched", reply, data: { taskThreadId: referenced.id, status: "cancelled", affectedTaskIds: affected.map((thread) => thread.id) } });
       }
       if (control.kind === "retry") return retryTaskThread(event, referenced, actor, { friendly: control.friendly });
       if (control.kind === "handoff") return handoffTaskThread(event, referenced, actor, { friendly: control.friendly });
@@ -3440,7 +6065,7 @@ export function createChannelConversationService({
       });
     }
     if (thread?.status === "waiting_approval"
-      && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input"].includes(thread.waitingFor)
+      && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input", "publication_review", "artifact_review"].includes(thread.waitingFor)
       && (isConfirmation(text) || intent.intent === "confirm")) {
       return confirmChannelRiskTask(event, conversation, thread, actor);
     }
@@ -3448,7 +6073,7 @@ export function createChannelConversationService({
     if (thread && (isCancellation(text) || intent.intent === "cancel")) {
       const restoredRevision = cancelTaskRevision(event, thread);
       if (restoredRevision) return restoredRevision;
-      if (["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input"].includes(thread.waitingFor)) {
+      if (["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input", "publication_review", "artifact_review"].includes(thread.waitingFor)) {
         return cancelChannelRiskTask(event, thread, actor);
       }
       if (thread.autoRunId && typeof cancelAutoRun === "function") {
@@ -3464,7 +6089,7 @@ export function createChannelConversationService({
       return settle(event, { status: "dispatched", reply: "这个任务已取消。", data: { taskThreadId: thread.id, status: "cancelled" } });
     }
     if (thread?.status === "waiting_approval"
-      && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input"].includes(thread.waitingFor)
+      && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input", "publication_review", "artifact_review"].includes(thread.waitingFor)
       && (!newTaskIntent || threadContinuation)) {
       return reviseChannelRiskThread(event, thread, actor);
     }
@@ -3512,6 +6137,19 @@ export function createChannelConversationService({
     attachmentAssets = event.attachmentAssets,
     fileDiscoveries = event.attachmentDiscoveries,
     dataMutationScope = null,
+    taskTitle = null,
+    taskKind = "general",
+    intentId = null,
+    intentStatement = "",
+    knowledgeItemIds = [],
+    workGoalId = null,
+    dependencyIds = [],
+    artifactContract = null,
+    platformTarget = null,
+    deferExecution = false,
+    deferUntilArtifacts = false,
+    batchRateReserved = false,
+    resultRepairSpec = null,
   } = {}) {
     const text = String(description ?? "").replace(/\s+/g, " ").trim();
     if (!text) {
@@ -3545,8 +6183,8 @@ export function createChannelConversationService({
         data: { reason: error?.code ?? "channel_task_context_invalid" },
       });
     }
-    const rate = runRateCheck(conversation);
-    if (rate.limited) {
+    const rate = batchRateReserved ? null : runRateCheck(conversation);
+    if (rate?.limited) {
       return settle(event, { status: "refused", reply: `操作太频繁了，每分钟最多处理 ${RUN_RATE_MAX} 个操作，请稍后再试。`, data: { reason: "rate_limited" } });
     }
     // Second limiter: a per-channel/day aggregate ceiling across ALL users (the
@@ -3554,29 +6192,44 @@ export function createChannelConversationService({
     const today = String(now()).slice(0, 10);
     const dayCount = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
     const dailyLimit = Number.isInteger(channel.taskDailyLimit) ? channel.taskDailyLimit : TASK_DAILY_LIMIT_FALLBACK;
-    if (dayCount >= dailyLimit) {
+    if (!batchRateReserved && dayCount >= dailyLimit) {
       return settle(event, { status: "refused", reply: `今天的任务数量已达到上限（${dailyLimit} 个），请明天再试。`, data: { reason: "daily_limit_reached" } });
     }
     // Reserve BOTH slots SYNCHRONOUSLY, before the `await` below — otherwise two
     // concurrent /task both read the pre-write windows and both pass (TOCTOU),
     // and the stale-snapshot write would clobber a /run appended during the await.
-    runTx(() => {
-      conversation.recentRuns = [...rate.recentRuns, rate.nowMs];
-      channel.taskDayDate = today;
-      channel.taskDayCount = dayCount + 1;
-      conversation.updatedAt = now();
-    });
+    if (!batchRateReserved) {
+      runTx(() => {
+        conversation.recentRuns = [...rate.recentRuns, rate.nowMs];
+        channel.taskDayDate = today;
+        channel.taskDayCount = dayCount + 1;
+        conversation.updatedAt = now();
+      });
+    }
     // Personal channels route after the user's confirmation. Team channels may
     // opt back into capture/approval semantics explicitly. The task creator
     // can further downgrade a personal task when its risk contract requires a
     // second, in-channel confirmation.
-    const requestedAutoRoute = channel.operationMode !== "team" || Boolean(channel.taskAutoRoute);
-    const title = text.slice(0, 120);
+    const requestedAutoRoute = !deferExecution && (channel.operationMode !== "team" || Boolean(channel.taskAutoRoute));
+    const title = String(taskTitle ?? text).trim().slice(0, 120);
     const taskRevision = threadId
       ? Number.isInteger((state.channelTaskThreads ?? []).find((candidate) => candidate.id === threadId)?.taskRevision)
         ? (state.channelTaskThreads ?? []).find((candidate) => candidate.id === threadId).taskRevision
         : 0
       : 0;
+    const inferredAtomicPlan = taskKind === "general" ? planDiscreteTasks({ text }) : null;
+    const effectiveTaskKind = inferredAtomicPlan?.tasks.length === 1
+      ? inferredAtomicPlan.tasks[0].kind
+      : taskKind;
+    const effectiveIntentId = intentId ?? `channel-intent:${threadId ?? event.id}`.slice(0, 200);
+    const effectiveIntentStatement = intentStatement || normalizedText(event.content) || text;
+    const userPreferences = channelPreferenceRows(state, {
+      channelId: channel.id,
+      conversationId: conversation.id,
+    }).map((preference) => ({
+      key: preference.key,
+      value: String(preference.value ?? "").slice(0, 300),
+    }));
     let filed;
     try {
       filed = await createChannelTaskIssue({
@@ -3595,6 +6248,7 @@ export function createChannelConversationService({
         inputAssets: taskContext.attachmentAssets,
         terminalId: taskContext.terminalId,
         channelTaskContext: taskContext,
+        userPreferences,
         fileDiscoveries: taskContext.fileDiscoveries,
         threadId,
         idempotencyKey: threadId
@@ -3602,6 +6256,16 @@ export function createChannelConversationService({
           : `channel-event:${channel.id}:${event.id}`,
         autoRoute: requestedAutoRoute,
         dataMutationScope,
+        taskKind: effectiveTaskKind,
+        intentId: effectiveIntentId,
+        intentStatement: effectiveIntentStatement,
+        creationBasis: "explicit_user_intent",
+        knowledgeItemIds,
+        workGoalId,
+        dependencyIds,
+        artifactContract,
+        platformTarget,
+        resultRepairSpec,
       });
     } catch (error) {
       filed = { ok: false, error: String(error?.message ?? error) };
@@ -3634,7 +6298,7 @@ export function createChannelConversationService({
       // human routes (→ auto-run) or dismisses it. Bounded newest-keeps.
       if (!effectiveAutoRoute) {
         const existingRequest = (state.channelTaskRequests ?? []).find((request) =>
-          request.status === "pending"
+          ["pending", "waiting_artifacts"].includes(request.status)
           && (
           (filed.workItemId && request.workItemId === filed.workItemId)
           || (threadId && request.threadId === threadId)
@@ -3652,12 +6316,16 @@ export function createChannelConversationService({
             workItemId: filed.workItemId ?? null,
             issueUrl: filed.url ?? null,
             title,
+            taskKind: effectiveTaskKind,
+            workGoalId,
+            artifactContract,
+            platformTarget,
             externalUserId: event.externalUserId,
             terminalId: taskContext.terminalId,
             inputAssets: taskContext.attachmentAssets,
             channelTaskContext: boundTaskContext,
             threadId,
-            status: "pending",
+            status: deferUntilArtifacts ? "waiting_artifacts" : "pending",
             autoRunId: null,
             requiresChannelConfirmation,
             requiresDataPlan: filed.requiresDataPlan === true,
@@ -3742,11 +6410,16 @@ export function createChannelConversationService({
           previewDigest, previewReady: filed.previewReady !== false,
           requiredFields: filed.executionPreview?.requiredFields ?? [],
           channelTaskRequestId, threadId,
+          taskKind: effectiveTaskKind,
+          workGoalId,
+          artifactContract,
+          platformTarget,
+          deferUntilArtifacts,
       },
     });
   }
 
-  async function dispatchExplicitTask(event, channel, conversation, description) {
+  async function dispatchExplicitTask(event, channel, conversation, description, options = {}) {
     // Keep configuration errors as command refusals instead of leaving a failed
     // task thread behind when the channel was never bound to an execution project.
     if (!channel.taskProjectId || typeof createChannelTaskIssue !== "function") {
@@ -3767,8 +6440,15 @@ export function createChannelConversationService({
       summary: description,
       status: "queued",
       reason: "explicit_task",
+      taskTitle: options.taskTitle,
+      taskKind: options.taskKind,
+      workGoalId: options.workGoalId,
+      artifactContract: options.artifactContract,
+      platformTarget: options.platformTarget,
+      dependencyTaskTitles: options.dependencyTaskTitles,
+      requiredArtifactKinds: options.requiredArtifactKinds,
     });
-    const result = await dispatchTask(event, channel, conversation, description, { threadId: thread.id });
+    const result = await dispatchTask(event, channel, conversation, description, { ...options, threadId: thread.id });
     if (result.status !== "dispatched") {
       discardImmediateTaskThread(thread, event, conversation);
       return result;
@@ -3800,11 +6480,23 @@ export function createChannelConversationService({
       thread.riskPreviewDigest = result.data?.previewDigest ?? null;
       setThreadStatus(
         thread,
-        readOnlyPayment || directCompleted ? "succeeded" : autoRoute ? "queued" : "waiting_approval",
-        readOnlyPayment ? "payment_reconciliation_completed" : directCompleted ? "direct_readonly_completed" : autoRoute ? "task_created" : "awaiting_route",
+        readOnlyPayment || directCompleted
+          ? "succeeded"
+          : result.data?.deferUntilArtifacts
+            ? "waiting_upstream"
+            : autoRoute ? "queued" : "waiting_approval",
+        readOnlyPayment
+          ? "payment_reconciliation_completed"
+          : directCompleted
+            ? "direct_readonly_completed"
+            : result.data?.deferUntilArtifacts
+              ? "awaiting_upstream_artifacts"
+              : autoRoute ? "task_created" : "awaiting_route",
       );
       thread.waitingFor = directCompleted
         ? null
+        : result.data?.deferUntilArtifacts
+          ? "upstream_artifacts"
         : autoRoute
         ? null
         : result.data?.requiresDataPlan
@@ -3830,6 +6522,8 @@ export function createChannelConversationService({
         ? directReadOnlyResult.summary
         : readOnlyPayment
         ? paymentReconciliationReply(paymentPreview)
+        : result.data?.deferUntilArtifacts
+        ? "任务已创建，正在等待上游成品。产物符合要求后，我会把最终文件和目标平台列出来请你确认。"
         : autoRoute
         ? result.data?.dataOperationPreview?.status === "ready"
           ? `${channelDataOperationReply(result.data.dataOperationPreview)}\n${queueMessage(thread)}`
@@ -3927,7 +6621,7 @@ export function createChannelConversationService({
     runTx(() => {
       thread.invocationId = invocation.id;
       stampThreadInvocation(thread, invocation);
-      conversation.activeTaskThreadId = thread.id;
+      rememberFocus(conversation, { taskThreadId: thread.id, reason: "capability_task_created" });
       conversation.updatedAt = now();
     });
     return settle(event, {
@@ -4418,6 +7112,7 @@ export function createChannelConversationService({
   function taskThreadStatus(thread) {
     const labels = {
       awaiting_confirmation: "等待确认",
+      waiting_upstream: "等待上游成品",
       waiting_approval: "等待确认",
       queued: "排队中",
       running: "执行中",
@@ -4433,11 +7128,177 @@ export function createChannelConversationService({
   }
 
   function taskListLine(thread, index) {
-    const summary = String(thread?.summary ?? "").slice(0, 100);
+    const summary = String(thread?.taskTitle ?? thread?.summary ?? "").slice(0, 100);
     const queueHint = thread?.status === "queued"
       ? `（${queueProgressLine(thread).replace(/。$/, "")}）`
       : "";
     return `${index}. ${taskThreadStatus(thread)}：${summary}${queueHint}`;
+  }
+
+  function workGoalStatusReply(conversation, goal = activeWorkGoal(conversation)) {
+    const threads = workGoalThreads(conversation, goal);
+    const failedSteps = goal?.failedSteps ?? [];
+    if (!goal || (!threads.length && !failedSteps.length)) return "这件事还没有可执行任务。请补充你希望得到的结果。";
+    const completed = threads.filter((thread) => thread.status === "succeeded").length;
+    const total = threads.length + failedSteps.length;
+    const cancelled = threads.filter((thread) => thread.status === "cancelled").length;
+    const active = threads.filter((thread) => ["running", "queued"].includes(thread.status));
+    const waitingUpstream = threads.filter((thread) => thread.status === "waiting_upstream");
+    const upstreamBlocked = threads.filter((thread) =>
+      thread.status === "needs_attention" && thread.waitingFor === "upstream_unavailable");
+    const needsUser = threads.filter((thread) =>
+      ["waiting_user", "needs_attention", "failed", "human_takeover"].includes(thread.status)
+      && thread.waitingFor !== "upstream_unavailable"
+      || (thread.status === "waiting_approval" && thread.taskKind !== "content_publish"));
+    const userConfirmations = threads.filter((thread) =>
+      thread.status === "waiting_approval" || thread.status === "awaiting_confirmation");
+    const publishWaiting = threads.filter((thread) =>
+      thread.taskKind === "content_publish" && ["waiting_upstream", "waiting_approval"].includes(thread.status));
+    const unaffectedCount = threads.filter((thread) =>
+      !upstreamBlocked.includes(thread) && !["cancelled", "failed"].includes(thread.status)).length;
+    const titleFor = (thread) => taskDisplayTitle(thread).slice(0, 100);
+    const workItems = threads.map((thread) =>
+      (state.workItems ?? []).find((item) => item.id === thread.workItemId) ?? null)
+      .filter(Boolean)
+      .map((item) => item.resultVerificationContract && !item.resultVerification
+        ? { ...item, resultVerification: verifyWorkItemResult(item) }
+        : item);
+    const latestChange = (state.workGoalChanges ?? [])
+      .filter((change) => change.goalId === goal.id)
+      .sort((left, right) => String(right.appliedAt ?? right.updatedAt ?? right.createdAt ?? "")
+        .localeCompare(String(left.appliedAt ?? left.updatedAt ?? left.createdAt ?? "")))[0] ?? null;
+    const userSummary = buildWorkGoalUserSummary({ goal, tasks: threads, workItems, latestChange });
+    const lines = [
+      `这件事：${String(goal.title ?? goal.statement ?? "待完成的工作").slice(0, 160)}`,
+      `整体进度：已完成 ${completed}/${total} 个任务（${userSummary?.progress.percent ?? 0}%）${cancelled ? `，已取消 ${cancelled} 个` : ""}${failedSteps.length ? `，待修复 ${failedSteps.length} 个` : ""}。`,
+      userSummary?.latestChange?.summary ? `最近调整：${userSummary.latestChange.summary}。` : null,
+      completed === total
+        ? "当前：所有任务都已完成。"
+        : `当前：${active.length} 项进行中，${waitingUpstream.length} 项等待成品，${userConfirmations.length} 项等待确认${upstreamBlocked.length ? `，${upstreamBlocked.length} 项因上游异常受阻` : ""}。`,
+      needsUser.length ? `需要你处理：${needsUser.map(titleFor).slice(0, 3).join("、")}。` : "目前不需要你操作。",
+      userSummary?.quality.failed
+        ? `结果检查：${userSummary.quality.failed} 项未通过，不能当作合格交付。`
+        : userSummary?.quality.passed ? `结果检查：${userSummary.quality.passed} 项已通过。` : null,
+      upstreamBlocked.length
+        ? `局部受阻：${upstreamBlocked.map((thread) => `${titleFor(thread)}等待${(thread.upstreamBlockers ?? []).map((blocker) => blocker.title).filter(Boolean).join("、") || "上游任务"}`).slice(0, 4).join("；")}。其他 ${unaffectedCount} 项任务不受影响。`
+        : null,
+      publishWaiting.length ? `发布：${publishWaiting.map((thread) => thread.platformTarget?.label ?? "目标平台").join("、")}会在内容准备好后请你最终确认。` : null,
+      userSummary?.nextStep ? `下一步：${userSummary.nextStep}` : null,
+      "任务：",
+      ...threads.slice(0, 10).map((thread, index) => `${index + 1}. ${titleFor(thread)}：${taskThreadStatus(thread)}`),
+      ...failedSteps.slice(0, Math.max(0, 10 - threads.length)).map((step, index) => `${threads.length + index + 1}. ${String(step.title ?? step.kind ?? "未创建任务").slice(0, 100)}：待修复`),
+    ].filter(Boolean);
+    return lines.join("\n");
+  }
+
+  async function cancelWorkGoal(event, conversation, actor) {
+    const goal = activeWorkGoal(conversation);
+    const threads = workGoalThreads(conversation, goal).filter((thread) =>
+      TASK_THREAD_ACTIVE_STATUSES.has(thread.status) || thread.status === "paused");
+    if (!goal || !threads.length) {
+      return settle(event, { status: "dispatched", reply: "这件事当前没有可以取消的步骤。", data: { taskControl: "goal_cancel", reason: "no_active_steps" } });
+    }
+    for (const thread of threads) {
+      updateBoundWorkItem(thread, { status: "blocked", executionPolicy: "paused" }, actor);
+      const request = (state.channelTaskRequests ?? []).find((candidate) =>
+        ["pending", "waiting_artifacts", "paused"].includes(candidate.status)
+        && (candidate.id === thread.channelTaskRequestId || candidate.threadId === thread.id));
+      if (request?.status === "pending" && typeof dismissChannelTask === "function") {
+        try { await dismissChannelTask(request.id, actor, { notifyUser: false }); } catch { /* local cancellation below remains authoritative */ }
+      }
+      if (request && ["pending", "waiting_artifacts", "paused"].includes(request.status)) {
+        request.status = "dismissed";
+        request.decidedAt = now();
+        request.decidedBy = actor?.userId ?? null;
+      }
+      if (thread.autoRunId && typeof cancelAutoRun === "function") {
+        try { await cancelAutoRun(thread.autoRunId, { actor, reason: "channel_work_goal_cancelled" }); } catch { /* best effort */ }
+      }
+      if (thread.invocationId && typeof cancelInvocation === "function") {
+        const invocation = findInvocation(thread.invocationId);
+        if (invocation) {
+          try { await cancelInvocation(invocation, actor); } catch { /* best effort */ }
+        }
+      }
+    }
+    runTx(() => {
+      for (const thread of threads) {
+        setThreadStatus(thread, "cancelled", "user_cancelled_work_goal");
+        thread.waitingFor = null;
+        thread.cancelledByEventId = event.id;
+        thread.updatedAt = now();
+      }
+      goal.status = "cancelled";
+      goal.updatedAt = now();
+      event.workGoalId = goal.id;
+    });
+    refreshQueuePositions(event.channelId, { notify: true });
+    return settle(event, {
+      status: "dispatched",
+      reply: `已取消这件事尚未完成的 ${threads.length} 个任务；已经完成的结果仍然保留。`,
+      data: { taskControl: "goal_cancel", workGoalId: goal.id, cancelledCount: threads.length },
+    });
+  }
+
+  function pauseOrResumeWorkGoal(event, conversation, resume, actor) {
+    const goal = activeWorkGoal(conversation);
+    const eligible = workGoalThreads(conversation, goal).filter((thread) =>
+      resume ? thread.status === "paused" : ["queued", "waiting_upstream", "waiting_approval", "awaiting_confirmation"].includes(thread.status));
+    if (!goal || !eligible.length) {
+      return settle(event, {
+        status: "dispatched",
+        reply: resume ? "这件事当前没有已暂停的步骤。" : "这件事当前没有可暂停的未开始步骤；已经执行的步骤不会被强行中断。",
+        data: { taskControl: resume ? "goal_resume" : "goal_pause", reason: "no_eligible_steps" },
+      });
+    }
+    const durable = eligible.filter((thread) => updateBoundWorkItem(thread, { executionPolicy: resume ? "inherit" : "paused" }, actor)?.ok !== false);
+    if (!durable.length) {
+      return settle(event, {
+        status: "refused",
+        reply: resume ? "暂时无法恢复这些任务，暂停状态没有改变。" : "暂时无法安全暂停这些任务，执行状态没有改变。",
+        data: { taskControl: resume ? "goal_resume" : "goal_pause", reason: "work_item_update_failed" },
+      });
+    }
+    runTx(() => {
+      for (const thread of durable) {
+        const request = (state.channelTaskRequests ?? []).find((candidate) =>
+          candidate.threadId === thread.id && (resume ? candidate.status === "paused" : ["pending", "waiting_artifacts"].includes(candidate.status)));
+        if (resume) {
+          const restoredStatus = thread.pausedFromStatus ?? "queued";
+          setThreadStatus(thread, restoredStatus, "user_resumed_work_goal");
+          thread.waitingFor = thread.pausedWaitingFor ?? null;
+          thread.pausedFromStatus = null;
+          thread.pausedWaitingFor = null;
+          if (request) {
+            request.status = request.pausedFromStatus ?? "pending";
+            request.pausedFromStatus = null;
+            request.resumedAt = now();
+          }
+        } else {
+          thread.pausedFromStatus = thread.status;
+          thread.pausedWaitingFor = thread.waitingFor ?? null;
+          setThreadStatus(thread, "paused", "user_paused_work_goal");
+          thread.waitingFor = "user";
+          if (request) {
+            request.pausedFromStatus = request.status;
+            request.status = "paused";
+            request.pausedAt = now();
+          }
+        }
+        thread.updatedAt = now();
+      }
+      goal.status = resume ? "active" : "paused";
+      goal.updatedAt = now();
+      event.workGoalId = goal.id;
+    });
+    refreshQueuePositions(event.channelId, { notify: true });
+    return settle(event, {
+      status: "dispatched",
+      reply: resume
+        ? `已恢复这件事的 ${durable.length} 个任务。`
+        : `已暂停这件事中尚未开始的 ${durable.length} 个任务；正在执行的任务没有被强行中断。`,
+      data: { taskControl: resume ? "goal_resume" : "goal_pause", workGoalId: goal.id, changedCount: durable.length },
+    });
   }
 
   function resultDeliveryLine(thread) {
@@ -4454,12 +7315,26 @@ export function createChannelConversationService({
     return "结果已经生成；如果暂时没有收到，回复“重发结果”即可。";
   }
 
+  function resultVerificationLine(thread) {
+    if (!thread?.workItemId) return null;
+    const item = (state.workItems ?? []).find((candidate) => candidate.id === thread.workItemId) ?? null;
+    if (!item?.resultVerificationContract && !item?.artifactContract?.requirements?.length) return null;
+    const verification = item.resultVerification ?? verifyWorkItemResult(item);
+    if (!verification || verification.status === "not_required") return null;
+    return verification.status === "passed"
+      ? `结果检查：${String(verification.summary ?? "数量、格式和内容属性已通过检查").slice(0, 500)}`
+      : `结果检查：${String(verification.summary ?? "还有结果检查未通过").slice(0, 500)}；可以打开任务详情查看具体项目，或直接告诉我需要怎么调整。`;
+  }
+
   function taskStatusReply(thread, { label = threadRef(thread) } = {}) {
     const summary = String(thread?.summary ?? "").slice(0, 800);
     const status = taskThreadStatus(thread);
     const detail = thread?.resultSummary ? `\n${String(thread.resultSummary).slice(0, 800)}` : "";
     if (thread?.status === "queued") {
       return `${label} ${status}：${summary}\n${queueProgressLine(thread)}你不需要重复发送。${detail}`;
+    }
+    if (thread?.status === "waiting_upstream") {
+      return `${label} ${status}：${summary}\n${upstreamDependencyCopy(thread)}你不需要重复发送；需要确认最终文件时我会通知你。${detail}`;
     }
     if (thread?.status === "running") {
       const progress = String(thread?.lastProgressSummary ?? "")
@@ -4475,6 +7350,19 @@ export function createChannelConversationService({
       return `${label} ${status}：${summary}\n回复“确认”开始，或继续补充、回复“取消”。${detail}`;
     }
     if (thread?.status === "waiting_approval") {
+      if (thread.waitingFor === "publication_review") {
+        const preview = thread.publicationPreview;
+        const files = (preview?.artifacts ?? []).slice(0, 8).map((asset) => asset.path).filter(Boolean).join("、");
+        const versionNotice = thread.artifactVersionChangedAt
+          ? "上游内容已有新版本，之前的确认版本已失效；"
+          : "";
+        return `${label} ${status}：${summary}\n${versionNotice}即将发布到${preview?.platform?.label ?? "目标平台"}；最终版本包含 ${preview?.artifacts?.length ?? 0} 个文件${files ? `：${files}` : ""}。回复“确认发布”继续，内容变化后会要求重新确认。${detail}`;
+      }
+      if (thread.waitingFor === "artifact_review") {
+        const preview = thread.artifactReviewPreview;
+        const files = (preview?.artifacts ?? []).slice(0, 8).map((asset) => asset.path).filter(Boolean).join("、");
+        return `${label} ${status}：${summary}\n上游成品已准备好${files ? `：${files}` : ""}。回复“确认”继续。${detail}`;
+      }
       if (thread.waitingFor === "delivery") {
         return `${label} ${status}：${summary}\n结果已经生成并完成复核，但尚未应用到原项目；请在桌面端查看变更并确认应用。${detail}`;
       }
@@ -4502,6 +7390,19 @@ export function createChannelConversationService({
     }
     if (thread?.status === "waiting_user") return `${label} ${status}：${summary}\n请直接回复需要补充的信息。${detail}`;
     if (thread?.status === "needs_attention") {
+      if (thread.waitingFor === "upstream_unavailable") {
+        const blockers = (thread.upstreamBlockers ?? []).map((blocker) => blocker.title).filter(Boolean).join("、") || "上游任务";
+        return `${label} 受阻：${summary}\n正在等待“${blockers}”恢复并重新交付成品；其他不依赖它的任务会继续。你不需要重复发送这个任务。${detail}`;
+      }
+      if (thread.attentionReason === "wechat_login_required") {
+        return `${label} ${status}：${summary}\n公众号登录已失效，但草稿保存尚未开始。请打开 myagenttool://open?section=sessions&desktopAction=open-desktop-page&site=wechat_official 前往“网站登录”扫码登录，完成后回复“继续”，系统会恢复原任务。${detail}`;
+      }
+      if (thread.attentionReason === "wechat_draft_outcome_unknown") {
+        return `${label} ${status}：${summary}\n上次保存可能已经生效。为避免重复草稿，系统不会自动重试；请先到公众号草稿箱核对。找到后回复“已找到草稿”；确认没有后回复“确认未保存”，系统才会重新执行。${detail}`;
+      }
+      if (thread.attentionReason === "wechat_plugin_update_required") {
+        return `${label} ${status}：${summary}\n公众号页面结构已变化，需要更新站点插件后再继续；任务和文章版本都已保留。${detail}`;
+      }
       if (thread.attentionReason === "delivery_review_unavailable") {
         return `${label} ${status}：${summary}\n结果已经生成，但自动复核暂未完成。请保持执行设备在线；系统会自动重试，也可以在桌面端查看。${detail}`;
       }
@@ -4509,10 +7410,43 @@ export function createChannelConversationService({
     }
     if (thread?.status === "human_takeover") return `${label} ${status}：${summary}\n自动执行已暂停，请等待人工回复。${detail}`;
     if (thread?.status === "paused") return `${label} ${status}：${summary}\n回复“继续”恢复任务，或回复“取消”放弃。${detail}`;
-    if (thread?.status === "succeeded") return `${label} ${status}：${summary}\n${resultDeliveryLine(thread)}${detail}`;
+    if (thread?.status === "succeeded") {
+      const verification = resultVerificationLine(thread);
+      return `${label} ${status}：${summary}\n${resultDeliveryLine(thread)}${verification ? `\n${verification}` : ""}${detail}`;
+    }
     if (thread?.status === "failed") return `${label} ${status}：${summary}\n任务没有完成。回复“重试”再次执行，或回复“转人工”继续处理。${detail}`;
     if (thread?.status === "cancelled") return `${label} ${status}：${summary}\n任务已停止；如需继续，请重新描述需求。${detail}`;
     return `${label} ${status}：${summary}${detail}`;
+  }
+
+  function taskExplanationReply(thread, { label = "当前任务" } = {}) {
+    if (!thread) return "目前没有可以说明依据的任务。直接描述要做的事情，我会先帮你整理。";
+    const item = thread.workItemId
+      ? (state.workItems ?? []).find((candidate) => candidate.id === thread.workItemId) ?? null
+      : null;
+    const sources = (item?.dataContextSnapshot?.sources ?? [])
+      .map((source) => source.displayName ?? source.name ?? source.originalName ?? source.kind)
+      .filter(Boolean)
+      .map((value) => String(value).slice(0, 120));
+    const uniqueSources = [...new Set(sources)].slice(0, 8);
+    const workMode = thread.workMode?.name ?? thread.workMode?.expectedOutput ?? null;
+    const criteria = (item?.acceptanceCriteria ?? []).filter(Boolean).slice(0, 4);
+    const lines = [`${label}的处理依据：`];
+    lines.push(`我理解的目标：${String(thread.summary ?? "按你的描述完成这件事").slice(0, 240)}`);
+    if (workMode) lines.push(`处理方式：${String(workMode).slice(0, 240)}`);
+    if (uniqueSources.length) {
+      lines.push(`使用的资料：${uniqueSources.join("、")}`);
+    } else if (thread.sourceEventIds?.length || thread.messages?.length) {
+      lines.push("使用的资料：来自你在当前 Channel 会话中发送的内容和附件。");
+    } else {
+      lines.push("使用的资料：目前没有记录到可列出的资料来源。");
+    }
+    if (criteria.length) lines.push(`完成标准：${criteria.join("；")}`);
+    if (thread.status === "failed" || thread.status === "needs_attention") {
+      lines.push(`当前问题：${String(thread.resultSummary ?? thread.lastProgressSummary ?? "执行未完成").slice(0, 300)}`);
+    }
+    lines.push(`下一步：${taskThreadStatus(thread)}。`);
+    return lines.join("\n");
   }
 
   function localDeliveryPending(autoRun) {
@@ -4677,25 +7611,60 @@ export function createChannelConversationService({
 
   function syncTaskThreadFromInvocation(invocation, { notify = true, reason = "invocation_update" } = {}) {
     const context = executionContext({ invocation });
-    const { channelContext, thread, autoRun } = context;
+    const { channelContext, thread, autoRun, workItem } = context;
     if (!channelContext?.conversationId || !thread) return null;
     // Human takeover is an explicit terminal ownership change. A late cancel or
     // completion callback from the old automation must not take the thread back.
     if (thread.status === "human_takeover") return { thread, status: thread.status, label: taskThreadStatus(thread) };
     const autoRunId = autoRun?.id ?? channelContext.autoRunId ?? invocation?.options?.metadata?.autoRunId ?? null;
     const status = autoRun?.status;
-    const nextStatus = recoveredThreadStatus({ autoRun, autoRunStatus: status, invocationStatus: invocation.status, fallback: "running" });
+    const wechatDraftResult = invocation?.options?.metadata?.wechatDraftTask
+      ? parseWechatDraftInvocationResult(invocation)
+      : null;
+    const wechatDraftBinding = invocation?.options?.metadata?.wechatDraftTask ?? null;
+    const wechatTerminalSuccess = invocation?.status === "succeeded";
+    const wechatReceiptValidation = wechatTerminalSuccess && wechatDraftResult?.status === "succeeded"
+      ? validateWechatDraftSuccessReceipt({
+        result: wechatDraftResult,
+        expectedPackageDigest: wechatDraftBinding?.articlePackageDigest ?? null,
+        expectedTitle: wechatDraftBinding?.articlePackageTitle ?? null,
+      })
+      : null;
+    const wechatAttention = !wechatDraftBinding
+      ? null
+      : wechatDraftResult?.status === "session_expired"
+      ? { reason: "wechat_login_required", waitingFor: "wechat_login", summary: "公众号登录已失效；草稿保存尚未开始。" }
+      : wechatDraftResult?.status === "unconfirmed" || wechatDraftResult?.sideEffectState === "unknown"
+        ? { reason: "wechat_draft_outcome_unknown", waitingFor: "wechat_draft_reconcile", summary: "公众号草稿保存结果不确定，可能已经保存。" }
+        : wechatDraftResult?.status === "site_layout_changed"
+          ? { reason: "wechat_plugin_update_required", waitingFor: "wechat_plugin_update", summary: "公众号页面结构已变化，当前插件无法安全保存草稿。" }
+          : wechatReceiptValidation && !wechatReceiptValidation.ok
+            ? { reason: "wechat_draft_receipt_invalid", waitingFor: "wechat_draft_verification", summary: "公众号返回了保存结果，但回执与本次文章包不一致；任务未标记完成，请检查草稿箱。" }
+            : wechatDraftResult?.status === "needs_user_action"
+              ? { reason: "wechat_draft_user_action_required", waitingFor: "wechat_user_action", summary: wechatDraftResult.summary || "公众号需要你完成一步操作后才能继续。" }
+              : wechatDraftResult?.status === "failed" && wechatTerminalSuccess
+                ? { reason: "wechat_draft_execution_failed", waitingFor: "wechat_draft_retry", summary: wechatDraftResult.summary || "公众号草稿任务未完成。" }
+                : !wechatDraftResult && wechatTerminalSuccess
+                  ? { reason: "wechat_draft_result_missing", waitingFor: "wechat_draft_verification", summary: "公众号任务已返回，但没有收到可验证的结果；任务未标记完成。" }
+          : null;
+    const nextStatus = wechatAttention
+      ? "needs_attention"
+      : recoveredThreadStatus({ autoRun, autoRunStatus: status, invocationStatus: invocation.status, fallback: "running" });
     const progressEvidence = invocationProgressEvidence(invocation);
     const rawSummary = autoRunUserSummary(autoRun)
       ?? autoRun?.report
       ?? autoRun?.error
       ?? (typeof invocation.result === "string" ? invocation.result : invocation.result?.summary ?? null)
       ?? progressEvidence.summary;
-    const summary = nextStatus === "failed"
+    const summary = wechatAttention?.summary ?? (nextStatus === "failed"
       ? channelFailureCopy({ invocation, autoRun, summary: rawSummary })
       : nextStatus === "succeeded"
         ? channelResultCopy(rawSummary, { readOnly: thread.operationIntent?.accessMode === "read_only" })
-        : rawSummary;
+        : rawSummary);
+    const resultCheckNote = nextStatus === "succeeded" && workItem?.resultVerification?.status === "passed"
+      ? "结果文件检查已通过。"
+      : null;
+    const userSummary = [summary, resultCheckNote].filter(Boolean).join("\n\n") || null;
     const observationKey = [invocation.id, invocation.status, autoRun?.status ?? "", autoRun?.phase ?? "", autoRun?.updatedAt ?? "", progressEvidence.key].join(":");
     let progressNotification = null;
     let authorizationNotification = null;
@@ -4707,20 +7676,20 @@ export function createChannelConversationService({
       thread.autoRunId = autoRun?.id ?? autoRunId ?? thread.autoRunId ?? null;
       thread.invocationId = autoRun?.invocationId ?? invocation.id;
       setThreadStatus(thread, nextStatus, reason);
-      thread.waitingFor = nextStatus === "waiting_user"
+      thread.waitingFor = wechatAttention?.waitingFor ?? (nextStatus === "waiting_user"
         ? "user_input"
         : nextStatus === "waiting_approval"
           ? localDeliveryPending(autoRun) ? "delivery" : "approval"
-          : null;
-      thread.attentionReason = localDeliveryPending(autoRun) && autoRun?.deliveryReview?.verdict === "changes_requested"
+          : null);
+      thread.attentionReason = wechatAttention?.reason ?? (localDeliveryPending(autoRun) && autoRun?.deliveryReview?.verdict === "changes_requested"
         ? "delivery_review_changes_requested"
         : nextStatus === "needs_attention" && localDeliveryPending(autoRun) && ["failed", "unavailable"].includes(autoRun?.deliveryReview?.status)
           ? "delivery_review_unavailable"
-          : null;
-      if (summary) thread.resultSummary = String(summary).slice(0, 4000);
+          : null);
+      if (userSummary) thread.resultSummary = String(userSummary).slice(0, 4000);
       thread.lastProgressAt = now();
-      thread.lastProgressSummary = summary
-        ? String(summary).slice(0, 4000)
+      thread.lastProgressSummary = userSummary
+        ? String(userSummary).slice(0, 4000)
         : `状态更新：${taskThreadStatus({ status: nextStatus })}`;
       thread.nextAction = threadNextAction(nextStatus, thread);
       thread.lastInvocationObservationKey = observationKey;
@@ -4734,6 +7703,7 @@ export function createChannelConversationService({
         thread.expiresAt = new Date((Number.isFinite(requestedAt) ? requestedAt : Date.parse(now())) + CHANNEL_APPROVAL_TTL_MS).toISOString();
       }
       if (nextStatus === "waiting_approval" && localDeliveryPending(autoRun)) thread.expiresAt = null;
+      if (wechatAttention) thread.expiresAt = null;
       thread.lastActivityAt = now();
       thread.updatedAt = now();
       const conversation = findConversation(thread.conversationId);
@@ -4858,6 +7828,12 @@ export function createChannelConversationService({
         }
       }
     });
+    const affectedDependents = previousStatus !== nextStatus && ["failed", "cancelled"].includes(nextStatus)
+      ? blockDependentTaskThreads(thread, nextStatus === "cancelled" ? "cancelled" : "failed")
+      : [];
+    if (notification && affectedDependents.length) {
+      notification.content = `${notification.content}\n受影响的 ${affectedDependents.length} 个下游任务已暂停等待：${affectedDependents.map(taskDisplayTitle).slice(0, 4).join("、")}。其他独立任务继续。`;
+    }
     if (notification) {
       const result = typeof notifyTaskEvent === "function"
         ? notifyTaskEvent(notification)
@@ -4878,14 +7854,50 @@ export function createChannelConversationService({
   }
 
   function syncTaskThreadFromWorkItem(workItem, { notify = true, reason = "work_item_update" } = {}) {
-    if (!workItem?.id || !workItem.channelOrigin?.conversationId) return null;
+    if (!workItem?.id) return null;
+    const projectedThread = (state.channelTaskThreads ?? []).find((candidate) =>
+      candidate.workItemId === workItem.id
+      && (!workItem.channelOrigin?.conversationId || candidate.conversationId === workItem.channelOrigin.conversationId)) ?? null;
+    if (projectedThread?.artifactVersionChangedAt
+      && projectedThread.lastArtifactVersionNoticeAt !== projectedThread.artifactVersionChangedAt) {
+      const notice = projectedThread.artifactVersionChangeNotice ?? "上游成品已更新，请重新核对最新版本。";
+      let delivered = true;
+      if (notify) {
+        const result = typeof notifyTaskEvent === "function"
+          ? notifyTaskEvent({
+            channelId: projectedThread.channelId,
+            conversationId: projectedThread.conversationId,
+            threadId: projectedThread.id,
+            event: "waiting_approval",
+            dedupeKey: `channel-artifact-version:${projectedThread.id}:${projectedThread.artifactVersionChangedAt}`,
+            content: notice,
+          })
+          : sendDeferredReply({
+            channelId: projectedThread.channelId,
+            conversationId: projectedThread.conversationId,
+            threadId: projectedThread.id,
+            dedupeKey: `channel-artifact-version:${projectedThread.id}:${projectedThread.artifactVersionChangedAt}`,
+            content: notice,
+          });
+        delivered = result?.ok !== false;
+      }
+      if (delivered) runTx(() => {
+        projectedThread.lastArtifactVersionNoticeAt = projectedThread.artifactVersionChangedAt;
+        projectedThread.updatedAt = now();
+      });
+    }
+    if (!workItem.channelOrigin?.conversationId) return projectedThread
+      ? { thread: projectedThread, status: projectedThread.status, label: taskThreadStatus(projectedThread) }
+      : null;
     const boundRunIds = (workItem.executionBindings ?? [])
       .filter((binding) => binding.kind === "auto_run")
       .map((binding) => binding.targetId);
     const autoRun = [...(state.autoRuns ?? [])]
       .filter((run) => boundRunIds.includes(run.id) || run.localIssueId === workItem.id || run.executionChainId === workItem.id)
       .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))[0] ?? null;
-    if (!autoRun) return null;
+    if (!autoRun) return projectedThread
+      ? { thread: projectedThread, status: projectedThread.status, label: taskThreadStatus(projectedThread) }
+      : null;
     if (!autoRun.channelOrigin) {
       runTx(() => { autoRun.channelOrigin = { ...workItem.channelOrigin }; });
     }
@@ -4902,8 +7914,63 @@ export function createChannelConversationService({
   function recoverTaskThreads() {
     let reconciled = 0;
     let requeued = 0;
+    const interruptedGoalChangeNotifications = [];
+    const interruptedGoalChangeAutoRuns = [];
     const activeStatuses = new Set(["awaiting_confirmation", "waiting_approval", "queued", "running", "waiting_user", "needs_attention"]);
     runTx(() => {
+      for (const conversation of state.channelConversations ?? []) {
+        const proposal = conversation.pendingWorkGoalChange;
+        if (proposal?.status !== "applying") continue;
+        const operations = Object.entries(proposal.appliedOperations ?? {});
+        const destructiveCompleted = operations.some(([key, result]) => result?.status === "completed" && !key.startsWith("create:"));
+        const createdThreadIds = operations.filter(([key, result]) => key.startsWith("create:") && result?.status === "completed")
+          .flatMap(([, result]) => result.taskThreadIds ?? []);
+        let rolledBack = 0;
+        if (!destructiveCompleted) {
+          for (const threadId of [...new Set(createdThreadIds)]) {
+            const thread = (state.channelTaskThreads ?? []).find((candidate) => candidate.id === threadId);
+            if (!thread || ["cancelled", "failed"].includes(thread.status)) continue;
+            if (thread.autoRunId) interruptedGoalChangeAutoRuns.push(thread.autoRunId);
+            const item = (state.workItems ?? []).find((candidate) => candidate.id === thread.workItemId);
+            if (item) {
+              item.status = "blocked";
+              item.executionPolicy = "paused";
+              item.revision = Number(item.revision ?? 0) + 1;
+              item.updatedAt = now();
+            }
+            setThreadStatus(thread, "cancelled", "goal_change_restart_rollback");
+            thread.waitingFor = null;
+            thread.resultSummary = "调整应用在服务重启时中断，本次新增任务已安全清理。";
+            thread.updatedAt = now();
+            rolledBack += 1;
+          }
+          proposal.status = "failed_rolled_back";
+          proposal.failedAt = now();
+          proposal.failureReason = "process_restart";
+          proposal.rolledBackTaskCount = rolledBack;
+        } else {
+          proposal.status = "partially_applied";
+          proposal.failedAt = now();
+          proposal.failureReason = "process_restart_after_task_change";
+        }
+        conversation.pendingWorkGoalChange = null;
+        conversation.updatedAt = now();
+        interruptedGoalChangeNotifications.push({
+          channelId: proposal.channelId,
+          conversationId: conversation.id,
+          content: destructiveCompleted
+            ? "刚才的任务调整在服务重启时中断，已完成的步骤不会重复执行。请回复“进度”查看当前状态，再决定是否继续调整。"
+            : `刚才的任务调整在服务重启时中断，本次新增的 ${rolledBack} 个任务已清理，原有任务没有改变。请重新发起调整。`,
+          dedupeKey: `work-goal-change-recovery:${proposal.id}`,
+        });
+        appendEvent({
+          invocationId: null,
+          type: "channel_work_goal_change_recovered",
+          level: destructiveCompleted ? "warn" : "info",
+          message: `Work-goal change ${proposal.id} recovered after restart.`,
+          data: { workGoalChangeId: proposal.id, destructiveCompleted, rolledBack },
+        });
+      }
       for (const thread of state.channelTaskThreads ?? []) {
         if (!thread.nextAction) thread.nextAction = threadNextAction(thread.status, thread);
         if (!thread.lastProgressAt) thread.lastProgressAt = thread.lastActivityAt ?? thread.updatedAt ?? now();
@@ -4913,6 +7980,32 @@ export function createChannelConversationService({
         if (!Object.prototype.hasOwnProperty.call(thread, "lastDeliveryStatus")) thread.lastDeliveryStatus = null;
         if (!Object.prototype.hasOwnProperty.call(thread, "lastDeliveryId")) thread.lastDeliveryId = null;
         if (!Object.prototype.hasOwnProperty.call(thread, "lastDeliveryError")) thread.lastDeliveryError = null;
+        // A process may stop after the confirmation record is persisted but
+        // before the downstream create/route call returns. Keep the request
+        // retryable, but make the interrupted boundary explicit for audit and
+        // for the next confirmation attempt.
+        if (thread.executionAttempt?.outcome === "started") {
+          thread.executionAttempt = finishChannelExecutionAttempt(thread.executionAttempt, {
+            outcome: "interrupted",
+            finishedAt: now(),
+            error: "process_restart",
+          });
+          thread.lastProgressSummary = "上次确认中断，任务仍可安全重试";
+          thread.updatedAt = now();
+        }
+        const request = (state.channelTaskRequests ?? []).find((candidate) =>
+          candidate.id === thread.channelTaskRequestId
+          || (candidate.threadId && candidate.threadId === thread.id)
+          || (thread.workItemId && candidate.workItemId === thread.workItemId),
+        );
+        if (request?.status === "pending" && request.executionAttempt?.outcome === "started") {
+          request.executionAttempt = finishChannelExecutionAttempt(request.executionAttempt, {
+            outcome: "interrupted",
+            finishedAt: now(),
+            error: "process_restart",
+          });
+          request.lastRouteRecoveryAt = now();
+        }
       }
     });
     for (const thread of state.channelTaskThreads ?? []) {
@@ -5001,6 +8094,13 @@ export function createChannelConversationService({
     }
     const channelIds = new Set((state.channelTaskThreads ?? []).map((thread) => thread.channelId).filter(Boolean));
     for (const channelId of channelIds) refreshQueuePositions(channelId);
+    for (const autoRunId of interruptedGoalChangeAutoRuns) {
+      try {
+        const result = cancelAutoRun?.(autoRunId, { reason: "channel_goal_change_restart_rollback" });
+        result?.catch?.(() => {});
+      } catch { /* durable rollback remains authoritative */ }
+    }
+    for (const notification of interruptedGoalChangeNotifications) sendDeferredReply(notification);
     return { reconciled, requeued };
   }
 
@@ -5249,7 +8349,7 @@ export function createChannelConversationService({
   }
 
   function candidateSelectionReply(threads) {
-    const choices = threads.slice(0, 5).map((thread, index) => `${index + 1}. ${taskThreadStatus(thread)}：${String(thread.summary ?? "").slice(0, 80)}`).join("\n");
+    const choices = threads.slice(0, 10).map((thread, index) => `${index + 1}. ${taskThreadStatus(thread)}：${String(thread.taskTitle ?? thread.summary ?? "").slice(0, 80)}`).join("\n");
     return `我发现有多个任务正在等待处理。请回复序号（如“1”）选择目标，也可以说“继续第一个任务”或“取消第一个任务”；想创建新任务请以“另外”开头。\n${choices}`;
   }
 

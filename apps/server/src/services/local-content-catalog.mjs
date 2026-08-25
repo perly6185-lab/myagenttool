@@ -7,6 +7,7 @@ import {
 import { basename, dirname, extname, join, posix, resolve } from "node:path";
 
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import {
   extractionText,
   parseWorkflowDocument,
@@ -92,6 +93,8 @@ export function createLocalContentCatalogService({
   state,
   stateStorePath,
   now = () => new Date().toISOString(),
+  persistStateSoon = () => {},
+  store,
   databasePath = localContentCatalogPath(stateStorePath),
   openDatabase = openLocalContentCatalogDatabase,
   mailArchiveRoot = defaultMailArchiveRoot(),
@@ -103,6 +106,7 @@ export function createLocalContentCatalogService({
   watchDirectory = watchFileSystem,
 } = {}) {
   let databasePromise = null;
+  const runTx = makeRunTx({ store, persistStateSoon });
   let indexTimer = null;
   let incrementalPromise = null;
   let indexOperationChain = Promise.resolve();
@@ -744,6 +748,32 @@ export function createLocalContentCatalogService({
     });
   }
 
+  async function archive({ contentId: requestedContentId } = {}, actor = null) {
+    const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const requestedId = String(requestedContentId ?? "");
+    const item = (state.channelKnowledgeItems ?? []).find((candidate) =>
+      candidate?.status === "ready"
+      && !candidate.archivedAt
+      && (candidate.ownerTeamId ?? LOCAL_TEAM_ID) === teamId
+      && contentId("article", candidate.ownerTeamId ?? LOCAL_TEAM_ID, candidate.id) === requestedId) ?? null;
+    if (!item) return { status: 404, body: { error: "local_content_not_found" } };
+
+    runTx(() => {
+      item.archivedAt = now();
+      item.updatedAt = now();
+    });
+    const rebuilt = await rebuild({}, actor);
+    return {
+      status: 200,
+      body: {
+        archived: true,
+        originalDeleted: false,
+        contentId: requestedId,
+        rebuild: rebuilt.body?.rebuild ?? null,
+      },
+    };
+  }
+
   async function health({ contentIds = [] } = {}, actor = null) {
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
     const ids = [...new Set((Array.isArray(contentIds) ? contentIds : [contentIds])
@@ -811,7 +841,7 @@ export function createLocalContentCatalogService({
   }
 
   const service = {
-    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, browseDirectories, get, preview, previewAsset, readTextChunk, refresh, health,
+    rebuild, requestIncremental, requestAutomaticIncremental, flushIncremental, search, browseDirectories, get, preview, previewAsset, readTextChunk, refresh, archive, health,
     resolveOriginal, resolveContainer, stats, start, close, databasePath,
   };
   return service;

@@ -62,3 +62,29 @@ test("consultation adapter fails closed when the local Bridge is unavailable", (
 
   assert.throws(() => adapter.enqueue({ text: "你好", eventId: "ce_2" }), /bridge_unavailable/);
 });
+
+test("a consultation retry gets a distinct idempotency key and durable retry metadata", () => {
+  let captured = null;
+  const adapter = createChannelConsultationAdapter({
+    config: { enabled: true, providerId: "desktop_bridge", agentId: "agt_codex_cli", timeoutMs: 60_000 },
+    state: { device: { unlinkState: "linked" }, invocations: [] },
+    findAgent: (id) => ({ id, status: "ready" }),
+    createInvocation: (_prompt, _agent, options) => {
+      captured = options;
+      return { id: "inv_consult_retry", status: "queued", options };
+    },
+  });
+
+  adapter.enqueue({
+    text: "重新分析资料",
+    eventId: "ce_retry",
+    attempt: 2,
+    retryReason: "answer_missing",
+    retryOfInvocationId: "inv_consult_first",
+  });
+
+  assert.equal(captured.idempotencyKey, "channel-consultation:ce_retry:attempt:2");
+  assert.equal(captured.metadata.channelConsultationAttempt, 2);
+  assert.equal(captured.metadata.channelConsultationRetryReason, "answer_missing");
+  assert.equal(captured.metadata.channelConsultationRetryOfInvocationId, "inv_consult_first");
+});

@@ -1555,24 +1555,54 @@ export function createArticleImportService({
       }
       const relativeDirectory = relative(root, directory).split(sep).join("/");
       const analysisRelativePath = `${relativeDirectory}/analysis.md`;
-      const stored = (state.workItems ?? []).find((candidate) => candidate.id === job.workItemId);
-      if (!stored) throw articleError("work_item_not_found");
+      const sourceItem = (state.workItems ?? []).find((candidate) => candidate.id === job.workItemId);
+      if (!sourceItem) throw articleError("work_item_not_found");
+      const sourceAsset = (sourceItem.outputAssets ?? []).find((asset) => asset.path === job.result.markdownPath);
+      if (!sourceAsset) throw articleError("article_import_source_asset_missing");
+      const analysisTask = workItemService.createWorkItem({
+        projectId: sourceItem.projectId,
+        title: `深度分析：${job.result.inspection?.title ?? sourceItem.title}`.slice(0, 300),
+        body: [
+          "基于已入库的文章资料形成一份可独立使用的深度分析报告。",
+          `来源任务：${sourceItem.localRef ?? sourceItem.id}`,
+          `来源文件：${job.result.markdownPath}`,
+          "本任务只负责分析，不自动创建文章、漫画、口播、视频或发布任务。",
+        ].join("\n"),
+        type: "task",
+        status: "in_progress",
+        priority: "p3",
+        executionPolicy: "manual",
+        taskKind: "knowledge_analysis",
+        intentId: `article-analysis:${job.id}`,
+        intentStatement: `深度分析已入库文章：${job.result.inspection?.title ?? sourceItem.title}`,
+        creationBasis: "explicit_user_intent",
+        planningHorizon: "committed",
+        inputAssets: [{ ...sourceAsset }],
+        idempotencyKey: `article-analysis:${job.id}:${sourceHash}`.slice(0, 200),
+      }, actor);
+      if (!analysisTask.ok) throw articleError(analysisTask.body?.error ?? "article_analysis_task_create_failed");
+      let analysisItem = (state.workItems ?? []).find((candidate) => candidate.id === analysisTask.body.workItem.id);
+      if (!analysisItem) throw articleError("article_analysis_task_not_found");
       const outputAssets = [
-        ...(stored.outputAssets ?? []).filter((asset) => asset.path !== analysisRelativePath),
-        articleAsset(analysisRelativePath, "markdown", Buffer.byteLength(renderArticleAnalysisMarkdown(analysis)), stored, job.worktreeId),
+        ...(analysisItem.outputAssets ?? []).filter((asset) => asset.path !== analysisRelativePath),
+        articleAsset(analysisRelativePath, "markdown", Buffer.byteLength(renderArticleAnalysisMarkdown(analysis)), analysisItem, job.worktreeId),
       ];
       const updated = workItemService.updateWorkItem({
-        workItemId: stored.id,
-        expectedRevision: stored.revision,
+        workItemId: analysisItem.id,
+        expectedRevision: analysisItem.revision,
         outputAssets,
+        status: "done",
+        waitingOn: "none",
       }, actor);
       if (!updated.ok) throw articleError(updated.body?.error ?? "article_analysis_asset_binding_failed");
+      analysisItem = (state.workItems ?? []).find((candidate) => candidate.id === analysisItem.id) ?? analysisItem;
       job.result.analysisPath = analysisRelativePath;
+      job.result.analysisWorkItemId = analysisItem.id;
       persistJobs();
       return {
         ok: true,
         status: 200,
-        body: { analysis, analysisPath: analysisRelativePath },
+        body: { analysis, analysisPath: analysisRelativePath, workItem: updated.body.workItem },
       };
     } catch (error) {
       return articleFailure(error);
@@ -1729,7 +1759,7 @@ export function createArticleImportService({
         && invocation.requestedBy === (actor?.userId ?? "usr_local"));
       if (existing) {
         const metadata = existing.options?.metadata?.articleDerivative;
-        if (metadata?.workItemId !== String(input.workItemId ?? "")
+        if ((metadata?.sourceWorkItemId ?? metadata?.workItemId) !== String(input.workItemId ?? "")
           || metadata?.sourceJobId !== String(input.jobId ?? "")
           || articleDerivativeMetadataFingerprint(metadata) !== requestFingerprint) {
           return { ok: false, status: 409, body: { error: "article_derivative_idempotency_conflict" } };
@@ -1766,6 +1796,35 @@ export function createArticleImportService({
       });
       const derivativeId = nextId("article_derivative");
       const generatedAt = now();
+      const sourceAsset = (stored.outputAssets ?? []).find((asset) => asset.path === sourceJob.result.markdownPath);
+      if (!sourceAsset) throw articleError("article_import_source_asset_missing");
+      const derivativeLabel = request.kind === "video_script" ? "视频脚本" : "文章二创";
+      const derivativeTask = workItemService.createWorkItem({
+        projectId: stored.projectId,
+        title: `${derivativeLabel}：${sourceJob.result.inspection?.title ?? stored.title}`.slice(0, 300),
+        body: [
+          `基于已入库资料完成${derivativeLabel}，形成可独立审阅的内容成品。`,
+          `来源任务：${stored.localRef ?? stored.id}`,
+          `来源文件：${sourceJob.result.markdownPath}`,
+          `目标受众：${request.audience || request.targetAge || "未特别限定"}`,
+          "本任务不会自动创建其他创作任务或平台发布任务。",
+        ].join("\n"),
+        type: "task",
+        status: "ready",
+        priority: "p3",
+        executionPolicy: "auto",
+        waitingOn: "ai",
+        taskKind: request.kind === "video_script" ? "content_video" : "content_article",
+        intentId: `article-derivative:${derivativeId}`,
+        intentStatement: `${derivativeLabel}：${sourceJob.result.inspection?.title ?? stored.title}`,
+        creationBasis: "explicit_user_intent",
+        planningHorizon: "committed",
+        inputAssets: [{ ...sourceAsset }],
+        idempotencyKey: `article-derivative-task:${idempotencyKey || derivativeId}`.slice(0, 200),
+      }, actor);
+      if (!derivativeTask.ok) throw articleError(derivativeTask.body?.error ?? "article_derivative_task_create_failed");
+      const targetItem = (state.workItems ?? []).find((candidate) => candidate.id === derivativeTask.body.workItem.id);
+      if (!targetItem) throw articleError("article_derivative_task_not_found");
       const analysisRelativePath = sourceJob.result.analysisPath
         ?? `${relative(root, sourceDirectory).split(sep).join("/")}/analysis.md`;
       const analysisAbsolutePath = resolve(root, analysisRelativePath);
@@ -1781,7 +1840,7 @@ export function createArticleImportService({
         outputPath,
         sourceUrl: sourceJob.canonicalUrl ?? sourceJob.result.inspection?.sourceUrl ?? null,
         generatedAt,
-        workItemId: stored.id,
+        workItemId: targetItem.id,
       });
       const invocation = createInvocation(prompt, selected.agent, {
         actor,
@@ -1792,8 +1851,9 @@ export function createArticleImportService({
           worktreeId: sourceJob.worktreeId,
           articleDerivative: {
             id: derivativeId,
-            workItemId: stored.id,
-            ownerTeamId: stored.ownerTeamId,
+            workItemId: targetItem.id,
+            sourceWorkItemId: stored.id,
+            ownerTeamId: targetItem.ownerTeamId,
             requestedBy: actor?.userId ?? "usr_local",
             sourceJobId: sourceJob.id,
             sourcePath: sourceJob.result.markdownPath,
@@ -1817,7 +1877,7 @@ export function createArticleImportService({
       });
       const invocationMetadata = invocation.options?.metadata?.articleDerivative;
       if (invocationMetadata?.id !== derivativeId) {
-        if (invocationMetadata?.workItemId !== stored.id
+        if ((invocationMetadata?.sourceWorkItemId ?? invocationMetadata?.workItemId) !== stored.id
           || invocationMetadata?.sourceJobId !== sourceJob.id
           || articleDerivativeMetadataFingerprint(invocationMetadata) !== requestFingerprint) {
           return { ok: false, status: 409, body: { error: "article_derivative_idempotency_conflict" } };
@@ -1826,7 +1886,7 @@ export function createArticleImportService({
         return { ok: true, status: 200, body: { derivative: articleDerivativeView(invocation) } };
       }
       const binding = workItemService.recordExecutionBinding({
-        workItemId: stored.id,
+        workItemId: targetItem.id,
         kind: "article_derivative",
         targetId: derivativeId,
         worktreeId: sourceJob.worktreeId,
@@ -1866,7 +1926,7 @@ export function createArticleImportService({
     const invocations = (state.invocations ?? [])
       .filter((invocation) => {
         const metadata = invocation.options?.metadata?.articleDerivative;
-        return metadata?.workItemId === String(workItemId ?? "")
+        return (metadata?.sourceWorkItemId ?? metadata?.workItemId) === String(workItemId ?? "")
           && metadata?.sourceJobId === String(jobId ?? "");
       })
       .sort((left, right) => String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? "")))
@@ -1934,6 +1994,8 @@ export function createArticleImportService({
         workItemId: stored.id,
         expectedRevision: stored.revision,
         outputAssets,
+        status: "done",
+        waitingOn: "none",
       }, internalActor);
       if (!updated.ok) throw articleError(updated.body?.error ?? "article_derivative_asset_binding_failed");
       workItemService.createComment?.({
@@ -2263,7 +2325,7 @@ function findArticleDerivativeInvocation(state, { workItemId, sourceJobId, deriv
   return (state.invocations ?? []).find((invocation) => {
     const metadata = invocation.options?.metadata?.articleDerivative;
     return metadata?.id === derivativeId
-      && metadata?.workItemId === workItemId
+      && (metadata?.sourceWorkItemId ?? metadata?.workItemId) === workItemId
       && metadata?.sourceJobId === sourceJobId;
   }) ?? null;
 }
@@ -2289,6 +2351,7 @@ function articleDerivativeView(invocation) {
     invocationId: invocation.id,
     sourceJobId: metadata.sourceJobId,
     workItemId: metadata.workItemId,
+    sourceWorkItemId: metadata.sourceWorkItemId ?? metadata.workItemId,
     worktreeId: invocation.worktreeId,
     kind: metadata.kind,
     tone: metadata.tone,

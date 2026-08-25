@@ -7,6 +7,7 @@ import { useUiStore } from "@/store/ui-store";
 
 const mocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
+  createWorkItemResultRepair: vi.fn(),
   updateWorkItem: vi.fn(),
   suggestWorkItemDraft: vi.fn(),
   listMyTemplateDefinitions: vi.fn(),
@@ -50,6 +51,7 @@ vi.mock("@/data/use-console-state", () => ({
 vi.mock("@/data/use-console-actions", () => ({
   api: {
     getWorkItem: mocks.getWorkItem,
+    createWorkItemResultRepair: mocks.createWorkItemResultRepair,
     updateWorkItem: mocks.updateWorkItem,
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
     listMyTemplateDefinitions: mocks.listMyTemplateDefinitions,
@@ -174,6 +176,17 @@ afterEach(() => {
 });
 
 describe("work item summary presentation", () => {
+  it("turns a malformed task response into a retryable ordinary-user error", async () => {
+    mocks.getWorkItem.mockResolvedValueOnce({}).mockResolvedValueOnce({ workItem: item() });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("could not be loaded");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByRole("heading", { name: "Prepare customer update" })).toBeTruthy();
+    expect(mocks.getWorkItem).toHaveBeenCalledTimes(2);
+  });
+
   it("explains the automatically matched My template without asking the user to choose it", async () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({
@@ -372,6 +385,47 @@ describe("work item summary presentation", () => {
     expect(onCreateTaskDraft).toHaveBeenLastCalledWith(expect.stringContaining("Follow up on “Prepare customer update”"));
   });
 
+  it("explains failed result checks and opens one independent repair task", async () => {
+    const onOpenWorkItem = vi.fn();
+    const failedItem = item({
+      status: "blocked",
+      executionState: "failed",
+      resultVerification: {
+        schemaVersion: 2,
+        status: "failed",
+        summary: "One result check failed.",
+        checks: [{
+          kind: "business_document",
+          status: "failed",
+          summary: "A customer proposal document is still missing.",
+          expected: { minCount: 1 },
+          actual: { qualifiedCount: 0 },
+        }],
+        verificationChecks: [],
+        repair: {
+          required: true,
+          mode: "independent_task",
+          reasons: ["A customer proposal document is still missing."],
+          suggestedRequest: "Repair the missing customer proposal document.",
+        },
+        digest: "sha256:failed-result",
+      },
+    });
+    const repair = item({ id: "lwi_repair", title: "Prepare customer update repair", status: "backlog" });
+    mocks.getWorkItem.mockResolvedValue({ workItem: failedItem });
+    mocks.createWorkItemResultRepair.mockResolvedValue({ workItem: repair, replayed: false });
+
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onOpenWorkItem={onOpenWorkItem} />);
+
+    expect(await screen.findByText("This result is not complete yet")).toBeTruthy();
+    expect(screen.getByText("A customer proposal document is still missing.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create repair task from checks" }));
+
+    await waitFor(() => expect(mocks.createWorkItemResultRepair).toHaveBeenCalledWith("lwi_1"));
+    expect(onOpenWorkItem).toHaveBeenCalledWith("lwi_repair");
+    expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
+  });
+
   it("saves a completed ordinary task as a new learning My template after confirming the extracted result", async () => {
     const completed = item({
       state: "closed",
@@ -403,11 +457,11 @@ describe("work item summary presentation", () => {
     mocks.createMyTemplateDraft.mockResolvedValue({ workItem: item({ ...completed, myTemplateDraft: draft }), draft });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Save as My template" }));
-    expect(await screen.findByRole("heading", { name: "Save as a new My template" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Use this approach next time" }));
+    expect(await screen.findByRole("heading", { name: "Remember this approach" })).toBeTruthy();
     expect(screen.getByDisplayValue("Customer update")).toBeTruthy();
     expect(screen.getByText(/One case is enough to review and enable/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Confirm and save template" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remember this approach" }));
 
     await waitFor(() => expect(mocks.createMyTemplateDraft).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
       expectedRevision: 2,
@@ -417,7 +471,7 @@ describe("work item summary presentation", () => {
       expectedOutput: "Customer update document",
     })));
     expect(await screen.findByText("Saved for review and activation")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Save as My template" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use this approach next time" })).toBeNull();
   });
 
   it("records whether a completed My template result met expectations without conflating technical failures", async () => {

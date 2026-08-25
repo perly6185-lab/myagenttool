@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "source": "redacted_ordinary_user_acceptance_baseline",
+  "cases": [
+    { "id": "channel-001", "text": "你好", "source": "acceptance_baseline", "expected": { "taskKinds": [] } },
+    { "id": "channel-002", "text": "为什么发布失败？", "source": "acceptance_baseline", "expected": { "taskKinds": [] } },
+    { "id": "channel-003", "text": "把这个链接保存到本地知识库", "source": "acceptance_baseline", "expected": { "taskKinds": [] } },
+    { "id": "channel-004", "text": "基于库里的资料写一篇深度文章", "source": "acceptance_baseline", "expected": { "taskKinds": ["content_article"] } },
+    { "id": "channel-005", "text": "基于资料写文章，再做三张图片", "source": "acceptance_baseline", "expected": { "taskKinds": ["content_article", "content_image"] } },
+    { "id": "channel-006", "text": "不要写文章，只做三张配图", "source": "acceptance_baseline", "expected": { "taskKinds": ["content_image"] } },
+    { "id": "channel-007", "text": "先分析资料，合适的话再做三张配图", "source": "acceptance_baseline", "expected": { "taskKinds": ["knowledge_analysis", "content_image"] } },
+    { "id": "channel-008", "text": "做文章和图片，发公众号和小红书", "source": "acceptance_baseline", "expected": { "taskKinds": ["content_article", "content_image"], "clarificationKind": "publication_content_mapping" } },
+    { "id": "channel-009", "text": "写文章和图片，文章发公众号，图片发小红书", "source": "acceptance_baseline", "expected": { "taskKinds": ["content_article", "content_image", "platform_adaptation", "wechat_draft_sync", "content_publish"] } },
+    { "id": "channel-010", "text": "把今天编码的工作整理成文章和图片", "source": "acceptance_baseline", "expected": { "taskKinds": ["coding_digest", "content_article", "content_image"] } },
+    { "id": "channel-011", "text": "排查为什么登录会报错，先不要修改代码", "source": "acceptance_baseline", "expected": { "taskKinds": ["software_analysis"] } },
+    { "id": "channel-012", "text": "修复登录错误并测试，部署先别做", "source": "acceptance_baseline", "expected": { "taskKinds": ["software_implementation", "software_verification"] } },
+    { "id": "channel-013", "text": "根据分析结果整理成一篇技术文章", "source": "acceptance_baseline", "expected": { "taskKinds": ["content_article"] } },
+    { "id": "channel-014", "text": "整理一份客户名单表格", "source": "acceptance_baseline", "expected": { "taskKinds": ["business_document"] } },
+    { "id": "channel-015", "text": "准备客户方案，然后邮件发给王总", "source": "acceptance_baseline", "expected": { "taskKinds": ["business_document", "business_communication"] } },
+    { "id": "channel-016", "text": "给客户发邮件，会议下周再约", "source": "acceptance_baseline", "expected": { "taskKinds": ["business_communication"] } },
+    { "id": "channel-017", "text": "只约王总开会，不要发邮件", "source": "acceptance_baseline", "expected": { "taskKinds": ["business_scheduling"] } },
+    { "id": "channel-018", "text": "做一段口播和一个短视频", "source": "acceptance_baseline", "expected": { "taskKinds": ["content_voiceover", "content_video"] } },
+    { "id": "channel-019", "text": "文章已经写好了，直接发到公众号", "source": "acceptance_baseline", "expected": { "taskKinds": ["platform_adaptation", "wechat_draft_sync", "content_publish"] } },
+    { "id": "channel-020", "text": "按这个优化一下", "source": "acceptance_baseline", "expected": { "taskKinds": [] } }
+  ]
+}

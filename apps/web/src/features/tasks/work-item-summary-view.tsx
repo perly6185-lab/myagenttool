@@ -42,6 +42,8 @@ import { myTemplateExpectedOutput } from "@/features/workflow-memory/my-template
 import type { BusinessRoutineDefinition } from "@/lib/api-client";
 import type { LocalWorkItem, LocalWorkItemObservability, WorkItemComment, WorkItemOutcomeFile } from "./task-view-types";
 import { deriveWorkItemUserStatus } from "./work-item-user-status";
+import { WorkItemJobOverview } from "./work-item-job-overview";
+import { isLocalWorkItem } from "./work-item-response";
 import { COPY, type SummaryCopy } from "./work-item-summary-copy";
 import {
   WAITING_LABEL,
@@ -159,6 +161,8 @@ export function WorkItemSummaryView({
   const [retryOpen, setRetryOpen] = useState(false);
   const [retryPending, setRetryPending] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [repairPending, setRepairPending] = useState(false);
+  const [repairError, setRepairError] = useState<string | null>(null);
   const [resultExpanded, setResultExpanded] = useState(false);
   const [discussionOpen, setDiscussionOpen] = useState(false);
   const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | null>(null);
@@ -221,6 +225,8 @@ export function WorkItemSummaryView({
     setRetryOpen(false);
     setRetryPending(false);
     setRetryError(null);
+    setRepairPending(false);
+    setRepairError(null);
     setResultExpanded(false);
     setDiscussionOpen(false);
     setActionPending(null);
@@ -256,18 +262,19 @@ export function WorkItemSummaryView({
       api.listWorkItemComments(workItemId) as Promise<{ comments: WorkItemComment[] }>,
     ]).then(([detail, commentResult]) => {
       if (cancelled) return;
-      if (detail.status === "fulfilled") {
-        setItem(detail.value.workItem);
+      if (detail.status === "fulfilled" && isLocalWorkItem(detail.value?.workItem)) {
+        const loadedItem = detail.value.workItem;
+        setItem(loadedItem);
         setObservability(detail.value.observability ?? null);
         if (
-          deriveWorkItemUserStatus(detail.value.workItem, detail.value.observability?.latestRun ?? null) === "ready_for_review"
-          && resultAutoOpenedFor.current !== detail.value.workItem.id
+          deriveWorkItemUserStatus(loadedItem, detail.value.observability?.latestRun ?? null) === "ready_for_review"
+          && resultAutoOpenedFor.current !== loadedItem.id
         ) {
           setResultExpanded(true);
-          resultAutoOpenedFor.current = detail.value.workItem.id;
+          resultAutoOpenedFor.current = loadedItem.id;
         }
         setLoadError(null);
-        void (api.autoRunReadiness(detail.value.workItem.projectId) as Promise<{ readiness?: AutoRunReadiness }>)
+        void (api.autoRunReadiness(loadedItem.projectId) as Promise<{ readiness?: AutoRunReadiness }>)
           .then((result) => {
             if (!cancelled) setReadiness(result.readiness ?? {
               ready: false,
@@ -424,10 +431,28 @@ export function WorkItemSummaryView({
   const resultSummary = outcome?.summary ?? deliveryReport?.summary ?? item.lastProgressSummary
     ?? (executionKind === "article_import" ? latestPassedVerification?.summary ?? null : null);
   const fullResult = outcome?.fullReport ?? deliveryReport?.summary ?? item.lastProgressSummary ?? null;
+  const objectiveResultVerification = item.resultVerification ?? null;
   const resultVerification = outcome?.verification ?? deliveryReport?.verification
+    ?? (objectiveResultVerification && objectiveResultVerification.status !== "not_required"
+      ? {
+          verified: true,
+          passed: objectiveResultVerification.status === "passed",
+          summary: objectiveResultVerification.summary,
+        }
+      : null)
     ?? (latestPassedVerification && acceptanceNeedsReview === 0
       ? { verified: true, passed: true, summary: latestPassedVerification.summary }
       : null);
+  const failedResultChecks = objectiveResultVerification
+    ? [...objectiveResultVerification.checks, ...objectiveResultVerification.verificationChecks]
+      .filter((check) => check.status === "failed")
+    : [];
+  const resultRepairNeeded = Boolean(
+    objectiveResultVerification?.status === "failed"
+    && objectiveResultVerification.repair?.required
+    && (["review", "blocked", "done"].includes(item.status) || item.state === "closed"),
+  );
+  const canCreateResultRepair = canOperate && resultRepairNeeded;
   const resultFiles = outcome?.files?.length
     ? outcome.files
     : [...new Set([...outputAssets.map((asset) => asset.path), ...changedFiles])];
@@ -587,6 +612,43 @@ export function WorkItemSummaryView({
       setCommentError(copy.commentFailed);
     } finally {
       setCommentPending(false);
+    }
+  };
+
+  const createResultRepair = async () => {
+    if (!canCreateResultRepair || repairPending) return;
+    setRepairPending(true);
+    setRepairError(null);
+    try {
+      const result = await api.createWorkItemResultRepair(item.id) as {
+        workItem?: LocalWorkItem;
+        replayed?: boolean;
+      };
+      if (!result.workItem?.id) throw new Error("result_repair_missing");
+      window.dispatchEvent(new Event("myagenttool:state-change"));
+      if (onOpenWorkItem) {
+        onOpenWorkItem(result.workItem.id);
+      } else {
+        setSyncNotice(language === "zh"
+          ? result.replayed ? "已找到之前创建的返工任务。" : "已创建独立返工任务，原结果保持不变。"
+          : result.replayed ? "The existing repair task is ready." : "An independent repair task was created; the original result is unchanged.");
+        setRefreshVersion((version) => version + 1);
+      }
+    } catch (error) {
+      const code = error instanceof Error ? error.message : String(error);
+      setRepairError(language === "zh"
+        ? code.includes("not_required")
+          ? "结果已经通过检查，不需要再创建返工任务。"
+          : code.includes("not_ready")
+            ? "当前任务还在执行，请等结果出来后再处理。"
+            : "返工任务暂时未创建，请稍后重试。"
+        : code.includes("not_required")
+          ? "The result now passes its checks, so no repair task is needed."
+          : code.includes("not_ready")
+            ? "This task is still running. Wait for the result before creating a repair."
+            : "The repair task could not be created. Try again.");
+    } finally {
+      setRepairPending(false);
     }
   };
   const previewMaterial = async (assetId: string) => {
@@ -898,11 +960,11 @@ export function WorkItemSummaryView({
       setItem(response.workItem);
       setTemplateDraftOpen(false);
       setSyncNotice(language === "zh"
-        ? "已保存为新的“我的模板”，目前处于学习中；不会改变原任务，也不会立即自动套用。"
-        : "Saved as a new learning My template. The original task is unchanged and it will not be applied automatically yet.");
+        ? "已记住这次做法，正在等待你检查并启用；不会改变原任务，也不会立即用于其他工作。"
+        : "This approach was saved for review and activation. The original task is unchanged and it will not be used for other work yet.");
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "my-template-draft", workItemId: item.id } }));
     } catch {
-      setTemplateDraftError(language === "zh" ? "暂时无法保存为我的模板，请稍后重试。" : "The My template could not be saved. Try again later.");
+      setTemplateDraftError(language === "zh" ? "暂时无法记住这次做法，请稍后重试。" : "This approach could not be saved. Try again later.");
     } finally {
       setTemplateDraftPending(false);
     }
@@ -1264,7 +1326,6 @@ export function WorkItemSummaryView({
     <div className="space-y-4" data-testid="work-item-summary-view">
       <header className="pr-8">
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span>{language === "zh" ? "任务编号" : "Task ID"}: <span className="font-mono">{item.localRef}</span></span>
           <Badge tone={status === "completed" ? "success" : ["needs_action", "blocked"].includes(status) ? "warning" : status === "ai_working" ? "running" : "neutral"}>
             {copy.status[status]}
           </Badge>
@@ -1319,6 +1380,8 @@ export function WorkItemSummaryView({
           </div>
         </div>
       </section> : null}
+
+      <WorkItemJobOverview item={item} language={language} onOpenWorkItem={onOpenWorkItem} />
 
       {understandingContext ? (
         <section className="rounded-xl border border-border/80 bg-muted/20 p-4" aria-label={language === "zh" ? "AI 理解任务时参考的内容" : "Context AI used to understand the task"}>
@@ -1705,6 +1768,49 @@ export function WorkItemSummaryView({
         </section>
       ) : null}
 
+      {resultRepairNeeded ? (
+        <section className="rounded-xl border border-destructive/35 bg-destructive/[0.04] p-4" aria-label={language === "zh" ? "结果检查未通过" : "Result checks failed"} data-testid="result-repair-card">
+          <div className="flex items-start gap-3">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-destructive/10 text-destructive"><AlertTriangle className="size-5" aria-hidden /></span>
+            <div className="min-w-0 flex-1">
+              <h4 className="font-semibold">{language === "zh" ? "结果还不能算完成" : "This result is not complete yet"}</h4>
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                {language === "zh"
+                  ? "检查发现以下问题。你可以单独创建一个返工任务；原任务、原结果和其他任务都不会被覆盖。"
+                  : "The checks found the following issues. Create a separate repair task without replacing the original task, result, or other work."}
+              </p>
+              {failedResultChecks.length ? (
+                <ul className="mt-3 space-y-1 text-sm">
+                  {failedResultChecks.slice(0, 5).map((check, index) => (
+                    <li key={`${check.kind}-${index}`} className="flex items-start gap-2">
+                      <span aria-hidden>•</span><span>{check.summary}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {canOperate ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Button size="sm" disabled={repairPending} onClick={() => { void createResultRepair(); }}>
+                    <Wrench aria-hidden />
+                    {repairPending
+                      ? (language === "zh" ? "正在创建…" : "Creating…")
+                      : (language === "zh" ? "按检查结果创建返工任务" : "Create repair task from checks")}
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {language === "zh" ? "只创建任务，不会自动执行。" : "Creates the task without starting it."}
+                  </span>
+                </div>
+              ) : (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {language === "zh" ? "请让有操作权限的成员创建返工任务。" : "Ask a member with permission to create the repair task."}
+                </p>
+              )}
+              {repairError ? <p className="mt-2 text-sm text-destructive" role="alert">{repairError}</p> : null}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       {status === "completed" ? (
         <section className="rounded-xl border border-success/35 bg-success/[0.06] p-4" aria-label={copy.completedTitle} role="status">
           <div className="flex items-start gap-3">
@@ -1729,7 +1835,7 @@ export function WorkItemSummaryView({
                 ) : (
                   <Button size="sm" variant="secondary" disabled={templateDraftPending} onClick={() => { void openTemplateDraft(); }}>
                     <BrainCircuit aria-hidden />
-                    {language === "zh" ? "保存为我的模板" : "Save as My template"}
+                    {language === "zh" ? "以后按这种方式处理" : "Use this approach next time"}
                   </Button>
                 ) : null}
                 {onOpenTaskCenter ? <Button size="sm" variant="secondary" onClick={onOpenTaskCenter}>{copy.taskCenter}</Button> : null}
@@ -2325,10 +2431,10 @@ export function WorkItemSummaryView({
       <Modal
         open={templateDraftOpen}
         onClose={() => { if (!templateDraftPending) setTemplateDraftOpen(false); }}
-        title={language === "zh" ? "保存为新的“我的模板”" : "Save as a new My template"}
+        title={language === "zh" ? "记住这次做法" : "Remember this approach"}
         description={language === "zh"
-          ? "系统已根据这次任务整理输入和结果。保存后即可到“我的模板”检查学习结果，并由你决定是否启用。"
-          : "The input and result were extracted from this task. After saving, review what was learned in My templates and decide whether to enable it."}
+          ? "系统已从这次成功结果中整理出一套常用做法。保存后不会改变当前任务；检查无误并启用后，相似工作会优先按这种方式处理。"
+          : "The system extracted a reusable approach from this successful result. Saving does not change the current task; after review and activation, similar work can prefer it."}
         closeDisabled={templateDraftPending}
         footer={(
           <div className="flex flex-wrap justify-end gap-2">
@@ -2340,7 +2446,7 @@ export function WorkItemSummaryView({
               onClick={() => { void saveTemplateDraft(); }}
             >
               {templateDraftPending ? <RefreshCw className="animate-spin" aria-hidden /> : <BrainCircuit aria-hidden />}
-              {templateDraftPending ? (language === "zh" ? "正在整理…" : "Saving…") : (language === "zh" ? "确认并保存模板" : "Confirm and save template")}
+              {templateDraftPending ? (language === "zh" ? "正在整理…" : "Saving…") : (language === "zh" ? "记住这种做法" : "Remember this approach")}
             </Button>
           </div>
         )}

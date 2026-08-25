@@ -12,6 +12,8 @@ import { isSpawnedChildBody, decompositionChildBody, extractProjectFieldsBlock }
 import { judgmentEvidence } from "./auto-run-judge.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { resolveAutoRunVerifyCommandFor } from "./worktree-verify.mjs";
+import { propagateCompletedWorkGoalTask } from "./work-goal-artifacts.mjs";
+import { verifyWorkItemResult } from "./work-item-result-verification.mjs";
 import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } from "./auto-run-design.mjs";
 import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
 import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
@@ -228,10 +230,15 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
         }));
       }
     }
+    const resultVerification = item.resultVerificationContract?.enforced === true
+      ? verifyWorkItemResult(item)
+      : null;
+    if (resultVerification) item.resultVerification = resultVerification;
     const completionReady = !(item.acceptanceCriteria ?? []).length
       || ((item.acceptanceCriteria ?? []).every((criterion) =>
         (item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed"))
-        && (item.verificationRecords ?? []).some((record) => record.status === "passed"));
+        && (item.verificationRecords ?? []).some((record) => record.status === "passed"))
+      && (!resultVerification || resultVerification.status === "passed");
     const effectiveTargetStatus = targetStatus === "done" && !completionReady ? "review" : targetStatus;
     const targetWaitingOn = ["needs_input", "awaiting_approval"].includes(status)
       ? "me"
@@ -251,6 +258,9 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
           action: "verification_recorded", actorId: "usr_autorun", createdAt: item.updatedAt,
           details: { autoRunId: autoRun.id, verificationId: item.verificationRecords[0].id },
         });
+      }
+      if (effectiveTargetStatus === "done") {
+        propagateCompletedWorkGoalTask({ state, source: item, now });
       }
       continue;
     }
@@ -276,6 +286,9 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
       },
     });
     changed.push(item);
+    if (effectiveTargetStatus === "done") {
+      propagateCompletedWorkGoalTask({ state, source: item, now });
+    }
   }
   return changed;
 }

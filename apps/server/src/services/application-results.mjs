@@ -20,6 +20,7 @@ import { gitCommandIdOf, parseGitApplicationResult } from "./git-result.mjs";
 import { parseMailApplicationResult } from "./mail-result.mjs";
 import { foldMailApplicationResult } from "./mail-facts.mjs";
 import { parsePdfcpuApplicationResult } from "./pdfcpu-result.mjs";
+import { parseWechatDraftResultText } from "./wechat-draft-task-execution.mjs";
 
 const MAX_APPLICATION_RESULTS = 500;
 // The wrapper runner's non-JSON fallback: `{ text: stdout.trim().slice(0, 20000) }`.
@@ -36,6 +37,7 @@ const RESULT_PARSERS = {
   git: ({ capability, text }) => parseGitApplicationResult({ commandId: gitCommandIdOf(capability), text }),
   mail_headers: ({ text }) => parseMailApplicationResult({ text }),
   pdfcpu: ({ capability, text }) => parsePdfcpuApplicationResult({ capability, text }),
+  wechat_official_draft: ({ text }) => parseWechatDraftResultText(text),
 };
 
 export function createApplicationResultImportService({

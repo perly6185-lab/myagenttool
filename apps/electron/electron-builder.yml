@@ -21,6 +21,8 @@ files:
   - node_modules/@modelcontextprotocol/sdk/**
   - node_modules/imapflow/**
   - node_modules/mailparser/**
+  - node_modules/playwright/**
+  - node_modules/playwright-core/**
   - node_modules/zod/**
   - apps/server/package.json
   - apps/server/src/**
@@ -37,10 +39,21 @@ files:
   - tools/agents/**
   - tools/mail-mcp/package.json
   - tools/mail-mcp/src/**
+  - tools/session-engine/package.json
+  - tools/session-engine/src/**
+  - tools/wechat-official-site/package.json
+  - tools/wechat-official-site/src/**
   - tools/ai/package.json
   - tools/ai/src/**
   - "!**/test/**"
   - "!**/*.test.*"
+
+# Keep local macOS packages launchable when a Developer ID certificate is not
+# available. Release builds intended for distribution should override this
+# identity with a Developer ID Application certificate and enable notarization.
+mac:
+  identity: "-"
+  hardenedRuntime: false
 
 win:
   target:

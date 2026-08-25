@@ -86,6 +86,19 @@ test("local ordinary-language tasks require positive work-type evidence", async 
   assert.equal(content.path, "content");
   assert.equal(content.workKind, "content");
 
+  const declaredArticle = await resolveDecision({
+    link: { type: "local_issue", title: "文章创作" },
+    issueBody: "用户完整目标：把今天编码工作写成文章和图片后发布",
+    projectContext: { channelOrigin: true, taskKind: "content_article" },
+  });
+  assert.equal(declaredArticle.path, "content", "coding source context must not turn an article task into development");
+  const declaredImage = await resolveDecision({
+    link: { type: "local_issue", title: "图片创作" },
+    issueBody: "用户完整目标：把今天编码工作写成文章和图片后发布",
+    projectContext: { channelOrigin: true, taskKind: "content_image" },
+  });
+  assert.equal(declaredImage.path, "creative");
+
   const general = await resolveDecision({ link: { type: "local_issue", title: "帮我翻译这段说明" }, projectContext: { channelOrigin: true } });
   assert.equal(general.path, "general");
   assert.equal(general.workKind, "general");

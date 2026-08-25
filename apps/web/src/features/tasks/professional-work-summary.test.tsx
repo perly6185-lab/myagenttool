@@ -92,4 +92,27 @@ describe("ProfessionalWorkSummary", () => {
     expect(screen.getByTestId("professional-work-summary").textContent).toContain("文件保护设置已失效");
     expect(screen.getByTestId("professional-work-summary").textContent).not.toContain("文件保护设置已绑定 ·");
   });
+
+  it("exposes the professional task boundary and governed publication connection", () => {
+    const publishItem = {
+      ...item,
+      taskKind: "content_publish",
+      artifactContract: { consumes: ["platform_package"], produces: ["publication_receipt"] },
+      platformTarget: { id: "wechat_official", label: "公众号" },
+      workGoal: {
+        id: "goal_1", title: "把编码成果整理并发布", statement: "整理并发布", outcome: "形成公开内容",
+        status: "active", planVersion: 1, platforms: [{ id: "wechat_official", label: "公众号" }], progress: { total: 5, completed: 3 },
+      },
+      publicationReadiness: {
+        state: "ready", reason: "governed_publication_capability_ready", platformId: "wechat_official",
+        connection: { applicationId: "app_wechat", applicationName: "公众号发布", facadeId: "publish", displayName: "公众号发布", requiresApproval: true },
+      },
+    } as unknown as LocalWorkItem;
+    render(<ProfessionalWorkSummary item={publishItem} observability={observability} />);
+    const goal = screen.getByTestId("professional-work-goal");
+    expect(goal.textContent).toContain("content_publish");
+    expect(goal.textContent).toContain("platform_package");
+    expect(goal.textContent).toContain("publication_receipt");
+    expect(goal.textContent).toContain("公众号发布");
+  });
 });

@@ -18,6 +18,7 @@ export async function handleLocalContentRoutes({
   previewLocalContent,
   previewLocalContentAsset,
   refreshLocalContent,
+  archiveLocalContent,
   getLocalContentHealth,
   resolveLocalContentOriginal,
   resolveLocalContentContainer,
@@ -101,6 +102,13 @@ export async function handleLocalContentRoutes({
   const refreshMatch = url.pathname.match(/^\/api\/local-content\/([^/]+)\/refresh$/);
   if (req.method === "POST" && refreshMatch) {
     const result = await refreshLocalContent({ contentId: decodeURIComponent(refreshMatch[1]) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const archiveMatch = url.pathname.match(/^\/api\/local-content\/([^/]+)\/archive$/);
+  if (req.method === "POST" && archiveMatch) {
+    const result = await archiveLocalContent({ contentId: decodeURIComponent(archiveMatch[1]) }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }

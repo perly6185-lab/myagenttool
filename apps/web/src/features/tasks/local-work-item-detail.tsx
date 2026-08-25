@@ -48,6 +48,7 @@ import { WorkItemSectionNav } from "./work-item-section-nav";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
 import { ProfessionalWorkSummary } from "./professional-work-summary";
 import { readableAutoRunReadinessCheck } from "./auto-run-readiness-ui";
+import { isLocalWorkItem } from "./work-item-response";
 
 const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
 const WorkItemFollowUpFields = lazy(() => import("./work-item-follow-up-fields")
@@ -93,6 +94,7 @@ export function LocalWorkItemDetail({
   const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((state) => state.setSection);
+  const openWorkItem = useUiStore((state) => state.openWorkItem);
   const setSelectedProjectId = useUiStore((state) => state.setSelectedProjectId);
   const setSelectedWorktreeId = useUiStore((state) => state.setSelectedWorktreeId);
   const storedWorkItemSection = useUiStore((state) => state.selectedWorkItemSection) ?? "overview";
@@ -134,6 +136,7 @@ export function LocalWorkItemDetail({
   const [selectedExecutionAgentId, setSelectedExecutionAgentId] = useState("");
   const [articleImportJobs, setArticleImportJobs] = useState<Record<string, ArticleImportJob>>({});
   const [articleAnalysis, setArticleAnalysis] = useState<ArticleAnalysis | null>(null);
+  const [articleAnalysisWorkItemId, setArticleAnalysisWorkItemId] = useState<string | null>(null);
   const [similarArticles, setSimilarArticles] = useState<ArticleSimilaritySearch | null>(null);
   const [articleDerivatives, setArticleDerivatives] = useState<Record<string, ArticleDerivative>>({});
   const [articleDerivativeDialog, setArticleDerivativeDialog] = useState<{
@@ -189,6 +192,7 @@ export function LocalWorkItemDetail({
         api.listWorkItems() as Promise<LocalWorkItemResult>,
       ]);
       const next = detail.workItem;
+      if (!isLocalWorkItem(next)) throw new Error("invalid_work_item_response");
       syncDraft(next);
       setComments(commentResult.comments);
       setActivity(activityResult.activities);
@@ -208,8 +212,8 @@ export function LocalWorkItemDetail({
           }));
       }
       setLoadError(null);
-    } catch (caught) {
-      setLoadError(caught instanceof Error ? caught.message : t("taskLocal.loadFailed"));
+    } catch {
+      setLoadError(t("taskLocal.loadFailed"));
     }
   };
 
@@ -287,7 +291,10 @@ export function LocalWorkItemDetail({
   }, [dirty]);
 
   if (!item) {
-    return <p className={cn("text-sm", loadError ? "text-destructive" : "text-muted-foreground")}>{loadError ?? t("tasks.loading")}</p>;
+    return <div className="grid justify-items-center gap-3 py-8 text-center">
+      <p className={cn("text-sm", loadError ? "text-destructive" : "text-muted-foreground")} role={loadError ? "alert" : "status"}>{loadError ?? t("tasks.loading")}</p>
+      {loadError ? <Button variant="secondary" onClick={() => void load()}>{i18n.language.startsWith("zh") ? "重新加载" : "Try again"}</Button> : null}
+    </div>;
   }
 
   const save = (afterSave?: () => void) => {
@@ -408,8 +415,10 @@ export function LocalWorkItemDetail({
       const result = await articleApi.analyze(item.id, jobId) as {
         analysis: ArticleAnalysis;
         analysisPath: string;
+        workItem?: { id: string };
       };
       setArticleAnalysis(result.analysis);
+      setArticleAnalysisWorkItemId(result.workItem?.id ?? null);
       return result;
     }).then((ok) => {
       if (!ok) return;
@@ -1329,11 +1338,12 @@ export function LocalWorkItemDetail({
         <Suspense fallback={null}>
           <ArticleWorkflowDialogs
             analysis={articleAnalysis}
+            analysisWorkItemId={articleAnalysisWorkItemId}
             similarArticles={similarArticles}
             derivativeContext={articleDerivativeDialog}
             derivative={articleDerivative}
             pending={pending}
-            onCloseAnalysis={() => setArticleAnalysis(null)}
+            onCloseAnalysis={() => { setArticleAnalysis(null); setArticleAnalysisWorkItemId(null); }}
             onCloseSimilarity={() => setSimilarArticles(null)}
             onCloseDerivative={() => {
               setArticleDerivativeDialog(null);
@@ -1341,6 +1351,7 @@ export function LocalWorkItemDetail({
             }}
             onOpenSimilar={openSimilarArticle}
             onOpenOutput={openOutputAsset}
+            onOpenTask={(targetId) => openWorkItem(targetId)}
             onCreateDerivative={createArticleDerivative}
           />
         </Suspense>

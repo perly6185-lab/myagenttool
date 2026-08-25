@@ -41,6 +41,7 @@ import {
 } from "./task-view-types";
 import { WorktreeOptionsForm } from "./worktree-options-form";
 import { deriveWorkItemUserStatus, type WorkItemUserStatus } from "./work-item-user-status";
+import { WorkItemViewSwitch } from "./work-item-view-switch";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
 
@@ -269,9 +270,13 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const storedSelectedLocalMode = useUiStore((state) => state.selectedWorkItemMode) ?? "summary";
   const persistSelectedLocalMode = useUiStore((state) => state.setSelectedWorkItemMode);
   const preferredLocalMode = useUiStore((state) => state.workItemDetailPreference) ?? "summary";
+  const composerDraftTask = useUiStore((state) => state.composerDraftTask);
   const setComposerDraftTask = useUiStore((state) => state.setComposerDraftTask);
   const [selectedLocalId, setSelectedLocalIdState] = useState<string | null>(storedSelectedLocalId ?? null);
   const [selectedLocalMode, setSelectedLocalModeState] = useState(storedSelectedLocalId ? storedSelectedLocalMode : "summary");
+  useEffect(() => {
+    if (localOnly && composerDraftTask?.trim()) setCreateLocalOpen(true);
+  }, [composerDraftTask, localOnly]);
   const setSelectedLocalId = (id: string | null) => {
     setSelectedLocalIdState(id);
     persistSelectedLocalId?.(id);
@@ -1090,6 +1095,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
             <HomeTaskComposer
               inline
               showTrigger={false}
+              draftGoal={composerDraftTask}
+              onDraftGoalApplied={() => setComposerDraftTask(null)}
               projectId={state?.currentProjectId ?? projects[0]?.id ?? null}
               projectName={projects.find((item) => item.id === (state?.currentProjectId ?? projects[0]?.id))?.name}
               projects={projects.map((item) => ({ id: item.id, name: item.name }))}
@@ -1107,7 +1114,10 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                 setTab("local");
                 setSelectedLocalId(workItemId);
               }}
-              onOpenSetup={(section) => navigate(section)}
+              onOpenSetup={(section, draft) => {
+                if (draft?.trim()) setComposerDraftTask(draft);
+                navigate(section);
+              }}
               onOpenProjects={() => {
                 setCreateLocalOpen(false);
                 navigate("projects");
@@ -1185,6 +1195,14 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
       }} title={i18n.language.startsWith("zh") ? "任务详情" : t("taskLocal.details")} size={selectedLocalMode === "expert" ? "full" : "2xl"}>
         {selectedLocalId ? (
           <div className="space-y-4">
+            <div className="flex justify-end">
+              <WorkItemViewSwitch
+                mode={selectedLocalMode}
+                language={i18n.language.startsWith("zh") ? "zh" : "en"}
+                disabled={selectedLocalDirty}
+                onChange={setSelectedLocalMode}
+              />
+            </div>
             {importHandoff?.workItemId === selectedLocalId ? (
               <div className="flex flex-col gap-2 rounded-lg border border-success/35 bg-success/[0.06] p-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="status">
                 <div>
@@ -1248,9 +1266,6 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
               </>
             ) : (
               <>
-                <Button size="sm" variant="ghost" disabled={selectedLocalDirty} onClick={() => setSelectedLocalMode("summary")}>
-                  ← {i18n.language.startsWith("zh") ? "返回任务摘要" : "Back to task summary"}
-                </Button>
                 <LocalWorkItemDetail
                   workItemId={selectedLocalId}
                   projects={projects}

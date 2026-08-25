@@ -53,6 +53,9 @@ export async function handleWorkItemRoutes({
   updateAttention,
   githubSyncDiagnostics,
   suggestWorkItemDraft,
+  previewIntentTaskPlan,
+  commitIntentTaskPlan,
+  createResultRepairTask,
   listMyTemplateRoutingFeedback,
   removeMyTemplateRoutingFeedback,
   previewMyTemplateDraft,
@@ -287,6 +290,18 @@ export async function handleWorkItemRoutes({
 
   if (url.pathname === "/api/work-items/assist/draft" && req.method === "POST") {
     const result = suggestWorkItemDraft(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/assist/intent-plan" && req.method === "POST") {
+    const result = previewIntentTaskPlan(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/assist/intent-plan/commit" && req.method === "POST") {
+    const result = commitIntentTaskPlan(await readJson(req), actor);
     sendJson(res, result.status, result.body);
     return true;
   }
@@ -606,6 +621,15 @@ export async function handleWorkItemRoutes({
     } else {
       sendJson(res, result.status, result.body);
     }
+    return true;
+  }
+
+  const resultRepairMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/result-repair$/);
+  if (resultRepairMatch && req.method === "POST") {
+    const result = createResultRepairTask({
+      workItemId: decodeURIComponent(resultRepairMatch[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
     return true;
   }
 

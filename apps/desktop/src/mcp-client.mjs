@@ -60,17 +60,26 @@ export function buildMcpChildEnv(adapter) {
   }
   const explicit = adapter && typeof adapter.env === "object" && !Array.isArray(adapter.env) ? adapter.env : {};
   for (const [key, value] of Object.entries(explicit)) env[String(key)] = String(value);
-  // Packaged Electron is also the app's trusted Node runtime. Only the exact
-  // shell-provided mail entry may opt into ELECTRON_RUN_AS_NODE; the
+  // Packaged Electron is also the app's trusted Node runtime. Only exact
+  // shell-provided bundled entries may opt into ELECTRON_RUN_AS_NODE; the
   // control-plane adapter remains environment-free (ADR 0010), and an
   // arbitrary MCP registration cannot acquire this process mode.
-  const trustedMailEntry = String(process.env.MYAGENTTOOL_MAIL_MCP_ENTRY ?? "");
-  const trustedMailNode = String(process.env.MYAGENTTOOL_MAIL_MCP_NODE ?? "");
-  if (
-    process.env.MYAGENTTOOL_MAIL_MCP_ELECTRON_RUN_AS_NODE === "1"
-    && sameExecutablePath(adapter?.command, trustedMailNode)
-    && sameExecutablePath(adapter?.args?.[0], trustedMailEntry)
-  ) {
+  const trustedElectronNodeAdapters = [
+    {
+      enabled: process.env.MYAGENTTOOL_MAIL_MCP_ELECTRON_RUN_AS_NODE === "1",
+      entry: process.env.MYAGENTTOOL_MAIL_MCP_ENTRY,
+      command: process.env.MYAGENTTOOL_MAIL_MCP_NODE,
+    },
+    {
+      enabled: process.env.MYAGENTTOOL_WECHAT_OFFICIAL_MCP_ELECTRON_RUN_AS_NODE === "1",
+      entry: process.env.MYAGENTTOOL_WECHAT_OFFICIAL_MCP_ENTRY,
+      command: process.env.MYAGENTTOOL_WECHAT_OFFICIAL_MCP_NODE,
+    },
+  ];
+  if (trustedElectronNodeAdapters.some((candidate) =>
+    candidate.enabled
+    && sameExecutablePath(adapter?.command, candidate.command)
+    && sameExecutablePath(adapter?.args?.[0], candidate.entry))) {
     env.ELECTRON_RUN_AS_NODE = "1";
   }
   return env;

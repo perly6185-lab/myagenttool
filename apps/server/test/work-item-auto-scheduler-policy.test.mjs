@@ -84,6 +84,28 @@ test("blocked work does not prevent the next eligible item from being selected",
   assert.deepEqual(plan.decisions.find((row) => row.workItemId === "blocked").reasons, ["dependencies_unresolved"]);
 });
 
+test("a completed dependency does not unlock a goal task until its required artifact is attached", () => {
+  const dependency = item("digest", { status: "done", state: "closed" });
+  const article = item("article", {
+    workGoalId: "goal_content",
+    dependencyIds: [dependency.id],
+    artifactContract: { consumes: ["coding_digest"], produces: ["article_draft"] },
+  });
+  const missing = planAutoExecutionQueue([dependency, article], { projects, today: "2026-08-08", now: NOW });
+  const missingDecision = missing.decisions.find((row) => row.workItemId === "article");
+  assert.deepEqual(missingDecision.reasons, ["artifacts_unavailable"]);
+  assert.deepEqual(missingDecision.unresolvedArtifactKinds, ["coding_digest"]);
+
+  article.artifactHandoffs = [{
+    sourceWorkItemId: dependency.id,
+    kinds: ["coding_digest"],
+    assetIds: ["delivery_digest"],
+    status: "attached",
+  }];
+  const ready = planAutoExecutionQueue([dependency, article], { projects, today: "2026-08-08", now: NOW });
+  assert.equal(ready.decisions.find((row) => row.workItemId === "article").eligible, true);
+});
+
 test("project policy is inherited and explicit task pause wins", () => {
   const disabled = evaluateAutoExecutionCandidate(item("disabled"), {
     project: { id: "prj_auto", autoExecutionEnabled: false }, today: "2026-08-08", now: NOW,

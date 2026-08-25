@@ -1,0 +1,107 @@
+import { describe, expect, it } from "vitest";
+import type { ChannelTaskThread } from "@/lib/console-state";
+import { channelTaskUserState } from "./channel-task-user-state";
+
+function thread(overrides: Partial<ChannelTaskThread> = {}): ChannelTaskThread {
+  return {
+    id: "thread_1",
+    channelId: "channel_1",
+    conversationId: "conversation_1",
+    sourceEventIds: [],
+    messages: [],
+    summary: "整理文章",
+    status: "queued",
+    ...overrides,
+  };
+}
+
+describe("channelTaskUserState", () => {
+  it("prioritizes an undelivered result over the completed task state", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "succeeded", resultSummary: "已生成结果" }),
+      delivery: { id: "delivery_1", channelId: "channel_1", conversationId: "conversation_1", status: "failed_terminal", attempts: 3 },
+    });
+
+    expect(result.label).toBe("结果未送达");
+    expect(result.action).toBe("retry_delivery");
+  });
+
+  it("turns a failed task with a retry action into a clear next step", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "failed" }),
+      task: { id: "task_1", channelId: "channel_1", projectId: "project_1", issueNumber: 1, title: "整理文章", status: "routed", stage: "run_failed", actions: { retry: true, reroute: false, takeover: false } },
+    });
+
+    expect(result.label).toBe("执行失败");
+    expect(result.actionLabel).toBe("重试任务");
+  });
+
+  it("keeps confirmation guidance in the channel instead of exposing internal controls", () => {
+    const result = channelTaskUserState({ thread: thread({ status: "awaiting_confirmation" }) });
+
+    expect(result.nextStep).toContain("微信回复“确认”");
+    expect(result.action).toBe("reply_in_channel");
+  });
+
+  it("makes a pending correction distinct from a first-run confirmation", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "awaiting_confirmation", revisionId: "revision_1" }),
+      revision: { id: "revision_1", channelId: "channel_1", conversationId: "conversation_1", threadId: "thread_1", revision: 2, type: "output_style_correction", status: "awaiting_confirmation", feedback: "格式不对，请保持原样" },
+    });
+
+    expect(result.label).toBe("等待确认修改");
+    expect(result.nextStep).toContain("格式不对，请保持原样");
+  });
+
+  it("sends an expired WeChat login to the site-login view", () => {
+    const result = channelTaskUserState({ thread: thread({ status: "needs_attention", attentionReason: "wechat_login_required" }) });
+    expect(result.label).toBe("需要登录公众号");
+    expect(result.action).toBe("open_sessions");
+  });
+
+  it("requires draft-box reconciliation instead of presenting a blind retry", () => {
+    const result = channelTaskUserState({ thread: thread({ status: "needs_attention", attentionReason: "wechat_draft_outcome_unknown" }) });
+    expect(result.label).toBe("等待核对草稿");
+    expect(result.nextStep).toContain("确认没有草稿后");
+    expect(result.action).toBeNull();
+  });
+
+  it("explains that upstream work is still preparing without asking for duplicate input", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "waiting_upstream", dependencyTaskTitles: ["文章创作"] }),
+    });
+    expect(result.label).toBe("等待前置结果");
+    expect(result.nextStep).toContain("文章创作");
+    expect(result.nextStep).toContain("不需要重复发送");
+  });
+
+  it("keeps an upstream failure local and tells the user what must recover", () => {
+    const result = channelTaskUserState({
+      thread: thread({
+        status: "needs_attention",
+        waitingFor: "upstream_unavailable",
+        attentionReason: "upstream_failed",
+        upstreamBlockers: [{ sourceWorkItemId: "work_image", title: "图片创作", cause: "failed" }],
+      }),
+    });
+    expect(result.label).toBe("等待上游恢复");
+    expect(result.nextStep).toContain("图片创作");
+    expect(result.nextStep).toContain("其他独立任务不受影响");
+    expect(result.action).toBeNull();
+  });
+
+  it("surfaces a failed result check instead of calling a completed task successful", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "succeeded", workItemId: "work_1" }),
+      task: {
+        id: "task_1", channelId: "channel_1", projectId: "project_1", issueNumber: 1,
+        title: "生成文章", status: "done", stage: "run_succeeded",
+        resultVerification: { status: "failed", summary: "文章需要至少 3 个章节" },
+        actions: { retry: false, reroute: false, takeover: false },
+      },
+    });
+    expect(result.label).toBe("结果需要检查");
+    expect(result.nextStep).toContain("文章需要至少 3 个章节");
+    expect(result.actionLabel).toBe("查看检查结果");
+  });
+});

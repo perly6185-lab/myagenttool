@@ -378,6 +378,13 @@ test("indexes a managed Channel article as the producing task's governed output"
       contentId: managedContentId,
       relativePath: "assets/001-preview.png",
     }, { ...actor, teamId: "team_2" })).status, 404);
+
+    const archived = await fx.service.archive({ contentId: managedContentId }, actor);
+    assert.equal(archived.status, 200);
+    assert.equal(archived.body.originalDeleted, false);
+    assert.equal(existsSync(managedFile), true);
+    assert.equal((await fx.service.search({ query: "iLink 收纳" }, actor)).body.results.some((item) => item.id === managedContentId), false);
+    assert.equal((await fx.service.preview({ contentId: managedContentId }, actor)).status, 200);
   } finally {
     await fx.cleanup();
   }
@@ -1222,6 +1229,21 @@ test("local content routes bind bounded query parameters and rebuild requests", 
   });
   assert.equal(refreshHandled, true);
   assert.deepEqual(captured[5], { input: { contentId: "lc_refresh" }, routeActor: actor });
+
+  const archiveHandled = await handleLocalContentRoutes({
+    req: { method: "POST" },
+    res,
+    url: new URL("http://local/api/local-content/lc_archive/archive"),
+    sendJson,
+    readJson: async () => ({}),
+    actor,
+    archiveLocalContent: async (input, routeActor) => {
+      captured.push({ input, routeActor });
+      return { status: 200, body: { archived: true, originalDeleted: false } };
+    },
+  });
+  assert.equal(archiveHandled, true);
+  assert.deepEqual(captured[6], { input: { contentId: "lc_archive" }, routeActor: actor });
 
   let revealedTarget = null;
   const revealHandled = await handleLocalContentRoutes({

@@ -20,6 +20,137 @@ import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection
 
 type CreateMode = "task" | "ai";
 
+type IntentPlanTask = {
+  key: string;
+  kind: string;
+  title: string;
+  outcome: string;
+  requires: string[];
+  approvalRequired: boolean;
+  platform?: { id: string; label: string } | null;
+  externalSource?: { workItemId: string; localRef: string; title: string; artifactKinds: string[] };
+};
+
+type IntentSourceCandidate = {
+  workItemId: string;
+  localRef: string;
+  title: string;
+  completedAt: string | null;
+  artifactKinds: string[];
+  outputCount: number;
+  ready?: boolean;
+  readyArtifactKinds?: string[];
+  validationErrors?: string[];
+};
+
+type IntentTaskPlan = {
+  plan: {
+    tasks: IntentPlanTask[];
+    clarification?: { kind: string; prompt: string } | null;
+    sourceSelection?: {
+      required: boolean;
+      candidates: IntentSourceCandidate[];
+      selected: IntentSourceCandidate | null;
+      unavailable: boolean;
+      query?: string;
+    } | null;
+    excludedKinds?: string[];
+    excludedTaskKeys?: string[];
+  };
+  summary: {
+    taskCount: number;
+    requiresRepository: boolean;
+    approvalTaskCount: number;
+    canCommit: boolean;
+    canStartAi?: boolean;
+    capabilityBlockers?: Array<{ taskKind: string; requiredCapability: string; reason: string; setupSection?: SectionKey | null }>;
+    nextStep: string;
+  };
+};
+
+type PreservedIntentPlanDraft = {
+  version: 1;
+  projectId: string;
+  goal: string;
+  dueDate: string;
+  criteria: string;
+  verificationSop: string;
+  planReviewed: boolean;
+  intentPlan: IntentTaskPlan | null;
+  sourceWorkItemId: string | null;
+  sourceQuery: string;
+  excludedTasks: Array<{ key: string; kind: string; title: string }>;
+  savedAt: number;
+};
+
+const PLAN_DRAFT_TTL_MS = 30 * 60 * 1000;
+const planDraftKey = (projectId: string) => `myagenttool:intent-plan-draft:v1:${projectId}`;
+
+function readPreservedPlanDraft(projectId: string | null): PreservedIntentPlanDraft | null {
+  if (!projectId || typeof window === "undefined") return null;
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(planDraftKey(projectId)) ?? "null") as PreservedIntentPlanDraft | null;
+    if (!value || value.version !== 1 || value.projectId !== projectId || Date.now() - value.savedAt > PLAN_DRAFT_TTL_MS) return null;
+    if (value.intentPlan && !isIntentTaskPlan(value.intentPlan)) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function clearPreservedPlanDraft(projectId: string | null) {
+  if (!projectId || typeof window === "undefined") return;
+  window.sessionStorage.removeItem(planDraftKey(projectId));
+}
+
+function isIntentTaskPlan(value: unknown): value is IntentTaskPlan {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<IntentTaskPlan>;
+  const plan = candidate.plan;
+  const summary = candidate.summary;
+  if (!plan || typeof plan !== "object" || !Array.isArray(plan.tasks)) return false;
+  if (!summary || typeof summary !== "object") return false;
+  if (!Number.isInteger(summary.taskCount) || Number(summary.taskCount) < 0) return false;
+  if (typeof summary.requiresRepository !== "boolean"
+    || !Number.isInteger(summary.approvalTaskCount)
+    || typeof summary.canCommit !== "boolean"
+    || typeof summary.nextStep !== "string") return false;
+  if (summary.taskCount !== plan.tasks.length) return false;
+  if (summary.canStartAi !== undefined && typeof summary.canStartAi !== "boolean") return false;
+  if (summary.capabilityBlockers !== undefined && (!Array.isArray(summary.capabilityBlockers)
+    || !summary.capabilityBlockers.every((blocker) => Boolean(blocker)
+      && typeof blocker.taskKind === "string"
+      && typeof blocker.requiredCapability === "string"
+      && typeof blocker.reason === "string"))) return false;
+  if (plan.clarification !== undefined && plan.clarification !== null
+    && (typeof plan.clarification !== "object" || typeof plan.clarification.prompt !== "string")) return false;
+  if (plan.sourceSelection !== undefined && plan.sourceSelection !== null
+    && (typeof plan.sourceSelection !== "object"
+      || typeof plan.sourceSelection.required !== "boolean"
+      || !Array.isArray(plan.sourceSelection.candidates)
+      || !plan.sourceSelection.candidates.every((candidate) => Boolean(candidate)
+        && typeof candidate.workItemId === "string"
+        && typeof candidate.localRef === "string"
+        && typeof candidate.title === "string"
+        && Array.isArray(candidate.artifactKinds)
+        && typeof candidate.outputCount === "number"))) return false;
+  return plan.tasks.every((task) => Boolean(task)
+    && typeof task.key === "string"
+    && typeof task.kind === "string"
+    && typeof task.title === "string"
+    && typeof task.outcome === "string"
+    && Array.isArray(task.requires)
+    && task.requires.every((dependency) => typeof dependency === "string")
+    && typeof task.approvalRequired === "boolean"
+    && (task.externalSource === undefined || (Boolean(task.externalSource)
+      && typeof task.externalSource.workItemId === "string"
+      && typeof task.externalSource.localRef === "string"
+      && typeof task.externalSource.title === "string"
+      && Array.isArray(task.externalSource.artifactKinds)))
+    && (task.platform === undefined || task.platform === null
+      || (typeof task.platform === "object" && typeof task.platform.id === "string" && typeof task.platform.label === "string")));
+}
+
 type MyTemplateCandidate = {
   templateId: string;
   definitionId: string;
@@ -112,7 +243,7 @@ export function HomeTaskComposer({
   readOnly?: boolean;
   onCreated: () => void;
   onOpenTask: (workItemId: string) => void;
-  onOpenSetup?: (section: SectionKey) => void;
+  onOpenSetup?: (section: SectionKey, draftGoal?: string) => void;
   onOpenProjects?: () => void;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -173,12 +304,22 @@ export function HomeTaskComposer({
     attachmentRejected: "部分文件未能添加。单个文件不能超过 50MB，最多添加 6 个非空文件。",
     attachmentUploadFailed: "参考文件上传失败，任务尚未创建。请重试或先移除文件。",
     create: "仅保存",
+    confirmSave: "确认并保存",
     prepareAi: "交给 AI",
     confirmAi: "确认并启动 AI",
     preparing: "正在生成方案…",
     creating: "正在创建…",
     created: "任务已创建并加入看板。",
     aiStarted: "任务已创建，AI 会自动处理；需要你时会提醒。",
+    planTitle: "我理解为这些任务",
+    planHint: "每项任务独立执行；只有确实需要前一步产物时才会串联。",
+    planApproval: "到这里会先问你",
+    sourceTitle: "选择要沿用的已有结果",
+    sourceHint: "系统不会替你猜。选择后，新任务会记录真实依赖并使用这份结果。",
+    sourceSelected: "将使用",
+    removeTask: "从方案移除 {{name}}",
+    removedTasks: "已从本次方案移除",
+    restoreTask: "恢复 {{name}}",
     failed: "任务创建失败，请检查项目和网络状态后重试。",
     preflight: "执行前检查",
     preflightChecking: "正在确认 AI、代码仓库和安全开关…",
@@ -187,6 +328,10 @@ export function HomeTaskComposer({
     preflightUnavailable: "暂时无法完成执行前检查，请重新检查。",
     preflightRetry: "重新检查",
     preflightSetup: "去设置并修复",
+    capabilityBlocked: "当前还缺少完成这类任务的专业能力。你可以先保存任务，配置完成后再交给 AI。",
+    capabilityTitle: "还需要配置专业能力",
+    capabilitySetup: "去配置能力",
+    capabilityRetry: "配置好了，重新检查",
     projectChanged: "项目已切换，原项目的参考文件已清除。",
     projectSwitchFailed: "项目切换失败，仍保留原项目。",
     openProjects: "打开项目设置",
@@ -243,12 +388,22 @@ export function HomeTaskComposer({
     attachmentRejected: "Some files could not be added. Each file must be non-empty and under 50MB; up to 6 files are allowed.",
     attachmentUploadFailed: "Reference files could not be uploaded, so the task was not created. Retry or remove the files.",
     create: "Save only",
+    confirmSave: "Confirm and save",
     prepareAi: "Let AI handle it",
     confirmAi: "Confirm and start AI",
     preparing: "Generating plan…",
     creating: "Creating…",
     created: "Task created and added to your boards.",
     aiStarted: "Task created. AI will work automatically and notify you only when needed.",
+    planTitle: "I understand this as these tasks",
+    planHint: "Each task runs independently unless it genuinely needs an earlier result.",
+    planApproval: "Will ask you here",
+    sourceTitle: "Choose an existing result",
+    sourceHint: "The system will not guess. The new task will record a real dependency on the result you choose.",
+    sourceSelected: "Will use",
+    removeTask: "Remove {{name}} from this plan",
+    removedTasks: "Removed from this plan",
+    restoreTask: "Restore {{name}}",
     failed: "The task could not be created. Check the project and connection, then retry.",
     preflight: "Preflight",
     preflightChecking: "Checking the AI, repository, and safety controls…",
@@ -257,6 +412,10 @@ export function HomeTaskComposer({
     preflightUnavailable: "Preflight could not be completed. Recheck before starting AI.",
     preflightRetry: "Recheck",
     preflightSetup: "Open setup and fix",
+    capabilityBlocked: "A specialized capability is still required. You can save the task now and start AI after setup.",
+    capabilityTitle: "Specialized capability required",
+    capabilitySetup: "Set up capability",
+    capabilityRetry: "Configured — recheck",
     projectChanged: "The project changed, so reference files from the previous project were cleared.",
     projectSwitchFailed: "The project could not be switched, so the previous project remains active.",
     openProjects: "Open project setup",
@@ -281,6 +440,10 @@ export function HomeTaskComposer({
   const [readiness, setReadiness] = useState<AutoRunReadiness | null>(null);
   const [readinessLoading, setReadinessLoading] = useState(false);
   const [planReviewed, setPlanReviewed] = useState(false);
+  const [intentPlan, setIntentPlan] = useState<IntentTaskPlan | null>(null);
+  const [sourceWorkItemId, setSourceWorkItemId] = useState<string | null>(null);
+  const [sourceQuery, setSourceQuery] = useState("");
+  const [excludedTasks, setExcludedTasks] = useState<Array<{ key: string; kind: string; title: string }>>([]);
   const [templateMatch, setTemplateMatch] = useState<MyTemplateMatch | null>(null);
   const [internalOpen, setInternalOpen] = useState(false);
   const open = openProp ?? internalOpen;
@@ -305,7 +468,12 @@ export function HomeTaskComposer({
   const capacityBlocked = readiness?.checks.some((check) => check.status === "blocked" && check.key === "capacity") ?? false;
   const queueReady = readinessBlocking.length === 0 && (readiness?.ready === true || capacityBlocked);
   const templateNeedsClarification = planReviewed && templateMatch?.state === "ambiguous";
-  const canCreateWithAi = canCreate && queueReady && !readinessLoading && !templateNeedsClarification;
+  const repositoryCheckRequired = planReviewed && intentPlan?.summary.requiresRepository === true;
+  const canCreateWithAi = canCreate
+    && (!repositoryCheckRequired || (queueReady && !readinessLoading))
+    && intentPlan?.summary.canCommit !== false
+    && intentPlan?.summary.canStartAi !== false
+    && !templateNeedsClarification;
   const dirty = Boolean(goal.trim() || dueDate || criteria.trim() || verificationSop.trim() || attachments.length);
 
   useEffect(() => {
@@ -382,11 +550,14 @@ export function HomeTaskComposer({
       idempotencyKey.current = null;
       setFeedback(null);
       setPlanReviewed(false);
+      setIntentPlan(null);
+      setSourceWorkItemId(null);
+      setSourceQuery("");
+      setExcludedTasks([]);
       setTemplateMatch(null);
       setAttachmentFeedback(hadAttachments ? copy.projectChanged : null);
     }
     setReadiness(null);
-    void loadReadiness(projectId);
     // The project boundary deliberately invalidates draft state exactly once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, unavailable, readOnly]);
@@ -394,13 +565,70 @@ export function HomeTaskComposer({
   useEffect(() => {
     const next = draftGoal?.trim();
     if (!next) return;
+    const preserved = readPreservedPlanDraft(projectId);
+    if (preserved && preserved.goal.trim() === next) {
+      setGoal(preserved.goal);
+      setDueDate(preserved.dueDate);
+      setCriteria(preserved.criteria);
+      setVerificationSop(preserved.verificationSop);
+      setPlanReviewed(preserved.planReviewed);
+      setIntentPlan(preserved.intentPlan);
+      setSourceWorkItemId(preserved.sourceWorkItemId);
+      setSourceQuery(preserved.sourceQuery ?? "");
+      setExcludedTasks(preserved.excludedTasks);
+      setTemplateMatch(null);
+      setFeedback(null);
+      onMobileOpenChange?.(true);
+      onDraftGoalApplied?.();
+      return;
+    }
     setGoal(next);
     onMobileOpenChange?.(true);
     setPlanReviewed(false);
+    setIntentPlan(null);
+    setSourceWorkItemId(null);
+    setSourceQuery("");
+    setExcludedTasks([]);
     setTemplateMatch(null);
     setFeedback(null);
     onDraftGoalApplied?.();
-  }, [draftGoal, onDraftGoalApplied]);
+  }, [draftGoal, onDraftGoalApplied, onMobileOpenChange, projectId]);
+
+  useEffect(() => {
+    if (draftGoal?.trim() || !projectId) return;
+    const preserved = readPreservedPlanDraft(projectId);
+    if (!preserved) return;
+    setGoal(preserved.goal);
+    setDueDate(preserved.dueDate);
+    setCriteria(preserved.criteria);
+    setVerificationSop(preserved.verificationSop);
+    setPlanReviewed(preserved.planReviewed);
+    setIntentPlan(preserved.intentPlan);
+    setSourceWorkItemId(preserved.sourceWorkItemId);
+    setSourceQuery(preserved.sourceQuery ?? "");
+    setExcludedTasks(preserved.excludedTasks);
+    setTemplateMatch(null);
+    onMobileOpenChange?.(true);
+  }, [draftGoal, onMobileOpenChange, projectId]);
+
+  function preservePlanForSetup() {
+    if (!projectId || typeof window === "undefined") return;
+    const value: PreservedIntentPlanDraft = {
+      version: 1,
+      projectId,
+      goal,
+      dueDate,
+      criteria,
+      verificationSop,
+      planReviewed,
+      intentPlan,
+      sourceWorkItemId,
+      sourceQuery,
+      excludedTasks,
+      savedAt: Date.now(),
+    };
+    window.sessionStorage.setItem(planDraftKey(projectId), JSON.stringify(value));
+  }
 
   function rememberDraft(next: TaskMaterialDraft) {
     if (!materialDraft.current || next.revision >= materialDraft.current.revision) materialDraft.current = next;
@@ -449,6 +677,10 @@ export function HomeTaskComposer({
     if (result.selected.length) {
       idempotencyKey.current = null;
       setPlanReviewed(false);
+      setIntentPlan(null);
+      setSourceWorkItemId(null);
+      setSourceQuery("");
+      setExcludedTasks([]);
       setTemplateMatch(null);
       setFeedback(null);
       setAttachments((current) => [...current, ...result.selected].slice(0, MAX_TASK_MATERIALS));
@@ -470,120 +702,153 @@ export function HomeTaskComposer({
     }
     idempotencyKey.current = null;
     setPlanReviewed(false);
+    setIntentPlan(null);
+    setSourceWorkItemId(null);
+    setSourceQuery("");
+    setExcludedTasks([]);
     setTemplateMatch(null);
     setFeedback(null);
     setAttachments((current) => current.filter((candidate) => candidate.id !== item.id));
     setAttachmentFeedback(null);
   }
 
-  async function create(mode: CreateMode) {
+  async function create(mode: CreateMode, {
+    forcePreview = false,
+    sourceWorkItemIdOverride,
+    excludeKindsOverride,
+    excludeTaskKeysOverride,
+    sourceQueryOverride,
+  }: {
+    forcePreview?: boolean;
+    sourceWorkItemIdOverride?: string | null;
+    excludeKindsOverride?: string[];
+    excludeTaskKeysOverride?: string[];
+    sourceQueryOverride?: string;
+  } = {}) {
     if (!projectId || !title || pendingMode) return;
     setPendingMode(mode);
     setFeedback(null);
     const key = idempotencyKey.current ?? clientKey();
     idempotencyKey.current = key;
-    let created: LocalWorkItem | null = null;
-    let effectiveCriteria = criteria;
-    let effectiveVerificationSop = verificationSop;
-    let effectiveTemplateMatch = templateMatch;
     try {
       if (!filesReady) return;
-      if (mode === "ai") {
-        const latestReadiness = await loadReadiness(projectId);
+      const draft = materialDraft.current;
+      const effectiveSourceWorkItemId = sourceWorkItemIdOverride === undefined ? sourceWorkItemId : sourceWorkItemIdOverride;
+      const effectiveExcludeKinds = excludeKindsOverride ?? [];
+      const effectiveExcludeTaskKeys = excludeTaskKeysOverride ?? excludedTasks.map((task) => task.key);
+      const effectiveSourceQuery = sourceQueryOverride ?? sourceQuery;
+      if (forcePreview || !planReviewed || !intentPlan) {
+        const plannedResponse: unknown = await api.previewWorkItemIntentPlan({
+          projectId,
+          title,
+          body: goal.trim(),
+          ...(attachments.length && draft ? {
+            materialDraftId: draft.id,
+            materialDraftRevision: draft.revision,
+          } : {}),
+          ...(effectiveSourceWorkItemId ? { sourceWorkItemId: effectiveSourceWorkItemId } : {}),
+          ...(effectiveSourceQuery ? { sourceQuery: effectiveSourceQuery } : {}),
+          ...(effectiveExcludeKinds.length ? { excludeKinds: effectiveExcludeKinds } : {}),
+          ...(effectiveExcludeTaskKeys.length ? { excludeTaskKeys: effectiveExcludeTaskKeys } : {}),
+        });
         if (projectIdRef.current !== projectId) return;
-        const latestBlocking = latestReadiness?.checks.some((check) => check.status === "blocked" && check.key !== "capacity") ?? true;
-        const latestCapacityBlocked = latestReadiness?.checks.some((check) => check.status === "blocked" && check.key === "capacity") ?? false;
-        const latestQueueReady = !latestBlocking && (latestReadiness?.ready === true || latestCapacityBlocked);
-        if (!latestQueueReady) {
-          setFeedback({ tone: "warning", text: copy.preflightBlocked });
+        if (!isIntentTaskPlan(plannedResponse)) throw new Error("intent_plan_invalid");
+        const planned = plannedResponse;
+        setIntentPlan(planned);
+        setPlanReviewed(true);
+        if (!planned.summary.canCommit) {
+          setFeedback({ tone: "warning", text: planned.plan.clarification?.prompt ?? planned.summary.nextStep });
           return;
         }
-        if (!planReviewed) {
-          const currentMaterialDraft = materialDraft.current;
-          const response = await api.suggestWorkItemDraft({
+        if (planned.summary.taskCount === 1) {
+          const assisted = await api.suggestWorkItemDraft({
             projectId,
             title,
             body: goal.trim(),
-            ...(attachments.length && currentMaterialDraft ? {
-              materialDraftId: currentMaterialDraft.id,
-              materialDraftRevision: currentMaterialDraft.revision,
+            ...(attachments.length && draft ? {
+              materialDraftId: draft.id,
+              materialDraftRevision: draft.revision,
             } : {}),
           }) as {
             draft?: { acceptanceCriteria?: string[]; verificationSop?: string[]; templateMatch?: MyTemplateMatch };
           };
-          const suggestedCriteria = response.draft?.acceptanceCriteria?.filter(Boolean) ?? [];
-          const suggestedSop = response.draft?.verificationSop?.filter(Boolean) ?? [];
+          const suggestedCriteria = assisted.draft?.acceptanceCriteria?.filter(Boolean) ?? [];
+          const suggestedSop = assisted.draft?.verificationSop?.filter(Boolean) ?? [];
           const nextCriteria = criteria.trim() || suggestedCriteria.join("\n");
           const nextSop = verificationSop.trim() || suggestedSop.join("\n");
           if (!nextCriteria || !nextSop) throw new Error("execution_plan_incomplete");
-          effectiveCriteria = nextCriteria;
-          effectiveVerificationSop = nextSop;
-          effectiveTemplateMatch = response.draft?.templateMatch ?? null;
           setCriteria(nextCriteria);
           setVerificationSop(nextSop);
-          setTemplateMatch(effectiveTemplateMatch);
-          const canStartDirectly = effectiveTemplateMatch?.state === "matched"
-            && effectiveTemplateMatch.selected
-            && effectiveTemplateMatch.decision?.kind === "auto_apply"
-            && effectiveTemplateMatch.decision.confidence === "high";
-          if (canStartDirectly) {
-            setPlanReviewed(false);
-          } else {
-            setDetailsOpen(true);
-            setPlanReviewed(true);
-            setFeedback({ tone: "warning", text: copy.contractReview });
-            return;
-          }
+          setTemplateMatch(assisted.draft?.templateMatch ?? null);
+        } else {
+          setTemplateMatch(null);
+        }
+        if (mode === "ai" && planned.summary.canStartAi === false) {
+          setFeedback({ tone: "warning", text: planned.summary.nextStep || copy.capabilityBlocked });
+          return;
+        }
+        if (mode === "ai" && planned.summary.requiresRepository) await loadReadiness(projectId);
+        setFeedback(null);
+        return;
+      }
+
+      if (mode === "ai" && intentPlan.summary.requiresRepository) {
+        const latestReadiness = await loadReadiness(projectId);
+        if (projectIdRef.current !== projectId) return;
+        const latestBlocking = latestReadiness?.checks.some((check) => check.status === "blocked" && check.key !== "capacity") ?? true;
+        const latestCapacityBlocked = latestReadiness?.checks.some((check) => check.status === "blocked" && check.key === "capacity") ?? false;
+        if (latestBlocking || !(latestReadiness?.ready === true || latestCapacityBlocked)) {
+          setFeedback({ tone: "warning", text: copy.preflightBlocked });
+          return;
         }
       }
-      const draft = materialDraft.current;
-      const response = await api.createWorkItem({
+      const response = await api.commitWorkItemIntentPlan({
         projectId,
         title,
         body: goal.trim(),
-        type: "task",
-        status: mode === "ai" ? "ready" : "backlog",
-        priority: "p2",
-        executionPolicy: mode === "ai" ? "auto" : "manual",
-        acceptanceCriteria: effectiveCriteria.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
-        verificationSop: effectiveVerificationSop.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
-        requesterRelation: "self",
-        intakeChannel: "manual",
-        waitingOn: mode === "ai" ? "ai" : "none",
+        mode,
+        idempotencyKey: key,
+        acceptanceCriteria: criteria.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+        verificationSop: verificationSop.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
         dueDate: dueDate || null,
-        plannedDate: mode === "ai" ? localDateKey() : null,
-        ...(attachments.length && draft ? { materialDraftId: draft.id, materialDraftRevision: draft.revision } : {}),
-        ...(effectiveTemplateMatch?.state === "matched" && effectiveTemplateMatch.selected ? {
+        ...(intentPlan.summary.taskCount === 1 && templateMatch?.state === "matched" && templateMatch.selected ? {
           myTemplateBinding: {
-            definitionId: effectiveTemplateMatch.selected.definitionId,
-            familyId: effectiveTemplateMatch.selected.templateId,
-            version: effectiveTemplateMatch.selected.version,
-            matchReasons: effectiveTemplateMatch.selected.reasons,
-            ...(effectiveTemplateMatch.decision?.reason === "user_confirmed_result" ? { userConfirmedResult: true } : {}),
+            definitionId: templateMatch.selected.definitionId,
+            familyId: templateMatch.selected.templateId,
+            version: templateMatch.selected.version,
+            matchReasons: templateMatch.selected.reasons,
+            ...(templateMatch.decision?.reason === "user_confirmed_result" ? { userConfirmedResult: true } : {}),
           },
         } : {}),
-        idempotencyKey: key,
-      }) as { workItem: LocalWorkItem };
-      created = response.workItem;
+        ...(attachments.length && draft ? { materialDraftId: draft.id, materialDraftRevision: draft.revision } : {}),
+        ...(sourceWorkItemId ? { sourceWorkItemId } : {}),
+        ...(excludedTasks.length ? { excludeTaskKeys: excludedTasks.map((task) => task.key) } : {}),
+      }) as { workItems: LocalWorkItem[] };
+      const created = response.workItems[0] ?? null;
       if (mode === "ai") {
-        setFeedback({ tone: "success", text: copy.aiStarted, workItemId: created.id });
+        setFeedback({ tone: "success", text: copy.aiStarted, workItemId: created?.id });
       } else {
-        setFeedback({ tone: "success", text: copy.created, workItemId: created.id });
+        setFeedback({ tone: "success", text: copy.created, workItemId: created?.id });
       }
       setGoal("");
+      clearPreservedPlanDraft(projectId);
       setCriteria("");
       setVerificationSop("");
       setDetailsOpen(false);
       setPlanReviewed(false);
+      setIntentPlan(null);
+      setSourceWorkItemId(null);
+      setSourceQuery("");
+      setExcludedTasks([]);
       setTemplateMatch(null);
       setAttachments([]);
       materialDraft.current = null;
       setAttachmentFeedback(null);
       idempotencyKey.current = null;
       onCreated();
-      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "home-task-create", workItemId: created.id } }));
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "home-task-create", workItemId: created?.id, workItemIds: response.workItems.map((item) => item.id) } }));
     } catch {
-      setFeedback({ tone: "danger", text: mode === "ai" && !planReviewed ? copy.contractFailed : copy.failed });
+      setFeedback({ tone: "danger", text: forcePreview || !planReviewed || !intentPlan ? copy.contractFailed : copy.failed });
     } finally {
       setPendingMode(null);
     }
@@ -651,8 +916,13 @@ export function HomeTaskComposer({
           value={goal}
           placeholder={copy.placeholder}
           onChange={(event) => {
+            clearPreservedPlanDraft(projectId);
             setGoal(event.target.value);
             setPlanReviewed(false);
+            setIntentPlan(null);
+            setSourceWorkItemId(null);
+            setSourceQuery("");
+            setExcludedTasks([]);
             setTemplateMatch(null);
             idempotencyKey.current = null;
             setFeedback(null);
@@ -679,10 +949,10 @@ export function HomeTaskComposer({
           feedback={attachmentFeedback}
         />
         <div className="grid gap-2 sm:grid-cols-2 sm:items-end">
-          <Button className="w-full" disabled={!canCreate} onClick={() => void create("task")}>{pendingMode === "task" ? copy.creating : copy.create}</Button>
-          <Button className="w-full" variant="secondary" data-home-create-action="create-ai" disabled={!canCreateWithAi} title={!queueReady ? copy.preflightBlocked : undefined} onClick={() => void create("ai")}><Sparkles aria-hidden />{pendingMode === "ai" ? (planReviewed ? copy.creating : copy.preparing) : planReviewed ? copy.confirmAi : copy.prepareAi}</Button>
+          <Button className="w-full" disabled={!canCreate || intentPlan?.summary.canCommit === false} onClick={() => void create("task")}>{pendingMode === "task" ? (planReviewed ? copy.creating : copy.preparing) : planReviewed ? copy.confirmSave : copy.create}</Button>
+          <Button className="w-full" variant="secondary" data-home-create-action="create-ai" disabled={!canCreateWithAi} title={intentPlan?.summary.canStartAi === false ? intentPlan.summary.nextStep : repositoryCheckRequired && !queueReady ? copy.preflightBlocked : undefined} onClick={() => void create("ai")}><Sparkles aria-hidden />{pendingMode === "ai" ? (planReviewed ? copy.creating : copy.preparing) : planReviewed ? copy.confirmAi : copy.prepareAi}</Button>
         </div>
-        {projectId && !blocked && (readinessLoading || readinessBlocking.length > 0 || readinessWarnings.length > 0) ? (
+        {repositoryCheckRequired && projectId && !blocked && (readinessLoading || readinessBlocking.length > 0 || readinessWarnings.length > 0) ? (
           <section className={`rounded-lg border px-3 py-2 text-sm ${readinessBlocking.length > 0 ? "border-warning/40 bg-warning/[0.06]" : "border-border bg-muted/30"}`} aria-label={copy.preflight} role={readinessBlocking.length > 0 ? "alert" : "status"}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
@@ -698,8 +968,125 @@ export function HomeTaskComposer({
               </div>
               {!readinessLoading ? <div className="flex shrink-0 flex-wrap gap-1">
                 <Button size="sm" variant="ghost" onClick={() => { void loadReadiness(); }}><RefreshCw aria-hidden />{copy.preflightRetry}</Button>
-                {readinessBlocking.length > 0 && readableReadiness && onOpenSetup ? <Button size="sm" variant="secondary" onClick={() => onOpenSetup(readinessSetupSection({ ...readableReadiness, checks: readinessBlocking }))}>{readinessFixLabel(readableReadiness, zh ? "zh" : "en")}</Button> : null}
+                {readinessBlocking.length > 0 && readableReadiness && onOpenSetup ? <Button size="sm" variant="secondary" onClick={() => { preservePlanForSetup(); onOpenSetup(readinessSetupSection({ ...readableReadiness, checks: readinessBlocking }), goal); }}>{readinessFixLabel(readableReadiness, zh ? "zh" : "en")}</Button> : null}
               </div> : null}
+            </div>
+          </section>
+        ) : null}
+        {planReviewed && intentPlan ? (
+          <section className="rounded-lg border border-primary/35 bg-primary/[0.045] px-3 py-3 text-sm" aria-label={copy.planTitle} data-testid="home-intent-task-plan">
+            <h3 className="font-semibold">{copy.planTitle}</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{copy.planHint}</p>
+            {intentPlan.plan.sourceSelection ? (
+              <div className="mt-3 rounded-lg border bg-background/80 p-3" role="group" aria-label={copy.sourceTitle}>
+                <p className="font-medium">{copy.sourceTitle}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{copy.sourceHint}</p>
+                <div className="mt-2 flex gap-2">
+                  <Input
+                    value={sourceQuery}
+                    aria-label={zh ? "搜索已有结果" : "Search existing results"}
+                    placeholder={zh ? "按任务名称或成果类型搜索" : "Search by task or artifact"}
+                    onChange={(event) => setSourceQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      event.preventDefault();
+                      void create("task", { forcePreview: true, sourceQueryOverride: sourceQuery });
+                    }}
+                  />
+                  <Button type="button" size="sm" variant="secondary" disabled={pendingMode != null} onClick={() => void create("task", { forcePreview: true, sourceQueryOverride: sourceQuery })}>
+                    {zh ? "搜索" : "Search"}
+                  </Button>
+                </div>
+                {intentPlan.plan.sourceSelection.candidates.length ? (
+                  <div className="mt-2 grid gap-2">
+                    {intentPlan.plan.sourceSelection.candidates.map((candidate) => {
+                      const selected = candidate.workItemId === intentPlan.plan.sourceSelection?.selected?.workItemId;
+                      return <button
+                        type="button"
+                        key={candidate.workItemId}
+                        aria-pressed={selected}
+                        disabled={pendingMode != null || selected || candidate.ready === false}
+                        className={`rounded-md border px-3 py-2 text-left transition ${selected ? "border-primary bg-primary/10" : "hover:border-primary/60 hover:bg-muted/40"}`}
+                        onClick={() => {
+                          setSourceWorkItemId(candidate.workItemId);
+                          setPlanReviewed(false);
+                          idempotencyKey.current = null;
+                          void create("task", { forcePreview: true, sourceWorkItemIdOverride: candidate.workItemId });
+                        }}
+                      >
+                        <span className="block font-medium">{candidate.title}</span>
+                        <span className="mt-0.5 block text-xs text-muted-foreground">{candidate.localRef} · {candidate.outputCount} {zh ? "个结果文件" : candidate.outputCount === 1 ? "result file" : "result files"}{selected ? ` · ${copy.sourceSelected}` : candidate.ready === false ? (zh ? " · 成果格式或数量未通过检查" : " · artifact format or quantity failed validation") : ""}</span>
+                      </button>;
+                    })}
+                  </div>
+                ) : <p className="mt-2 text-xs text-warning">{intentPlan.summary.nextStep}</p>}
+              </div>
+            ) : null}
+            <ol className="mt-3 space-y-2">
+              {intentPlan.plan.tasks.map((task, index) => (
+                <li key={task.key} className="rounded-md bg-background/80 px-3 py-2">
+                  <div className="flex items-start gap-2">
+                    <span className="grid size-5 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">{index + 1}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium">{task.title}</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{task.outcome}</p>
+                      {task.requires.length ? <p className="mt-1 text-xs text-muted-foreground">{zh ? "需要前一步结果" : "Uses an earlier result"}</p> : null}
+                      {task.externalSource ? <p className="mt-1 text-xs font-medium text-primary">{copy.sourceSelected}{zh ? "：" : ": "}{task.externalSource.title}{zh ? `（${task.externalSource.localRef}）` : ` (${task.externalSource.localRef})`}</p> : null}
+                    </div>
+                    {task.approvalRequired ? <span className="shrink-0 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">{copy.planApproval}</span> : null}
+                    {intentPlan.plan.tasks.length > 1 ? <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      aria-label={copy.removeTask.replace("{{name}}", task.title)}
+                      disabled={pendingMode != null}
+                      onClick={() => {
+                        const next = [...excludedTasks, { key: task.key, kind: task.kind, title: task.title }];
+                        setExcludedTasks(next);
+                        setPlanReviewed(false);
+                        idempotencyKey.current = null;
+                        void create("task", { forcePreview: true, excludeKindsOverride: [], excludeTaskKeysOverride: next.map((item) => item.key) });
+                      }}
+                    >×</Button> : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+            {excludedTasks.length ? <div className="mt-3 rounded-md border border-dashed bg-background/60 px-3 py-2">
+              <p className="text-xs text-muted-foreground">{copy.removedTasks}</p>
+              <div className="mt-2 flex flex-wrap gap-2">{excludedTasks.map((removed) => <Button
+                type="button"
+                key={removed.key}
+                size="sm"
+                variant="ghost"
+                disabled={pendingMode != null}
+                aria-label={copy.restoreTask.replace("{{name}}", removed.title)}
+                onClick={() => {
+                  const next = excludedTasks.filter((item) => item.key !== removed.key);
+                  setExcludedTasks(next);
+                  setPlanReviewed(false);
+                  idempotencyKey.current = null;
+                  void create("task", { forcePreview: true, excludeKindsOverride: [], excludeTaskKeysOverride: next.map((item) => item.key) });
+                }}
+              >+ {removed.title}</Button>)}</div>
+            </div> : null}
+            <p className="mt-3 text-xs font-medium text-primary">{intentPlan.summary.nextStep}</p>
+          </section>
+        ) : null}
+        {planReviewed && intentPlan?.summary.canStartAi === false && intentPlan.summary.capabilityBlockers?.length ? (
+          <section className="rounded-lg border border-warning/40 bg-warning/[0.06] px-3 py-3 text-sm" aria-label={copy.capabilityTitle} role="alert">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <h3 className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4 text-warning" aria-hidden />{copy.capabilityTitle}</h3>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+                  {intentPlan.summary.capabilityBlockers.map((blocker) => <li key={`${blocker.taskKind}:${blocker.requiredCapability}`}>{blocker.requiredCapability}</li>)}
+                </ul>
+                <p className="mt-2 text-xs text-muted-foreground">{copy.capabilityBlocked}</p>
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-1">
+                {onOpenSetup ? <Button type="button" size="sm" variant="secondary" onClick={() => { preservePlanForSetup(); onOpenSetup(intentPlan.summary.capabilityBlockers?.[0]?.setupSection ?? "applications", goal); }}>{copy.capabilitySetup}</Button> : null}
+                <Button type="button" size="sm" variant="ghost" disabled={pendingMode != null} onClick={() => { void create("ai", { forcePreview: true }); }}><RefreshCw aria-hidden />{copy.capabilityRetry}</Button>
+              </div>
             </div>
           </section>
         ) : null}
@@ -793,7 +1180,7 @@ export function HomeTaskComposer({
             ) : null}
             <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
               <span className="inline-flex items-center gap-1"><CalendarDays className="size-3.5" aria-hidden />{copy.due}</span>
-              <Input aria-label={copy.due} type="date" value={dueDate} min={localDateKey()} disabled={blocked} onChange={(event) => { setDueDate(event.target.value); setPlanReviewed(false); idempotencyKey.current = null; setFeedback(null); }} />
+              <Input aria-label={copy.due} type="date" value={dueDate} min={localDateKey()} disabled={blocked} onChange={(event) => { setDueDate(event.target.value); setPlanReviewed(false); setIntentPlan(null); idempotencyKey.current = null; setFeedback(null); }} />
             </label>
           </div>
           <label className="mt-3 grid gap-1 text-xs font-medium text-muted-foreground">
