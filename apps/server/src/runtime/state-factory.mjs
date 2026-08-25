@@ -262,6 +262,12 @@ export function createServerState({ defaultProjectPath, now }) {
     workItemReportDeliveries: [],
     planningProjects: [],
     planningProjectItems: [],
+    // Verified SSH directory roots. These contain metadata and opaque host
+    // references only; remote file contents and credentials are never durable.
+    hostFileScopes: [],
+    // Transfer metadata and audit status only. Uploaded/downloaded bytes are
+    // intentionally never stored in the control-plane snapshot.
+    hostFileTransfers: [],
     // Epic #1547: local-first, evidence-backed requirement-to-delivery memory.
     // These records store derived metadata, relationships, and versioned
     // profiles; raw local file contents remain outside durable state by default.

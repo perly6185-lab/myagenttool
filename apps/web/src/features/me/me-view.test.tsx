@@ -19,7 +19,7 @@ vi.mock("@/hooks/use-page-navigation", () => ({
 
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
-  useUiStore.setState({ workItemDetailPreference: "summary" });
+  useUiStore.setState({ workItemDetailPreference: "summary", experienceMode: "ordinary" });
 });
 
 afterEach(() => cleanup());
@@ -41,14 +41,15 @@ describe("MeView", () => {
     expect(screen.getByRole("button", { name: /My settings/ })).toBeTruthy();
   });
 
-  it("lets the user opt into the persistent professional task surface", () => {
+  it("lets the user opt into the product-wide professional mode", () => {
     render(<MeView embedded />);
 
-    const toggle = screen.getByRole("switch", { name: "Professional task view" });
+    const toggle = screen.getByRole("switch", { name: "Professional mode" });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(toggle);
 
     expect(useUiStore.getState().workItemDetailPreference).toBe("expert");
+    expect(useUiStore.getState().experienceMode).toBe("professional");
     expect(toggle.getAttribute("aria-checked")).toBe("true");
   });
 });

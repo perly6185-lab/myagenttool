@@ -35,6 +35,7 @@ const EconomicsView = lazy(() => import("@/features/economics/economics-view").t
 const AuditView = lazy(() => import("@/features/audit/audit-view").then((m) => ({ default: m.AuditView })));
 const SettingsHomeView = lazy(() => import("@/features/settings/settings-home-view").then((m) => ({ default: m.SettingsHomeView })));
 const MeView = lazy(() => import("@/features/me/me-view").then((m) => ({ default: m.MeView })));
+const MyHostsView = lazy(() => import("@/features/my-hosts/my-hosts-view").then((m) => ({ default: m.MyHostsView })));
 
 /** Section → screen map. The lightweight URL sync lives above this table. */
 export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
@@ -72,4 +73,5 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   sessions: SessionsView,
   economics: EconomicsView,
   audit: AuditView,
+  myHosts: MyHostsView,
 };

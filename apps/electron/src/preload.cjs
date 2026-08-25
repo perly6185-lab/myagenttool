@@ -27,4 +27,7 @@ contextBridge.exposeInMainWorld("myagenttoolDesktop", {
   pickOutboundMailAttachments: () => ipcRenderer.invoke("mail:pick-outbound-attachments"),
   stagePastedMailAttachments: (input) => ipcRenderer.invoke("mail:stage-pasted-attachments", input),
   stageTaskOutputMailAttachments: (input) => ipcRenderer.invoke("mail:stage-task-output-attachments", input),
+  getSshHostCredentialStatus: (input) => ipcRenderer.invoke("ssh-host:get-credential-status", input),
+  saveSshHostCredential: (input) => ipcRenderer.invoke("ssh-host:save-credential", input),
+  removeSshHostCredential: (input) => ipcRenderer.invoke("ssh-host:remove-credential", input),
 });

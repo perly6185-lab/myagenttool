@@ -163,6 +163,8 @@ export const persistedArrayKeys = [
   "alertOutbox",
   "planningProjects",
   "planningProjectItems",
+  "hostFileScopes",
+  "hostFileTransfers",
   "workflowSources",
   "workflowScanJobs",
   "workflowIntakeObservations",

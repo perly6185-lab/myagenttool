@@ -34,9 +34,12 @@ const manageRules = [
   /^\/api\/users$/,
   /^\/api\/observability\/delete$/,
   /^\/api\/mail\/task-policies$/,
+  /^\/api\/hosts(?:\/[^/]+(?:\/(?:observe-fingerprint|confirm-fingerprint|verify))?)?$/,
+  /^\/api\/hosts\/[^/]+\/file-scopes(?:\/[^/]+)?$/,
 ];
 
 const operateRules = [
+  /^\/api\/host-file-scopes\/[^/]+\/transfers(?:\/(?:upload|download))?$/,
   /^\/api\/approvals\/grants$/,
   /^\/api\/approvals\/[^/]+\/(?:approve|deny)$/,
   /^\/api\/pending-decisions\/[^/]+\/(?:claim|release)$/,
