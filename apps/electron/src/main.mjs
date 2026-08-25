@@ -13,6 +13,7 @@ import { registerWorkflowCaseIntake } from "./workflow-case-intake.mjs";
 import { registerMailAccountConnector } from "./mail-account-connector.mjs";
 import { registerMailAttachmentHandler } from "./mail-attachment-handler.mjs";
 import { registerMailOutboundAttachmentHandler } from "./mail-outbound-attachment-handler.mjs";
+import { registerSiteCloudCredentialConnector } from "./site-cloud-credential-connector.mjs";
 import { registerSshHostCredentialConnector } from "./ssh-host-credential-connector.mjs";
 import { APP_PROTOCOL, desktopRouteFromArgv, rendererUrlForDesktopRoute } from "./mail-connector-deep-link.mjs";
 
@@ -254,6 +255,19 @@ function createMainWindow(url, serverUrl) {
     verifySendCredential: async (credential) => {
       const module = await import(pathToFileURL(join(paths.runtimeRoot, "tools", "mail-mcp", "src", "send-163.mjs")).href);
       return module.verify163SendCredential(credential);
+    },
+  });
+  registerSiteCloudCredentialConnector({
+    ipcMain,
+    safeStorage,
+    credentialRoot: join(app.getPath("appData"), "myagenttool"),
+    requestServer: async (method, path, body) => {
+      const response = await fetch(`${serverUrl}${path}`, {
+        method,
+        headers: { ...loopbackHeaders, "X-Desktop-Credential-Token": desktopCredentialToken, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new Error(`${method} ${path} failed.`);
     },
   });
   registerSshHostCredentialConnector({

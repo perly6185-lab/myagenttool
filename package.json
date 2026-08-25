@@ -169,6 +169,7 @@
     "feishu:import": "node tools/feishu-doc-imports/src/cli.mjs",
     "smoke:ci": "node tools/dev/run-ci-smokes.mjs",
     "smoke:ssh-target": "node tools/dev/ssh-target-smoke.mjs",
+    "verify:my-site:ssh-real": "node tools/dev/my-site-ssh-real-validation.mjs",
     "smoke:terminal": "node tools/dev/terminal-smoke.mjs",
     "smoke:tool-contract": "node tools/dev/tool-registry-contract-smoke.mjs",
     "smoke:tool-review-client": "node tools/dev/tool-registry-review-client-smoke.mjs",
