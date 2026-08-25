@@ -262,6 +262,19 @@ export function createServerState({ defaultProjectPath, now }) {
     workItemReportDeliveries: [],
     planningProjects: [],
     planningProjectItems: [],
+    // "My Site": team-owned drafts, immutable revisions, governed publication
+    // plans/releases, and non-secret deployment target metadata.
+    sites: [],
+    siteEntries: [],
+    siteEntryRevisions: [],
+    siteAssets: [],
+    sitePublicationPlans: [],
+    sitePublications: [],
+    siteDeploymentTargets: [],
+    sitePilotSessions: [],
+    sitePilotCampaigns: [],
+    sitePilotInvitations: [],
+    sitePilotSandboxes: [],
     // Verified SSH directory roots. These contain metadata and opaque host
     // references only; remote file contents and credentials are never durable.
     hostFileScopes: [],

@@ -77,7 +77,7 @@ export function MySettingsDialog() {
   const categories = useMemo(() => MY_SETTINGS_CATEGORIES.map((category) => ({
     ...category,
     pages: category.sections
-      .filter((key) => (key !== "myHosts") || professionalMode)
+      .filter((key) => (key !== "siteSettings" && key !== "myHosts") || professionalMode)
       .filter((key) => canDiscoverProfessionalPage(key, sessionUser?.role))
       .map((key) => pageRegistration(key)),
   })).filter((category) => category.pages.length), [professionalMode, sessionUser?.role]);

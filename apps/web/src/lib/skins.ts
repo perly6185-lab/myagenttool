@@ -189,6 +189,33 @@ declare global {
         | { ok: true; attachments: Array<{ ref: string; name: string; contentType: string; size: number }> }
         | { ok: false; error: "attachment_invalid" | "attachment_too_large" | "attachment_stage_failed" }
       >;
+      getAliyunOssCredentialStatus?: () => Promise<{ desktop: true; secureStorage: boolean; stored: boolean; ready: boolean; reference: string | null }>;
+      saveAliyunOssCredential?: (input: { accessKeyId: string; accessKeySecret: string; securityToken?: string }) => Promise<
+        | { ok: true; reference: string }
+        | { ok: false; error: "secure_storage_unavailable" | "credential_invalid" | "save_failed" }
+      >;
+      removeAliyunOssCredential?: () => Promise<
+        | { ok: true; disconnected: true }
+        | { ok: false; error: "remove_failed" }
+      >;
+      getAliDnsCredentialStatus?: () => Promise<{ desktop: true; secureStorage: boolean; stored: boolean; ready: boolean; reference: string | null }>;
+      saveAliDnsCredential?: (input: { accessKeyId: string; accessKeySecret: string; securityToken?: string }) => Promise<
+        | { ok: true; reference: string }
+        | { ok: false; error: "secure_storage_unavailable" | "credential_invalid" | "save_failed" }
+      >;
+      removeAliDnsCredential?: () => Promise<
+        | { ok: true; disconnected: true }
+        | { ok: false; error: "remove_failed" }
+      >;
+      getCloudflareSiteCredentialStatus?: () => Promise<{ desktop: true; secureStorage: boolean; stored: boolean; ready: boolean; reference: string | null }>;
+      saveCloudflareSiteCredential?: (input: { accountId: string; apiToken: string }) => Promise<
+        | { ok: true; reference: string }
+        | { ok: false; error: "secure_storage_unavailable" | "credential_invalid" | "save_failed" }
+      >;
+      removeCloudflareSiteCredential?: () => Promise<
+        | { ok: true; disconnected: true }
+        | { ok: false; error: "remove_failed" }
+      >;
       getSshHostCredentialStatus?: (input: { hostId: string }) => Promise<
         | { desktop: true; secureStorage: boolean; stored: boolean; ready: boolean; reference: string | null; authMethod: "private_key_ref" | "managed_identity" | "password_ref" | null }
         | { ok: false; error: "host_id_invalid" }

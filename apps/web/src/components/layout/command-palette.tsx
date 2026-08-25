@@ -12,13 +12,13 @@ import { useSessionUser } from "@/hooks/use-session-user";
 
 const MY_SETTINGS_PAGES = MY_SETTINGS_SECTION_KEYS.map((key) => pageRegistration(key));
 
-function commandPages(section: SectionKey, query: string, role?: SessionRole) {
+function commandPages(section: SectionKey, query: string, professionalMode: boolean, role?: SessionRole) {
   const settingsHome = pageRegistration("settings");
   const professionalContext = pageRegistration(section).surface !== "entry";
   // Keep the empty palette ordinary and compact. Once a user deliberately
   // searches, allow a direct role-filtered jump into My settings.
   const pages = professionalContext || query.trim()
-    ? [...ENTRY_SECTIONS, settingsHome, ...MY_SETTINGS_PAGES.filter((page) => canDiscoverProfessionalPage(page.key, role))]
+    ? [...ENTRY_SECTIONS, settingsHome, ...MY_SETTINGS_PAGES.filter((page) => (page.key !== "siteSettings" || professionalMode) && canDiscoverProfessionalPage(page.key, role))]
     : [...ENTRY_SECTIONS, settingsHome];
   return [...new Map(pages.map((page) => [page.key, page])).values()];
 }
@@ -32,6 +32,7 @@ export function CommandPalette({ initiallyOpen = false }: { initiallyOpen?: bool
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const section = useUiStore((state) => state.section);
+  const professionalMode = useUiStore((state) => state.experienceMode) === "professional";
   const sessionUser = useSessionUser();
   const navigate = usePageNavigation();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -40,14 +41,14 @@ export function CommandPalette({ initiallyOpen = false }: { initiallyOpen?: bool
   const pointerRef = useRef({ x: -1, y: -1 });
 
   const results = useMemo(() => {
-    const availablePages = commandPages(section, query, sessionUser?.role);
+    const availablePages = commandPages(section, query, professionalMode, sessionUser?.role);
     const q = query.trim().toLowerCase();
     if (!q) return availablePages;
     return availablePages.filter((page) =>
       t(pageNavigationLabelKey(page)).toLowerCase().includes(q)
       || t(page.blurbKey).toLowerCase().includes(q)
       || t(`shell.navigation.${page.surface}`).toLowerCase().includes(q));
-  }, [i18n.resolvedLanguage, query, section, sessionUser?.role, t]);
+  }, [i18n.resolvedLanguage, professionalMode, query, section, sessionUser?.role, t]);
 
   // Mirror results/active into refs so the window key handler can read the
   // latest without re-subscribing on every keystroke.

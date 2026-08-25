@@ -176,6 +176,8 @@ import { createTemplateLearningService } from "../services/template-learning.mjs
 import { createWorkflowMemoryInsightsService } from "../services/workflow-memory-insights.mjs";
 import { createInquiryIntakeTriggerService } from "../services/inquiry-intake-triggers.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
+import { createSiteService } from "../services/sites.mjs";
+import { createSitePilotService } from "../services/site-pilot.mjs";
 import {
   autoRunVerificationTimeoutMs,
   resolveAutoRunVerificationPlan,
@@ -1020,6 +1022,34 @@ export function createServerRuntimeServices({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
   });
   const siteCredentialVault = createSiteCredentialVault();
+  const siteService = createSiteService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    publishRoot: process.env.MYAGENTTOOL_SITE_RELEASE_ROOT
+      ? resolve(process.env.MYAGENTTOOL_SITE_RELEASE_ROOT)
+      : stateStorePath
+        ? resolve(dirname(stateStorePath), "sites")
+        : null,
+    assetRoot: process.env.MYAGENTTOOL_SITE_ASSET_ROOT
+      ? resolve(process.env.MYAGENTTOOL_SITE_ASSET_ROOT)
+      : stateStorePath
+        ? resolve(dirname(stateStorePath), "site-assets")
+        : null,
+    resolveCredential: siteCredentialVault.resolveCredential,
+  });
+  const sitePilotService = createSitePilotService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    store,
+    provisionSandbox: siteService.provisionPilotSandbox,
+    purgeSandbox: siteService.purgePilotSandbox,
+  });
 
   const {
     applicationHealthSweep,
@@ -7760,6 +7790,40 @@ export function createServerRuntimeServices({
     suggestPlanningPlan: planningProjectService.suggestPlan,
     executePlanningRecommendedAction: planningProjectService.executeRecommendedAction,
     decidePlanningRecommendedAction: planningProjectService.decideRecommendedAction,
+    listSites: siteService.listSites,
+    getSite: siteService.getSite,
+    createSite: siteService.createSite,
+    updateSite: siteService.updateSite,
+    listSiteEntries: siteService.listEntries,
+    getSiteEntry: siteService.getEntry,
+    createSiteEntry: siteService.createEntry,
+    updateSiteEntry: siteService.updateEntry,
+    listSiteAssets: siteService.listAssets,
+    uploadSiteAsset: siteService.uploadAsset,
+    updateSiteAsset: siteService.updateAsset,
+    deleteSiteAsset: siteService.deleteAsset,
+    getSiteAssetContent: siteService.getAssetContent,
+    previewSite: siteService.previewSite,
+    createSitePublicationPlan: siteService.createPublicationPlan,
+    getSitePublicationPlan: siteService.getPublicationPlan,
+    confirmSitePublicationPlan: siteService.confirmPublicationPlan,
+    listSitePublications: siteService.listPublications,
+    createSiteRollbackPlan: siteService.createRollbackPlan,
+    confirmSiteRollbackPlan: siteService.confirmRollbackPlan,
+    listSiteDeploymentProviders: siteService.listDeploymentProviders,
+    configureSiteDeploymentTarget: siteService.configureDeploymentTarget,
+    verifySiteDeploymentTarget: siteService.verifyDeploymentTarget,
+    startSitePilotSession: sitePilotService.startSession,
+    getActiveSitePilotSession: sitePilotService.getActiveSession,
+    updateSitePilotSession: sitePilotService.updateSession,
+    deleteSitePilotSession: sitePilotService.deleteSession,
+    getSitePilotSummary: sitePilotService.getSummary,
+    listSitePilotCampaigns: sitePilotService.listCampaigns,
+    createSitePilotCampaign: sitePilotService.createCampaign,
+    updateSitePilotCampaign: sitePilotService.updateCampaign,
+    deleteSitePilotCampaign: sitePilotService.deleteCampaign,
+    createSitePilotInvitation: sitePilotService.createInvitation,
+    resolveSitePilotWorkspace: sitePilotService.resolveWorkspace,
     provisionSiteCredential: siteCredentialVault.provision,
     revokeSiteCredential: siteCredentialVault.revoke,
     createChannelTaskIssue,

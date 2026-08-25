@@ -36,6 +36,8 @@ import { handleSessionRoutes } from "../routes/sessions.mjs";
 import { handleWorkflowMemoryRoutes } from "../routes/workflow-memory.mjs";
 import { handleChannelObjectRoutes } from "../routes/channel-objects.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
+import { handleSiteRoutes } from "../routes/sites.mjs";
+import { handleSitePilotRoutes } from "../routes/site-pilot.mjs";
 import { handleSiteCredentialRoutes } from "../routes/site-credentials.mjs";
 import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
 import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
@@ -585,6 +587,40 @@ export function createHttpServer({
   suggestPlanningPlan,
   executePlanningRecommendedAction,
   decidePlanningRecommendedAction,
+  listSites,
+  getSite,
+  createSite,
+  updateSite,
+  listSiteEntries,
+  getSiteEntry,
+  createSiteEntry,
+  updateSiteEntry,
+  listSiteAssets,
+  uploadSiteAsset,
+  updateSiteAsset,
+  deleteSiteAsset,
+  getSiteAssetContent,
+  previewSite,
+  createSitePublicationPlan,
+  getSitePublicationPlan,
+  confirmSitePublicationPlan,
+  listSitePublications,
+  createSiteRollbackPlan,
+  confirmSiteRollbackPlan,
+  listSiteDeploymentProviders,
+  configureSiteDeploymentTarget,
+  verifySiteDeploymentTarget,
+  startSitePilotSession,
+  getActiveSitePilotSession,
+  updateSitePilotSession,
+  deleteSitePilotSession,
+  getSitePilotSummary,
+  listSitePilotCampaigns,
+  createSitePilotCampaign,
+  updateSitePilotCampaign,
+  deleteSitePilotCampaign,
+  createSitePilotInvitation,
+  resolveSitePilotWorkspace,
   registerChannel,
   listChannels,
   listChannelInteractions,
@@ -695,10 +731,12 @@ export function createHttpServer({
         && /^\/api\/projects\/[^/]+\/task-material-drafts\/[^/]+\/files\/[^/]+$/.test(url.pathname);
       const binaryTemplateLearningUpload = req.method === "POST"
         && /^\/api\/workflow-memory\/template-learning\/[^/]+\/files$/.test(url.pathname);
+      const binarySiteAssetUpload = req.method === "PUT"
+        && /^\/api\/sites\/[^/]+\/assets$/.test(url.pathname);
       const binaryHostFileUpload = req.method === "POST"
         && /^\/api\/host-file-scopes\/[^/]+\/transfers\/upload$/.test(url.pathname);
       if (["POST", "PUT", "PATCH"].includes(req.method) && url.pathname.startsWith("/api/")
-        && !binaryTaskMaterialUpload && !binaryTemplateLearningUpload && !binaryHostFileUpload) {
+        && !binaryTaskMaterialUpload && !binaryTemplateLearningUpload && !binarySiteAssetUpload && !binaryHostFileUpload) {
         const contentType = String(req.headers["content-type"] ?? "").trim().toLowerCase();
         if (contentType && !contentType.startsWith("application/json")) {
           sendJson(res, 415, { error: "unsupported_content_type", message: "API writes must declare application/json." });
@@ -1231,6 +1269,52 @@ export function createHttpServer({
         suggestPlan: suggestPlanningPlan,
         executeRecommendedAction: executePlanningRecommendedAction,
         decideRecommendedAction: decidePlanningRecommendedAction,
+      })) {
+        return;
+      }
+
+      if (await handleSitePilotRoutes({
+        req, res, url, sendJson, readJson, actor,
+        startSitePilotSession,
+        getActiveSitePilotSession,
+        updateSitePilotSession,
+        deleteSitePilotSession,
+        getSitePilotSummary,
+        listSitePilotCampaigns,
+        createSitePilotCampaign,
+        updateSitePilotCampaign,
+        deleteSitePilotCampaign,
+        createSitePilotInvitation,
+      })) {
+        return;
+      }
+
+      if (await handleSiteRoutes({
+        req, res, url, sendJson, readJson, actor,
+        resolveSitePilotWorkspace,
+        listSites,
+        getSite,
+        createSite,
+        updateSite,
+        listEntries: listSiteEntries,
+        getEntry: getSiteEntry,
+        createEntry: createSiteEntry,
+        updateEntry: updateSiteEntry,
+        listAssets: listSiteAssets,
+        uploadAsset: uploadSiteAsset,
+        updateAsset: updateSiteAsset,
+        deleteAsset: deleteSiteAsset,
+        getAssetContent: getSiteAssetContent,
+        previewSite,
+        createPublicationPlan: createSitePublicationPlan,
+        getPublicationPlan: getSitePublicationPlan,
+        confirmPublicationPlan: confirmSitePublicationPlan,
+        listPublications: listSitePublications,
+        createRollbackPlan: createSiteRollbackPlan,
+        confirmRollbackPlan: confirmSiteRollbackPlan,
+        listDeploymentProviders: listSiteDeploymentProviders,
+        configureDeploymentTarget: configureSiteDeploymentTarget,
+        verifyDeploymentTarget: verifySiteDeploymentTarget,
       })) {
         return;
       }
