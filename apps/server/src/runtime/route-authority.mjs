@@ -36,6 +36,8 @@ const manageRules = [
   /^\/api\/mail\/task-policies$/,
   /^\/api\/hosts(?:\/[^/]+(?:\/(?:observe-fingerprint|confirm-fingerprint|verify))?)?$/,
   /^\/api\/hosts\/[^/]+\/file-scopes(?:\/[^/]+)?$/,
+  /^\/api\/sites\/[^/]+\/deployment-target(?:\/verify)?$/,
+  /^\/api\/site-pilot\/campaigns(?:\/[^/]+(?:\/invitations)?)?$/,
 ];
 
 const operateRules = [

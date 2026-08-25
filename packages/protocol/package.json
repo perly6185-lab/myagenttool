@@ -38,6 +38,10 @@
     "./business-routine": {
       "types": "./src/business-routine.ts",
       "default": "./src/business-routine.mjs"
+    },
+    "./site": {
+      "types": "./src/site.ts",
+      "default": "./src/site.mjs"
     }
   },
   "scripts": {

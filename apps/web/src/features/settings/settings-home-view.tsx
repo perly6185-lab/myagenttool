@@ -234,7 +234,7 @@ export function SettingsHomeView({ embedded = false }: { embedded?: boolean }) {
   const categories = useMemo(() => MY_SETTINGS_CATEGORIES.map((category) => ({
     ...category,
     pages: category.sections
-      .filter((key) => (key !== "myHosts") || professionalMode)
+      .filter((key) => (key !== "siteSettings" && key !== "myHosts") || professionalMode)
       .filter((key) => canDiscoverProfessionalPage(key, sessionUser?.role))
       .map((key) => pageRegistration(key))
       .filter((page) => !normalized || matchesSettingsQuery(`${t(page.labelKey)} ${t(page.blurbKey)} ${settingsSearchAliases(page.key)}`, normalized)),
@@ -242,7 +242,7 @@ export function SettingsHomeView({ embedded = false }: { embedded?: boolean }) {
   const quickAccessPages = useMemo(() => {
     const keys = [...favoriteSections, ...recentSections.filter((key) => !favoriteSections.includes(key))];
     return keys
-      .filter((key, index) => keys.indexOf(key) === index && ((key !== "myHosts") || professionalMode) && canDiscoverProfessionalPage(key, sessionUser?.role))
+      .filter((key, index) => keys.indexOf(key) === index && ((key !== "siteSettings" && key !== "myHosts") || professionalMode) && canDiscoverProfessionalPage(key, sessionUser?.role))
       .map((key) => pageRegistration(key));
   }, [favoriteSections, professionalMode, recentSections, sessionUser?.role]);
 

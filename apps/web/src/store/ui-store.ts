@@ -21,6 +21,7 @@ export type SectionKey =
   | "dashboard"
   | "mail"
   | "localLibrary"
+  | "mySite"
   | "me"
   | "workBoard"
   | "workspace"
@@ -52,6 +53,7 @@ export type SectionKey =
   | "economics"
   | "audit"
   | "myHosts"
+  | "siteSettings"
   | "settings";
 
 export interface ApplicationRunSelection {
@@ -197,6 +199,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "dashboard",
   "mail",
   "localLibrary",
+  "mySite",
   "me",
   "workBoard",
   "workspace",
@@ -228,6 +231,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "economics",
   "audit",
   "myHosts",
+  "siteSettings",
 ];
 
 export interface UrlNavigationState {

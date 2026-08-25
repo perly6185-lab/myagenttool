@@ -43,6 +43,12 @@ test("configuration and governance writes require professional management", () =
     ["POST", "/api/hosts/ssh_target_1/verify"],
     ["POST", "/api/hosts/ssh_target_1/file-scopes"],
     ["PATCH", "/api/hosts/ssh_target_1/file-scopes/hfs_1"],
+    ["PUT", "/api/sites/site-1/deployment-target"],
+    ["POST", "/api/sites/site-1/deployment-target/verify"],
+    ["POST", "/api/site-pilot/campaigns"],
+    ["PATCH", "/api/site-pilot/campaigns/campaign-1"],
+    ["DELETE", "/api/site-pilot/campaigns/campaign-1"],
+    ["POST", "/api/site-pilot/campaigns/campaign-1/invitations"],
   ];
 
   for (const [method, pathname] of cases) {
