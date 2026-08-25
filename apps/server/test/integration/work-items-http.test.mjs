@@ -201,6 +201,55 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
   assert.equal(reopened.body.workItem.completedAt, null);
 });
 
+test("failed result checks create one team-scoped independent repair over HTTP", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "客户方案 HTTP",
+      status: "blocked",
+      taskKind: "business_document",
+      acceptanceCriteria: ["生成客户方案文档"],
+      artifactContract: {
+        consumes: [],
+        produces: ["business_document"],
+        requirements: [{ kind: "business_document", minCount: 1, extensions: [".docx"] }],
+      },
+      outputAssets: [{
+        id: "http_wrong_result",
+        originalName: "customer-plan.png",
+        path: "results/customer-plan.png",
+        terminalId: runtimeState.device.id,
+        family: "image",
+        size: 12,
+        capabilities: [],
+      }],
+    },
+  });
+  assert.equal(created.status, 201);
+
+  const repair = await call(`/api/work-items/${created.body.workItem.id}/result-repair`, {
+    method: "POST", body: {},
+  });
+  assert.equal(repair.status, 201, JSON.stringify(repair.body));
+  assert.equal(repair.body.workItem.repairOfWorkItemId, created.body.workItem.id);
+  assert.equal(repair.body.workItem.executionPolicy, "manual");
+  assert.deepEqual(repair.body.workItem.dependencyIds, []);
+  assert.deepEqual(repair.body.workItem.artifactHandoffs[0].kinds, ["failed_output_evidence"]);
+  assert.equal(repair.body.workItem.artifactHandoffs[0].evidenceOnly, true);
+
+  const replay = await call(`/api/work-items/${created.body.workItem.id}/result-repair`, {
+    method: "POST", body: {},
+  });
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.workItem.id, repair.body.workItem.id);
+  assert.equal((await call(`/api/work-items/${created.body.workItem.id}/result-repair`, {
+    token: "tok_b", method: "POST", body: {},
+  })).status, 404);
+  assert.equal((await call(`/api/work-items/${created.body.workItem.id}`)).body.workItem.status, "blocked");
+});
+
 test("structured requester and follow-up context is validated and audited through HTTP", async () => {
   const created = await call("/api/work-items", {
     method: "POST",

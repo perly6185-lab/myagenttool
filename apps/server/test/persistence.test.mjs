@@ -121,6 +121,19 @@ test("persistence restores active control-plane records across runtime restart",
       id: "maildecision_1", policyId: "mailpolicy_1", messageId: "<restart@example.com>",
       action: "would_create", ownerTeamId: "team_local", createdAt: now(),
     });
+    first.state.channelIntentLearningSamples.push({
+      id: "cil_restart_1",
+      channelId: "chn_private",
+      conversationId: "conv_private",
+      redactedText: "把[链接]里的内容改成视频",
+      textDigest: "a".repeat(64),
+      reason: "user_correction",
+      status: "resolved",
+      expected: { intent: "task_control", controlKind: "select", taskKind: "content_video" },
+      occurrenceCount: 1,
+      createdAt: now(),
+      updatedAt: now(),
+    });
     first.state.retentionSettings.logsDays = 99;
 
     createPersistenceRuntime({
@@ -157,6 +170,9 @@ test("persistence restores active control-plane records across runtime restart",
     assert(second.state.terminalEvidenceRecords.some((item) => item.id === "tev_1"), "terminal evidence should restore");
     assert(second.state.terminalBridgeActions.some((item) => item.id === "tba_1"), "terminal bridge actions should restore");
     assert.equal(second.state.guidedSetupRuns.find((item) => item.id === "gsr_1")?.checkCount, 2, "guided setup should resume after restart");
+    assert.equal(second.state.channelIntentLearningSamples.find((item) => item.id === "cil_restart_1")?.expected?.taskKind, "content_video", "reviewed Channel intent samples should restore");
+    const publicState = publicStateFor(second.state, { defaultProjectPath: projectPath });
+    assert.equal(Object.hasOwn(publicState, "channelIntentLearningSamples"), false, "redacted replay rows stay server-private; only aggregate metrics are public");
     assert(second.state.sshTargets.some((item) => item.id === "ssh_1"), "SSH targets should restore");
     assert(second.state.sshConnectionTests.some((item) => item.id === "ssh_test_1"), "SSH connection tests should restore");
     assert(second.state.ledgerEntries.some((item) => item.id === "led_1"), "ledger entries should restore");
@@ -1562,6 +1578,15 @@ test("persistence restores channel drafts, operation mode, and queued task threa
       eventIds: ["chev_restart"], messages: [{ eventId: "chev_restart", content: "继续整理" }],
       status: "collecting", dueAt: "2026-07-15T00:00:05.000Z",
     });
+    first.state.channelConversations.push({
+      id: "chcv_restart", channelId: "chn_restart", externalUserId: "wx_restart",
+      activeWorkGoalId: "goal_restart", activeTaskThreadId: "cth_restart",
+      focusMemory: {
+        schemaVersion: 1, goalId: "goal_restart", taskThreadId: "cth_restart",
+        recentTaskThreadIds: ["cth_restart"], recentMaterialIds: [], reason: "task_selected", updatedAt: now(),
+      },
+      createdAt: now(), updatedAt: now(),
+    });
     first.state.channelTaskThreads.push({
       id: "cth_restart", shortRef: "T-RESTART", channelId: "chn_restart", conversationId: "chcv_restart",
       sourceEventIds: ["chev_restart"], messages: [{ eventId: "chev_restart", content: "继续整理" }],
@@ -1573,6 +1598,12 @@ test("persistence restores channel drafts, operation mode, and queued task threa
       revision: 1, type: "data_correction", status: "awaiting_confirmation", feedback: "客户弄错了",
       previous: { status: "succeeded", summary: "原结果", resultSummary: "原汇总" }, createdAt: now(),
     });
+    first.state.workGoalChanges.push({
+      id: "wgc_restart", channelId: "chn_restart", conversationId: "chcv_restart",
+      status: "applying", attempt: 1, snapshot: { digest: "snapshot_restart" },
+      appliedOperations: [{ key: "create:article", status: "completed", threadId: "cth_restart" }],
+      createdAt: now(), updatedAt: now(),
+    });
 
     createPersistenceRuntime({ state: first.state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject: first.defaultProject, sameProjectPath }).savePersistentState();
 
@@ -1580,8 +1611,11 @@ test("persistence restores channel drafts, operation mode, and queued task threa
     createPersistenceRuntime({ state: second.state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject: second.defaultProject, sameProjectPath }).restorePersistentState();
     assert.equal(second.state.channels.find((channel) => channel.id === "chn_restart")?.operationMode, "personal");
     assert.equal(second.state.channelIntakeGroups.find((group) => group.id === "cig_restart")?.status, "collecting");
+    assert.equal(second.state.channelConversations.find((conversation) => conversation.id === "chcv_restart")?.focusMemory?.taskThreadId, "cth_restart");
     assert.equal(second.state.channelTaskThreads.find((thread) => thread.id === "cth_restart")?.queuePosition, 1);
     assert.equal(second.state.channelTaskRevisions.find((revision) => revision.id === "ctrev_restart")?.status, "awaiting_confirmation");
+    assert.equal(second.state.workGoalChanges.find((change) => change.id === "wgc_restart")?.status, "applying");
+    assert.equal(second.state.workGoalChanges.find((change) => change.id === "wgc_restart")?.appliedOperations[0]?.threadId, "cth_restart");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

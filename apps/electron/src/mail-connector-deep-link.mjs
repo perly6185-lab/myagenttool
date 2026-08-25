@@ -1,7 +1,7 @@
 export const APP_PROTOCOL = "myagenttool";
 
 const INTENTS = new Set(["manage", "send", "organize"]);
-const SECTIONS = new Set(["mail", "documents", "workflowMemory", "devices", "discovery", "tools", "applications"]);
+const SECTIONS = new Set(["mail", "documents", "workflowMemory", "devices", "discovery", "tools", "applications", "sessions"]);
 const ACTIONS = new Set([
   "mail-attachment",
   "compose-attachment",
@@ -11,7 +11,7 @@ const ACTIONS = new Set([
   "choose-source-folder",
   "open-desktop-page",
 ]);
-const PARAMS = new Set(["message", "attachment", "mode", "folder", "page", "view", "project", "document", "worktree", "source"]);
+const PARAMS = new Set(["message", "attachment", "mode", "folder", "page", "view", "project", "document", "worktree", "source", "site"]);
 
 function safeValue(value, maxLength = 512) {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength && !/[\u0000-\u001f]/.test(value)

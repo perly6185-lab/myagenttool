@@ -1,3 +1,5 @@
+import { unresolvedArtifactKinds } from "./work-goal-artifacts.mjs";
+
 const PRIORITY_RANK = Object.freeze({ p0: 0, p1: 1, p2: 2, p3: 3 });
 const ELIGIBLE_STATUSES = new Set(["ready", "in_progress"]);
 const USER_WAIT_STATES = new Set(["me", "requester", "internal"]);
@@ -118,6 +120,8 @@ export function evaluateAutoExecutionCandidate(item, {
   if (item?.executionOperation?.status === "starting") reasons.push("execution_starting");
   const dependencies = unresolvedDependencies(item, itemsById);
   if (dependencies.length) reasons.push("dependencies_unresolved");
+  const missingArtifacts = dependencies.length ? [] : unresolvedArtifactKinds(item);
+  if (missingArtifacts.length) reasons.push("artifacts_unavailable");
   const notBefore = timestamp(item?.notBefore, null);
   const nowMs = timestamp(now, Date.now());
   if (notBefore != null && notBefore > nowMs) reasons.push("not_before_reached");
@@ -132,6 +136,7 @@ export function evaluateAutoExecutionCandidate(item, {
     reasons,
     executionPolicy: policy,
     unresolvedDependencyIds: dependencies,
+    unresolvedArtifactKinds: missingArtifacts,
     rank: rankFor(item, normalizedToday),
   };
 }

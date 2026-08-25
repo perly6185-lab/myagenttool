@@ -44,6 +44,15 @@ import { normalizeWorkModeSnapshot } from "./work-mode-runtime.mjs";
 import { normalizeChannelExecutionStrategy } from "./channel-execution-strategy.mjs";
 import { normalizeChannelOperationIntent } from "./channel-operation-intent.mjs";
 import { normalizeChannelDataOperationPreview } from "./channel-data-operation-preview.mjs";
+import { draftSyncCapabilityReadiness, publicationCapabilityReadiness } from "./publication-readiness.mjs";
+import { artifactDependencyReadiness, propagateCompletedWorkGoalTask, validatedArtifactTransfer } from "./work-goal-artifacts.mjs";
+import { buildWorkGoalUserSummary } from "./work-goal-user-summary.mjs";
+import { resultVerificationContract, verifyWorkItemResult } from "./work-item-result-verification.mjs";
+import { deriveWorkItemOutputMetricsForAssets } from "./work-item-output-metrics.mjs";
+import { planDiscreteTasks } from "./discrete-task-planner.mjs";
+import { validateTaskPlan } from "./task-plan-contract.mjs";
+import { taskPlanCapabilityReadiness } from "./task-capability-readiness.mjs";
+import { applyResultRepairSpec, buildResultRepairTaskSpec } from "./result-repair-task.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -52,6 +61,14 @@ const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
 const PRIORITIES = new Set(["p0", "p1", "p2", "p3"]);
 const EXECUTION_POLICIES = new Set(["inherit", "auto", "manual", "paused"]);
+const TASK_CREATION_BASES = new Set([
+  "explicit_user_intent",
+  "channel_ingest_rule",
+  "saved_automation",
+  "required_guard",
+  "imported",
+]);
+const ARTIFACT_KINDS_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const CHANNEL_TASK_DOMAINS = new Set(["general", "office", "development", "design", "product_design", "creative", "content"]);
 const CHANNEL_TASK_RISK_LEVELS = new Set(["low", "local_change", "external_communication", "financial", "destructive"]);
 const DATA_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1;
@@ -62,6 +79,99 @@ const PRIORITY_ALIASES = { critical: "p0", urgent: "p0", high: "p1", medium: "p2
 function normalizePriority(value) {
   const candidate = String(value ?? "").toLowerCase().trim();
   return PRIORITY_ALIASES[candidate] ?? candidate;
+}
+
+function normalizeArtifactContract(input) {
+  if (input == null) return { consumes: [], produces: [] };
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const normalizeKinds = (value) => {
+    if (!Array.isArray(value) || value.length > 20) return null;
+    const kinds = [...new Set(value.map((entry) => String(entry ?? "").trim().toLowerCase()))];
+    return kinds.every((kind) => ARTIFACT_KINDS_RE.test(kind)) ? kinds : null;
+  };
+  const consumes = normalizeKinds(input.consumes ?? []);
+  const produces = normalizeKinds(input.produces ?? []);
+  if (!consumes || !produces) return null;
+  const rawRequirements = input.requirements ?? [];
+  if (!Array.isArray(rawRequirements) || rawRequirements.length > 20) return null;
+  const requirements = [];
+  const normalizeQuality = (quality) => {
+    if (quality == null) return null;
+    if (!quality || typeof quality !== "object" || Array.isArray(quality)) return undefined;
+    const normalized = {};
+    const integerFields = [
+      "minChars", "maxChars", "minSections", "maxSections", "minPages", "maxPages",
+      "minWidth", "maxWidth", "minHeight", "maxHeight",
+    ];
+    const numberFields = ["minDurationSeconds", "maxDurationSeconds"];
+    for (const field of integerFields) {
+      if (!Object.hasOwn(quality, field)) continue;
+      const value = Number(quality[field]);
+      if (!Number.isSafeInteger(value) || value < 0 || value > 100_000_000) return undefined;
+      normalized[field] = value;
+    }
+    for (const field of numberFields) {
+      if (!Object.hasOwn(quality, field)) continue;
+      const value = Number(quality[field]);
+      if (!Number.isFinite(value) || value < 0 || value > 10_000_000) return undefined;
+      normalized[field] = value;
+    }
+    if (Object.hasOwn(quality, "requiredHeadings")) {
+      if (!Array.isArray(quality.requiredHeadings) || quality.requiredHeadings.length > 30) return undefined;
+      const headings = [...new Set(quality.requiredHeadings.map((value) => String(value).trim()).filter(Boolean))];
+      if (headings.some((value) => value.length > 200)) return undefined;
+      normalized.requiredHeadings = headings;
+    }
+    if (Object.keys(normalized).length === 0) return undefined;
+    if (normalized.minChars != null && normalized.maxChars != null && normalized.minChars > normalized.maxChars) return undefined;
+    if (normalized.minSections != null && normalized.maxSections != null && normalized.minSections > normalized.maxSections) return undefined;
+    if (normalized.minPages != null && normalized.maxPages != null && normalized.minPages > normalized.maxPages) return undefined;
+    if (normalized.minDurationSeconds != null && normalized.maxDurationSeconds != null && normalized.minDurationSeconds > normalized.maxDurationSeconds) return undefined;
+    if (normalized.minWidth != null && normalized.maxWidth != null && normalized.minWidth > normalized.maxWidth) return undefined;
+    if (normalized.minHeight != null && normalized.maxHeight != null && normalized.minHeight > normalized.maxHeight) return undefined;
+    return normalized;
+  };
+  for (const value of rawRequirements) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const kind = String(value.kind ?? "").trim().toLowerCase();
+    const minCount = Number(value.minCount ?? 1);
+    if (!Array.isArray(value.extensions ?? []) || !Array.isArray(value.families ?? [])) return null;
+    const extensions = [...new Set((value.extensions ?? []).map((entry) => String(entry ?? "").trim().toLowerCase()))];
+    const families = [...new Set((value.families ?? []).map((entry) => String(entry ?? "").trim().toLowerCase()))];
+    const quality = normalizeQuality(value.quality);
+    if (!ARTIFACT_KINDS_RE.test(kind) || !produces.includes(kind)
+      || !Number.isInteger(minCount) || minCount < 1 || minCount > 100
+      || extensions.length > 20
+      || !extensions.every((extension) => /^\.[a-z0-9]{1,10}$/.test(extension))
+      || families.length > 10
+      || !families.every((family) => ARTIFACT_KINDS_RE.test(family)) || quality === undefined) return null;
+    requirements.push({ kind, minCount, ...(extensions.length ? { extensions } : {}), ...(families.length ? { families } : {}), ...(quality ? { quality } : {}) });
+  }
+  const verification = input.verification;
+  let normalizedVerification = null;
+  if (verification != null) {
+    if (!verification || typeof verification !== "object" || Array.isArray(verification)
+      || !Array.isArray(verification.requiredKinds) || verification.requiredKinds.length > 10) return null;
+    const allowedKinds = new Set(["test", "build", "lint", "typecheck", "manual", "review"]);
+    const requiredKinds = [...new Set(verification.requiredKinds.map((value) => String(value).trim().toLowerCase()))];
+    if (!requiredKinds.length || requiredKinds.some((kind) => !allowedKinds.has(kind))) return null;
+    normalizedVerification = { requiredKinds };
+  }
+  return {
+    consumes,
+    produces,
+    ...(requirements.length ? { requirements } : {}),
+    ...(normalizedVerification ? { verification: normalizedVerification } : {}),
+  };
+}
+
+function normalizePlatformTarget(input) {
+  if (input == null) return null;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const id = String(input.id ?? "").trim().toLowerCase();
+  const label = String(input.label ?? "").trim();
+  if (!ARTIFACT_KINDS_RE.test(id) || !label || label.length > 80) return undefined;
+  return { id, label };
 }
 const MAX_TITLE = 300;
 const MAX_BODY = 200_000;
@@ -78,7 +188,7 @@ const ROUTINE_BINDING_FIELDS = [
 const GITHUB_SYNC_FIELDS = ["title", "body", "state", "labels", "milestone", "assigneeIds"];
 const EXTERNAL_RELATIONS = new Set(["source", "related", "duplicate", "parent", "blocks"]);
 const EXTERNAL_SYNC_POLICIES = new Set(["manual", "webhook_pull", "bidirectional"]);
-const VERIFICATION_KINDS = new Set(["test", "lint", "typecheck", "manual", "review"]);
+const VERIFICATION_KINDS = new Set(["test", "build", "lint", "typecheck", "manual", "review"]);
 const VERIFICATION_STATUSES = new Set(["passed", "failed"]);
 const EXECUTION_OPERATION_TTL_MS = 30 * 60_000;
 const ACTIVE_AUTO_RUN_STATUSES = new Set([
@@ -256,6 +366,41 @@ function validateDraft(input, { partial = false } = {}) {
     const assets = normalizeAssetRefs(input.outputAssets ?? []);
     if (!assets) return { error: "invalid_work_item_output_assets" };
     value.outputAssets = assets;
+  }
+  const intentFields = ["intentId", "intentStatement", "taskKind", "creationBasis", "planningHorizon", "workGoalId", "artifactContract", "platformTarget"];
+  if (partial && intentFields.some((field) => Object.hasOwn(input, field))) {
+    return { error: "work_item_intent_fields_immutable" };
+  }
+  if (!partial) {
+    const intentId = input.intentId == null || input.intentId === "" ? null : String(input.intentId).trim();
+    const intentStatement = input.intentStatement == null ? "" : String(input.intentStatement).trim();
+    const taskKind = String(input.taskKind ?? "general").trim().toLowerCase();
+    const creationBasis = String(input.creationBasis ?? "explicit_user_intent").trim();
+    const planningHorizon = String(input.planningHorizon ?? "committed").trim();
+    const workGoalId = input.workGoalId == null || input.workGoalId === "" ? null : String(input.workGoalId).trim();
+    const artifactContract = normalizeArtifactContract(input.artifactContract);
+    const platformTarget = normalizePlatformTarget(input.platformTarget);
+    if (intentId && (!/^[A-Za-z0-9:_-]{1,200}$/.test(intentId) || !intentStatement)) {
+      return { error: "invalid_work_item_intent" };
+    }
+    if (intentStatement.length > 4_000) return { error: "invalid_work_item_intent_statement" };
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(taskKind)) return { error: "invalid_work_item_task_kind" };
+    if (!TASK_CREATION_BASES.has(creationBasis)) return { error: "invalid_work_item_creation_basis" };
+    if (workGoalId && !/^[A-Za-z0-9:_-]{1,200}$/.test(workGoalId)) return { error: "invalid_work_item_goal" };
+    if (!artifactContract) return { error: "invalid_work_item_artifact_contract" };
+    if (platformTarget === undefined) return { error: "invalid_work_item_platform_target" };
+    // A suggestion is not a task. Only a committed user/rule decision may be
+    // persisted as a WorkItem; possible next steps live outside this model.
+    if (planningHorizon !== "committed") return { error: "invalid_work_item_planning_horizon" };
+    value.intentId = intentId;
+    value.intentStatement = intentStatement;
+    value.taskKind = taskKind;
+    value.creationBasis = creationBasis;
+    value.planningHorizon = planningHorizon;
+    value.workGoalId = workGoalId;
+    value.artifactContract = artifactContract;
+    value.platformTarget = platformTarget;
+    value.resultVerificationContract = resultVerificationContract({ taskKind, artifactContract }, { enforced: false });
   }
   const followUp = normalizeWorkItemFollowUpInput(input, { partial });
   if (followUp.error) return followUp;
@@ -741,6 +886,43 @@ function normalizeAssetRefs(input) {
     if (candidate.contentId != null && !/^lc_[a-f0-9]{32}$/i.test(String(candidate.contentId))) return null;
     const capabilities = strings(candidate.capabilities ?? [], { limit: 20, maxLength: 40 });
     if (!capabilities || capabilities.some((verb) => !ASSET_CAPABILITY_VERBS.includes(verb))) return null;
+    const rawMetrics = candidate.contentMetrics;
+    if (rawMetrics != null && (!rawMetrics || typeof rawMetrics !== "object" || Array.isArray(rawMetrics))) return null;
+    const contentMetrics = rawMetrics == null ? null : {};
+    for (const field of ["charCount", "sectionCount", "pageCount", "width", "height"]) {
+      if (contentMetrics && Object.hasOwn(rawMetrics, field)) {
+        const value = Number(rawMetrics[field]);
+        if (!Number.isSafeInteger(value) || value < 0 || value > 100_000_000) return null;
+        contentMetrics[field] = value;
+      }
+    }
+    for (const field of ["durationSeconds"]) {
+      if (contentMetrics && Object.hasOwn(rawMetrics, field)) {
+        const value = Number(rawMetrics[field]);
+        if (!Number.isFinite(value) || value < 0 || value > 10_000_000) return null;
+        contentMetrics[field] = value;
+      }
+    }
+    for (const field of ["sampleRate", "channels"]) {
+      if (contentMetrics && Object.hasOwn(rawMetrics, field)) {
+        const value = Number(rawMetrics[field]);
+        if (!Number.isSafeInteger(value) || value < 0 || value > 1_000_000) return null;
+        contentMetrics[field] = value;
+      }
+    }
+    if (contentMetrics && Object.hasOwn(rawMetrics, "codec")) {
+      contentMetrics.codec = String(rawMetrics.codec).trim().slice(0, 40);
+      if (!contentMetrics.codec) return null;
+    }
+    if (contentMetrics && Object.hasOwn(rawMetrics, "headings")) {
+      if (!Array.isArray(rawMetrics.headings) || rawMetrics.headings.length > 100) return null;
+      contentMetrics.headings = rawMetrics.headings.map((value) => String(value).trim().slice(0, 200)).filter(Boolean);
+    }
+    if (contentMetrics && Object.hasOwn(rawMetrics, "source")) {
+      const source = String(rawMetrics.source).trim().toLowerCase();
+      if (!["local_file", "producer", "media_probe"].includes(source)) return null;
+      contentMetrics.source = source;
+    }
     assets.push({
       id: String(candidate.id ?? "").slice(0, 100) || null,
       ...(candidate.contentId ? { contentId: String(candidate.contentId).toLowerCase() } : {}),
@@ -750,6 +932,7 @@ function normalizeAssetRefs(input) {
       mimeType: candidate.mimeType ? String(candidate.mimeType).slice(0, 120) : null,
       terminalId,
       size: Number.isSafeInteger(candidate.size) && candidate.size >= 0 ? candidate.size : null,
+      ...(contentMetrics && Object.keys(contentMetrics).length ? { contentMetrics } : {}),
       resourceClass: ["small", "medium", "large", "unknown"].includes(candidate.resourceClass)
         ? candidate.resourceClass
         : "unknown",
@@ -790,6 +973,7 @@ export function createWorkItemService({
   inspectTaskMaterialDraft = null,
   resolveClaimedTaskMaterial = null,
   resolveLocalContentReference = null,
+  probeMediaAsset = null,
   store,
 }) {
   state.myTemplateRoutingFeedback ??= [];
@@ -801,6 +985,11 @@ export function createWorkItemService({
   const runTx = makeRunTx({ store, persistStateSoon });
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const actorUser = (actor) => actor?.userId ?? LOCAL_USER_ID;
+  const projectRootFor = (projectId) => state.projects?.find((project) => project.id === projectId)?.path ?? null;
+  const outputMetricsOptions = (projectId) => ({
+    projectRoot: projectRootFor(projectId),
+    ...(typeof probeMediaAsset === "function" ? { probeMedia: probeMediaAsset } : {}),
+  });
   const taskDraftsNeedingSingleCaseMigration = state.myTemplateDrafts.filter((draft) =>
     draft.casesRequired !== 1 || (draft.state === "learning" && Number(draft.caseCount ?? 0) >= 1));
   if (taskDraftsNeedingSingleCaseMigration.length) runTx(() => {
@@ -845,6 +1034,19 @@ export function createWorkItemService({
     } catch {
       // Outcome projection is best-effort and must never roll back the Issue mutation.
     }
+  };
+  const propagateCompletedGoalTask = (source, actor) => {
+    let result = { sourceChanged: false, dependents: [] };
+    runTx(() => {
+      result = propagateCompletedWorkGoalTask({
+        state,
+        source,
+        now,
+        recordActivity: (item, action, details) => recordActivity(item, actor, action, details),
+      });
+    });
+    if (result.sourceChanged) notifyWorkItemChanged(source, actor, "delivery_outputs_registered");
+    for (const dependent of result.dependents) notifyWorkItemChanged(dependent, actor, "goal_artifact_handoff");
   };
   const materializeMyTemplateBinding = (requested, projectId, actor, timestamp = now()) => {
     const definition = (state.routineDefinitions ?? []).find((row) =>
@@ -1083,13 +1285,26 @@ export function createWorkItemService({
   }
 
   function completionGate(item) {
-    if (!(item.acceptanceCriteria ?? []).length) return { ready: true, missingCriteria: [], verificationRequired: false };
+    const hasCriteria = (item.acceptanceCriteria ?? []).length > 0;
+    const resultVerification = item.resultVerificationContract?.enforced === true
+      ? (item.resultVerification ?? verifyWorkItemResult(item))
+      : null;
+    if (!hasCriteria && !resultVerification) {
+      return { ready: true, missingCriteria: [], verificationRequired: false, resultVerificationRequired: false };
+    }
     const passed = new Set((item.acceptanceResults ?? [])
       .filter((result) => result.status === "passed")
       .map((result) => result.criterion));
-    const missingCriteria = item.acceptanceCriteria.filter((criterion) => !passed.has(criterion));
+    const missingCriteria = (item.acceptanceCriteria ?? []).filter((criterion) => !passed.has(criterion));
     const verificationRequired = !(item.verificationRecords ?? []).some((record) => record.status === "passed");
-    return { ready: missingCriteria.length === 0 && !verificationRequired, missingCriteria, verificationRequired };
+    const resultVerificationRequired = Boolean(resultVerification && resultVerification.status !== "passed");
+    return {
+      ready: missingCriteria.length === 0 && !verificationRequired && !resultVerificationRequired,
+      missingCriteria,
+      verificationRequired,
+      resultVerificationRequired,
+      resultVerification,
+    };
   }
 
   function executionContractGate(item) {
@@ -1381,6 +1596,51 @@ export function createWorkItemService({
     const completedSubIssues = subIssues.filter(
       (candidate) => candidate.status === "done" || candidate.state === "closed",
     ).length;
+    const intentPeers = item.intentId
+      ? (state.workItems ?? []).filter((candidate) =>
+        candidate.ownerTeamId === actorTeam(actor)
+        && candidate.intentId === item.intentId
+        && candidate.id !== item.id)
+      : [];
+    const workGoal = item.workGoalId
+      ? (state.workGoals ?? []).find((candidate) =>
+        candidate.id === item.workGoalId && candidate.ownerTeamId === actorTeam(actor)) ?? null
+      : null;
+    const goalTasks = workGoal
+      ? (state.workItems ?? []).filter((candidate) =>
+        candidate.ownerTeamId === actorTeam(actor) && candidate.workGoalId === workGoal.id)
+      : [];
+    const publicationReadiness = item.taskKind === "content_publish"
+      ? publicationCapabilityReadiness({
+        applications: state.applications ?? [],
+        platformTarget: item.platformTarget,
+        ownerTeamId: actorTeam(actor),
+      })
+      : null;
+    const draftSyncReadiness = item.taskKind === "wechat_draft_sync"
+      ? draftSyncCapabilityReadiness({
+        applications: state.applications ?? [],
+        platformTarget: item.platformTarget,
+        ownerTeamId: actorTeam(actor),
+      })
+      : null;
+    const resultVerification = item.resultVerificationContract
+      ? (item.resultVerification ?? verifyWorkItemResult(item))
+      : null;
+    const latestGoalChange = workGoal
+      ? (state.workGoalChanges ?? [])
+        .filter((change) => change.goalId === workGoal.id)
+        .sort((left, right) => String(right.appliedAt ?? right.updatedAt ?? right.createdAt ?? "")
+          .localeCompare(String(left.appliedAt ?? left.updatedAt ?? left.createdAt ?? "")))[0] ?? null
+      : null;
+    const workGoalUserSummary = workGoal ? buildWorkGoalUserSummary({
+      goal: workGoal,
+      tasks: goalTasks,
+      workItems: goalTasks.map((candidate) => candidate.resultVerificationContract && !candidate.resultVerification
+        ? { ...candidate, resultVerification: verifyWorkItemResult(candidate) }
+        : candidate),
+      latestChange: latestGoalChange,
+    }) : null;
     const templateOutcomeFeedback = state.myTemplateOutcomeFeedback.find((feedback) =>
       feedback.ownerTeamId === actorTeam(actor) && feedback.workItemId === item.id) ?? null;
     return {
@@ -1410,6 +1670,8 @@ export function createWorkItemService({
         execution: derivedExecutionState,
       },
       completionGate: completionGate({ ...item, acceptanceCriteria: visibleAcceptanceCriteria }),
+      resultVerificationContract: item.resultVerificationContract ?? null,
+      resultVerification,
       executionContractGate: executionContractGate(item),
       reviewContract: frozenReviewContract,
       reviewEvidence: reviewEvidence(item, frozenReviewContract),
@@ -1425,6 +1687,40 @@ export function createWorkItemService({
         updatedAt: templateOutcomeFeedback.updatedAt,
       } : null,
       myTemplateDraft: myTemplateDraftView(taskTemplateDraftFor(item, actor)),
+      intentPeers: intentPeers.map((candidate) => ({
+        id: candidate.id,
+        localRef: candidate.localRef,
+        title: candidate.title,
+        taskKind: candidate.taskKind ?? "general",
+        status: candidate.status,
+        state: candidate.state,
+      })),
+      workGoal: workGoal ? {
+        id: workGoal.id,
+        title: workGoal.title,
+        statement: workGoal.statement,
+        outcome: workGoal.outcome,
+        status: workGoal.status,
+        planVersion: workGoal.planVersion,
+        platforms: workGoal.platforms ?? [],
+        progress: {
+          total: goalTasks.length,
+          completed: goalTasks.filter((candidate) => candidate.status === "done" || candidate.state === "closed").length,
+        },
+        userSummary: workGoalUserSummary,
+      } : null,
+      publicationReadiness,
+      draftSyncReadiness,
+      goalTasks: goalTasks.map((candidate) => ({
+        id: candidate.id,
+        localRef: candidate.localRef,
+        title: candidate.title,
+        taskKind: candidate.taskKind ?? "general",
+        status: candidate.status,
+        state: candidate.state,
+        dependencyIds: candidate.dependencyIds ?? [],
+        platformTarget: candidate.platformTarget ?? null,
+      })),
       parent: parent ? {
         id: parent.id, localRef: parent.localRef, title: parent.title,
         status: parent.status, state: parent.state,
@@ -1441,13 +1737,17 @@ export function createWorkItemService({
       dependencyIds: item.dependencyIds ?? [],
       blockedBy: (item.dependencyIds ?? []).map((dependencyId) => {
         const dependency = findOwn(dependencyId, actor);
+        const readiness = artifactDependencyReadiness(item, dependency);
         return dependency ? {
           id: dependency.id,
           localRef: dependency.localRef,
           title: dependency.title,
           status: dependency.status,
           state: dependency.state,
-          resolved: dependency.status === "done" || dependency.state === "closed",
+          resolved: readiness.resolved,
+          taskResolved: readiness.taskResolved,
+          artifactResolved: readiness.artifactResolved,
+          unresolvedArtifactKinds: readiness.unresolvedArtifactKinds,
         } : null;
       }).filter(Boolean),
       blocks: (state.workItems ?? [])
@@ -2548,6 +2848,460 @@ export function createWorkItemService({
             confidence: body.length >= 120 ? 0.78 : body.length >= 40 ? 0.65 : 0.45,
           },
         },
+      },
+    };
+  }
+
+  function previewIntentTaskPlan(input = {}, actor = null) {
+    const projectId = String(input.projectId ?? "");
+    if (!projectId || !actorCanAccessProject(state, actor, projectId)) return notFound();
+    const title = String(input.title ?? "").trim().slice(0, 300);
+    const body = String(input.body ?? "").trim().slice(0, 20_000);
+    const statement = [title, body && body !== title ? body : ""].filter(Boolean).join("\n").slice(0, 4_000);
+    if (!statement) return { ok: false, status: 400, body: { error: "intent_statement_required" } };
+    const excludeKinds = [...new Set((Array.isArray(input.excludeKinds) ? input.excludeKinds : [])
+      .map((kind) => String(kind ?? "").trim().slice(0, 80))
+      .filter(Boolean))].slice(0, 30);
+    const excludeTaskKeys = [...new Set((Array.isArray(input.excludeTaskKeys) ? input.excludeTaskKeys : [])
+      .map((key) => String(key ?? "").trim().slice(0, 160))
+      .filter(Boolean))].slice(0, 50);
+    const requestedSourceId = String(input.sourceWorkItemId ?? "").trim();
+    const sourceQuery = String(input.sourceQuery ?? "").trim().toLowerCase().slice(0, 120);
+    const referencesExistingResult = Boolean(requestedSourceId)
+      || /(?:根据|基于|结合|使用|沿用|接着|继续).{0,24}(?:已有|现有|前面|此前|之前|刚才|上一个|已经完成|已完成).{0,24}(?:分析|结果|报告|方案|文章|资料|任务|成果)|(?:根据|基于).{0,20}(?:分析结果|分析报告|已有结果|前序结果|上一步结果)|based on (?:the )?(?:existing|previous|earlier) (?:analysis|result|report|task)/i.test(statement);
+    const sourceRows = (state.workItems ?? [])
+      .filter((item) => item.ownerTeamId === actorTeam(actor)
+        && item.projectId === projectId
+        && (item.status === "done" || item.state === "closed" || item.executionState === "completed")
+        && (item.outputAssets ?? []).some((asset) => asset?.id && asset?.path && asset?.terminalId)
+        && (item.artifactContract?.produces ?? []).length
+        && (!sourceQuery || [item.localRef, item.title, ...(item.artifactContract?.produces ?? [])]
+          .some((value) => String(value ?? "").toLowerCase().includes(sourceQuery))))
+      .sort((left, right) => String(right.completedAt ?? right.updatedAt ?? "").localeCompare(String(left.completedAt ?? left.updatedAt ?? "")));
+    const selectedSource = requestedSourceId
+      ? sourceRows.find((item) => item.id === requestedSourceId) ?? null
+      : null;
+    if (requestedSourceId && !selectedSource) {
+      return { ok: false, status: 400, body: { error: "intent_source_work_item_invalid" } };
+    }
+    const selectedTransfer = selectedSource
+      ? validatedArtifactTransfer({ source: selectedSource, kinds: selectedSource.artifactContract?.produces ?? [] })
+      : null;
+    if (selectedSource && selectedTransfer.handoff.status !== "attached") {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "intent_source_artifacts_invalid",
+          workItemId: selectedSource.id,
+          validationErrors: selectedTransfer.handoff.validationErrors,
+        },
+      };
+    }
+    const sourceCandidates = (selectedSource
+      ? [selectedSource, ...sourceRows.filter((item) => item.id !== selectedSource.id)]
+      : sourceRows)
+      .slice(0, 20)
+      .map((item) => {
+        const transfer = validatedArtifactTransfer({ source: item, kinds: item.artifactContract?.produces ?? [] });
+        return {
+          workItemId: item.id,
+          localRef: item.localRef,
+          title: item.title,
+          completedAt: item.completedAt ?? item.updatedAt ?? null,
+          artifactKinds: [...new Set(item.artifactContract?.produces ?? [])],
+          readyArtifactKinds: transfer.handoff.kinds,
+          outputCount: (item.outputAssets ?? []).length,
+          ready: transfer.handoff.status === "attached",
+          validationErrors: transfer.handoff.validationErrors,
+        };
+      });
+    const intentId = String(input.intentId ?? "").trim()
+      || `desktop-intent:${createHash("sha256").update(`${projectId}\n${statement}`).digest("hex").slice(0, 24)}`;
+    const inspected = input.materialDraftId && typeof inspectTaskMaterialDraft === "function"
+      ? inspectTaskMaterialDraft({ projectId, draftId: String(input.materialDraftId) }, actor)
+      : null;
+    if (inspected && inspected.status !== 200) return { ok: false, status: inspected.status, body: inspected.body };
+    let plan = planDiscreteTasks({
+      text: statement,
+      intentId,
+      excludeKinds,
+      excludeTaskKeys,
+      materials: (inspected?.body?.draft?.assets ?? []).map((asset) => ({
+        id: asset.id,
+        contentId: asset.contentId,
+        title: asset.originalName ?? asset.path,
+      })),
+    });
+    if (!plan.tasks.length && !plan.clarification
+      && /^(?:(?:请|帮我|麻烦)?(?:按|照)?(?:这个|这样|上面(?:这个)?|刚才(?:那个)?|之前(?:那个)?)?\s*(?:优化|完善|处理|调整|修改|改|弄|做)(?:一下|下)?)[。.!！?？]*$/i.test(statement)) {
+      plan = {
+        ...plan,
+        clarification: {
+          kind: "task_scope",
+          prompt: "你希望优化或修改什么？请补充对象和想得到的结果，例如“优化首页任务创建，让手机上也能顺畅使用”。我先不创建笼统任务。",
+        },
+      };
+    }
+    if (!plan.tasks.length && !plan.clarification && (excludeKinds.length || excludeTaskKeys.length)) {
+      plan = {
+        ...plan,
+        clarification: {
+          kind: "task_selection_empty",
+          prompt: "方案里已经没有要创建的任务。请恢复至少一项，或重新描述希望完成的结果。",
+        },
+      };
+    }
+    if (!plan.tasks.length && !plan.clarification) {
+      plan = {
+        ...plan,
+        tasks: [{
+          key: "general",
+          kind: "general",
+          domain: "general",
+          title: title || statement.slice(0, 120),
+          outcome: `完成“${(title || statement).slice(0, 100)}”并交付可检查的结果`,
+          intentId,
+          intentStatement: statement,
+          creationBasis: "explicit_user_intent",
+          planningHorizon: "committed",
+          sourceContentIds: [],
+          sourceTitles: [],
+          requires: [],
+          artifactContract: { consumes: [], produces: [], requirements: [] },
+          platform: null,
+          approvalRequired: false,
+          gate: null,
+        }],
+      };
+    }
+    if (selectedSource) {
+      const sourceKinds = [...new Set(selectedSource.artifactContract?.produces ?? [])];
+      plan = {
+        ...plan,
+        tasks: plan.tasks.map((task) => (task.requires ?? []).length ? task : {
+          ...task,
+          artifactContract: {
+            ...task.artifactContract,
+            consumes: [...new Set([...(task.artifactContract?.consumes ?? []), ...sourceKinds])],
+          },
+          externalSource: {
+            workItemId: selectedSource.id,
+            localRef: selectedSource.localRef,
+            title: selectedSource.title,
+            artifactKinds: sourceKinds,
+          },
+        }),
+      };
+    }
+    const sourceSelectionRequired = referencesExistingResult && !selectedSource;
+    const usableSourceCandidates = sourceCandidates.filter((candidate) => candidate.ready);
+    const sourceSelection = referencesExistingResult ? {
+      required: sourceSelectionRequired,
+      candidates: sourceCandidates,
+      selected: selectedSource ? sourceCandidates.find((candidate) => candidate.workItemId === selectedSource.id) ?? null : null,
+      unavailable: sourceSelectionRequired && usableSourceCandidates.length === 0,
+      query: sourceQuery,
+    } : null;
+    plan = { ...plan, sourceSelection, excludedKinds: excludeKinds, excludedTaskKeys: excludeTaskKeys };
+    const contract = validateTaskPlan(plan, { requireTasks: !plan.clarification });
+    if (!contract.ok) {
+      return { ok: false, status: 422, body: { error: "invalid_intent_task_plan", details: contract.errors } };
+    }
+    const repositoryKinds = new Set([
+      "coding_digest", "software_analysis", "software_implementation", "software_verification", "software_deployment",
+    ]);
+    const capabilityReadiness = taskPlanCapabilityReadiness(state, plan.tasks);
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        plan: { ...plan, planContract: contract },
+        summary: {
+          taskCount: plan.tasks.length,
+          requiresRepository: plan.tasks.some((task) => repositoryKinds.has(task.kind)),
+          approvalTaskCount: plan.tasks.filter((task) => task.approvalRequired).length,
+          canCommit: !plan.clarification && !sourceSelectionRequired,
+          canStartAi: capabilityReadiness.ready,
+          capabilityBlockers: capabilityReadiness.blockers,
+          nextStep: plan.clarification?.prompt
+            ?? (sourceSelectionRequired
+              ? usableSourceCandidates.length
+                ? "请选择这次工作要使用的已有结果；确认后系统会建立真实的任务和产物依赖。"
+                : "没有找到可使用的已完成结果。请先完成前序任务，或把结果作为附件加入。"
+              : null)
+            ?? (!capabilityReadiness.ready
+              ? `可以先保存任务；交给 AI 前还需要配置：${capabilityReadiness.blockers.map((blocker) => blocker.requiredCapability).join("、")}。`
+              : plan.tasks.some((task) => task.approvalRequired)
+                ? "先创建可执行任务；涉及发布、发送或部署时再由你确认。"
+                : `确认后将创建 ${plan.tasks.length} 项可独立执行的任务。`),
+        },
+      },
+    };
+  }
+
+  function commitIntentTaskPlan(input = {}, actor = null) {
+    const projectId = String(input.projectId ?? "");
+    const mode = input.mode === "ai" ? "ai" : "task";
+    const idempotencyKey = String(input.idempotencyKey ?? "").trim();
+    if (!idempotencyKey || idempotencyKey.length > 200) {
+      return { ok: false, status: 400, body: { error: "intent_plan_idempotency_key_required" } };
+    }
+    const replayGoal = (state.workGoals ?? []).find((goal) =>
+      goal.ownerTeamId === actorTeam(actor)
+      && goal.projectId === projectId
+      && goal.createIdempotencyKey === idempotencyKey);
+    if (replayGoal) {
+      const workItems = (replayGoal.taskIds ?? [])
+        .map((id) => findOwn(id, actor))
+        .filter(Boolean)
+        .map((item) => workItemView(item, actor));
+      return { ok: true, status: 200, body: { workGoal: replayGoal, workItems, replayed: true } };
+    }
+    const preview = previewIntentTaskPlan(input, actor);
+    if (!preview.ok) return preview;
+    const { plan } = preview.body;
+    if (plan.clarification) {
+      return { ok: false, status: 409, body: { error: "intent_clarification_required", clarification: plan.clarification } };
+    }
+    if (plan.sourceSelection?.required) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "intent_source_selection_required", sourceSelection: plan.sourceSelection },
+      };
+    }
+    if (mode === "ai" && preview.body.summary.canStartAi === false) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "intent_task_capability_required",
+          capabilityBlockers: preview.body.summary.capabilityBlockers,
+        },
+      };
+    }
+    const timestamp = now();
+    const goalId = `desktop-goal:${nextId("wgl")}`;
+    const workGoal = {
+      id: goalId,
+      ownerTeamId: actorTeam(actor),
+      projectId,
+      conversationId: null,
+      sourceEventIds: [],
+      title: plan.goal?.title ?? String(input.title ?? "一件待完成的工作").slice(0, 120),
+      statement: plan.goal?.statement ?? String(input.body ?? input.title ?? "").slice(0, 4_000),
+      outcome: plan.goal?.outcome ?? "完成用户明确提出的工作",
+      planContract: plan.planContract.summary,
+      intentConfidence: plan.planContract.confidence,
+      domains: plan.goal?.domains ?? [],
+      platforms: plan.goal?.platforms ?? [],
+      status: "active",
+      planVersion: 1,
+      taskIds: [],
+      artifacts: [],
+      createIdempotencyKey: idempotencyKey,
+      createdBy: actorUser(actor),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    runTx(() => { (state.workGoals ??= []).push(workGoal); });
+
+    const createdByKey = new Map();
+    const pending = [...plan.tasks];
+    const created = [];
+    let sharedInputAssets = null;
+    try {
+      while (pending.length) {
+        const index = pending.findIndex((task) => (task.requires ?? []).every((key) => createdByKey.has(key)));
+        if (index < 0) throw new Error("intent_task_dependency_order_invalid");
+        const [task] = pending.splice(index, 1);
+        const approvalRequired = task.approvalRequired === true;
+        const taskBody = [
+          task.outcome,
+          task.executionInstructions,
+          `原始需求：${plan.intent?.statement ?? workGoal.statement}`,
+          approvalRequired ? "到达对外发布、发送、部署或上游审核步骤时必须等待用户确认。" : "只完成这一项任务，不自动执行同一目标中的其他任务。",
+        ].filter(Boolean).join("\n\n");
+        const assisted = suggestWorkItemDraft({ projectId, title: task.title, body: taskBody }, actor);
+        if (!assisted.ok) throw new Error(assisted.body?.error ?? "intent_task_draft_failed");
+        const singleTaskCriteria = plan.tasks.length === 1 && Array.isArray(input.acceptanceCriteria)
+          ? input.acceptanceCriteria.map((value) => String(value).trim()).filter(Boolean)
+          : null;
+        const singleTaskSop = plan.tasks.length === 1 && Array.isArray(input.verificationSop)
+          ? input.verificationSop.map((value) => String(value).trim()).filter(Boolean)
+          : null;
+        const includeMaterialDraft = created.length === 0 && input.materialDraftId;
+        const externalSource = task.externalSource?.workItemId
+          ? findOwn(task.externalSource.workItemId, actor)
+          : null;
+        const result = createWorkItem({
+          projectId,
+          title: task.title,
+          body: taskBody,
+          type: "task",
+          status: mode === "ai" && !approvalRequired ? "ready" : "backlog",
+          priority: "p2",
+          executionPolicy: mode === "ai" && !approvalRequired ? "auto" : "manual",
+          acceptanceCriteria: singleTaskCriteria?.length ? singleTaskCriteria : assisted.body.draft.acceptanceCriteria,
+          verificationSop: singleTaskSop?.length ? singleTaskSop : assisted.body.draft.verificationSop,
+          requesterRelation: "self",
+          intakeChannel: "manual",
+          waitingOn: approvalRequired ? "me" : mode === "ai" ? "ai" : "none",
+          plannedDate: mode === "ai" && !approvalRequired ? timestamp.slice(0, 10) : null,
+          dueDate: input.dueDate || null,
+          intentId: plan.intent?.id ?? task.intentId,
+          intentStatement: plan.intent?.statement ?? task.intentStatement,
+          taskKind: task.kind,
+          creationBasis: task.creationBasis,
+          planningHorizon: "committed",
+          workGoalId: goalId,
+          artifactContract: task.artifactContract,
+          platformTarget: task.platform ?? null,
+          dependencyIds: [...new Set([
+            ...(task.requires ?? []).map((key) => createdByKey.get(key).id),
+            ...(externalSource ? [externalSource.id] : []),
+          ])],
+          ...(plan.tasks.length === 1 && input.myTemplateBinding ? { myTemplateBinding: input.myTemplateBinding } : {}),
+          ...(includeMaterialDraft ? {
+            materialDraftId: String(input.materialDraftId),
+            materialDraftRevision: input.materialDraftRevision,
+          } : sharedInputAssets?.length ? { inputAssets: sharedInputAssets } : {}),
+          idempotencyKey: `${idempotencyKey}:${task.key}`.slice(0, 200),
+        }, actor);
+        if (!result.ok) throw new Error(result.body?.error ?? "intent_task_creation_failed");
+        let item = result.body.workItem;
+        if (externalSource) {
+          const stored = findOwn(item.id, actor);
+          const sourceKinds = [...new Set(task.externalSource?.artifactKinds ?? [])];
+          const transfer = validatedArtifactTransfer({ source: externalSource, kinds: sourceKinds, at: now() });
+          const sourceAssets = transfer.assets.filter((asset) => asset?.terminalId);
+          const handoff = {
+            ...transfer.handoff,
+            assetIds: transfer.handoff.assetIds.filter((assetId) => sourceAssets.some((asset) => asset.id === assetId)),
+          };
+          if (!sourceAssets.length || handoff.kinds.length !== sourceKinds.length) handoff.status = "awaiting_artifact";
+          runTx(() => {
+            const existingIds = new Set((stored.inputAssets ?? []).map((asset) => asset.id).filter(Boolean));
+            stored.inputAssets = [
+              ...(stored.inputAssets ?? []),
+              ...sourceAssets.filter((asset) => !existingIds.has(asset.id)).map((asset) => ({ ...asset })),
+            ].slice(0, 100);
+            stored.artifactHandoffs = [
+              ...(stored.artifactHandoffs ?? []).filter((handoff) => handoff.sourceWorkItemId !== externalSource.id),
+              handoff,
+            ].slice(-50);
+            stored.dataContextSnapshot = buildDataContextSnapshot({
+              workItemId: stored.id,
+              workItemRevision: stored.revision,
+              capturedAt: stored.updatedAt,
+              inputAssets: stored.inputAssets,
+              localContentRefs: stored.localContentRefs,
+              channelTaskContract: stored.channelTaskContract,
+            });
+          });
+          item = workItemView(stored, actor);
+        }
+        if (!sharedInputAssets && item.inputAssets?.length) sharedInputAssets = item.inputAssets;
+        created.push(item);
+        createdByKey.set(task.key, item);
+        runTx(() => {
+          workGoal.taskIds.push(item.id);
+          workGoal.updatedAt = now();
+        });
+      }
+    } catch (error) {
+      runTx(() => {
+        workGoal.status = "needs_repair";
+        workGoal.lastError = error instanceof Error ? error.message : String(error);
+        workGoal.updatedAt = now();
+      });
+      return {
+        ok: false,
+        status: 500,
+        body: { error: "intent_task_plan_commit_failed", workGoalId: goalId, createdWorkItemIds: created.map((item) => item.id) },
+      };
+    }
+    return {
+      ok: true,
+      status: 201,
+      body: { workGoal, workItems: created.map((item) => workItemView(item, actor)), replayed: false, plan: preview.body },
+    };
+  }
+
+  function createResultRepairTask({ workItemId } = {}, actor = null) {
+    const source = findOwn(String(workItemId ?? ""), actor);
+    if (!source) return notFound();
+    if (!(["review", "blocked", "done"].includes(source.status) || source.state === "closed")) {
+      return { ok: false, status: 409, body: { error: "work_item_result_repair_not_ready" } };
+    }
+    const verification = source.resultVerification ?? verifyWorkItemResult(source);
+    if (verification.status !== "failed" || !verification.repair?.suggestedRequest) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_result_repair_not_required", resultVerification: verification },
+      };
+    }
+
+    const spec = buildResultRepairTaskSpec({ source, verification, at: now() });
+    const idempotencyKey = `result-repair:${source.id}:${source.revision}:${verification.digest}`.slice(0, 200);
+    const created = createWorkItem({
+      projectId: source.projectId,
+      title: spec.title,
+      body: spec.description,
+      type: "task",
+      status: "backlog",
+      priority: source.priority ?? "p2",
+      executionPolicy: "manual",
+      requesterRelation: "self",
+      intakeChannel: "manual",
+      waitingOn: "none",
+      intentId: `${source.intentId ?? source.id}:repair:${source.revision}:${verification.digest.slice(-16)}`.slice(0, 200),
+      intentStatement: spec.description,
+      taskKind: source.taskKind ?? "general",
+      creationBasis: "explicit_user_intent",
+      planningHorizon: "committed",
+      workGoalId: source.workGoalId ?? null,
+      artifactContract: spec.artifactContract,
+      dependencyIds: spec.dependencyIds,
+      inputAssets: spec.inputAssets,
+      acceptanceCriteria: [...(source.acceptanceCriteria ?? [])],
+      verificationSop: [...(source.verificationSop ?? [])],
+      idempotencyKey,
+    }, actor);
+    if (!created.ok) return created;
+
+    const repair = findOwn(created.body.workItem.id, actor);
+    if (!repair) return { ok: false, status: 500, body: { error: "work_item_result_repair_missing" } };
+    runTx(() => {
+      applyResultRepairSpec(repair, spec);
+      repair.dataContextSnapshot = buildDataContextSnapshot({
+        workItemId: repair.id,
+        workItemRevision: repair.revision,
+        capturedAt: repair.updatedAt,
+        inputAssets: repair.inputAssets,
+        localContentRefs: repair.localContentRefs,
+        channelTaskContract: repair.channelTaskContract,
+      });
+      const goal = source.workGoalId
+        ? (state.workGoals ?? []).find((candidate) => candidate.id === source.workGoalId
+          && candidate.ownerTeamId === actorTeam(actor))
+        : null;
+      if (goal && !(goal.taskIds ?? []).includes(repair.id)) {
+        goal.taskIds = [...(goal.taskIds ?? []), repair.id];
+        goal.status = "active";
+        goal.updatedAt = now();
+      }
+    });
+    return {
+      ok: true,
+      status: created.body.replayed ? 200 : 201,
+      body: {
+        workItem: workItemView(repair, actor),
+        repairOfWorkItemId: source.id,
+        resultVerification: verification,
+        replayed: created.body.replayed === true,
       },
     };
   }
@@ -3790,6 +4544,13 @@ export function createWorkItemService({
     }
     const validated = validateDraft(input);
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    if (validated.value.workGoalId) {
+      const goal = (state.workGoals ?? []).find((candidate) =>
+        candidate.id === validated.value.workGoalId
+        && candidate.ownerTeamId === actorTeam(actor)
+        && candidate.projectId === projectId);
+      if (!goal) return { ok: false, status: 400, body: { error: "invalid_work_item_goal" } };
+    }
     if (!validated.value.myTemplateBinding && !hasRoutineInput) {
       const automaticMatch = matchPublishedMyTemplate({
         definitions: (state.routineDefinitions ?? []).filter(
@@ -3846,6 +4607,13 @@ export function createWorkItemService({
     if (parentId && (!parent || parent.projectId !== projectId)) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_parent" } };
     }
+    const dependencyIds = [...new Set((Array.isArray(input.dependencyIds) ? input.dependencyIds : []).map(String))];
+    if (dependencyIds.length > 50 || dependencyIds.some((id) => {
+      const dependency = findOwn(id, actor);
+      return !dependency || dependency.projectId !== projectId;
+    })) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_dependencies" } };
+    }
     const pinnedRoutineChild = Boolean(allowPinnedRoutineChild
       && parent
       && validated.value.routineDefinitionId
@@ -3884,6 +4652,14 @@ export function createWorkItemService({
       validated.value.executionContractSource = null;
       validated.value.executionContractConfirmedAt = null;
     }
+    if (validated.value.resultVerificationContract) {
+      validated.value.resultVerificationContract = resultVerificationContract(validated.value, {
+        enforced: contractCriteria.length > 0,
+      });
+    }
+    validated.value.outputAssets = deriveWorkItemOutputMetricsForAssets(validated.value.outputAssets ?? [], {
+      ...outputMetricsOptions(projectId),
+    });
     const workItem = {
       id: nextId("lwi"),
       localNumber,
@@ -3892,7 +4668,7 @@ export function createWorkItemService({
       projectId,
       terminalId: localTerminalId(),
       ...validated.value,
-      dependencyIds: [],
+      dependencyIds,
       parentId,
       createIdempotencyKey: idempotencyKey,
       followUpScheduleRevision: validated.value.nextFollowUpAt ? 1 : 0,
@@ -4118,6 +4894,9 @@ export function createWorkItemService({
     if ([...nextInputAssets, ...nextOutputAssets].some((asset) => asset.terminalId !== item.terminalId)) {
       return { ok: false, status: 409, body: { error: "asset_terminal_mismatch", terminalId: item.terminalId } };
     }
+    validated.value.outputAssets = deriveWorkItemOutputMetricsForAssets(nextOutputAssets, {
+      ...outputMetricsOptions(item.projectId),
+    });
     const timestamp = now();
     const previousTemplateBinding = item.myTemplateBinding ?? null;
     const templateResultConfirmed = validated.value.myTemplateBinding?.userConfirmedResult === true;
@@ -4200,7 +4979,27 @@ export function createWorkItemService({
         validated.value.executionContractConfirmedAt = null;
       }
     }
+    if (item.resultVerificationContract && contractInputChanged) {
+      validated.value.resultVerificationContract = resultVerificationContract({
+        ...item,
+        ...validated.value,
+      }, {
+        enforced: (validated.value.acceptanceCriteria ?? item.acceptanceCriteria ?? []).length > 0,
+      });
+    }
     if (validated.value.status === "done") {
+      const candidate = { ...item, ...validated.value };
+      if (candidate.resultVerificationContract?.enforced === true) {
+        const resultVerification = verifyWorkItemResult(candidate);
+        if (resultVerification.status !== "passed") {
+          return {
+            ok: false,
+            status: 409,
+            body: { error: "work_item_result_verification_incomplete", resultVerification },
+          };
+        }
+        validated.value.resultVerification = resultVerification;
+      }
       const gate = completionGate({ ...item, ...validated.value });
       if (!gate.ready) return { ok: false, status: 409, body: { error: "work_item_acceptance_incomplete", ...gate } };
     }
@@ -4327,6 +5126,7 @@ export function createWorkItemService({
         data: { workItemId: item.id, revision: item.revision, actorTeamId: actorTeam(actor) },
       });
     });
+    if (validated.value.status === "done") propagateCompletedGoalTask(item, actor);
     notifyWorkItemChanged(item, actor, "updated");
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
   }
@@ -4667,7 +5467,11 @@ export function createWorkItemService({
     if (!source.capabilities.includes(capability) || source.readiness?.state !== "ready") {
       return { ok: false, status: 409, body: { error: "waiting_capability", capability, terminalId: item.terminalId } };
     }
-    const normalizedOutput = outputAsset == null ? null : normalizeAssetRefs([outputAsset])?.[0] ?? null;
+    const normalizedOutput = outputAsset == null
+      ? null
+      : deriveWorkItemOutputMetricsForAssets(normalizeAssetRefs([outputAsset]) ?? [], {
+        ...outputMetricsOptions(item.projectId),
+      })[0] ?? null;
     if (outputAsset != null && (!normalizedOutput || normalizedOutput.terminalId !== item.terminalId
       || !normalizedOutput.id || !normalizedOutput.hash || !normalizedOutput.version)) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_output_asset" } };
@@ -4984,7 +5788,7 @@ export function createWorkItemService({
   } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
-    if (!["worktree", "auto_run"].includes(kind)) {
+    if (!["worktree", "auto_run", "application_invocation"].includes(kind)) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_execution_kind" } };
     }
     if (item.state !== "open" || item.archivedAt) {
@@ -5094,7 +5898,7 @@ export function createWorkItemService({
   } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
-    if (!["worktree", "auto_run", "article_import", "article_derivative"].includes(kind) || !targetId) {
+    if (!["worktree", "auto_run", "application_invocation", "article_import", "article_derivative"].includes(kind) || !targetId) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_execution_binding" } };
     }
     if (operationId != null
@@ -5125,6 +5929,7 @@ export function createWorkItemService({
       item.updatedAt = now();
       item.lastModifiedBy = actorUser(actor);
       const activityType = kind === "worktree" ? "worktree_created"
+        : kind === "application_invocation" ? "application_execution_started"
         : kind === "article_import" ? "article_import_started"
           : kind === "article_derivative" ? "article_derivative_started"
           : "auto_run_started";
@@ -5318,6 +6123,7 @@ export function createWorkItemService({
         data: { workItemId: item.id, autoRunId: autoRun.id, mode, result },
       });
     });
+    if (mode === "local_merge") propagateCompletedGoalTask(item, actor);
     notifyWorkItemChanged(item, actor, "delivery_completed");
     return {
       ok: true,
@@ -6122,7 +6928,7 @@ export function createWorkItemService({
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
-    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, retryWorkItemAlert,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, retryWorkItemAlert,
     startApplicationExecution, requestApplicationExecutionApproval,
     applyLocalSchedulePlan,
     applyLocalScheduleRollover,

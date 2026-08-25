@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   updateWorkItemAttention: vi.fn(),
   listGithubItems: vi.fn(),
   createWorkItem: vi.fn(),
+  suggestWorkItemDraft: vi.fn(),
+  previewWorkItemIntentPlan: vi.fn(),
+  commitWorkItemIntentPlan: vi.fn(),
   inspectArticleImport: vi.fn(),
   startArticleImport: vi.fn(),
   listArticleImports: vi.fn(),
@@ -121,6 +124,9 @@ vi.mock("@/data/use-console-actions", () => ({
     updateWorkItemAttention: mocks.updateWorkItemAttention,
     listGithubItems: mocks.listGithubItems,
     createWorkItem: mocks.createWorkItem,
+    suggestWorkItemDraft: mocks.suggestWorkItemDraft,
+    previewWorkItemIntentPlan: mocks.previewWorkItemIntentPlan,
+    commitWorkItemIntentPlan: mocks.commitWorkItemIntentPlan,
     inspectArticleImport: mocks.inspectArticleImport,
     startArticleImport: mocks.startArticleImport,
     listArticleImports: mocks.listArticleImports,
@@ -235,6 +241,27 @@ describe("TaskView local work items", () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
     mocks.getWorkItemExternalIssueFunnel.mockResolvedValue({ metrics: { total: 0, notStarted: 0, running: 0, review: 0, completed: 0, stalled: 0 }, stalls: [] });
     mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
+    mocks.suggestWorkItemDraft.mockResolvedValue({
+      draft: {
+        acceptanceCriteria: ["The requested outcome is complete"],
+        verificationSop: ["Exercise the real user flow"],
+      },
+    });
+    mocks.previewWorkItemIntentPlan.mockResolvedValue({
+      plan: {
+        tasks: [{
+          key: "general", kind: "general", title: "Prepared task",
+          outcome: "Produce a reviewable result", requires: [], approvalRequired: false,
+        }],
+        clarification: null,
+      },
+      summary: {
+        taskCount: 1, requiresRepository: false, approvalTaskCount: 0,
+        canCommit: true, canStartAi: true,
+        nextStep: "The execution-plan draft is ready. Confirm to continue.",
+      },
+    });
+    mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_simple" }] });
     mocks.listArticleImports.mockResolvedValue({ jobs: [], latest: null });
     mocks.listArticleDerivatives.mockResolvedValue({ derivatives: [] });
     mocks.listWorkItemReportDrafts.mockResolvedValue({ reportDrafts: [], count: 0 });
@@ -296,7 +323,6 @@ describe("TaskView local work items", () => {
 
   it("uses the same low-decision creator on the ordinary task page", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_simple" } });
     render(<TaskView localOnly />);
 
     expect(screen.getByText("Local").parentElement?.className).toContain("hidden");
@@ -315,13 +341,16 @@ describe("TaskView local work items", () => {
     expect(screen.queryByLabelText("Priority")).toBeNull();
     expect(screen.queryByLabelText("Verification SOP")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Save only" }));
+    await screen.findByTestId("home-intent-task-plan");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and save" }));
 
-    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "prj_1",
       title: "Prepare a short customer update",
       dueDate: null,
-      priority: "p2",
-      executionPolicy: "manual",
+      mode: "task",
+      acceptanceCriteria: ["The requested outcome is complete"],
+      verificationSop: ["Exercise the real user flow"],
     })));
   });
 

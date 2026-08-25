@@ -344,6 +344,9 @@ export function buildPublicState({
     autoRuns,
     invocations: visibleInvocations,
     deliveries: channelDeliveries,
+    workItems: (state.workItems ?? []).filter(
+      (item) => teamId == null || (item.ownerTeamId ?? LOCAL_TEAM_ID) === teamId,
+    ),
   });
   // #1143 issue claims carry a projectId; project-team scoping is the boundary.
   const issueClaims = byProject(state.issueClaims);

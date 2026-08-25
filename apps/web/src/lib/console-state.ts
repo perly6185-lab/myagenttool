@@ -1525,6 +1525,27 @@ export interface ChannelIntentMetrics {
     activeFollowUpsQueued?: number;
     retryStartDuplicatesSuppressed?: number;
     mediaReceipts?: number;
+    consultationAnswers?: number;
+    consultationAnswerMissing?: number;
+    consultationTimeouts?: number;
+    consultationAutoRetries?: number;
+    consultationAutoRetryRecovered?: number;
+    consultationAutoRetryExhausted?: number;
+    difficultSamples?: number;
+    pendingReviewSamples?: number;
+    resolvedCorrections?: number;
+    replayReadySamples?: number;
+    deduplicatedOccurrences?: number;
+    updatedAt?: string | null;
+  } | null;
+  learning?: {
+    difficultSamples?: number;
+    pendingReviewSamples?: number;
+    resolvedCorrections?: number;
+    replayReadySamples?: number;
+    deduplicatedOccurrences?: number;
+    byReason?: Record<string, number>;
+    byDomain?: Record<string, number>;
     updatedAt?: string | null;
   } | null;
   bridge?: {
@@ -1579,6 +1600,10 @@ export interface ChannelTaskThread {
   lastActivityAt?: string | null;
   expiresAt?: string | null;
   nextAction?: string | null;
+  taskRevision?: number | null;
+  revisionId?: string | null;
+  revisionType?: string | null;
+  previousResultSummary?: string | null;
   lastProgressAt?: string | null;
   lastProgressSummary?: string | null;
   attentionReason?: string | null;
@@ -1589,6 +1614,11 @@ export interface ChannelTaskThread {
   parentThreadId?: string | null;
   followUpKind?: string | null;
   followUpSummary?: string | null;
+  dependencyTaskTitles?: string[];
+  requiredArtifactKinds?: string[];
+  upstreamBlockers?: { sourceWorkItemId?: string | null; title?: string | null; cause?: string | null; at?: string | null }[];
+  artifactVersionChangedAt?: string | null;
+  artifactVersionChangeNotice?: string | null;
 }
 
 export interface ChannelTaskRevision {
@@ -1620,9 +1650,23 @@ export interface ChannelTaskRequest {
   invocationId?: string | null;
   invocationStatus?: string | null;
   resultSummary?: string | null;
+  resultVerification?: {
+    status: string;
+    summary?: string | null;
+    checks?: { kind: string; status: string; summary?: string | null; expected?: unknown; actual?: unknown }[];
+    verificationChecks?: { kind: string; status: string; summary?: string | null }[];
+    repair?: { required: boolean; mode: "independent_task"; reasons: string[]; suggestedRequest: string } | null;
+  } | null;
   deliveryStatus?: string | null;
   createdAt?: string | null;
-  actions: { retry: boolean; reroute: boolean; takeover: boolean };
+  actions: {
+    retry: boolean;
+    reroute: boolean;
+    takeover: boolean;
+    reconcileSaved?: boolean;
+    reconcileNotSaved?: boolean;
+    connectLogin?: boolean;
+  };
 }
 
 /** One dispatcher routing decision (state.dispatchAssignments) — the "why here". */
@@ -1698,6 +1742,7 @@ export interface ChannelOperations {
     active: number;
     queued: number;
     running: number;
+    waitingUpstream: number;
     waitingApproval: number;
     waitingUser: number;
     needsAttention: number;
@@ -1716,6 +1761,39 @@ export interface ChannelOperations {
     inbound: Record<string, number>;
     outbound: Record<string, number>;
   };
+  recentLinks?: ChannelLinkDiagnostic[];
+}
+
+export interface ChannelLinkDiagnostic {
+  eventId: string;
+  conversationId?: string | null;
+  hosts: string[];
+  status: "detected" | "inspecting" | "ready" | "failed" | "unavailable" | string;
+  detectedAt?: string | null;
+  completedAt?: string | null;
+  activeTaskCount: number;
+  acknowledgement: {
+    deliveryId?: string | null;
+    status: string;
+    attempts: number;
+    lastErrorCode?: string | null;
+    updatedAt?: string | null;
+  };
+  finalReply: {
+    deliveryId?: string | null;
+    status: string;
+    attempts: number;
+    lastErrorCode?: string | null;
+    updatedAt?: string | null;
+  };
+  route?: {
+    target: string;
+    status: string;
+    reason?: string | null;
+    activeTaskCount: number;
+    decidedAt?: string | null;
+  } | null;
+  failureCode?: string | null;
 }
 
 export interface ChannelDiagnostics {
@@ -1740,6 +1818,7 @@ export interface ChannelDiagnostics {
     outbound: Record<string, number>;
     tasks: Record<string, number>;
   };
+  links: ChannelLinkDiagnostic[];
   failures: Array<{ direction: string; status: string; code: string; attempts: number; at: string }>;
   note: string;
 }
@@ -1760,6 +1839,15 @@ export interface ChannelConversation {
     lastFailedAt?: string | null;
     lastSharedAt?: string | null;
     lastAnalysisAt?: string | null;
+    nextTaskProposals?: Array<{
+      id: string;
+      kind: string;
+      label: string;
+      outcome: string;
+      state?: "suggested" | string;
+      createsTask: false;
+      sourceContentIds?: string[];
+    }>;
     items?: Array<{
       id: string;
       status?: string;

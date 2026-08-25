@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   removeTaskMaterialFile: vi.fn(),
   autoRunReadiness: vi.fn(),
   suggestWorkItemDraft: vi.fn(),
+  previewWorkItemIntentPlan: vi.fn(),
+  commitWorkItemIntentPlan: vi.fn(),
 }));
 
 vi.mock("@/data/use-console-actions", () => ({
@@ -22,6 +24,8 @@ vi.mock("@/data/use-console-actions", () => ({
     removeTaskMaterialFile: mocks.removeTaskMaterialFile,
     autoRunReadiness: mocks.autoRunReadiness,
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
+    previewWorkItemIntentPlan: mocks.previewWorkItemIntentPlan,
+    commitWorkItemIntentPlan: mocks.commitWorkItemIntentPlan,
   },
 }));
 
@@ -34,6 +38,27 @@ beforeEach(async () => {
       verificationSop: ["Exercise the real user flow", "Review automated evidence"],
     },
   });
+  mocks.previewWorkItemIntentPlan.mockResolvedValue({
+    plan: {
+      tasks: [{
+        key: "general",
+        kind: "general",
+        title: "Prepared task",
+        outcome: "Produce a reviewable result",
+        requires: [],
+        approvalRequired: false,
+      }],
+      clarification: null,
+    },
+    summary: {
+      taskCount: 1,
+      requiresRepository: true,
+      approvalTaskCount: 0,
+      canCommit: true,
+      nextStep: "The execution-plan draft is ready. Confirm to continue.",
+    },
+  });
+  mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_new" }] });
 });
 
 afterEach(() => {
@@ -108,6 +133,87 @@ describe("HomeTaskComposer", () => {
     expect(onOpenProjects).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the composer usable when intent planning returns a malformed response", async () => {
+    mocks.previewWorkItemIntentPlan.mockResolvedValueOnce({});
+    render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
+
+    const input = screen.getByRole("textbox", { name: "Create a task" }) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Prepare a customer update" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save only" }));
+
+    expect(await screen.findByText(/reliable execution plan could not be prepared/i)).toBeTruthy();
+    expect(input.value).toBe("Prepare a customer update");
+    expect(screen.queryByTestId("home-intent-task-plan")).toBeNull();
+    expect(mocks.commitWorkItemIntentPlan).not.toHaveBeenCalled();
+  });
+
+  it("asks the user to choose an existing result before planning continuation work", async () => {
+    const candidate = {
+      workItemId: "lwi_analysis",
+      localRef: "LOCAL-7",
+      title: "Login issue analysis",
+      completedAt: "2026-08-24T10:00:00.000Z",
+      artifactKinds: ["software_analysis"],
+      outputCount: 1,
+    };
+    const tasks = [
+      { key: "software_implementation", kind: "software_implementation", title: "Implement the fix", outcome: "Complete the login fix", requires: [], approvalRequired: false },
+      { key: "software_verification", kind: "software_verification", title: "Verify the fix", outcome: "Produce test evidence", requires: ["software_implementation"], approvalRequired: false },
+    ];
+    mocks.previewWorkItemIntentPlan
+      .mockResolvedValueOnce({
+        plan: { tasks, clarification: null, sourceSelection: { required: true, candidates: [candidate], selected: null, unavailable: false } },
+        summary: { taskCount: 2, requiresRepository: true, approvalTaskCount: 0, canCommit: false, canStartAi: true, nextStep: "Choose the existing result to use." },
+      })
+      .mockResolvedValueOnce({
+        plan: {
+          tasks: [{ ...tasks[0], externalSource: { workItemId: candidate.workItemId, localRef: candidate.localRef, title: candidate.title, artifactKinds: candidate.artifactKinds } }, tasks[1]],
+          clarification: null,
+          sourceSelection: { required: false, candidates: [candidate], selected: candidate, unavailable: false },
+        },
+        summary: { taskCount: 2, requiresRepository: true, approvalTaskCount: 0, canCommit: true, canStartAi: true, nextStep: "Confirm to create two tasks." },
+      });
+    render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Based on the existing analysis, fix login and run tests" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save only" }));
+    expect(await screen.findByRole("group", { name: "Choose an existing result" })).toBeTruthy();
+    expect(mocks.commitWorkItemIntentPlan).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Login issue analysis/ }));
+    await waitFor(() => expect(mocks.previewWorkItemIntentPlan).toHaveBeenLastCalledWith(expect.objectContaining({
+      sourceWorkItemId: "lwi_analysis",
+    })));
+    expect(await screen.findByText(/Will use: Login issue analysis/)).toBeTruthy();
+  });
+
+  it("removes one independent task from the plan and re-plans before commit", async () => {
+    const article = { key: "content_article", kind: "content_article", title: "Article", outcome: "Draft an article", requires: [], approvalRequired: false };
+    const comic = { key: "content_comic", kind: "content_comic", title: "Comic", outcome: "Create a comic", requires: [], approvalRequired: false };
+    const voice = { key: "content_voiceover", kind: "content_voiceover", title: "Voiceover", outcome: "Write a voiceover", requires: [], approvalRequired: false };
+    mocks.previewWorkItemIntentPlan
+      .mockResolvedValueOnce({
+        plan: { tasks: [article, comic, voice], clarification: null, excludedKinds: [] },
+        summary: { taskCount: 3, requiresRepository: false, approvalTaskCount: 0, canCommit: true, canStartAi: true, nextStep: "Confirm to create three tasks." },
+      })
+      .mockResolvedValueOnce({
+        plan: { tasks: [article, voice], clarification: null, excludedKinds: ["content_comic"] },
+        summary: { taskCount: 2, requiresRepository: false, approvalTaskCount: 0, canCommit: true, canStartAi: true, nextStep: "Confirm to create two tasks." },
+      });
+    render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Create an article, comic, and voiceover" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save only" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Comic from this plan" }));
+
+    await waitFor(() => expect(mocks.previewWorkItemIntentPlan).toHaveBeenLastCalledWith(expect.objectContaining({
+      excludeTaskKeys: ["content_comic"],
+    })));
+    expect(screen.queryByText("Create a comic")).toBeNull();
+    expect(screen.getByRole("button", { name: "Restore Comic" })).toBeTruthy();
+    expect(mocks.commitWorkItemIntentPlan).not.toHaveBeenCalled();
+  });
+
   it("shows and switches the project context inside the ordinary composer", async () => {
     const onProjectChange = vi.fn().mockResolvedValue(undefined);
     render(
@@ -133,7 +239,7 @@ describe("HomeTaskComposer", () => {
   });
 
   it("creates one durable task that the scheduler will run automatically", async () => {
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_new" } });
+    mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_new" }] });
     const onCreated = vi.fn();
     const onOpenTask = vi.fn();
     render(<HomeTaskComposer projectId="prj_1" projectName="Customer work" onCreated={onCreated} onOpenTask={onOpenTask} />);
@@ -150,19 +256,16 @@ describe("HomeTaskComposer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Let AI handle it" }));
     expect(await screen.findByText(/execution-plan draft is ready/i)).toBeTruthy();
     expect(screen.getByRole("region", { name: "Confirm before AI starts" })).toBeTruthy();
-    expect(mocks.createWorkItem).not.toHaveBeenCalled();
+    expect(mocks.commitWorkItemIntentPlan).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Confirm and start AI" }));
 
-    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "prj_1",
       title: "Prepare the weekly customer update",
       body: "Prepare the weekly customer update\nUse plain language.",
+      mode: "ai",
       acceptanceCriteria: ["Cover every open risk", "Produce a shareable document"],
       verificationSop: ["Exercise the real user flow", "Review automated evidence"],
-      waitingOn: "ai",
-      executionPolicy: "auto",
-      status: "ready",
-      plannedDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       idempotencyKey: expect.any(String),
     })));
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
@@ -172,6 +275,49 @@ describe("HomeTaskComposer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "View task" }));
     expect(onOpenTask).toHaveBeenCalledWith("lwi_new");
+  });
+
+  it("lets the user save specialized work but blocks AI until the required capability exists", async () => {
+    const blockedPlan = {
+      plan: {
+        tasks: [{
+          key: "content_image", kind: "content_image", title: "Image creation",
+          outcome: "Produce three reviewable images", requires: [], approvalRequired: false,
+        }],
+        clarification: null,
+      },
+      summary: {
+        taskCount: 1, requiresRepository: false, approvalTaskCount: 0,
+        canCommit: true, canStartAi: false,
+        capabilityBlockers: [{ taskKind: "content_image", requiredCapability: "Image generation", reason: "specialized_capability_unavailable", setupSection: "applications" }],
+        nextStep: "You can save the task now; image generation must be configured before starting AI.",
+      },
+    };
+    mocks.previewWorkItemIntentPlan.mockResolvedValueOnce(blockedPlan).mockResolvedValueOnce({
+      ...blockedPlan,
+      summary: { ...blockedPlan.summary, canStartAi: true, capabilityBlockers: [], nextStep: "Ready to start." },
+    });
+    const onOpenSetup = vi.fn();
+    render(<HomeTaskComposer projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} onOpenSetup={onOpenSetup} />);
+    openComposer();
+    fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), {
+      target: { value: "Create three product images" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Let AI handle it" }));
+
+    expect((await screen.findAllByText(/image generation must be configured/i)).length).toBeGreaterThan(0);
+    expect((screen.getByRole("button", { name: "Confirm and start AI" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Confirm and save" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(mocks.commitWorkItemIntentPlan).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Set up capability" }));
+    expect(onOpenSetup).toHaveBeenCalledWith("applications", "Create three product images");
+    fireEvent.click(screen.getByRole("button", { name: "Configured — recheck" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Confirm and start AI" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(mocks.previewWorkItemIntentPlan).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and save" }));
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({ mode: "task" })));
   });
 
   it("matches My templates from the requested result and pins the match when creating the Issue", async () => {
@@ -196,7 +342,7 @@ describe("HomeTaskComposer", () => {
         },
       },
     });
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_quote" } });
+    mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_quote" }] });
     render(<HomeTaskComposer projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
     openComposer();
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), {
@@ -204,8 +350,10 @@ describe("HomeTaskComposer", () => {
     });
     await waitFor(() => expect((screen.getByRole("button", { name: "Let AI handle it" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Let AI handle it" }));
+    await screen.findByRole("region", { name: "Will follow your previous way of working" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and start AI" }));
 
-    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({
       myTemplateBinding: {
         definitionId: "rtd_quote",
         familyId: "family_quote",
@@ -213,7 +361,26 @@ describe("HomeTaskComposer", () => {
         matchReasons: ["Expected result matches quotation"],
       },
     })));
-    expect(screen.queryByRole("button", { name: "Confirm and start AI" })).toBeNull();
+    expect(await screen.findByText(/AI will work automatically/)).toBeTruthy();
+  });
+
+  it("starts reversible text creation directly because the user's AI action is the authorization", async () => {
+    mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_script" }] });
+    render(<HomeTaskComposer projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
+    openComposer();
+    fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), {
+      target: { value: "Rewrite this article as a two-minute video script" },
+    });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Let AI handle it" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Let AI handle it" }));
+    await screen.findByTestId("home-intent-task-plan");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and start AI" }));
+
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Rewrite this article as a two-minute video script",
+      mode: "ai",
+      acceptanceCriteria: ["The requested outcome is complete"],
+    })));
   });
 
   it("asks for the desired result instead of asking the user to choose a template", async () => {
@@ -263,7 +430,7 @@ describe("HomeTaskComposer", () => {
         },
       },
     });
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_quote" } });
+    mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_quote" }] });
     render(<HomeTaskComposer projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
     openComposer();
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), {
@@ -281,7 +448,7 @@ describe("HomeTaskComposer", () => {
     expect((screen.getByRole("button", { name: "Confirm and start AI" }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Confirm and start AI" }));
 
-    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({
       myTemplateBinding: expect.objectContaining({
         definitionId: "rtd_quote",
         familyId: "family_quote",
@@ -318,7 +485,7 @@ describe("HomeTaskComposer", () => {
         },
       },
     });
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_quote" } });
+    mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_quote" }] });
     render(<HomeTaskComposer projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
     openComposer();
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), {
@@ -333,7 +500,7 @@ describe("HomeTaskComposer", () => {
     await waitFor(() => expect((screen.getByRole("button", { name: "Confirm and start AI" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Confirm and start AI" }));
 
-    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({
       myTemplateBinding: expect.objectContaining({
         definitionId: "rtd_quote", familyId: "family_quote", userConfirmedResult: true,
       }),
@@ -341,7 +508,7 @@ describe("HomeTaskComposer", () => {
   });
 
   it("keeps an automatically queued task accessible after explicit plan confirmation", async () => {
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_partial" } });
+    mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_partial" }] });
     const onOpenTask = vi.fn();
     render(<HomeTaskComposer projectId="prj_1" onCreated={() => {}} onOpenTask={onOpenTask} />);
     openComposer();
@@ -368,7 +535,7 @@ describe("HomeTaskComposer", () => {
       draft: { ...draft, revision: 1, assets: [{ id: "asset_1", originalName: "brief.txt" }] },
       asset: { id: "asset_1", originalName: "brief.txt" },
     });
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_with_file" } });
+    mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_with_file" }] });
     render(
       <HomeTaskComposer
         projectId="prj_1"
@@ -387,13 +554,15 @@ describe("HomeTaskComposer", () => {
       "prj_1", "draft_1", expect.any(String), expect.objectContaining({ name: "brief.txt" }),
     ));
     fireEvent.click(screen.getByRole("button", { name: "Save only" }));
+    await screen.findByTestId("home-intent-task-plan");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and save" }));
 
-    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({
       materialDraftId: "draft_1",
       materialDraftRevision: 1,
     })));
-    expect(mocks.createWorkItem.mock.calls[0]?.[0]).not.toHaveProperty("inputAssets");
-    expect(mocks.createWorkItem.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ waitingOn: "none", plannedDate: null, executionPolicy: "manual" }));
+    expect(mocks.commitWorkItemIntentPlan.mock.calls[0]?.[0]).not.toHaveProperty("inputAssets");
+    expect(mocks.commitWorkItemIntentPlan.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ mode: "task" }));
   });
 
   it("pastes a clipboard file or screenshot into the primary task composer", async () => {
@@ -457,20 +626,21 @@ describe("HomeTaskComposer", () => {
     render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} onOpenSetup={onOpenSetup} />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Prepare a release note" } });
+    fireEvent.click(screen.getByRole("button", { name: "Let AI handle it" }));
     expect((await screen.findByRole("alert", { name: "Preflight" })).textContent).toContain("does not have an available task assistant");
     expect(screen.queryByText(/No default agent/)).toBeNull();
-    expect((screen.getByRole("button", { name: "Let AI handle it" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Confirm and start AI" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Choose task assistant" }));
 
-    expect(onOpenSetup).toHaveBeenCalledWith("autoRuns");
-    expect(mocks.createWorkItem).not.toHaveBeenCalled();
+    expect(onOpenSetup).toHaveBeenCalledWith("autoRuns", "Prepare a release note");
+    expect(mocks.commitWorkItemIntentPlan).not.toHaveBeenCalled();
   });
 
   it("queues an AI task while execution capacity is temporarily full", async () => {
     mocks.autoRunReadiness.mockResolvedValue({
       readiness: { ready: false, checks: [{ key: "capacity", label: "Capacity", status: "blocked", detail: "At capacity: 1/1." }] },
     });
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_queued" } });
+    mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_queued" }] });
     render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Queue the next task" } });
@@ -480,9 +650,8 @@ describe("HomeTaskComposer", () => {
     await screen.findByText(/execution-plan draft is ready/i);
     fireEvent.click(screen.getByRole("button", { name: "Confirm and start AI" }));
 
-    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
-      status: "ready",
-      executionPolicy: "auto",
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "ai",
     })));
   });
 

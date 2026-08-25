@@ -19,6 +19,10 @@ const IMPORTANT_EVENTS = new Set([
   "queued", "started", "waiting_user", "waiting_approval", "needs_attention",
   "succeeded", "failed", "cancelled", "human_takeover",
 ]);
+const URGENT_EVENTS = new Set([
+  "waiting_user", "waiting_approval", "needs_attention", "failed", "human_takeover",
+]);
+const GOAL_BATCH_EVENTS = new Set(["queued", "started", "succeeded"]);
 const DEFAULT_EVENTS = Object.freeze({
   queued: true,
   started: true,
@@ -238,16 +242,24 @@ export function createChannelNotificationService({ state, now, nextId, appendEve
     return result;
   }
 
-  function queueBatch({ channelId, conversationId, threadId, invocationId, content, mediaAssets, event, dueAt, dedupeKey }) {
+  function queueBatch({ channelId, conversationId, threadId, invocationId, content, mediaAssets, event, dueAt, dedupeKey, groupKey = "conversation", goalId = null }) {
     const at = timestamp(now);
-    const existing = (state.channelNotificationBatches ?? []).find((row) => row.status === "pending" && row.channelId === channelId && row.conversationId === conversationId);
+    const existing = (state.channelNotificationBatches ?? []).find((row) => row.status === "pending"
+      && row.channelId === channelId
+      && row.conversationId === conversationId
+      && (row.groupKey ?? "conversation") === groupKey);
+    const item = { threadId: threadId ?? null, invocationId: invocationId ?? null, content: String(content).slice(0, 1_500), mediaAssets: mediaAssets ?? [], event, dedupeKey: dedupeKey ?? null };
+    if (existing && dedupeKey && (existing.items ?? []).some((row) => row.dedupeKey === dedupeKey)) {
+      return { ok: true, batched: true, deduplicated: true };
+    }
     runTx(() => {
       if (existing) {
-        existing.items = [...(existing.items ?? []), { threadId: threadId ?? null, invocationId: invocationId ?? null, content: String(content).slice(0, 1_500), mediaAssets: mediaAssets ?? [], event }].slice(-20);
+        existing.items = [...(existing.items ?? []), item].slice(-20);
+        existing.threadIds = [...new Set([...(existing.threadIds ?? []), ...(threadId ? [threadId] : [])])].slice(-20);
         existing.dueAt = dueAt < existing.dueAt ? dueAt : existing.dueAt;
         existing.updatedAt = at;
       } else {
-        state.channelNotificationBatches = [...(state.channelNotificationBatches ?? []), { id: nextId("cnb"), channelId, conversationId, threadIds: threadId ? [threadId] : [], items: [{ threadId: threadId ?? null, invocationId: invocationId ?? null, content: String(content).slice(0, 1_500), mediaAssets: mediaAssets ?? [], event }], dueAt, dedupeKey, status: "pending", createdAt: at, updatedAt: at }].slice(-500);
+        state.channelNotificationBatches = [...(state.channelNotificationBatches ?? []), { id: nextId("cnb"), channelId, conversationId, goalId, groupKey, threadIds: threadId ? [threadId] : [], items: [item], dueAt, dedupeKey, status: "pending", createdAt: at, updatedAt: at }].slice(-500);
       }
     });
     return { ok: true, batched: true };
@@ -262,7 +274,8 @@ export function createChannelNotificationService({ state, now, nextId, appendEve
       return { ok: true, suppressed: true, reason: "important_only" };
     }
     const currentMs = Date.parse(timestamp(now));
-    const quietDueAt = !force ? quietEndAt(timestamp(now), policy.quietHours) : null;
+    const urgent = URGENT_EVENTS.has(event);
+    const quietDueAt = !force && !urgent ? quietEndAt(timestamp(now), policy.quietHours) : null;
     const thread = threadId ? (state.channelTaskThreads ?? []).find((row) => row.id === threadId) : null;
     if (!force && event === "progress") {
       const last = Date.parse(thread?.lastProgressNotificationAt ?? "");
@@ -273,14 +286,36 @@ export function createChannelNotificationService({ state, now, nextId, appendEve
     }
     const activeRows = (state.channelTaskThreads ?? []).filter((row) => row.channelId === channelId && row.conversationId === conversationId && ["queued", "running"].includes(row.status));
     const activeTaskCount = activeRows.length;
+    const goalThreads = thread?.workGoalId
+      ? (state.channelTaskThreads ?? []).filter((row) => row.channelId === channelId
+        && row.conversationId === conversationId
+        && row.workGoalId === thread.workGoalId)
+      : [];
+    const batchGoalEvent = !force && !urgent && GOAL_BATCH_EVENTS.has(event) && goalThreads.length > 1;
+    if (batchGoalEvent) {
+      const dueAt = quietDueAt ?? new Date(currentMs + policy.digestWindowSeconds * 1_000).toISOString();
+      return queueBatch({
+        channelId,
+        conversationId,
+        threadId,
+        invocationId,
+        content: `${taskLabel(thread)} ${content}`,
+        mediaAssets,
+        event,
+        dueAt,
+        dedupeKey: dedupeKey ?? `channel-goal-notify:${threadId}:${event}`,
+        groupKey: `goal:${thread.workGoalId}`,
+        goalId: thread.workGoalId,
+      });
+    }
     if (!force && !eventIsImportant(event) && (policy.mode === "digest" || (event === "progress" && activeTaskCount > 1))) {
       const dueAt = quietDueAt ?? new Date(currentMs + policy.digestWindowSeconds * 1_000).toISOString();
-      const result = queueBatch({ channelId, conversationId, threadId, invocationId, content: `${taskLabel(thread)} ${content}`, mediaAssets, event, dueAt, dedupeKey });
+      const result = queueBatch({ channelId, conversationId, threadId, invocationId, content: `${taskLabel(thread)} ${content}`, mediaAssets, event, dueAt, dedupeKey, groupKey: "conversation" });
       if (result?.ok && thread && event === "progress") runTx(() => { thread.lastProgressNotificationAt = timestamp(now); thread.updatedAt = timestamp(now); });
       return result;
     }
     if (!force && quietDueAt) {
-      const result = queueBatch({ channelId, conversationId, threadId, invocationId, content: `${taskLabel(thread)} ${content}`, mediaAssets, event, dueAt: quietDueAt, dedupeKey });
+      const result = queueBatch({ channelId, conversationId, threadId, invocationId, content: `${taskLabel(thread)} ${content}`, mediaAssets, event, dueAt: quietDueAt, dedupeKey, groupKey: "conversation" });
       if (result?.ok && thread && event === "progress") runTx(() => { thread.lastProgressNotificationAt = timestamp(now); thread.updatedAt = timestamp(now); });
       return result;
     }
@@ -300,8 +335,10 @@ export function createChannelNotificationService({ state, now, nextId, appendEve
     const due = (state.channelNotificationBatches ?? []).filter((row) => row.status === "pending" && Date.parse(row.dueAt ?? "") <= currentMs);
     let processed = 0;
     for (const batch of due) {
-      const content = [`进展汇总（${batch.items.length} 条）：`, ...batch.items.map((item) => `• ${item.content}`), "如需查看单个任务，回复“进度”。"].join("\n");
-      const result = enqueueImmediate({ channelId: batch.channelId, conversationId: batch.conversationId, threadId: batch.items[0]?.threadId ?? null, invocationId: batch.items[0]?.invocationId ?? null, content, mediaAssets: batch.items.flatMap((item) => item.mediaAssets ?? []).slice(0, 5), dedupeKey: `channel-batch:${batch.id}`, event: "progress" });
+      const allSucceeded = batch.items.length > 0 && batch.items.every((item) => item.event === "succeeded");
+      const title = allSucceeded ? `任务完成汇总（${batch.items.length} 项）` : `进展汇总（${batch.items.length} 条）`;
+      const content = [`${title}：`, ...batch.items.map((item) => `• ${item.content}`), "如需查看单个任务，回复“进度”。"].join("\n");
+      const result = enqueueImmediate({ channelId: batch.channelId, conversationId: batch.conversationId, threadId: batch.items[0]?.threadId ?? null, invocationId: batch.items[0]?.invocationId ?? null, content, mediaAssets: batch.items.flatMap((item) => item.mediaAssets ?? []).slice(0, 5), dedupeKey: `channel-batch:${batch.id}`, event: allSucceeded ? "succeeded" : "progress" });
       if (result?.ok) { runTx(() => { batch.status = "sent"; batch.sentAt = timestamp(now); batch.updatedAt = timestamp(now); }); processed += 1; }
     }
     return { processed };

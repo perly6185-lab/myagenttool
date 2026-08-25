@@ -39,6 +39,7 @@ import {
   type HomePrimaryAction,
 } from "@/features/dashboard/home-next-action";
 import { STARTER_TASK_TEMPLATES } from "@/features/dashboard/starter-task-templates";
+import { MyTaskTimelineCard } from "@/features/dashboard/my-task-timeline-card";
 import { ActionErrorNotice } from "@/components/common/action-error-notice";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
@@ -771,12 +772,26 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                 showTrigger={false}
                 onCreated={() => setDailyRefreshVersion((version) => version + 1)}
                 onOpenTask={(workItemId) => openWorkItem(workItemId)}
-                onOpenSetup={(section) => navigate(section)}
+                onOpenSetup={(section, draft) => {
+                  if (draft?.trim()) setComposerDraftTask(draft);
+                  navigate(section);
+                }}
                 onOpenProjects={() => navigate("projects")}
               />
             </aside>
           </div>
         </>
+      ) : null}
+      {surface === "overview" ? (
+        <MyTaskTimelineCard
+          workItems={dailyWorkItems}
+          channelTaskThreads={state?.channelTaskThreads}
+          channelTaskRequests={state?.channelTaskRequests}
+          channelTaskRevisions={state?.channelTaskRevisions}
+          channelDeliveries={state?.channelDeliveries}
+          onOpenTask={(workItemId) => openWorkItem(workItemId)}
+          onOpenChannels={() => navigate("channels")}
+        />
       ) : null}
       {surface === "overview" && invocation && homeNextAction.state !== "approval" ? (
         <Card

@@ -45,6 +45,25 @@ const READ_ONLY_WORK_RE = /(?:只读|不要修改|不修改|查看|查询|列出
 const FILE_REFERENCE_RE = /(?:附件|刚才(?:的)?文件|这份(?:文件|表格|材料)|上传(?:的)?文件|\.(?:csv|xlsx?|json|docx?|pptx?)\b)/i;
 const CONCRETE_GENERAL_WORK_RE = /^(?:请|帮我|麻烦|请帮我|请协助我)?[^\n]{0,12}(?:检查|处理|整理|分析|查询|查看|列出|生成|创建|修改|汇总|总结|翻译|审核|规划|跟踪|下载|发送|发布).{2,}/i;
 const VAGUE_GENERAL_WORK_RE = /^(?:(?:请|麻烦)?帮我|请)?(?:处理|整理|检查|查看|看|做)(?:一下|下|这个|它|一下这个)?[。.!！?？]*$/i;
+const DECLARED_TASK_KIND_TO_WORK_KIND = new Map([
+  ["coding_digest", "content"],
+  ["knowledge_analysis", "content"],
+  ["content_article", "content"],
+  ["content_image", "creative"],
+  ["content_comic", "creative"],
+  ["content_voiceover", "content"],
+  ["content_video", "creative"],
+  ["platform_adaptation", "content"],
+  ["content_publish", "content"],
+  ["software_analysis", "development"],
+  ["software_implementation", "development"],
+  ["software_verification", "development"],
+  ["software_deployment", "development"],
+  ["business_research", "general"],
+  ["business_document", "office"],
+  ["business_communication", "general"],
+  ["business_scheduling", "general"],
+]);
 
 export function classifyLocalWorkKind(link, issueBody = "", projectContext = null) {
   const title = String(link?.title ?? "");
@@ -52,6 +71,8 @@ export function classifyLocalWorkKind(link, issueBody = "", projectContext = nul
   const text = `${title}\n${body}`;
   const inputAssets = Array.isArray(projectContext?.inputAssets) ? projectContext.inputAssets : [];
   const hasInput = inputAssets.length > 0 || FILE_REFERENCE_RE.test(text);
+  const declaredKind = DECLARED_TASK_KIND_TO_WORK_KIND.get(String(projectContext?.taskKind ?? ""));
+  if (declaredKind) return { kind: declaredKind, confidence: 0.99, hasInput, declaredTaskKind: projectContext.taskKind };
   if (PROGRAMMING_WORK_RE.test(text)) return { kind: "development", confidence: 0.88, hasInput };
   if (PRODUCT_DESIGN_WORK_RE.test(text)) return { kind: "product_design", confidence: 0.86, hasInput };
   if (CREATIVE_WORK_RE.test(text)) return { kind: "creative", confidence: 0.86, hasInput };

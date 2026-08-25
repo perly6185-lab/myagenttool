@@ -5,6 +5,12 @@ workspace packages under `tools/<site>-imports/` (zhihu, qichacha, xiaohongshu,
 jianshu today) that render login-walled / WAF-protected sites by reusing a
 logged-in persistent browser profile.
 
+The first governed write-capable consumer is
+`tools/wechat-official-site`. It reuses only the profile lifecycle and browser
+launch primitives; its draft operation is exposed through a separately
+approval-gated Application. Read plugins and write plugins do not share an
+implicit authority boundary.
+
 The product bundles no browser and the server never imports playwright; only
 these tool packages do, via the hoisted root devDependency.
 

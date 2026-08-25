@@ -2090,7 +2090,11 @@ function ClassificationCorrectionModal({ copy, value, pending, onChange, onClose
   if (!value) return null;
   const views: Array<Exclude<MailSmartView, "all">> = ["needs_attention", "important", "notifications", "subscriptions", "other"];
   return <Modal open title={copy.correctionTitle} description={copy.correctionHint} onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button onClick={onSave} disabled={pending}>{pending ? copy.correctionSaving : copy.correctionSave}</Button></div>}>
-    <label className="block text-sm font-medium">{copy.correctionLabel}<select autoFocus value={value.view} onChange={(event) => onChange({ ...value, view: event.target.value as Exclude<MailSmartView, "all"> })} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring">{views.map((view) => <option key={view} value={view}>{copy.smartViews[view]}</option>)}</select></label>
+    <label className="block text-sm font-medium">{copy.correctionLabel}<select autoFocus value={value.view} onChange={(event) => onChange({ ...value, view: event.target.value as Exclude<MailSmartView, "all"> })} onKeyDown={(event) => {
+      if (event.key !== "Home" && event.key !== "End") return;
+      event.preventDefault();
+      onChange({ ...value, view: event.key === "Home" ? views[0] : views.at(-1)! });
+    }} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring">{views.map((view) => <option key={view} value={view}>{copy.smartViews[view]}</option>)}</select></label>
   </Modal>;
 }
 
@@ -2236,7 +2240,11 @@ function ClassificationRuleEditModal({ copy, value, accountName, pending, feedba
   const match = (value.rule.matchKind === "sender" ? copy.rulesMatchSender : copy.rulesMatchDomain).replace("{{value}}", value.rule.matchValue);
   return <Modal open title={copy.rulesEdit} description={copy.rulesEditing.replace("{{match}}", match)} onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button onClick={onSave} disabled={pending}>{pending ? copy.rulesUpdating : copy.rulesSave}</Button></div>}>
     <div className="space-y-3">{accountName ? <p className="text-xs text-muted-foreground">{copy.rulesAccount.replace("{{value}}", accountName)}</p> : null}{feedback ? <div role={feedback.tone === "error" ? "alert" : "status"} className={cn("rounded-lg border px-3 py-2 text-sm", feedback.tone === "error" ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-emerald-500/30 bg-emerald-500/5 text-emerald-700")}>{feedback.text}</div> : null}
-    <label className="block text-sm font-medium">{copy.correctionLabel}<select autoFocus value={value.view} onChange={(event) => onChange({ ...value, view: event.target.value as Exclude<MailSmartView, "all"> })} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring">{views.map((view) => <option key={view} value={view}>{copy.smartViews[view]}</option>)}</select></label>
+    <label className="block text-sm font-medium">{copy.correctionLabel}<select autoFocus value={value.view} onChange={(event) => onChange({ ...value, view: event.target.value as Exclude<MailSmartView, "all"> })} onKeyDown={(event) => {
+      if (event.key !== "Home" && event.key !== "End") return;
+      event.preventDefault();
+      onChange({ ...value, view: event.key === "Home" ? views[0] : views.at(-1)! });
+    }} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring">{views.map((view) => <option key={view} value={view}>{copy.smartViews[view]}</option>)}</select></label>
     <p className="text-xs leading-5 text-muted-foreground">{copy.rulesNoActions}</p></div>
   </Modal>;
 }

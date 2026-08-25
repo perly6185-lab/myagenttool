@@ -57,6 +57,45 @@ export function workItemOperationInstructions(workItem) {
   ].join("\n");
 }
 
+export function workItemAtomicTaskInstructions(workItem) {
+  const common = [
+    `Atomic task kind: ${workItem?.taskKind ?? "general"}.`,
+    workItem?.workGoal?.title ? `User-visible work goal: ${workItem.workGoal.title}.` : "",
+    "Complete only this atomic task. Treat the broader goal as context, not authorization to execute sibling tasks.",
+    (workItem?.artifactContract?.consumes ?? []).length
+      ? `Required upstream artifact kinds: ${workItem.artifactContract.consumes.join(", ")}.`
+      : "",
+    (workItem?.artifactContract?.produces ?? []).length
+      ? `Required output artifact kinds: ${workItem.artifactContract.produces.join(", ")}. Write reviewable outputs to explicit project-relative paths.`
+      : "",
+  ];
+  const specialized = {
+    coding_digest: [
+      "Build a source snapshot of the requested coding period from local Git history, changed files, completed task records, and verification evidence.",
+      "Do not expose credentials, tokens, private customer data, or unrelated code. Record omissions and the exact time/repository scope.",
+      "Deliver a Markdown coding digest suitable as source material for a writer; do not write the article itself.",
+    ],
+    content_article: [
+      "Create the article from the attached upstream artifacts. Preserve factual traceability to the coding digest and mark uncertain claims.",
+      "Do not generate platform-specific publication packages or publish externally.",
+    ],
+    content_image: [
+      "Create the requested cover/illustration/image set using the governed image-generation capability when available.",
+      "Return explicit image files plus a short manifest connecting each image to the article section or visual purpose.",
+    ],
+    platform_adaptation: [
+      `Adapt approved source artifacts for ${workItem?.platformTarget?.label ?? "the selected platform"}; preserve the source facts while changing format, length, title, and media arrangement as needed.`,
+      "Produce a reviewable platform package only. Do not publish it.",
+    ],
+    content_publish: [
+      `The only authorized external target is ${workItem?.platformTarget?.label ?? "the explicitly selected platform"}.`,
+      "Never claim publication from a generated file or browser preview. A successful result requires a governed platform adapter receipt.",
+      "If the adapter, authenticated session, approved package, or exact target is unavailable, stop with NeedsInput and do not change external state.",
+    ],
+  };
+  return [...common, ...(specialized[workItem?.taskKind] ?? [])].filter(Boolean).join("\n");
+}
+
 export function createWorkItemAutoRunUnderstandingService({
   state,
   getWorkItem,
@@ -179,6 +218,7 @@ export function createWorkItemAutoRunUnderstandingService({
       const operationIntent = workItem.channelTaskContract?.operationIntent ?? null;
       const issueBody = [
         workItem.body,
+        workItemAtomicTaskInstructions(workItem),
         workItemOperationInstructions(workItem),
         workItemTemplateInstructions(workItem),
         `Acceptance criteria (frozen for this run):\n${workItem.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}`,

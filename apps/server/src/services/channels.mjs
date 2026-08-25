@@ -20,6 +20,7 @@ import {
 import { detectPromptInjection } from "@myagenttool/protocol/issue-prompt";
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { listDevices } from "../runtime/device.mjs";
+import { recentChannelLinkDiagnostics } from "../read-models/channels.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizeChannelAttachmentAssets } from "./channel-task-context.mjs";
 
@@ -463,6 +464,7 @@ export function createChannelService({
           outbound: outboundStatus,
           tasks: taskStatus,
         },
+        links: recentChannelLinkDiagnostics(events, deliveries, { limit: 10 }),
         failures,
         note: "诊断信息已脱敏，不包含消息正文、凭据或访问令牌。",
       },

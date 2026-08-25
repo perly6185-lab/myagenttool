@@ -248,7 +248,7 @@ describe("MailView ordinary-user flow", () => {
     expect(await screen.findByText(/分类建议：主题包含明确的处理要求/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "分类不对" }));
     const dialog = screen.getByRole("dialog", { name: "调整邮件分类" });
-    fireEvent.change(within(dialog).getByLabelText("放到"), { target: { value: "other" } });
+    fireEvent.keyDown(within(dialog).getByLabelText("放到"), { key: "End" });
     fireEvent.click(within(dialog).getByRole("button", { name: "保存调整" }));
     await waitFor(() => expect(mocks.correctClassification).toHaveBeenCalledWith("<one@example.com>", {
       folderId: "inbox",

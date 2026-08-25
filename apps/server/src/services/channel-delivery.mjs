@@ -500,7 +500,17 @@ export function createChannelDeliveryService({
     if (thread?.status === "waiting_user") lines.push("请直接回复需要补充的信息，或发送图片、语音、文件。");
     if (thread?.status === "waiting_approval" && thread.waitingFor === "delivery") lines.push("请在桌面端查看变更并确认应用；应用完成后我会再通知你。");
     if (thread?.status === "failed") lines.push("你可以回复“重试”再次执行，或回复“转人工”。");
-    if (thread?.status === "needs_attention") lines.push("任务暂时没有新进展。回复“进度”查看，回复“继续”继续观察，或回复“转人工”。");
+    if (thread?.status === "needs_attention") {
+      if (thread.attentionReason === "wechat_login_required") {
+        lines.push("请在 MyAgentTool 的“网站登录”中重新扫码登录，完成后回复“继续”，系统会恢复原任务。");
+      } else if (thread.attentionReason === "wechat_draft_outcome_unknown") {
+        lines.push("为避免重复草稿，系统不会自动重试。请先到公众号草稿箱核对是否已经保存。");
+      } else if (thread.attentionReason === "wechat_plugin_update_required") {
+        lines.push("任务和文章版本已保留；需要更新公众号站点插件后再继续。");
+      } else {
+        lines.push("任务暂时没有新进展。回复“进度”查看，回复“继续”继续观察，或回复“转人工”。");
+      }
+    }
     if (thread?.status === "human_takeover") lines.push("请等待人工处理，我会在有进展时通知你。");
     const workItem = (state.workItems ?? []).find((row) => row.id === channelContext.workItemId);
     const resultAssets = [

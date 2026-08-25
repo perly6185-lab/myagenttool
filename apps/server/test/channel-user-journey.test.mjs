@@ -185,7 +185,7 @@ test("iLink ordinary-user journey stays understandable from intake through deliv
   });
   assert.equal(waiting.status, "waiting_user");
   const selected = harness.receive("继续第一个任务").dispatched;
-  assert.match(selected.reply, /已切换到 这个任务/);
+  assert.match(selected.reply, /已切换到这个任务/);
   assert.equal(harness.state.channelConversations[0].activeTaskThreadId, firstThread.id);
   const answered = await harness.receive("目标环境是生产环境").dispatched;
   assert.match(answered.reply, /继续执行/);

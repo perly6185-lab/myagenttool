@@ -17,7 +17,7 @@ export type ArticleImportJob = {
   state: "queued" | "running" | "completed" | "failed" | "canceled";
   progress: { stage: string; completed: number; total: number };
   error: string | null;
-  result?: { markdownPath?: string; htmlPath?: string; warnings?: { code: string }[] } | null;
+  result?: { markdownPath?: string; htmlPath?: string; analysisPath?: string; analysisWorkItemId?: string; warnings?: { code: string }[] } | null;
 };
 
 export type ArticleAnalysis = {
@@ -74,6 +74,7 @@ export type ArticleDerivative = {
   invocationId: string;
   sourceJobId: string;
   workItemId: string;
+  sourceWorkItemId?: string;
   worktreeId: string;
   kind: "article_rewrite" | "video_script";
   tone: "insightful" | "practical" | "conversational";

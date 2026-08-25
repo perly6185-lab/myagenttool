@@ -22,7 +22,8 @@ const messages: Record<"en" | "zh", Messages> = {
     provider: { wechat: "WeChat", xiaohongshu: "Xiaohongshu", zhihu: "Zhihu", qichacha: "Qichacha", juejin: "Juejin", jianshu: "Jianshu", web: "Web" },
     analysis: {
       title: "Article analysis",
-      localMethod: "Extracted locally from the imported Markdown; the article is not uploaded.",
+      localMethod: "Created as an independent task from the imported Markdown; the article is not uploaded.",
+      openTask: "Open analysis task",
       coreIdeas: "Core ideas",
       framework: "Article framework",
       keyConcepts: "Key concepts",
@@ -51,7 +52,7 @@ const messages: Record<"en" | "zh", Messages> = {
     },
     derivative: {
       title: "Create derivative",
-      description: "A governed local Agent creates a new version without overwriting the source.",
+      description: "A new independent task uses the imported source without overwriting it.",
       kind: "Format",
       kinds: { article_rewrite: "Deep rewrite", video_script: "Short-video script" },
       tone: "Tone",
@@ -119,8 +120,9 @@ const messages: Record<"en" | "zh", Messages> = {
       targetAge: "Target age",
       output: "Output",
       openOutput: "Open derivative Markdown",
+      openTask: "Open independent task",
       pendingHint: "You can close this dialog; the governed Agent continues in the background.",
-      completedHint: "The derivative was validated and attached to this local Issue.",
+      completedHint: "The derivative was validated and attached to its independent task.",
       failedHint: "The derivative was not attached. Check the invocation details and retry.",
       sourceSafety: "The task treats the imported article as untrusted reference data and instructs the Agent to write only the allocated file; the server attaches only that validated output.",
     },
@@ -129,7 +131,8 @@ const messages: Record<"en" | "zh", Messages> = {
     provider: { wechat: "公众号", xiaohongshu: "小红书", zhihu: "知乎", qichacha: "企查查", juejin: "掘金", jianshu: "简书", web: "其他网页" },
     analysis: {
       title: "文章分析",
-      localMethod: "基于已导入的 Markdown 在本地提取，不会上传文章内容。",
+      localMethod: "已基于导入资料创建独立分析任务；文章内容不会上传。",
+      openTask: "打开分析任务",
       coreIdeas: "核心思想",
       framework: "框架体系",
       keyConcepts: "关键概念",
@@ -146,7 +149,7 @@ const messages: Record<"en" | "zh", Messages> = {
     },
     derivative: {
       title: "文章二创",
-      description: "由受治理的本地 Agent 生成新版本，不会覆盖原文。",
+      description: "新建独立任务引用已入库原文，不会覆盖原文或修改下载任务。",
       kind: "二创形式",
       kinds: { article_rewrite: "深度改写", video_script: "短视频口播稿" },
       tone: "表达风格",
@@ -207,8 +210,9 @@ const messages: Record<"en" | "zh", Messages> = {
       targetAge: "目标年龄",
       output: "产物",
       openOutput: "打开二创 Markdown",
+      openTask: "打开独立任务",
       pendingHint: "可以关闭对话框，受治理的 Agent 会在后台继续执行。",
-      completedHint: "二创文件已通过校验，并已归入当前本地 Issue。",
+      completedHint: "二创文件已通过校验，并已归入自己的独立任务。",
       failedHint: "二创文件未能归档，请查看调用详情后重试。",
       sourceSafety: "任务会把导入文章视为不可信参考资料，并要求 Agent 只写入预分配文件；服务端只归档通过校验的该产物。",
     },
@@ -229,6 +233,7 @@ function interpolate(value: string, variables?: Record<string, string | number>)
 
 export default function ArticleWorkflowDialogs({
   analysis,
+  analysisWorkItemId,
   similarArticles,
   derivativeContext,
   derivative,
@@ -238,9 +243,11 @@ export default function ArticleWorkflowDialogs({
   onCloseDerivative,
   onOpenSimilar,
   onOpenOutput,
+  onOpenTask,
   onCreateDerivative,
 }: {
   analysis: ArticleAnalysis | null;
+  analysisWorkItemId?: string | null;
   similarArticles: ArticleSimilaritySearch | null;
   derivativeContext: { sourceJobId: string; worktreeId: string } | null;
   derivative: ArticleDerivative | null;
@@ -250,6 +257,7 @@ export default function ArticleWorkflowDialogs({
   onCloseDerivative: () => void;
   onOpenSimilar: (match: ArticleSimilarityMatch) => void;
   onOpenOutput: (asset: { path: string; worktreeId: string }) => void;
+  onOpenTask: (workItemId: string) => void;
   onCreateDerivative: (request: ArticleDerivativeRequest) => void;
 }) {
   const { i18n } = useAppTranslation();
@@ -306,6 +314,11 @@ export default function ArticleWorkflowDialogs({
                   {analysis.keyConcepts.map((concept) => <Badge key={concept} tone="neutral">{concept}</Badge>)}
                 </div>
               </section>
+            ) : null}
+            {analysisWorkItemId ? (
+              <div className="flex justify-end">
+                <Button onClick={() => onOpenTask(analysisWorkItemId)}>{text("analysis.openTask")}</Button>
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -410,7 +423,10 @@ export default function ArticleWorkflowDialogs({
             {derivative.state === "completed" ? (
               <>
                 <p className="text-muted-foreground">{text("derivative.completedHint")}</p>
-                <div className="flex justify-end">
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button variant="secondary" onClick={() => onOpenTask(derivative.workItemId)}>
+                    {text("derivative.openTask")}
+                  </Button>
                   <Button onClick={() => onOpenOutput({
                     path: derivative.outputPath,
                     worktreeId: derivative.worktreeId,
@@ -425,7 +441,12 @@ export default function ArticleWorkflowDialogs({
                 {derivative.error ? <p className="font-mono text-xs">{derivative.error}</p> : null}
               </div>
             ) : (
-              <p className="text-muted-foreground">{text("derivative.pendingHint")}</p>
+              <div className="space-y-2">
+                <p className="text-muted-foreground">{text("derivative.pendingHint")}</p>
+                <div className="flex justify-end">
+                  <Button variant="secondary" onClick={() => onOpenTask(derivative.workItemId)}>{text("derivative.openTask")}</Button>
+                </div>
+              </div>
             )}
           </div>
         ) : (

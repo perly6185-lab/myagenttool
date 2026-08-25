@@ -1,12 +1,12 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { ConfirmModal } from "@/components/common/confirm-modal";
-import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useUiStore, type WorkItemSection } from "@/store/ui-store";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { WorkItemSummaryView } from "./work-item-summary-view";
+import { WorkItemViewSwitch } from "./work-item-view-switch";
 
 const LocalWorkItemDetail = lazy(() => import("./local-work-item-detail")
   .then((module) => ({ default: module.LocalWorkItemDetail })));
@@ -58,6 +58,12 @@ export function WorkItemDetailShell() {
       >
         {workItemId ? (
           <div className="space-y-4" data-testid="work-item-detail-shell" data-detail-mode={mode}>
+            <div className="flex justify-end">
+              <WorkItemViewSwitch mode={mode} language={zh ? "zh" : "en"} disabled={dirty} onChange={(nextMode) => {
+                if (nextMode === "expert") openExpert("overview");
+                else setMode("summary");
+              }} />
+            </div>
             {mode === "summary" ? (
               <>
                 <WorkItemSummaryView
@@ -82,9 +88,6 @@ export function WorkItemDetailShell() {
               </>
             ) : (
               <>
-                <Button size="sm" variant="ghost" disabled={dirty} onClick={() => setMode("summary")}>
-                  ← {zh ? "返回任务摘要" : "Back to task summary"}
-                </Button>
                 <Suspense fallback={<p className="py-8 text-center text-sm text-muted-foreground">{zh ? "正在加载技术详情…" : "Loading technical details…"}</p>}>
                   <LocalWorkItemDetail
                     workItemId={workItemId}

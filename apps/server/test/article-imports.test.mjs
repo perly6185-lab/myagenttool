@@ -631,7 +631,11 @@ test("creates a governed derivative invocation and attaches only its validated M
     ownerTeamId: "team_1",
     terminalId: "dev_1",
     revision: 1,
-    outputAssets: [],
+    outputAssets: [{
+      id: "asset_source", path: `${relativeDirectory}/article.md`, family: "markdown",
+      terminalId: "dev_1", hash: null, version: null, capabilities: ["preview"],
+      readiness: { state: "ready", reason: "article_import_completed" },
+    }],
   };
   const state = {
     projects: [{ id: "prj_1", defaultAgentId: "agt_codex_cli" }],
@@ -664,22 +668,31 @@ test("creates a governed derivative invocation and attaches only its validated M
   };
   const bindings = [];
   const comments = [];
+  let derivativeItem = null;
   let capturedPrompt = "";
   let capturedOptions;
   const workItemService = {
     getWorkItem: ({ workItemId }) => workItemId === item.id
       ? { ok: true, status: 200, body: { workItem: item } }
       : { ok: false, status: 404, body: { error: "work_item_not_found" } },
+    createWorkItem: (input) => {
+      derivativeItem = {
+        id: "lwi_derivative_1", localNumber: 2, localRef: "LOCAL-2",
+        projectId: input.projectId, ownerTeamId: "team_1", terminalId: "dev_1",
+        revision: 1, outputAssets: [], ...input,
+      };
+      state.workItems.push(derivativeItem);
+      return { ok: true, status: 201, body: { workItem: derivativeItem } };
+    },
     recordExecutionBinding: (binding) => {
       bindings.push(binding);
-      item.revision += 1;
+      derivativeItem.revision += 1;
       return { ok: true, status: 200, body: { binding } };
     },
-    updateWorkItem: ({ expectedRevision, outputAssets }) => {
-      assert.equal(expectedRevision, item.revision);
-      item.outputAssets = outputAssets;
-      item.revision += 1;
-      return { ok: true, status: 200, body: { workItem: item } };
+    updateWorkItem: ({ expectedRevision, outputAssets, status, waitingOn }) => {
+      assert.equal(expectedRevision, derivativeItem.revision);
+      Object.assign(derivativeItem, { outputAssets, status, waitingOn, revision: derivativeItem.revision + 1 });
+      return { ok: true, status: 200, body: { workItem: derivativeItem } };
     },
     createComment: (input) => {
       comments.push(input);
@@ -725,6 +738,9 @@ test("creates a governed derivative invocation and attaches only its validated M
   assert.equal(created.body.derivative.state, "queued");
   assert.equal(created.body.derivative.outputPath, `${relativeDirectory}/derivatives/article-rewrite-001.md`);
   assert.equal(bindings[0].kind, "article_derivative");
+  assert.equal(bindings[0].workItemId, "lwi_derivative_1");
+  assert.equal(created.body.derivative.workItemId, "lwi_derivative_1");
+  assert.equal(created.body.derivative.sourceWorkItemId, "lwi_1");
   assert.equal(capturedOptions.metadata.projectId, "prj_1");
   assert.match(capturedPrompt, /modify any file except the exact output path/);
   assert.match(capturedPrompt, /article-rewrite-001\.md/);
@@ -750,7 +766,7 @@ test("creates a governed derivative invocation and attaches only its validated M
     "age_preset: all",
     'target_age: "错误年龄"',
     `source_article: "${relativeDirectory}/article.md"`,
-    'local_issue_id: "lwi_1"',
+    'local_issue_id: "lwi_derivative_1"',
     "---",
     "",
     "# 新文章",
@@ -767,7 +783,8 @@ test("creates a governed derivative invocation and attaches only its validated M
   }, actor);
   assert.equal(invalid.body.derivative.state, "failed");
   assert.equal(invalid.body.derivative.error, "article_derivative_output_invalid");
-  assert.equal(item.outputAssets.length, 0);
+  assert.equal(derivativeItem.outputAssets.length, 0);
+  assert.equal(item.outputAssets.length, 1);
   assert.equal(comments.length, 0);
 
   await writeFile(join(root, created.body.derivative.outputPath), [
@@ -779,7 +796,7 @@ test("creates a governed derivative invocation and attaches only its validated M
     "age_preset: all",
     'target_age: "不限年龄"',
     `source_article: "${relativeDirectory}/article.md"`,
-    'local_issue_id: "lwi_1"',
+    'local_issue_id: "lwi_derivative_1"',
     "---",
     "",
     "# 新文章",
@@ -802,8 +819,10 @@ test("creates a governed derivative invocation and attaches only its validated M
   assert.equal(completed.body.derivative.state, "completed");
   assert.equal(concurrent.body.derivative.state, "completed");
   assert.equal(item.outputAssets.length, 1);
-  assert.equal(item.outputAssets[0].path, created.body.derivative.outputPath);
-  assert.equal(item.outputAssets[0].family, "markdown");
+  assert.equal(derivativeItem.outputAssets.length, 1);
+  assert.equal(derivativeItem.outputAssets[0].path, created.body.derivative.outputPath);
+  assert.equal(derivativeItem.outputAssets[0].family, "markdown");
+  assert.equal(derivativeItem.status, "done");
   assert.equal(comments.length, 1);
 });
 
@@ -1082,6 +1101,7 @@ test("queues an Issue-bound import and attaches generated output assets", async 
   const updates = [];
   const bindings = [];
   const comments = [];
+  let analysisItem = null;
   const workItemService = {
     getWorkItem: ({ workItemId }) => workItemId === item.id
       ? { ok: true, status: 200, body: { workItem: item } }
@@ -1091,25 +1111,36 @@ test("queues an Issue-bound import and attaches generated output assets", async 
       item.revision += 1;
       return { ok: true, status: 200, body: { binding: input } };
     },
+    createWorkItem: (input) => {
+      analysisItem = {
+        id: "lwi_analysis_1", localNumber: 2, localRef: "LOCAL-2",
+        projectId: input.projectId, terminalId: "dev_1", ownerTeamId: "team_local",
+        revision: 1, outputAssets: [], ...input,
+      };
+      serviceState.workItems.push(analysisItem);
+      return { ok: true, status: 201, body: { workItem: analysisItem } };
+    },
     updateWorkItem: (input) => {
       updates.push(input);
-      Object.assign(item, input, { revision: item.revision + 1 });
-      return { ok: true, status: 200, body: { workItem: item } };
+      const target = input.workItemId === item.id ? item : analysisItem;
+      Object.assign(target, input, { revision: target.revision + 1 });
+      return { ok: true, status: 200, body: { workItem: target } };
     },
     createComment: (input) => {
       comments.push(input);
       return { ok: true, status: 201, body: { comment: input } };
     },
   };
-  const service = createArticleImportService({
-    state: {
+  const serviceState = {
       workItems: [item],
       projects: [{ id: "prj_1", ownerTeamId: "team_local" }],
       worktrees: [{
         id: "wtr_1", sourceProjectId: "prj_1", path: worktreePath,
         link: { type: "local_issue", number: 1 },
       }],
-    },
+    };
+  const service = createArticleImportService({
+    state: serviceState,
     nextId: () => "article_import_1",
     workItemService,
     resolveHostname: PUBLIC_DNS,
@@ -1148,8 +1179,13 @@ test("queues an Issue-bound import and attaches generated output assets", async 
   assert.equal(analyzed.status, 200);
   assert.equal(analyzed.body.analysis.method, "local-extractive-v1");
   assert.match(analyzed.body.analysisPath, /analysis\.md$/);
+  assert.equal(analyzed.body.workItem.id, "lwi_analysis_1");
+  assert.equal(analysisItem.taskKind, "knowledge_analysis");
+  assert.equal(analysisItem.parentId, undefined);
   assert.equal(updates.length, 2);
-  assert.equal(updates[1].outputAssets.length, 4);
+  assert.equal(updates[1].workItemId, "lwi_analysis_1");
+  assert.equal(updates[1].outputAssets.length, 1);
+  assert.equal(item.outputAssets.length, 3);
   const analysisMarkdown = await readFile(join(worktreePath, analyzed.body.analysisPath), "utf8");
   assert.match(analysisMarkdown, /# 核心思想/);
   assert.match(analysisMarkdown, /# 框架体系/);

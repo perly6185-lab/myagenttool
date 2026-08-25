@@ -101,6 +101,7 @@ async function startApp() {
   const webUrl = `http://${host}:${webPort}`;
   const mailMcpRuntime = nodeRuntime();
   const mailMcpEntry = join(paths.runtimeRoot, "tools", "mail-mcp", "src", "server.mjs");
+  const wechatOfficialMcpEntry = join(paths.runtimeRoot, "tools", "wechat-official-site", "src", "server.mjs");
 
   startNodeService("server", paths.serverEntry, {
     SERVER_HOST: host,
@@ -126,6 +127,9 @@ async function startApp() {
     MYAGENTTOOL_MAIL_MCP_ENTRY: mailMcpEntry,
     MYAGENTTOOL_MAIL_MCP_NODE: mailMcpRuntime.command,
     MYAGENTTOOL_MAIL_MCP_ELECTRON_RUN_AS_NODE: mailMcpRuntime.env.ELECTRON_RUN_AS_NODE ?? "0",
+    MYAGENTTOOL_WECHAT_OFFICIAL_MCP_ENTRY: wechatOfficialMcpEntry,
+    MYAGENTTOOL_WECHAT_OFFICIAL_MCP_NODE: mailMcpRuntime.command,
+    MYAGENTTOOL_WECHAT_OFFICIAL_MCP_ELECTRON_RUN_AS_NODE: mailMcpRuntime.env.ELECTRON_RUN_AS_NODE ?? "0",
     ...bundledAgentEnv({ appRoot: paths.runtimeRoot, resourcesRoot: paths.resourcesRoot, execPath: process.execPath }),
   }, paths.runtimeRoot);
 

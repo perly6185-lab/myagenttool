@@ -14,6 +14,7 @@ import { installChannelTranslations } from "@/lib/i18n/channel-resources";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useUiStore } from "@/store/ui-store";
 import { ArticleExtractorPluginsPanel } from "./article-extractor-plugins-panel";
+import { channelTaskUserState } from "./channel-task-user-state";
 
 installChannelTranslations();
 
@@ -129,12 +130,50 @@ function interactionStatusTone(status: string): Tone {
   return "neutral";
 }
 
+function linkStageLabel(status: string): string {
+  if (status === "inspecting") return "正在解析";
+  if (status === "ready") return "处理完成";
+  if (status === "failed") return "解析失败";
+  if (status === "unavailable") return "解析能力不可用";
+  return "已识别";
+}
+
+function linkStageTone(status: string): Tone {
+  if (status === "ready") return "success";
+  if (status === "failed" || status === "unavailable") return "danger";
+  if (status === "inspecting") return "warning";
+  return "neutral";
+}
+
+function linkDeliveryLabel(status: string): string {
+  if (status === "delivered") return "已送达";
+  if (status === "queued") return "等待发送";
+  if (status === "sending") return "正在发送";
+  if (status === "retrying") return "自动重试中";
+  if (status === "failed_terminal" || status === "failed") return "发送失败";
+  if (status === "not_queued") return "尚未生成";
+  return status;
+}
+
+function linkRouteLabel(target: string, status: string): string {
+  if (target === "analysis") return status === "queued" ? "资料分析已排队" : "已用于独立分析";
+  if (target === "current_task_follow_up") return "已明确安排到当前任务之后";
+  if (target === "new_task") return "已用于创建独立任务";
+  if (target === "needs_confirmation") return "等待选择：分析资料、加入当前任务或创建新任务";
+  if (target === "local_location") return "已查询本地保存位置";
+  if (target === "retry") return "已请求重新解析";
+  if (target === "none") return "暂不处理，资料继续保留";
+  if (target === "current_task") return status === "attached" ? "已作为资料加入当前任务" : "等待选择要关联的任务";
+  return target;
+}
+
 function interactionTypeKey(type: string): string {
   return ["text", "image", "voice", "file", "mixed"].includes(type) ? type : "mixed";
 }
 
 const taskThreadStatusLabels: Record<string, string> = {
   awaiting_confirmation: "等待你确认",
+  waiting_upstream: "等待前置结果",
   waiting_approval: "等待确认",
   queued: "排队中",
   running: "执行中",
@@ -154,6 +193,7 @@ function taskThreadStatusLabel(status: string, waitingFor?: string | null): stri
   if (status === "waiting_approval" && waitingFor === "data_review") return "等待数据复核";
   if (status === "waiting_approval" && waitingFor === "data_mutation") return "等待变更范围";
   if (status === "waiting_approval" && waitingFor === "execution_input") return "等待执行资料";
+  if (status === "waiting_upstream") return "等待前置结果";
   return taskThreadStatusLabels[status] ?? status.replaceAll("_", " ");
 }
 
@@ -168,6 +208,7 @@ function waitingForLabel(value: string): string {
   if (value === "execution_input") return "补充执行资料";
   if (value === "attention") return "等待任务恢复";
   if (value === "human") return "人工处理";
+  if (value === "upstream_artifacts") return "等待前置结果";
   return value.replaceAll("_", " ");
 }
 
@@ -236,7 +277,11 @@ export function ChannelsView() {
           <summary className="cursor-pointer">高级诊断：意图理解</summary>
           <p className="mt-2">意图识别：{state.channelIntentMetrics.total} 次，低置信度 {state.channelIntentMetrics.lowConfidence ?? 0} 次，需澄清 {state.channelIntentMetrics.ambiguous ?? 0} 次{state.channelIntentMetrics.policyVersion ? `，策略 ${state.channelIntentMetrics.policyVersion}` : ""}</p>
           {state.channelIntentMetrics.bridge?.attempts ? <p className="mt-1">Bridge：{state.channelIntentMetrics.bridge.succeeded ?? 0} 成功 / {state.channelIntentMetrics.bridge.failed ?? 0} 失败，平均 {state.channelIntentMetrics.bridge.averageLatencyMs ?? "—"} ms{state.channelIntentMetrics.bridge.circuitOpen ? "，已自动降级本地识别" : ""}</p> : null}
-          {state.channelIntentMetrics.experience ? <p className="mt-1">体验闭环：针对性澄清 {state.channelIntentMetrics.experience.targetedClarifications ?? 0}，明确只读 {state.channelIntentMetrics.experience.directReadOnlyTasks ?? 0}（本地直达 {state.channelIntentMetrics.experience.directLocalReadOnlyResults ?? 0}），复用/清理重复任务 {(state.channelIntentMetrics.experience.duplicateTasksReused ?? 0) + (state.channelIntentMetrics.experience.staleDuplicatesReconciled ?? 0)}，执行后续补充 {state.channelIntentMetrics.experience.activeFollowUpsQueued ?? 0}，重试通知去重 {state.channelIntentMetrics.experience.retryStartDuplicatesSuppressed ?? 0}，媒体回执 {state.channelIntentMetrics.experience.mediaReceipts ?? 0}</p> : null}
+          {state.channelIntentMetrics.experience ? <>
+            <p className="mt-1">体验闭环：针对性澄清 {state.channelIntentMetrics.experience.targetedClarifications ?? 0}，明确只读 {state.channelIntentMetrics.experience.directReadOnlyTasks ?? 0}（本地直达 {state.channelIntentMetrics.experience.directLocalReadOnlyResults ?? 0}），复用/清理重复任务 {(state.channelIntentMetrics.experience.duplicateTasksReused ?? 0) + (state.channelIntentMetrics.experience.staleDuplicatesReconciled ?? 0)}，执行后续补充 {state.channelIntentMetrics.experience.activeFollowUpsQueued ?? 0}，重试通知去重 {state.channelIntentMetrics.experience.retryStartDuplicatesSuppressed ?? 0}，媒体回执 {state.channelIntentMetrics.experience.mediaReceipts ?? 0}</p>
+            <p className="mt-1">咨询质量：有效回答 {state.channelIntentMetrics.experience.consultationAnswers ?? 0}，无有效答案 {state.channelIntentMetrics.experience.consultationAnswerMissing ?? 0}，超时 {state.channelIntentMetrics.experience.consultationTimeouts ?? 0}，自动重试 {state.channelIntentMetrics.experience.consultationAutoRetries ?? 0}（恢复 {state.channelIntentMetrics.experience.consultationAutoRetryRecovered ?? 0}，耗尽 {state.channelIntentMetrics.experience.consultationAutoRetryExhausted ?? 0}）</p>
+            <p className="mt-1">真实表达评测：困难样本 {state.channelIntentMetrics.experience.difficultSamples ?? 0}，待审核 {state.channelIntentMetrics.experience.pendingReviewSamples ?? 0}，用户已纠正 {state.channelIntentMetrics.experience.resolvedCorrections ?? 0}，可回放 {state.channelIntentMetrics.experience.replayReadySamples ?? 0}，重复表达合并 {state.channelIntentMetrics.experience.deduplicatedOccurrences ?? 0}</p>
+          </> : null}
         </details>
       ) : null}
       {channels.length > 0 ? <QuickStartGuide /> : null}
@@ -599,6 +644,10 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
     });
     return [...new Map(rows.map((item) => [item.canonicalUrl, item])).values()].slice(-5).reverse();
   }, [conversations]);
+  const nextTaskProposals = useMemo(() => {
+    const rows = conversations.flatMap((conversation) => conversation.sharedContentContext?.nextTaskProposals ?? []);
+    return [...new Map(rows.map((proposal) => [proposal.kind, proposal])).values()];
+  }, [conversations]);
 
   useEffect(() => {
     if (!notificationConversationId && conversations[0]?.id) setNotificationConversationId(conversations[0].id);
@@ -672,6 +721,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
   const taskSummaryParts = channel.taskSummary ? [
     channel.taskSummary.queued > 0 ? `排队 ${channel.taskSummary.queued}` : null,
     channel.taskSummary.running > 0 ? `执行中 ${channel.taskSummary.running}` : null,
+    channel.taskSummary.waitingUpstream > 0 ? `等上游 ${channel.taskSummary.waitingUpstream}` : null,
     channel.taskSummary.waitingApproval > 0 ? `待确认 ${channel.taskSummary.waitingApproval}` : null,
     channel.taskSummary.waitingUser > 0 ? `待补充 ${channel.taskSummary.waitingUser}` : null,
     channel.taskSummary.needsAttention > 0 ? `需要关注 ${channel.taskSummary.needsAttention}` : null,
@@ -733,6 +783,11 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
   async function taskAction(task: ChannelTaskRequest, action: "route" | "dismiss" | "retry" | "reroute" | "takeover") {
     const handlers = { route: api.routeChannelTask, dismiss: api.dismissChannelTask, retry: api.retryChannelTask, reroute: api.rerouteChannelTask, takeover: api.takeoverChannelTask };
     await execute(() => handlers[action](task.id));
+  }
+
+  async function reconcileWechatDraft(task: ChannelTaskRequest, outcome: "confirmed_saved" | "confirmed_not_saved") {
+    if (outcome === "confirmed_not_saved" && !window.confirm("请确认公众号草稿箱中确实没有该草稿。确认后系统会重新保存，是否继续？")) return;
+    await execute(() => api.reconcileWechatDraftTask(task.id, outcome));
   }
 
   async function sendHumanReply(targetId: string) {
@@ -835,6 +890,32 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           {diagnosticError ? <p className="mt-1 text-destructive">诊断导出失败，请稍后重试。</p> : null}
         </div> : null}
 
+        {advancedOpen && channel.recentLinks?.length ? (
+          <div className="space-y-2 rounded-md border border-border px-3 py-2 text-xs" data-testid="channel-link-diagnostics">
+            <p className="font-medium">最近链接处理</p>
+            {channel.recentLinks.map((link) => {
+              const failedDelivery = [link.acknowledgement, link.finalReply]
+                .find((delivery) => delivery.status === "failed_terminal" && delivery.deliveryId);
+              return (
+                <div key={link.eventId} className="rounded border border-border bg-muted/20 px-2 py-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{link.hosts.join("、") || "链接"}</span>
+                    <Badge tone={linkStageTone(link.status)}>{linkStageLabel(link.status)}</Badge>
+                    <span className="text-muted-foreground">{diagnosticTime(link.detectedAt)}</span>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">
+                    即时回执：{linkDeliveryLabel(link.acknowledgement.status)}；最终反馈：{linkDeliveryLabel(link.finalReply.status)}
+                  </p>
+                  {link.activeTaskCount > 0 ? <p className="mt-1 text-muted-foreground">识别时有 {link.activeTaskCount} 个进行中的任务；未自动修改任务。</p> : null}
+                  {link.route ? <p className="mt-1 text-muted-foreground">后续用途：{linkRouteLabel(link.route.target, link.route.status)}{link.route.decidedAt ? `（${diagnosticTime(link.route.decidedAt)}）` : ""}</p> : null}
+                  {link.failureCode ? <p className="mt-1 text-destructive">失败原因：{link.failureCode}</p> : null}
+                  {failedDelivery?.deliveryId ? <Button className="mt-2" variant="secondary" size="sm" onClick={() => void retry(failedDelivery.deliveryId!)} disabled={pending}>重试发送反馈</Button> : null}
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+
         {advancedOpen && channel.provider === "wechat_ilink" ? (
           <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs" data-testid="ilink-runtime-summary">
             <div className="flex flex-wrap gap-x-4 gap-y-1">
@@ -883,6 +964,15 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                   </div>
                 </div>
               ))}
+              {nextTaskProposals.length ? (
+                <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs" data-testid="channel-next-task-proposals">
+                  <p className="font-medium">接下来可以另行发起</p>
+                  <p className="mt-1 text-muted-foreground">以下只是建议，不会自动创建任务；你明确说要做哪一项后，才会建立独立任务。</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {nextTaskProposals.map((proposal) => <Badge key={proposal.kind} tone="neutral">{proposal.label}</Badge>)}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </details>
         ) : null}
@@ -1081,20 +1171,54 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                   const task = taskByThreadId.get(thread.id);
                   const threadDelivery = deliveryByThreadId.get(thread.id);
                   const threadRevisions = revisions.filter((revision) => revision.threadId === thread.id).sort((left, right) => right.revision - left.revision);
+                  const latestRevision = threadRevisions[0] ?? null;
+                  const userTaskState = channelTaskUserState({ thread, task, delivery: threadDelivery, revision: latestRevision });
                   return (
                     <>
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone={thread.status === "queued" || thread.status === "succeeded" ? "success" : thread.status === "failed" ? "danger" : thread.status === "human_takeover" || thread.status === "needs_attention" || thread.status === "paused" ? "warning" : "neutral"}>{taskThreadStatusLabel(thread.status, thread.waitingFor)}</Badge>
+                  <Badge tone={userTaskState.tone}>{userTaskState.label}</Badge>
                   <span className="text-muted-foreground">当前会话任务</span>
                   {thread.status === "queued" && Number(thread.queueAheadCount ?? 0) > 0 ? <span className="text-muted-foreground">前面还有 {thread.queueAheadCount} 个任务</span> : null}
                   {thread.status === "queued" && Number(thread.queuePosition ?? 0) > 0 ? <span className="text-muted-foreground">排第 {thread.queuePosition} 位</span> : null}
                   {thread.waitingFor ? <span className="text-muted-foreground">等待：{waitingForLabel(thread.waitingFor)}</span> : null}
                   {task?.status === "pending" ? <><Button size="sm" onClick={() => taskAction(task, "route")} disabled={pending}>{t("channelsPage.route")}</Button><Button variant="ghost" size="sm" onClick={() => taskAction(task, "dismiss")} disabled={pending}>{t("channelsPage.dismiss")}</Button></> : null}
-                  {task?.actions.retry ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "retry")} disabled={pending}>{t("channelsPage.retry")}</Button> : null}
-                  {task?.actions.reroute ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "reroute")} disabled={pending}>{t("channelsPage.reroute")}</Button> : null}
-                  {task?.actions.takeover ? <Button variant="ghost" size="sm" onClick={() => taskAction(task, "takeover")} disabled={pending}>{t("channelsPage.takeover")}</Button> : null}
+                  {advancedOpen && task?.actions.retry ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "retry")} disabled={pending}>{t("channelsPage.retry")}</Button> : null}
+                  {advancedOpen && task?.actions.reroute ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "reroute")} disabled={pending}>{t("channelsPage.reroute")}</Button> : null}
+                  {advancedOpen && task?.actions.takeover ? <Button variant="ghost" size="sm" onClick={() => taskAction(task, "takeover")} disabled={pending}>{t("channelsPage.takeover")}</Button> : null}
                 </div>
                 <p className="mt-1 line-clamp-2 text-muted-foreground">{thread.summary}</p>
+                <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 p-3" data-testid="channel-task-next-step">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={userTaskState.tone}>{userTaskState.label}</Badge>
+                    <span className="text-xs font-medium text-foreground">下一步</span>
+                    {userTaskState.actionLabel && userTaskState.action !== "reply_in_channel" ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          if (userTaskState.action === "retry_delivery" && threadDelivery) void retry(threadDelivery.id);
+                          else if (userTaskState.action === "retry_task" && task) void taskAction(task, "retry");
+                          else if (userTaskState.action === "open_approvals") setSection("approvals");
+                          else if (userTaskState.action === "open_sessions") setSection("sessions");
+                          else if (userTaskState.action === "view_task" && thread.workItemId) {
+                            openWorkItem(thread.workItemId, { section: "overview" });
+                            setSection("task");
+                          }
+                        }}
+                        disabled={pending}
+                      >
+                        {userTaskState.actionLabel}
+                      </Button>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">{userTaskState.nextStep}</p>
+                  {thread.attentionReason === "wechat_draft_outcome_unknown" && task ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {task.actions.reconcileSaved ? <Button size="sm" onClick={() => void reconcileWechatDraft(task, "confirmed_saved")} disabled={pending}>已找到草稿</Button> : null}
+                      {task.actions.reconcileNotSaved ? <Button variant="secondary" size="sm" onClick={() => void reconcileWechatDraft(task, "confirmed_not_saved")} disabled={pending}>确认未保存并重试</Button> : null}
+                    </div>
+                  ) : null}
+                </div>
                 {thread.workItemId ? <Button className="mt-2" variant="secondary" size="sm" onClick={() => { openWorkItem(thread.workItemId!, { section: "overview" }); setSection("task"); }}>查看任务</Button> : null}
                 {thread.status === "awaiting_confirmation" ? <p className="mt-1 text-amber-600">请在微信回复“确认”开始，也可以继续补充或回复“取消”。</p> : null}
                 {thread.status === "waiting_user" ? <p className="mt-1 text-amber-600">等待你补充信息，直接在微信回复即可。</p> : null}

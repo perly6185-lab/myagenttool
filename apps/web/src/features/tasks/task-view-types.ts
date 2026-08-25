@@ -38,6 +38,47 @@ export type LocalWorkItem = {
   type: "task" | "bug" | "feature" | "initiative";
   status: "backlog" | "ready" | "in_progress" | "review" | "blocked" | "done";
   priority: "p0" | "p1" | "p2" | "p3";
+  intentId?: string | null;
+  intentStatement?: string;
+  taskKind?: string;
+  workGoalId?: string | null;
+  artifactContract?: { consumes: string[]; produces: string[]; requirements?: Array<Record<string, unknown>> };
+  resultVerification?: {
+    schemaVersion: number;
+    status: "passed" | "failed" | "not_required";
+    summary: string;
+    checks: Array<{
+      kind: string;
+      status: "passed" | "failed";
+      summary: string;
+      expected?: Record<string, unknown>;
+      actual?: Record<string, unknown>;
+    }>;
+    verificationChecks: Array<{
+      kind: string;
+      status: "passed" | "failed";
+      summary: string;
+    }>;
+    repair: {
+      required: true;
+      mode: "independent_task";
+      reasons: string[];
+      suggestedRequest: string;
+    } | null;
+    digest: string;
+  } | null;
+  repairOfWorkItemId?: string | null;
+  resultRepairReasons?: string[];
+  platformTarget?: { id: string; label: string } | null;
+  artifactHandoffs?: Array<{
+    sourceWorkItemId: string;
+    kinds: string[];
+    assetIds: string[];
+    status: "attached" | "awaiting_artifact";
+    at: string;
+  }>;
+  creationBasis?: "explicit_user_intent" | "channel_ingest_rule" | "saved_automation" | "required_guard" | "imported";
+  planningHorizon?: "committed";
   executionPolicy?: "inherit" | "auto" | "manual" | "paused";
   state: "open" | "closed";
   businessState?: "open" | "closed";
@@ -411,7 +452,78 @@ export type LocalWorkItem = {
   parent?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" } | null;
   subIssues?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
   subIssuesSummary?: { total: number; completed: number; percentCompleted: number };
-  blockedBy?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed"; resolved: boolean }[];
+  intentPeers?: { id: string; localRef: string; title: string; taskKind: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
+  workGoal?: {
+    id: string;
+    title: string;
+    statement: string;
+    outcome: string;
+    status: "active" | "completed" | string;
+    planVersion: number;
+    platforms: Array<{ id: string; label: string }>;
+    progress?: { total: number; completed: number };
+    userSummary?: {
+      schemaVersion: 1;
+      goalId: string;
+      title: string;
+      outcome: string;
+      status: string;
+      progress: { total: number; completed: number; cancelled: number; failed: number; running: number; waiting: number; needsUser: number; percent: number };
+      quality: { passed: number; failed: number; unchecked: number };
+      nextStep: string;
+      nextAction?: {
+        kind: "none" | "repair_result" | "open_task" | "view_progress" | "view_waiting" | string;
+        workItemId: string | null;
+        label: string;
+      };
+      latestChange: { id: string; status: string; summary: string; updatedAt: string | null } | null;
+    } | null;
+  } | null;
+  publicationReadiness?: {
+    state: "ready" | "needs_setup";
+    reason: string;
+    platformId: string | null;
+    connection: {
+      applicationId: string;
+      applicationName: string;
+      facadeId: string;
+      displayName: string;
+      requiresApproval: boolean;
+    } | null;
+  } | null;
+  draftSyncReadiness?: {
+    state: "ready" | "needs_setup";
+    reason: string;
+    platformId: string | null;
+    connection: {
+      applicationId: string;
+      applicationName: string;
+      facadeId: string;
+      displayName: string;
+      requiresApproval: boolean;
+    } | null;
+  } | null;
+  goalTasks?: Array<{
+    id: string;
+    localRef: string;
+    title: string;
+    taskKind: string;
+    status: LocalWorkItem["status"];
+    state: "open" | "closed";
+    dependencyIds: string[];
+    platformTarget?: { id: string; label: string } | null;
+  }>;
+  blockedBy?: {
+    id: string;
+    localRef: string;
+    title: string;
+    status: LocalWorkItem["status"];
+    state: "open" | "closed";
+    resolved: boolean;
+    taskResolved?: boolean;
+    artifactResolved?: boolean;
+    unresolvedArtifactKinds?: string[];
+  }[];
   blocks?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
   createdAt?: string;
   updatedAt: string;

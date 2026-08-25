@@ -116,6 +116,9 @@ export function createHttpServer({
   updateWorkItemAttention,
   getWorkItemGithubSyncDiagnostics,
   suggestWorkItemDraft,
+  previewIntentTaskPlan,
+  commitIntentTaskPlan,
+  createResultRepairTask,
   listMyTemplateRoutingFeedback,
   removeMyTemplateRoutingFeedback,
   previewMyTemplateDraft,
@@ -587,6 +590,7 @@ export function createHttpServer({
   routeChannelTask,
   dismissChannelTask,
   retryChannelTask,
+  reconcileWechatDraftChannelTask,
   rerouteChannelTask,
   takeoverChannelTask,
   replyChannelTask,
@@ -879,6 +883,7 @@ export function createHttpServer({
         routeChannelTask,
         dismissChannelTask,
         retryChannelTask,
+        reconcileWechatDraftChannelTask,
         rerouteChannelTask,
         takeoverChannelTask,
         replyChannelTask,
@@ -1149,6 +1154,9 @@ export function createHttpServer({
         updateAttention: updateWorkItemAttention,
         githubSyncDiagnostics: getWorkItemGithubSyncDiagnostics,
         suggestWorkItemDraft,
+        previewIntentTaskPlan,
+        commitIntentTaskPlan,
+        createResultRepairTask,
         listMyTemplateRoutingFeedback,
         removeMyTemplateRoutingFeedback,
         previewMyTemplateDraft,
@@ -1210,6 +1218,7 @@ export function createHttpServer({
         listSessions,
         probeSessionSite,
         reseedSessionSite,
+        actor,
       })) {
         return;
       }

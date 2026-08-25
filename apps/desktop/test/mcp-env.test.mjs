@@ -73,3 +73,29 @@ test("Electron-as-Node is added only for the exact shell-owned mail runtime", ()
     }
   }
 });
+
+test("Electron-as-Node also trusts only the exact shell-owned WeChat runtime", () => {
+  const keys = [
+    "MYAGENTTOOL_WECHAT_OFFICIAL_MCP_ENTRY",
+    "MYAGENTTOOL_WECHAT_OFFICIAL_MCP_NODE",
+    "MYAGENTTOOL_WECHAT_OFFICIAL_MCP_ELECTRON_RUN_AS_NODE",
+  ];
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.MYAGENTTOOL_WECHAT_OFFICIAL_MCP_ENTRY = "C:\\app\\tools\\wechat-official-site\\src\\server.mjs";
+    process.env.MYAGENTTOOL_WECHAT_OFFICIAL_MCP_NODE = "C:\\app\\MyAgentTool.exe";
+    process.env.MYAGENTTOOL_WECHAT_OFFICIAL_MCP_ELECTRON_RUN_AS_NODE = "1";
+    const trusted = buildMcpChildEnv({
+      command: "C:\\app\\MyAgentTool.exe",
+      args: ["C:\\app\\tools\\wechat-official-site\\src\\server.mjs"],
+    });
+    const unrelated = buildMcpChildEnv({ command: "C:\\app\\MyAgentTool.exe", args: ["C:\\other\\server.mjs"] });
+    assert.equal(trusted.ELECTRON_RUN_AS_NODE, "1");
+    assert.equal(unrelated.ELECTRON_RUN_AS_NODE, undefined);
+  } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  }
+});

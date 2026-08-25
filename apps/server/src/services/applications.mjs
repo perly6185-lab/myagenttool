@@ -2096,6 +2096,8 @@ function normalizeApplicationCapabilityFacades(value) {
     if (agentToolName && !agentId) {
       throw applicationRegistrationError("invalid_application_capability_facade", "agentToolName is only valid on an agent facade (agentId).");
     }
+    const taskCapabilityContract = normalizeTaskCapabilityContract(facade.taskCapabilityContract);
+    const siteOperationContract = normalizeSiteOperationContract(facade.siteOperationContract);
     seen.add(id);
     return {
       id,
@@ -2122,8 +2124,41 @@ function normalizeApplicationCapabilityFacades(value) {
       // command. Same generic mechanism (application-results RESULT_PARSERS), so
       // a new importing application adds a parser, not a branch in completion.
       resultImport: normalizeFacadeResultImport(facade.resultImport),
+      ...(taskCapabilityContract ? { taskCapabilityContract } : {}),
+      ...(siteOperationContract ? { siteOperationContract } : {}),
     };
   });
+}
+
+function normalizeTaskCapabilityContract(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw applicationRegistrationError("invalid_application_capability_facade", "taskCapabilityContract must be an object.");
+  }
+  const id = stringOrNull(value.id);
+  const operations = normalizeStringList(value.operations);
+  const outputArtifactKinds = normalizeStringList(value.outputArtifactKinds);
+  if (!id || !/^[a-z][a-z0-9_.-]{2,100}$/.test(id) || !operations.length || !outputArtifactKinds.length) {
+    throw applicationRegistrationError("invalid_application_capability_facade", "taskCapabilityContract requires id, operations, and outputArtifactKinds.");
+  }
+  return { id, operations, outputArtifactKinds };
+}
+
+function normalizeSiteOperationContract(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw applicationRegistrationError("invalid_application_capability_facade", "siteOperationContract must be an object.");
+  }
+  const platformId = stringOrNull(value.platformId)?.toLowerCase();
+  const operation = stringOrNull(value.operation)?.toLowerCase();
+  const inputArtifactKinds = normalizeStringList(value.inputArtifactKinds);
+  const outputArtifactKinds = normalizeStringList(value.outputArtifactKinds);
+  if (!platformId || !/^[a-z][a-z0-9_-]{1,63}$/.test(platformId)
+    || !["probe", "draft_sync", "publish"].includes(operation)
+    || (operation !== "probe" && (!inputArtifactKinds.length || !outputArtifactKinds.length))) {
+    throw applicationRegistrationError("invalid_application_capability_facade", "siteOperationContract requires a supported platform operation and artifact contract.");
+  }
+  return { platformId, operation, inputArtifactKinds, outputArtifactKinds };
 }
 
 function normalizeFacadeResultImport(resultImport) {
