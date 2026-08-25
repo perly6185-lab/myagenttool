@@ -88,3 +88,17 @@ test("credential-like values are redacted from executor summaries", async () => 
   assert.doesNotMatch(result.result.summary, /abc|def/);
   assert.match(result.result.summary, /\[redacted\]/);
 });
+
+test("JSON-shaped credential summaries are redacted recursively enough for logs", async () => {
+  const runner = createSiteOperationRunner({
+    manifests: [manifest],
+    executors: new Map([["builtin.wechat_official", async () => ({
+      status: "failed",
+      summary: "{\"token\":\"secret123\",\"cookie\":\"session456\"}",
+    })]]),
+    state: {},
+  });
+  const result = await runner.run(operationInput());
+  assert.doesNotMatch(result.result.summary, /secret123|session456/);
+  assert.equal((result.result.summary.match(/\[redacted\]/g) ?? []).length, 2);
+});

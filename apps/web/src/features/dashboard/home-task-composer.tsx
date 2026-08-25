@@ -79,6 +79,7 @@ type PreservedIntentPlanDraft = {
   intentPlan: IntentTaskPlan | null;
   sourceWorkItemId: string | null;
   sourceQuery: string;
+  clarificationAnswer: string;
   excludedTasks: Array<{ key: string; kind: string; title: string }>;
   savedAt: number;
 };
@@ -314,6 +315,9 @@ export function HomeTaskComposer({
     planTitle: "我理解为这些任务",
     planHint: "每项任务独立执行；只有确实需要前一步产物时才会串联。",
     planApproval: "到这里会先问你",
+    clarificationAnswer: "直接回答",
+    clarificationPlaceholder: "补充你希望执行的具体动作或选择",
+    clarificationContinue: "按回答重新理解",
     sourceTitle: "选择要沿用的已有结果",
     sourceHint: "系统不会替你猜。选择后，新任务会记录真实依赖并使用这份结果。",
     sourceSelected: "将使用",
@@ -398,6 +402,9 @@ export function HomeTaskComposer({
     planTitle: "I understand this as these tasks",
     planHint: "Each task runs independently unless it genuinely needs an earlier result.",
     planApproval: "Will ask you here",
+    clarificationAnswer: "Your answer",
+    clarificationPlaceholder: "Add the action or choice you want",
+    clarificationContinue: "Update the plan",
     sourceTitle: "Choose an existing result",
     sourceHint: "The system will not guess. The new task will record a real dependency on the result you choose.",
     sourceSelected: "Will use",
@@ -443,6 +450,7 @@ export function HomeTaskComposer({
   const [intentPlan, setIntentPlan] = useState<IntentTaskPlan | null>(null);
   const [sourceWorkItemId, setSourceWorkItemId] = useState<string | null>(null);
   const [sourceQuery, setSourceQuery] = useState("");
+  const [clarificationAnswer, setClarificationAnswer] = useState("");
   const [excludedTasks, setExcludedTasks] = useState<Array<{ key: string; kind: string; title: string }>>([]);
   const [templateMatch, setTemplateMatch] = useState<MyTemplateMatch | null>(null);
   const [internalOpen, setInternalOpen] = useState(false);
@@ -553,6 +561,7 @@ export function HomeTaskComposer({
       setIntentPlan(null);
       setSourceWorkItemId(null);
       setSourceQuery("");
+      setClarificationAnswer("");
       setExcludedTasks([]);
       setTemplateMatch(null);
       setAttachmentFeedback(hadAttachments ? copy.projectChanged : null);
@@ -575,6 +584,7 @@ export function HomeTaskComposer({
       setIntentPlan(preserved.intentPlan);
       setSourceWorkItemId(preserved.sourceWorkItemId);
       setSourceQuery(preserved.sourceQuery ?? "");
+      setClarificationAnswer(preserved.clarificationAnswer ?? "");
       setExcludedTasks(preserved.excludedTasks);
       setTemplateMatch(null);
       setFeedback(null);
@@ -588,6 +598,7 @@ export function HomeTaskComposer({
     setIntentPlan(null);
     setSourceWorkItemId(null);
     setSourceQuery("");
+    setClarificationAnswer("");
     setExcludedTasks([]);
     setTemplateMatch(null);
     setFeedback(null);
@@ -606,6 +617,7 @@ export function HomeTaskComposer({
     setIntentPlan(preserved.intentPlan);
     setSourceWorkItemId(preserved.sourceWorkItemId);
     setSourceQuery(preserved.sourceQuery ?? "");
+    setClarificationAnswer(preserved.clarificationAnswer ?? "");
     setExcludedTasks(preserved.excludedTasks);
     setTemplateMatch(null);
     onMobileOpenChange?.(true);
@@ -624,6 +636,7 @@ export function HomeTaskComposer({
       intentPlan,
       sourceWorkItemId,
       sourceQuery,
+      clarificationAnswer,
       excludedTasks,
       savedAt: Date.now(),
     };
@@ -718,12 +731,14 @@ export function HomeTaskComposer({
     excludeKindsOverride,
     excludeTaskKeysOverride,
     sourceQueryOverride,
+    clarificationAnswerOverride,
   }: {
     forcePreview?: boolean;
     sourceWorkItemIdOverride?: string | null;
     excludeKindsOverride?: string[];
     excludeTaskKeysOverride?: string[];
     sourceQueryOverride?: string;
+    clarificationAnswerOverride?: string;
   } = {}) {
     if (!projectId || !title || pendingMode) return;
     setPendingMode(mode);
@@ -737,6 +752,7 @@ export function HomeTaskComposer({
       const effectiveExcludeKinds = excludeKindsOverride ?? [];
       const effectiveExcludeTaskKeys = excludeTaskKeysOverride ?? excludedTasks.map((task) => task.key);
       const effectiveSourceQuery = sourceQueryOverride ?? sourceQuery;
+      const effectiveClarificationAnswer = clarificationAnswerOverride ?? clarificationAnswer;
       if (forcePreview || !planReviewed || !intentPlan) {
         const plannedResponse: unknown = await api.previewWorkItemIntentPlan({
           projectId,
@@ -748,6 +764,7 @@ export function HomeTaskComposer({
           } : {}),
           ...(effectiveSourceWorkItemId ? { sourceWorkItemId: effectiveSourceWorkItemId } : {}),
           ...(effectiveSourceQuery ? { sourceQuery: effectiveSourceQuery } : {}),
+          ...(effectiveClarificationAnswer.trim() ? { clarificationAnswer: effectiveClarificationAnswer.trim() } : {}),
           ...(effectiveExcludeKinds.length ? { excludeKinds: effectiveExcludeKinds } : {}),
           ...(effectiveExcludeTaskKeys.length ? { excludeTaskKeys: effectiveExcludeTaskKeys } : {}),
         });
@@ -823,6 +840,7 @@ export function HomeTaskComposer({
         ...(attachments.length && draft ? { materialDraftId: draft.id, materialDraftRevision: draft.revision } : {}),
         ...(sourceWorkItemId ? { sourceWorkItemId } : {}),
         ...(excludedTasks.length ? { excludeTaskKeys: excludedTasks.map((task) => task.key) } : {}),
+        ...(clarificationAnswer.trim() ? { clarificationAnswer: clarificationAnswer.trim() } : {}),
       }) as { workItems: LocalWorkItem[] };
       const created = response.workItems[0] ?? null;
       if (mode === "ai") {
@@ -839,6 +857,7 @@ export function HomeTaskComposer({
       setIntentPlan(null);
       setSourceWorkItemId(null);
       setSourceQuery("");
+      setClarificationAnswer("");
       setExcludedTasks([]);
       setTemplateMatch(null);
       setAttachments([]);
@@ -922,6 +941,7 @@ export function HomeTaskComposer({
             setIntentPlan(null);
             setSourceWorkItemId(null);
             setSourceQuery("");
+            setClarificationAnswer("");
             setExcludedTasks([]);
             setTemplateMatch(null);
             idempotencyKey.current = null;
@@ -977,6 +997,32 @@ export function HomeTaskComposer({
           <section className="rounded-lg border border-primary/35 bg-primary/[0.045] px-3 py-3 text-sm" aria-label={copy.planTitle} data-testid="home-intent-task-plan">
             <h3 className="font-semibold">{copy.planTitle}</h3>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{copy.planHint}</p>
+            {intentPlan.plan.clarification ? (
+              <div className="mt-3 rounded-lg border border-warning/35 bg-warning/[0.055] p-3" role="group" aria-label={intentPlan.plan.clarification.prompt}>
+                <p className="font-medium">{intentPlan.plan.clarification.prompt}</p>
+                <label className="mt-3 block text-xs font-medium text-muted-foreground" htmlFor="home-intent-clarification-answer">{copy.clarificationAnswer}</label>
+                <div className="mt-1 flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    id="home-intent-clarification-answer"
+                    value={clarificationAnswer}
+                    placeholder={copy.clarificationPlaceholder}
+                    disabled={pendingMode != null}
+                    onChange={(event) => setClarificationAnswer(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" || !clarificationAnswer.trim()) return;
+                      event.preventDefault();
+                      void create("task", { forcePreview: true, clarificationAnswerOverride: clarificationAnswer });
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={pendingMode != null || !clarificationAnswer.trim()}
+                    onClick={() => void create("task", { forcePreview: true, clarificationAnswerOverride: clarificationAnswer })}
+                  >{copy.clarificationContinue}</Button>
+                </div>
+              </div>
+            ) : null}
             {intentPlan.plan.sourceSelection ? (
               <div className="mt-3 rounded-lg border bg-background/80 p-3" role="group" aria-label={copy.sourceTitle}>
                 <p className="font-medium">{copy.sourceTitle}</p>

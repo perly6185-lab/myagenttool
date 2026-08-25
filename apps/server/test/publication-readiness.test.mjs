@@ -63,3 +63,58 @@ test("publication names and risk tags cannot impersonate a site operation contra
   assert.equal(readiness.state, "needs_setup");
   assert.equal(readiness.reason, "publication_connection_missing");
 });
+
+test("publication refuses unhealthy or expired site sessions", () => {
+  const application = {
+    id: "app_expired", name: "失效公众号", ownerTeamId: "team_a", status: "active",
+    health: { status: "unhealthy" }, sessionStatus: "expired",
+    capabilityFacades: [{
+      id: "publish", toolName: "wechat_official.publish", directInvocation: true, requiresApproval: true,
+      siteOperationContract: { platformId: "wechat_official", operation: "publish", inputArtifactKinds: ["wechat_article_package"], outputArtifactKinds: ["publication_receipt"] },
+    }],
+  };
+  const readiness = publicationCapabilityReadiness({ applications: [application], platformTarget: target, ownerTeamId: "team_a" });
+  assert.equal(readiness.state, "needs_setup");
+  assert.equal(readiness.reason, "publication_connection_unhealthy");
+});
+
+test("publication resolves an explicitly selected account instead of taking the first platform match", () => {
+  const application = (id, accountId) => ({
+    id, accountId, name: id, ownerTeamId: "team_a", status: "active", health: { status: "healthy" },
+    capabilityFacades: [{
+      id: "publish", toolName: `${id}.publish`, directInvocation: true, requiresApproval: true,
+      siteOperationContract: { platformId: "wechat_official", operation: "publish", inputArtifactKinds: ["wechat_article_package"], outputArtifactKinds: ["publication_receipt"] },
+    }],
+  });
+  const readiness = publicationCapabilityReadiness({
+    applications: [application("app_one", "account_1"), application("app_two", "account_2")],
+    platformTarget: { ...target, accountId: "account_2" },
+    ownerTeamId: "team_a",
+  });
+  assert.equal(readiness.state, "ready");
+  assert.equal(readiness.connection.applicationId, "app_two");
+  assert.equal(readiness.connection.accountId, "account_2");
+
+  const selectedByApplication = publicationCapabilityReadiness({
+    applications: [application("app_one", "account_1"), application("app_two", "account_2")],
+    platformTarget: { ...target, applicationId: "app_two" },
+    ownerTeamId: "team_a",
+  });
+  assert.equal(selectedByApplication.state, "ready");
+  assert.equal(selectedByApplication.connection.applicationId, "app_two");
+  assert.equal(selectedByApplication.connection.accountId, "account_2");
+
+  const missing = publicationCapabilityReadiness({
+    applications: [application("app_one", "account_1")],
+    platformTarget: { ...target, accountId: "account_missing" },
+    ownerTeamId: "team_a",
+  });
+  assert.equal(missing.reason, "publication_account_connection_missing");
+
+  const missingApplication = publicationCapabilityReadiness({
+    applications: [application("app_one", "account_1")],
+    platformTarget: { ...target, applicationId: "app_missing" },
+    ownerTeamId: "team_a",
+  });
+  assert.equal(missingApplication.reason, "publication_account_connection_missing");
+});

@@ -4,7 +4,7 @@ import { evaluateIntentUnderstanding } from "../src/services/intent-understandin
 
 test("ordinary-user intent replay set stays green across creator, software, and business work", () => {
   const evaluation = evaluateIntentUnderstanding();
-  assert.equal(evaluation.total, 240);
+  assert.equal(evaluation.total, 291);
   assert.equal(evaluation.failed.length, 0, JSON.stringify(evaluation.failed, null, 2));
   assert.equal(evaluation.passed, evaluation.total);
   assert.equal(evaluation.metrics.taskBoundaryAccuracy, 1);
@@ -16,5 +16,11 @@ test("ordinary-user intent replay set stays green across creator, software, and 
   assert.equal(evaluation.metrics.crossDomainAccuracy, 1);
   assert.equal(evaluation.metrics.naturalExpressionAccuracy, 1);
   assert.equal(evaluation.metrics.heldOutProfessionalAccuracy, 1);
+  assert.equal(evaluation.metrics.professionalNaturalAccuracy, 1);
+  assert.equal(evaluation.metrics.professionalBoundaryAccuracy, 1);
+  assert.equal(evaluation.metrics.professionalExistingAccuracy, 1);
+  assert.equal(evaluation.metrics.multiInstanceAccuracy, 1);
+  assert.equal(evaluation.metrics.publishingSafetyAccuracy, 1);
+  assert.equal(evaluation.metrics.harmfulForbiddenTaskRate, 0);
   assert.equal(evaluation.releaseReady, true);
 });

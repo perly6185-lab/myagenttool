@@ -164,7 +164,7 @@ test("parallel article and image outputs stay independent unless the user links 
 
 test("saving to the WeChat draft box is not interpreted as public publishing", () => {
   const result = planDiscreteTasks({ text: "把这篇文章同步到公众号草稿箱", domain: "content" });
-  assert.deepEqual(result.tasks.map((task) => task.kind), ["content_article", "platform_adaptation", "wechat_draft_sync"]);
+  assert.deepEqual(result.tasks.map((task) => task.kind), ["platform_adaptation", "wechat_draft_sync"]);
   assert.ok(!result.tasks.some((task) => task.kind === "content_publish"));
   assert.equal(result.tasks.at(-1).approvalRequired, true);
 });
@@ -282,4 +282,142 @@ test("existing outputs and discussion topics remain context instead of becoming 
     domain: "business",
   });
   assert.deepEqual(meeting.tasks.map((task) => task.kind), ["business_scheduling"]);
+});
+
+test("professional intent understands ordinary language and company shorthand", () => {
+  const samples = [
+    ["帮我过一遍这批CV，把合适的人约来聊聊", ["hr_candidate_screening", "hr_interview_scheduling"]],
+    ["把本月账对一下，没问题就走付款", ["finance_reconciliation", "finance_payment_request"]],
+    ["看看这份协议哪些条款有坑，按建议改一版", ["legal_contract_review", "legal_document_revision"]],
+    ["工单按紧急程度排一下，再给客户回信", ["support_case_triage", "support_response_draft"]],
+    ["三家报价选一家，走采购流程", ["procurement_quote_comparison", "procurement_approval_request"]],
+    ["把CRM里的机会补齐，再催一下重点客户", ["sales_pipeline_update", "sales_followup"]],
+    ["总结这次项目踩坑，做个汇报 deck", ["operations_retrospective", "presentation_creation"]],
+    ["这份使用说明从中文转成英文，版式别动", ["document_translation"]],
+    ["看看Q2营收趋势，画几张图", ["data_analysis", "data_visualization"]],
+  ];
+  for (const [text, expectedKinds] of samples) {
+    assert.deepEqual(planDiscreteTasks({ text }).tasks.map((task) => task.kind), expectedKinds, text);
+  }
+});
+
+test("professional negation never creates an unwanted external-effect task", () => {
+  const samples = [
+    ["只筛选简历，不安排面试", ["hr_candidate_screening"]],
+    ["先核对发票和流水，付款申请暂不做", ["finance_reconciliation"]],
+    ["合同只审风险，不要修改", ["legal_contract_review"]],
+    ["客诉只分类，先别回复客户", ["support_case_triage"]],
+    ["供应商先比价，不提交采购审批", ["procurement_quote_comparison"]],
+    ["更新商机表，暂时不联系客户", ["sales_pipeline_update"]],
+  ];
+  for (const [text, expectedKinds] of samples) {
+    assert.deepEqual(planDiscreteTasks({ text }).tasks.map((task) => task.kind), expectedKinds, text);
+  }
+});
+
+test("existing professional results are inputs instead of duplicate upstream tasks", () => {
+  assert.deepEqual(
+    planDiscreteTasks({ text: "合同已经审完，按审查意见修订" }).tasks.map((task) => task.kind),
+    ["legal_document_revision"],
+  );
+  assert.deepEqual(
+    planDiscreteTasks({ text: "销售数据分析已经完成，只生成图表" }).tasks.map((task) => task.kind),
+    ["data_visualization"],
+  );
+});
+
+test("same professional task kind keeps separate scopes and stable keys", () => {
+  const screening = planDiscreteTasks({ text: "分别筛选北京和上海两批简历" });
+  assert.deepEqual(screening.tasks.map((task) => task.kind), ["hr_candidate_screening", "hr_candidate_screening"]);
+  assert.deepEqual(screening.tasks.map((task) => task.instanceScope), ["北京", "上海"]);
+  assert.equal(new Set(screening.tasks.map((task) => task.key)).size, 2);
+
+  const translation = planDiscreteTasks({ text: "把中文和日文两份手册分别翻译成英文" });
+  assert.deepEqual(translation.tasks.map((task) => task.kind), ["document_translation", "document_translation"]);
+  assert.deepEqual(translation.tasks.map((task) => task.instanceScope), ["中文", "日文"]);
+
+  const data = planDiscreteTasks({ text: "把北京和上海两份销售数据分别分析一下" });
+  assert.deepEqual(data.tasks.map((task) => task.kind), ["data_analysis", "data_analysis"]);
+  assert.deepEqual(data.tasks.map((task) => task.instanceScope), ["北京", "上海"]);
+
+  const legal = planDiscreteTasks({ text: "A合同和B合同分别审查风险" });
+  assert.deepEqual(legal.tasks.map((task) => task.kind), ["legal_contract_review", "legal_contract_review"]);
+  assert.deepEqual(legal.tasks.map((task) => task.instanceScope), ["A合同", "B合同"]);
+
+  const sales = planDiscreteTasks({ text: "分别跟进甲公司和乙公司两个客户" });
+  assert.deepEqual(sales.tasks.map((task) => task.kind), ["sales_followup", "sales_followup"]);
+  assert.deepEqual(sales.tasks.map((task) => task.instanceScope), ["甲公司", "乙公司"]);
+
+  const threeLanguages = planDiscreteTasks({ text: "把中文、日文和韩文三份说明分别翻成英文" });
+  assert.deepEqual(threeLanguages.tasks.map((task) => task.instanceScope), ["中文", "日文", "韩文"]);
+});
+
+test("professional shorthand keeps preparation, submission, analysis, and presentation boundaries", () => {
+  const samples = [
+    ["先别走款，付款申请单给我准备一份", ["finance_payment_request_draft"]],
+    ["对账已经做完，准备申请并提交付款", ["finance_payment_request_draft", "finance_payment_request"]],
+    ["三家报价比一下，申请单先准备好，今天不要送审", ["procurement_quote_comparison", "procurement_approval_draft"]],
+    ["销售分析报告已有，出三张趋势图", ["data_visualization"]],
+    ["客户投诉比较急，分下优先级，再给我一版回复", ["support_case_triage", "support_response_draft"]],
+    ["法务合同审一下，财务对账一下，最后做个汇报PPT", ["finance_reconciliation", "legal_contract_review", "presentation_creation"]],
+    ["这个月营收咋样，顺手出个图", ["data_analysis", "data_visualization"]],
+    ["把客户资料梳理清楚", ["business_research"]],
+    ["合同不用审了，按现有意见直接改一版", ["legal_document_revision"]],
+  ];
+  for (const [text, expectedKinds] of samples) {
+    assert.deepEqual(planDiscreteTasks({ text }).tasks.map((task) => task.kind), expectedKinds, text);
+  }
+});
+
+test("professional ambiguity asks one useful question instead of silently returning no work", () => {
+  for (const text of ["帮我处理一下这批合同", "把客户的事情处理好", "看看这些数字"]) {
+    const plan = planDiscreteTasks({ text });
+    assert.deepEqual(plan.tasks, [], text);
+    assert.equal(plan.clarification?.kind, "professional_action", text);
+  }
+});
+
+test("professional clarification does not intercept a concrete file mutation", () => {
+  const plan = planDiscreteTasks({
+    text: "回款已到账，请确认回款：把 receivables.csv 里的 AR-3001 的 回款状态改成 已回款",
+  });
+  assert.equal(plan.clarification, null);
+  assert.deepEqual(plan.tasks, []);
+});
+
+test("publication wording does not leak into software work and account selection blocks side effects", () => {
+  const publish = planDiscreteTasks({ text: "写一篇文章并公开发布到公众号" });
+  assert.deepEqual(publish.tasks.map((task) => task.kind), [
+    "content_article", "platform_adaptation", "wechat_draft_sync", "content_publish",
+  ]);
+  assert.ok(!publish.tasks.some((task) => task.kind === "software_implementation"));
+
+  const xiaohongshuOnly = planDiscreteTasks({ text: "先写公众号文章，审核通过后发到小红书" });
+  assert.deepEqual(xiaohongshuOnly.tasks.filter((task) => task.kind === "content_publish")
+    .map((task) => task.platform.id), ["xiaohongshu"]);
+
+  const account = planDiscreteTasks({ text: "把现成文章发到公司的第二个公众号" });
+  assert.deepEqual(account.tasks, []);
+  assert.equal(account.clarification?.kind, "account_choice");
+});
+
+test("preparing financial approvals stays separate from submitting them", () => {
+  const payment = planDiscreteTasks({ text: "根据对账差异准备付款申请，但先别提交" });
+  assert.deepEqual(payment.tasks.map((task) => task.kind), ["finance_payment_request_draft"]);
+  assert.equal(payment.tasks[0].approvalRequired, false);
+  assert.equal(payment.tasks[0].gate, null);
+
+  const procurement = planDiscreteTasks({ text: "根据比价结果起草采购申请，暂时不送审" });
+  assert.deepEqual(procurement.tasks.map((task) => task.kind), ["procurement_approval_draft"]);
+  assert.equal(procurement.tasks[0].approvalRequired, false);
+
+  const paymentBoth = planDiscreteTasks({ text: "先准备付款申请，再提交付款申请" });
+  assert.deepEqual(paymentBoth.tasks.map((task) => task.kind), ["finance_payment_request_draft", "finance_payment_request"]);
+  assert.deepEqual(paymentBoth.tasks[1].requires, [paymentBoth.tasks[0].key]);
+  assert.deepEqual(paymentBoth.tasks[1].artifactContract.consumes, ["payment_request_draft"]);
+
+  const procurementBoth = planDiscreteTasks({ text: "先起草采购申请，再送审采购申请" });
+  assert.deepEqual(procurementBoth.tasks.map((task) => task.kind), ["procurement_approval_draft", "procurement_approval_request"]);
+  assert.deepEqual(procurementBoth.tasks[1].requires, [procurementBoth.tasks[0].key]);
+  assert.deepEqual(procurementBoth.tasks[1].artifactContract.consumes, ["procurement_request_draft"]);
 });

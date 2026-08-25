@@ -2620,7 +2620,10 @@ export const api = {
     materialDraftId?: string;
     materialDraftRevision?: number;
     sourceWorkItemId?: string;
+    sourceQuery?: string;
     excludeKinds?: string[];
+    excludeTaskKeys?: string[];
+    clarificationAnswer?: string;
   }) => request("POST", "/api/work-items/assist/intent-plan", payload),
   commitWorkItemIntentPlan: (payload: {
     projectId: string;
@@ -2642,6 +2645,8 @@ export const api = {
     materialDraftRevision?: number;
     sourceWorkItemId?: string;
     excludeKinds?: string[];
+    excludeTaskKeys?: string[];
+    clarificationAnswer?: string;
   }) => request("POST", "/api/work-items/assist/intent-plan/commit", payload),
   listMyTemplateDefinitions: () =>
     request("GET", "/api/workflow-memory/business-routine-definitions"),
