@@ -14,7 +14,7 @@ export interface MySettingsCategory {
  */
 export const MY_SETTINGS_CATEGORIES: readonly MySettingsCategory[] = [
   { key: "execution", sections: ["devices", "agents", "agentSkills", "discovery", "tools"] },
-  { key: "connections", sections: ["applications", "integrations", "channels", "sessions"] },
+  { key: "connections", sections: ["myHosts", "applications", "integrations", "channels", "sessions"] },
   { key: "automation", sections: ["automation", "routines", "autoRuns"] },
   { key: "governance", sections: ["approvals", "audit"] },
   { key: "resources", sections: ["economics"] },
@@ -24,6 +24,7 @@ export const MY_SETTINGS_CATEGORIES: readonly MySettingsCategory[] = [
 export const MY_SETTINGS_SECTION_KEYS = MY_SETTINGS_CATEGORIES.flatMap((category) => category.sections);
 
 const SETTINGS_SEARCH_ALIASES: Partial<Record<SectionKey, readonly string[]>> = {
+  myHosts: ["host", "ssh", "sftp", "server", "remote files", "主机", "服务器", "远程文件", "文件传输"],
   devices: ["computer", "desktop bridge", "runtime", "电脑", "本机", "执行环境"],
   agents: ["assistant", "executor", "模型", "助手", "执行器"],
   agentSkills: ["instructions", "prompt", "skill", "指令", "提示词", "技能"],

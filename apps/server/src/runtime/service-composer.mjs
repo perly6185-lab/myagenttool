@@ -198,8 +198,11 @@ import { canDeleteObservabilityData, deleteObservabilityData, deletionScopes } f
 import { DEFAULT_SLO_TARGETS, evaluateSloAlert, summarizeAutoRunSlos } from "../services/auto-run-slo.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
+import { createSshHostConnector } from "../services/ssh-host-connector.mjs";
+import { createHostFileService } from "../services/host-files.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 import { createExternalIssueProviderClient } from "../services/external-issue-provider.mjs";
+import { createSiteCredentialVault } from "../services/site-credential-vault.mjs";
 
 export { enrichAlertOwnership };
 
@@ -239,6 +242,7 @@ export function createServerRuntimeServices({
   // the last writes before shutdown are captured. A no-op until the mirror is primed
   // (and always, when there is no SQLite backing).
   let durableSync = () => {};
+  const sshHostConnector = createSshHostConnector();
   const {
     persistStateSoon,
     persistStateNow,
@@ -1015,6 +1019,7 @@ export function createServerRuntimeServices({
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
   });
+  const siteCredentialVault = createSiteCredentialVault();
 
   const {
     applicationHealthSweep,
@@ -1179,13 +1184,16 @@ export function createServerRuntimeServices({
   };
 
   const {
+    confirmSshHostFingerprint,
     createManagedTerminalSession,
     createSshConnectionTest,
     createSshTarget,
     nextTerminalBridgeAction,
+    observeSshHostFingerprint,
     queueTerminalBridgeAction,
     recordTerminalBridgeEvent,
     recordTerminalEvidence,
+    verifySshHostConnection,
   } = createTerminalService({
     state,
     now,
@@ -1195,6 +1203,18 @@ export function createServerRuntimeServices({
     summarizeText,
     uniqueStrings,
     codexSessionForInvocation,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    sshHostConnector,
+    store,
+  });
+  const hostFileService = createHostFileService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    sshHostConnector,
     store,
   });
 
@@ -7740,6 +7760,8 @@ export function createServerRuntimeServices({
     suggestPlanningPlan: planningProjectService.suggestPlan,
     executePlanningRecommendedAction: planningProjectService.executeRecommendedAction,
     decidePlanningRecommendedAction: planningProjectService.decideRecommendedAction,
+    provisionSiteCredential: siteCredentialVault.provision,
+    revokeSiteCredential: siteCredentialVault.revoke,
     createChannelTaskIssue,
     routeChannelTask,
     dismissChannelTask,
@@ -7824,8 +7846,18 @@ export function createServerRuntimeServices({
     setApplicationHealthProbe,
     applicationHealthSweep,
     transitionApplication,
+    confirmSshHostFingerprint,
     createSshTarget,
     createSshConnectionTest,
+    observeSshHostFingerprint,
+    verifySshHostConnection,
+    listHostFileScopes: hostFileService.listScopes,
+    createHostFileScope: hostFileService.createScope,
+    updateHostFileScope: hostFileService.updateScope,
+    listHostFileEntries: hostFileService.listEntries,
+    listHostFileTransfers: hostFileService.listTransfers,
+    uploadHostFile: hostFileService.uploadFile,
+    downloadHostFile: hostFileService.downloadFile,
     createManagedTerminalSession,
     queueTerminalBridgeAction,
     nextTerminalBridgeAction,

@@ -51,6 +51,7 @@ export type SectionKey =
   | "sessions"
   | "economics"
   | "audit"
+  | "myHosts"
   | "settings";
 
 export interface ApplicationRunSelection {
@@ -70,6 +71,7 @@ export type TaskArea = "overview" | "process" | "assets" | "verification" | "tra
 export type ExternalWorkTab = "issue" | "pr";
 export type SettingsCategoryKey = "execution" | "connections" | "automation" | "governance" | "resources" | "diagnostics";
 export type WorkItemDetailMode = "summary" | "expert";
+export type ExperienceMode = "ordinary" | "professional";
 export type InvocationStatusFilter = "all" | "active" | "completed" | "failed";
 export interface PlanningProjectFilters {
   status: string;
@@ -95,6 +97,8 @@ interface UiState {
   selectedWorkItemId: string | null;
   selectedWorkItemMode: WorkItemDetailMode;
   workItemDetailPreference: WorkItemDetailMode;
+  /** One product-wide presentation mode; advanced controls stay in My settings. */
+  experienceMode: ExperienceMode;
   selectedWorkItemSection: WorkItemSection;
   /** URL-backed section inside the ordinary Tasks workspace. */
   taskArea: TaskArea;
@@ -149,6 +153,7 @@ interface UiState {
   closeWorkItem: () => void;
   setSelectedWorkItemMode: (mode: WorkItemDetailMode) => void;
   setWorkItemDetailPreference: (mode: WorkItemDetailMode) => void;
+  setExperienceMode: (mode: ExperienceMode) => void;
   setSelectedWorkItemSection: (section: WorkItemSection) => void;
   setTaskArea: (area: TaskArea) => void;
   setSelectedExternalWorkTab: (tab: ExternalWorkTab) => void;
@@ -222,6 +227,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "sessions",
   "economics",
   "audit",
+  "myHosts",
 ];
 
 export interface UrlNavigationState {
@@ -438,6 +444,7 @@ export const useUiStore = create<UiState>()(
         selectedWorkItemId: initialNavigation.selectedWorkItemId ?? null,
         selectedWorkItemMode: initialNavigation.selectedWorkItemMode ?? "summary",
         workItemDetailPreference: "summary",
+        experienceMode: "ordinary",
         selectedWorkItemSection: initialNavigation.selectedWorkItemSection ?? "overview",
         taskArea: initialNavigation.taskArea ?? "overview",
         selectedExternalWorkTab: initialNavigation.selectedExternalWorkTab ?? "issue",
@@ -488,7 +495,16 @@ export const useUiStore = create<UiState>()(
         }),
         closeWorkItem: () => set({ selectedWorkItemId: null }),
         setSelectedWorkItemMode: (selectedWorkItemMode) => set({ selectedWorkItemMode }),
-        setWorkItemDetailPreference: (workItemDetailPreference) => set({ workItemDetailPreference }),
+        setWorkItemDetailPreference: (workItemDetailPreference) => set({
+          workItemDetailPreference,
+          experienceMode: workItemDetailPreference === "expert" ? "professional" : "ordinary",
+        }),
+        setExperienceMode: (experienceMode) => set({
+          experienceMode,
+          workItemDetailPreference: experienceMode === "professional" ? "expert" : "summary",
+          selectedWorkItemMode: experienceMode === "professional" ? "expert" : "summary",
+          ...(experienceMode === "ordinary" ? { taskArea: "overview" as const } : {}),
+        }),
         setSelectedWorkItemSection: (selectedWorkItemSection) => set({ selectedWorkItemSection }),
         setTaskArea: (taskArea) => set({ taskArea }),
         setSelectedExternalWorkTab: (selectedExternalWorkTab) => set({ selectedExternalWorkTab }),
@@ -542,6 +558,7 @@ export const useUiStore = create<UiState>()(
         selectedWorkItemId: state.selectedWorkItemId,
         selectedWorkItemMode: state.selectedWorkItemMode,
         workItemDetailPreference: state.workItemDetailPreference,
+        experienceMode: state.experienceMode,
         selectedWorkItemSection: state.selectedWorkItemSection,
         taskArea: state.taskArea,
         selectedExternalWorkTab: state.selectedExternalWorkTab,
@@ -590,6 +607,9 @@ export const useUiStore = create<UiState>()(
         if (!isSupportedLocale(saved.locale)) merged.locale = current.locale;
         if (!['summary', 'expert'].includes(merged.selectedWorkItemMode)) merged.selectedWorkItemMode = "summary";
         if (!['summary', 'expert'].includes(merged.workItemDetailPreference)) merged.workItemDetailPreference = "summary";
+        if (!['ordinary', 'professional'].includes(merged.experienceMode)) {
+          merged.experienceMode = merged.workItemDetailPreference === "expert" ? "professional" : "ordinary";
+        }
         if (!["list", "board", "roadmap", "insights", "executions"].includes(merged.planningProjectView)) {
           merged.planningProjectView = "list";
         }

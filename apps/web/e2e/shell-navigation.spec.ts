@@ -95,7 +95,7 @@ test("defaults to a simple task surface and restores professional navigation on 
 
   await navigation.getByRole("button", { name: "My settings", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "My settings" });
-  const professionalView = settings.getByRole("switch", { name: "Professional task view" });
+  const professionalView = settings.getByRole("switch", { name: "Professional mode" });
   await expect(professionalView).toHaveAttribute("aria-checked", "false");
   await professionalView.click();
   await expect(professionalView).toHaveAttribute("aria-checked", "true");
@@ -163,7 +163,7 @@ test("offers five mobile destinations and keeps task status as a secondary task 
   await expect(page).toHaveURL(/section=me/);
   const settings = page.getByRole("dialog", { name: "My settings" });
   await expect(settings.getByRole("heading", { name: "Identity and session" })).toBeVisible();
-  await expect(settings.getByRole("switch", { name: "Professional task view" })).toBeVisible();
+  await expect(settings.getByRole("switch", { name: "Professional mode" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("mobile-me.png"), fullPage: true });
   await settings.getByRole("button", { name: "Close" }).click();
   await expect(page).toHaveURL(/section=workBoard/);

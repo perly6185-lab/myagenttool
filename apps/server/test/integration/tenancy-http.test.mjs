@@ -209,6 +209,15 @@ before(async () => {
     createdAt: now(),
   });
   state.events.push({
+    id: "evt_ssh_scope_a",
+    invocationId: null,
+    type: "ssh.host_file_scope.created",
+    level: "info",
+    message: "team a host file scope",
+    data: { targetId: "ssh_a", scopeId: "hfs_a" },
+    createdAt: now(),
+  });
+  state.events.push({
     id: "evt_ssh_a",
     invocationId: null,
     type: "ssh.target.registered",
@@ -283,6 +292,8 @@ test("read scoping: team B's /api/state hides team A's projects and evidence", a
   assert.ok(!sshTargetIds.includes("ssh_a"), "team B must NOT see team A's SSH target");
   const sshTestIds = (b.body.sshConnectionTests ?? []).map((report) => report.id);
   assert.ok(!sshTestIds.includes("ssh_test_a"), "team B must NOT see team A's SSH preflight report");
+  const sshScopeEventIds = (b.body.events ?? []).map((event) => event.id);
+  assert.ok(!sshScopeEventIds.includes("evt_ssh_scope_a"), "team B must NOT see team A's SSH file-range event");
   const eventIds = (b.body.events ?? []).map((event) => event.id);
   assert.ok(!eventIds.includes("evt_ssh_a"), "team B must NOT see team A's SSH target events");
 
@@ -719,6 +730,72 @@ test("SSH target creation ignores caller-supplied ownership", async () => {
   assert.equal(created.status, 201);
   assert.equal(created.body.target.ownerTeamId, TEAM_B);
   assert.equal(created.body.target.createdByUserId, "usr_b");
+});
+
+test("My hosts API reuses SSH identity while keeping file-transfer hosts team scoped", async () => {
+  const created = await call("/api/hosts", {
+    token: "tok_b",
+    method: "POST",
+    body: {
+      name: "Team B website host",
+      host: "website.example",
+      port: 22,
+      user: "deployer",
+      authMethod: "private_key_ref",
+      purposes: ["file_transfer", "site_publish"],
+      networkPolicy: "public_only",
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.target.workspaceRoot, null);
+  assert.deepEqual(created.body.target.purposes, ["file_transfer", "site_publish"]);
+  assert.equal(created.body.target.ownerTeamId, TEAM_B);
+  assert.equal(created.body.target.revision, 1);
+  assert.equal(created.body.target.credentialRef, `credential://ssh/${created.body.target.id}`);
+
+  const hostId = created.body.target.id;
+  const own = await call(`/api/hosts/${hostId}`, { token: "tok_b" });
+  assert.equal(own.status, 200);
+  assert.equal(own.body.host.id, hostId);
+  const foreign = await call(`/api/hosts/${hostId}`, { token: "tok_a" });
+  assert.equal(foreign.status, 404);
+
+  const list = await call("/api/hosts", { token: "tok_b" });
+  assert.equal(list.status, 200);
+  assert.ok(list.body.hosts.some((host) => host.id === hostId));
+  assert.ok(list.body.hosts.every((host) => host.ownerTeamId === TEAM_B));
+
+  const scopes = await call(`/api/hosts/${hostId}/file-scopes`, { token: "tok_b" });
+  assert.equal(scopes.status, 200);
+  assert.deepEqual(scopes.body.scopes, []);
+  const foreignScopes = await call(`/api/hosts/${hostId}/file-scopes`, { token: "tok_a" });
+  assert.equal(foreignScopes.status, 404);
+  const transfers = await call(`/api/hosts/${hostId}/file-transfers`, { token: "tok_b" });
+  assert.equal(transfers.status, 200);
+  assert.deepEqual(transfers.body.transfers, []);
+  const foreignTransfers = await call(`/api/hosts/${hostId}/file-transfers`, { token: "tok_a" });
+  assert.equal(foreignTransfers.status, 404);
+  const unverifiedScope = await call(`/api/hosts/${hostId}/file-scopes`, {
+    token: "tok_b", method: "POST", body: { label: "Website files", purpose: "site_publish", rootPath: "/srv/www/example" },
+  });
+  assert.equal(unverifiedScope.status, 409);
+  assert.equal(unverifiedScope.body.error, "ssh_host_not_ready");
+
+  testState.hostFileScopes.push(
+    { id: "hfs_team_b", ownerTeamId: TEAM_B, sshTargetId: hostId, label: "Website files", purpose: "site_publish", rootPath: "/srv/www/example", resolvedRootPath: "/srv/www/example", permissions: ["list", "upload", "download"], status: "ready", revision: 1, lastVerifiedAt: now() },
+    { id: "hfs_team_a", ownerTeamId: TEAM_A, sshTargetId: "ssh_a", label: "Team A secret site", purpose: "site_publish", rootPath: "/srv/www/secret", resolvedRootPath: "/srv/www/secret", permissions: ["list", "upload", "download"], status: "ready", revision: 1, lastVerifiedAt: now() },
+  );
+  const publishScopes = await call("/api/host-file-scopes?purpose=site_publish", { token: "tok_b" });
+  assert.equal(publishScopes.status, 200);
+  assert.deepEqual(publishScopes.body.scopes.map((scope) => scope.id), ["hfs_team_b"]);
+  assert.equal(publishScopes.body.scopes[0].host.id, hostId);
+  assert.equal("credentialRef" in publishScopes.body.scopes[0].host, false);
+
+  const unobservedConfirmation = await call(`/api/hosts/${hostId}/confirm-fingerprint`, {
+    token: "tok_b", method: "POST", body: { expectedRevision: 1, fingerprint: "SHA256:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/ab" },
+  });
+  assert.equal(unobservedConfirmation.status, 400);
+  assert.equal(unobservedConfirmation.body.error, "ssh_host_fingerprint_confirmation_invalid");
 });
 
 test("write guard: team B cannot resolve team A's codex approval request (404)", async () => {

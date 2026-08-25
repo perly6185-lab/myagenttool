@@ -166,7 +166,7 @@ export function buildPublicState({
     return owner !== undefined && owner === teamId;
   };
   const eventVisible = (event) => {
-    if (!String(event?.type ?? "").startsWith("ssh.target.")) return true;
+    if (!String(event?.type ?? "").startsWith("ssh.")) return true;
     return sshTargetIdVisible(event?.data?.targetId);
   };
   const projects = (state.projects ?? []).filter((p) => projectVisible(p.id) && p.hiddenFromNavigation !== true);

@@ -2,6 +2,7 @@ import { resolve, sep } from "node:path";
 
 import { DEFAULT_DEVICE_ID } from "../runtime/device.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { createSshHostConnector, normalizeSshFingerprint, SshHostConnectorError } from "./ssh-host-connector.mjs";
 
 // A local managed terminal is the broadest execution surface on the bridge (an
 // interactive shell). Its cwd must stay inside a registered project or worktree
@@ -36,7 +37,7 @@ export function createTerminalRuntimeCapability({ now = defaultNow } = {}) {
     },
     ssh: {
       available: true,
-      reason: "SSH target registry and safety preflight are available; remote relay PTY is not enabled",
+      reason: "SSH host registry, reviewed live handshake, and SFTP preflight are available; remote relay PTY is not enabled",
       phase: "Phase G",
       targetRegistry: true,
       remoteRelayAvailable: false,
@@ -63,6 +64,8 @@ export function createTerminalService({
   summarizeText,
   uniqueStrings,
   codexSessionForInvocation,
+  resolveCredential = async () => ({ ok: false, error: "ssh_credential_unavailable" }),
+  sshHostConnector = createSshHostConnector(),
   store,
 }) {
   // #1001 Phase A: durable SSH/terminal/evidence writes commit through the Store's
@@ -74,9 +77,12 @@ export function createTerminalService({
     const user = normalizeSshUser(body.user);
     const authMethod = normalizeSshAuthMethod(body.authMethod);
     const knownHostPolicy = normalizeKnownHostPolicy(body.knownHostPolicy);
-    const workspaceRoot = normalizeSshWorkspaceRoot(body.workspaceRoot);
+    const purposes = normalizeSshPurposes(body.purposes ?? body.purpose);
+    const workspaceRoot = normalizeSshWorkspaceRoot(body.workspaceRoot, { required: purposes.includes("runtime") });
+    const knownHostFingerprint = normalizeKnownHostFingerprint(body.knownHostFingerprint);
+    const id = nextId("ssh_target");
     const target = {
-      id: nextId("ssh_target"),
+      id,
       name: summarizeText(body.name ?? `${user}@${host}:${port}`, 80),
       createdByUserId: body.createdByUserId ?? "usr_local",
       ownerTeamId: body.ownerTeamId ?? "team_local",
@@ -84,16 +90,29 @@ export function createTerminalService({
       port,
       user,
       authMethod,
-      credentialRef: normalizeSshCredentialRef(body, authMethod),
+      credentialRef: normalizeSshCredentialRef(body, authMethod, {
+        defaultReference: purposes.some((purpose) => purpose === "file_transfer" || purpose === "site_publish")
+          ? `credential://ssh/${id}`
+          : null,
+      }),
       credentialStorage: "external_reference_only",
       knownHostPolicy,
-      knownHostFingerprint: normalizeKnownHostFingerprint(body.knownHostFingerprint),
+      knownHostFingerprint,
+      observedFingerprint: null,
       workspaceRoot,
+      purposes,
+      networkPolicy: normalizeSshNetworkPolicy(body.networkPolicy),
       platformHint: normalizeSshPlatformHint(body.platformHint),
       agentForwarding: normalizeBoolean(body.agentForwarding, false),
       keySelection: normalizeSshKeySelection(body.keySelection),
       status: "registered",
       trustStatus: sshTrustStatus(knownHostPolicy, body.knownHostFingerprint),
+      connectionStatus: "untested",
+      capabilities: null,
+      verifiedAt: null,
+      lastConnectedAt: null,
+      lastConnectionError: null,
+      revision: 1,
       remoteRelayEnabled: false,
       evidencePolicy: "not_managed_terminal_evidence_until_relay_registered",
       riskSummary: sshTargetRiskSummary({ authMethod, knownHostPolicy, agentForwarding: body.agentForwarding, keySelection: body.keySelection }),
@@ -122,6 +141,114 @@ export function createTerminalService({
       });
     });
     return target;
+  }
+
+  async function observeSshHostFingerprint(target) {
+    try {
+      const observed = await sshHostConnector.observeFingerprint(target);
+      runTx(() => {
+        target.observedFingerprint = observed.fingerprint;
+        target.connectionStatus = target.knownHostFingerprint === observed.fingerprint ? "untested" : "fingerprint_pending";
+        target.lastResolvedAddress = observed.resolvedAddress;
+        target.lastConnectionError = null;
+        target.revision = sshTargetRevision(target) + 1;
+        target.updatedAt = now();
+        appendEvent({
+          invocationId: null,
+          type: "ssh.host.fingerprint_observed",
+          level: "info",
+          message: "SSH host fingerprint observed and awaiting explicit confirmation.",
+          data: { targetId: target.id, fingerprint: observed.fingerprint, connectionStatus: target.connectionStatus },
+        });
+      });
+      return { ok: true, observation: observed, target };
+    } catch (error) {
+      return recordSshConnectionFailure(target, error, "ssh.host.fingerprint_failed");
+    }
+  }
+
+  function confirmSshHostFingerprint(target, { fingerprint, expectedRevision } = {}) {
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, error: "expected_revision_required" };
+    if (sshTargetRevision(target) !== expectedRevision) return { ok: false, status: 409, error: "ssh_target_revision_conflict", currentRevision: sshTargetRevision(target) };
+    const normalized = normalizeSshFingerprint(fingerprint);
+    if (!normalized || normalized !== target.observedFingerprint) return { ok: false, status: 400, error: "ssh_host_fingerprint_confirmation_invalid" };
+    runTx(() => {
+      target.knownHostPolicy = "pinned_fingerprint";
+      target.knownHostFingerprint = normalized;
+      target.trustStatus = "pinned";
+      target.connectionStatus = "untested";
+      target.capabilities = null;
+      target.verifiedAt = null;
+      target.lastConnectionError = null;
+      target.revision = sshTargetRevision(target) + 1;
+      target.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "ssh.host.fingerprint_confirmed",
+        level: "info",
+        message: "SSH host fingerprint confirmed for governed connections.",
+        data: { targetId: target.id, fingerprint: normalized },
+      });
+    });
+    return { ok: true, target };
+  }
+
+  async function verifySshHostConnection(target) {
+    if (!normalizeSshFingerprint(target.knownHostFingerprint) || target.trustStatus !== "pinned") {
+      return recordSshConnectionFailure(target, new SshHostConnectorError("ssh_host_fingerprint_required", "Confirm the SSH host fingerprint before connecting."), "ssh.host.verification_failed");
+    }
+    if (target.agentForwarding) {
+      return recordSshConnectionFailure(target, new SshHostConnectorError("ssh_agent_forwarding_forbidden", "SSH agent forwarding is not allowed for governed file connections."), "ssh.host.verification_failed");
+    }
+    const resolved = target.authMethod === "ssh_agent"
+      ? { ok: true, credential: { agentSocket: process.env.SSH_AUTH_SOCK } }
+      : await resolveCredential(target.credentialRef);
+    if (!resolved?.ok) {
+      return recordSshConnectionFailure(target, new SshHostConnectorError(resolved?.error ?? "ssh_credential_unavailable", "The SSH credential is unavailable."), "ssh.host.verification_failed");
+    }
+    try {
+      const verification = await sshHostConnector.verifyConnection(target, resolved.credential);
+      const timestamp = now();
+      runTx(() => {
+        target.connectionStatus = "ready";
+        target.capabilities = verification.capabilities;
+        target.lastResolvedAddress = verification.resolvedAddress;
+        target.verifiedAt = timestamp;
+        target.lastConnectedAt = timestamp;
+        target.lastConnectionError = null;
+        target.revision = sshTargetRevision(target) + 1;
+        target.updatedAt = timestamp;
+        appendEvent({
+          invocationId: null,
+          type: "ssh.host.verified",
+          level: "info",
+          message: "SSH host connection and SFTP capability verified.",
+          data: { targetId: target.id, capabilities: verification.capabilities },
+        });
+      });
+      return { ok: true, verification, target };
+    } catch (error) {
+      return recordSshConnectionFailure(target, error, "ssh.host.verification_failed");
+    }
+  }
+
+  function recordSshConnectionFailure(target, error, eventType) {
+    const code = error instanceof SshHostConnectorError ? error.code : "ssh_connection_failed";
+    runTx(() => {
+      target.connectionStatus = "error";
+      target.capabilities = null;
+      target.lastConnectionError = { code, at: now() };
+      target.revision = sshTargetRevision(target) + 1;
+      target.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: eventType,
+        level: "warn",
+        message: "SSH host connection did not complete.",
+        data: { targetId: target.id, error: code },
+      });
+    });
+    return { ok: false, status: sshConnectionFailureStatus(code), error: code, target };
   }
 
   function createSshConnectionTest(target, body = {}) {
@@ -463,13 +590,16 @@ export function createTerminalService({
   }
 
   return {
+    confirmSshHostFingerprint,
     createManagedTerminalSession,
     createSshConnectionTest,
     createSshTarget,
     nextTerminalBridgeAction,
+    observeSshHostFingerprint,
     queueTerminalBridgeAction,
     recordTerminalBridgeEvent,
     recordTerminalEvidence,
+    verifySshHostConnection,
   };
 }
 
@@ -534,24 +664,45 @@ function normalizeKnownHostPolicy(value) {
   return ["strict", "pinned_fingerprint", "manual_review"].includes(policy) ? policy : "strict";
 }
 
-function normalizeSshWorkspaceRoot(value) {
+function normalizeSshWorkspaceRoot(value, { required = true } = {}) {
   const root = String(value ?? "").trim();
-  if (!root) {
+  if (!root && required) {
     throw new Error("SSH workspace root is required.");
   }
+  if (!root) return null;
   if (root.includes("\0")) {
     throw new Error("SSH workspace root contains an invalid character.");
   }
   return root;
 }
 
-function normalizeSshCredentialRef(body, authMethod) {
+function normalizeSshPurposes(value) {
+  const values = Array.isArray(value) ? value : value == null ? ["runtime"] : [value];
+  const purposes = [...new Set(values.map(String).filter((item) => ["runtime", "file_transfer", "site_publish"].includes(item)))];
+  return purposes.length ? purposes : ["runtime"];
+}
+
+function normalizeSshNetworkPolicy(value) {
+  return value === "allow_private_network" ? "allow_private_network" : "public_only";
+}
+
+function sshTargetRevision(target) {
+  return Number.isInteger(target?.revision) && target.revision > 0 ? target.revision : 1;
+}
+
+function sshConnectionFailureStatus(code) {
+  if (["ssh_host_fingerprint_required", "ssh_agent_forwarding_forbidden", "ssh_credential_invalid", "ssh_agent_unavailable"].includes(code)) return 409;
+  if (code === "ssh_host_fingerprint_changed") return 409;
+  return 502;
+}
+
+function normalizeSshCredentialRef(body, authMethod, { defaultReference = null } = {}) {
   const raw = String(body.credentialRef ?? body.keyRef ?? body.passwordRef ?? "").trim();
   if (authMethod === "ssh_agent") {
     return raw || "ssh-agent:default";
   }
   if (!raw) {
-    return "external-secret:unconfigured";
+    return defaultReference ?? "external-secret:unconfigured";
   }
   return raw.replace(/[^a-zA-Z0-9:_./-]/g, "_").slice(0, 120);
 }
@@ -657,7 +808,7 @@ function sshPreflightChecks(target, body = {}) {
       label: "Live connection",
       status: "not_attempted",
       severity: "warn",
-      detail: "Live SSH handshake is reserved for a reviewed connector implementation.",
+      detail: "This legacy report is static; use the governed /api/hosts fingerprint and verify flow for a live SSH handshake.",
     });
   }
   return checks;

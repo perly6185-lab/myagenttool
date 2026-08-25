@@ -36,6 +36,7 @@ import { handleSessionRoutes } from "../routes/sessions.mjs";
 import { handleWorkflowMemoryRoutes } from "../routes/workflow-memory.mjs";
 import { handleChannelObjectRoutes } from "../routes/channel-objects.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
+import { handleSiteCredentialRoutes } from "../routes/site-credentials.mjs";
 import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
 import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
 import { terminalObservationReadModel } from "../read-models/terminal-observation.mjs";
@@ -359,8 +360,18 @@ export function createHttpServer({
   setApplicationAutoRecovery,
   setApplicationHealthProbe,
   transitionApplication,
+  confirmSshHostFingerprint,
   createSshTarget,
   createSshConnectionTest,
+  observeSshHostFingerprint,
+  verifySshHostConnection,
+  listHostFileScopes,
+  createHostFileScope,
+  updateHostFileScope,
+  listHostFileEntries,
+  listHostFileTransfers,
+  uploadHostFile,
+  downloadHostFile,
   createManagedTerminalSession,
   queueTerminalBridgeAction,
   nextTerminalBridgeAction,
@@ -604,6 +615,8 @@ export function createHttpServer({
   persistStateSoon,
   persistStateNow,
   identityProviderCore = null,
+  provisionSiteCredential,
+  revokeSiteCredential,
 }) {
   const identityPolicy = identityPolicyFromEnv();
   const loopbackToken = configuredLoopbackToken();
@@ -682,14 +695,27 @@ export function createHttpServer({
         && /^\/api\/projects\/[^/]+\/task-material-drafts\/[^/]+\/files\/[^/]+$/.test(url.pathname);
       const binaryTemplateLearningUpload = req.method === "POST"
         && /^\/api\/workflow-memory\/template-learning\/[^/]+\/files$/.test(url.pathname);
+      const binaryHostFileUpload = req.method === "POST"
+        && /^\/api\/host-file-scopes\/[^/]+\/transfers\/upload$/.test(url.pathname);
       if (["POST", "PUT", "PATCH"].includes(req.method) && url.pathname.startsWith("/api/")
-        && !binaryTaskMaterialUpload && !binaryTemplateLearningUpload) {
+        && !binaryTaskMaterialUpload && !binaryTemplateLearningUpload && !binaryHostFileUpload) {
         const contentType = String(req.headers["content-type"] ?? "").trim().toLowerCase();
         if (contentType && !contentType.startsWith("application/json")) {
           sendJson(res, 415, { error: "unsupported_content_type", message: "API writes must declare application/json." });
           return;
         }
       }
+
+      if (await handleSiteCredentialRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        desktopToken: process.env.MYAGENT_DESKTOP_CREDENTIAL_TOKEN ?? "",
+        provision: provisionSiteCredential,
+        revoke: revokeSiteCredential,
+      })) return;
 
       const bridgePath = url.pathname.startsWith("/api/bridge/");
       // External providers authenticate webhook deliveries with endpoint-specific
@@ -1366,8 +1392,18 @@ export function createHttpServer({
         readJson,
         actor,
         state,
+        confirmSshHostFingerprint,
         createSshTarget,
         createSshConnectionTest,
+        observeSshHostFingerprint,
+        verifySshHostConnection,
+        listHostFileScopes,
+        createHostFileScope,
+        updateHostFileScope,
+        listHostFileEntries,
+        listHostFileTransfers,
+        uploadHostFile,
+        downloadHostFile,
         createManagedTerminalSession,
         queueTerminalBridgeAction,
         nextTerminalBridgeAction,
@@ -1655,8 +1691,8 @@ function setCors(req, res) {
     res.setHeader("Vary", "Origin");
   }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token,X-Loopback-Token");
-  res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token,X-Loopback-Token,X-Transfer-Confirmed,X-Overwrite-Confirmed");
+  res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range,X-Host-Transfer-Id");
 }
 
 async function readJson(req) {

@@ -23,6 +23,7 @@
     "exceljs": "^4.4.0",
     "parse5": "^7.3.0",
     "pdfjs-dist": "^6.2.108",
+    "ssh2": "1.17.0",
     "yaml": "^2.8.1"
   },
   "devDependencies": {

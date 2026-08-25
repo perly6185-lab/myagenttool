@@ -7,6 +7,7 @@ import {
   FolderKanban,
   Files,
   Gauge,
+  HardDrive,
   GitCompare,
   KeyRound,
   GitPullRequest,
@@ -87,6 +88,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "audit", labelKey: "sections.audit.label", icon: ScrollText, blurbKey: "sections.audit.blurb", group: "oversee" },
   // Configure — the registry + setup.
   { key: "settings", labelKey: "sections.settings.label", icon: Settings, blurbKey: "sections.settings.blurb", group: "configure" },
+  { key: "myHosts", labelKey: "sections.myHosts.label", icon: HardDrive, blurbKey: "sections.myHosts.blurb", group: "configure" },
   { key: "projects", labelKey: "sections.projects.label", icon: FolderKanban, blurbKey: "sections.projects.blurb", group: "configure" },
   { key: "agents", labelKey: "sections.agents.label", icon: Boxes, blurbKey: "sections.agents.blurb", group: "configure" },
   { key: "agentSkills", labelKey: "sections.agentSkills.label", icon: Wand2, blurbKey: "sections.agentSkills.blurb", group: "configure" },

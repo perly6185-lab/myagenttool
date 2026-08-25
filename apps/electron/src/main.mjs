@@ -13,6 +13,7 @@ import { registerWorkflowCaseIntake } from "./workflow-case-intake.mjs";
 import { registerMailAccountConnector } from "./mail-account-connector.mjs";
 import { registerMailAttachmentHandler } from "./mail-attachment-handler.mjs";
 import { registerMailOutboundAttachmentHandler } from "./mail-outbound-attachment-handler.mjs";
+import { registerSshHostCredentialConnector } from "./ssh-host-credential-connector.mjs";
 import { APP_PROTOCOL, desktopRouteFromArgv, rendererUrlForDesktopRoute } from "./mail-connector-deep-link.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -23,7 +24,7 @@ if (process.argv.includes("--check")) {
   process.exit(0);
 }
 
-const { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell } = await import("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, session, shell } = await import("electron");
 
 // #1616 loopback trust boundary: a fresh per-launch credential shared only
 // with the processes this shell spawns. The server rejects /api requests
@@ -32,6 +33,7 @@ const { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell } = awa
 // — the renderer gets it injected at the network layer, not exposed to page JS.
 const loopbackToken = randomBytes(32).toString("hex");
 const loopbackHeaders = { "X-Loopback-Token": loopbackToken };
+const desktopCredentialToken = randomBytes(32).toString("hex");
 
 const smokeMode = process.argv.includes("--smoke") || process.env.MYAGENTTOOL_ELECTRON_SMOKE === "1";
 const host = "127.0.0.1";
@@ -107,6 +109,7 @@ async function startApp() {
     SERVER_HOST: host,
     SERVER_PORT: String(serverPort),
     MYAGENT_LOOPBACK_TOKEN: loopbackToken,
+    MYAGENT_DESKTOP_CREDENTIAL_TOKEN: desktopCredentialToken,
     MYAGENTTOOL_STATE_PATH: join(app.getPath("userData"), "state", "local-demo-state.json"),
     MYAGENTTOOL_PROJECT_PATH: process.env.MYAGENTTOOL_PROJECT_PATH ?? app.getPath("documents"),
     // The desktop product exposes reviewed, user-initiated send and folder
@@ -251,6 +254,19 @@ function createMainWindow(url, serverUrl) {
     verifySendCredential: async (credential) => {
       const module = await import(pathToFileURL(join(paths.runtimeRoot, "tools", "mail-mcp", "src", "send-163.mjs")).href);
       return module.verify163SendCredential(credential);
+    },
+  });
+  registerSshHostCredentialConnector({
+    ipcMain,
+    safeStorage,
+    credentialRoot: join(app.getPath("appData"), "myagenttool"),
+    requestServer: async (method, path, body) => {
+      const response = await fetch(`${serverUrl}${path}`, {
+        method,
+        headers: { ...loopbackHeaders, "X-Desktop-Credential-Token": desktopCredentialToken, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new Error(`${method} ${path} failed.`);
     },
   });
   registerMailAttachmentHandler({

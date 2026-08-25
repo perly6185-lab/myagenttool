@@ -56,6 +56,7 @@ export function MySettingsDialog() {
   const zh = i18n.language.startsWith("zh");
   const sessionUser = useSessionUser();
   const canManage = canManageProfessionalSettings(sessionUser?.role);
+  const professionalMode = useUiStore((state) => state.experienceMode) === "professional";
   const section = useUiStore((state) => state.section);
   const dialogOpen = useUiStore((state) => state.settingsDialogOpen);
   const setDialogOpen = useUiStore((state) => state.setSettingsDialogOpen);
@@ -76,9 +77,10 @@ export function MySettingsDialog() {
   const categories = useMemo(() => MY_SETTINGS_CATEGORIES.map((category) => ({
     ...category,
     pages: category.sections
+      .filter((key) => (key !== "myHosts") || professionalMode)
       .filter((key) => canDiscoverProfessionalPage(key, sessionUser?.role))
       .map((key) => pageRegistration(key)),
-  })).filter((category) => category.pages.length), [sessionUser?.role]);
+  })).filter((category) => category.pages.length), [professionalMode, sessionUser?.role]);
 
   const searchablePages = useMemo(() => categories.flatMap((category) => category.pages.map((page) => ({
     category: category.key,

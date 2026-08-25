@@ -30,6 +30,7 @@ describe("page ownership registry (#1505)", () => {
   it("assigns configuration to Settings and execution records to Trace", () => {
     expect(pageRegistration("applications")).toMatchObject({ surface: "settings", authority: "manage" });
     expect(pageRegistration("channels")).toMatchObject({ surface: "settings", authority: "manage" });
+    expect(pageRegistration("myHosts")).toMatchObject({ surface: "settings", authority: "manage" });
     expect(pageRegistration("invocations")).toMatchObject({ surface: "trace", authority: "audit" });
     expect(pageRegistration("audit")).toMatchObject({ surface: "trace", authority: "audit" });
   });
