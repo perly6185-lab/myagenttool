@@ -105,6 +105,25 @@ describe("MySiteView", () => {
     expect(screen.getByText("/ · Page")).toBeTruthy();
   });
 
+  it("tells an ordinary user when a saved LAN domain still needs HTTPS setup", async () => {
+    const lanSite: Site = {
+      ...starterSite,
+      deploymentTarget: { ...starterSite.deploymentTarget!, kind: "ssh_static", displayName: "My server" },
+      domainTlsBinding: {
+        hostname: "lan.mytoolagent.com", accessMode: "private_lan", status: "setup",
+        lastVerifiedAt: null, renewAfter: null, notAfter: null,
+      },
+    };
+    vi.mocked(siteApi.list).mockResolvedValue({ sites: [lanSite], count: 1 });
+    renderView();
+
+    expect(await screen.findByText("Website domain saved; HTTPS is not finished yet")).toBeTruthy();
+    expect(screen.getByText("Private LAN")).toBeTruthy();
+    expect(screen.getByText(/Visitors can use HTTPS after certificate issuance/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Continue setup" }));
+    expect(useUiStore.getState().experienceMode).toBe("professional");
+  });
+
   it("lets an ordinary user create a safe second-language draft from the content list", async () => {
     const source = {
       ...starterSite.entries[0], locale: "en-US" as const, translationOf: null,

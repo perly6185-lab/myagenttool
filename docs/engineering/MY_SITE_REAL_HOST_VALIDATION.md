@@ -126,6 +126,6 @@
 
 ## 6. 当前阻塞与完成定义
 
-当前 A、B 和内网 HTTP 发布/恢复均已完成，独立 AliDNS 凭据连接器及项目入口也已实现。C–E 的执行前置是：用户创建并在该入口安全保存 AliDNS 最小权限 RAM AccessKey；项目继续实现只读权限验证、ACME DNS-01、`tls_certificate` 范围和固定 Nginx 重载 profile。主机 443 当前仍为空闲，尚未做任何变更。
+当前 A、B 和内网 HTTP 发布/恢复均已完成，独立 AliDNS 凭据连接器、`SiteDomainTlsBinding` 模型、公网/局域网访问状态入口，以及绑定已验证私网地址的约束也已实现。C–E 的执行前置是：用户创建并在该入口安全保存 AliDNS 最小权限 RAM AccessKey；项目继续实现只读权限验证、ACME DNS-01、签发执行时的地址重新解析固定与 SNI 核验、`tls_certificate` 范围和固定 Nginx 重载 profile。主机 443 当前仍为空闲，尚未做任何变更。
 
 首台验证主机现在可以标记为“内网真实主机 HTTP 验收通过”。C–E 与回归矩阵通过后标记为“内网可信 HTTPS 生产协议验收完成”；公网开放、备案和公网可达性是另一项独立决策，不作为本轮内网验收条件。

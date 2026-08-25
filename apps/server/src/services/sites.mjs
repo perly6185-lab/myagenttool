@@ -15,6 +15,8 @@ import {
   siteRevisionIdPrefix,
   siteDeploymentTargetIdPrefix,
   siteAssetIdPrefix,
+  siteDomainTlsBindingIdPrefix,
+  siteDomainTlsAccessModes,
 } from "@myagenttool/protocol/site";
 import { LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
@@ -28,11 +30,13 @@ import {
 } from "./site-deployment-adapters.mjs";
 import { createEnvironmentCredentialResolver } from "./site-credential-resolver.mjs";
 import { createSiteAssetStorage, readBoundedSiteAssetBody, safeSiteAssetName } from "./site-asset-storage.mjs";
+import { classifySshAddress } from "./ssh-host-connector.mjs";
 
 const BLOCK_TYPES = new Set(siteBlockTypes);
 const ENTRY_TYPES = new Set(siteEntryTypes);
 const ENTRY_STATUSES = new Set(siteEntryStatuses);
 const DEPLOYMENT_KINDS = new Set(siteDeploymentKinds);
+const DOMAIN_TLS_ACCESS_MODES = new Set(siteDomainTlsAccessModes);
 const SAFE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SAFE_OSS_BUCKET = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 const SAFE_OSS_REGION = /^oss-[a-z0-9]+(?:-[a-z0-9]+)+$/;
@@ -207,7 +211,7 @@ export function createSiteService({
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   const assetStorage = createSiteAssetStorage({ root: assetRoot });
-  for (const key of ["sites", "siteEntries", "siteEntryRevisions", "sitePublicationPlans", "sitePublications", "siteDeploymentTargets", "siteAssets"]) {
+  for (const key of ["sites", "siteEntries", "siteEntryRevisions", "sitePublicationPlans", "sitePublications", "siteDeploymentTargets", "siteDomainTlsBindings", "siteAssets"]) {
     state[key] ??= [];
   }
   const activeDeploymentAdapters = { ...deploymentAdapters };
@@ -236,6 +240,39 @@ export function createSiteService({
 
   function targetFor(site) {
     return state.siteDeploymentTargets.find((target) => target.siteId === site.id && target.ownerTeamId === site.ownerTeamId && target.status !== "disabled") ?? null;
+  }
+
+  function domainTlsFor(site) {
+    return state.siteDomainTlsBindings.find((binding) => binding.siteId === site.id && binding.ownerTeamId === site.ownerTeamId && binding.status !== "disabled") ?? null;
+  }
+
+  function domainTlsView(binding, { professional = false } = {}) {
+    if (!binding) return null;
+    const ordinary = {
+      hostname: binding.hostname,
+      accessMode: binding.accessMode,
+      status: binding.status,
+      lastVerifiedAt: binding.lastVerifiedAt,
+      renewAfter: binding.renewAfter,
+      notAfter: binding.notAfter,
+    };
+    return professional ? {
+      ...ordinary,
+      id: binding.id,
+      deploymentTargetId: binding.deploymentTargetId,
+      dnsProvider: binding.dnsProvider,
+      dnsCredentialRef: binding.dnsCredentialRef,
+      challenge: binding.challenge,
+      certificateScopeId: binding.certificateScopeId,
+      activationProfileId: binding.activationProfileId,
+      certificateFingerprint: binding.certificateFingerprint,
+      certificateIssuer: binding.certificateIssuer,
+      certificateSans: binding.certificateSans,
+      lastFailure: binding.lastFailure,
+      revision: binding.revision,
+      createdAt: binding.createdAt,
+      updatedAt: binding.updatedAt,
+    } : ordinary;
   }
 
   function assetsFor(site) {
@@ -344,6 +381,7 @@ export function createSiteService({
           lastError: target.lastError ?? null,
         } : {}),
       } : null,
+      domainTlsBinding: domainTlsView(domainTlsFor(site), { professional }),
     };
   }
 
@@ -1113,14 +1151,109 @@ export function createSiteService({
     if (kind === "ssh_static" && !normalizedDomain) return { ok: false, status: 400, body: { error: "site_deployment_domain_required" } };
     const storedCredentialRef = ["cloudflare_pages", "aliyun_oss_cdn"].includes(kind) ? normalizedCredentialRef : null;
     const timestamp = now();
-    runTx(() => Object.assign(target, {
-      kind, displayName: boundedText(displayName, 120) || target.displayName, credentialRef: storedCredentialRef,
-      remoteProjectRef: boundedText(remoteProjectRef, 300) || null, region: boundedText(region, 100) || null,
-      customDomain: normalizedDomain, capabilities: siteDeploymentProviderCapabilities[kind],
-      status: kind === "local_directory" ? "ready" : "setup", lastVerifiedAt: kind === "local_directory" ? timestamp : null,
-      verification: null, lastError: null, revision: target.revision + 1, updatedAt: timestamp,
-    }));
+    const previousRemoteProjectRef = target.remoteProjectRef ?? null;
+    const binding = domainTlsFor(site);
+    runTx(() => {
+      Object.assign(target, {
+        kind, displayName: boundedText(displayName, 120) || target.displayName, credentialRef: storedCredentialRef,
+        remoteProjectRef: boundedText(remoteProjectRef, 300) || null, region: boundedText(region, 100) || null,
+        customDomain: normalizedDomain, capabilities: siteDeploymentProviderCapabilities[kind],
+        status: kind === "local_directory" ? "ready" : "setup", lastVerifiedAt: kind === "local_directory" ? timestamp : null,
+        verification: null, lastError: null, revision: target.revision + 1, updatedAt: timestamp,
+      });
+      if (binding && (kind !== "ssh_static" || binding.hostname !== normalizedDomain || previousRemoteProjectRef !== target.remoteProjectRef)) {
+        Object.assign(binding, kind === "ssh_static" ? {
+          status: "needs_attention",
+          lastFailure: { error: "site_domain_target_changed", message: "The server publishing target changed. Review and verify domain and HTTPS setup again.", retryable: false },
+          lastVerifiedAt: null,
+          revision: binding.revision + 1,
+          updatedAt: timestamp,
+        } : {
+          status: "disabled",
+          lastFailure: null,
+          lastVerifiedAt: null,
+          revision: binding.revision + 1,
+          updatedAt: timestamp,
+        });
+      }
+    });
     return { ok: true, status: 200, body: { site: siteView(site, { professional: true }) } };
+  }
+
+  function configureDomainTlsBinding({ siteId, expectedRevision, hostname, accessMode = "public" } = {}, actor = null) {
+    const site = findSite(siteId, actor);
+    if (!site) return notFound();
+    const target = targetFor(site);
+    if (!target || target.kind !== "ssh_static") return { ok: false, status: 409, body: { error: "site_domain_ssh_target_required" } };
+    const current = domainTlsFor(site);
+    const expected = current?.revision ?? 0;
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required", currentRevision: expected } };
+    if (expectedRevision !== expected) return { ok: false, status: 409, body: { error: "site_domain_tls_revision_conflict", currentRevision: expected } };
+    const normalizedHostname = normalizeCustomDomain(hostname);
+    if (!normalizedHostname) return { ok: false, status: 400, body: { error: "site_domain_hostname_invalid" } };
+    if (normalizedHostname !== target.customDomain) return { ok: false, status: 409, body: { error: "site_domain_target_hostname_mismatch" } };
+    if (!DOMAIN_TLS_ACCESS_MODES.has(accessMode)) return { ok: false, status: 400, body: { error: "site_domain_access_mode_invalid" } };
+    const scope = state.hostFileScopes?.find((candidate) => candidate.id === target.remoteProjectRef && candidate.ownerTeamId === site.ownerTeamId) ?? null;
+    const host = scope ? state.sshTargets?.find((candidate) => candidate.id === scope.sshTargetId && candidate.ownerTeamId === site.ownerTeamId) ?? null : null;
+    if (!scope || scope.status !== "ready" || scope.purpose !== "site_publish" || !host || host.connectionStatus !== "ready") {
+      return { ok: false, status: 409, body: { error: "site_domain_ssh_target_not_ready" } };
+    }
+    if (accessMode === "private_lan" && host.networkPolicy !== "allow_private_network") {
+      return { ok: false, status: 409, body: { error: "site_domain_private_network_not_allowed" } };
+    }
+    if (accessMode === "private_lan" && classifySshAddress(scope.lastResolvedAddress) !== "private") {
+      return { ok: false, status: 409, body: { error: "site_domain_private_address_required" } };
+    }
+    if (current && current.hostname === normalizedHostname && current.accessMode === accessMode && current.deploymentTargetId === target.id) {
+      return { ok: true, status: 200, body: { site: siteView(site, { professional: true }), binding: domainTlsView(current, { professional: true }) } };
+    }
+    const timestamp = now();
+    let binding;
+    runTx(() => {
+      if (current) {
+        Object.assign(current, {
+          deploymentTargetId: target.id,
+          hostname: normalizedHostname,
+          accessMode,
+          status: current.status === "active" ? "needs_attention" : "setup",
+          lastVerifiedAt: null,
+          lastFailure: current.status === "active"
+            ? { error: "site_domain_binding_changed", message: "Domain or access mode changed. Issue and verify a matching certificate before continuing.", retryable: false }
+            : null,
+          revision: current.revision + 1,
+          updatedAt: timestamp,
+        });
+        binding = current;
+        return;
+      }
+      binding = {
+        id: nextId(siteDomainTlsBindingIdPrefix),
+        ownerTeamId: site.ownerTeamId,
+        siteId: site.id,
+        deploymentTargetId: target.id,
+        hostname: normalizedHostname,
+        accessMode,
+        dnsProvider: "alidns",
+        dnsCredentialRef: "credential://alidns/main",
+        challenge: "dns-01",
+        certificateScopeId: null,
+        activationProfileId: null,
+        status: "setup",
+        certificateFingerprint: null,
+        certificateIssuer: null,
+        certificateSans: [],
+        lastVerifiedAt: null,
+        renewAfter: null,
+        notAfter: null,
+        lastFailure: null,
+        revision: 1,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      state.siteDomainTlsBindings.push(binding);
+      appendEvent({ invocationId: null, type: "site_domain_tls_configured", level: "info", message: `Domain and HTTPS setup was configured for site ${site.id}.`, data: { siteId: site.id, bindingId: binding.id, deploymentTargetId: target.id, accessMode, actorTeamId: site.ownerTeamId } });
+    });
+    return { ok: true, status: current ? 200 : 201, body: { site: siteView(site, { professional: true }), binding: domainTlsView(binding, { professional: true }) } };
   }
 
   async function verifyDeploymentTarget({ siteId } = {}, actor = null) {
@@ -1207,7 +1340,7 @@ export function createSiteService({
       }
     }
     runTx(() => {
-      for (const key of ["sites", "siteEntries", "siteEntryRevisions", "siteAssets", "sitePublicationPlans", "sitePublications", "siteDeploymentTargets"]) {
+      for (const key of ["sites", "siteEntries", "siteEntryRevisions", "siteAssets", "sitePublicationPlans", "sitePublications", "siteDeploymentTargets", "siteDomainTlsBindings"]) {
         state[key] = state[key].filter((row) => row.ownerTeamId !== ownerTeamId);
       }
     });
@@ -1243,6 +1376,7 @@ export function createSiteService({
     listDeploymentProviders,
     configureDeploymentTarget,
     verifyDeploymentTarget,
+    configureDomainTlsBinding,
     provisionPilotSandbox,
     purgePilotSandbox,
   };

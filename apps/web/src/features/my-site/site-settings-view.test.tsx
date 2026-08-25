@@ -11,6 +11,7 @@ import type { Site, SitePilotCampaign } from "./site-types";
 
 vi.mock("./site-api", () => ({ siteApi: {
   list: vi.fn(), get: vi.fn(), update: vi.fn(), providers: vi.fn(), publications: vi.fn(), assets: vi.fn(), configureTarget: vi.fn(), verifyTarget: vi.fn(), pilotSummary: vi.fn(),
+  configureDomainTls: vi.fn(),
   pilotCampaigns: vi.fn(), createPilotCampaign: vi.fn(), updatePilotCampaign: vi.fn(), deletePilotCampaign: vi.fn(), createPilotInvitation: vi.fn(),
 } }));
 vi.mock("../my-hosts/host-api", () => ({ hostApi: { publishScopes: vi.fn() } }));
@@ -169,6 +170,48 @@ it("selects a verified SSH publishing range without asking for another credentia
     kind: "ssh_static", remoteProjectRef: "hfs_1", customDomain: "www.example.com", credentialRef: null,
   })));
   expect(screen.getByText(/Point the web root to current/)).toBeTruthy();
+});
+
+it("registers a private-LAN HTTPS binding separately from the SSH publishing target", async () => {
+  const sshSite: Site = {
+    ...site,
+    deploymentTarget: {
+      ...site.deploymentTarget!, kind: "ssh_static", status: "ready", displayName: "My server", credentialRef: null,
+      remoteProjectRef: "hfs_1", customDomain: "lan.mytoolagent.com", revision: 3,
+    },
+    domainTlsBinding: null,
+  };
+  const withBinding: Site = {
+    ...sshSite,
+    domainTlsBinding: {
+      id: "stb_1", hostname: "lan.mytoolagent.com", accessMode: "private_lan", status: "setup",
+      lastVerifiedAt: null, renewAfter: null, notAfter: null, revision: 1, dnsProvider: "alidns",
+      dnsCredentialRef: "credential://alidns/main", challenge: "dns-01",
+    },
+  };
+  vi.mocked(siteApi.list).mockResolvedValue({ sites: [sshSite], count: 1 });
+  vi.mocked(siteApi.get).mockResolvedValue({ site: sshSite });
+  vi.mocked(siteApi.providers).mockResolvedValue({ providers: [{
+    kind: "ssh_static", ordinaryLabel: "My server", productionReady: true, professionalOnly: true,
+    connectionKind: "host_file_scope_reference", setupFlow: [], capabilities: {},
+  }] });
+  vi.mocked(hostApi.publishScopes).mockResolvedValue({ scopes: [{
+    id: "hfs_1", sshTargetId: "ssh_1", label: "Website files", purpose: "site_publish", rootPath: "/srv/www/site", resolvedRootPath: "/srv/www/site",
+    permissions: ["list", "upload", "download"], status: "ready", revision: 1, lastVerifiedAt: "2026-08-24T00:00:00.000Z",
+    host: { id: "ssh_1", name: "Production host", host: "10.10.10.222", connectionStatus: "ready", capabilities: { sftp: true, posixRename: true, symlink: true } },
+  }], count: 1 });
+  vi.mocked(siteApi.configureDomainTls).mockResolvedValue({ site: withBinding, binding: withBinding.domainTlsBinding! });
+  renderView();
+
+  expect(await screen.findByText("Domain and HTTPS")).toBeTruthy();
+  expect((screen.getByLabelText("Access scope") as HTMLSelectElement).value).toBe("public");
+  fireEvent.change(screen.getByLabelText("Access scope"), { target: { value: "private_lan" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save domain setup" }));
+
+  await waitFor(() => expect(siteApi.configureDomainTls).toHaveBeenCalledWith("sit_1", {
+    expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "private_lan",
+  }));
+  expect(await screen.findByText("Certificate setup pending")).toBeTruthy();
 });
 
 it("stores and removes an AliDNS AccessKey independently for SSH domain HTTPS", async () => {

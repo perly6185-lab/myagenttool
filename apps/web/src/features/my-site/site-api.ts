@@ -6,6 +6,7 @@ import type {
   SiteBlock,
   SiteDeploymentKind,
   SiteDeploymentProvider,
+  SiteDomainTlsAccessMode,
   SiteEntry,
   SiteEntryStatus,
   SiteEntryType,
@@ -86,6 +87,8 @@ export const siteApi = {
   }) => siteRequest<{ site: Site }>("PUT", `/api/sites/${encodeURIComponent(siteId)}/deployment-target`, input),
   verifyTarget: (siteId: string) =>
     siteRequest<{ site: Site; verification: Record<string, unknown> }>("POST", `/api/sites/${encodeURIComponent(siteId)}/deployment-target/verify`, {}, true, 60_000),
+  configureDomainTls: (siteId: string, input: { expectedRevision: number; hostname: string; accessMode: SiteDomainTlsAccessMode }) =>
+    siteRequest<{ site: Site; binding: NonNullable<Site["domainTlsBinding"]> }>("PUT", `/api/sites/${encodeURIComponent(siteId)}/domain-tls-binding`, input),
   activePilotSession: (invitationCode?: string) => request<{ session: SitePilotSession | null; invitationStatus: SitePilotInvitation["status"] | null; assignedScenario: SitePilotScenario | null; workspace?: SitePilotWorkspace | null }>("GET", `/api/site-pilot/sessions/active${invitationCode ? `?code=${encodeURIComponent(invitationCode)}` : ""}`),
   startPilotSession: (scenario: SitePilotScenario, campaignCode?: string) =>
     request<{ session: SitePilotSession }>("POST", "/api/site-pilot/sessions", { scenario, consent: true, ...(campaignCode ? { campaignCode } : {}) }),

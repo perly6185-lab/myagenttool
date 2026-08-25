@@ -7827,6 +7827,7 @@ export function createServerRuntimeServices({
     listSiteDeploymentProviders: siteService.listDeploymentProviders,
     configureSiteDeploymentTarget: siteService.configureDeploymentTarget,
     verifySiteDeploymentTarget: siteService.verifyDeploymentTarget,
+    configureSiteDomainTlsBinding: siteService.configureDomainTlsBinding,
     startSitePilotSession: sitePilotService.startSession,
     getActiveSitePilotSession: sitePilotService.getActiveSession,
     updateSitePilotSession: sitePilotService.updateSession,

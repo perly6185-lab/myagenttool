@@ -191,6 +191,16 @@ test("publication confirmation is explicit and provider discovery reports implem
   assert.equal(verified.body.site.deploymentTarget.status, "ready");
 });
 
+test("domain and HTTPS binding endpoint fails closed until an SSH publishing target exists", async () => {
+  const list = await call("/api/sites");
+  const configured = await call(`/api/sites/${list.body.sites[0].id}/domain-tls-binding`, {
+    method: "PUT",
+    body: { expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "private_lan" },
+  });
+  assert.equal(configured.status, 409);
+  assert.equal(configured.body.error, "site_domain_ssh_target_required");
+});
+
 test("site image HTTP endpoints accept bounded binary uploads and serve managed content", async () => {
   const list = await call("/api/sites");
   const site = list.body.sites[0];

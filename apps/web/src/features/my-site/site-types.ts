@@ -66,6 +66,32 @@ export interface SiteDeploymentTarget {
   lastError?: { error: string; message: string; retryable?: boolean } | null;
 }
 
+export type SiteDomainTlsAccessMode = "public" | "private_lan";
+export type SiteDomainTlsStatus = "setup" | "dns_ready" | "issuing" | "deploying" | "active" | "renewal_due" | "needs_attention" | "disabled";
+
+export interface SiteDomainTlsBinding {
+  hostname: string;
+  accessMode: SiteDomainTlsAccessMode;
+  status: SiteDomainTlsStatus;
+  lastVerifiedAt: string | null;
+  renewAfter: string | null;
+  notAfter: string | null;
+  id?: string;
+  deploymentTargetId?: string;
+  dnsProvider?: "alidns";
+  dnsCredentialRef?: "credential://alidns/main";
+  challenge?: "dns-01";
+  certificateScopeId?: string | null;
+  activationProfileId?: string | null;
+  certificateFingerprint?: string | null;
+  certificateIssuer?: string | null;
+  certificateSans?: string[];
+  lastFailure?: { error: string; message: string; retryable?: boolean } | null;
+  revision?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface SitePublication {
   id: string;
   version: number;
@@ -118,6 +144,7 @@ export interface Site {
   assetCount?: number;
   activePublication: SitePublication | null;
   deploymentTarget: SiteDeploymentTarget | null;
+  domainTlsBinding?: SiteDomainTlsBinding | null;
 }
 
 export interface PublicationPlan {

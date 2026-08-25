@@ -610,6 +610,7 @@ export function createHttpServer({
   listSiteDeploymentProviders,
   configureSiteDeploymentTarget,
   verifySiteDeploymentTarget,
+  configureSiteDomainTlsBinding,
   startSitePilotSession,
   getActiveSitePilotSession,
   updateSitePilotSession,
@@ -1315,6 +1316,7 @@ export function createHttpServer({
         listDeploymentProviders: listSiteDeploymentProviders,
         configureDeploymentTarget: configureSiteDeploymentTarget,
         verifyDeploymentTarget: verifySiteDeploymentTarget,
+        configureDomainTlsBinding: configureSiteDomainTlsBinding,
       })) {
         return;
       }

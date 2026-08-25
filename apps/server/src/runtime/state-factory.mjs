@@ -271,6 +271,7 @@ export function createServerState({ defaultProjectPath, now }) {
     sitePublicationPlans: [],
     sitePublications: [],
     siteDeploymentTargets: [],
+    siteDomainTlsBindings: [],
     sitePilotSessions: [],
     sitePilotCampaigns: [],
     sitePilotInvitations: [],

@@ -7,6 +7,7 @@ export async function handleSiteRoutes({
   createPublicationPlan, getPublicationPlan, confirmPublicationPlan, listPublications,
   createRollbackPlan, confirmRollbackPlan,
   listDeploymentProviders, configureDeploymentTarget, verifyDeploymentTarget,
+  configureDomainTlsBinding,
 }) {
   const siteRequest = url.pathname === "/api/site-deployment-providers" || url.pathname.startsWith("/api/sites");
   if (!siteRequest) return false;
@@ -172,6 +173,13 @@ export async function handleSiteRoutes({
   const targetVerifyMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/deployment-target\/verify$/);
   if (targetVerifyMatch && req.method === "POST") {
     const result = await verifyDeploymentTarget({ siteId: decodeURIComponent(targetVerifyMatch[1]) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const domainTlsMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/domain-tls-binding$/);
+  if (domainTlsMatch && req.method === "PUT") {
+    const result = configureDomainTlsBinding({ siteId: decodeURIComponent(domainTlsMatch[1]), ...(await readJson(req)) }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }

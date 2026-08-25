@@ -170,6 +170,7 @@ export const persistedArrayKeys = [
   "sitePublicationPlans",
   "sitePublications",
   "siteDeploymentTargets",
+  "siteDomainTlsBindings",
   "sitePilotSessions",
   "sitePilotCampaigns",
   "sitePilotInvitations",

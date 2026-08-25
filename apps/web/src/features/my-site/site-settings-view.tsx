@@ -14,7 +14,7 @@ import { hostApi } from "../my-hosts/host-api";
 import { siteApi } from "./site-api";
 import { AliDnsCredentialField, AliyunOssCredentialField, CloudflareCredentialField } from "./site-credential-fields";
 import { clearGoLiveHandoff, readGoLiveHandoff, recommendedDeploymentKind, type GoLiveHandoff } from "./site-experience-model";
-import type { Site, SiteDeploymentKind, SiteDeploymentProvider, SitePilotCampaign, SitePilotScenario, SitePilotSummary, SitePublication } from "./site-types";
+import type { Site, SiteDeploymentKind, SiteDeploymentProvider, SiteDomainTlsAccessMode, SitePilotCampaign, SitePilotScenario, SitePilotSummary, SitePublication } from "./site-types";
 
 function message(error: unknown, zh: boolean) {
   if (error instanceof ApiError && error.code === "site_deployment_busy") return zh ? "网站正在发布或检查连接，请等待当前操作完成后再修改设置。" : "A publication or connection check is running. Wait for it to finish before changing settings.";
@@ -23,6 +23,10 @@ function message(error: unknown, zh: boolean) {
   if (error instanceof ApiError && error.code === "site_deployment_ssh_atomic_capability_required") return zh ? "这台主机不支持安全的原子切换，不能用于官网发布。" : "This host cannot perform the atomic switch required for safe site publishing.";
   if (error instanceof ApiError && error.code === "site_deployment_healthcheck_failed") return zh ? "服务器文件已处理，但 HTTPS 访问检查失败；系统已恢复原来的线上版本。请检查域名和 Web 服务。" : "The server files were processed, but the HTTPS check failed. The previous live version was restored. Check the domain and web server.";
   if (error instanceof ApiError && error.code === "site_deployment_content_mismatch") return zh ? "线上首页与本次发布内容不一致，系统没有保留错误版本为线上版本。" : "The public homepage did not match this release, so the incorrect version was not kept live.";
+  if (error instanceof ApiError && error.code === "site_domain_private_network_not_allowed") return zh ? "这台主机尚未允许私网访问，请先到“我的主机”确认私网连接风险。" : "Private-network access is not enabled for this host. Confirm the private-network risk in My hosts first.";
+  if (error instanceof ApiError && error.code === "site_domain_private_address_required") return zh ? "当前发布范围没有经过固定私网地址验证，请到“我的主机”重新验证该目录。" : "The publishing range has no verified fixed private address. Reverify the directory in My hosts.";
+  if (error instanceof ApiError && error.code === "site_domain_target_hostname_mismatch") return zh ? "网站域名与当前发布目标不一致，请先保存发布目标后再继续。" : "The website domain does not match the current publishing target. Save the target before continuing.";
+  if (error instanceof ApiError && error.code === "site_domain_ssh_target_not_ready") return zh ? "当前服务器或站点目录尚未通过连接检查。" : "The current server or site directory has not passed its connection checks.";
   if (error instanceof ApiError && error.status === 409) return zh ? "设置已发生变化，请刷新后重试。" : "Settings changed elsewhere. Refresh and try again.";
   return error instanceof Error ? error.message : (zh ? "设置未能保存。" : "Settings could not be saved.");
 }
@@ -75,12 +79,47 @@ export function SiteSettingsView() {
     <PilotCampaignManager campaigns={pilotCampaigns.data?.campaigns ?? []} loading={pilotCampaigns.isLoading} failed={Boolean(pilotCampaigns.error)} zh={zh} />
     <PilotMetricsCard summary={pilotSummary.data?.summary ?? null} loading={pilotSummary.isLoading} failed={Boolean(pilotSummary.error)} zh={zh} />
     <DeploymentTargetEditor site={site.data.site} providers={providers.data?.providers ?? []} zh={zh} copy={copy} handoff={goLiveHandoff} />
+    {site.data.site.deploymentTarget?.kind === "ssh_static" ? <DomainTlsSettingsCard site={site.data.site} zh={zh} /> : null}
     <div className="grid gap-4 lg:grid-cols-2">
       <Card><CardHeader><CardTitle>{copy.capabilities}</CardTitle></CardHeader><CardContent className="space-y-3">{(providers.data?.providers ?? []).map((provider) => <ProviderRow key={provider.kind} provider={provider} copy={copy} />)}</CardContent></Card>
       <Card><CardHeader><CardTitle>{copy.releases}</CardTitle></CardHeader><CardContent>{publications.data?.publications.length ? <div className="divide-y divide-border">{publications.data.publications.map((release) => <ReleaseRow key={release.id} release={release} active={release.id === site.data.site.activePublicationId} zh={zh} liveLabel={copy.live} />)}</div> : <p className="text-sm text-muted-foreground">{copy.noReleases}</p>}</CardContent></Card>
       <Card className="lg:col-span-2"><CardHeader><CardTitle>{copy.assets}</CardTitle><p className="text-sm text-muted-foreground">{copy.storage}: {formatBytes(assets.data?.usage.bytes ?? 0)} / {formatBytes(assets.data?.usage.limitBytes ?? 0)}</p></CardHeader><CardContent>{assets.data?.assets.length ? <div className="divide-y divide-border">{assets.data.assets.map((asset) => <div key={asset.id} className="flex items-center gap-3 py-3"><span className="grid size-9 place-items-center rounded-lg bg-muted"><Image className="size-4 text-muted-foreground" /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{asset.name}</span><span className="block truncate font-mono text-xs text-muted-foreground">{asset.mimeType} · {formatBytes(asset.size)} · {asset.sha256?.slice(0, 16) ?? "—"}</span></span><StatusBadge tone={asset.status === "ready" ? "success" : "warning"}>{asset.status}</StatusBadge></div>)}</div> : <p className="text-sm text-muted-foreground">{copy.noAssets}</p>}</CardContent></Card>
     </div>
   </div>;
+}
+
+function DomainTlsSettingsCard({ site, zh }: { site: Site; zh: boolean }) {
+  const queryClient = useQueryClient();
+  const binding = site.domainTlsBinding ?? null;
+  const hostname = site.deploymentTarget?.customDomain ?? "";
+  const [accessMode, setAccessMode] = useState<SiteDomainTlsAccessMode>(binding?.accessMode ?? "public");
+  useEffect(() => setAccessMode(binding?.accessMode ?? "public"), [binding?.accessMode]);
+  const mutation = useMutation({
+    mutationFn: () => siteApi.configureDomainTls(site.id, { expectedRevision: binding?.revision ?? 0, hostname, accessMode }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["my-site-professional", site.id], { site: data.site });
+      void queryClient.invalidateQueries({ queryKey: ["my-site"] });
+    },
+  });
+  const statusLabel = binding?.status === "active"
+    ? (zh ? "HTTPS 已启用" : "HTTPS active")
+    : binding?.status === "renewal_due"
+      ? (zh ? "证书即将到期" : "Certificate renewal due")
+      : binding?.status === "needs_attention"
+        ? (zh ? "需要重新检查" : "Needs attention")
+        : (zh ? "等待证书配置" : "Certificate setup pending");
+  const tone = binding?.status === "active" ? "success" : binding?.status === "needs_attention" || binding?.status === "renewal_due" ? "warning" : "neutral";
+  return <Card>
+    <CardHeader><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2"><ShieldCheck className="size-5 text-primary" /><CardTitle>{zh ? "域名与 HTTPS" : "Domain and HTTPS"}</CardTitle></div><StatusBadge tone={tone}>{statusLabel}</StatusBadge></div><p className="text-sm text-muted-foreground">{zh ? "先登记网站的访问方式。证书签发和服务器部署将在后续步骤中单独确认，不会因保存设置自动改动服务器。" : "Register how visitors reach the site first. Certificate issuance and server deployment are confirmed separately and saving this form does not change the server."}</p></CardHeader>
+    <CardContent className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2"><SettingField label={zh ? "网站域名" : "Website domain"}><Input readOnly value={hostname} /></SettingField><SettingField label={zh ? "访问范围" : "Access scope"}><Select aria-label={zh ? "访问范围" : "Access scope"} value={accessMode} onChange={(event) => setAccessMode(event.target.value as SiteDomainTlsAccessMode)}><option value="public">{zh ? "公网访问" : "Public internet"}</option><option value="private_lan">{zh ? "仅当前局域网" : "Private LAN only"}</option></Select></SettingField></div>
+      <div className="grid gap-2 rounded-lg border border-border p-3 text-sm sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">{zh ? "DNS 服务" : "DNS provider"}</p><p className="mt-1 font-medium">AliDNS</p></div><div><p className="text-xs text-muted-foreground">{zh ? "验证方式" : "Validation"}</p><p className="mt-1 font-medium">DNS-01</p></div><div><p className="text-xs text-muted-foreground">{zh ? "证书续期" : "Renewal"}</p><p className="mt-1 font-medium">{zh ? "尚未启用" : "Not enabled yet"}</p></div></div>
+      {accessMode === "private_lan" ? <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "局域网模式不要求公网 A/AAAA 记录，但仍会使用该域名完成完整 HTTPS 证书校验。主机必须已明确允许私网访问。" : "LAN mode does not require public A/AAAA records, but full HTTPS certificate validation still uses this hostname. The host must explicitly allow private-network access."}</p> : null}
+      {binding?.lastFailure ? <p role="alert" className="rounded-lg bg-warning/10 p-3 text-sm text-warning">{zh ? "域名或服务器配置发生变化，请重新完成后续 HTTPS 检查。" : "The domain or server target changed. Complete the HTTPS checks again."}</p> : null}
+      {mutation.error ? <p role="alert" className="text-sm text-destructive">{message(mutation.error, zh)}</p> : null}
+      <div className="flex justify-end"><Button disabled={!hostname || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{binding ? (zh ? "更新域名设置" : "Update domain setup") : (zh ? "保存域名设置" : "Save domain setup")}</Button></div>
+    </CardContent>
+  </Card>;
 }
 
 function ReleaseRow({ release, active, zh, liveLabel }: { release: SitePublication; active: boolean; zh: boolean; liveLabel: string }) {

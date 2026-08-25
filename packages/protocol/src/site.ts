@@ -5,6 +5,7 @@ export type SiteEntryId = `sen_${string}`;
 export type SiteRevisionId = `srv_${string}`;
 export type SitePublicationId = `spb_${string}`;
 export type SiteAssetId = `sat_${string}`;
+export type SiteDomainTlsBindingId = `stb_${string}`;
 export type SiteEntryType = "page" | "article" | "case";
 export type SiteEntryStatus = "draft" | "ready" | "published" | "archived";
 export type SiteBlockType =
@@ -37,6 +38,36 @@ export interface Site {
   updatedAt: IsoDateTime;
   createdBy: UserId;
   lastModifiedBy: UserId;
+}
+
+export type SiteDomainTlsAccessMode = "public" | "private_lan";
+export type SiteDomainTlsStatus =
+  | "setup" | "dns_ready" | "issuing" | "deploying" | "active"
+  | "renewal_due" | "needs_attention" | "disabled";
+
+export interface SiteDomainTlsBinding {
+  id: SiteDomainTlsBindingId;
+  siteId: SiteId;
+  ownerTeamId: TeamId;
+  deploymentTargetId: string;
+  hostname: string;
+  accessMode: SiteDomainTlsAccessMode;
+  dnsProvider: "alidns";
+  dnsCredentialRef: "credential://alidns/main";
+  challenge: "dns-01";
+  certificateScopeId: string | null;
+  activationProfileId: string | null;
+  status: SiteDomainTlsStatus;
+  certificateFingerprint: string | null;
+  certificateIssuer: string | null;
+  certificateSans: string[];
+  lastVerifiedAt: IsoDateTime | null;
+  renewAfter: IsoDateTime | null;
+  notAfter: IsoDateTime | null;
+  lastFailure: { error: string; message: string; retryable?: boolean } | null;
+  revision: number;
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
 }
 
 export interface SiteEntry {
