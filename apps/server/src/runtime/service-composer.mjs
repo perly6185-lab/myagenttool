@@ -205,6 +205,9 @@ import { createHostFileService } from "../services/host-files.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 import { createExternalIssueProviderClient } from "../services/external-issue-provider.mjs";
 import { createSiteCredentialVault } from "../services/site-credential-vault.mjs";
+import { createCloudflarePagesAdapter } from "../services/cloudflare-pages-adapter.mjs";
+import { createAliyunOssCdnAdapter } from "../services/aliyun-oss-cdn-adapter.mjs";
+import { createSshStaticSiteAdapter } from "../services/ssh-static-site-adapter.mjs";
 
 export { enrichAlertOwnership };
 
@@ -229,6 +232,9 @@ export function createServerRuntimeServices({
   ilinkCredentialStore = null,
   ilinkClientFactory = undefined,
   channelObjectConnectorAdapters = {},
+  // Integration-only seam for real-host acceptance. Production leaves this
+  // unset and receives the strict public-HTTPS SSH adapter from createSiteService.
+  siteSshAdapterFactory = null,
 }) {
   let idCounter = 1;
   let invocationService = null;
@@ -1022,6 +1028,9 @@ export function createServerRuntimeServices({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
   });
   const siteCredentialVault = createSiteCredentialVault();
+  const sshSiteAdapter = typeof siteSshAdapterFactory === "function"
+    ? siteSshAdapterFactory({ state, sshHostConnector, resolveCredential: siteCredentialVault.resolveCredential })
+    : createSshStaticSiteAdapter({ state, sshHostConnector, resolveCredential: siteCredentialVault.resolveCredential });
   const siteService = createSiteService({
     state,
     now,
@@ -1040,6 +1049,11 @@ export function createServerRuntimeServices({
         ? resolve(dirname(stateStorePath), "site-assets")
         : null,
     resolveCredential: siteCredentialVault.resolveCredential,
+    deploymentAdapters: {
+      cloudflare_pages: createCloudflarePagesAdapter(),
+      aliyun_oss_cdn: createAliyunOssCdnAdapter(),
+      ssh_static: sshSiteAdapter,
+    },
   });
   const sitePilotService = createSitePilotService({
     state,
