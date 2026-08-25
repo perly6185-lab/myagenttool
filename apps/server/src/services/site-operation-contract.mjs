@@ -142,7 +142,9 @@ function boundedJson(value, maxBytes, code) {
 }
 
 function redact(value) {
-  return String(value ?? "").replace(/(token|secret|password|authorization|cookie)\s*[:=]\s*\S+/gi, "$1=[redacted]");
+  return String(value ?? "")
+    .replace(/(["']?(?:token|secret|password|authorization|cookie)["']?\s*[:=]\s*)(["'])[^"'\r\n]*\2/gi, "$1$2[redacted]$2")
+    .replace(/(token|secret|password|authorization|cookie)\s*[:=]\s*\S+/gi, "$1=[redacted]");
 }
 
 function safeCode(value) {

@@ -721,7 +721,10 @@ test("one explicit creative intent creates independent material-backed tasks", a
   harness.bindTaskProject("proj_a");
   await harness.receive("https://example.com/atomic-content").dispatched;
 
-  const created = await harness.receive("基于这些资料写深度文章、做漫画和口播").dispatched;
+  const preview = await harness.receive("基于这些资料写深度文章、做漫画和口播").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  assert.equal(filed.length, 0);
+  const created = await harness.receive("确认执行").dispatched;
 
   assert.match(created.reply, /创建 3 个独立任务/);
   assert.match(created.reply, /可分别进行：文章创作、漫画、口播/);
@@ -799,7 +802,10 @@ test("a multi-intent coding-to-publication request creates one goal with typed d
   assert.match(question.reply, /文章发公众号，图片发小红书/);
   assert.equal(filed.length, 0);
 
-  const result = await harness.receive("文章发公众号，图片发小红书").dispatched;
+  const preview = await harness.receive("文章发公众号，图片发小红书").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  assert.equal(filed.length, 0);
+  const result = await harness.receive("确认执行").dispatched;
 
   assert.match(result.reply, /创建 8 个独立任务/);
   assert.match(result.reply, /2 个发布任务已建立/);
@@ -873,12 +879,128 @@ test("an ambiguous publishing destination is clarified before the goal is create
   assert.match(mappingQuestion.reply, /各自发布到哪里/);
   assert.equal(filed.length, 0);
 
-  const resolved = await harness.receive("文章发公众号，图片发小红书").dispatched;
+  const preview = await harness.receive("文章发公众号，图片发小红书").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  const resolved = await harness.receive("确认执行").dispatched;
   assert.match(resolved.reply, /创建 8 个独立任务/);
   assert.equal(filed.length, 8);
-  assert.equal(harness.state.channelConversations[0].pendingTaskPlanClarification, null);
+  assert.equal(harness.state.channelConversations[0].pendingTaskPlanClarification ?? null, null);
   assert.deepEqual(filed.filter((input) => input.taskKind === "content_publish")
     .map((input) => input.platformTarget.label), ["公众号", "小红书"]);
+});
+
+test("a vague professional request is clarified and the answer resumes one independent task", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return {
+        ok: true,
+        number: filed.length,
+        localRef: `LOCAL-${filed.length}`,
+        workItemId: `wi_professional_${filed.length}`,
+        autoRoute: input.autoRoute,
+        executionPreview: { previewReady: true, requiredFields: [] },
+      };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+
+  const question = await harness.receive("帮我处理一下这批合同").dispatched;
+  assert.equal(question.data.clarificationKind, "professional_action");
+  assert.match(question.reply, /希望我做什么/);
+  assert.equal(filed.length, 0);
+
+  const result = await harness.receive("审查条款风险").dispatched;
+  assert.match(result.reply, /创建 1 个独立任务/);
+  assert.deepEqual(filed.map((input) => input.taskKind), ["legal_contract_review"]);
+  assert.equal(harness.state.channelConversations[0].pendingTaskPlanClarification ?? null, null);
+});
+
+test("an explicitly named publication account is resolved before the task basket is confirmed", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return {
+        ok: true,
+        number: filed.length,
+        localRef: `LOCAL-${filed.length}`,
+        workItemId: `wi_account_${filed.length}`,
+        autoRoute: input.autoRoute,
+        executionPreview: { previewReady: true, requiredFields: [] },
+      };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  const application = (id, name, accountId) => ({
+    id, name, accountId, ownerTeamId: "team_local", status: "active",
+    capabilityFacades: ["draft_sync", "publish"].map((operation) => ({
+      id: `${id}_${operation}`,
+      directInvocation: true,
+      requiresApproval: true,
+      siteOperationContract: {
+        platformId: "wechat_official",
+        operation,
+        inputArtifactKinds: ["wechat_article_package"],
+        outputArtifactKinds: [`${operation}_receipt`],
+      },
+    })),
+  });
+  harness.state.applications.push(
+    application("app_personal", "个人公众号", "account_personal"),
+    application("app_company", "公司公众号", "account_company"),
+  );
+
+  const preview = await harness.receive("把现成文章发到公司的第二个公众号").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  assert.equal(preview.data.plannedTaskCount, 3);
+  assert.equal(filed.length, 0);
+  const result = await harness.receive("确认执行").dispatched;
+  assert.match(result.reply, /创建 3 个独立任务/);
+  assert.deepEqual(filed.map((input) => input.taskKind), ["platform_adaptation", "wechat_draft_sync", "content_publish"]);
+  assert.ok(filed.every((input) => input.platformTarget.applicationId === "app_company"));
+  assert.ok(filed.every((input) => input.platformTarget.accountId === "account_company"));
+  assert.equal(harness.state.channelConversations[0].pendingTaskPlanClarification ?? null, null);
+});
+
+test("publication account setup refreshes the pending choice and resumes the original request", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return { ok: true, number: filed.length, workItemId: `wi_refreshed_account_${filed.length}`, autoRoute: input.autoRoute, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  const application = (id, name, accountId) => ({
+    id, name, accountId, ownerTeamId: "team_local", status: "active",
+    capabilityFacades: ["draft_sync", "publish"].map((operation) => ({
+      id: `${id}_${operation}`, directInvocation: true, requiresApproval: true,
+      siteOperationContract: { platformId: "wechat_official", operation, inputArtifactKinds: ["wechat_article_package"], outputArtifactKinds: [`${operation}_receipt`] },
+    })),
+  });
+
+  const blocked = await harness.receive("把现成文章发到公司的第二个公众号").dispatched;
+  assert.equal(blocked.data.clarificationKind, "account_choice");
+  assert.match(blocked.reply, /当前没有找到可用的已连接账号/);
+
+  harness.state.applications.push(
+    application("app_personal", "个人公众号", "account_personal"),
+    application("app_company", "公司公众号", "account_company"),
+  );
+  const resumed = await harness.receive("已连接").dispatched;
+  assert.equal(resumed.data.previewOnly, true);
+  assert.equal(resumed.data.plannedTaskCount, 3);
+  assert.equal(filed.length, 0);
+
+  const created = await harness.receive("确认执行").dispatched;
+  assert.match(created.reply, /创建 3 个独立任务/);
+  assert.ok(filed.every((input) => input.platformTarget.applicationId === "app_company"));
+  assert.ok(filed.every((input) => input.platformTarget.accountId === "account_company"));
 });
 
 test("alternative publication targets require a choice before task creation", async () => {
@@ -896,7 +1018,9 @@ test("alternative publication targets require a choice before task creation", as
   assert.equal(filed.length, 0);
   const mappingQuestion = await harness.receive("公众号").dispatched;
   assert.equal(mappingQuestion.data.clarificationKind, "publication_content_mapping");
-  const resolved = await harness.receive("文章和图片都发公众号").dispatched;
+  const preview = await harness.receive("文章和图片都发公众号").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  const resolved = await harness.receive("确认执行").dispatched;
   assert.match(resolved.reply, /创建 6 个独立任务/);
   assert.equal(filed.filter((input) => input.taskKind === "content_publish").length, 1);
   assert.equal(filed.find((input) => input.taskKind === "content_publish").platformTarget.id, "wechat_official");
@@ -914,7 +1038,9 @@ test("batch admission refuses the whole plan before creating a partial goal", as
   harness.bindTaskProject("proj_a");
   await harness.receive("你好").dispatched;
   harness.state.channelConversations[0].recentRuns = Array.from({ length: 9 }, () => Date.parse(NOW));
-  const result = await harness.receive("写一篇深度文章，同时做漫画和口播").dispatched;
+  const preview = await harness.receive("写一篇深度文章，同时做漫画和口播").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  const result = await harness.receive("确认执行").dispatched;
   assert.equal(result.status, "refused");
   assert.match(result.reply, /没有创建任何任务/);
   assert.equal(filed.length, 0);
@@ -932,7 +1058,9 @@ test("a partial creation failure leaves an explicit repairable goal", async () =
     },
   });
   harness.bindTaskProject("proj_a");
-  const result = await harness.receive("写一篇深度文章，同时做漫画和口播").dispatched;
+  const preview = await harness.receive("写一篇深度文章，同时做漫画和口播").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  const result = await harness.receive("确认执行").dispatched;
   assert.equal(result.status, "dispatched");
   assert.equal(result.data.taskCount, 2);
   assert.equal(result.data.failedCount, 1);
@@ -1019,14 +1147,18 @@ test("software and business goals use the same independent-task boundary", async
   });
   harness.bindTaskProject("proj_a");
 
-  const development = await harness.receive("实现这个功能、完成测试并部署上线").dispatched;
+  const developmentPreview = await harness.receive("实现这个功能、完成测试并部署上线").dispatched;
+  assert.equal(developmentPreview.data.previewOnly, true);
+  const development = await harness.receive("确认执行").dispatched;
   assert.match(development.reply, /创建 3 个独立任务/);
   assert.deepEqual(filed.map((input) => input.taskKind), [
     "software_implementation", "software_verification", "software_deployment",
   ]);
 
   filed.length = 0;
-  const business = await harness.receive("完成市场调研、准备方案并发送邮件给客户").dispatched;
+  const businessPreview = await harness.receive("完成市场调研、准备方案并发送邮件给客户").dispatched;
+  assert.equal(businessPreview.data.previewOnly, true);
+  const business = await harness.receive("确认执行").dispatched;
   assert.match(business.reply, /创建 3 个独立任务/);
   assert.deepEqual(filed.map((input) => input.taskKind), [
     "business_research", "business_document", "business_communication",

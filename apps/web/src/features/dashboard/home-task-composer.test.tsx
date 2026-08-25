@@ -147,6 +147,44 @@ describe("HomeTaskComposer", () => {
     expect(mocks.commitWorkItemIntentPlan).not.toHaveBeenCalled();
   });
 
+  it("lets an ordinary user answer an intent clarification without rewriting the original request", async () => {
+    const legalTask = {
+      key: "legal_contract_review",
+      kind: "legal_contract_review",
+      title: "Contract review",
+      outcome: "Produce a contract risk review",
+      requires: [],
+      approvalRequired: false,
+    };
+    mocks.previewWorkItemIntentPlan
+      .mockResolvedValueOnce({
+        plan: { tasks: [], clarification: { kind: "professional_action", prompt: "What result do you want from these contracts?" } },
+        summary: { taskCount: 0, requiresRepository: false, approvalTaskCount: 0, canCommit: false, canStartAi: true, nextStep: "What result do you want from these contracts?" },
+      })
+      .mockResolvedValueOnce({
+        plan: { tasks: [legalTask], clarification: null },
+        summary: { taskCount: 1, requiresRepository: false, approvalTaskCount: 0, canCommit: true, canStartAi: true, nextStep: "Confirm to save this task." },
+      });
+    render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Handle these contracts" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save only" }));
+    expect(await screen.findByRole("group", { name: "What result do you want from these contracts?" })).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Your answer"), { target: { value: "Review clause risks" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update the plan" }));
+    await waitFor(() => expect(mocks.previewWorkItemIntentPlan).toHaveBeenLastCalledWith(expect.objectContaining({
+      title: "Handle these contracts",
+      clarificationAnswer: "Review clause risks",
+    })));
+    expect(await screen.findByText("Produce a contract risk review")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and save" }));
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({
+      clarificationAnswer: "Review clause risks",
+    })));
+  });
+
   it("asks the user to choose an existing result before planning continuation work", async () => {
     const candidate = {
       workItemId: "lwi_analysis",

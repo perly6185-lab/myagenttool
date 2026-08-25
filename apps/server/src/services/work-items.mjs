@@ -2857,7 +2857,12 @@ export function createWorkItemService({
     if (!projectId || !actorCanAccessProject(state, actor, projectId)) return notFound();
     const title = String(input.title ?? "").trim().slice(0, 300);
     const body = String(input.body ?? "").trim().slice(0, 20_000);
-    const statement = [title, body && body !== title ? body : ""].filter(Boolean).join("\n").slice(0, 4_000);
+    const clarificationAnswer = String(input.clarificationAnswer ?? "").trim().slice(0, 1_000);
+    const statement = [
+      title,
+      body && body !== title ? body : "",
+      clarificationAnswer ? `用户补充：${clarificationAnswer}` : "",
+    ].filter(Boolean).join("\n").slice(0, 4_000);
     if (!statement) return { ok: false, status: 400, body: { error: "intent_statement_required" } };
     const excludeKinds = [...new Set((Array.isArray(input.excludeKinds) ? input.excludeKinds : [])
       .map((kind) => String(kind ?? "").trim().slice(0, 80))

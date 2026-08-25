@@ -40,3 +40,13 @@ test("Channel replay keeps non-task reviewed corrections visible but out of task
   assert.equal(evaluation.skipped, 1);
   assert.equal(evaluation.results[0].reason, "task_boundary_not_reviewed");
 });
+
+test("Channel replay preserves multiple instances of the same professional task kind", () => {
+  const evaluation = evaluateChannelIntentReplayCases([{
+    id: "two_translation_jobs",
+    text: "把中文和日文两份手册分别翻译成英文",
+    expected: { taskKinds: ["document_translation", "document_translation"] },
+  }]);
+  assert.equal(evaluation.passed, 1);
+  assert.deepEqual(evaluation.results[0].actualKinds, ["document_translation", "document_translation"]);
+});

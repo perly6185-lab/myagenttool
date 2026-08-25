@@ -5,7 +5,7 @@ function normalizedKinds(expected) {
   const values = Array.isArray(expected?.taskKinds)
     ? expected.taskKinds
     : expected?.taskKind ? [expected.taskKind] : null;
-  return values ? [...new Set(values.map(String).filter(Boolean))].sort() : null;
+  return values ? values.map(String).filter(Boolean).sort() : null;
 }
 function sameValues(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -31,7 +31,7 @@ export function evaluateChannelIntentReplayCases(cases = []) {
       intentId: String(entry?.id ?? `channel-replay-${index + 1}`),
     });
     const contract = validateTaskPlan(plan, { requireTasks: expectedKinds.length > 0 && !plan.clarification });
-    const actualKinds = [...new Set(plan.tasks.map((task) => task.kind))].sort();
+    const actualKinds = plan.tasks.map((task) => task.kind).sort();
     const expectedClarification = entry?.expected?.clarificationKind ?? null;
     const actualClarification = plan.clarification?.kind ?? null;
     const kindsPassed = sameValues(actualKinds, expectedKinds);

@@ -56,7 +56,6 @@ import {
   snapshotTaskBasket,
   taskBasketAction,
   taskBasketExpired,
-  taskBasketPreviewRequested,
   taskBasketReply,
 } from "./task-basket.mjs";
 import {
@@ -84,7 +83,7 @@ import {
 // single-user setup. Do not reveal whether the sender was unmapped, disabled,
 // or blocked by an allowlist.
 const GENERIC_DENIED_REPLY = "当前消息暂时无法处理。请在桌面端打开“频道”，确认微信已绑定且处于在线状态；首次使用请复制绑定口令，在微信 ClawBot 对话中发送。";
-const USAGE_REPLY = `直接发送文字、图片、语音或文件即可。\n\n我会先理解你的需求：\n• 想了解：我先回答问题\n• 只读查看：范围明确时直接处理，不会修改文件\n• 一句话包含多项工作：可以说“先规划……”，我会先列出任务篮，回复“确认执行”后才创建\n• 一件事进行中：可以说“文章改成 1500 字，图片不动”或“小红书改发视频”，我会先预览变化\n• 修改、发送或其他有风险操作：先说明影响并请你确认\n• 任务处理中：可以问“进度”\n• 想知道依据：回复“查看依据”或“为什么这样做”\n• 需要普通授权：按提示回复“确认授权”或“拒绝授权”\n• 结果不满意：直接说哪里需要修改\n• 想让我记住习惯：回复“记住：文章控制在 2000 字左右”；回复“我的偏好”查看\n\n常用操作：确认、取消、进度、查看依据、确认授权、拒绝授权、重试、重发结果、转人工。`;
+const USAGE_REPLY = `直接发送文字、图片、语音或文件即可。\n\n我会先理解你的需求：\n• 想了解：我先回答问题\n• 只读查看：范围明确时直接处理，不会修改文件\n• 一句话包含多项工作：我会先列出任务篮，回复“确认执行”后才创建\n• 一件事进行中：可以说“文章改成 1500 字，图片不动”或“小红书改发视频”，我会先预览变化\n• 修改、发送或其他有风险操作：先说明影响并请你确认\n• 任务处理中：可以问“进度”\n• 想知道依据：回复“查看依据”或“为什么这样做”\n• 需要普通授权：按提示回复“确认授权”或“拒绝授权”\n• 结果不满意：直接说哪里需要修改\n• 想让我记住习惯：回复“记住：文章控制在 2000 字左右”；回复“我的偏好”查看\n\n常用操作：确认、取消、进度、查看依据、确认授权、拒绝授权、重试、重发结果、转人工。`;
 
 // A staged confirmation goes stale after this long — a fresh /run is required
 // (mirrors the approval-grant TTL: a confirm-click artifact, not a work queue).
@@ -243,6 +242,65 @@ export function createChannelConversationService({
     (state.channelConversations ?? []).find((row) => row.id === conversationId) ?? null;
   const findInvocation = (invocationId) =>
     (state.invocations ?? []).find((row) => row.id === String(invocationId ?? "")) ?? null;
+
+  function publicationAccountOptions(channel, platforms = []) {
+    const platformIds = new Set((platforms ?? []).map((platform) => platform?.id).filter(Boolean));
+    const byApplication = new Map();
+    for (const application of state.applications ?? []) {
+      if ((application.ownerTeamId ?? LOCAL_TEAM_ID) !== (channel.ownerTeamId ?? LOCAL_TEAM_ID)) continue;
+      if (application.status !== "active") continue;
+      const health = String(application.health?.status ?? application.healthStatus ?? "unknown").toLowerCase();
+      const session = String(application.session?.status ?? application.sessionStatus
+        ?? application.source?.manifest?.sessionStatus ?? "unknown").toLowerCase();
+      if (["unhealthy", "failed", "error", "offline"].includes(health)
+        || ["expired", "disconnected", "failed", "error", "signed_out", "unauthenticated"].includes(session)) continue;
+      for (const facade of application.capabilityFacades ?? []) {
+        const contract = facade?.siteOperationContract;
+        if (!platformIds.has(contract?.platformId) || !["draft_sync", "publish"].includes(contract?.operation)) continue;
+        const key = `${contract.platformId}:${application.id}`;
+        const accountId = String(facade.accountId ?? application.accountId ?? application.source?.manifest?.accountId ?? "").trim() || null;
+        const existing = byApplication.get(key);
+        byApplication.set(key, {
+          platformId: contract.platformId,
+          applicationId: application.id,
+          accountId,
+          label: String(application.name ?? facade.displayName ?? accountId ?? "已连接账号").slice(0, 80),
+          operations: [...new Set([...(existing?.operations ?? []), contract.operation])],
+        });
+      }
+    }
+    return [...byApplication.values()];
+  }
+
+  function publicationAccountChoice(text, options = [], { embeddedOrdinal = false } = {}) {
+    const value = normalizedText(text);
+    const ordinalPattern = embeddedOrdinal
+      ? /(?:第)([一二三四五六七八九十\d]+)(?:个|号|项|账号)?/
+      : /^(?:第)?([一二三四五六七八九十\d]+)(?:个|号|项|账号)?$/;
+    const ordinal = value.match(ordinalPattern)?.[1] ?? null;
+    const chineseOrdinals = new Map([["一", 1], ["二", 2], ["三", 3], ["四", 4], ["五", 5], ["六", 6], ["七", 7], ["八", 8], ["九", 9], ["十", 10]]);
+    const ordinalIndex = ordinal ? (Number(ordinal) || chineseOrdinals.get(ordinal) || 0) - 1 : -1;
+    if (ordinalIndex >= 0 && ordinalIndex < options.length) return options[ordinalIndex];
+    const normalized = value.toLowerCase();
+    return options.find((option) => [option.label, option.accountId, option.applicationId]
+      .filter(Boolean)
+      .some((candidate) => normalized.includes(String(candidate).toLowerCase()))) ?? null;
+  }
+
+  function publicationTargetsForAccount(platforms, selectedAccount) {
+    return (platforms ?? []).map((platform) => platform.id === selectedAccount.platformId
+      ? { ...platform, applicationId: selectedAccount.applicationId, ...(selectedAccount.accountId ? { accountId: selectedAccount.accountId } : {}) }
+      : platform);
+  }
+
+  function publicationAccountRecoveryRequested(text) {
+    return /^(?:已连接|连接好了|已经连接|配置好了|已经配置|登录好了|已经登录|好了|重试|再试一次|重新检查)[。.!！]*$/i.test(normalizedText(text));
+  }
+
+  function publicationAccountOptionsReply(options = []) {
+    if (!options.length) return "当前没有找到可用的已连接账号。请先在桌面端“应用”中连接并启用对应平台账号，然后再试。";
+    return `可选账号：${options.map((option, index) => `${index + 1}. ${option.label}`).join("；")}。请回复序号或账号名称。`;
+  }
 
   function rememberFocus(conversation, { goalId = null, taskThreadId = null, reason = "interaction" } = {}) {
     return rememberChannelFocus(conversation, { goalId, taskThreadId, reason, at: now() });
@@ -4106,8 +4164,28 @@ function sharedContentContinuation(text, conversation) {
 
   async function dispatchPlannedSharedContentTasks(event, channel, conversation, text, plan, { forceDispatch = false, taskBasketId = null } = {}) {
     if (taskBasketId) event.taskBasketId = taskBasketId;
-    if (["platform_targets", "platform_choice", "publication_content_mapping"].includes(plan?.clarification?.kind)) {
+    if (["platform_targets", "platform_choice", "publication_content_mapping", "professional_action", "account_choice"].includes(plan?.clarification?.kind)) {
       const intentId = String(plan?.goal?.id ?? plan?.intent?.id ?? `channel-intent:${event.id}`).slice(0, 200);
+      const accountOptions = plan.clarification.kind === "account_choice"
+        ? publicationAccountOptions(channel, plan.clarification.platforms ?? plan.goal?.platforms ?? [])
+        : [];
+      const explicitAccount = plan.clarification.kind === "account_choice"
+        ? publicationAccountChoice(text, accountOptions, { embeddedOrdinal: true })
+        : null;
+      if (explicitAccount) {
+        const resolvedPlan = planDiscreteTasks({
+          text,
+          domain: plan.tasks[0]?.domain ?? null,
+          intentId,
+          platformTargets: publicationTargetsForAccount(plan.clarification.platforms ?? plan.goal?.platforms ?? [], explicitAccount),
+          materials: activeSharedContents(conversation).map((item) => ({
+            id: item.knowledgeItemId,
+            contentId: resolveKnowledgeLocation?.({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })?.contentId ?? null,
+            title: item.title,
+          })),
+        });
+        if (!resolvedPlan.clarification) return dispatchPlannedSharedContentTasks(event, channel, conversation, text, resolvedPlan, { forceDispatch });
+      }
       runTx(() => {
         conversation.pendingTaskPlanClarification = {
           kind: plan.clarification.kind,
@@ -4117,6 +4195,7 @@ function sharedContentContinuation(text, conversation) {
           options: plan.clarification.options ?? [],
           platforms: plan.clarification.platforms ?? plan.goal?.platforms ?? [],
           contentOptions: plan.clarification.contentOptions ?? [],
+          accountOptions,
           requestedAt: now(),
         };
         conversation.updatedAt = now();
@@ -4125,7 +4204,11 @@ function sharedContentContinuation(text, conversation) {
         status: "dispatched",
         reply: plan.clarification.kind === "publication_content_mapping"
           ? `${plan.clarification.prompt}\n我不会替你把所有成品绑定到所有平台；确认对应关系后，只创建必要的发布依赖。`
-          : `${plan.clarification.prompt}\n目前支持识别：公众号、小红书、抖音、哔哩哔哩、知乎和微博。`,
+          : plan.clarification.kind === "account_choice"
+            ? `${plan.clarification.prompt}\n${publicationAccountOptionsReply(accountOptions)}`
+            : plan.clarification.kind === "professional_action"
+              ? plan.clarification.prompt
+              : `${plan.clarification.prompt}\n目前支持识别：公众号、小红书、抖音、哔哩哔哩、知乎和微博。`,
         data: { needsClarification: true, clarificationKind: plan.clarification.kind, taskCount: 0 },
       });
     }
@@ -4146,7 +4229,19 @@ function sharedContentContinuation(text, conversation) {
       event.intentPlanContract = planContract.summary;
       event.intentConfidence = planContract.confidence;
     });
-    if (!forceDispatch && plan.tasks.length > 1 && taskBasketPreviewRequested(text)) {
+    const items = activeSharedContents(conversation);
+    const publishTasks = plan.tasks.filter((task) => task.gate === "approved_output_required");
+    const preparatoryTasks = plan.tasks.filter((task) => task.gate !== "approved_output_required");
+    const createsReviewableOutput = preparatoryTasks.some((task) =>
+      !["platform_adaptation", "wechat_draft_sync"].includes(task.kind));
+    if (!createsReviewableOutput && publishTasks.length && items.length) {
+      return settle(event, {
+        status: "dispatched",
+        reply: "当前选中的是原始资料，不是已审核的内容成品，因此没有创建发布任务。请先创建并确认文章、漫画、口播或视频任务，再从确认后的成品发起平台发布。",
+        data: { sharedContent: true, taskProposalOnly: true, gate: "approved_output_required" },
+      });
+    }
+    if (!forceDispatch && plan.tasks.length > 1) {
       const basket = snapshotTaskBasket(plan, {
         id: `task-basket:${event.id}`,
         originalText: text,
@@ -4167,18 +4262,6 @@ function sharedContentContinuation(text, conversation) {
           plannedTaskCount: basket.tasks.length,
           previewOnly: true,
         },
-      });
-    }
-    const items = activeSharedContents(conversation);
-    const publishTasks = plan.tasks.filter((task) => task.gate === "approved_output_required");
-    const preparatoryTasks = plan.tasks.filter((task) => task.gate !== "approved_output_required");
-    const createsReviewableOutput = preparatoryTasks.some((task) =>
-      !["platform_adaptation", "wechat_draft_sync"].includes(task.kind));
-    if (!createsReviewableOutput && publishTasks.length && items.length) {
-      return settle(event, {
-        status: "dispatched",
-        reply: "当前选中的是原始资料，不是已审核的内容成品，因此没有创建发布任务。请先创建并确认文章、漫画、口播或视频任务，再从确认后的成品发起平台发布。",
-        data: { sharedContent: true, taskProposalOnly: true, gate: "approved_output_required" },
       });
     }
     if (!channel.taskProjectId || typeof createChannelTaskIssue !== "function") {
@@ -5096,17 +5179,20 @@ function sharedContentContinuation(text, conversation) {
         return settle(event, { status: "dispatched", reply: "已取消这次规划，没有创建任务。", data: { taskBasket: true, cancelled: true } });
       }
       if (action?.kind === "confirm") {
-        const plan = planDiscreteTasks({
-          text: pendingBasket.originalText,
-          domain: pendingBasket.domain,
-          intentId: pendingBasket.intentId,
-          excludeKinds: pendingBasket.excludedKinds,
-          materials: activeSharedContents(conversation).map((item) => ({
-            id: item.knowledgeItemId,
-            contentId: resolveKnowledgeLocation?.({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })?.contentId ?? null,
-            title: item.title,
-          })),
-        });
+        // The basket is the exact plan the user reviewed. Re-planning only the
+        // original sentence here loses answers collected by earlier platform
+        // or account clarification and can ask the same question again.
+        const plan = {
+          goal: pendingBasket.goal,
+          intent: pendingBasket.goal ? {
+            id: pendingBasket.intentId,
+            statement: pendingBasket.goal.statement ?? pendingBasket.originalText,
+            source: "explicit_user",
+          } : null,
+          tasks: pendingBasket.tasks,
+          clarification: null,
+          proposals: [],
+        };
         runTx(() => {
           conversation.pendingTaskBasket = null;
           conversation.updatedAt = now();
@@ -5154,17 +5240,85 @@ function sharedContentContinuation(text, conversation) {
       });
     }
     const pendingPlan = conversation.pendingTaskPlanClarification;
-    if (["platform_targets", "platform_choice", "publication_content_mapping"].includes(pendingPlan?.kind)) {
-      if (/^(?:取消|算了|不用了|先不发|暂不发布)$/i.test(text)) {
+    if (["platform_targets", "platform_choice", "publication_content_mapping", "professional_action", "account_choice"].includes(pendingPlan?.kind)) {
+      if (/^(?:(?:取消|算了|不用了|先不做|暂不处理|先不发|暂不发布)|(?:不用|不要|别用).{0,20}(?:账号|公众号))$/i.test(text)) {
         runTx(() => {
           conversation.pendingTaskPlanClarification = null;
           conversation.updatedAt = now();
         });
         return settle(event, {
           status: "dispatched",
-          reply: "已取消这次发布规划，没有创建任务。以后明确平台名称后可以重新发起。",
+          reply: pendingPlan.kind === "professional_action"
+            ? "已取消这次任务规划，没有创建任务。以后明确想得到的结果后可以重新发起。"
+            : "已取消这次发布规划，没有创建任务。以后明确平台或账号后可以重新发起。",
           data: { planClarificationCancelled: true, kind: pendingPlan.kind },
         });
+      }
+      if (pendingPlan.kind === "professional_action") {
+        const resolvedText = `${pendingPlan.originalText}；${text}`;
+        const resolvedPlan = planDiscreteTasks({
+          text: resolvedText,
+          domain: pendingPlan.domain ?? null,
+          intentId: pendingPlan.intentId,
+          materials: activeSharedContents(conversation).map((item) => ({
+            id: item.knowledgeItemId,
+            contentId: resolveKnowledgeLocation?.({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })?.contentId ?? null,
+            title: item.title,
+          })),
+        });
+        if (resolvedPlan.clarification || !resolvedPlan.tasks.length) {
+          return settle(event, {
+            status: "dispatched",
+            reply: resolvedPlan.clarification?.prompt ?? "我还是没看出你希望得到什么结果。请直接说具体动作，例如“审查合同风险”或“把合同改一版”。",
+            data: { needsClarification: true, clarificationKind: "professional_action" },
+          });
+        }
+        runTx(() => {
+          conversation.pendingTaskPlanClarification = null;
+          conversation.updatedAt = now();
+        });
+        return dispatchPlannedSharedContentTasks(event, channel, conversation, resolvedText, resolvedPlan);
+      }
+      if (pendingPlan.kind === "account_choice") {
+        const refreshedOptions = publicationAccountOptions(channel, pendingPlan.platforms ?? []);
+        const selectedAccount = publicationAccountChoice(text, refreshedOptions)
+          ?? publicationAccountChoice(pendingPlan.originalText, refreshedOptions, { embeddedOrdinal: true })
+          ?? (publicationAccountRecoveryRequested(text) && refreshedOptions.length === 1 ? refreshedOptions[0] : null);
+        if (!selectedAccount) {
+          runTx(() => {
+            conversation.pendingTaskPlanClarification = { ...pendingPlan, accountOptions: refreshedOptions, requestedAt: now() };
+            conversation.updatedAt = now();
+          });
+          return settle(event, {
+            status: "dispatched",
+            reply: publicationAccountOptionsReply(refreshedOptions),
+            data: { needsClarification: true, clarificationKind: pendingPlan.kind },
+          });
+        }
+        const selectedTargets = publicationTargetsForAccount(pendingPlan.platforms ?? [], selectedAccount);
+        const resolvedPlan = planDiscreteTasks({
+          text: pendingPlan.originalText,
+          domain: pendingPlan.domain ?? null,
+          intentId: pendingPlan.intentId,
+          platformTargets: selectedTargets,
+          materials: activeSharedContents(conversation).map((item) => ({
+            id: item.knowledgeItemId,
+            contentId: resolveKnowledgeLocation?.({ itemId: item.knowledgeItemId, ownerTeamId: channel?.ownerTeamId })?.contentId ?? null,
+            title: item.title,
+          })),
+        });
+        if (resolvedPlan.clarification) {
+          return settle(event, {
+            status: "dispatched",
+            reply: resolvedPlan.clarification.prompt,
+            data: { needsClarification: true, clarificationKind: resolvedPlan.clarification.kind },
+          });
+        }
+        runTx(() => {
+          conversation.pendingTaskPlanClarification = null;
+          conversation.updatedAt = now();
+        });
+        return dispatchPlannedSharedContentTasks(event, channel, conversation, pendingPlan.originalText, resolvedPlan);
       }
       if (pendingPlan.kind === "publication_content_mapping") {
         const platforms = pendingPlan.platforms ?? [];
@@ -5377,7 +5531,8 @@ function sharedContentContinuation(text, conversation) {
       text,
       intentId: workGoalIntentId(text, conversation, event),
     });
-    if (crossDomainPlan.tasks.length > 1
+    if ((crossDomainPlan.clarification && noActiveTask)
+      || crossDomainPlan.tasks.length > 1
       || (crossDomainPlan.tasks.length === 1 && crossDomainPlan.goal?.id === conversation.activeWorkGoalId)) {
       return dispatchPlannedSharedContentTasks(event, channel, conversation, text, crossDomainPlan);
     }

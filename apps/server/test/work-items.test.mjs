@@ -155,6 +155,33 @@ test("desktop intent planning asks for scope instead of silently creating a vagu
   assert.match(preview.body.summary.nextStep, /优化或修改什么/);
 });
 
+test("desktop intent planning continues from a short clarification answer without rewriting the request", () => {
+  const { service } = harness();
+  const initial = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "帮我处理一下这批合同",
+  }, ACTOR_A);
+  assert.equal(initial.body.plan.clarification.kind, "professional_action");
+
+  const continued = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "帮我处理一下这批合同",
+    clarificationAnswer: "审查条款风险",
+  }, ACTOR_A);
+  assert.equal(continued.body.summary.canCommit, true);
+  assert.deepEqual(continued.body.plan.tasks.map((task) => task.kind), ["legal_contract_review"]);
+
+  const committed = service.commitIntentTaskPlan({
+    projectId: "prj_a",
+    title: "帮我处理一下这批合同",
+    clarificationAnswer: "审查条款风险",
+    mode: "task",
+    idempotencyKey: "desktop-clarification-continuation-1",
+  }, ACTOR_A);
+  assert.equal(committed.status, 201);
+  assert.equal(committed.body.workItems[0].taskKind, "legal_contract_review");
+});
+
 test("desktop intent planning can save media work but refuses AI until a real capability exists", () => {
   const { service, state } = harness();
   const input = {

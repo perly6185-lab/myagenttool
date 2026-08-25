@@ -1,4 +1,9 @@
-import { connectProfessionalTasks, PROFESSIONAL_TASK_DEFINITIONS, resolveProfessionalTaskOverlaps } from "./professional-task-registry.mjs";
+import {
+  connectProfessionalTasks,
+  PROFESSIONAL_TASK_DEFINITIONS,
+  professionalTaskInstanceScopes,
+  resolveProfessionalTaskOverlaps,
+} from "./professional-task-registry.mjs";
 
 const PLATFORM_PATTERNS = [
   { id: "wechat_official", label: "公众号", pattern: /公众号|微信公众平台|wechat official/i },
@@ -21,10 +26,10 @@ const TASK_DEFINITIONS = [
   { kind: "wechat_draft_sync", domain: "content", label: "保存公众号草稿", outcome: "将一个已适配内容版本保存到指定公众号的草稿箱", externalEffect: true, produces: ["wechat_draft_receipt"] },
   { kind: "content_publish", domain: "content", label: "平台发布", outcome: "将一个已审核内容版本发布到用户指定的平台", pattern: /(?:公开发布|发布到|发到|投放到|群发到|(?:把|将).{0,20}(?:文章|图片|漫画|口播|视频|内容|成品).{0,8}(?:发|发布)|(?:文章|图片|漫画|口播|视频|内容|成品).{0,8}(?:发|发布)(?:到|至|往)?(?:公众号|小红书|抖音|哔哩哔哩|b站|知乎|微博)|publish|post to)/i, requiresApprovedOutput: true, externalEffect: true, produces: ["publication_receipt"] },
   { kind: "software_analysis", domain: "development", label: "需求分析", outcome: "形成可独立确认的需求或问题分析", pattern: /(?:需求分析|问题分析|分析(?:需求|问题|原因)|分析(?:一下)?(?:这个|该|当前)?(?:仓库|项目|系统|代码)|排查(?:一下)?.{0,12}(?:为什么|报错|故障|错误|原因|问题)|看看.{0,16}为什么|技术调研|analy[sz]e requirements|root cause)/i, produces: ["software_analysis"] },
-  { kind: "software_implementation", domain: "development", label: "软件实现", outcome: "完成一个边界明确的软件变更", pattern: /(?:开发|实现|修改代码|修复代码|修复\s*bug|修(?:掉|好|复).{0,16}(?:问题|故障|错误|bug)|(?:修好|修复)(?=后|再|并|，|,|。|$)|解决.{0,16}(?:问题|故障|错误|bug)|(?:把|将).{0,20}需求.{0,8}(?:做完|完成)|完成(?:这个|该)?需求|implement|fix (?:the )?(?:code|bug))/i, produces: ["software_change"] },
+  { kind: "software_implementation", domain: "development", label: "软件实现", outcome: "完成一个边界明确的软件变更", pattern: /(?:(?<!公)开发(?!布)|实现|修改代码|修复代码|修复\s*bug|修(?:掉|好|复).{0,16}(?:问题|故障|错误|bug)|(?:修好|修复)(?=后|再|并|，|,|。|$)|解决.{0,16}(?:问题|故障|错误|bug)|(?:把|将).{0,20}需求.{0,8}(?:做完|完成)|完成(?:这个|该)?需求|implement|fix (?:the )?(?:code|bug))/i, produces: ["software_change"] },
   { kind: "software_verification", domain: "development", label: "软件验证", outcome: "形成独立的测试和验证结果", pattern: /(?:测试|验证|代码审查|test|verify|code review)/i, produces: ["verification_report"] },
   { kind: "software_deployment", domain: "development", label: "部署发布", outcome: "完成一次有明确目标环境的部署", pattern: /(?:部署|上线|发版|deploy|release)/i, externalEffect: true, produces: ["deployment_receipt"] },
-  { kind: "business_research", domain: "business", label: "商务调研", outcome: "形成可独立使用的商务调研结果", pattern: /(?:商务调研|客户调研|竞品调研|市场调研|研究.{0,12}竞品|整理(?:一下)?客户资料|客户资料整理|提炼(?:一下)?合同要点|合同要点提炼|business research|market research)/i, produces: ["business_research"] },
+  { kind: "business_research", domain: "business", label: "商务调研", outcome: "形成可独立使用的商务调研结果", pattern: /(?:商务调研|客户调研|竞品调研|市场调研|研究.{0,12}竞品|(?:整理|梳理|汇总)(?:一下)?客户资料|客户资料(?:整理|梳理|汇总)|提炼(?:一下)?合同要点|合同要点提炼|business research|market research)/i, produces: ["business_research"] },
   { kind: "business_document", domain: "business", label: "商务材料", outcome: "形成可独立审阅的商务文档", pattern: /(?:(?:准备|制作|撰写|起草|整理|输出|形成|更新|完善|做|写|出(?:一版)?).{0,16}(?:客户方案|报价方案|方案|报价|合同草稿|商务材料|客户汇报|内部汇报|更新说明|跟进邮件|邮件草稿|客户名单|名单|excel|表格)|(?:合同草稿|商务材料|客户汇报|内部汇报|更新说明|邮件草稿)|proposal|quotation|contract draft)/i, produces: ["business_document"] },
   { kind: "business_communication", domain: "business", label: "对外沟通", outcome: "完成一次有明确对象的外部沟通", pattern: /(?:发送邮件|回复客户|联系客户|(?:邮件|报价|方案|名单|文件|资料).{0,12}(?:发|发送|转发)(?:给|至|到).{0,12}(?:客户|销售|同事|负责人|经理|联系人|[\u3400-\u9fff]{1,4}总)|(?:给|向)(?:客户|销售|同事|负责人|经理|联系人|[\u3400-\u9fff]{1,4}总).{0,8}(?:发|发送|转发).{0,8}(?:邮件|消息|报价|方案|文件)|send email|reply to (?:the )?customer)/i, externalEffect: true, produces: ["communication_receipt"] },
   { kind: "business_scheduling", domain: "business", label: "安排日程", outcome: "建立一个时间和参与人明确的日程", pattern: /(?:安排会议|预约会议|安排日程|(?:约|邀请).{0,16}(?:开会|会议|见面|沟通)|(?:会议|见面).{0,10}(?:约|安排)|schedule (?:a )?meeting)/i, externalEffect: true, produces: ["calendar_receipt"] },
@@ -65,13 +70,13 @@ function firstMatch(pattern, statement) {
 }
 
 function negatedAt(statement, index) {
-  return /(?:(?:不要|不用|无需|别|取消|排除|先别|暂不|暂时不|先不)(?:再)?(?:去)?(?:写|创作|生成|整理|改写|润色|做|画|跑|执行|进行|测试|验证|部署|上线|发版|发到?|发送|发布|同步|投放|联系|回复|安排|预约|处理|开发|实现|修改)?(?:一下|一遍|一次)?|(?:暂时|暂且|先|目前|现在)?\s*不(?:写|发|做|跑|测试|验证|部署|上线|处理|$))\s*$/i
+  return /(?:(?:不要|不用|无需|(?<!分)别|取消|排除|先别|暂不|暂时不|先不)(?:再)?(?:去)?(?:写|创作|生成|整理|改写|润色|做|画|跑|执行|进行|测试|验证|部署|上线|发版|发到?|发送|发布|同步|投放|提交|发起|送审|联系|跟进|催|回复|安排|预约|邀约|处理|开发|实现|修改|修订|审查|审核|审)?(?:一下|一遍|一次)?|(?:暂时|暂且|先|目前|现在)?\s*不(?:写|发|做|跑|测试|验证|部署|上线|提交|送审|联系|跟进|回复|安排|处理|审查|审核|审|$)|(?:^|[，,。；;：:\s])(?:暂时|暂且|先|目前|现在)?\s*(?:不|别|无需))\s*$/i
     .test(statement.slice(Math.max(0, index - 24), index));
 }
 
 function excludedAfter(statement, index, length) {
   const after = statement.slice(index + length, index + length + 18);
-  return /^(?:这项|这个|它|也|则|就)?\s*(?:(?:暂时|暂且|先|目前|现在)?\s*(?:不要|不用|不再|不做|先别|别做)|(?:暂时|先|后面|以后|稍后)\s*(?:不做|不用做|再说))/i.test(after);
+  return /^(?:这项|这个|它|也|则|就)?\s*(?:(?:暂时|暂且|先|目前|现在)?\s*(?:不要|不用|不再|不做|不提交|不送审|不联系|不跟进|不回复|不安排|先别|别做|暂不做)|(?:暂时|先|后面|以后|稍后)\s*(?:不做|不用做|不提交|再说))/i.test(after);
 }
 
 function deferredInsideMatch(value) {
@@ -83,7 +88,7 @@ function requestedMatch(statement, pattern) {
   const matcher = new RegExp(pattern.source, flags);
   let match;
   while ((match = matcher.exec(statement))) {
-    if (!/(?:不要|不用|无需|暂时不|先不|别)\s*(?:写|画|跑|测试|验证|部署|上线|发|发布|同步|投放|做)/i.test(match[0])
+    if (!/(?:不要|不用|无需|暂时不|暂不|先不|先别|(?<!分)别|不)\s*(?:写|画|跑|测试|验证|部署|上线|发|发布|同步|投放|做|提交|发起|送审|联系|跟进|催|回复|安排|预约|邀约|修改|修订|审查|审核|审)/i.test(match[0])
       && !deferredInsideMatch(match[0])
       && !negatedAt(statement, match.index)
       && !excludedAfter(statement, match.index, match[0].length)) return match;
@@ -99,7 +104,7 @@ function definitionRequested(statement, definition) {
 
 function describesExistingInput(statement, kind) {
   if (kind === "content_article") {
-    const saysArticleExists = /(?:文章|稿件)(?:已经|已|本来就|现成)?有了|已有(?:文章|稿件)|(?:文章|稿件)(?:已经|已)(?:完成|写好|准备好)/i.test(statement);
+    const saysArticleExists = /(?:文章|稿件)(?:已经|已|本来就|现成)?有了|已有(?:文章|稿件)|现成(?:的)?(?:文章|稿件)|(?:文章|稿件)(?:已经|已)(?:完成|写好|准备好)|(?:把|将)(?:这篇|该篇|现成)?(?:文章|稿件).{0,12}(?:发布|发到|同步|保存|上传|存入)/i.test(statement);
     const asksForArticle = /(?:写|创作|生成|整理|改写|润色|做成|输出).{0,10}(?:文章|稿件)|(?:文章|稿件).{0,8}(?:创作|改写|润色)/i.test(statement);
     return saysArticleExists && !asksForArticle;
   }
@@ -108,17 +113,45 @@ function describesExistingInput(statement, kind) {
     const asksForVerification = /(?:跑|执行|进行|补|重新|再|做).{0,8}(?:测试|验证)|(?:测试|验证)(?:一下|一遍|一次|并确认)/i.test(statement);
     return saysVerificationPassed && !asksForVerification;
   }
+  if (kind === "legal_contract_review") {
+    const saysReviewExists = /(?:合同|协议)(?:已经|已)(?:审完|审查完成|审核完成)|已有(?:合同|协议)?审查报告|按(?:审查|审核)(?:结果|意见|建议).{0,12}(?:修改|修订|改)/i.test(statement);
+    const asksForReview = /(?:重新|再|补充|继续).{0,8}(?:审查|审核|检查)|(?:审查|审核|检查).{0,8}(?:一遍|一次|一下)/i.test(statement);
+    return saysReviewExists && !asksForReview;
+  }
+  if (kind === "data_analysis") {
+    const saysAnalysisExists = /(?:数据|销售|经营|业务)?分析(?:已经|已)(?:完成|做完)|(?:已有|现成)(?:数据|销售|经营|业务)?分析(?:报告|结果)|(?:数据|销售|经营|业务)?分析(?:报告|结果)(?:已有|现成)|根据(?:分析报告|分析结果).{0,12}(?:生成|制作|绘制|输出|做).{0,6}(?:图|图表|看板)/i.test(statement);
+    const asksForAnalysis = /(?:重新|再|补充|继续).{0,8}(?:分析|统计|洞察)/i.test(statement);
+    return saysAnalysisExists && !asksForAnalysis;
+  }
+  if (kind === "finance_reconciliation") {
+    const saysReconciliationExists = /根据(?:对账差异|对账结果|对账报告)|已有对账(?:差异|结果|报告)|对账(?:已经|已)(?:完成|做完)/i.test(statement);
+    const asksForReconciliation = /(?:重新|再|补充|继续).{0,8}(?:对账|核对)/i.test(statement);
+    return saysReconciliationExists && !asksForReconciliation;
+  }
   return false;
 }
 
 export function platformTargetsIn(statement) {
-  const matches = PLATFORM_PATTERNS.map((platform) => {
-    const match = firstMatch(platform.pattern, statement);
-    return match && !negatedAt(statement, match.index)
-      ? { id: platform.id, label: platform.label, index: match.index, length: match[0].length }
-      : null;
-  }).filter(Boolean).sort((left, right) => left.index - right.index);
+  const matches = PLATFORM_PATTERNS.map((platform) => platformTargetMatch(statement, platform))
+    .filter(Boolean).sort((left, right) => left.index - right.index);
   return matches.map(({ id, label }) => ({ id, label }));
+}
+
+function platformTargetMatch(statement, platform) {
+  const flags = [...new Set(`${platform.pattern.flags}g`.split(""))].join("");
+  const matcher = new RegExp(platform.pattern.source, flags);
+  let match;
+  while ((match = matcher.exec(statement))) {
+    const before = statement.slice(Math.max(0, match.index - 16), match.index);
+    const after = statement.slice(match.index + match[0].length, match.index + match[0].length + 12);
+    const contentDescriptor = /^(?:风格|格式|文章|稿件|排版|标题)/i.test(after)
+      && !/(?:发布到|发到|投放到|同步到|保存到|上传到|群发到)\s*$/i.test(before);
+    if (!contentDescriptor && !negatedAt(statement, match.index)) {
+      return { id: platform.id, label: platform.label, index: match.index, length: match[0].length };
+    }
+    if (!match[0].length) matcher.lastIndex += 1;
+  }
+  return null;
 }
 
 function hasPlatformAlternative(statement, platforms) {
@@ -225,12 +258,14 @@ const ARTIFACT_FORMATS = {
   candidate_shortlist: { extensions: [".xlsx", ".csv", ".md", ".docx", ".pdf"] },
   interview_schedule_receipt: { extensions: [".ics", ".json", ".md", ".txt"] },
   reconciliation_report: { extensions: [".xlsx", ".csv", ".md", ".docx", ".pdf"] },
+  payment_request_draft: { extensions: [".md", ".docx", ".pdf"] },
   payment_request_receipt: { extensions: [".json", ".md", ".pdf"] },
   contract_review: { extensions: [".md", ".docx", ".pdf"] },
   legal_document: { extensions: [".docx", ".pdf", ".md"] },
   support_triage: { extensions: [".xlsx", ".csv", ".md"] },
   customer_response_draft: { extensions: [".md", ".txt", ".docx"] },
   procurement_comparison: { extensions: [".xlsx", ".csv", ".md", ".pdf"] },
+  procurement_request_draft: { extensions: [".md", ".docx", ".pdf"] },
   procurement_request_receipt: { extensions: [".json", ".md", ".pdf"] },
   sales_pipeline: { extensions: [".xlsx", ".csv", ".json"] },
   sales_followup_receipt: { extensions: [".json", ".md", ".txt"] },
@@ -259,7 +294,7 @@ function artifactRequirements(definition, statement, produces = definition.produ
 
 function taskFrom(definition, { intentId, statement, sources, key = definition.kind, title = definition.label,
   platform = null, requires = [], consumes = [], produces = null, approvalRequired = null, gate = null,
-  executionInstructions = null } = {}) {
+  executionInstructions = null, instanceScope = null } = {}) {
   const outputKinds = produces ?? definition.produces ?? [];
   return {
     key,
@@ -283,6 +318,7 @@ function taskFrom(definition, { intentId, statement, sources, key = definition.k
         : {}),
     },
     platform,
+    ...(instanceScope ? { instanceScope } : {}),
     approvalRequired: approvalRequired ?? Boolean(definition.externalEffect || definition.requiresApprovedOutput),
     gate: gate ?? (definition.requiresApprovedOutput ? "approved_output_required" : definition.externalEffect ? "external_effect_approval" : null),
     ...(executionInstructions ? { executionInstructions } : {}),
@@ -301,6 +337,28 @@ function topologicallyOrderedTasks(tasks) {
     created.add(task.key);
   }
   return ordered;
+}
+
+function professionalActionClarification(statement, tasks) {
+  if (tasks.length || !/(?:合同|协议|客户|数字|数据|简历|候选人|发票|流水|供应商|工单|投诉|商机|CRM)/i.test(statement)) return null;
+  // A concrete file mutation already has an executable, preview-gated path in
+  // Channel. Business nouns in its surrounding explanation (for example
+  // “客户已确认，把 orders.csv 的状态改成已下单”) must not downgrade that
+  // precise operation into a generic professional-intent question.
+  if (/(?:\.csv\b|\.xlsx?\b|文件|表格|工作簿|sheet)/i.test(statement)
+    && /(?:修改|更新|删除|清空|新增|追加|覆盖|替换|回填|写入|写回|移动|重命名|改(?:一下|为|成)|调整|纠正|同步回)/i.test(statement)) return null;
+  if (/(?:整理|汇总|归类|分类|提取|筛选).{0,20}(?:合同|协议|客户|数字|数据|简历|候选人|发票|流水|供应商|工单|投诉|商机|CRM)|(?:合同|协议|客户|数字|数据|简历|候选人|发票|流水|供应商|工单|投诉|商机|CRM).{0,20}(?:整理|汇总|归类|分类|提取|筛选)/i.test(statement)) return null;
+  if (!/(?:处理|看看|看一下|弄一下|搞一下|怎么办|做一下|帮我|这些|这批)/i.test(statement)) return null;
+  return {
+    kind: "professional_action",
+    prompt: "我看到了你要处理的业务资料，但还不确定要得到什么结果。请直接说希望我做什么，例如“审查合同风险”“分析数据趋势”或“整理客户方案”。",
+  };
+}
+
+function requiresPlatformAccountChoice(statement, platforms, providedTargets) {
+  if (!/(?:第[一二三四五六七八九十\d]+个|另一个|其他账号|公司(?:的)?).{0,8}(?:公众号|微信公众平台|小红书|抖音|知乎|微博)/i.test(statement)) return false;
+  if (Array.isArray(providedTargets) && providedTargets.some((target) => target?.accountId || target?.applicationId)) return false;
+  return platforms.length > 0;
 }
 
 export function proposeNextTasks({ domain = "content", materials = [] } = {}) {
@@ -353,8 +411,33 @@ export function planDiscreteTasks({
     if (!definitionRequested(statement, definition)) continue;
     if (describesExistingInput(statement, definition.kind)) continue;
     if (definition.kind === "content_publish" || (definition.kind === "software_implementation" && isCodingSource)) continue;
+    const instanceScopes = professionalTaskInstanceScopes(statement, definition.kind);
+    if (instanceScopes.length > 1) {
+      instanceScopes.forEach((instanceScope, index) => add(definition.kind, {
+        key: `${definition.kind}:${index + 1}`,
+        title: `${instanceScope} · ${definition.label}`,
+        instanceScope,
+      }));
+      continue;
+    }
     if (tasks.some((task) => task.kind === definition.kind)) continue;
     add(definition.kind);
+  }
+  if (tasks.some((task) => task.kind === "procurement_quote_comparison")
+    && !tasks.some((task) => task.kind === "procurement_approval_draft")
+    && /(?:申请单|审批单).{0,10}(?:准备|起草|整理|创建)(?:好|一份)?|(?:准备|起草|整理|创建).{0,10}(?:申请单|审批单)/i.test(statement)) {
+    add("procurement_approval_draft");
+  }
+  if (tasks.some((task) => task.kind === "finance_payment_request")
+    && !tasks.some((task) => task.kind === "finance_payment_request_draft")
+    && /(?:准备|起草|整理).{0,8}(?:申请|申请单).{0,12}(?:提交|发起|送审|走).{0,8}(?:付款|支付|报销)/i.test(statement)) {
+    add("finance_payment_request_draft");
+  }
+  if (!tasks.some((task) => task.kind === "legal_document_revision")
+    && /(?:合同|协议)/i.test(statement)
+    && /(?:按|根据).{0,16}(?:意见|建议|结果).{0,12}(?:直接|重新|再)?(?:改|修改|修订)(?:一版|一下)?|(?:直接|重新|再)(?:改|修改|修订)(?:一版|一下)/i.test(statement)
+    && !/(?:不要|不用|无需|先别|暂不|先不).{0,4}(?:改|修改|修订)/i.test(statement)) {
+    add("legal_document_revision");
   }
   resolveProfessionalTaskOverlaps(tasks, statement);
 
@@ -447,6 +530,8 @@ export function planDiscreteTasks({
     && definitionRequested(statement, TASK_DEFINITIONS.find((definition) => definition.kind === "content_publish"));
   const draftSyncRequested = WECHAT_DRAFT_SYNC_RE.test(statement);
   const platformAlternative = publishRequested && !Array.isArray(platformTargets) && hasPlatformAlternative(statement, platforms);
+  const platformAccountChoice = (publishRequested || draftSyncRequested)
+    && requiresPlatformAccountChoice(statement, platforms, platformTargets);
   const explicitAssignments = normalizedPublicationAssignments(
     publicationAssignments ?? publicationAssignmentsIn(statement, {
       platforms,
@@ -463,7 +548,7 @@ export function planDiscreteTasks({
     ? platforms.map((platform) => ({ platform, contentKinds: [contentOutputs[0].kind] }))
     : explicitAssignments;
   const assignmentByPlatform = new Map(automaticAssignments.map((assignment) => [assignment.platform.id, assignment]));
-  if ((publishRequested || draftSyncRequested) && platforms.length && !platformAlternative && !needsContentMapping) {
+  if ((publishRequested || draftSyncRequested) && platforms.length && !platformAlternative && !platformAccountChoice && !needsContentMapping) {
     for (const platform of platforms) {
       if (draftSyncRequested && !publishRequested && platform.id !== "wechat_official") continue;
       const assignedKinds = assignmentByPlatform.get(platform.id)?.contentKinds ?? [];
@@ -509,6 +594,7 @@ export function planDiscreteTasks({
   }
 
   const domains = [...new Set(tasks.map((task) => task.domain))];
+  const professionalClarification = professionalActionClarification(statement, tasks);
   const clarification = platformAlternative
     ? {
         kind: "platform_choice",
@@ -520,6 +606,12 @@ export function planDiscreteTasks({
         kind: "platform_targets",
         prompt: "你希望发布到哪些平台？请直接回复平台名称，例如“公众号和小红书”。确认平台后，我再一次性创建完整步骤。",
       }
+      : platformAccountChoice
+        ? {
+            kind: "account_choice",
+            platforms,
+            prompt: "你提到了特定平台账号。请从已连接账号中确认要使用哪一个；确认前我不会创建保存草稿或公开发布任务。",
+          }
       : needsContentMapping
         ? {
             kind: "publication_content_mapping",
@@ -527,7 +619,7 @@ export function planDiscreteTasks({
             contentOptions: contentOutputs.map((task) => ({ kind: task.kind, label: CONTENT_KIND_PATTERNS.find((entry) => entry.kind === task.kind)?.label ?? task.title })),
             prompt: `你准备了${contentOutputs.map((task) => CONTENT_KIND_PATTERNS.find((entry) => entry.kind === task.kind)?.label ?? task.title).join("、")}，并提到了${platforms.map((platform) => platform.label).join("、")}。请告诉我各自发布到哪里，例如“文章发公众号，图片发小红书”；如果全部内容都要适配到全部平台，也可以直接说“全部都发”。`,
           }
-        : null;
+        : professionalClarification;
   return {
     goal: statement ? {
       id: resolvedIntentId,
