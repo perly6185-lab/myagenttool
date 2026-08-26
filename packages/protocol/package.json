@@ -38,6 +38,10 @@
     "./business-routine": {
       "types": "./src/business-routine.ts",
       "default": "./src/business-routine.mjs"
+    },
+    "./task-resources": {
+      "types": "./src/task-resources.ts",
+      "default": "./src/task-resources.mjs"
     }
   },
   "scripts": {
