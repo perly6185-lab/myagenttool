@@ -9,6 +9,8 @@ export const hostApi = {
   get: (hostId: string) => request<{ host: SshHost }>("GET", `/api/hosts/${encodeURIComponent(hostId)}`),
   create: (input: { name: string; host: string; port: number; user: string; authMethod: HostAuthMethod; purposes: HostPurpose[]; networkPolicy: "public_only" | "allow_private_network" }) =>
     request<{ target: SshHost }>("POST", "/api/hosts", input),
+  update: (hostId: string, input: { expectedRevision: number; name?: string; host?: string; port?: number; user?: string; authMethod?: HostAuthMethod; purposes?: HostPurpose[]; networkPolicy?: "public_only" | "allow_private_network" }) =>
+    request<{ host: SshHost }>("PATCH", `/api/hosts/${encodeURIComponent(hostId)}`, input),
   observeFingerprint: (hostId: string) =>
     request<{ host: SshHost; observation: { fingerprint: string; resolvedAddress: string } }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/observe-fingerprint`, {}, true, 30_000),
   confirmFingerprint: (hostId: string, fingerprint: string, expectedRevision: number) =>

@@ -1287,6 +1287,7 @@ export function createServerRuntimeServices({
     queueTerminalBridgeAction,
     recordTerminalBridgeEvent,
     recordTerminalEvidence,
+    updateSshTarget,
     verifySshHostConnection,
   } = createTerminalService({
     state,
@@ -7289,6 +7290,7 @@ export function createServerRuntimeServices({
     createManagedTerminalSession,
     createSshConnectionTest,
     createSshTarget,
+    updateSshTarget,
     createTroubleshootingReport,
     claimDecision,
     releaseDecisionClaim,
@@ -8005,6 +8007,7 @@ export function createServerRuntimeServices({
     transitionApplication,
     confirmSshHostFingerprint,
     createSshTarget,
+    updateSshTarget,
     createSshConnectionTest,
     observeSshHostFingerprint,
     verifySshHostConnection,

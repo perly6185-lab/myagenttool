@@ -760,6 +760,19 @@ test("My hosts API reuses SSH identity while keeping file-transfer hosts team sc
   const foreign = await call(`/api/hosts/${hostId}`, { token: "tok_a" });
   assert.equal(foreign.status, 404);
 
+  const foreignUpdate = await call(`/api/hosts/${hostId}`, {
+    token: "tok_a", method: "PATCH", body: { expectedRevision: 1, networkPolicy: "allow_private_network" },
+  });
+  assert.equal(foreignUpdate.status, 404);
+  const updated = await call(`/api/hosts/${hostId}`, {
+    token: "tok_b", method: "PATCH", body: { expectedRevision: 1, networkPolicy: "allow_private_network" },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.host.id, hostId);
+  assert.equal(updated.body.host.credentialRef, `credential://ssh/${hostId}`);
+  assert.equal(updated.body.host.networkPolicy, "allow_private_network");
+  assert.equal(updated.body.host.revision, 2);
+
   const list = await call("/api/hosts", { token: "tok_b" });
   assert.equal(list.status, 200);
   assert.ok(list.body.hosts.some((host) => host.id === hostId));
@@ -792,7 +805,7 @@ test("My hosts API reuses SSH identity while keeping file-transfer hosts team sc
   assert.equal("credentialRef" in publishScopes.body.scopes[0].host, false);
 
   const unobservedConfirmation = await call(`/api/hosts/${hostId}/confirm-fingerprint`, {
-    token: "tok_b", method: "POST", body: { expectedRevision: 1, fingerprint: "SHA256:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/ab" },
+    token: "tok_b", method: "POST", body: { expectedRevision: 2, fingerprint: "SHA256:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/ab" },
   });
   assert.equal(unobservedConfirmation.status, 400);
   assert.equal(unobservedConfirmation.body.error, "ssh_host_fingerprint_confirmation_invalid");

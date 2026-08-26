@@ -143,6 +143,42 @@ export function createTerminalService({
     return target;
   }
 
+  function updateSshTarget(target, body = {}) {
+    if (!Number.isInteger(body.expectedRevision)) return { ok: false, status: 400, error: "expected_revision_required" };
+    if (sshTargetRevision(target) !== body.expectedRevision) return { ok: false, status: 409, error: "ssh_target_revision_conflict", currentRevision: sshTargetRevision(target) };
+    const host = body.host == null ? target.host : normalizeSshHost(body.host);
+    const port = body.port == null ? target.port : normalizeSshPort(body.port);
+    const user = body.user == null ? target.user : normalizeSshUser(body.user);
+    const authMethod = body.authMethod == null ? target.authMethod : normalizeSshAuthMethod(body.authMethod);
+    const purposes = body.purposes == null ? target.purposes : normalizeSshPurposes(body.purposes);
+    const networkPolicy = body.networkPolicy == null ? target.networkPolicy : normalizeSshNetworkPolicy(body.networkPolicy);
+    const name = body.name == null ? target.name : summarizeText(body.name || `${user}@${host}`, 80);
+    const hostIdentityChanged = host !== target.host || port !== target.port;
+    runTx(() => {
+      Object.assign(target, { name, host, port, user, authMethod, purposes, networkPolicy });
+      if (hostIdentityChanged) {
+        target.knownHostPolicy = "strict";
+        target.knownHostFingerprint = null;
+        target.observedFingerprint = null;
+        target.trustStatus = "known_hosts_required";
+      }
+      target.connectionStatus = "untested";
+      target.capabilities = null;
+      target.verifiedAt = null;
+      target.lastConnectionError = null;
+      target.revision = sshTargetRevision(target) + 1;
+      target.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "ssh.target.updated",
+        level: "info",
+        message: "SSH host connection settings updated and require verification.",
+        data: { targetId: target.id, host: target.host, port: target.port, user: target.user, authMethod: target.authMethod, networkPolicy: target.networkPolicy },
+      });
+    });
+    return { ok: true, target };
+  }
+
   async function observeSshHostFingerprint(target) {
     try {
       const observed = await sshHostConnector.observeFingerprint(target);
@@ -599,6 +635,7 @@ export function createTerminalService({
     queueTerminalBridgeAction,
     recordTerminalBridgeEvent,
     recordTerminalEvidence,
+    updateSshTarget,
     verifySshHostConnection,
   };
 }
