@@ -12,6 +12,7 @@ import {
   updatePrivateTutorAuthoredContent,
   confirmPrivateTutorAuthoredContent,
   publishPrivateTutorKnowledgeMapDraft,
+  activatePrivateTutorContentPackage,
 } from "@/features/private-tutor/private-tutor-api";
 import * as apiRequest from "@/lib/api/request";
 
@@ -158,5 +159,21 @@ describe("private tutor material import & draft API", () => {
     const res = await publishPrivateTutorKnowledgeMapDraft("kmd_xyz789");
     expect(res).toEqual({ success: true, packageId: "pkg-user-deadbeef" });
     expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/publish");
+  });
+
+  it("activatePrivateTutorContentPackage preserves the selected chapter entry", async () => {
+    const activation = { id: "ptact_1", entryMode: "chapter", startModuleId: "mod_1" };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ activation });
+    const result = await activatePrivateTutorContentPackage({
+      packageId: "pkg-user-deadbeef",
+      entryMode: "chapter",
+      startModuleId: "mod_1",
+    });
+    expect(result).toEqual({ activation });
+    expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/profile/content-package/activate", {
+      packageId: "pkg-user-deadbeef",
+      entryMode: "chapter",
+      startModuleId: "mod_1",
+    });
   });
 });

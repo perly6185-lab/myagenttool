@@ -25,7 +25,9 @@ export interface LearningContentPackage {
   sourceType: ContentSourceType;
   version: string;
   license: string;
-  status?: "published" | "disabled";
+  status?: "published" | "disabled" | "source_removed";
+  learningProfileId?: string;
+  evaluationSubjectId?: string;
   contentChecksum?: string;
   releasedAt?: string;
   targetAudience?: ContentTargetAudience;

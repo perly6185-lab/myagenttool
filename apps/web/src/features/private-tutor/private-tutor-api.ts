@@ -62,6 +62,8 @@ export interface PrivateTutorAssessmentQuestion {
   kind: "numeric" | "choice" | "math_steps" | "semantic_response" | "code" | "rubric_response";
   prompt: string;
   options: Array<{ id: string; label: string }> | null;
+  requiredSourceRefs?: string[];
+  sourceRefs?: Array<{ sectionId: string; pageNumber: number | null; origin: string | null }>;
 }
 
 export interface PrivateTutorAssessmentResult {
@@ -84,6 +86,7 @@ export interface PrivateTutorAssessment {
   contentPackageId: string | null;
   contentPackageVersion: string | null;
   subjectId: string;
+  activationId?: string | null;
   status: "active" | "paused" | "completed";
   revision: number;
   startedAt: string;
@@ -93,7 +96,9 @@ export interface PrivateTutorAssessment {
   targetSeconds: number;
   minQuestions: number;
   maxQuestions: number;
+  runtimeValidationId?: string | null;
   answeredCount: number;
+  evidenceAnswerCount?: number;
   currentQuestion: PrivateTutorAssessmentQuestion | null;
   result: PrivateTutorAssessmentResult | null;
   updatedAt: string;
@@ -327,15 +332,22 @@ export interface PrivateTutorLearningPlan {
   contentPackageId: string | null;
   contentPackageVersion: string | null;
   subjectId: string;
+  activationId?: string | null;
   revision: number;
-  status: "active";
+  status: "active" | "completed" | "source_unavailable";
+  entryMode?: "diagnostic" | "chapter";
+  startModuleId?: string | null;
+  startTopicId?: string | null;
+  startKnowledgeId?: string | null;
   reason: string;
   studentReason: string;
   generatedAt: string;
   days: Array<{
     dayIndex: number;
     date: string;
-    status: "planned";
+    status: "planned" | "in_progress" | "completed";
+    startedAt?: string;
+    completedAt?: string;
     knowledgeId: string;
     knowledgeTitle: string;
     activity: string;
@@ -390,14 +402,16 @@ export interface PrivateTutorSession {
   contentPackageId: string | null;
   contentPackageVersion: string | null;
   subjectId: string;
+  activationId?: string | null;
   planId: string | null;
   decisionId: string | null;
+  planDayIndex?: number | null;
   targetKnowledgeId: string;
   targetTitle: string;
   strategy: PrivateTutorTeachingStrategy;
   pace: PrivateTutorSessionPace;
   plannedMinutes: number;
-  status: "active" | "paused" | "completed";
+  status: "active" | "paused" | "completed" | "source_unavailable";
   revision: number;
   currentActivityIndex: number;
   progress: Array<{ kind: PrivateTutorSessionActivityKind; budgetMinutes: number; status: "pending" | "active" | "completed" }>;
@@ -435,6 +449,7 @@ export interface PrivateTutorSession {
     hintedActivities: PrivateTutorSessionActivityKind[];
     methodSwitchCount: number;
     evidenceCount: number;
+    practiceCount?: number;
     reviewAt: string;
     nextStep: string;
   } | null;
@@ -831,6 +846,41 @@ export interface PrivateTutorContentPackageUpdateResult {
   snapshot: PrivateTutorSnapshot | null;
 }
 
+export interface PrivateTutorRuntimeValidation {
+  id: string;
+  packageId: string;
+  packageVersion: string;
+  status: "passed" | "blocked" | "superseded" | "revoked";
+  failureCodes: string[];
+  validatedAt: string;
+  questions: Array<{
+    questionRevisionId: string;
+    context: string;
+    status: "passed" | "blocked";
+    failureCodes: string[];
+  }>;
+}
+
+export interface PrivateTutorPackageActivation {
+  id: string;
+  learnerId: string;
+  packageId: string;
+  packageVersion: string;
+  entryMode: "diagnostic" | "chapter";
+  startModuleId: string | null;
+  startTopicId: string | null;
+  startKnowledgeId: string | null;
+  scopeKnowledgeIds: string[];
+  runtimeValidationId: string | null;
+  status: "active" | "inactive" | "source_unavailable";
+  activatedAt: string;
+}
+
+export interface PrivateTutorPackageActivationResult extends PrivateTutorContentPackageUpdateResult, PrivateTutorIntelligence {
+  activation: PrivateTutorPackageActivation;
+  runtimeValidation: PrivateTutorRuntimeValidation | null;
+}
+
 export async function listPrivateTutorContentPackages(filters: { sourceType?: ContentSourceType; domain?: string } = {}) {
   const params = new URLSearchParams();
   if (filters.sourceType) params.set("sourceType", filters.sourceType);
@@ -886,6 +936,20 @@ export interface PrivateTutorMaterialResult {
 
 export interface PrivateTutorKnowledgeMapDraftResult {
   draft: KnowledgeMapDraft;
+}
+
+export async function activatePrivateTutorContentPackage(input: {
+  packageId: string;
+  entryMode: "diagnostic" | "chapter";
+  startModuleId?: string;
+  startTopicId?: string;
+  startKnowledgeId?: string;
+}) {
+  return request<PrivateTutorPackageActivationResult>(
+    "POST",
+    "/api/private-tutor/profile/content-package/activate",
+    input,
+  );
 }
 
 export interface PrivateTutorAuthoredContentResult extends PrivateTutorKnowledgeMapDraftResult {

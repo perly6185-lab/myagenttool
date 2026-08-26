@@ -1492,13 +1492,125 @@ Details on bubble sort.
   assert.equal(packageRes.body.package.knowledgeComponents.every((item) => item.dailyQuestions.length === 1), true);
   assert.equal(packageRes.body.package.knowledgeComponents.every((item) => item.dailyQuestions[0].evidencePolicy === "practice_only_until_runtime_validation"), true);
 
-  // 9. Delete Material
+  const otherAccountPackage = await call(`/api/private-tutor/content-packages/${publishedPackageId}`, {
+    token: "tok_migrate",
+  });
+  assert.equal(otherAccountPackage.status, 404);
+
+  // 9. Calibrate authored rubrics and start from a selected chapter without inventing mastery.
+  const moduleId = packageRes.body.package.modules[0].id;
+  const activationRes = await call("/api/private-tutor/profile/content-package/activate", {
+    token: "tok_personal",
+    method: "POST",
+    body: { packageId: publishedPackageId, entryMode: "chapter", startModuleId: moduleId },
+  });
+  assert.equal(activationRes.status, 200, JSON.stringify(activationRes.body));
+  assert.equal(activationRes.body.activation.entryMode, "chapter");
+  assert.equal(activationRes.body.runtimeValidation.status, "passed");
+  assert.equal(activationRes.body.runtimeValidation.questions.every((item) => item.status === "passed"), true);
+  assert.equal(activationRes.body.learningPlan.days.length, 7);
+  assert.equal(activationRes.body.snapshot.knowledge.every((item) => item.mastery === null && item.evidenceCount === 0), true);
+
+  let sessionRes = await call("/api/private-tutor/profile/tutoring-sessions/start", {
+    token: "tok_personal",
+    method: "POST",
+    body: { pace: "easy" },
+  });
+  assert.equal(sessionRes.status, 201, JSON.stringify(sessionRes.body));
+  const sessionId = sessionRes.body.session.id;
+  const paused = await call(`/api/private-tutor/profile/tutoring-sessions/${sessionId}/pause`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {},
+  });
+  assert.equal(paused.status, 200);
+  assert.equal(paused.body.session.status, "paused");
+  sessionRes = await call(`/api/private-tutor/profile/tutoring-sessions/${sessionId}/resume`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {},
+  });
+  assert.equal(sessionRes.status, 200);
+  assert.equal(sessionRes.body.session.status, "active");
+
+  const internalPackage = runtimeState.privateTutorContentPackages.find((item) => item.id === publishedPackageId);
+  let actionIndex = 0;
+  while (sessionRes.body.session.status === "active") {
+    const activity = sessionRes.body.session.currentActivity;
+    let body;
+    if (activity.question) {
+      const authoredQuestion = internalPackage.knowledgeComponents
+        .flatMap((item) => item.tutoringQuestions)
+        .find((item) => item.id === activity.question.revisionId);
+      const answer = authoredQuestion.rubric.anchors.find((item) => item.band === "proficient").sample;
+      body = {
+        action: "answer",
+        idempotencyKey: `m7-runtime-session-${actionIndex}`,
+        questionRevisionId: activity.question.revisionId,
+        rawAnswer: answer,
+        responseKind: "answer",
+        source: "screen",
+      };
+    } else {
+      body = { action: "continue" };
+    }
+    sessionRes = await call(`/api/private-tutor/profile/tutoring-sessions/${sessionId}/actions`, {
+      token: "tok_personal",
+      method: "POST",
+      body,
+    });
+    assert.equal([200, 201].includes(sessionRes.status), true, JSON.stringify(sessionRes.body));
+    if (sessionRes.body.answer) {
+      assert.equal(sessionRes.body.answer.evidenceEligible, true);
+      assert.equal(sessionRes.body.answer.evidenceTier, "rubric_runtime_validated");
+      assert.equal(sessionRes.body.answer.evaluation.confidence, 0.85);
+    }
+    actionIndex += 1;
+    assert.ok(actionIndex <= 6);
+  }
+  assert.equal(sessionRes.body.session.status, "completed");
+  assert.equal(sessionRes.body.learningPlan.days[0].status, "completed");
+  assert.equal(sessionRes.body.session.summary.evidenceCount, 3);
+
+  const diagnosticReactivation = await call("/api/private-tutor/profile/content-package/activate", {
+    token: "tok_personal",
+    method: "POST",
+    body: { packageId: publishedPackageId, entryMode: "diagnostic" },
+  });
+  assert.equal(diagnosticReactivation.status, 200, JSON.stringify(diagnosticReactivation.body));
+  assert.equal(diagnosticReactivation.body.learningPlan, null);
+  const stalePlanStart = await call("/api/private-tutor/profile/tutoring-sessions/start", {
+    token: "tok_personal",
+    method: "POST",
+    body: { pace: "easy" },
+  });
+  assert.equal(stalePlanStart.status, 409);
+  assert.equal(stalePlanStart.body.error, "private_tutor_learning_plan_required");
+
+  // 10. Deleting the source freezes derived learning while keeping versioned history explainable.
   const deleteRes = await call(`/api/private-tutor/materials/${materialId}`, {
     token: "tok_personal",
     method: "DELETE",
   });
   assert.equal(deleteRes.status, 200);
   assert.equal(deleteRes.body.deleted, true);
+  assert.equal(deleteRes.body.deactivation.deactivatedPackageCount, 1);
+  assert.equal(internalPackage.status, "source_removed");
+  assert.equal(runtimeState.privateTutorRuntimeValidations.find((item) => item.packageId === publishedPackageId).status, "revoked");
+  assert.equal(runtimeState.privateTutorLearningPlans.find((item) => item.contentPackageId === publishedPackageId).status, "source_unavailable");
+  const blockedAfterDelete = await call("/api/private-tutor/profile/tutoring-sessions/start", {
+    token: "tok_personal",
+    method: "POST",
+    body: { pace: "easy" },
+  });
+  assert.equal(blockedAfterDelete.status, 409);
+  assert.equal(blockedAfterDelete.body.error, "private_tutor_source_material_unavailable");
+  const restoredMath = await call("/api/private-tutor/profile/content-package", {
+    token: "tok_personal",
+    method: "PUT",
+    body: { packageId: "demo-math-foundations-v1" },
+  });
+  assert.equal(restoredMath.status, 200);
 });
 
 test("accepts preserved PDF bytes and exposes page-grounded extraction metadata", async () => {

@@ -81,8 +81,10 @@ import {
   type PrivateTutorVoiceTurn,
   type PrivateTutorWeeklyReport,
   getPrivateTutorActiveContentPackage,
+  getPrivateTutorContentPackage,
   listPrivateTutorContentPackages,
-  updatePrivateTutorActiveContentPackage,
+  activatePrivateTutorContentPackage,
+  type PrivateTutorPackageActivationResult,
   type LearningContentPackage,
   listPrivateTutorMaterials,
   generatePrivateTutorKnowledgeMapDraft,
@@ -437,6 +439,17 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     }
   }
 
+  function applyPackageActivation(result: PrivateTutorPackageActivationResult) {
+    if (result.snapshot) setLearnerState((current) => applyServerSnapshot(current, result.snapshot!));
+    setLearnerModel(result.learnerModel ?? null);
+    setStrategyDecision(result.strategyDecision ?? null);
+    setLearningPlan(result.learningPlan ?? null);
+    setAssessment(null);
+    setTutoringSession(null);
+    setDiagnosticDismissed(result.activation.entryMode === "chapter");
+    setTab("today");
+  }
+
   const allKnowledgeUnknown = learnerState.knowledge.every((item) => item.level === "unknown");
   if (!assessmentReady) {
     return <div className="grid min-h-[65vh] place-items-center text-sm text-muted-foreground">正在准备专属于你的学习空间…</div>;
@@ -453,7 +466,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
       </div>
     );
   }
-  if ((!assessment && allKnowledgeUnknown)
+  if ((!assessment && allKnowledgeUnknown && !learningPlan)
     || (assessment != null && assessment.status !== "completed")
     || (assessment?.status === "completed" && !diagnosticDismissed)) {
     return (
@@ -524,6 +537,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
             onCaptionsChange={setCaptions}
             reducedMotion={reducedMotion}
             onReducedMotionChange={setReducedMotion}
+            onPackageActivated={applyPackageActivation}
             onProfileDeleted={() => window.location.reload()}
           />
         ) : null}
@@ -682,6 +696,7 @@ function DiagnosticExperience({
             <Star className="size-11 fill-amber-300 text-amber-300" />
             <h1 className="mt-4 text-3xl font-bold">我已经更了解你了</h1>
             <p className="mt-2 text-emerald-50">完成了 {assessment.result.answeredCount} 道自适应题。先看看你已经站稳的地方。</p>
+            {assessment.runtimeValidationId ? <p className="mt-2 text-xs text-emerald-100">其中 {assessment.evidenceAnswerCount ?? 0} 道通过来源量表运行校准并形成受限置信度证据。</p> : null}
           </div>
           <div className="grid gap-5 p-6 sm:grid-cols-2 sm:p-8">
             <div className="rounded-2xl bg-emerald-50 p-5 dark:bg-emerald-950">
@@ -713,12 +728,15 @@ function DiagnosticExperience({
       </div>
       <div className="mb-6 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} /></div>
       <Card className="p-6 sm:p-9">
-        <p className="text-xs font-medium text-muted-foreground">{DIAGNOSTIC_KNOWLEDGE_LABELS[question.knowledgeId] ?? "数学理解"}</p>
+        <p className="text-xs font-medium text-muted-foreground">{DIAGNOSTIC_KNOWLEDGE_LABELS[question.knowledgeId] ?? "当前知识点"}</p>
         <h1 className="mt-3 text-2xl font-bold leading-relaxed">{question.prompt}</h1>
+        {question.sourceRefs?.length ? <p className="mt-3 text-xs text-muted-foreground">来源位置：{question.sourceRefs.map((ref) => `${ref.sectionId}${ref.pageNumber ? ` · 第 ${ref.pageNumber} 页` : ""}`).join("；")}</p> : null}
         {question.kind === "choice" && question.options ? (
           <div className="mt-7 grid gap-3">
             {question.options.map((option) => <button key={option.id} type="button" onClick={() => setAnswer(option.id)} className={cn("rounded-xl border-2 p-4 text-left transition", answer === option.id ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950" : "hover:border-emerald-300")}><span className="mr-3 font-bold uppercase">{option.id}</span>{option.label}</button>)}
           </div>
+        ) : question.kind === "rubric_response" ? (
+          <div className="mt-7"><label className="text-sm font-medium" htmlFor="diagnostic-answer">写下你的理解，并保留题目要求的来源标记</label><textarea id="diagnostic-answer" value={answer} onChange={(event) => setAnswer(event.target.value.slice(0, 4000))} placeholder="用自己的话解释，并写出 [ref:章节]" className="mt-2 min-h-36 w-full rounded-xl border-2 bg-card p-4 text-base leading-7 outline-none focus:border-emerald-500" /></div>
         ) : (
           <div className="mt-7"><label className="text-sm font-medium" htmlFor="diagnostic-answer">写下答案</label><input id="diagnostic-answer" value={answer} onChange={(event) => setAnswer(event.target.value.slice(0, 80))} onKeyDown={(event) => { if (event.key === "Enter") void submit("answer"); }} placeholder="例如：5、1/2 或 x=5" className="mt-2 h-14 w-full rounded-xl border-2 bg-card px-4 text-xl font-semibold outline-none focus:border-emerald-500" autoComplete="off" /></div>
         )}
@@ -1216,6 +1234,7 @@ function TodayLearning({
           {current.question ? (
             <div className="mt-5">
               <p className="text-base font-semibold">{current.question.prompt}</p>
+              {current.question.sourceRefs?.length ? <p className="mt-2 text-xs text-muted-foreground">来源位置：{current.question.sourceRefs.map((ref) => `${ref.sectionId}${ref.pageNumber ? ` · 第 ${ref.pageNumber} 页` : ""}`).join("；")}</p> : null}
               {current.question.options ? <div className="mt-3 grid gap-2">{current.question.options.map((option) => <button key={option.id} type="button" disabled={busy} onClick={() => { setAnswer(option.id); void submit("answer", option.id); }} className="min-h-12 rounded-xl border-2 bg-card px-4 text-left text-sm font-medium hover:border-emerald-400 disabled:opacity-60">{option.label}</button>)}</div> : <div className="mt-3 flex flex-wrap items-end gap-3"><textarea value={answer} onChange={(event) => setAnswer(event.target.value.slice(0, 4000))} aria-label="写下答案" rows={current.question.kind === "numeric" ? 2 : 5} className="min-w-48 flex-1 resize-y rounded-xl border bg-card px-4 py-3 font-mono text-base" placeholder={current.question.kind === "math_steps" ? "每行写一个步骤，或用 => 分隔" : current.question.kind === "code" ? "写下受限函数或 return 表达式" : "写下你的答案"} /><Button className="min-h-12" disabled={busy} onClick={() => void submit("answer")}>{busy ? "正在检查…" : "提交答案"}</Button></div>}
               {current.hint ? <p className="mt-3 rounded-lg bg-sky-50 p-3 text-sm text-sky-900 dark:bg-sky-950 dark:text-sky-100">提示 {current.hintLevel}：{current.hint}</p> : null}
               {message ? <p role="status" className="mt-3 rounded-lg bg-muted p-3 text-sm">{message}</p> : null}
@@ -1287,8 +1306,8 @@ function SevenDayPlan({ plan, onReschedule }: { plan: PrivateTutorLearningPlan; 
       </div>
       <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-7">
         {plan.days.map((day) => (
-          <div key={`${plan.id}-${day.dayIndex}`} className={cn("rounded-xl border p-3", day.dayIndex === 1 ? "border-emerald-400 bg-emerald-50 dark:bg-emerald-950" : "bg-card")}>
-            <p className="text-[11px] font-medium text-muted-foreground">{day.dayIndex === 1 ? "今天" : `第 ${day.dayIndex} 天`}</p>
+          <div key={`${plan.id}-${day.dayIndex}`} className={cn("rounded-xl border p-3", day.status === "completed" ? "border-emerald-300 bg-emerald-50/60 dark:bg-emerald-950" : day.status === "in_progress" ? "border-sky-400 bg-sky-50 dark:bg-sky-950" : "bg-card")}>
+            <p className="text-[11px] font-medium text-muted-foreground">{day.status === "completed" ? "已完成" : day.status === "in_progress" ? "正在学习" : `第 ${day.dayIndex} 天`}</p>
             <p className="mt-2 text-sm font-semibold leading-5">{day.title}</p>
             <p className="mt-2 text-[11px] text-muted-foreground">{day.minutes} 分钟</p>
           </div>
@@ -1430,6 +1449,7 @@ function ErrorBook({ state, reviewBook, onReviewBookChange, onSnapshot }: {
               <div className="mt-5 rounded-xl border bg-muted/35 p-4">
                 <p className="text-xs font-medium text-emerald-700">{reviewPhaseLabel(item.schedule.phase)}</p>
                 <p className="mt-2 text-lg font-semibold">{question.prompt}</p>
+                {question.sourceRefs?.length ? <p className="mt-2 text-xs text-muted-foreground">来源位置：{question.sourceRefs.map((ref) => `${ref.sectionId}${ref.pageNumber ? ` · 第 ${ref.pageNumber} 页` : ""}`).join("；")}</p> : null}
                 {question.kind === "choice" && question.options ? <div className="mt-4 grid gap-2">{question.options.map((option) => <button key={option.id} type="button" disabled={busy} onClick={() => setAnswer(option.id)} className={cn("rounded-lg border p-3 text-left text-sm", answer === option.id ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950" : "bg-card")}><span className="mr-2 font-bold uppercase">{option.id}</span>{option.label}</button>)}</div> : <input value={answer} disabled={busy} onChange={(event) => setAnswer(event.target.value.slice(0, 80))} onKeyDown={(event) => { if (event.key === "Enter" && answer.trim()) void submitReview(item, "answer"); }} aria-label="复习答案" placeholder="写下你的答案" autoComplete="off" className="mt-4 h-12 w-full rounded-lg border bg-card px-3 text-lg font-semibold" />}
                 <div className="mt-4 flex flex-wrap justify-between gap-2"><Button variant="ghost" disabled={busy} onClick={() => void submitReview(item, "dont_know")}>我还没想明白</Button><Button disabled={busy || !answer.trim()} onClick={() => void submitReview(item, "answer")}>{busy ? "正在保存…" : "提交答案"}</Button></div>
                 <div className="mt-4 border-t pt-4"><p className="text-xs text-muted-foreground">如果系统理解错了你的卡点，可以用自己的话修正：</p><div className="mt-2 flex flex-wrap gap-2"><input value={correction} onChange={(event) => setCorrection(event.target.value.slice(0, 240))} placeholder="例如：方法会了，只是刚才算错了" className="h-9 min-w-60 flex-1 rounded-md border bg-card px-3 text-sm" /><Button size="sm" variant="secondary" disabled={busy || !correction.trim()} onClick={() => void saveDiagnosis(item.id)}>修正错因</Button></div></div>
@@ -1482,7 +1502,7 @@ function privateTutorOcrReasonLabel(reason: string | null | undefined) {
   return "本地 OCR 未能完成识别";
 }
 
-function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onReducedMotionChange, onProfileDeleted }: { state: LearnerTutorState; captions: boolean; onCaptionsChange: (value: boolean) => void; reducedMotion: boolean; onReducedMotionChange: (value: boolean) => void; onProfileDeleted: () => void }) {
+function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onReducedMotionChange, onPackageActivated, onProfileDeleted }: { state: LearnerTutorState; captions: boolean; onCaptionsChange: (value: boolean) => void; reducedMotion: boolean; onReducedMotionChange: (value: boolean) => void; onPackageActivated: (result: PrivateTutorPackageActivationResult) => void; onProfileDeleted: () => void }) {
   const [space, setSpace] = useState<TutorSettingsSpace>("preferences");
   const [teacherStyle, setTeacherStyle] = useState("启发式引导");
   const [explanationDepth, setExplanationDepth] = useState("先简洁，再展开");
@@ -1493,6 +1513,9 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
   const [showImport, setShowImport] = useState(false);
   const [materials, setMaterials] = useState<MaterialDocument[]>([]);
   const [activeDraft, setActiveDraft] = useState<{ material: MaterialDocument; draft: KnowledgeMapDraft } | null>(null);
+  const [pendingPackage, setPendingPackage] = useState<LearningContentPackage | null>(null);
+  const [entryMode, setEntryMode] = useState<"diagnostic" | "chapter">("diagnostic");
+  const [startModuleId, setStartModuleId] = useState("");
   const selected = SETTINGS_SPACES.find((item) => item.key === space) ?? SETTINGS_SPACES[0];
 
   useEffect(() => {
@@ -1551,16 +1574,40 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
     }
   }
 
-  async function switchPackage(packageId: string) {
+  async function choosePackage(packageId: string) {
     setLoading(true);
     setError("");
     try {
-      await updatePrivateTutorActiveContentPackage(packageId);
-      // Refresh the snapshot to sync learner state and curriculum label
-      await getPrivateTutorSnapshot();
-      setActivePackage(packages.find(p => p.id === packageId) || null);
+      const pkg = await getPrivateTutorContentPackage(packageId);
+      setPendingPackage(pkg);
+      setEntryMode("diagnostic");
+      setStartModuleId(pkg.modules?.[0]?.id ?? "");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "切换失败，请重试。");
+      setError(err instanceof Error ? err.message : "无法读取内容包，请重试。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function activatePackage() {
+    if (!pendingPackage) return;
+    if (entryMode === "chapter" && !startModuleId) {
+      setError("请选择开始学习的章节。");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const result = await activatePrivateTutorContentPackage({
+        packageId: pendingPackage.id,
+        entryMode,
+        ...(entryMode === "chapter" ? { startModuleId } : {}),
+      });
+      setActivePackage(result.activePackage);
+      setPendingPackage(null);
+      onPackageActivated(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "内容包校准或激活失败，请检查内容后重试。");
     } finally {
       setLoading(false);
     }
@@ -1603,6 +1650,35 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
                   <p className="mt-1 text-xs text-muted-foreground">{activePackage.targetAudience?.description || "通识与专业基础"}</p>
                 </div>
               ) : null}
+              {pendingPackage ? (
+                <div className="rounded-xl border border-sky-300 bg-sky-50/60 p-4 dark:border-sky-900 dark:bg-sky-950/30">
+                  <p className="text-sm font-semibold">如何开始“{pendingPackage.name}”</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">个人资料会先回放不足、发展中、熟练三档评分锚点；校准未通过时不会启动，也不会写入掌握证据。</p>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <label className={cn("cursor-pointer rounded-lg border p-3 text-sm", entryMode === "diagnostic" ? "border-sky-500 bg-card" : "bg-card/60")}>
+                      <input className="mr-2 accent-sky-600" type="radio" name="package-entry-mode" checked={entryMode === "diagnostic"} onChange={() => setEntryMode("diagnostic")} />
+                      先做练习模式摸底
+                      <span className="mt-1 block text-xs text-muted-foreground">根据可验证作答生成七日计划。</span>
+                    </label>
+                    <label className={cn("cursor-pointer rounded-lg border p-3 text-sm", entryMode === "chapter" ? "border-sky-500 bg-card" : "bg-card/60")}>
+                      <input className="mr-2 accent-sky-600" type="radio" name="package-entry-mode" checked={entryMode === "chapter"} onChange={() => setEntryMode("chapter")} />
+                      从指定章节开始
+                      <span className="mt-1 block text-xs text-muted-foreground">只确定学习起点，不假定已经掌握。</span>
+                    </label>
+                  </div>
+                  {entryMode === "chapter" ? (
+                    <label className="mt-3 block text-sm font-medium">开始章节
+                      <select value={startModuleId} onChange={(event) => setStartModuleId(event.target.value)} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal">
+                        {(pendingPackage.modules ?? []).map((module) => <option key={module.id} value={module.id}>{module.name}</option>)}
+                      </select>
+                    </label>
+                  ) : null}
+                  <div className="mt-4 flex gap-2">
+                    <Button size="sm" disabled={loading} onClick={() => void activatePackage()}>{loading ? "正在校准…" : "校准并开始"}</Button>
+                    <Button size="sm" variant="secondary" disabled={loading} onClick={() => setPendingPackage(null)}>取消</Button>
+                  </div>
+                </div>
+              ) : null}
               <div className="mt-2 grid gap-3">
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-medium">选择学习内容</p>
@@ -1616,10 +1692,10 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
                           <span className="text-sm font-bold">{pkg.name}</span>
                           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{pkg.sourceType}</span>
                         </div>
-                        <p className="mt-1 text-xs text-muted-foreground">{pkg.targetAudience?.stage ?? "全部阶段"} · {pkg.evaluationCapabilities?.deterministicGrading ? "支持确定性判题" : "主观开放评估"}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{pkg.targetAudience?.stage ?? "全部阶段"} · {pkg.sourceType === "user_material" ? "来源量表将在启动时校准" : pkg.evaluationCapabilities?.deterministicGrading ? "支持确定性判题" : "主观开放评估"}</p>
                       </div>
-                      <Button size="sm" variant={isActive ? "secondary" : "primary"} disabled={loading || isActive} onClick={() => void switchPackage(pkg.id)}>
-                        {isActive ? "正在学习" : "切换为此内容"}
+                      <Button size="sm" variant={isActive ? "secondary" : "primary"} disabled={loading || isActive} onClick={() => void choosePackage(pkg.id)}>
+                        {isActive ? "正在学习" : "选择开始方式"}
                       </Button>
                     </div>
                   );

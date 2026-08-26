@@ -376,7 +376,9 @@ export function publishKnowledgeMapDraft(state, draftId, now = new Date().toISOS
   const pkg = {
     id: packageId,
     name: draft.packageName,
+    learningProfileId: draft.learningProfileId,
     subjectId: draft.subjectId,
+    evaluationSubjectId: "conceptual_studies",
     domain: draft.domain,
     sourceType: "user_material",
     version: `${authoredContent.version}.0.0`,

@@ -21,17 +21,27 @@ export function finalizePrivateTutorEvaluation({ result, plugin, question }) {
   if (!subjectId || !evaluatorVersion) throw new Error("invalid_private_tutor_evaluator_identity");
 
   const practiceOnly = question?.evidencePolicy === "practice_only_until_runtime_validation";
-  const evidenceTier = practiceOnly ? "practice_only" : String(result.evidenceTier ?? "deterministic");
+  const runtimeValidated = question?.evidencePolicy === "runtime_validated_capped"
+    && question?.runtimeValidation?.id
+    && Number(question.runtimeValidation.confidenceCap) > 0;
+  const evidenceTier = practiceOnly
+    ? "practice_only"
+    : runtimeValidated ? "rubric_runtime_validated" : String(result.evidenceTier ?? "deterministic");
   const details = result.evaluation && typeof result.evaluation === "object"
     ? structuredClone(result.evaluation)
     : {};
-  const confidence = normalizedConfidence(
+  const rawConfidence = normalizedConfidence(
     result.confidence ?? details.confidence ?? defaultConfidence(evidenceTier, result.evidenceEligible),
   );
+  const confidence = runtimeValidated && rawConfidence != null
+    ? Math.min(rawConfidence, Number(question.runtimeValidation.confidenceCap))
+    : rawConfidence;
   const reviewRequired = !practiceOnly && (details.requiresReview === true
     || result.reviewStatus === "required"
     || (result.evidenceEligible !== false && confidence === null));
-  const evidenceEligible = !practiceOnly && result.evidenceEligible !== false && !reviewRequired;
+  const evidenceEligible = !practiceOnly
+    && !reviewRequired
+    && (runtimeValidated ? true : result.evidenceEligible !== false);
   const reviewStatus = reviewRequired ? "required" : result.reviewStatus === "completed" ? "completed" : "not_required";
   const contentRevisionId = String(question?.id ?? question?.revisionId ?? "") || null;
   const contentPackageId = question?.contentPackageId ?? null;
@@ -69,6 +79,9 @@ export function finalizePrivateTutorEvaluation({ result, plugin, question }) {
       contentPackageVersion,
       rubricVersion,
       evidencePolicy: question?.evidencePolicy ?? null,
+      runtimeValidationId: question?.runtimeValidation?.id ?? null,
+      runtimeQuestionFingerprint: question?.runtimeValidation?.questionFingerprint ?? null,
+      confidenceCapped: runtimeValidated,
       confidence,
       reviewStatus,
       requiresReview: reviewRequired,

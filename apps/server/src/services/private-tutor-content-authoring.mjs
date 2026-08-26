@@ -236,6 +236,13 @@ function createQuestion(knowledge, context, index, action, rubric, referenceAnsw
 function createRubric(knowledge, sourceKeys, referenceAnswer) {
   const terms = sourceTerms(knowledge, referenceAnswer);
   const primaryRef = sourceKeys[0];
+  const allCitations = sourceKeys.map((key) => `[ref:${key}]`).join(" ");
+  const criteria = [
+    { id: "concept", label: `指出“${knowledge.name}”的核心含义`, weight: 0.35, acceptedPhrases: [terms[0]], partialPhrases: [], sourceRef: primaryRef },
+    { id: "detail", label: "包含原文中的关键细节", weight: 0.3, acceptedPhrases: [terms[1] ?? terms[0]], partialPhrases: [], sourceRef: primaryRef },
+    { id: "explanation", label: "把概念与关键细节组织成完整解释", weight: 0.2, acceptedPhrases: [terms[2] ?? terms[1] ?? terms[0]], partialPhrases: [], sourceRef: primaryRef },
+  ];
+  const proficientPhrases = [...new Set(criteria.map((criterion) => criterion.acceptedPhrases[0]).filter(Boolean))];
   return {
     version: "2.0.0",
     profile: "anchored-concept-rubric-v2",
@@ -251,14 +258,10 @@ function createRubric(knowledge, sourceKeys, referenceAnswer) {
     ],
     anchors: [
       { id: `${stableScopedId(knowledge.id)}-anchor-insufficient-v1`, band: "insufficient", description: "只有笼统结论，未覆盖核心内容和来源。", sample: "我记得这一节讲过这个概念。" },
-      { id: `${stableScopedId(knowledge.id)}-anchor-developing-v1`, band: "developing", description: "覆盖部分核心内容，但解释或来源不完整。", sample: `[ref:${primaryRef}] ${referenceAnswer.slice(0, 120)}` },
-      { id: `${stableScopedId(knowledge.id)}-anchor-proficient-v1`, band: "proficient", description: "核心内容、关键细节和可核对来源相互支撑。", sample: `[ref:${primaryRef}] ${referenceAnswer.slice(0, 300)}` },
+      { id: `${stableScopedId(knowledge.id)}-anchor-developing-v1`, band: "developing", description: "覆盖部分核心内容，但解释或来源不完整。", sample: `[ref:${primaryRef}] ${terms[0]}` },
+      { id: `${stableScopedId(knowledge.id)}-anchor-proficient-v1`, band: "proficient", description: "核心内容、关键细节和可核对来源相互支撑。", sample: `${allCitations} ${proficientPhrases.join("；")}`.slice(0, 1_600) },
     ],
-    criteria: [
-      { id: "concept", label: `指出“${knowledge.name}”的核心含义`, weight: 0.3, acceptedPhrases: terms.slice(0, 4), partialPhrases: terms.slice(4, 6), sourceRef: primaryRef },
-      { id: "detail", label: "包含原文中的关键细节", weight: 0.3, acceptedPhrases: terms.slice(2, 7), partialPhrases: terms.slice(0, 2), sourceRef: primaryRef },
-      { id: "explanation", label: "把概念与关键细节组织成完整解释", weight: 0.25, acceptedPhrases: terms.slice(5, 10), partialPhrases: terms.slice(2, 5), sourceRef: primaryRef },
-    ],
+    criteria,
   };
 }
 
@@ -298,10 +301,13 @@ function validRubric(rubric, sourceKeys, sourceText) {
   if (!Array.isArray(rubric.criteria) || rubric.criteria.length < 3 || rubric.criteria.length > 12) return false;
   if (!Array.isArray(rubric.bands) || rubric.bands.length !== 3 || !rubric.bands.some((band) => band.id === rubric.passBand)) return false;
   if (!Array.isArray(rubric.anchors) || rubric.bands.some((band) => !rubric.anchors.some((anchor) =>
-    anchor.band === band.id && boundedText(anchor.description, 500) && boundedText(anchor.sample, 500) && !INVALID_SOURCE_TEXT.test(anchor.sample)))) return false;
+    anchor.band === band.id && boundedText(anchor.description, 500) && boundedText(anchor.sample, 1_600) && !INVALID_SOURCE_TEXT.test(anchor.sample)))) return false;
   if (rubric.anchors.filter((anchor) => anchor.band !== "insufficient").some((anchor) => {
     const answerText = normalizeText(anchor.sample).replace(/\[ref:[^\]]+\]\s*/g, "");
-    return !sourceKeys.some((key) => anchor.sample.includes(`[ref:${key}]`)) || !sourceText.includes(answerText);
+    const groundedParts = answerText.split(/[；;]/).map(normalizeText).filter(Boolean);
+    return !sourceKeys.some((key) => anchor.sample.includes(`[ref:${key}]`))
+      || !groundedParts.length
+      || groundedParts.some((part) => !sourceText.includes(part));
   })) return false;
   const total = rubric.criteria.reduce((sum, criterion) => sum + Number(criterion.weight || 0), 0) + Number(rubric.sourceWeight || 0);
   return total > 0 && total <= 1.0001 && rubric.criteria.every((criterion) =>
@@ -314,11 +320,13 @@ function validRubric(rubric, sourceKeys, sourceText) {
 }
 
 function sourceTerms(knowledge, referenceAnswer) {
+  const source = normalizeText(referenceAnswer);
   const values = [knowledge.name, ...knowledge.learningObjectives, ...String(referenceAnswer).split(/[，。；;、\s]+/)]
     .map((value) => normalizeText(value))
-    .filter((value) => value.length >= 2 && value.length <= 40);
+    .filter((value) => value.length >= 2 && value.length <= 40 && /[\p{L}\p{N}]/u.test(value) && source.includes(value));
   const unique = [...new Set(values)];
-  while (unique.length < 10) unique.push(knowledge.name);
+  const fallback = unique[0] ?? source.slice(0, 40);
+  while (unique.length < 10) unique.push(fallback);
   return unique.slice(0, 12);
 }
 

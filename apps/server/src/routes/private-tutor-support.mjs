@@ -57,6 +57,8 @@ export function ensurePrivateTutorCollections(state) {
     "privateTutorSubjectPlugins",
     "privateTutorMaterialDocuments",
     "privateTutorKnowledgeMapDrafts",
+    "privateTutorRuntimeValidations",
+    "privateTutorPackageActivations",
   ]) {
     if (!Array.isArray(state[key])) state[key] = [];
   }

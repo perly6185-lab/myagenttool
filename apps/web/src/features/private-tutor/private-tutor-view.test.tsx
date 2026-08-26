@@ -10,6 +10,9 @@ const apiMocks = vi.hoisted(() => ({
   confirmMigration: vi.fn(),
   snapshot: vi.fn(),
   currentAssessment: vi.fn(),
+  listPackages: vi.fn(),
+  getPackage: vi.fn(),
+  activatePackage: vi.fn(),
 }));
 
 const sessionUser = { role: "viewer" } as const;
@@ -88,18 +91,9 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   answerPrivateTutorReview: () => Promise.reject(new Error("not used")),
   correctPrivateTutorReviewDiagnosis: () => Promise.reject(new Error("not used")),
   rebalancePrivateTutorLearningPlan: () => Promise.reject(new Error("not used")),
-  listPrivateTutorContentPackages: () => Promise.resolve([
-    {
-      id: "demo-math-foundations-v1",
-      name: "初中数学基础：一元一次方程",
-      subjectId: "math",
-      domain: "math",
-      sourceType: "textbook",
-      version: "1.0.0",
-      targetAudience: { stage: "初中/通用基础" },
-      evaluationCapabilities: { deterministicGrading: true },
-    },
-  ]),
+  listPrivateTutorContentPackages: apiMocks.listPackages,
+  getPrivateTutorContentPackage: apiMocks.getPackage,
+  activatePrivateTutorContentPackage: apiMocks.activatePackage,
   getPrivateTutorActiveContentPackage: () => Promise.resolve({
     id: "demo-math-foundations-v1",
     name: "初中数学基础：一元一次方程",
@@ -110,7 +104,6 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
     targetAudience: { stage: "初中/通用基础" },
     evaluationCapabilities: { deterministicGrading: true },
   }),
-  updatePrivateTutorActiveContentPackage: () => Promise.resolve({ success: true, activePackageId: "demo-math-foundations-v1" }),
   listPrivateTutorMaterials: () => Promise.resolve([]),
   uploadPrivateTutorMaterial: () => Promise.reject(new Error("not used")),
   generatePrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
@@ -138,6 +131,18 @@ describe("My private tutor personal learning information architecture", () => {
     apiMocks.confirmMigration.mockReset().mockRejectedValue(new Error("not used"));
     apiMocks.snapshot.mockReset().mockResolvedValue({ learner: activeProfile, profile: activeProfile, snapshot: freshSnapshot, learnerModel: null, strategyDecision: null, learningPlan: null });
     apiMocks.currentAssessment.mockReset().mockResolvedValue(completedAssessment);
+    apiMocks.listPackages.mockReset().mockResolvedValue([{
+      id: "demo-math-foundations-v1",
+      name: "初中数学基础：一元一次方程",
+      subjectId: "math",
+      domain: "math",
+      sourceType: "textbook",
+      version: "1.0.0",
+      targetAudience: { stage: "初中/通用基础" },
+      evaluationCapabilities: { deterministicGrading: true },
+    }]);
+    apiMocks.getPackage.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.activatePackage.mockReset().mockRejectedValue(new Error("not used"));
   });
   afterEach(() => cleanup());
 
@@ -186,6 +191,48 @@ describe("My private tutor personal learning information architecture", () => {
     expect(screen.getByRole("button", { name: /学习数据/ })).toBeTruthy();
     expect(screen.queryByText("家庭与监护")).toBeNull();
     expect(screen.queryByText("家长入口")).toBeNull();
+  });
+
+  it("chooses diagnostic or a concrete chapter before activating personal material", async () => {
+    const personalPackage = {
+      id: "pkg-user-feedback",
+      name: "形成性反馈",
+      subjectId: "general",
+      domain: "education",
+      sourceType: "user_material",
+      version: "1.0.0",
+      targetAudience: { stage: "custom" },
+      evaluationCapabilities: { deterministicGrading: false, sourceGrounding: true },
+      modules: [{ id: "mod-feedback", name: "第一章 学习证据", description: "", orderIndex: 1, topics: [] }],
+      knowledgeComponents: [],
+    } as const;
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.listPackages.mockResolvedValue([personalPackage]);
+    apiMocks.getPackage.mockResolvedValue(personalPackage);
+    apiMocks.activatePackage.mockResolvedValue({
+      activePackage: personalPackage,
+      snapshot: freshSnapshot,
+      activation: { id: "ptact_1", entryMode: "chapter", startModuleId: "mod-feedback", status: "active" },
+      runtimeValidation: { id: "ptrv_1", status: "passed" },
+      learnerModel: null,
+      strategyDecision: null,
+      learningPlan: null,
+    });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的设置" }));
+    fireEvent.click(screen.getByRole("button", { name: /学习内容/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "选择开始方式" }));
+
+    expect(await screen.findByText(/如何开始“形成性反馈”/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/从指定章节开始/));
+    expect((screen.getByLabelText("开始章节") as HTMLSelectElement).value).toBe("mod-feedback");
+    fireEvent.click(screen.getByRole("button", { name: "校准并开始" }));
+
+    await waitFor(() => expect(apiMocks.activatePackage).toHaveBeenCalledWith({
+      packageId: "pkg-user-feedback",
+      entryMode: "chapter",
+      startModuleId: "mod-feedback",
+    }));
   });
 
   it("shows unknown knowledge as unmeasured instead of weak", async () => {

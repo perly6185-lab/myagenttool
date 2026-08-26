@@ -20,6 +20,10 @@ import {
   confirmAuthoredContentVersion,
   generateAuthoredContentVersion,
 } from "../src/services/private-tutor-content-authoring.mjs";
+import {
+  activatePrivateTutorPackageRuntime,
+  validatePrivateTutorPackageRuntime,
+} from "../src/services/private-tutor-adaptive-runtime.mjs";
 
 const unavailableOcr = {
   readiness: () => ({ state: "unavailable", providerId: null, reason: "test_local_ocr_unavailable" }),
@@ -217,6 +221,10 @@ test("parses the tracked Chinese textbook PDF with stable page sources", async (
   assert.match(doc.pages[0].text, /循环工程/);
   assert.equal(doc.pages.every((page) => page.pageNumber >= 1 && page.source === "pdf_text"), true);
   assert.equal(doc.pages.some((page) => /%PDF-|endstream|xref/.test(page.text)), false);
+  const runtime = completeLearningRuntime(doc, "tracked-pdf");
+  assert.equal(runtime.validation.status, "passed");
+  assert.equal(runtime.activation.entryMode, "chapter");
+  assert.equal(runtime.learningPlan.days.length, 7);
 });
 
 test("detects a tracked scanned PDF and degrades without generating binary sections", async () => {
@@ -233,7 +241,7 @@ test("detects a tracked scanned PDF and degrades without generating binary secti
 });
 
 test("uses an available local OCR adapter for a scanned PDF", async () => {
-  const bytes = minimalPdf();
+  const bytes = readTrackedPdf("../../../demos/pdfcli/97-动态热机械分析仪DMA.pdf");
   const doc = await parseUploadedMaterialDocument(pdfUpload(bytes), {
     ocrAdapter: {
       providerId: "test-local-ocr",
@@ -242,7 +250,11 @@ test("uses an available local OCR adapter for a scanned PDF", async () => {
         assert.match(path, /source\.pdf$/);
         return {
           providerId: "test-local-ocr",
-          pages: [{ index: 1, text: "Chapter 1: OCR Learning\nEvidence from the scanned page.", confidence: 0.92 }],
+          pages: Array.from({ length: 6 }, (_, index) => ({
+            index: index + 1,
+            text: `Chapter ${index + 1}: OCR Learning\nEvidence, calibration, and practice guidance from scanned page ${index + 1}.`,
+            confidence: 0.92,
+          })),
         };
       },
     },
@@ -254,7 +266,69 @@ test("uses an available local OCR adapter for a scanned PDF", async () => {
   assert.equal(doc.extraction.method, "pdf_text_with_local_ocr");
   assert.equal(doc.extraction.ocr.state, "completed");
   assert.match(doc.sections[0].title, /OCR Learning/);
+  const runtime = completeLearningRuntime(doc, "ocr-pdf");
+  assert.equal(runtime.validation.status, "passed");
+  assert.equal(runtime.activation.runtimeValidationId, runtime.validation.id);
 });
+
+function completeLearningRuntime(doc, suffix) {
+  let sequence = 0;
+  const nextId = (prefix) => `${prefix}_${suffix}_${++sequence}`;
+  const now = () => "2026-08-27T06:00:00.000Z";
+  const draft = generateKnowledgeMapDraft({
+    materialDocument: doc,
+    packageName: `Runtime ${suffix}`,
+    subjectId: "general",
+    domain: "uploaded_material",
+  });
+  const learner = { id: `learner_${suffix}`, ownerTeamId: "team_pdf", status: "active" };
+  const state = {
+    privateTutorMaterialDocuments: [doc],
+    privateTutorKnowledgeMapDrafts: [draft],
+    privateTutorContentPackages: [],
+    privateTutorModules: [],
+    privateTutorTopics: [],
+    privateTutorKnowledgeComponents: [],
+    privateTutorSubjectPlugins: [],
+    privateTutorRuntimeValidations: [],
+    privateTutorPackageActivations: [],
+    privateTutorLearnerModels: [],
+    privateTutorStrategyDecisions: [],
+    privateTutorLearningPlans: [],
+    privateTutorAssessments: [],
+    privateTutorSessions: [],
+    privateTutorSnapshots: [{ id: `snapshot_${suffix}`, learnerId: learner.id, revision: 1, knowledge: [] }],
+  };
+  confirmKnowledgeMapDraft(state, draft.id, {
+    actorId: doc.learningProfileId,
+    expectedRevision: draft.revision,
+    acknowledgeSourceReview: true,
+  });
+  const content = generateAuthoredContentVersion(state, draft.id, { actorId: doc.learningProfileId });
+  confirmAuthoredContentVersion(state, draft.id, {
+    actorId: doc.learningProfileId,
+    expectedRevision: content.revision,
+    acknowledgeContentReview: true,
+  });
+  const packageId = publishKnowledgeMapDraft(state, draft.id, now());
+  const pkg = state.privateTutorContentPackages.find((item) => item.id === packageId);
+  const validation = validatePrivateTutorPackageRuntime(state, packageId, {
+    actorId: doc.learningProfileId,
+    learnerId: learner.id,
+    now: now(),
+    nextId,
+  });
+  const activated = activatePrivateTutorPackageRuntime(state, {
+    learner,
+    pkg,
+    actorId: doc.learningProfileId,
+    entryMode: "chapter",
+    startModuleId: pkg.modules[0].id,
+    now,
+    nextId,
+  });
+  return { validation, ...activated };
+}
 
 test("rejects corrupted or text-decoded PDF uploads before persistence", async () => {
   const invalid = Buffer.from("%PDF-this-is-not-a-document", "utf8");
