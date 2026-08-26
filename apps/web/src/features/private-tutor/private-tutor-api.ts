@@ -1081,6 +1081,104 @@ export interface PrivateTutorSnapshotResponse {
   learningPlan?: PrivateTutorLearningPlan | null;
 }
 
+export interface PrivateTutorLearningHistoryMetrics {
+  sessionCount: number;
+  completedSessionCount: number;
+  startedPlanDayCount: number;
+  completedPlanDayCount: number;
+  planDayCompletionRate: number | null;
+  currentPlan: {
+    planId: string | null;
+    status: string | null;
+    scheduledDays: number;
+    completedDays: number;
+    inProgressDays: number;
+  };
+  practiceAttemptCount: number;
+  eligibleEvidenceCount: number;
+  evidenceEligibilityRate: number | null;
+  independentAttemptCount: number;
+  independentCorrectCount: number;
+  independentCorrectRate: number | null;
+  review: { scheduledCount: number; completedCount: number; dueCount: number; upcomingCount: number };
+  sourceRubric: {
+    attemptCount: number;
+    requiredReviewCount: number;
+    completedReviewCount: number;
+    pendingReviewCount: number;
+    reviewCompletionRate: number | null;
+  };
+}
+
+export interface PrivateTutorLearningHistory {
+  schemaVersion: number;
+  learnerId: string;
+  generatedAt: string;
+  definitions: Record<string, string>;
+  summary: {
+    packageCount: number;
+    chapterCount: number;
+    sessionCount: number;
+    completedSessionCount: number;
+    startedPlanDayCount: number;
+    completedPlanDayCount: number;
+    planDayCompletionRate: number | null;
+    practiceAttemptCount: number;
+    eligibleEvidenceCount: number;
+    evidenceEligibilityRate: number | null;
+    independentAttemptCount: number;
+    independentCorrectCount: number;
+    independentCorrectRate: number | null;
+    scheduledReviewCount: number;
+    completedReviewCount: number;
+    dueReviewCount: number;
+    upcomingReviewCount: number;
+    sourceRubricAttemptCount: number;
+    sourceRubricRequiredReviewCount: number;
+    sourceRubricCompletedReviewCount: number;
+    sourceRubricReviewCompletionRate: number | null;
+  };
+  packages: Array<{
+    packageId: string;
+    packageVersion: string;
+    packageName: string;
+    sourceType: ContentSourceType | null;
+    packageStatus: string;
+    contentDefinitionAvailable: boolean;
+    firstActivityAt: string | null;
+    lastActivityAt: string | null;
+    activationCount: number;
+    assessmentCount: number;
+    completedAssessmentCount: number;
+    summary: PrivateTutorLearningHistoryMetrics;
+    chapters: Array<{
+      moduleId: string;
+      moduleName: string;
+      orderIndex: number;
+      knowledgeCount: number;
+      firstActivityAt: string | null;
+      lastActivityAt: string | null;
+      summary: PrivateTutorLearningHistoryMetrics;
+      topics: Array<{ topicId: string; topicName: string; knowledgeIds: string[] }>;
+    }>;
+    recentSessions: Array<{
+      id: string;
+      status: string;
+      moduleId: string;
+      moduleName: string;
+      knowledgeId: string;
+      knowledgeTitle: string;
+      planId: string | null;
+      planDayIndex: number | null;
+      practiceCount: number;
+      evidenceCount: number;
+      startedAt: string | null;
+      completedAt: string | null;
+      reviewAt: string | null;
+    }>;
+  }>;
+}
+
 export async function getPrivateTutorSnapshot() {
   return request<PrivateTutorSnapshotResponse>(
     "GET",
@@ -1090,6 +1188,14 @@ export async function getPrivateTutorSnapshot() {
 
 export async function getPrivateTutorLearningPlan() {
   return request<PrivateTutorIntelligence>("GET", "/api/private-tutor/profile/learning-plan");
+}
+
+export async function getPrivateTutorLearningHistory() {
+  const result = await request<{ history: PrivateTutorLearningHistory }>(
+    "GET",
+    "/api/private-tutor/profile/learning-history",
+  );
+  return result.history;
 }
 
 export async function rebalancePrivateTutorLearningPlan(missedDayIndex: number) {

@@ -44,6 +44,7 @@ import {
   answerPrivateTutorReview,
   getCurrentPrivateTutorAssessment,
   getCurrentPrivateTutorSession,
+  getPrivateTutorLearningHistory,
   getPrivateTutorProfile,
   getPrivateTutorDataPolicy,
   getPrivateTutorSnapshot,
@@ -73,6 +74,7 @@ import {
   type PrivateTutorReviewBook,
   type PrivateTutorLearner,
   type PrivateTutorLearningPlan,
+  type PrivateTutorLearningHistory,
   type PrivateTutorProfileMigrationReport,
   type PrivateTutorSession,
   type PrivateTutorSessionPace,
@@ -1467,26 +1469,103 @@ function reviewPhaseLabel(phase: "correction" | "similar" | "variation" | "delay
   return { correction: "先把原题讲清楚", similar: "换一道同类题", variation: "再试一道变式题", delayed: "间隔一天再确认" }[phase];
 }
 
-function Growth({ state }: { state: LearnerTutorState }) {
-  const bars = [32, 44, 41, 56, 63, 69, Math.min(92, 56 + state.completedSessions * 3)];
+function Growth({ state: _state }: { state: LearnerTutorState }) {
+  const [history, setHistory] = useState<PrivateTutorLearningHistory | null>(null);
+  const [selectedPackageKey, setSelectedPackageKey] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+
+  useEffect(() => {
+    let current = true;
+    setLoading(true);
+    setError("");
+    void getPrivateTutorLearningHistory()
+      .then((value) => {
+        if (!current) return;
+        setHistory(value);
+        setSelectedPackageKey((selected) => value.packages.some((item) => historyPackageKey(item) === selected)
+          ? selected
+          : value.packages[0] ? historyPackageKey(value.packages[0]) : "");
+      })
+      .catch((loadError) => {
+        if (!current) return;
+        setError(loadError instanceof Error ? loadError.message : "暂时无法读取学习历史。");
+      })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [loadAttempt]);
+
+  const selectedPackage = history?.packages.find((item) => historyPackageKey(item) === selectedPackageKey)
+    ?? history?.packages[0]
+    ?? null;
   return (
     <section>
       <p className="text-sm font-medium text-violet-600">看见自己的进步</p>
       <h1 className="mt-1 text-2xl font-bold">我的成长</h1>
-      <p className="mt-2 text-sm text-muted-foreground">这里没有排名，只记录你能独立做到的事情。</p>
-      <div className="mt-6 grid gap-4 sm:grid-cols-3">
-        <Card className="p-5"><GentleStat value={`${state.completedSessions}`} label="完成学习旅程" /></Card>
-        <Card className="p-5"><GentleStat value={`${state.independentAnswers}`} label="独立想出的答案" /></Card>
-        <Card className="p-5"><GentleStat value={`${state.streakDays} 天`} label="最近愿意来学习" /></Card>
-      </div>
-      <Card className="mt-5 p-5">
-        <div className="flex items-center justify-between"><h2 className="font-semibold">这一周的理解在变稳</h2><span className="text-xs text-muted-foreground">只和过去的自己比</span></div>
-        <div className="mt-6 flex h-44 items-end gap-3" aria-label="七天独立掌握趋势">
-          {bars.map((height, index) => <div key={index} className="flex flex-1 flex-col items-center gap-2"><div className="w-full max-w-12 rounded-t-xl bg-gradient-to-t from-violet-500 to-emerald-400 transition-all" style={{ height: `${height}%` }} /><span className="text-xs text-muted-foreground">{index + 1}</span></div>)}
-        </div>
-      </Card>
+      <p className="mt-2 text-sm text-muted-foreground">这里没有排名，只按教材版本和章节记录真实完成情况、独立作答与复习安排。</p>
+      {loading ? <p className="mt-6 text-sm text-muted-foreground">正在整理学习历史…</p> : null}
+      {error ? <Card className="mt-6 border-amber-200 p-5"><p role="alert" className="text-sm text-amber-800 dark:text-amber-200">{error}</p><Button className="mt-3" size="sm" variant="secondary" onClick={() => setLoadAttempt((value) => value + 1)}>重新读取</Button></Card> : null}
+      {!loading && !error && history ? (
+        <>
+          <div className="mt-6 grid gap-4 sm:grid-cols-3">
+            <Card className="p-5"><GentleStat value={formatHistoryRate(history.summary.planDayCompletionRate)} label={`已完成 ${history.summary.completedPlanDayCount}/${history.summary.startedPlanDayCount} 个开始过的计划日`} /></Card>
+            <Card className="p-5"><GentleStat value={formatHistoryRate(history.summary.independentCorrectRate)} label={`独立正确 ${history.summary.independentCorrectCount}/${history.summary.independentAttemptCount} 次`} /></Card>
+            <Card className="p-5"><GentleStat value={`${history.summary.dueReviewCount}`} label="已经到期、等待回想的复习" /></Card>
+          </div>
+          {history.packages.length === 0 ? (
+            <Card className="mt-5 p-6 text-center"><BookHeart className="mx-auto size-9 text-violet-500" /><p className="mt-3 font-medium">完成第一段学习后，这里会出现章节历史</p><p className="mt-1 text-sm text-muted-foreground">摸底、练习和会话记录不会被虚构成进度。</p></Card>
+          ) : (
+            <>
+              <Card className="mt-5 p-5">
+                <label className="text-sm font-medium">查看教材与版本
+                  <select value={selectedPackage ? historyPackageKey(selectedPackage) : ""} onChange={(event) => setSelectedPackageKey(event.target.value)} className="mt-2 h-11 w-full rounded-lg border bg-card px-3 font-normal sm:max-w-xl">
+                    {history.packages.map((item) => <option key={historyPackageKey(item)} value={historyPackageKey(item)}>{item.packageName} · v{item.packageVersion}</option>)}
+                  </select>
+                </label>
+                {selectedPackage ? <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted-foreground"><span className="rounded-full bg-muted px-3 py-1.5">{selectedPackage.activationCount} 次学习入口</span><span className="rounded-full bg-muted px-3 py-1.5">{selectedPackage.summary.practiceAttemptCount} 次作答</span><span className="rounded-full bg-muted px-3 py-1.5">{selectedPackage.summary.eligibleEvidenceCount} 条有效证据</span>{selectedPackage.summary.sourceRubric.attemptCount > 0 ? <span className="rounded-full bg-muted px-3 py-1.5">来源量表复核 {formatHistoryRate(selectedPackage.summary.sourceRubric.reviewCompletionRate)}{selectedPackage.summary.sourceRubric.pendingReviewCount ? ` · 待复核 ${selectedPackage.summary.sourceRubric.pendingReviewCount}` : ""}</span> : null}{!selectedPackage.contentDefinitionAvailable ? <span className="rounded-full bg-amber-100 px-3 py-1.5 text-amber-900">当前缺少该旧版本的章节定义</span> : null}</div> : null}
+              </Card>
+              {selectedPackage ? (
+                <div className="mt-5 grid gap-4">
+                  {selectedPackage.chapters.map((chapter) => (
+                    <Card key={chapter.moduleId} className="p-5">
+                      <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-medium text-violet-600">章节学习历史</p><h2 className="mt-1 font-semibold">{chapter.moduleName}</h2><p className="mt-1 text-xs text-muted-foreground">{chapter.topics.map((topic) => topic.topicName).join(" · ") || "旧版本章节"}</p></div><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">{chapter.summary.completedSessionCount} 次完整学习</span></div>
+                      <div className="mt-4 grid gap-3 text-sm sm:grid-cols-4">
+                        <HistoryMetric label="开始过的计划日" value={`${chapter.summary.completedPlanDayCount}/${chapter.summary.startedPlanDayCount}`} />
+                        <HistoryMetric label="证据有效率" value={formatHistoryRate(chapter.summary.evidenceEligibilityRate)} />
+                        <HistoryMetric label="独立正确率" value={formatHistoryRate(chapter.summary.independentCorrectRate)} />
+                        <HistoryMetric label="到期复习" value={`${chapter.summary.review.dueCount}`} />
+                      </div>
+                      {chapter.summary.currentPlan.scheduledDays > 0 ? <p className="mt-4 text-xs text-muted-foreground">当前计划：完成 {chapter.summary.currentPlan.completedDays}/{chapter.summary.currentPlan.scheduledDays} 天，进行中 {chapter.summary.currentPlan.inProgressDays} 天。</p> : null}
+                    </Card>
+                  ))}
+                  {selectedPackage.recentSessions.length > 0 ? <Card className="p-5"><h2 className="font-semibold">最近学习记录</h2><div className="mt-3 divide-y">{selectedPackage.recentSessions.slice(0, 5).map((session) => <div key={session.id} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm"><div><p className="font-medium">{session.knowledgeTitle}</p><p className="text-xs text-muted-foreground">{session.moduleName} · {formatHistoryDate(session.completedAt ?? session.startedAt)}</p></div><span className="text-xs text-muted-foreground">练习 {session.practiceCount} 次 · 证据 {session.evidenceCount} 条</span></div>)}</div></Card> : null}
+                </div>
+              ) : null}
+            </>
+          )}
+        </>
+      ) : null}
     </section>
   );
+}
+
+function HistoryMetric({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-xl bg-muted/55 p-3"><p className="font-semibold">{value}</p><p className="mt-1 text-xs text-muted-foreground">{label}</p></div>;
+}
+
+function historyPackageKey(item: { packageId: string; packageVersion: string }) {
+  return `${item.packageId}@${item.packageVersion}`;
+}
+
+function formatHistoryRate(value: number | null) {
+  return value == null ? "暂无" : `${Math.round(value * 100)}%`;
+}
+
+function formatHistoryDate(value: string | null) {
+  if (!value) return "时间未记录";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "时间未记录" : date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
 }
 
 function GentleStat({ value, label }: { value: string; label: string }) {

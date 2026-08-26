@@ -13,6 +13,7 @@ import {
   confirmPrivateTutorAuthoredContent,
   publishPrivateTutorKnowledgeMapDraft,
   activatePrivateTutorContentPackage,
+  getPrivateTutorLearningHistory,
 } from "@/features/private-tutor/private-tutor-api";
 import * as apiRequest from "@/lib/api/request";
 
@@ -175,5 +176,13 @@ describe("private tutor material import & draft API", () => {
       entryMode: "chapter",
       startModuleId: "mod_1",
     });
+  });
+
+  it("getPrivateTutorLearningHistory reads the account-scoped quality projection", async () => {
+    const history = { schemaVersion: 1, learnerId: "learner_xyz", packages: [] };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ history });
+    const result = await getPrivateTutorLearningHistory();
+    expect(result).toEqual(history);
+    expect(spy).toHaveBeenCalledWith("GET", "/api/private-tutor/profile/learning-history");
   });
 });

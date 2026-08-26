@@ -34,6 +34,7 @@ import {
   decidePrivateTutorStrategy,
   derivePrivateTutorLearnerModel,
 } from "../services/private-tutor-learning-model.mjs";
+import { buildPrivateTutorLearningHistory } from "../services/private-tutor-learning-history.mjs";
 import {
   completePrivateTutorActivity,
   completePrivateTutorPlanDay,
@@ -1305,6 +1306,25 @@ export async function handlePrivateTutorRoutes({
       profile: learnerView(resolved.learner),
       snapshot: snapshotView(snapshot),
       ...currentPrivateTutorIntelligence(state, resolved.learner.id),
+    });
+    return true;
+  }
+
+  if (url.pathname === "/api/private-tutor/profile/learning-history") {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    sendJson(res, 200, {
+      history: buildPrivateTutorLearningHistory(state, resolved.learner.id, {
+        at: now(),
+        learningProfileId: actor?.userId ?? LOCAL_USER_ID,
+      }),
     });
     return true;
   }
@@ -3416,6 +3436,7 @@ function rejectPausedPrivateTutorLearningWrite({ req, res, url, sendJson, state,
     });
     return true;
   }
+
   const pause = privateTutorPilotPauseForLearner(state, learner.id);
   if (!pause) return false;
   sendJson(res, 423, {

@@ -13,6 +13,7 @@ const apiMocks = vi.hoisted(() => ({
   listPackages: vi.fn(),
   getPackage: vi.fn(),
   activatePackage: vi.fn(),
+  learningHistory: vi.fn(),
 }));
 
 const sessionUser = { role: "viewer" } as const;
@@ -70,6 +71,7 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorAssessment: apiMocks.currentAssessment,
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
   getPrivateTutorReviewBook: () => Promise.resolve(emptyReviewBook),
+  getPrivateTutorLearningHistory: apiMocks.learningHistory,
   getPrivateTutorWeeklyReport: () => Promise.reject(new Error("not used")),
   getPrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
   updatePrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
@@ -143,6 +145,49 @@ describe("My private tutor personal learning information architecture", () => {
     }]);
     apiMocks.getPackage.mockReset().mockRejectedValue(new Error("not used"));
     apiMocks.activatePackage.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.learningHistory.mockReset().mockResolvedValue({
+      schemaVersion: 1,
+      learnerId: activeProfile.id,
+      generatedAt: "2026-08-26T08:00:00.000Z",
+      definitions: {},
+      summary: {
+        packageCount: 1, chapterCount: 1, sessionCount: 2, completedSessionCount: 2,
+        startedPlanDayCount: 2, completedPlanDayCount: 1, planDayCompletionRate: 0.5,
+        practiceAttemptCount: 6, eligibleEvidenceCount: 4, evidenceEligibilityRate: 0.6667,
+        independentAttemptCount: 3, independentCorrectCount: 2, independentCorrectRate: 0.6667,
+        scheduledReviewCount: 2, completedReviewCount: 1, dueReviewCount: 1, upcomingReviewCount: 0,
+        sourceRubricAttemptCount: 3, sourceRubricRequiredReviewCount: 1, sourceRubricCompletedReviewCount: 1,
+        sourceRubricReviewCompletionRate: 1,
+      },
+      packages: [{
+        packageId: "demo-math-foundations-v1", packageVersion: "1.0.0", packageName: "初中数学基础：一元一次方程",
+        sourceType: "textbook", packageStatus: "published", contentDefinitionAvailable: true,
+        firstActivityAt: "2026-08-20T08:00:00.000Z", lastActivityAt: "2026-08-26T08:00:00.000Z",
+        activationCount: 1, assessmentCount: 1, completedAssessmentCount: 1,
+        summary: {
+          sessionCount: 2, completedSessionCount: 2, startedPlanDayCount: 2, completedPlanDayCount: 1,
+          planDayCompletionRate: 0.5, currentPlan: { planId: "plan-1", status: "active", scheduledDays: 7, completedDays: 1, inProgressDays: 1 },
+          practiceAttemptCount: 6, eligibleEvidenceCount: 4, evidenceEligibilityRate: 0.6667,
+          independentAttemptCount: 3, independentCorrectCount: 2, independentCorrectRate: 0.6667,
+          review: { scheduledCount: 2, completedCount: 1, dueCount: 1, upcomingCount: 0 },
+          sourceRubric: { attemptCount: 3, requiredReviewCount: 1, completedReviewCount: 1, pendingReviewCount: 0, reviewCompletionRate: 1 },
+        },
+        chapters: [{
+          moduleId: "mod-equations", moduleName: "一元一次方程与等式性质", orderIndex: 1, knowledgeCount: 4,
+          firstActivityAt: "2026-08-20T08:00:00.000Z", lastActivityAt: "2026-08-26T08:00:00.000Z",
+          summary: {
+            sessionCount: 2, completedSessionCount: 2, startedPlanDayCount: 2, completedPlanDayCount: 1,
+            planDayCompletionRate: 0.5, currentPlan: { planId: "plan-1", status: "active", scheduledDays: 7, completedDays: 1, inProgressDays: 1 },
+            practiceAttemptCount: 6, eligibleEvidenceCount: 4, evidenceEligibilityRate: 0.6667,
+            independentAttemptCount: 3, independentCorrectCount: 2, independentCorrectRate: 0.6667,
+            review: { scheduledCount: 2, completedCount: 1, dueCount: 1, upcomingCount: 0 },
+            sourceRubric: { attemptCount: 3, requiredReviewCount: 1, completedReviewCount: 1, pendingReviewCount: 0, reviewCompletionRate: 1 },
+          },
+          topics: [{ topicId: "top-foundations", topicName: "运算与方程基础", knowledgeIds: ["integer"] }],
+        }],
+        recentSessions: [{ id: "session-1", status: "completed", moduleId: "mod-equations", moduleName: "一元一次方程与等式性质", knowledgeId: "integer", knowledgeTitle: "有理数运算", planId: "plan-1", planDayIndex: 1, practiceCount: 3, evidenceCount: 2, startedAt: "2026-08-25T08:00:00.000Z", completedAt: "2026-08-25T08:20:00.000Z", reviewAt: "2026-08-26T08:20:00.000Z" }],
+      }],
+    });
   });
   afterEach(() => cleanup());
 
@@ -191,6 +236,18 @@ describe("My private tutor personal learning information architecture", () => {
     expect(screen.getByRole("button", { name: /学习数据/ })).toBeTruthy();
     expect(screen.queryByText("家庭与监护")).toBeNull();
     expect(screen.queryByText("家长入口")).toBeNull();
+  });
+
+  it("shows versioned chapter history and real long-term quality metrics", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的成长" }));
+
+    expect(await screen.findByText("已完成 1/2 个开始过的计划日")).toBeTruthy();
+    expect(screen.getByText("一元一次方程与等式性质")).toBeTruthy();
+    expect(screen.getByText("当前计划：完成 1/7 天，进行中 1 天。")).toBeTruthy();
+    expect(screen.getByText("有理数运算")).toBeTruthy();
+    expect(apiMocks.learningHistory).toHaveBeenCalledTimes(1);
   });
 
   it("chooses diagnostic or a concrete chapter before activating personal material", async () => {

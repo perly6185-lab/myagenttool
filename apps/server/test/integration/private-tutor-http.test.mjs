@@ -246,6 +246,18 @@ test("profile sub-resources resolve the owned profile and stay account-scoped", 
   const plan = await call("/api/private-tutor/profile/learning-plan", { token: "tok_personal" });
   assert.equal(plan.status, 200);
 
+  const history = await call("/api/private-tutor/profile/learning-history", { token: "tok_personal" });
+  assert.equal(history.status, 200);
+  assert.equal(history.body.history.learnerId, profileId);
+  assert.equal(history.body.history.summary.practiceAttemptCount, 1);
+  assert.equal(history.body.history.packages[0].packageVersion, "1.0.0");
+  assert.equal(JSON.stringify(history.body).includes("normalizedAnswer"), false);
+
+  const foreignHistory = await call("/api/private-tutor/profile/learning-history", { token: "tok_personal_race" });
+  assert.equal(foreignHistory.status, 200);
+  assert.notEqual(foreignHistory.body.history.learnerId, profileId);
+  assert.equal(foreignHistory.body.history.summary.practiceAttemptCount, 0);
+
   const review = await call("/api/private-tutor/profile/review", { token: "tok_personal" });
   assert.equal(review.status, 200);
   assert.equal("reviewBook" in review.body, true);
