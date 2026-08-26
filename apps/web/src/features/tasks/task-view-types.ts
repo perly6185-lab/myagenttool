@@ -158,6 +158,8 @@ export type LocalWorkItem = {
     previewId: string | null;
     batchPreviewId: string | null;
     previewIds: string[];
+    invalidatedAt?: string | null;
+    invalidatedReason?: string | null;
   }) | null;
   localContentRefs?: WorkItemContentReference[];
   materialChangesPending?: boolean;

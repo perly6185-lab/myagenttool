@@ -2672,7 +2672,7 @@ export const api = {
     );
   },
   getWorkItemLedgerPostingPlan: (workItemId: string) =>
-    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[] }; preview: Record<string, unknown> | null; batchPreview: Record<string, unknown> | null }>(
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[]; invalidatedAt?: string | null; invalidatedReason?: string | null }; preview: Record<string, unknown> | null; batchPreview: Record<string, unknown> | null }>(
       "GET",
       `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan`,
     ),
@@ -2681,13 +2681,13 @@ export const api = {
     primary?: LedgerPostingPlan["primary"];
     related?: LedgerPostingPlan["related"];
   }) =>
-    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[] }; preview: Record<string, unknown> | null; batchPreview: Record<string, unknown> | null }>(
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[]; invalidatedAt?: string | null; invalidatedReason?: string | null }; preview: Record<string, unknown> | null; batchPreview: Record<string, unknown> | null }>(
       "POST",
       `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan`,
       payload,
     ),
   commitWorkItemLedgerPostingPlan: (workItemId: string, payload: { planId: string; expectedRevision: number; approvalToken: string }) =>
-    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[] } }>(
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[]; invalidatedAt?: string | null; invalidatedReason?: string | null } }>(
       "POST",
       `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan/commit`,
       payload,

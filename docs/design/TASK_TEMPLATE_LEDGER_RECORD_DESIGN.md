@@ -242,7 +242,7 @@ type LedgerPostingPlan = {
   resultRevision: number;
   primary: LedgerPostingOperation | null;
   related: LedgerPostingOperation[];
-  state: "proposed" | "approved" | "committed" | "partially_committed" | "cancelled";
+  state: "proposed" | "approved" | "committed" | "partially_committed" | "invalidated" | "cancelled";
 };
 
 type LedgerPostingOperation = {
@@ -256,6 +256,8 @@ type LedgerPostingOperation = {
 ```
 
 现有 `ledger-upserts` 继续作为文件台账的安全提交实现。后续提供方只需实现相同的预览、版本检查、提交和审计合同。
+
+任务修订或资料快照在提交前发生变化时，仍待审批的计划进入 `invalidated`，旧授权不得继续提交。用户可以沿用原拟写入内容对当前任务修订重新生成差异预览，但必须再次核对并取得新的单次审批；这一步不代表系统已经重新计算业务结果。
 
 ### 4.6 与现有 LedgerEntry 的命名边界
 

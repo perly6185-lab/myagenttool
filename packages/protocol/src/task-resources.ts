@@ -54,6 +54,7 @@ export declare const ledgerPostingPlanStates: readonly [
   "approved",
   "committed",
   "partially_committed",
+  "invalidated",
   "cancelled",
 ];
 export type LedgerPostingPlanState = (typeof ledgerPostingPlanStates)[number];

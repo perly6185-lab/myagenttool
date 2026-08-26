@@ -201,6 +201,76 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
   assert.equal(reopened.body.workItem.completedAt, null);
 });
 
+test("work item revisions invalidate pending ledger plans before old approvals can write", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Refresh ledger plan", type: "task" },
+  });
+  assert.equal(created.status, 201);
+  const workItem = runtimeState.workItems.find((item) => item.id === created.body.workItem.id);
+  const planId = `tpp_http_stale_${workItem.id}`;
+  workItem.ledgerPostingPlanId = planId;
+  runtimeState.taskLedgerPostingPlans.unshift({
+    id: planId,
+    schemaVersion: 2,
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    workItemId: workItem.id,
+    resultRevision: 1,
+    plan: {
+      schemaVersion: 2,
+      workItemId: workItem.id,
+      resultRevision: 1,
+      primary: {
+        ledgerDefinitionId: "ldg_http_stale",
+        recordId: null,
+        action: "create",
+        fields: { title: "Old result" },
+        sourceEvidence: [{ artifactId: "artifact_http_stale", field: "title" }],
+        approvalRequired: true,
+      },
+      related: [],
+      state: "proposed",
+    },
+    inputDigest: "old-digest",
+    previewId: "lup_http_stale",
+    batchPreviewId: null,
+    previewIds: ["lup_http_stale"],
+    previewSnapshot: { id: "lup_http_stale", action: "insert", changedCells: [] },
+    batchPreviewSnapshot: null,
+    expectedLedgerActions: ["insert"],
+    status: "proposed",
+    revision: 1,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    createdBy: "usr_a",
+  });
+
+  const updated = await call(`/api/work-items/${workItem.id}`, {
+    method: "PATCH",
+    body: { expectedRevision: 1, title: "Refresh ledger plan with current materials" },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(runtimeState.taskLedgerPostingPlans.find((plan) => plan.id === planId).status, "invalidated");
+
+  const grant = await call("/api/approvals/grants", {
+    method: "POST",
+    body: { action: "ledger_posting_plan_commit", targetId: planId },
+  });
+  assert.equal(grant.status, 201);
+  const denied = await call(`/api/work-items/${workItem.id}/ledger-posting-plan/commit`, {
+    method: "POST",
+    body: { planId, expectedRevision: 2, approvalToken: grant.body.token },
+  });
+  assert.equal(denied.status, 409);
+  assert.equal(denied.body.error, "task_ledger_posting_plan_stale");
+  assert.equal(runtimeState.approvalGrants.find((candidate) => candidate.id === grant.body.grantId).consumedAt, null);
+  const stale = await call(`/api/work-items/${workItem.id}/ledger-posting-plan`);
+  assert.equal(stale.body.plan.status, "invalidated");
+  assert.equal(stale.body.plan.resultRevision, 1);
+  assert.equal(stale.body.plan.invalidatedReason, "updated");
+});
+
 test("failed result checks create one team-scoped independent repair over HTTP", async () => {
   const created = await call("/api/work-items", {
     method: "POST",

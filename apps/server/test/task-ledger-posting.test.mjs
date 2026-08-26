@@ -137,6 +137,66 @@ test("requires an issued grant and commits the exact prepared plan", async () =>
   assert.equal(calls.filter((call) => call.type === "commit").length, 1);
 });
 
+test("invalidates a stale plan before consuming approval and allows a fresh replacement", async () => {
+  let approvalChecks = 0;
+  const { state, service, calls } = harness({
+    validateApprovalToken: (token) => {
+      approvalChecks += 1;
+      return token === "fresh-token"
+        ? { approved: true, mode: "grant", grantId: "apg_fresh" }
+        : { approved: false, reason: "grant_required" };
+    },
+  });
+  const prepared = await service.prepareLedgerPostingPlan({
+    workItemId: "lwi_1",
+    expectedRevision: 3,
+    ...plan(),
+  }, actor);
+  const oldPlanId = prepared.body.plan.id;
+
+  state.workItems[0].revision = 4;
+  assert.equal(service.invalidateStaleLedgerPostingPlanForWorkItem(state.workItems[0], null, "system_refresh"), true);
+  const stale = service.getLedgerPostingPlan({ workItemId: "lwi_1" }, actor);
+  assert.equal(stale.status, 200);
+  assert.equal(stale.body.plan.status, "invalidated");
+  assert.equal(stale.body.plan.state, "invalidated");
+  assert.equal(stale.body.plan.invalidatedReason, "system_refresh");
+  assert.equal(calls.filter((call) => call.type === "task_ledger_posting_plan_invalidated").length, 1);
+
+  const denied = await service.commitLedgerPostingPlan({
+    workItemId: "lwi_1",
+    planId: oldPlanId,
+    expectedRevision: 4,
+    approvalToken: "old-token",
+  }, actor);
+  assert.equal(denied.status, 409);
+  assert.equal(denied.body.error, "task_ledger_posting_plan_stale");
+  assert.equal(approvalChecks, 0);
+
+  const refreshed = await service.prepareLedgerPostingPlan({
+    workItemId: "lwi_1",
+    expectedRevision: 4,
+    ...plan(),
+  }, actor);
+  assert.equal(refreshed.status, 201);
+  assert.notEqual(refreshed.body.plan.id, oldPlanId);
+  assert.equal(refreshed.body.plan.resultRevision, 4);
+  assert.equal(refreshed.body.plan.status, "proposed");
+  assert.equal(state.workItems[0].ledgerPostingPlanId, refreshed.body.plan.id);
+  assert.equal(state.taskLedgerPostingPlans.length, 2);
+  assert.equal(service.getLedgerPostingPlan({ workItemId: "lwi_1" }, actor).body.plan.id, refreshed.body.plan.id);
+
+  const committed = await service.commitLedgerPostingPlan({
+    workItemId: "lwi_1",
+    planId: refreshed.body.plan.id,
+    expectedRevision: 4,
+    approvalToken: "fresh-token",
+  }, actor);
+  assert.equal(committed.status, 200);
+  assert.equal(committed.body.plan.status, "committed");
+  assert.equal(approvalChecks, 1);
+});
+
 test("rejects evidence that is not in the task snapshot", async () => {
   const { service } = harness();
   const result = await service.prepareLedgerPostingPlan({

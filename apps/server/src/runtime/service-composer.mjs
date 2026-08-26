@@ -514,6 +514,7 @@ export function createServerRuntimeServices({
   let syncAdaptiveWorkItemOutcome = () => {};
   let requestWorkItemAutoSchedulerSweep = () => {};
   let enqueueWorkItemReportDeliveryBatch = () => ({ ok: false, reason: "delivery_unavailable" });
+  let invalidateStaleTaskLedgerPostingPlan = () => false;
   const localContentCatalogService = createLocalContentCatalogService({
     state, stateStorePath, now, persistStateSoon, store, autoIndex: true,
   });
@@ -553,6 +554,7 @@ export function createServerRuntimeServices({
     enqueueChannelDeliveryBatch: (input) => enqueueWorkItemReportDeliveryBatch(input),
     validateApprovalToken,
     onWorkItemChanged: (item, actor, reason) => {
+      invalidateStaleTaskLedgerPostingPlan(item, actor, reason);
       syncAdaptiveWorkItemOutcome(item, actor);
       requestWorkItemAutoSchedulerSweep();
       try {
@@ -645,6 +647,7 @@ export function createServerRuntimeServices({
     commitLedgerBatchUpsertPreview: ledgerUpsertService.commitBatchPreview,
     validateApprovalToken,
   });
+  invalidateStaleTaskLedgerPostingPlan = taskLedgerPostingService.invalidateStaleLedgerPostingPlanForWorkItem;
   const businessPilotEvidenceService = createBusinessPilotEvidenceService({
     state,
     now,

@@ -9,6 +9,8 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const APPROVAL_ACTION = "ledger_posting_plan_commit";
 const SUPPORTED_ACTIONS = new Set(["create", "update"]);
+const ACTIVE_PLAN_STATUSES = new Set(["proposed", "approved"]);
+const REPLACEABLE_PLAN_STATUSES = new Set(["cancelled", "invalidated"]);
 
 function actorTeam(actor) {
   return actor?.teamId ?? LOCAL_TEAM_ID;
@@ -35,6 +37,8 @@ function publicPlan(row) {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     createdBy: row.createdBy,
+    invalidatedAt: row.invalidatedAt ?? null,
+    invalidatedReason: row.invalidatedReason ?? null,
   };
 }
 
@@ -137,6 +141,47 @@ export function createTaskLedgerPostingService({
     };
   }
 
+  function invalidatePlan(row, item, reason = "work_item_revision_changed") {
+    if (!row || !item || !ACTIVE_PLAN_STATUSES.has(row.status) || row.resultRevision === item.revision) return false;
+    const timestamp = now();
+    runTx(() => {
+      row.status = "invalidated";
+      row.plan.state = "invalidated";
+      row.revision += 1;
+      row.updatedAt = timestamp;
+      row.invalidatedAt = timestamp;
+      row.invalidatedReason = reason;
+      appendEvent({
+        invocationId: null,
+        type: "task_ledger_posting_plan_invalidated",
+        level: "warn",
+        message: `Ledger posting plan ${row.id} was invalidated after work item ${item.id} changed.`,
+        data: {
+          planId: row.id,
+          workItemId: item.id,
+          plannedRevision: row.resultRevision,
+          currentRevision: item.revision,
+          reason,
+        },
+      });
+    });
+    return true;
+  }
+
+  function reconcilePlan(row, item, reason) {
+    invalidatePlan(row, item, reason);
+    return row;
+  }
+
+  function invalidateStaleLedgerPostingPlanForWorkItem(item, _actor = null, reason = "work_item_revision_changed") {
+    if (!item) return false;
+    const row = item.ledgerPostingPlanId
+      ? (state.taskLedgerPostingPlans ?? []).find((candidate) => candidate.id === item.ledgerPostingPlanId
+        && candidate.ownerTeamId === item.ownerTeamId && candidate.projectId === item.projectId) ?? null
+      : null;
+    return invalidatePlan(row, item, reason);
+  }
+
   async function prepareLedgerPostingPlan({ workItemId, expectedRevision, plan: inputPlan = null, ...legacyPlan } = {}, actor = null) {
     const item = workItemFor(workItemId, actor);
     if (!item) return { status: 404, body: { error: "work_item_not_found" } };
@@ -160,10 +205,12 @@ export function createTaskLedgerPostingService({
 
     const inputDigest = digest(normalized.value);
     const existing = item.ledgerPostingPlanId ? planFor(item.ledgerPostingPlanId, actor) : null;
-    if (existing && existing.inputDigest === inputDigest && !["cancelled", "partially_committed"].includes(existing.status)) {
+    reconcilePlan(existing, item, "work_item_revision_changed_before_prepare");
+    if (existing && existing.inputDigest === inputDigest && !REPLACEABLE_PLAN_STATUSES.has(existing.status)
+      && existing.status !== "partially_committed") {
       return { status: 200, body: resultBody(existing, { replayed: true }) };
     }
-    if (existing && !["cancelled", "committed"].includes(existing.status)) {
+    if (existing && !REPLACEABLE_PLAN_STATUSES.has(existing.status) && existing.status !== "committed") {
       return { status: 409, body: { error: "task_ledger_posting_plan_exists", planId: existing.id } };
     }
 
@@ -248,6 +295,7 @@ export function createTaskLedgerPostingService({
     const item = workItemFor(row.workItemId, actor);
     if (!item) return { status: 404, body: { error: "work_item_not_found" } };
     if (item.revision !== expectedRevision || row.resultRevision !== item.revision) {
+      invalidatePlan(row, item, "work_item_revision_changed_before_commit");
       return { status: 409, body: { error: "task_ledger_posting_plan_stale", currentRevision: item.revision } };
     }
     if (!["proposed", "approved"].includes(row.status)) {
@@ -305,13 +353,25 @@ export function createTaskLedgerPostingService({
   }
 
   function getLedgerPostingPlan({ planId, workItemId } = {}, actor = null) {
-    const row = planId ? planFor(planId, actor) : (state.taskLedgerPostingPlans ?? []).find((candidate) =>
-      candidate.workItemId === String(workItemId) && visible(candidate, actor, state));
+    const item = workItemId ? workItemFor(workItemId, actor) : null;
+    const row = planId
+      ? planFor(planId, actor)
+      : item?.ledgerPostingPlanId
+        ? planFor(item.ledgerPostingPlanId, actor)
+        : (state.taskLedgerPostingPlans ?? []).find((candidate) =>
+          candidate.workItemId === String(workItemId) && visible(candidate, actor, state));
     if (!row) return { status: 404, body: { error: "task_ledger_posting_plan_not_found" } };
+    const owningItem = item ?? workItemFor(row.workItemId, actor);
+    if (owningItem) reconcilePlan(row, owningItem, "work_item_revision_changed_before_read");
     return { status: 200, body: resultBody(row) };
   }
 
-  return { prepareLedgerPostingPlan, commitLedgerPostingPlan, getLedgerPostingPlan };
+  return {
+    prepareLedgerPostingPlan,
+    commitLedgerPostingPlan,
+    getLedgerPostingPlan,
+    invalidateStaleLedgerPostingPlanForWorkItem,
+  };
 }
 
 export { APPROVAL_ACTION as TASK_LEDGER_POSTING_APPROVAL_ACTION };

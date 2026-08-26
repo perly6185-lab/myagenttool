@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
   getBusinessLedgerRecord: vi.fn(),
   getWorkItemLedgerPostingPlan: vi.fn(),
+  prepareWorkItemLedgerPostingPlan: vi.fn(),
   issueApprovalGrant: vi.fn(),
   commitWorkItemLedgerPostingPlan: vi.fn(),
   createWorkItemResultRepair: vi.fn(),
@@ -57,6 +58,7 @@ vi.mock("@/data/use-console-actions", () => ({
     getWorkItem: mocks.getWorkItem,
     getBusinessLedgerRecord: mocks.getBusinessLedgerRecord,
     getWorkItemLedgerPostingPlan: mocks.getWorkItemLedgerPostingPlan,
+    prepareWorkItemLedgerPostingPlan: mocks.prepareWorkItemLedgerPostingPlan,
     issueApprovalGrant: mocks.issueApprovalGrant,
     commitWorkItemLedgerPostingPlan: mocks.commitWorkItemLedgerPostingPlan,
     createWorkItemResultRepair: mocks.createWorkItemResultRepair,
@@ -297,6 +299,64 @@ describe("work item summary presentation", () => {
       approvalToken: "issued-token",
     });
     expect(await screen.findByText("The ledger was updated and the change was recorded.")).toBeTruthy();
+  });
+
+  it("regenerates an invalidated ledger plan from the current task revision", async () => {
+    const operation = {
+      ledgerDefinitionId: "ldg_orders",
+      recordId: null,
+      action: "create" as const,
+      fields: { order_number: "ORD-001" },
+      sourceEvidence: [{ artifactId: "artifact_order", field: "order_number" }],
+      approvalRequired: true,
+    };
+    mocks.getWorkItem.mockResolvedValue({ workItem: item({ revision: 3, ledgerPostingPlanId: "tpp_old" }) });
+    mocks.getWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: {
+        schemaVersion: 2,
+        id: "tpp_old",
+        workItemId: "lwi_1",
+        resultRevision: 2,
+        primary: operation,
+        related: [],
+        status: "invalidated",
+        state: "invalidated",
+        revision: 2,
+        invalidatedReason: "work_item_revision_changed",
+      },
+      preview: { changedCells: [{ field: "order_number", before: null, after: "ORD-001" }] },
+      batchPreview: null,
+    });
+    mocks.prepareWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: {
+        schemaVersion: 2,
+        id: "tpp_fresh",
+        workItemId: "lwi_1",
+        resultRevision: 3,
+        primary: operation,
+        related: [],
+        status: "proposed",
+        state: "proposed",
+        revision: 1,
+      },
+      preview: { changedCells: [{ field: "order_number", before: null, after: "ORD-001" }] },
+      batchPreview: null,
+    });
+
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByText("Refresh required")).toBeTruthy();
+    expect(screen.queryByText("order_number")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh plan and review again" }));
+
+    await waitFor(() => expect(mocks.prepareWorkItemLedgerPostingPlan).toHaveBeenCalledWith("lwi_1", {
+      expectedRevision: 3,
+      primary: operation,
+      related: [],
+    }));
+    expect(await screen.findByText("The proposed write was checked against the current task revision. Review the fresh diff before approving.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve and write ledger" })).toBeTruthy();
+    expect(screen.getByText("order_number")).toBeTruthy();
   });
 
   it("explains the automatically matched My template without asking the user to choose it", async () => {

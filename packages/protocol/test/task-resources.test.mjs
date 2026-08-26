@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ledgerPostingActions,
+  ledgerPostingPlanStates,
   normalizeBusinessLedgerRecordRef,
   normalizeLedgerPostingPlan,
   normalizeTaskRecordBinding,
@@ -89,6 +90,7 @@ test("template contracts require one bounded, independently verifiable outcome",
 
 test("posting plans require evidence and distinguish create from update", () => {
   assert.deepEqual(ledgerPostingActions, ["create", "update", "append_activity", "link_only"]);
+  assert.deepEqual(ledgerPostingPlanStates, ["proposed", "approved", "committed", "partially_committed", "invalidated", "cancelled"]);
   const base = {
     ledgerDefinitionId: "ledger_customer",
     recordId: null,

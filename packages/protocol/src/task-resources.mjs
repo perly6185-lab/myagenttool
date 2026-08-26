@@ -13,7 +13,7 @@ export const taskRecordBindingDirections = ["input", "output"];
 export const taskRecordBindingRoles = ["required", "reference", "primary_ledger", "related_ledger"];
 export const taskRecordResolutionSources = ["explicit_user", "current_context", "intent_match", "template_default"];
 export const taskRecordResolutionStates = ["resolved", "needs_confirmation", "stale", "unavailable"];
-export const ledgerPostingPlanStates = ["proposed", "approved", "committed", "partially_committed", "cancelled"];
+export const ledgerPostingPlanStates = ["proposed", "approved", "committed", "partially_committed", "invalidated", "cancelled"];
 export const ledgerPostingActions = ["create", "update", "append_activity", "link_only"];
 
 const SAFE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/;
