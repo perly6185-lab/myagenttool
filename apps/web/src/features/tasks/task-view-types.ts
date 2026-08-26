@@ -1,4 +1,5 @@
 import type { WorkItemContentReference } from "@/features/local-content/local-content-types";
+import type { TaskRecordBinding } from "@myagenttool/protocol/task-resources";
 
 export type GithubItem = {
   type: "issue" | "pr";
@@ -148,6 +149,7 @@ export type LocalWorkItem = {
     evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string; sourceAutoRunId?: string | null;
   }[];
   inputAssets?: WorkItemAssetRef[];
+  recordBindings?: TaskRecordBinding[];
   localContentRefs?: WorkItemContentReference[];
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];

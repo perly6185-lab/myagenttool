@@ -6,6 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { businessRoutineSchemaVersion, normalizeLocalIssueRoutineBinding } from "@myagenttool/protocol/business-routine";
+import { normalizeTaskRecordBinding } from "@myagenttool/protocol/task-resources";
 import { actorCanAccessProject, findUser, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { listDevices } from "../runtime/device.mjs";
 import { homeWorkbenchReadModel } from "../read-models/home-workbench.mjs";
@@ -349,6 +350,27 @@ function validateDraft(input, { partial = false } = {}) {
     const assets = normalizeAssetRefs(input.inputAssets ?? []);
     if (!assets) return { error: "invalid_work_item_input_assets" };
     value.inputAssets = assets;
+  }
+  if (!partial || Object.hasOwn(input, "recordBindings")) {
+    const rawBindings = Object.hasOwn(input, "recordBindings") ? input.recordBindings : [];
+    if (!Array.isArray(rawBindings) || rawBindings.length > 50) {
+      return { error: "invalid_work_item_record_bindings" };
+    }
+    const bindings = [];
+    const bindingIds = new Set();
+    let primaryLedgerCount = 0;
+    for (const candidate of rawBindings) {
+      const normalized = normalizeTaskRecordBinding(candidate);
+      if (!normalized.ok) return { error: normalized.error };
+      if (bindingIds.has(normalized.value.id)) return { error: "duplicate_work_item_record_binding" };
+      bindingIds.add(normalized.value.id);
+      if (normalized.value.direction === "output" && normalized.value.role === "primary_ledger") {
+        primaryLedgerCount += 1;
+      }
+      bindings.push(normalized.value);
+    }
+    if (primaryLedgerCount > 1) return { error: "multiple_primary_work_item_ledgers" };
+    value.recordBindings = bindings;
   }
   if (!partial || Object.hasOwn(input, "requiredCapabilities")) {
     const capabilities = strings(input.requiredCapabilities ?? [], { limit: 20, maxLength: 40 });
@@ -4867,6 +4889,10 @@ export function createWorkItemService({
     if (Object.hasOwn(changes, "myTemplateBinding")
       && (item.executionBindings ?? []).length) {
       return { ok: false, status: 409, body: { error: "work_item_my_template_binding_immutable" } };
+    }
+    if (Object.hasOwn(changes, "recordBindings")
+      && (item.executionBindings ?? []).length) {
+      return { ok: false, status: 409, body: { error: "work_item_record_bindings_immutable" } };
     }
     if (Object.hasOwn(changes, "terminalId")) {
       return {

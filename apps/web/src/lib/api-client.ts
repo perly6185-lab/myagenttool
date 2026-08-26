@@ -28,6 +28,7 @@ import type {
   ToolInvocationRequest,
   ToolInvocationResponse,
 } from "@/lib/console-state";
+import type { TaskRecordBinding } from "@myagenttool/protocol/task-resources";
 import {
   ApiError,
   apiBase,
@@ -2586,6 +2587,7 @@ export const api = {
       capabilities: string[];
       readiness: { state: "ready" | "waiting_capability"; reason: string };
     }>;
+    recordBindings?: TaskRecordBinding[];
     materialDraftId?: string;
     materialDraftRevision?: number;
   }) => request("POST", "/api/work-items", payload),

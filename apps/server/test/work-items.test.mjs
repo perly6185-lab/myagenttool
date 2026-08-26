@@ -123,6 +123,86 @@ test("desktop intent planning creates discrete typed tasks instead of one giant 
   assert.equal(state.workItems.length, 4);
 });
 
+test("work items persist provider-neutral record bindings and freeze them after execution starts", () => {
+  const { service, state } = harness();
+  const fingerprint = `sha256:${"b".repeat(64)}`;
+  const binding = {
+    id: "binding_customer",
+    slotKey: "customer",
+    direction: "input",
+    role: "required",
+    ledgerDefinitionId: "ledger_customer",
+    record: {
+      ledgerDefinitionId: "ledger_customer",
+      recordId: "blr_customer_1",
+      recordType: "customer",
+      businessKey: "CUS-001",
+      title: "客户 A",
+      revision: "revision-1",
+      fingerprint,
+      observedAt: "2026-08-26T08:00:00Z",
+    },
+    selection: { fieldKeys: ["name"], queryId: null, rowLimit: 1 },
+    snapshot: { revision: "revision-1", fingerprint, capturedAt: "2026-08-26T08:00:00Z", evidenceRefs: [{ artifactId: "art_customer", field: "name" }] },
+    resolution: { source: "explicit_user", confidence: 1, state: "resolved", reasons: ["用户明确选择"] },
+  };
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "为客户 A 制作方案",
+    recordBindings: [binding],
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.recordBindings[0].record.recordId, "blr_customer_1");
+  const workItemId = created.body.workItem.id;
+  const updated = service.updateWorkItem({
+    workItemId,
+    expectedRevision: created.body.workItem.revision,
+    recordBindings: [{ ...binding, resolution: { ...binding.resolution, state: "stale" } }],
+  }, ACTOR_A);
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.workItem.recordBindings[0].resolution.state, "stale");
+
+  const stored = state.workItems.find((item) => item.id === workItemId);
+  stored.executionBindings = [{ kind: "auto_run", targetId: "run_1" }];
+  const blocked = service.updateWorkItem({
+    workItemId,
+    expectedRevision: stored.revision,
+    recordBindings: [binding],
+  }, ACTOR_A);
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, "work_item_record_bindings_immutable");
+});
+
+test("work item record bindings keep IDs unique and allow one primary ledger only", () => {
+  const { service } = harness();
+  const fingerprint = `sha256:${"c".repeat(64)}`;
+  const binding = {
+    id: "binding_output_a",
+    direction: "output",
+    role: "primary_ledger",
+    ledgerDefinitionId: "ledger_customer",
+    record: null,
+    selection: { fieldKeys: ["name"], queryId: null, rowLimit: 1 },
+    snapshot: null,
+    resolution: { source: "template_default", confidence: 0.8, state: "needs_confirmation", reasons: ["等待确认"] },
+  };
+  const duplicate = service.createWorkItem({
+    projectId: "prj_a",
+    title: "重复绑定",
+    recordBindings: [binding, { ...binding }],
+  }, ACTOR_A);
+  assert.equal(duplicate.status, 400);
+  assert.equal(duplicate.body.error, "duplicate_work_item_record_binding");
+
+  const secondPrimary = service.createWorkItem({
+    projectId: "prj_a",
+    title: "多个主台账",
+    recordBindings: [binding, { ...binding, id: "binding_output_b" }],
+  }, ACTOR_A);
+  assert.equal(secondPrimary.status, 400);
+  assert.equal(secondPrimary.body.error, "multiple_primary_work_item_ledgers");
+});
+
 test("desktop intent planning asks one ordinary clarification before ambiguous publishing", () => {
   const { service } = harness();
   const preview = service.previewIntentTaskPlan({
