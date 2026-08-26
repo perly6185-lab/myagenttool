@@ -7,6 +7,7 @@ import { useUiStore } from "@/store/ui-store";
 
 const mocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
+  getBusinessLedgerRecord: vi.fn(),
   createWorkItemResultRepair: vi.fn(),
   updateWorkItem: vi.fn(),
   suggestWorkItemDraft: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock("@/data/use-console-state", () => ({
 vi.mock("@/data/use-console-actions", () => ({
   api: {
     getWorkItem: mocks.getWorkItem,
+    getBusinessLedgerRecord: mocks.getBusinessLedgerRecord,
     createWorkItemResultRepair: mocks.createWorkItemResultRepair,
     updateWorkItem: mocks.updateWorkItem,
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
@@ -222,6 +224,46 @@ describe("work item summary presentation", () => {
     expect(section?.textContent).toContain("Needs confirmation");
     expect(section?.textContent).not.toContain("ledger_customer");
     expect(section?.textContent).not.toContain("blr_customer_1");
+  });
+
+  it("refreshes a stale business material and confirms the new snapshot", async () => {
+    const oldFingerprint = `sha256:${"e".repeat(64)}`;
+    const newFingerprint = `sha256:${"f".repeat(64)}`;
+    const staleBinding = {
+      id: "binding_customer",
+      slotKey: "customer",
+      direction: "input" as const,
+      role: "required" as const,
+      ledgerDefinitionId: "ledger_customer",
+      record: {
+        ledgerDefinitionId: "ledger_customer",
+        recordId: "blr_customer_1",
+        recordType: "customer",
+        businessKey: "CUS-001",
+        title: "Acme Corporation",
+        revision: "revision-1",
+        fingerprint: oldFingerprint,
+        observedAt: "2026-08-26T08:00:00Z",
+      },
+      selection: { fieldKeys: ["customer"], queryId: null, rowLimit: 1 },
+      snapshot: { revision: "revision-1", fingerprint: oldFingerprint, capturedAt: "2026-08-26T08:00:00Z", evidenceRefs: [] },
+      resolution: { source: "explicit_user" as const, confidence: 1, state: "stale" as const, reasons: ["The record changed"] },
+    };
+    const refreshedBinding = {
+      ...staleBinding,
+      record: { ...staleBinding.record, revision: "revision-2", fingerprint: newFingerprint, observedAt: "2026-08-26T08:01:00Z" },
+      snapshot: { ...staleBinding.snapshot, revision: "revision-2", fingerprint: newFingerprint, capturedAt: "2026-08-26T08:01:00Z" },
+      resolution: { ...staleBinding.resolution, state: "resolved" as const },
+    };
+    mocks.getBusinessLedgerRecord.mockResolvedValue({ record: refreshedBinding.record, fields: { customer: "Acme Corporation" }, rowNumber: 2, targetRevision: "revision-2" });
+    mocks.updateWorkItem.mockResolvedValue({ workItem: item({ revision: 3, recordBindings: [refreshedBinding] }) });
+    mocks.getWorkItem.mockResolvedValue({ workItem: item({ recordBindings: [staleBinding] }) });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh and confirm" }));
+    await waitFor(() => expect(mocks.getBusinessLedgerRecord).toHaveBeenCalledWith("ledger_customer", { recordId: "blr_customer_1" }));
+    expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({ expectedRevision: 2, recordBindings: [expect.objectContaining({ resolution: expect.objectContaining({ state: "resolved" }) })] }));
+    expect(await screen.findByText("The business material was refreshed and confirmed; the task will use the current record version.")).toBeTruthy();
   });
 
   it("explains the automatically matched My template without asking the user to choose it", async () => {

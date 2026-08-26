@@ -28,7 +28,7 @@ import type {
   ToolInvocationRequest,
   ToolInvocationResponse,
 } from "@/lib/console-state";
-import type { TaskRecordBinding, TaskTemplateContractV2 } from "@myagenttool/protocol/task-resources";
+import type { BusinessLedgerRecordRef, TaskRecordBinding, TaskTemplateContractV2 } from "@myagenttool/protocol/task-resources";
 import {
   ApiError,
   apiBase,
@@ -2657,6 +2657,20 @@ export const api = {
       "GET",
       `/api/workflow-memory/task-templates${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
     ),
+  getBusinessLedgerRecord: (ledgerDefinitionId: string, selector: { recordId?: string; businessKey?: string }) => {
+    const query = new URLSearchParams();
+    if (selector.recordId) query.set("recordId", selector.recordId);
+    if (selector.businessKey) query.set("businessKey", selector.businessKey);
+    return request<{
+      record: BusinessLedgerRecordRef;
+      fields: Record<string, string | number | boolean | null>;
+      rowNumber: number;
+      targetRevision: string;
+    }>(
+      "GET",
+      `/api/workflow-memory/ledger-definitions/${encodeURIComponent(ledgerDefinitionId)}/records?${query.toString()}`,
+    );
+  },
   listMyTemplateLearning: (projectId?: string) =>
     request("GET", `/api/work-items/my-template-learning${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   removeMyTemplateLearning: (feedbackId: string) =>

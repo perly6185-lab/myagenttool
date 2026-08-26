@@ -87,7 +87,21 @@ function recordBindingStateLabel(state: string, language: string) {
   return labels[state]?.[language === "zh" ? 0 : 1] ?? state;
 }
 
-function WorkItemRecordBindings({ item, language }: { item: LocalWorkItem; language: string }) {
+function WorkItemRecordBindings({
+  item,
+  language,
+  locked,
+  pendingId,
+  onRefresh,
+  error,
+}: {
+  item: LocalWorkItem;
+  language: string;
+  locked: boolean;
+  pendingId: string | null;
+  onRefresh: (binding: NonNullable<LocalWorkItem["recordBindings"]>[number]) => void;
+  error: string | null;
+}) {
   const bindings = item.recordBindings ?? [];
   if (!bindings.length) return null;
   return (
@@ -121,10 +135,27 @@ function WorkItemRecordBindings({ item, language }: { item: LocalWorkItem; langu
                 {recordBindingStateLabel(binding.resolution.state, language)}
               </Badge>
               {binding.selection.fieldKeys.length ? <span className="max-w-[16rem] truncate text-xs text-muted-foreground">{binding.selection.fieldKeys.join(", ")}</span> : null}
+              {!locked && ["stale", "needs_confirmation"].includes(binding.resolution.state) ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={pendingId === binding.id}
+                  onClick={() => onRefresh(binding)}
+                >
+                  {pendingId === binding.id ? <RefreshCw className="size-3.5 animate-spin" aria-hidden /> : <RefreshCw className="size-3.5" aria-hidden />}
+                  {language === "zh" ? "刷新并确认" : "Refresh and confirm"}
+                </Button>
+              ) : null}
             </div>
           );
         })}
       </div>
+      {locked && bindings.some((binding) => ["stale", "needs_confirmation"].includes(binding.resolution.state)) ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {language === "zh" ? "任务已开始执行，当前资料快照已固定；如需更换资料，请创建新的任务。" : "Execution has started, so the current material snapshot is fixed. Create a new task to use different material."}
+        </p>
+      ) : null}
+      {error ? <p className="mt-2 text-sm text-destructive" role="alert">{error}</p> : null}
     </section>
   );
 }
@@ -248,6 +279,8 @@ export function WorkItemSummaryView({
   const [materialPreviewError, setMaterialPreviewError] = useState<string | null>(null);
   const [materialRevealPendingId, setMaterialRevealPendingId] = useState<string | null>(null);
   const [materialRevealError, setMaterialRevealError] = useState<string | null>(null);
+  const [recordBindingRefreshPendingId, setRecordBindingRefreshPendingId] = useState<string | null>(null);
+  const [recordBindingRefreshError, setRecordBindingRefreshError] = useState<string | null>(null);
   const [openingResultFileKey, setOpeningResultFileKey] = useState<string | null>(null);
   const [resultFileError, setResultFileError] = useState<string | null>(null);
   const [resultPreviewFile, setResultPreviewFile] = useState<WorkItemOutcomeFile | null>(null);
@@ -270,6 +303,8 @@ export function WorkItemSummaryView({
     setMaterialAddUndo(null);
     setMaterialRevealPendingId(null);
     setMaterialRevealError(null);
+    setRecordBindingRefreshPendingId(null);
+    setRecordBindingRefreshError(null);
     setMaterialOfficePreview(null);
     setMaterialPreviewPending(false);
     setMaterialPreviewError(null);
@@ -733,6 +768,42 @@ export function WorkItemSummaryView({
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
+  };
+  const refreshRecordBinding = async (binding: NonNullable<LocalWorkItem["recordBindings"]>[number]) => {
+    if (recordBindingRefreshPendingId || !binding.record || (item.executionBindings ?? []).length) return;
+    setRecordBindingRefreshPendingId(binding.id);
+    setRecordBindingRefreshError(null);
+    try {
+      const current = await api.getBusinessLedgerRecord(binding.ledgerDefinitionId, { recordId: binding.record.recordId });
+      const nextBindings = (item.recordBindings ?? []).map((candidate) => candidate.id === binding.id
+        ? {
+            ...candidate,
+            record: current.record,
+            snapshot: {
+              revision: current.record.revision,
+              fingerprint: current.record.fingerprint,
+              capturedAt: current.record.observedAt,
+              evidenceRefs: candidate.snapshot?.evidenceRefs ?? [],
+            },
+            resolution: {
+              ...candidate.resolution,
+              state: "resolved" as const,
+              reasons: [...new Set([...candidate.resolution.reasons, language === "zh" ? "已重新读取并确认当前记录" : "Read and confirmed the current record"])].slice(-20),
+            },
+          }
+        : candidate);
+      const response = await api.updateWorkItem(item.id, {
+        expectedRevision: item.revision,
+        recordBindings: nextBindings,
+      }) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setSyncNotice(language === "zh" ? "业务资料已刷新并确认，任务将使用当前记录版本。" : "The business material was refreshed and confirmed; the task will use the current record version.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-record-binding-refresh", workItemId: item.id } }));
+    } catch {
+      setRecordBindingRefreshError(language === "zh" ? "业务资料暂时无法刷新，请稍后重试。" : "The business material could not be refreshed. Try again later.");
+    } finally {
+      setRecordBindingRefreshPendingId(null);
+    }
   };
   const removeMaterial = async (assetId: string) => {
     if (materialPendingId) return;
@@ -2357,7 +2428,14 @@ export function WorkItemSummaryView({
         {materialError ? <p className="mt-2 text-sm text-destructive" role="alert">{materialError}</p> : null}
       </section>
 
-      <WorkItemRecordBindings item={item} language={language} />
+      <WorkItemRecordBindings
+        item={item}
+        language={language}
+        locked={Boolean((item.executionBindings ?? []).length)}
+        pendingId={recordBindingRefreshPendingId}
+        onRefresh={(binding) => void refreshRecordBinding(binding)}
+        error={recordBindingRefreshError}
+      />
 
       <section className="rounded-xl border border-border p-4" aria-labelledby={`work-item-collaboration-${item.id}`}>
         <h4 id={`work-item-collaboration-${item.id}`} className="text-sm font-semibold">{copy.collaborationTitle}</h4>
