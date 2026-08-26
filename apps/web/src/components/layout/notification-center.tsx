@@ -82,6 +82,16 @@ export function NotificationCenter() {
       .filter((item): item is { id: string; workItemId: string; title: string } => Boolean(item.workItemId)),
     [recordBindingAttentionQuery.data?.items],
   );
+  useEffect(() => {
+    const refreshRecordAttention = (event: Event) => {
+      const source = (event as CustomEvent<{ source?: unknown }>).detail?.source;
+      if (typeof source === "string" && source.startsWith("work-item-record-binding-")) {
+        void recordBindingAttentionQuery.refetch();
+      }
+    };
+    window.addEventListener("myagenttool:state-change", refreshRecordAttention);
+    return () => window.removeEventListener("myagenttool:state-change", refreshRecordAttention);
+  }, [recordBindingAttentionQuery.refetch]);
   const model = useMemo(
     () => deriveNotificationCenterModel(state, {
       isError,
