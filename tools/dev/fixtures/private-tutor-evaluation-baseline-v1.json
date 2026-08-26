@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "private-tutor-evaluation-v2-2026-08-26",
+  "evaluationVersion": 2,
+  "datasetFingerprint": "27069321e7287d912826a4d82f2cfdbb4fa453ee628f909a9688b1020390d629",
+  "suites": [
+    {
+      "name": "math-step",
+      "setVersion": "1.0.0",
+      "versions": { "evaluatorVersion": "2.0.0", "contentPackageVersion": "1.0.0", "rubricVersion": "1.0.0", "profile": "linear-equation-v2" },
+      "total": 14,
+      "metrics": { "passRate": 1, "falsePositiveCount": 0, "falseNegativeCount": 0, "evidenceLeakCount": 0, "anchorAgreementRate": null, "repeatabilityRate": null },
+      "decisions": [
+        { "id": "subtract-both-sides", "correct": true, "evidenceEligible": true, "reason": "semantic_steps_valid", "requiresReview": false, "confidence": 1 },
+        { "id": "alternative-subtraction", "correct": true, "evidenceEligible": true, "reason": "semantic_steps_valid", "requiresReview": false, "confidence": 1 },
+        { "id": "valid-direct-jump", "correct": true, "evidenceEligible": true, "reason": "semantic_steps_valid", "requiresReview": false, "confidence": 1 },
+        { "id": "expand-parentheses", "correct": true, "evidenceEligible": true, "reason": "semantic_steps_valid", "requiresReview": false, "confidence": 1 },
+        { "id": "collect-and-divide", "correct": true, "evidenceEligible": true, "reason": "semantic_steps_valid", "requiresReview": false, "confidence": 1 },
+        { "id": "fraction-coefficient", "correct": true, "evidenceEligible": true, "reason": "semantic_steps_valid", "requiresReview": false, "confidence": 1 },
+        { "id": "single-side-change", "correct": false, "evidenceEligible": true, "reason": "math_step_invalid_transformation", "requiresReview": false, "classification": "single_side_change", "confidence": 1 },
+        { "id": "sign-error", "correct": false, "evidenceEligible": true, "reason": "math_step_invalid_transformation", "requiresReview": false, "classification": "sign_error", "confidence": 1 },
+        { "id": "arithmetic-error", "correct": false, "evidenceEligible": true, "reason": "math_step_invalid_transformation", "requiresReview": false, "classification": "arithmetic_error", "confidence": 1 },
+        { "id": "non-equivalent", "correct": false, "evidenceEligible": true, "reason": "math_step_invalid_transformation", "requiresReview": false, "classification": "non_equivalent_transformation", "confidence": 1 },
+        { "id": "nonlinear-answer", "correct": false, "evidenceEligible": false, "reason": "math_step_parse_failed", "requiresReview": true, "classification": "nonlinear_expression", "confidence": 0 },
+        { "id": "earlier-error-before-unsupported-step", "correct": false, "evidenceEligible": false, "reason": "math_step_parse_failed", "requiresReview": true, "classification": "single_side_change", "confidence": 0 },
+        { "id": "unknown-variable", "correct": false, "evidenceEligible": false, "reason": "math_step_parse_failed", "requiresReview": true, "classification": "unknown_variable", "confidence": 0 },
+        { "id": "solution-not-isolated", "correct": false, "evidenceEligible": true, "reason": "math_solution_incomplete", "requiresReview": false, "confidence": 1 }
+      ]
+    },
+    {
+      "name": "language-semantic",
+      "setVersion": "1.0.0",
+      "versions": { "evaluatorVersion": "2.0.0", "contentPackageVersion": "2.0.0", "rubricVersion": "2.0.0", "profile": "causal-semantic-v2" },
+      "total": 19,
+      "metrics": { "passRate": 1, "falsePositiveCount": 0, "falseNegativeCount": 0, "evidenceLeakCount": 0, "anchorAgreementRate": null, "repeatabilityRate": null },
+      "decisions": [
+        { "id": "because-standard", "correct": true, "evidenceEligible": true, "reason": "semantic_complete_calibrated", "requiresReview": false, "semanticStatus": "complete_high_confidence", "score": 1, "confidence": 1 },
+        { "id": "because-leading", "correct": true, "evidenceEligible": true, "reason": "semantic_complete_calibrated", "requiresReview": false, "semanticStatus": "complete_high_confidence", "score": 1, "confidence": 1 },
+        { "id": "result-so", "correct": true, "evidenceEligible": true, "reason": "semantic_complete_calibrated", "requiresReview": false, "semanticStatus": "complete_high_confidence", "score": 1, "confidence": 1 },
+        { "id": "reason-due-to", "correct": true, "evidenceEligible": true, "reason": "semantic_complete_calibrated", "requiresReview": false, "semanticStatus": "complete_high_confidence", "score": 1, "confidence": 1 },
+        { "id": "paraphrase-helps", "correct": true, "evidenceEligible": true, "reason": "semantic_complete_calibrated", "requiresReview": false, "semanticStatus": "complete_high_confidence", "score": 1, "confidence": 0.9667 },
+        { "id": "paraphrase-gives", "correct": true, "evidenceEligible": true, "reason": "semantic_complete_calibrated", "requiresReview": false, "semanticStatus": "complete_high_confidence", "score": 1, "confidence": 0.9333 },
+        { "id": "paraphrase-provides", "correct": true, "evidenceEligible": true, "reason": "semantic_complete_calibrated", "requiresReview": false, "semanticStatus": "complete_high_confidence", "score": 1, "confidence": 0.9333 },
+        { "id": "solar-therefore", "correct": true, "evidenceEligible": true, "reason": "semantic_complete_calibrated", "requiresReview": false, "semanticStatus": "complete_high_confidence", "score": 1, "confidence": 0.9667 },
+        { "id": "negated-claim", "correct": false, "evidenceEligible": false, "reason": "semantic_contradiction", "requiresReview": false, "semanticStatus": "contradicted", "score": 0.3333, "confidence": 0.9333 },
+        { "id": "reversed-causality", "correct": false, "evidenceEligible": false, "reason": "semantic_contradiction", "requiresReview": false, "semanticStatus": "causal_direction_reversed", "score": 1, "confidence": 1 },
+        { "id": "conflicting-connectors", "correct": false, "evidenceEligible": false, "reason": "semantic_contradiction", "requiresReview": false, "semanticStatus": "causal_direction_reversed", "score": 1, "confidence": 1 },
+        { "id": "missing-cause", "correct": false, "evidenceEligible": false, "reason": "semantic_review_required", "requiresReview": true, "semanticStatus": "borderline_review", "score": 0.6667, "confidence": 0.6667 },
+        { "id": "missing-effect", "correct": false, "evidenceEligible": false, "reason": "semantic_review_required", "requiresReview": true, "semanticStatus": "borderline_review", "score": 0.6667, "confidence": 0.6667 },
+        { "id": "disconnected-statements", "correct": false, "evidenceEligible": false, "reason": "semantic_review_required", "requiresReview": true, "semanticStatus": "borderline_review", "score": 0.6667, "confidence": 0.6667 },
+        { "id": "disconnected-forward-verb", "correct": false, "evidenceEligible": false, "reason": "semantic_contradiction", "requiresReview": false, "semanticStatus": "causal_relation_disconnected", "score": 1, "confidence": 0.9667 },
+        { "id": "keyword-salad", "correct": false, "evidenceEligible": false, "reason": "semantic_incomplete", "requiresReview": false, "semanticStatus": "incomplete", "score": 0.3333, "confidence": 0.5333 },
+        { "id": "irrelevant", "correct": false, "evidenceEligible": false, "reason": "semantic_incomplete", "requiresReview": false, "semanticStatus": "incomplete", "score": 0, "confidence": 0 },
+        { "id": "high-confidence-voice", "correct": true, "evidenceEligible": true, "reason": "semantic_complete_calibrated", "requiresReview": false, "semanticStatus": "complete_high_confidence", "score": 1, "confidence": 0.96 },
+        { "id": "low-confidence-voice-review", "correct": true, "evidenceEligible": false, "reason": "semantic_speech_review_required", "requiresReview": true, "semanticStatus": "complete_review_required", "score": 1, "confidence": 0.8 }
+      ]
+    },
+    {
+      "name": "conceptual-rubric",
+      "setVersion": "1.0.0",
+      "versions": { "evaluatorVersion": "2.0.0", "contentPackageVersion": "2.0.0", "rubricVersion": "2.0.0", "profile": "anchored-concept-rubric-v2" },
+      "total": 11,
+      "metrics": { "passRate": 1, "falsePositiveCount": 0, "falseNegativeCount": 0, "evidenceLeakCount": 0, "anchorAgreementRate": 1, "repeatabilityRate": 1 },
+      "decisions": [
+        { "id": "proficient-grounded-zh", "correct": true, "evidenceEligible": true, "reason": "anchored_rubric_proficient", "requiresReview": false, "scoreBand": "proficient", "score": 1, "anchorId": "anchor-proficient-v1", "confidence": 1 },
+        { "id": "proficient-reordered-zh", "correct": true, "evidenceEligible": true, "reason": "anchored_rubric_proficient", "requiresReview": false, "scoreBand": "proficient", "score": 1, "anchorId": "anchor-proficient-v1", "confidence": 1 },
+        { "id": "proficient-grounded-en", "correct": true, "evidenceEligible": true, "reason": "anchored_rubric_proficient", "requiresReview": false, "scoreBand": "proficient", "score": 1, "anchorId": "anchor-proficient-v1", "confidence": 1 },
+        { "id": "developing-missing-source", "correct": false, "evidenceEligible": false, "reason": "anchored_rubric_review_required", "requiresReview": true, "scoreBand": "developing", "score": 0.85, "anchorId": "anchor-developing-v1", "confidence": 0.75 },
+        { "id": "developing-boundary-review", "correct": false, "evidenceEligible": false, "reason": "anchored_rubric_review_required", "requiresReview": true, "scoreBand": "developing", "score": 0.75, "anchorId": "anchor-developing-v1", "confidence": 0.75 },
+        { "id": "developing-concept-application", "correct": false, "evidenceEligible": false, "reason": "anchored_rubric_incomplete", "requiresReview": false, "scoreBand": "developing", "score": 0.525, "anchorId": "anchor-developing-v1", "confidence": 1 },
+        { "id": "insufficient-partial-criteria", "correct": false, "evidenceEligible": false, "reason": "anchored_rubric_incomplete", "requiresReview": false, "scoreBand": "insufficient", "score": 0.4, "anchorId": "anchor-insufficient-v1", "confidence": 1 },
+        { "id": "insufficient-source-only", "correct": false, "evidenceEligible": false, "reason": "anchored_rubric_incomplete", "requiresReview": false, "scoreBand": "insufficient", "score": 0.15, "anchorId": "anchor-insufficient-v1", "confidence": 1 },
+        { "id": "insufficient-irrelevant", "correct": false, "evidenceEligible": false, "reason": "anchored_rubric_incomplete", "requiresReview": false, "scoreBand": "insufficient", "score": 0, "anchorId": "anchor-insufficient-v1", "confidence": 1 },
+        { "id": "developing-unknown-source", "correct": false, "evidenceEligible": false, "reason": "anchored_rubric_review_required", "requiresReview": true, "scoreBand": "developing", "score": 0.85, "anchorId": "anchor-developing-v1", "confidence": 0.75 },
+        { "id": "proficient-score-unknown-extra-source", "correct": false, "evidenceEligible": false, "reason": "anchored_rubric_review_required", "requiresReview": true, "scoreBand": "proficient", "score": 1, "anchorId": "anchor-proficient-v1", "confidence": 0.75 }
+      ]
+    }
+  ]
+}
