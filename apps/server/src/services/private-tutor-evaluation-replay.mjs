@@ -1,4 +1,6 @@
 import { mathLinearStepsGoldenCases, MATH_LINEAR_STEPS_GOLDEN_SET_VERSION } from "./evaluation-sets/math-linear-steps-v2.mjs";
+import { languageCausalSemanticGoldenCases, LANGUAGE_CAUSAL_SEMANTIC_GOLDEN_SET_VERSION } from "./evaluation-sets/language-causal-semantic-v2.mjs";
+import { languageSubjectPlugin } from "./plugins/language-plugin.mjs";
 import { mathSubjectPlugin } from "./plugins/math-plugin.mjs";
 
 export function runPrivateTutorEvaluationReplay({ cases, evaluate, setVersion = "unversioned" }) {
@@ -20,6 +22,10 @@ export function runPrivateTutorEvaluationReplay({ cases, evaluate, setVersion = 
       actualEvidenceEligible: result?.evidenceEligible !== false,
       expectedClassification: fixture.expected.firstIncorrectClassification ?? null,
       actualClassification,
+      expectedSemanticStatus: fixture.expected.semanticStatus ?? null,
+      actualSemanticStatus: result?.evaluation?.semanticStatus ?? null,
+      actualConfidence: result?.evaluation?.confidence ?? result?.confidence ?? null,
+      actualRequiresReview: result?.evaluation?.requiresReview === true,
       reason: result?.reason ?? result?.error ?? "missing_result",
     };
   });
@@ -51,12 +57,25 @@ export function runMathLinearStepsGoldenReplay() {
   });
 }
 
+export function runLanguageCausalSemanticGoldenReplay() {
+  return runPrivateTutorEvaluationReplay({
+    cases: languageCausalSemanticGoldenCases,
+    setVersion: LANGUAGE_CAUSAL_SEMANTIC_GOLDEN_SET_VERSION,
+    evaluate: (fixture) => languageSubjectPlugin.evaluator(fixture.input, fixture.question),
+  });
+}
+
 function expectedResultMatches(result, expected, actualClassification) {
   for (const key of ["accepted", "correct", "evidenceEligible", "reason"]) {
     if (expected[key] !== undefined && result?.[key] !== expected[key]) return false;
   }
-  return expected.firstIncorrectClassification === undefined
-    || expected.firstIncorrectClassification === actualClassification;
+  if (expected.firstIncorrectClassification !== undefined && expected.firstIncorrectClassification !== actualClassification) return false;
+  if (expected.semanticStatus !== undefined && expected.semanticStatus !== result?.evaluation?.semanticStatus) return false;
+  if (expected.requiresReview !== undefined && expected.requiresReview !== (result?.evaluation?.requiresReview === true)) return false;
+  const confidence = result?.evaluation?.confidence ?? result?.confidence;
+  if (expected.confidenceAtLeast !== undefined && !(confidence >= expected.confidenceAtLeast)) return false;
+  if (expected.confidenceAtMost !== undefined && !(confidence <= expected.confidenceAtMost)) return false;
+  return true;
 }
 
 function firstIncorrectClassification(result) {

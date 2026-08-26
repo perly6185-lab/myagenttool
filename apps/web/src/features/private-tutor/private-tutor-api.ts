@@ -113,6 +113,12 @@ export interface PrivateTutorEvaluation {
   reviewStatus?: "not_required" | "required" | "completed";
   decisionFingerprint?: string;
   profile?: string;
+  semanticStatus?: string;
+  semanticConfidence?: number;
+  speechConfidence?: number | null;
+  missingCriteria?: string[];
+  contradictedCriteria?: string[];
+  thresholds?: { evidence?: number; review?: number; voiceEvidence?: number };
   score?: number;
   passedCount?: number;
   totalCount?: number;

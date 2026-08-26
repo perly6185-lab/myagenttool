@@ -54,13 +54,26 @@ test("M6 advanced evaluators expose explainable results and conservative evidenc
   assert.equal(math.evaluation.passedCount, 2);
   assert.equal(math.evidenceTier, "deterministic_math_steps_v2");
 
-  const languageQuestion = registry.getPackage("language-causal-explanations-v1").knowledgeComponents[0].dailyQuestions[0];
+  const languagePackage = registry.getPackage("language-causal-explanations-v1");
+  assert.equal(languagePackage.version, "2.0.0");
+  const languageQuestion = languagePackage.knowledgeComponents[0].dailyQuestions[0];
+  assert.equal(languageQuestion.id, "practice-language-cause-001-v2");
   const language = languageSubjectPlugin.evaluator({ rawAnswer: "Plants grow because sunlight supplies energy.", responseKind: "answer", source: "screen" }, languageQuestion);
   assert.equal(language.correct, true);
   assert.equal(language.evidenceEligible, true);
+  assert.equal(language.evidenceTier, "rubric_calibrated");
+  assert.equal(language.evaluation.semanticStatus, "complete_high_confidence");
   const lowConfidenceSpeech = languageSubjectPlugin.evaluator({ rawAnswer: "Plants grow because sunlight supplies energy.", responseKind: "answer", source: "voice_confirmed", recognitionConfidence: 0.8 }, languageQuestion);
+  assert.equal(lowConfidenceSpeech.correct, true);
   assert.equal(lowConfidenceSpeech.evidenceEligible, false);
+  assert.equal(lowConfidenceSpeech.reason, "semantic_speech_review_required");
+  assert.equal(lowConfidenceSpeech.evaluation.confidence, 0.8);
   assert.equal(lowConfidenceSpeech.evaluation.requiresReview, true);
+
+  const reversedCausality = languageSubjectPlugin.evaluator({ rawAnswer: "Sunlight supplies energy because plants grow.", responseKind: "answer", source: "screen" }, languageQuestion);
+  assert.equal(reversedCausality.correct, false);
+  assert.equal(reversedCausality.evidenceEligible, false);
+  assert.equal(reversedCausality.evaluation.semanticStatus, "causal_direction_reversed");
 
   const codeQuestion = registry.getPackage("programming-functions-v1").knowledgeComponents[0].dailyQuestions[0];
   const code = programmingSubjectPlugin.evaluator({ rawAnswer: "function double(n) { return n * 2; }", responseKind: "answer" }, codeQuestion);

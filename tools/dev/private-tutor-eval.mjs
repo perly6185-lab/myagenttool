@@ -1,7 +1,14 @@
-import { runMathLinearStepsGoldenReplay } from "../../apps/server/src/services/private-tutor-evaluation-replay.mjs";
+import { runLanguageCausalSemanticGoldenReplay, runMathLinearStepsGoldenReplay } from "../../apps/server/src/services/private-tutor-evaluation-replay.mjs";
 
-const evaluation = runMathLinearStepsGoldenReplay();
-console.log(`Private tutor math-step eval ${evaluation.setVersion}: ${evaluation.matchedCount}/${evaluation.total} matched`);
-console.log(`False positives: ${evaluation.falsePositiveCount}; false negatives: ${evaluation.falseNegativeCount}; evidence leaks: ${evaluation.evidenceLeakCount}`);
-for (const failure of evaluation.failed) console.error(`- ${failure.id}: ${failure.reason} (${failure.actualClassification ?? "no classification"})`);
-process.exitCode = evaluation.passed ? 0 : 1;
+const evaluations = [
+  ["math-step", runMathLinearStepsGoldenReplay()],
+  ["language-semantic", runLanguageCausalSemanticGoldenReplay()],
+];
+for (const [name, evaluation] of evaluations) {
+  console.log(`Private tutor ${name} eval ${evaluation.setVersion}: ${evaluation.matchedCount}/${evaluation.total} matched`);
+  console.log(`False positives: ${evaluation.falsePositiveCount}; false negatives: ${evaluation.falseNegativeCount}; evidence leaks: ${evaluation.evidenceLeakCount}`);
+  for (const failure of evaluation.failed) {
+    console.error(`- ${failure.id}: ${failure.reason} (${failure.actualClassification ?? failure.actualSemanticStatus ?? "no classification"})`);
+  }
+}
+process.exitCode = evaluations.every(([, evaluation]) => evaluation.passed) ? 0 : 1;

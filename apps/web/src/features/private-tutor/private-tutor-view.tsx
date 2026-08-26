@@ -954,8 +954,17 @@ function TodayLearning({
     else {
       setPendingVoiceTurn(null);
       setAnswer("");
-      setVoiceMessage(result.correct ? "听对了，也答对了。继续下一小步吧" : "答案已经确认。没关系，我会换一种讲法");
-      if (result.correct === false) attemptKeyRef.current = newClientKey("tutoring");
+      const feedback = formatPrivateTutorEvaluationFeedback(result.evaluation);
+      if (result.evidenceEligible === false) {
+        setVoiceMessage(feedback ?? "答案已确认，但这次结果需要复核后才会计入掌握度");
+        setMessage(feedback
+          ? `${feedback} 当前结果不会计入掌握度。`
+          : "答案已确认，但这次结果需要复核，不会计入掌握度。");
+        attemptKeyRef.current = newClientKey("tutoring");
+      } else {
+        setVoiceMessage(result.correct ? "听对了，也答对了。继续下一小步吧" : "答案已经确认。没关系，我会换一种讲法");
+        if (result.correct === false) attemptKeyRef.current = newClientKey("tutoring");
+      }
     }
     setBusy(false);
   }

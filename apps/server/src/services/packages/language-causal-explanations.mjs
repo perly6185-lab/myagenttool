@@ -6,10 +6,10 @@ export const languageCausalExplanationsPackage = Object.freeze({
   subjectId: "language_learning",
   domain: "english",
   sourceType: "professional_skill",
-  version: "1.0.0",
+  version: "2.0.0",
   license: "CC-BY-4.0",
   targetAudience: { stage: "general", description: "练习用完整句表达原因与结果", prerequisites: [] },
-  evaluationCapabilities: { deterministicGrading: true, semanticEvaluation: true, stepEvaluation: false, speechEvaluation: true, visualInteractions: false },
+  evaluationCapabilities: { deterministicGrading: true, semanticEvaluation: "causal-semantic-v2", stepEvaluation: false, speechEvaluation: true, visualInteractions: false },
   modules: [{ id: "mod-language-cause", name: "因果表达", description: "识别并组织原因和结果。", orderIndex: 1, topics: [{ id: "top-language-cause", name: "原因与结果", description: "使用 because、due to 和 so。", orderIndex: 1, knowledgeComponentIds: ["language-cause-effect"] }] }],
   knowledgeComponents: [{
     id: "language-cause-effect",
@@ -26,11 +26,11 @@ export const languageCausalExplanationsPackage = Object.freeze({
       choice("diag-language-cause-01-v1", "下面哪句清楚表达了因果？", [{ id: "a", label: "It rained. The road was wet." }, { id: "b", label: "The road was wet because it rained." }], "b"),
       choice("diag-language-cause-02-v1", "选择合适的连接词：Plants grow ___ sunlight provides energy.", [{ id: "a", label: "because" }, { id: "b", label: "but" }], "a"),
     ],
-    dailyQuestions: [semantic("practice-language-cause-001-v1", "用一句英语解释为什么阳光能帮助植物生长。")],
+    dailyQuestions: [semantic("practice-language-cause-001-v2", "用一句英语解释为什么阳光能帮助植物生长。")],
     tutoringQuestions: [
       choice("tutor-language-cause-recall-001-v1", "哪一个词通常引出原因？", [{ id: "a", label: "because" }, { id: "b", label: "although" }], "a"),
-      semantic("tutor-language-cause-guided-001-v1", "用一句英语说明：植物生长，因为阳光提供能量。"),
-      semantic("tutor-language-cause-transfer-001-v1", "用一句英语解释为什么阳光能帮助植物生长。"),
+      semantic("tutor-language-cause-guided-001-v2", "用一句英语说明：植物生长，因为阳光提供能量。"),
+      semantic("tutor-language-cause-transfer-001-v2", "用一句英语解释为什么阳光能帮助植物生长。"),
     ],
     reviewQuestions: [
       choice("review-language-cause-similar-001-v1", "哪句包含完整因果？", [{ id: "a", label: "Sunlight and plants." }, { id: "b", label: "Plants grow because sunlight supplies energy." }], "b"),
@@ -51,10 +51,40 @@ function semantic(id, prompt) {
     difficulty: 2,
     kind: "semantic_response",
     prompt,
-    rubric: { criteria: [
-      { id: "cause", label: "说明阳光提供能量", acceptedPhrases: ["sunlight provides energy", "sunlight supplies energy", "energy from sunlight"] },
-      { id: "effect", label: "说明植物生长", acceptedPhrases: ["plants grow", "plant growth"] },
-      { id: "link", label: "使用因果连接", acceptedPhrases: ["because", "so", "due to"] },
-    ] },
+    rubric: {
+      version: "2.0.0",
+      profile: "causal-semantic-v2",
+      evidenceThreshold: 0.88,
+      reviewThreshold: 0.65,
+      voiceEvidenceThreshold: 0.9,
+      relation: {
+        causeAnchors: ["sunlight", "sun", "solar", "light", "energy"],
+        effectAnchors: ["grow", "grows", "growth", "develop", "development"],
+        reasonConnectors: ["because", "since", "due to"],
+        resultConnectors: ["so", "therefore", "thus"],
+        forwardVerbs: ["helps", "enables", "allows", "supports", "need", "needs"],
+      },
+      criteria: [
+        {
+          id: "cause",
+          label: "说明阳光提供能量",
+          acceptedPhrases: ["sunlight provides energy", "sunlight supplies energy", "energy from sunlight", "light provides energy"],
+          conceptGroups: [["sunlight", "sun", "solar", "light"], ["energy"], ["provide", "provides", "providing", "supply", "supplies", "supplying", "give", "gives", "giving"]],
+        },
+        {
+          id: "effect",
+          label: "说明植物生长",
+          acceptedPhrases: ["plants grow", "plant growth", "plants can grow"],
+          conceptGroups: [["plant", "plants"], ["grow", "grows", "growth", "develop", "development"]],
+        },
+        {
+          id: "link",
+          label: "使用因果连接",
+          detectNegation: false,
+          acceptedPhrases: ["because", "so", "due to", "since", "therefore", "helps", "enables", "allows", "supports", "need", "needs"],
+          conceptGroups: [["because", "so", "due to", "since", "therefore", "helps", "enables", "allows", "supports", "need", "needs"]],
+        },
+      ],
+    },
   };
 }

@@ -262,4 +262,12 @@ describe("private tutor evaluation feedback", () => {
       ],
     })).toBe("第 2 步：只改变等式一边会破坏平衡。");
   });
+
+  it("surfaces calibrated semantic-review feedback", () => {
+    expect(formatPrivateTutorEvaluationFeedback({
+      semanticStatus: "complete_review_required",
+      requiresReview: true,
+      explanation: "表达完整，但当前语音置信度不足。",
+    })).toBe("表达完整，但当前语音置信度不足。");
+  });
 });

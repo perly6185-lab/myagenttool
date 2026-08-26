@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { finalizePrivateTutorEvaluation, PRIVATE_TUTOR_EVALUATION_SCHEMA_VERSION } from "../src/services/private-tutor-evaluation-contract.mjs";
-import { runMathLinearStepsGoldenReplay } from "../src/services/private-tutor-evaluation-replay.mjs";
+import { runLanguageCausalSemanticGoldenReplay, runMathLinearStepsGoldenReplay } from "../src/services/private-tutor-evaluation-replay.mjs";
 import { judgePrivateTutorAnswer } from "../src/services/private-tutor-assessment.mjs";
 import { createPrivateTutorPackageRegistry, seedPrivateTutorContentPackages } from "../src/services/private-tutor-package-registry.mjs";
 import { mathSubjectPlugin, MATH_STEP_EVALUATOR_VERSION } from "../src/services/plugins/math-plugin.mjs";
@@ -78,6 +78,18 @@ test("the versioned math golden replay has zero false positives and zero evidenc
   const replay = runMathLinearStepsGoldenReplay();
   assert.equal(replay.setVersion, "1.0.0");
   assert.equal(replay.total, 14);
+  assert.equal(replay.matchedCount, replay.total);
+  assert.equal(replay.falsePositiveCount, 0);
+  assert.equal(replay.falseNegativeCount, 0);
+  assert.equal(replay.evidenceLeakCount, 0);
+  assert.equal(replay.passed, true);
+  assert.deepEqual(replay.failed, []);
+});
+
+test("the calibrated language golden replay rejects negation and reversed causality without leaking evidence", () => {
+  const replay = runLanguageCausalSemanticGoldenReplay();
+  assert.equal(replay.setVersion, "1.0.0");
+  assert.equal(replay.total, 19);
   assert.equal(replay.matchedCount, replay.total);
   assert.equal(replay.falsePositiveCount, 0);
   assert.equal(replay.falseNegativeCount, 0);

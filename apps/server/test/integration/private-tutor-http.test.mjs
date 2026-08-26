@@ -1664,9 +1664,9 @@ test("M6 advanced subject evaluators expose versioned feedback while only eligib
   await switchPackage("language-causal-explanations-v1");
   const languageModelsBefore = runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "language-causal-explanations-v1").length;
   const languageLowConfidence = await practice({
-    idempotencyKey: "m5-advanced-language-low-confidence",
+    idempotencyKey: "m6-language-low-confidence",
     knowledgeId: "language-cause-effect",
-    questionRevisionId: "practice-language-cause-001-v1",
+    questionRevisionId: "practice-language-cause-001-v2",
     rawAnswer: "Plants grow because sunlight supplies energy.",
     responseKind: "answer",
     independent: true,
@@ -1676,14 +1676,43 @@ test("M6 advanced subject evaluators expose versioned feedback while only eligib
     durationSeconds: 20,
   });
   assert.equal(languageLowConfidence.status, 201);
+  assert.equal(languageLowConfidence.body.attempt.correct, true);
   assert.equal(languageLowConfidence.body.attempt.evidenceEligible, false);
+  assert.equal(languageLowConfidence.body.attempt.evidenceTier, "practice_only");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.evaluatorVersion, "2.0.0");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.contentPackageVersion, "2.0.0");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.contentRevisionId, "practice-language-cause-001-v2");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.rubricVersion, "2.0.0");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.semanticStatus, "complete_review_required");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.confidence, 0.8);
+  assert.equal(languageLowConfidence.body.attempt.evaluation.reviewStatus, "required");
   assert.equal(languageLowConfidence.body.snapshot.knowledge[0].mastery, null);
   assert.equal(languageLowConfidence.body.snapshot.knowledge[0].evidenceCount, 0);
   assert.equal(runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "language-causal-explanations-v1").length, languageModelsBefore);
-  const languageConfirmed = await practice({
-    idempotencyKey: "m5-advanced-language-confirmed",
+
+  const reversedLanguage = await practice({
+    idempotencyKey: "m6-language-reversed-causality",
     knowledgeId: "language-cause-effect",
-    questionRevisionId: "practice-language-cause-001-v1",
+    questionRevisionId: "practice-language-cause-001-v2",
+    rawAnswer: "Sunlight supplies energy because plants grow.",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+    durationSeconds: 20,
+  });
+  assert.equal(reversedLanguage.status, 201);
+  assert.equal(reversedLanguage.body.attempt.correct, false);
+  assert.equal(reversedLanguage.body.attempt.evidenceEligible, false);
+  assert.equal(reversedLanguage.body.attempt.evaluation.semanticStatus, "causal_direction_reversed");
+  assert.equal(reversedLanguage.body.attempt.evaluation.reviewStatus, "not_required");
+  assert.match(reversedLanguage.body.attempt.evaluation.explanation, /因果方向写反/);
+  assert.equal(reversedLanguage.body.snapshot.knowledge[0].evidenceCount, 0);
+
+  const languageConfirmed = await practice({
+    idempotencyKey: "m6-language-confirmed",
+    knowledgeId: "language-cause-effect",
+    questionRevisionId: "practice-language-cause-001-v2",
     rawAnswer: "Plants grow because sunlight supplies energy.",
     responseKind: "answer",
     independent: true,
@@ -1693,6 +1722,10 @@ test("M6 advanced subject evaluators expose versioned feedback while only eligib
   });
   assert.equal(languageConfirmed.status, 201);
   assert.equal(languageConfirmed.body.attempt.evidenceEligible, true);
+  assert.equal(languageConfirmed.body.attempt.evidenceTier, "rubric_calibrated");
+  assert.equal(languageConfirmed.body.attempt.evaluation.semanticStatus, "complete_high_confidence");
+  assert.equal(languageConfirmed.body.attempt.evaluation.confidence, 1);
+  assert.equal(languageConfirmed.body.attempt.evaluation.reviewStatus, "not_required");
   assert.equal(languageConfirmed.body.snapshot.knowledge[0].evidenceCount, 1);
 
   await switchPackage("programming-functions-v1");
