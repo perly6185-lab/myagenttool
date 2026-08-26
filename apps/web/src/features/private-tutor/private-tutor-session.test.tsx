@@ -13,7 +13,7 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/use-session-user", () => ({
-  useSessionUser: () => ({ role: "viewer", privateTutorChildMode: { learnerId: "lrn_session", enteredAt: "2026-08-20T00:00:00.000Z" } }),
+  useSessionUser: () => ({ role: "viewer" }),
 }));
 
 const learner = { id: "lrn_session", displayName: "小满", grade: "七年级", curriculumEditionId: null, status: "active", createdAt: "2026-08-20T00:00:00.000Z", updatedAt: "2026-08-20T00:10:00.000Z" } as const;
@@ -57,9 +57,11 @@ function sessionAt(kind: "recall" | "explain" | "guided_practice" | "independent
 }
 
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
-  getPrivateTutorSnapshot: () => Promise.resolve({ learner, snapshot, learnerModel: null, strategyDecision, learningPlan }),
+  getPrivateTutorProfile: () => Promise.resolve({ profile: learner, migrationRequired: false }),
+  getPrivateTutorSnapshot: () => Promise.resolve({ learner, profile: learner, snapshot, learnerModel: null, strategyDecision, learningPlan }),
   getCurrentPrivateTutorAssessment: () => Promise.resolve(completedAssessment),
   getCurrentPrivateTutorSession: apiMocks.currentSession,
+  getPrivateTutorReviewBook: () => Promise.resolve({ learnerId: learner.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] }),
   startPrivateTutorSession: apiMocks.startSession,
   pausePrivateTutorSession: apiMocks.pauseSession,
   resumePrivateTutorSession: apiMocks.resumeSession,
@@ -71,10 +73,19 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   resumePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
-  listPrivateTutorLearners: () => Promise.resolve([]),
-  createPrivateTutorLearner: () => Promise.reject(new Error("not used")),
-  startPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
-  exitPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
+  answerPrivateTutorReview: () => Promise.reject(new Error("not used")),
+  correctPrivateTutorReviewDiagnosis: () => Promise.reject(new Error("not used")),
+  getPrivateTutorWeeklyReport: () => Promise.reject(new Error("not used")),
+  getPrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
+  exportPrivateTutorLearnerData: () => Promise.reject(new Error("not used")),
+  previewPrivateTutorLearnerDeletion: () => Promise.reject(new Error("not used")),
+  deletePrivateTutorProfile: () => Promise.reject(new Error("not used")),
+  listPrivateTutorDeletionJobs: () => Promise.resolve([]),
+  retryPrivateTutorLearnerDeletion: () => Promise.reject(new Error("not used")),
+  getPrivateTutorProfileMigrationReport: () => Promise.reject(new Error("not used")),
+  confirmPrivateTutorProfileMigration: () => Promise.reject(new Error("not used")),
+  createPrivateTutorProfile: () => Promise.reject(new Error("not used")),
 }));
 
 describe("My private tutor resumable daily session", () => {
@@ -101,7 +112,7 @@ describe("My private tutor resumable daily session", () => {
     fireEvent.click(screen.getByRole("button", { name: "提交答案" }));
 
     await waitFor(() => expect(apiMocks.action).toHaveBeenCalled());
-    const input = apiMocks.action.mock.calls[0][2];
+    const input = apiMocks.action.mock.calls[0][1];
     expect(input.rawAnswer).toBe("x=5");
     expect(input).not.toHaveProperty("correct");
     expect(await screen.findByText("把方程想成平衡的天平。")).toBeTruthy();
@@ -115,7 +126,7 @@ describe("My private tutor resumable daily session", () => {
 
     expect(await screen.findByText("课程停在原来的位置")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "从这里继续" }));
-    await waitFor(() => expect(apiMocks.resumeSession).toHaveBeenCalledWith(learner.id, paused.id));
+    await waitFor(() => expect(apiMocks.resumeSession).toHaveBeenCalledWith(paused.id));
   });
 
   it("submits a whiteboard selection as explicit visual evidence for server judging", async () => {
@@ -126,7 +137,7 @@ describe("My private tutor resumable daily session", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "5" }));
     await waitFor(() => expect(apiMocks.action).toHaveBeenCalled());
-    expect(apiMocks.action.mock.calls[0][2]).toMatchObject({ rawAnswer: "5", source: "visual" });
+    expect(apiMocks.action.mock.calls[0][1]).toMatchObject({ rawAnswer: "5", source: "visual" });
   });
 
   it("keeps low-confidence speech out of grading until the child confirms the normalized math", async () => {
@@ -172,7 +183,7 @@ describe("My private tutor resumable daily session", () => {
     expect(apiMocks.action).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /就是这个/ }));
     await waitFor(() => expect(apiMocks.action).toHaveBeenCalled());
-    expect(apiMocks.action.mock.calls[0][2]).toMatchObject({ source: "voice_confirmed", voiceTurnId: "ptvt_1", rawAnswer: "" });
+    expect(apiMocks.action.mock.calls[0][1]).toMatchObject({ source: "voice_confirmed", voiceTurnId: "ptvt_1", rawAnswer: "" });
   });
 
   it("summarizes independent completion, help used, and the next review without ranking", async () => {

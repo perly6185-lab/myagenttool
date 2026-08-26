@@ -83,7 +83,7 @@ export function App() {
   const pageAllowed = backgroundSection === "settings" || canDiscoverProfessionalPage(backgroundSection, sessionUser?.role);
   const View = SECTION_VIEWS[backgroundSection === "task" ? TASK_AREA_VIEWS[taskArea] : backgroundSection];
 
-  if (section === "privateTutor" || sessionUser?.privateTutorChildMode) {
+  if (section === "privateTutor") {
     const PrivateTutorView = SECTION_VIEWS.privateTutor;
     return (
       <main className="h-full overflow-y-auto bg-background p-2 sm:p-4">

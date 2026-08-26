@@ -4,10 +4,15 @@ import {
   type LearnerTutorState,
 } from "@/features/private-tutor/private-tutor-model";
 
-const STORAGE_PREFIX = "myagenttool.private-tutor.learner.v1";
+const STORAGE_PREFIX = "myagenttool.private-tutor.profile.v2";
+const LEGACY_STORAGE_PREFIX = "myagenttool.private-tutor.learner.v1";
 
 export function learnerStorageKey(learnerId: string) {
   return `${STORAGE_PREFIX}.${learnerId}`;
+}
+
+function legacyLearnerStorageKey(learnerId: string) {
+  return `${LEGACY_STORAGE_PREFIX}.${learnerId}`;
 }
 
 export function loadLearnerState(learner: LearnerProfile): LearnerTutorState {
@@ -28,4 +33,6 @@ export function loadLearnerState(learner: LearnerProfile): LearnerTutorState {
 export function saveLearnerState(state: LearnerTutorState) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(learnerStorageKey(state.learner.id), JSON.stringify(state));
+  // M1 单档案迁移：写入 v2 缓存时顺手淘汰 v1 旧键。
+  window.localStorage.removeItem(legacyLearnerStorageKey(state.learner.id));
 }

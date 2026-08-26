@@ -592,6 +592,8 @@ export function createHttpServer({
   nextId,
   persistStateSoon,
   persistStateNow,
+  finalizePrivateTutorLearnerDeletion = null,
+  privateTutorReleaseBuildId = "development-unversioned",
   identityProviderCore = null,
 }) {
   const identityPolicy = identityPolicyFromEnv();
@@ -867,6 +869,9 @@ export function createHttpServer({
         now,
         nextId,
         persistStateSoon,
+        persistStateNow,
+        finalizePrivateTutorLearnerDeletion,
+        privateTutorReleaseBuildId,
       })) {
         return;
       }

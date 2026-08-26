@@ -147,7 +147,7 @@ export async function request<T = unknown>(
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const record = data as { message?: string; error?: string };
-    throw new ApiError(record.error ?? "request_failed", record.message ?? record.error ?? `${method} ${path} failed.`, response.status);
+    throw new ApiError(record.error ?? "request_failed", record.message ?? record.error ?? `${method} ${path} failed.`, response.status, data as Record<string, unknown>);
   }
   return data as T;
 }

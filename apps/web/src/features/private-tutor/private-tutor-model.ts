@@ -1,6 +1,178 @@
+export type ContentSourceType = "textbook" | "university_course" | "professional_skill" | "user_material";
+
+export interface EvaluationCapabilities {
+  deterministicGrading: boolean;
+  stepEvaluation: boolean;
+  speechEvaluation: boolean;
+  visualInteractions: boolean;
+  semanticEvaluation?: boolean | "authored_rubric" | "source_grounded_rubric";
+  codeExecution?: boolean;
+  sourceGrounding?: boolean;
+}
+
+export interface ContentTargetAudience {
+  stage?: string;
+  description?: string;
+  prerequisites?: string[];
+}
+
+export interface LearningContentPackage {
+  id: string;
+  name: string;
+  subjectId: string;
+  domain: string;
+  sourceType: ContentSourceType;
+  version: string;
+  license: string;
+  targetAudience?: ContentTargetAudience;
+  evaluationCapabilities?: EvaluationCapabilities;
+  modules?: Module[];
+  knowledgeComponents?: KnowledgeComponentSummary[];
+}
+
+export interface MaterialSection {
+  id: string;
+  title: string;
+  level: number;
+  pageNumber: number | null;
+  lineStart: number;
+  lineEnd: number;
+  content: string;
+}
+
+export interface MaterialDocument {
+  id: string;
+  learningProfileId: string;
+  fileName: string;
+  fileType: "markdown" | "pdf" | "plain_text";
+  fileSize: number;
+  sourceHash: string;
+  status: "uploaded" | "parsing" | "parsed" | "draft_ready" | "published" | "failed" | "empty";
+  rawText?: string;
+  sections: MaterialSection[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DraftSourceRef {
+  sectionId: string;
+  pageNumber: number | null;
+  excerpt: string;
+}
+
+export interface DraftCandidateQuestion {
+  id: string;
+  prompt: string;
+  kind: string;
+}
+
+export interface DraftModule {
+  id: string;
+  name: string;
+  description: string;
+  sourceSectionId?: string;
+  orderIndex: number;
+}
+
+export interface DraftTopic {
+  id: string;
+  moduleId: string;
+  name: string;
+  description: string;
+  sourceSectionId?: string;
+  orderIndex: number;
+}
+
+export interface DraftKnowledgeComponent {
+  id: string;
+  topicId: string;
+  name: string;
+  shortDescription?: string;
+  learningObjectives: string[];
+  prerequisiteDraftIds: string[];
+  sourceRef?: DraftSourceRef;
+  candidateQuestions?: DraftCandidateQuestion[];
+  orderIndex: number;
+}
+
+export interface DraftValidationIssue {
+  type: "cycle" | "missing_prerequisite" | string;
+  message: string;
+  severity: "error" | "warning" | "info";
+}
+
+export interface KnowledgeMapDraft {
+  id: string;
+  materialDocumentId: string;
+  learningProfileId: string;
+  packageName: string;
+  subjectId: string;
+  domain: string;
+  schemaVersion: number;
+  draftModules: DraftModule[];
+  draftTopics: DraftTopic[];
+  draftKnowledgeComponents: DraftKnowledgeComponent[];
+  validationIssues: DraftValidationIssue[];
+  status: "in_review" | "published" | "discarded";
+  publishedPackageId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Module {
+  id: string;
+  packageId?: string;
+  name: string;
+  description: string;
+  orderIndex: number;
+  topics?: Topic[];
+}
+
+export interface Topic {
+  id: string;
+  moduleId?: string;
+  packageId?: string;
+  name: string;
+  description: string;
+  orderIndex: number;
+  knowledgeComponentIds?: string[];
+}
+
+export interface KnowledgeComponentSummary {
+  id: string;
+  packageId?: string;
+  topicId?: string;
+  name: string;
+  shortDescription?: string;
+  orderIndex?: number;
+  prerequisiteKnowledgeIds?: string[];
+  downstreamImpact?: number;
+  learningObjectives?: string[];
+  misconceptions?: Array<{ id: string; label: string; recommendedStrategy?: string }>;
+}
+
+export interface KnowledgeGraphData {
+  packageId: string;
+  packageName: string;
+  version: string;
+  subjectId: string;
+  nodes: Array<{
+    id: string;
+    name: string;
+    topicId?: string;
+    topicName?: string;
+    moduleName?: string;
+    orderIndex?: number;
+    prerequisites: string[];
+    downstreamImpact: number;
+    learningObjectives: string[];
+  }>;
+  topologicalOrder: string[];
+}
+
 export type TutorTab = "today" | "map" | "errors" | "growth" | "settings";
 
-export type TutorSettingsSpace = "student" | "guardian" | "educator" | "safety" | "system";
+export type TutorSettingsSpace = "preferences" | "content" | "teacher" | "data";
 
 export type MasteryLevel = "mastered" | "learning" | "needs_support" | "unknown";
 
@@ -47,11 +219,6 @@ export interface LearnerTutorState {
   errors: ErrorCase[];
 }
 
-export const DEMO_LEARNERS: LearnerProfile[] = [
-  { id: "learner-xiaohe", displayName: "小禾", grade: "七年级", curriculum: "演示课程 · 方程基础", avatar: "禾" },
-  { id: "learner-anran", displayName: "安然", grade: "七年级", curriculum: "演示课程 · 方程基础", avatar: "安" },
-];
-
 const KNOWLEDGE_TEMPLATE: KnowledgeNode[] = [
   { id: "integer", title: "有理数运算", mastery: 0.86, level: "mastered", evidence: "3 次独立答对" },
   { id: "equation-meaning", title: "等式与方程", mastery: 0.68, level: "learning", evidence: "会列式，移项含义待巩固" },
@@ -60,27 +227,24 @@ const KNOWLEDGE_TEMPLATE: KnowledgeNode[] = [
 ];
 
 export function createInitialLearnerState(learner: LearnerProfile): LearnerTutorState {
-  const isSecondDemoLearner = learner.id === "learner-anran";
-  const knowledge = KNOWLEDGE_TEMPLATE.map((node) => isSecondDemoLearner && node.id === "balance"
-    ? { ...node, mastery: 0.73, level: "learning" as const, evidence: "图形理解稳定，计算速度待提升" }
-    : { ...node });
+  const knowledge = KNOWLEDGE_TEMPLATE.map((node) => ({ ...node }));
   return {
     learner,
-    dailyMinutes: isSecondDemoLearner ? 11 : 6,
-    streakDays: isSecondDemoLearner ? 5 : 3,
-    completedSessions: isSecondDemoLearner ? 9 : 6,
-    independentAnswers: isSecondDemoLearner ? 24 : 17,
+    dailyMinutes: 6,
+    streakDays: 3,
+    completedSessions: 6,
+    independentAnswers: 17,
     knowledge,
     errors: [
       {
         id: `${learner.id}-balance-sign`,
         learnerId: learner.id,
         knowledgeId: "balance",
-        title: isSecondDemoLearner ? "解方程时计算不够熟练" : "等式两边要做同样的事",
-        misconception: isSecondDemoLearner ? "概念正确，但符号计算速度慢" : "只处理了等式的一边",
-        status: isSecondDemoLearner ? "working" : "challenge_today",
-        nextReview: isSecondDemoLearner ? "明天" : "今天",
-        strategy: isSecondDemoLearner ? "fluency_practice" : "concept_rebuild",
+        title: "等式两边要做同样的事",
+        misconception: "只处理了等式的一边",
+        status: "challenge_today",
+        nextReview: "今天",
+        strategy: "concept_rebuild",
       },
       {
         id: `${learner.id}-negative-number`,

@@ -625,7 +625,11 @@ test("batch rollback snapshots use private permissions and are removed after com
       approved: true,
     }, ACTOR);
     assert.equal(result.status, 409);
-    assert.equal(snapshotMode, 0o600);
+    // chmod is best-effort on Windows (files report 0o666 regardless of the
+    // requested mode), so the privacy assertion only holds on POSIX.
+    if (process.platform !== "win32") {
+      assert.equal(snapshotMode, 0o600);
+    }
     assert.equal(readdirSync(dirname(inquiryPath)).some((name) => name.endsWith(".rollback")), false);
   } finally {
     h.cleanup();

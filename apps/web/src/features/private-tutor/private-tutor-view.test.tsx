@@ -1,35 +1,173 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrivateTutorView } from "@/features/private-tutor/private-tutor-view";
+import { ApiError } from "@/lib/api/request";
 
-vi.mock("@/hooks/use-session-user", () => ({
-  useSessionUser: () => ({
-    role: "viewer",
-    privateTutorChildMode: { learnerId: "learner-xiaohe", enteredAt: "2026-08-20T00:00:00.000Z" },
-  }),
+const apiMocks = vi.hoisted(() => ({
+  getProfile: vi.fn(),
+  createProfile: vi.fn(),
+  migrationReport: vi.fn(),
+  confirmMigration: vi.fn(),
+  snapshot: vi.fn(),
+  currentAssessment: vi.fn(),
 }));
 
+const sessionUser = { role: "viewer" } as const;
+
+vi.mock("@/hooks/use-session-user", () => ({
+  useSessionUser: () => sessionUser,
+}));
+
+const activeProfile = { id: "lrn_personal", displayName: "小林", grade: "大学课程", curriculumEditionId: "demo-math-foundations-v1", status: "active", createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z" } as const;
+
+const freshSnapshot = {
+  id: "pts_personal",
+  learnerId: activeProfile.id,
+  revision: 1,
+  dailyMinutes: 0,
+  completedSessions: 0,
+  independentAnswers: 0,
+  diagnosticCompletedAt: "2026-08-24T00:00:00.000Z",
+  latestAssessmentId: "pas_done",
+  knowledge: [
+    { id: "integer", mastery: null, level: "unknown", evidenceCount: 0 },
+    { id: "equation-meaning", mastery: null, level: "unknown", evidenceCount: 0 },
+    { id: "balance", mastery: null, level: "unknown", evidenceCount: 0 },
+    { id: "word-problem", mastery: null, level: "unknown", evidenceCount: 0 },
+  ],
+  updatedAt: "2026-08-24T00:00:00.000Z",
+} as const;
+
+const completedAssessment = {
+  id: "pas_done",
+  learnerId: activeProfile.id,
+  status: "completed",
+  revision: 13,
+  startedAt: "2026-08-24T00:00:00.000Z",
+  pausedAt: null,
+  completedAt: "2026-08-24T00:10:00.000Z",
+  activeSeconds: 600,
+  targetSeconds: 600,
+  minQuestions: 12,
+  maxQuestions: 18,
+  answeredCount: 12,
+  currentQuestion: null,
+  result: { knowledge: [], strengths: [], focus: ["balance"], answeredCount: 12 },
+  updatedAt: "2026-08-24T00:10:00.000Z",
+} as const;
+
+const emptyReviewBook = { learnerId: activeProfile.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] } as const;
+
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
-  getPrivateTutorSnapshot: () => Promise.reject(new Error("offline test fixture")),
-  getCurrentPrivateTutorAssessment: () => Promise.reject(new Error("offline test fixture")),
+  getPrivateTutorProfile: apiMocks.getProfile,
+  createPrivateTutorProfile: apiMocks.createProfile,
+  getPrivateTutorProfileMigrationReport: apiMocks.migrationReport,
+  confirmPrivateTutorProfileMigration: apiMocks.confirmMigration,
+  getPrivateTutorSnapshot: apiMocks.snapshot,
+  getCurrentPrivateTutorAssessment: apiMocks.currentAssessment,
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
+  getPrivateTutorReviewBook: () => Promise.resolve(emptyReviewBook),
+  getPrivateTutorWeeklyReport: () => Promise.reject(new Error("not used")),
+  getPrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
+  exportPrivateTutorLearnerData: () => Promise.reject(new Error("not used")),
+  previewPrivateTutorLearnerDeletion: () => Promise.reject(new Error("not used")),
+  deletePrivateTutorProfile: () => Promise.reject(new Error("not used")),
+  listPrivateTutorDeletionJobs: () => Promise.resolve([]),
+  retryPrivateTutorLearnerDeletion: () => Promise.reject(new Error("not used")),
   startPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   resumePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
-  listPrivateTutorLearners: () => Promise.resolve([]),
-  createPrivateTutorLearner: () => Promise.reject(new Error("not used")),
-  startPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
-  exitPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
-  recordPrivateTutorAttempt: () => Promise.reject(new Error("not used")),
+  startPrivateTutorSession: () => Promise.reject(new Error("not used")),
+  pausePrivateTutorSession: () => Promise.reject(new Error("not used")),
+  resumePrivateTutorSession: () => Promise.reject(new Error("not used")),
+  actOnPrivateTutorSession: () => Promise.reject(new Error("not used")),
+  createPrivateTutorVoiceTurn: () => Promise.reject(new Error("not used")),
+  recordPrivateTutorVoiceEvent: () => Promise.reject(new Error("not used")),
+  answerPrivateTutorReview: () => Promise.reject(new Error("not used")),
+  correctPrivateTutorReviewDiagnosis: () => Promise.reject(new Error("not used")),
   rebalancePrivateTutorLearningPlan: () => Promise.reject(new Error("not used")),
+  listPrivateTutorContentPackages: () => Promise.resolve([
+    {
+      id: "demo-math-foundations-v1",
+      name: "初中数学基础：一元一次方程",
+      subjectId: "math",
+      domain: "math",
+      sourceType: "textbook",
+      version: "1.0.0",
+      targetAudience: { stage: "初中/通用基础" },
+      evaluationCapabilities: { deterministicGrading: true },
+    },
+  ]),
+  getPrivateTutorActiveContentPackage: () => Promise.resolve({
+    id: "demo-math-foundations-v1",
+    name: "初中数学基础：一元一次方程",
+    subjectId: "math",
+    domain: "math",
+    sourceType: "textbook",
+    version: "1.0.0",
+    targetAudience: { stage: "初中/通用基础" },
+    evaluationCapabilities: { deterministicGrading: true },
+  }),
+  updatePrivateTutorActiveContentPackage: () => Promise.resolve({ success: true, activePackageId: "demo-math-foundations-v1" }),
+  listPrivateTutorMaterials: () => Promise.resolve([]),
+  uploadPrivateTutorMaterial: () => Promise.reject(new Error("not used")),
+  generatePrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
+  getPrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
+  publishPrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
 }));
 
-describe("My private tutor student information architecture", () => {
-  beforeEach(() => window.localStorage.clear());
+const migrationReportFixture = {
+  migrationRequired: true,
+  profileCount: 2,
+  recommendedKeepLearnerId: "lrn_keep",
+  candidates: [
+    { learnerId: "lrn_keep", displayName: "小林", grade: "大学课程", createdAt: "2026-08-20T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z", evidence: { attempts: 8, assessments: 1, tutoringSessions: 2, reviewSchedules: 3, auditEvents: 12 }, evidenceTotal: 26 },
+    { learnerId: "lrn_legacy", displayName: "旧档案", grade: "七年级", createdAt: "2026-08-10T00:00:00.000Z", updatedAt: "2026-08-18T00:00:00.000Z", evidence: { attempts: 2, assessments: 0, tutoringSessions: 0, reviewSchedules: 1, auditEvents: 4 }, evidenceTotal: 7 },
+  ],
+} as const;
+
+describe("My private tutor personal learning information architecture", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    apiMocks.getProfile.mockReset().mockResolvedValue({ profile: null, migrationRequired: false });
+    apiMocks.createProfile.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.migrationReport.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.confirmMigration.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.snapshot.mockReset().mockResolvedValue({ learner: activeProfile, profile: activeProfile, snapshot: freshSnapshot, learnerModel: null, strategyDecision: null, learningPlan: null });
+    apiMocks.currentAssessment.mockReset().mockResolvedValue(completedAssessment);
+  });
   afterEach(() => cleanup());
 
-  it("keeps the five child capabilities at level one", async () => {
+  it("starts a signed-in user with one personal learning profile instead of a family handoff", async () => {
+    render(<PrivateTutorView />);
+
+    expect(await screen.findByRole("heading", { name: "为我建立一份长期学习档案" })).toBeTruthy();
+    expect(screen.getByText(/未来也可以接入大学教材、专业课程或你自己的资料/)).toBeTruthy();
+    expect(screen.queryByText("选择孩子")).toBeNull();
+    expect(screen.queryByText("家长 PIN")).toBeNull();
+  });
+
+  it("creates the current account profile through the single-profile contract", async () => {
+    apiMocks.createProfile.mockResolvedValue({ profile: activeProfile, created: true, migrationRequired: false });
+    render(<PrivateTutorView />);
+
+    fireEvent.change(await screen.findByLabelText("私教怎么称呼你"), { target: { value: "小林" } });
+    fireEvent.change(screen.getByLabelText("当前学习阶段"), { target: { value: "大学课程" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始我的学习" }));
+
+    expect(apiMocks.createProfile).toHaveBeenCalledWith({
+      displayName: "小林",
+      grade: "大学课程",
+      curriculumEditionId: "demo-math-foundations-v1",
+    });
+    expect(await screen.findByRole("button", { name: "今日学习" })).toBeTruthy();
+  });
+
+  it("keeps the five personal learning capabilities at level one", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
     render(<PrivateTutorView />);
 
     for (const label of ["今日学习", "知识地图", "我的错题本", "我的成长", "我的设置"]) {
@@ -37,21 +175,78 @@ describe("My private tutor student information architecture", () => {
     }
   });
 
-  it("does not disclose guardian or professional spaces to an unverified student", async () => {
+  it("keeps learning content and the AI teacher inside my settings", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
     render(<PrivateTutorView />);
     fireEvent.click(await screen.findByRole("button", { name: "我的设置" }));
 
-    expect(screen.getByRole("button", { name: /我的偏好/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /学习偏好/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /学习内容/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /AI 私教/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /学习数据/ })).toBeTruthy();
     expect(screen.queryByText("家庭与监护")).toBeNull();
-    expect(screen.queryByText("教学内容与策略")).toBeNull();
-    expect(screen.queryByText("系统与 AI")).toBeNull();
+    expect(screen.queryByText("家长入口")).toBeNull();
   });
 
   it("shows unknown knowledge as unmeasured instead of weak", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
     render(<PrivateTutorView />);
     fireEvent.click(await screen.findByRole("button", { name: "知识地图" }));
 
     expect(screen.getAllByText("尚未测到").length).toBeGreaterThan(0);
-    expect(screen.getByText("等待后续学习证据")).toBeTruthy();
+    expect(screen.getAllByText("等待后续学习证据").length).toBeGreaterThan(0);
+  });
+
+  it("stops safely instead of substituting demo data when a real learner cannot load", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.snapshot.mockRejectedValue(new Error("offline test fixture"));
+    render(<PrivateTutorView />);
+
+    expect(await screen.findByText("学习空间暂时没有准备好")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("避免显示错误或演示数据");
+    expect(screen.queryByText("我的学习")).toBeNull();
+    expect(screen.queryByText("自主学习")).toBeNull();
+    expect(screen.getByRole("button", { name: "重新读取" })).toBeTruthy();
+  });
+
+  it("gates learning behind a report-first migration when the account still owns multiple profiles", async () => {
+    apiMocks.getProfile.mockRejectedValue(new ApiError("private_tutor_profile_migration_required", "这个账号存在多份学习档案，需要先完成迁移。", 409, { profileCount: 2 }));
+    apiMocks.migrationReport.mockResolvedValue(migrationReportFixture);
+    apiMocks.confirmMigration.mockResolvedValue({
+      merged: true,
+      dryRun: false,
+      plan: { keepLearnerId: "lrn_keep", discardLearnerIds: ["lrn_legacy"], dryRun: false, rewrites: { privateTutorAttempts: 2 }, rewrittenTotal: 7, cohortRewrites: 0, childModeSessionRewrites: 0, discardedProfileCount: 1 },
+      rollbackReceipt: { id: "ptmr_1", keepLearnerId: "lrn_keep", discardLearnerIds: ["lrn_legacy"], appliedAt: "2026-08-24T01:00:00.000Z", rewrittenTotal: 7, rollbackCheck: { residualDiscardReferences: 1, expectedResidualDiscardReferences: 1 } },
+    });
+    render(<PrivateTutorView />);
+
+    expect(await screen.findByRole("heading", { name: "这个账号还保留着多份历史学习档案" })).toBeTruthy();
+    expect(await screen.findByText("旧档案 · 七年级")).toBeTruthy();
+    expect(screen.getByText("建议保留")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "今日学习" })).toBeNull();
+
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    fireEvent.click(screen.getByRole("button", { name: "保留这一份并合并其余档案" }));
+
+    await waitFor(() => expect(apiMocks.confirmMigration).toHaveBeenCalledWith({ keepLearnerId: "lrn_keep", discardLearnerIds: ["lrn_legacy"] }));
+    expect(await screen.findByRole("button", { name: "今日学习" })).toBeTruthy();
+  });
+
+  it("keeps history untouched when the migration rollback check fails", async () => {
+    apiMocks.getProfile.mockRejectedValue(new ApiError("private_tutor_profile_migration_required", "这个账号存在多份学习档案，需要先完成迁移。", 409, { profileCount: 2 }));
+    apiMocks.migrationReport.mockResolvedValue(migrationReportFixture);
+    apiMocks.confirmMigration.mockResolvedValue({
+      merged: true,
+      dryRun: false,
+      plan: { keepLearnerId: "lrn_keep", discardLearnerIds: ["lrn_legacy"], dryRun: false, rewrites: {}, rewrittenTotal: 7, cohortRewrites: 0, childModeSessionRewrites: 0, discardedProfileCount: 1 },
+      rollbackReceipt: { id: "ptmr_1", keepLearnerId: "lrn_keep", discardLearnerIds: ["lrn_legacy"], appliedAt: "2026-08-24T01:00:00.000Z", rewrittenTotal: 7, rollbackCheck: { residualDiscardReferences: 4, expectedResidualDiscardReferences: 1 } },
+    });
+    render(<PrivateTutorView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "保留这一份并合并其余档案" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("迁移校验没有完全通过");
+    expect(apiMocks.getProfile).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "今日学习" })).toBeNull();
   });
 });

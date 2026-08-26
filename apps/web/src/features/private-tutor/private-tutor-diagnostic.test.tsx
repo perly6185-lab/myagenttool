@@ -8,10 +8,7 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/use-session-user", () => ({
-  useSessionUser: () => ({
-    role: "viewer",
-    privateTutorChildMode: { learnerId: "lrn_new", enteredAt: "2026-08-20T00:00:00.000Z" },
-  }),
+  useSessionUser: () => ({ role: "viewer" }),
 }));
 
 const profile = { id: "lrn_new", displayName: "小满", grade: "七年级", curriculumEditionId: null, status: "active", createdAt: "2026-08-20T00:00:00.000Z", updatedAt: "2026-08-20T00:00:00.000Z" };
@@ -46,18 +43,34 @@ const activeAssessment = {
 } as const;
 
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
-  getPrivateTutorSnapshot: () => Promise.resolve({ learner: profile, snapshot }),
+  getPrivateTutorProfile: () => Promise.resolve({ profile, migrationRequired: false }),
+  getPrivateTutorSnapshot: () => Promise.resolve({ learner: profile, profile, snapshot }),
   getCurrentPrivateTutorAssessment: () => Promise.resolve(null),
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
+  getPrivateTutorReviewBook: () => Promise.resolve({ learnerId: profile.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] }),
   startPrivateTutorAssessment: apiMocks.start,
   answerPrivateTutorAssessment: apiMocks.answer,
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   resumePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
-  listPrivateTutorLearners: () => Promise.resolve([]),
-  createPrivateTutorLearner: () => Promise.reject(new Error("not used")),
-  startPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
-  exitPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
-  recordPrivateTutorAttempt: () => Promise.reject(new Error("not used")),
+  startPrivateTutorSession: () => Promise.reject(new Error("not used")),
+  pausePrivateTutorSession: () => Promise.reject(new Error("not used")),
+  resumePrivateTutorSession: () => Promise.reject(new Error("not used")),
+  actOnPrivateTutorSession: () => Promise.reject(new Error("not used")),
+  createPrivateTutorVoiceTurn: () => Promise.reject(new Error("not used")),
+  recordPrivateTutorVoiceEvent: () => Promise.reject(new Error("not used")),
+  answerPrivateTutorReview: () => Promise.reject(new Error("not used")),
+  correctPrivateTutorReviewDiagnosis: () => Promise.reject(new Error("not used")),
+  getPrivateTutorWeeklyReport: () => Promise.reject(new Error("not used")),
+  getPrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
+  exportPrivateTutorLearnerData: () => Promise.reject(new Error("not used")),
+  previewPrivateTutorLearnerDeletion: () => Promise.reject(new Error("not used")),
+  deletePrivateTutorProfile: () => Promise.reject(new Error("not used")),
+  listPrivateTutorDeletionJobs: () => Promise.resolve([]),
+  retryPrivateTutorLearnerDeletion: () => Promise.reject(new Error("not used")),
+  getPrivateTutorProfileMigrationReport: () => Promise.reject(new Error("not used")),
+  confirmPrivateTutorProfileMigration: () => Promise.reject(new Error("not used")),
+  createPrivateTutorProfile: () => Promise.reject(new Error("not used")),
   rebalancePrivateTutorLearningPlan: () => Promise.reject(new Error("not used")),
 }));
 
@@ -80,7 +93,7 @@ describe("My private tutor adaptive diagnostic", () => {
     fireEvent.click(screen.getByRole("button", { name: "提交并看下一题" }));
 
     await waitFor(() => expect(apiMocks.answer).toHaveBeenCalled());
-    const input = apiMocks.answer.mock.calls[0][2];
+    const input = apiMocks.answer.mock.calls[0][1];
     expect(input.rawAnswer).toBe("x=5");
     expect(input.responseKind).toBe("answer");
     expect(input).not.toHaveProperty("correct");

@@ -41,7 +41,7 @@ export const zhCNResources = {
       assetActions: { label: "可用操作", preview: "预览", edit: "编辑", openExternal: "外部打开", unavailable: "不可用" },
       sections: {
         settings: { label: "我的设置", blurb: "高级能力、治理、资源与运行记录" },
-        privateTutor: { label: "我的私教", blurb: "每天 20 分钟，找到真正不会的知识点并把它学会" },
+        privateTutor: { label: "我的私教", blurb: "围绕我正在学的内容，找到真正不会的地方并把它学会" },
         planning: { label: "规划", blurb: "本地项目列表与状态看板" },
         dashboard: { label: "我的首页", blurb: "发起任务并查看真正需要你处理的事项" }, mail: { label: "我的邮箱", blurb: "收发邮件并继续整理成工作" }, localLibrary: { label: "我的资料", blurb: "查找本地原件并引用到任务" }, me: { label: "我的设置", blurb: "本地账号、语言、外观及更多设置" }, workBoard: { label: "任务状态", blurb: "需要时查看任务的生命周期状态" },
         workspace: { label: "工作区", blurb: "集中查看项目文件、记录与历史" }, documents: { label: "资产", blurb: "预览和管理项目文档、图纸、图片与视频" }, workflowMemory: { label: "我的模板", blurb: "从本地历史工作中学习可复用的处理方法" }, canvas: { label: "画布", blurb: "绘制和编辑图表及 Excalidraw 场景" },

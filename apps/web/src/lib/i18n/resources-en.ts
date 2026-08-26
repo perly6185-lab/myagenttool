@@ -41,7 +41,7 @@ export const enUSResources = {
       assetActions: { label: "Available actions", preview: "Preview", edit: "Edit", openExternal: "Open externally", unavailable: "Not available" },
       sections: {
         settings: { label: "My settings", blurb: "Advanced capabilities, governance, resources, and records" },
-        privateTutor: { label: "My private tutor", blurb: "Find the real learning gap and master it in 20 minutes a day" },
+        privateTutor: { label: "My private tutor", blurb: "Learn from my own courses and materials, then close the gaps that matter" },
         planning: { label: "Planning", blurb: "Local project lists and status boards" },
         dashboard: { label: "My home", blurb: "Start a task and see what needs your attention" }, mail: { label: "My email", blurb: "Read, write, and turn email into work" }, localLibrary: { label: "My files", blurb: "Find local originals and add references to tasks" }, me: { label: "My settings", blurb: "Account, language, appearance, and more" }, workBoard: { label: "Task status", blurb: "Review task lifecycle status when you need it" },
         workspace: { label: "Workspace", blurb: "Project files, transcript, and history in one place" }, documents: { label: "Assets", blurb: "Preview and manage project documents, drawings, images, and video" }, workflowMemory: { label: "My templates", blurb: "Learn reusable ways of working from local history" }, canvas: { label: "Canvas", blurb: "Draw and edit diagrams and Excalidraw scenes" },

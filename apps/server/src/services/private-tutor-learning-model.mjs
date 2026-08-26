@@ -17,9 +17,10 @@ const MISCONCEPTIONS = {
   unresolved_method: { label: "当前方法还没有形成稳定证据", recommendedStrategy: "concept_rebuild" },
 };
 
-export function derivePrivateTutorLearnerModel({ snapshot, attempts, now }) {
+export function derivePrivateTutorLearnerModel({ snapshot, attempts, now, knowledgeDefinitions = PRIVATE_TUTOR_KNOWLEDGE }) {
   const at = now();
-  const knowledge = PRIVATE_TUTOR_KNOWLEDGE.map((definition) => {
+  const definitions = knowledgeDefinitions.map(normalizeKnowledgeDefinition);
+  const knowledge = definitions.map((definition) => {
     const snapshotState = snapshot.knowledge.find((item) => item.id === definition.id) ?? {
       mastery: null,
       level: "unknown",
@@ -32,7 +33,7 @@ export function derivePrivateTutorLearnerModel({ snapshot, attempts, now }) {
     const hintedCorrect = evidence.filter((attempt) => attempt.correct && attempt.usedHint).length;
     const incorrect = evidence.filter((attempt) => !attempt.correct).length;
     const latestEvidenceAt = evidence[0]?.createdAt ?? null;
-    const misconception = inferMisconception(evidence);
+    const misconception = inferMisconception(evidence, definition);
     return {
       id: definition.id,
       title: definition.title,
@@ -159,14 +160,30 @@ export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "
   };
 }
 
-function inferMisconception(evidence) {
+function inferMisconception(evidence, definition) {
   const wrong = evidence.filter((attempt) => !attempt.correct);
   if (!wrong.length) return null;
   const ids = wrong.map((attempt) => misconceptionIdForAttempt(attempt));
   const counts = new Map();
   for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
   const [id, evidenceCount] = [...counts.entries()].sort((left, right) => right[1] - left[1])[0];
-  return { id, ...MISCONCEPTIONS[id], evidenceCount };
+  const packageDefinition = definition.misconceptions?.find((item) => item.id === id)
+    ?? definition.misconceptions?.[0];
+  const resolved = MISCONCEPTIONS[id] ?? (packageDefinition ? {
+    label: packageDefinition.label,
+    recommendedStrategy: packageDefinition.recommendedStrategy ?? "concept_rebuild",
+  } : MISCONCEPTIONS.unresolved_method);
+  return { id: packageDefinition?.id ?? id, ...resolved, evidenceCount };
+}
+
+function normalizeKnowledgeDefinition(definition) {
+  return {
+    ...definition,
+    title: definition.title ?? definition.name ?? definition.id,
+    prerequisiteId: definition.prerequisiteId ?? definition.prerequisiteKnowledgeIds?.[0] ?? null,
+    downstreamImpact: Number(definition.downstreamImpact ?? 1),
+    misconceptions: definition.misconceptions ?? [],
+  };
 }
 
 function misconceptionIdForAttempt(attempt) {

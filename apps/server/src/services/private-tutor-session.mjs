@@ -1,4 +1,7 @@
 import { privateTutorQuestion, publicQuestion } from "./private-tutor-assessment.mjs";
+import { activePrivateTutorQuestionRevision } from "./private-tutor-content.mjs";
+import { privateTutorLearningPreferences } from "./private-tutor-learning-preferences.mjs";
+import { privateTutorPackageRegistryFromState } from "./private-tutor-package-registry.mjs";
 import { buildPrivateTutorVisualScene } from "./private-tutor-visual-scene.mjs";
 
 export const PRIVATE_TUTOR_SESSION_PACES = {
@@ -31,17 +34,36 @@ const KNOWLEDGE_CONTENT = {
   ]),
 };
 
-export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, decision, pace, now }) {
+export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, decision, pace, now, state, contentPackageId = null }) {
   const paceDefinition = PRIVATE_TUTOR_SESSION_PACES[pace];
   if (!paceDefinition) return null;
   const targetKnowledgeId = plan?.days?.[0]?.knowledgeId ?? decision?.targetKnowledgeId;
-  const target = KNOWLEDGE_CONTENT[targetKnowledgeId];
+  const runtime = contentPackageId ? sessionRuntime(state, contentPackageId, targetKnowledgeId) : null;
+  const target = runtime?.content ?? KNOWLEDGE_CONTENT[targetKnowledgeId];
   if (!target) return null;
   const startedAt = now();
+  const activities = ACTIVITY_KINDS.map((kind, index) => ({
+    kind,
+    budgetMinutes: paceDefinition.budgets[index],
+    status: index === 0 ? "active" : "pending",
+    questionRevisionId: activeQuestionRevisionId(
+      state,
+      runtime ? runtimeQuestionId(runtime.knowledge, kind) : questionId(target.questionPrefix, kind),
+    ),
+    hintLevel: 0,
+    attemptCount: 0,
+    incorrectCount: 0,
+    startedAt: index === 0 ? startedAt : null,
+    completedAt: null,
+  }));
+  if (activities.some((activity) => ["recall", "guided_practice", "independent_check"].includes(activity.kind) && !activity.questionRevisionId)) return null;
   return {
     id,
     ownerTeamId,
     learnerId,
+    contentPackageId: runtime?.package.id ?? null,
+    contentPackageVersion: runtime?.package.version ?? null,
+    subjectId: runtime?.package.subjectId ?? "math",
     planId: plan?.id ?? null,
     decisionId: decision?.id ?? null,
     targetKnowledgeId,
@@ -52,17 +74,7 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
     status: "active",
     revision: 1,
     currentActivityIndex: 0,
-    activities: ACTIVITY_KINDS.map((kind, index) => ({
-      kind,
-      budgetMinutes: paceDefinition.budgets[index],
-      status: index === 0 ? "active" : "pending",
-      questionRevisionId: questionId(target.questionPrefix, kind),
-      hintLevel: 0,
-      attemptCount: 0,
-      incorrectCount: 0,
-      startedAt: index === 0 ? startedAt : null,
-      completedAt: null,
-    })),
+    activities,
     consecutiveIncorrect: 0,
     methodSwitchCount: 0,
     teachingMethod: initialMethod(decision?.strategy),
@@ -76,14 +88,26 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
   };
 }
 
-export function privateTutorSessionView(session) {
+export function privateTutorSessionView(session, state) {
   if (!session) return null;
-  const contentDefinition = KNOWLEDGE_CONTENT[session.targetKnowledgeId];
+  const runtime = session.contentPackageId ? sessionRuntime(state, session.contentPackageId, session.targetKnowledgeId) : null;
+  const contentDefinition = runtime?.content ?? KNOWLEDGE_CONTENT[session.targetKnowledgeId];
+  if (!contentDefinition) return null;
   const activity = session.activities[session.currentActivityIndex] ?? null;
-  const question = activity?.questionRevisionId ? publicQuestion(privateTutorQuestion(activity.questionRevisionId)) : null;
+  const question = activity?.questionRevisionId
+    ? publicQuestion(privateTutorQuestion(activity.questionRevisionId, state, session.contentPackageId))
+    : null;
+  // Preferences shape HOW content is explained (style/depth framing) but are
+  // never read by grading or mastery-evidence paths — see M4 exit criteria.
+  const preferences = state?.privateTutorLearningPreferences
+    ? privateTutorLearningPreferences(state, session.learnerId)
+    : null;
   return {
     id: session.id,
     learnerId: session.learnerId,
+    contentPackageId: session.contentPackageId ?? null,
+    contentPackageVersion: session.contentPackageVersion ?? null,
+    subjectId: session.subjectId ?? "math",
     planId: session.planId,
     decisionId: session.decisionId,
     targetKnowledgeId: session.targetKnowledgeId,
@@ -100,10 +124,10 @@ export function privateTutorSessionView(session) {
       budgetMinutes: activity.budgetMinutes,
       hintLevel: activity.hintLevel,
       attemptCount: activity.attemptCount,
-      instruction: instructionFor(activity.kind, contentDefinition, session.teachingMethod),
+      instruction: instructionFor(activity.kind, contentDefinition, session.teachingMethod, preferences),
       question,
       hint: activity.hintLevel ? contentDefinition.hints[Math.min(activity.hintLevel, contentDefinition.hints.length) - 1] : null,
-      visualScene: buildPrivateTutorVisualScene({
+      visualScene: runtime?.capabilities.visualInteractions === false ? null : buildPrivateTutorVisualScene({
         knowledgeId: session.targetKnowledgeId,
         activityKind: activity.kind,
         teachingMethod: session.teachingMethod,
@@ -111,6 +135,12 @@ export function privateTutorSessionView(session) {
       }),
     } : null,
     teachingMethod: session.teachingMethod,
+    teachingPreferences: preferences ? {
+      teacherStyle: preferences.teacherStyle,
+      explanationDepth: preferences.explanationDepth,
+      followUpStyle: preferences.followUpStyle,
+    } : null,
+    subjectCapabilities: runtime?.capabilities ?? null,
     methodSwitchCount: session.methodSwitchCount,
     intervention: session.intervention,
     pausedAt: session.pausedAt,
@@ -221,12 +251,83 @@ function questionId(prefix, kind) {
   return null;
 }
 
-function instructionFor(kind, contentDefinition, teachingMethod) {
+function activeQuestionRevisionId(state, fallbackRevisionId) {
+  if (!fallbackRevisionId) return null;
+  if (!state?.privateTutorQuestionRevisions) return fallbackRevisionId;
+  const questionId = fallbackRevisionId.replace(/-v\d+$/, "");
+  if (!state.privateTutorQuestionRevisions.some((row) => row.questionId === questionId)) return fallbackRevisionId;
+  return activePrivateTutorQuestionRevision(state, questionId)?.id ?? null;
+}
+
+function sessionRuntime(state, contentPackageId, knowledgeId) {
+  if (!state || !contentPackageId) return null;
+  const registry = privateTutorPackageRegistryFromState(state);
+  const pkg = registry.getPackage(contentPackageId);
+  const knowledge = pkg?.knowledgeComponents?.find((item) => item.id === knowledgeId);
+  if (!pkg || !knowledge) return null;
+  const teaching = knowledge.teachingContent ?? {};
+  return {
+    package: pkg,
+    knowledge,
+    capabilities: registry.getSubjectPlugin(pkg.subjectId)?.getCapabilities?.() ?? {
+      deterministicGrading: false,
+      stepEvaluation: false,
+      speechEvaluation: false,
+      visualInteractions: false,
+    },
+    content: {
+      title: knowledge.name ?? knowledge.id,
+      explanation: teaching.coreConcept ?? knowledge.shortDescription ?? "先理解核心概念，再用练习确认。",
+      hints: teaching.keyPoints?.length ? teaching.keyPoints : ["回到定义，逐项检查条件。"],
+    },
+  };
+}
+
+function runtimeQuestionId(knowledge, kind) {
+  const questions = knowledge.tutoringQuestions ?? [];
+  if (!questions.length) return null;
+  if (kind === "recall") return questions[0]?.id ?? null;
+  if (kind === "guided_practice") return questions[1]?.id ?? questions[0]?.id ?? null;
+  if (kind === "independent_check") return questions[2]?.id ?? questions.at(-1)?.id ?? null;
+  return null;
+}
+
+function instructionFor(kind, contentDefinition, teachingMethod, preferences = null) {
+  const styleFrame = preferences ? styleFraming(preferences) : null;
+  const depthFrame = preferences ? depthFraming(preferences.explanationDepth) : null;
   if (kind === "recall") return `先回想一下“${contentDefinition.title}”，看看昨天的理解还在不在。`;
-  if (kind === "explain") return `${contentDefinition.explanation} 当前讲法：${methodLabel(teachingMethod)}。`;
-  if (kind === "guided_practice") return "我会陪你做这一步；需要时可以逐级看提示。";
+  if (kind === "explain") {
+    const base = `${contentDefinition.explanation} 当前讲法：${methodLabel(teachingMethod)}。`;
+    return `${base}${styleFrame ?? ""}${depthFrame ?? ""}`;
+  }
+  if (kind === "guided_practice") {
+    const base = "我会陪你做这一步；需要时可以逐级看提示。";
+    return `${base}${styleFrame ?? ""}`;
+  }
   if (kind === "independent_check") return "这是一道没见过的新题。先不看提示，自己验证能不能迁移。";
   return "看看今天学会了什么，以及下一次什么时候回来复习。";
+}
+
+// Style/depth frames only reframe the explanation copy. They never change the
+// question, the hints, or the answer key — deterministic grading is untouched.
+function styleFraming(preferences) {
+  const frames = {
+    heuristic_guidance: " 讲解方式：先抛出问题，引导你自己想出下一步。",
+    direct_concept: " 讲解方式：直接讲清概念和规则，再示范一次。",
+    case_driven: " 讲解方式：先看一个具体例子，从例子里归纳规则。",
+    socratic_questioning: " 讲解方式：用连续追问帮你检验每一步的理由。",
+  };
+  return frames[preferences.teacherStyle] ?? null;
+}
+
+function depthFraming(depth) {
+  const frames = {
+    concise_then_expand: " 深度：先给简洁版本，确认理解后再展开细节。",
+    from_foundations: " 深度：从最基础的概念完整讲起，不跳过前置知识。",
+    key_difficulties_only: " 深度：只聚焦关键难点，已掌握的部分快速带过。",
+    professional_depth: " 深度：按专业标准深入，包含严格的定义和边界条件。",
+  };
+  return frames[depth] ?? null;
 }
 
 function initialMethod(strategy) {

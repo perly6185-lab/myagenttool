@@ -13,6 +13,7 @@ import { after, before, test } from "node:test";
 let server;
 let base;
 let runtimeState;
+let deletionFinalizer;
 const root = join(tmpdir(), `myagenttool-private-tutor-http-${process.pid}`);
 
 before(async () => {
@@ -25,15 +26,32 @@ before(async () => {
   execFileSync("git", ["init", "-b", "main", root]);
   const { defaultProject, state } = createServerState({ defaultProjectPath: root, now });
   runtimeState = state;
-  state.teams.push({ id: "team_family_a" }, { id: "team_family_b" });
+  state.teams.push(
+    { id: "team_family_a" },
+    { id: "team_family_b" },
+    { id: "team_personal" },
+    { id: "team_migrate" },
+  );
   state.users.push(
     { id: "usr_parent_a", teamId: "team_family_a", role: "viewer" },
     { id: "usr_parent_b", teamId: "team_family_b", role: "owner" },
+    { id: "usr_admin", teamId: "team_family_b", role: "admin" },
+    { id: "usr_reviewer", teamId: "team_family_b", role: "admin" },
+    { id: "usr_parent_c", teamId: "team_family_c", role: "viewer" },
+    { id: "usr_personal", teamId: "team_personal", role: "viewer" },
+    { id: "usr_personal_race", teamId: "team_personal", role: "viewer" },
+    { id: "usr_migrate", teamId: "team_migrate", role: "viewer" },
   );
   const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
   state.tokens.push(
     { token: "tok_parent_a", userId: "usr_parent_a", expiresAt },
     { token: "tok_parent_b", userId: "usr_parent_b", expiresAt },
+    { token: "tok_admin", userId: "usr_admin", expiresAt },
+    { token: "tok_reviewer", userId: "usr_reviewer", expiresAt },
+    { token: "tok_parent_c", userId: "usr_parent_c", expiresAt },
+    { token: "tok_personal", userId: "usr_personal", expiresAt },
+    { token: "tok_personal_race", userId: "usr_personal_race", expiresAt },
+    { token: "tok_migrate", userId: "usr_migrate", expiresAt },
   );
 
   const { httpDependencies } = createServerRuntimeServices({
@@ -48,12 +66,14 @@ before(async () => {
     dispatchLeaseMs: 30_000,
     now,
   });
+  deletionFinalizer = httpDependencies.finalizePrivateTutorLearnerDeletion;
   server = createHttpServer({
     host: "127.0.0.1",
     port: 0,
     namespace: "test",
     protocolVersion: "0.0.0",
     ...httpDependencies,
+    finalizePrivateTutorLearnerDeletion: (input) => deletionFinalizer(input),
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -74,6 +94,20 @@ async function call(path, { token = "tok_parent_a", method = "GET", body } = {})
     body: body ? JSON.stringify(body) : undefined,
   });
   return { status: response.status, body: await response.json() };
+}
+
+function releaseEvidenceBody(gate, evidenceTarget, evidence = `owner evidence for ${gate.id}`) {
+  return {
+    gateId: gate.id,
+    targetId: evidenceTarget.id,
+    status: "passed",
+    evidence,
+    evidenceType: evidenceTarget.evidenceType,
+    environment: evidenceTarget.environment,
+    artifactName: `${gate.id}-${evidenceTarget.id}.json`,
+    artifactChecksumSha256: "b".repeat(64),
+    executedAt: new Date().toISOString(),
+  };
 }
 
 function cookiesFrom(response) {
@@ -111,6 +145,359 @@ test("a signed-in parent creates children with isolated learner-scoped snapshots
   assert.deepEqual(otherFamily.body.learners, []);
 
   runtimeState.testPrivateTutorLearnerIds = [first.body.learner.id, second.body.learner.id];
+});
+
+test("the personal tutor contract creates at most one profile for the current account", async () => {
+  const empty = await call("/api/private-tutor/profile", { token: "tok_personal" });
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body, { profile: null, migrationRequired: false });
+
+  const created = await call("/api/private-tutor/profile", {
+    token: "tok_personal",
+    method: "POST",
+    body: { displayName: "小林", grade: "大学课程", curriculumEditionId: "calculus-v1" },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.created, true);
+  assert.equal(created.body.profile.displayName, "小林");
+  assert.equal(created.body.profile.grade, "大学课程");
+
+  const repeated = await call("/api/private-tutor/profile", {
+    token: "tok_personal",
+    method: "POST",
+    body: { displayName: "不应创建第二份", grade: "职业与专业学习" },
+  });
+  assert.equal(repeated.status, 200);
+  assert.equal(repeated.body.created, false);
+  assert.equal(repeated.body.profile.id, created.body.profile.id);
+  assert.equal(runtimeState.privateTutorLearners.filter((row) => row.createdBy === "usr_personal").length, 1);
+
+  const loaded = await call("/api/private-tutor/profile", { token: "tok_personal" });
+  assert.equal(loaded.status, 200);
+  assert.equal(loaded.body.profile.id, created.body.profile.id);
+});
+
+test("multiple legacy profiles require an explicit migration instead of implicit selection", async () => {
+  const response = await call("/api/private-tutor/profile");
+  assert.equal(response.status, 409);
+  assert.equal(response.body.error, "private_tutor_profile_migration_required");
+  assert.equal(response.body.profileCount, 2);
+  assert.equal("profiles" in response.body, false);
+});
+
+test("parallel profile creation remains idempotent", async () => {
+  const results = await Promise.all([
+    call("/api/private-tutor/profile", {
+      token: "tok_personal_race",
+      method: "POST",
+      body: { displayName: "并发学习者", grade: "自主学习" },
+    }),
+    call("/api/private-tutor/profile", {
+      token: "tok_personal_race",
+      method: "POST",
+      body: { displayName: "不应重复", grade: "大学课程" },
+    }),
+  ]);
+  assert.deepEqual(results.map((result) => result.status).sort(), [200, 201]);
+  assert.equal(results[0].body.profile.id, results[1].body.profile.id);
+  assert.equal(runtimeState.privateTutorLearners.filter((row) => row.createdBy === "usr_personal_race").length, 1);
+});
+
+test("profile sub-resources resolve the owned profile and stay account-scoped", async () => {
+  const owned = await call("/api/private-tutor/profile", { token: "tok_personal" });
+  assert.equal(owned.status, 200);
+  assert.equal(owned.body.profile != null, true);
+  const profileId = owned.body.profile.id;
+  const snapshot = await call("/api/private-tutor/profile/snapshot", { token: "tok_personal" });
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.body.snapshot.learnerId, profileId);
+  assert.equal(snapshot.body.profile.id, profileId);
+
+  const foreign = await call("/api/private-tutor/profile/snapshot", { token: "tok_personal_race" });
+  assert.equal(foreign.status, 200);
+  assert.notEqual(foreign.body.snapshot.learnerId, profileId);
+
+  const payload = {
+    idempotencyKey: "profile-attempt-001",
+    knowledgeId: "balance",
+    questionRevisionId: "demo-balance-001-v1",
+    rawAnswer: "5",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+    durationSeconds: 60,
+  };
+  const attempt = await call("/api/private-tutor/profile/attempts", { token: "tok_personal", method: "POST", body: payload });
+  assert.equal(attempt.status, 201);
+  assert.equal(attempt.body.attempt.learnerId, profileId);
+  assert.equal(attempt.body.learningPlan != null || attempt.body.learnerModel != null, true);
+
+  const replayed = await call("/api/private-tutor/profile/attempts", { token: "tok_personal", method: "POST", body: payload });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+
+  const plan = await call("/api/private-tutor/profile/learning-plan", { token: "tok_personal" });
+  assert.equal(plan.status, 200);
+
+  const review = await call("/api/private-tutor/profile/review", { token: "tok_personal" });
+  assert.equal(review.status, 200);
+  assert.equal("reviewBook" in review.body, true);
+
+  const audit = await call("/api/private-tutor/profile/audit", { token: "tok_personal" });
+  assert.equal(audit.status, 200);
+  assert.equal(audit.body.audit.some((row) => row.action === "attempt_recorded"), true);
+
+  const foreignAudit = await call("/api/private-tutor/profile/audit", { token: "tok_personal_race" });
+  assert.equal(foreignAudit.status, 200);
+  assert.equal(foreignAudit.body.audit.every((row) => row.learnerId !== profileId), true);
+});
+
+test("learning preferences round-trip through the profile route with audit and isolation", async () => {
+  const defaults = await call("/api/private-tutor/profile/preferences", { token: "tok_personal" });
+  assert.equal(defaults.status, 200);
+  assert.equal(defaults.body.preferences.captions, true);
+  assert.equal(defaults.body.preferences.dailyMinutes, 20);
+  assert.equal(defaults.body.preferences.teacherStyle, "heuristic_guidance");
+  assert.equal(defaults.body.preferences.revision, 0);
+  // Reading defaults must not persist a row
+  assert.equal(runtimeState.privateTutorLearningPreferences.length, 0);
+
+  const updated = await call("/api/private-tutor/profile/preferences", {
+    token: "tok_personal",
+    method: "PUT",
+    body: { captions: false, dailyMinutes: 45, teacherStyle: "socratic_questioning", explanationDepth: "professional_depth" },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.preferences.captions, false);
+  assert.equal(updated.body.preferences.dailyMinutes, 45);
+  assert.equal(updated.body.preferences.teacherStyle, "socratic_questioning");
+  assert.equal(updated.body.preferences.explanationDepth, "professional_depth");
+  assert.equal(updated.body.preferences.revision, 1);
+
+  const reloaded = await call("/api/private-tutor/profile/preferences", { token: "tok_personal" });
+  assert.equal(reloaded.status, 200);
+  assert.equal(reloaded.body.preferences.captions, false);
+  assert.equal(reloaded.body.preferences.revision, 1);
+
+  const audit = await call("/api/private-tutor/profile/audit", { token: "tok_personal" });
+  assert.equal(audit.body.audit.some((row) => row.action === "learning_preferences_updated"), true);
+
+  const foreign = await call("/api/private-tutor/profile/preferences", { token: "tok_personal_race" });
+  assert.equal(foreign.status, 200);
+  assert.equal(foreign.body.preferences.captions, true); // unaffected defaults
+});
+
+test("learning preferences reject invalid values and require a profile", async () => {
+  const badEnum = await call("/api/private-tutor/profile/preferences", {
+    token: "tok_personal",
+    method: "PUT",
+    body: { teacherStyle: "drill_sergeant" },
+  });
+  assert.equal(badEnum.status, 400);
+  assert.equal(badEnum.body.error, "invalid_teacher_style");
+
+  const badBool = await call("/api/private-tutor/profile/preferences", {
+    token: "tok_personal",
+    method: "PUT",
+    body: { captions: "yes" },
+  });
+  assert.equal(badBool.status, 400);
+
+  const nested = await call("/api/private-tutor/profile/preferences", {
+    token: "tok_personal",
+    method: "PUT",
+    body: { preferences: { dailyMinutes: 30, planIntensity: "intensive" } },
+  });
+  assert.equal(nested.status, 200);
+  assert.equal(nested.body.preferences.dailyMinutes, 30);
+  assert.equal(nested.body.preferences.planIntensity, "intensive");
+  assert.equal(nested.body.preferences.captions, false); // preserved from previous test
+
+  const missing = await call("/api/private-tutor/profile/preferences", { token: "tok_parent_c", method: "PUT", body: { captions: true } });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.error, "private_tutor_profile_required");
+});
+
+test("profile migration report-first merges legacy profiles with rollback check", async () => {
+  const seed = await call("/api/private-tutor/profile", {
+    token: "tok_migrate",
+    method: "POST",
+    body: { displayName: "迁移保留档案", grade: "七年级" },
+  });
+  assert.equal(seed.status, 201);
+  const seededKeepId = seed.body.profile.id;
+
+  // The seeded profile must stay the recommended keep candidate, so give the
+  // injected legacy profile a strictly older timestamp (sub-ms clock
+  // resolution can otherwise tie the two createdAt values).
+  const legacyCreatedAt = new Date(Date.parse(seed.body.profile.createdAt) - 60_000).toISOString();
+  const legacy = {
+    id: "lrn_legacy_merge",
+    ownerTeamId: "team_migrate",
+    displayName: "旧档案",
+    grade: "七年级",
+    curriculumEditionId: null,
+    status: "active",
+    createdAt: legacyCreatedAt,
+    createdBy: "usr_migrate",
+    updatedAt: legacyCreatedAt,
+  };
+  runtimeState.privateTutorLearners.unshift(legacy);
+
+  const gated = await call("/api/private-tutor/profile", { token: "tok_migrate" });
+  assert.equal(gated.status, 409);
+  assert.equal(gated.body.error, "private_tutor_profile_migration_required");
+  const gatedSnapshot = await call("/api/private-tutor/profile/snapshot", { token: "tok_migrate" });
+  assert.equal(gatedSnapshot.status, 409);
+  assert.equal(gatedSnapshot.body.error, "private_tutor_profile_migration_required");
+
+  const report = await call("/api/private-tutor/profile/migration", { token: "tok_migrate" });
+  assert.equal(report.status, 200);
+  assert.equal(report.body.migrationRequired, true);
+  assert.equal(report.body.candidates.length, 2);
+  const keepLearnerId = report.body.recommendedKeepLearnerId;
+  assert.equal(typeof keepLearnerId, "string");
+  assert.equal(keepLearnerId, seededKeepId);
+  const discardLearnerId = report.body.candidates.find((row) => row.learnerId !== keepLearnerId)?.learnerId;
+  assert.equal(typeof discardLearnerId, "string");
+
+  const dryRun = await call("/api/private-tutor/profile/migration", {
+    token: "tok_migrate",
+    method: "POST",
+    body: { keepLearnerId, discardLearnerIds: [discardLearnerId], dryRun: true },
+  });
+  assert.equal(dryRun.status, 200);
+  assert.equal(dryRun.body.merged, false);
+  assert.equal(dryRun.body.dryRun, true);
+  assert.equal(runtimeState.privateTutorLearners.some((row) => row.id === discardLearnerId && row.status === "active"), true);
+
+  const invalid = await call("/api/private-tutor/profile/migration", {
+    token: "tok_migrate",
+    method: "POST",
+    body: { keepLearnerId, discardLearnerIds: [keepLearnerId] },
+  });
+  assert.equal(invalid.status, 400);
+
+  const foreignMerge = await call("/api/private-tutor/profile/migration", {
+    token: "tok_parent_b",
+    method: "POST",
+    body: { keepLearnerId, discardLearnerIds: [discardLearnerId] },
+  });
+  assert.equal(foreignMerge.status, 404);
+
+  const merged = await call("/api/private-tutor/profile/migration", {
+    token: "tok_migrate",
+    method: "POST",
+    body: { keepLearnerId, discardLearnerIds: [discardLearnerId] },
+  });
+  assert.equal(merged.status, 200);
+  assert.equal(merged.body.merged, true);
+  assert.equal("rollbackSnapshot" in merged.body, false);
+  assert.equal(typeof merged.body.rollbackReceipt.id, "string");
+  assert.equal(
+    merged.body.rollbackReceipt.rollbackCheck.residualDiscardReferences,
+    merged.body.rollbackReceipt.rollbackCheck.expectedResidualDiscardReferences,
+  );
+  assert.equal(runtimeState.privateTutorAttempts.every((row) => row.learnerId !== discardLearnerId), true);
+  const discarded = runtimeState.privateTutorLearners.find((row) => row.id === discardLearnerId);
+  assert.equal(discarded.status, "merged");
+  assert.equal(discarded.mergedIntoLearnerId, keepLearnerId);
+  assert.equal(runtimeState.privateTutorAuditEvents.some((row) => row.action === "private_tutor_profile_merged" && row.learnerId === keepLearnerId), true);
+
+  const resolved = await call("/api/private-tutor/profile", { token: "tok_migrate" });
+  assert.equal(resolved.status, 200);
+  assert.equal(resolved.body.profile.id, keepLearnerId);
+  const reportAfter = await call("/api/private-tutor/profile/migration", { token: "tok_migrate" });
+  assert.equal(reportAfter.body.migrationRequired, false);
+});
+
+test("profile deletion removes the owned profile and unlocks recreation", async () => {
+  const preview = await call("/api/private-tutor/profile/guardian/deletion-preview", { token: "tok_personal" });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.preview.totalRecords > 0, true);
+
+  const rejected = await call("/api/private-tutor/profile", {
+    token: "tok_personal",
+    method: "DELETE",
+    body: { confirmDisplayName: "错误名字" },
+  });
+  assert.equal(rejected.status, 409);
+  assert.equal(rejected.body.error, "private_tutor_delete_confirmation_required");
+
+  const deleted = await call("/api/private-tutor/profile", {
+    token: "tok_personal",
+    method: "DELETE",
+    body: { confirmDisplayName: "小林" },
+  });
+  assert.equal(deleted.status, 200);
+  assert.equal(typeof deleted.body.deletedId, "string");
+  assert.equal(deleted.body.deletionReport.liveStateResidualCount, 0);
+  assert.equal(deleted.body.deletionReport.durableVerification.ok, true);
+
+  const missing = await call("/api/private-tutor/profile/snapshot", { token: "tok_personal" });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.error, "private_tutor_profile_required");
+
+  const recreated = await call("/api/private-tutor/profile", {
+    token: "tok_personal",
+    method: "POST",
+    body: { displayName: "小林", grade: "大学课程" },
+  });
+  assert.equal(recreated.status, 201);
+  assert.equal(recreated.body.created, true);
+});
+
+test("child mode stays blocked from every profile route", async () => {
+  const login = await fetch(`${base}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ mode: "local" }),
+  });
+  assert.equal(login.status, 200);
+  const cookies = cookiesFrom(login);
+  const cookieHeader = Object.entries(cookies).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join("; ");
+  const headers = {
+    cookie: cookieHeader,
+    "content-type": "application/json",
+    "x-csrf-token": cookies.myagenttool_csrf,
+  };
+
+  const created = await fetch(`${base}/api/private-tutor/learners`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ displayName: "小满二号", grade: "六年级" }),
+  });
+  assert.equal(created.status, 201);
+  const learnerId = (await created.json()).learner.id;
+
+  const entered = await fetch(`${base}/api/private-tutor/child-mode`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ learnerId, exitPin: "618520" }),
+  });
+  assert.equal(entered.status, 201);
+
+  for (const [method, path] of [
+    ["GET", "/api/private-tutor/profile"],
+    ["GET", "/api/private-tutor/profile/snapshot"],
+    ["GET", "/api/private-tutor/profile/learning-plan"],
+    ["GET", "/api/private-tutor/profile/review"],
+    ["GET", "/api/private-tutor/profile/audit"],
+    ["GET", "/api/private-tutor/profile/migration"],
+    ["POST", "/api/private-tutor/profile/migration"],
+  ]) {
+    const blocked = await fetch(`${base}${path}`, { method, headers, body: method === "POST" ? "{}" : undefined });
+    assert.equal(blocked.status, 403, path);
+    assert.equal((await blocked.json()).error, "private_tutor_child_mode_restricted", path);
+  }
+
+  const exited = await fetch(`${base}/api/private-tutor/child-mode/exit`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ exitPin: "618520" }),
+  });
+  assert.equal(exited.status, 200);
 });
 
 test("foreign and missing learners have byte-equivalent not-found responses", async () => {
@@ -422,12 +809,360 @@ test("the adaptive diagnostic is resumable, server-graded, idempotent, and produ
   assert.equal(runtimeState.privateTutorSessionEvents.some((row) => row.sessionId === tutoringSession.id && row.type === "session_completed"), true);
 });
 
+test("review and family routes preserve learner isolation and low-pressure defaults", async () => {
+  const learnerId = runtimeState.testPrivateTutorLearnerIds[0];
+  const review = await call(`/api/private-tutor/learners/${learnerId}/review`);
+  assert.equal(review.status, 200);
+  assert.equal(review.body.reviewBook.counts.challengeToday >= 1, true);
+  const theme = review.body.reviewBook.themes.find((row) => row.schedule?.due);
+  assert.ok(theme);
+  assert.equal(theme.schedule.phase, "correction");
+
+  const corrected = await call(`/api/private-tutor/learners/${learnerId}/review/themes/${theme.id}/diagnosis`, {
+    method: "POST",
+    body: { correction: "方法会了，这一次是计算失误。" },
+  });
+  assert.equal(corrected.status, 200);
+  assert.equal(corrected.body.reviewBook.themes.find((row) => row.id === theme.id).learnerDiagnosisCorrection, "方法会了，这一次是计算失误。");
+
+  const answerPayload = {
+    idempotencyKey: "review-correction-001",
+    questionRevisionId: theme.schedule.question.revisionId,
+    rawAnswer: "5",
+    responseKind: "answer",
+    source: "screen",
+  };
+  const answered = await call(`/api/private-tutor/learners/${learnerId}/review/schedules/${theme.schedule.id}/answers`, { method: "POST", body: answerPayload });
+  assert.equal(answered.status, 201);
+  assert.equal(answered.body.attempt.context, "review");
+  assert.equal(answered.body.schedule.phase, "similar");
+  assert.equal(answered.body.reviewBook.themes.find((row) => row.id === theme.id).status, "challenge_today");
+  const replayed = await call(`/api/private-tutor/learners/${learnerId}/review/schedules/${theme.schedule.id}/answers`, { method: "POST", body: answerPayload });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+
+  const report = await call(`/api/private-tutor/learners/${learnerId}/guardian/weekly-report`);
+  assert.equal(report.status, 200);
+  assert.deepEqual(report.body.report.pressureSafety, { rankingShown: false, dailyErrorAlertEnabled: false, comparisonWithOthers: false });
+  const defaults = await call(`/api/private-tutor/learners/${learnerId}/guardian/preferences`);
+  assert.equal(defaults.body.preferences.notificationFrequency, "weekly");
+  const rejectedAlerts = await call(`/api/private-tutor/learners/${learnerId}/guardian/preferences`, { method: "PUT", body: { notificationFrequency: "weekly", dailyErrorAlerts: true } });
+  assert.equal(rejectedAlerts.status, 400);
+  const saved = await call(`/api/private-tutor/learners/${learnerId}/guardian/preferences`, { method: "PUT", body: { notificationFrequency: "off", weeklyProgressSummary: false, quietHours: { enabled: true, start: "21:00", end: "07:30" } } });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.preferences.dailyErrorAlerts, false);
+  assert.equal(saved.body.preferences.quietHours.start, "21:00");
+
+  const foreignReview = await call(`/api/private-tutor/learners/${learnerId}/review`, { token: "tok_parent_b" });
+  const foreignReport = await call(`/api/private-tutor/learners/${learnerId}/guardian/weekly-report`, { token: "tok_parent_b" });
+  assert.equal(foreignReview.status, 404);
+  assert.equal(foreignReport.status, 404);
+});
+
+test("only professional roles can clear every release gate before starting one bounded pilot", async () => {
+  const forbidden = await call("/api/private-tutor/release-readiness");
+  assert.equal(forbidden.status, 403);
+
+  const initial = await call("/api/private-tutor/release-readiness", { token: "tok_parent_b" });
+  assert.equal(initial.status, 200);
+  assert.equal(initial.body.readiness.ready, false);
+  assert.equal(initial.body.readiness.gates.length, 8);
+  const invalidArtifact = await call("/api/private-tutor/release-readiness/evaluations", {
+    token: "tok_parent_b",
+    method: "POST",
+    body: { ...releaseEvidenceBody(initial.body.readiness.gates[0], initial.body.readiness.gates[0].targets[0]), artifactChecksumSha256: "unsafe" },
+  });
+  assert.equal(invalidArtifact.status, 400);
+  for (const gate of initial.body.readiness.gates) {
+    for (const evidenceTarget of gate.targets) {
+      const evaluated = await call("/api/private-tutor/release-readiness/evaluations", {
+        token: "tok_parent_b",
+        method: "POST",
+        body: releaseEvidenceBody(gate, evidenceTarget),
+      });
+      assert.equal(evaluated.status, 201);
+      assert.equal(evaluated.body.evaluation.contractVersion, 2);
+      assert.equal(evaluated.body.evaluation.reviewerId, "usr_parent_b");
+    }
+  }
+  const oneReviewerShort = await call("/api/private-tutor/release-readiness", { token: "tok_parent_b" });
+  assert.equal(oneReviewerShort.body.readiness.ready, false);
+  assert.equal(oneReviewerShort.body.readiness.gates.find((gate) => gate.id === "math_content").passedReviewers, 1);
+  const blockedPilot = await call("/api/private-tutor/pilot", { token: "tok_parent_b", method: "POST", body: { participantTarget: 50, responseOwner: "安全负责人" } });
+  assert.equal(blockedPilot.status, 409);
+
+  const secondReview = await call("/api/private-tutor/release-readiness/evaluations", {
+    token: "tok_admin",
+    method: "POST",
+    body: releaseEvidenceBody(
+      initial.body.readiness.gates.find((gate) => gate.id === "math_content"),
+      initial.body.readiness.gates.find((gate) => gate.id === "math_content").targets[0],
+      "second independent math review",
+    ),
+  });
+  assert.equal(secondReview.status, 201);
+  assert.equal(secondReview.body.evaluation.reviewerId, "usr_admin");
+  assert.equal(secondReview.body.readiness.ready, true);
+  assert.equal(secondReview.body.readiness.gates.find((gate) => gate.id === "math_content").passedReviewers, 2);
+
+  const started = await call("/api/private-tutor/pilot", { token: "tok_parent_b", method: "POST", body: { participantTarget: 50, responseOwner: "安全负责人" } });
+  assert.equal(started.status, 201);
+  assert.equal(started.body.cohort.durationDays, 7);
+  assert.equal(started.body.cohort.participantTarget, 50);
+  assert.equal(started.body.cohort.exitPolicy, "guardian_can_withdraw_and_request_deletion");
+  const duplicate = await call("/api/private-tutor/pilot", { token: "tok_admin", method: "POST", body: { participantTarget: 30, responseOwner: "备用负责人" } });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.body.error, "private_tutor_pilot_already_active");
+});
+
+test("pilot participation requires versioned consent and supports check-in, escalation, pause, resume, and withdrawal", async () => {
+  const learnerId = runtimeState.testPrivateTutorLearnerIds[0];
+  const initial = await call(`/api/private-tutor/learners/${learnerId}/guardian/pilot`);
+  assert.equal(initial.status, 200);
+  assert.equal(initial.body.pilot.canJoin, true);
+  assert.match(initial.body.pilot.consentDocument.version, /^2026-08-21/);
+  assert.equal("enrolledLearnerIds" in initial.body.pilot.cohort, false);
+
+  const incomplete = await call(`/api/private-tutor/learners/${learnerId}/guardian/pilot/consent`, {
+    method: "POST",
+    body: { cohortId: initial.body.pilot.cohort.id, consentDocumentId: initial.body.pilot.consentDocument.id, acknowledgements: { guardianAuthority: true } },
+  });
+  assert.equal(incomplete.status, 400);
+  assert.equal(incomplete.body.error, "private_tutor_pilot_consent_incomplete");
+
+  const accepted = await call(`/api/private-tutor/learners/${learnerId}/guardian/pilot/consent`, {
+    method: "POST",
+    body: {
+      cohortId: initial.body.pilot.cohort.id,
+      consentDocumentId: initial.body.pilot.consentDocument.id,
+      acknowledgements: {
+        guardianAuthority: true, scopeUnderstood: true, dataUseUnderstood: true,
+        voluntaryParticipation: true, withdrawalUnderstood: true, childWillingnessDiscussed: true,
+      },
+    },
+  });
+  assert.equal(accepted.status, 201);
+  assert.equal(accepted.body.consent.documentChecksum, initial.body.pilot.consentDocument.checksum);
+
+  const checkedIn = await call(`/api/private-tutor/learners/${learnerId}/guardian/pilot/check-ins`, {
+    method: "POST", body: { guardianPressure: "manageable", childWillingToReturn: "yes" },
+  });
+  assert.equal(checkedIn.status, 200);
+
+  const incident = await call(`/api/private-tutor/learners/${learnerId}/guardian/pilot/incidents`, {
+    method: "POST", body: { category: "child_distress", needsImmediateStop: true, summary: "孩子出现明显不适，请立即停止试点。" },
+  });
+  assert.equal(incident.status, 200);
+  assert.equal(incident.body.incident.status, "escalated");
+  assert.equal(incident.body.cohort.status, "paused");
+  const pausedLearning = await call(`/api/private-tutor/learners/${learnerId}/attempts`, { method: "POST", body: {} });
+  assert.equal(pausedLearning.status, 423);
+  assert.equal(pausedLearning.body.error, "private_tutor_pilot_paused");
+  assert.match(pausedLearning.body.message, /今天先休息一下/);
+  assert.deepEqual(Object.keys(pausedLearning.body.pause), ["pausedAt"]);
+  const pausedAssessment = await call(`/api/private-tutor/learners/${learnerId}/assessments/start`, { method: "POST", body: {} });
+  assert.equal(pausedAssessment.status, 423);
+  assert.equal(pausedAssessment.body.error, "private_tutor_pilot_paused");
+  const foreignPausedWrite = await call(`/api/private-tutor/learners/${learnerId}/attempts`, { token: "tok_parent_b", method: "POST", body: {} });
+  assert.equal(foreignPausedWrite.status, 404);
+  assert.deepEqual(foreignPausedWrite.body, { error: "private_tutor_learner_not_found" });
+
+  const forbiddenOperations = await call("/api/private-tutor/pilot/operations");
+  assert.equal(forbiddenOperations.status, 403);
+  const operations = await call("/api/private-tutor/pilot/operations", { token: "tok_admin" });
+  assert.equal(operations.status, 200);
+  assert.equal(operations.body.operations.metrics[0].enrollment.active, 1);
+  assert.equal(operations.body.operations.metrics[0].experience.guardianPressure.manageable, 1);
+  assert.equal(JSON.stringify(operations.body.operations.metrics).includes(learnerId), false);
+
+  const blockedResume = await call(`/api/private-tutor/pilot/cohorts/${initial.body.pilot.cohort.id}/resume`, {
+    token: "tok_admin", method: "POST", body: { reason: "准备恢复试点" },
+  });
+  assert.equal(blockedResume.status, 409);
+  assert.equal(blockedResume.body.error, "private_tutor_pilot_critical_incident_open");
+  const resolved = await call(`/api/private-tutor/pilot/incidents/${incident.body.incident.id}`, {
+    token: "tok_admin", method: "POST", body: { action: "resolve", resolution: "已联系监护人并完成安全复核。" },
+  });
+  assert.equal(resolved.status, 200);
+  const resumed = await call(`/api/private-tutor/pilot/cohorts/${initial.body.pilot.cohort.id}/resume`, {
+    token: "tok_admin", method: "POST", body: { reason: "安全负责人确认可以恢复" },
+  });
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.cohort.status, "active");
+
+  const withdrawn = await call(`/api/private-tutor/learners/${learnerId}/guardian/pilot/withdraw`, {
+    method: "POST", body: { reason: "child_choice", deletionRequested: true },
+  });
+  assert.equal(withdrawn.status, 200);
+  assert.equal(withdrawn.body.participation.status, "withdrawn");
+  assert.equal(withdrawn.body.deletionRequest.status, "pending_parent_confirmation");
+});
+
+test("professional content API requires two independent reviews and gates runtime use by release state", async () => {
+  const forbidden = await call("/api/private-tutor/content/questions");
+  assert.equal(forbidden.status, 403);
+
+  const created = await call("/api/private-tutor/content/questions", {
+    token: "tok_parent_b",
+    method: "POST",
+    body: {
+      questionId: "demo-balance-001",
+      context: "practice",
+      knowledgeId: "balance",
+      difficulty: 2,
+      kind: "numeric",
+      prompt: "x + 6 = 14，x 是多少？",
+      expectedAnswer: "8",
+      allowVariableAssignment: true,
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.revision.version, 2);
+  const revisionId = created.body.revision.id;
+
+  const learnerId = runtimeState.testPrivateTutorLearnerIds[0];
+  const draftAttempt = await call(`/api/private-tutor/learners/${learnerId}/attempts`, {
+    method: "POST",
+    body: { idempotencyKey: "draft-content-blocked", knowledgeId: "balance", questionRevisionId: revisionId, rawAnswer: "8", responseKind: "answer", source: "screen" },
+  });
+  assert.equal(draftAttempt.status, 400);
+
+  assert.equal((await call(`/api/private-tutor/content/questions/${revisionId}/submit`, { token: "tok_parent_b", method: "POST", body: {} })).status, 200);
+  const selfReview = await call(`/api/private-tutor/content/questions/${revisionId}/reviews`, {
+    token: "tok_parent_b", method: "POST", body: { decision: "approved", evidence: "作者自审" },
+  });
+  assert.equal(selfReview.status, 409);
+  for (const [token, evidence] of [["tok_admin", "第一位独立审核验算通过"], ["tok_reviewer", "第二位独立审核复核通过"]]) {
+    const reviewed = await call(`/api/private-tutor/content/questions/${revisionId}/reviews`, {
+      token, method: "POST", body: { decision: "approved", evidence },
+    });
+    assert.equal(reviewed.status, 200);
+  }
+  const published = await call(`/api/private-tutor/content/questions/${revisionId}/publish`, { token: "tok_parent_b", method: "POST", body: {} });
+  assert.equal(published.status, 200);
+  assert.equal(published.body.revision.active, true);
+  const governedCohort = runtimeState.privateTutorPilotCohorts[0];
+  assert.equal(governedCohort.status, "paused");
+  assert.match(governedCohort.pauseReason, /release_gates_blocked/);
+  const releaseBlockedResume = await call(`/api/private-tutor/pilot/cohorts/${governedCohort.id}/resume`, {
+    token: "tok_admin", method: "POST", body: { reason: "尝试在未重新验证时恢复" },
+  });
+  assert.equal(releaseBlockedResume.status, 409);
+  assert.equal(releaseBlockedResume.body.error, "private_tutor_release_gates_blocked");
+
+  const releasedAttempt = await call(`/api/private-tutor/learners/${learnerId}/attempts`, {
+    method: "POST",
+    body: { idempotencyKey: "released-content-accepted", knowledgeId: "balance", questionRevisionId: revisionId, rawAnswer: "x=8", responseKind: "answer", source: "screen" },
+  });
+  assert.equal(releasedAttempt.status, 201);
+  assert.equal(releasedAttempt.body.attempt.correct, true);
+
+  const disabled = await call(`/api/private-tutor/content/questions/${revisionId}/disable`, {
+    token: "tok_admin", method: "POST", body: { reason: "试运行发现题干需要复查" },
+  });
+  assert.equal(disabled.status, 200);
+  assert.equal(disabled.body.activeRevisionId, null);
+  const disabledAttempt = await call(`/api/private-tutor/learners/${learnerId}/attempts`, {
+    method: "POST",
+    body: { idempotencyKey: "disabled-content-blocked", knowledgeId: "balance", questionRevisionId: revisionId, rawAnswer: "8", responseKind: "answer", source: "screen" },
+  });
+  assert.equal(disabledAttempt.status, 400);
+
+  const rollback = await call("/api/private-tutor/content/questions/demo-balance-001/rollback", {
+    token: "tok_admin", method: "POST", body: { revisionId: "demo-balance-001-v1", reason: "恢复已验证的演示版本" },
+  });
+  assert.equal(rollback.status, 200);
+  assert.equal(rollback.body.activeRevisionId, "demo-balance-001-v1");
+  const listed = await call("/api/private-tutor/content/questions", { token: "tok_admin" });
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.revisions.find((row) => row.id === revisionId).status, "disabled");
+  assert.equal(listed.body.revisions.find((row) => row.id === "demo-balance-001-v1").active, true);
+});
+
+test("guardian invitation, export, retention policy, and deletion preview stay learner-scoped", async () => {
+  const learnerId = runtimeState.testPrivateTutorLearnerIds[0];
+  const siblingId = runtimeState.testPrivateTutorLearnerIds[1];
+  const created = await call(`/api/private-tutor/learners/${learnerId}/guardian/invitations`, {
+    method: "POST",
+    body: { inviteeLabel: "另一位监护人", permissions: ["read", "write", "manage"] },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(typeof created.body.invitationToken, "string");
+  assert.equal("tokenHash" in created.body.invitation, false);
+  const invitationToken = created.body.invitationToken;
+  const storedInvitation = runtimeState.privateTutorGuardianInvitations.find((row) => row.id === created.body.invitation.id);
+  assert.equal(storedInvitation.tokenHash.includes(invitationToken), false);
+
+  const listed = await call(`/api/private-tutor/learners/${learnerId}/guardian/invitations`);
+  assert.equal(listed.status, 200);
+  assert.equal(JSON.stringify(listed.body).includes(storedInvitation.tokenHash), false);
+  const accepted = await call("/api/private-tutor/guardian-invitations/accept", {
+    token: "tok_parent_c", method: "POST", body: { invitationToken },
+  });
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.body.guardianLink.guardianUserId, "usr_parent_c");
+  assert.equal((await call(`/api/private-tutor/learners/${learnerId}/snapshot`, { token: "tok_parent_c" })).status, 200);
+  assert.equal((await call(`/api/private-tutor/learners/${siblingId}/snapshot`, { token: "tok_parent_c" })).status, 404);
+  const acceptedLink = runtimeState.privateTutorGuardianLinks.find((row) => row.id === accepted.body.guardianLink.id);
+  acceptedLink.permissions = ["read"];
+  assert.equal((await call(`/api/private-tutor/learners/${learnerId}/guardian/data-policy`, { token: "tok_parent_c" })).status, 404);
+  assert.equal((await call(`/api/private-tutor/learners/${learnerId}/attempts`, {
+    token: "tok_parent_c", method: "POST",
+    body: { idempotencyKey: "read-only-write-blocked", knowledgeId: "balance", questionRevisionId: "demo-balance-001-v1", rawAnswer: "5", responseKind: "answer", source: "screen" },
+  })).status, 404);
+  acceptedLink.permissions = ["read", "write", "manage"];
+
+  const dataExport = await call(`/api/private-tutor/learners/${learnerId}/guardian/data-export`, { token: "tok_parent_c" });
+  assert.equal(dataExport.status, 200);
+  const serializedExport = JSON.stringify(dataExport.body.bundle);
+  assert.equal(serializedExport.includes(invitationToken), false);
+  assert.equal(serializedExport.includes(storedInvitation.tokenHash), false);
+  assert.equal(serializedExport.includes(siblingId), false);
+
+  const rejectedPolicy = await call(`/api/private-tutor/learners/${learnerId}/guardian/data-policy`, {
+    token: "tok_parent_c", method: "PUT",
+    body: { rawAudioDays: 7, voiceTranscriptDays: 30, derivedProfileHistoryDays: 365, learningEvidenceRetention: "until_learner_deletion" },
+  });
+  assert.equal(rejectedPolicy.status, 400);
+  const savedPolicy = await call(`/api/private-tutor/learners/${learnerId}/guardian/data-policy`, {
+    token: "tok_parent_c", method: "PUT",
+    body: { rawAudioDays: 0, voiceTranscriptDays: 7, derivedProfileHistoryDays: 180, learningEvidenceRetention: "until_learner_deletion" },
+  });
+  assert.equal(savedPolicy.status, 200);
+  assert.equal(savedPolicy.body.policy.rawAudioDays, 0);
+  assert.equal(savedPolicy.body.policy.voiceTranscriptDays, 7);
+
+  const preview = await call(`/api/private-tutor/learners/${learnerId}/guardian/deletion-preview`, { token: "tok_parent_c" });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.preview.totalRecords > 0, true);
+  assert.equal(preview.body.preview.requiresExactDisplayName, true);
+});
+
 test("parent-confirmed deletion removes every child data collection and leaves an audit tombstone", async () => {
   const learnerId = runtimeState.testPrivateTutorLearnerIds[1];
   runtimeState.privateTutorSessions.push({ id: "ptsess_delete", learnerId, ownerTeamId: "team_family_a" });
   runtimeState.privateTutorSessionEvents.push({ id: "ptse_delete", learnerId, sessionId: "ptsess_delete", ownerTeamId: "team_family_a" });
   runtimeState.privateTutorVoiceTurns.push({ id: "ptvt_delete", learnerId, sessionId: "ptsess_delete", ownerTeamId: "team_family_a" });
   runtimeState.privateTutorVoiceEvents.push({ id: "ptve_delete", learnerId, sessionId: "ptsess_delete", ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorErrorCases.push({ id: "ptec_delete", learnerId, ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorErrorThemes.push({ id: "ptet_delete", learnerId, ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorReviewSchedules.push({ id: "ptrs_delete", learnerId, ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorGuardianPreferences.push({ id: "ptgp_delete", learnerId, guardianUserId: "usr_parent_a" });
+  runtimeState.privateTutorGuardianInvitations.push({ id: "ptgi_delete", learnerId, ownerTeamId: "team_family_a", tokenHash: "secret-hash" });
+  runtimeState.privateTutorDataPolicies.push({ id: "ptdp_delete", learnerId, ownerTeamId: "team_family_a" });
+  const cohortId = runtimeState.privateTutorPilotCohorts[0].id;
+  runtimeState.privateTutorPilotCohorts[0].enrolledLearnerIds.push(learnerId);
+  runtimeState.privateTutorPilotParticipations.push({ id: "ptpp_delete", cohortId, learnerId, ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorPilotConsents.push({ id: "ptcn_delete", cohortId, learnerId, ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorPilotIncidents.push({ id: "ptin_delete", cohortId, learnerId, ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorPilotCheckIns.push({ id: "ptci_delete", cohortId, learnerId, ownerTeamId: "team_family_a" });
+  runtimeState.privateTutorPilotDeletionRequests.push({ id: "ptpd_delete", cohortId, learnerId, ownerTeamId: "team_family_a" });
+  const boundSession = { id: "idsess_delete", userId: "usr_local", teamId: "team_local", createdAt: "2026-08-21T00:00:00.000Z" };
+  runtimeState.identitySessions.push(boundSession);
+  boundSession.privateTutorChildMode = { learnerId, verifiedAt: "2026-08-21T00:00:00.000Z" };
+  const preview = await call(`/api/private-tutor/learners/${learnerId}/guardian/deletion-preview`);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.preview.collectionCounts.privateTutorChildModeSessions, 1);
   const rejected = await call(`/api/private-tutor/learners/${learnerId}`, {
     method: "DELETE",
     body: { confirmDisplayName: "错误名字" },
@@ -454,10 +1189,62 @@ test("parent-confirmed deletion removes every child data collection and leaves a
     "privateTutorVoiceTurns",
     "privateTutorVoiceEvents",
     "privateTutorIdempotencyRecords",
+    "privateTutorErrorCases",
+    "privateTutorErrorThemes",
+    "privateTutorReviewSchedules",
+    "privateTutorGuardianPreferences",
+    "privateTutorGuardianInvitations",
+    "privateTutorDataPolicies",
+    "privateTutorPilotParticipations",
+    "privateTutorPilotConsents",
+    "privateTutorPilotIncidents",
+    "privateTutorPilotCheckIns",
+    "privateTutorPilotDeletionRequests",
   ]) {
     assert.equal(runtimeState[key].some((row) => row.id === learnerId || row.learnerId === learnerId), false, key);
   }
-  assert.equal(runtimeState.privateTutorAuditEvents.some((row) => row.learnerId === learnerId && row.action === "learner_deleted"), true);
+  assert.equal(runtimeState.privateTutorPilotCohorts[0].enrolledLearnerIds.includes(learnerId), false);
+  assert.equal(boundSession.privateTutorChildMode, undefined);
+  assert.equal(runtimeState.privateTutorAuditEvents.some((row) => row.learnerId?.startsWith("deleted:") && row.action === "learner_deleted"), true);
+  assert.equal(deleted.body.deletionReport.liveStateResidualCount, 0);
+  assert.equal(deleted.body.deletionReport.durableVerification.backing, "memory");
+  assert.equal(deleted.body.deletionReport.durableVerification.durableResidualCount, 0);
+  assert.equal(deleted.body.deletionReport.durableVerification.ok, true);
+});
+
+test("deletion never returns success when durable verification fails", async () => {
+  const created = await call("/api/private-tutor/learners", { method: "POST", body: { displayName: "待验证", grade: "六年级" } });
+  assert.equal(created.status, 201);
+  const originalFinalizer = deletionFinalizer;
+  deletionFinalizer = () => ({
+    backing: "sqlite", durableResidualCount: 1, secureDelete: false, walCheckpointed: false,
+    checkpointBusy: 1, remainingLogFrames: 1, logicalPersistenceSucceeded: false,
+    jsonRollbackArtifactUpdated: false, reportPersisted: false, compactionError: "injected failure", ok: false,
+  });
+  let reportId;
+  try {
+    const failed = await call(`/api/private-tutor/learners/${created.body.learner.id}`, {
+      method: "DELETE", body: { confirmDisplayName: "待验证" },
+    });
+    assert.equal(failed.status, 503);
+    assert.equal(failed.body.error, "private_tutor_deletion_verification_failed");
+    assert.equal(failed.body.deletionReport.durableVerification.ok, false);
+    reportId = failed.body.deletionReport.id;
+  } finally {
+    deletionFinalizer = originalFinalizer;
+  }
+  const pending = await call("/api/private-tutor/deletions");
+  assert.equal(pending.status, 200);
+  assert.deepEqual(pending.body.deletions.map((row) => row.reportId), [reportId]);
+  assert.equal("subjectId" in pending.body.deletions[0], false);
+  const retried = await call(`/api/private-tutor/deletions/${reportId}/retry`, { method: "POST" });
+  assert.equal(retried.status, 200);
+  assert.equal(retried.body.deletionReport.status, "completed");
+  const job = runtimeState.privateTutorDeletionJobs.find((row) => row.reportId === reportId);
+  assert.equal(job.status, "completed");
+  assert.equal(job.subjectId, null);
+  const completed = await call("/api/private-tutor/deletions");
+  assert.deepEqual(completed.body.deletions, []);
 });
 
 test("a parent starts a learner-bound child mode that blocks the rest of the signed-in account", async () => {
@@ -543,4 +1330,402 @@ test("a parent starts a learner-bound child mode that blocks the rest of the sig
 
   const restoredState = await fetch(`${base}/api/state`, { headers: { cookie: cookieHeader } });
   assert.equal(restoredState.status, 200);
+});
+
+test("supports material upload, draft generation, editing, and publishing into a custom content package", async () => {
+  const markdownText = `# Section 1: Algorithms
+Introduction to sorting algorithms.
+## Topic 1.1: Bubble Sort
+Details on bubble sort.
+### Concept: Swapping
+- 目标: Understand element swaps.
+- 问题: Why do we swap elements?
+`;
+
+  // 1. Upload Material
+  const uploadRes = await call("/api/private-tutor/materials", {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      fileName: "algo.md",
+      fileType: "markdown",
+      fileContent: markdownText,
+    },
+  });
+  assert.equal(uploadRes.status, 201);
+  assert.ok(uploadRes.body.material.id);
+  const materialId = uploadRes.body.material.id;
+
+  // 2. List Materials
+  const listRes = await call("/api/private-tutor/materials", { token: "tok_personal" });
+  assert.equal(listRes.status, 200);
+  assert.equal(listRes.body.materials.length, 1);
+  assert.equal(listRes.body.materials[0].id, materialId);
+
+  // 3. Generate Draft
+  const draftRes = await call(`/api/private-tutor/materials/${materialId}/generate-draft`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      packageName: "Custom Algorithms Package",
+      subjectId: "computer_science",
+      domain: "algorithms",
+    },
+  });
+  assert.equal(draftRes.status, 201);
+  assert.ok(draftRes.body.draft.id);
+  const draftId = draftRes.body.draft.id;
+  assert.equal(draftRes.body.draft.status, "in_review");
+
+  // 4. Update Draft
+  const updateRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}`, {
+    token: "tok_personal",
+    method: "PUT",
+    body: {
+      packageName: "Algorithms 101",
+    },
+  });
+  assert.equal(updateRes.status, 200);
+  assert.equal(updateRes.body.draft.packageName, "Algorithms 101");
+
+  // 5. Publish Draft
+  const publishRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/publish`, {
+    token: "tok_personal",
+    method: "POST",
+  });
+  assert.equal(publishRes.status, 200);
+  assert.equal(publishRes.body.success, true);
+  const publishedPackageId = publishRes.body.packageId;
+
+  // 6. Verify Content Package Registered
+  const packageRes = await call(`/api/private-tutor/content-packages/${publishedPackageId}`, {
+    token: "tok_personal",
+  });
+  assert.equal(packageRes.status, 200);
+  assert.equal(packageRes.body.package.name, "Algorithms 101");
+  assert.equal(packageRes.body.package.sourceType, "user_material");
+  assert.equal(packageRes.body.package.evaluationCapabilities.deterministicGrading, false);
+
+  // 7. Delete Material
+  const deleteRes = await call(`/api/private-tutor/materials/${materialId}`, {
+    token: "tok_personal",
+    method: "DELETE",
+  });
+  assert.equal(deleteRes.status, 200);
+  assert.equal(deleteRes.body.deleted, true);
+});
+
+test("math and computer-science packages share the learning runtime without contaminating mastery", async () => {
+  const token = "tok_personal";
+  const mathEvidence = await call("/api/private-tutor/profile/attempts", {
+    token,
+    method: "POST",
+    body: {
+      idempotencyKey: "m5-math-evidence-1",
+      knowledgeId: "balance",
+      questionRevisionId: "demo-balance-001-v1",
+      rawAnswer: "5",
+      responseKind: "answer",
+      independent: true,
+      usedHint: false,
+      source: "screen",
+      durationSeconds: 30,
+    },
+  });
+  assert.equal(mathEvidence.status, 201);
+  const mathKnowledgeBefore = structuredClone(mathEvidence.body.snapshot.knowledge);
+
+  const switched = await call("/api/private-tutor/profile/content-package", {
+    token,
+    method: "PUT",
+    body: { packageId: "cs-logic-foundations-v1" },
+  });
+  assert.equal(switched.status, 200);
+  assert.equal(switched.body.activePackage.subjectId, "computer_science");
+  assert.equal(switched.body.snapshot.contentPackageId, "cs-logic-foundations-v1");
+  assert.deepEqual(switched.body.snapshot.knowledge.map((item) => item.id), ["proposition", "logic-connectives"]);
+  assert.equal(switched.body.snapshot.knowledge.every((item) => item.mastery === null), true);
+
+  let assessment = await call("/api/private-tutor/profile/assessments/start", { token, method: "POST", body: {} });
+  assert.equal(assessment.status, 201);
+  assert.equal(assessment.body.assessment.subjectId, "computer_science");
+  assert.equal(assessment.body.assessment.maxQuestions, 4);
+  const diagnosticAnswers = {
+    "diag-prop-01-v1": "b",
+    "diag-prop-02-v1": "b",
+    "diag-conn-01-v1": "b",
+    "diag-conn-02-v1": "a",
+  };
+  let answerIndex = 0;
+  while (assessment.body.assessment.status !== "completed") {
+    const question = assessment.body.assessment.currentQuestion;
+    assert.equal(question.subjectId, "computer_science");
+    assert.equal(Object.hasOwn(question, "expectedChoice"), false);
+    const answer = await call(`/api/private-tutor/profile/assessments/${assessment.body.assessment.id}/answers`, {
+      token,
+      method: "POST",
+      body: {
+        idempotencyKey: `m5-cs-diagnostic-${answerIndex}`,
+        questionRevisionId: question.revisionId,
+        rawAnswer: diagnosticAnswers[question.revisionId],
+        responseKind: "answer",
+        source: "screen",
+        durationSeconds: 8,
+      },
+    });
+    assert.equal(answer.status, 201);
+    assessment = answer;
+    answerIndex += 1;
+    assert.ok(answerIndex <= 4);
+  }
+  assert.deepEqual(
+    assessment.body.assessment.result.knowledge.map((item) => item.knowledgeId),
+    ["proposition", "logic-connectives"],
+  );
+
+  const plan = await call("/api/private-tutor/profile/learning-plan", { token });
+  assert.equal(plan.status, 200);
+  assert.equal(plan.body.learningPlan.contentPackageId, "cs-logic-foundations-v1");
+  assert.equal(plan.body.learningPlan.days.every((day) => ["proposition", "logic-connectives"].includes(day.knowledgeId)), true);
+
+  let session = await call("/api/private-tutor/profile/tutoring-sessions/start", {
+    token,
+    method: "POST",
+    body: { pace: "standard" },
+  });
+  assert.equal(session.status, 201);
+  assert.equal(session.body.session.subjectId, "computer_science");
+  assert.equal(session.body.session.subjectCapabilities.visualInteractions, false);
+  const tutoringAnswers = {
+    "tutor-prop-recall-001-v1": "b",
+    "tutor-prop-guided-001-v1": "b",
+    "tutor-prop-transfer-001-v1": "b",
+    "tutor-conn-recall-001-v1": "a",
+    "tutor-conn-guided-001-v1": "b",
+    "tutor-conn-transfer-001-v1": "a",
+  };
+  let actionIndex = 0;
+  let recordedCsError = false;
+  while (session.body.session.status !== "completed") {
+    const activity = session.body.session.currentActivity;
+    const correctAnswer = activity.question ? tutoringAnswers[activity.question.revisionId] : null;
+    const submittedAnswer = activity.question && !recordedCsError
+      ? (correctAnswer === "a" ? "b" : "a")
+      : correctAnswer;
+    const body = activity.question
+      ? {
+          action: "answer",
+          idempotencyKey: `m5-cs-session-${actionIndex}`,
+          questionRevisionId: activity.question.revisionId,
+          rawAnswer: submittedAnswer,
+          responseKind: "answer",
+          source: "screen",
+        }
+      : { action: "continue" };
+    session = await call(`/api/private-tutor/profile/tutoring-sessions/${session.body.session.id}/actions`, {
+      token,
+      method: "POST",
+      body,
+    });
+    assert.equal([200, 201].includes(session.status), true);
+    if (activity.question && !recordedCsError) recordedCsError = true;
+    actionIndex += 1;
+    assert.ok(actionIndex <= 6);
+  }
+
+  const csReview = await call("/api/private-tutor/profile/review", { token });
+  assert.equal(csReview.status, 200);
+  assert.equal(csReview.body.reviewBook.themes.length > 0, true);
+  assert.equal(csReview.body.reviewBook.themes[0].contentPackageId, "cs-logic-foundations-v1");
+  assert.equal(csReview.body.reviewBook.themes[0].schedule.question.subjectId, "computer_science");
+
+  const backToMath = await call("/api/private-tutor/profile/content-package", {
+    token,
+    method: "PUT",
+    body: { packageId: "demo-math-foundations-v1" },
+  });
+  assert.equal(backToMath.status, 200);
+  assert.deepEqual(backToMath.body.snapshot.knowledge, mathKnowledgeBefore);
+
+  const backToCs = await call("/api/private-tutor/profile/content-package", {
+    token,
+    method: "PUT",
+    body: { packageId: "cs-logic-foundations-v1" },
+  });
+  assert.equal(backToCs.status, 200);
+  assert.equal(backToCs.body.snapshot.knowledge.every((item) => item.mastery !== null), true);
+
+  const unsupportedPackage = {
+    id: "m5-unsupported-subject-v1",
+    name: "M5 unsupported subject fixture",
+    subjectId: "unsupported_subject",
+    domain: "testing",
+    sourceType: "professional_skill",
+    version: "1.0.0",
+    license: "internal-test",
+    targetAudience: {},
+    evaluationCapabilities: { deterministicGrading: true },
+    modules: [],
+    knowledgeComponents: [{
+      id: "unsupported-kc",
+      name: "Unsupported knowledge",
+      prerequisiteKnowledgeIds: [],
+      diagnosticQuestions: [{
+        id: "unsupported-diagnostic-v1",
+        questionId: "unsupported-diagnostic",
+        knowledgeId: "unsupported-kc",
+        difficulty: 1,
+        kind: "choice",
+        prompt: "This question has no subject plugin",
+        options: [{ id: "a", label: "A" }],
+        expectedChoice: "a",
+      }],
+    }],
+  };
+  runtimeState.privateTutorContentPackages.push(unsupportedPackage);
+  const attemptsBeforeUnsupportedStart = runtimeState.privateTutorAttempts.length;
+  const unsupportedSwitch = await call("/api/private-tutor/profile/content-package", {
+    token,
+    method: "PUT",
+    body: { packageId: unsupportedPackage.id },
+  });
+  assert.equal(unsupportedSwitch.status, 200);
+  const unsupportedAssessment = await call("/api/private-tutor/profile/assessments/start", {
+    token,
+    method: "POST",
+    body: {},
+  });
+  assert.equal(unsupportedAssessment.status, 409);
+  assert.equal(unsupportedAssessment.body.error, "private_tutor_published_diagnostic_content_required");
+  assert.equal(runtimeState.privateTutorAttempts.length, attemptsBeforeUnsupportedStart);
+  assert.equal(unsupportedSwitch.body.snapshot.knowledge.every((item) => item.mastery === null), true);
+
+  await call("/api/private-tutor/profile/content-package", {
+    token,
+    method: "PUT",
+    body: { packageId: "cs-logic-foundations-v1" },
+  });
+});
+
+test("M5 advanced subject evaluators expose feedback while only eligible evidence updates mastery", async () => {
+  const token = "tok_personal";
+  const switchPackage = async (packageId) => call("/api/private-tutor/profile/content-package", {
+    token,
+    method: "PUT",
+    body: { packageId },
+  });
+  const practice = async (body) => call("/api/private-tutor/profile/attempts", { token, method: "POST", body });
+
+  const mathSwitch = await switchPackage("demo-math-foundations-v1");
+  const mathBefore = mathSwitch.body.snapshot.knowledge.find((item) => item.id === "balance").evidenceCount;
+  const math = await practice({
+    idempotencyKey: "m5-advanced-math-steps",
+    knowledgeId: "balance",
+    questionRevisionId: "practice-balance-steps-001-v1",
+    rawAnswer: "x + 3 - 3 = 8 - 3\nx = 5",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+    durationSeconds: 40,
+  });
+  assert.equal(math.status, 201);
+  assert.equal(math.body.attempt.correct, true);
+  assert.equal(math.body.attempt.evidenceTier, "deterministic_steps");
+  assert.equal(math.body.attempt.evaluation.passedCount, 2);
+  assert.equal(math.body.snapshot.knowledge.find((item) => item.id === "balance").evidenceCount, mathBefore + 1);
+
+  await switchPackage("language-causal-explanations-v1");
+  const languageModelsBefore = runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "language-causal-explanations-v1").length;
+  const languageLowConfidence = await practice({
+    idempotencyKey: "m5-advanced-language-low-confidence",
+    knowledgeId: "language-cause-effect",
+    questionRevisionId: "practice-language-cause-001-v1",
+    rawAnswer: "Plants grow because sunlight supplies energy.",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "voice_confirmed",
+    recognitionConfidence: 0.8,
+    durationSeconds: 20,
+  });
+  assert.equal(languageLowConfidence.status, 201);
+  assert.equal(languageLowConfidence.body.attempt.evidenceEligible, false);
+  assert.equal(languageLowConfidence.body.snapshot.knowledge[0].mastery, null);
+  assert.equal(languageLowConfidence.body.snapshot.knowledge[0].evidenceCount, 0);
+  assert.equal(runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "language-causal-explanations-v1").length, languageModelsBefore);
+  const languageConfirmed = await practice({
+    idempotencyKey: "m5-advanced-language-confirmed",
+    knowledgeId: "language-cause-effect",
+    questionRevisionId: "practice-language-cause-001-v1",
+    rawAnswer: "Plants grow because sunlight supplies energy.",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+    durationSeconds: 20,
+  });
+  assert.equal(languageConfirmed.status, 201);
+  assert.equal(languageConfirmed.body.attempt.evidenceEligible, true);
+  assert.equal(languageConfirmed.body.snapshot.knowledge[0].evidenceCount, 1);
+
+  await switchPackage("programming-functions-v1");
+  const attemptsBeforeRejectedCode = runtimeState.privateTutorAttempts.length;
+  const rejectedCode = await practice({
+    idempotencyKey: "m5-advanced-code-rejected",
+    knowledgeId: "pure-function-return",
+    questionRevisionId: "practice-code-double-001-v1",
+    rawAnswer: "return process.exit();",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+  });
+  assert.equal(rejectedCode.status, 422);
+  assert.equal(rejectedCode.body.error, "private_tutor_code_sandbox_rejected");
+  assert.equal(runtimeState.privateTutorAttempts.length, attemptsBeforeRejectedCode);
+  const code = await practice({
+    idempotencyKey: "m5-advanced-code-pass",
+    knowledgeId: "pure-function-return",
+    questionRevisionId: "practice-code-double-001-v1",
+    rawAnswer: "function double(n) { return n * 2; }",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+  });
+  assert.equal(code.status, 201);
+  assert.equal(code.body.attempt.evaluation.passedCount, 3);
+  assert.equal(code.body.attempt.evidenceTier, "deterministic_sandbox");
+
+  await switchPackage("conceptual-source-reasoning-v1");
+  const conceptModelsBefore = runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "conceptual-source-reasoning-v1").length;
+  const conceptWithoutSource = await practice({
+    idempotencyKey: "m5-advanced-concept-no-source",
+    knowledgeId: "source-grounded-explanation",
+    questionRevisionId: "practice-concept-source-001-v1",
+    rawAnswer: "形成性反馈可以发现差距并及时纠正，从而调整学习策略。",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+  });
+  assert.equal(conceptWithoutSource.status, 201);
+  assert.equal(conceptWithoutSource.body.attempt.evidenceEligible, false);
+  assert.deepEqual(conceptWithoutSource.body.attempt.evaluation.missingSourceRefs, ["chapter-1"]);
+  assert.equal(conceptWithoutSource.body.snapshot.knowledge[0].mastery, null);
+  assert.equal(runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "conceptual-source-reasoning-v1").length, conceptModelsBefore);
+  const groundedConcept = await practice({
+    idempotencyKey: "m5-advanced-concept-grounded",
+    knowledgeId: "source-grounded-explanation",
+    questionRevisionId: "practice-concept-source-001-v1",
+    rawAnswer: "[ref:chapter-1] 形成性反馈可以发现差距并及时纠正，从而调整学习策略。",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+  });
+  assert.equal(groundedConcept.status, 201);
+  assert.equal(groundedConcept.body.attempt.evidenceEligible, true);
+  assert.equal(groundedConcept.body.snapshot.knowledge[0].evidenceCount, 1);
 });

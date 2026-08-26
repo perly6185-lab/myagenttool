@@ -3,23 +3,25 @@ import {
   assertLearnerBoundary,
   completeIndependentCheck,
   createInitialLearnerState,
-  DEMO_LEARNERS,
+  type LearnerProfile,
 } from "@/features/private-tutor/private-tutor-model";
 import { learnerStorageKey } from "@/features/private-tutor/private-tutor-storage";
 
-describe("private tutor learner boundary", () => {
-  it("creates separate error books and persistence keys for every child", () => {
-    const first = createInitialLearnerState(DEMO_LEARNERS[0]);
-    const second = createInitialLearnerState(DEMO_LEARNERS[1]);
+const PERSONAL_PROFILE: LearnerProfile = { id: "lrn_personal", displayName: "我的学习", grade: "自主学习", curriculum: "演示课程 · 方程基础", avatar: "我" };
 
-    expect(assertLearnerBoundary(first, DEMO_LEARNERS[0].id)).toBe(true);
-    expect(assertLearnerBoundary(second, DEMO_LEARNERS[1].id)).toBe(true);
-    expect(first.errors.map((item) => item.id)).not.toEqual(second.errors.map((item) => item.id));
-    expect(learnerStorageKey(first.learner.id)).not.toBe(learnerStorageKey(second.learner.id));
+describe("private tutor personal learning boundary", () => {
+  it("keeps every record and persistence key inside the current learning profile", () => {
+    const state = createInitialLearnerState(PERSONAL_PROFILE);
+
+    expect(assertLearnerBoundary(state, PERSONAL_PROFILE.id)).toBe(true);
+    expect(assertLearnerBoundary(state, "another-account-profile")).toBe(false);
+    expect(state.errors.every((item) => item.learnerId === state.learner.id)).toBe(true);
+    expect(learnerStorageKey(state.learner.id)).toContain(state.learner.id);
+    expect(learnerStorageKey(state.learner.id)).toContain("myagenttool.private-tutor.profile.v2");
   });
 
   it("records an independent answer without prematurely marking mastery", () => {
-    const original = createInitialLearnerState(DEMO_LEARNERS[0]);
+    const original = createInitialLearnerState(PERSONAL_PROFILE);
     const updated = completeIndependentCheck(original);
     const balance = updated.knowledge.find((item) => item.id === "balance");
 

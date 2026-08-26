@@ -73,6 +73,32 @@ export const persistedArrayKeys = [
   "privateTutorVoiceEvents",
   "privateTutorIdempotencyRecords",
   "privateTutorAuditEvents",
+  "privateTutorErrorCases",
+  "privateTutorErrorThemes",
+  "privateTutorReviewSchedules",
+  "privateTutorGuardianPreferences",
+  "privateTutorReleaseEvaluations",
+  "privateTutorPilotCohorts",
+  "privateTutorPilotParticipations",
+  "privateTutorPilotConsents",
+  "privateTutorPilotIncidents",
+  "privateTutorPilotCheckIns",
+  "privateTutorPilotDeletionRequests",
+  "privateTutorQuestionRevisions",
+  "privateTutorQuestionReviews",
+  "privateTutorContentEvents",
+  "privateTutorGuardianInvitations",
+  "privateTutorDataPolicies",
+  "privateTutorDeletionReports",
+  "privateTutorDeletionJobs",
+  "privateTutorContentPackages",
+  "privateTutorModules",
+  "privateTutorTopics",
+  "privateTutorKnowledgeComponents",
+  "privateTutorSubjectPlugins",
+  "privateTutorMaterialDocuments",
+  "privateTutorKnowledgeMapDrafts",
+  "privateTutorLearningPreferences",
   "agents",
   "applications",
   "applicationInstallRuns",
@@ -543,12 +569,12 @@ export function createPersistenceRuntime({
   // dispatched one) has no lease to re-queue it. Cancels the pending debounce so
   // the timer doesn't re-write redundantly.
   function persistStateNow() {
-    if (!enabled) return;
+    if (!enabled) return { ok: true, skipped: true };
     if (saveStateTimer) {
       clearTimeout(saveStateTimer);
       saveStateTimer = null;
     }
-    savePersistentState();
+    return savePersistentState();
   }
 
   // The actual JSON snapshot write. Called per-commit only when JSON is the backing
@@ -587,31 +613,36 @@ export function createPersistenceRuntime({
     try {
       mkdirSync(dirname(stateStorePath), { recursive: true });
       durableWriteFileSync(stateStorePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+      return { ok: true };
     } catch (error) {
       console.error(`[server] failed to persist state: ${error?.message ?? error}`);
+      return { ok: false, error: error?.message ?? String(error) };
     }
   }
 
   function savePersistentState() {
-    if (!enabled) return;
+    if (!enabled) return { ok: true, skipped: true };
     // JSON is written per-commit only when it is the backing (#1042). On the SQLite
     // backing this is a no-op — the durable write is the mirror below.
-    if (jsonBacking) writeSnapshotFile();
+    const json = jsonBacking ? writeSnapshotFile() : { ok: true, skipped: true };
     // Mirror the same state into the durable backing (SQLite) on the SAME flush, so
     // every write path stays in sync. Best-effort: a mirror failure must not crash
     // the control plane.
+    let durable = { ok: true };
     try {
       afterFlush();
     } catch (error) {
       console.error(`[server] durable backing sync failed: ${error?.message ?? error}`);
+      durable = { ok: false, error: error?.message ?? String(error) };
     }
+    return { ok: json.ok && durable.ok, json, durable };
   }
 
   // #1042: explicit JSON export — a rollback/backup artifact, independent of the
   // backing. Written at shutdown and on demand even when SQLite is the backing.
   function exportJsonSnapshot() {
-    if (!enabled) return;
-    writeSnapshotFile();
+    if (!enabled) return { ok: true, skipped: true };
+    return writeSnapshotFile();
   }
 
   // A snapshot we refuse to load must be MOVED ASIDE, not left in place: the

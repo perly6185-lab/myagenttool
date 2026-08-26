@@ -5,10 +5,7 @@ import { PrivateTutorView } from "@/features/private-tutor/private-tutor-view";
 const apiMocks = vi.hoisted(() => ({ rebalance: vi.fn() }));
 
 vi.mock("@/hooks/use-session-user", () => ({
-  useSessionUser: () => ({
-    role: "viewer",
-    privateTutorChildMode: { learnerId: "lrn_plan", enteredAt: "2026-08-20T00:00:00.000Z" },
-  }),
+  useSessionUser: () => ({ role: "viewer" }),
 }));
 
 const learner = { id: "lrn_plan", displayName: "小满", grade: "七年级", curriculumEditionId: null, status: "active", createdAt: "2026-08-20T00:00:00.000Z", updatedAt: "2026-08-20T00:00:00.000Z" } as const;
@@ -48,19 +45,35 @@ const learningPlan = {
 } as const;
 
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
-  getPrivateTutorSnapshot: () => Promise.resolve({ learner, snapshot, learnerModel, strategyDecision, learningPlan }),
+  getPrivateTutorProfile: () => Promise.resolve({ profile: learner, migrationRequired: false }),
+  getPrivateTutorSnapshot: () => Promise.resolve({ learner, profile: learner, snapshot, learnerModel, strategyDecision, learningPlan }),
   getCurrentPrivateTutorAssessment: () => Promise.resolve({ id: "pas_done", learnerId: learner.id, status: "completed", revision: 13, startedAt: "2026-08-20T00:00:00.000Z", pausedAt: null, completedAt: "2026-08-20T00:10:00.000Z", activeSeconds: 600, targetSeconds: 600, minQuestions: 12, maxQuestions: 18, answeredCount: 12, currentQuestion: null, result: { knowledge: [], strengths: [], focus: ["balance"], answeredCount: 12 }, updatedAt: "2026-08-20T00:10:00.000Z" }),
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
+  getPrivateTutorReviewBook: () => Promise.resolve({ learnerId: learner.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] }),
   rebalancePrivateTutorLearningPlan: apiMocks.rebalance,
   startPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   resumePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
-  listPrivateTutorLearners: () => Promise.resolve([]),
-  createPrivateTutorLearner: () => Promise.reject(new Error("not used")),
-  startPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
-  exitPrivateTutorChildMode: () => Promise.reject(new Error("not used")),
-  recordPrivateTutorAttempt: () => Promise.reject(new Error("not used")),
+  startPrivateTutorSession: () => Promise.reject(new Error("not used")),
+  pausePrivateTutorSession: () => Promise.reject(new Error("not used")),
+  resumePrivateTutorSession: () => Promise.reject(new Error("not used")),
+  actOnPrivateTutorSession: () => Promise.reject(new Error("not used")),
+  createPrivateTutorVoiceTurn: () => Promise.reject(new Error("not used")),
+  recordPrivateTutorVoiceEvent: () => Promise.reject(new Error("not used")),
+  answerPrivateTutorReview: () => Promise.reject(new Error("not used")),
+  correctPrivateTutorReviewDiagnosis: () => Promise.reject(new Error("not used")),
+  getPrivateTutorWeeklyReport: () => Promise.reject(new Error("not used")),
+  getPrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
+  exportPrivateTutorLearnerData: () => Promise.reject(new Error("not used")),
+  previewPrivateTutorLearnerDeletion: () => Promise.reject(new Error("not used")),
+  deletePrivateTutorProfile: () => Promise.reject(new Error("not used")),
+  listPrivateTutorDeletionJobs: () => Promise.resolve([]),
+  retryPrivateTutorLearnerDeletion: () => Promise.reject(new Error("not used")),
+  getPrivateTutorProfileMigrationReport: () => Promise.reject(new Error("not used")),
+  confirmPrivateTutorProfileMigration: () => Promise.reject(new Error("not used")),
+  createPrivateTutorProfile: () => Promise.reject(new Error("not used")),
 }));
 
 describe("My private tutor personalized learning plan", () => {
@@ -77,7 +90,7 @@ describe("My private tutor personalized learning plan", () => {
     expect(screen.getAllByText("20 分钟")).toHaveLength(7);
 
     fireEvent.click(screen.getByRole("button", { name: "今天来不及，帮我顺延" }));
-    await waitFor(() => expect(apiMocks.rebalance).toHaveBeenCalledWith(learner.id, 1));
+    await waitFor(() => expect(apiMocks.rebalance).toHaveBeenCalledWith(1));
     expect(await screen.findByText(/今天没有失败/)).toBeTruthy();
   });
 
