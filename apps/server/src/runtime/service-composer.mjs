@@ -4864,6 +4864,7 @@ export function createServerRuntimeServices({
 
   let channelReplySender = null;
   let channelResendDelivery = null;
+  let channelAcknowledgeDelivery = null;
   let channelDeliveryService = null;
   let channelNotificationService = null;
   const recordChannelIntentBridgeMetric = ({ status, latencyMs, circuitOpen, circuitOpenUntil, failureStreak, circuitTrips } = {}) => {
@@ -5170,6 +5171,7 @@ export function createServerRuntimeServices({
       }
     },
     resendDelivery: (args) => channelResendDelivery?.(args),
+    acknowledgeDelivery: (args) => channelAcknowledgeDelivery?.(args),
     replySender: (args) => channelReplySender?.(args),
     enqueueChannelDelivery: (args) => channelDeliveryService?.enqueueChannelDelivery(args),
     notifyTaskEvent: (args) => channelNotificationService?.notifyTaskEvent(args),
@@ -5228,6 +5230,7 @@ export function createServerRuntimeServices({
       : null,
   });
   channelResendDelivery = channelDeliveryService.resendChannelDelivery;
+  channelAcknowledgeDelivery = channelDeliveryService.acknowledgeChannelDelivery;
   channelDeliveryService.recoverThreadDeliveryState?.();
   channelNotificationService.sweep?.();
   channelConversationService.recoverTaskThreads?.();

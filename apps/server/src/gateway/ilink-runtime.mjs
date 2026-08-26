@@ -498,6 +498,24 @@ export function createIlinkRuntime({
       setAccount(account, { lastMessageAt: now(), lastError: null });
       return;
     }
+    // Text delivery can be accepted by iLink yet remain invisible in WeChat.
+    // Tencent's typing path is independent and gives the user an immediate,
+    // best-effort acknowledgement that this inbound message reached the app.
+    if (typeof client.sendTyping === "function") {
+      void client.sendTyping({
+        toUser: senderId,
+        contextToken: message?.context_token,
+        status: 1,
+      }).catch((error) => {
+        appendEvent({
+          invocationId: null,
+          type: "ilink_typing_signal_failed",
+          level: "warn",
+          message: `iLink typing acknowledgement failed (${error?.code ?? "typing_failed"}).`,
+          data: { channelId: channel.id, code: error?.code ?? "typing_failed" },
+        });
+      });
+    }
     const media = mediaTypes.length
       ? await downloadMediaCandidates(client, message, channel.id)
       : { attachmentCandidates: [], descriptions: [], failed: [], voiceTexts: [] };
@@ -523,7 +541,6 @@ export function createIlinkRuntime({
         toUser: senderId,
         content: "绑定成功。现在直接发送问题、文字、图片、语音或文件即可；回复“帮助”可查看使用方式。",
         contextToken: message.context_token,
-        fromUserId: account.botId,
         clientId: `ilink-bind-${channel.id}-${messageId}`,
       });
       setAccount(account, { status: "connected", pairingStatus: "bound", pendingPairCode: null, pendingPairUserId: null, pairingExpiresAt: null, lastMessageAt: now(), lastError: null });
@@ -693,12 +710,19 @@ export function createIlinkRuntime({
         toUser,
         content,
         contextToken: replyContext?.contextToken,
-        fromUserId: account.botId ?? credential.botId ?? undefined,
         mediaItems,
         clientId: deliveryId,
       });
       setAccount(account, { lastError: null });
-      return { ok: true, msgid: result?.clientId ?? String(Date.now()) };
+      return {
+        ok: true,
+        // iLink's message_id confirms API acceptance only. Tencent's own
+        // tracker documents accepted messages that remain invisible or arrive
+        // much later, and the API exposes no delivered/read query.
+        confirmed: false,
+        msgid: result?.providerReceiptId ?? null,
+        clientId: result?.clientId ?? deliveryId ?? null,
+      };
     } catch (error) {
       if (error?.authExpired) requireReauth(account, error.code);
       return { ok: false, retryable: Boolean(error?.retryable), errcode: error?.code ?? "ilink_send_failed" };

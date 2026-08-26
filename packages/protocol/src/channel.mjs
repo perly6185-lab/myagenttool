@@ -30,6 +30,7 @@ export const channelDeliveryStatuses = [
   "queued",
   "sending",
   "delivered",
+  "sent_unconfirmed",
   "retrying",
   "failed_terminal",
 ];

@@ -1735,6 +1735,7 @@ export interface ChannelOperations {
     events: number;
     deliveries: number;
     failedDeliveries: number;
+    unconfirmedDeliveries?: number;
     injectionFlagged: number;
   };
   taskSummary?: {
@@ -1757,6 +1758,14 @@ export interface ChannelOperations {
   lastDeliveredAt?: string | null;
   lastFailureAt?: string | null;
   lastFailureCode?: string | null;
+  deliveryHealth?: {
+    state: "healthy" | "awaiting_visibility" | "outbound_delayed" | "outbound_failed" | string;
+    unconfirmedCount: number;
+    delayedCount: number;
+    latestDeliveryId?: string | null;
+    latestAcceptedAt?: string | null;
+    retryAfter?: string | null;
+  };
   pipeline?: {
     inbound: Record<string, number>;
     outbound: Record<string, number>;
@@ -1818,6 +1827,11 @@ export interface ChannelDiagnostics {
     outbound: Record<string, number>;
     tasks: Record<string, number>;
   };
+  deliveryHealth?: {
+    state: string;
+    unconfirmedCount: number;
+    delayedCount: number;
+  };
   links: ChannelLinkDiagnostic[];
   failures: Array<{ direction: string; status: string; code: string; attempts: number; at: string }>;
   note: string;
@@ -1870,10 +1884,19 @@ export interface ChannelDelivery {
   channelId: string;
   conversationId: string;
   invocationId?: string | null;
-  taskContext?: { threadId?: string | null; workItemId?: string | null; traceId?: string | null } | null;
+  taskContext?: { threadId?: string | null; workItemId?: string | null; traceId?: string | null; deliveryKind?: "result" | "status_notification" | string | null } | null;
   status: "queued" | "sending" | "delivered" | "retrying" | "failed_terminal" | string;
   attempts: number;
   providerReceiptId?: string | null;
+  providerClientId?: string | null;
+  providerAcceptedAt?: string | null;
+  nextManualRetryAt?: string | null;
+  lastResentAt?: string | null;
+  resendCount?: number;
+  resendOfDeliveryId?: string | null;
+  userConfirmedAt?: string | null;
+  userConfirmedByEventId?: string | null;
+  userReportedMissingAt?: string | null;
   lastErrorCode?: string | null;
   content?: string | null;
   mediaAssets?: ChannelInteractionAttachment[];
@@ -1907,6 +1930,7 @@ export interface ChannelInteraction {
   injectionSuspicious?: boolean;
   attempts?: number;
   providerReceiptId?: string | null;
+  providerClientId?: string | null;
   lastErrorCode?: string | null;
   mediaFailure?: { total?: number; failed?: { kind?: string; filename?: string; code?: string }[] } | null;
 }

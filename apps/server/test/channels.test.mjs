@@ -391,7 +391,7 @@ test("health counts channel child rows and terminal delivery failures", () => {
     { id: "chdl_b", channelId, status: "failed_terminal" },
   );
   const health = service.channelHealth({ channelId }, owner);
-  assert.deepEqual(health.body.counts, { events: 1, conversations: 1, deliveries: 2, failedDeliveries: 1 });
+  assert.deepEqual(health.body.counts, { events: 1, conversations: 1, deliveries: 2, failedDeliveries: 1, unconfirmedDeliveries: 0 });
 });
 
 test("diagnostics reports pipeline health without exposing message content or secrets", () => {

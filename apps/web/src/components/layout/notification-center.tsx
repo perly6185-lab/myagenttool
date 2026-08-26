@@ -111,7 +111,7 @@ export function NotificationCenter() {
     : [];
   const unreadCount = unreadIds.length;
   const unreadCompletionItems = model.completions.items.filter((item) => unreadIds.includes(item.id));
-  const actionCount = model.approvals.count + model.failures.count + model.followUps.count + templateAlerts.length + (model.offline ? 1 : 0);
+  const actionCount = model.approvals.count + model.failures.count + model.followUps.count + model.channelDeliveries.count + templateAlerts.length + (model.offline ? 1 : 0);
   const hasDanger = model.failures.count > 0 || templateAlerts.some((task) => task.stage === "failed") || model.offline;
 
   const notificationEventIds = [
@@ -137,7 +137,11 @@ export function NotificationCenter() {
       });
       notice.onclick = () => {
         window.focus();
-        navigate(newIds.some((id) => id.startsWith("template:")) ? "workflowMemory" : "workBoard");
+        navigate(newIds.some((id) => id.startsWith("channel-delivery:"))
+          ? "channels"
+          : newIds.some((id) => id.startsWith("template:"))
+            ? "workflowMemory"
+            : "workBoard");
         notice.close();
       };
     } catch {
@@ -208,6 +212,10 @@ export function NotificationCenter() {
       if (task?.stage === "needs_case_review") url.searchParams.set("sourceId", task.sourceId);
       else url.searchParams.delete("sourceId");
       window.location.assign(url.toString());
+      return;
+    }
+    if (item.target === "channel") {
+      navigate("channels");
       return;
     }
     navigate(fallback);
@@ -366,6 +374,19 @@ export function NotificationCenter() {
                 tone="warning"
                 onClick={() => openSection("workBoard")}
               />
+            ) : null}
+            {model.channelDeliveries.count > 0 ? (
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<BellRing className="size-5 text-warning" />}
+                  title={text.channelDeliveries}
+                  description={text.channelDeliveriesHint}
+                  count={model.channelDeliveries.count}
+                  tone="warning"
+                  onClick={() => openSection("channels")}
+                />
+                <NotificationItemLinks items={model.channelDeliveries.items} onOpen={(item) => openNotificationItem(item, "channels")} />
+              </NotificationGroup>
             ) : null}
             {model.offline ? (
               <NotificationRow

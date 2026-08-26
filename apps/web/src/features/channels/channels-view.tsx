@@ -126,7 +126,7 @@ function taskDeviceLabel(t: Translate, device: DeviceSnapshot): string {
 function interactionStatusTone(status: string): Tone {
   if (status === "delivered" || status === "imported") return "success";
   if (status === "failed_terminal") return "danger";
-  if (status === "retrying" || status === "sending") return "warning";
+  if (status === "retrying" || status === "sending" || status === "sent_unconfirmed") return "warning";
   return "neutral";
 }
 
@@ -147,6 +147,7 @@ function linkStageTone(status: string): Tone {
 
 function linkDeliveryLabel(status: string): string {
   if (status === "delivered") return "已送达";
+  if (status === "sent_unconfirmed") return "微信已接受，未确认送达";
   if (status === "queued") return "等待发送";
   if (status === "sending") return "正在发送";
   if (status === "retrying") return "自动重试中";
@@ -718,6 +719,11 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
     }
     return latest;
   }, [deliveries]);
+  const latestLocalResultThread = useMemo(() => threads
+    .filter((thread) => thread.workItemId && ["succeeded", "failed"].includes(thread.status))
+    .slice()
+    .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? "")))[0] ?? null, [threads]);
+  const outboundDelayed = channel.provider === "wechat_ilink" && channel.deliveryHealth?.state === "outbound_delayed";
   const taskSummaryParts = channel.taskSummary ? [
     channel.taskSummary.queued > 0 ? `排队 ${channel.taskSummary.queued}` : null,
     channel.taskSummary.running > 0 ? `执行中 ${channel.taskSummary.running}` : null,
@@ -866,6 +872,27 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           </div>
         </div>
 
+        {outboundDelayed ? (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm" data-testid="channel-outbound-delay-fallback">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone="warning">微信回复可能延迟</Badge>
+              <span className="font-medium">收消息和任务执行仍然正常</span>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              微信接口已经接受回复，但尚未确认客户端显示。任务结果保存在本机，不需要重复发送指令。
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {latestLocalResultThread?.workItemId ? (
+                <Button variant="secondary" size="sm" onClick={() => { openWorkItem(latestLocalResultThread.workItemId!, { section: "overview" }); setSection("task"); }}>
+                  查看本地结果
+                </Button>
+              ) : null}
+              <Button variant="secondary" size="sm" onClick={() => onReconnect(channel.id)} disabled={pending}>重新连接微信</Button>
+              <Button variant="ghost" size="sm" onClick={() => setAdvancedOpen(true)}>查看诊断</Button>
+            </div>
+          </div>
+        ) : null}
+
         {advancedOpen ? <div className="grid gap-2 sm:grid-cols-3">
           {Object.entries(channel.readiness).filter(([scope]) => scope !== "workerHealthy").map(([scope, ok]) => (
             <div key={scope} className="flex items-center gap-2 text-xs">
@@ -884,7 +911,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           </div>
           {channel.pipeline ? (
             <p className="mt-1 text-muted-foreground">
-              链路：入站 {Object.entries(channel.pipeline.inbound).map(([status, count]) => `${status === "imported" ? "已接收" : status} ${count}`).join(" · ") || "暂无"}；出站 {Object.entries(channel.pipeline.outbound).map(([status, count]) => `${status === "delivered" ? "已送达" : status === "failed_terminal" ? "发送失败" : status} ${count}`).join(" · ") || "暂无"}
+              链路：入站 {Object.entries(channel.pipeline.inbound).map(([status, count]) => `${status === "imported" ? "已接收" : status} ${count}`).join(" · ") || "暂无"}；出站 {Object.entries(channel.pipeline.outbound).map(([status, count]) => `${status === "delivered" ? "已确认送达" : status === "sent_unconfirmed" ? "微信已接受、未确认送达" : status === "failed_terminal" ? "发送失败" : status} ${count}`).join(" · ") || "暂无"}
             </p>
           ) : null}
           {diagnosticError ? <p className="mt-1 text-destructive">诊断导出失败，请稍后重试。</p> : null}
@@ -1172,6 +1199,8 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                   const threadDelivery = deliveryByThreadId.get(thread.id);
                   const threadRevisions = revisions.filter((revision) => revision.threadId === thread.id).sort((left, right) => right.revision - left.revision);
                   const latestRevision = threadRevisions[0] ?? null;
+                  const unconfirmedResult = threadDelivery?.status === "sent_unconfirmed"
+                    && (threadDelivery.taskContext?.deliveryKind === "result" || ["succeeded", "failed"].includes(thread.status));
                   const userTaskState = channelTaskUserState({ thread, task, delivery: threadDelivery, revision: latestRevision });
                   return (
                     <>
@@ -1227,7 +1256,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                 ) : null}
                 {thread.lastProgressSummary ? <p className="mt-1 text-muted-foreground">进展：{thread.lastProgressSummary}</p> : null}
                 {thread.nextAction ? <p className="mt-1 text-muted-foreground">下一步：{thread.nextAction}</p> : null}
-                {thread.lastDeliveryStatus ? <p className="mt-1 text-muted-foreground">消息：{thread.lastDeliveryStatus === "delivered" ? "已发送" : thread.lastDeliveryStatus === "retrying" ? "发送失败，自动重试中" : thread.lastDeliveryStatus === "failed_terminal" ? "发送失败，请重试" : thread.lastDeliveryStatus === "queued" ? "等待发送" : thread.lastDeliveryStatus}</p> : null}
+                {thread.lastDeliveryStatus ? <p className="mt-1 text-muted-foreground">消息：{thread.lastDeliveryStatus === "delivered" ? "已确认送达" : thread.lastDeliveryStatus === "sent_unconfirmed" ? "微信已接受，未确认送达" : thread.lastDeliveryStatus === "retrying" ? "发送失败，自动重试中" : thread.lastDeliveryStatus === "failed_terminal" ? "发送失败，请重试" : thread.lastDeliveryStatus === "queued" ? "等待发送" : thread.lastDeliveryStatus}</p> : null}
                 {thread.resultSummary ? <p className="mt-1 line-clamp-3 text-muted-foreground">{thread.resultSummary}</p> : null}
                 {threadRevisions.length > 0 ? (
                   <details className="mt-2 text-[11px] text-muted-foreground">
@@ -1237,7 +1266,16 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                     </div>
                   </details>
                 ) : null}
-                {threadDelivery?.status === "failed_terminal" ? (
+                {unconfirmedResult ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-amber-700">
+                    <span>微信接口已接受消息，但没有确认客户端已经显示。</span>
+                    {Date.parse(threadDelivery.nextManualRetryAt ?? "") > Date.now() ? (
+                      <span className="text-xs text-muted-foreground">为避免延迟重复，{diagnosticTime(threadDelivery.nextManualRetryAt)} 后才可再次发送。</span>
+                    ) : (
+                      <Button variant="secondary" size="sm" onClick={() => void retry(threadDelivery.id)} disabled={pending}>确认未收到，再次发送</Button>
+                    )}
+                  </div>
+                ) : threadDelivery?.status === "failed_terminal" ? (
                   <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-destructive">
                     <span>结果消息未送达：{threadDelivery.lastErrorCode ?? thread.lastDeliveryError ?? "发送失败"}</span>
                     <Button variant="secondary" size="sm" onClick={() => void retry(threadDelivery.id)} disabled={pending}>重试发送</Button>
@@ -1367,6 +1405,7 @@ function ChannelInteractionPanel({
           <option value="all">{t("channelsPage.allStatuses")}</option>
           <option value="imported">{t("channelsPage.inbound")}</option>
           <option value="delivered">{t("channelsPage.delivered")}</option>
+          <option value="sent_unconfirmed">微信已接受，未确认送达</option>
           <option value="queued">{t("channelsPage.queued")}</option>
           <option value="sending">{t("channelsPage.sending")}</option>
           <option value="retrying">{t("channelsPage.retrying")}</option>
@@ -1399,7 +1438,7 @@ function InteractionRow({ interaction, t }: { interaction: ChannelInteraction; t
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone={interaction.direction === "inbound" ? "neutral" : "success"}>{translateDynamic(t, `channelsPage.${interaction.direction}`)}</Badge>
         <Badge tone="neutral">{typeLabel}</Badge>
-        <Badge tone={interactionStatusTone(interaction.status)}>{interaction.status === "imported" ? t("channelsPage.inbound") : interaction.status === "failed_terminal" ? t("channelsPage.failedTerminal") : translateDynamic(t, `channelsPage.${interaction.status}`)}</Badge>
+        <Badge tone={interactionStatusTone(interaction.status)}>{interaction.status === "imported" ? t("channelsPage.inbound") : interaction.status === "failed_terminal" ? t("channelsPage.failedTerminal") : interaction.status === "sent_unconfirmed" ? "微信已接受，未确认送达" : translateDynamic(t, `channelsPage.${interaction.status}`)}</Badge>
         <span className="ml-auto text-muted-foreground">{time}</span>
       </div>
       {interaction.content ? <p className="mt-2 whitespace-pre-wrap break-words text-sm">{interaction.content}</p> : <p className="mt-2 text-muted-foreground">{t("channelsPage.noContent")}</p>}

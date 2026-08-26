@@ -16,7 +16,7 @@ import { createChannelService } from "../src/services/channels.mjs";
 const NOW = "2026-07-15T00:00:00.000Z";
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, routeChannelTask, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, retryDirectTask, reconcileWechatDraftTask, cancelAutoRun, classifyIntent, createConsultation, inspectSharedLink, trackKnowledgeCaptureTask, attachKnowledgeToWorkItem, resolveKnowledgeLocation, notifyHumanTakeover, notifyTaskEvent, resendDelivery, setNotificationPolicy, updateWorkItem, operationMode = "team" } = {}) {
+function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, routeChannelTask, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, retryDirectTask, reconcileWechatDraftTask, cancelAutoRun, classifyIntent, createConsultation, inspectSharedLink, trackKnowledgeCaptureTask, attachKnowledgeToWorkItem, resolveKnowledgeLocation, notifyHumanTakeover, notifyTaskEvent, resendDelivery, acknowledgeDelivery, setNotificationPolicy, updateWorkItem, operationMode = "team" } = {}) {
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
   const events = [];
   const refusals = [];
@@ -76,6 +76,7 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
     attachKnowledgeToWorkItem,
     resolveKnowledgeLocation,
     resendDelivery,
+    acknowledgeDelivery,
     notifyHumanTakeover,
     notifyTaskEvent,
     setNotificationPolicy,
@@ -3188,6 +3189,40 @@ test("ordinary users can request the latest result again without a task id", () 
   assert.match(naturalResult.reply, /重新发送任务结果/);
   assert.equal(calls, 2);
   assert.equal(harness.state.channelTaskThreads.at(-1).lastDeliveryStatus, "queued");
+});
+
+test("ordinary users can confirm the latest visible result without acknowledging unrelated text", () => {
+  const acknowledgements = [];
+  const harness = makeHarness({
+    intakeQuietMs: 1,
+    acknowledgeDelivery: (input) => {
+      acknowledgements.push(input);
+      return { ok: true, deliveryId: "del_visible", alreadyConfirmed: false };
+    },
+  });
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  harness.state.channelTaskThreads.push({
+    id: "cth_visible", shortRef: "T-VISIBLE", channelId: harness.channelId, conversationId: conversation.id,
+    sourceEventIds: [], messages: [], summary: "整理文章", status: "succeeded", resultSummary: "文章已完成",
+    lastDeliveryId: "del_visible", lastDeliveryStatus: "sent_unconfirmed", workItemId: "wi_visible",
+    createdAt: NOW, updatedAt: NOW,
+  });
+  harness.state.channelDeliveries.push({
+    id: "del_visible", channelId: harness.channelId, conversationId: conversation.id,
+    status: "sent_unconfirmed", attempts: 1, content: "文章已完成", createdAt: NOW, updatedAt: NOW,
+    taskContext: { threadId: "cth_visible", workItemId: "wi_visible", deliveryKind: "result" },
+  });
+
+  const received = harness.receive("收到").dispatched;
+  assert.match(received.reply, /已确认你收到了任务结果/);
+  assert.equal(acknowledgements.length, 1);
+  assert.equal(acknowledgements[0].threadId, "cth_visible");
+  assert.ok(acknowledgements[0].sourceEventId);
+
+  harness.state.channelDeliveries[0].taskContext.deliveryKind = "status_notification";
+  harness.receive("收到订单后，请继续整理报价");
+  assert.equal(acknowledgements.length, 1);
 });
 
 test("progress question without tasks gives a next action instead of creating work", () => {

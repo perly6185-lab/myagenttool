@@ -91,6 +91,7 @@ export function channelOperations({
   channelTaskThreads = [],
   readinessForChannel = null,
   runtimeAccountForChannel = null,
+  now = () => new Date().toISOString(),
 } = {}) {
   const byChannel = (rows, channelId) => rows.filter((row) => row?.channelId === channelId);
 
@@ -99,6 +100,26 @@ export function channelOperations({
     const deliveries = byChannel(channelDeliveries, channel.id);
     const taskThreads = byChannel(channelTaskThreads, channel.id);
     const failed = deliveries.filter((row) => row.status === "failed_terminal");
+    const unconfirmed = deliveries.filter((row) => row.status === "sent_unconfirmed");
+    const resultDeliveryIds = new Set(taskThreads.map((thread) => thread.lastDeliveryId).filter(Boolean));
+    const legacyResultKeys = new Set(taskThreads
+      .filter((thread) => ["succeeded", "failed"].includes(thread.status))
+      .flatMap((thread) => (thread.sourceEventIds ?? []).map((eventId) => `channel-event:${eventId}:reply`)));
+    const actionableUnconfirmed = unconfirmed.filter((row) =>
+      row.taskContext?.deliveryKind === "result"
+      || row.taskContext?.notificationEvent === "succeeded"
+      || row.sourceContext?.kind === "work_item_report"
+      || resultDeliveryIds.has(row.id)
+      || legacyResultKeys.has(row.dedupeKey));
+    const nowMs = Date.parse(now());
+    const delayedUnconfirmed = actionableUnconfirmed.filter((row) => {
+      const acceptedAt = Date.parse(row.providerAcceptedAt ?? row.updatedAt ?? row.createdAt ?? "");
+      return Number.isFinite(nowMs) && Number.isFinite(acceptedAt) && nowMs - acceptedAt >= 60_000;
+    });
+    const latestUnconfirmed = actionableUnconfirmed
+      .slice()
+      .sort((left, right) => String(right.providerAcceptedAt ?? right.updatedAt ?? right.createdAt ?? "")
+        .localeCompare(String(left.providerAcceptedAt ?? left.updatedAt ?? left.createdAt ?? "")))[0] ?? null;
     const taskSummary = {
       total: taskThreads.length,
       queued: taskThreads.filter((row) => row.status === "queued").length,
@@ -144,7 +165,7 @@ export function channelOperations({
     // "attention" when enabled-but-not-ready or carrying terminal failures.
     let health = "ok";
     if (channel.status !== "enabled") health = "idle";
-    else if (!ready || failed.length > 0 || taskSummary.failed > 0) health = "attention";
+    else if (!ready || failed.length > 0 || delayedUnconfirmed.length > 0 || taskSummary.failed > 0) health = "attention";
 
     return {
       id: channel.id,
@@ -188,6 +209,7 @@ export function channelOperations({
         events: events.length,
         deliveries: deliveries.length,
         failedDeliveries: failed.length,
+        unconfirmedDeliveries: unconfirmed.length,
         injectionFlagged: events.filter((row) => row.injectionSuspicious).length,
       },
       taskSummary,
@@ -197,6 +219,20 @@ export function channelOperations({
       lastDeliveredAt,
       lastFailureAt: lastFailure?.updatedAt ?? lastFailure?.createdAt ?? null,
       lastFailureCode: lastFailure?.lastErrorCode ?? null,
+      deliveryHealth: {
+        state: delayedUnconfirmed.length > 0
+          ? "outbound_delayed"
+          : actionableUnconfirmed.length > 0
+            ? "awaiting_visibility"
+            : failed.length > 0
+              ? "outbound_failed"
+              : "healthy",
+        unconfirmedCount: actionableUnconfirmed.length,
+        delayedCount: delayedUnconfirmed.length,
+        latestDeliveryId: latestUnconfirmed?.id ?? null,
+        latestAcceptedAt: latestUnconfirmed?.providerAcceptedAt ?? latestUnconfirmed?.updatedAt ?? latestUnconfirmed?.createdAt ?? null,
+        retryAfter: latestUnconfirmed?.nextManualRetryAt ?? null,
+      },
       pipeline: {
         inbound: Object.fromEntries([...new Set(events.map((row) => row.status).filter(Boolean))].map((status) => [status, events.filter((row) => row.status === status).length])),
         outbound: Object.fromEntries([...new Set(deliveries.map((row) => row.status).filter(Boolean))].map((status) => [status, deliveries.filter((row) => row.status === status).length])),
