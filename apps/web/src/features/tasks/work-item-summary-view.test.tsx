@@ -187,6 +187,43 @@ describe("work item summary presentation", () => {
     expect(mocks.getWorkItem).toHaveBeenCalledTimes(2);
   });
 
+  it("shows bounded business materials without connector details", async () => {
+    const fingerprint = `sha256:${"d".repeat(64)}`;
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        recordBindings: [{
+          id: "binding_customer",
+          slotKey: "customer",
+          direction: "input",
+          role: "required",
+          ledgerDefinitionId: "ledger_customer",
+          record: {
+            ledgerDefinitionId: "ledger_customer",
+            recordId: "blr_customer_1",
+            recordType: "customer",
+            businessKey: "CUS-001",
+            title: "Acme Corporation",
+            revision: "revision-1",
+            fingerprint,
+            observedAt: "2026-08-26T08:00:00Z",
+          },
+          selection: { fieldKeys: ["customer"], queryId: null, rowLimit: 1 },
+          snapshot: { revision: "revision-1", fingerprint, capturedAt: "2026-08-26T08:00:00Z", evidenceRefs: [] },
+          resolution: { source: "explicit_user", confidence: 1, state: "needs_confirmation", reasons: ["Confirm the record"] },
+        }],
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const materials = await screen.findByRole("heading", { name: "Business materials" });
+    const section = materials.closest("section");
+    expect(section?.textContent).toContain("Acme Corporation");
+    expect(section?.textContent).toContain("CUS-001");
+    expect(section?.textContent).toContain("Needs confirmation");
+    expect(section?.textContent).not.toContain("ledger_customer");
+    expect(section?.textContent).not.toContain("blr_customer_1");
+  });
+
   it("explains the automatically matched My template without asking the user to choose it", async () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({
