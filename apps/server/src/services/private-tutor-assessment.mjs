@@ -1,4 +1,5 @@
 import { privateTutorPackageRegistryFromState } from "./private-tutor-package-registry.mjs";
+import { finalizePrivateTutorEvaluation } from "./private-tutor-evaluation-contract.mjs";
 
 const KNOWLEDGE_ORDER = ["integer", "equation-meaning", "balance", "word-problem"];
 const PREREQUISITE = {
@@ -145,16 +146,7 @@ export function judgePrivateTutorAnswer(questionRevisionId, input = {}, state, p
     }
     try {
       const result = runtime.plugin.evaluator({ ...input, rawAnswer, responseKind }, question);
-      return result?.accepted === true
-        ? {
-            ...result,
-            evidenceEligible: result.evidenceEligible !== false,
-            evidenceTier: result.evidenceTier ?? "deterministic",
-            evaluation: result.evaluation ?? null,
-          }
-        : result?.accepted === false
-          ? result
-        : { accepted: false, error: "private_tutor_subject_plugin_failed" };
+      return finalizePrivateTutorEvaluation({ result, plugin: runtime.plugin, question });
     } catch {
       return { accepted: false, error: "private_tutor_subject_plugin_failed" };
     }

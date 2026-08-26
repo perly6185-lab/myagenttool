@@ -1607,7 +1607,7 @@ test("math and computer-science packages share the learning runtime without cont
   });
 });
 
-test("M5 advanced subject evaluators expose feedback while only eligible evidence updates mastery", async () => {
+test("M6 advanced subject evaluators expose versioned feedback while only eligible evidence updates mastery", async () => {
   const token = "tok_personal";
   const switchPackage = async (packageId) => call("/api/private-tutor/profile/content-package", {
     token,
@@ -1619,10 +1619,10 @@ test("M5 advanced subject evaluators expose feedback while only eligible evidenc
   const mathSwitch = await switchPackage("demo-math-foundations-v1");
   const mathBefore = mathSwitch.body.snapshot.knowledge.find((item) => item.id === "balance").evidenceCount;
   const math = await practice({
-    idempotencyKey: "m5-advanced-math-steps",
+    idempotencyKey: "m6-advanced-math-steps",
     knowledgeId: "balance",
     questionRevisionId: "practice-balance-steps-001-v1",
-    rawAnswer: "x + 3 - 3 = 8 - 3\nx = 5",
+    rawAnswer: "x = 8 - 3\nx = 5",
     responseKind: "answer",
     independent: true,
     usedHint: false,
@@ -1631,9 +1631,35 @@ test("M5 advanced subject evaluators expose feedback while only eligible evidenc
   });
   assert.equal(math.status, 201);
   assert.equal(math.body.attempt.correct, true);
-  assert.equal(math.body.attempt.evidenceTier, "deterministic_steps");
+  assert.equal(math.body.attempt.evidenceTier, "deterministic_math_steps_v2");
   assert.equal(math.body.attempt.evaluation.passedCount, 2);
+  assert.equal(math.body.attempt.evaluation.schemaVersion, 1);
+  assert.equal(math.body.attempt.evaluation.evaluatorId, "private-tutor:math");
+  assert.equal(math.body.attempt.evaluation.evaluatorVersion, "2.0.0");
+  assert.equal(math.body.attempt.evaluation.profile, "linear-equation-v2");
+  assert.equal(math.body.attempt.evaluation.confidence, 1);
+  assert.equal(math.body.attempt.evaluation.reviewStatus, "not_required");
+  assert.match(math.body.attempt.evaluation.decisionFingerprint, /^[a-f0-9]{64}$/);
   assert.equal(math.body.snapshot.knowledge.find((item) => item.id === "balance").evidenceCount, mathBefore + 1);
+
+  const invalidMath = await practice({
+    idempotencyKey: "m6-advanced-math-invalid",
+    knowledgeId: "balance",
+    questionRevisionId: "practice-balance-steps-001-v1",
+    rawAnswer: "x + 3 = 5\nx = 2",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+    durationSeconds: 25,
+  });
+  assert.equal(invalidMath.status, 201);
+  assert.equal(invalidMath.body.attempt.correct, false);
+  assert.equal(invalidMath.body.attempt.evidenceEligible, true);
+  assert.equal(invalidMath.body.attempt.evaluation.firstIncorrectStep, 0);
+  assert.equal(invalidMath.body.attempt.evaluation.steps[0].classification, "single_side_change");
+  assert.match(invalidMath.body.attempt.evaluation.explanation, /等式两边|两边必须/);
+  assert.equal(invalidMath.body.snapshot.knowledge.find((item) => item.id === "balance").evidenceCount, mathBefore + 2);
 
   await switchPackage("language-causal-explanations-v1");
   const languageModelsBefore = runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "language-causal-explanations-v1").length;

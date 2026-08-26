@@ -45,14 +45,14 @@ test("content package registry initializes all built-in M5 subject packages", ()
   assert.deepEqual(csGraph.knowledge.map((k) => k.id), ["proposition", "logic-connectives"]);
 });
 
-test("M5 advanced evaluators expose explainable results and conservative evidence gates", () => {
+test("M6 advanced evaluators expose explainable results and conservative evidence gates", () => {
   const registry = createPrivateTutorPackageRegistry();
   const mathQuestion = registry.getPackage(DEMO_MATH_FOUNDATIONS_PACKAGE_ID).knowledgeComponents
     .find((item) => item.id === "balance").dailyQuestions.find((item) => item.kind === "math_steps");
   const math = mathSubjectPlugin.evaluator({ rawAnswer: "x + 3 - 3 = 8 - 3\nx = 5", responseKind: "answer" }, mathQuestion);
   assert.equal(math.correct, true);
   assert.equal(math.evaluation.passedCount, 2);
-  assert.equal(math.evidenceTier, "deterministic_steps");
+  assert.equal(math.evidenceTier, "deterministic_math_steps_v2");
 
   const languageQuestion = registry.getPackage("language-causal-explanations-v1").knowledgeComponents[0].dailyQuestions[0];
   const language = languageSubjectPlugin.evaluator({ rawAnswer: "Plants grow because sunlight supplies energy.", responseKind: "answer", source: "screen" }, languageQuestion);

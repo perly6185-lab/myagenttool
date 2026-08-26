@@ -101,6 +101,18 @@ export interface PrivateTutorAssessment {
 export type PrivateTutorTeachingStrategy = "prerequisite_repair" | "concept_rebuild" | "fluency_practice" | "transfer_challenge";
 
 export interface PrivateTutorEvaluation {
+  schemaVersion?: number;
+  evaluatorId?: string;
+  evaluatorVersion?: string;
+  subjectId?: string;
+  contentRevisionId?: string | null;
+  contentPackageId?: string | null;
+  contentPackageVersion?: string | null;
+  rubricVersion?: string | null;
+  confidence?: number | null;
+  reviewStatus?: "not_required" | "required" | "completed";
+  decisionFingerprint?: string;
+  profile?: string;
   score?: number;
   passedCount?: number;
   totalCount?: number;
@@ -109,7 +121,16 @@ export interface PrivateTutorEvaluation {
   missingSourceRefs?: string[];
   explanation?: string;
   criteria?: Array<Record<string, unknown>>;
-  steps?: Array<Record<string, unknown>>;
+  steps?: Array<{
+    index?: number;
+    displayIndex?: number;
+    correct?: boolean;
+    actual?: string | null;
+    normalizedEquation?: string | null;
+    classification?: string;
+    feedback?: string;
+    [key: string]: unknown;
+  }>;
   tests?: Array<Record<string, unknown>>;
   [key: string]: unknown;
 }

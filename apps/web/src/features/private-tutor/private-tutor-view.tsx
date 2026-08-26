@@ -781,6 +781,15 @@ function applyServerSnapshot(state: LearnerTutorState, snapshot: PrivateTutorSna
   };
 }
 
+export function formatPrivateTutorEvaluationFeedback(evaluation: PrivateTutorEvaluation | null | undefined) {
+  if (!evaluation) return null;
+  if (typeof evaluation.firstIncorrectStep === "number") {
+    const step = evaluation.steps?.[evaluation.firstIncorrectStep];
+    if (step?.feedback) return `第 ${evaluation.firstIncorrectStep + 1} 步：${step.feedback}`;
+  }
+  return evaluation.explanation ?? null;
+}
+
 function TodayLearning({
   state,
   learningPlan,
@@ -1041,11 +1050,14 @@ function TodayLearning({
     });
     if (result.error) setMessage(result.error);
     else if (result.evidenceEligible === false) {
-      setMessage("已生成练习反馈，但当前结果需要补充或复核，不会计入掌握度。");
+      const feedback = formatPrivateTutorEvaluationFeedback(result.evaluation);
+      setMessage(feedback
+        ? `${feedback} 当前结果需要补充或复核，不会计入掌握度。`
+        : "已生成练习反馈，但当前结果需要补充或复核，不会计入掌握度。");
       attemptKeyRef.current = newClientKey("tutoring");
     }
     else if (result.correct === false) {
-      setMessage(result.evaluation?.explanation ?? "没关系，这次答案会帮助我换一种更合适的讲法。");
+      setMessage(formatPrivateTutorEvaluationFeedback(result.evaluation) ?? "没关系，这次答案会帮助我换一种更合适的讲法。");
       attemptKeyRef.current = newClientKey("tutoring");
     }
     setBusy(false);

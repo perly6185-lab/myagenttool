@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PrivateTutorView } from "@/features/private-tutor/private-tutor-view";
+import { formatPrivateTutorEvaluationFeedback, PrivateTutorView } from "@/features/private-tutor/private-tutor-view";
 import { ApiError } from "@/lib/api/request";
 
 const apiMocks = vi.hoisted(() => ({
@@ -248,5 +248,18 @@ describe("My private tutor personal learning information architecture", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("迁移校验没有完全通过");
     expect(apiMocks.getProfile).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "今日学习" })).toBeNull();
+  });
+});
+
+describe("private tutor evaluation feedback", () => {
+  it("surfaces the first incorrect math step before the general explanation", () => {
+    expect(formatPrivateTutorEvaluationFeedback({
+      firstIncorrectStep: 1,
+      explanation: "请检查整个解题过程。",
+      steps: [
+        { correct: true, feedback: "这一步正确。" },
+        { correct: false, feedback: "只改变等式一边会破坏平衡。" },
+      ],
+    })).toBe("第 2 步：只改变等式一边会破坏平衡。");
   });
 });
