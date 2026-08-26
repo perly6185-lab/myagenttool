@@ -237,6 +237,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
   const [attentionNextCursor, setAttentionNextCursor] = useState<string | null>(null);
   const [attentionMetrics, setAttentionMetrics] = useState<WorkItemAttentionMetrics | null>(null);
+  const staleRecordAttentionItems = attentionItems.filter((item) =>
+    item.kind === "record_binding_stale" && item.details.refreshable === true);
   const [externalFunnel, setExternalFunnel] = useState<{
     metrics: { total: number; notStarted: number; running: number; review: number; completed: number; stalled: number };
     stalls: { kind: "execution_failed" | "writeback_pending" | "imported_not_started" | "review_waiting"; workItemId: string; localRef: string; title: string; provider: string; issueNumber: number; since: string }[];
@@ -316,6 +318,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const [localLoading, setLocalLoading] = useState(true);
   const [localLoadError, setLocalLoadError] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [liveSyncError, setLiveSyncError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   useEffect(() => {
@@ -361,11 +364,12 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
         : [],
     })).filter((item) => Number.isInteger(item.expectedRevision) && item.bindingIds.length > 0);
     if (!items.length) return;
+    setActionNotice(null);
     void execute(() => api.refreshWorkItemRecordBindingsBatch(items)).then((ok) => {
       if (!ok) return;
       const refreshedAttentionIds = new Set(refreshable.map((item) => item.id));
       setSelectedAttentionIds((current) => new Set([...current].filter((id) => !refreshedAttentionIds.has(id))));
-      setNotice(i18n.language.startsWith("zh")
+      setActionNotice(i18n.language.startsWith("zh")
         ? `已刷新并确认 ${items.length} 个任务的业务资料。`
         : `Refreshed and confirmed business materials for ${items.length} task(s).`);
       setNonce((value) => value + 1);
@@ -752,6 +756,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
         ) : null}
 
         {notice ? <p className="text-xs text-muted-foreground">{notice}</p> : null}
+        {actionNotice ? <p className="text-xs text-muted-foreground" role="status">{actionNotice}</p> : null}
         {liveSyncError ? <p className="text-xs text-destructive">{liveSyncError}</p> : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
@@ -807,6 +812,47 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                 onOpen={setSelectedLocalId}
               />
             </Suspense>
+            {localOnly && staleRecordAttentionItems.length ? (
+              <section
+                className="space-y-3 rounded-lg border border-warning/40 bg-warning/5 p-3"
+                aria-label={i18n.language.startsWith("zh") ? "过期业务资料批量处理" : "Stale business material batch actions"}
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold">
+                      {i18n.language.startsWith("zh") ? "业务资料等待确认" : "Business materials need confirmation"}
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      {i18n.language.startsWith("zh")
+                        ? `${staleRecordAttentionItems.length} 个任务的资料已变化，继续前需要刷新确认。`
+                        : `${staleRecordAttentionItems.length} task(s) have changed materials. Refresh them before continuing.`}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={pending}
+                    onClick={() => refreshRecordBindingAttention(staleRecordAttentionItems)}
+                  >
+                    <RefreshCw className="mr-1 size-4" />
+                    {i18n.language.startsWith("zh") ? "全部刷新并确认" : "Refresh and confirm all"}
+                  </Button>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {staleRecordAttentionItems.map((attention) => (
+                    <button
+                      key={attention.id}
+                      type="button"
+                      className="rounded border border-border bg-background p-2 text-left text-sm hover:border-primary/40"
+                      onClick={() => attention.workItemId && setSelectedLocalId(attention.workItemId)}
+                    >
+                      <span className="block truncate font-medium">{attention.title}</span>
+                      <span className="text-xs text-muted-foreground">{attention.localRef ?? "—"}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
             {!localOnly ? <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <h3 className="text-sm font-semibold">{t("approvals.pending", { count: attentionItems.length })}</h3>
