@@ -1,7 +1,3 @@
-process.env.MYAGENT_REQUIRE_AUTH = "1";
-process.env.MYAGENT_LOCAL_MODE = "1";
-process.env.MYAGENT_SECURE_COOKIES = "0";
-
 import type { Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -71,7 +67,7 @@ test.afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
-test("a signed-in learner keeps one personal profile and never sees family handoff UI", async ({ page }) => {
+test("a signed-in learner keeps one personal profile and never sees family handoff UI", async ({ page }, testInfo) => {
   const login = await page.context().request.post(`${apiBase}/api/session`, {
     data: { mode: "local" },
   });
@@ -89,6 +85,10 @@ test("a signed-in learner keeps one personal profile and never sees family hando
 
   await expect(page.getByRole("heading", { name: "先让我认识一下你会什么" })).toBeVisible();
   await expect(page.getByRole("button", { name: "家长入口" })).toHaveCount(0);
+  await testInfo.attach("private-tutor-learner-profile", {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
+  });
 
   const profile = await page.context().request.get(`${apiBase}/api/private-tutor/profile`);
   expect(profile.ok()).toBe(true);
