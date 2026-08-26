@@ -124,6 +124,23 @@ describe("MySiteView", () => {
     expect(useUiStore.getState().experienceMode).toBe("professional");
   });
 
+  it("does not present a staging certificate as trusted website HTTPS", async () => {
+    const stagingSite: Site = {
+      ...starterSite,
+      deploymentTarget: { ...starterSite.deploymentTarget!, kind: "ssh_static", displayName: "My server" },
+      domainTlsBinding: {
+        hostname: "lan.mytoolagent.com", accessMode: "private_lan", status: "staging_ready",
+        lastVerifiedAt: "2026-08-26T00:00:00.000Z", renewAfter: "2026-10-25T00:00:00.000Z", notAfter: "2026-11-24T00:00:00.000Z",
+      },
+    };
+    vi.mocked(siteApi.list).mockResolvedValue({ sites: [stagingSite], count: 1 });
+    renderView();
+
+    expect(await screen.findByText("Test certificate issued; website HTTPS is not active")).toBeTruthy();
+    expect(screen.getByText(/Browsers do not trust it/)).toBeTruthy();
+    expect(screen.queryByText("Secure website connection is active")).toBeNull();
+  });
+
   it("lets an ordinary user create a safe second-language draft from the content list", async () => {
     const source = {
       ...starterSite.entries[0], locale: "en-US" as const, translationOf: null,

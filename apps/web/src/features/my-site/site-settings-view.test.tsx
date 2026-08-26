@@ -11,7 +11,7 @@ import type { Site, SitePilotCampaign } from "./site-types";
 
 vi.mock("./site-api", () => ({ siteApi: {
   list: vi.fn(), get: vi.fn(), update: vi.fn(), providers: vi.fn(), publications: vi.fn(), assets: vi.fn(), configureTarget: vi.fn(), verifyTarget: vi.fn(), pilotSummary: vi.fn(),
-  configureDomainTls: vi.fn(),
+  configureDomainTls: vi.fn(), verifyDomainDns: vi.fn(), issueDomainTlsStaging: vi.fn(),
   pilotCampaigns: vi.fn(), createPilotCampaign: vi.fn(), updatePilotCampaign: vi.fn(), deletePilotCampaign: vi.fn(), createPilotInvitation: vi.fn(),
 } }));
 vi.mock("../my-hosts/host-api", () => ({ hostApi: { publishScopes: vi.fn() } }));
@@ -212,6 +212,51 @@ it("registers a private-LAN HTTPS binding separately from the SSH publishing tar
     expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "private_lan",
   }));
   expect(await screen.findByText("Certificate setup pending")).toBeTruthy();
+});
+
+it("verifies AliDNS before requesting an explicitly labeled staging certificate", async () => {
+  const setupSite: Site = {
+    ...site,
+    deploymentTarget: {
+      ...site.deploymentTarget!, kind: "ssh_static", status: "ready", displayName: "My server", credentialRef: null,
+      remoteProjectRef: "hfs_1", customDomain: "lan.mytoolagent.com", revision: 3,
+    },
+    domainTlsBinding: {
+      id: "stb_1", hostname: "lan.mytoolagent.com", accessMode: "private_lan", status: "setup",
+      lastVerifiedAt: null, renewAfter: null, notAfter: null, revision: 1, dnsProvider: "alidns",
+      dnsCredentialRef: "credential://alidns/main", challenge: "dns-01",
+    },
+  };
+  const verifiedSite: Site = {
+    ...setupSite,
+    domainTlsBinding: { ...setupSite.domainTlsBinding!, status: "dns_ready", dnsZone: "mytoolagent.com", revision: 2, lastVerifiedAt: "2026-08-26T00:00:00.000Z" },
+  };
+  const issuedSite: Site = {
+    ...verifiedSite,
+    domainTlsBinding: {
+      ...verifiedSite.domainTlsBinding!, status: "staging_ready", certificateEnvironment: "staging", revision: 4,
+      certificateFingerprint: "a".repeat(64), certificateIssuer: "Fake LE Intermediate X1",
+      certificateSans: ["lan.mytoolagent.com"], stagingIssuedAt: "2026-08-26T00:01:00.000Z", notAfter: "2026-11-24T00:00:00.000Z",
+    },
+  };
+  vi.mocked(siteApi.list).mockResolvedValue({ sites: [setupSite], count: 1 });
+  vi.mocked(siteApi.get).mockResolvedValue({ site: setupSite });
+  vi.mocked(siteApi.providers).mockResolvedValue({ providers: [{
+    kind: "ssh_static", ordinaryLabel: "My server", productionReady: true, professionalOnly: true,
+    connectionKind: "host_file_scope_reference", setupFlow: [], capabilities: {},
+  }] });
+  vi.mocked(siteApi.verifyDomainDns).mockResolvedValue({ site: verifiedSite, binding: verifiedSite.domainTlsBinding! });
+  vi.mocked(siteApi.issueDomainTlsStaging).mockResolvedValue({ site: issuedSite, binding: issuedSite.domainTlsBinding! });
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Verify AliDNS access" }));
+  await waitFor(() => expect(siteApi.verifyDomainDns).toHaveBeenCalledWith("sit_1", 1));
+  expect(await screen.findByText("AliDNS verified")).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Request test certificate" }));
+  await waitFor(() => expect(siteApi.issueDomainTlsStaging).toHaveBeenCalledWith("sit_1", 2));
+  expect(await screen.findByText("Test certificate issued; not deployed")).toBeTruthy();
+  expect(screen.getByText(/Browsers do not trust it as a production certificate/)).toBeTruthy();
 });
 
 it("stores and removes an AliDNS AccessKey independently for SSH domain HTTPS", async () => {

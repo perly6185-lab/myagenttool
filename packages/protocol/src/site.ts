@@ -42,7 +42,7 @@ export interface Site {
 
 export type SiteDomainTlsAccessMode = "public" | "private_lan";
 export type SiteDomainTlsStatus =
-  | "setup" | "dns_ready" | "issuing" | "deploying" | "active"
+  | "setup" | "dns_ready" | "issuing" | "staging_ready" | "deploying" | "active"
   | "renewal_due" | "needs_attention" | "disabled";
 
 export interface SiteDomainTlsBinding {
@@ -55,12 +55,17 @@ export interface SiteDomainTlsBinding {
   dnsProvider: "alidns";
   dnsCredentialRef: "credential://alidns/main";
   challenge: "dns-01";
+  dnsZone: string | null;
   certificateScopeId: string | null;
   activationProfileId: string | null;
   status: SiteDomainTlsStatus;
+  certificateEnvironment: "staging" | "production" | null;
   certificateFingerprint: string | null;
   certificateIssuer: string | null;
   certificateSans: string[];
+  certificateNotBefore: IsoDateTime | null;
+  stagingIssuedAt: IsoDateTime | null;
+  lastCleanupRecordDigest: string | null;
   lastVerifiedAt: IsoDateTime | null;
   renewAfter: IsoDateTime | null;
   notAfter: IsoDateTime | null;

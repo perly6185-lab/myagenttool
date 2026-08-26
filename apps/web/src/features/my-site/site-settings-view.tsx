@@ -27,6 +27,15 @@ function message(error: unknown, zh: boolean) {
   if (error instanceof ApiError && error.code === "site_domain_private_address_required") return zh ? "当前发布范围没有经过固定私网地址验证，请到“我的主机”重新验证该目录。" : "The publishing range has no verified fixed private address. Reverify the directory in My hosts.";
   if (error instanceof ApiError && error.code === "site_domain_target_hostname_mismatch") return zh ? "网站域名与当前发布目标不一致，请先保存发布目标后再继续。" : "The website domain does not match the current publishing target. Save the target before continuing.";
   if (error instanceof ApiError && error.code === "site_domain_ssh_target_not_ready") return zh ? "当前服务器或站点目录尚未通过连接检查。" : "The current server or site directory has not passed its connection checks.";
+  if (error instanceof ApiError && error.code === "site_domain_dns_credential_unavailable") return zh ? "AliDNS 安全连接不可用，请重新保存 AccessKey。" : "The secure AliDNS connection is unavailable. Save the AccessKey again.";
+  if (error instanceof ApiError && error.code === "site_domain_dns_permission_denied") return zh ? "AliDNS AccessKey 没有该域名所需的读取或记录管理权限。" : "The AliDNS AccessKey lacks the required read or record-management permission for this domain.";
+  if (error instanceof ApiError && error.code === "site_domain_dns_auth_failed") return zh ? "AliDNS 拒绝了当前 AccessKey，请检查或重新保存。" : "AliDNS rejected this AccessKey. Check it or save it again.";
+  if (error instanceof ApiError && error.code === "site_domain_dns_zone_not_managed") return zh ? "当前阿里云 DNS 账号没有托管这个域名。" : "This domain is not managed by the connected Alibaba Cloud DNS account.";
+  if (error instanceof ApiError && error.code === "site_domain_caa_not_allowed") return zh ? "域名的 CAA 策略尚未允许 Let's Encrypt 签发证书。" : "The domain's CAA policy does not currently allow Let's Encrypt.";
+  if (error instanceof ApiError && error.code === "site_domain_dns_propagation_timeout") return zh ? "测试 TXT 记录暂未传播完成，系统已尝试清理，请稍后重试。" : "The test TXT record did not propagate in time. Cleanup was attempted; try again later.";
+  if (error instanceof ApiError && error.code === "site_domain_acme_contact_required") return zh ? "请先在站点资料中填写联系邮箱。" : "Add a contact email to the site profile first.";
+  if (error instanceof ApiError && error.code === "site_domain_dns_verification_required") return zh ? "请先完成 AliDNS 只读验证。" : "Complete the read-only AliDNS verification first.";
+  if (error instanceof ApiError && error.code === "site_domain_tls_busy") return zh ? "域名或证书检查正在进行，请等待完成。" : "A domain or certificate check is already running.";
   if (error instanceof ApiError && error.status === 409) return zh ? "设置已发生变化，请刷新后重试。" : "Settings changed elsewhere. Refresh and try again.";
   return error instanceof Error ? error.message : (zh ? "设置未能保存。" : "Settings could not be saved.");
 }
@@ -101,8 +110,26 @@ function DomainTlsSettingsCard({ site, zh }: { site: Site; zh: boolean }) {
       void queryClient.invalidateQueries({ queryKey: ["my-site"] });
     },
   });
+  const applyResult = (data: { site: Site }) => {
+    queryClient.setQueryData(["my-site-professional", site.id], { site: data.site });
+    void queryClient.invalidateQueries({ queryKey: ["my-site"] });
+  };
+  const verifyDns = useMutation({
+    mutationFn: () => siteApi.verifyDomainDns(site.id, binding?.revision ?? 0),
+    onSuccess: applyResult,
+  });
+  const issueStaging = useMutation({
+    mutationFn: () => siteApi.issueDomainTlsStaging(site.id, binding?.revision ?? 0),
+    onSuccess: applyResult,
+  });
   const statusLabel = binding?.status === "active"
     ? (zh ? "HTTPS 已启用" : "HTTPS active")
+    : binding?.status === "staging_ready"
+      ? (zh ? "测试证书已签发，尚未部署" : "Test certificate issued; not deployed")
+      : binding?.status === "dns_ready"
+        ? (zh ? "AliDNS 已验证" : "AliDNS verified")
+        : binding?.status === "issuing"
+          ? (zh ? "正在申请测试证书" : "Requesting test certificate")
     : binding?.status === "renewal_due"
       ? (zh ? "证书即将到期" : "Certificate renewal due")
       : binding?.status === "needs_attention"
@@ -114,10 +141,16 @@ function DomainTlsSettingsCard({ site, zh }: { site: Site; zh: boolean }) {
     <CardContent className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2"><SettingField label={zh ? "网站域名" : "Website domain"}><Input readOnly value={hostname} /></SettingField><SettingField label={zh ? "访问范围" : "Access scope"}><Select aria-label={zh ? "访问范围" : "Access scope"} value={accessMode} onChange={(event) => setAccessMode(event.target.value as SiteDomainTlsAccessMode)}><option value="public">{zh ? "公网访问" : "Public internet"}</option><option value="private_lan">{zh ? "仅当前局域网" : "Private LAN only"}</option></Select></SettingField></div>
       <div className="grid gap-2 rounded-lg border border-border p-3 text-sm sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">{zh ? "DNS 服务" : "DNS provider"}</p><p className="mt-1 font-medium">AliDNS</p></div><div><p className="text-xs text-muted-foreground">{zh ? "验证方式" : "Validation"}</p><p className="mt-1 font-medium">DNS-01</p></div><div><p className="text-xs text-muted-foreground">{zh ? "证书续期" : "Renewal"}</p><p className="mt-1 font-medium">{zh ? "尚未启用" : "Not enabled yet"}</p></div></div>
+      {binding?.certificateEnvironment === "staging" ? <p className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-warning">{zh ? "当前是 Let's Encrypt 测试证书，只用于验证 DNS-01 流程，浏览器不会将它视为正式可信证书，也尚未部署到服务器。" : "This is a Let's Encrypt staging certificate used only to validate the DNS-01 flow. Browsers do not trust it as a production certificate, and it has not been deployed to the server."}</p> : null}
+      {binding?.status === "dns_ready" ? <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "申请测试证书会联系 Let's Encrypt staging，并在 AliDNS 创建临时 TXT；无论签发成功或失败，系统都会按本次 RecordId 尝试删除该记录。" : "Requesting a test certificate contacts Let's Encrypt staging and creates a temporary AliDNS TXT record. Whether issuance succeeds or fails, the system attempts to delete that exact RecordId."}</p> : null}
       {accessMode === "private_lan" ? <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "局域网模式不要求公网 A/AAAA 记录，但仍会使用该域名完成完整 HTTPS 证书校验。主机必须已明确允许私网访问。" : "LAN mode does not require public A/AAAA records, but full HTTPS certificate validation still uses this hostname. The host must explicitly allow private-network access."}</p> : null}
       {binding?.lastFailure ? <p role="alert" className="rounded-lg bg-warning/10 p-3 text-sm text-warning">{zh ? "域名或服务器配置发生变化，请重新完成后续 HTTPS 检查。" : "The domain or server target changed. Complete the HTTPS checks again."}</p> : null}
-      {mutation.error ? <p role="alert" className="text-sm text-destructive">{message(mutation.error, zh)}</p> : null}
-      <div className="flex justify-end"><Button disabled={!hostname || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{binding ? (zh ? "更新域名设置" : "Update domain setup") : (zh ? "保存域名设置" : "Save domain setup")}</Button></div>
+      {mutation.error || verifyDns.error || issueStaging.error ? <p role="alert" className="text-sm text-destructive">{message(mutation.error ?? verifyDns.error ?? issueStaging.error, zh)}</p> : null}
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button variant="secondary" disabled={!hostname || mutation.isPending || verifyDns.isPending || issueStaging.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{binding ? (zh ? "更新域名设置" : "Update domain setup") : (zh ? "保存域名设置" : "Save domain setup")}</Button>
+        {binding && !["active", "staging_ready", "deploying"].includes(binding.status) ? <Button variant="secondary" disabled={!binding.revision || verifyDns.isPending || issueStaging.isPending} onClick={() => verifyDns.mutate()}>{verifyDns.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "验证 AliDNS 权限" : "Verify AliDNS access"}</Button> : null}
+        {binding?.status === "dns_ready" ? <Button disabled={!binding.revision || issueStaging.isPending || verifyDns.isPending} onClick={() => issueStaging.mutate()}>{issueStaging.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "申请测试证书" : "Request test certificate"}</Button> : null}
+      </div>
     </CardContent>
   </Card>;
 }

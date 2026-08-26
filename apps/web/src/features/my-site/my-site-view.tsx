@@ -367,13 +367,18 @@ function DomainTlsJourneyNotice({ site, zh, onContinue }: { site: Site; zh: bool
   const binding = site.domainTlsBinding!;
   const active = binding.status === "active";
   const attention = binding.status === "needs_attention" || binding.status === "renewal_due";
+  const stagingIssued = binding.status === "staging_ready";
   const title = active
     ? (zh ? "网站安全连接已启用" : "Secure website connection is active")
+    : stagingIssued
+      ? (zh ? "测试证书已签发，网站尚未启用 HTTPS" : "Test certificate issued; website HTTPS is not active")
     : attention
       ? (zh ? "网站安全连接需要处理" : "Secure website connection needs attention")
       : (zh ? "网站域名已保存，HTTPS 尚未完成" : "Website domain saved; HTTPS is not finished yet");
   const detail = active
     ? (zh ? `访客可通过 https://${binding.hostname}/ 安全访问。` : `Visitors can securely open https://${binding.hostname}/.`)
+    : stagingIssued
+      ? (zh ? "测试证书只证明域名验证流程可行，浏览器不会信任它；部署正式证书并完成服务器检查前，访客仍不能通过可信 HTTPS 打开网站。" : "The test certificate only proves the domain-validation flow. Browsers do not trust it; visitors still need a production certificate and completed server checks for trusted HTTPS.")
     : attention
       ? (zh ? "网站内容和旧版本不会被自动删除，请让配置人员重新检查域名、证书和服务器。" : "Website content and the previous release remain intact. Ask the setup owner to recheck the domain, certificate, and server.")
       : (zh ? "当前仍可继续编辑和预览；完成证书签发和服务器检查后，访客才能通过 HTTPS 打开。" : "You can keep editing and previewing. Visitors can use HTTPS after certificate issuance and server checks are complete.");

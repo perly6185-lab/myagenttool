@@ -611,6 +611,8 @@ export function createHttpServer({
   configureSiteDeploymentTarget,
   verifySiteDeploymentTarget,
   configureSiteDomainTlsBinding,
+  verifySiteDomainTlsDns,
+  issueSiteDomainTlsStaging,
   startSitePilotSession,
   getActiveSitePilotSession,
   updateSitePilotSession,
@@ -1317,6 +1319,8 @@ export function createHttpServer({
         configureDeploymentTarget: configureSiteDeploymentTarget,
         verifyDeploymentTarget: verifySiteDeploymentTarget,
         configureDomainTlsBinding: configureSiteDomainTlsBinding,
+        verifyDomainTlsDns: verifySiteDomainTlsDns,
+        issueDomainTlsStaging: issueSiteDomainTlsStaging,
       })) {
         return;
       }

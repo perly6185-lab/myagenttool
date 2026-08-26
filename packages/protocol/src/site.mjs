@@ -23,7 +23,7 @@ export const siteBlockTypes = [
 ];
 export const siteDeploymentKinds = ["local_directory", "cloudflare_pages", "aliyun_oss_cdn", "ssh_static"];
 export const siteDomainTlsAccessModes = ["public", "private_lan"];
-export const siteDomainTlsStatuses = ["setup", "dns_ready", "issuing", "deploying", "active", "renewal_due", "needs_attention", "disabled"];
+export const siteDomainTlsStatuses = ["setup", "dns_ready", "issuing", "staging_ready", "deploying", "active", "renewal_due", "needs_attention", "disabled"];
 
 export const siteBounds = {
   maxNameLength: 120,

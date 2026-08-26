@@ -199,6 +199,16 @@ test("domain and HTTPS binding endpoint fails closed until an SSH publishing tar
   });
   assert.equal(configured.status, 409);
   assert.equal(configured.body.error, "site_domain_ssh_target_required");
+  const verifyDns = await call(`/api/sites/${list.body.sites[0].id}/domain-tls-binding/verify-dns`, {
+    method: "POST", body: { expectedRevision: 0 },
+  });
+  assert.equal(verifyDns.status, 404);
+  assert.equal(verifyDns.body.error, "site_domain_tls_binding_not_found");
+  const issueStaging = await call(`/api/sites/${list.body.sites[0].id}/domain-tls-binding/issue-staging`, {
+    method: "POST", body: { expectedRevision: 0, confirmed: true },
+  });
+  assert.equal(issueStaging.status, 404);
+  assert.equal(issueStaging.body.error, "site_domain_tls_binding_not_found");
 });
 
 test("site image HTTP endpoints accept bounded binary uploads and serve managed content", async () => {

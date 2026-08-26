@@ -177,6 +177,7 @@ import { createWorkflowMemoryInsightsService } from "../services/workflow-memory
 import { createInquiryIntakeTriggerService } from "../services/inquiry-intake-triggers.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import { createSiteService } from "../services/sites.mjs";
+import { createSiteDomainTlsAdapter } from "../services/site-domain-tls-adapter.mjs";
 import { createSitePilotService } from "../services/site-pilot.mjs";
 import {
   autoRunVerificationTimeoutMs,
@@ -1049,6 +1050,7 @@ export function createServerRuntimeServices({
         ? resolve(dirname(stateStorePath), "site-assets")
         : null,
     resolveCredential: siteCredentialVault.resolveCredential,
+    domainTlsAdapter: createSiteDomainTlsAdapter(),
     deploymentAdapters: {
       cloudflare_pages: createCloudflarePagesAdapter(),
       aliyun_oss_cdn: createAliyunOssCdnAdapter(),
@@ -7828,6 +7830,8 @@ export function createServerRuntimeServices({
     configureSiteDeploymentTarget: siteService.configureDeploymentTarget,
     verifySiteDeploymentTarget: siteService.verifyDeploymentTarget,
     configureSiteDomainTlsBinding: siteService.configureDomainTlsBinding,
+    verifySiteDomainTlsDns: siteService.verifyDomainTlsDns,
+    issueSiteDomainTlsStaging: siteService.issueDomainTlsStaging,
     startSitePilotSession: sitePilotService.startSession,
     getActiveSitePilotSession: sitePilotService.getActiveSession,
     updateSitePilotSession: sitePilotService.updateSession,

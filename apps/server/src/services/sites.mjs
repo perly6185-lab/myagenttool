@@ -30,6 +30,7 @@ import {
 } from "./site-deployment-adapters.mjs";
 import { createEnvironmentCredentialResolver } from "./site-credential-resolver.mjs";
 import { createSiteAssetStorage, readBoundedSiteAssetBody, safeSiteAssetName } from "./site-asset-storage.mjs";
+import { SiteDomainTlsAdapterError } from "./site-domain-tls-adapter.mjs";
 import { classifySshAddress } from "./ssh-host-connector.mjs";
 
 const BLOCK_TYPES = new Set(siteBlockTypes);
@@ -197,6 +198,13 @@ function deploymentFailure(error) {
   return { error: "site_deployment_failed", message: "Site deployment failed.", retryable: false };
 }
 
+function domainTlsFailure(error) {
+  if (error instanceof SiteDomainTlsAdapterError) {
+    return { error: error.code, message: error.message, retryable: error.retryable, cleanupRecordDigest: error.cleanupRecordDigest ?? null };
+  }
+  return { error: "site_domain_tls_operation_failed", message: "The domain and certificate operation failed.", retryable: false, cleanupRecordDigest: null };
+}
+
 export function createSiteService({
   state,
   now,
@@ -208,6 +216,7 @@ export function createSiteService({
   assetRoot = null,
   resolveCredential = createEnvironmentCredentialResolver(),
   deploymentAdapters = {},
+  domainTlsAdapter = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   const assetStorage = createSiteAssetStorage({ root: assetRoot });
@@ -219,6 +228,7 @@ export function createSiteService({
   const userOf = (actor) => actor?.userId ?? LOCAL_USER_ID;
   const notFound = (kind = "site") => ({ ok: false, status: 404, body: { error: `${kind}_not_found` } });
   const inFlightSiteDeployments = new Set();
+  const inFlightDomainTlsOperations = new Set();
 
   function findSite(siteId, actor) {
     return state.sites.find((site) => site.id === String(siteId) && site.ownerTeamId === teamOf(actor)) ?? null;
@@ -263,11 +273,16 @@ export function createSiteService({
       dnsProvider: binding.dnsProvider,
       dnsCredentialRef: binding.dnsCredentialRef,
       challenge: binding.challenge,
+      dnsZone: binding.dnsZone ?? null,
       certificateScopeId: binding.certificateScopeId,
       activationProfileId: binding.activationProfileId,
-      certificateFingerprint: binding.certificateFingerprint,
-      certificateIssuer: binding.certificateIssuer,
-      certificateSans: binding.certificateSans,
+      certificateEnvironment: binding.certificateEnvironment ?? null,
+      certificateFingerprint: binding.certificateFingerprint ?? null,
+      certificateIssuer: binding.certificateIssuer ?? null,
+      certificateSans: binding.certificateSans ?? [],
+      certificateNotBefore: binding.certificateNotBefore ?? null,
+      stagingIssuedAt: binding.stagingIssuedAt ?? null,
+      lastCleanupRecordDigest: binding.lastCleanupRecordDigest ?? null,
       lastFailure: binding.lastFailure,
       revision: binding.revision,
       createdAt: binding.createdAt,
@@ -1116,6 +1131,7 @@ export function createSiteService({
     const target = targetFor(site);
     if (!target) return notFound("site_deployment_target");
     if (inFlightSiteDeployments.has(site.id)) return { ok: false, status: 409, body: { error: "site_deployment_busy" } };
+    if (inFlightDomainTlsOperations.has(site.id)) return { ok: false, status: 409, body: { error: "site_domain_tls_busy" } };
     if (target.revision !== expectedRevision) return { ok: false, status: 409, body: { error: "site_deployment_target_revision_conflict", currentRevision: target.revision } };
     if (!DEPLOYMENT_KINDS.has(kind)) return { ok: false, status: 400, body: { error: "invalid_site_deployment_kind" } };
     if (actor?.pilotSandboxId && kind !== "local_directory") {
@@ -1153,6 +1169,8 @@ export function createSiteService({
     const timestamp = now();
     const previousRemoteProjectRef = target.remoteProjectRef ?? null;
     const binding = domainTlsFor(site);
+    const bindingInvalidated = binding && (kind !== "ssh_static" || binding.hostname !== normalizedDomain || previousRemoteProjectRef !== (boundedText(remoteProjectRef, 300) || null));
+    if (bindingInvalidated) domainTlsAdapter?.discardStagingArtifact?.(binding.id);
     runTx(() => {
       Object.assign(target, {
         kind, displayName: boundedText(displayName, 120) || target.displayName, credentialRef: storedCredentialRef,
@@ -1161,7 +1179,11 @@ export function createSiteService({
         status: kind === "local_directory" ? "ready" : "setup", lastVerifiedAt: kind === "local_directory" ? timestamp : null,
         verification: null, lastError: null, revision: target.revision + 1, updatedAt: timestamp,
       });
-      if (binding && (kind !== "ssh_static" || binding.hostname !== normalizedDomain || previousRemoteProjectRef !== target.remoteProjectRef)) {
+      if (bindingInvalidated) {
+        if (binding.certificateEnvironment === "staging") Object.assign(binding, {
+          certificateEnvironment: null, certificateFingerprint: null, certificateIssuer: null, certificateSans: [],
+          certificateNotBefore: null, stagingIssuedAt: null, renewAfter: null, notAfter: null, lastCleanupRecordDigest: null,
+        });
         Object.assign(binding, kind === "ssh_static" ? {
           status: "needs_attention",
           lastFailure: { error: "site_domain_target_changed", message: "The server publishing target changed. Review and verify domain and HTTPS setup again.", retryable: false },
@@ -1183,6 +1205,7 @@ export function createSiteService({
   function configureDomainTlsBinding({ siteId, expectedRevision, hostname, accessMode = "public" } = {}, actor = null) {
     const site = findSite(siteId, actor);
     if (!site) return notFound();
+    if (inFlightDomainTlsOperations.has(site.id)) return { ok: false, status: 409, body: { error: "site_domain_tls_busy" } };
     const target = targetFor(site);
     if (!target || target.kind !== "ssh_static") return { ok: false, status: 409, body: { error: "site_domain_ssh_target_required" } };
     const current = domainTlsFor(site);
@@ -1209,19 +1232,25 @@ export function createSiteService({
     }
     const timestamp = now();
     let binding;
+    const currentWasActive = current?.status === "active";
+    if (current) domainTlsAdapter?.discardStagingArtifact?.(current.id);
     runTx(() => {
       if (current) {
         Object.assign(current, {
           deploymentTargetId: target.id,
           hostname: normalizedHostname,
           accessMode,
-          status: current.status === "active" ? "needs_attention" : "setup",
+          status: currentWasActive ? "needs_attention" : "setup",
           lastVerifiedAt: null,
-          lastFailure: current.status === "active"
+          lastFailure: currentWasActive
             ? { error: "site_domain_binding_changed", message: "Domain or access mode changed. Issue and verify a matching certificate before continuing.", retryable: false }
             : null,
           revision: current.revision + 1,
           updatedAt: timestamp,
+        });
+        if (!currentWasActive) Object.assign(current, {
+          dnsZone: null, certificateEnvironment: null, certificateFingerprint: null, certificateIssuer: null, certificateSans: [],
+          certificateNotBefore: null, stagingIssuedAt: null, renewAfter: null, notAfter: null, lastCleanupRecordDigest: null,
         });
         binding = current;
         return;
@@ -1236,12 +1265,17 @@ export function createSiteService({
         dnsProvider: "alidns",
         dnsCredentialRef: "credential://alidns/main",
         challenge: "dns-01",
+        dnsZone: null,
         certificateScopeId: null,
         activationProfileId: null,
         status: "setup",
+        certificateEnvironment: null,
         certificateFingerprint: null,
         certificateIssuer: null,
         certificateSans: [],
+        certificateNotBefore: null,
+        stagingIssuedAt: null,
+        lastCleanupRecordDigest: null,
         lastVerifiedAt: null,
         renewAfter: null,
         notAfter: null,
@@ -1254,6 +1288,106 @@ export function createSiteService({
       appendEvent({ invocationId: null, type: "site_domain_tls_configured", level: "info", message: `Domain and HTTPS setup was configured for site ${site.id}.`, data: { siteId: site.id, bindingId: binding.id, deploymentTargetId: target.id, accessMode, actorTeamId: site.ownerTeamId } });
     });
     return { ok: true, status: current ? 200 : 201, body: { site: siteView(site, { professional: true }), binding: domainTlsView(binding, { professional: true }) } };
+  }
+
+  async function verifyDomainTlsDns({ siteId, expectedRevision } = {}, actor = null) {
+    const site = findSite(siteId, actor);
+    if (!site) return notFound();
+    const binding = domainTlsFor(site);
+    if (!binding) return notFound("site_domain_tls_binding");
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required", currentRevision: binding.revision } };
+    if (binding.revision !== expectedRevision) return { ok: false, status: 409, body: { error: "site_domain_tls_revision_conflict", currentRevision: binding.revision } };
+    if (!domainTlsAdapter?.verifyDns) return { ok: false, status: 501, body: { error: "site_domain_tls_adapter_unavailable" } };
+    if (inFlightDomainTlsOperations.has(site.id)) return { ok: false, status: 409, body: { error: "site_domain_tls_busy" } };
+    inFlightDomainTlsOperations.add(site.id);
+    try {
+      const resolved = await resolveCredential(binding.dnsCredentialRef);
+      if (!resolved?.ok) return { ok: false, status: 409, body: { error: "site_domain_dns_credential_unavailable" } };
+      const verification = await domainTlsAdapter.verifyDns({ hostname: binding.hostname, credential: resolved.credential });
+      const timestamp = now();
+      runTx(() => Object.assign(binding, {
+        dnsZone: verification.zone,
+        status: "dns_ready",
+        lastVerifiedAt: timestamp,
+        lastFailure: null,
+        lastCleanupRecordDigest: null,
+        revision: binding.revision + 1,
+        updatedAt: timestamp,
+      }));
+      appendEvent({ invocationId: null, type: "site_domain_dns_verified", level: "info", message: `AliDNS access was verified for site ${site.id}.`, data: { siteId: site.id, bindingId: binding.id, deploymentTargetId: binding.deploymentTargetId, actorTeamId: site.ownerTeamId } });
+      return { ok: true, status: 200, body: { site: siteView(site, { professional: true }), binding: domainTlsView(binding, { professional: true }) } };
+    } catch (error) {
+      const failure = domainTlsFailure(error);
+      const timestamp = now();
+      runTx(() => Object.assign(binding, {
+        status: "needs_attention",
+        lastFailure: { error: failure.error, message: failure.message, retryable: failure.retryable },
+        lastCleanupRecordDigest: failure.cleanupRecordDigest,
+        revision: binding.revision + 1,
+        updatedAt: timestamp,
+      }));
+      return { ok: false, status: failure.retryable ? 503 : 409, body: { ...failure, currentRevision: binding.revision } };
+    } finally {
+      inFlightDomainTlsOperations.delete(site.id);
+    }
+  }
+
+  async function issueDomainTlsStaging({ siteId, expectedRevision, confirmed = false } = {}, actor = null) {
+    const site = findSite(siteId, actor);
+    if (!site) return notFound();
+    const binding = domainTlsFor(site);
+    if (!binding) return notFound("site_domain_tls_binding");
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required", currentRevision: binding.revision } };
+    if (binding.revision !== expectedRevision) return { ok: false, status: 409, body: { error: "site_domain_tls_revision_conflict", currentRevision: binding.revision } };
+    if (confirmed !== true) return { ok: false, status: 400, body: { error: "site_domain_staging_confirmation_required" } };
+    if (binding.status !== "dns_ready") return { ok: false, status: 409, body: { error: "site_domain_dns_verification_required" } };
+    if (!domainTlsAdapter?.issueStaging) return { ok: false, status: 501, body: { error: "site_domain_tls_adapter_unavailable" } };
+    if (inFlightDomainTlsOperations.has(site.id)) return { ok: false, status: 409, body: { error: "site_domain_tls_busy" } };
+    const contactEmail = String(site.settings?.contactEmail ?? "").trim();
+    if (!contactEmail) return { ok: false, status: 409, body: { error: "site_domain_acme_contact_required" } };
+    inFlightDomainTlsOperations.add(site.id);
+    const startedAt = now();
+    runTx(() => Object.assign(binding, { status: "issuing", lastFailure: null, revision: binding.revision + 1, updatedAt: startedAt }));
+    try {
+      const resolved = await resolveCredential(binding.dnsCredentialRef);
+      if (!resolved?.ok) throw new SiteDomainTlsAdapterError("site_domain_dns_credential_unavailable", "The AliDNS credential is unavailable.");
+      const result = await domainTlsAdapter.issueStaging({ bindingId: binding.id, hostname: binding.hostname, contactEmail, credential: resolved.credential });
+      const timestamp = now();
+      const notAfter = new Date(result.notAfter);
+      const renewAfter = new Date(notAfter.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const cleanupFailed = result.cleanup?.ok === false;
+      runTx(() => Object.assign(binding, {
+        status: cleanupFailed ? "needs_attention" : "staging_ready",
+        certificateEnvironment: "staging",
+        certificateFingerprint: result.fingerprint,
+        certificateIssuer: result.issuer,
+        certificateSans: result.sans,
+        certificateNotBefore: result.notBefore,
+        stagingIssuedAt: timestamp,
+        renewAfter,
+        notAfter: result.notAfter,
+        lastVerifiedAt: timestamp,
+        lastCleanupRecordDigest: cleanupFailed ? result.cleanup.recordDigest : null,
+        lastFailure: cleanupFailed ? { error: "site_domain_txt_cleanup_failed", message: "The staging certificate was issued, but its temporary DNS record could not be removed.", retryable: true } : null,
+        revision: binding.revision + 1,
+        updatedAt: timestamp,
+      }));
+      appendEvent({ invocationId: null, type: "site_domain_staging_certificate_issued", level: cleanupFailed ? "warning" : "info", message: `A staging certificate was issued for site ${site.id}.`, data: { siteId: site.id, bindingId: binding.id, deploymentTargetId: binding.deploymentTargetId, cleanupSucceeded: !cleanupFailed, actorTeamId: site.ownerTeamId } });
+      return { ok: true, status: 200, body: { site: siteView(site, { professional: true }), binding: domainTlsView(binding, { professional: true }) } };
+    } catch (error) {
+      const failure = domainTlsFailure(error);
+      const timestamp = now();
+      runTx(() => Object.assign(binding, {
+        status: "needs_attention",
+        lastFailure: { error: failure.error, message: failure.message, retryable: failure.retryable },
+        lastCleanupRecordDigest: failure.cleanupRecordDigest,
+        revision: binding.revision + 1,
+        updatedAt: timestamp,
+      }));
+      return { ok: false, status: failure.retryable ? 503 : 409, body: { ...failure, currentRevision: binding.revision } };
+    } finally {
+      inFlightDomainTlsOperations.delete(site.id);
+    }
   }
 
   async function verifyDeploymentTarget({ siteId } = {}, actor = null) {
@@ -1333,6 +1467,9 @@ export function createSiteService({
       return { ok: false, status: 403, body: { error: "site_pilot_sandbox_context_required" } };
     }
     const assets = state.siteAssets.filter((asset) => asset.ownerTeamId === ownerTeamId);
+    for (const binding of state.siteDomainTlsBindings.filter((candidate) => candidate.ownerTeamId === ownerTeamId)) {
+      domainTlsAdapter?.discardStagingArtifact?.(binding.id);
+    }
     for (const asset of assets) {
       try { assetStorage.remove(asset.storageKey); } catch { /* stale sandbox files must not block record cleanup */ }
       for (const derivative of asset.derivatives ?? []) {
@@ -1377,6 +1514,8 @@ export function createSiteService({
     configureDeploymentTarget,
     verifyDeploymentTarget,
     configureDomainTlsBinding,
+    verifyDomainTlsDns,
+    issueDomainTlsStaging,
     provisionPilotSandbox,
     purgePilotSandbox,
   };
