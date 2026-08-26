@@ -19,6 +19,31 @@ import {
   resolveDeliveryAssetPath,
 } from "@/features/tasks/work-item-delivery-preview-model";
 
+const PREVIEW_COPY = {
+  zh: {
+    title: "安全全文预览",
+    safety: "安全渲染 Markdown；仅加载原件内受控的本地图片，不执行 HTML、脚本，也不会加载远程资源。",
+    imageUnavailable: "图片无法从本地原件读取。",
+    imagesLoaded: "{{count}} 张图片仅从本地原件加载。",
+    loading: "正在验证并读取原件…",
+    truncated: "抽取内容已按安全上限截断（原文件 {{size}}）。",
+    copyText: "复制文字",
+    copied: "已复制",
+    downloadText: "下载文字",
+  },
+  en: {
+    title: "Safe full-text preview",
+    safety: "Markdown is rendered safely. Only controlled images from the local original are loaded; HTML, scripts, and remote resources are not executed.",
+    imageUnavailable: "The image could not be read from the local original.",
+    imagesLoaded: "{{count}} image(s) loaded only from the local original.",
+    loading: "Verifying and reading the original…",
+    truncated: "Extracted text was truncated at the safety limit (original file {{size}}).",
+    copyText: "Copy text",
+    copied: "Copied",
+    downloadText: "Download text",
+  },
+} as const;
+
 function formatBytes(value: number | null, locale: string) {
   if (value == null) return "—";
   const units = ["B", "KB", "MB", "GB"];
@@ -372,6 +397,7 @@ export function PreviewModal({
   onChoose,
 }: PreviewModalProps) {
   const [copied, setCopied] = useState(false);
+  const previewCopy = PREVIEW_COPY[locale.toLowerCase().startsWith("zh") ? "zh" : "en"];
 
   async function copyText() {
     if (!preview?.text || !navigator.clipboard) return;
@@ -396,10 +422,10 @@ export function PreviewModal({
   }
 
   return (
-    <Modal open={Boolean(target)} onClose={onClose} title={copy.previewTitle} description={target?.title} size="lg">
+    <Modal open={Boolean(target)} onClose={onClose} title={previewCopy.title} description={target?.title} size="lg">
       <div className="space-y-3">
-        <p className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/[0.06] px-3 py-2 text-xs leading-relaxed"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />{copy.previewSafety}</p>
-        {loading ? <p className="text-sm text-muted-foreground" role="status">{copy.previewLoading}</p> : error ? (
+        <p className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/[0.06] px-3 py-2 text-xs leading-relaxed"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />{previewCopy.safety}</p>
+        {loading ? <p className="text-sm text-muted-foreground" role="status">{previewCopy.loading}</p> : error ? (
           <div className="space-y-3">
             <p className="text-sm text-destructive" role="alert">{errorMessage}</p>
             <div className="flex flex-wrap gap-2">
@@ -409,17 +435,17 @@ export function PreviewModal({
           </div>
         ) : preview ? (
           <>
-            {preview.truncated ? <p className="text-xs text-warning">{copy.previewTruncated.replace("{{size}}", new Intl.NumberFormat(locale, { style: "unit", unit: "megabyte", maximumFractionDigits: 1 }).format(preview.totalBytes / (1024 * 1024)))}</p> : null}
+            {preview.truncated ? <p className="text-xs text-warning">{previewCopy.truncated.replace("{{size}}", new Intl.NumberFormat(locale, { style: "unit", unit: "megabyte", maximumFractionDigits: 1 }).format(preview.totalBytes / (1024 * 1024)))}</p> : null}
             {isMarkdownPreview(preview) ? <LocalContentMarkdownPreview
               contentId={preview.contentId}
               originalName={preview.originalName}
               text={preview.text}
-              imageUnavailableLabel={copy.previewImageUnavailable}
-              imageLoadedLabel={(count) => copy.previewImagesLoaded.replace("{{count}}", String(count))}
+              imageUnavailableLabel={previewCopy.imageUnavailable}
+              imageLoadedLabel={(count) => previewCopy.imagesLoaded.replace("{{count}}", String(count))}
             /> : <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/35 p-3 text-sm leading-relaxed" tabIndex={0}>{preview.text}</pre>}
             <div className="flex flex-wrap justify-end gap-2">
-              <Button size="sm" variant="ghost" onClick={() => void copyText()} disabled={!navigator.clipboard}>{copied ? <Check aria-hidden /> : <Copy aria-hidden />}{copied ? copy.copied : copy.copyText}</Button>
-              <Button size="sm" variant="ghost" onClick={downloadText}><Download aria-hidden />{copy.downloadText}</Button>
+              <Button size="sm" variant="ghost" onClick={() => void copyText()} disabled={!navigator.clipboard}>{copied ? <Check aria-hidden /> : <Copy aria-hidden />}{copied ? previewCopy.copied : previewCopy.copyText}</Button>
+              <Button size="sm" variant="ghost" onClick={downloadText}><Download aria-hidden />{previewCopy.downloadText}</Button>
               {target && target.storageMode !== "state_record" ? <Button size="sm" variant="ghost" disabled={locating} onClick={() => onLocate(target)}><FolderOpen aria-hidden />{copy.locate}</Button> : null}
               {target ? <Button size="sm" onClick={() => onChoose(target)}>{copy.addToTask}</Button> : null}
             </div>
