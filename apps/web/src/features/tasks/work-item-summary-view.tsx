@@ -40,7 +40,7 @@ import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
 import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
 import { myTemplateExpectedOutput } from "@/features/workflow-memory/my-template-model";
-import type { BusinessRoutineDefinition } from "@/lib/api-client";
+import { ApiError, type BusinessRoutineDefinition } from "@/lib/api-client";
 import type { LocalWorkItem, LocalWorkItemObservability, WorkItemComment, WorkItemOutcomeFile } from "./task-view-types";
 import { deriveWorkItemUserStatus } from "./work-item-user-status";
 import { WorkItemJobOverview } from "./work-item-job-overview";
@@ -343,9 +343,64 @@ type MyTemplateDraftPreview = {
   };
 };
 
+type LocalDeliveryReceipt = {
+  baseBranch: string | null;
+  deliveredCommit: string | null;
+  deliveredAt: string | null;
+};
+
+type DeliveryRecoveryAction = "review_changes" | "refresh";
+
+function localDeliveryFailure(error: unknown, language: "zh" | "en"): { message: string; action: DeliveryRecoveryAction } | null {
+  if (!(error instanceof ApiError)) return null;
+  const detail = error.message.toLowerCase();
+  if (detail.includes("changed after approval")) {
+    return {
+      message: language === "zh"
+        ? "工作区在审核通过后又发生了变化。任务仍停留在审核阶段；请重新检查当前改动并取得新的审核结论。"
+        : "The worktree changed after approval. The task remains in review; inspect the current changes and obtain a new approval before applying it.",
+      action: "review_changes",
+    };
+  }
+  if (detail.includes("base branch") && (detail.includes("advanced") || detail.includes("rebase"))) {
+    return {
+      message: language === "zh"
+        ? "本地基准分支已经前进，系统没有强行合并。任务和工作区都已保留；请先同步基准分支，再重新检查改动。"
+        : "The local base branch advanced, so no merge was forced. The task and worktree were kept; update the worktree from the base branch and review the changes again.",
+      action: "review_changes",
+    };
+  }
+  if (detail.includes("uncommitted changes") || detail.includes("clean it before delivery")) {
+    return {
+      message: language === "zh"
+        ? "工作区或本地基准分支存在未提交修改，因此没有应用交付。任务和改动均已保留；请处理这些修改后重新审核。"
+        : "The worktree or local base branch has uncommitted changes, so the delivery was not applied. Everything was kept; resolve those changes and review again.",
+      action: "review_changes",
+    };
+  }
+  if (error.code === "work_item_revision_conflict") {
+    return {
+      message: language === "zh"
+        ? "任务在确认期间已更新，本次操作没有应用。刷新任务以查看最新状态。"
+        : "The task changed while you were confirming it, so nothing was applied. Refresh the task to review its latest state.",
+      action: "refresh",
+    };
+  }
+  if (error.code === "work_item_delivery_failed") {
+    return {
+      message: language === "zh"
+        ? "本地应用没有完成，任务仍停留在审核阶段，工作区也已保留。请检查当前改动后重试。"
+        : "The local delivery did not complete. The task remains in review and the worktree was kept; inspect the current changes before retrying.",
+      action: "review_changes",
+    };
+  }
+  return null;
+}
+
 export function WorkItemSummaryView({
   workItemId,
   onOpenExpert,
+  onOpenDeliveryChanges,
   onOpenTaskCenter,
   onOpenSetup,
   onDirtyChange,
@@ -355,6 +410,7 @@ export function WorkItemSummaryView({
 }: {
   workItemId: string;
   onOpenExpert: (section?: WorkItemSection) => void;
+  onOpenDeliveryChanges?: (projectId: string, worktreeId: string) => void;
   onOpenTaskCenter?: () => void;
   onOpenSetup?: (section: SectionKey) => void;
   onDirtyChange?: (dirty: boolean) => void;
@@ -362,7 +418,7 @@ export function WorkItemSummaryView({
   onCreateTaskDraft?: (draft: string) => void;
   onOpenWorkItem?: (workItemId: string) => void;
 }) {
-  const { i18n } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
   const language = i18n.language.startsWith("zh") ? "zh" : "en";
   const copy = COPY[language];
   const sessionUser = useSessionUser();
@@ -418,6 +474,8 @@ export function WorkItemSummaryView({
   const [acceptOpen, setAcceptOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [completionWriteback, setCompletionWriteback] = useState<"local_only" | "sync_close">("local_only");
+  const [localDeliveryReceipt, setLocalDeliveryReceipt] = useState<LocalDeliveryReceipt | null>(null);
+  const [deliveryRecovery, setDeliveryRecovery] = useState<DeliveryRecoveryAction | null>(null);
   const [reopenConfirmOpen, setReopenConfirmOpen] = useState(false);
   const [previewAsset, setPreviewAsset] = useState<NonNullable<LocalWorkItem["inputAssets"]>[number] | null>(null);
   const [materialOfficePreview, setMaterialOfficePreview] = useState<string | null>(null);
@@ -479,6 +537,8 @@ export function WorkItemSummaryView({
     setAcceptOpen(false);
     setReportOpen(false);
     setCompletionWriteback("local_only");
+    setLocalDeliveryReceipt(null);
+    setDeliveryRecovery(null);
     setReopenConfirmOpen(false);
     setPreviewAsset(null);
     setOpeningResultFileKey(null);
@@ -662,9 +722,20 @@ export function WorkItemSummaryView({
       ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
     }));
   const changedFiles = deliveryReport?.changedFiles ?? [];
+  const deliveryWorktreeId = observability?.delivery?.worktreeId ?? observability?.latestRun?.localDelivery?.worktreeId ?? null;
   const resultSummary = outcome?.summary ?? deliveryReport?.summary ?? item.lastProgressSummary
     ?? (executionKind === "article_import" ? latestPassedVerification?.summary ?? null : null);
   const fullResult = outcome?.fullReport ?? deliveryReport?.summary ?? item.lastProgressSummary ?? null;
+  const persistedLocalDelivery = observability?.latestRun?.localDelivery;
+  const completedLocalDeliveryReceipt = localDeliveryReceipt ?? (
+    persistedLocalDelivery?.mode === "local_merge" && persistedLocalDelivery.deliveredAt
+      ? {
+          baseBranch: persistedLocalDelivery.baseBranch ?? null,
+          deliveredCommit: persistedLocalDelivery.deliveredCommit ?? null,
+          deliveredAt: persistedLocalDelivery.deliveredAt,
+        }
+      : null
+  );
   const objectiveResultVerification = item.resultVerification ?? null;
   const resultVerification = outcome?.verification ?? deliveryReport?.verification
     ?? (objectiveResultVerification && objectiveResultVerification.status !== "not_required"
@@ -719,20 +790,31 @@ export function WorkItemSummaryView({
     executionKind,
     resultFiles,
   });
-  const acceptActionLabel = observability?.delivery?.mode === "pull_request"
+  const deliveryMode = observability?.delivery?.mode ?? null;
+  const acceptActionLabel = deliveryMode === "pull_request"
     ? language === "zh" ? "审核通过并创建 Pull Request" : "Approve and create pull request"
-    : language === "zh" ? "审核通过并完成任务" : "Approve and complete task";
-  const acceptDialogTitle = observability?.delivery?.mode === "pull_request"
+    : deliveryMode === "local_merge"
+      ? language === "zh" ? "审核通过并应用到本地" : "Approve and apply locally"
+      : language === "zh" ? "审核通过并完成任务" : "Approve and complete task";
+  const acceptDialogTitle = deliveryMode === "pull_request"
     ? language === "zh" ? "确认审核通过并创建 Pull Request？" : "Approve and create a pull request?"
-    : copy.acceptTitle;
-  const acceptDialogDescription = observability?.delivery?.mode === "pull_request"
+    : deliveryMode === "local_merge"
+      ? language === "zh" ? "确认审核通过并应用到本地？" : "Approve and apply this delivery locally?"
+      : copy.acceptTitle;
+  const acceptDialogDescription = deliveryMode === "pull_request"
     ? language === "zh"
       ? "系统会用当前交付创建一个待审核的 Pull Request，不会直接合并到远端主分支。创建后，本地任务继续保留在审核阶段。"
       : "The current delivery will become a reviewable pull request without merging into the remote base branch. The local task remains in review afterward."
-    : copy.acceptDescription;
-  const acceptDialogConfirm = observability?.delivery?.mode === "pull_request"
+    : deliveryMode === "local_merge"
+      ? language === "zh"
+        ? "系统会把已审核的 Worktree 改动应用到本地基准分支并完成任务；不会推送或合并任何远端分支。"
+        : "The reviewed worktree changes will be applied to the local base branch and the task will be completed. No remote branch will be pushed or merged."
+      : copy.acceptDescription;
+  const acceptDialogConfirm = deliveryMode === "pull_request"
     ? language === "zh" ? "确认创建 Pull Request" : "Create pull request"
-    : copy.acceptConfirm;
+    : deliveryMode === "local_merge"
+      ? language === "zh" ? "确认应用到本地" : "Apply locally"
+      : copy.acceptConfirm;
   const reviewFeedback = reviewFindings.map((finding) => [
     `${finding.severity ? `[${finding.severity}] ` : ""}${finding.path ?? "Code"}${finding.line ? `:${finding.line}` : ""}: ${finding.body}`,
     finding.suggestion ? `Suggested fix: ${finding.suggestion}` : null,
@@ -1449,6 +1531,7 @@ export function WorkItemSummaryView({
     }
     setActionPending("complete");
     setActionError(null);
+    setDeliveryRecovery(null);
     try {
       let current = item;
       if (reviewAcceptanceCriteria.length && acceptancePassed < reviewAcceptanceCriteria.length) {
@@ -1468,10 +1551,31 @@ export function WorkItemSummaryView({
         current = verification.workItem;
         setItem(current);
       }
-      const response = observability?.delivery
-        ? await api.deliverWorkItem(current.id, observability.delivery.mode, current.revision) as { workItem: LocalWorkItem }
+      const response: {
+        workItem: LocalWorkItem;
+        delivery?: {
+          baseBranch?: string | null;
+          deliveredCommit?: string | null;
+          deliveredAt?: string | null;
+        };
+      } = observability?.delivery
+        ? await api.deliverWorkItem(current.id, observability.delivery.mode, current.revision) as {
+            workItem: LocalWorkItem;
+            delivery?: {
+              baseBranch?: string | null;
+              deliveredCommit?: string | null;
+              deliveredAt?: string | null;
+            };
+          }
         : await api.transitionWorkItem(current.id, "close", current.revision) as { workItem: LocalWorkItem };
       setItem(response.workItem);
+      if (observability?.delivery?.mode === "local_merge") {
+        setLocalDeliveryReceipt({
+          baseBranch: response.delivery?.baseBranch ?? null,
+          deliveredCommit: response.delivery?.deliveredCommit ?? observability.delivery.review?.reviewedCommit ?? null,
+          deliveredAt: response.delivery?.deliveredAt ?? response.workItem.updatedAt ?? null,
+        });
+      }
       setAcceptOpen(false);
       setSyncNotice(null);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-completed", workItemId: item.id } }));
@@ -1488,12 +1592,26 @@ export function WorkItemSummaryView({
           return;
         }
       }
-    } catch {
-      setActionError(copy.completionFailed);
+    } catch (error) {
+      const failure = observability?.delivery?.mode === "local_merge" ? localDeliveryFailure(error, language) : null;
+      setActionError(failure?.message ?? copy.completionFailed);
+      setDeliveryRecovery(failure?.action ?? null);
       setRefreshVersion((version) => version + 1);
     } finally {
       setActionPending(null);
     }
+  };
+  const runDeliveryRecovery = () => {
+    const recovery = deliveryRecovery;
+    setAcceptOpen(false);
+    setActionError(null);
+    setDeliveryRecovery(null);
+    if (recovery === "review_changes" && deliveryWorktreeId) {
+      if (onOpenDeliveryChanges) onOpenDeliveryChanges(item.projectId, deliveryWorktreeId);
+      else onOpenExpert("process");
+      return;
+    }
+    setRefreshVersion((version) => version + 1);
   };
   const runPrimaryAction = () => {
     if (pendingTemplateClarification) {
@@ -1759,7 +1877,12 @@ export function WorkItemSummaryView({
         </section>
       ) : null}
 
-      {actionError ? <p className="rounded-lg border border-destructive/35 bg-destructive/[0.05] px-3 py-2 text-sm text-destructive" role="alert">{actionError}</p> : null}
+      {actionError && !acceptOpen ? (
+        <div className="rounded-lg border border-destructive/35 bg-destructive/[0.05] px-3 py-2 text-sm" role="alert">
+          <p className="text-destructive">{actionError}</p>
+          {deliveryRecovery ? <Button className="mt-2" size="sm" variant="secondary" onClick={runDeliveryRecovery}>{deliveryRecovery === "review_changes" ? language === "zh" ? "检查当前改动" : "Review current changes" : language === "zh" ? "刷新任务" : "Refresh task"}</Button> : null}
+        </div>
+      ) : null}
 
       {syncNotice ? (
         <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/[0.06] px-3 py-2 text-sm" role="status">
@@ -2071,6 +2194,20 @@ export function WorkItemSummaryView({
             <div className="min-w-0 flex-1">
               <h4 className="font-semibold">{copy.completedTitle}</h4>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.completedHint}</p>
+              {completedLocalDeliveryReceipt ? (
+                <div className="mt-3 rounded-lg border border-success/30 bg-background/80 p-3" aria-label={language === "zh" ? "本地交付回执" : "Local delivery receipt"}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold">{language === "zh" ? "本地交付回执" : "Local delivery receipt"}</p>
+                    <Badge tone="success">{language === "zh" ? "应用成功" : "Applied successfully"}</Badge>
+                  </div>
+                  <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                    <div><dt className="text-muted-foreground">{language === "zh" ? "目标分支" : "Target branch"}</dt><dd className="mt-0.5 break-all font-mono text-foreground">{completedLocalDeliveryReceipt.baseBranch ?? (language === "zh" ? "本地基准分支" : "Local base branch")}</dd></div>
+                    <div><dt className="text-muted-foreground">{language === "zh" ? "交付提交" : "Delivered commit"}</dt><dd className="mt-0.5 break-all font-mono text-foreground">{completedLocalDeliveryReceipt.deliveredCommit?.slice(0, 12) ?? (language === "zh" ? "已由本地 Git 确认" : "Confirmed by local Git")}</dd></div>
+                    <div><dt className="text-muted-foreground">{language === "zh" ? "修改范围" : "Change scope"}</dt><dd className="mt-0.5 text-foreground">{language === "zh" ? `${changedFiles.length} 个文件已应用` : `${changedFiles.length} file(s) applied`}</dd></div>
+                    <div><dt className="text-muted-foreground">{language === "zh" ? "验证结果" : "Verification"}</dt><dd className="mt-0.5 text-foreground">{resultVerification?.summary ?? (language === "zh" ? "审核与验证均已通过" : "Review and verification passed")}</dd></div>
+                  </dl>
+                </div>
+              ) : null}
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button size="sm" aria-expanded={resultExpanded} aria-controls={resultSectionId} onClick={() => setResultExpanded((expanded) => !expanded)}>
                   {resultExpanded ? copy.hideResult : copy.action.completed}
@@ -2257,7 +2394,21 @@ export function WorkItemSummaryView({
             </div>
           </div>
           <div className="mt-3">
-            <p className="text-xs text-muted-foreground">{copy.deliverableFiles}</p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-muted-foreground">{copy.deliverableFiles}</p>
+              {changedFiles.length && deliveryWorktreeId ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    if (onOpenDeliveryChanges) onOpenDeliveryChanges(item.projectId, deliveryWorktreeId);
+                    else onOpenExpert("process");
+                  }}
+                >
+                  <FolderOpen aria-hidden />{t("taskDelivery.review")}
+                </Button>
+              ) : null}
+            </div>
             <DeliverableFileList
               entries={resultFileEntries}
               copy={copy}
@@ -2923,7 +3074,12 @@ export function WorkItemSummaryView({
               {!externalWritebackAllowed ? <p className="text-xs text-warning" role="status">{copy.writebackDisabled}</p> : null}
             </fieldset>
           ) : null}
-          {actionError ? <p className="text-sm text-destructive" role="alert">{actionError}</p> : null}
+          {actionError ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/[0.04] p-3" role="alert">
+              <p className="text-sm text-destructive">{actionError}</p>
+              {deliveryRecovery ? <Button className="mt-2" size="sm" variant="secondary" onClick={runDeliveryRecovery}>{deliveryRecovery === "review_changes" ? language === "zh" ? "检查当前改动" : "Review current changes" : language === "zh" ? "刷新任务" : "Refresh task"}</Button> : null}
+            </div>
+          ) : null}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" disabled={actionPending === "complete"} onClick={() => setAcceptOpen(false)}>{language === "zh" ? "取消" : "Cancel"}</Button>
             <Button disabled={!executionContractReady || !outcomeReady || actionPending === "complete"} onClick={() => void acceptAndComplete()}>

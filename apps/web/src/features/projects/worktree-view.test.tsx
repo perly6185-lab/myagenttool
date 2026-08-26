@@ -10,6 +10,8 @@ const apiMock = vi.hoisted(() => ({
   listInvocationEvents: vi.fn(),
   listWorktreeFiles: vi.fn(),
   readWorktreeFile: vi.fn(),
+  worktreeGit: vi.fn(),
+  worktreeDiff: vi.fn(),
   uploadWorktreeAttachments: vi.fn(),
   createInvocation: vi.fn(),
 }));
@@ -20,6 +22,8 @@ vi.mock("@/lib/api-client", () => ({
     listInvocationEvents: apiMock.listInvocationEvents,
     listWorktreeFiles: apiMock.listWorktreeFiles,
     readWorktreeFile: apiMock.readWorktreeFile,
+    worktreeGit: apiMock.worktreeGit,
+    worktreeDiff: apiMock.worktreeDiff,
     uploadWorktreeAttachments: apiMock.uploadWorktreeAttachments,
     createInvocation: apiMock.createInvocation,
   },
@@ -33,11 +37,48 @@ afterEach(() => {
     section: "projects",
     selectedInvocationId: null,
     selectedWorktreeId: "wt_docs",
+    worktreeOpenIntent: null,
+    worktreeReviewContext: null,
     officecliPreviewPath: null,
   });
 });
 
 describe("WorktreeView session history", () => {
+  it("consumes a task-result handoff and opens the unified diff directly", async () => {
+    apiMock.fetchState.mockResolvedValue(consoleState());
+    apiMock.listWorktreeFiles.mockResolvedValue({ tree: [] });
+    apiMock.worktreeGit.mockResolvedValue({
+      branch: "codex/session-history", clean: false, changedFiles: 1,
+      hasUpstream: false, upstream: null, ahead: 1, behind: 0,
+    });
+    apiMock.worktreeDiff.mockResolvedValue({
+      files: [{ path: "src/login.ts", index: "M", work: " ", untracked: false }],
+      base: "main",
+      diff: "diff --git a/src/login.ts b/src/login.ts\n@@ -1 +1 @@\n+const reviewed = true;",
+      truncated: false,
+    });
+    apiMock.listInvocationEvents.mockResolvedValue({
+      invocationId: "inv_new", events: [], nextCursor: null, hasMore: false, retentionTruncated: false,
+    });
+    useUiStore.setState({
+      worktreeOpenIntent: { worktreeId: "wt_docs", view: "changes" },
+      worktreeReviewContext: { workItemId: "lwi_review", worktreeId: "wt_docs" },
+    });
+
+    renderWorktree();
+
+    expect(await screen.findByRole("button", { name: "src/login.ts" })).toBeTruthy();
+    expect(await screen.findByText("+const reviewed = true;")).toBeTruthy();
+    expect(apiMock.worktreeDiff).toHaveBeenCalledWith("wt_docs");
+    expect(useUiStore.getState().worktreeOpenIntent).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Return to task" }));
+    expect(useUiStore.getState().section).toBe("task");
+    expect(useUiStore.getState().selectedWorkItemId).toBe("lwi_review");
+    expect(useUiStore.getState().selectedWorktreeId).toBeNull();
+    expect(useUiStore.getState().worktreeReviewContext).toBeNull();
+  });
+
   it("opens a source delivery handed off from task results", async () => {
     apiMock.fetchState.mockResolvedValue(consoleState());
     apiMock.listWorktreeFiles.mockResolvedValue({ tree: [] });

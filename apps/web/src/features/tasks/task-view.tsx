@@ -97,6 +97,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const setSelectedWorkItemSection = useUiStore((s) => s.setSelectedWorkItemSection);
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
+  const setWorktreeOpenIntent = useUiStore((s) => s.setWorktreeOpenIntent);
+  const setWorktreeReviewContext = useUiStore((s) => s.setWorktreeReviewContext);
   const setSelectedExternalWorkTab = useUiStore((s) => s.setSelectedExternalWorkTab);
   const setSettingsQuery = useUiStore((s) => s.setSettingsQuery);
   const worktrees = state?.worktrees ?? [];
@@ -144,9 +146,11 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   function latestRun(worktreeId: string) {
     return invocations.find((i) => i.worktreeId === worktreeId) ?? null;
   }
-  function openWorktree(worktreeId: string, projectId: string) {
+  function openWorktree(worktreeId: string, projectId: string, view: "default" | "changes" = "default", returnTaskId: string | null = null) {
     setSelectedProjectId(projectId);
     setSelectedWorktreeId(worktreeId);
+    setWorktreeOpenIntent(view === "changes" ? { worktreeId, view } : null);
+    setWorktreeReviewContext(view === "changes" && returnTaskId ? { workItemId: returnTaskId, worktreeId } : null);
     navigate("projects");
   }
   // GitHub Issues are intake records. They must first become Local Issues;
@@ -1343,6 +1347,10 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                     onOpenExpert={(section = "overview") => {
                       setSelectedWorkItemSection(section);
                       setSelectedLocalMode("expert");
+                    }}
+                    onOpenDeliveryChanges={(projectId, worktreeId) => {
+                      setSelectedLocalId(null);
+                      openWorktree(worktreeId, projectId, "changes", selectedLocalId);
                     }}
                     onOpenWorkItem={(id) => {
                       setSelectedLocalId(id);

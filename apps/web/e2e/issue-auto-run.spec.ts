@@ -6,6 +6,29 @@ let autoRunStarted: boolean;
 let importedViaExternal: boolean;
 let autoRunReady: boolean;
 let repairWorkItem: Record<string, unknown> | null;
+let ordinaryDeliveryReady: boolean;
+let ordinaryDeliveryVersion: number;
+let localDeliveryConflict: boolean;
+let localDeliveryCompleted: boolean;
+
+function reviewedCodingWorkItem(): Record<string, unknown> {
+  return {
+    id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
+    title: "Fix the login failure", body: "Repair login and add a regression test.", type: "task", priority: "p1",
+    status: "review", state: "open", labels: [], assigneeIds: [], waitingOn: "me",
+    acceptanceCriteria: ["Login works again", "Regression tests pass"],
+    acceptanceResults: [
+      { criterion: "Login works again", status: "passed", note: "Verified", verificationId: "ver_1" },
+      { criterion: "Regression tests pass", status: "passed", note: "Verified", verificationId: "ver_1" },
+    ],
+    verificationSop: ["Run the login regression tests", "Review the code diff"],
+    executionContractSource: "manual", executionContractConfirmedAt: "2026-07-24T00:00:00.000Z",
+    executionContractGate: { ready: true, missing: [], source: "manual", confirmedAt: "2026-07-24T00:00:00.000Z" },
+    executionState: "completed",
+    executionBindings: [{ kind: "auto_run", targetId: "aur_1", worktreeId: "wt_1", createdAt: "2026-07-24T00:01:00.000Z" }],
+    revision: 3, archivedAt: null, updatedAt: "2026-07-24T00:03:00.000Z",
+  };
+}
 
 async function mockApi(page: Page) {
   await page.route("http://127.0.0.1:5001/api/**", async (route) => {
@@ -16,7 +39,11 @@ async function mockApi(page: Page) {
       currentProjectId: project.id,
       projects: [project],
       projectTargets: [{ projectId: project.id, state: "ready", rootPath: "/tmp/e2e-repository" }],
-      worktrees: autoRunStarted ? [{ id: "wt_1", projectId: project.id, branchName: "ai/e2e-route", path: "/tmp/e2e" }] : [],
+      worktrees: autoRunStarted ? [{
+        id: "wt_1", projectId: project.id, targetId: "target_1", branch: "ai/e2e-route",
+        branchName: "ai/e2e-route", path: "/tmp/e2e", isMain: false, agentId: "agt_1",
+        createdAt: "2026-07-24T00:01:00.000Z",
+      }] : [],
       invocations: workItem ? [{
         id: "inv_1",
         status: "queued",
@@ -171,19 +198,57 @@ async function mockApi(page: Page) {
     } });
     if (url.pathname === "/api/work-items/lwi_1" && method === "GET") {
       return route.fulfill({ json: { workItem, observability: {
-        nextAction: autoRunStarted ? "review_delivery" : "start_execution",
+        nextAction: localDeliveryCompleted ? "none" : autoRunStarted ? "review_delivery" : "start_execution",
         attention: [],
         latestRun: autoRunStarted ? {
           id: "aur_1", status: "done", updatedAt: "2026-07-24T00:02:00.000Z",
           invocationId: "inv_1", agentId: "agt_1",
-          localDelivery: { worktreeId: "wt_1", branchName: "ai/e2e-route" },
+          localDelivery: localDeliveryCompleted ? {
+            mode: "local_merge", worktreeId: "wt_1", branchName: "ai/e2e-route",
+            baseBranch: "main", deliveredCommit: "reviewed-commit", deliveredAt: "2026-07-24T00:04:00.000Z",
+          } : { worktreeId: "wt_1", branchName: "ai/e2e-route" },
+          ...(localDeliveryCompleted ? {
+            deliveryReport: {
+              summary: ordinaryDeliveryVersion > 1
+                ? "Revised the login fix to cover expired sessions and kept the regression test."
+                : "Fixed the login failure and added a regression test.",
+              verification: { passed: true, verified: true, summary: "Login regression tests passed." },
+              changedFiles: ["apps/web/src/login.ts", "apps/web/src/login.test.ts"],
+              completedAt: "2026-07-24T00:02:00.000Z",
+            },
+            deliveryReview: {
+              status: "completed", invocationId: "inv_review_1", reviewer: "codex",
+              startedAt: "2026-07-24T00:02:00.000Z", completedAt: "2026-07-24T00:03:00.000Z",
+              verdict: "approved", summary: "No blocking code issues found.", findings: [],
+              reviewedCommit: "reviewed-commit", errorCode: null,
+            },
+          } : {}),
         } : importedViaExternal ? null : {
           id: "aur_trace", status: "queued", updatedAt: "2026-07-24T00:01:00.000Z",
           invocationId: "inv_1", agentId: "agt_1",
         },
-        delivery: autoRunStarted ? {
+        delivery: autoRunStarted && !localDeliveryCompleted ? {
           state: "awaiting_review", mode: "local_merge", worktreeId: "wt_1",
-          branchName: "ai/e2e-route", remoteUrl: null, review: null,
+          branchName: "ai/e2e-route", remoteUrl: null,
+          report: ordinaryDeliveryReady ? {
+            summary: ordinaryDeliveryVersion > 1
+              ? "Revised the login fix to cover expired sessions and kept the regression test."
+              : "Fixed the login failure and added a regression test.",
+            verification: { passed: true, verified: true, summary: "Login regression tests passed." },
+            changedFiles: ["apps/web/src/login.ts", "apps/web/src/login.test.ts"],
+            completedAt: "2026-07-24T00:02:00.000Z",
+          } : null,
+          aiReview: ordinaryDeliveryReady ? {
+            status: "completed", invocationId: "inv_review_1", reviewer: "codex",
+            startedAt: "2026-07-24T00:02:00.000Z", completedAt: "2026-07-24T00:03:00.000Z",
+            verdict: "approved", summary: "No blocking code issues found.", findings: [],
+            reviewedCommit: "reviewed-commit", errorCode: null,
+          } : null,
+          review: ordinaryDeliveryReady ? {
+            verdict: "approved", summary: "No blocking code issues found.", comments: [],
+            reviewedCommit: "reviewed-commit", reviewedBy: "usr_autorun_review", source: "ai",
+            reviewerName: "Codex", reviewInvocationId: "inv_review_1", createdAt: "2026-07-24T00:03:00.000Z",
+          } : null,
         } : null,
         activeClaim: null,
         cost: { knownUsd: 0, unknownEntries: 0, entryCount: 0, projectBudget: null, teamBudget: null },
@@ -246,8 +311,59 @@ async function mockApi(page: Page) {
       };
       return route.fulfill({ json: { workItem } });
     }
+    if (url.pathname === "/api/work-items/lwi_1/delivery/local" && method === "POST") {
+      if (localDeliveryConflict) {
+        return route.fulfill({ status: 409, json: {
+          error: "work_item_delivery_failed",
+          message: "The base branch main advanced. Rebase or merge it into ai/e2e-route, then review again.",
+        } });
+      }
+      workItem = {
+        ...workItem,
+        status: "done",
+        state: "closed",
+        waitingOn: "none",
+        revision: Number(workItem?.revision ?? 0) + 1,
+        updatedAt: "2026-07-24T00:04:00.000Z",
+      };
+      localDeliveryCompleted = true;
+      return route.fulfill({ json: {
+        workItem,
+        delivery: {
+          mode: "local_merge", worktreeId: "wt_1", branchName: "ai/e2e-route",
+          baseBranch: "main", deliveredCommit: "reviewed-commit", deliveredAt: "2026-07-24T00:04:00.000Z",
+        },
+      } });
+    }
+    if (url.pathname === "/api/worktrees/wt_1/files" && method === "GET") {
+      return route.fulfill({ json: { tree: [] } });
+    }
+    if (url.pathname === "/api/worktrees/wt_1/git" && method === "GET") {
+      return route.fulfill({ json: {
+        branch: "ai/e2e-route", clean: false, changedFiles: 2,
+        hasUpstream: false, upstream: null, ahead: 1, behind: 0,
+      } });
+    }
+    if (url.pathname === "/api/worktrees/wt_1/diff" && method === "GET") {
+      return route.fulfill({ json: {
+        files: [
+          { path: "apps/web/src/login.ts", index: "M", work: " ", untracked: false },
+          { path: "apps/web/src/login.test.ts", index: "A", work: " ", untracked: false },
+        ],
+        base: "main",
+        diff: "diff --git a/apps/web/src/login.ts b/apps/web/src/login.ts\n@@ -1 +1 @@\n+export const loginFixed = true;",
+        truncated: false,
+      } });
+    }
     if (url.pathname.endsWith("/comments")) return route.fulfill({ json: { comments: [] } });
     if (url.pathname.endsWith("/activity")) return route.fulfill({ json: { activities: [] } });
+    if (url.pathname === "/api/auto-runs/aur_1/retry" && method === "POST") {
+      ordinaryDeliveryReady = false;
+      ordinaryDeliveryVersion += 1;
+      return route.fulfill({ status: 201, json: {
+        autoRun: { id: "aur_1", worktreeId: "wt_1", status: "running" },
+      } });
+    }
     if (url.pathname === "/api/work-items/lwi_1/auto-runs" && method === "POST") {
       autoRunStarted = true;
       workItem = {
@@ -282,9 +398,15 @@ test.beforeEach(async ({ page }) => {
   importedViaExternal = false;
   autoRunReady = true;
   repairWorkItem = null;
+  ordinaryDeliveryReady = false;
+  ordinaryDeliveryVersion = 1;
+  localDeliveryConflict = false;
+  localDeliveryCompleted = false;
   await page.addInitScript(() => {
     window.localStorage.setItem("myagenttool.token", "e2e-token");
-    window.localStorage.setItem("myagenttool-ui", JSON.stringify({ version: 1, state: { locale: "en" } }));
+    if (!window.localStorage.getItem("myagenttool-ui")) {
+      window.localStorage.setItem("myagenttool-ui", JSON.stringify({ version: 1, state: { locale: "en" } }));
+    }
   });
   await mockApi(page);
 });
@@ -465,6 +587,202 @@ test("creates an issue, routes AI execution, and reaches reviewed local delivery
   await expect(refresh).toBeFocused();
   await refresh.press("Enter");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test("completes an ordinary coding task through revision and durable local delivery", async ({ page }) => {
+  await page.goto("/?section=task", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "New task" }).click();
+  const createDialog = page.getByRole("dialog", { name: "New task" });
+  await createDialog.getByRole("textbox", { name: "Create a task" }).fill("Implement browser chain");
+  await createDialog.getByRole("button", { name: "Save only" }).click();
+  await expect(createDialog.getByTestId("home-intent-task-plan")).toBeVisible();
+  await createDialog.getByRole("button", { name: "Confirm and save" }).click();
+  await expect(createDialog.getByText("Task created and added to your boards.")).toBeVisible();
+
+  // Keep the whole journey on the ordinary task surface. The scheduler is
+  // represented by changing the mocked task state after the user opts in.
+  importedViaExternal = true;
+  await createDialog.getByRole("button", { name: "View task" }).click();
+  let detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail.getByRole("button", { name: "Professional view" })).toHaveAttribute("aria-pressed", "false");
+  await detail.getByRole("button", { name: "Let AI start" }).click();
+  await expect(detail.getByText(/execution plan is ready/i)).toBeVisible();
+  const scheduleRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/work-items/lwi_1")
+      && request.method() === "PATCH"
+      && request.postDataJSON().executionPolicy === "auto");
+  await detail.getByRole("button", { name: "Let AI start" }).click();
+  await scheduleRequest;
+  await expect(detail.getByText(/task is set to automatic/i)).toBeVisible();
+
+  autoRunStarted = true;
+  ordinaryDeliveryReady = true;
+  workItem = { ...reviewedCodingWorkItem(), title: "Implement browser chain" };
+  await page.reload({ waitUntil: "domcontentloaded" });
+  detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail.getByText("Fixed the login failure and added a regression test.").first()).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Professional view" })).toHaveAttribute("aria-pressed", "false");
+
+  await detail.getByRole("button", { name: "Ask AI to revise" }).click();
+  await detail.locator("textarea").fill("Also cover expired sessions in the regression test.");
+  const commentRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/work-items/lwi_1/comments") && request.method() === "POST");
+  const revisionRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/auto-runs/aur_1/retry") && request.method() === "POST");
+  await detail.getByRole("button", { name: "Send changes to AI" }).click();
+  expect((await commentRequest).postDataJSON()).toMatchObject({ body: "Also cover expired sessions in the regression test." });
+  await revisionRequest;
+  await expect(detail.getByText("Your changes were recorded and AI has started another pass.")).toBeVisible();
+
+  ordinaryDeliveryReady = true;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail.getByText("Revised the login fix to cover expired sessions and kept the regression test.").first()).toBeVisible();
+  const reviewChanges = detail.getByRole("button", { name: "Review changes" });
+  await reviewChanges.focus();
+  await expect(reviewChanges).toBeFocused();
+  await reviewChanges.press("Enter");
+  await expect(page).toHaveURL(/section=projects/);
+  await expect(page.getByText("+export const loginFixed = true;")).toBeVisible();
+
+  const returnToTask = page.getByRole("button", { name: "Return to task" });
+  await returnToTask.focus();
+  await expect(returnToTask).toBeFocused();
+  await returnToTask.press("Enter");
+  await expect(page).toHaveURL(/section=task.*task=lwi_1/);
+  detail = page.getByRole("dialog", { name: "Local issue details" });
+  await detail.getByRole("button", { name: "Approve and apply locally" }).click();
+  const confirm = page.getByRole("dialog", { name: "Approve and apply this delivery locally?" });
+  await confirm.getByRole("button", { name: "Apply locally" }).click();
+  await expect(detail.getByText("This work is complete")).toBeVisible();
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail.getByText("This work is complete")).toBeVisible();
+  const receipt = detail.getByLabel("Local delivery receipt");
+  await expect(receipt.getByText("Applied successfully")).toBeVisible();
+  await expect(receipt.getByText("2 file(s) applied")).toBeVisible();
+  await expect(receipt.getByText("Login regression tests passed.")).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Professional view" })).toHaveAttribute("aria-pressed", "false");
+});
+
+for (const fixture of [
+  { name: "desktop", viewport: { width: 1366, height: 768 } },
+  { name: "mobile", viewport: { width: 390, height: 844 } },
+]) {
+  test(`lets an ordinary developer review delivered code directly on ${fixture.name}`, async ({ page }) => {
+    await page.setViewportSize(fixture.viewport);
+    autoRunStarted = true;
+    ordinaryDeliveryReady = true;
+    workItem = reviewedCodingWorkItem();
+
+    await page.goto("/?section=task&task=lwi_1", { waitUntil: "domcontentloaded" });
+    const detail = page.getByRole("dialog", { name: "Local issue details" });
+    await expect(detail.getByText("Result passed automated review and verification")).toBeVisible();
+    await expect(detail.getByText("Login regression tests passed.")).toBeVisible();
+    await expect(detail.getByText(/1 product file, 1 test file/).first()).toBeVisible();
+    await expect(detail.getByRole("button", { name: "Review changes" })).toBeVisible();
+    await expect(detail.getByRole("button", { name: "Professional view" })).toHaveAttribute("aria-pressed", "false");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+    await detail.getByRole("button", { name: "Review changes" }).click();
+    await expect(page).toHaveURL(/section=projects/);
+    await expect.poll(() => page.evaluate(() => {
+      const state = JSON.parse(window.localStorage.getItem("myagenttool-ui") ?? "null")?.state;
+      return { projectId: state?.selectedProjectId, worktreeId: state?.selectedWorktreeId };
+    })).toEqual({ projectId: "prj_1", worktreeId: "wt_1" });
+    await expect(page.getByRole("button", { name: "apps/web/src/login.ts", exact: true })).toBeVisible();
+    await expect(page.getByText("+export const loginFixed = true;")).toBeVisible();
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: "Return to task" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "apps/web/src/login.ts", exact: true })).toBeVisible();
+    await expect(page.getByText("+export const loginFixed = true;")).toBeVisible();
+
+    await page.getByRole("button", { name: "Return to task" }).click();
+    await expect(page).toHaveURL(/section=task.*task=lwi_1/);
+    const reopenedDetail = page.getByRole("dialog", { name: "Local issue details" });
+    await expect(reopenedDetail).toBeVisible();
+    const deliveryRequest = page.waitForRequest((request) =>
+      request.url().endsWith("/api/work-items/lwi_1/delivery/local") && request.method() === "POST");
+    await reopenedDetail.getByRole("button", { name: "Approve and apply locally" }).click();
+    const confirm = page.getByRole("dialog", { name: "Approve and apply this delivery locally?" });
+    await expect(confirm.getByText(/No remote branch will be pushed or merged/)).toBeVisible();
+    await confirm.getByRole("button", { name: "Apply locally" }).click();
+    await deliveryRequest;
+    await expect(reopenedDetail.getByText("This work is complete")).toBeVisible();
+    const receipt = reopenedDetail.getByLabel("Local delivery receipt");
+    await expect(receipt.getByText("Applied successfully")).toBeVisible();
+    await expect(receipt.getByText("main")).toBeVisible();
+    await expect(receipt.getByText("reviewed-com")).toBeVisible();
+    await expect(receipt.getByText("2 file(s) applied")).toBeVisible();
+    await expect(receipt.getByText("Login regression tests passed.")).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const restoredDetail = page.getByRole("dialog", { name: "Local issue details" });
+    await expect(restoredDetail.getByText("This work is complete")).toBeVisible();
+    const restoredReceipt = restoredDetail.getByLabel("Local delivery receipt");
+    await expect(restoredReceipt.getByText("Applied successfully")).toBeVisible();
+    await expect(restoredReceipt.getByText("main")).toBeVisible();
+    await expect(restoredReceipt.getByText("reviewed-com")).toBeVisible();
+    await expect(restoredReceipt.getByText("2 file(s) applied")).toBeVisible();
+    await expect(restoredReceipt.getByText("Login regression tests passed.")).toBeVisible();
+  });
+}
+
+test("restores the completed local delivery receipt on Chinese mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    window.localStorage.setItem("myagenttool-ui", JSON.stringify({
+      version: 1,
+      state: { locale: "zh-CN", section: "task" },
+    }));
+  });
+  autoRunStarted = true;
+  ordinaryDeliveryReady = true;
+  localDeliveryCompleted = true;
+  workItem = {
+    ...reviewedCodingWorkItem(),
+    status: "done",
+    state: "closed",
+    waitingOn: "none",
+    updatedAt: "2026-07-24T00:04:00.000Z",
+  };
+
+  await page.goto("/?section=task&task=lwi_1", { waitUntil: "domcontentloaded" });
+  const detail = page.getByRole("dialog", { name: "任务详情" });
+  await expect(detail.getByText("这项工作已完成")).toBeVisible();
+  const receipt = detail.getByLabel("本地交付回执");
+  await expect(receipt.getByText("应用成功")).toBeVisible();
+  await expect(receipt.getByText("main")).toBeVisible();
+  await expect(receipt.getByText("2 个文件已应用")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("dialog", { name: "任务详情" }).getByLabel("本地交付回执")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test("keeps an ordinary coding task reviewable when the local base branch advances", async ({ page }) => {
+  autoRunStarted = true;
+  ordinaryDeliveryReady = true;
+  localDeliveryConflict = true;
+  workItem = reviewedCodingWorkItem();
+
+  await page.goto("/?section=task&task=lwi_1", { waitUntil: "domcontentloaded" });
+  const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await detail.getByRole("button", { name: "Approve and apply locally" }).click();
+  const confirm = page.getByRole("dialog", { name: "Approve and apply this delivery locally?" });
+  await confirm.getByRole("button", { name: "Apply locally" }).click();
+
+  const alert = confirm.getByRole("alert");
+  await expect(alert).toContainText("local base branch advanced");
+  await expect(detail.getByText("This work is complete")).toHaveCount(0);
+  await alert.getByRole("button", { name: "Review current changes" }).click();
+  await expect(page).toHaveURL(/section=projects/);
+  await expect(page.getByRole("button", { name: "apps/web/src/login.ts", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Return to task" })).toBeVisible();
 });
 
 test("keeps the Local Issue selected while fixing preflight and rechecks after returning", async ({ page }) => {

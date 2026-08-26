@@ -719,6 +719,7 @@ export type LocalWorkItemAutoRun = {
   report?: string | null;
   localDelivery?: {
     worktreeId: string; branchName: string | null; mode?: "local_merge" | "pull_request";
+    baseBranch?: string | null; deliveredCommit?: string | null;
     deliveredAt?: string | null; promotedAt?: string | null; prNumber?: number | null; prUrl?: string | null;
   } | null;
   clarifyAnswer?: { by?: string | null; at?: string | null; text?: string | null } | null;

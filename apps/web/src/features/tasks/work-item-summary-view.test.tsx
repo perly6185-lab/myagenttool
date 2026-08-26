@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveWorkItemUserStatus, WorkItemSummaryView } from "./work-item-summary-view";
 import type { LocalWorkItem } from "./task-view-types";
 import { i18n } from "@/lib/i18n";
+import { ApiError } from "@/lib/api-client";
 import { useUiStore } from "@/store/ui-store";
 
 const mocks = vi.hoisted(() => ({
@@ -1617,6 +1618,7 @@ describe("work item summary presentation", () => {
   });
 
   it("explains a safe reviewed delivery and the real effect of confirming it", async () => {
+    const onOpenDeliveryChanges = vi.fn();
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({ status: "review", executionState: "completed" }),
       observability: {
@@ -1647,7 +1649,7 @@ describe("work item summary presentation", () => {
         },
       },
     });
-    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onOpenDeliveryChanges={onOpenDeliveryChanges} />);
 
     expect(await screen.findByText("Result passed automated review and verification")).toBeTruthy();
     expect(screen.getByText("Result risk: Low")).toBeTruthy();
@@ -1655,6 +1657,8 @@ describe("work item summary presentation", () => {
     expect(screen.getAllByText(/Create a pull request for later merge/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/remote base branch is not changed directly/).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Approve and create pull request" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    expect(onOpenDeliveryChanges).toHaveBeenCalledWith("prj_1", "wtr_approved");
 
     fireEvent.click(screen.getByRole("button", { name: "View full report" }));
     const report = screen.getByRole("dialog", { name: "What AI delivered" });
@@ -1665,6 +1669,127 @@ describe("work item summary presentation", () => {
     expect(screen.queryByRole("dialog", { name: "What AI delivered" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "Approve and create a pull request?" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create pull request" })).toBeTruthy();
+  });
+
+  it("applies an approved code delivery locally with explicit scope", async () => {
+    const reviewItem = item({
+      status: "review",
+      executionState: "completed",
+      acceptanceResults: [{
+        criterion: "Customer-ready summary",
+        status: "passed",
+        note: "Verified",
+        verificationId: "ver_local",
+      }],
+    });
+    const completedItem = item({
+      ...reviewItem,
+      revision: 3,
+      status: "done",
+      state: "closed",
+    });
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: reviewItem,
+      observability: {
+        latestRun: { id: "aur_local", status: "done" },
+        delivery: {
+          state: "awaiting_review",
+          mode: "local_merge",
+          worktreeId: "wtr_local",
+          branchName: "local-reviewed",
+          remoteUrl: null,
+          report: {
+            summary: "Fixed login and added coverage.",
+            verification: { passed: true, verified: true, summary: "Login tests passed." },
+            changedFiles: ["apps/web/src/login.ts", "apps/web/src/login.test.ts"],
+            completedAt: "2026-08-07T08:00:00.000Z",
+          },
+          aiReview: {
+            status: "completed", invocationId: "inv_local", reviewer: "codex",
+            startedAt: "2026-08-07T08:00:00.000Z", completedAt: "2026-08-07T08:01:00.000Z",
+            verdict: "approved", summary: "No blocking issues.", findings: [],
+            reviewedCommit: "local123", errorCode: null,
+          },
+          review: {
+            verdict: "approved", summary: "No blocking issues.", comments: [],
+            reviewedCommit: "local123", reviewedBy: "usr_autorun_review", source: "ai",
+            reviewerName: "Codex", reviewInvocationId: "inv_local", createdAt: "2026-08-07T08:01:00.000Z",
+          },
+        },
+      },
+    });
+    mocks.deliverWorkItem.mockResolvedValue({
+      workItem: completedItem,
+      delivery: {
+        baseBranch: "main",
+        deliveredCommit: "1234567890abcdef",
+        deliveredAt: "2026-08-07T08:02:00.000Z",
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve and apply locally" }));
+    const dialog = screen.getByRole("dialog", { name: "Approve and apply this delivery locally?" });
+    expect(within(dialog).getByText(/No remote branch will be pushed or merged/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply locally" }));
+
+    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_1", "local_merge", 2));
+    expect(mocks.transitionWorkItem).not.toHaveBeenCalled();
+    expect(await screen.findByText("This work is complete")).toBeTruthy();
+    const receipt = screen.getByLabelText("Local delivery receipt");
+    expect(within(receipt).getByText("Applied successfully")).toBeTruthy();
+    expect(within(receipt).getByText("main")).toBeTruthy();
+    expect(within(receipt).getByText("1234567890ab")).toBeTruthy();
+    expect(within(receipt).getByText("2 file(s) applied")).toBeTruthy();
+    expect(within(receipt).getByText("Login tests passed.")).toBeTruthy();
+  });
+
+  it("keeps a failed local delivery in review and guides the user back to current changes", async () => {
+    const onOpenDeliveryChanges = vi.fn();
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        status: "review",
+        executionState: "completed",
+        acceptanceResults: [{ criterion: "Customer-ready summary", status: "passed", note: "Verified", verificationId: "ver_local" }],
+      }),
+      observability: {
+        latestRun: { id: "aur_conflict", status: "done" },
+        delivery: {
+          state: "awaiting_review", mode: "local_merge", worktreeId: "wtr_conflict",
+          branchName: "local-conflict", remoteUrl: null,
+          report: {
+            summary: "Implemented the reviewed change.",
+            verification: { passed: true, verified: true, summary: "Relevant tests passed." },
+            changedFiles: ["apps/web/src/login.ts"], completedAt: "2026-08-07T08:00:00.000Z",
+          },
+          aiReview: {
+            status: "completed", invocationId: "inv_conflict", reviewer: "codex",
+            startedAt: "2026-08-07T08:00:00.000Z", completedAt: "2026-08-07T08:01:00.000Z",
+            verdict: "approved", summary: "No blocking issues.", findings: [], reviewedCommit: "conflict123", errorCode: null,
+          },
+          review: {
+            verdict: "approved", summary: "No blocking issues.", comments: [], reviewedCommit: "conflict123",
+            reviewedBy: "usr_autorun_review", source: "ai", reviewerName: "Codex",
+            reviewInvocationId: "inv_conflict", createdAt: "2026-08-07T08:01:00.000Z",
+          },
+        },
+      },
+    });
+    mocks.deliverWorkItem.mockRejectedValue(new ApiError(
+      "work_item_delivery_failed",
+      "The base branch main advanced. Rebase or merge it into local-conflict, then review again.",
+      409,
+    ));
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onOpenDeliveryChanges={onOpenDeliveryChanges} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve and apply locally" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply locally" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText(/local base branch advanced/i)).toBeTruthy();
+    fireEvent.click(within(alert).getByRole("button", { name: "Review current changes" }));
+    expect(onOpenDeliveryChanges).toHaveBeenCalledWith("prj_1", "wtr_conflict");
+    expect(screen.queryByText("This work is complete")).toBeNull();
   });
 
   it("offers a material-specific rerun only when a change is waiting for the next execution", async () => {

@@ -34,6 +34,7 @@ import { cn } from "@/lib/cn";
 import type { InvocationSnapshot, WorktreeSnapshot } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { installWorktreeViewTranslations } from "@/lib/i18n/worktree-view-resources";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
 
 installWorktreeViewTranslations();
 
@@ -99,6 +100,12 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const worktreeOpenIntent = useUiStore((s) => s.worktreeOpenIntent);
+  const setWorktreeOpenIntent = useUiStore((s) => s.setWorktreeOpenIntent);
+  const worktreeReviewContext = useUiStore((s) => s.worktreeReviewContext);
+  const setWorktreeReviewContext = useUiStore((s) => s.setWorktreeReviewContext);
+  const openWorkItem = useUiStore((s) => s.openWorkItem);
+  const navigate = usePageNavigation();
   const requestedOfficeDocument = useUiStore((s) => s.officecliPreviewPath);
   const setOfficecliPreviewPath = useUiStore((s) => s.setOfficecliPreviewPath);
 
@@ -109,6 +116,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const runInFlightRef = useRef(false);
   const runIdempotencyKeyRef = useRef<string | null>(null);
   const attachmentWorktreeRef = useRef(worktree.id);
+  const handledReviewContextRef = useRef<string | null>(null);
   const [task, setTask] = useState<string>(defaultTask);
   const [agentId, setAgentId] = useState(worktree.agentId ?? agents[0]?.id ?? "");
   const [permissionLevel, setPermissionLevel] = useState<CodexPermissionMode>(() => permissionModeForAgent(agents.find((agent) => agent.id === (worktree.agentId ?? agents[0]?.id))));
@@ -267,6 +275,20 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     setAgentId(worktree.agentId ?? agents[0]?.id ?? "");
     loadTree();
   }, [worktree.id]);
+
+  // Task results can request the authoritative unified diff directly. Consume
+  // the intent once so later visits retain the user's normal workspace state.
+  useEffect(() => {
+    const reviewContextKey = worktreeReviewContext?.worktreeId === worktree.id
+      ? `${worktreeReviewContext.workItemId}:${worktreeReviewContext.worktreeId}`
+      : null;
+    const hasOpenIntent = worktreeOpenIntent?.worktreeId === worktree.id && worktreeOpenIntent.view === "changes";
+    if (!hasOpenIntent && (!reviewContextKey || handledReviewContextRef.current === reviewContextKey)) return;
+    handledReviewContextRef.current = reviewContextKey;
+    setPaneTab("changes");
+    selectTab(DIFF_TAB);
+    if (hasOpenIntent) setWorktreeOpenIntent(null);
+  }, [worktree.id, worktreeOpenIntent, worktreeReviewContext, setWorktreeOpenIntent]);
 
   // Documents and task results can hand a governed file to this worktree.
   // Consume the transient path once the target worktree is mounted, then open
@@ -486,22 +508,40 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
       setGit(null);
     });
   }
+  function returnToReviewTask() {
+    if (!worktreeReviewContext || worktreeReviewContext.worktreeId !== worktree.id) return;
+    const taskId = worktreeReviewContext.workItemId;
+    setWorktreeReviewContext(null);
+    setSelectedWorktreeId(null);
+    openWorkItem(taskId, { mode: "summary", section: "overview" });
+    navigate("task");
+  }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setSelectedWorktreeId(null)}
-          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" />
-          {project?.name ?? t("worktreeView.project")}
-        </button>
-        <span className="text-muted-foreground">/</span>
-        <span className="font-medium">{worktree.branch}</span>
-        {worktree.isMain ? <Badge tone="neutral">{t("worktreeView.main")}</Badge> : <Badge tone="neutral">{t("worktreeView.worktree")}</Badge>}
-        {worktree.link ? <WorktreeLinkPopover worktree={worktree} /> : null}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setWorktreeReviewContext(null);
+              setSelectedWorktreeId(null);
+            }}
+            className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <ChevronLeft className="size-4" />
+            {project?.name ?? t("worktreeView.project")}
+          </button>
+          <span className="text-muted-foreground">/</span>
+          <span className="break-all font-medium">{worktree.branch}</span>
+          {worktree.isMain ? <Badge tone="neutral">{t("worktreeView.main")}</Badge> : <Badge tone="neutral">{t("worktreeView.worktree")}</Badge>}
+          {worktree.link ? <WorktreeLinkPopover worktree={worktree} /> : null}
+        </div>
+        {worktreeReviewContext?.worktreeId === worktree.id ? (
+          <Button size="sm" variant="secondary" onClick={returnToReviewTask}>
+            <ChevronLeft aria-hidden />{t("worktreeView.returnToTask")}
+          </Button>
+        ) : null}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">

@@ -56,6 +56,26 @@ describe("ui-store persistence", () => {
     await useUiStore.persist.rehydrate();
     expect(useUiStore.getState().locale).toBe("en-US");
   });
+
+  it("restores the task-to-worktree review context after a refresh", async () => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({
+      version: 1,
+      state: {
+        section: "projects",
+        selectedWorktreeId: "wt_review",
+        worktreeReviewContext: { workItemId: "lwi_review", worktreeId: "wt_review" },
+      },
+    }));
+
+    await useUiStore.persist.rehydrate();
+
+    expect(useUiStore.getState().section).toBe("projects");
+    expect(useUiStore.getState().selectedWorktreeId).toBe("wt_review");
+    expect(useUiStore.getState().worktreeReviewContext).toEqual({
+      workItemId: "lwi_review",
+      worktreeId: "wt_review",
+    });
+  });
 });
 
 describe("nav group collapse (#928)", () => {
