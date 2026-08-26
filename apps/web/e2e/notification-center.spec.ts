@@ -30,10 +30,152 @@ const board = ({
   },
 });
 
+const staleWorkItems = [
+  {
+    id: "lwi-stale-1", localRef: "LOCAL-21", projectId: "project-1", title: "Customer brief",
+    body: "Confirm the latest customer profile.", type: "task", status: "ready", priority: "p1",
+    state: "open", labels: [], assigneeIds: [], requesterRelation: "customer", requesterName: "Example customer",
+    requesterOrganization: null, requesterUserId: null, intakeChannel: "manual", externalReference: null,
+    waitingOn: "me", commitmentDate: null, nextFollowUpAt: null, lastProgressAt: null, lastProgressSummary: null,
+    acceptanceCriteria: [], dueDate: null, plannedDate: null, milestone: "", estimatePoints: 0,
+    revision: 7, archivedAt: null, updatedAt: "2026-08-26T01:00:00.000Z",
+    executionState: "blocked", executionBindings: [], recordBindings: [],
+  },
+  {
+    id: "lwi-stale-2", localRef: "LOCAL-22", projectId: "project-1", title: "Order summary",
+    body: "Confirm the latest order totals.", type: "task", status: "ready", priority: "p1",
+    state: "open", labels: [], assigneeIds: [], requesterRelation: "customer", requesterName: "Example customer",
+    requesterOrganization: null, requesterUserId: null, intakeChannel: "manual", externalReference: null,
+    waitingOn: "me", commitmentDate: null, nextFollowUpAt: null, lastProgressAt: null, lastProgressSummary: null,
+    acceptanceCriteria: [], dueDate: null, plannedDate: null, milestone: "", estimatePoints: 0,
+    revision: 4, archivedAt: null, updatedAt: "2026-08-26T01:01:00.000Z",
+    executionState: "blocked", executionBindings: [], recordBindings: [],
+  },
+];
+
+function staleAttention(items = staleWorkItems) {
+  return items.map((item, index) => ({
+    id: `record_binding_stale:${item.id}`,
+    kind: "record_binding_stale",
+    severity: "high",
+    workItemId: item.id,
+    localRef: item.localRef,
+    title: item.title,
+    createdAt: "2026-08-26T01:05:00.000Z",
+    updatedAt: "2026-08-26T01:05:00.000Z",
+    dueAt: "2026-08-26T05:05:00.000Z",
+    slaStatus: "within_sla",
+    history: [], handling: null, resolution: null,
+    details: {
+      workItemRevision: item.revision,
+      bindingIds: [`binding-${index + 1}`],
+      bindingCount: 1,
+      states: ["stale"],
+      executionBlocked: true,
+      postingBlocked: true,
+      refreshable: true,
+    },
+  }));
+}
+
+function withStaleRecordBinding<T extends (typeof staleWorkItems)[number]>(item: T, index: number) {
+  return {
+    ...item,
+    recordBindings: [{
+      id: `binding-${index + 1}`, slotKey: "customer", direction: "input", role: "required",
+      ledgerDefinitionId: "ledger-customers",
+      record: {
+        ledgerDefinitionId: "ledger-customers", recordId: `record-${index + 1}`, recordType: "customer",
+        businessKey: item.localRef, title: item.title, revision: 2, fingerprint: `old-${index + 1}`,
+        observedAt: "2026-08-25T01:00:00.000Z",
+      },
+      selection: { fieldKeys: ["name", "status"], queryId: null, rowLimit: 1 },
+      snapshot: {
+        revision: 1, fingerprint: `old-${index + 1}`, capturedAt: "2026-08-25T01:00:00.000Z", evidenceRefs: [],
+      },
+      resolution: { source: "explicit_user", confidence: 1, state: "stale", reasons: ["business_record_changed"] },
+    }],
+  };
+}
+
+async function routeStaleRecordFlow(page: Page, options: { count?: number; failFirstRefresh?: boolean } = {}) {
+  let workItems = staleWorkItems.slice(0, options.count ?? 2).map(withStaleRecordBinding);
+  let attention = staleAttention(workItems);
+  let refreshAttempts = 0;
+  const batchBodies: unknown[] = [];
+  await page.route("http://127.0.0.1:5001/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path === "/api/state") return route.fulfill({ json: {
+      projects: [{ id: "project-1", name: "Example project" }], currentProjectId: "project-1",
+      projectTargets: [], worktrees: [], agents: [], events: [], pendingDecisions: [], evidenceLedger: [], invocations: [],
+      device: { id: "device-1", name: "Local computer", status: "online" }, workBoard: board(),
+    } });
+    if (path === "/api/work-items/attention") return route.fulfill({ json: {
+      items: attention,
+      metrics: { backlog: attention.length, breached: 0, claimed: 0, pendingApprovals: 0, staleRecords: attention.length, oldestAgeSeconds: 0 },
+      nextCursor: null,
+    } });
+    if (path === "/api/work-items" && request.method() === "GET") {
+      return route.fulfill({ json: { workItems, count: workItems.length, hasMore: false, nextCursor: null } });
+    }
+    if (path === "/api/work-items/record-bindings/refresh" && request.method() === "POST") {
+      refreshAttempts += 1;
+      batchBodies.push(request.postDataJSON());
+      if (options.failFirstRefresh && refreshAttempts === 1) {
+        return route.fulfill({ status: 409, json: {
+          error: "work_item_revision_conflict",
+          message: "Materials changed again before refresh. Reload and try again.",
+        } });
+      }
+      const refreshedCount = attention.length;
+      attention = [];
+      return route.fulfill({ json: { refreshedCount, workItems } });
+    }
+    const singleRefreshIndex = workItems.findIndex((item) =>
+      path === `/api/work-items/${item.id}/record-bindings/${item.recordBindings[0].id}/refresh`);
+    if (singleRefreshIndex >= 0 && request.method() === "POST") {
+      refreshAttempts += 1;
+      if (options.failFirstRefresh && refreshAttempts === 1) {
+        return route.fulfill({ status: 409, json: {
+          error: "work_item_revision_conflict",
+          message: "Materials changed again before refresh. Reload and try again.",
+        } });
+      }
+      const current = workItems[singleRefreshIndex];
+      const refreshed = {
+        ...current,
+        revision: current.revision + 1,
+        recordBindings: current.recordBindings.map((binding) => ({
+          ...binding,
+          resolution: { ...binding.resolution, state: "resolved", reasons: ["business_record_refreshed_and_confirmed"] },
+        })),
+      };
+      workItems = workItems.map((item, index) => index === singleRefreshIndex ? refreshed : item);
+      attention = attention.filter((item) => item.workItemId !== current.id);
+      return route.fulfill({ json: { workItem: refreshed } });
+    }
+    const detail = workItems.find((item) => path === `/api/work-items/${item.id}`);
+    if (detail && request.method() === "GET") return route.fulfill({ json: { workItem: detail, observability: null } });
+    if (workItems.some((item) => path === `/api/work-items/${item.id}/comments`)) return route.fulfill({ json: { comments: [] } });
+    if (path === "/api/work-items/external-funnel") return route.fulfill({ json: {
+      metrics: { total: 0, notStarted: 0, running: 0, review: 0, completed: 0, stalled: 0 }, stalls: [],
+    } });
+    if (path === "/api/planning-projects") return route.fulfill({ json: { projects: [] } });
+    if (path === "/api/work-items/my-template-learning") return route.fulfill({ json: { tasks: [] } });
+    if (/^\/api\/projects\/[^/]+\/auto-run-readiness$/.test(path)) {
+      return route.fulfill({ json: { readiness: { ready: false, checks: [] } } });
+    }
+    return route.fulfill({ json: {} });
+  });
+  return { batchBodies, getRefreshAttempts: () => refreshAttempts };
+}
+
 async function routeState(page: Page, read: () => State) {
-  await page.route("http://127.0.0.1:5001/api/**", (route) => route.fulfill({
-    json: route.request().url().endsWith("/api/state")
-      ? {
+  await page.route("http://127.0.0.1:5001/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/state") return route.fulfill({ json: {
           projects: [],
           projectTargets: [],
           worktrees: [],
@@ -43,9 +185,13 @@ async function routeState(page: Page, read: () => State) {
           evidenceLedger: [],
           invocations: [],
           ...read(),
-        }
-      : {},
-  }));
+        } });
+    if (path === "/api/local-schedule/preview") return route.fulfill({ json: { planRevision: "e2e", days: [], attention: [], unscheduled: [] } });
+    if (path === "/api/local-schedule/rollover-preview") return route.fulfill({ json: { rolloverRevision: "e2e", moves: [], confirmationRequired: [], unscheduled: [] } });
+    if (path === "/api/local-schedule/urgent-preview") return route.fulfill({ json: { urgentRevision: "e2e", insertions: [], displacements: [], confirmationRequired: [] } });
+    if (path === "/api/local-schedule/capacity") return route.fulfill({ json: { terminal: { bridgeAvailable: true }, capacity: { maxConcurrency: 1, availableSlots: 1, queueDepth: 0, worktreeLocks: 0 } } });
+    return route.fulfill({ json: {} });
+  });
 }
 
 test("keeps the ordinary desktop header quiet and centralizes actionable work", async ({ page }, testInfo) => {
@@ -144,6 +290,56 @@ test("opens the exact failed task from its notification title", async ({ page })
 
   await expect(page).toHaveURL(/section=task/);
   await expect(page).toHaveURL(/task=failed-direct/);
+});
+
+test("refreshes stale business materials in a batch and clears their notifications", async ({ page }) => {
+  const flow = await routeStaleRecordFlow(page);
+  await page.goto("/?section=dashboard");
+
+  const trigger = page.getByRole("button", { name: "Notifications: 2 require action, 0 unread" });
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  const center = page.getByRole("dialog", { name: "Notifications" });
+  await expect(center.getByRole("button", { name: "Customer brief", exact: true })).toBeVisible();
+  await center.getByRole("button", { name: "Customer brief", exact: true }).click();
+
+  await expect(page).toHaveURL(/section=task.*task=lwi-stale-1/);
+  await expect(page.getByRole("dialog", { name: "Local issue details" })).toContainText("Customer brief");
+  await page.keyboard.press("Escape");
+
+  const attentionSection = page.getByRole("region", { name: "Stale business material batch actions" });
+  await expect(attentionSection.getByText("2 task(s) have changed materials. Refresh them before continuing.", { exact: true })).toBeVisible();
+  await attentionSection.getByRole("button", { name: "Refresh and confirm all", exact: true }).click();
+
+  await expect(page.getByText("Refreshed and confirmed business materials for 2 task(s).", { exact: true })).toBeVisible();
+  expect(flow.batchBodies).toEqual([{ items: [
+    { id: "lwi-stale-1", expectedRevision: 7, bindingIds: ["binding-1"] },
+    { id: "lwi-stale-2", expectedRevision: 4, bindingIds: ["binding-2"] },
+  ] }]);
+  await expect(page.getByRole("button", { name: "Notifications: 0 require action, 0 unread" })).toBeVisible();
+  await expect(attentionSection).toBeHidden();
+});
+
+test("keeps stale material attention recoverable after a refresh conflict on mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const flow = await routeStaleRecordFlow(page, { count: 1, failFirstRefresh: true });
+  await page.addInitScript(() => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({ state: { locale: "zh-CN", section: "dashboard" }, version: 1 }));
+  });
+  await page.goto("/?section=dashboard");
+  await page.getByRole("button", { name: "通知：1 项需要处理，0 项未读" }).click();
+  await page.getByRole("dialog", { name: "通知" }).getByRole("button", { name: "Customer brief", exact: true }).click();
+  const taskDetails = page.getByRole("dialog", { name: "任务详情" });
+  await expect(taskDetails).toBeVisible();
+  await taskDetails.getByRole("button", { name: "刷新并确认", exact: true }).click();
+  await expect(taskDetails.getByText("业务资料暂时无法刷新，请稍后重试。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "通知：1 项需要处理，0 项未读" })).toBeVisible();
+
+  await taskDetails.getByRole("button", { name: "刷新并确认", exact: true }).click();
+  await expect(taskDetails.getByText("业务资料已刷新并确认，任务将使用当前记录版本。", { exact: true })).toBeVisible();
+  expect(flow.getRefreshAttempts()).toBe(2);
+  await expect(page.getByRole("button", { name: "通知：0 项需要处理，0 项未读" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
 test("browser delivery is explicit, disableable, and privacy-safe", async ({ page }) => {
