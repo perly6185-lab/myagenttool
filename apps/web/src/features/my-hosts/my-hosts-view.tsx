@@ -37,10 +37,17 @@ function errorText(error: unknown, zh: boolean) {
   const code = error instanceof ApiError ? error.code : "";
   const messages: Record<string, [string, string]> = {
     secure_storage_unavailable: ["当前系统安全存储不可用，不能保存主机凭据。", "OS secure storage is unavailable, so this credential cannot be saved."],
-    ssh_host_private_network_blocked: ["这是私网地址，请返回连接资料并明确允许私网访问。", "This is a private address. Return to connection details and explicitly allow private-network access."],
+    ssh_host_private_network_blocked: ["这是局域网地址。请确认允许连接这台局域网设备后重试。", "This is a local-network address. Allow connection to this local device, then try again."],
     ssh_host_fingerprint_changed: ["主机指纹已变化。为保护文件，连接已阻断。", "The host fingerprint changed. The connection was blocked to protect remote files."],
     ssh_authentication_failed: ["凭据未获主机接受，请重新保存正确的私钥或密码。", "The host did not accept the credential. Save the correct private key or password and retry."],
     ssh_credential_unavailable: ["此电脑尚未准备好该主机的安全凭据。", "This computer has not prepared a secure credential for this host."],
+    ssh_credential_invalid: ["没有找到可用的登录密码或私钥，请重新输入。", "No usable password or private key was found. Enter it again."],
+    ssh_connection_refused: ["设备拒绝连接，请确认 SSH 服务已开启且端口正确。", "The device refused the connection. Check that SSH is running and the port is correct."],
+    ssh_connection_timeout: ["连接设备超时，请确认设备在线且与本机处于同一局域网。", "The connection timed out. Check that the device is online and on the same local network."],
+    ssh_connection_failed: ["无法连接这台设备，请检查地址、SSH 端口和网络连接。", "This device could not be connected. Check its address, SSH port, and network connection."],
+    ssh_host_unreachable: ["找不到这台设备，请检查地址、网络连接和防火墙。", "This device could not be reached. Check its address, network connection, and firewall."],
+    ssh_host_unresolvable: ["找不到这个主机地址，请检查输入是否正确。", "This host address could not be found. Check that it was entered correctly."],
+    ssh_host_address_forbidden: ["出于安全原因，不能连接这个地址。请填写这台设备明确可识别的地址。", "This address cannot be connected for safety reasons. Enter an address that clearly identifies this device."],
     host_file_scope_symlink_forbidden: ["目录路径经过符号链接，请选择真实的专用目录。", "The directory passes through a symbolic link. Choose a dedicated real directory."],
     host_file_scope_escape_blocked: ["远程目录已偏离批准范围，浏览已停止。", "The remote directory moved outside its approved range, so browsing stopped."],
     host_file_listing_too_large: ["该目录项目过多，请先在主机上整理为更小的子目录。", "This directory has too many items. Organize it into smaller subdirectories first."],
@@ -135,7 +142,7 @@ function HostOverview({ host, scopeCount, zh, onContinue }: { host: SshHost; sco
       <Summary icon={ShieldCheck} label={zh ? "访问方式" : "Access"} value={zh ? "范围内受控传输" : "Governed transfers"} />
     </div>
     {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div><p className="text-sm font-medium">{!ready ? (zh ? "继续完成安全连接" : "Complete secure connection") : (zh ? "添加一个文件范围" : "Add a file range")}</p><p className="mt-1 text-xs text-muted-foreground">{!ready ? (zh ? "保存凭据、确认指纹并验证 SFTP。" : "Save a credential, confirm the fingerprint, and verify SFTP.") : (zh ? "只有批准目录内的文件可以被查看。" : "Only files inside an approved directory can be viewed.")}</p></div><Button onClick={onContinue}>{zh ? "继续设置" : "Continue setup"}<ChevronRight /></Button></div> : null}
-    {host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{zh ? "上次连接未完成：" : "Last connection did not complete: "}{host.lastConnectionError.code}</p> : null}
+    {host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
   </div>;
 }
 
@@ -275,12 +282,29 @@ function HostTechnicalSettings({ host, zh }: { host: SshHost; zh: boolean }) {
   return <div className="divide-y rounded-lg border">{rows.map(([label, value]) => <div key={label} className="grid gap-1 px-3 py-3 sm:grid-cols-[140px_1fr]"><span className="text-xs text-muted-foreground">{label}</span><code className="break-all text-xs">{value}</code></div>)}</div>;
 }
 
+type HostSetupStage = "connection" | "fingerprint" | "scope";
+
+function isPrivateNetworkHost(value: string) {
+  const host = value.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host === "::1") return true;
+  const ipv4 = host.split(".").map(Number);
+  if (ipv4.length === 4 && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
+    return ipv4[0] === 10
+      || ipv4[0] === 127
+      || (ipv4[0] === 169 && ipv4[1] === 254)
+      || (ipv4[0] === 172 && ipv4[1] >= 16 && ipv4[1] <= 31)
+      || (ipv4[0] === 192 && ipv4[1] === 168);
+  }
+  return host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb");
+}
+
 function HostSetupDialog({ open, initialHost, zh, onClose, onChanged }: { open: boolean; initialHost: SshHost | null; zh: boolean; onClose: () => void; onChanged: () => Promise<unknown> }) {
   const queryClient = useQueryClient();
-  const [step, setStep] = useState(0);
+  const [stage, setStage] = useState<HostSetupStage>("connection");
   const [host, setHost] = useState<SshHost | null>(null);
-  const [form, setForm] = useState({ name: "", host: "", port: "22", user: "deploy", authMethod: "private_key_ref" as HostAuthMethod, allowPrivate: false, sitePublish: true });
+  const [form, setForm] = useState({ name: "", host: "", port: "22", user: "deploy", authMethod: "password_ref" as HostAuthMethod, allowPrivate: false, sitePublish: true });
   const [connectionError, setConnectionError] = useState("");
+  const [privateDetected, setPrivateDetected] = useState(false);
   const [secret, setSecret] = useState({ privateKey: "", passphrase: "", password: "" });
   const [fingerprintAccepted, setFingerprintAccepted] = useState(false);
   const [scope, setScope] = useState({ label: zh ? "网站文件" : "Website files", rootPath: "/srv/www/site", purpose: "site_publish" as HostFileScopePurpose, upload: true, download: true });
@@ -289,64 +313,146 @@ function HostSetupDialog({ open, initialHost, zh, onClose, onChanged }: { open: 
   useEffect(() => {
     if (!open) return;
     setHost(initialHost);
-    setStep(!initialHost ? 0 : initialHost.connectionStatus === "ready" ? 3 : initialHost.connectionStatus === "fingerprint_pending" ? 2 : 1);
+    setStage(initialHost?.connectionStatus === "ready" ? "scope" : initialHost?.connectionStatus === "fingerprint_pending" && initialHost.observedFingerprint ? "fingerprint" : "connection");
+    setForm({
+      name: initialHost?.name ?? "",
+      host: initialHost?.host ?? "",
+      port: String(initialHost?.port ?? 22),
+      user: initialHost?.user ?? "deploy",
+      authMethod: initialHost?.authMethod ?? "password_ref",
+      allowPrivate: initialHost?.networkPolicy === "allow_private_network",
+      sitePublish: initialHost ? initialHost.purposes.includes("site_publish") : true,
+    });
     setConnectionError("");
+    setPrivateDetected(initialHost?.lastConnectionError?.code === "ssh_host_private_network_blocked");
+    setSecret({ privateKey: "", passphrase: "", password: "" });
     setFingerprintAccepted(false);
-    if (initialHost) {
-      setForm((current) => ({ ...current, authMethod: initialHost.authMethod }));
-      setScope((current) => ({ ...current, purpose: initialHost.purposes.includes("site_publish") ? "site_publish" : "general_files" }));
-      void bridge?.getSshHostCredentialStatus?.({ hostId: initialHost.id });
-    }
-  }, [bridge, initialHost, open]);
+    setScope((current) => ({ ...current, label: zh ? "网站文件" : "Website files", purpose: initialHost?.purposes.includes("site_publish") === false ? "general_files" : "site_publish" }));
+    if (initialHost) void bridge?.getSshHostCredentialStatus?.({ hostId: initialHost.id });
+  }, [bridge, initialHost, open, zh]);
 
-  const create = useMutation({ mutationFn: () => hostApi.create({ name: form.name.trim() || `${form.user.trim()}@${form.host.trim()}`, host: form.host.trim(), port: Number(form.port), user: form.user.trim(), authMethod: form.authMethod, purposes: form.sitePublish ? ["file_transfer", "site_publish", "tls_certificate"] : ["file_transfer"], networkPolicy: form.allowPrivate ? "allow_private_network" : "public_only" }), onSuccess: (data) => { setConnectionError(""); setHost(data.target); setStep(1); void onChanged(); } });
-  const submitConnection = () => {
-    if (!form.host.trim()) {
-      setConnectionError(zh ? "请输入主机地址，例如 10.10.10.222。" : "Enter a host address, for example 10.10.10.222.");
-      return;
-    }
-    if (!form.user.trim()) {
-      setConnectionError(zh ? "请输入登录用户。" : "Enter the login user.");
-      return;
-    }
-    const port = Number(form.port);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      setConnectionError(zh ? "端口必须是 1 到 65535 之间的整数。" : "Port must be an integer from 1 to 65535.");
-      return;
-    }
-    setConnectionError("");
-    create.mutate();
-  };
-  const saveCredential = useMutation({
+  const keyAuthentication = form.authMethod === "private_key_ref" || form.authMethod === "managed_identity";
+  const credentialProvided = form.authMethod === "password_ref" ? secret.password.length > 0 : keyAuthentication ? Boolean(secret.privateKey.trim()) : false;
+  const existingHost = host ?? initialHost;
+  const authChanged = Boolean(existingHost && existingHost.authMethod !== form.authMethod);
+  const credentialRequired = (!existingHost || authChanged) && form.authMethod !== "ssh_agent";
+  const showPrivateConsent = isPrivateNetworkHost(form.host) || privateDetected || form.allowPrivate;
+
+  const connect = useMutation({
     mutationFn: async () => {
-      if (!host || !bridge?.saveSshHostCredential) throw new Error(zh ? "请使用桌面版安全保存主机凭据。" : "Use the desktop app to save host credentials securely.");
-      const result = await bridge.saveSshHostCredential({ hostId: host.id, authMethod: form.authMethod as "private_key_ref" | "managed_identity" | "password_ref", privateKey: secret.privateKey, passphrase: secret.passphrase, password: secret.password });
-      if (!("ok" in result) || !result.ok) throw new Error("error" in result ? result.error : "credential_not_saved");
-      return result;
+      const input = {
+        name: form.name.trim() || `${form.user.trim()}@${form.host.trim()}`,
+        host: form.host.trim(),
+        port: Number(form.port),
+        user: form.user.trim(),
+        authMethod: form.authMethod,
+        purposes: form.sitePublish ? ["file_transfer", "site_publish", "tls_certificate"] as const : ["file_transfer"] as const,
+        networkPolicy: form.allowPrivate ? "allow_private_network" as const : "public_only" as const,
+      };
+      let current = existingHost
+        ? (await hostApi.update(existingHost.id, { ...input, purposes: [...input.purposes], expectedRevision: existingHost.revision })).host
+        : (await hostApi.create({ ...input, purposes: [...input.purposes] })).target;
+      setHost(current);
+
+      const shouldSaveCredential = form.authMethod !== "ssh_agent" && (credentialProvided || !existingHost || authChanged);
+      if (shouldSaveCredential) {
+        if (!bridge?.saveSshHostCredential) throw new Error(zh ? "请使用桌面版安全保存主机密码或私钥。" : "Use the desktop app to save the host password or private key securely.");
+        const result = await bridge.saveSshHostCredential({
+          hostId: current.id,
+          authMethod: form.authMethod as "private_key_ref" | "managed_identity" | "password_ref",
+          privateKey: secret.privateKey,
+          passphrase: secret.passphrase,
+          password: secret.password,
+        });
+        if (!("ok" in result) || !result.ok) throw new ApiError("error" in result ? result.error : "credential_not_saved", "credential_not_saved", 400);
+      }
+
+      const pinnedFingerprint = current.knownHostFingerprint;
+      try {
+        const observed = await hostApi.observeFingerprint(current.id);
+        current = observed.host;
+        setHost(current);
+        if (pinnedFingerprint && pinnedFingerprint === observed.observation.fingerprint) {
+          const verified = await hostApi.verify(current.id);
+          return { host: verified.host, needsConfirmation: false };
+        }
+        return { host: current, needsConfirmation: true };
+      } catch (error) {
+        const latest = await hostApi.get(current.id).catch(() => null);
+        if (latest?.host) setHost(latest.host);
+        throw error;
+      }
     },
-    onSuccess: () => { setSecret({ privateKey: "", passphrase: "", password: "" }); setStep(2); },
+    onSuccess: async (result) => {
+      setSecret({ privateKey: "", passphrase: "", password: "" });
+      setHost(result.host);
+      setConnectionError("");
+      await onChanged();
+      if (result.needsConfirmation) {
+        setFingerprintAccepted(false);
+        setStage("fingerprint");
+      } else onClose();
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === "ssh_host_private_network_blocked") setPrivateDetected(true);
+      setConnectionError(errorText(error, zh));
+      void onChanged();
+    },
   });
-  const observe = useMutation({ mutationFn: () => hostApi.observeFingerprint(host!.id), onSuccess: (data) => { setHost(data.host); setFingerprintAccepted(false); void onChanged(); } });
+
+  const submitConnection = () => {
+    if (!form.host.trim()) return setConnectionError(zh ? "请输入主机地址，例如 10.10.10.222。" : "Enter a host address, for example 10.10.10.222.");
+    if (!form.user.trim()) return setConnectionError(zh ? "请输入登录用户。" : "Enter the login user.");
+    const port = Number(form.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return setConnectionError(zh ? "端口必须是 1 到 65535 之间的整数。" : "Port must be an integer from 1 to 65535.");
+    if (showPrivateConsent && !form.allowPrivate) return setConnectionError(zh ? "请先确认允许连接这台局域网设备。" : "Confirm that MyAgentTool may connect to this local-network device.");
+    if (credentialRequired && !credentialProvided) return setConnectionError(form.authMethod === "password_ref" ? (zh ? "请输入登录密码。" : "Enter the login password.") : (zh ? "请输入私钥。" : "Enter the private key."));
+    if (form.authMethod !== "ssh_agent" && (credentialProvided || !existingHost || authChanged) && !bridge?.saveSshHostCredential) return setConnectionError(zh ? "请在 MyAgentTool 桌面版中完成连接，以便安全保存凭据。" : "Complete this connection in the MyAgentTool desktop app so the credential can be stored securely.");
+    setConnectionError("");
+    connect.mutate();
+  };
+
   const confirm = useMutation({
     mutationFn: async () => {
       if (!host?.observedFingerprint) throw new Error("fingerprint_missing");
-      const confirmed = await hostApi.confirmFingerprint(host.id, host.observedFingerprint, host.revision);
-      return hostApi.verify(confirmed.host.id);
+      const observedFingerprint = host.observedFingerprint;
+      let current = host;
+      try {
+        if (current.knownHostFingerprint !== observedFingerprint) {
+          current = (await hostApi.confirmFingerprint(current.id, observedFingerprint, current.revision)).host;
+          setHost(current);
+        }
+        return await hostApi.verify(current.id);
+      } catch (error) {
+        const latest = await hostApi.get(current.id).catch(() => null);
+        if (latest?.host) setHost(latest.host);
+        throw error;
+      }
     },
-    onSuccess: (data) => { setHost(data.host); setStep(3); void onChanged(); },
+    onSuccess: async (data) => { setHost(data.host); await onChanged(); onClose(); },
   });
   const createScope = useMutation({ mutationFn: () => hostApi.createScope(host!.id, { label: scope.label, rootPath: scope.rootPath, purpose: scope.purpose, permissions: ["list", ...(scope.upload ? ["upload" as const] : []), ...(scope.download ? ["download" as const] : [])] }), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["my-host-scopes", host!.id] }); await onChanged(); onClose(); } });
-  const mutationError = create.error ?? saveCredential.error ?? observe.error ?? confirm.error ?? createScope.error;
-  const titles = zh ? ["连接资料", "安全凭据", "确认指纹", "文件范围"] : ["Connection", "Secure credential", "Confirm fingerprint", "File range"];
-  const close = () => { if (!create.isPending && !saveCredential.isPending && !observe.isPending && !confirm.isPending && !createScope.isPending) onClose(); };
+  const mutationError = confirm.error ?? createScope.error;
+  const pending = connect.isPending || confirm.isPending || createScope.isPending;
+  const close = () => { if (!pending) onClose(); };
+  const modalTitle = stage === "connection" ? (zh ? "连接主机" : "Connect a host") : stage === "fingerprint" ? (zh ? "确认这台设备" : "Confirm this device") : (zh ? "添加文件范围" : "Add a file range");
+  const modalDescription = stage === "connection" ? (zh ? "填写地址和登录信息，系统会安全保存凭据并测试连接。" : "Enter the address and sign-in details. The credential is stored securely and the connection is tested.") : stage === "fingerprint" ? (zh ? "首次连接需要确认设备指纹，避免连接到错误设备。" : "The first connection requires a device fingerprint check to prevent connecting to the wrong device.") : (zh ? "连接已验证。现在可选择允许访问的专用目录。" : "The connection is verified. Now choose a dedicated directory that may be accessed.");
 
-  return <Modal open={open} onClose={close} title={zh ? "添加或继续设置主机" : "Add or continue host setup"} description={`${zh ? "第" : "Step"} ${step + 1}/4 · ${titles[step]}`} size="lg" footer={<div className="flex w-full flex-wrap justify-between gap-2"><Button variant="secondary" onClick={close}>{zh ? "稍后继续" : "Continue later"}</Button><div className="flex gap-2">{step === 2 ? <Button variant="secondary" onClick={() => setStep(1)}><ArrowLeft />{zh ? "返回凭据" : "Back to credential"}</Button> : null}{step === 0 ? <Button disabled={create.isPending} onClick={submitConnection}>{create.isPending ? <Loader2 className="animate-spin" /> : <ChevronRight />}{zh ? "保存连接资料" : "Save connection"}</Button> : null}{step === 1 ? <Button disabled={saveCredential.isPending || (form.authMethod === "password_ref" ? !secret.password : !secret.privateKey)} onClick={() => saveCredential.mutate()}>{saveCredential.isPending ? <Loader2 className="animate-spin" /> : <KeyRound />}{zh ? "安全保存" : "Save securely"}</Button> : null}{step === 2 ? (!host?.observedFingerprint ? <Button disabled={observe.isPending} onClick={() => observe.mutate()}>{observe.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "读取主机指纹" : "Read fingerprint"}</Button> : <Button disabled={!fingerprintAccepted || confirm.isPending} onClick={() => confirm.mutate()}>{confirm.isPending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}{zh ? "确认并测试连接" : "Confirm and verify"}</Button>) : null}{step === 3 ? <Button disabled={!scope.rootPath.trim() || createScope.isPending} onClick={() => createScope.mutate()}>{createScope.isPending ? <Loader2 className="animate-spin" /> : <FolderLock />}{zh ? "验证范围并完成" : "Verify range and finish"}</Button> : null}</div></div>}>
+  const footer = <div className="flex w-full flex-wrap justify-between gap-2"><Button variant="secondary" onClick={close}>{zh ? "稍后继续" : "Continue later"}</Button><div className="flex gap-2">{stage === "fingerprint" ? <Button variant="secondary" onClick={() => { setConnectionError(""); setStage("connection"); }}><ArrowLeft />{zh ? "返回修改" : "Back to edit"}</Button> : null}{stage === "connection" ? <Button disabled={connect.isPending} onClick={submitConnection}>{connect.isPending ? <Loader2 className="animate-spin" /> : <KeyRound />}{zh ? "连接并验证" : "Connect and verify"}</Button> : null}{stage === "fingerprint" ? <Button disabled={!fingerprintAccepted || confirm.isPending} onClick={() => confirm.mutate()}>{confirm.isPending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}{zh ? "确认并连接" : "Confirm and connect"}</Button> : null}{stage === "scope" ? <Button disabled={!scope.rootPath.trim() || createScope.isPending} onClick={() => createScope.mutate()}>{createScope.isPending ? <Loader2 className="animate-spin" /> : <FolderLock />}{zh ? "验证范围并完成" : "Verify range and finish"}</Button> : null}</div></div>;
+
+  return <Modal open={open} onClose={close} title={modalTitle} description={modalDescription} size="lg" footer={footer}>
     <div className="space-y-4">
-      <ol className="grid grid-cols-4 gap-1" aria-label={zh ? "设置进度" : "Setup progress"}>{titles.map((title, index) => <li key={title} className={`rounded-md px-2 py-2 text-center text-xs ${index === step ? "bg-primary text-primary-foreground" : index < step ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>{title}</li>)}</ol>
-      {step === 0 ? <div className="grid gap-3 sm:grid-cols-2"><Field label={zh ? "主机名称" : "Host name"}><Input value={form.name} placeholder={zh ? "网站生产主机" : "Production website host"} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field><Field label={zh ? "主机地址" : "Host address"} required><Input required aria-invalid={connectionError && !form.host.trim() ? true : undefined} value={form.host} placeholder="10.10.10.222" onChange={(event) => { setConnectionError(""); setForm({ ...form, host: event.target.value }); }} /></Field><Field label={zh ? "端口" : "Port"} required><Input required type="number" min="1" max="65535" aria-invalid={connectionError && (!Number.isInteger(Number(form.port)) || Number(form.port) < 1 || Number(form.port) > 65535) ? true : undefined} value={form.port} onChange={(event) => { setConnectionError(""); setForm({ ...form, port: event.target.value }); }} /></Field><Field label={zh ? "登录用户" : "Login user"} required><Input required aria-invalid={connectionError && !form.user.trim() ? true : undefined} value={form.user} onChange={(event) => { setConnectionError(""); setForm({ ...form, user: event.target.value }); }} /></Field><Field label={zh ? "认证方式" : "Authentication"}><Select value={form.authMethod} onChange={(event) => setForm({ ...form, authMethod: event.target.value as HostAuthMethod })}><option value="private_key_ref">{zh ? "私钥（推荐）" : "Private key (recommended)"}</option><option value="password_ref">{zh ? "密码" : "Password"}</option></Select></Field><div className="space-y-2 pt-6"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.sitePublish} onChange={(event) => setForm({ ...form, sitePublish: event.target.checked })} />{zh ? "允许用于站点发布" : "Allow site publishing"}</label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.allowPrivate} onChange={(event) => setForm({ ...form, allowPrivate: event.target.checked })} />{zh ? "允许访问私网地址" : "Allow private-network address"}</label></div>{connectionError ? <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive sm:col-span-2">{connectionError}</p> : null}</div> : null}
-      {step === 1 ? <div className="space-y-3"><div className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "凭据只会由桌面端写入操作系统安全存储。页面、服务状态和日志均不会保存明文。" : "The desktop app writes this credential only to OS secure storage. Plaintext is never stored in page state, server state, or logs."}</div>{form.authMethod === "password_ref" ? <Field label={zh ? "主机密码" : "Host password"}><Input type="password" value={secret.password} autoComplete="new-password" onChange={(event) => setSecret({ ...secret, password: event.target.value })} /></Field> : <><Field label={zh ? "私钥" : "Private key"}><Textarea rows={8} value={secret.privateKey} spellCheck={false} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" onChange={(event) => setSecret({ ...secret, privateKey: event.target.value })} /></Field><Field label={zh ? "私钥口令（如有）" : "Key passphrase (if any)"}><Input type="password" value={secret.passphrase} autoComplete="new-password" onChange={(event) => setSecret({ ...secret, passphrase: event.target.value })} /></Field></>}</div> : null}
-      {step === 2 ? <div className="space-y-3"><div className="rounded-lg border p-4"><p className="text-sm font-medium">{zh ? "主机指纹" : "Host fingerprint"}</p><code className="mt-2 block break-all rounded bg-muted p-3 text-xs">{host?.observedFingerprint ?? (zh ? "尚未读取" : "Not read yet")}</code></div>{host?.observedFingerprint ? <label className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"><input className="mt-1" type="checkbox" checked={fingerprintAccepted} onChange={(event) => setFingerprintAccepted(event.target.checked)} /><span>{zh ? "我已通过主机控制台或管理员提供的可信渠道核对该指纹。" : "I checked this fingerprint through the host console or another trusted administrator channel."}</span></label> : <p className="text-sm text-muted-foreground">{zh ? "读取只获取主机公钥，不会发送密码或私钥。" : "Reading fetches only the host public key and sends no password or private key."}</p>}</div> : null}
-      {step === 3 ? <div className="space-y-3"><div className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "请选择专门用于网站、资料或 HTTPS 证书的目录。不同用途不能与证书范围重叠，也不能选择系统目录或符号链接路径。" : "Choose a dedicated website, file, or HTTPS certificate directory. Other ranges cannot overlap a certificate range, and system or symlinked paths are rejected."}</div><Field label={zh ? "范围名称" : "Range name"}><Input value={scope.label} onChange={(event) => setScope({ ...scope, label: event.target.value })} /></Field><Field label={zh ? "远程目录" : "Remote directory"}><Input className="font-mono" value={scope.rootPath} onChange={(event) => setScope({ ...scope, rootPath: event.target.value })} /></Field><Field label={zh ? "用途" : "Purpose"}><Select value={scope.purpose} onChange={(event) => setScope({ ...scope, purpose: event.target.value as HostFileScopePurpose })}><option value="site_publish">{zh ? "站点发布" : "Site publishing"}</option><option value="tls_certificate">{zh ? "HTTPS 证书专用" : "HTTPS certificates only"}</option><option value="general_files">{zh ? "普通文件" : "General files"}</option><option value="backup">{zh ? "备份" : "Backup"}</option></Select></Field>{scope.purpose === "tls_certificate" ? <p className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-warning">{zh ? "证书范围不会出现在文件浏览和下载入口；只有受控证书部署可以写入。" : "Certificate ranges are excluded from file browsing and downloads; only controlled certificate deployment can write to them."}</p> : <div className="rounded-lg border p-3"><p className="mb-2 text-sm font-medium">{zh ? "允许的传输" : "Allowed transfers"}</p><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={scope.upload} onChange={(event) => setScope({ ...scope, upload: event.target.checked })} />{zh ? "上传（最大 10 MB，默认保留两份）" : "Upload (10 MB max, keep both by default)"}</label><label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={scope.download} onChange={(event) => setScope({ ...scope, download: event.target.checked })} />{zh ? "下载（最大 25 MB，阻止敏感文件）" : "Download (25 MB max, sensitive files blocked)"}</label></div>}</div> : null}
+      {stage !== "scope" ? <ol className="grid grid-cols-2 gap-1" aria-label={zh ? "连接进度" : "Connection progress"}><li className={`rounded-md px-2 py-2 text-center text-xs ${stage === "connection" ? "bg-primary text-primary-foreground" : "bg-success/10 text-success"}`}>{zh ? "1. 登录信息" : "1. Sign-in details"}</li><li className={`rounded-md px-2 py-2 text-center text-xs ${stage === "fingerprint" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>{zh ? "2. 确认设备" : "2. Confirm device"}</li></ol> : null}
+      {stage === "connection" ? <div className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2"><Field label={zh ? "主机地址" : "Host address"} required><Input required aria-invalid={connectionError && !form.host.trim() ? true : undefined} value={form.host} placeholder="10.10.10.222" onChange={(event) => { setConnectionError(""); setPrivateDetected(false); setForm({ ...form, host: event.target.value, allowPrivate: false }); }} /></Field><Field label={zh ? "登录用户" : "Login user"} required><Input required aria-invalid={connectionError && !form.user.trim() ? true : undefined} value={form.user} onChange={(event) => { setConnectionError(""); setForm({ ...form, user: event.target.value }); }} /></Field></div>
+        {form.authMethod === "password_ref" ? <Field label={zh ? "登录密码" : "Login password"} required={credentialRequired}><Input type="password" value={secret.password} autoComplete="new-password" placeholder={existingHost && !authChanged ? (zh ? "留空则使用已安全保存的密码" : "Leave blank to reuse the securely stored password") : ""} onChange={(event) => { setConnectionError(""); setSecret({ ...secret, password: event.target.value }); }} /></Field> : keyAuthentication ? <><Field label={zh ? "私钥" : "Private key"} required={credentialRequired}><Textarea rows={7} value={secret.privateKey} spellCheck={false} placeholder={existingHost && !authChanged ? (zh ? "留空则使用已安全保存的私钥" : "Leave blank to reuse the securely stored private key") : "-----BEGIN OPENSSH PRIVATE KEY-----"} onChange={(event) => { setConnectionError(""); setSecret({ ...secret, privateKey: event.target.value }); }} /></Field><Field label={zh ? "私钥口令（如有）" : "Key passphrase (if any)"}><Input type="password" value={secret.passphrase} autoComplete="new-password" onChange={(event) => setSecret({ ...secret, passphrase: event.target.value })} /></Field></> : null}
+        <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "密码或私钥只保存在本机操作系统的安全存储中，不会写入站点数据或日志。" : "The password or private key stays in this computer's OS secure storage and is not written to site data or logs."}</p>
+        {showPrivateConsent ? <label className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"><input className="mt-1" type="checkbox" checked={form.allowPrivate} onChange={(event) => { setConnectionError(""); setForm({ ...form, allowPrivate: event.target.checked }); }} /><span>{zh ? "这是局域网地址。允许 MyAgentTool 连接这台局域网设备。" : "This is a local-network address. Allow MyAgentTool to connect to this local device."}</span></label> : null}
+        <details className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">{zh ? "高级选项" : "Advanced options"}</summary><div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label={zh ? "主机名称" : "Host name"}><Input value={form.name} placeholder={zh ? "网站生产主机" : "Production website host"} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field><Field label={zh ? "端口" : "Port"} required><Input required type="number" min="1" max="65535" value={form.port} onChange={(event) => { setConnectionError(""); setForm({ ...form, port: event.target.value }); }} /></Field><Field label={zh ? "认证方式" : "Authentication"}><Select value={form.authMethod} onChange={(event) => { setConnectionError(""); setSecret({ privateKey: "", passphrase: "", password: "" }); setForm({ ...form, authMethod: event.target.value as HostAuthMethod }); }}><option value="password_ref">{zh ? "密码" : "Password"}</option><option value="private_key_ref">{zh ? "私钥" : "Private key"}</option><option value="managed_identity">{zh ? "托管身份" : "Managed identity"}</option><option value="ssh_agent">{zh ? "SSH Agent" : "SSH agent"}</option></Select></Field><label className="flex items-center gap-2 pt-6 text-sm"><input type="checkbox" checked={form.sitePublish} onChange={(event) => setForm({ ...form, sitePublish: event.target.checked })} />{zh ? "允许用于站点发布" : "Allow site publishing"}</label></div></details>
+        {connectionError ? <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{connectionError}</p> : null}
+      </div> : null}
+      {stage === "fingerprint" ? <div className="space-y-3"><div className="rounded-lg border p-4"><p className="text-sm font-medium">{zh ? "设备指纹" : "Device fingerprint"}</p><code className="mt-2 block break-all rounded bg-muted p-3 text-xs">{host?.observedFingerprint ?? (zh ? "尚未读取" : "Not read yet")}</code></div><p className="text-sm text-muted-foreground">{zh ? "请与设备控制台或管理员提供的指纹核对。确认后，今后指纹变化会自动阻止连接。" : "Compare this with the fingerprint shown by the device console or administrator. Future fingerprint changes will block the connection."}</p><label className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"><input className="mt-1" type="checkbox" checked={fingerprintAccepted} onChange={(event) => setFingerprintAccepted(event.target.checked)} /><span>{zh ? "我已确认这是要连接的设备。" : "I confirmed that this is the device I intend to connect to."}</span></label></div> : null}
+      {stage === "scope" ? <div className="space-y-3"><div className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "请选择专门用于网站、资料或 HTTPS 证书的目录。不同用途不能与证书范围重叠，也不能选择系统目录或符号链接路径。" : "Choose a dedicated website, file, or HTTPS certificate directory. Other ranges cannot overlap a certificate range, and system or symlinked paths are rejected."}</div><Field label={zh ? "范围名称" : "Range name"}><Input value={scope.label} onChange={(event) => setScope({ ...scope, label: event.target.value })} /></Field><Field label={zh ? "远程目录" : "Remote directory"}><Input className="font-mono" value={scope.rootPath} onChange={(event) => setScope({ ...scope, rootPath: event.target.value })} /></Field><Field label={zh ? "用途" : "Purpose"}><Select value={scope.purpose} onChange={(event) => setScope({ ...scope, purpose: event.target.value as HostFileScopePurpose })}><option value="site_publish">{zh ? "站点发布" : "Site publishing"}</option><option value="tls_certificate">{zh ? "HTTPS 证书专用" : "HTTPS certificates only"}</option><option value="general_files">{zh ? "普通文件" : "General files"}</option><option value="backup">{zh ? "备份" : "Backup"}</option></Select></Field>{scope.purpose === "tls_certificate" ? <p className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-warning">{zh ? "证书范围不会出现在文件浏览和下载入口；只有受控证书部署可以写入。" : "Certificate ranges are excluded from file browsing and downloads; only controlled certificate deployment can write to them."}</p> : <div className="rounded-lg border p-3"><p className="mb-2 text-sm font-medium">{zh ? "允许的传输" : "Allowed transfers"}</p><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={scope.upload} onChange={(event) => setScope({ ...scope, upload: event.target.checked })} />{zh ? "上传（最大 10 MB，默认保留两份）" : "Upload (10 MB max, keep both by default)"}</label><label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={scope.download} onChange={(event) => setScope({ ...scope, download: event.target.checked })} />{zh ? "下载（最大 25 MB，阻止敏感文件）" : "Download (25 MB max, sensitive files blocked)"}</label></div>}</div> : null}
       {mutationError ? <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(mutationError, zh)}</p> : null}
     </div>
   </Modal>;

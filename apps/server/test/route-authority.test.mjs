@@ -38,6 +38,7 @@ test("configuration and governance writes require professional management", () =
     ["POST", "/api/users"],
     ["POST", "/api/mail/task-policies"],
     ["POST", "/api/hosts"],
+    ["PATCH", "/api/hosts/ssh_target_1"],
     ["POST", "/api/hosts/ssh_target_1/observe-fingerprint"],
     ["POST", "/api/hosts/ssh_target_1/confirm-fingerprint"],
     ["POST", "/api/hosts/ssh_target_1/verify"],

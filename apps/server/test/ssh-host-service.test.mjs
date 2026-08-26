@@ -82,3 +82,40 @@ test("does not accept a fingerprint other than the just-observed value", async (
   assert.equal(result.error, "ssh_host_fingerprint_confirmation_invalid");
   assert.equal(target.knownHostFingerprint, null);
 });
+
+test("updates an existing host's private-network consent without replacing its credential reference", () => {
+  const { events, service } = harness();
+  const target = service.createSshTarget({
+    host: "10.10.10.222", user: "devagent", authMethod: "password_ref",
+    purposes: ["file_transfer", "site_publish"], networkPolicy: "public_only",
+  });
+  target.connectionStatus = "error";
+  target.lastConnectionError = { code: "ssh_host_private_network_blocked", at: "2026-08-25T00:00:00.000Z" };
+  const credentialRef = target.credentialRef;
+
+  assert.deepEqual(service.updateSshTarget(target, { expectedRevision: 9, networkPolicy: "allow_private_network" }), {
+    ok: false, status: 409, error: "ssh_target_revision_conflict", currentRevision: 1,
+  });
+  const updated = service.updateSshTarget(target, { expectedRevision: 1, networkPolicy: "allow_private_network" });
+  assert.equal(updated.ok, true);
+  assert.equal(target.networkPolicy, "allow_private_network");
+  assert.equal(target.credentialRef, credentialRef);
+  assert.equal(target.connectionStatus, "untested");
+  assert.equal(target.lastConnectionError, null);
+  assert.equal(target.revision, 2);
+  assert.equal(events.at(-1)?.type, "ssh.target.updated");
+});
+
+test("changing host identity clears the old fingerprint before reconnecting", async () => {
+  const { service } = harness();
+  const target = service.createSshTarget({ host: "host.example", user: "deploy", authMethod: "password_ref", purpose: "file_transfer" });
+  await service.observeSshHostFingerprint(target);
+  service.confirmSshHostFingerprint(target, { fingerprint: FINGERPRINT, expectedRevision: 2 });
+
+  const updated = service.updateSshTarget(target, { expectedRevision: 3, host: "replacement.example" });
+  assert.equal(updated.ok, true);
+  assert.equal(target.host, "replacement.example");
+  assert.equal(target.knownHostFingerprint, null);
+  assert.equal(target.observedFingerprint, null);
+  assert.equal(target.trustStatus, "known_hosts_required");
+});

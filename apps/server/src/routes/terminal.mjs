@@ -13,6 +13,7 @@ export async function handleTerminalRoutes({
   createSshTarget,
   createSshConnectionTest,
   observeSshHostFingerprint,
+  updateSshTarget,
   verifySshHostConnection,
   listHostFileScopes,
   createHostFileScope,
@@ -68,6 +69,20 @@ export async function handleTerminalRoutes({
     const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostMatch[1]));
     if (!target) sendJson(res, 404, { error: "ssh_target_not_found" });
     else sendJson(res, 200, { host: target });
+    return true;
+  }
+  if (req.method === "PATCH" && hostMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    try {
+      const result = updateSshTarget(target, await readJson(req));
+      sendJson(res, result.ok ? 200 : result.status, result.ok ? { host: result.target } : { error: result.error, ...(result.currentRevision ? { currentRevision: result.currentRevision } : {}) });
+    } catch (error) {
+      sendJson(res, 400, { error: "invalid_ssh_target", message: error instanceof Error ? error.message : String(error) });
+    }
     return true;
   }
 

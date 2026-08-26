@@ -9,7 +9,7 @@ import type { HostFileScope, SshHost } from "./host-types";
 import { MyHostsView } from "./my-hosts-view";
 
 vi.mock("./host-api", () => ({ MAX_HOST_UPLOAD_BYTES: 10 * 1024 * 1024, MAX_HOST_DOWNLOAD_BYTES: 25 * 1024 * 1024, hostApi: {
-  list: vi.fn(), get: vi.fn(), create: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
+  list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
   scopes: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
 } }));
 
@@ -99,12 +99,12 @@ it("offers a bounded retry from a failed transfer without retaining file bytes",
   expect(hostApi.download).not.toHaveBeenCalled();
 });
 
-it("explains missing connection fields instead of silently disabling save", async () => {
+it("explains missing connection fields instead of silently disabling connection", async () => {
   vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
   renderView();
 
   fireEvent.click((await screen.findAllByRole("button", { name: "Add host" }))[0]);
-  const save = screen.getByRole("button", { name: "Save connection" }) as HTMLButtonElement;
+  const save = screen.getByRole("button", { name: "Connect and verify" }) as HTMLButtonElement;
   expect(save.disabled).toBe(false);
 
   fireEvent.click(save);
@@ -123,22 +123,75 @@ it("explains missing connection fields instead of silently disabling save", asyn
   expect(hostApi.create).not.toHaveBeenCalled();
 });
 
-it("starts with plain connection fields and moves credentials into desktop secure storage", async () => {
+it("connects from one ordinary form and moves the password into desktop secure storage", async () => {
   vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
-  vi.mocked(hostApi.create).mockResolvedValue({ target: { ...host, connectionStatus: "untested", knownHostFingerprint: null, observedFingerprint: null, capabilities: null, verifiedAt: null, revision: 1 } });
-  const saveSshHostCredential = vi.fn().mockResolvedValue({ ok: true, reference: host.credentialRef, authMethod: "private_key_ref" });
+  const createdHost = { ...host, authMethod: "password_ref" as const, connectionStatus: "untested" as const, knownHostFingerprint: null, observedFingerprint: null, capabilities: null, verifiedAt: null, revision: 1 };
+  const observedHost = { ...createdHost, connectionStatus: "fingerprint_pending" as const, observedFingerprint: host.observedFingerprint, revision: 2 };
+  const confirmedHost = { ...observedHost, connectionStatus: "untested" as const, knownHostFingerprint: host.observedFingerprint, revision: 3 };
+  const readyHost = { ...host, authMethod: "password_ref" as const };
+  vi.mocked(hostApi.create).mockResolvedValue({ target: createdHost });
+  vi.mocked(hostApi.observeFingerprint).mockResolvedValue({ host: observedHost, observation: { fingerprint: host.observedFingerprint!, resolvedAddress: "203.0.113.10" } });
+  vi.mocked(hostApi.confirmFingerprint).mockResolvedValue({ host: confirmedHost });
+  vi.mocked(hostApi.verify).mockResolvedValue({ host: readyHost, verification: { capabilities: readyHost.capabilities } });
+  const saveSshHostCredential = vi.fn().mockResolvedValue({ ok: true, reference: host.credentialRef, authMethod: "password_ref" });
   window.myagenttoolDesktop = { saveSshHostCredential };
   renderView();
 
   fireEvent.click((await screen.findAllByRole("button", { name: "Add host" }))[0]);
   fireEvent.change(screen.getByLabelText("Host address"), { target: { value: "host.example" } });
-  fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
-  await waitFor(() => expect(hostApi.create).toHaveBeenCalledWith(expect.objectContaining({ host: "host.example", user: "deploy", purposes: ["file_transfer", "site_publish", "tls_certificate"] })));
+  fireEvent.change(screen.getByLabelText("Login password"), { target: { value: "test-password" } });
+  fireEvent.click(screen.getByRole("button", { name: "Connect and verify" }));
+  await waitFor(() => expect(hostApi.create).toHaveBeenCalledWith(expect.objectContaining({ host: "host.example", user: "deploy", authMethod: "password_ref", purposes: ["file_transfer", "site_publish", "tls_certificate"] })));
+  expect(saveSshHostCredential).toHaveBeenCalledWith(expect.objectContaining({ hostId: host.id, password: "test-password" }));
+  expect(hostApi.observeFingerprint).toHaveBeenCalledWith(host.id);
+  expect(await screen.findByRole("button", { name: "Confirm and connect" })).toBeTruthy();
+  expect(screen.getByText(host.observedFingerprint!)).toBeTruthy();
+  expect(screen.queryByDisplayValue("test-password")).toBeNull();
+  fireEvent.click(screen.getByLabelText("I confirmed that this is the device I intend to connect to."));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm and connect" }));
+  await waitFor(() => expect(hostApi.confirmFingerprint).toHaveBeenCalledWith(host.id, host.observedFingerprint, observedHost.revision));
+  expect(hostApi.verify).toHaveBeenCalledWith(host.id);
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Confirm this device" })).toBeNull());
+});
 
-  const privateKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nplain-test-key\n-----END OPENSSH PRIVATE KEY-----";
-  fireEvent.change(await screen.findByLabelText("Private key"), { target: { value: privateKey } });
-  fireEvent.click(screen.getByRole("button", { name: "Save securely" }));
-  await waitFor(() => expect(saveSshHostCredential).toHaveBeenCalledWith(expect.objectContaining({ hostId: host.id, privateKey })));
-  expect(await screen.findByRole("button", { name: "Read fingerprint" })).toBeTruthy();
-  expect(screen.queryByDisplayValue(privateKey)).toBeNull();
+it("requires plain-language consent before connecting to a local-network address", async () => {
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
+  renderView();
+
+  fireEvent.click((await screen.findAllByRole("button", { name: "Add host" }))[0]);
+  fireEvent.change(screen.getByLabelText("Host address"), { target: { value: "10.10.10.222" } });
+  fireEvent.change(screen.getByLabelText("Login password"), { target: { value: "test-password" } });
+  fireEvent.click(screen.getByRole("button", { name: "Connect and verify" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Confirm that MyAgentTool may connect to this local-network device");
+  expect(hostApi.create).not.toHaveBeenCalled();
+});
+
+it("repairs an existing private-network host in place and reuses its saved credential", async () => {
+  const blockedHost: SshHost = {
+    ...host,
+    host: "10.10.10.222",
+    authMethod: "password_ref",
+    networkPolicy: "public_only",
+    connectionStatus: "error",
+    knownHostFingerprint: null,
+    observedFingerprint: null,
+    capabilities: null,
+    lastConnectionError: { code: "ssh_host_private_network_blocked", at: "2026-08-26T00:00:00.000Z" },
+    verifiedAt: null,
+  };
+  const updatedHost = { ...blockedHost, networkPolicy: "allow_private_network" as const, connectionStatus: "untested" as const, lastConnectionError: null, revision: 5 };
+  const observedHost = { ...updatedHost, connectionStatus: "fingerprint_pending" as const, observedFingerprint: host.observedFingerprint, revision: 6 };
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [blockedHost], count: 1 });
+  vi.mocked(hostApi.update).mockResolvedValue({ host: updatedHost });
+  vi.mocked(hostApi.observeFingerprint).mockResolvedValue({ host: observedHost, observation: { fingerprint: host.observedFingerprint!, resolvedAddress: "10.10.10.222" } });
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Continue setup" }));
+  expect(await screen.findByText("This is a local-network address. Allow MyAgentTool to connect to this local device.")).toBeTruthy();
+  fireEvent.click(screen.getByLabelText("This is a local-network address. Allow MyAgentTool to connect to this local device."));
+  fireEvent.click(screen.getByRole("button", { name: "Connect and verify" }));
+
+  await waitFor(() => expect(hostApi.update).toHaveBeenCalledWith(blockedHost.id, expect.objectContaining({ expectedRevision: blockedHost.revision, networkPolicy: "allow_private_network" })));
+  expect(hostApi.create).not.toHaveBeenCalled();
+  expect(await screen.findByRole("button", { name: "Confirm and connect" })).toBeTruthy();
 });
