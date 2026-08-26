@@ -79,6 +79,8 @@ test("execution, approval, recovery, and retry writes admit operators", () => {
     ["POST", "/api/mail/task-policies/evaluate"],
     ["POST", "/api/host-file-scopes/hfs_1/transfers/upload"],
     ["POST", "/api/host-file-scopes/hfs_1/transfers/download"],
+    ["POST", "/api/hosts/ssh_target_1/diagnostics"],
+    ["POST", "/api/hosts/ssh_target_1/assistant/plan"],
     ["POST", "/api/sites/site-1/domain-tls-binding/verify-dns"],
     ["POST", "/api/sites/site-1/domain-tls-binding/issue-staging"],
     ["POST", "/api/sites/site-1/domain-tls-binding/deploy-staging"],

@@ -23,6 +23,14 @@ export interface SshHost {
 
 export type HostFileScopePurpose = "general_files" | "site_publish" | "backup" | "tls_certificate";
 
+export interface HostFileScopeSuggestion {
+  rootPath: string;
+  label: string;
+  purpose: "general_files" | "site_publish";
+  reason: "managed_site" | "managed_content" | "website_directory";
+  recommended: boolean;
+}
+
 export interface HostFileScope {
   id: string;
   sshTargetId: string;
@@ -59,6 +67,27 @@ export interface HostFileEntry {
   accessible: boolean;
   size: number | null;
   modifiedAt: string | null;
+}
+
+export type HostDiagnosticAction = "disk_usage" | "memory_usage" | "system_info" | "uptime" | "failed_services" | "processes" | "listening_ports" | "docker_status" | "service_status" | "recent_logs" | "network_info";
+
+export interface HostDiagnosticParameters {
+  serviceName?: string;
+}
+
+export interface HostDiagnosticResult {
+  action: HostDiagnosticAction;
+  command: string;
+  output: string;
+  parameters?: HostDiagnosticParameters;
+  resolvedAddress?: string;
+}
+
+export interface HostDiagnosticPlan {
+  action: HostDiagnosticAction;
+  command: string;
+  risk: "read_only";
+  parameters?: HostDiagnosticParameters;
 }
 
 export type HostFileConflictPolicy = "deny" | "rename" | "replace";

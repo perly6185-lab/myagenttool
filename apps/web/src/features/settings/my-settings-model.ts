@@ -14,7 +14,7 @@ export interface MySettingsCategory {
  */
 export const MY_SETTINGS_CATEGORIES: readonly MySettingsCategory[] = [
   { key: "execution", sections: ["devices", "agents", "agentSkills", "discovery", "tools"] },
-  { key: "connections", sections: ["myHosts", "siteSettings", "applications", "integrations", "channels", "sessions"] },
+  { key: "connections", sections: ["siteSettings", "applications", "integrations", "channels", "sessions"] },
   { key: "automation", sections: ["automation", "routines", "autoRuns"] },
   { key: "governance", sections: ["approvals", "audit"] },
   { key: "resources", sections: ["economics"] },

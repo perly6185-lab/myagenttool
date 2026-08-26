@@ -16,6 +16,7 @@ export async function handleTerminalRoutes({
   updateSshTarget,
   verifySshHostConnection,
   listHostFileScopes,
+  suggestHostFileScopes,
   createHostFileScope,
   updateHostFileScope,
   listHostFileEntries,
@@ -29,6 +30,8 @@ export async function handleTerminalRoutes({
   nextTerminalBridgeAction,
   recordTerminalBridgeEvent,
   recordTerminalEvidence,
+  planSshHostDiagnostic,
+  runSshHostDiagnostic,
   requireBridgeCredential,
   summarizeText,
 }) {
@@ -136,6 +139,18 @@ export async function handleTerminalRoutes({
     }
     const result = await createHostFileScope(target, await readJson(req), actor);
     sendJson(res, result.ok ? 201 : result.status, result.ok ? { scope: result.scope } : { error: result.error });
+    return true;
+  }
+
+  const hostScopeSuggestionsMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/file-scope-suggestions$/);
+  if (req.method === "GET" && hostScopeSuggestionsMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostScopeSuggestionsMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const result = await suggestHostFileScopes(target);
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { suggestions: result.suggestions, count: result.count } : { error: result.error });
     return true;
   }
 
@@ -289,6 +304,36 @@ export async function handleTerminalRoutes({
     const body = await readJson(req);
     const report = createSshConnectionTest(target, body);
     sendJson(res, 202, { report, target });
+    return true;
+  }
+
+  const hostDiagnosticMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/diagnostics$/);
+  if (req.method === "POST" && hostDiagnosticMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostDiagnosticMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const body = await readJson(req);
+    if (body.confirmed !== true) {
+      sendJson(res, 400, { error: "ssh_diagnostic_confirmation_required" });
+      return true;
+    }
+    const result = await runSshHostDiagnostic(target, body.action, actor, body.parameters ?? {});
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { result } : { error: result.error });
+    return true;
+  }
+
+  const hostAssistantPlanMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/plan$/);
+  if (req.method === "POST" && hostAssistantPlanMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostAssistantPlanMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const body = await readJson(req);
+    const result = planSshHostDiagnostic(body.input);
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { plan: result } : { error: result.error });
     return true;
   }
 

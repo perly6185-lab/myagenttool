@@ -2,7 +2,7 @@ import { resolve, sep } from "node:path";
 
 import { DEFAULT_DEVICE_ID } from "../runtime/device.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
-import { createSshHostConnector, normalizeSshFingerprint, SshHostConnectorError } from "./ssh-host-connector.mjs";
+import { createSshHostConnector, normalizeSshFingerprint, sshDiagnosticPlanForInput, sshDiagnosticCommand, SshHostConnectorError } from "./ssh-host-connector.mjs";
 
 // A local managed terminal is the broadest execution surface on the bridge (an
 // interactive shell). Its cwd must stay inside a registered project or worktree
@@ -21,6 +21,12 @@ export function terminalCwdWithinRoots(cwd, roots) {
     const r = resolve(String(root));
     return target === r || target.startsWith(r + sep);
   });
+}
+
+function sanitizeSshDiagnosticOutput(action, output) {
+  const normalized = String(output ?? "");
+  if (action !== "recent_logs") return normalized;
+  return normalized.split("\n").map((line) => /password|passwd|secret|token|api[_-]?key|authorization|private[ _-]?key/i.test(line) ? "[redacted sensitive log line]" : line).join("\n");
 }
 
 export function createTerminalRuntimeCapability({ now = defaultNow } = {}) {
@@ -266,6 +272,43 @@ export function createTerminalService({
     } catch (error) {
       return recordSshConnectionFailure(target, error, "ssh.host.verification_failed");
     }
+  }
+
+  async function runSshHostDiagnostic(target, action, actor = null, parameters = {}) {
+    const command = sshDiagnosticCommand(action, parameters);
+    if (!command) return { ok: false, status: 400, error: "ssh_diagnostic_unsupported" };
+    if (target.connectionStatus !== "ready") return { ok: false, status: 409, error: "ssh_host_not_ready" };
+    if (!normalizeSshFingerprint(target.knownHostFingerprint) || target.trustStatus !== "pinned") {
+      return { ok: false, status: 409, error: "ssh_host_fingerprint_required" };
+    }
+    if (target.agentForwarding) return { ok: false, status: 409, error: "ssh_agent_forwarding_forbidden" };
+    const resolved = target.authMethod === "ssh_agent"
+      ? { ok: true, credential: { agentSocket: process.env.SSH_AUTH_SOCK } }
+      : await resolveCredential(target.credentialRef);
+    if (!resolved?.ok) return { ok: false, status: 409, error: resolved?.error ?? "ssh_credential_unavailable" };
+    try {
+      const result = await sshHostConnector.runFixedCommand(target, resolved.credential, action, parameters, { operationTimeoutMs: 120_000 });
+      const output = sanitizeSshDiagnosticOutput(action, String(result?.value?.output ?? "")).slice(0, 8_000);
+      runTx(() => {
+        appendEvent({
+          invocationId: null,
+          type: "ssh.host_diagnostic.completed",
+          level: "info",
+          message: "A confirmed read-only SSH host diagnostic completed.",
+          data: { targetId: target.id, action, command, parameters, requestedBy: actor?.userId ?? "usr_local", outputPreview: summarizeText(output, 500) },
+        });
+      });
+      return { ok: true, action, command, output, resolvedAddress: result.resolvedAddress };
+    } catch (error) {
+      const code = error instanceof SshHostConnectorError ? error.code : "ssh_fixed_command_failed";
+      return { ok: false, status: code === "ssh_host_fingerprint_changed" ? 409 : 502, error: code };
+    }
+  }
+
+  function planSshHostDiagnostic(input) {
+    const plan = sshDiagnosticPlanForInput(input);
+    if (!plan) return { ok: false, status: 422, error: "ssh_diagnostic_intent_unsupported" };
+    return { ok: true, action: plan.action, command: plan.command, risk: "read_only", ...(Object.keys(plan.parameters ?? {}).length ? { parameters: plan.parameters } : {}) };
   }
 
   function recordSshConnectionFailure(target, error, eventType) {
@@ -635,6 +678,8 @@ export function createTerminalService({
     queueTerminalBridgeAction,
     recordTerminalBridgeEvent,
     recordTerminalEvidence,
+    planSshHostDiagnostic,
+    runSshHostDiagnostic,
     updateSshTarget,
     verifySshHostConnection,
   };

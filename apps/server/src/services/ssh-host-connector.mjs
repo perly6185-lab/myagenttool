@@ -7,6 +7,20 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_FIXED_COMMAND_OUTPUT_BYTES = 64 * 1024;
 const SAFE_DOCKER_CONTAINER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
+const SAFE_DIAGNOSTIC_COMMANDS = Object.freeze({
+  disk_usage: "df -h",
+  memory_usage: "free -h",
+  system_info: "uname -a",
+  uptime: "uptime",
+  failed_services: "systemctl --failed --no-pager",
+  processes: "ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -n 15",
+  listening_ports: "ss -lntup",
+  docker_status: "docker ps --format '{{.Names}}\\t{{.Status}}'",
+  recent_logs: "journalctl -n 40 --no-pager",
+  network_info: "ip -brief address",
+});
+const SAFE_SYSTEMD_SERVICE = /^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,63}$/;
+
 export class SshHostConnectorError extends Error {
   constructor(code, message) {
     super(message);
@@ -141,12 +155,54 @@ function sanitizedSftpOperationError(error) {
 }
 
 function fixedCommand(action, parameters = {}) {
+  if (Object.hasOwn(SAFE_DIAGNOSTIC_COMMANDS, action)) return SAFE_DIAGNOSTIC_COMMANDS[action];
+  if (action === "service_status") {
+    const serviceName = String(parameters.serviceName ?? "").trim();
+    if (!SAFE_SYSTEMD_SERVICE.test(serviceName)) throw new SshHostConnectorError("ssh_fixed_command_parameter_invalid", "The fixed remote action has an invalid service name.");
+    return `systemctl status --no-pager --lines=30 ${serviceName} || true`;
+  }
+  if (!["docker_nginx_inspect", "docker_nginx_config_test", "docker_nginx_reload"].includes(action)) {
+    throw new SshHostConnectorError("ssh_fixed_command_unsupported", "The requested fixed remote action is not supported.");
+  }
   const containerName = String(parameters.containerName ?? "").trim();
   if (!SAFE_DOCKER_CONTAINER.test(containerName)) throw new SshHostConnectorError("ssh_fixed_command_parameter_invalid", "The fixed remote action has an invalid container name.");
   if (action === "docker_nginx_inspect") return `docker inspect --format '{{.State.Running}}' ${containerName}`;
   if (action === "docker_nginx_config_test") return `docker exec ${containerName} nginx -t`;
   if (action === "docker_nginx_reload") return `docker kill --signal=HUP ${containerName}`;
-  throw new SshHostConnectorError("ssh_fixed_command_unsupported", "The requested fixed remote action is not supported.");
+}
+
+export function sshDiagnosticCommand(action, parameters = {}) {
+  const normalized = String(action ?? "").trim();
+  if (normalized === "service_status") {
+    try { return fixedCommand(normalized, parameters); } catch { return null; }
+  }
+  return SAFE_DIAGNOSTIC_COMMANDS[normalized] ?? null;
+}
+
+export function sshDiagnosticActionForInput(input) {
+  const value = String(input ?? "").trim().toLocaleLowerCase();
+  if (!value) return null;
+  if (/磁盘|硬盘|空间|容量|disk|storage/.test(value)) return "disk_usage";
+  if (/内存|memory|ram|交换/.test(value)) return "memory_usage";
+  if (/系统|内核|版本|system|kernel|os/.test(value)) return "system_info";
+  if (/服务状态|服务运行|service status|service health/.test(value)) return "service_status";
+  if (/运行|在线|uptime|负载|load/.test(value)) return "uptime";
+  if (/失败服务|服务失败|systemd|failed service/.test(value)) return "failed_services";
+  if (/进程|process|cpu|占用/.test(value)) return "processes";
+  if (/端口|监听|port|listen/.test(value)) return "listening_ports";
+  if (/docker|容器|container/.test(value)) return "docker_status";
+  return null;
+}
+
+export function sshDiagnosticPlanForInput(input) {
+  const action = sshDiagnosticActionForInput(input);
+  if (!action) return null;
+  if (action !== "service_status") return { action, parameters: {}, command: sshDiagnosticCommand(action) };
+  const value = String(input ?? "").trim();
+  const serviceName = value.match(/(?:^|\s)([A-Za-z0-9][A-Za-z0-9_.@:-]{0,63})\s*(?:服务|service)(?:状态|运行|status|health)?/i)?.[1]
+    ?? value.match(/(?:服务|service)\s+([A-Za-z0-9][A-Za-z0-9_.@:-]{0,63})/i)?.[1];
+  if (!serviceName || !SAFE_SYSTEMD_SERVICE.test(serviceName)) return null;
+  return { action, parameters: { serviceName }, command: sshDiagnosticCommand(action, { serviceName }) };
 }
 
 export function createSshHostConnector({
@@ -359,7 +415,7 @@ export function createSshHostConnector({
             if (Number(code) !== 0) return finish(new SshHostConnectorError("ssh_fixed_command_failed", "The fixed remote action failed."));
             const normalized = stdout.toString("utf8").trim();
             if (action === "docker_nginx_inspect" && normalized !== "true") return finish(new SshHostConnectorError("ssh_docker_nginx_not_running", "The configured Docker Nginx container is not running."));
-            finish(null, { action, ok: true });
+            finish(null, { action, ok: true, output: normalized });
           });
         });
       });

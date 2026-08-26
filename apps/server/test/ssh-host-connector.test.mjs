@@ -7,6 +7,8 @@ import {
   classifySshAddress,
   createSshHostConnector,
   resolveSshHostAddress,
+  sshDiagnosticActionForInput,
+  sshDiagnosticCommand,
   sshHostFingerprint,
 } from "../src/services/ssh-host-connector.mjs";
 
@@ -126,6 +128,32 @@ test("fixed Docker Nginx actions accept only bounded container names and predefi
   assert.equal(commands.every((item) => item.options.pty === false), true);
   await assert.rejects(connector.runFixedCommand(target, { password: "secret" }, "docker_nginx_reload", { containerName: "site-nginx; id" }), { code: "ssh_fixed_command_parameter_invalid" });
   await assert.rejects(connector.runFixedCommand(target, { password: "secret" }, "shell", { containerName: "site-nginx" }), { code: "ssh_fixed_command_unsupported" });
+});
+
+test("fixed read-only diagnostics use predefined commands and return bounded output", async () => {
+  const commands = [];
+  const ClientClass = fakeClientClass({ execHandler: (command, options, callback) => {
+    commands.push({ command, options });
+    const stream = new EventEmitter();
+    stream.stderr = { resume() {} };
+    callback(null, stream);
+    setImmediate(() => { stream.emit("data", Buffer.from("safe diagnostic output\n")); stream.emit("close", 0); });
+  } });
+  const connector = createSshHostConnector({ ClientClass, lookup: async () => [{ address: "93.184.216.25", family: 4 }] });
+  const target = { host: "host.example", port: 22, user: "deploy", authMethod: "password_ref", networkPolicy: "public_only", knownHostFingerprint: sshHostFingerprint(HOST_KEY) };
+  const result = await connector.runFixedCommand(target, { password: "secret" }, "disk_usage");
+  assert.equal(result.value.output, "safe diagnostic output");
+  assert.deepEqual(commands.map((item) => item.command), ["df -h"]);
+  await assert.rejects(connector.runFixedCommand(target, { password: "secret" }, "disk_usage; id"), { code: "ssh_fixed_command_unsupported" });
+});
+
+test("maps host questions to a finite read-only diagnostic vocabulary", () => {
+  assert.equal(sshDiagnosticActionForInput("show top CPU processes"), "processes");
+  assert.equal(sshDiagnosticActionForInput("查看监听端口"), "listening_ports");
+  assert.equal(sshDiagnosticActionForInput("列出 Docker 容器"), "docker_status");
+  assert.equal(sshDiagnosticActionForInput("delete old logs && whoami"), null);
+  assert.equal(sshDiagnosticCommand("docker_status"), "docker ps --format '{{.Names}}\\t{{.Status}}'");
+  assert.equal(sshDiagnosticCommand("processes; id"), null);
 });
 
 test("completes real SSH fingerprint observation, authentication, and SFTP negotiation", async (t) => {

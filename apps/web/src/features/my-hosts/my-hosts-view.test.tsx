@@ -10,7 +10,7 @@ import { MyHostsView } from "./my-hosts-view";
 
 vi.mock("./host-api", () => ({ MAX_HOST_UPLOAD_BYTES: 10 * 1024 * 1024, MAX_HOST_DOWNLOAD_BYTES: 25 * 1024 * 1024, hostApi: {
   list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
-  scopes: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
+  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
 } }));
 
 const host: SshHost = {
@@ -37,6 +37,8 @@ beforeEach(async () => {
   useUiStore.setState({ experienceMode: "professional" });
   vi.mocked(hostApi.list).mockResolvedValue({ hosts: [host], count: 1 });
   vi.mocked(hostApi.scopes).mockResolvedValue({ scopes: [scope], count: 1 });
+  vi.mocked(hostApi.scopeSuggestions).mockResolvedValue({ suggestions: [{ rootPath: "/srv/myagenttool-sites/server001-lan-e2e", label: "server001 lan e2e", purpose: "site_publish", reason: "managed_site", recommended: true }], count: 1 });
+  vi.mocked(hostApi.createScope).mockResolvedValue({ scope });
   vi.mocked(hostApi.entries).mockResolvedValue({ scope, path: "", count: 3, entries: [
     { name: "assets", path: "assets", type: "directory", accessible: true, size: null, modifiedAt: null },
     { name: "index.html", path: "index.html", type: "file", accessible: true, size: 1200, modifiedAt: null },
@@ -44,15 +46,27 @@ beforeEach(async () => {
   ] });
   vi.mocked(hostApi.transfers).mockResolvedValue({ transfers: [], count: 0 });
   vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
+  vi.mocked(hostApi.diagnose).mockResolvedValue({ result: { action: "disk_usage", command: "df -h", output: "Filesystem\n/dev/sda1 20G 8G 12G 40% /" } });
+  vi.mocked(hostApi.planDiagnostic).mockResolvedValue({ plan: { action: "disk_usage", command: "df -h", risk: "read_only" } });
 });
 afterEach(() => cleanup());
 
-it("keeps host metadata out of Ordinary mode until Professional mode is enabled", async () => {
+it("keeps host metadata out of Ordinary mode while offering a direct connection entry", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   renderView();
-  expect(await screen.findByText("This page belongs to Professional mode")).toBeTruthy();
+  expect(await screen.findByText("Connect your computer or server")).toBeTruthy();
   expect(screen.queryByText("Production website host")).toBeNull();
   expect(hostApi.list).not.toHaveBeenCalled();
+});
+
+it("opens host setup directly from Ordinary mode", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Start connecting" }));
+  expect(await screen.findByRole("heading", { name: "Connect a host" })).toBeTruthy();
+  expect(hostApi.list).toHaveBeenCalled();
 });
 
 it("keeps a list-only range read-only and links inaccessible", async () => {
@@ -61,10 +75,49 @@ it("keeps a list-only range read-only and links inaccessible", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Remote files" }));
   expect(await screen.findByText("index.html")).toBeTruthy();
   expect(screen.getByText("1.2 KB")).toBeTruthy();
-  expect(screen.getByText("Restricted: cannot open")).toBeTruthy();
+  expect(screen.getByTestId("directory-summary").textContent).toContain("1.2 KB");
+  expect(screen.getByText("Shortcut: open the matching real folder")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /upload/i })).toBeNull();
   expect(screen.queryByRole("button", { name: /download/i })).toBeNull();
   expect(hostApi.entries).toHaveBeenCalledWith("hfs_1", "");
+});
+
+it("keeps manual folder entry open while an ordinary user types an alternative", async () => {
+  renderView();
+  fireEvent.click(await screen.findByRole("button", { name: "Remote files" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Add range" }));
+  expect(await screen.findByDisplayValue("/srv/myagenttool-sites/server001-lan-e2e")).toBeTruthy();
+  fireEvent.click(screen.getByText("Use another folder"));
+  const input = await screen.findByLabelText("Remote directory");
+  fireEvent.change(input, { target: { value: "/srv/www/another-site" } });
+  expect(screen.getByDisplayValue("/srv/www/another-site")).toBeTruthy();
+});
+
+it("turns a plain-language host request into a reviewed read-only diagnostic", async () => {
+  renderView();
+  const assistant = await screen.findByTestId("host-assistant");
+  fireEvent.change(screen.getByPlaceholderText("For example: show remaining disk space"), { target: { value: "show disk space" } });
+  fireEvent.click(screen.getByRole("button", { name: "Suggest" }));
+  expect(await screen.findByText("df -h")).toBeTruthy();
+  expect(hostApi.planDiagnostic).toHaveBeenCalledWith(host.id, "show disk space");
+  expect(hostApi.diagnose).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Confirm and run" }));
+  await waitFor(() => expect(hostApi.diagnose).toHaveBeenCalledWith(host.id, "disk_usage"));
+  expect(await screen.findByText(/Filesystem/)).toBeTruthy();
+  expect(await screen.findByTestId("diagnostic-insights")).toBeTruthy();
+  expect(assistant).toBeTruthy();
+});
+
+it("previews approved text files without executing their contents", async () => {
+  const readableScope = { ...scope, permissions: ["list", "download"] as HostFileScope["permissions"] };
+  vi.mocked(hostApi.scopes).mockResolvedValue({ scopes: [readableScope], count: 1 });
+  vi.mocked(hostApi.download).mockResolvedValue({ blob: new Blob(["<h1>safe preview</h1>"], { type: "text/html" }), fileName: "index.html", transferId: "hft_preview" });
+  renderView();
+  fireEvent.click(await screen.findByRole("button", { name: "Remote files" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Preview" }));
+  expect(await screen.findByText("Preview: index.html")).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole("dialog").textContent).toContain("safe preview"));
+  expect(hostApi.download).toHaveBeenCalledWith("hfs_1", { path: "index.html" });
 });
 
 it("requires a clear confirmation before an enabled upload starts", async () => {
@@ -141,17 +194,21 @@ it("connects from one ordinary form and moves the password into desktop secure s
   fireEvent.change(screen.getByLabelText("Host address"), { target: { value: "host.example" } });
   fireEvent.change(screen.getByLabelText("Login password"), { target: { value: "test-password" } });
   fireEvent.click(screen.getByRole("button", { name: "Connect and verify" }));
-  await waitFor(() => expect(hostApi.create).toHaveBeenCalledWith(expect.objectContaining({ host: "host.example", user: "deploy", authMethod: "password_ref", purposes: ["file_transfer", "site_publish", "tls_certificate"] })));
+  await waitFor(() => expect(hostApi.create).toHaveBeenCalledWith(expect.objectContaining({ host: "host.example", user: "deploy", authMethod: "password_ref", purposes: ["file_transfer"] })));
   expect(saveSshHostCredential).toHaveBeenCalledWith(expect.objectContaining({ hostId: host.id, password: "test-password" }));
   expect(hostApi.observeFingerprint).toHaveBeenCalledWith(host.id);
   expect(await screen.findByRole("button", { name: "Confirm and connect" })).toBeTruthy();
   expect(screen.getByText(host.observedFingerprint!)).toBeTruthy();
   expect(screen.queryByDisplayValue("test-password")).toBeNull();
-  fireEvent.click(screen.getByLabelText("I confirmed that this is the device I intend to connect to."));
+  fireEvent.click(screen.getByLabelText("I compared the fingerprint and confirmed this is the device I intend to connect to."));
   fireEvent.click(screen.getByRole("button", { name: "Confirm and connect" }));
   await waitFor(() => expect(hostApi.confirmFingerprint).toHaveBeenCalledWith(host.id, host.observedFingerprint, observedHost.revision));
   expect(hostApi.verify).toHaveBeenCalledWith(host.id);
-  await waitFor(() => expect(screen.queryByRole("heading", { name: "Confirm this device" })).toBeNull());
+  expect(await screen.findByRole("heading", { name: "Add a file range" })).toBeTruthy();
+  expect(await screen.findByDisplayValue("/srv/myagenttool-sites/server001-lan-e2e")).toBeTruthy();
+  expect(screen.getByText("3. Choose folder")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Verify range and finish" }));
+  await waitFor(() => expect(hostApi.createScope).toHaveBeenCalledWith(host.id, expect.objectContaining({ rootPath: "/srv/myagenttool-sites/server001-lan-e2e" })));
 });
 
 it("requires plain-language consent before connecting to a local-network address", async () => {
@@ -186,9 +243,9 @@ it("repairs an existing private-network host in place and reuses its saved crede
   vi.mocked(hostApi.observeFingerprint).mockResolvedValue({ host: observedHost, observation: { fingerprint: host.observedFingerprint!, resolvedAddress: "10.10.10.222" } });
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Continue setup" }));
-  expect(await screen.findByText("This is a local-network address. Allow MyAgentTool to connect to this local device.")).toBeTruthy();
-  fireEvent.click(screen.getByLabelText("This is a local-network address. Allow MyAgentTool to connect to this local device."));
+  fireEvent.click(await screen.findByRole("button", { name: "Allow local network and retry" }));
+  const privateConsent = await screen.findByLabelText("This is a local-network address. Allow MyAgentTool to connect to this local device.");
+  expect((privateConsent as HTMLInputElement).checked).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Connect and verify" }));
 
   await waitFor(() => expect(hostApi.update).toHaveBeenCalledWith(blockedHost.id, expect.objectContaining({ expectedRevision: blockedHost.revision, networkPolicy: "allow_private_network" })));
