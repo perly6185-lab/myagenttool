@@ -28,7 +28,7 @@ import type {
   ToolInvocationRequest,
   ToolInvocationResponse,
 } from "@/lib/console-state";
-import type { TaskRecordBinding } from "@myagenttool/protocol/task-resources";
+import type { TaskRecordBinding, TaskTemplateContractV2 } from "@myagenttool/protocol/task-resources";
 import {
   ApiError,
   apiBase,
@@ -2652,6 +2652,11 @@ export const api = {
   }) => request("POST", "/api/work-items/assist/intent-plan/commit", payload),
   listMyTemplateDefinitions: () =>
     request("GET", "/api/workflow-memory/business-routine-definitions"),
+  listTaskTemplates: (projectId?: string) =>
+    request<{ taskTemplates: TaskTemplateContractV2[]; count: number }>(
+      "GET",
+      `/api/workflow-memory/task-templates${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
+    ),
   listMyTemplateLearning: (projectId?: string) =>
     request("GET", `/api/work-items/my-template-learning${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   removeMyTemplateLearning: (feedbackId: string) =>

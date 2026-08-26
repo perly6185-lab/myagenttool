@@ -7515,6 +7515,7 @@ export function createServerRuntimeServices({
     createRoutineDefinition: businessRoutineService.createRoutineDefinition,
     createRoutineDraftFromDiscovery: businessRoutineService.createRoutineDraftFromDiscovery,
     listBusinessRoutineDefinitions: businessRoutineService.listRoutineDefinitions,
+    listTaskTemplates: businessRoutineService.listTaskTemplates,
     updateBusinessRoutineDefinition: businessRoutineService.updateRoutineDefinition,
     createBusinessRoutineDefinitionVersion: businessRoutineService.createRoutineDefinitionVersion,
     publishBusinessRoutineDefinition: businessRoutineService.publishRoutineDefinition,

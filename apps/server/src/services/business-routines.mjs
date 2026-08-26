@@ -23,6 +23,7 @@ import {
   writeLocalQuotationDraft,
 } from "./business-routine-executors.mjs";
 import { normalizeDataContract } from "./data-plan-contract.mjs";
+import { projectRoutineDefinitionToTaskTemplate } from "./task-template-runtime.mjs";
 
 export const businessRoutineCollectionKeys = [
   "businessDocumentClassifications",
@@ -1878,6 +1879,25 @@ export function createBusinessRoutineService({
       .filter((row) => visible(row, actor) && (!sourceId || row.sourceId === sourceId))
       .map((row) => ({ ...row, evidenceHealth: routineDefinitionHealth(row, actor) }));
     return { status: 200, body: { routineDefinitions, count: routineDefinitions.length } };
+  }
+
+  function listTaskTemplates({ projectId = null, sourceId = null, includeNonPublished = false } = {}, actor = null) {
+    if (sourceId && !sourceFor(sourceId, actor)) {
+      return { status: 404, body: { error: "workflow_source_not_found" } };
+    }
+    if (projectId && !projectFor(projectId, actor)) {
+      return { status: 404, body: { error: "project_not_found" } };
+    }
+    const taskTemplates = [];
+    for (const definition of state.routineDefinitions) {
+      if (!visible(definition, actor)
+        || (projectId && definition.projectId !== projectId)
+        || (sourceId && definition.sourceId !== sourceId)
+        || (!includeNonPublished && definition.state !== "published")) continue;
+      const projected = projectRoutineDefinitionToTaskTemplate(definition);
+      if (projected.ok) taskTemplates.push(projected.value);
+    }
+    return { status: 200, body: { taskTemplates, count: taskTemplates.length } };
   }
 
   function selectPublishedRoutineForTrigger({ projectId, sourceId, documentType } = {}, actor = null) {
@@ -4234,6 +4254,7 @@ export function createBusinessRoutineService({
     createRoutineDefinition,
     createRoutineDraftFromDiscovery,
     listRoutineDefinitions,
+    listTaskTemplates,
     selectPublishedRoutineForTrigger,
     updateRoutineDefinition,
     createRoutineDefinitionVersion,

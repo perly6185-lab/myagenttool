@@ -65,6 +65,7 @@ export async function handleWorkflowMemoryRoutes({
   listBusinessRoutineCandidates,
   createRoutineDraft,
   listBusinessRoutineDefinitions,
+  listTaskTemplates,
   updateBusinessRoutineDefinition,
   createBusinessRoutineDefinitionVersion,
   publishBusinessRoutineDefinition,
@@ -638,6 +639,16 @@ export async function handleWorkflowMemoryRoutes({
     && req.method === "GET") {
     const result = listBusinessRoutineDefinitions({
       sourceId: url.searchParams.get("sourceId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/task-templates" && req.method === "GET") {
+    const result = listTaskTemplates({
+      projectId: url.searchParams.get("projectId"),
+      sourceId: url.searchParams.get("sourceId"),
+      includeNonPublished: url.searchParams.get("includeNonPublished") === "1",
     }, actor);
     sendJson(res, result.status, result.body);
     return true;
