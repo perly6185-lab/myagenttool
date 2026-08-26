@@ -22,6 +22,7 @@ type ChannelTaskUserStateInput = {
   task?: ChannelTaskRequest | null;
   delivery?: ChannelDelivery | null;
   revision?: ChannelTaskRevision | null;
+  now?: number;
 };
 
 /**
@@ -29,7 +30,22 @@ type ChannelTaskUserStateInput = {
  * next step. Internal task actions remain available beside this summary, but
  * the default wording should answer: "What do I do now?"
  */
-export function channelTaskUserState({ thread, task, delivery, revision }: ChannelTaskUserStateInput): ChannelTaskUserState {
+export function channelTaskUserState({ thread, task, delivery, revision, now = Date.now() }: ChannelTaskUserStateInput): ChannelTaskUserState {
+  if (delivery?.status === "sent_unconfirmed"
+    && (delivery.taskContext?.deliveryKind === "result" || ["succeeded", "failed"].includes(thread.status))) {
+    const retryAt = Date.parse(delivery.nextManualRetryAt ?? "");
+    const coolingDown = Number.isFinite(retryAt) && retryAt > now;
+    return {
+      label: "微信未确认送达",
+      tone: "warning",
+      nextStep: coolingDown
+        ? "微信已接受结果，客户端可能正在延迟展示。为避免之后收到重复消息，请稍后再发送；本地结果现在就能查看。"
+        : "微信接口已接受结果，但没有确认客户端已经显示。如果微信里没有结果，可以明确再次发送。",
+      action: coolingDown ? (thread.workItemId ? "view_task" : null) : "retry_delivery",
+      actionLabel: coolingDown ? (thread.workItemId ? "查看本地结果" : null) : "再次发送结果",
+    };
+  }
+
   if (delivery?.status === "failed_terminal") {
     return {
       label: "结果未送达",

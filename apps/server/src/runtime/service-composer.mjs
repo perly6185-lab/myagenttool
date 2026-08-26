@@ -165,6 +165,8 @@ import { createBusinessRoutineService } from "../services/business-routines.mjs"
 import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
 import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive-work.mjs";
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
+import { createTaskLedgerPostingService } from "../services/task-ledger-posting.mjs";
+import { createTaskRecordFreshnessService } from "../services/task-record-freshness.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
 import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree, inspectArticle } from "../services/article-imports.mjs";
@@ -528,6 +530,8 @@ export function createServerRuntimeServices({
   let syncAdaptiveWorkItemOutcome = () => {};
   let requestWorkItemAutoSchedulerSweep = () => {};
   let enqueueWorkItemReportDeliveryBatch = () => ({ ok: false, reason: "delivery_unavailable" });
+  let invalidateStaleTaskLedgerPostingPlan = () => false;
+  let reconcileTaskRecordBindings = async () => ({ status: 200, body: { changed: false, blocked: false } });
   const localContentCatalogService = createLocalContentCatalogService({
     state, stateStorePath, now, persistStateSoon, store, autoIndex: true,
   });
@@ -567,6 +571,7 @@ export function createServerRuntimeServices({
     enqueueChannelDeliveryBatch: (input) => enqueueWorkItemReportDeliveryBatch(input),
     validateApprovalToken,
     onWorkItemChanged: (item, actor, reason) => {
+      invalidateStaleTaskLedgerPostingPlan(item, actor, reason);
       syncAdaptiveWorkItemOutcome(item, actor);
       requestWorkItemAutoSchedulerSweep();
       try {
@@ -613,6 +618,7 @@ export function createServerRuntimeServices({
     upsertChannelObject: channelObjectRegistryService.upsertChannelObject,
     setChannelObjectStatus: channelObjectRegistryService.setChannelObjectStatus,
     onFileSourceConfirmed: (identity, actor) => refreshChannelMutationSourceIdentity?.(identity, actor),
+    validateApprovalToken,
   });
   const channelObjectConnectorService = createChannelObjectConnectorService({
     state,
@@ -623,6 +629,7 @@ export function createServerRuntimeServices({
     store,
     upsertChannelObject: channelObjectRegistryService.upsertChannelObject,
     adapters: channelObjectConnectorAdapters,
+    validateApprovalToken,
   });
   const channelMutationBindingService = createChannelMutationBindingService({
     state,
@@ -644,6 +651,33 @@ export function createServerRuntimeServices({
     validateRoutineLedgerStep: businessRoutineService.validateRoutineLedgerStep,
     completeRoutineLedgerStep: businessRoutineService.completeRoutineLedgerStep,
   });
+  const taskLedgerPostingService = createTaskLedgerPostingService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    previewLedgerUpsert: ledgerUpsertService.previewUpsert,
+    previewLedgerBatchUpsert: ledgerUpsertService.previewBatchUpsert,
+    commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
+    commitLedgerBatchUpsertPreview: ledgerUpsertService.commitBatchPreview,
+    validateApprovalToken,
+    reconcileRecordBindings: (input, actor) => reconcileTaskRecordBindings(input, actor),
+  });
+  invalidateStaleTaskLedgerPostingPlan = taskLedgerPostingService.invalidateStaleLedgerPostingPlanForWorkItem;
+  const taskRecordFreshnessService = createTaskRecordFreshnessService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    readBusinessLedgerRecord: ledgerUpsertService.readBusinessLedgerRecord,
+    getWorkItem: workItemService.getWorkItem,
+    invalidateLedgerPostingPlan: invalidateStaleTaskLedgerPostingPlan,
+  });
+  reconcileTaskRecordBindings = taskRecordFreshnessService.reconcileWorkItemRecordBindings;
   const businessPilotEvidenceService = createBusinessPilotEvidenceService({
     state,
     now,
@@ -2485,6 +2519,7 @@ export function createServerRuntimeServices({
     persistStateSoon,
     appendEvent,
     getWorkItem: workItemService.getWorkItem,
+    reconcileRecordBindings: taskRecordFreshnessService.reconcileWorkItemRecordBindings,
     beginExecution: workItemService.beginExecution,
     abortExecution: workItemService.abortExecution,
     recordExecutionBinding: workItemService.recordExecutionBinding,
@@ -2497,6 +2532,7 @@ export function createServerRuntimeServices({
     now,
     appendEvent,
     getWorkItem: workItemService.getWorkItem,
+    reconcileRecordBindings: taskRecordFreshnessService.reconcileWorkItemRecordBindings,
     beginExecution: workItemService.beginExecution,
     abortExecution: workItemService.abortExecution,
     recordExecutionBinding: workItemService.recordExecutionBinding,
@@ -4954,6 +4990,7 @@ export function createServerRuntimeServices({
 
   let channelReplySender = null;
   let channelResendDelivery = null;
+  let channelAcknowledgeDelivery = null;
   let channelDeliveryService = null;
   let channelNotificationService = null;
   const recordChannelIntentBridgeMetric = ({ status, latencyMs, circuitOpen, circuitOpenUntil, failureStreak, circuitTrips } = {}) => {
@@ -5260,6 +5297,7 @@ export function createServerRuntimeServices({
       }
     },
     resendDelivery: (args) => channelResendDelivery?.(args),
+    acknowledgeDelivery: (args) => channelAcknowledgeDelivery?.(args),
     replySender: (args) => channelReplySender?.(args),
     enqueueChannelDelivery: (args) => channelDeliveryService?.enqueueChannelDelivery(args),
     notifyTaskEvent: (args) => channelNotificationService?.notifyTaskEvent(args),
@@ -5318,6 +5356,7 @@ export function createServerRuntimeServices({
       : null,
   });
   channelResendDelivery = channelDeliveryService.resendChannelDelivery;
+  channelAcknowledgeDelivery = channelDeliveryService.acknowledgeChannelDelivery;
   channelDeliveryService.recoverThreadDeliveryState?.();
   channelNotificationService.sweep?.();
   channelConversationService.recoverTaskThreads?.();
@@ -7498,6 +7537,10 @@ export function createServerRuntimeServices({
     getHomeWorkbench: workItemService.getHomeWorkbench,
     listWorkItemAttention: workItemService.listAttention,
     getWorkItem: workItemService.getWorkItem,
+    reconcileWorkItemRecordBindings: taskRecordFreshnessService.reconcileWorkItemRecordBindings,
+    reconcileVisibleWorkItemRecordBindings: taskRecordFreshnessService.reconcileVisibleWorkItemRecordBindings,
+    refreshWorkItemRecordBinding: taskRecordFreshnessService.refreshWorkItemRecordBinding,
+    refreshWorkItemRecordBindingsBatch: taskRecordFreshnessService.refreshWorkItemRecordBindingsBatch,
     createWorkItem: workItemService.createWorkItem,
     createWorkItemFromExternal: workItemService.createWorkItemFromExternal,
     addWorkItemMaterials: workItemService.addMaterials,
@@ -7602,6 +7645,7 @@ export function createServerRuntimeServices({
     createRoutineDefinition: businessRoutineService.createRoutineDefinition,
     createRoutineDraftFromDiscovery: businessRoutineService.createRoutineDraftFromDiscovery,
     listBusinessRoutineDefinitions: businessRoutineService.listRoutineDefinitions,
+    listTaskTemplates: businessRoutineService.listTaskTemplates,
     updateBusinessRoutineDefinition: businessRoutineService.updateRoutineDefinition,
     createBusinessRoutineDefinitionVersion: businessRoutineService.createRoutineDefinitionVersion,
     publishBusinessRoutineDefinition: businessRoutineService.publishRoutineDefinition,
@@ -7612,6 +7656,10 @@ export function createServerRuntimeServices({
     disableLedgerDefinition: ledgerUpsertService.disableDefinition,
     previewLedgerUpsert: ledgerUpsertService.previewUpsert,
     inspectLedgerTargetIdentity: ledgerUpsertService.inspectTargetIdentity,
+    readBusinessLedgerRecord: ledgerUpsertService.readBusinessLedgerRecord,
+    prepareLedgerPostingPlan: taskLedgerPostingService.prepareLedgerPostingPlan,
+    commitLedgerPostingPlan: taskLedgerPostingService.commitLedgerPostingPlan,
+    getLedgerPostingPlan: taskLedgerPostingService.getLedgerPostingPlan,
     commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
     previewLedgerBatchUpsert: ledgerUpsertService.previewBatchUpsert,
     commitLedgerBatchUpsertPreview: ledgerUpsertService.commitBatchPreview,

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, BellRing, CheckCircle2, CircleAlert, ShieldCheck, Sparkles, WifiOff, X } from "lucide-react";
+import { Bell, BellRing, CheckCircle2, CircleAlert, Database, ShieldCheck, Sparkles, WifiOff, X } from "lucide-react";
 import { useConsoleState } from "@/data/use-console-state";
+import { api } from "@/data/use-console-actions";
 import {
   isControlPlaneStreamConnected,
   subscribeControlPlaneStream,
@@ -68,9 +69,27 @@ export function NotificationCenter() {
     isControlPlaneStreamConnected,
     () => false,
   );
+  const recordBindingAttentionQuery = useQuery({
+    queryKey: ["work-items", "attention", "record-binding-stale"],
+    queryFn: () => api.listWorkItemAttention({ kind: "record_binding_stale", limit: "100" }) as Promise<{
+      items: Array<{ id: string; workItemId: string | null; title: string }>;
+    }>,
+    enabled: Boolean(state),
+    refetchInterval: 15_000,
+  });
+  const recordBindingAttentionItems = useMemo(
+    () => (recordBindingAttentionQuery.data?.items ?? [])
+      .filter((item): item is { id: string; workItemId: string; title: string } => Boolean(item.workItemId)),
+    [recordBindingAttentionQuery.data?.items],
+  );
   const model = useMemo(
-    () => deriveNotificationCenterModel(state, { isError, isLoading, liveUpdates }),
-    [isError, isLoading, liveUpdates, state],
+    () => deriveNotificationCenterModel(state, {
+      isError,
+      isLoading,
+      liveUpdates,
+      recordBindingAttentionItems,
+    }),
+    [isError, isLoading, liveUpdates, recordBindingAttentionItems, state],
   );
   const templateTasksQuery = useQuery({
     queryKey: ["workflow-memory", "template-learning-tasks"],
@@ -111,8 +130,10 @@ export function NotificationCenter() {
     : [];
   const unreadCount = unreadIds.length;
   const unreadCompletionItems = model.completions.items.filter((item) => unreadIds.includes(item.id));
-  const actionCount = model.approvals.count + model.failures.count + model.followUps.count + templateAlerts.length + (model.offline ? 1 : 0);
-  const hasDanger = model.failures.count > 0 || templateAlerts.some((task) => task.stage === "failed") || model.offline;
+  const actionCount = model.approvals.count + model.failures.count + model.followUps.count
+    + model.businessRecords.count + model.channelDeliveries.count + templateAlerts.length + (model.offline ? 1 : 0);
+  const hasDanger = model.failures.count > 0 || model.businessRecords.count > 0
+    || templateAlerts.some((task) => task.stage === "failed") || model.offline;
 
   const notificationEventIds = [
     ...model.eventIds,
@@ -137,7 +158,13 @@ export function NotificationCenter() {
       });
       notice.onclick = () => {
         window.focus();
-        navigate(newIds.some((id) => id.startsWith("template:")) ? "workflowMemory" : "workBoard");
+        navigate(newIds.some((id) => id.startsWith("channel-delivery:"))
+          ? "channels"
+          : newIds.some((id) => id.startsWith("template:"))
+            ? "workflowMemory"
+            : newIds.some((id) => id.startsWith("business-record:"))
+              ? "task"
+              : "workBoard");
         notice.close();
       };
     } catch {
@@ -208,6 +235,10 @@ export function NotificationCenter() {
       if (task?.stage === "needs_case_review") url.searchParams.set("sourceId", task.sourceId);
       else url.searchParams.delete("sourceId");
       window.location.assign(url.toString());
+      return;
+    }
+    if (item.target === "channel") {
+      navigate("channels");
       return;
     }
     navigate(fallback);
@@ -366,6 +397,32 @@ export function NotificationCenter() {
                 tone="warning"
                 onClick={() => openSection("workBoard")}
               />
+            ) : null}
+            {model.businessRecords.count > 0 ? (
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<Database className="size-5 text-warning" />}
+                  title={text.businessRecords}
+                  description={text.businessRecordsHint}
+                  count={model.businessRecords.count}
+                  tone="warning"
+                  onClick={() => openSection("task")}
+                />
+                <NotificationItemLinks items={model.businessRecords.items} onOpen={(item) => openNotificationItem(item, "task")} />
+              </NotificationGroup>
+            ) : null}
+            {model.channelDeliveries.count > 0 ? (
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<BellRing className="size-5 text-warning" />}
+                  title={text.channelDeliveries}
+                  description={text.channelDeliveriesHint}
+                  count={model.channelDeliveries.count}
+                  tone="warning"
+                  onClick={() => openSection("channels")}
+                />
+                <NotificationItemLinks items={model.channelDeliveries.items} onOpen={(item) => openNotificationItem(item, "channels")} />
+              </NotificationGroup>
             ) : null}
             {model.offline ? (
               <NotificationRow

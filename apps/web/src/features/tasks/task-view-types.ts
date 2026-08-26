@@ -1,4 +1,5 @@
 import type { WorkItemContentReference } from "@/features/local-content/local-content-types";
+import type { LedgerPostingPlan, TaskRecordBinding } from "@myagenttool/protocol/task-resources";
 
 export type GithubItem = {
   type: "issue" | "pr";
@@ -148,6 +149,18 @@ export type LocalWorkItem = {
     evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string; sourceAutoRunId?: string | null;
   }[];
   inputAssets?: WorkItemAssetRef[];
+  recordBindings?: TaskRecordBinding[];
+  ledgerPostingPlanId?: string | null;
+  ledgerPostingPlan?: (LedgerPostingPlan & {
+    id: string;
+    revision: number;
+    status: string;
+    previewId: string | null;
+    batchPreviewId: string | null;
+    previewIds: string[];
+    invalidatedAt?: string | null;
+    invalidatedReason?: string | null;
+  }) | null;
   localContentRefs?: WorkItemContentReference[];
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
@@ -656,7 +669,7 @@ export type WorkItemActivity = {
 };
 export type WorkItemAttention = {
   id: string;
-  kind: "github_conflict" | "github_deleted" | "execution_approval" | "execution_input" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
+  kind: "record_binding_stale" | "github_conflict" | "github_deleted" | "execution_approval" | "execution_input" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
   severity: "low" | "medium" | "high";
   workItemId: string | null;
   planningProjectId?: string | null;
@@ -676,6 +689,7 @@ export type WorkItemAttentionMetrics = {
   breached: number;
   claimed: number;
   pendingApprovals: number;
+  staleRecords: number;
   oldestAgeSeconds: number;
 };
 export type LocalWorkItemAutoRun = {

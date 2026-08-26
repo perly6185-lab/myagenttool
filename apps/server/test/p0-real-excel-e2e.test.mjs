@@ -36,6 +36,9 @@ test("P0 real Excel E2E preserves quote revisions, split shipments/payments, ret
     nextId: (prefix) => `${prefix}_real_${++sequence}`,
     appendEvent: () => {},
     persistStateSoon: () => {},
+    validateApprovalToken: (token, request) => token === "issued-token" && request.action === "channel_object_import_confirm"
+      ? { approved: true, grantId: "apg_test" }
+      : { approved: false, reason: "grant_required" },
   };
   const registry = createChannelObjectRegistryService(options);
   const imports = createChannelObjectImportService({
@@ -104,7 +107,7 @@ test("P0 real Excel E2E preserves quote revisions, split shipments/payments, ret
       assert.equal(preview.status, 201, `${definition.fileName}: ${JSON.stringify(preview)}`);
       assert.equal(preview.body.import.acceptedRows, definition.rows.length);
       assert.equal(preview.body.canConfirm, true);
-      const confirmed = imports.confirmChannelObjectImport({ importId: preview.body.import.id }, ACTOR);
+      const confirmed = imports.confirmChannelObjectImport({ importId: preview.body.import.id, approvalToken: "issued-token" }, ACTOR);
       assert.equal(confirmed.status, 200, `${definition.fileName}: ${JSON.stringify(confirmed)}`);
       assert.equal(confirmed.body.replayed, false);
     }

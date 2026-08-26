@@ -7,6 +7,11 @@ import { useUiStore } from "@/store/ui-store";
 
 const mocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
+  refreshWorkItemRecordBinding: vi.fn(),
+  getWorkItemLedgerPostingPlan: vi.fn(),
+  prepareWorkItemLedgerPostingPlan: vi.fn(),
+  issueApprovalGrant: vi.fn(),
+  commitWorkItemLedgerPostingPlan: vi.fn(),
   createWorkItemResultRepair: vi.fn(),
   updateWorkItem: vi.fn(),
   suggestWorkItemDraft: vi.fn(),
@@ -51,6 +56,11 @@ vi.mock("@/data/use-console-state", () => ({
 vi.mock("@/data/use-console-actions", () => ({
   api: {
     getWorkItem: mocks.getWorkItem,
+    refreshWorkItemRecordBinding: mocks.refreshWorkItemRecordBinding,
+    getWorkItemLedgerPostingPlan: mocks.getWorkItemLedgerPostingPlan,
+    prepareWorkItemLedgerPostingPlan: mocks.prepareWorkItemLedgerPostingPlan,
+    issueApprovalGrant: mocks.issueApprovalGrant,
+    commitWorkItemLedgerPostingPlan: mocks.commitWorkItemLedgerPostingPlan,
     createWorkItemResultRepair: mocks.createWorkItemResultRepair,
     updateWorkItem: mocks.updateWorkItem,
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
@@ -185,6 +195,166 @@ describe("work item summary presentation", () => {
 
     expect(await screen.findByRole("heading", { name: "Prepare customer update" })).toBeTruthy();
     expect(mocks.getWorkItem).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows bounded business materials without connector details", async () => {
+    const fingerprint = `sha256:${"d".repeat(64)}`;
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        recordBindings: [{
+          id: "binding_customer",
+          slotKey: "customer",
+          direction: "input",
+          role: "required",
+          ledgerDefinitionId: "ledger_customer",
+          record: {
+            ledgerDefinitionId: "ledger_customer",
+            recordId: "blr_customer_1",
+            recordType: "customer",
+            businessKey: "CUS-001",
+            title: "Acme Corporation",
+            revision: "revision-1",
+            fingerprint,
+            observedAt: "2026-08-26T08:00:00Z",
+          },
+          selection: { fieldKeys: ["customer"], queryId: null, rowLimit: 1 },
+          snapshot: { revision: "revision-1", fingerprint, capturedAt: "2026-08-26T08:00:00Z", evidenceRefs: [] },
+          resolution: { source: "explicit_user", confidence: 1, state: "needs_confirmation", reasons: ["Confirm the record"] },
+        }],
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const materials = await screen.findByRole("heading", { name: "Business materials" });
+    const section = materials.closest("section");
+    expect(section?.textContent).toContain("Acme Corporation");
+    expect(section?.textContent).toContain("CUS-001");
+    expect(section?.textContent).toContain("Needs confirmation");
+    expect(section?.textContent).not.toContain("ledger_customer");
+    expect(section?.textContent).not.toContain("blr_customer_1");
+  });
+
+  it("refreshes a stale business material and confirms the new snapshot", async () => {
+    const oldFingerprint = `sha256:${"e".repeat(64)}`;
+    const newFingerprint = `sha256:${"f".repeat(64)}`;
+    const staleBinding = {
+      id: "binding_customer",
+      slotKey: "customer",
+      direction: "input" as const,
+      role: "required" as const,
+      ledgerDefinitionId: "ledger_customer",
+      record: {
+        ledgerDefinitionId: "ledger_customer",
+        recordId: "blr_customer_1",
+        recordType: "customer",
+        businessKey: "CUS-001",
+        title: "Acme Corporation",
+        revision: "revision-1",
+        fingerprint: oldFingerprint,
+        observedAt: "2026-08-26T08:00:00Z",
+      },
+      selection: { fieldKeys: ["customer"], queryId: null, rowLimit: 1 },
+      snapshot: { revision: "revision-1", fingerprint: oldFingerprint, capturedAt: "2026-08-26T08:00:00Z", evidenceRefs: [] },
+      resolution: { source: "explicit_user" as const, confidence: 1, state: "stale" as const, reasons: ["The record changed"] },
+    };
+    const refreshedBinding = {
+      ...staleBinding,
+      record: { ...staleBinding.record, revision: "revision-2", fingerprint: newFingerprint, observedAt: "2026-08-26T08:01:00Z" },
+      snapshot: { ...staleBinding.snapshot, revision: "revision-2", fingerprint: newFingerprint, capturedAt: "2026-08-26T08:01:00Z" },
+      resolution: { ...staleBinding.resolution, state: "resolved" as const },
+    };
+    mocks.refreshWorkItemRecordBinding.mockResolvedValue({ workItem: item({ revision: 3, recordBindings: [refreshedBinding] }) });
+    mocks.getWorkItem.mockResolvedValue({ workItem: item({ recordBindings: [staleBinding] }) });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh and confirm" }));
+    await waitFor(() => expect(mocks.refreshWorkItemRecordBinding).toHaveBeenCalledWith("lwi_1", "binding_customer", 2));
+    expect(await screen.findByText("The business material was refreshed and confirmed; the task will use the current record version.")).toBeTruthy();
+  });
+
+  it("shows a ledger preview and requires an approval grant before committing", async () => {
+    mocks.getWorkItem.mockResolvedValue({ workItem: item({ ledgerPostingPlanId: "tpp_1" }) });
+    mocks.getWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: { id: "tpp_1", status: "proposed", state: "proposed", revision: 1 },
+      preview: { changedCells: [{ field: "status", before: "draft", after: "ready" }] },
+      batchPreview: null,
+    });
+    mocks.issueApprovalGrant.mockResolvedValue({ grantId: "apg_1", token: "issued-token", expiresAt: "2026-08-26T00:10:00Z" });
+    mocks.commitWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: { id: "tpp_1", status: "committed", state: "committed", revision: 2 },
+    });
+
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByRole("heading", { name: "Ledger change approval" })).toBeTruthy();
+    expect(await screen.findByText("status")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Approve and write ledger" }));
+
+    await waitFor(() => expect(mocks.issueApprovalGrant).toHaveBeenCalledWith("ledger_posting_plan_commit", "tpp_1"));
+    expect(mocks.commitWorkItemLedgerPostingPlan).toHaveBeenCalledWith("lwi_1", {
+      planId: "tpp_1",
+      expectedRevision: 2,
+      approvalToken: "issued-token",
+    });
+    expect(await screen.findByText("The ledger was updated and the change was recorded.")).toBeTruthy();
+  });
+
+  it("regenerates an invalidated ledger plan from the current task revision", async () => {
+    const operation = {
+      ledgerDefinitionId: "ldg_orders",
+      recordId: null,
+      action: "create" as const,
+      fields: { order_number: "ORD-001" },
+      sourceEvidence: [{ artifactId: "artifact_order", field: "order_number" }],
+      approvalRequired: true,
+    };
+    mocks.getWorkItem.mockResolvedValue({ workItem: item({ revision: 3, ledgerPostingPlanId: "tpp_old" }) });
+    mocks.getWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: {
+        schemaVersion: 2,
+        id: "tpp_old",
+        workItemId: "lwi_1",
+        resultRevision: 2,
+        primary: operation,
+        related: [],
+        status: "invalidated",
+        state: "invalidated",
+        revision: 2,
+        invalidatedReason: "work_item_revision_changed",
+      },
+      preview: { changedCells: [{ field: "order_number", before: null, after: "ORD-001" }] },
+      batchPreview: null,
+    });
+    mocks.prepareWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: {
+        schemaVersion: 2,
+        id: "tpp_fresh",
+        workItemId: "lwi_1",
+        resultRevision: 3,
+        primary: operation,
+        related: [],
+        status: "proposed",
+        state: "proposed",
+        revision: 1,
+      },
+      preview: { changedCells: [{ field: "order_number", before: null, after: "ORD-001" }] },
+      batchPreview: null,
+    });
+
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByText("Refresh required")).toBeTruthy();
+    expect(screen.queryByText("order_number")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh plan and review again" }));
+
+    await waitFor(() => expect(mocks.prepareWorkItemLedgerPostingPlan).toHaveBeenCalledWith("lwi_1", {
+      expectedRevision: 3,
+      primary: operation,
+      related: [],
+    }));
+    expect(await screen.findByText("The proposed write was checked against the current task revision. Review the fresh diff before approving.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve and write ledger" })).toBeTruthy();
+    expect(screen.getByText("order_number")).toBeTruthy();
   });
 
   it("explains the automatically matched My template without asking the user to choose it", async () => {

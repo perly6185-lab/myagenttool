@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   listWorkItemAttention: vi.fn(),
   getWorkItemExternalIssueFunnel: vi.fn(),
   updateWorkItemAttention: vi.fn(),
+  refreshWorkItemRecordBindingsBatch: vi.fn(),
   listGithubItems: vi.fn(),
   createWorkItem: vi.fn(),
   suggestWorkItemDraft: vi.fn(),
@@ -122,6 +123,7 @@ vi.mock("@/data/use-console-actions", () => ({
     listWorkItemAttention: mocks.listWorkItemAttention,
     getWorkItemExternalIssueFunnel: mocks.getWorkItemExternalIssueFunnel,
     updateWorkItemAttention: mocks.updateWorkItemAttention,
+    refreshWorkItemRecordBindingsBatch: mocks.refreshWorkItemRecordBindingsBatch,
     listGithubItems: mocks.listGithubItems,
     createWorkItem: mocks.createWorkItem,
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
@@ -239,6 +241,7 @@ describe("TaskView local work items", () => {
     mocks.listAutoRuns.mockResolvedValue({ autoRuns: [] });
     mocks.listWorkItemAutoRunBatches.mockResolvedValue({ batches: [] });
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
+    mocks.refreshWorkItemRecordBindingsBatch.mockResolvedValue({ refreshedCount: 0 });
     mocks.getWorkItemExternalIssueFunnel.mockResolvedValue({ metrics: { total: 0, notStarted: 0, running: 0, review: 0, completed: 0, stalled: 0 }, stalls: [] });
     mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
     mocks.suggestWorkItemDraft.mockResolvedValue({
@@ -294,6 +297,39 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("Ready")).toBeTruthy();
     expect(screen.getByText("1 pending")).toBeTruthy();
     expect(screen.getAllByText("Conflict")).toHaveLength(2);
+  });
+
+  it("refreshes and confirms stale business materials from the attention queue", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    mocks.listWorkItemAttention.mockResolvedValue({
+      items: [{
+        id: "record_binding_stale:lwi_7", kind: "record_binding_stale", severity: "high",
+        workItemId: "lwi_7", localRef: "LOCAL-7", title: "Customer brief",
+        createdAt: "2026-07-24T00:00:00.000Z", dueAt: "2026-07-24T04:00:00.000Z",
+        slaStatus: "within_sla", history: [], handling: null, resolution: null,
+        details: {
+          workItemRevision: 7,
+          bindingIds: ["binding_customer", "binding_orders"],
+          bindingCount: 2,
+          states: ["stale"],
+          executionBlocked: true,
+          postingBlocked: true,
+          refreshable: true,
+        },
+      }],
+      metrics: { backlog: 1, breached: 0, claimed: 0, pendingApprovals: 0, staleRecords: 1, oldestAgeSeconds: 0 },
+    });
+    mocks.refreshWorkItemRecordBindingsBatch.mockResolvedValue({ refreshedCount: 1 });
+
+    render(<TaskView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh and confirm" }));
+
+    await waitFor(() => expect(mocks.refreshWorkItemRecordBindingsBatch).toHaveBeenCalledWith([{
+      id: "lwi_7",
+      expectedRevision: 7,
+      bindingIds: ["binding_customer", "binding_orders"],
+    }]));
+    expect(await screen.findByText("Refreshed and confirmed business materials for 1 task(s).")).toBeTruthy();
   });
 
   it("creates a task from the modal", async () => {

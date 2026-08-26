@@ -303,6 +303,7 @@ export function createChannelService({
           invocationId: row.invocationId ?? null,
           attempts: Number(row.attempts ?? 0),
           providerReceiptId: row.providerReceiptId ?? null,
+          providerClientId: row.providerClientId ?? null,
           lastErrorCode: row.lastErrorCode ?? null,
         };
       });
@@ -396,6 +397,7 @@ export function createChannelService({
     const scopes = readiness(channel);
     const ready = Object.values(scopes).every(Boolean);
     const deliveries = (state.channelDeliveries ?? []).filter((row) => row.channelId === channel.id);
+    const unconfirmed = deliveries.filter((row) => row.status === "sent_unconfirmed");
     return {
       ok: true,
       status: 200,
@@ -409,6 +411,7 @@ export function createChannelService({
           conversations: (state.channelConversations ?? []).filter((row) => row.channelId === channel.id).length,
           deliveries: deliveries.length,
           failedDeliveries: deliveries.filter((row) => row.status === "failed_terminal").length,
+          unconfirmedDeliveries: unconfirmed.length,
         },
       },
     };
@@ -430,6 +433,22 @@ export function createChannelService({
     const inboundStatus = Object.fromEntries([...new Set(events.map((row) => row.status).filter(Boolean))].map((status) => [status, events.filter((row) => row.status === status).length]));
     const outboundStatus = Object.fromEntries([...new Set(deliveries.map((row) => row.status).filter(Boolean))].map((status) => [status, deliveries.filter((row) => row.status === status).length]));
     const taskStatus = Object.fromEntries([...new Set(threads.map((row) => row.status).filter(Boolean))].map((status) => [status, threads.filter((row) => row.status === status).length]));
+    const unconfirmed = deliveries.filter((row) => row.status === "sent_unconfirmed");
+    const resultDeliveryIds = new Set(threads.map((thread) => thread.lastDeliveryId).filter(Boolean));
+    const legacyResultKeys = new Set(threads
+      .filter((thread) => ["succeeded", "failed"].includes(thread.status))
+      .flatMap((thread) => (thread.sourceEventIds ?? []).map((eventId) => `channel-event:${eventId}:reply`)));
+    const actionableUnconfirmed = unconfirmed.filter((row) =>
+      row.taskContext?.deliveryKind === "result"
+      || row.taskContext?.notificationEvent === "succeeded"
+      || row.sourceContext?.kind === "work_item_report"
+      || resultDeliveryIds.has(row.id)
+      || legacyResultKeys.has(row.dedupeKey));
+    const nowMs = Date.parse(now());
+    const delayedUnconfirmed = actionableUnconfirmed.filter((row) => {
+      const acceptedAt = Date.parse(row.providerAcceptedAt ?? row.updatedAt ?? row.createdAt ?? "");
+      return Number.isFinite(nowMs) && Number.isFinite(acceptedAt) && nowMs - acceptedAt >= 60_000;
+    });
     const failures = [
       ...deliveries
         .filter((row) => row.status === "failed_terminal")
@@ -443,7 +462,7 @@ export function createChannelService({
       ok: true,
       status: 200,
       body: {
-        generatedAt: now(),
+        generatedAt: new Date(nowMs).toISOString(),
         channel: {
           id: channel.id,
           provider: channel.provider,
@@ -463,6 +482,11 @@ export function createChannelService({
           inbound: inboundStatus,
           outbound: outboundStatus,
           tasks: taskStatus,
+        },
+        deliveryHealth: {
+          state: delayedUnconfirmed.length > 0 ? "outbound_delayed" : actionableUnconfirmed.length > 0 ? "awaiting_visibility" : "healthy",
+          unconfirmedCount: actionableUnconfirmed.length,
+          delayedCount: delayedUnconfirmed.length,
         },
         links: recentChannelLinkDiagnostics(events, deliveries, { limit: 10 }),
         failures,

@@ -257,6 +257,7 @@ export const persistedArrayKeys = [
   "channelTaskRequests",
   "channelIntentLearningSamples",
   "ilinkAccounts",
+  "taskLedgerPostingPlans",
 ];
 
 // NOTE: `devices` is deliberately absent from both key lists — it restores
@@ -341,6 +342,7 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "ledgerBatchUpsertPreviews", owner: "ownerTeamId" },
   { key: "ledgerBatchMutationJournals", owner: "ownerTeamId" },
   { key: "ledgerMutationAudits", owner: "ownerTeamId" },
+  { key: "taskLedgerPostingPlans", owner: "ownerTeamId" },
 ];
 
 /**

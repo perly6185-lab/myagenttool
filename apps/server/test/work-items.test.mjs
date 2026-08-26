@@ -123,6 +123,92 @@ test("desktop intent planning creates discrete typed tasks instead of one giant 
   assert.equal(state.workItems.length, 4);
 });
 
+test("work items persist provider-neutral record bindings and require managed refreshes", () => {
+  const { service, state } = harness();
+  const fingerprint = `sha256:${"b".repeat(64)}`;
+  const binding = {
+    id: "binding_customer",
+    slotKey: "customer",
+    direction: "input",
+    role: "required",
+    ledgerDefinitionId: "ledger_customer",
+    record: {
+      ledgerDefinitionId: "ledger_customer",
+      recordId: "blr_customer_1",
+      recordType: "customer",
+      businessKey: "CUS-001",
+      title: "客户 A",
+      revision: "revision-1",
+      fingerprint,
+      observedAt: "2026-08-26T08:00:00Z",
+    },
+    selection: { fieldKeys: ["name"], queryId: null, rowLimit: 1 },
+    snapshot: { revision: "revision-1", fingerprint, capturedAt: "2026-08-26T08:00:00Z", evidenceRefs: [{ artifactId: "art_customer", field: "name" }] },
+    resolution: { source: "explicit_user", confidence: 1, state: "resolved", reasons: ["用户明确选择"] },
+  };
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "为客户 A 制作方案",
+    recordBindings: [binding],
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.recordBindings[0].record.recordId, "blr_customer_1");
+  const workItemId = created.body.workItem.id;
+  const managed = service.updateWorkItem({
+    workItemId,
+    expectedRevision: created.body.workItem.revision,
+    recordBindings: [{ ...binding, resolution: { ...binding.resolution, state: "stale" } }],
+  }, ACTOR_A);
+  assert.equal(managed.status, 409);
+  assert.equal(managed.body.error, "work_item_record_bindings_require_managed_update");
+
+  const stored = state.workItems.find((item) => item.id === workItemId);
+  stored.recordBindings[0].resolution.state = "stale";
+  const admission = service.beginExecution({ workItemId, kind: "auto_run" }, ACTOR_A);
+  assert.equal(admission.status, 409);
+  assert.equal(admission.body.error, "work_item_record_bindings_stale");
+  assert.deepEqual(admission.body.blockingBindings, [{ bindingId: "binding_customer", state: "stale" }]);
+
+  stored.executionBindings = [{ kind: "auto_run", targetId: "run_1" }];
+  const blocked = service.updateWorkItem({
+    workItemId,
+    expectedRevision: stored.revision,
+    recordBindings: [binding],
+  }, ACTOR_A);
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, "work_item_record_bindings_immutable");
+});
+
+test("work item record bindings keep IDs unique and allow one primary ledger only", () => {
+  const { service } = harness();
+  const fingerprint = `sha256:${"c".repeat(64)}`;
+  const binding = {
+    id: "binding_output_a",
+    direction: "output",
+    role: "primary_ledger",
+    ledgerDefinitionId: "ledger_customer",
+    record: null,
+    selection: { fieldKeys: ["name"], queryId: null, rowLimit: 1 },
+    snapshot: null,
+    resolution: { source: "template_default", confidence: 0.8, state: "needs_confirmation", reasons: ["等待确认"] },
+  };
+  const duplicate = service.createWorkItem({
+    projectId: "prj_a",
+    title: "重复绑定",
+    recordBindings: [binding, { ...binding }],
+  }, ACTOR_A);
+  assert.equal(duplicate.status, 400);
+  assert.equal(duplicate.body.error, "duplicate_work_item_record_binding");
+
+  const secondPrimary = service.createWorkItem({
+    projectId: "prj_a",
+    title: "多个主台账",
+    recordBindings: [binding, { ...binding, id: "binding_output_b" }],
+  }, ACTOR_A);
+  assert.equal(secondPrimary.status, 400);
+  assert.equal(secondPrimary.body.error, "multiple_primary_work_item_ledgers");
+});
+
 test("desktop intent planning asks one ordinary clarification before ambiguous publishing", () => {
   const { service } = harness();
   const preview = service.previewIntentTaskPlan({
@@ -1794,6 +1880,47 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   assert.equal(service.listAttention({}, ACTOR_A).body.items.some((row) => row.id === attentionId), false);
   const resolved = service.listAttention({ includeResolved: "1" }, ACTOR_A).body.items.find((row) => row.id === attentionId);
   assert.equal(resolved.resolution.note, "Handled");
+});
+
+test("stale business records remain actionable until refreshed", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Refresh customer material" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((candidate) => candidate.id === item.id);
+  stored.recordBindings = [{
+    id: "binding_customer",
+    direction: "input",
+    role: "required",
+    record: { title: "Acme" },
+    resolution: { state: "stale" },
+  }];
+  state.workItemActivities.unshift({
+    id: "wia_stale",
+    workItemId: item.id,
+    action: "record_bindings_freshness_changed",
+    actorId: "system_record_freshness",
+    createdAt: "2026-07-24T00:00:00.000Z",
+  });
+  const attention = service.listAttention({ kind: "record_binding_stale" }, ACTOR_A).body;
+  assert.equal(attention.count, 1);
+  assert.equal(attention.metrics.staleRecords, 1);
+  assert.equal(attention.items[0].severity, "high");
+  assert.deepEqual(attention.items[0].details, {
+    workItemRevision: 1,
+    bindingIds: ["binding_customer"],
+    bindingCount: 1,
+    states: ["stale"],
+    executionBlocked: true,
+    postingBlocked: true,
+    refreshable: true,
+  });
+  assert.equal(service.updateAttention({
+    attentionIds: [attention.items[0].id], action: "resolve",
+  }, ACTOR_A).body.error, "work_item_record_binding_attention_requires_refresh");
+
+  stored.executionBindings = [{ kind: "auto_run", targetId: "aur_started" }];
+  assert.equal(service.listAttention({ kind: "record_binding_stale" }, ACTOR_A).body.items[0].details.refreshable, false);
+  stored.recordBindings[0].resolution.state = "resolved";
+  assert.equal(service.listAttention({ kind: "record_binding_stale" }, ACTOR_A).body.count, 0);
 });
 
 test("adds and removes scoped local content references without copying bytes", async () => {

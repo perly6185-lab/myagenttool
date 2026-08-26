@@ -12,6 +12,7 @@ export const ILINK_BOT_AGENT = "MyAgentTool/0.2.0";
 export const MAX_ILINK_MEDIA_BYTES = 25 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
+const DEFAULT_CONFIG_TIMEOUT_MS = 10_000;
 const MEDIA_TRANSFER_TIMEOUT_MS = 30_000;
 
 export class IlinkApiError extends Error {
@@ -268,15 +269,16 @@ export function createIlinkClient({
     }
   }
 
-  async function sendMessage({ toUser, content, contextToken, fromUserId = undefined, mediaItems = [], clientId = null } = {}) {
-    const now = Date.now();
+  async function sendMessage({ toUser, content, contextToken, mediaItems = [], clientId = null } = {}) {
     const msg = {
       // Callers that own a durable delivery row pass its id here so a retry
       // reuses the same provider idempotency key. Standalone callers retain a
       // fresh id for each message.
       client_id: String(clientId ?? "").trim() || randomUUID(),
-      message_id: now,
-      from_user_id: fromUserId,
+      // Tencent's current iLink client deliberately leaves this empty. The
+      // bearer token identifies the bot; supplying the bot id can be accepted
+      // by HTTP while the message is silently omitted from the user chat.
+      from_user_id: "",
       to_user_id: String(toUser ?? ""),
       message_type: 2,
       message_state: 2,
@@ -284,9 +286,6 @@ export function createIlinkClient({
       item_list: [
         ...(String(content ?? "") ? [{
           type: 1,
-          create_time_ms: now,
-          update_time_ms: now,
-          is_completed: true,
           text_item: { text: String(content) },
         }] : []),
         ...mediaItems,
@@ -296,7 +295,42 @@ export function createIlinkClient({
       body: { msg, base_info: { channel_version: ILINK_CHANNEL_VERSION, bot_agent: ILINK_BOT_AGENT } },
       timeoutMs: DEFAULT_TIMEOUT_MS,
     });
-    return { ...assertRet(body, "sendmessage", { allowMissingRet: true }), clientId: msg.client_id };
+    const accepted = assertRet(body, "sendmessage", { allowMissingRet: true });
+    const providerReceiptId = String(accepted?.msgid ?? accepted?.message_id ?? "").trim() || null;
+    return { ...accepted, clientId: msg.client_id, providerReceiptId };
+  }
+
+  async function getConfig({ toUser, contextToken } = {}) {
+    const body = await request("ilink/bot/getconfig", {
+      body: {
+        ilink_user_id: String(toUser ?? ""),
+        context_token: contextToken || undefined,
+        base_info: { channel_version: ILINK_CHANNEL_VERSION, bot_agent: ILINK_BOT_AGENT },
+      },
+      timeoutMs: DEFAULT_CONFIG_TIMEOUT_MS,
+    });
+    return assertRet(body, "getconfig");
+  }
+
+  async function sendTyping({ toUser, contextToken, status = 1 } = {}) {
+    const config = await getConfig({ toUser, contextToken });
+    const typingTicket = String(config?.typing_ticket ?? "").trim();
+    if (!typingTicket) {
+      throw new IlinkApiError("getconfig: typing ticket is missing", {
+        code: "typing_ticket_missing",
+        retryable: true,
+      });
+    }
+    const body = await request("ilink/bot/sendtyping", {
+      body: {
+        ilink_user_id: String(toUser ?? ""),
+        typing_ticket: typingTicket,
+        status: Number(status) === 2 ? 2 : 1,
+        base_info: { channel_version: ILINK_CHANNEL_VERSION, bot_agent: ILINK_BOT_AGENT },
+      },
+      timeoutMs: DEFAULT_CONFIG_TIMEOUT_MS,
+    });
+    return assertRet(body, "sendtyping", { allowMissingRet: true });
   }
 
   async function getUploadUrl({ toUser, mediaType, rawSize, rawFileMd5, fileSize, aesKeyHex, fileKey } = {}) {
@@ -443,7 +477,7 @@ export function createIlinkClient({
     }), "notifystop", { allowMissingRet: true });
   }
 
-  return { getQrCode, getQrCodeStatus, getUpdates, sendMessage, getUploadUrl, uploadMedia, downloadMedia, notifyStart, notifyStop };
+  return { getQrCode, getQrCodeStatus, getUpdates, sendMessage, getConfig, sendTyping, getUploadUrl, uploadMedia, downloadMedia, notifyStart, notifyStop };
 }
 
 export function textFromIlinkMessage(message) {

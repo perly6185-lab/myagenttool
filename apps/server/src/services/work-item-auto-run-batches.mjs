@@ -42,6 +42,7 @@ export function createWorkItemAutoRunBatchService({
   persistStateSoon,
   appendEvent,
   getWorkItem,
+  reconcileRecordBindings,
   beginExecution,
   abortExecution,
   recordExecutionBinding,
@@ -198,6 +199,15 @@ export function createWorkItemAutoRunBatchService({
 
   async function startItem(batch, batchItem) {
     const actor = actorFor(batch);
+    if (typeof reconcileRecordBindings === "function") {
+      const freshness = await reconcileRecordBindings({ workItemId: batchItem.workItemId }, actor);
+      if (freshness?.status !== 200 || freshness.body?.executionBlocked) {
+        const error = new Error(freshness?.body?.error ?? "work_item_record_bindings_stale");
+        error.code = "work_item_record_bindings_stale";
+        error.blockingBindings = freshness?.body?.blockingBindings ?? [];
+        throw error;
+      }
+    }
     const detail = getWorkItem({ workItemId: batchItem.workItemId }, actor);
     if (!detail.ok) throw new Error(detail.body?.error ?? "work_item_not_found");
     const item = detail.body.workItem;

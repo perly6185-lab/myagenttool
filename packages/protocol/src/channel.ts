@@ -27,6 +27,7 @@ export declare const channelDeliveryStatuses: readonly [
   "queued",
   "sending",
   "delivered",
+  "sent_unconfirmed",
   "retrying",
   "failed_terminal",
 ];
@@ -170,8 +171,22 @@ export interface ChannelDelivery {
   invocationId: string | null;
   status: ChannelDeliveryStatus;
   attempts: number;
-  /** Provider receipt (WeCom msgid) when delivered. */
+  /** Provider receipt or acceptance id; only `delivered` confirms delivery. */
   providerReceiptId: string | null;
+  /** Client idempotency key, distinct from any provider acceptance id. */
+  providerClientId: string | null;
+  /** When the provider accepted the request, not proof of client visibility. */
+  providerAcceptedAt?: IsoDateTime | null;
+  /** Earliest safe manual resend time used to avoid delayed duplicates. */
+  nextManualRetryAt?: IsoDateTime | null;
+  lastResentAt?: IsoDateTime | null;
+  resendCount?: number;
+  resendOfDeliveryId?: ChannelDeliveryId | null;
+  /** Explicit visibility evidence supplied by the channel user. */
+  userConfirmedAt?: IsoDateTime | null;
+  userConfirmedByEventId?: ChannelEventId | null;
+  /** The user explicitly reported that the accepted message was not visible. */
+  userReportedMissingAt?: IsoDateTime | null;
   /** Provider error code of the last failed attempt, if any. */
   lastErrorCode: string | null;
   createdAt: IsoDateTime;

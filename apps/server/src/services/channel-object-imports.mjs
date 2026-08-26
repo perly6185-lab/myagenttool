@@ -253,7 +253,7 @@ function publicFileSource(source) {
 
 export function createChannelObjectImportService({
   state, now, nextId, appendEvent, persistStateSoon, store, upsertChannelObject, setChannelObjectStatus,
-  onFileSourceConfirmed = null,
+  onFileSourceConfirmed = null, validateApprovalToken,
 } = {}) {
   state.channelObjectImports ??= [];
   state.channelObjectFileSources ??= [];
@@ -335,6 +335,15 @@ export function createChannelObjectImportService({
       return { status: 409, body: { error: "channel_object_import_expired" } };
     }
     if (record.errors.length) return { status: 400, body: { error: "channel_object_import_has_errors", errors: record.errors } };
+    const approval = validateApprovalToken?.(input.approvalToken, {
+      action: "channel_object_import_confirm",
+      targetId: record.id,
+      actor,
+      allowLegacy: false,
+    });
+    if (!approval?.approved) {
+      return { status: 409, body: { error: "channel_object_import_approval_required", reason: approval?.reason ?? "approval_validator_unavailable" } };
+    }
     const imported = [];
     for (const row of record.rows.filter((candidate) => candidate.change !== "unchanged")) {
       const result = upsertChannelObject({
@@ -362,7 +371,7 @@ export function createChannelObjectImportService({
       record.status = "confirmed";
       record.confirmedAt = timestamp;
       record.confirmedCount = imported.length;
-      appendEvent?.({ invocationId: null, type: "channel_object_import_confirmed", level: "info", message: `Channel object import ${record.id} confirmed.`, data: { importId: record.id, count: imported.length } });
+      appendEvent?.({ invocationId: null, type: "channel_object_import_confirmed", level: "info", message: `Channel object import ${record.id} confirmed.`, data: { importId: record.id, count: imported.length, approvalGrantId: approval.grantId ?? null } });
     });
     onFileSourceConfirmed?.({
       fileSourceId: record.sourceId,

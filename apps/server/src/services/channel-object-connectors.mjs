@@ -6,6 +6,7 @@ const PREVIEW_TTL_MS = 30 * 60 * 1000;
 const KINDS = new Set(["contact", "order"]);
 const STATUSES = new Set(["enabled", "disabled"]);
 const SAFE_FIELDS = new Set(["name", "email", "phone", "company", "order_number", "customer"]);
+const SYNC_APPROVAL_ACTION = "channel_object_connector_sync_confirm";
 
 function teamOf(actor) { return actor?.teamId ?? LOCAL_TEAM_ID; }
 function clean(value, max = 300) {
@@ -36,7 +37,7 @@ function publicPreview(preview) {
 }
 
 export function createChannelObjectConnectorService({
-  state, now, nextId, appendEvent, persistStateSoon, store, upsertChannelObject, adapters = {},
+  state, now, nextId, appendEvent, persistStateSoon, store, upsertChannelObject, adapters = {}, validateApprovalToken,
 } = {}) {
   state.channelObjectSyncs ??= [];
   state.channelObjectConnectorConfigs ??= [];
@@ -187,6 +188,15 @@ export function createChannelObjectConnectorService({
     if (preview.status === "confirmed") return { status: 200, body: { preview: publicPreview(preview), replayed: true } };
     if (preview.status !== "preview") return { status: 409, body: { error: "channel_object_sync_preview_not_confirmable" } };
     if (new Date(preview.expiresAt).getTime() <= new Date(now()).getTime()) return { status: 409, body: { error: "channel_object_sync_preview_expired" } };
+    const approval = validateApprovalToken?.(input.approvalToken, {
+      action: SYNC_APPROVAL_ACTION,
+      targetId: preview.id,
+      actor,
+      allowLegacy: false,
+    });
+    if (!approval?.approved) {
+      return { status: 409, body: { error: "channel_object_sync_approval_required", reason: approval?.reason ?? "approval_validator_unavailable" } };
+    }
     const sync = { id: nextId("csync"), ownerTeamId: teamOf(actor), projectId: preview.projectId, connectorId: preview.connectorId, configId: preview.configId, kind: preview.kind, status: "running", startedAt: now(), completedAt: null, imported: 0, failed: 0 };
     for (const row of preview.rows.filter((candidate) => candidate.change !== "unchanged")) {
       const result = upsertChannelObject({ kind: row.kind, projectId: preview.projectId, label: row.label, businessKey: row.businessKey, fields: row.fields, source: preview.connectorId, sourceRef: row.sourceRef }, actor);
@@ -194,7 +204,7 @@ export function createChannelObjectConnectorService({
     }
     sync.status = sync.failed ? "succeeded_with_errors" : "succeeded";
     sync.completedAt = now();
-    runTx(() => { preview.status = "confirmed"; state.channelObjectSyncs.push(sync); appendEvent?.({ invocationId: null, type: "channel_object_connector_sync_confirmed", level: sync.failed ? "warn" : "info", message: `Channel object connector ${preview.connectorId} sync confirmed.`, data: { syncId: sync.id, previewId: preview.id, imported: sync.imported, failed: sync.failed } }); });
+    runTx(() => { preview.status = "confirmed"; state.channelObjectSyncs.push(sync); appendEvent?.({ invocationId: null, type: "channel_object_connector_sync_confirmed", level: sync.failed ? "warn" : "info", message: `Channel object connector ${preview.connectorId} sync confirmed.`, data: { syncId: sync.id, previewId: preview.id, imported: sync.imported, failed: sync.failed, approvalGrantId: approval.grantId ?? null } }); });
     return { status: 200, body: { preview: publicPreview(preview), sync, replayed: false } };
   }
 
@@ -205,7 +215,14 @@ export function createChannelObjectConnectorService({
       runTx(() => state.channelObjectSyncs.push(failedSync));
       return { ...preview, body: { ...preview.body, sync: failedSync } };
     }
-    return confirmChannelObjectConnectorSync({ previewId: preview.body.preview.id }, actor);
+    return {
+      ...preview,
+      body: {
+        ...preview.body,
+        approvalRequired: true,
+        approval: { action: SYNC_APPROVAL_ACTION, targetId: preview.body.preview.id },
+      },
+    };
   }
   async function retryChannelObjectConnectorSync(id, actor = null) {
     const sync = state.channelObjectSyncs.find((row) => row.id === id && row.ownerTeamId === teamOf(actor));
@@ -230,3 +247,5 @@ export function createChannelObjectConnectorService({
     listChannelObjectSyncs,
   };
 }
+
+export { SYNC_APPROVAL_ACTION as CHANNEL_OBJECT_SYNC_APPROVAL_ACTION };

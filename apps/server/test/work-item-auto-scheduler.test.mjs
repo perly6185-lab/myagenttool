@@ -80,6 +80,39 @@ test("enabled mode admits one task, binds its reserved Run, and does not duplica
   assert.equal(events.some((event) => event.type === "work_item_auto_scheduler_started"), true);
 });
 
+test("enabled mode reconciles business records before execution admission", async () => {
+  const { state } = fixture("enabled");
+  Object.assign(state.workItems[0], {
+    localNumber: 1,
+    localRef: "LOCAL-1",
+    title: "Use current customer record",
+    body: "",
+    terminalId: "dev_local",
+    createdBy: "usr_a",
+  });
+  let beginCount = 0;
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    getWorkItem: ({ workItemId }) => ({ ok: true, body: { workItem: state.workItems.find((item) => item.id === workItemId) } }),
+    reconcileRecordBindings: async () => ({
+      status: 200,
+      body: {
+        executionBlocked: true,
+        blockingBindings: [{ bindingId: "binding_customer", state: "stale" }],
+      },
+    }),
+    beginExecution: () => {
+      beginCount += 1;
+      return { ok: true, body: { operation: { id: "weo_1" } } };
+    },
+  });
+  const result = await service.sweep();
+  assert.equal(result.starts[0].started, false);
+  assert.equal(result.starts[0].reason, "work_item_record_bindings_stale");
+  assert.equal(beginCount, 0);
+});
+
 test("enabled mode runs an explicit non-repository task through a direct invocation", async () => {
   const { state, events } = fixture("enabled");
   Object.assign(state.workItems[0], {
