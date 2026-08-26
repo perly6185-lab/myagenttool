@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveWorkItemUserStatus, WorkItemSummaryView } from "./work-item-summary-view";
 import type { LocalWorkItem } from "./task-view-types";
 import { i18n } from "@/lib/i18n";
+import { ApiError } from "@/lib/api-client";
 import { useUiStore } from "@/store/ui-store";
 
 const mocks = vi.hoisted(() => ({
@@ -1741,6 +1742,54 @@ describe("work item summary presentation", () => {
     expect(within(receipt).getByText("1234567890ab")).toBeTruthy();
     expect(within(receipt).getByText("2 file(s) applied")).toBeTruthy();
     expect(within(receipt).getByText("Login tests passed.")).toBeTruthy();
+  });
+
+  it("keeps a failed local delivery in review and guides the user back to current changes", async () => {
+    const onOpenDeliveryChanges = vi.fn();
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        status: "review",
+        executionState: "completed",
+        acceptanceResults: [{ criterion: "Customer-ready summary", status: "passed", note: "Verified", verificationId: "ver_local" }],
+      }),
+      observability: {
+        latestRun: { id: "aur_conflict", status: "done" },
+        delivery: {
+          state: "awaiting_review", mode: "local_merge", worktreeId: "wtr_conflict",
+          branchName: "local-conflict", remoteUrl: null,
+          report: {
+            summary: "Implemented the reviewed change.",
+            verification: { passed: true, verified: true, summary: "Relevant tests passed." },
+            changedFiles: ["apps/web/src/login.ts"], completedAt: "2026-08-07T08:00:00.000Z",
+          },
+          aiReview: {
+            status: "completed", invocationId: "inv_conflict", reviewer: "codex",
+            startedAt: "2026-08-07T08:00:00.000Z", completedAt: "2026-08-07T08:01:00.000Z",
+            verdict: "approved", summary: "No blocking issues.", findings: [], reviewedCommit: "conflict123", errorCode: null,
+          },
+          review: {
+            verdict: "approved", summary: "No blocking issues.", comments: [], reviewedCommit: "conflict123",
+            reviewedBy: "usr_autorun_review", source: "ai", reviewerName: "Codex",
+            reviewInvocationId: "inv_conflict", createdAt: "2026-08-07T08:01:00.000Z",
+          },
+        },
+      },
+    });
+    mocks.deliverWorkItem.mockRejectedValue(new ApiError(
+      "work_item_delivery_failed",
+      "The base branch main advanced. Rebase or merge it into local-conflict, then review again.",
+      409,
+    ));
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onOpenDeliveryChanges={onOpenDeliveryChanges} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve and apply locally" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply locally" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText(/local base branch advanced/i)).toBeTruthy();
+    fireEvent.click(within(alert).getByRole("button", { name: "Review current changes" }));
+    expect(onOpenDeliveryChanges).toHaveBeenCalledWith("prj_1", "wtr_conflict");
+    expect(screen.queryByText("This work is complete")).toBeNull();
   });
 
   it("offers a material-specific rerun only when a change is waiting for the next execution", async () => {

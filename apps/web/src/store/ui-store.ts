@@ -122,7 +122,7 @@ interface UiState {
   selectedWorktreeId: string | null;
   /** Transient one-shot handoff that opens a selected worktree on a specific review surface. */
   worktreeOpenIntent: WorktreeOpenIntent | null;
-  /** Transient source retained only for the worktree diff opened from a task result. */
+  /** Review source retained across refresh while the user inspects this task's worktree. */
   worktreeReviewContext: WorktreeReviewContext | null;
   selectedAgentSkillId: string | null;
   selectedCanvasSceneId: string | null;
@@ -589,6 +589,7 @@ export const useUiStore = create<UiState>()(
         planningProjectView: state.planningProjectView,
         planningProjectFilters: state.planningProjectFilters,
         selectedWorktreeId: state.selectedWorktreeId,
+        worktreeReviewContext: state.worktreeReviewContext,
         selectedAgentSkillId: state.selectedAgentSkillId,
         selectedCanvasSceneId: state.selectedCanvasSceneId,
         selectedToolName: state.selectedToolName,

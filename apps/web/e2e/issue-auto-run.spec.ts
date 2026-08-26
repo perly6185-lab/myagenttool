@@ -7,6 +7,26 @@ let importedViaExternal: boolean;
 let autoRunReady: boolean;
 let repairWorkItem: Record<string, unknown> | null;
 let ordinaryDeliveryReady: boolean;
+let localDeliveryConflict: boolean;
+
+function reviewedCodingWorkItem(): Record<string, unknown> {
+  return {
+    id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
+    title: "Fix the login failure", body: "Repair login and add a regression test.", type: "task", priority: "p1",
+    status: "review", state: "open", labels: [], assigneeIds: [], waitingOn: "me",
+    acceptanceCriteria: ["Login works again", "Regression tests pass"],
+    acceptanceResults: [
+      { criterion: "Login works again", status: "passed", note: "Verified", verificationId: "ver_1" },
+      { criterion: "Regression tests pass", status: "passed", note: "Verified", verificationId: "ver_1" },
+    ],
+    verificationSop: ["Run the login regression tests", "Review the code diff"],
+    executionContractSource: "manual", executionContractConfirmedAt: "2026-07-24T00:00:00.000Z",
+    executionContractGate: { ready: true, missing: [], source: "manual", confirmedAt: "2026-07-24T00:00:00.000Z" },
+    executionState: "completed",
+    executionBindings: [{ kind: "auto_run", targetId: "aur_1", worktreeId: "wt_1", createdAt: "2026-07-24T00:01:00.000Z" }],
+    revision: 3, archivedAt: null, updatedAt: "2026-07-24T00:03:00.000Z",
+  };
+}
 
 async function mockApi(page: Page) {
   await page.route("http://127.0.0.1:5001/api/**", async (route) => {
@@ -269,6 +289,12 @@ async function mockApi(page: Page) {
       return route.fulfill({ json: { workItem } });
     }
     if (url.pathname === "/api/work-items/lwi_1/delivery/local" && method === "POST") {
+      if (localDeliveryConflict) {
+        return route.fulfill({ status: 409, json: {
+          error: "work_item_delivery_failed",
+          message: "The base branch main advanced. Rebase or merge it into ai/e2e-route, then review again.",
+        } });
+      }
       workItem = {
         ...workItem,
         status: "done",
@@ -342,9 +368,12 @@ test.beforeEach(async ({ page }) => {
   autoRunReady = true;
   repairWorkItem = null;
   ordinaryDeliveryReady = false;
+  localDeliveryConflict = false;
   await page.addInitScript(() => {
     window.localStorage.setItem("myagenttool.token", "e2e-token");
-    window.localStorage.setItem("myagenttool-ui", JSON.stringify({ version: 1, state: { locale: "en" } }));
+    if (!window.localStorage.getItem("myagenttool-ui")) {
+      window.localStorage.setItem("myagenttool-ui", JSON.stringify({ version: 1, state: { locale: "en" } }));
+    }
   });
   await mockApi(page);
 });
@@ -535,22 +564,7 @@ for (const fixture of [
     await page.setViewportSize(fixture.viewport);
     autoRunStarted = true;
     ordinaryDeliveryReady = true;
-    workItem = {
-      id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
-      title: "Fix the login failure", body: "Repair login and add a regression test.", type: "task", priority: "p1",
-      status: "review", state: "open", labels: [], assigneeIds: [], waitingOn: "me",
-      acceptanceCriteria: ["Login works again", "Regression tests pass"],
-      acceptanceResults: [
-        { criterion: "Login works again", status: "passed", note: "Verified", verificationId: "ver_1" },
-        { criterion: "Regression tests pass", status: "passed", note: "Verified", verificationId: "ver_1" },
-      ],
-      verificationSop: ["Run the login regression tests", "Review the code diff"],
-      executionContractSource: "manual", executionContractConfirmedAt: "2026-07-24T00:00:00.000Z",
-      executionContractGate: { ready: true, missing: [], source: "manual", confirmedAt: "2026-07-24T00:00:00.000Z" },
-      executionState: "completed",
-      executionBindings: [{ kind: "auto_run", targetId: "aur_1", worktreeId: "wt_1", createdAt: "2026-07-24T00:01:00.000Z" }],
-      revision: 3, archivedAt: null, updatedAt: "2026-07-24T00:03:00.000Z",
-    };
+    workItem = reviewedCodingWorkItem();
 
     await page.goto("/?section=task&task=lwi_1", { waitUntil: "domcontentloaded" });
     const detail = page.getByRole("dialog", { name: "Local issue details" });
@@ -567,6 +581,11 @@ for (const fixture of [
       const state = JSON.parse(window.localStorage.getItem("myagenttool-ui") ?? "null")?.state;
       return { projectId: state?.selectedProjectId, worktreeId: state?.selectedWorktreeId };
     })).toEqual({ projectId: "prj_1", worktreeId: "wt_1" });
+    await expect(page.getByRole("button", { name: "apps/web/src/login.ts", exact: true })).toBeVisible();
+    await expect(page.getByText("+export const loginFixed = true;")).toBeVisible();
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: "Return to task" })).toBeVisible();
     await expect(page.getByRole("button", { name: "apps/web/src/login.ts", exact: true })).toBeVisible();
     await expect(page.getByText("+export const loginFixed = true;")).toBeVisible();
 
@@ -591,6 +610,27 @@ for (const fixture of [
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   });
 }
+
+test("keeps an ordinary coding task reviewable when the local base branch advances", async ({ page }) => {
+  autoRunStarted = true;
+  ordinaryDeliveryReady = true;
+  localDeliveryConflict = true;
+  workItem = reviewedCodingWorkItem();
+
+  await page.goto("/?section=task&task=lwi_1", { waitUntil: "domcontentloaded" });
+  const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await detail.getByRole("button", { name: "Approve and apply locally" }).click();
+  const confirm = page.getByRole("dialog", { name: "Approve and apply this delivery locally?" });
+  await confirm.getByRole("button", { name: "Apply locally" }).click();
+
+  const alert = confirm.getByRole("alert");
+  await expect(alert).toContainText("local base branch advanced");
+  await expect(detail.getByText("This work is complete")).toHaveCount(0);
+  await alert.getByRole("button", { name: "Review current changes" }).click();
+  await expect(page).toHaveURL(/section=projects/);
+  await expect(page.getByRole("button", { name: "apps/web/src/login.ts", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Return to task" })).toBeVisible();
+});
 
 test("keeps the Local Issue selected while fixing preflight and rechecks after returning", async ({ page }) => {
   autoRunReady = false;

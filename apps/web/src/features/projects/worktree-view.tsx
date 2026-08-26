@@ -116,6 +116,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const runInFlightRef = useRef(false);
   const runIdempotencyKeyRef = useRef<string | null>(null);
   const attachmentWorktreeRef = useRef(worktree.id);
+  const handledReviewContextRef = useRef<string | null>(null);
   const [task, setTask] = useState<string>(defaultTask);
   const [agentId, setAgentId] = useState(worktree.agentId ?? agents[0]?.id ?? "");
   const [permissionLevel, setPermissionLevel] = useState<CodexPermissionMode>(() => permissionModeForAgent(agents.find((agent) => agent.id === (worktree.agentId ?? agents[0]?.id))));
@@ -278,11 +279,16 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   // Task results can request the authoritative unified diff directly. Consume
   // the intent once so later visits retain the user's normal workspace state.
   useEffect(() => {
-    if (worktreeOpenIntent?.worktreeId !== worktree.id || worktreeOpenIntent.view !== "changes") return;
+    const reviewContextKey = worktreeReviewContext?.worktreeId === worktree.id
+      ? `${worktreeReviewContext.workItemId}:${worktreeReviewContext.worktreeId}`
+      : null;
+    const hasOpenIntent = worktreeOpenIntent?.worktreeId === worktree.id && worktreeOpenIntent.view === "changes";
+    if (!hasOpenIntent && (!reviewContextKey || handledReviewContextRef.current === reviewContextKey)) return;
+    handledReviewContextRef.current = reviewContextKey;
     setPaneTab("changes");
     selectTab(DIFF_TAB);
-    setWorktreeOpenIntent(null);
-  }, [worktree.id, worktreeOpenIntent, setWorktreeOpenIntent]);
+    if (hasOpenIntent) setWorktreeOpenIntent(null);
+  }, [worktree.id, worktreeOpenIntent, worktreeReviewContext, setWorktreeOpenIntent]);
 
   // Documents and task results can hand a governed file to this worktree.
   // Consume the transient path once the target worktree is mounted, then open
