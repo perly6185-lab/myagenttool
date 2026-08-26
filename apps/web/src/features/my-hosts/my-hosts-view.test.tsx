@@ -99,6 +99,30 @@ it("offers a bounded retry from a failed transfer without retaining file bytes",
   expect(hostApi.download).not.toHaveBeenCalled();
 });
 
+it("explains missing connection fields instead of silently disabling save", async () => {
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
+  renderView();
+
+  fireEvent.click((await screen.findAllByRole("button", { name: "Add host" }))[0]);
+  const save = screen.getByRole("button", { name: "Save connection" }) as HTMLButtonElement;
+  expect(save.disabled).toBe(false);
+
+  fireEvent.click(save);
+  expect((await screen.findByRole("alert")).textContent).toContain("Enter a host address");
+  expect(hostApi.create).not.toHaveBeenCalled();
+
+  fireEvent.change(screen.getByLabelText("Host address"), { target: { value: "10.10.10.222" } });
+  fireEvent.change(screen.getByLabelText("Login user"), { target: { value: "" } });
+  fireEvent.click(save);
+  expect((await screen.findByRole("alert")).textContent).toContain("Enter the login user");
+
+  fireEvent.change(screen.getByLabelText("Login user"), { target: { value: "deploy" } });
+  fireEvent.change(screen.getByLabelText("Port"), { target: { value: "0" } });
+  fireEvent.click(save);
+  expect((await screen.findByRole("alert")).textContent).toContain("Port must be an integer from 1 to 65535");
+  expect(hostApi.create).not.toHaveBeenCalled();
+});
+
 it("starts with plain connection fields and moves credentials into desktop secure storage", async () => {
   vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
   vi.mocked(hostApi.create).mockResolvedValue({ target: { ...host, connectionStatus: "untested", knownHostFingerprint: null, observedFingerprint: null, capabilities: null, verifiedAt: null, revision: 1 } });
