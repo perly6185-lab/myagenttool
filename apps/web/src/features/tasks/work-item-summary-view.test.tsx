@@ -8,6 +8,9 @@ import { useUiStore } from "@/store/ui-store";
 const mocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
   getBusinessLedgerRecord: vi.fn(),
+  getWorkItemLedgerPostingPlan: vi.fn(),
+  issueApprovalGrant: vi.fn(),
+  commitWorkItemLedgerPostingPlan: vi.fn(),
   createWorkItemResultRepair: vi.fn(),
   updateWorkItem: vi.fn(),
   suggestWorkItemDraft: vi.fn(),
@@ -53,6 +56,9 @@ vi.mock("@/data/use-console-actions", () => ({
   api: {
     getWorkItem: mocks.getWorkItem,
     getBusinessLedgerRecord: mocks.getBusinessLedgerRecord,
+    getWorkItemLedgerPostingPlan: mocks.getWorkItemLedgerPostingPlan,
+    issueApprovalGrant: mocks.issueApprovalGrant,
+    commitWorkItemLedgerPostingPlan: mocks.commitWorkItemLedgerPostingPlan,
     createWorkItemResultRepair: mocks.createWorkItemResultRepair,
     updateWorkItem: mocks.updateWorkItem,
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
@@ -264,6 +270,33 @@ describe("work item summary presentation", () => {
     await waitFor(() => expect(mocks.getBusinessLedgerRecord).toHaveBeenCalledWith("ledger_customer", { recordId: "blr_customer_1" }));
     expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({ expectedRevision: 2, recordBindings: [expect.objectContaining({ resolution: expect.objectContaining({ state: "resolved" }) })] }));
     expect(await screen.findByText("The business material was refreshed and confirmed; the task will use the current record version.")).toBeTruthy();
+  });
+
+  it("shows a ledger preview and requires an approval grant before committing", async () => {
+    mocks.getWorkItem.mockResolvedValue({ workItem: item({ ledgerPostingPlanId: "tpp_1" }) });
+    mocks.getWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: { id: "tpp_1", status: "proposed", state: "proposed", revision: 1 },
+      preview: { changedCells: [{ field: "status", before: "draft", after: "ready" }] },
+      batchPreview: null,
+    });
+    mocks.issueApprovalGrant.mockResolvedValue({ grantId: "apg_1", token: "issued-token", expiresAt: "2026-08-26T00:10:00Z" });
+    mocks.commitWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: { id: "tpp_1", status: "committed", state: "committed", revision: 2 },
+    });
+
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByRole("heading", { name: "Ledger change approval" })).toBeTruthy();
+    expect(await screen.findByText("status")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Approve and write ledger" }));
+
+    await waitFor(() => expect(mocks.issueApprovalGrant).toHaveBeenCalledWith("ledger_posting_plan_commit", "tpp_1"));
+    expect(mocks.commitWorkItemLedgerPostingPlan).toHaveBeenCalledWith("lwi_1", {
+      planId: "tpp_1",
+      expectedRevision: 2,
+      approvalToken: "issued-token",
+    });
+    expect(await screen.findByText("The ledger was updated and the change was recorded.")).toBeTruthy();
   });
 
   it("explains the automatically matched My template without asking the user to choose it", async () => {

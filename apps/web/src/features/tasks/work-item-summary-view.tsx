@@ -160,6 +160,105 @@ function WorkItemRecordBindings({
   );
 }
 
+type LedgerPostingPlanResponse = {
+  plan: NonNullable<LocalWorkItem["ledgerPostingPlan"]>;
+  preview: Record<string, unknown> | null;
+  batchPreview: Record<string, unknown> | null;
+};
+
+function WorkItemLedgerPostingPlan({
+  item,
+  language,
+  canOperate,
+}: {
+  item: LocalWorkItem;
+  language: string;
+  canOperate: boolean;
+}) {
+  const [data, setData] = useState<LedgerPostingPlanResponse | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!item.ledgerPostingPlanId) {
+      setData(null);
+      setError(null);
+      return () => { active = false; };
+    }
+    void api.getWorkItemLedgerPostingPlan(item.id)
+      .then((result) => {
+        if (active) setData(result as LedgerPostingPlanResponse);
+      })
+      .catch(() => {
+        if (active) setError(language === "zh" ? "台账变更计划暂时无法加载。" : "The ledger posting plan could not be loaded.");
+      });
+    return () => { active = false; };
+  }, [item.id, item.ledgerPostingPlanId, language]);
+
+  if (!item.ledgerPostingPlanId && !error) return null;
+  const plan = data?.plan ?? null;
+  const preview = data?.preview ?? data?.batchPreview;
+  const changedCells = Array.isArray(preview?.changedCells)
+    ? preview.changedCells as Array<{ field?: string; before?: unknown; after?: unknown }>
+    : [];
+  const committed = plan?.status === "committed" || plan?.state === "committed";
+
+  const commit = async () => {
+    if (!plan || pending || !canOperate) return;
+    setPending(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const grant = await api.issueApprovalGrant("ledger_posting_plan_commit", plan.id);
+      const result = await api.commitWorkItemLedgerPostingPlan(item.id, {
+        planId: plan.id,
+        expectedRevision: item.revision,
+        approvalToken: grant.token,
+      });
+      setData((current) => current ? { ...current, plan: result.plan } : current);
+      setNotice(language === "zh" ? "台账已写入，变更已记录。" : "The ledger was updated and the change was recorded.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "task-ledger-posting-committed", workItemId: item.id } }));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message.includes("stale") || message.includes("revision")
+        ? (language === "zh" ? "任务版本已变化，请重新加载后再审批。" : "The task changed. Reload it before approving this plan.")
+        : (language === "zh" ? "台账写入未完成，审批授权未被重复使用。" : "The ledger was not updated. Review the plan and try again."));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <section className="rounded-xl border border-warning/40 bg-warning/[0.04] p-4" aria-labelledby={`work-item-ledger-plan-${item.id}`}>
+      <div className="flex items-start gap-2">
+        <Database className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <h4 id={`work-item-ledger-plan-${item.id}`} className="text-sm font-semibold">{language === "zh" ? "台账变更审批" : "Ledger change approval"}</h4>
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+            {committed
+              ? (language === "zh" ? "这项变更已经写入本地台账。" : "This change has been written to the local ledger.")
+              : (language === "zh" ? "请先检查变更预览，再批准写入本地台账。" : "Review the change preview before approving the local ledger write.")}
+          </p>
+        </div>
+        {plan ? <Badge tone={committed ? "success" : "warning"}>{committed ? (language === "zh" ? "已完成" : "Committed") : (language === "zh" ? "待审批" : "Pending approval")}</Badge> : null}
+      </div>
+      {changedCells.length ? (
+        <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-background">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-border text-muted-foreground"><tr><th className="px-3 py-2">{language === "zh" ? "字段" : "Field"}</th><th className="px-3 py-2">{language === "zh" ? "之前" : "Before"}</th><th className="px-3 py-2">{language === "zh" ? "之后" : "After"}</th></tr></thead>
+            <tbody>{changedCells.slice(0, 50).map((cell, index) => <tr key={`${cell.field ?? "field"}-${index}`} className="border-b border-border last:border-0"><td className="px-3 py-2 font-medium">{cell.field ?? "—"}</td><td className="px-3 py-2">{String(cell.before ?? "—")}</td><td className="px-3 py-2">{String(cell.after ?? "—")}</td></tr>)}</tbody>
+          </table>
+        </div>
+      ) : null}
+      {!committed && plan && canOperate ? <div className="mt-3 flex justify-end"><Button size="sm" disabled={pending} onClick={() => void commit()}><CheckCircle2 aria-hidden />{pending ? (language === "zh" ? "审批并写入中…" : "Approving and writing…") : (language === "zh" ? "审批并写入台账" : "Approve and write ledger")}</Button></div> : null}
+      {notice ? <p className="mt-2 text-sm text-success" role="status">{notice}</p> : null}
+      {error ? <p className="mt-2 text-sm text-destructive" role="alert">{error}</p> : null}
+    </section>
+  );
+}
+
 type TaskTemplateCandidate = {
   templateId: string;
   definitionId: string;
@@ -2436,6 +2535,8 @@ export function WorkItemSummaryView({
         onRefresh={(binding) => void refreshRecordBinding(binding)}
         error={recordBindingRefreshError}
       />
+
+      <WorkItemLedgerPostingPlan item={item} language={language} canOperate={canOperate} />
 
       <section className="rounded-xl border border-border p-4" aria-labelledby={`work-item-collaboration-${item.id}`}>
         <h4 id={`work-item-collaboration-${item.id}`} className="text-sm font-semibold">{copy.collaborationTitle}</h4>
