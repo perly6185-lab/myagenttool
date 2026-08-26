@@ -99,6 +99,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const worktreeOpenIntent = useUiStore((s) => s.worktreeOpenIntent);
+  const setWorktreeOpenIntent = useUiStore((s) => s.setWorktreeOpenIntent);
   const requestedOfficeDocument = useUiStore((s) => s.officecliPreviewPath);
   const setOfficecliPreviewPath = useUiStore((s) => s.setOfficecliPreviewPath);
 
@@ -267,6 +269,15 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     setAgentId(worktree.agentId ?? agents[0]?.id ?? "");
     loadTree();
   }, [worktree.id]);
+
+  // Task results can request the authoritative unified diff directly. Consume
+  // the intent once so later visits retain the user's normal workspace state.
+  useEffect(() => {
+    if (worktreeOpenIntent?.worktreeId !== worktree.id || worktreeOpenIntent.view !== "changes") return;
+    setPaneTab("changes");
+    selectTab(DIFF_TAB);
+    setWorktreeOpenIntent(null);
+  }, [worktree.id, worktreeOpenIntent, setWorktreeOpenIntent]);
 
   // Documents and task results can hand a governed file to this worktree.
   // Consume the transient path once the target worktree is mounted, then open

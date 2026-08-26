@@ -1617,6 +1617,7 @@ describe("work item summary presentation", () => {
   });
 
   it("explains a safe reviewed delivery and the real effect of confirming it", async () => {
+    const onOpenDeliveryChanges = vi.fn();
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({ status: "review", executionState: "completed" }),
       observability: {
@@ -1647,7 +1648,7 @@ describe("work item summary presentation", () => {
         },
       },
     });
-    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onOpenDeliveryChanges={onOpenDeliveryChanges} />);
 
     expect(await screen.findByText("Result passed automated review and verification")).toBeTruthy();
     expect(screen.getByText("Result risk: Low")).toBeTruthy();
@@ -1655,6 +1656,8 @@ describe("work item summary presentation", () => {
     expect(screen.getAllByText(/Create a pull request for later merge/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/remote base branch is not changed directly/).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Approve and create pull request" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    expect(onOpenDeliveryChanges).toHaveBeenCalledWith("prj_1", "wtr_approved");
 
     fireEvent.click(screen.getByRole("button", { name: "View full report" }));
     const report = screen.getByRole("dialog", { name: "What AI delivered" });
@@ -1665,6 +1668,66 @@ describe("work item summary presentation", () => {
     expect(screen.queryByRole("dialog", { name: "What AI delivered" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "Approve and create a pull request?" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create pull request" })).toBeTruthy();
+  });
+
+  it("applies an approved code delivery locally with explicit scope", async () => {
+    const reviewItem = item({
+      status: "review",
+      executionState: "completed",
+      acceptanceResults: [{
+        criterion: "Customer-ready summary",
+        status: "passed",
+        note: "Verified",
+        verificationId: "ver_local",
+      }],
+    });
+    const completedItem = item({
+      ...reviewItem,
+      revision: 3,
+      status: "done",
+      state: "closed",
+    });
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: reviewItem,
+      observability: {
+        latestRun: { id: "aur_local", status: "done" },
+        delivery: {
+          state: "awaiting_review",
+          mode: "local_merge",
+          worktreeId: "wtr_local",
+          branchName: "local-reviewed",
+          remoteUrl: null,
+          report: {
+            summary: "Fixed login and added coverage.",
+            verification: { passed: true, verified: true, summary: "Login tests passed." },
+            changedFiles: ["apps/web/src/login.ts", "apps/web/src/login.test.ts"],
+            completedAt: "2026-08-07T08:00:00.000Z",
+          },
+          aiReview: {
+            status: "completed", invocationId: "inv_local", reviewer: "codex",
+            startedAt: "2026-08-07T08:00:00.000Z", completedAt: "2026-08-07T08:01:00.000Z",
+            verdict: "approved", summary: "No blocking issues.", findings: [],
+            reviewedCommit: "local123", errorCode: null,
+          },
+          review: {
+            verdict: "approved", summary: "No blocking issues.", comments: [],
+            reviewedCommit: "local123", reviewedBy: "usr_autorun_review", source: "ai",
+            reviewerName: "Codex", reviewInvocationId: "inv_local", createdAt: "2026-08-07T08:01:00.000Z",
+          },
+        },
+      },
+    });
+    mocks.deliverWorkItem.mockResolvedValue({ workItem: completedItem });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve and apply locally" }));
+    const dialog = screen.getByRole("dialog", { name: "Approve and apply this delivery locally?" });
+    expect(within(dialog).getByText(/No remote branch will be pushed or merged/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply locally" }));
+
+    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_1", "local_merge", 2));
+    expect(mocks.transitionWorkItem).not.toHaveBeenCalled();
+    expect(await screen.findByText("This work is complete")).toBeTruthy();
   });
 
   it("offers a material-specific rerun only when a change is waiting for the next execution", async () => {

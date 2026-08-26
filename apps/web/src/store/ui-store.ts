@@ -76,6 +76,7 @@ export type SettingsCategoryKey = "execution" | "connections" | "automation" | "
 export type WorkItemDetailMode = "summary" | "expert";
 export type ExperienceMode = "ordinary" | "professional";
 export type InvocationStatusFilter = "all" | "active" | "completed" | "failed";
+export type WorktreeOpenIntent = { worktreeId: string; view: "changes" };
 export interface PlanningProjectFilters {
   status: string;
   priority: string;
@@ -118,6 +119,8 @@ interface UiState {
   planningProjectView: PlanningProjectView;
   planningProjectFilters: PlanningProjectFilters;
   selectedWorktreeId: string | null;
+  /** Transient one-shot handoff that opens a selected worktree on a specific review surface. */
+  worktreeOpenIntent: WorktreeOpenIntent | null;
   selectedAgentSkillId: string | null;
   selectedCanvasSceneId: string | null;
   selectedToolName: string | null;
@@ -170,6 +173,7 @@ interface UiState {
   setPlanningProjectView: (view: PlanningProjectView) => void;
   setPlanningProjectFilters: (filters: PlanningProjectFilters) => void;
   setSelectedWorktreeId: (id: string | null) => void;
+  setWorktreeOpenIntent: (intent: WorktreeOpenIntent | null) => void;
   setSelectedAgentSkillId: (id: string | null) => void;
   setSelectedCanvasSceneId: (id: string | null) => void;
   setSelectedToolName: (name: string | null) => void;
@@ -464,6 +468,7 @@ export const useUiStore = create<UiState>()(
         planningProjectView: initialNavigation.planningProjectView ?? "list",
         planningProjectFilters: initialNavigation.planningProjectFilters ?? { ...DEFAULT_PLANNING_PROJECT_FILTERS },
         selectedWorktreeId: null,
+        worktreeOpenIntent: null,
         selectedAgentSkillId: null,
         selectedCanvasSceneId: null,
         selectedToolName: null,
@@ -530,6 +535,7 @@ export const useUiStore = create<UiState>()(
         setPlanningProjectView: (planningProjectView) => set({ planningProjectView }),
         setPlanningProjectFilters: (planningProjectFilters) => set({ planningProjectFilters }),
         setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
+        setWorktreeOpenIntent: (worktreeOpenIntent) => set({ worktreeOpenIntent }),
         setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
         setSelectedCanvasSceneId: (selectedCanvasSceneId) => set({ selectedCanvasSceneId }),
         setSelectedToolName: (selectedToolName) => set({ selectedToolName }),

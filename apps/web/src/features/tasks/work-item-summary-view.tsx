@@ -346,6 +346,7 @@ type MyTemplateDraftPreview = {
 export function WorkItemSummaryView({
   workItemId,
   onOpenExpert,
+  onOpenDeliveryChanges,
   onOpenTaskCenter,
   onOpenSetup,
   onDirtyChange,
@@ -355,6 +356,7 @@ export function WorkItemSummaryView({
 }: {
   workItemId: string;
   onOpenExpert: (section?: WorkItemSection) => void;
+  onOpenDeliveryChanges?: (projectId: string, worktreeId: string) => void;
   onOpenTaskCenter?: () => void;
   onOpenSetup?: (section: SectionKey) => void;
   onDirtyChange?: (dirty: boolean) => void;
@@ -362,7 +364,7 @@ export function WorkItemSummaryView({
   onCreateTaskDraft?: (draft: string) => void;
   onOpenWorkItem?: (workItemId: string) => void;
 }) {
-  const { i18n } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
   const language = i18n.language.startsWith("zh") ? "zh" : "en";
   const copy = COPY[language];
   const sessionUser = useSessionUser();
@@ -662,6 +664,7 @@ export function WorkItemSummaryView({
       ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
     }));
   const changedFiles = deliveryReport?.changedFiles ?? [];
+  const deliveryWorktreeId = observability?.delivery?.worktreeId ?? null;
   const resultSummary = outcome?.summary ?? deliveryReport?.summary ?? item.lastProgressSummary
     ?? (executionKind === "article_import" ? latestPassedVerification?.summary ?? null : null);
   const fullResult = outcome?.fullReport ?? deliveryReport?.summary ?? item.lastProgressSummary ?? null;
@@ -719,20 +722,31 @@ export function WorkItemSummaryView({
     executionKind,
     resultFiles,
   });
-  const acceptActionLabel = observability?.delivery?.mode === "pull_request"
+  const deliveryMode = observability?.delivery?.mode ?? null;
+  const acceptActionLabel = deliveryMode === "pull_request"
     ? language === "zh" ? "审核通过并创建 Pull Request" : "Approve and create pull request"
-    : language === "zh" ? "审核通过并完成任务" : "Approve and complete task";
-  const acceptDialogTitle = observability?.delivery?.mode === "pull_request"
+    : deliveryMode === "local_merge"
+      ? language === "zh" ? "审核通过并应用到本地" : "Approve and apply locally"
+      : language === "zh" ? "审核通过并完成任务" : "Approve and complete task";
+  const acceptDialogTitle = deliveryMode === "pull_request"
     ? language === "zh" ? "确认审核通过并创建 Pull Request？" : "Approve and create a pull request?"
-    : copy.acceptTitle;
-  const acceptDialogDescription = observability?.delivery?.mode === "pull_request"
+    : deliveryMode === "local_merge"
+      ? language === "zh" ? "确认审核通过并应用到本地？" : "Approve and apply this delivery locally?"
+      : copy.acceptTitle;
+  const acceptDialogDescription = deliveryMode === "pull_request"
     ? language === "zh"
       ? "系统会用当前交付创建一个待审核的 Pull Request，不会直接合并到远端主分支。创建后，本地任务继续保留在审核阶段。"
       : "The current delivery will become a reviewable pull request without merging into the remote base branch. The local task remains in review afterward."
-    : copy.acceptDescription;
-  const acceptDialogConfirm = observability?.delivery?.mode === "pull_request"
+    : deliveryMode === "local_merge"
+      ? language === "zh"
+        ? "系统会把已审核的 Worktree 改动应用到本地基准分支并完成任务；不会推送或合并任何远端分支。"
+        : "The reviewed worktree changes will be applied to the local base branch and the task will be completed. No remote branch will be pushed or merged."
+      : copy.acceptDescription;
+  const acceptDialogConfirm = deliveryMode === "pull_request"
     ? language === "zh" ? "确认创建 Pull Request" : "Create pull request"
-    : copy.acceptConfirm;
+    : deliveryMode === "local_merge"
+      ? language === "zh" ? "确认应用到本地" : "Apply locally"
+      : copy.acceptConfirm;
   const reviewFeedback = reviewFindings.map((finding) => [
     `${finding.severity ? `[${finding.severity}] ` : ""}${finding.path ?? "Code"}${finding.line ? `:${finding.line}` : ""}: ${finding.body}`,
     finding.suggestion ? `Suggested fix: ${finding.suggestion}` : null,
@@ -2257,7 +2271,21 @@ export function WorkItemSummaryView({
             </div>
           </div>
           <div className="mt-3">
-            <p className="text-xs text-muted-foreground">{copy.deliverableFiles}</p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-muted-foreground">{copy.deliverableFiles}</p>
+              {changedFiles.length && deliveryWorktreeId ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    if (onOpenDeliveryChanges) onOpenDeliveryChanges(item.projectId, deliveryWorktreeId);
+                    else onOpenExpert("process");
+                  }}
+                >
+                  <FolderOpen aria-hidden />{t("taskDelivery.review")}
+                </Button>
+              ) : null}
+            </div>
             <DeliverableFileList
               entries={resultFileEntries}
               copy={copy}
