@@ -1652,8 +1652,16 @@ test("Channel object import requires confirmation and exposes the read-only busi
   assert.equal(preview.status, 201);
   assert.equal(preview.body.canConfirm, true);
   assert.equal((await call("/api/channel-objects?projectId=prj_a&kind=contact")).body.count, 0);
-  const confirmed = await call("/api/channel-objects/import/confirm", {
+  const denied = await call("/api/channel-objects/import/confirm", {
     method: "POST", body: { importId: preview.body.import.id },
+  });
+  assert.equal(denied.status, 409);
+  assert.equal(denied.body.error, "channel_object_import_approval_required");
+  const grant = await call("/api/approvals/grants", {
+    method: "POST", body: { action: "channel_object_import_confirm", targetId: preview.body.import.id },
+  });
+  const confirmed = await call("/api/channel-objects/import/confirm", {
+    method: "POST", body: { importId: preview.body.import.id, approvalToken: grant.body.token },
   });
   assert.equal(confirmed.status, 200);
   assert.equal(confirmed.body.objects[0].label, "导入联系人");
@@ -1723,6 +1731,21 @@ test("Channel connector configuration, health check, and sync preview are team s
   });
   assert.equal(preview.status, 201);
   assert.equal(preview.body.preview.status, "preview");
+  const denied = await call("/api/channel-objects/sync/confirm", {
+    method: "POST", body: { previewId: preview.body.preview.id },
+  });
+  assert.equal(denied.status, 409);
+  assert.equal(denied.body.error, "channel_object_sync_approval_required");
+  const grant = await call("/api/approvals/grants", {
+    method: "POST",
+    body: { action: "channel_object_connector_sync_confirm", targetId: preview.body.preview.id },
+  });
+  assert.equal(grant.status, 201);
+  const confirmed = await call("/api/channel-objects/sync/confirm", {
+    method: "POST", body: { previewId: preview.body.preview.id, approvalToken: grant.body.token },
+  });
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.preview.status, "confirmed");
   assert.equal((await call(`/api/channel-objects/connector-configs/${saved.body.config.id}/status`, {
     method: "PATCH", body: { status: "disabled", expectedRevision: tested.body.config.revision },
   })).status, 200);

@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   upsertChannelObjectConnectorConfig: vi.fn(),
   previewChannelObjectConnectorSync: vi.fn(),
   confirmChannelObjectConnectorSync: vi.fn(),
+  issueApprovalGrant: vi.fn(),
   testChannelObjectConnectorConfig: vi.fn(),
   syncChannelObjectConnector: vi.fn(),
   bindProject: vi.fn(),
@@ -80,6 +81,7 @@ vi.mock("@/features/workflow-memory/workflow-memory-api", () => ({
     upsertChannelObjectConnectorConfig: mocks.upsertChannelObjectConnectorConfig,
     previewChannelObjectConnectorSync: mocks.previewChannelObjectConnectorSync,
     confirmChannelObjectConnectorSync: mocks.confirmChannelObjectConnectorSync,
+    issueApprovalGrant: mocks.issueApprovalGrant,
     testChannelObjectConnectorConfig: mocks.testChannelObjectConnectorConfig,
     syncChannelObjectConnector: mocks.syncChannelObjectConnector,
   },
@@ -154,6 +156,83 @@ afterEach(() => {
 });
 
 describe("MyTemplatesView", () => {
+  it("mints a one-time grant before importing through the existing local file connector", async () => {
+    mocks.previewChannelObjectImport.mockResolvedValue({
+      import: {
+        id: "cimport_1",
+        projectId: "project-1",
+        kind: "contact",
+        format: "csv",
+        fileName: "contacts.csv",
+        status: "preview",
+        acceptedRows: 1,
+        errorRows: 0,
+        errors: [],
+        previewRows: [{ rowNumber: 2, businessKey: "customer-zhang", label: "张三", fields: { name: "张三" }, change: "create" }],
+        diff: { created: 1, updated: 0, unchanged: 0, removed: 0 },
+        expiresAt: "2026-08-26T01:00:00.000Z",
+        createdAt: "2026-08-26T00:30:00.000Z",
+      },
+      canConfirm: true,
+    });
+    mocks.issueApprovalGrant.mockResolvedValue({ grantId: "apg_import_1", token: "import-token", expiresAt: "2026-08-26T00:40:00.000Z" });
+    mocks.confirmChannelObjectImport.mockResolvedValue({ import: { id: "cimport_1", status: "confirmed" }, replayed: false });
+
+    renderView();
+    fireEvent.click(await screen.findByRole("button", { name: "查看专业设置" }));
+    const fileInput = await screen.findByLabelText(/^导入已有资料/);
+    const file = new File(["name\n张三"], "contacts.csv", { type: "text/csv" });
+    Object.defineProperty(file, "arrayBuffer", { value: vi.fn().mockResolvedValue(new TextEncoder().encode("name\n张三").buffer) });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: "先检查文件" }));
+    expect(await screen.findByText(/contacts\.csv：新增 1/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "审批并加入" }));
+
+    await waitFor(() => expect(mocks.issueApprovalGrant).toHaveBeenCalledWith("channel_object_import_confirm", "cimport_1"));
+    expect(mocks.confirmChannelObjectImport).toHaveBeenCalledWith("cimport_1", "import-token");
+    expect(await screen.findByText("已导入 1 条联系人。")).toBeTruthy();
+  });
+
+  it("previews the existing local connector and mints a one-time grant before syncing", async () => {
+    mocks.listChannelObjectConnectors.mockResolvedValue({
+      connectors: [{ id: "business_entities", name: "本地业务实体", mode: "read_only", kinds: ["contact", "order"], configured: true }],
+    });
+    mocks.previewChannelObjectConnectorSync.mockResolvedValue({
+      preview: {
+        id: "csync_preview_1",
+        projectId: "project-1",
+        connectorId: "business_entities",
+        configId: null,
+        kind: "contact",
+        status: "preview",
+        creates: 1,
+        updates: 0,
+        unchanged: 0,
+        totalRows: 1,
+        sampleRows: [{ label: "张三", businessKey: "customer-zhang", change: "create" }],
+        expiresAt: "2026-08-26T01:00:00.000Z",
+        createdAt: "2026-08-26T00:30:00.000Z",
+      },
+      canConfirm: true,
+    });
+    mocks.issueApprovalGrant.mockResolvedValue({ grantId: "apg_1", token: "issued-token", expiresAt: "2026-08-26T00:40:00.000Z" });
+    mocks.confirmChannelObjectConnectorSync.mockResolvedValue({
+      preview: { id: "csync_preview_1", status: "confirmed" },
+      sync: { id: "csync_1", status: "succeeded", imported: 1, failed: 0 },
+      replayed: false,
+    });
+
+    renderView();
+    fireEvent.click(await screen.findByRole("button", { name: "查看专业设置" }));
+    fireEvent.click(await screen.findByRole("button", { name: "预览同步" }));
+    expect(await screen.findByText(/同步预览：新增 1 条/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "审批并同步" }));
+
+    await waitFor(() => expect(mocks.issueApprovalGrant).toHaveBeenCalledWith("channel_object_connector_sync_confirm", "csync_preview_1"));
+    expect(mocks.confirmChannelObjectConnectorSync).toHaveBeenCalledWith("csync_preview_1", "issued-token");
+    expect(await screen.findByText("同步完成：新增或更新 1 条，失败 0 条。")).toBeTruthy();
+  });
+
   it("shows ordinary users what each learned template receives and produces", async () => {
     renderView();
     expect(await screen.findByRole("heading", { name: "我的模板" })).toBeTruthy();

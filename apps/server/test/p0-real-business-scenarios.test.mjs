@@ -29,6 +29,9 @@ function financialImportHarness() {
     nextId: (prefix) => `${prefix}_payment_${++counter}`,
     appendEvent: () => {},
     persistStateSoon: () => {},
+    validateApprovalToken: (token, request) => token === "issued-token" && request.action === "channel_object_import_confirm"
+      ? { approved: true, grantId: "apg_test" }
+      : { approved: false, reason: "grant_required" },
   };
   const registry = createChannelObjectRegistryService(options);
   const imports = createChannelObjectImportService({
@@ -40,6 +43,12 @@ function financialImportHarness() {
 }
 
 function base64(value) { return Buffer.from(value).toString("base64"); }
+
+function confirmImportWithGrant(deps, importId, actor) {
+  const grant = deps.issueApprovalGrant({ action: "channel_object_import_confirm", targetId: importId }, actor);
+  assert.equal(grant.status, 201);
+  return deps.confirmChannelObjectImport({ importId, approvalToken: grant.body.token }, actor);
+}
 
 async function mutationHarness({ files, definitions, routineDefinition = null }) {
   const projectPath = await mkdtemp(join(tmpdir(), "myagenttool-p0-real-"));
@@ -343,8 +352,8 @@ test("P0 real payment reconciliation returns an explainable read-only difference
   }, OWNER);
   assert.equal(receivableImport.body.import.errorRows, 0);
   assert.equal(transactionImport.body.import.errorRows, 0);
-  const receivables = imported.imports.confirmChannelObjectImport({ importId: receivableImport.body.import.id }, OWNER);
-  const transactions = imported.imports.confirmChannelObjectImport({ importId: transactionImport.body.import.id }, OWNER);
+  const receivables = imported.imports.confirmChannelObjectImport({ importId: receivableImport.body.import.id, approvalToken: "issued-token" }, OWNER);
+  const transactions = imported.imports.confirmChannelObjectImport({ importId: transactionImport.body.import.id, approvalToken: "issued-token" }, OWNER);
   assert.equal(receivables.status, 200);
   assert.equal(transactions.status, 200);
 
@@ -410,7 +419,7 @@ test("P0 real payment reconciliation is returned from a natural Channel request 
       content: base64(content),
     }, OWNER);
     assert.equal(preview.status, 201, JSON.stringify(preview));
-    assert.equal(h.deps.confirmChannelObjectImport({ importId: preview.body.import.id }, OWNER).status, 200);
+    assert.equal(confirmImportWithGrant(h.deps, preview.body.import.id, OWNER).status, 200);
   }
   const originalReceivables = await readFile(join(h.projectPath, "ledgers/receivables.csv"), "utf8");
   const originalTransactions = await readFile(join(h.projectPath, "ledgers/bank-transactions.csv"), "utf8");
@@ -582,7 +591,7 @@ test("P0 lifecycle scenario follows one customer from quotation through payment,
       content: base64(content),
     }, OWNER);
     assert.equal(preview.status, 201, JSON.stringify(preview));
-    assert.equal(h.deps.confirmChannelObjectImport({ importId: preview.body.import.id }, OWNER).status, 200);
+    assert.equal(confirmImportWithGrant(h.deps, preview.body.import.id, OWNER).status, 200);
   }
 
   await mutate("quotation", "请做报价跟进，把 quotations.csv 里的 Q-3001 的 跟进状态改成 已报价");
@@ -607,7 +616,7 @@ test("P0 lifecycle scenario follows one customer from quotation through payment,
   ]) {
     const preview = await h.deps.previewChannelObjectImport({ projectId: h.defaultProject.id, kind, format: "csv", fileName, sourceId: sources.get(fileName).id, content: base64(content) }, OWNER);
     assert.equal(preview.status, 201, JSON.stringify(preview));
-    assert.equal(h.deps.confirmChannelObjectImport({ importId: preview.body.import.id }, OWNER).status, 200);
+    assert.equal(confirmImportWithGrant(h.deps, preview.body.import.id, OWNER).status, 200);
   }
   h.advanceTime(1);
   const paymentAfterSync = await send("payment-after-sync", "请重新做回款对账");
@@ -680,7 +689,7 @@ test("P0 lifecycle rejects stale confirmation and resumes after the latest local
     content: base64("报价单号,客户,报价金额,跟进状态\nQ-3010,海棠科技,8600,外部已修改\n"),
   }, OWNER);
   assert.equal(imported.status, 201, JSON.stringify(imported));
-  assert.equal(h.deps.confirmChannelObjectImport({ importId: imported.body.import.id }, OWNER).status, 200);
+  assert.equal(confirmImportWithGrant(h.deps, imported.body.import.id, OWNER).status, 200);
 
   const resumed = await send("resumed-draft", "请重新跟进报价，把 quotations.csv 里的 Q-3010 的 跟进状态改成 已跟进");
   assert.equal(resumed.ok, true, JSON.stringify(resumed));

@@ -599,6 +599,7 @@ export function createServerRuntimeServices({
     upsertChannelObject: channelObjectRegistryService.upsertChannelObject,
     setChannelObjectStatus: channelObjectRegistryService.setChannelObjectStatus,
     onFileSourceConfirmed: (identity, actor) => refreshChannelMutationSourceIdentity?.(identity, actor),
+    validateApprovalToken,
   });
   const channelObjectConnectorService = createChannelObjectConnectorService({
     state,
@@ -609,6 +610,7 @@ export function createServerRuntimeServices({
     store,
     upsertChannelObject: channelObjectRegistryService.upsertChannelObject,
     adapters: channelObjectConnectorAdapters,
+    validateApprovalToken,
   });
   const channelMutationBindingService = createChannelMutationBindingService({
     state,
