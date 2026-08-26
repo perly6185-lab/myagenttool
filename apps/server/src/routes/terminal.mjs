@@ -21,6 +21,8 @@ export async function handleTerminalRoutes({
   listHostFileTransfers,
   uploadHostFile,
   downloadHostFile,
+  listHostTlsActivationProfiles,
+  createHostTlsActivationProfile,
   createManagedTerminalSession,
   queueTerminalBridgeAction,
   nextTerminalBridgeAction,
@@ -119,6 +121,23 @@ export async function handleTerminalRoutes({
     }
     const result = await createHostFileScope(target, await readJson(req), actor);
     sendJson(res, result.ok ? 201 : result.status, result.ok ? { scope: result.scope } : { error: result.error });
+    return true;
+  }
+
+  const hostTlsProfilesMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/tls-activation-profiles$/);
+  if (hostTlsProfilesMatch && ["GET", "POST"].includes(req.method)) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostTlsProfilesMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    if (req.method === "GET") {
+      const profiles = listHostTlsActivationProfiles(target);
+      sendJson(res, 200, { profiles, count: profiles.length });
+      return true;
+    }
+    const result = await createHostTlsActivationProfile(target, await readJson(req), actor);
+    sendJson(res, result.ok ? 201 : result.status, result.ok ? { profile: result.profile } : { error: result.error });
     return true;
   }
 
@@ -387,7 +406,7 @@ function findVisibleSshTarget(state, actor, targetId) {
 }
 
 function myHostTarget(target) {
-  return Array.isArray(target?.purposes) && target.purposes.some((purpose) => purpose === "file_transfer" || purpose === "site_publish");
+  return Array.isArray(target?.purposes) && target.purposes.some((purpose) => ["file_transfer", "site_publish", "tls_certificate"].includes(purpose));
 }
 
 function findVisibleHostFileScope(state, actor, scopeId) {

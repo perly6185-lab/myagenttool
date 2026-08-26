@@ -93,13 +93,25 @@ function pathWithinRoot(root, candidate) {
 
 function scopePurpose(value) {
   const purpose = String(value ?? "general_files");
-  if (!["general_files", "site_publish", "backup"].includes(purpose)) throw new HostFileScopeError("host_file_scope_purpose_invalid", "The file range purpose is invalid.");
+  if (!["general_files", "site_publish", "backup", "tls_certificate"].includes(purpose)) throw new HostFileScopeError("host_file_scope_purpose_invalid", "The file range purpose is invalid.");
   return purpose;
 }
 
 function targetAllowsPurpose(target, purpose) {
-  const required = purpose === "site_publish" ? "site_publish" : "file_transfer";
-  return Array.isArray(target?.purposes) && target.purposes.includes(required);
+  const required = purpose === "site_publish" ? "site_publish" : purpose === "tls_certificate" ? "tls_certificate" : "file_transfer";
+  return Array.isArray(target?.purposes) && (target.purposes.includes(required) || (purpose === "tls_certificate" && target.purposes.includes("site_publish")));
+}
+
+function rootsOverlap(left, right) {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function assertCertificateScopeIsolation(state, target, purpose, rootPath, currentScopeId = null) {
+  const conflict = state.hostFileScopes.some((scope) => scope.id !== currentScopeId
+    && scope.sshTargetId === target.id
+    && (purpose === "tls_certificate" || scope.purpose === "tls_certificate")
+    && rootsOverlap(rootPath, scope.resolvedRootPath ?? scope.rootPath));
+  if (conflict) throw new HostFileScopeError("host_tls_scope_overlaps_file_scope", "The certificate range must not overlap another managed file range.", 409);
 }
 
 function normalizeScopePermissions(value, fallback = ["list"]) {
@@ -226,6 +238,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
       const purpose = scopePurpose(body.purpose);
       if (!targetAllowsPurpose(target, purpose)) throw new HostFileScopeError("host_file_scope_purpose_not_allowed", "The host connection is not approved for this file range purpose.", 409);
       const rootPath = normalizeHostScopeRoot(body.rootPath);
+      assertCertificateScopeIsolation(state, target, purpose, rootPath);
       const credential = await resolveCredential(target.credentialRef);
       if (!credential?.ok) throw new HostFileScopeError(credential?.error ?? "ssh_credential_unavailable", "The SSH credential is unavailable.", 409);
       const inspected = await sshHostConnector.runSftp(target, credential.credential, (sftp) => inspectRoot(sftp, rootPath));
@@ -238,7 +251,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
         purpose,
         rootPath,
         resolvedRootPath: inspected.value,
-        permissions: normalizeScopePermissions(body.permissions),
+        permissions: purpose === "tls_certificate" ? ["certificate_write"] : normalizeScopePermissions(body.permissions),
         overwritePolicy: "deny",
         limits: { maxEntries: MAX_ENTRIES, maxDepth: MAX_DEPTH },
         status: "ready",
@@ -266,6 +279,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
       const purpose = body.purpose == null ? scope.purpose : scopePurpose(body.purpose);
       if (!targetAllowsPurpose(target, purpose)) throw new HostFileScopeError("host_file_scope_purpose_not_allowed", "The host connection is not approved for this file range purpose.", 409);
       const rootPath = body.rootPath == null ? scope.rootPath : normalizeHostScopeRoot(body.rootPath);
+      assertCertificateScopeIsolation(state, target, purpose, rootPath, scope.id);
       const nextStatus = body.status === "disabled" ? "disabled" : "ready";
       let resolvedRootPath = scope.resolvedRootPath;
       let resolvedAddress = scope.lastResolvedAddress;
@@ -284,7 +298,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
         scope.purpose = purpose;
         scope.rootPath = rootPath;
         scope.resolvedRootPath = resolvedRootPath;
-        scope.permissions = normalizeScopePermissions(body.permissions, scope.permissions);
+        scope.permissions = purpose === "tls_certificate" ? ["certificate_write"] : normalizeScopePermissions(body.permissions, scope.permissions);
         scope.status = nextStatus;
         scope.lastVerifiedAt = verifiedAt;
         scope.lastResolvedAddress = resolvedAddress;
@@ -300,6 +314,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
 
   async function listEntries(target, scope, rawPath) {
     try {
+      if (scope.purpose === "tls_certificate") throw new HostFileScopeError("host_tls_scope_browsing_forbidden", "Certificate files cannot be browsed through the file API.", 403);
       if (scope.status !== "ready" || target.connectionStatus !== "ready") throw new HostFileScopeError("host_file_scope_not_ready", "Verify the host and file range before browsing.", 409);
       const relativePath = normalizeHostRelativePath(rawPath);
       const credential = await resolveCredential(target.credentialRef);
@@ -394,6 +409,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
   async function uploadFile(target, scope, body, options = {}, actor = null) {
     let task = null;
     try {
+      if (scope.purpose === "tls_certificate") throw new HostFileScopeError("host_tls_scope_transfer_forbidden", "Certificate files can only be changed by the certificate manager.", 403);
       if (!scopeAllows(scope, "upload")) throw new HostFileScopeError("host_file_upload_not_allowed", "Uploads are not enabled for this file range.", 403);
       if (scope.status !== "ready" || target.connectionStatus !== "ready") throw new HostFileScopeError("host_file_scope_not_ready", "Verify the host and file range before uploading.", 409);
       if (!Buffer.isBuffer(body) || body.length < 1 || body.length > MAX_HOST_UPLOAD_BYTES) throw new HostFileScopeError("host_file_upload_size_invalid", "The upload is empty or exceeds the size limit.", 413);
@@ -448,6 +464,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
   async function downloadFile(target, scope, options = {}, actor = null) {
     let task = null;
     try {
+      if (scope.purpose === "tls_certificate") throw new HostFileScopeError("host_tls_scope_transfer_forbidden", "Certificate files cannot be downloaded through the file API.", 403);
       if (!scopeAllows(scope, "download")) throw new HostFileScopeError("host_file_download_not_allowed", "Downloads are not enabled for this file range.", 403);
       if (scope.status !== "ready" || target.connectionStatus !== "ready") throw new HostFileScopeError("host_file_scope_not_ready", "Verify the host and file range before downloading.", 409);
       if (options.confirmed !== true) throw new HostFileScopeError("host_file_transfer_confirmation_required", "Confirm the transfer before it starts.");

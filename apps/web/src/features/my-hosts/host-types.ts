@@ -1,5 +1,5 @@
 export type HostAuthMethod = "private_key_ref" | "managed_identity" | "password_ref" | "ssh_agent";
-export type HostPurpose = "runtime" | "file_transfer" | "site_publish";
+export type HostPurpose = "runtime" | "file_transfer" | "site_publish" | "tls_certificate";
 export type HostConnectionStatus = "untested" | "fingerprint_pending" | "ready" | "error" | "disabled";
 
 export interface SshHost {
@@ -21,7 +21,7 @@ export interface SshHost {
   revision: number;
 }
 
-export type HostFileScopePurpose = "general_files" | "site_publish" | "backup";
+export type HostFileScopePurpose = "general_files" | "site_publish" | "backup" | "tls_certificate";
 
 export interface HostFileScope {
   id: string;
@@ -30,7 +30,7 @@ export interface HostFileScope {
   purpose: HostFileScopePurpose;
   rootPath: string;
   resolvedRootPath: string;
-  permissions: Array<"list" | "upload" | "download">;
+  permissions: Array<"list" | "upload" | "download" | "certificate_write">;
   status: "ready" | "disabled" | "error";
   revision: number;
   lastVerifiedAt: string;
@@ -38,6 +38,18 @@ export interface HostFileScope {
 
 export interface HostFileScopeOption extends HostFileScope {
   host: Pick<SshHost, "id" | "name" | "host" | "connectionStatus" | "capabilities">;
+}
+
+export interface HostTlsActivationProfile {
+  id: string;
+  sshTargetId: string;
+  certificateScopeId: string;
+  label: string;
+  type: "docker_nginx";
+  containerName: string;
+  status: "ready" | "disabled" | "error";
+  lastVerifiedAt: string;
+  revision: number;
 }
 
 export interface HostFileEntry {

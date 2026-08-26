@@ -5,6 +5,7 @@ export const sitePublicationIdPrefix = "spb";
 export const sitePublicationPlanIdPrefix = "spp";
 export const siteDeploymentTargetIdPrefix = "sdt";
 export const siteAssetIdPrefix = "sat";
+export const siteDomainTlsBindingIdPrefix = "stb";
 
 export const siteEntryTypes = ["page", "article", "case"];
 export const siteEntryStatuses = ["draft", "ready", "published", "archived"];
@@ -21,6 +22,8 @@ export const siteBlockTypes = [
   "cta",
 ];
 export const siteDeploymentKinds = ["local_directory", "cloudflare_pages", "aliyun_oss_cdn", "ssh_static"];
+export const siteDomainTlsAccessModes = ["public", "private_lan"];
+export const siteDomainTlsStatuses = ["setup", "dns_ready", "issuing", "staging_ready", "deploying", "staging_deployed", "active", "renewal_due", "needs_attention", "disabled"];
 
 export const siteBounds = {
   maxNameLength: 120,

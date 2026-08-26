@@ -177,6 +177,7 @@ import { createWorkflowMemoryInsightsService } from "../services/workflow-memory
 import { createInquiryIntakeTriggerService } from "../services/inquiry-intake-triggers.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import { createSiteService } from "../services/sites.mjs";
+import { createSiteDomainTlsAdapter } from "../services/site-domain-tls-adapter.mjs";
 import { createSitePilotService } from "../services/site-pilot.mjs";
 import {
   autoRunVerificationTimeoutMs,
@@ -202,12 +203,14 @@ import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createSshHostConnector } from "../services/ssh-host-connector.mjs";
 import { createHostFileService } from "../services/host-files.mjs";
+import { createHostTlsActivationProfileService } from "../services/host-tls-activation-profiles.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 import { createExternalIssueProviderClient } from "../services/external-issue-provider.mjs";
 import { createSiteCredentialVault } from "../services/site-credential-vault.mjs";
 import { createCloudflarePagesAdapter } from "../services/cloudflare-pages-adapter.mjs";
 import { createAliyunOssCdnAdapter } from "../services/aliyun-oss-cdn-adapter.mjs";
 import { createSshStaticSiteAdapter } from "../services/ssh-static-site-adapter.mjs";
+import { createSshTlsCertificateAdapter } from "../services/ssh-tls-certificate-adapter.mjs";
 
 export { enrichAlertOwnership };
 
@@ -1031,6 +1034,17 @@ export function createServerRuntimeServices({
   const sshSiteAdapter = typeof siteSshAdapterFactory === "function"
     ? siteSshAdapterFactory({ state, sshHostConnector, resolveCredential: siteCredentialVault.resolveCredential })
     : createSshStaticSiteAdapter({ state, sshHostConnector, resolveCredential: siteCredentialVault.resolveCredential });
+  const domainTlsAdapter = createSiteDomainTlsAdapter();
+  const stagingCaPath = String(process.env.MYAGENTTOOL_ACME_STAGING_CA_FILE ?? "").trim();
+  const stagingCaPem = stagingCaPath && existsSync(resolve(stagingCaPath))
+    ? readFileSync(resolve(stagingCaPath), "utf8").slice(0, 1024 * 1024)
+    : process.env.MYAGENTTOOL_ACME_STAGING_CA_PEM ?? "";
+  const tlsCertificateAdapter = createSshTlsCertificateAdapter({
+    state,
+    sshHostConnector,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    stagingCaPem,
+  });
   const siteService = createSiteService({
     state,
     now,
@@ -1049,6 +1063,8 @@ export function createServerRuntimeServices({
         ? resolve(dirname(stateStorePath), "site-assets")
         : null,
     resolveCredential: siteCredentialVault.resolveCredential,
+    domainTlsAdapter,
+    tlsCertificateAdapter,
     deploymentAdapters: {
       cloudflare_pages: createCloudflarePagesAdapter(),
       aliyun_oss_cdn: createAliyunOssCdnAdapter(),
@@ -1252,6 +1268,16 @@ export function createServerRuntimeServices({
     store,
   });
   const hostFileService = createHostFileService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    sshHostConnector,
+    store,
+  });
+  const hostTlsActivationProfileService = createHostTlsActivationProfileService({
     state,
     now,
     nextId,
@@ -7827,6 +7853,11 @@ export function createServerRuntimeServices({
     listSiteDeploymentProviders: siteService.listDeploymentProviders,
     configureSiteDeploymentTarget: siteService.configureDeploymentTarget,
     verifySiteDeploymentTarget: siteService.verifyDeploymentTarget,
+    configureSiteDomainTlsBinding: siteService.configureDomainTlsBinding,
+    configureSiteDomainTlsDeployment: siteService.configureDomainTlsDeployment,
+    verifySiteDomainTlsDns: siteService.verifyDomainTlsDns,
+    issueSiteDomainTlsStaging: siteService.issueDomainTlsStaging,
+    deploySiteDomainTlsStaging: siteService.deployDomainTlsStaging,
     startSitePilotSession: sitePilotService.startSession,
     getActiveSitePilotSession: sitePilotService.getActiveSession,
     updateSitePilotSession: sitePilotService.updateSession,
@@ -7936,6 +7967,8 @@ export function createServerRuntimeServices({
     listHostFileTransfers: hostFileService.listTransfers,
     uploadHostFile: hostFileService.uploadFile,
     downloadHostFile: hostFileService.downloadFile,
+    listHostTlsActivationProfiles: hostTlsActivationProfileService.listProfiles,
+    createHostTlsActivationProfile: hostTlsActivationProfileService.createProfile,
     createManagedTerminalSession,
     queueTerminalBridgeAction,
     nextTerminalBridgeAction,

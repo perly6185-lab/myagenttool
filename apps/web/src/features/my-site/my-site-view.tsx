@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronUp, ExternalLink, Eye, FilePlus2, Globe2, History, ImagePlus,
-  Languages, LayoutTemplate, ListChecks, Loader2, Monitor, Palette, Plus, Rocket, RotateCcw, Save, Settings2, Smartphone, Trash2, Upload,
+  Languages, LayoutTemplate, ListChecks, Loader2, Monitor, Palette, Plus, Rocket, RotateCcw, Save, Settings2, ShieldCheck, Smartphone, Trash2, Upload,
 } from "lucide-react";
 import { SectionHeading } from "@/components/common/section-heading";
 import { Button } from "@/components/ui/button";
@@ -326,6 +326,7 @@ function SiteWorkspace({ initialSite, zh, pilot }: { initialSite: Site; zh: bool
     {publish.error && !publishPlan ? <PublishRecovery error={publish.error} zh={zh} professional={professional} hasActiveRelease={Boolean(site.activePublication)} canRestore={Boolean(previousPublication)} onRetry={retryPublish} onSettings={() => { setExperienceMode("professional"); navigate("siteSettings"); }} onRestore={previousPublication ? restoreHealthyRelease : undefined} /> : null}
     {rollback.error ? <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{errorMessage(rollback.error, zh)}</p> : null}
     <SiteJourneyCard state={experienceState} journey={journey} zh={zh} expanded={guideExpanded} pending={publish.isPending} onToggle={() => setGuideExpanded((value) => !value)} onAction={runJourneyAction} />
+    {site.domainTlsBinding ? <DomainTlsJourneyNotice site={site} zh={zh} onContinue={() => { setExperienceMode("professional"); navigate("siteSettings"); }} /> : null}
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
       <Card>
         <CardHeader className="flex-row items-center justify-between gap-3">
@@ -360,6 +361,37 @@ function SiteWorkspace({ initialSite, zh, pilot }: { initialSite: Site; zh: bool
     <Modal open={Boolean(rollbackPlan)} onClose={() => setRollbackPlan(null)} title={copy.restoreTitle} description={(isPublic ? copy.restoreDetail : copy.restoreLocalDetail).replace("{{version}}", String(rollbackPlan?.changes.toVersion ?? ""))} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={() => setRollbackPlan(null)}>{copy.cancel}</Button><Button disabled={rollback.isPending} onClick={() => rollback.mutate()}><History />{copy.restore}</Button></div>}><div className="space-y-2 text-sm text-muted-foreground"><p>{isPublic ? (zh ? "网站全部公开页面、文章和图片会恢复到该版本。" : "All public pages, articles, and images will return to that version.") : (zh ? "已生成版本中的页面、文章和图片会恢复到该版本。" : "Pages, articles, and images in the generated release will return to that version.")}</p><p>{zh ? `你当前的 ${site.unpublishedCount} 项未发布修改会继续保留，可以稍后再次发布。` : `Your ${site.unpublishedCount} unpublished changes will be kept so you can publish them later.`}</p></div></Modal>
     <GoLiveGuide open={goLiveOpen} zh={zh} onClose={() => setGoLiveOpen(false)} onContinue={continueGoLive} />
   </>;
+}
+
+function DomainTlsJourneyNotice({ site, zh, onContinue }: { site: Site; zh: boolean; onContinue: () => void }) {
+  const binding = site.domainTlsBinding!;
+  const active = binding.status === "active";
+  const attention = binding.status === "needs_attention" || binding.status === "renewal_due";
+  const stagingIssued = binding.status === "staging_ready";
+  const stagingDeployed = binding.status === "staging_deployed";
+  const title = active
+    ? (zh ? "网站安全连接已启用" : "Secure website connection is active")
+    : stagingDeployed
+      ? (zh ? "测试证书已完成服务器验证" : "Test certificate passed server verification")
+    : stagingIssued
+      ? (zh ? "测试证书已签发，网站尚未启用 HTTPS" : "Test certificate issued; website HTTPS is not active")
+    : attention
+      ? (zh ? "网站安全连接需要处理" : "Secure website connection needs attention")
+      : (zh ? "网站域名已保存，HTTPS 尚未完成" : "Website domain saved; HTTPS is not finished yet");
+  const detail = active
+    ? (zh ? `访客可通过 https://${binding.hostname}/ 安全访问。` : `Visitors can securely open https://${binding.hostname}/.`)
+    : stagingDeployed
+      ? (zh ? "证书上传、原子切换、Nginx 重载和 HTTPS 校验均已通过；但测试证书不受浏览器信任，仍需正式签发后才能对访客启用可信 HTTPS。" : "Certificate upload, atomic switch, Nginx reload, and HTTPS verification passed. The staging certificate is still untrusted by browsers; production issuance is required before trusted HTTPS is available to visitors.")
+    : stagingIssued
+      ? (zh ? "测试证书只证明域名验证流程可行，浏览器不会信任它；部署正式证书并完成服务器检查前，访客仍不能通过可信 HTTPS 打开网站。" : "The test certificate only proves the domain-validation flow. Browsers do not trust it; visitors still need a production certificate and completed server checks for trusted HTTPS.")
+    : attention
+      ? (zh ? "网站内容和旧版本不会被自动删除，请让配置人员重新检查域名、证书和服务器。" : "Website content and the previous release remain intact. Ask the setup owner to recheck the domain, certificate, and server.")
+      : (zh ? "当前仍可继续编辑和预览；完成证书签发和服务器检查后，访客才能通过 HTTPS 打开。" : "You can keep editing and previewing. Visitors can use HTTPS after certificate issuance and server checks are complete.");
+  return <div className={`flex flex-wrap items-center gap-3 rounded-xl border p-4 ${active ? "border-success/30 bg-success/5" : attention ? "border-warning/30 bg-warning/5" : "border-border bg-card"}`}>
+    <span className={`grid size-10 shrink-0 place-items-center rounded-lg ${active ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}><ShieldCheck className="size-5" /></span>
+    <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold">{title}</p><StatusBadge tone={active ? "success" : attention ? "warning" : "neutral"}>{binding.accessMode === "private_lan" ? (zh ? "仅局域网" : "Private LAN") : (zh ? "公网" : "Public")}</StatusBadge></div><p className="mt-1 text-sm text-muted-foreground">{detail}</p></div>
+    {!active ? <Button variant="secondary" onClick={onContinue}><Settings2 />{zh ? "继续上线设置" : "Continue setup"}</Button> : site.publicUrl ? <a className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline" href={site.publicUrl} target="_blank" rel="noreferrer">{zh ? "打开网站" : "Open website"}<ExternalLink className="size-3.5" /></a> : null}
+  </div>;
 }
 
 function SiteJourneyCard({ state, journey, zh, expanded, pending, onToggle, onAction }: {

@@ -105,6 +105,59 @@ describe("MySiteView", () => {
     expect(screen.getByText("/ · Page")).toBeTruthy();
   });
 
+  it("tells an ordinary user when a saved LAN domain still needs HTTPS setup", async () => {
+    const lanSite: Site = {
+      ...starterSite,
+      deploymentTarget: { ...starterSite.deploymentTarget!, kind: "ssh_static", displayName: "My server" },
+      domainTlsBinding: {
+        hostname: "lan.mytoolagent.com", accessMode: "private_lan", status: "setup",
+        lastVerifiedAt: null, renewAfter: null, notAfter: null,
+      },
+    };
+    vi.mocked(siteApi.list).mockResolvedValue({ sites: [lanSite], count: 1 });
+    renderView();
+
+    expect(await screen.findByText("Website domain saved; HTTPS is not finished yet")).toBeTruthy();
+    expect(screen.getByText("Private LAN")).toBeTruthy();
+    expect(screen.getByText(/Visitors can use HTTPS after certificate issuance/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Continue setup" }));
+    expect(useUiStore.getState().experienceMode).toBe("professional");
+  });
+
+  it("does not present a staging certificate as trusted website HTTPS", async () => {
+    const stagingSite: Site = {
+      ...starterSite,
+      deploymentTarget: { ...starterSite.deploymentTarget!, kind: "ssh_static", displayName: "My server" },
+      domainTlsBinding: {
+        hostname: "lan.mytoolagent.com", accessMode: "private_lan", status: "staging_ready",
+        lastVerifiedAt: "2026-08-26T00:00:00.000Z", renewAfter: "2026-10-25T00:00:00.000Z", notAfter: "2026-11-24T00:00:00.000Z",
+      },
+    };
+    vi.mocked(siteApi.list).mockResolvedValue({ sites: [stagingSite], count: 1 });
+    renderView();
+
+    expect(await screen.findByText("Test certificate issued; website HTTPS is not active")).toBeTruthy();
+    expect(screen.getByText(/Browsers do not trust it/)).toBeTruthy();
+    expect(screen.queryByText("Secure website connection is active")).toBeNull();
+  });
+
+  it("explains that a server-verified staging certificate is still not production HTTPS", async () => {
+    const stagingSite: Site = {
+      ...starterSite,
+      deploymentTarget: { ...starterSite.deploymentTarget!, kind: "ssh_static", displayName: "My server" },
+      domainTlsBinding: {
+        hostname: "lan.mytoolagent.com", accessMode: "private_lan", status: "staging_deployed",
+        lastVerifiedAt: "2026-08-26T00:02:00.000Z", renewAfter: "2026-10-25T00:00:00.000Z", notAfter: "2026-11-24T00:00:00.000Z",
+      },
+    };
+    vi.mocked(siteApi.list).mockResolvedValue({ sites: [stagingSite], count: 1 });
+    renderView();
+
+    expect(await screen.findByText("Test certificate passed server verification")).toBeTruthy();
+    expect(screen.getByText(/still untrusted by browsers/)).toBeTruthy();
+    expect(screen.queryByText("Secure website connection is active")).toBeNull();
+  });
+
   it("lets an ordinary user create a safe second-language draft from the content list", async () => {
     const source = {
       ...starterSite.entries[0], locale: "en-US" as const, translationOf: null,

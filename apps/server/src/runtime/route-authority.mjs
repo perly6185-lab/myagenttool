@@ -36,12 +36,15 @@ const manageRules = [
   /^\/api\/mail\/task-policies$/,
   /^\/api\/hosts(?:\/[^/]+(?:\/(?:observe-fingerprint|confirm-fingerprint|verify))?)?$/,
   /^\/api\/hosts\/[^/]+\/file-scopes(?:\/[^/]+)?$/,
+  /^\/api\/hosts\/[^/]+\/tls-activation-profiles$/,
   /^\/api\/sites\/[^/]+\/deployment-target(?:\/verify)?$/,
+  /^\/api\/sites\/[^/]+\/domain-tls-binding(?:\/deployment)?$/,
   /^\/api\/site-pilot\/campaigns(?:\/[^/]+(?:\/invitations)?)?$/,
 ];
 
 const operateRules = [
   /^\/api\/host-file-scopes\/[^/]+\/transfers(?:\/(?:upload|download))?$/,
+  /^\/api\/sites\/[^/]+\/domain-tls-binding\/(?:verify-dns|issue-staging|deploy-staging)$/,
   /^\/api\/approvals\/grants$/,
   /^\/api\/approvals\/[^/]+\/(?:approve|deny)$/,
   /^\/api\/pending-decisions\/[^/]+\/(?:claim|release)$/,

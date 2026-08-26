@@ -678,7 +678,7 @@ function normalizeSshWorkspaceRoot(value, { required = true } = {}) {
 
 function normalizeSshPurposes(value) {
   const values = Array.isArray(value) ? value : value == null ? ["runtime"] : [value];
-  const purposes = [...new Set(values.map(String).filter((item) => ["runtime", "file_transfer", "site_publish"].includes(item)))];
+  const purposes = [...new Set(values.map(String).filter((item) => ["runtime", "file_transfer", "site_publish", "tls_certificate"].includes(item)))];
   return purposes.length ? purposes : ["runtime"];
 }
 

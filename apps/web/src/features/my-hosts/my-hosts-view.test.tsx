@@ -10,7 +10,7 @@ import { MyHostsView } from "./my-hosts-view";
 
 vi.mock("./host-api", () => ({ MAX_HOST_UPLOAD_BYTES: 10 * 1024 * 1024, MAX_HOST_DOWNLOAD_BYTES: 25 * 1024 * 1024, hostApi: {
   list: vi.fn(), get: vi.fn(), create: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
-  scopes: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(),
+  scopes: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
 } }));
 
 const host: SshHost = {
@@ -43,6 +43,7 @@ beforeEach(async () => {
     { name: "current", path: "current", type: "symlink", accessible: false, size: null, modifiedAt: null },
   ] });
   vi.mocked(hostApi.transfers).mockResolvedValue({ transfers: [], count: 0 });
+  vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
 });
 afterEach(() => cleanup());
 
@@ -108,7 +109,7 @@ it("starts with plain connection fields and moves credentials into desktop secur
   fireEvent.click((await screen.findAllByRole("button", { name: "Add host" }))[0]);
   fireEvent.change(screen.getByLabelText("Host address"), { target: { value: "host.example" } });
   fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
-  await waitFor(() => expect(hostApi.create).toHaveBeenCalledWith(expect.objectContaining({ host: "host.example", user: "deploy", purposes: ["file_transfer", "site_publish"] })));
+  await waitFor(() => expect(hostApi.create).toHaveBeenCalledWith(expect.objectContaining({ host: "host.example", user: "deploy", purposes: ["file_transfer", "site_publish", "tls_certificate"] })));
 
   const privateKey = "-----BEGIN OPENSSH PRIVATE KEY-----\nplain-test-key\n-----END OPENSSH PRIVATE KEY-----";
   fireEvent.change(await screen.findByLabelText("Private key"), { target: { value: privateKey } });

@@ -1,5 +1,5 @@
 import { ApiError, apiBase, csrfHeaders, ensureSession, request } from "@/lib/api/request";
-import type { HostAuthMethod, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileTransfer, HostPurpose, SshHost } from "./host-types";
+import type { HostAuthMethod, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileTransfer, HostPurpose, HostTlsActivationProfile, SshHost } from "./host-types";
 
 export const MAX_HOST_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_HOST_DOWNLOAD_BYTES = 25 * 1024 * 1024;
@@ -19,10 +19,16 @@ export const hostApi = {
     request<{ scopes: HostFileScope[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/file-scopes`),
   publishScopes: () =>
     request<{ scopes: HostFileScopeOption[]; count: number }>("GET", "/api/host-file-scopes?purpose=site_publish"),
+  certificateScopes: () =>
+    request<{ scopes: HostFileScopeOption[]; count: number }>("GET", "/api/host-file-scopes?purpose=tls_certificate"),
   createScope: (hostId: string, input: { label: string; purpose: HostFileScopePurpose; rootPath: string; permissions?: Array<"list" | "upload" | "download"> }) =>
     request<{ scope: HostFileScope }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/file-scopes`, input, true, 30_000),
   updateScope: (hostId: string, scopeId: string, input: { expectedRevision: number; label?: string; rootPath?: string; purpose?: HostFileScopePurpose; status?: "ready" | "disabled"; permissions?: Array<"list" | "upload" | "download"> }) =>
     request<{ scope: HostFileScope }>("PATCH", `/api/hosts/${encodeURIComponent(hostId)}/file-scopes/${encodeURIComponent(scopeId)}`, input, true, 30_000),
+  tlsProfiles: (hostId: string) =>
+    request<{ profiles: HostTlsActivationProfile[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/tls-activation-profiles`),
+  createTlsProfile: (hostId: string, input: { label: string; certificateScopeId: string; containerName: string }) =>
+    request<{ profile: HostTlsActivationProfile }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/tls-activation-profiles`, { ...input, type: "docker_nginx" }, true, 30_000),
   entries: (scopeId: string, path = "") =>
     request<{ scope: HostFileScope; path: string; entries: HostFileEntry[]; count: number }>("GET", `/api/host-file-scopes/${encodeURIComponent(scopeId)}/entries?path=${encodeURIComponent(path)}`, undefined, true, 30_000),
   transfers: (hostId: string) =>

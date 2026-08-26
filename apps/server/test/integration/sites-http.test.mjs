@@ -43,6 +43,22 @@ async function call(path, { method = "GET", body, headers = {} } = {}) {
   return { status: response.status, body: await response.json() };
 }
 
+test("TLS activation profile API is wired through the real HTTP server", async () => {
+  const created = await call("/api/hosts", { method: "POST", body: {
+    name: "TLS test host",
+    host: "10.10.10.222",
+    port: 22,
+    user: "devagent",
+    authMethod: "private_key_ref",
+    purposes: ["tls_certificate"],
+    networkPolicy: "allow_private_network",
+  } });
+  assert.equal(created.status, 201);
+  const listed = await call(`/api/hosts/${created.body.target.id}/tls-activation-profiles`);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body, { profiles: [], count: 0 });
+});
+
 test("site HTTP flow creates, edits, previews, plans, and publishes one immutable version", async () => {
   const created = await call("/api/sites", { method: "POST", body: {
     name: "HTTP 官网", description: "从一个简单流程发布", audience: "普通访客",
@@ -189,6 +205,26 @@ test("publication confirmation is explicit and provider discovery reports implem
   const verified = await call(`/api/sites/${list.body.sites[0].id}/deployment-target/verify`, { method: "POST", body: {} });
   assert.equal(verified.status, 200);
   assert.equal(verified.body.site.deploymentTarget.status, "ready");
+});
+
+test("domain and HTTPS binding endpoint fails closed until an SSH publishing target exists", async () => {
+  const list = await call("/api/sites");
+  const configured = await call(`/api/sites/${list.body.sites[0].id}/domain-tls-binding`, {
+    method: "PUT",
+    body: { expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "private_lan" },
+  });
+  assert.equal(configured.status, 409);
+  assert.equal(configured.body.error, "site_domain_ssh_target_required");
+  const verifyDns = await call(`/api/sites/${list.body.sites[0].id}/domain-tls-binding/verify-dns`, {
+    method: "POST", body: { expectedRevision: 0 },
+  });
+  assert.equal(verifyDns.status, 404);
+  assert.equal(verifyDns.body.error, "site_domain_tls_binding_not_found");
+  const issueStaging = await call(`/api/sites/${list.body.sites[0].id}/domain-tls-binding/issue-staging`, {
+    method: "POST", body: { expectedRevision: 0, confirmed: true },
+  });
+  assert.equal(issueStaging.status, 404);
+  assert.equal(issueStaging.body.error, "site_domain_tls_binding_not_found");
 });
 
 test("site image HTTP endpoints accept bounded binary uploads and serve managed content", async () => {

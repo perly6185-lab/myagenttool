@@ -11,12 +11,12 @@ import { SiteDeploymentAdapterError } from "../src/services/site-deployment-adap
 const ACTOR_A = { userId: "usr_a", teamId: "team_a", role: "owner" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b", role: "owner" };
 
-function harness({ publishRoot = null, assetRoot = null, resolveCredential, deploymentAdapters, sshHostConnector } = {}) {
+function harness({ publishRoot = null, assetRoot = null, resolveCredential, deploymentAdapters, domainTlsAdapter, tlsCertificateAdapter, sshHostConnector } = {}) {
   let id = 0;
   let clock = Date.parse("2026-08-24T00:00:00.000Z");
   const state = {
     sites: [], siteEntries: [], siteEntryRevisions: [], sitePublicationPlans: [],
-    sitePublications: [], siteDeploymentTargets: [], siteAssets: [], sshTargets: [], hostFileScopes: [],
+    sitePublications: [], siteDeploymentTargets: [], siteDomainTlsBindings: [], siteAssets: [], sshTargets: [], hostFileScopes: [], hostTlsActivationProfiles: [],
   };
   const service = createSiteService({
     state,
@@ -26,6 +26,8 @@ function harness({ publishRoot = null, assetRoot = null, resolveCredential, depl
     assetRoot,
     ...(resolveCredential ? { resolveCredential } : {}),
     ...(deploymentAdapters ? { deploymentAdapters } : {}),
+    ...(domainTlsAdapter ? { domainTlsAdapter } : {}),
+    ...(tlsCertificateAdapter ? { tlsCertificateAdapter } : {}),
     ...(sshHostConnector ? { sshHostConnector } : {}),
   });
   return { state, service, tick: () => { clock += 1000; } };
@@ -742,6 +744,221 @@ test("SSH static target reuses a verified host range without a second credential
   assert.equal((await service.confirmRollbackPlan({ siteId: site.id, planId: rollbackPlan.id, confirmed: true }, ACTOR_A)).status, 200);
   assert.deepEqual(calls.map(([kind]) => kind), ["verify", "deploy", "deploy", "rollback"]);
   assert.equal(calls.every((call) => call.at(-1) === null || typeof call.at(-1) === "string"), true);
+});
+
+test("domain and TLS setup is team scoped, revision gated, and keeps DNS credentials opaque", () => {
+  const { service, state } = harness();
+  const site = createDefaultSite(service);
+  state.sshTargets.push({
+    id: "ssh_target_1", ownerTeamId: "team_a", connectionStatus: "ready", networkPolicy: "public_only",
+    purposes: ["site_publish"], capabilities: { sftp: true, posixRename: true, symlink: true },
+  });
+  state.hostFileScopes.push({
+    id: "hfs_1", ownerTeamId: "team_a", sshTargetId: "ssh_target_1", purpose: "site_publish", status: "ready",
+    permissions: ["list", "upload", "download"], resolvedRootPath: "/srv/www/site", lastResolvedAddress: "8.8.8.8",
+  });
+  const target = service.getSite({ siteId: site.id, professional: true }, ACTOR_A).body.site.deploymentTarget;
+  const configured = service.configureDeploymentTarget({
+    siteId: site.id, expectedRevision: target.revision, kind: "ssh_static", displayName: "我的服务器",
+    remoteProjectRef: "hfs_1", customDomain: "lan.mytoolagent.com",
+  }, ACTOR_A);
+  assert.equal(configured.status, 200);
+
+  state.hostFileScopes[0].status = "error";
+  const staleScope = service.configureDomainTlsBinding({
+    siteId: site.id, expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "public",
+  }, ACTOR_A);
+  assert.equal(staleScope.status, 409);
+  assert.equal(staleScope.body.error, "site_domain_ssh_target_not_ready");
+  state.hostFileScopes[0].status = "ready";
+
+  const blockedPrivate = service.configureDomainTlsBinding({
+    siteId: site.id, expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "private_lan",
+  }, ACTOR_A);
+  assert.equal(blockedPrivate.status, 409);
+  assert.equal(blockedPrivate.body.error, "site_domain_private_network_not_allowed");
+
+  state.sshTargets[0].networkPolicy = "allow_private_network";
+  const wrongAddress = service.configureDomainTlsBinding({
+    siteId: site.id, expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "private_lan",
+  }, ACTOR_A);
+  assert.equal(wrongAddress.status, 409);
+  assert.equal(wrongAddress.body.error, "site_domain_private_address_required");
+  state.hostFileScopes[0].lastResolvedAddress = "10.10.10.222";
+  const created = service.configureDomainTlsBinding({
+    siteId: site.id, expectedRevision: 0, hostname: "LAN.MyToolAgent.com", accessMode: "private_lan",
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.binding.hostname, "lan.mytoolagent.com");
+  assert.equal(created.body.binding.dnsCredentialRef, "credential://alidns/main");
+  assert.equal(created.body.binding.challenge, "dns-01");
+  assert.equal(created.body.binding.status, "setup");
+  assert.equal(service.configureDomainTlsBinding({ siteId: site.id, expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "private_lan" }, ACTOR_A).status, 409);
+  assert.equal(service.configureDomainTlsBinding({ siteId: site.id, expectedRevision: 1, hostname: "lan.mytoolagent.com", accessMode: "private_lan" }, ACTOR_B).status, 404);
+
+  const ordinary = service.getSite({ siteId: site.id }, ACTOR_A).body.site.domainTlsBinding;
+  assert.deepEqual(Object.keys(ordinary).sort(), ["accessMode", "hostname", "lastVerifiedAt", "notAfter", "renewAfter", "status"]);
+  assert.equal("dnsCredentialRef" in ordinary, false);
+  assert.equal(JSON.stringify(state).includes("AccessKey"), false);
+});
+
+test("changing an SSH publishing target marks the domain binding for a fresh HTTPS check", () => {
+  const { service, state } = harness();
+  const site = createDefaultSite(service);
+  state.sshTargets.push({
+    id: "ssh_target_1", ownerTeamId: "team_a", connectionStatus: "ready", networkPolicy: "allow_private_network",
+    purposes: ["site_publish"], capabilities: { sftp: true, posixRename: true, symlink: true },
+  });
+  state.hostFileScopes.push({
+    id: "hfs_1", ownerTeamId: "team_a", sshTargetId: "ssh_target_1", purpose: "site_publish", status: "ready",
+    permissions: ["list", "upload", "download"], resolvedRootPath: "/srv/www/site", lastResolvedAddress: "10.10.10.222",
+  });
+  let target = service.getSite({ siteId: site.id, professional: true }, ACTOR_A).body.site.deploymentTarget;
+  target = service.configureDeploymentTarget({
+    siteId: site.id, expectedRevision: target.revision, kind: "ssh_static", displayName: "我的服务器",
+    remoteProjectRef: "hfs_1", customDomain: "lan.mytoolagent.com",
+  }, ACTOR_A).body.site.deploymentTarget;
+  assert.equal(service.configureDomainTlsBinding({
+    siteId: site.id, expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "private_lan",
+  }, ACTOR_A).status, 201);
+
+  const changed = service.configureDeploymentTarget({
+    siteId: site.id, expectedRevision: target.revision, kind: "ssh_static", displayName: "我的服务器",
+    remoteProjectRef: "hfs_1", customDomain: "site.mytoolagent.com",
+  }, ACTOR_A);
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.site.domainTlsBinding.status, "needs_attention");
+  assert.equal(changed.body.site.domainTlsBinding.lastFailure.error, "site_domain_target_changed");
+  assert.equal(service.getSite({ siteId: site.id }, ACTOR_A).body.site.domainTlsBinding.lastFailure, undefined);
+});
+
+test("AliDNS verification and staging issuance expose only certificate summaries", async () => {
+  const calls = [];
+  let releaseIssue;
+  let markIssueStarted;
+  const issueGate = new Promise((resolve) => { releaseIssue = resolve; });
+  const issueStarted = new Promise((resolve) => { markIssueStarted = resolve; });
+  const domainTlsAdapter = {
+    verifyDns: async ({ hostname, credential }) => {
+      calls.push(["verify", hostname, credential.accessKeyId]);
+      assert.equal(credential.accessKeySecret, "dns-secret-value");
+      return { provider: "alidns", zone: "mytoolagent.com" };
+    },
+    issueStaging: async ({ bindingId, hostname, contactEmail, credential }) => {
+      calls.push(["issue", bindingId, hostname, contactEmail, credential.accessKeyId]);
+      assert.equal(credential.accessKeySecret, "dns-secret-value");
+      markIssueStarted();
+      await issueGate;
+      return {
+        environment: "staging",
+        fingerprint: "b".repeat(64),
+        issuer: "CN=Fake LE Intermediate X1",
+        sans: [hostname],
+        notBefore: "2026-08-26T00:00:00.000Z",
+        notAfter: "2026-11-24T00:00:00.000Z",
+        cleanup: { ok: true },
+      };
+    },
+  };
+  const { service, state } = harness({
+    domainTlsAdapter,
+    resolveCredential: async (reference) => {
+      assert.equal(reference, "credential://alidns/main");
+      return { ok: true, credential: { accessKeyId: "LTAI5dnsExampleKey", accessKeySecret: "dns-secret-value" } };
+    },
+  });
+  const site = createDefaultSite(service);
+  state.sshTargets.push({
+    id: "ssh_target_1", ownerTeamId: "team_a", connectionStatus: "ready", networkPolicy: "public_only",
+    purposes: ["site_publish"], capabilities: { sftp: true, posixRename: true, symlink: true },
+  });
+  state.hostFileScopes.push({
+    id: "hfs_1", ownerTeamId: "team_a", sshTargetId: "ssh_target_1", purpose: "site_publish", status: "ready",
+    permissions: ["list", "upload", "download"], resolvedRootPath: "/srv/www/site", lastResolvedAddress: "8.8.8.8",
+  });
+  const target = service.getSite({ siteId: site.id, professional: true }, ACTOR_A).body.site.deploymentTarget;
+  service.configureDeploymentTarget({
+    siteId: site.id, expectedRevision: target.revision, kind: "ssh_static", displayName: "我的服务器",
+    remoteProjectRef: "hfs_1", customDomain: "lan.mytoolagent.com",
+  }, ACTOR_A);
+  let binding = service.configureDomainTlsBinding({
+    siteId: site.id, expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "public",
+  }, ACTOR_A).body.binding;
+
+  const verified = await service.verifyDomainTlsDns({ siteId: site.id, expectedRevision: binding.revision }, ACTOR_A);
+  assert.equal(verified.status, 200);
+  binding = verified.body.binding;
+  assert.equal(binding.status, "dns_ready");
+  assert.equal(binding.dnsZone, "mytoolagent.com");
+  assert.equal((await service.issueDomainTlsStaging({ siteId: site.id, expectedRevision: binding.revision }, ACTOR_A)).body.error, "site_domain_staging_confirmation_required");
+
+  const issueRequest = service.issueDomainTlsStaging({ siteId: site.id, expectedRevision: binding.revision, confirmed: true }, ACTOR_A);
+  await issueStarted;
+  assert.equal(service.configureDomainTlsBinding({
+    siteId: site.id, expectedRevision: binding.revision, hostname: "lan.mytoolagent.com", accessMode: "public",
+  }, ACTOR_A).body.error, "site_domain_tls_busy");
+  const currentTarget = service.getSite({ siteId: site.id, professional: true }, ACTOR_A).body.site.deploymentTarget;
+  assert.equal(service.configureDeploymentTarget({
+    siteId: site.id, expectedRevision: currentTarget.revision, kind: "ssh_static", displayName: "我的服务器",
+    remoteProjectRef: "hfs_1", customDomain: "lan.mytoolagent.com",
+  }, ACTOR_A).body.error, "site_domain_tls_busy");
+  releaseIssue();
+  const issued = await issueRequest;
+  assert.equal(issued.status, 200);
+  assert.equal(issued.body.binding.status, "staging_ready");
+  assert.equal(issued.body.binding.certificateEnvironment, "staging");
+  assert.equal(issued.body.binding.certificateFingerprint, "b".repeat(64));
+  assert.equal(issued.body.binding.notAfter, "2026-11-24T00:00:00.000Z");
+  assert.equal(issued.body.binding.renewAfter, "2026-10-25T00:00:00.000Z");
+  assert.deepEqual(calls.map(([action]) => action), ["verify", "issue"]);
+
+  const ordinary = service.getSite({ siteId: site.id }, ACTOR_A).body.site.domainTlsBinding;
+  assert.equal(ordinary.status, "staging_ready");
+  assert.equal("dnsZone" in ordinary, false);
+  assert.equal("certificateFingerprint" in ordinary, false);
+  assert.equal(JSON.stringify(state).includes("dns-secret-value"), false);
+  assert.equal(JSON.stringify(issued.body).includes("dns-secret-value"), false);
+});
+
+test("configures and executes staging certificate deployment without exposing key material", async () => {
+  const calls = [];
+  const artifact = { privateKey: Buffer.from("CERTIFICATE PRIVATE KEY"), certificate: Buffer.from("CERTIFICATE CHAIN"), hostname: "lan.mytoolagent.com", fingerprint: "c".repeat(64) };
+  const domainTlsAdapter = {
+    hasStagingArtifact: (bindingId, fingerprint) => bindingId.startsWith("stb_") && fingerprint === artifact.fingerprint,
+    withStagingArtifact: async (_bindingId, _fingerprint, operation) => operation(artifact),
+    discardStagingArtifact: (bindingId) => calls.push(["discard", bindingId]),
+  };
+  const tlsCertificateAdapter = { deployStaging: async ({ binding, artifact: input }) => {
+    assert.equal(input.privateKey.toString(), "CERTIFICATE PRIVATE KEY");
+    calls.push(["deploy", binding.id]);
+    return { releaseId: `staging-${input.fingerprint.slice(0, 32)}`, activationProfileId: "htp_1" };
+  } };
+  const { service, state } = harness({ domainTlsAdapter, tlsCertificateAdapter });
+  const site = createDefaultSite(service);
+  state.sshTargets.push({ id: "ssh_1", ownerTeamId: "team_a", connectionStatus: "ready", networkPolicy: "allow_private_network", purposes: ["site_publish"], capabilities: { sftp: true, posixRename: true, symlink: true } });
+  state.hostFileScopes.push(
+    { id: "hfs_publish", ownerTeamId: "team_a", sshTargetId: "ssh_1", purpose: "site_publish", status: "ready", permissions: ["list", "upload", "download"], resolvedRootPath: "/srv/www/site", lastResolvedAddress: "10.10.10.222" },
+    { id: "hfs_tls", ownerTeamId: "team_a", sshTargetId: "ssh_1", purpose: "tls_certificate", status: "ready", permissions: ["certificate_write"], resolvedRootPath: "/srv/tls/site", lastResolvedAddress: "10.10.10.222" },
+  );
+  state.hostTlsActivationProfiles.push({ id: "htp_1", ownerTeamId: "team_a", sshTargetId: "ssh_1", certificateScopeId: "hfs_tls", type: "docker_nginx", status: "ready" });
+  const initialTarget = service.getSite({ siteId: site.id, professional: true }, ACTOR_A).body.site.deploymentTarget;
+  service.configureDeploymentTarget({ siteId: site.id, expectedRevision: initialTarget.revision, kind: "ssh_static", displayName: "LAN", remoteProjectRef: "hfs_publish", customDomain: "lan.mytoolagent.com" }, ACTOR_A);
+  const created = service.configureDomainTlsBinding({ siteId: site.id, expectedRevision: 0, hostname: "lan.mytoolagent.com", accessMode: "private_lan" }, ACTOR_A).body.binding;
+  const stored = state.siteDomainTlsBindings[0];
+  Object.assign(stored, { status: "staging_ready", certificateEnvironment: "staging", certificateFingerprint: artifact.fingerprint, certificateSans: [artifact.hostname], notAfter: "2026-11-24T00:00:00.000Z" });
+  const configured = service.configureDomainTlsDeployment({ siteId: site.id, expectedRevision: created.revision, certificateScopeId: "hfs_tls", activationProfileId: "htp_1" }, ACTOR_A);
+  assert.equal(configured.status, 200);
+  assert.equal((await service.deployDomainTlsStaging({ siteId: site.id, expectedRevision: configured.body.binding.revision }, ACTOR_A)).body.error, "site_tls_staging_deployment_confirmation_required");
+  const deployed = await service.deployDomainTlsStaging({ siteId: site.id, expectedRevision: configured.body.binding.revision, confirmed: true }, ACTOR_A);
+  assert.equal(deployed.status, 200);
+  assert.equal(deployed.body.binding.status, "staging_deployed");
+  assert.match(deployed.body.binding.certificateReleaseId, /^staging-c+$/);
+  assert.deepEqual(calls.map(([action]) => action), ["deploy", "discard"]);
+  assert.equal(JSON.stringify(state).includes("CERTIFICATE PRIVATE KEY"), false);
+  assert.equal(JSON.stringify(deployed.body).includes("CERTIFICATE PRIVATE KEY"), false);
+  const ordinary = service.getSite({ siteId: site.id }, ACTOR_A).body.site.domainTlsBinding;
+  assert.equal(ordinary.status, "staging_deployed");
+  assert.equal("certificateReleaseId" in ordinary, false);
 });
 
 test("failed cloud deployment keeps the active release and records a sanitized failure", async () => {

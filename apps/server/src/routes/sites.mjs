@@ -7,6 +7,7 @@ export async function handleSiteRoutes({
   createPublicationPlan, getPublicationPlan, confirmPublicationPlan, listPublications,
   createRollbackPlan, confirmRollbackPlan,
   listDeploymentProviders, configureDeploymentTarget, verifyDeploymentTarget,
+  configureDomainTlsBinding, configureDomainTlsDeployment, verifyDomainTlsDns, issueDomainTlsStaging, deployDomainTlsStaging,
 }) {
   const siteRequest = url.pathname === "/api/site-deployment-providers" || url.pathname.startsWith("/api/sites");
   if (!siteRequest) return false;
@@ -172,6 +173,41 @@ export async function handleSiteRoutes({
   const targetVerifyMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/deployment-target\/verify$/);
   if (targetVerifyMatch && req.method === "POST") {
     const result = await verifyDeploymentTarget({ siteId: decodeURIComponent(targetVerifyMatch[1]) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const domainTlsMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/domain-tls-binding$/);
+  if (domainTlsMatch && req.method === "PUT") {
+    const result = configureDomainTlsBinding({ siteId: decodeURIComponent(domainTlsMatch[1]), ...(await readJson(req)) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const domainTlsDnsVerifyMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/domain-tls-binding\/verify-dns$/);
+  if (domainTlsDnsVerifyMatch && req.method === "POST") {
+    const result = await verifyDomainTlsDns({ siteId: decodeURIComponent(domainTlsDnsVerifyMatch[1]), ...(await readJson(req)) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const domainTlsDeploymentMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/domain-tls-binding\/deployment$/);
+  if (domainTlsDeploymentMatch && req.method === "PUT") {
+    const result = configureDomainTlsDeployment({ siteId: decodeURIComponent(domainTlsDeploymentMatch[1]), ...(await readJson(req)) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const domainTlsStagingMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/domain-tls-binding\/issue-staging$/);
+  if (domainTlsStagingMatch && req.method === "POST") {
+    const result = await issueDomainTlsStaging({ siteId: decodeURIComponent(domainTlsStagingMatch[1]), ...(await readJson(req)) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const domainTlsDeployStagingMatch = url.pathname.match(/^\/api\/sites\/([^/]+)\/domain-tls-binding\/deploy-staging$/);
+  if (domainTlsDeployStagingMatch && req.method === "POST") {
+    const result = await deployDomainTlsStaging({ siteId: decodeURIComponent(domainTlsDeployStagingMatch[1]), ...(await readJson(req)) }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }
