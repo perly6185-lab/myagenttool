@@ -7,6 +7,7 @@ import {
   generatePrivateTutorKnowledgeMapDraft,
   getPrivateTutorKnowledgeMapDraft,
   updatePrivateTutorKnowledgeMapDraft,
+  confirmPrivateTutorKnowledgeMapDraft,
   publishPrivateTutorKnowledgeMapDraft,
 } from "@/features/private-tutor/private-tutor-api";
 import * as apiRequest from "@/lib/api/request";
@@ -34,6 +35,8 @@ const fakeDraft = {
   subjectId: "general",
   domain: "general",
   schemaVersion: 1,
+  revision: 1,
+  sourceSnapshot: { materialDocumentId: "mat_abc123", sourceHash: "deadbeef", parserVersion: 2, sectionCount: 1, pageCount: 1 },
   draftModules: [
     { id: "mod_1", name: "Module 1", description: "d", orderIndex: 1 },
   ],
@@ -44,6 +47,7 @@ const fakeDraft = {
     { id: "kc_1", topicId: "top_1", name: "KC 1", learningObjectives: ["goal"], prerequisiteDraftIds: [], orderIndex: 1 },
   ],
   validationIssues: [],
+  confirmation: null,
   status: "in_review" as const,
   createdAt: "2026-08-25T00:00:00.000Z",
   updatedAt: "2026-08-25T00:00:00.000Z",
@@ -104,6 +108,20 @@ describe("private tutor material import & draft API", () => {
     const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ draft: fakeDraft });
     await updatePrivateTutorKnowledgeMapDraft("kmd_xyz789", { packageName: "Renamed" });
     expect(spy).toHaveBeenCalledWith("PUT", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789", { packageName: "Renamed" });
+  });
+
+  it("confirmPrivateTutorKnowledgeMapDraft sends revision-bound source acknowledgement", async () => {
+    const confirmedDraft = { ...fakeDraft, status: "confirmed" as const };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ draft: confirmedDraft });
+    const result = await confirmPrivateTutorKnowledgeMapDraft("kmd_xyz789", {
+      expectedRevision: 3,
+      acknowledgeSourceReview: true,
+    });
+    expect(result).toEqual(confirmedDraft);
+    expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/confirm", {
+      expectedRevision: 3,
+      acknowledgeSourceReview: true,
+    });
   });
 
   it("publishPrivateTutorKnowledgeMapDraft calls publish endpoint", async () => {

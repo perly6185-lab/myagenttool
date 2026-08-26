@@ -94,9 +94,11 @@ export interface MaterialDocument {
 }
 
 export interface DraftSourceRef {
+  sourceHash: string;
   sectionId: string;
   pageNumber: number | null;
   excerpt: string;
+  origin: "source" | "user_confirmed" | "ai_suggestion";
 }
 
 export interface DraftCandidateQuestion {
@@ -110,6 +112,7 @@ export interface DraftModule {
   name: string;
   description: string;
   sourceSectionId?: string;
+  sourceRef?: DraftSourceRef;
   orderIndex: number;
 }
 
@@ -119,6 +122,7 @@ export interface DraftTopic {
   name: string;
   description: string;
   sourceSectionId?: string;
+  sourceRef?: DraftSourceRef;
   orderIndex: number;
 }
 
@@ -130,6 +134,7 @@ export interface DraftKnowledgeComponent {
   learningObjectives: string[];
   prerequisiteDraftIds: string[];
   sourceRef?: DraftSourceRef;
+  sourceRefs?: DraftSourceRef[];
   candidateQuestions?: DraftCandidateQuestion[];
   orderIndex: number;
 }
@@ -148,11 +153,26 @@ export interface KnowledgeMapDraft {
   subjectId: string;
   domain: string;
   schemaVersion: number;
+  revision: number;
+  sourceSnapshot: {
+    materialDocumentId: string;
+    sourceHash: string;
+    parserVersion: number | null;
+    sectionCount: number;
+    pageCount: number | null;
+  };
   draftModules: DraftModule[];
   draftTopics: DraftTopic[];
   draftKnowledgeComponents: DraftKnowledgeComponent[];
   validationIssues: DraftValidationIssue[];
-  status: "in_review" | "published" | "discarded";
+  confirmation: {
+    revision: number;
+    fingerprint: string;
+    confirmedBy: string;
+    confirmedAt: string;
+    acknowledgement: "source_map_reviewed";
+  } | null;
+  status: "in_review" | "confirmed" | "published" | "discarded";
   publishedPackageId?: string;
   createdAt: string;
   updatedAt: string;

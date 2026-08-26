@@ -9,8 +9,11 @@ import {
   parsePlainTextSections,
 } from "../src/services/private-tutor-material-parser.mjs";
 import {
+  confirmKnowledgeMapDraft,
   generateKnowledgeMapDraft,
+  knowledgeMapDraftFingerprint,
   publishKnowledgeMapDraft,
+  updateKnowledgeMapDraft,
   validateDraft,
 } from "../src/services/private-tutor-graph-extractor.mjs";
 
@@ -320,14 +323,111 @@ Learn about variables.
   assert.equal(draft.packageName, "Programming Basics");
   assert.equal(draft.status, "in_review");
   assert.equal(draft.draftModules.length, 1);
-  assert.equal(draft.draftTopics.length, 1);
-  assert.equal(draft.draftKnowledgeComponents.length, 1);
+  assert.equal(draft.draftTopics.length, 2);
+  assert.equal(draft.schemaVersion, 2);
+  assert.equal(draft.revision, 1);
+  assert.equal(draft.confirmation, null);
+  assert.equal(draft.draftKnowledgeComponents.length, 3);
 
-  const kc = draft.draftKnowledgeComponents[0];
+  const kc = draft.draftKnowledgeComponents.find((item) => item.name === "Concept: Assignment");
+  assert.ok(kc);
   assert.equal(kc.name, "Concept: Assignment");
   assert.deepEqual(kc.learningObjectives, ["Understand how to assign values."]);
   assert.equal(kc.candidateQuestions.length, 1);
   assert.equal(kc.candidateQuestions[0].prompt, "What is assignment?");
+  assert.equal(kc.sourceRefs[0].sourceHash, doc.sourceHash);
+  assert.equal(kc.sourceRefs[0].sectionId, "sec_3");
+});
+
+test("builds a non-empty page-grounded map from the tracked Chinese textbook", async () => {
+  const bytes = readTrackedPdf("../../../docs/Loop-Engineering-IEEE-中文版-优化版.pdf");
+  const doc = await parseUploadedMaterialDocument(pdfUpload(bytes, { fileName: "loop-engineering.pdf" }), { ocrAdapter: unavailableOcr });
+  const draft = generateKnowledgeMapDraft({ materialDocument: doc, packageName: "循环工程学习地图" });
+
+  assert.ok(doc.sections.some((section) => /^IV\./.test(section.title)));
+  assert.ok(doc.sections.some((section) => /^A\./.test(section.title) && section.level === 2));
+  assert.ok(draft.draftModules.length > 5);
+  assert.ok(draft.draftTopics.length > 5);
+  assert.ok(draft.draftKnowledgeComponents.length > 10);
+  assert.equal(draft.draftKnowledgeComponents.every((item) => item.sourceRefs.length >= 1), true);
+  assert.equal(draft.draftKnowledgeComponents.every((item) => item.sourceRefs.every((ref) => ref.pageNumber >= 1)), true);
+  assert.equal(draft.validationIssues.some((issue) => issue.severity === "error"), false);
+});
+
+test("requires explicit source confirmation and invalidates it after every edit", () => {
+  const doc = parseMaterialDocument({
+    learningProfileId: "learner_confirm",
+    fileName: "confirm.md",
+    fileType: "markdown",
+    fileContent: "# Module\n## Topic\n### Evidence\nGrounded source content.",
+  });
+  const draft = generateKnowledgeMapDraft({ materialDocument: doc, packageName: "Confirm Package" });
+  const state = {
+    privateTutorMaterialDocuments: [doc],
+    privateTutorKnowledgeMapDrafts: [draft],
+    privateTutorContentPackages: [],
+    privateTutorModules: [],
+    privateTutorTopics: [],
+    privateTutorKnowledgeComponents: [],
+  };
+
+  assert.throws(() => publishKnowledgeMapDraft(state, draft.id), /draft_confirmation_required/);
+  assert.throws(() => confirmKnowledgeMapDraft(state, draft.id, {
+    actorId: "usr_confirm",
+    expectedRevision: 99,
+    acknowledgeSourceReview: true,
+  }), /draft_revision_conflict/);
+
+  const confirmed = confirmKnowledgeMapDraft(state, draft.id, {
+    actorId: "usr_confirm",
+    expectedRevision: draft.revision,
+    acknowledgeSourceReview: true,
+    now: "2026-08-27T01:00:00.000Z",
+  });
+  assert.equal(confirmed.confirmation.fingerprint, knowledgeMapDraftFingerprint(confirmed));
+  assert.equal(confirmed.status, "confirmed");
+
+  const updated = updateKnowledgeMapDraft(state, draft.id, { packageName: "Edited Package" }, "2026-08-27T01:01:00.000Z");
+  assert.equal(updated.revision, 2);
+  assert.equal(updated.confirmation, null);
+  assert.equal(updated.status, "in_review");
+  assert.throws(() => publishKnowledgeMapDraft(state, draft.id), /draft_confirmation_required/);
+});
+
+test("blocks empty, binary, and unknown-source knowledge maps from confirmation", () => {
+  const doc = parseMaterialDocument({
+    learningProfileId: "learner_invalid",
+    fileName: "invalid.md",
+    fileType: "markdown",
+    fileContent: "# Module\n## Topic\n### Evidence\nGrounded source content.",
+  });
+  const draft = generateKnowledgeMapDraft({ materialDocument: doc, packageName: "Invalid Package" });
+  const state = { privateTutorMaterialDocuments: [doc], privateTutorKnowledgeMapDrafts: [draft] };
+  const validKnowledge = structuredClone(draft.draftKnowledgeComponents);
+
+  const withoutSource = structuredClone(draft.draftKnowledgeComponents);
+  withoutSource[0].sourceRef = undefined;
+  withoutSource[0].sourceRefs = [];
+  withoutSource[0].shortDescription = "%PDF-1.4 endstream xref";
+  updateKnowledgeMapDraft(state, draft.id, { draftKnowledgeComponents: withoutSource });
+  assert.equal(draft.validationIssues.some((issue) => issue.type === "missing_source_reference"), true);
+  assert.equal(draft.validationIssues.some((issue) => issue.type === "binary_text_detected"), true);
+  assert.throws(() => confirmKnowledgeMapDraft(state, draft.id, {
+    actorId: "usr_invalid",
+    expectedRevision: draft.revision,
+    acknowledgeSourceReview: true,
+  }), /draft_has_validation_errors/);
+
+  const tamperedModules = structuredClone(draft.draftModules);
+  tamperedModules[0].sourceRef.excerpt = "This sentence was never in the uploaded material.";
+  updateKnowledgeMapDraft(state, draft.id, {
+    draftModules: tamperedModules,
+    draftKnowledgeComponents: validKnowledge,
+  });
+  assert.equal(draft.validationIssues.some((issue) => issue.type === "invalid_source_excerpt"), true);
+
+  updateKnowledgeMapDraft(state, draft.id, { draftKnowledgeComponents: [] });
+  assert.equal(draft.validationIssues.some((issue) => issue.type === "empty_knowledge_map"), true);
 });
 
 test("publishes a draft into a standard LearningContentPackage and registers it in state", () => {
@@ -356,11 +456,19 @@ Content of KC 2.
   // Simulate state
   const state = {
     privateTutorKnowledgeMapDrafts: [draft],
+    privateTutorMaterialDocuments: [doc],
     privateTutorContentPackages: [],
     privateTutorModules: [],
     privateTutorTopics: [],
     privateTutorKnowledgeComponents: [],
   };
+
+  const confirmed = confirmKnowledgeMapDraft(state, draft.id, {
+    actorId: "usr_learner",
+    expectedRevision: draft.revision,
+    acknowledgeSourceReview: true,
+  });
+  assert.equal(confirmed.status, "confirmed");
 
   const packageId = publishKnowledgeMapDraft(state, draft.id);
 
@@ -369,6 +477,8 @@ Content of KC 2.
   assert.equal(state.privateTutorContentPackages[0].sourceType, "user_material");
   assert.equal(state.privateTutorContentPackages[0].evaluationCapabilities.deterministicGrading, false);
   assert.equal(state.privateTutorContentPackages[0].evaluationCapabilities.semanticEvaluation, true);
+  assert.equal(state.privateTutorContentPackages[0].evaluationCapabilities.sourceGrounding, true);
+  assert.equal(state.privateTutorContentPackages[0].source.sourceHash, doc.sourceHash);
 
   assert.equal(state.privateTutorModules.length, 1);
   assert.equal(state.privateTutorTopics.length, 1);
@@ -410,6 +520,7 @@ test("detects validation errors and prevents publishing a draft with cycles", ()
 
   const state = {
     privateTutorKnowledgeMapDrafts: [draft],
+    privateTutorMaterialDocuments: [doc],
     privateTutorContentPackages: [],
     privateTutorModules: [],
     privateTutorTopics: [],

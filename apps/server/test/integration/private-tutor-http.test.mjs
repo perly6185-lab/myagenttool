@@ -1394,7 +1394,27 @@ Details on bubble sort.
   assert.equal(updateRes.status, 200);
   assert.equal(updateRes.body.draft.packageName, "Algorithms 101");
 
-  // 5. Publish Draft
+  // 5. Publishing is blocked until the current grounded map is confirmed.
+  const unconfirmedPublish = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/publish`, {
+    token: "tok_personal",
+    method: "POST",
+  });
+  assert.equal(unconfirmedPublish.status, 400);
+  assert.equal(unconfirmedPublish.body.error, "draft_confirmation_required");
+
+  const confirmRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/confirm`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      expectedRevision: updateRes.body.draft.revision,
+      acknowledgeSourceReview: true,
+    },
+  });
+  assert.equal(confirmRes.status, 200);
+  assert.equal(confirmRes.body.draft.status, "confirmed");
+  assert.equal(confirmRes.body.draft.confirmation.revision, updateRes.body.draft.revision);
+
+  // 6. Publish Draft
   const publishRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/publish`, {
     token: "tok_personal",
     method: "POST",
@@ -1403,7 +1423,7 @@ Details on bubble sort.
   assert.equal(publishRes.body.success, true);
   const publishedPackageId = publishRes.body.packageId;
 
-  // 6. Verify Content Package Registered
+  // 7. Verify Content Package Registered
   const packageRes = await call(`/api/private-tutor/content-packages/${publishedPackageId}`, {
     token: "tok_personal",
   });
@@ -1411,8 +1431,10 @@ Details on bubble sort.
   assert.equal(packageRes.body.package.name, "Algorithms 101");
   assert.equal(packageRes.body.package.sourceType, "user_material");
   assert.equal(packageRes.body.package.evaluationCapabilities.deterministicGrading, false);
+  assert.equal(packageRes.body.package.evaluationCapabilities.sourceGrounding, true);
+  assert.equal(packageRes.body.package.knowledgeComponents.every((item) => item.sourceGrounding === "user_confirmed"), true);
 
-  // 7. Delete Material
+  // 8. Delete Material
   const deleteRes = await call(`/api/private-tutor/materials/${materialId}`, {
     token: "tok_personal",
     method: "DELETE",

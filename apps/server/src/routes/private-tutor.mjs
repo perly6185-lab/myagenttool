@@ -112,9 +112,10 @@ import {
   parseUploadedMaterialDocument,
 } from "../services/private-tutor-material-parser.mjs";
 import {
+  confirmKnowledgeMapDraft,
   generateKnowledgeMapDraft,
   publishKnowledgeMapDraft,
-  validateDraft,
+  updateKnowledgeMapDraft,
 } from "../services/private-tutor-graph-extractor.mjs";
 import {
   privateTutorLearningPreferences,
@@ -469,25 +470,14 @@ export async function handlePrivateTutorRoutes({
     }
     if (req.method === "PUT") {
       const body = await readJson(req).catch(() => ({}));
-      if (draft.status === "published") {
-        sendJson(res, 400, { error: "cannot_edit_published_draft" });
-        return true;
+      try {
+        const updated = updateKnowledgeMapDraft(state, draftId, body, now());
+        state.privateTutorKnowledgeMapDrafts[draftIndex] = updated;
+        persistStateSoon();
+        sendJson(res, 200, { draft: updated });
+      } catch (error) {
+        sendJson(res, 400, { error: String(error?.message ?? "invalid_knowledge_map_draft") });
       }
-
-      // Update fields
-      if (body.packageName) draft.packageName = body.packageName;
-      if (body.subjectId) draft.subjectId = body.subjectId;
-      if (body.domain) draft.domain = body.domain;
-      if (body.draftModules) draft.draftModules = body.draftModules;
-      if (body.draftTopics) draft.draftTopics = body.draftTopics;
-      if (body.draftKnowledgeComponents) draft.draftKnowledgeComponents = body.draftKnowledgeComponents;
-
-      draft.updatedAt = new Date().toISOString();
-      draft.validationIssues = validateDraft(draft.draftKnowledgeComponents);
-
-      state.privateTutorKnowledgeMapDrafts[draftIndex] = draft;
-      persistStateSoon();
-      sendJson(res, 200, { draft });
       return true;
     }
     sendJson(res, 405, { error: "method_not_allowed" });
@@ -594,6 +584,40 @@ export async function handlePrivateTutorRoutes({
       return true;
     }
     sendJson(res, 405, { error: "method_not_allowed" });
+    return true;
+  }
+
+  const confirmDraftMatch = url.pathname.match(/^\/api\/private-tutor\/knowledge-map-drafts\/([^/]+)\/confirm$/);
+  if (confirmDraftMatch) {
+    const learnerId = actor?.privateTutorLearnerId || actor?.userId;
+    if (!learnerId) {
+      sendJson(res, 403, { error: "private_tutor_learner_required" });
+      return true;
+    }
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const draftId = decodeURIComponent(confirmDraftMatch[1]);
+    const draft = state.privateTutorKnowledgeMapDrafts.find((item) => item.id === draftId);
+    if (!draft || draft.learningProfileId !== learnerId) {
+      sendJson(res, 404, { error: "draft_not_found" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    try {
+      const confirmed = confirmKnowledgeMapDraft(state, draftId, {
+        actorId: actor.userId,
+        expectedRevision: body.expectedRevision,
+        acknowledgeSourceReview: body.acknowledgeSourceReview,
+        now: now(),
+      });
+      persistStateSoon();
+      sendJson(res, 200, { draft: confirmed });
+    } catch (error) {
+      const code = String(error?.message ?? "knowledge_map_confirmation_failed");
+      sendJson(res, code === "draft_revision_conflict" ? 409 : 400, { error: code });
+    }
     return true;
   }
 

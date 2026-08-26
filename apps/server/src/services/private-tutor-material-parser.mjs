@@ -558,7 +558,9 @@ export function parsePdfTextSections(pdfText) {
       continue;
     }
 
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/) || line.trim().match(/^(第[0-9一二三四五六七八九十百]+[章回讲节篇]|Chapter\s+\d+|[0-9]+\.[0-9]*\s+)/i);
+    const markdownHeading = line.match(/^(#{1,6})\s+(.+)$/);
+    const structuralHeading = line.trim().match(/^(第[0-9一二三四五六七八九十百]+[章回讲节篇]|Chapter\s+\d+|Unit\s+\d+|Part\s+[0-9IVXLCDM]+|[IVXLCDM]+\.|[A-Z]\.|[0-9]+(?:\.[0-9]+)*[.、]?\s+|摘要$|引言$|结论$|参考文献$|附录(?:\s*[A-Z一二三四五六七八九十])?[:：]?)/i);
+    const headingMatch = markdownHeading || structuralHeading;
 
     if (headingMatch) {
       if (currentSection) {
@@ -568,9 +570,9 @@ export function parsePdfTextSections(pdfText) {
         sections.push(currentSection);
       }
 
-      const isMd = !!line.match(/^(#{1,6})\s+(.+)$/);
+      const isMd = Boolean(markdownHeading);
       const title = isMd ? line.replace(/^#+\s+/, "").trim() : line.trim();
-      const level = isMd ? line.match(/^(#{1,6})/)[1].length : 1;
+      const level = isMd ? markdownHeading[1].length : pdfStructuralHeadingLevel(title);
 
       currentSection = {
         id: `sec_${sectionIndex++}`,
@@ -594,4 +596,11 @@ export function parsePdfTextSections(pdfText) {
   }
 
   return sections;
+}
+
+function pdfStructuralHeadingLevel(title) {
+  if (/^[A-Z]\.\s+/.test(title) || /^第[0-9一二三四五六七八九十百]+节/.test(title)) return 2;
+  const decimal = title.match(/^([0-9]+(?:\.[0-9]+)+)[.、]?\s+/);
+  if (decimal) return Math.min(6, decimal[1].split(".").length);
+  return 1;
 }

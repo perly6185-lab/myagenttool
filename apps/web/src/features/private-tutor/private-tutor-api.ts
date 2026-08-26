@@ -955,6 +955,18 @@ export async function updatePrivateTutorKnowledgeMapDraft(draftId: string, input
   return result.draft;
 }
 
+export async function confirmPrivateTutorKnowledgeMapDraft(draftId: string, input: {
+  expectedRevision: number;
+  acknowledgeSourceReview: true;
+}) {
+  const result = await request<PrivateTutorKnowledgeMapDraftResult>(
+    "POST",
+    `/api/private-tutor/knowledge-map-drafts/${encodeURIComponent(draftId)}/confirm`,
+    input,
+  );
+  return result.draft;
+}
+
 export async function publishPrivateTutorKnowledgeMapDraft(draftId: string) {
   return request<{ success: boolean; packageId: string }>(
     "POST",

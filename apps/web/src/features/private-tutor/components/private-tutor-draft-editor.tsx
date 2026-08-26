@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
 import {
+  confirmPrivateTutorKnowledgeMapDraft,
   publishPrivateTutorKnowledgeMapDraft,
   updatePrivateTutorKnowledgeMapDraft,
   type KnowledgeMapDraft,
@@ -27,12 +28,17 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
 
   const errorCount = draft.validationIssues.filter((i) => i.severity === "error").length;
   const warningCount = draft.validationIssues.filter((i) => i.severity === "warning").length;
-  const canPublish = errorCount === 0 && draft.draftKnowledgeComponents.length > 0;
+  const confirmed = draft.status === "confirmed"
+    && draft.confirmation?.revision === draft.revision;
+  const canConfirm = errorCount === 0 && draft.draftKnowledgeComponents.length > 0 && !confirmed;
+  const canPublish = errorCount === 0 && confirmed;
 
   const selectedKc = draft.draftKnowledgeComponents.find((kc) => kc.id === selectedKcId);
-  const selectedSection = selectedKc?.sourceRef
-    ? material.sections.find((s) => s.id === selectedKc.sourceRef?.sectionId)
-    : null;
+  const selectedSourceRefs = selectedKc?.sourceRefs?.length ? selectedKc.sourceRefs : selectedKc?.sourceRef ? [selectedKc.sourceRef] : [];
+  const selectedSections = selectedSourceRefs.map((ref) => ({
+    ref,
+    section: material.sections.find((section) => section.id === ref.sectionId),
+  })).filter((item) => item.section);
 
   async function saveDraft(updates: Partial<KnowledgeMapDraft>) {
     setBusy(true);
@@ -56,11 +62,41 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
     }
   }
 
+  async function confirm() {
+    setBusy(true);
+    setError("");
+    setSaveMessage("");
+    try {
+      const saved = await updatePrivateTutorKnowledgeMapDraft(draft.id, {
+        packageName: draft.packageName,
+        subjectId: draft.subjectId,
+        domain: draft.domain,
+        draftModules: draft.draftModules,
+        draftTopics: draft.draftTopics,
+        draftKnowledgeComponents: draft.draftKnowledgeComponents,
+      });
+      if (saved.validationIssues.some((issue) => issue.severity === "error")) {
+        setDraft(saved);
+        setError("知识地图仍有校验错误，请修正后再确认。");
+        return;
+      }
+      const confirmedDraft = await confirmPrivateTutorKnowledgeMapDraft(draft.id, {
+        expectedRevision: saved.revision,
+        acknowledgeSourceReview: true,
+      });
+      setDraft(confirmedDraft);
+      setSaveMessage("来源与知识结构已确认，可以发布。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "确认失败，请检查来源和知识结构。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function publish() {
     setBusy(true);
     setError("");
     try {
-      await saveDraft({});
       const result = await publishPrivateTutorKnowledgeMapDraft(draft.id);
       onPublished(result.packageId);
     } catch (err) {
@@ -72,7 +108,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
 
   function updateKc(kcId: string, updates: Partial<DraftKnowledgeComponent>) {
     const nextKcs = draft.draftKnowledgeComponents.map((kc) => (kc.id === kcId ? { ...kc, ...updates } : kc));
-    setDraft({ ...draft, draftKnowledgeComponents: nextKcs });
+    setDraft({ ...draft, draftKnowledgeComponents: nextKcs, confirmation: null, status: "in_review" });
   }
 
   function removeKc(kcId: string) {
@@ -80,7 +116,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
       ...kc,
       prerequisiteDraftIds: kc.prerequisiteDraftIds.filter((id) => id !== kcId),
     }));
-    setDraft({ ...draft, draftKnowledgeComponents: nextKcs });
+    setDraft({ ...draft, draftKnowledgeComponents: reorderKnowledge(nextKcs), confirmation: null, status: "in_review" });
     if (selectedKcId === kcId) setSelectedKcId(null);
   }
 
@@ -91,7 +127,88 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
     const nextIds = has
       ? kc.prerequisiteDraftIds.filter((id) => id !== prereqId)
       : [...kc.prerequisiteDraftIds, prereqId];
-    updateKc(kcId, { prerequisiteDraftIds: nextIds });
+    const nextKcs = draft.draftKnowledgeComponents.map((item) =>
+      item.id === kcId ? { ...item, prerequisiteDraftIds: nextIds } : item);
+    setDraft({ ...draft, draftKnowledgeComponents: nextKcs, confirmation: null, status: "in_review" });
+    void saveDraft({ draftKnowledgeComponents: nextKcs });
+  }
+
+  function moveSelected(direction: -1 | 1) {
+    if (!selectedKc) return;
+    const sameTopic = draft.draftKnowledgeComponents.filter((item) => item.topicId === selectedKc.topicId);
+    const currentIndex = sameTopic.findIndex((item) => item.id === selectedKc.id);
+    const target = sameTopic[currentIndex + direction];
+    if (!target) return;
+    const next = [...draft.draftKnowledgeComponents];
+    const left = next.findIndex((item) => item.id === selectedKc.id);
+    const right = next.findIndex((item) => item.id === target.id);
+    [next[left], next[right]] = [next[right], next[left]];
+    const reordered = reorderKnowledge(next);
+    setDraft({ ...draft, draftKnowledgeComponents: reordered, confirmation: null, status: "in_review" });
+    void saveDraft({ draftKnowledgeComponents: reordered });
+  }
+
+  function splitSelected() {
+    if (!selectedKc) return;
+    let suffix = 2;
+    while (draft.draftKnowledgeComponents.some((item) => item.id === `${selectedKc.id}_part_${suffix}`)) suffix += 1;
+    const secondId = `${selectedKc.id}_part_${suffix}`;
+    const objectives = selectedKc.learningObjectives.length > 1
+      ? selectedKc.learningObjectives
+      : [selectedKc.learningObjectives[0] ?? "理解并能够解释本节核心概念"];
+    const midpoint = Math.max(1, Math.ceil(objectives.length / 2));
+    const first = { ...selectedKc, name: `${selectedKc.name}（一）`, learningObjectives: objectives.slice(0, midpoint) };
+    const second = {
+      ...selectedKc,
+      id: secondId,
+      name: `${selectedKc.name}（二）`,
+      learningObjectives: objectives.slice(midpoint).length ? objectives.slice(midpoint) : [...objectives],
+      prerequisiteDraftIds: [selectedKc.id],
+    };
+    const index = draft.draftKnowledgeComponents.findIndex((item) => item.id === selectedKc.id);
+    const next = reorderKnowledge([
+      ...draft.draftKnowledgeComponents.slice(0, index),
+      first,
+      second,
+      ...draft.draftKnowledgeComponents.slice(index + 1),
+    ]);
+    setDraft({ ...draft, draftKnowledgeComponents: next, confirmation: null, status: "in_review" });
+    void saveDraft({ draftKnowledgeComponents: next });
+  }
+
+  function mergeWithNext() {
+    if (!selectedKc) return;
+    const sameTopic = draft.draftKnowledgeComponents.filter((item) => item.topicId === selectedKc.topicId);
+    const nextKnowledge = sameTopic[sameTopic.findIndex((item) => item.id === selectedKc.id) + 1];
+    if (!nextKnowledge) return;
+    const sourceRefs = uniqueSourceRefs([
+      ...(selectedKc.sourceRefs ?? (selectedKc.sourceRef ? [selectedKc.sourceRef] : [])),
+      ...(nextKnowledge.sourceRefs ?? (nextKnowledge.sourceRef ? [nextKnowledge.sourceRef] : [])),
+    ]);
+    const merged = {
+      ...selectedKc,
+      name: `${selectedKc.name} / ${nextKnowledge.name}`,
+      shortDescription: [selectedKc.shortDescription, nextKnowledge.shortDescription].filter(Boolean).join("；"),
+      learningObjectives: [...new Set([...selectedKc.learningObjectives, ...nextKnowledge.learningObjectives])],
+      prerequisiteDraftIds: [...new Set([...selectedKc.prerequisiteDraftIds, ...nextKnowledge.prerequisiteDraftIds])]
+        .filter((id) => id !== selectedKc.id && id !== nextKnowledge.id),
+      sourceRef: sourceRefs[0],
+      sourceRefs,
+      candidateQuestions: [...(selectedKc.candidateQuestions ?? []), ...(nextKnowledge.candidateQuestions ?? [])]
+        .map((question, index) => ({ ...question, id: `q_${index + 1}` })),
+    };
+    const next = reorderKnowledge(draft.draftKnowledgeComponents
+      .filter((item) => item.id !== nextKnowledge.id)
+      .map((item) => {
+        if (item.id === selectedKc.id) return merged;
+        return {
+          ...item,
+          prerequisiteDraftIds: [...new Set(item.prerequisiteDraftIds
+            .map((id) => id === nextKnowledge.id ? selectedKc.id : id))],
+        };
+      }));
+    setDraft({ ...draft, draftKnowledgeComponents: next, confirmation: null, status: "in_review" });
+    void saveDraft({ draftKnowledgeComponents: next });
   }
 
   return (
@@ -107,8 +224,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
             </div>
             <input
               value={draft.packageName}
-              onChange={(e) => setDraft({ ...draft, packageName: e.target.value })}
-              onBlur={() => void saveDraft({ packageName: draft.packageName })}
+              onChange={(e) => setDraft({ ...draft, packageName: e.target.value, confirmation: null, status: "in_review" })}
               className="mt-1 w-full max-w-md rounded border-none bg-transparent p-0 text-xl font-bold focus:ring-0"
               aria-label="内容包名称"
             />
@@ -116,6 +232,10 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
           <div className="flex items-center gap-3">
             {saveMessage ? <span className="text-xs text-emerald-600">{saveMessage}</span> : null}
             <Button variant="secondary" onClick={onClose} disabled={busy}>返回</Button>
+            <Button variant="secondary" onClick={() => void saveDraft({})} disabled={busy}>保存草稿</Button>
+            <Button variant="secondary" onClick={() => void confirm()} disabled={!canConfirm || busy}>
+              {confirmed ? "已确认" : "确认来源与结构"}
+            </Button>
             <Button onClick={() => void publish()} disabled={!canPublish || busy}>
               {busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
               发布为学习内容包
@@ -131,6 +251,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
                 {errorCount > 0 ? <span className="flex items-center gap-1 text-rose-600"><XCircle className="size-3" /> {errorCount} 个错误</span> : null}
                 {warningCount > 0 ? <span className="flex items-center gap-1 text-amber-600"><GitBranch className="size-3" /> {warningCount} 个提示</span> : null}
                 {errorCount === 0 && warningCount === 0 ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="size-3" /> 校验通过</span> : null}
+                {confirmed ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="size-3" /> 已确认</span> : null}
               </div>
             </div>
 
@@ -201,12 +322,17 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
                 </div>
 
                 <div className="space-y-4 rounded-xl border bg-card p-4">
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="secondary" onClick={() => moveSelected(-1)}>上移</Button>
+                    <Button size="sm" variant="secondary" onClick={() => moveSelected(1)}>下移</Button>
+                    <Button size="sm" variant="secondary" onClick={splitSelected}>拆分</Button>
+                    <Button size="sm" variant="secondary" onClick={mergeWithNext}>与下一项合并</Button>
+                  </div>
                   <label className="block text-sm font-medium">
                     知识点名称
                     <input
                       value={selectedKc.name}
                       onChange={(e) => updateKc(selectedKc.id, { name: e.target.value })}
-                      onBlur={() => void saveDraft({ draftKnowledgeComponents: draft.draftKnowledgeComponents })}
                       className="mt-1 w-full rounded-lg border bg-background px-3 py-2 text-sm"
                     />
                   </label>
@@ -216,7 +342,6 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
                     <textarea
                       value={selectedKc.learningObjectives.join("\n")}
                       onChange={(e) => updateKc(selectedKc.id, { learningObjectives: e.target.value.split("\n").filter(Boolean) })}
-                      onBlur={() => void saveDraft({ draftKnowledgeComponents: draft.draftKnowledgeComponents })}
                       rows={3}
                       className="mt-1 w-full rounded-lg border bg-background px-3 py-2 text-sm"
                     />
@@ -230,10 +355,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
                           <input
                             type="checkbox"
                             checked={selectedKc.prerequisiteDraftIds.includes(kc.id)}
-                            onChange={() => {
-                              togglePrerequisite(selectedKc.id, kc.id);
-                              void saveDraft({ draftKnowledgeComponents: draft.draftKnowledgeComponents });
-                            }}
+                            onChange={() => togglePrerequisite(selectedKc.id, kc.id)}
                             className="size-4 accent-emerald-600"
                           />
                           <span className="truncate">{kc.name}</span>
@@ -243,18 +365,18 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
                   </div>
                 </div>
 
-                {selectedSection ? (
-                  <div className="rounded-xl border border-sky-200 bg-sky-50/50 p-4 dark:border-sky-900 dark:bg-sky-950/20">
+                {selectedSections.map(({ ref, section }) => section ? (
+                  <div key={`${ref.sectionId}-${ref.pageNumber ?? "line"}`} className="rounded-xl border border-sky-200 bg-sky-50/50 p-4 dark:border-sky-900 dark:bg-sky-950/20">
                     <div className="flex items-center gap-2 text-sm font-semibold text-sky-800 dark:text-sky-200">
                       <BookOpen className="size-4" />
-                      原文对照 {selectedSection.pageNumber ? `(第 ${selectedSection.pageNumber} 页)` : ""}
+                      原文对照 {ref.pageNumber ? `(第 ${ref.pageNumber} 页)` : ""}
                     </div>
-                    <p className="mt-2 text-xs text-muted-foreground">行 {selectedSection.lineStart} - {selectedSection.lineEnd}</p>
+                    <p className="mt-2 text-xs text-muted-foreground">{section.title} · 行 {section.lineStart} - {section.lineEnd}</p>
                     <div className="mt-3 max-h-48 overflow-y-auto rounded-lg bg-background p-3 text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
-                      {selectedSection.content}
+                      {ref.excerpt}
                     </div>
                   </div>
-                ) : null}
+                ) : null)}
               </div>
             ) : (
               <div className="flex h-full flex-col items-center justify-center text-center text-muted-foreground">
@@ -274,4 +396,18 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
       </Card>
     </div>
   );
+}
+
+function reorderKnowledge(items: DraftKnowledgeComponent[]) {
+  return items.map((item, index) => ({ ...item, orderIndex: index + 1 }));
+}
+
+function uniqueSourceRefs(refs: NonNullable<DraftKnowledgeComponent["sourceRefs"]>) {
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    const key = `${ref.sourceHash}:${ref.sectionId}:${ref.pageNumber ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
