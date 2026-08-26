@@ -40,6 +40,43 @@ export interface MaterialSection {
   content: string;
 }
 
+export interface MaterialPage {
+  pageNumber: number;
+  text: string;
+  characterCount: number;
+  source: "pdf_text" | "local_ocr";
+  confidence: number | null;
+}
+
+export interface MaterialExtractionWarning {
+  code: string;
+  detail?: string;
+  pageNumbers?: number[];
+  limit?: number;
+}
+
+export interface MaterialExtraction {
+  parserVersion: number;
+  state: "ready" | "needs_ocr" | "empty";
+  method: "native_text" | "pdf_text" | "pdf_text_with_local_ocr" | "legacy_extracted_pdf_text";
+  pageCount: number | null;
+  processedPageCount: number | null;
+  characterCount: number;
+  textPageCount: number | null;
+  lowTextPageNumbers: number[];
+  truncated: boolean;
+  truncatedPages: boolean;
+  needsOcr: boolean;
+  ocr: {
+    required: boolean;
+    attempted: boolean;
+    state: "not_required" | "unavailable" | "completed" | "failed";
+    providerId: string | null;
+    reason: string | null;
+  };
+  warnings: MaterialExtractionWarning[];
+}
+
 export interface MaterialDocument {
   id: string;
   learningProfileId: string;
@@ -47,9 +84,11 @@ export interface MaterialDocument {
   fileType: "markdown" | "pdf" | "plain_text";
   fileSize: number;
   sourceHash: string;
-  status: "uploaded" | "parsing" | "parsed" | "draft_ready" | "published" | "failed" | "empty";
+  status: "uploaded" | "parsing" | "parsed" | "needs_ocr" | "draft_ready" | "published" | "failed" | "empty";
   rawText?: string;
+  pages?: MaterialPage[];
   sections: MaterialSection[];
+  extraction?: MaterialExtraction;
   createdAt: string;
   updatedAt: string;
 }

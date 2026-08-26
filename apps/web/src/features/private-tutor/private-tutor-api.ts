@@ -896,6 +896,7 @@ export async function uploadPrivateTutorMaterial(input: {
   fileName: string;
   fileType: string;
   fileContent: string;
+  fileEncoding?: "utf8" | "base64";
   fileSize?: number;
 }) {
   const result = await request<PrivateTutorMaterialResult>("POST", "/api/private-tutor/materials", input);

@@ -3,6 +3,7 @@ import { Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { uploadPrivateTutorMaterial, type MaterialDocument } from "../private-tutor-api";
+import { readPrivateTutorMaterialFile } from "../private-tutor-material-file";
 
 const ACCEPTED_FILE_TYPES = ["markdown", "pdf", "plain_text"] as const;
 type AcceptedFileType = (typeof ACCEPTED_FILE_TYPES)[number];
@@ -42,11 +43,12 @@ export function PrivateTutorMaterialImport({ onClose, onUploaded }: PrivateTutor
 
     setBusy(true);
     try {
-      const fileContent = await file.text();
+      const { fileContent, fileEncoding } = await readPrivateTutorMaterialFile(file, fileType);
       const material = await uploadPrivateTutorMaterial({
         fileName,
         fileType,
         fileContent,
+        fileEncoding,
         fileSize: file.size,
       });
       onUploaded(material);

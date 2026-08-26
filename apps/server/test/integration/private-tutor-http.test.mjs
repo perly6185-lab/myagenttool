@@ -5,7 +5,7 @@ process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { after, before, test } from "node:test";
@@ -1419,6 +1419,69 @@ Details on bubble sort.
   });
   assert.equal(deleteRes.status, 200);
   assert.equal(deleteRes.body.deleted, true);
+});
+
+test("accepts preserved PDF bytes and exposes page-grounded extraction metadata", async () => {
+  const bytes = readFileSync(new URL("../../../../docs/Loop-Engineering-IEEE-中文版-优化版.pdf", import.meta.url));
+  const uploaded = await call("/api/private-tutor/materials", {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      fileName: "loop-engineering.pdf",
+      fileType: "pdf",
+      fileContent: bytes.toString("base64"),
+      fileEncoding: "base64",
+      fileSize: bytes.length,
+    },
+  });
+
+  assert.equal(uploaded.status, 201);
+  assert.equal(uploaded.body.material.status, "parsed");
+  assert.equal(uploaded.body.material.extraction.pageCount, 16);
+  assert.equal(uploaded.body.material.extraction.textPageCount, 16);
+  assert.equal(uploaded.body.material.extraction.method, "pdf_text");
+  assert.match(uploaded.body.material.pages[0].text, /循环工程/);
+  assert.equal(uploaded.body.material.pages.some((page) => /%PDF-|endstream|xref/.test(page.text)), false);
+  assert.equal("rawText" in uploaded.body.material, false);
+
+  const materialId = uploaded.body.material.id;
+  const otherAccount = await call(`/api/private-tutor/materials/${materialId}`, { token: "tok_migrate" });
+  assert.equal(otherAccount.status, 404);
+
+  const replayed = await call("/api/private-tutor/materials", {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      fileName: "loop-engineering.pdf",
+      fileType: "pdf",
+      fileContent: bytes.toString("base64"),
+      fileEncoding: "base64",
+      fileSize: bytes.length,
+    },
+  });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.material.id, materialId);
+
+  const decodedAsText = await call("/api/private-tutor/materials", {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      fileName: "broken.pdf",
+      fileType: "pdf",
+      fileContent: "%PDF-1.4 binary decoded as text",
+      fileEncoding: "utf8",
+      fileSize: 31,
+    },
+  });
+  assert.equal(decodedAsText.status, 400);
+  assert.equal(decodedAsText.body.error, "pdf_binary_required");
+
+  const removed = await call(`/api/private-tutor/materials/${materialId}`, {
+    token: "tok_personal",
+    method: "DELETE",
+  });
+  assert.equal(removed.status, 200);
 });
 
 test("math and computer-science packages share the learning runtime without contaminating mastery", async () => {

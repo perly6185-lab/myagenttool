@@ -109,7 +109,7 @@ import {
   privateTutorPackageRegistryFromState,
 } from "../services/private-tutor-package-registry.mjs";
 import {
-  parseMaterialDocument,
+  parseUploadedMaterialDocument,
 } from "../services/private-tutor-material-parser.mjs";
 import {
   generateKnowledgeMapDraft,
@@ -343,18 +343,26 @@ export async function handlePrivateTutorRoutes({
         return true;
       }
       try {
-        const doc = parseMaterialDocument({
+        const doc = await parseUploadedMaterialDocument({
           learningProfileId: learnerId,
           fileName: body.fileName,
           fileType: body.fileType,
           fileContent: body.fileContent,
+          fileEncoding: body.fileEncoding,
           fileSize: body.fileSize,
         });
-        state.privateTutorMaterialDocuments.push(doc);
+        const existingIndex = state.privateTutorMaterialDocuments.findIndex((item) =>
+          item.learningProfileId === learnerId && item.sourceHash === doc.sourceHash);
+        if (existingIndex >= 0) state.privateTutorMaterialDocuments[existingIndex] = doc;
+        else state.privateTutorMaterialDocuments.push(doc);
         persistStateSoon();
-        sendJson(res, 201, { material: doc });
+        sendJson(res, existingIndex >= 0 ? 200 : 201, { material: doc, replayed: existingIndex >= 0 });
       } catch (err) {
-        sendJson(res, 400, { error: err.message });
+        const error = String(err?.code ?? err?.message ?? "private_tutor_material_parse_failed");
+        sendJson(res, error === "file_size_exceeds_limit" ? 413 : 400, {
+          error,
+          message: String(err?.message ?? error).slice(0, 500),
+        });
       }
       return true;
     }
@@ -416,6 +424,14 @@ export async function handlePrivateTutorRoutes({
     }
 
     try {
+      if (doc.status !== "parsed") {
+        sendJson(res, 409, {
+          error: "private_tutor_material_not_ready",
+          status: doc.status,
+          extraction: doc.extraction ?? null,
+        });
+        return true;
+      }
       const draft = generateKnowledgeMapDraft({
         materialDocument: doc,
         packageName: body.packageName,

@@ -1473,6 +1473,15 @@ function GentleStat({ value, label }: { value: string; label: string }) {
   return <div><p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300">{value}</p><p className="mt-1 text-xs text-muted-foreground">{label}</p></div>;
 }
 
+function privateTutorOcrReasonLabel(reason: string | null | undefined) {
+  if (!reason) return "";
+  if (reason === "workflow_ocr_platform_unsupported") return "当前系统没有可用的本地 OCR 提供器";
+  if (reason === "workflow_ocr_disabled") return "本地 OCR 已被关闭";
+  if (reason === "workflow_ocr_provider_unavailable") return "本地 OCR 尚未安装或不可用";
+  if (reason === "workflow_ocr_timeout") return "本地 OCR 处理超时";
+  return "本地 OCR 未能完成识别";
+}
+
 function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onReducedMotionChange, onProfileDeleted }: { state: LearnerTutorState; captions: boolean; onCaptionsChange: (value: boolean) => void; reducedMotion: boolean; onReducedMotionChange: (value: boolean) => void; onProfileDeleted: () => void }) {
   const [space, setSpace] = useState<TutorSettingsSpace>("preferences");
   const [teacherStyle, setTeacherStyle] = useState("启发式引导");
@@ -1504,7 +1513,14 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
 
   async function handleMaterialUploaded(material: MaterialDocument) {
     setShowImport(false);
-    setMaterials((prev) => [...prev, material]);
+    setMaterials((prev) => [...prev.filter((item) => item.id !== material.id), material]);
+    if (material.status !== "parsed") {
+      const reason = privateTutorOcrReasonLabel(material.extraction?.ocr.reason);
+      setError(material.status === "needs_ocr"
+        ? `这份 PDF 没有足够的可提取文字，本机 OCR 暂时无法完成识别${reason ? `（${reason}）` : ""}。资料已保留，但不会生成错误的知识地图。`
+        : "资料尚未解析完成，暂时不能生成知识地图。");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -1620,7 +1636,9 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
                           <span className="truncate font-medium">{m.fileName}</span>
                           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{m.fileType}</span>
                         </div>
-                        <span className="text-xs text-muted-foreground">{m.status === "parsed" ? "已解析" : m.status === "draft_ready" ? "草稿待确认" : m.status === "published" ? "已发布" : m.status}</span>
+                        <span className={cn("text-xs", m.status === "needs_ocr" ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
+                          {m.status === "parsed" ? "已解析" : m.status === "needs_ocr" ? "需要本地 OCR" : m.status === "draft_ready" ? "草稿待确认" : m.status === "published" ? "已发布" : m.status}
+                        </span>
                       </div>
                     ))}
                   </div>
