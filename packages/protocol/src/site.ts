@@ -42,7 +42,7 @@ export interface Site {
 
 export type SiteDomainTlsAccessMode = "public" | "private_lan";
 export type SiteDomainTlsStatus =
-  | "setup" | "dns_ready" | "issuing" | "staging_ready" | "deploying" | "active"
+  | "setup" | "dns_ready" | "issuing" | "staging_ready" | "deploying" | "staging_deployed" | "active"
   | "renewal_due" | "needs_attention" | "disabled";
 
 export interface SiteDomainTlsBinding {
@@ -65,6 +65,8 @@ export interface SiteDomainTlsBinding {
   certificateSans: string[];
   certificateNotBefore: IsoDateTime | null;
   stagingIssuedAt: IsoDateTime | null;
+  stagingDeployedAt: IsoDateTime | null;
+  certificateReleaseId: string | null;
   lastCleanupRecordDigest: string | null;
   lastVerifiedAt: IsoDateTime | null;
   renewAfter: IsoDateTime | null;

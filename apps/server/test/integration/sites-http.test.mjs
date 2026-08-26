@@ -43,6 +43,22 @@ async function call(path, { method = "GET", body, headers = {} } = {}) {
   return { status: response.status, body: await response.json() };
 }
 
+test("TLS activation profile API is wired through the real HTTP server", async () => {
+  const created = await call("/api/hosts", { method: "POST", body: {
+    name: "TLS test host",
+    host: "10.10.10.222",
+    port: 22,
+    user: "devagent",
+    authMethod: "private_key_ref",
+    purposes: ["tls_certificate"],
+    networkPolicy: "allow_private_network",
+  } });
+  assert.equal(created.status, 201);
+  const listed = await call(`/api/hosts/${created.body.target.id}/tls-activation-profiles`);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body, { profiles: [], count: 0 });
+});
+
 test("site HTTP flow creates, edits, previews, plans, and publishes one immutable version", async () => {
   const created = await call("/api/sites", { method: "POST", body: {
     name: "HTTP 官网", description: "从一个简单流程发布", audience: "普通访客",

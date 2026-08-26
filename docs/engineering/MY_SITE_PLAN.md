@@ -26,7 +26,7 @@ v0.20 阶段 3 已实现 AliDNS `DescribeDomainRecords` 只读验证和 Let’s 
 
 普通用户审核后的高优先级问题已经修复：本地版本与公网线上版本使用不同状态，不再把本地发布显示为“当前线上”；没有公网地址时提供按访客区域选择的上线引导，并明确把真实云账号配置交接到“我的设置”。文章列表会生成可点击的文章卡片，新增文章发布后可以从首页和文章页访问。页面和新文章存在未保存修改时，关闭或取消会二次确认；普通编辑器不再展示网址名称。发布按钮在没有修改时禁用，确认页显示具体内容名称与业务化发布位置，发布失败优先使用普通语言说明旧网站是否受影响。预览支持桌面和 390 px 手机视图，站点样式页可以直接上传并应用 Logo。
 
-SSH 自托管已成为生产可用适配器。专业用户在“我的主机”验证主机身份、SFTP 原子能力和专用 `site_publish` 文件范围，再在站点专业设置选择该范围与 HTTPS 域名；站点不会复制主机凭据。发布使用不可变目录、逐文件远端回读、原子 `current` 切换、固定公网地址的 TLS 首页核对和失败恢复，历史回滚由范围外受管回执约束。当前版本仍由主机管理员配置 Nginx 和正式证书；v0.20 已加入受控的 staging DNS-01 测试，后续继续实现独立证书范围、正式证书、原子部署和固定动作重载，不开放任意远程命令。Cloudflare 首版要求使用已经存在的 Direct Upload Pages 项目；阿里云首版要求使用已经存在并完成静态网站、版本控制、CDN 和 HTTPS 配置的专用 Bucket。项目自动创建以及备案自动配置继续留在后续阶段。
+SSH 自托管已成为生产可用适配器。专业用户在“我的主机”验证主机身份、SFTP 原子能力和专用 `site_publish` 文件范围，再在站点专业设置选择该范围与 HTTPS 域名；站点不会复制主机凭据。发布使用不可变目录、逐文件远端回读、原子 `current` 切换、固定公网地址的 TLS 首页核对和失败恢复，历史回滚由范围外受管回执约束。v0.20 已加入 staging DNS-01、独立 `tls_certificate` 范围、证书原子部署、固定 Docker Nginx 动作和失败恢复；主机管理员仍需预先准备专用目录、容器挂载与 staging CA，正式证书和自动续期留在下一阶段。Cloudflare 首版要求使用已经存在的 Direct Upload Pages 项目；阿里云首版要求使用已经存在并完成静态网站、版本控制、CDN 和 HTTPS 配置的专用 Bucket。项目自动创建以及备案自动配置继续留在后续阶段。
 
 真实 Linux 主机联合验收使用独立的环境记录承载设备地址和分阶段证据，不作为本地站点 MVP 的依赖。SSH/SFTP、应用级范围绑定和内网发布通过后，再使用专用测试子域名、DNS-01 和独立 443 服务验证内网可信 HTTPS，不要求先开放公网入口。
 
@@ -426,7 +426,7 @@ revision 记录不可原地修改。自动保存可以合并当前工作草稿�
 - `challenge`: 固定为 `dns-01`；状态只保存 ACME order URL 的摘要、证书指纹、SAN、签发者和有效期，不保存 challenge value
 - `certificateScopeId`：指向主机上独立于公开站点根的 `tls_certificate` 范围
 - `activationProfileId`：固定类型的 Web 服务重载配置；不接受自由 shell、容器参数或 Nginx 片段
-- `status`: `setup | dns_ready | issuing | staging_ready | deploying | active | renewal_due | needs_attention | disabled`
+- `status`: `setup | dns_ready | issuing | staging_ready | deploying | staging_deployed | active | renewal_due | needs_attention | disabled`
 - `lastVerifiedAt`, `renewAfter`, `notAfter`, `revision` 和经过脱敏的最近失败摘要
 
 ACME 账号私钥、证书私钥、AliDNS AccessKey 和临时 TXT challenge 均不进入该模型、普通状态、审计正文或 HTTP 读接口。
@@ -602,8 +602,10 @@ SSH 静态站点不单独建设主机连接和文件上传逻辑，而是复用�
 1. 独立 AliDNS 凭据命名空间、Electron 安全连接器和只写注入 API。**已完成。**
 2. 域名/TLS 数据模型、专业设置四步向导和私网固定地址验证策略。**模型、API、访问方式约束、已验证私网地址绑定和普通/专业状态入口已完成；签发执行时的重新解析固定与 SNI 核验将在执行层接入。**
 3. ACME staging 签发器、AliDNS DNS-01 适配器、TXT 清理与脱敏测试。**代码与自动化测试已完成；真实 AliDNS/Let’s Encrypt staging 验证待用户凭据。**
-4. `tls_certificate` 范围、证书原子上传、固定 Docker Nginx 重载 profile 和失败恢复。
+4. `tls_certificate` 范围、证书原子上传、固定 Docker Nginx 重载 profile 和失败恢复。**代码与自动化测试已完成；真实主机仍保持未变更。**
 5. 正式证书、自动续期调度、到期预警、真实内网主机回归和安全演练。
+
+阶段 4 的 staging HTTPS 校验必须显式配置测试 CA，优先使用 `MYAGENTTOOL_ACME_STAGING_CA_FILE=/absolute/path/to/staging-root.pem`；也可使用 `MYAGENTTOOL_ACME_STAGING_CA_PEM`。CA 文件应从 Let’s Encrypt 官方 staging 文档获取。未配置时部署失败关闭为 `site_tls_staging_ca_required`，不会使用 `-k`、`rejectUnauthorized=false` 或系统生产信任库冒充测试链可信。
 
 前四步完成前，产品不得把现有 OSS 凭据输入框描述为自有服务器证书配置，也不得把手工放置证书标记为“自动续期已开启”。
 

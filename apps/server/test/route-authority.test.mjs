@@ -43,8 +43,11 @@ test("configuration and governance writes require professional management", () =
     ["POST", "/api/hosts/ssh_target_1/verify"],
     ["POST", "/api/hosts/ssh_target_1/file-scopes"],
     ["PATCH", "/api/hosts/ssh_target_1/file-scopes/hfs_1"],
+    ["POST", "/api/hosts/ssh_target_1/tls-activation-profiles"],
     ["PUT", "/api/sites/site-1/deployment-target"],
     ["POST", "/api/sites/site-1/deployment-target/verify"],
+    ["PUT", "/api/sites/site-1/domain-tls-binding"],
+    ["PUT", "/api/sites/site-1/domain-tls-binding/deployment"],
     ["POST", "/api/site-pilot/campaigns"],
     ["PATCH", "/api/site-pilot/campaigns/campaign-1"],
     ["DELETE", "/api/site-pilot/campaigns/campaign-1"],
@@ -75,6 +78,9 @@ test("execution, approval, recovery, and retry writes admit operators", () => {
     ["POST", "/api/mail/task-policies/evaluate"],
     ["POST", "/api/host-file-scopes/hfs_1/transfers/upload"],
     ["POST", "/api/host-file-scopes/hfs_1/transfers/download"],
+    ["POST", "/api/sites/site-1/domain-tls-binding/verify-dns"],
+    ["POST", "/api/sites/site-1/domain-tls-binding/issue-staging"],
+    ["POST", "/api/sites/site-1/domain-tls-binding/deploy-staging"],
   ];
 
   for (const [method, pathname] of cases) {

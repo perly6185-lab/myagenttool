@@ -279,6 +279,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // Verified SSH directory roots. These contain metadata and opaque host
     // references only; remote file contents and credentials are never durable.
     hostFileScopes: [],
+    // Fixed, non-shell TLS activation profiles. Container names and scope
+    // references are durable; commands and credentials are never persisted.
+    hostTlsActivationProfiles: [],
     // Transfer metadata and audit status only. Uploaded/downloaded bytes are
     // intentionally never stored in the control-plane snapshot.
     hostFileTransfers: [],

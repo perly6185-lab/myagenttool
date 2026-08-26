@@ -93,6 +93,10 @@ export const siteApi = {
     siteRequest<{ site: Site; binding: NonNullable<Site["domainTlsBinding"]> }>("POST", `/api/sites/${encodeURIComponent(siteId)}/domain-tls-binding/verify-dns`, { expectedRevision }, true, 60_000),
   issueDomainTlsStaging: (siteId: string, expectedRevision: number) =>
     siteRequest<{ site: Site; binding: NonNullable<Site["domainTlsBinding"]> }>("POST", `/api/sites/${encodeURIComponent(siteId)}/domain-tls-binding/issue-staging`, { expectedRevision, confirmed: true }, true, 12 * 60_000),
+  configureDomainTlsDeployment: (siteId: string, input: { expectedRevision: number; certificateScopeId: string; activationProfileId: string }) =>
+    siteRequest<{ site: Site; binding: NonNullable<Site["domainTlsBinding"]> }>("PUT", `/api/sites/${encodeURIComponent(siteId)}/domain-tls-binding/deployment`, input),
+  deployDomainTlsStaging: (siteId: string, expectedRevision: number) =>
+    siteRequest<{ site: Site; binding: NonNullable<Site["domainTlsBinding"]> }>("POST", `/api/sites/${encodeURIComponent(siteId)}/domain-tls-binding/deploy-staging`, { expectedRevision, confirmed: true }, true, 12 * 60_000),
   activePilotSession: (invitationCode?: string) => request<{ session: SitePilotSession | null; invitationStatus: SitePilotInvitation["status"] | null; assignedScenario: SitePilotScenario | null; workspace?: SitePilotWorkspace | null }>("GET", `/api/site-pilot/sessions/active${invitationCode ? `?code=${encodeURIComponent(invitationCode)}` : ""}`),
   startPilotSession: (scenario: SitePilotScenario, campaignCode?: string) =>
     request<{ session: SitePilotSession }>("POST", "/api/site-pilot/sessions", { scenario, consent: true, ...(campaignCode ? { campaignCode } : {}) }),

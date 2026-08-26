@@ -36,6 +36,10 @@ function message(error: unknown, zh: boolean) {
   if (error instanceof ApiError && error.code === "site_domain_acme_contact_required") return zh ? "请先在站点资料中填写联系邮箱。" : "Add a contact email to the site profile first.";
   if (error instanceof ApiError && error.code === "site_domain_dns_verification_required") return zh ? "请先完成 AliDNS 只读验证。" : "Complete the read-only AliDNS verification first.";
   if (error instanceof ApiError && error.code === "site_domain_tls_busy") return zh ? "域名或证书检查正在进行，请等待完成。" : "A domain or certificate check is already running.";
+  if (error instanceof ApiError && error.code === "site_tls_staging_ca_required") return zh ? "服务端尚未配置 Let's Encrypt staging 根证书，不能执行完整可信校验。" : "The server has no explicit Let's Encrypt staging trust anchor, so full verification cannot run.";
+  if (error instanceof ApiError && error.code === "site_domain_staging_artifact_unavailable") return zh ? "测试证书只保存在当前进程内，请重新申请后再部署。" : "The test certificate existed only in the previous process. Request it again before deployment.";
+  if (error instanceof ApiError && error.code === "site_tls_recovery_failed") return zh ? "测试证书激活失败，且旧证书恢复未能确认；请停止后续操作并检查服务器。" : "Test certificate activation failed and recovery could not be confirmed. Stop and inspect the server.";
+  if (error instanceof ApiError && error.code.startsWith("site_tls_")) return zh ? "证书部署未完成；系统已尝试保留或恢复原证书，请检查证书范围和固定 Nginx 配置。" : "Certificate deployment did not complete. The previous certificate was kept or restored where possible; check the certificate range and fixed Nginx profile.";
   if (error instanceof ApiError && error.status === 409) return zh ? "设置已发生变化，请刷新后重试。" : "Settings changed elsewhere. Refresh and try again.";
   return error instanceof Error ? error.message : (zh ? "设置未能保存。" : "Settings could not be saved.");
 }
@@ -102,7 +106,24 @@ function DomainTlsSettingsCard({ site, zh }: { site: Site; zh: boolean }) {
   const binding = site.domainTlsBinding ?? null;
   const hostname = site.deploymentTarget?.customDomain ?? "";
   const [accessMode, setAccessMode] = useState<SiteDomainTlsAccessMode>(binding?.accessMode ?? "public");
+  const publishScopes = useQuery({ queryKey: ["host-publish-scopes"], queryFn: hostApi.publishScopes, retry: false });
+  const publishingScope = publishScopes.data?.scopes.find((scope) => scope.id === site.deploymentTarget?.remoteProjectRef) ?? null;
+  const certificateScopes = useQuery({ queryKey: ["host-certificate-scopes"], queryFn: hostApi.certificateScopes, retry: false });
+  const availableCertificateScopes = certificateScopes.data?.scopes.filter((scope) => scope.sshTargetId === publishingScope?.sshTargetId && scope.status === "ready") ?? [];
+  const [certificateScopeId, setCertificateScopeId] = useState(binding?.certificateScopeId ?? "");
+  const selectedCertificateScope = availableCertificateScopes.find((scope) => scope.id === certificateScopeId) ?? null;
+  const profileHostId = selectedCertificateScope?.sshTargetId ?? publishingScope?.sshTargetId ?? "";
+  const profiles = useQuery({
+    queryKey: ["host-tls-profiles", profileHostId, certificateScopeId],
+    queryFn: () => hostApi.tlsProfiles(profileHostId),
+    enabled: Boolean(profileHostId && certificateScopeId),
+    retry: false
+  });
+  const availableProfiles = profiles.data?.profiles.filter((profile) => profile.certificateScopeId === certificateScopeId && profile.status === "ready") ?? [];
+  const [activationProfileId, setActivationProfileId] = useState(binding?.activationProfileId ?? "");
   useEffect(() => setAccessMode(binding?.accessMode ?? "public"), [binding?.accessMode]);
+  useEffect(() => setCertificateScopeId(binding?.certificateScopeId ?? ""), [binding?.certificateScopeId]);
+  useEffect(() => setActivationProfileId(binding?.activationProfileId ?? ""), [binding?.activationProfileId]);
   const mutation = useMutation({
     mutationFn: () => siteApi.configureDomainTls(site.id, { expectedRevision: binding?.revision ?? 0, hostname, accessMode }),
     onSuccess: (data) => {
@@ -122,8 +143,18 @@ function DomainTlsSettingsCard({ site, zh }: { site: Site; zh: boolean }) {
     mutationFn: () => siteApi.issueDomainTlsStaging(site.id, binding?.revision ?? 0),
     onSuccess: applyResult,
   });
+  const configureDeployment = useMutation({
+    mutationFn: () => siteApi.configureDomainTlsDeployment(site.id, { expectedRevision: binding?.revision ?? 0, certificateScopeId, activationProfileId }),
+    onSuccess: applyResult,
+  });
+  const deployStaging = useMutation({
+    mutationFn: () => siteApi.deployDomainTlsStaging(site.id, binding?.revision ?? 0),
+    onSuccess: applyResult,
+  });
   const statusLabel = binding?.status === "active"
     ? (zh ? "HTTPS 已启用" : "HTTPS active")
+    : binding?.status === "staging_deployed"
+      ? (zh ? "测试证书已部署并验证" : "Test certificate deployed and verified")
     : binding?.status === "staging_ready"
       ? (zh ? "测试证书已签发，尚未部署" : "Test certificate issued; not deployed")
       : binding?.status === "dns_ready"
@@ -141,14 +172,15 @@ function DomainTlsSettingsCard({ site, zh }: { site: Site; zh: boolean }) {
     <CardContent className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2"><SettingField label={zh ? "网站域名" : "Website domain"}><Input readOnly value={hostname} /></SettingField><SettingField label={zh ? "访问范围" : "Access scope"}><Select aria-label={zh ? "访问范围" : "Access scope"} value={accessMode} onChange={(event) => setAccessMode(event.target.value as SiteDomainTlsAccessMode)}><option value="public">{zh ? "公网访问" : "Public internet"}</option><option value="private_lan">{zh ? "仅当前局域网" : "Private LAN only"}</option></Select></SettingField></div>
       <div className="grid gap-2 rounded-lg border border-border p-3 text-sm sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">{zh ? "DNS 服务" : "DNS provider"}</p><p className="mt-1 font-medium">AliDNS</p></div><div><p className="text-xs text-muted-foreground">{zh ? "验证方式" : "Validation"}</p><p className="mt-1 font-medium">DNS-01</p></div><div><p className="text-xs text-muted-foreground">{zh ? "证书续期" : "Renewal"}</p><p className="mt-1 font-medium">{zh ? "尚未启用" : "Not enabled yet"}</p></div></div>
-      {binding?.certificateEnvironment === "staging" ? <p className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-warning">{zh ? "当前是 Let's Encrypt 测试证书，只用于验证 DNS-01 流程，浏览器不会将它视为正式可信证书，也尚未部署到服务器。" : "This is a Let's Encrypt staging certificate used only to validate the DNS-01 flow. Browsers do not trust it as a production certificate, and it has not been deployed to the server."}</p> : null}
+      {binding?.certificateEnvironment === "staging" ? <p className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-warning">{binding.status === "staging_deployed" ? (zh ? "测试证书已通过受控流程部署和校验，但浏览器仍不会信任它，网站不能据此标记为正式 HTTPS。" : "The staging certificate passed controlled deployment and verification, but browsers still do not trust it and the site is not production HTTPS.") : (zh ? "当前是 Let's Encrypt 测试证书，只用于验证 DNS-01 流程，浏览器不会将它视为正式可信证书，也尚未部署到服务器。" : "This is a Let's Encrypt staging certificate used only to validate the DNS-01 flow. Browsers do not trust it as a production certificate, and it has not been deployed to the server.")}</p> : null}
+      {binding?.status === "staging_ready" ? <div className="space-y-3 rounded-lg border p-3"><p className="text-sm font-medium">{zh ? "受控测试部署" : "Controlled test deployment"}</p><p className="text-xs text-muted-foreground">{zh ? "先在“我的主机”创建证书专用范围和固定 Docker Nginx profile。部署会原子切换证书、固定重载、使用域名 SNI 和显式 staging CA 校验；失败会恢复旧指针。" : "First create a certificate-only range and fixed Docker Nginx profile in My hosts. Deployment atomically switches the certificate, performs a fixed reload, and verifies with hostname SNI and an explicit staging CA; failures restore the old pointer."}</p><div className="grid gap-3 md:grid-cols-2"><SettingField label={zh ? "证书专用范围" : "Certificate-only range"}><Select aria-label={zh ? "证书专用范围" : "Certificate-only range"} value={certificateScopeId} onChange={(event) => { setCertificateScopeId(event.target.value); setActivationProfileId(""); }}><option value="">{zh ? "请选择" : "Select"}</option>{availableCertificateScopes.map((scope) => <option key={scope.id} value={scope.id}>{scope.label}</option>)}</Select></SettingField><SettingField label={zh ? "固定激活配置" : "Fixed activation profile"}><Select aria-label={zh ? "固定激活配置" : "Fixed activation profile"} value={activationProfileId} onChange={(event) => setActivationProfileId(event.target.value)}><option value="">{zh ? "请选择" : "Select"}</option>{availableProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}</Select></SettingField></div><div className="flex flex-wrap justify-end gap-2"><Button variant="secondary" disabled={!certificateScopeId || !activationProfileId || configureDeployment.isPending} onClick={() => configureDeployment.mutate()}>{configureDeployment.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "保存部署位置" : "Save deployment target"}</Button><Button disabled={!binding.certificateScopeId || !binding.activationProfileId || deployStaging.isPending} onClick={() => deployStaging.mutate()}>{deployStaging.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "部署并验证测试证书" : "Deploy and verify test certificate"}</Button></div></div> : null}
       {binding?.status === "dns_ready" ? <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "申请测试证书会联系 Let's Encrypt staging，并在 AliDNS 创建临时 TXT；无论签发成功或失败，系统都会按本次 RecordId 尝试删除该记录。" : "Requesting a test certificate contacts Let's Encrypt staging and creates a temporary AliDNS TXT record. Whether issuance succeeds or fails, the system attempts to delete that exact RecordId."}</p> : null}
       {accessMode === "private_lan" ? <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "局域网模式不要求公网 A/AAAA 记录，但仍会使用该域名完成完整 HTTPS 证书校验。主机必须已明确允许私网访问。" : "LAN mode does not require public A/AAAA records, but full HTTPS certificate validation still uses this hostname. The host must explicitly allow private-network access."}</p> : null}
       {binding?.lastFailure ? <p role="alert" className="rounded-lg bg-warning/10 p-3 text-sm text-warning">{zh ? "域名或服务器配置发生变化，请重新完成后续 HTTPS 检查。" : "The domain or server target changed. Complete the HTTPS checks again."}</p> : null}
-      {mutation.error || verifyDns.error || issueStaging.error ? <p role="alert" className="text-sm text-destructive">{message(mutation.error ?? verifyDns.error ?? issueStaging.error, zh)}</p> : null}
+      {mutation.error || verifyDns.error || issueStaging.error || configureDeployment.error || deployStaging.error ? <p role="alert" className="text-sm text-destructive">{message(mutation.error ?? verifyDns.error ?? issueStaging.error ?? configureDeployment.error ?? deployStaging.error, zh)}</p> : null}
       <div className="flex flex-wrap justify-end gap-2">
-        <Button variant="secondary" disabled={!hostname || mutation.isPending || verifyDns.isPending || issueStaging.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{binding ? (zh ? "更新域名设置" : "Update domain setup") : (zh ? "保存域名设置" : "Save domain setup")}</Button>
-        {binding && !["active", "staging_ready", "deploying"].includes(binding.status) ? <Button variant="secondary" disabled={!binding.revision || verifyDns.isPending || issueStaging.isPending} onClick={() => verifyDns.mutate()}>{verifyDns.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "验证 AliDNS 权限" : "Verify AliDNS access"}</Button> : null}
+        <Button variant="secondary" disabled={!hostname || mutation.isPending || verifyDns.isPending || issueStaging.isPending || deployStaging.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{binding ? (zh ? "更新域名设置" : "Update domain setup") : (zh ? "保存域名设置" : "Save domain setup")}</Button>
+        {binding && !["active", "staging_ready", "staging_deployed", "deploying"].includes(binding.status) ? <Button variant="secondary" disabled={!binding.revision || verifyDns.isPending || issueStaging.isPending} onClick={() => verifyDns.mutate()}>{verifyDns.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "验证 AliDNS 权限" : "Verify AliDNS access"}</Button> : null}
         {binding?.status === "dns_ready" ? <Button disabled={!binding.revision || issueStaging.isPending || verifyDns.isPending} onClick={() => issueStaging.mutate()}>{issueStaging.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "申请测试证书" : "Request test certificate"}</Button> : null}
       </div>
     </CardContent>

@@ -4,6 +4,8 @@ import { isIP } from "node:net";
 import { Client } from "ssh2";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+const MAX_FIXED_COMMAND_OUTPUT_BYTES = 64 * 1024;
+const SAFE_DOCKER_CONTAINER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
 export class SshHostConnectorError extends Error {
   constructor(code, message) {
@@ -134,8 +136,17 @@ function sanitizedConnectionError(error) {
 
 function sanitizedSftpOperationError(error) {
   if (error instanceof SshHostConnectorError) return error;
-  if (error?.safeForSftpBoundary === true && /^site_deployment_[a-z0-9_]+$/.test(String(error?.code ?? ""))) return error;
+  if (error?.safeForSftpBoundary === true && /^site_(?:deployment|tls)_[a-z0-9_]+$/.test(String(error?.code ?? ""))) return error;
   return new SshHostConnectorError("ssh_sftp_operation_failed", "The remote file operation did not complete.");
+}
+
+function fixedCommand(action, parameters = {}) {
+  const containerName = String(parameters.containerName ?? "").trim();
+  if (!SAFE_DOCKER_CONTAINER.test(containerName)) throw new SshHostConnectorError("ssh_fixed_command_parameter_invalid", "The fixed remote action has an invalid container name.");
+  if (action === "docker_nginx_inspect") return `docker inspect --format '{{.State.Running}}' ${containerName}`;
+  if (action === "docker_nginx_config_test") return `docker exec ${containerName} nginx -t`;
+  if (action === "docker_nginx_reload") return `docker kill --signal=HUP ${containerName}`;
+  throw new SshHostConnectorError("ssh_fixed_command_unsupported", "The requested fixed remote action is not supported.");
 }
 
 export function createSshHostConnector({
@@ -295,5 +306,73 @@ export function createSshHostConnector({
     });
   }
 
-  return { observeFingerprint, verifyConnection, runSftp };
+  async function runFixedCommand(target, credential, action, parameters = {}, { operationTimeoutMs = timeoutMs } = {}) {
+    const command = fixedCommand(action, parameters);
+    const boundedOperationTimeoutMs = Number.isFinite(operationTimeoutMs)
+      ? Math.min(2 * 60_000, Math.max(1_000, Number(operationTimeoutMs)))
+      : timeoutMs;
+    const expectedFingerprint = normalizeSshFingerprint(target.knownHostFingerprint);
+    if (!expectedFingerprint) throw new SshHostConnectorError("ssh_host_fingerprint_required", "Confirm the SSH host fingerprint before connecting.");
+    const resolved = await resolveAddress(target.host, { networkPolicy: target.networkPolicy, lookup });
+    return new Promise((resolve, reject) => {
+      const client = new ClientClass();
+      let observedFingerprint = null;
+      let settled = false;
+      let timer;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { client.end(); } catch { /* connection may already be closed */ }
+        if (error) reject(error);
+        else resolve({ value, fingerprint: observedFingerprint, resolvedAddress: resolved.address });
+      };
+      timer = setTimeout(() => finish(new SshHostConnectorError("ssh_connection_timeout", "The SSH connection timed out.")), timeoutMs);
+      timer.unref?.();
+      client.once("error", (error) => {
+        if (!settled) finish(observedFingerprint && observedFingerprint !== expectedFingerprint
+          ? new SshHostConnectorError("ssh_host_fingerprint_changed", "The SSH host fingerprint does not match the confirmed value.")
+          : sanitizedConnectionError(error));
+      });
+      client.once("ready", () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => finish(new SshHostConnectorError("ssh_fixed_command_timeout", "The fixed remote action timed out.")), boundedOperationTimeoutMs);
+        timer.unref?.();
+        client.exec(command, { pty: false }, (error, stream) => {
+          if (error) return finish(new SshHostConnectorError("ssh_fixed_command_failed", "The fixed remote action could not start."));
+          let stdout = Buffer.alloc(0);
+          let outputTooLarge = false;
+          stream.on("data", (chunk) => {
+            if (outputTooLarge) return;
+            const bytes = Buffer.from(chunk);
+            if (stdout.length + bytes.length > MAX_FIXED_COMMAND_OUTPUT_BYTES) {
+              outputTooLarge = true;
+              stream.close?.();
+              return;
+            }
+            stdout = Buffer.concat([stdout, bytes]);
+          });
+          stream.stderr?.resume?.();
+          stream.once("error", () => finish(new SshHostConnectorError("ssh_fixed_command_failed", "The fixed remote action failed.")));
+          stream.once("close", (code) => {
+            if (outputTooLarge) return finish(new SshHostConnectorError("ssh_fixed_command_output_too_large", "The fixed remote action returned too much output."));
+            if (Number(code) !== 0) return finish(new SshHostConnectorError("ssh_fixed_command_failed", "The fixed remote action failed."));
+            const normalized = stdout.toString("utf8").trim();
+            if (action === "docker_nginx_inspect" && normalized !== "true") return finish(new SshHostConnectorError("ssh_docker_nginx_not_running", "The configured Docker Nginx container is not running."));
+            finish(null, { action, ok: true });
+          });
+        });
+      });
+      try {
+        client.connect(connectionOptions(target, resolved.address, credential, (key) => {
+          observedFingerprint = sshHostFingerprint(key);
+          return observedFingerprint === expectedFingerprint;
+        }, timeoutMs));
+      } catch (error) {
+        finish(sanitizedConnectionError(error));
+      }
+    });
+  }
+
+  return { observeFingerprint, verifyConnection, runSftp, runFixedCommand };
 }

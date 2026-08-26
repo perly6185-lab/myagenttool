@@ -111,6 +111,20 @@ test("creates a list-only scope after checking every root directory component", 
   assert.equal(JSON.stringify(events).includes("PRIVATE-KEY-MATERIAL"), false);
 });
 
+test("isolates certificate ranges from file scopes and all browser file operations", async () => {
+  const { service, target } = harness();
+  const publishing = await service.createScope(target, { purpose: "site_publish", rootPath: "/srv/www/example" });
+  assert.equal(publishing.ok, true);
+  const overlapping = await service.createScope(target, { purpose: "tls_certificate", rootPath: "/srv/www/example/tls" });
+  assert.equal(overlapping.error, "host_tls_scope_overlaps_file_scope");
+  const certificate = await service.createScope(target, { purpose: "tls_certificate", rootPath: "/srv/tls/example" });
+  assert.equal(certificate.ok, true);
+  assert.deepEqual(certificate.scope.permissions, ["certificate_write"]);
+  assert.equal((await service.listEntries(target, certificate.scope, "")).error, "host_tls_scope_browsing_forbidden");
+  assert.equal((await service.uploadFile(target, certificate.scope, Buffer.from("secret"), { confirmed: true, filename: "privkey.pem" })).error, "host_tls_scope_transfer_forbidden");
+  assert.equal((await service.downloadFile(target, certificate.scope, { confirmed: true, path: "privkey.pem" })).error, "host_tls_scope_transfer_forbidden");
+});
+
 test("lists bounded metadata while keeping links and special files inaccessible", async () => {
   const { service, target } = harness();
   const created = await service.createScope(target, { rootPath: "/srv/www/example" });

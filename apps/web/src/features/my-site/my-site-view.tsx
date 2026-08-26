@@ -368,8 +368,11 @@ function DomainTlsJourneyNotice({ site, zh, onContinue }: { site: Site; zh: bool
   const active = binding.status === "active";
   const attention = binding.status === "needs_attention" || binding.status === "renewal_due";
   const stagingIssued = binding.status === "staging_ready";
+  const stagingDeployed = binding.status === "staging_deployed";
   const title = active
     ? (zh ? "网站安全连接已启用" : "Secure website connection is active")
+    : stagingDeployed
+      ? (zh ? "测试证书已完成服务器验证" : "Test certificate passed server verification")
     : stagingIssued
       ? (zh ? "测试证书已签发，网站尚未启用 HTTPS" : "Test certificate issued; website HTTPS is not active")
     : attention
@@ -377,6 +380,8 @@ function DomainTlsJourneyNotice({ site, zh, onContinue }: { site: Site; zh: bool
       : (zh ? "网站域名已保存，HTTPS 尚未完成" : "Website domain saved; HTTPS is not finished yet");
   const detail = active
     ? (zh ? `访客可通过 https://${binding.hostname}/ 安全访问。` : `Visitors can securely open https://${binding.hostname}/.`)
+    : stagingDeployed
+      ? (zh ? "证书上传、原子切换、Nginx 重载和 HTTPS 校验均已通过；但测试证书不受浏览器信任，仍需正式签发后才能对访客启用可信 HTTPS。" : "Certificate upload, atomic switch, Nginx reload, and HTTPS verification passed. The staging certificate is still untrusted by browsers; production issuance is required before trusted HTTPS is available to visitors.")
     : stagingIssued
       ? (zh ? "测试证书只证明域名验证流程可行，浏览器不会信任它；部署正式证书并完成服务器检查前，访客仍不能通过可信 HTTPS 打开网站。" : "The test certificate only proves the domain-validation flow. Browsers do not trust it; visitors still need a production certificate and completed server checks for trusted HTTPS.")
     : attention

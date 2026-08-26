@@ -67,7 +67,7 @@ export interface SiteDeploymentTarget {
 }
 
 export type SiteDomainTlsAccessMode = "public" | "private_lan";
-export type SiteDomainTlsStatus = "setup" | "dns_ready" | "issuing" | "staging_ready" | "deploying" | "active" | "renewal_due" | "needs_attention" | "disabled";
+export type SiteDomainTlsStatus = "setup" | "dns_ready" | "issuing" | "staging_ready" | "deploying" | "staging_deployed" | "active" | "renewal_due" | "needs_attention" | "disabled";
 
 export interface SiteDomainTlsBinding {
   hostname: string;
@@ -90,6 +90,8 @@ export interface SiteDomainTlsBinding {
   certificateSans?: string[];
   certificateNotBefore?: string | null;
   stagingIssuedAt?: string | null;
+  stagingDeployedAt?: string | null;
+  certificateReleaseId?: string | null;
   lastCleanupRecordDigest?: string | null;
   lastFailure?: { error: string; message: string; retryable?: boolean } | null;
   revision?: number;

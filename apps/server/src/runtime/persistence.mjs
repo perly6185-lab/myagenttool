@@ -176,6 +176,7 @@ export const persistedArrayKeys = [
   "sitePilotInvitations",
   "sitePilotSandboxes",
   "hostFileScopes",
+  "hostTlsActivationProfiles",
   "hostFileTransfers",
   "workflowSources",
   "workflowScanJobs",

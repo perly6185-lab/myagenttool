@@ -256,6 +256,19 @@ export function createSiteDomainTlsAdapter({
     return Boolean(artifact && (!fingerprint || artifact.fingerprint === fingerprint));
   }
 
+  async function withStagingArtifact(bindingId, fingerprint, operation) {
+    const artifact = stagingArtifacts.get(bindingId);
+    if (!artifact || artifact.fingerprint !== fingerprint || typeof operation !== "function") {
+      throw new SiteDomainTlsAdapterError("site_domain_staging_artifact_unavailable", "The in-memory staging certificate is unavailable. Request a new test certificate.");
+    }
+    return operation({
+      privateKey: artifact.privateKey,
+      certificate: artifact.certificate,
+      hostname: artifact.hostname,
+      fingerprint: artifact.fingerprint,
+    });
+  }
+
   function discardStagingArtifact(bindingId) {
     const artifact = stagingArtifacts.get(bindingId);
     if (artifact?.privateKey) artifact.privateKey.fill(0);
@@ -265,5 +278,5 @@ export function createSiteDomainTlsAdapter({
     accountKeyPromises.delete(bindingId);
   }
 
-  return { verifyDns, issueStaging, hasStagingArtifact, discardStagingArtifact };
+  return { verifyDns, issueStaging, hasStagingArtifact, withStagingArtifact, discardStagingArtifact };
 }

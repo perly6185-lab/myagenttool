@@ -13,7 +13,7 @@ import {
 const HOST_KEY = Buffer.from("test-host-public-key");
 const { Server, utils } = ssh2;
 
-function fakeClientClass({ hostKey = HOST_KEY, sftp = { _version: 3, _extensions: { "posix-rename@openssh.com": "1" }, symlink() {} } } = {}) {
+function fakeClientClass({ hostKey = HOST_KEY, sftp = { _version: 3, _extensions: { "posix-rename@openssh.com": "1" }, symlink() {} }, execHandler = null } = {}) {
   return class FakeClient extends EventEmitter {
     static connections = [];
     connect(options) {
@@ -22,6 +22,7 @@ function fakeClientClass({ hostKey = HOST_KEY, sftp = { _version: 3, _extensions
       setImmediate(() => accepted ? this.emit("ready") : this.emit("error", Object.assign(new Error("rejected"), { level: "handshake" })));
     }
     sftp(callback) { callback(null, sftp); }
+    exec(command, options, callback) { execHandler?.(command, options, callback); }
     end() { this.ended = true; }
   };
 }
@@ -98,6 +99,33 @@ test("SFTP callback preserves only explicitly safe deployment failures", async (
     connector.runSftp(target, { password: "secret" }, async () => { throw Object.assign(new Error("password=secret"), { code: "unsafe_detail" }); }),
     (error) => error.code === "ssh_sftp_operation_failed" && !error.message.includes("secret"),
   );
+});
+
+test("fixed Docker Nginx actions accept only bounded container names and predefined commands", async () => {
+  const commands = [];
+  const ClientClass = fakeClientClass({ execHandler: (command, options, callback) => {
+    commands.push({ command, options });
+    const stream = new EventEmitter();
+    stream.stderr = { resume() {} };
+    callback(null, stream);
+    setImmediate(() => {
+      if (command.startsWith("docker inspect")) stream.emit("data", Buffer.from("true\n"));
+      stream.emit("close", 0);
+    });
+  } });
+  const connector = createSshHostConnector({ ClientClass, lookup: async () => [{ address: "93.184.216.24", family: 4 }] });
+  const target = { host: "host.example", port: 22, user: "deploy", authMethod: "password_ref", networkPolicy: "public_only", knownHostFingerprint: sshHostFingerprint(HOST_KEY) };
+  await connector.runFixedCommand(target, { password: "secret" }, "docker_nginx_inspect", { containerName: "site-nginx_1" });
+  await connector.runFixedCommand(target, { password: "secret" }, "docker_nginx_config_test", { containerName: "site-nginx_1" });
+  await connector.runFixedCommand(target, { password: "secret" }, "docker_nginx_reload", { containerName: "site-nginx_1" });
+  assert.deepEqual(commands.map((item) => item.command), [
+    "docker inspect --format '{{.State.Running}}' site-nginx_1",
+    "docker exec site-nginx_1 nginx -t",
+    "docker kill --signal=HUP site-nginx_1",
+  ]);
+  assert.equal(commands.every((item) => item.options.pty === false), true);
+  await assert.rejects(connector.runFixedCommand(target, { password: "secret" }, "docker_nginx_reload", { containerName: "site-nginx; id" }), { code: "ssh_fixed_command_parameter_invalid" });
+  await assert.rejects(connector.runFixedCommand(target, { password: "secret" }, "shell", { containerName: "site-nginx" }), { code: "ssh_fixed_command_unsupported" });
 });
 
 test("completes real SSH fingerprint observation, authentication, and SFTP negotiation", async (t) => {
