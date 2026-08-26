@@ -55,6 +55,9 @@ export async function handleWorkItemRoutes({
   suggestWorkItemDraft,
   previewIntentTaskPlan,
   commitIntentTaskPlan,
+  prepareLedgerPostingPlan,
+  commitLedgerPostingPlan,
+  getLedgerPostingPlan,
   createResultRepairTask,
   listMyTemplateRoutingFeedback,
   removeMyTemplateRoutingFeedback,
@@ -1133,6 +1136,25 @@ export async function handleWorkItemRoutes({
   if (progressMatch && req.method === "POST") {
     const workItemId = decodeURIComponent(progressMatch[1]);
     const result = recordWorkItemProgress({ workItemId, ...(await readJson(req)) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const ledgerPostingPlanMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/ledger-posting-plan(?:\/(commit))?$/);
+  if (ledgerPostingPlanMatch) {
+    const workItemId = decodeURIComponent(ledgerPostingPlanMatch[1]);
+    const command = ledgerPostingPlanMatch[2] ?? null;
+    const body = req.method === "POST" ? await readJson(req) : {};
+    let result;
+    if (req.method === "GET" && !command) {
+      result = getLedgerPostingPlan({ workItemId }, actor);
+    } else if (req.method === "POST" && !command) {
+      result = prepareLedgerPostingPlan({ workItemId, ...body }, actor);
+    } else if (req.method === "POST" && command === "commit") {
+      result = await commitLedgerPostingPlan({ workItemId, ...body }, actor);
+    } else {
+      return false;
+    }
     sendJson(res, result.status, result.body);
     return true;
   }

@@ -1,5 +1,5 @@
 import type { WorkItemContentReference } from "@/features/local-content/local-content-types";
-import type { TaskRecordBinding } from "@myagenttool/protocol/task-resources";
+import type { LedgerPostingPlan, TaskRecordBinding } from "@myagenttool/protocol/task-resources";
 
 export type GithubItem = {
   type: "issue" | "pr";
@@ -150,6 +150,15 @@ export type LocalWorkItem = {
   }[];
   inputAssets?: WorkItemAssetRef[];
   recordBindings?: TaskRecordBinding[];
+  ledgerPostingPlanId?: string | null;
+  ledgerPostingPlan?: (LedgerPostingPlan & {
+    id: string;
+    revision: number;
+    status: string;
+    previewId: string | null;
+    batchPreviewId: string | null;
+    previewIds: string[];
+  }) | null;
   localContentRefs?: WorkItemContentReference[];
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];

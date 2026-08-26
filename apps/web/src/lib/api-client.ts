@@ -28,7 +28,7 @@ import type {
   ToolInvocationRequest,
   ToolInvocationResponse,
 } from "@/lib/console-state";
-import type { BusinessLedgerRecordRef, TaskRecordBinding, TaskTemplateContractV2 } from "@myagenttool/protocol/task-resources";
+import type { BusinessLedgerRecordRef, LedgerPostingPlan, TaskRecordBinding, TaskTemplateContractV2 } from "@myagenttool/protocol/task-resources";
 import {
   ApiError,
   apiBase,
@@ -2671,6 +2671,27 @@ export const api = {
       `/api/workflow-memory/ledger-definitions/${encodeURIComponent(ledgerDefinitionId)}/records?${query.toString()}`,
     );
   },
+  getWorkItemLedgerPostingPlan: (workItemId: string) =>
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[] }; preview: Record<string, unknown> | null; batchPreview: Record<string, unknown> | null }>(
+      "GET",
+      `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan`,
+    ),
+  prepareWorkItemLedgerPostingPlan: (workItemId: string, payload: {
+    expectedRevision: number;
+    primary?: LedgerPostingPlan["primary"];
+    related?: LedgerPostingPlan["related"];
+  }) =>
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[] }; preview: Record<string, unknown> | null; batchPreview: Record<string, unknown> | null }>(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan`,
+      payload,
+    ),
+  commitWorkItemLedgerPostingPlan: (workItemId: string, payload: { planId: string; expectedRevision: number; approvalToken: string }) =>
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[] } }>(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan/commit`,
+      payload,
+    ),
   listMyTemplateLearning: (projectId?: string) =>
     request("GET", `/api/work-items/my-template-learning${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   removeMyTemplateLearning: (feedbackId: string) =>

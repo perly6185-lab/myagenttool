@@ -165,6 +165,7 @@ import { createBusinessRoutineService } from "../services/business-routines.mjs"
 import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
 import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive-work.mjs";
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
+import { createTaskLedgerPostingService } from "../services/task-ledger-posting.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
 import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree, inspectArticle } from "../services/article-imports.mjs";
@@ -628,6 +629,19 @@ export function createServerRuntimeServices({
     store,
     validateRoutineLedgerStep: businessRoutineService.validateRoutineLedgerStep,
     completeRoutineLedgerStep: businessRoutineService.completeRoutineLedgerStep,
+  });
+  const taskLedgerPostingService = createTaskLedgerPostingService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    previewLedgerUpsert: ledgerUpsertService.previewUpsert,
+    previewLedgerBatchUpsert: ledgerUpsertService.previewBatchUpsert,
+    commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
+    commitLedgerBatchUpsertPreview: ledgerUpsertService.commitBatchPreview,
+    validateApprovalToken,
   });
   const businessPilotEvidenceService = createBusinessPilotEvidenceService({
     state,
@@ -7527,6 +7541,9 @@ export function createServerRuntimeServices({
     previewLedgerUpsert: ledgerUpsertService.previewUpsert,
     inspectLedgerTargetIdentity: ledgerUpsertService.inspectTargetIdentity,
     readBusinessLedgerRecord: ledgerUpsertService.readBusinessLedgerRecord,
+    prepareLedgerPostingPlan: taskLedgerPostingService.prepareLedgerPostingPlan,
+    commitLedgerPostingPlan: taskLedgerPostingService.commitLedgerPostingPlan,
+    getLedgerPostingPlan: taskLedgerPostingService.getLedgerPostingPlan,
     commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
     previewLedgerBatchUpsert: ledgerUpsertService.previewBatchUpsert,
     commitLedgerBatchUpsertPreview: ledgerUpsertService.commitBatchPreview,
