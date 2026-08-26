@@ -127,6 +127,12 @@ import {
   recomputePrivateTutorMasteryEvidence,
   resolvePrivateTutorEvaluationReview,
 } from "../services/private-tutor-evaluation-review.mjs";
+import {
+  createPrivateTutorGoldenCandidate,
+  linkPrivateTutorGoldenCandidateMigration,
+  listPrivateTutorGoldenCandidates,
+  reviewPrivateTutorGoldenCandidate,
+} from "../services/private-tutor-golden-candidates.mjs";
 
 const LOCAL_TEAM_ID = "team_local";
 const LOCAL_USER_ID = "usr_local";
@@ -498,6 +504,80 @@ export async function handlePrivateTutorRoutes({
     } catch (err) {
       sendJson(res, 400, { error: err.message });
     }
+    return true;
+  }
+
+  const goldenCandidateActionMatch = url.pathname.match(/^\/api\/private-tutor\/golden-candidates\/([^/]+)\/(migration|reviews)$/);
+  if (url.pathname === "/api/private-tutor/golden-candidates" || goldenCandidateActionMatch) {
+    if (actor?.privateTutorLearnerId || !["owner", "admin"].includes(actor?.role)) {
+      sendJson(res, 403, { error: "private_tutor_professional_role_required" });
+      return true;
+    }
+    if (url.pathname === "/api/private-tutor/golden-candidates" && req.method === "GET") {
+      const candidates = listPrivateTutorGoldenCandidates(state, {
+        ownerTeamId: actor.teamId,
+        status: url.searchParams.get("status"),
+        limit: url.searchParams.get("limit") ?? 50,
+      });
+      sendJson(res, 200, { candidates });
+      return true;
+    }
+    if (url.pathname === "/api/private-tutor/golden-candidates" && req.method === "POST") {
+      const body = await readJson(req).catch(() => ({}));
+      const result = createPrivateTutorGoldenCandidate(state, body, { actor, now, nextId });
+      if (!result.ok) {
+        sendJson(res, result.status, { error: result.error, ...(result.detected ? { detected: result.detected } : {}) });
+        return true;
+      }
+      const stored = state.privateTutorGoldenCandidates.find((row) => row.id === result.candidate.id);
+      const learner = state.privateTutorLearners.find((row) => row.id === stored?.learnerId);
+      if (learner) recordAudit(state, {
+        learner,
+        actor,
+        action: "golden_candidate_created",
+        details: {
+          candidateId: result.candidate.id,
+          classification: result.candidate.classification,
+          promotionEligible: result.candidate.promotionEligible,
+        },
+        now,
+        nextId,
+      });
+      (persistStateNow ?? persistStateSoon)();
+      sendJson(res, 201, result);
+      return true;
+    }
+    if (goldenCandidateActionMatch && req.method === "POST") {
+      const candidateId = decodeURIComponent(goldenCandidateActionMatch[1]);
+      const body = await readJson(req).catch(() => ({}));
+      const action = goldenCandidateActionMatch[2];
+      const result = action === "migration"
+        ? linkPrivateTutorGoldenCandidateMigration(state, candidateId, body, { actor, now, nextId })
+        : reviewPrivateTutorGoldenCandidate(state, candidateId, body, { actor, now, nextId });
+      if (!result.ok) {
+        sendJson(res, result.status, { error: result.error, ...(result.detected ? { detected: result.detected } : {}) });
+        return true;
+      }
+      const stored = state.privateTutorGoldenCandidates.find((row) => row.id === result.candidate.id);
+      const learner = state.privateTutorLearners.find((row) => row.id === stored?.learnerId);
+      if (learner) recordAudit(state, {
+        learner,
+        actor,
+        action: action === "migration" ? "golden_candidate_migration_linked" : "golden_candidate_reviewed",
+        details: {
+          candidateId: result.candidate.id,
+          status: result.candidate.status,
+          ...(result.review ? { reviewId: result.review.id, decision: result.review.decision } : {}),
+          ...(result.candidate.migration ? { migrationId: result.candidate.migration.migrationId } : {}),
+        },
+        now,
+        nextId,
+      });
+      (persistStateNow ?? persistStateSoon)();
+      sendJson(res, 200, result);
+      return true;
+    }
+    sendJson(res, 405, { error: "method_not_allowed" });
     return true;
   }
 

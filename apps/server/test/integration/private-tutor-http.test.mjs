@@ -38,6 +38,8 @@ before(async () => {
     { id: "usr_admin", teamId: "team_family_b", role: "admin" },
     { id: "usr_reviewer", teamId: "team_family_b", role: "admin" },
     { id: "usr_tutor_reviewer_a", teamId: "team_personal", role: "admin" },
+    { id: "usr_tutor_reviewer_b", teamId: "team_personal", role: "admin" },
+    { id: "usr_tutor_reviewer_c", teamId: "team_personal", role: "owner" },
     { id: "usr_parent_c", teamId: "team_family_c", role: "viewer" },
     { id: "usr_personal", teamId: "team_personal", role: "viewer" },
     { id: "usr_personal_race", teamId: "team_personal", role: "viewer" },
@@ -50,6 +52,8 @@ before(async () => {
     { token: "tok_admin", userId: "usr_admin", expiresAt },
     { token: "tok_reviewer", userId: "usr_reviewer", expiresAt },
     { token: "tok_tutor_reviewer_a", userId: "usr_tutor_reviewer_a", expiresAt },
+    { token: "tok_tutor_reviewer_b", userId: "usr_tutor_reviewer_b", expiresAt },
+    { token: "tok_tutor_reviewer_c", userId: "usr_tutor_reviewer_c", expiresAt },
     { token: "tok_parent_c", userId: "usr_parent_c", expiresAt },
     { token: "tok_personal", userId: "usr_personal", expiresAt },
     { token: "tok_personal_race", userId: "usr_personal_race", expiresAt },
@@ -1877,4 +1881,92 @@ test("M6 advanced subject evaluators expose versioned feedback while only eligib
   assert.equal(replayedReview.body.snapshot.knowledge[0].evidenceCount, 2);
   assert.equal(runtimeState.privateTutorEvaluationReviews.filter((item) => item.attemptId === conceptBoundary.body.attempt.id).length, 1);
   assert.equal(runtimeState.privateTutorAuditEvents.some((item) => item.action === "evaluation_review_completed" && item.details.attemptId === conceptBoundary.body.attempt.id), true);
+
+  assert.equal((await call("/api/private-tutor/golden-candidates")).status, 403);
+  const otherTeamCandidates = await call("/api/private-tutor/golden-candidates", { token: "tok_admin" });
+  assert.equal(otherTeamCandidates.status, 200);
+  assert.equal(otherTeamCandidates.body.candidates.length, 0);
+  const rejectedIdentifier = await call("/api/private-tutor/golden-candidates", {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: {
+      evaluationReviewId: reviewed.body.review.id,
+      classification: "content_defect",
+      deidentifiedAnswer: "Contact learner@example.com about usr_personal.",
+      rationale: "This intentionally contains identifiers and must be rejected.",
+    },
+  });
+  assert.equal(rejectedIdentifier.status, 422);
+  assert.equal(rejectedIdentifier.body.error, "private_tutor_golden_candidate_not_deidentified");
+  assert.deepEqual(rejectedIdentifier.body.detected.sort(), ["account_identifier", "email"]);
+
+  const migrationBlocked = await call("/api/private-tutor/golden-candidates", {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: {
+      evaluationReviewId: reviewed.body.review.id,
+      classification: "rubric_defect",
+      deidentifiedAnswer: "[ref:chapter-1] 形成性反馈能发现差距。",
+      rationale: "The proficiency boundary needs a future versioned rubric correction.",
+      expectedScore: 0.75,
+      expectedScoreBand: "developing",
+    },
+  });
+  assert.equal(migrationBlocked.status, 201, JSON.stringify(migrationBlocked.body));
+  assert.equal(migrationBlocked.body.candidate.status, "migration_required");
+  const blockedApproval = await call(`/api/private-tutor/golden-candidates/${migrationBlocked.body.candidate.id}/reviews`, {
+    token: "tok_tutor_reviewer_b",
+    method: "POST",
+    body: { decision: "approved", evidence: "The classification is valid but still requires a migration." },
+  });
+  assert.equal(blockedApproval.status, 409);
+  assert.equal(blockedApproval.body.error, "private_tutor_golden_candidate_migration_required");
+
+  const candidateCreated = await call("/api/private-tutor/golden-candidates", {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: {
+      evaluationReviewId: reviewed.body.review.id,
+      classification: "content_defect",
+      deidentifiedAnswer: "[ref:chapter-1] 形成性反馈能发现差距。",
+      rationale: "The reviewed boundary response should become a deidentified content regression candidate.",
+      expectedScore: 0.75,
+      expectedScoreBand: "developing",
+    },
+  });
+  assert.equal(candidateCreated.status, 201);
+  assert.equal(candidateCreated.body.candidate.status, "in_review");
+  assert.equal(candidateCreated.body.candidate.goldenArtifact.expected.correct, true);
+  assert.equal("learnerId" in candidateCreated.body.candidate, false);
+  assert.equal(JSON.stringify(candidateCreated.body.candidate.goldenArtifact).includes(reviewed.body.item.learnerId), false);
+  const candidateId = candidateCreated.body.candidate.id;
+  const candidateSelfReview = await call(`/api/private-tutor/golden-candidates/${candidateId}/reviews`, {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: { decision: "approved", evidence: "The creator must not approve this candidate." },
+  });
+  assert.equal(candidateSelfReview.status, 409);
+  assert.equal(candidateSelfReview.body.error, "private_tutor_golden_candidate_self_review_forbidden");
+
+  const firstCandidateReview = await call(`/api/private-tutor/golden-candidates/${candidateId}/reviews`, {
+    token: "tok_tutor_reviewer_b",
+    method: "POST",
+    body: { decision: "approved", evidence: "First independent review confirms the redaction and expected label." },
+  });
+  assert.equal(firstCandidateReview.status, 200);
+  assert.equal(firstCandidateReview.body.candidate.status, "in_review");
+  assert.equal(firstCandidateReview.body.candidate.approvals, 1);
+  const secondCandidateReview = await call(`/api/private-tutor/golden-candidates/${candidateId}/reviews`, {
+    token: "tok_tutor_reviewer_c",
+    method: "POST",
+    body: { decision: "approved", evidence: "Second independent review confirms the candidate without promoting it automatically." },
+  });
+  assert.equal(secondCandidateReview.status, 200);
+  assert.equal(secondCandidateReview.body.candidate.status, "approved");
+  assert.equal(secondCandidateReview.body.candidate.approvals, 2);
+  const approvedCandidates = await call("/api/private-tutor/golden-candidates?status=approved", { token: "tok_tutor_reviewer_b" });
+  assert.deepEqual(approvedCandidates.body.candidates.map((item) => item.id), [candidateId]);
+  assert.equal(runtimeState.privateTutorGoldenCandidateReviews.filter((item) => item.candidateId === candidateId).length, 2);
+  assert.equal(runtimeState.privateTutorAuditEvents.some((item) => item.action === "golden_candidate_created" && item.details.candidateId === candidateId), true);
+  assert.equal(runtimeState.privateTutorAuditEvents.filter((item) => item.action === "golden_candidate_reviewed" && item.details.candidateId === candidateId).length, 2);
 });

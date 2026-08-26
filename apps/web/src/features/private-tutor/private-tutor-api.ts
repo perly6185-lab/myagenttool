@@ -216,6 +216,64 @@ export interface PrivateTutorEvaluationReviewQueueItem {
   createdAt: string;
 }
 
+export type PrivateTutorGoldenCandidateClassification =
+  | "evaluator_defect"
+  | "rubric_defect"
+  | "content_defect"
+  | "transcription_issue"
+  | "one_off_exception";
+export type PrivateTutorGoldenCandidateStatus = "migration_required" | "in_review" | "approved" | "rejected" | "exception_only";
+
+export interface PrivateTutorGoldenExpected {
+  correct: boolean;
+  evidenceEligible: boolean;
+  requiresReview: boolean;
+  score: number | null;
+  scoreBand: "insufficient" | "developing" | "proficient" | null;
+}
+
+export interface PrivateTutorGoldenCandidate {
+  id: string;
+  schemaVersion: 1;
+  sourceEvaluationReviewId: string;
+  classification: PrivateTutorGoldenCandidateClassification;
+  targetChange: "evaluator" | "rubric" | "content" | "none";
+  promotionEligible: boolean;
+  migrationRequired: boolean;
+  migration: {
+    migrationId: string;
+    to: { evaluatorVersion: string | null; contentPackageVersion: string | null; rubricVersion: string | null; profile: string | null };
+    compatibility: string;
+  } | null;
+  suite: "math-step" | "language-semantic" | "conceptual-rubric";
+  rationale: string;
+  proposedExpected: PrivateTutorGoldenExpected;
+  goldenArtifact: {
+    schemaVersion: 1;
+    suite: string;
+    subjectId: string;
+    questionRevisionId: string;
+    versions: { evaluatorVersion: string | null; contentPackageVersion: string | null; rubricVersion: string | null; profile: string | null };
+    input: { rawAnswer: string; responseKind: string; source: string; recognitionConfidence: number | null };
+    expected: PrivateTutorGoldenExpected;
+  };
+  candidateFingerprint: string;
+  deidentification: { passed: boolean; policyVersion: 1; detected: string[] };
+  createdBy: string;
+  createdAt: string;
+  status: PrivateTutorGoldenCandidateStatus;
+  approvals: number;
+  requiredApprovals: 2;
+  reviews: Array<{
+    id: string;
+    candidateId: string;
+    reviewerId: string;
+    decision: "approved" | "rejected";
+    evidence: string;
+    reviewedAt: string;
+  }>;
+}
+
 export interface PrivateTutorLearnerModel {
   id: string;
   learnerId: string;
@@ -1168,6 +1226,48 @@ export async function resolvePrivateTutorEvaluationReview(attemptId: string, inp
     "POST",
     `/api/private-tutor/evaluation-reviews/${encodeURIComponent(attemptId)}`,
     input,
+  );
+}
+
+export async function listPrivateTutorGoldenCandidates(status?: PrivateTutorGoldenCandidateStatus) {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+  const result = await request<{ candidates: PrivateTutorGoldenCandidate[] }>(
+    "GET",
+    `/api/private-tutor/golden-candidates${suffix}`,
+  );
+  return result.candidates;
+}
+
+export async function createPrivateTutorGoldenCandidate(input: {
+  evaluationReviewId: string;
+  classification: PrivateTutorGoldenCandidateClassification;
+  deidentifiedAnswer: string;
+  rationale: string;
+  expectedRequiresReview?: boolean;
+  expectedScore?: number;
+  expectedScoreBand?: "insufficient" | "developing" | "proficient";
+}) {
+  const result = await request<{ candidate: PrivateTutorGoldenCandidate }>("POST", "/api/private-tutor/golden-candidates", input);
+  return result.candidate;
+}
+
+export async function linkPrivateTutorGoldenCandidateMigration(candidateId: string, migrationId: string) {
+  const result = await request<{ candidate: PrivateTutorGoldenCandidate }>(
+    "POST",
+    `/api/private-tutor/golden-candidates/${encodeURIComponent(candidateId)}/migration`,
+    { migrationId },
+  );
+  return result.candidate;
+}
+
+export async function reviewPrivateTutorGoldenCandidate(candidateId: string, decision: "approved" | "rejected", evidence: string) {
+  return request<{
+    candidate: PrivateTutorGoldenCandidate;
+    review: PrivateTutorGoldenCandidate["reviews"][number];
+  }>(
+    "POST",
+    `/api/private-tutor/golden-candidates/${encodeURIComponent(candidateId)}/reviews`,
+    { decision, evidence },
   );
 }
 
