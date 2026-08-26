@@ -1881,6 +1881,33 @@ export function createWorkItemService({
       && (!workItemId || item.id === workItemId));
     const rows = [];
     for (const item of items) {
+      const staleRecordBindings = (item.recordBindings ?? []).filter((recordBinding) =>
+        recordBinding.record && recordBinding.resolution?.state !== "resolved");
+      if (staleRecordBindings.length && !item.archivedAt) {
+        const freshnessActivity = (state.workItemActivities ?? []).find((activity) =>
+          activity.workItemId === item.id && activity.action === "record_bindings_freshness_changed");
+        const executionBlocked = staleRecordBindings.some((recordBinding) => recordBinding.direction === "input");
+        rows.push({
+          id: `record_binding_stale:${item.id}`,
+          kind: "record_binding_stale",
+          severity: executionBlocked ? "high" : "medium",
+          workItemId: item.id,
+          localRef: item.localRef,
+          projectId: item.projectId,
+          title: item.title,
+          createdAt: freshnessActivity?.createdAt ?? item.updatedAt,
+          details: {
+            workItemRevision: item.revision,
+            bindingIds: staleRecordBindings.map((recordBinding) => recordBinding.id),
+            bindingCount: staleRecordBindings.length,
+            states: [...new Set(staleRecordBindings.map((recordBinding) =>
+              recordBinding.resolution?.state ?? "unavailable"))],
+            executionBlocked,
+            postingBlocked: true,
+            refreshable: (item.executionBindings ?? []).length === 0,
+          },
+        });
+      }
       const binding = githubBinding(item);
       if (binding?.conflict) rows.push({
         id: `github_conflict:${item.id}`, kind: "github_conflict", severity: "high",
@@ -1957,6 +1984,9 @@ export function createWorkItemService({
       const handling = operation?.handling && Date.parse(operation.handling.expiresAt ?? operation.handling.claimedAt) > at
         ? operation.handling
         : null;
+      const resolution = row.kind === "record_binding_stale"
+        ? null
+        : operation?.resolution ?? null;
       const hours = row.severity === "high" ? 4 : row.severity === "medium" ? 24 : 72;
       const dueAt = new Date(Date.parse(row.createdAt) + hours * 3_600_000).toISOString();
       const history = row.workItemId ? (state.workItemActivities ?? [])
@@ -1969,7 +1999,7 @@ export function createWorkItemService({
         ...row, dueAt, slaStatus: Date.parse(dueAt) < at ? "breached" : "within_sla", history,
         updatedAt: operation?.history?.[0]?.createdAt ?? row.createdAt,
         handling,
-        resolution: operation?.resolution ?? null,
+        resolution,
       };
     });
     const allDecorated = derivedRows.filter((row) => !updatedSince || row.updatedAt > updatedSince);
@@ -1999,6 +2029,7 @@ export function createWorkItemService({
           breached: openRows.filter((row) => row.slaStatus === "breached").length,
           claimed: openRows.filter((row) => row.handling).length,
           pendingApprovals: openRows.filter((row) => row.kind === "recommended_action_approval").length,
+          staleRecords: openRows.filter((row) => row.kind === "record_binding_stale").length,
           oldestAgeSeconds: oldestCreatedAt ? Math.max(0, Math.floor((at - Date.parse(oldestCreatedAt)) / 1_000)) : 0,
         },
       },
@@ -2019,6 +2050,13 @@ export function createWorkItemService({
     }
     const visible = new Set(listAttention({ includeResolved: "1" }, actor).body.items.map((item) => item.id));
     if (ids.some((id) => !visible.has(id))) return { ok: false, status: 404, body: { error: "work_item_attention_not_found" } };
+    if (action === "resolve" && ids.some((id) => id.startsWith("record_binding_stale:"))) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_record_binding_attention_requires_refresh" },
+      };
+    }
     const timestamp = now();
     const operations = state.workItemAttentionOperations ?? [];
     const replayed = key && ids.every((attentionId) => operations.some((operation) =>

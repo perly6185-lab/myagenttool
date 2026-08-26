@@ -1882,6 +1882,47 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   assert.equal(resolved.resolution.note, "Handled");
 });
 
+test("stale business records remain actionable until refreshed", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Refresh customer material" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((candidate) => candidate.id === item.id);
+  stored.recordBindings = [{
+    id: "binding_customer",
+    direction: "input",
+    role: "required",
+    record: { title: "Acme" },
+    resolution: { state: "stale" },
+  }];
+  state.workItemActivities.unshift({
+    id: "wia_stale",
+    workItemId: item.id,
+    action: "record_bindings_freshness_changed",
+    actorId: "system_record_freshness",
+    createdAt: "2026-07-24T00:00:00.000Z",
+  });
+  const attention = service.listAttention({ kind: "record_binding_stale" }, ACTOR_A).body;
+  assert.equal(attention.count, 1);
+  assert.equal(attention.metrics.staleRecords, 1);
+  assert.equal(attention.items[0].severity, "high");
+  assert.deepEqual(attention.items[0].details, {
+    workItemRevision: 1,
+    bindingIds: ["binding_customer"],
+    bindingCount: 1,
+    states: ["stale"],
+    executionBlocked: true,
+    postingBlocked: true,
+    refreshable: true,
+  });
+  assert.equal(service.updateAttention({
+    attentionIds: [attention.items[0].id], action: "resolve",
+  }, ACTOR_A).body.error, "work_item_record_binding_attention_requires_refresh");
+
+  stored.executionBindings = [{ kind: "auto_run", targetId: "aur_started" }];
+  assert.equal(service.listAttention({ kind: "record_binding_stale" }, ACTOR_A).body.items[0].details.refreshable, false);
+  stored.recordBindings[0].resolution.state = "resolved";
+  assert.equal(service.listAttention({ kind: "record_binding_stale" }, ACTOR_A).body.count, 0);
+});
+
 test("adds and removes scoped local content references without copying bytes", async () => {
   const contentId = `lc_${"a".repeat(32)}`;
   const resolutions = [];

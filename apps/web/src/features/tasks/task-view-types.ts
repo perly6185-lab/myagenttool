@@ -669,7 +669,7 @@ export type WorkItemActivity = {
 };
 export type WorkItemAttention = {
   id: string;
-  kind: "github_conflict" | "github_deleted" | "execution_approval" | "execution_input" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
+  kind: "record_binding_stale" | "github_conflict" | "github_deleted" | "execution_approval" | "execution_input" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
   severity: "low" | "medium" | "high";
   workItemId: string | null;
   planningProjectId?: string | null;
@@ -689,6 +689,7 @@ export type WorkItemAttentionMetrics = {
   breached: number;
   claimed: number;
   pendingApprovals: number;
+  staleRecords: number;
   oldestAgeSeconds: number;
 };
 export type LocalWorkItemAutoRun = {

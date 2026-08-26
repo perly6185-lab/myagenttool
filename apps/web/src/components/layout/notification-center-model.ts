@@ -10,6 +10,7 @@ export interface NotificationCenterModel {
   approvals: { count: number; items: NotificationItem[] };
   failures: { count: number; items: NotificationItem[] };
   followUps: { count: number; items: NotificationItem[] };
+  businessRecords: { count: number; items: NotificationItem[] };
   channelDeliveries: { count: number; items: NotificationItem[] };
   completions: { count: number; items: NotificationItem[] };
   offline: boolean;
@@ -35,7 +36,12 @@ function workItem(item: WorkItem): NotificationItem {
  */
 export function deriveNotificationCenterModel(
   state: ConsoleSnapshot | null | undefined,
-  options: { isError: boolean; isLoading: boolean; liveUpdates: boolean },
+  options: {
+    isError: boolean;
+    isLoading: boolean;
+    liveUpdates: boolean;
+    recordBindingAttentionItems?: Array<{ id: string; workItemId: string; title: string }>;
+  },
 ): NotificationCenterModel {
   const board = state?.workBoard?.states;
   const approvals = state?.pendingDecisions ?? [];
@@ -53,6 +59,12 @@ export function deriveNotificationCenterModel(
   const followUpItems = board?.follow_up.items
     .filter((item) => item.kind === "work_item_follow_up_reminder")
     .map(workItem) ?? [];
+  const businessRecordAttention = options.recordBindingAttentionItems ?? [];
+  const businessRecordItems = businessRecordAttention.map((item) => ({
+    id: item.workItemId,
+    title: item.title,
+    target: "work_item" as const,
+  }));
   const channelDeliveryIssues = (state?.channelOperations ?? [])
     .filter((channel) => channel.provider === "wechat_ilink" && channel.deliveryHealth?.state === "outbound_delayed")
     .map((channel) => {
@@ -82,6 +94,10 @@ export function deriveNotificationCenterModel(
       count: followUpItems.length,
       items: followUpItems,
     },
+    businessRecords: {
+      count: businessRecordItems.length,
+      items: businessRecordItems,
+    },
     channelDeliveries: {
       count: channelDeliveryIssues.length,
       items: channelDeliveryIssues.map((issue) => issue.item),
@@ -96,6 +112,7 @@ export function deriveNotificationCenterModel(
       ...approvals.map((item) => `approval:${item.id}`),
       ...failureItems.map((item) => `failure:${item.id}`),
       ...followUpItems.map((item) => item.id),
+      ...businessRecordAttention.map((item) => `business-record:${item.id}`),
       ...channelDeliveryIssues.map((issue) => issue.eventId),
       ...completionItems.map((item) => `completion:${item.id}`),
       ...(offline ? ["execution:offline"] : []),

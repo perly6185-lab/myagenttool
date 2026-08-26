@@ -1909,6 +1909,15 @@ test("local ledger changes invalidate task bindings and require a managed refres
   });
 
   writeFileSync(ledgerPath, "Customer ID,Customer,Status\nCUS-001,Acme,paused\n");
+  const attention = await call("/api/work-items/attention?projectId=prj_a&kind=record_binding_stale");
+  assert.equal(attention.status, 200, JSON.stringify(attention.body));
+  assert.equal(attention.body.count, 1);
+  assert.equal(attention.body.metrics.staleRecords, 1);
+  assert.equal(attention.body.items[0].id, `record_binding_stale:${workItemId}`);
+  assert.deepEqual(attention.body.items[0].details.bindingIds, ["binding_customer_http"]);
+  assert.equal(attention.body.items[0].details.executionBlocked, true);
+  assert.equal(attention.body.items[0].details.refreshable, true);
+
   const stale = await call(`/api/work-items/${workItemId}`);
   assert.equal(stale.status, 200, JSON.stringify(stale.body));
   assert.equal(stale.body.workItem.revision, 2);
@@ -1923,14 +1932,22 @@ test("local ledger changes invalidate task bindings and require a managed refres
   assert.equal(blocked.body.error, "work_item_record_bindings_stale");
   assert.equal(runtimeState.autoRuns.some((run) => run.localIssueId === workItemId), false);
 
-  const refreshed = await call(
-    `/api/work-items/${workItemId}/record-bindings/binding_customer_http/refresh`,
-    { method: "POST", body: { expectedRevision: 2 } },
-  );
+  const refreshed = await call("/api/work-items/record-bindings/refresh", {
+    method: "POST",
+    body: {
+      items: [{
+        id: workItemId,
+        expectedRevision: 2,
+        bindingIds: ["binding_customer_http"],
+      }],
+    },
+  });
   assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
-  assert.equal(refreshed.body.workItem.revision, 3);
-  assert.equal(refreshed.body.workItem.recordBindings[0].resolution.state, "resolved");
-  assert.notEqual(refreshed.body.workItem.recordBindings[0].snapshot.fingerprint, recordRef.fingerprint);
+  assert.equal(refreshed.body.refreshedCount, 1);
+  assert.equal(refreshed.body.workItems[0].revision, 3);
+  assert.equal(refreshed.body.workItems[0].recordBindings[0].resolution.state, "resolved");
+  assert.notEqual(refreshed.body.workItems[0].recordBindings[0].snapshot.fingerprint, recordRef.fingerprint);
+  assert.equal((await call("/api/work-items/attention?kind=record_binding_stale")).body.count, 0);
 
   const unmanaged = await call(`/api/work-items/${workItemId}`, {
     method: "PATCH",

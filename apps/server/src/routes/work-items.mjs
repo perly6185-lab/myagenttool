@@ -29,7 +29,8 @@ function externalBindingEmergencyStopped(state, provider, repository, issueNumbe
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor, state,
   listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
-  reconcileWorkItemRecordBindings, refreshWorkItemRecordBinding,
+  reconcileWorkItemRecordBindings, reconcileVisibleWorkItemRecordBindings,
+  refreshWorkItemRecordBinding, refreshWorkItemRecordBindingsBatch,
   listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
   listReportDeliveries, getReportDelivery, previewReportDelivery, sendReportDelivery,
   listActivity, listComments, createComment, updateComment, deleteComment,
@@ -442,6 +443,11 @@ export async function handleWorkItemRoutes({
   }
 
   if (url.pathname === "/api/work-items/attention" && req.method === "GET") {
+    if (typeof reconcileVisibleWorkItemRecordBindings === "function") {
+      await reconcileVisibleWorkItemRecordBindings({
+        projectId: url.searchParams.get("projectId") || null,
+      }, actor);
+    }
     const result = listAttention(Object.fromEntries(url.searchParams), actor);
     sendJson(res, result.status, result.body);
     return true;
@@ -479,6 +485,11 @@ export async function handleWorkItemRoutes({
 
   if (url.pathname === "/api/work-items/bulk" && req.method === "PATCH") {
     const result = bulkUpdateWorkItems(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (url.pathname === "/api/work-items/record-bindings/refresh" && req.method === "POST") {
+    const result = await refreshWorkItemRecordBindingsBatch(await readJson(req), actor);
     sendJson(res, result.status, result.body);
     return true;
   }

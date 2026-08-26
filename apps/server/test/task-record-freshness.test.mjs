@@ -60,7 +60,7 @@ function harness({ readResult } = {}) {
     persistStateSoon: () => {},
     readBusinessLedgerRecord: async (input) => {
       reads.push(input);
-      return currentReadResult;
+      return typeof currentReadResult === "function" ? currentReadResult(input) : currentReadResult;
     },
     getWorkItem: ({ workItemId }) => ({ status: 200, body: { workItem: state.workItems.find((item) => item.id === workItemId) } }),
     invalidateLedgerPostingPlan: (item, requestActor, reason) => {
@@ -188,4 +188,86 @@ test("does not let an asynchronous ledger read overwrite a concurrent task revis
   assert.equal(result.body.error, "work_item_revision_conflict");
   assert.equal(state.workItems[0].recordBindings[0].snapshot.revision, "rev_1");
   assert.equal(invalidations.length, 0);
+});
+
+test("sweeps visible tasks and atomically refreshes multiple stale records", async () => {
+  const { state, service, reads } = harness();
+  state.workItems.push({
+    ...structuredClone(state.workItems[0]),
+    id: "lwi_2",
+    revision: 1,
+  });
+  const swept = await service.reconcileVisibleWorkItemRecordBindings({ force: true }, actor);
+  assert.equal(swept.status, 200);
+  assert.equal(swept.body.checked, 2);
+  assert.equal(swept.body.changed, 2);
+  assert.equal(state.workItems.every((item) => item.recordBindings[0].resolution.state === "stale"), true);
+
+  const refreshed = await service.refreshWorkItemRecordBindingsBatch({
+    items: state.workItems.map((item) => ({
+      id: item.id,
+      expectedRevision: 2,
+      bindingIds: ["binding_customer"],
+    })),
+  }, actor);
+  assert.equal(refreshed.status, 200);
+  assert.equal(refreshed.body.count, 2);
+  assert.equal(refreshed.body.refreshedCount, 2);
+  assert.equal(state.workItems.every((item) => item.revision === 3), true);
+  assert.equal(state.workItems.every((item) => item.recordBindings[0].resolution.state === "resolved"), true);
+  assert.equal(state.workItemActivities.filter((activity) => activity.action === "record_binding_refreshed").length, 2);
+
+  const cached = await service.reconcileVisibleWorkItemRecordBindings({}, actor);
+  assert.equal(cached.body.checked, 2, "refresh revisions invalidate the previous sweep cache");
+  const cachedAgain = await service.reconcileVisibleWorkItemRecordBindings({}, actor);
+  assert.equal(cachedAgain.body.checked, 0);
+  assert.equal(cachedAgain.body.skipped, 2);
+  assert.equal(reads.length, 6);
+});
+
+test("bounded sweeps rotate past recently checked tasks", async () => {
+  const { state, service, reads } = harness();
+  for (let index = 2; index <= 101; index += 1) {
+    state.workItems.push({
+      ...structuredClone(state.workItems[0]),
+      id: `lwi_${index}`,
+    });
+  }
+
+  const first = await service.reconcileVisibleWorkItemRecordBindings({ force: true, limit: 100 }, actor);
+  assert.equal(first.body.checked, 100);
+  assert.equal(first.body.changed, 100);
+  assert.equal(state.workItems[100].recordBindings[0].resolution.state, "resolved");
+
+  const second = await service.reconcileVisibleWorkItemRecordBindings({ limit: 100 }, actor);
+  assert.equal(second.body.checked, 1);
+  assert.equal(second.body.skipped, 99);
+  assert.equal(second.body.changed, 1);
+  assert.equal(state.workItems[100].recordBindings[0].resolution.state, "stale");
+  assert.equal(reads.length, 101);
+});
+
+test("batch refresh fails without partial updates when one record is unavailable", async () => {
+  const { state, service, setReadResult } = harness();
+  state.workItems[0].recordBindings[0].resolution.state = "stale";
+  state.workItems.push({
+    ...structuredClone(state.workItems[0]),
+    id: "lwi_2",
+  });
+  state.workItems[1].recordBindings[0].record.recordId = "blr_missing";
+  setReadResult((input) => input.recordId === "blr_missing"
+    ? { status: 404, body: { error: "business_ledger_record_not_found" } }
+    : { status: 200, body: { record: record("rev_2", "b") } });
+
+  const result = await service.refreshWorkItemRecordBindingsBatch({
+    items: state.workItems.map((item) => ({
+      id: item.id,
+      expectedRevision: 1,
+      bindingIds: ["binding_customer"],
+    })),
+  }, actor);
+  assert.equal(result.status, 409);
+  assert.equal(result.body.workItemId, "lwi_2");
+  assert.equal(state.workItems.every((item) => item.revision === 1), true);
+  assert.equal(state.workItems.every((item) => item.recordBindings[0].resolution.state === "stale"), true);
 });

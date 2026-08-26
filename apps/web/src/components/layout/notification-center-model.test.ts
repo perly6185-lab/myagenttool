@@ -119,4 +119,23 @@ describe("notification center model (#1537)", () => {
     });
     expect(model.eventIds).toContain("channel-delivery:del_1:unconfirmed");
   });
+
+  it("surfaces stale business records as actionable work-item notifications", () => {
+    const state = { device: { status: "online" }, pendingDecisions: [], invocations: [] } as unknown as ConsoleSnapshot;
+    const model = deriveNotificationCenterModel(state, {
+      isError: false,
+      isLoading: false,
+      liveUpdates: true,
+      recordBindingAttentionItems: [{
+        id: "record_binding_stale:lwi_1",
+        workItemId: "lwi_1",
+        title: "Prepare account review",
+      }],
+    });
+    expect(model.businessRecords).toEqual({
+      count: 1,
+      items: [{ id: "lwi_1", title: "Prepare account review", target: "work_item" }],
+    });
+    expect(model.eventIds).toContain("business-record:record_binding_stale:lwi_1");
+  });
 });

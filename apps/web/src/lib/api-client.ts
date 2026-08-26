@@ -2741,6 +2741,15 @@ export const api = {
       `/api/work-items/${encodeURIComponent(workItemId)}/record-bindings/${encodeURIComponent(bindingId)}/refresh`,
       { expectedRevision },
     ),
+  refreshWorkItemRecordBindingsBatch: (items: Array<{
+    id: string;
+    expectedRevision: number;
+    bindingIds: string[];
+  }>) => request(
+    "POST",
+    "/api/work-items/record-bindings/refresh",
+    { items },
+  ),
   claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/claim`, payload),
   releaseWorkItemClaim: (id: string, idempotencyKey?: string) =>
