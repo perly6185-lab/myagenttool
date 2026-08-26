@@ -4890,9 +4890,16 @@ export function createWorkItemService({
       && (item.executionBindings ?? []).length) {
       return { ok: false, status: 409, body: { error: "work_item_my_template_binding_immutable" } };
     }
-    if (Object.hasOwn(changes, "recordBindings")
-      && (item.executionBindings ?? []).length) {
-      return { ok: false, status: 409, body: { error: "work_item_record_bindings_immutable" } };
+    if (Object.hasOwn(changes, "recordBindings")) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: (item.executionBindings ?? []).length
+            ? "work_item_record_bindings_immutable"
+            : "work_item_record_bindings_require_managed_update",
+        },
+      };
     }
     if (Object.hasOwn(changes, "terminalId")) {
       return {
@@ -5567,6 +5574,14 @@ export function createWorkItemService({
     if (expectedRevision !== item.revision) {
       return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
     }
+    const blockingBindings = recordBindingExecutionBlock(item);
+    if (blockingBindings) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_record_bindings_stale", currentRevision: item.revision, blockingBindings },
+      };
+    }
     if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)
       || Buffer.byteLength(JSON.stringify(parameters), "utf8") > 256 * 1024
       || ["capability", "capabilityId", "applicationId", "toolName", "command", "argv", "terminalId", "projectId", "worktreeId", "requiresApproval"]
@@ -5814,6 +5829,14 @@ export function createWorkItemService({
     return null;
   }
 
+  function recordBindingExecutionBlock(item) {
+    const blockingBindings = (item.recordBindings ?? [])
+      .filter((binding) => binding.direction === "input" && binding.record
+        && binding.resolution?.state !== "resolved")
+      .map((binding) => ({ bindingId: binding.id, state: binding.resolution?.state ?? "unavailable" }));
+    return blockingBindings.length ? blockingBindings : null;
+  }
+
   function beginExecution({
     workItemId, kind, agentId = null,
   } = {}, actor = null) {
@@ -5824,6 +5847,14 @@ export function createWorkItemService({
     }
     if (item.state !== "open" || item.archivedAt) {
       return { ok: false, status: 409, body: { error: "work_item_execution_not_open" } };
+    }
+    const blockingBindings = recordBindingExecutionBlock(item);
+    if (blockingBindings) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_record_bindings_stale", currentRevision: item.revision, blockingBindings },
+      };
     }
     const timestamp = now();
     const currentOperation = activeExecutionOperation(item, timestamp);

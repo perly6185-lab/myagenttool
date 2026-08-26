@@ -550,6 +550,8 @@ export function createHttpServer({
   getHomeWorkbench,
   listWorkItemAttention,
   getWorkItem,
+  reconcileWorkItemRecordBindings,
+  refreshWorkItemRecordBinding,
   createWorkItem,
   createWorkItemFromExternal,
   captureWorkItemDataContext,
@@ -1102,6 +1104,7 @@ export function createHttpServer({
       if (await handleWorkItemRoutes({
         req, res, url, sendJson, readJson, actor, state,
         listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+        reconcileWorkItemRecordBindings, refreshWorkItemRecordBinding,
         listReportDrafts: listWorkItemReportDrafts,
         getReportDraft: getWorkItemReportDraft,
         generateReportDraft: generateWorkItemReportDraft,

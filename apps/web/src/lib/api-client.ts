@@ -2735,6 +2735,12 @@ export const api = {
     request("POST", `/api/work-items/my-template-governance/${encodeURIComponent(familyId)}/resume-observation`, payload),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
+  refreshWorkItemRecordBinding: (workItemId: string, bindingId: string, expectedRevision: number) =>
+    request(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/record-bindings/${encodeURIComponent(bindingId)}/refresh`,
+      { expectedRevision },
+    ),
   claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/claim`, payload),
   releaseWorkItemClaim: (id: string, idempotencyKey?: string) =>

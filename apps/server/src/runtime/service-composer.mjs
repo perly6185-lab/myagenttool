@@ -166,6 +166,7 @@ import { createBusinessPilotEvidenceService } from "../services/business-pilot-e
 import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive-work.mjs";
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createTaskLedgerPostingService } from "../services/task-ledger-posting.mjs";
+import { createTaskRecordFreshnessService } from "../services/task-record-freshness.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
 import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree, inspectArticle } from "../services/article-imports.mjs";
@@ -515,6 +516,7 @@ export function createServerRuntimeServices({
   let requestWorkItemAutoSchedulerSweep = () => {};
   let enqueueWorkItemReportDeliveryBatch = () => ({ ok: false, reason: "delivery_unavailable" });
   let invalidateStaleTaskLedgerPostingPlan = () => false;
+  let reconcileTaskRecordBindings = async () => ({ status: 200, body: { changed: false, blocked: false } });
   const localContentCatalogService = createLocalContentCatalogService({
     state, stateStorePath, now, persistStateSoon, store, autoIndex: true,
   });
@@ -646,8 +648,21 @@ export function createServerRuntimeServices({
     commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
     commitLedgerBatchUpsertPreview: ledgerUpsertService.commitBatchPreview,
     validateApprovalToken,
+    reconcileRecordBindings: (input, actor) => reconcileTaskRecordBindings(input, actor),
   });
   invalidateStaleTaskLedgerPostingPlan = taskLedgerPostingService.invalidateStaleLedgerPostingPlanForWorkItem;
+  const taskRecordFreshnessService = createTaskRecordFreshnessService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    readBusinessLedgerRecord: ledgerUpsertService.readBusinessLedgerRecord,
+    getWorkItem: workItemService.getWorkItem,
+    invalidateLedgerPostingPlan: invalidateStaleTaskLedgerPostingPlan,
+  });
+  reconcileTaskRecordBindings = taskRecordFreshnessService.reconcileWorkItemRecordBindings;
   const businessPilotEvidenceService = createBusinessPilotEvidenceService({
     state,
     now,
@@ -2414,6 +2429,7 @@ export function createServerRuntimeServices({
     persistStateSoon,
     appendEvent,
     getWorkItem: workItemService.getWorkItem,
+    reconcileRecordBindings: taskRecordFreshnessService.reconcileWorkItemRecordBindings,
     beginExecution: workItemService.beginExecution,
     abortExecution: workItemService.abortExecution,
     recordExecutionBinding: workItemService.recordExecutionBinding,
@@ -2426,6 +2442,7 @@ export function createServerRuntimeServices({
     now,
     appendEvent,
     getWorkItem: workItemService.getWorkItem,
+    reconcileRecordBindings: taskRecordFreshnessService.reconcileWorkItemRecordBindings,
     beginExecution: workItemService.beginExecution,
     abortExecution: workItemService.abortExecution,
     recordExecutionBinding: workItemService.recordExecutionBinding,
@@ -7430,6 +7447,8 @@ export function createServerRuntimeServices({
     getHomeWorkbench: workItemService.getHomeWorkbench,
     listWorkItemAttention: workItemService.listAttention,
     getWorkItem: workItemService.getWorkItem,
+    reconcileWorkItemRecordBindings: taskRecordFreshnessService.reconcileWorkItemRecordBindings,
+    refreshWorkItemRecordBinding: taskRecordFreshnessService.refreshWorkItemRecordBinding,
     createWorkItem: workItemService.createWorkItem,
     createWorkItemFromExternal: workItemService.createWorkItemFromExternal,
     addWorkItemMaterials: workItemService.addMaterials,

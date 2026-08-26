@@ -5,7 +5,7 @@ import { createTaskLedgerPostingService } from "../src/services/task-ledger-post
 
 const actor = { userId: "usr_a", teamId: "team_a", role: "operator" };
 
-function harness({ previewStatus = 201, validateApprovalToken } = {}) {
+function harness({ previewStatus = 201, validateApprovalToken, reconcileRecordBindings } = {}) {
   let sequence = 0;
   const state = {
     projects: [{ id: "prj_a", ownerTeamId: "team_a" }],
@@ -66,12 +66,35 @@ function harness({ previewStatus = 201, validateApprovalToken } = {}) {
       return { status: 200, body: { mutation: { id: "lma_1" }, preview: { id: "lup_1", action: "insert" } } };
     },
     commitLedgerBatchUpsertPreview: async () => ({ status: 500, body: { error: "unexpected_batch" } }),
+    reconcileRecordBindings,
     validateApprovalToken: validateApprovalToken ?? ((token) => token
       ? ({ approved: true, mode: "grant", grantId: "apg_1" })
       : ({ approved: false, reason: "grant_required" })),
   });
   return { state, service, calls };
 }
+
+test("blocks ledger planning before preview when a bound business record is stale", async () => {
+  const { service, calls } = harness({
+    reconcileRecordBindings: async () => ({
+      status: 200,
+      body: {
+        postingBlocked: true,
+        currentRevision: 4,
+        blockingBindings: [{ bindingId: "binding_customer", state: "stale" }],
+      },
+    }),
+  });
+  const result = await service.prepareLedgerPostingPlan({
+    workItemId: "lwi_1",
+    expectedRevision: 3,
+    ...plan(),
+  }, actor);
+  assert.equal(result.status, 409);
+  assert.equal(result.body.error, "task_ledger_posting_record_bindings_stale");
+  assert.equal(result.body.currentRevision, 4);
+  assert.equal(calls.some((call) => call.type === "preview"), false);
+});
 
 function plan(overrides = {}) {
   return {

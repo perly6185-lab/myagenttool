@@ -7,7 +7,7 @@ import { useUiStore } from "@/store/ui-store";
 
 const mocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
-  getBusinessLedgerRecord: vi.fn(),
+  refreshWorkItemRecordBinding: vi.fn(),
   getWorkItemLedgerPostingPlan: vi.fn(),
   prepareWorkItemLedgerPostingPlan: vi.fn(),
   issueApprovalGrant: vi.fn(),
@@ -56,7 +56,7 @@ vi.mock("@/data/use-console-state", () => ({
 vi.mock("@/data/use-console-actions", () => ({
   api: {
     getWorkItem: mocks.getWorkItem,
-    getBusinessLedgerRecord: mocks.getBusinessLedgerRecord,
+    refreshWorkItemRecordBinding: mocks.refreshWorkItemRecordBinding,
     getWorkItemLedgerPostingPlan: mocks.getWorkItemLedgerPostingPlan,
     prepareWorkItemLedgerPostingPlan: mocks.prepareWorkItemLedgerPostingPlan,
     issueApprovalGrant: mocks.issueApprovalGrant,
@@ -263,14 +263,12 @@ describe("work item summary presentation", () => {
       snapshot: { ...staleBinding.snapshot, revision: "revision-2", fingerprint: newFingerprint, capturedAt: "2026-08-26T08:01:00Z" },
       resolution: { ...staleBinding.resolution, state: "resolved" as const },
     };
-    mocks.getBusinessLedgerRecord.mockResolvedValue({ record: refreshedBinding.record, fields: { customer: "Acme Corporation" }, rowNumber: 2, targetRevision: "revision-2" });
-    mocks.updateWorkItem.mockResolvedValue({ workItem: item({ revision: 3, recordBindings: [refreshedBinding] }) });
+    mocks.refreshWorkItemRecordBinding.mockResolvedValue({ workItem: item({ revision: 3, recordBindings: [refreshedBinding] }) });
     mocks.getWorkItem.mockResolvedValue({ workItem: item({ recordBindings: [staleBinding] }) });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Refresh and confirm" }));
-    await waitFor(() => expect(mocks.getBusinessLedgerRecord).toHaveBeenCalledWith("ledger_customer", { recordId: "blr_customer_1" }));
-    expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({ expectedRevision: 2, recordBindings: [expect.objectContaining({ resolution: expect.objectContaining({ state: "resolved" }) })] }));
+    await waitFor(() => expect(mocks.refreshWorkItemRecordBinding).toHaveBeenCalledWith("lwi_1", "binding_customer", 2));
     expect(await screen.findByText("The business material was refreshed and confirmed; the task will use the current record version.")).toBeTruthy();
   });
 

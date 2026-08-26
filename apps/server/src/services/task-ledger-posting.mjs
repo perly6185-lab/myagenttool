@@ -63,6 +63,7 @@ export function createTaskLedgerPostingService({
   commitLedgerUpsertPreview,
   commitLedgerBatchUpsertPreview,
   validateApprovalToken,
+  reconcileRecordBindings,
 } = {}) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
@@ -183,6 +184,18 @@ export function createTaskLedgerPostingService({
   }
 
   async function prepareLedgerPostingPlan({ workItemId, expectedRevision, plan: inputPlan = null, ...legacyPlan } = {}, actor = null) {
+    const freshness = await reconcileRecordBindings?.({ workItemId }, actor);
+    if (freshness && freshness.status !== 200) return freshness;
+    if (freshness?.body?.postingBlocked) {
+      return {
+        status: 409,
+        body: {
+          error: "task_ledger_posting_record_bindings_stale",
+          currentRevision: freshness.body.currentRevision,
+          blockingBindings: freshness.body.blockingBindings,
+        },
+      };
+    }
     const item = workItemFor(workItemId, actor);
     if (!item) return { status: 404, body: { error: "work_item_not_found" } };
     if (item.revision !== expectedRevision) {
@@ -292,6 +305,18 @@ export function createTaskLedgerPostingService({
       return { status: 404, body: { error: "task_ledger_posting_plan_not_found" } };
     }
     if (row.status === "committed") return { status: 200, body: resultBody(row, { replayed: true }) };
+    const freshness = await reconcileRecordBindings?.({ workItemId: row.workItemId }, actor);
+    if (freshness && freshness.status !== 200) return freshness;
+    if (freshness?.body?.postingBlocked) {
+      return {
+        status: 409,
+        body: {
+          error: "task_ledger_posting_record_bindings_stale",
+          currentRevision: freshness.body.currentRevision,
+          blockingBindings: freshness.body.blockingBindings,
+        },
+      };
+    }
     const item = workItemFor(row.workItemId, actor);
     if (!item) return { status: 404, body: { error: "work_item_not_found" } };
     if (item.revision !== expectedRevision || row.resultRevision !== item.revision) {

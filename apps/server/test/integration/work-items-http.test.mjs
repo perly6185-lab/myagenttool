@@ -1820,3 +1820,122 @@ test("Channel connector configuration, health check, and sync preview are team s
     method: "PATCH", body: { status: "disabled", expectedRevision: tested.body.config.revision },
   })).status, 200);
 });
+
+test("local ledger changes invalidate task bindings and require a managed refresh over HTTP", async () => {
+  const directory = join(projectAPath, "record-freshness-http");
+  const ledgerPath = join(directory, "customers.csv");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(ledgerPath, "Customer ID,Customer,Status\nCUS-001,Acme,active\n");
+
+  const source = await call("/api/workflow-memory/sources", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      relativePath: "record-freshness-http",
+      readMode: "supported_text",
+      name: "Task record freshness fixtures",
+    },
+  });
+  assert.equal(source.status, 201, JSON.stringify(source.body));
+  const definition = await call("/api/workflow-memory/ledger-definitions", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      sourceId: source.body.source.id,
+      name: "Customer ledger freshness fixture",
+      documentType: "inquiry_ledger",
+      format: "csv",
+      relativePath: "customers.csv",
+      businessKeyField: "customer_id",
+      fieldMappings: {
+        customer_id: "Customer ID",
+        customer: "Customer",
+        status: "Status",
+      },
+      requiredFields: ["customer_id", "customer"],
+      writePolicy: { approval: "always", allowInsert: true, allowUpdate: true },
+    },
+  });
+  assert.equal(definition.status, 201, JSON.stringify(definition.body));
+  const ledgerDefinitionId = definition.body.ledgerDefinition.id;
+  const activated = await call(`/api/workflow-memory/ledger-definitions/${ledgerDefinitionId}/activate`, {
+    method: "POST",
+    body: { expectedRevision: definition.body.ledgerDefinition.revision },
+  });
+  assert.equal(activated.status, 200, JSON.stringify(activated.body));
+
+  const initialRecord = await call(
+    `/api/workflow-memory/ledger-definitions/${ledgerDefinitionId}/records?businessKey=CUS-001`,
+  );
+  assert.equal(initialRecord.status, 200, JSON.stringify(initialRecord.body));
+  const recordRef = initialRecord.body.record;
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Prepare the current Acme account review",
+      recordBindings: [{
+        id: "binding_customer_http",
+        slotKey: "customer",
+        direction: "input",
+        role: "required",
+        ledgerDefinitionId,
+        record: recordRef,
+        selection: { fieldKeys: ["customer", "status"], queryId: null, rowLimit: 1 },
+        snapshot: {
+          revision: recordRef.revision,
+          fingerprint: recordRef.fingerprint,
+          capturedAt: recordRef.observedAt,
+          evidenceRefs: [],
+        },
+        resolution: { source: "explicit_user", confidence: 1, state: "resolved", reasons: ["confirmed"] },
+      }],
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const workItemId = created.body.workItem.id;
+  const stored = runtimeState.workItems.find((item) => item.id === workItemId);
+  stored.ledgerPostingPlanId = `tpp_record_freshness_${workItemId}`;
+  runtimeState.taskLedgerPostingPlans.push({
+    id: stored.ledgerPostingPlanId,
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    workItemId,
+    resultRevision: stored.revision,
+    status: "proposed",
+    revision: 1,
+    plan: { state: "proposed" },
+    updatedAt: new Date().toISOString(),
+  });
+
+  writeFileSync(ledgerPath, "Customer ID,Customer,Status\nCUS-001,Acme,paused\n");
+  const stale = await call(`/api/work-items/${workItemId}`);
+  assert.equal(stale.status, 200, JSON.stringify(stale.body));
+  assert.equal(stale.body.workItem.revision, 2);
+  assert.equal(stale.body.workItem.recordBindings[0].resolution.state, "stale");
+  assert.equal(runtimeState.taskLedgerPostingPlans.find((plan) => plan.id === stored.ledgerPostingPlanId).status, "invalidated");
+
+  const blocked = await call(`/api/work-items/${workItemId}/auto-runs`, {
+    method: "POST",
+    body: { timezoneOffset: 0 },
+  });
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, "work_item_record_bindings_stale");
+  assert.equal(runtimeState.autoRuns.some((run) => run.localIssueId === workItemId), false);
+
+  const refreshed = await call(
+    `/api/work-items/${workItemId}/record-bindings/binding_customer_http/refresh`,
+    { method: "POST", body: { expectedRevision: 2 } },
+  );
+  assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
+  assert.equal(refreshed.body.workItem.revision, 3);
+  assert.equal(refreshed.body.workItem.recordBindings[0].resolution.state, "resolved");
+  assert.notEqual(refreshed.body.workItem.recordBindings[0].snapshot.fingerprint, recordRef.fingerprint);
+
+  const unmanaged = await call(`/api/work-items/${workItemId}`, {
+    method: "PATCH",
+    body: { expectedRevision: 3, recordBindings: created.body.workItem.recordBindings },
+  });
+  assert.equal(unmanaged.status, 409);
+  assert.equal(unmanaged.body.error, "work_item_record_bindings_require_managed_update");
+});

@@ -123,7 +123,7 @@ test("desktop intent planning creates discrete typed tasks instead of one giant 
   assert.equal(state.workItems.length, 4);
 });
 
-test("work items persist provider-neutral record bindings and freeze them after execution starts", () => {
+test("work items persist provider-neutral record bindings and require managed refreshes", () => {
   const { service, state } = harness();
   const fingerprint = `sha256:${"b".repeat(64)}`;
   const binding = {
@@ -154,15 +154,21 @@ test("work items persist provider-neutral record bindings and freeze them after 
   assert.equal(created.status, 201);
   assert.equal(created.body.workItem.recordBindings[0].record.recordId, "blr_customer_1");
   const workItemId = created.body.workItem.id;
-  const updated = service.updateWorkItem({
+  const managed = service.updateWorkItem({
     workItemId,
     expectedRevision: created.body.workItem.revision,
     recordBindings: [{ ...binding, resolution: { ...binding.resolution, state: "stale" } }],
   }, ACTOR_A);
-  assert.equal(updated.status, 200);
-  assert.equal(updated.body.workItem.recordBindings[0].resolution.state, "stale");
+  assert.equal(managed.status, 409);
+  assert.equal(managed.body.error, "work_item_record_bindings_require_managed_update");
 
   const stored = state.workItems.find((item) => item.id === workItemId);
+  stored.recordBindings[0].resolution.state = "stale";
+  const admission = service.beginExecution({ workItemId, kind: "auto_run" }, ACTOR_A);
+  assert.equal(admission.status, 409);
+  assert.equal(admission.body.error, "work_item_record_bindings_stale");
+  assert.deepEqual(admission.body.blockingBindings, [{ bindingId: "binding_customer", state: "stale" }]);
+
   stored.executionBindings = [{ kind: "auto_run", targetId: "run_1" }];
   const blocked = service.updateWorkItem({
     workItemId,

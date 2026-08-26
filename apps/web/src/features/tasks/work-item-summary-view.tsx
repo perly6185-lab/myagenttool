@@ -920,28 +920,11 @@ export function WorkItemSummaryView({
     setRecordBindingRefreshPendingId(binding.id);
     setRecordBindingRefreshError(null);
     try {
-      const current = await api.getBusinessLedgerRecord(binding.ledgerDefinitionId, { recordId: binding.record.recordId });
-      const nextBindings = (item.recordBindings ?? []).map((candidate) => candidate.id === binding.id
-        ? {
-            ...candidate,
-            record: current.record,
-            snapshot: {
-              revision: current.record.revision,
-              fingerprint: current.record.fingerprint,
-              capturedAt: current.record.observedAt,
-              evidenceRefs: candidate.snapshot?.evidenceRefs ?? [],
-            },
-            resolution: {
-              ...candidate.resolution,
-              state: "resolved" as const,
-              reasons: [...new Set([...candidate.resolution.reasons, language === "zh" ? "已重新读取并确认当前记录" : "Read and confirmed the current record"])].slice(-20),
-            },
-          }
-        : candidate);
-      const response = await api.updateWorkItem(item.id, {
-        expectedRevision: item.revision,
-        recordBindings: nextBindings,
-      }) as { workItem: LocalWorkItem };
+      const response = await api.refreshWorkItemRecordBinding(
+        item.id,
+        binding.id,
+        item.revision,
+      ) as { workItem: LocalWorkItem };
       setItem(response.workItem);
       setSyncNotice(language === "zh" ? "业务资料已刷新并确认，任务将使用当前记录版本。" : "The business material was refreshed and confirmed; the task will use the current record version.");
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-record-binding-refresh", workItemId: item.id } }));
