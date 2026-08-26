@@ -23,17 +23,25 @@ const server = http.createServer((req, res) => {
   const filePath = resolve(distDir, `.${pathname}`);
 
   if (isInsideDist(filePath) && existsSync(filePath) && statSync(filePath).isFile()) {
-    res.writeHead(200, { "Content-Type": contentType(filePath) });
+    res.writeHead(200, responseHeaders(filePath, pathname));
     createReadStream(filePath).pipe(res);
     return;
   }
 
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  if (pathname.startsWith("/assets/") || extname(pathname)) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+    res.end("Not found");
+    return;
+  }
+
+  res.writeHead(200, responseHeaders(indexHtml, "/index.html"));
   createReadStream(indexHtml).pipe(res);
 });
 
 server.listen(port, host, () => {
-  console.log(`[electron-web] http://${host}:${port}`);
+  const address = server.address();
+  const listeningPort = typeof address === "object" && address ? address.port : port;
+  console.log(`[electron-web] http://${host}:${listeningPort}`);
 });
 
 function safeDecode(pathname) {
@@ -69,4 +77,16 @@ function contentType(filePath) {
     default:
       return "application/octet-stream";
   }
+}
+
+function responseHeaders(filePath, pathname) {
+  return {
+    "Content-Type": contentType(filePath),
+    "Cache-Control": pathname === "/index.html"
+      ? "no-store"
+      : pathname.startsWith("/assets/")
+        ? "public, max-age=31536000, immutable"
+        : "no-cache",
+    "X-Content-Type-Options": "nosniff",
+  };
 }

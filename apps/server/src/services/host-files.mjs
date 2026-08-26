@@ -15,6 +15,8 @@ export const MAX_HOST_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 const TRANSFER_CHUNK_BYTES = 64 * 1024;
 const MAX_TRANSFER_ATTEMPTS = 3;
 const FORBIDDEN_ROOTS = ["/", "/boot", "/dev", "/etc", "/proc", "/root", "/run", "/sys"];
+const DISCOVERY_PARENTS = ["/srv/myagenttool-sites", "/srv/www", "/var/www", "/opt/myagenttool/sites"];
+const MAX_SCOPE_SUGGESTIONS = 12;
 const BLOCKED_DOWNLOAD_NAMES = new Set([".env", ".npmrc", ".pypirc", "authorized_keys", "known_hosts"]);
 const BLOCKED_DOWNLOAD_EXTENSIONS = new Set([".key", ".pem", ".p12", ".pfx", ".kdbx"]);
 
@@ -194,6 +196,57 @@ async function inspectRoot(sftp, requestedRoot) {
   return resolved;
 }
 
+function safeDiscoveryName(value) {
+  const name = String(value ?? "");
+  return Boolean(name)
+    && name.length <= 255
+    && name !== "."
+    && name !== ".."
+    && !name.startsWith(".")
+    && !name.includes("/")
+    && !name.includes("\\")
+    && !/[\x00-\x1f\x7f]/.test(name);
+}
+
+async function discoverScopeRoots(sftp, target) {
+  const suggestions = [];
+  for (const parent of DISCOVERY_PARENTS) {
+    if (suggestions.length >= MAX_SCOPE_SUGGESTIONS) break;
+    try {
+      const parentAttrs = await optionalLstat(sftp, parent);
+      if (!parentAttrs || attrsType(parentAttrs) !== "directory") continue;
+      if (String(await sftpCall(sftp, "realpath", parent)) !== parent) continue;
+      const rows = await sftpCall(sftp, "readdir", parent);
+      if (!Array.isArray(rows)) continue;
+      for (const row of rows.slice(0, MAX_ENTRIES)) {
+        if (suggestions.length >= MAX_SCOPE_SUGGESTIONS || !safeDiscoveryName(row?.filename) || attrsType(row?.attrs) !== "directory") continue;
+        const rootPath = posix.join(parent, row.filename);
+        try {
+          normalizeHostScopeRoot(rootPath);
+          await inspectRoot(sftp, rootPath);
+          const marker = await optionalLstat(sftp, posix.join(rootPath, ".myagenttool-site.json"));
+          const managedSite = attrsType(marker) === "file";
+          suggestions.push({
+            rootPath,
+            label: String(row.filename).replace(/[-_]+/g, " ").trim().slice(0, 80) || "Remote files",
+            purpose: managedSite && targetAllowsPurpose(target, "site_publish") ? "site_publish" : "general_files",
+            reason: managedSite ? "managed_site" : parent === "/srv/myagenttool-sites" ? "managed_content" : "website_directory",
+            discoveryRank: managedSite ? 2 : parent === "/srv/myagenttool-sites" ? 1 : 0,
+            modifiedAt: Number(marker?.mtime ?? row?.attrs?.mtime ?? 0),
+          });
+        } catch {
+          // Discovery is best-effort. Unsafe, inaccessible, and linked directories are omitted.
+        }
+      }
+    } catch {
+      // A missing or inaccessible conventional parent is normal on many hosts.
+    }
+  }
+  return suggestions
+    .sort((left, right) => right.discoveryRank - left.discoveryRank || right.modifiedAt - left.modifiedAt || left.rootPath.localeCompare(right.rootPath))
+    .map(({ discoveryRank: _discoveryRank, modifiedAt: _modifiedAt, ...suggestion }, index) => ({ ...suggestion, recommended: index === 0 }));
+}
+
 async function inspectBrowseDirectory(sftp, root, relativePath) {
   const rootAttrs = await sftpCall(sftp, "lstat", root);
   if (attrsType(rootAttrs) === "symlink") throw new HostFileScopeError("host_file_scope_symlink_forbidden", "The approved file range has become a symbolic link.", 409);
@@ -230,6 +283,18 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
 
   function listScopes(target) {
     return state.hostFileScopes.filter((scope) => scope.sshTargetId === target.id);
+  }
+
+  async function suggestScopes(target) {
+    try {
+      if (target.connectionStatus !== "ready" || !target.capabilities?.sftp) throw new HostFileScopeError("ssh_host_not_ready", "Verify the SSH host before discovering file ranges.", 409);
+      const credential = await resolveCredential(target.credentialRef);
+      if (!credential?.ok) throw new HostFileScopeError(credential?.error ?? "ssh_credential_unavailable", "The SSH credential is unavailable.", 409);
+      const result = await sshHostConnector.runSftp(target, credential.credential, (sftp) => discoverScopeRoots(sftp, target));
+      return { ok: true, suggestions: result.value, count: result.value.length };
+    } catch (error) {
+      return scopeFailure(error);
+    }
   }
 
   async function createScope(target, body = {}, actor = null) {
@@ -513,7 +578,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
     }
   }
 
-  return { listScopes, createScope, updateScope, listEntries, listTransfers, uploadFile, downloadFile };
+  return { listScopes, suggestScopes, createScope, updateScope, listEntries, listTransfers, uploadFile, downloadFile };
 }
 
 function scopeFailure(error) {

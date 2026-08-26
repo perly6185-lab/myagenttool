@@ -43,6 +43,8 @@ const manageRules = [
 ];
 
 const operateRules = [
+  /^\/api\/hosts\/[^/]+\/assistant\/plan$/,
+  /^\/api\/hosts\/[^/]+\/diagnostics$/,
   /^\/api\/host-file-scopes\/[^/]+\/transfers(?:\/(?:upload|download))?$/,
   /^\/api\/sites\/[^/]+\/domain-tls-binding\/(?:verify-dns|issue-staging|deploy-staging)$/,
   /^\/api\/approvals\/grants$/,

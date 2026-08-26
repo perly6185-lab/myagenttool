@@ -87,6 +87,29 @@ function writableSftp(initialFiles = {}) {
   };
 }
 
+function discoverySftp() {
+  const missing = () => Object.assign(new Error("missing"), { code: 2 });
+  const directories = new Set(["/srv", "/srv/myagenttool-sites", "/srv/myagenttool-sites/server001-e2e", "/srv/myagenttool-sites/server001-lan-e2e"]);
+  return {
+    lstat(path, callback) {
+      if (directories.has(path)) callback(null, { mode: DIR, size: 0, mtime: 1_700_000_000 });
+      else if (path === "/srv/myagenttool-sites/server001-lan-e2e/.myagenttool-site.json") callback(null, { mode: FILE, size: 60, mtime: 1_700_000_100 });
+      else if (path === "/srv/myagenttool-sites/server001-e2e/.myagenttool-site.json") callback(null, { mode: FILE, size: 60, mtime: 1_700_000_000 });
+      else callback(missing());
+    },
+    realpath(path, callback) { callback(null, path); },
+    readdir(path, callback) {
+      if (path !== "/srv/myagenttool-sites") return callback(missing());
+      callback(null, [
+        { filename: "server001-e2e", attrs: { mode: DIR } },
+        { filename: "server001-lan-e2e", attrs: { mode: DIR } },
+        { filename: "current", attrs: { mode: LINK } },
+        { filename: ".private", attrs: { mode: DIR } },
+      ]);
+    },
+  };
+}
+
 test("normalizes dedicated roots and rejects unsafe relative paths", () => {
   assert.equal(normalizeHostScopeRoot("/srv/www/example"), "/srv/www/example");
   assert.equal(normalizeHostRelativePath("assets/images"), "assets/images");
@@ -109,6 +132,29 @@ test("creates a list-only scope after checking every root directory component", 
   assert.equal(result.scope.revision, 1);
   assert.equal(JSON.stringify(state).includes("PRIVATE-KEY-MATERIAL"), false);
   assert.equal(JSON.stringify(events).includes("PRIVATE-KEY-MATERIAL"), false);
+});
+
+test("discovers only verified dedicated content directories and recommends managed sites", async () => {
+  const { service, target } = harness(discoverySftp());
+  const result = await service.suggestScopes(target);
+  assert.equal(result.ok, true);
+  assert.equal(result.count, 2);
+  assert.deepEqual(result.suggestions, [
+    {
+      rootPath: "/srv/myagenttool-sites/server001-lan-e2e",
+      label: "server001 lan e2e",
+      purpose: "site_publish",
+      reason: "managed_site",
+      recommended: true,
+    },
+    {
+      rootPath: "/srv/myagenttool-sites/server001-e2e",
+      label: "server001 e2e",
+      purpose: "site_publish",
+      reason: "managed_site",
+      recommended: false,
+    },
+  ]);
 });
 
 test("isolates certificate ranges from file scopes and all browser file operations", async () => {

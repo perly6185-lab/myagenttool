@@ -783,6 +783,11 @@ test("My hosts API reuses SSH identity while keeping file-transfer hosts team sc
   assert.deepEqual(scopes.body.scopes, []);
   const foreignScopes = await call(`/api/hosts/${hostId}/file-scopes`, { token: "tok_a" });
   assert.equal(foreignScopes.status, 404);
+  const suggestions = await call(`/api/hosts/${hostId}/file-scope-suggestions`, { token: "tok_b" });
+  assert.equal(suggestions.status, 409);
+  assert.equal(suggestions.body.error, "ssh_host_not_ready");
+  const foreignSuggestions = await call(`/api/hosts/${hostId}/file-scope-suggestions`, { token: "tok_a" });
+  assert.equal(foreignSuggestions.status, 404);
   const transfers = await call(`/api/hosts/${hostId}/file-transfers`, { token: "tok_b" });
   assert.equal(transfers.status, 200);
   assert.deepEqual(transfers.body.transfers, []);

@@ -32,6 +32,10 @@ function harness({ verifyError = null } = {}) {
         if (verifyError) throw verifyError;
         return { fingerprint: FINGERPRINT, resolvedAddress: "203.0.113.30", capabilities: { sftp: true, sftpVersion: 3, posixRename: true, symlink: true } };
       },
+      runFixedCommand: async (_target, _credential, action) => ({
+        resolvedAddress: "203.0.113.30",
+        value: { action, ok: true, output: "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        20G   8G   12G  40% /" },
+      }),
     },
   });
   return { state, events, resolvedCredentials, service };
@@ -118,4 +122,37 @@ test("changing host identity clears the old fingerprint before reconnecting", as
   assert.equal(target.knownHostFingerprint, null);
   assert.equal(target.observedFingerprint, null);
   assert.equal(target.trustStatus, "known_hosts_required");
+});
+
+test("runs only confirmed, allowlisted read-only diagnostics after host verification", async () => {
+  const { service, events, resolvedCredentials } = harness();
+  const target = service.createSshTarget({ host: "host.example", user: "deploy", authMethod: "private_key_ref", purpose: "file_transfer" });
+  target.connectionStatus = "ready";
+  target.trustStatus = "pinned";
+  target.knownHostFingerprint = FINGERPRINT;
+
+  const result = await service.runSshHostDiagnostic(target, "disk_usage", { userId: "usr_operator" });
+  assert.equal(result.ok, true);
+  assert.equal(result.command, "df -h");
+  assert.match(result.output, /Filesystem/);
+  assert.deepEqual(resolvedCredentials, [`credential://ssh/${target.id}`]);
+  assert.equal(events.at(-1)?.type, "ssh.host_diagnostic.completed");
+
+  assert.deepEqual(await service.runSshHostDiagnostic(target, "shell", { userId: "usr_operator" }), {
+    ok: false, status: 400, error: "ssh_diagnostic_unsupported",
+  });
+});
+
+test("plans ordinary host questions without producing arbitrary shell", () => {
+  const { service } = harness();
+  assert.deepEqual(service.planSshHostDiagnostic("查看当前监听端口"), {
+    ok: true, action: "listening_ports", command: "ss -lntup", risk: "read_only",
+  });
+  assert.deepEqual(service.planSshHostDiagnostic("删除日志 && whoami"), {
+    ok: false, status: 422, error: "ssh_diagnostic_intent_unsupported",
+  });
+  assert.deepEqual(service.planSshHostDiagnostic("查看 nginx 服务状态"), {
+    ok: true, action: "service_status", parameters: { serviceName: "nginx" },
+    command: "systemctl status --no-pager --lines=30 nginx || true", risk: "read_only",
+  });
 });

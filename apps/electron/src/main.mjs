@@ -165,7 +165,7 @@ async function startApp() {
     },
   );
 
-  rendererBaseUrl = `${webUrl}/?api=${encodeURIComponent(serverUrl)}`;
+  rendererBaseUrl = `${webUrl}/?api=${encodeURIComponent(serverUrl)}&desktopStartup=${Date.now()}`;
   const initialUrl = pendingDesktopRoute
     ? rendererUrlForDesktopRoute(rendererBaseUrl, pendingDesktopRoute)
     : rendererBaseUrl;

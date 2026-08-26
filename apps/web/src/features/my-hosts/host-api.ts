@@ -1,5 +1,5 @@
 import { ApiError, apiBase, csrfHeaders, ensureSession, request } from "@/lib/api/request";
-import type { HostAuthMethod, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileTransfer, HostPurpose, HostTlsActivationProfile, SshHost } from "./host-types";
+import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileTransfer, HostPurpose, HostTlsActivationProfile, SshHost } from "./host-types";
 
 export const MAX_HOST_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_HOST_DOWNLOAD_BYTES = 25 * 1024 * 1024;
@@ -17,8 +17,14 @@ export const hostApi = {
     request<{ host: SshHost }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/confirm-fingerprint`, { fingerprint, expectedRevision }),
   verify: (hostId: string) =>
     request<{ host: SshHost; verification: { capabilities: SshHost["capabilities"] } }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/verify`, {}, true, 30_000),
+  diagnose: (hostId: string, action: HostDiagnosticAction, parameters: HostDiagnosticParameters = {}) =>
+    request<{ result: HostDiagnosticResult }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/diagnostics`, { action, parameters, confirmed: true }, true, 120_000),
+  planDiagnostic: (hostId: string, input: string) =>
+    request<{ plan: HostDiagnosticPlan }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/plan`, { input }, true, 30_000),
   scopes: (hostId: string) =>
     request<{ scopes: HostFileScope[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/file-scopes`),
+  scopeSuggestions: (hostId: string) =>
+    request<{ suggestions: HostFileScopeSuggestion[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/file-scope-suggestions`, undefined, true, 30_000),
   publishScopes: () =>
     request<{ scopes: HostFileScopeOption[]; count: number }>("GET", "/api/host-file-scopes?purpose=site_publish"),
   certificateScopes: () =>

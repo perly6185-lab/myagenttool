@@ -20,5 +20,6 @@ describe("My settings information architecture", () => {
       "approvals",
     ]));
     expect(MY_SETTINGS_SECTION_KEYS).not.toContain("workflowMemory");
+    expect(MY_SETTINGS_SECTION_KEYS).not.toContain("myHosts");
   });
 });
