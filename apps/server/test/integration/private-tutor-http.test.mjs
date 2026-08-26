@@ -37,6 +37,7 @@ before(async () => {
     { id: "usr_parent_b", teamId: "team_family_b", role: "owner" },
     { id: "usr_admin", teamId: "team_family_b", role: "admin" },
     { id: "usr_reviewer", teamId: "team_family_b", role: "admin" },
+    { id: "usr_tutor_reviewer_a", teamId: "team_personal", role: "admin" },
     { id: "usr_parent_c", teamId: "team_family_c", role: "viewer" },
     { id: "usr_personal", teamId: "team_personal", role: "viewer" },
     { id: "usr_personal_race", teamId: "team_personal", role: "viewer" },
@@ -48,6 +49,7 @@ before(async () => {
     { token: "tok_parent_b", userId: "usr_parent_b", expiresAt },
     { token: "tok_admin", userId: "usr_admin", expiresAt },
     { token: "tok_reviewer", userId: "usr_reviewer", expiresAt },
+    { token: "tok_tutor_reviewer_a", userId: "usr_tutor_reviewer_a", expiresAt },
     { token: "tok_parent_c", userId: "usr_parent_c", expiresAt },
     { token: "tok_personal", userId: "usr_personal", expiresAt },
     { token: "tok_personal_race", userId: "usr_personal_race", expiresAt },
@@ -1816,4 +1818,63 @@ test("M6 advanced subject evaluators expose versioned feedback while only eligib
   assert.equal(groundedConcept.body.attempt.evaluation.anchorId, "anchor-proficient-v1");
   assert.equal(groundedConcept.body.attempt.evaluation.reviewStatus, "not_required");
   assert.equal(groundedConcept.body.snapshot.knowledge[0].evidenceCount, 1);
+
+  const learnerQueueForbidden = await call("/api/private-tutor/evaluation-reviews");
+  assert.equal(learnerQueueForbidden.status, 403);
+  const otherTeamQueue = await call("/api/private-tutor/evaluation-reviews", { token: "tok_admin" });
+  assert.equal(otherTeamQueue.status, 200);
+  assert.equal(otherTeamQueue.body.queue.some((item) => item.attemptId === conceptBoundary.body.attempt.id), false);
+  const queue = await call("/api/private-tutor/evaluation-reviews", { token: "tok_tutor_reviewer_a" });
+  assert.equal(queue.status, 200);
+  const boundaryItem = queue.body.queue.find((item) => item.attemptId === conceptBoundary.body.attempt.id);
+  assert.ok(boundaryItem);
+  assert.equal(boundaryItem.evaluation.reviewStatus, "required");
+  assert.equal(boundaryItem.automatedCorrect, false);
+
+  const staleReview = await call(`/api/private-tutor/evaluation-reviews/${conceptBoundary.body.attempt.id}`, {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: {
+      idempotencyKey: "concept-boundary-stale",
+      decisionFingerprint: "f".repeat(64),
+      decision: "confirmed_correct",
+      reasonCode: "rubric_interpretation",
+    },
+  });
+  assert.equal(staleReview.status, 409);
+  assert.equal(staleReview.body.error, "private_tutor_evaluation_review_stale_decision");
+
+  const reviewBody = {
+    idempotencyKey: "concept-boundary-review-once",
+    decisionFingerprint: boundaryItem.evaluation.decisionFingerprint,
+    decision: "confirmed_correct",
+    reasonCode: "rubric_interpretation",
+    note: "The cited response satisfies the proficiency boundary after independent rubric review.",
+  };
+  const reviewed = await call(`/api/private-tutor/evaluation-reviews/${conceptBoundary.body.attempt.id}`, {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: reviewBody,
+  });
+  assert.equal(reviewed.status, 200);
+  assert.equal(reviewed.body.replayed, false);
+  assert.equal(reviewed.body.review.finalCorrect, true);
+  assert.equal(reviewed.body.review.finalEvidenceEligible, true);
+  assert.equal(reviewed.body.item.evaluation.reviewStatus, "completed");
+  assert.equal(reviewed.body.item.evaluation.decisionFingerprint, boundaryItem.evaluation.decisionFingerprint);
+  assert.equal(reviewed.body.snapshot.knowledge[0].mastery, 0.74);
+  assert.equal(reviewed.body.snapshot.knowledge[0].evidenceCount, 2);
+  assert.equal(reviewed.body.learnerModel.reason, "human_evaluation_review_completed");
+  assert.equal(reviewed.body.learnerModel.knowledge[0].evidenceCount, 2);
+
+  const replayedReview = await call(`/api/private-tutor/evaluation-reviews/${conceptBoundary.body.attempt.id}`, {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: reviewBody,
+  });
+  assert.equal(replayedReview.status, 200);
+  assert.equal(replayedReview.body.replayed, true);
+  assert.equal(replayedReview.body.snapshot.knowledge[0].evidenceCount, 2);
+  assert.equal(runtimeState.privateTutorEvaluationReviews.filter((item) => item.attemptId === conceptBoundary.body.attempt.id).length, 1);
+  assert.equal(runtimeState.privateTutorAuditEvents.some((item) => item.action === "evaluation_review_completed" && item.details.attemptId === conceptBoundary.body.attempt.id), true);
 });

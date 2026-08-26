@@ -133,6 +133,12 @@ export interface PrivateTutorEvaluation {
   missingSourceRefs?: string[];
   unknownSourceRefs?: string[];
   reviewReason?: string | null;
+  humanReviewId?: string;
+  humanReviewDecision?: PrivateTutorEvaluationReviewDecision;
+  humanReviewReasonCode?: PrivateTutorEvaluationReviewReasonCode;
+  reviewedAt?: string;
+  finalCorrect?: boolean;
+  finalEvidenceEligible?: boolean;
   explanation?: string;
   criteria?: Array<Record<string, unknown>>;
   steps?: Array<{
@@ -156,6 +162,58 @@ export interface PrivateTutorAttemptEvaluation {
   evidenceEligible: boolean;
   evidenceTier: string;
   evaluation: PrivateTutorEvaluation | null;
+}
+
+export type PrivateTutorEvaluationReviewDecision = "confirmed_correct" | "confirmed_incorrect";
+export type PrivateTutorEvaluationReviewReasonCode =
+  | "transcription_verified"
+  | "semantic_interpretation"
+  | "rubric_interpretation"
+  | "source_verified"
+  | "automated_false_positive"
+  | "automated_false_negative"
+  | "other";
+
+export interface PrivateTutorEvaluationReview {
+  id: string;
+  learnerId: string;
+  attemptId: string;
+  reviewerId: string;
+  automated: {
+    correct: boolean;
+    evidenceEligible: boolean;
+    judgementReason: string;
+    evidenceTier: string;
+    decisionFingerprint: string;
+  };
+  decision: PrivateTutorEvaluationReviewDecision;
+  reasonCode: PrivateTutorEvaluationReviewReasonCode;
+  note: string;
+  finalCorrect: boolean;
+  finalEvidenceEligible: boolean;
+  createdAt: string;
+}
+
+export interface PrivateTutorEvaluationReviewQueueItem {
+  attemptId: string;
+  learnerId: string;
+  learnerDisplayName: string | null;
+  contentPackageId: string | null;
+  contentPackageVersion: string | null;
+  subjectId: string | null;
+  knowledgeId: string;
+  questionRevisionId: string;
+  responseKind: string;
+  normalizedAnswer: string | null;
+  source: string;
+  recognitionConfidence: number | null;
+  independent: boolean;
+  usedHint: boolean;
+  automatedCorrect: boolean;
+  automatedEvidenceEligible: boolean;
+  evaluation: PrivateTutorEvaluation;
+  review: PrivateTutorEvaluationReview | null;
+  createdAt: string;
 }
 
 export interface PrivateTutorLearnerModel {
@@ -1083,6 +1141,34 @@ export async function updatePrivateTutorGuardianPreferences(input: Pick<PrivateT
 export async function getPrivateTutorReleaseReadiness() {
   const result = await request<{ readiness: PrivateTutorReleaseReadiness }>("GET", "/api/private-tutor/release-readiness");
   return result.readiness;
+}
+
+export async function listPrivateTutorEvaluationReviews(status: "required" | "completed" = "required") {
+  const result = await request<{ queue: PrivateTutorEvaluationReviewQueueItem[] }>(
+    "GET",
+    `/api/private-tutor/evaluation-reviews?status=${encodeURIComponent(status)}`,
+  );
+  return result.queue;
+}
+
+export async function resolvePrivateTutorEvaluationReview(attemptId: string, input: {
+  idempotencyKey: string;
+  decisionFingerprint: string;
+  decision: PrivateTutorEvaluationReviewDecision;
+  reasonCode: PrivateTutorEvaluationReviewReasonCode;
+  note?: string;
+}) {
+  return request<{
+    review: PrivateTutorEvaluationReview;
+    item: PrivateTutorEvaluationReviewQueueItem;
+    snapshot: PrivateTutorSnapshot | null;
+    masteryRecomputed: boolean;
+    replayed: boolean;
+  } & PrivateTutorIntelligence>(
+    "POST",
+    `/api/private-tutor/evaluation-reviews/${encodeURIComponent(attemptId)}`,
+    input,
+  );
 }
 
 export async function evaluatePrivateTutorReleaseGate(input: {

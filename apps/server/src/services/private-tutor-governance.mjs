@@ -5,6 +5,7 @@ export const PRIVATE_TUTOR_LEARNER_COLLECTION_KEYS = [
   "privateTutorGuardianLinks",
   "privateTutorSnapshots",
   "privateTutorAttempts",
+  "privateTutorEvaluationReviews",
   "privateTutorAssessments",
   "privateTutorLearnerModels",
   "privateTutorStrategyDecisions",

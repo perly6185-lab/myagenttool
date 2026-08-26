@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { privateTutorEvaluationMigrations, resolvePrivateTutorEvaluationMigration } from "../../../apps/server/src/services/private-tutor-evaluation-migrations.mjs";
+import { runPrivateTutorDoubleAnnotationEvaluation } from "../../../apps/server/src/services/private-tutor-double-annotation.mjs";
 import { parseWorkflowJobs } from "../ci-simulate.mjs";
 import {
   buildPrivateTutorEvaluationBaseline,
@@ -25,7 +26,9 @@ test("private tutor release evaluation uses a fixed three-suite dataset", () => 
     { name: "conceptual-rubric", setVersion: "1.0.0", total: 11 },
   ]);
   assert.deepEqual(report.dataset.suites.map((suite) => suite.versions.evaluatorVersion), ["2.0.0", "2.0.0", "2.0.0"]);
-  assert.equal(report.metrics.totalCases, 44);
+  assert.equal(report.dataset.doubleAnnotation.setVersion, "1.0.0");
+  assert.equal(report.dataset.doubleAnnotation.total, 12);
+  assert.equal(report.metrics.totalCases, 56);
 });
 
 test("the committed baseline exactly matches the current versioned decisions", () => {
@@ -52,7 +55,17 @@ test("private tutor release evaluation clears every strict quality gate", () => 
   assert.equal(PRIVATE_TUTOR_RELEASE_THRESHOLDS.maximumEvidenceLeakCount, 0);
   assert.equal(PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumAnchorAgreementRate, 1);
   assert.equal(PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumRepeatabilityRate, 1);
-  assert.equal(report.metrics.matchedCases, 44);
+  assert.equal(PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumDoubleAnnotatedCases, 12);
+  assert.equal(PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumInterRaterKappa, 0.6);
+  assert.equal(PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumAdjudicationCompletionRate, 1);
+  assert.equal(PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumAdjudicatedEvaluatorAgreementRate, 1);
+  assert.equal(report.metrics.matchedCases, 56);
+  assert.equal(report.metrics.doubleAnnotatedCases, 12);
+  assert.equal(report.metrics.interRaterExactAgreementRate, 0.8333);
+  assert.equal(report.metrics.interRaterKappa, 0.6667);
+  assert.equal(report.metrics.scoreBandAgreementRate, 1);
+  assert.equal(report.metrics.adjudicationCompletionRate, 1);
+  assert.equal(report.metrics.adjudicatedEvaluatorAgreementRate, 1);
   assert.equal(report.versionDrift.summary.changedDecisionCount, 0);
   assert.equal(report.versionDrift.summary.maximumAbsoluteScoreDrift, 0);
   assert.equal(report.versionDrift.passed, true);
@@ -174,6 +187,20 @@ test("conceptual anchor disagreement or nondeterminism blocks the release gate",
   const report = evaluatePrivateTutorReleaseGate({ evaluations });
   assert.equal(report.gates.anchorAgreement, false);
   assert.equal(report.gates.repeatability, false);
+  assert.equal(report.passed, false);
+});
+
+test("insufficient double annotation consistency or unfinished adjudication blocks release", () => {
+  const doubleAnnotation = structuredClone(runPrivateTutorDoubleAnnotationEvaluation());
+  doubleAnnotation.doubleAnnotatedCount = 11;
+  doubleAnnotation.interRaterKappa = 0.5;
+  doubleAnnotation.adjudicationCompletionRate = 0.9;
+  doubleAnnotation.adjudicatedEvaluatorAgreementRate = 0.99;
+  const report = evaluatePrivateTutorReleaseGate({ doubleAnnotation });
+  assert.equal(report.gates.doubleAnnotationCoverage, false);
+  assert.equal(report.gates.interRaterConsistency, false);
+  assert.equal(report.gates.adjudicationComplete, false);
+  assert.equal(report.gates.adjudicatedEvaluatorAgreement, false);
   assert.equal(report.passed, false);
 });
 

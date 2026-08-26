@@ -18,6 +18,7 @@ export function ensurePrivateTutorCollections(state) {
     "privateTutorGuardianLinks",
     "privateTutorSnapshots",
     "privateTutorAttempts",
+    "privateTutorEvaluationReviews",
     "privateTutorAssessments",
     "privateTutorLearnerModels",
     "privateTutorStrategyDecisions",

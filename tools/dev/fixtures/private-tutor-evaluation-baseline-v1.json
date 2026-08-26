@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "baselineId": "private-tutor-evaluation-v2-2026-08-26",
-  "evaluationVersion": 2,
-  "datasetFingerprint": "27069321e7287d912826a4d82f2cfdbb4fa453ee628f909a9688b1020390d629",
+  "baselineId": "private-tutor-evaluation-v3-2026-08-26",
+  "evaluationVersion": 3,
+  "datasetFingerprint": "8f3b6c6537568444b0f59e990f2de74c5b93504e9380306754c1a2cbcdd59c1e",
   "suites": [
     {
       "name": "math-step",

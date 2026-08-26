@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { conceptualAnchoredRubricGoldenCases, CONCEPTUAL_ANCHORED_RUBRIC_GOLDEN_SET_VERSION } from "../../apps/server/src/services/evaluation-sets/conceptual-anchored-rubric-v2.mjs";
 import { languageCausalSemanticGoldenCases, LANGUAGE_CAUSAL_SEMANTIC_GOLDEN_SET_VERSION } from "../../apps/server/src/services/evaluation-sets/language-causal-semantic-v2.mjs";
 import { mathLinearStepsGoldenCases, MATH_LINEAR_STEPS_GOLDEN_SET_VERSION } from "../../apps/server/src/services/evaluation-sets/math-linear-steps-v2.mjs";
+import { privateTutorDoubleAnnotationCases, PRIVATE_TUTOR_DOUBLE_ANNOTATION_PROTOCOL, PRIVATE_TUTOR_DOUBLE_ANNOTATION_SET_VERSION } from "../../apps/server/src/services/evaluation-sets/private-tutor-double-annotation-v1.mjs";
 import {
   privateTutorEvaluationMigrations,
   resolvePrivateTutorEvaluationMigration,
@@ -21,10 +22,11 @@ import { languageSubjectPlugin } from "../../apps/server/src/services/plugins/la
 import { LANGUAGE_SEMANTIC_EVALUATOR_VERSION } from "../../apps/server/src/services/plugins/language-semantic-evaluator.mjs";
 import { mathSubjectPlugin, MATH_STEP_EVALUATOR_VERSION } from "../../apps/server/src/services/plugins/math-plugin.mjs";
 import { runConceptualRubricConsistencyReplay, runLanguageCausalSemanticGoldenReplay, runMathLinearStepsGoldenReplay } from "../../apps/server/src/services/private-tutor-evaluation-replay.mjs";
+import { runPrivateTutorDoubleAnnotationEvaluation } from "../../apps/server/src/services/private-tutor-double-annotation.mjs";
 
-export const PRIVATE_TUTOR_RELEASE_EVALUATION_VERSION = 2;
+export const PRIVATE_TUTOR_RELEASE_EVALUATION_VERSION = 3;
 export const PRIVATE_TUTOR_BASELINE_SCHEMA_VERSION = 1;
-export const PRIVATE_TUTOR_DATASET_FINGERPRINT = "27069321e7287d912826a4d82f2cfdbb4fa453ee628f909a9688b1020390d629";
+export const PRIVATE_TUTOR_DATASET_FINGERPRINT = "8f3b6c6537568444b0f59e990f2de74c5b93504e9380306754c1a2cbcdd59c1e";
 export const PRIVATE_TUTOR_RELEASE_THRESHOLDS = Object.freeze({
   minimumPassRate: 1,
   maximumFalsePositiveCount: 0,
@@ -32,6 +34,10 @@ export const PRIVATE_TUTOR_RELEASE_THRESHOLDS = Object.freeze({
   maximumEvidenceLeakCount: 0,
   minimumAnchorAgreementRate: 1,
   minimumRepeatabilityRate: 1,
+  minimumDoubleAnnotatedCases: 12,
+  minimumInterRaterKappa: 0.6,
+  minimumAdjudicationCompletionRate: 1,
+  minimumAdjudicatedEvaluatorAgreementRate: 1,
 });
 
 const BASELINE_URL = new URL("./fixtures/private-tutor-evaluation-baseline-v1.json", import.meta.url);
@@ -86,21 +92,37 @@ export function runPrivateTutorReleaseEvaluations() {
 }
 
 export function privateTutorDatasetFingerprint() {
-  return hash(DATASETS.map(({ name, setVersion, cases }) => ({ name, setVersion, cases })));
+  return hash({
+    goldenSets: DATASETS.map(({ name, setVersion, cases }) => ({ name, setVersion, cases })),
+    doubleAnnotation: {
+      setVersion: PRIVATE_TUTOR_DOUBLE_ANNOTATION_SET_VERSION,
+      protocol: PRIVATE_TUTOR_DOUBLE_ANNOTATION_PROTOCOL,
+      cases: privateTutorDoubleAnnotationCases,
+    },
+  });
 }
 
-export function evaluatePrivateTutorQuality({ evaluations = runPrivateTutorReleaseEvaluations() } = {}) {
+export function evaluatePrivateTutorQuality({
+  evaluations = runPrivateTutorReleaseEvaluations(),
+  doubleAnnotation = runPrivateTutorDoubleAnnotationEvaluation(),
+} = {}) {
   const suites = evaluations.map(([name, evaluation]) => suiteReport(name, evaluation));
   const conceptual = suites.find((suite) => suite.name === "conceptual-rubric");
   const fingerprint = privateTutorDatasetFingerprint();
   const metrics = {
-    totalCases: sum(suites, "total"),
-    matchedCases: sum(suites, "matchedCount"),
-    falsePositiveCount: sum(suites, "falsePositiveCount"),
-    falseNegativeCount: sum(suites, "falseNegativeCount"),
-    evidenceLeakCount: sum(suites, "evidenceLeakCount"),
+    totalCases: sum(suites, "total") + doubleAnnotation.total,
+    matchedCases: sum(suites, "matchedCount") + doubleAnnotation.matchedCount,
+    falsePositiveCount: sum(suites, "falsePositiveCount") + doubleAnnotation.falsePositiveCount,
+    falseNegativeCount: sum(suites, "falseNegativeCount") + doubleAnnotation.falseNegativeCount,
+    evidenceLeakCount: sum(suites, "evidenceLeakCount") + doubleAnnotation.evidenceLeakCount,
     anchorAgreementRate: conceptual?.anchorAgreementRate ?? null,
     repeatabilityRate: conceptual?.repeatabilityRate ?? null,
+    doubleAnnotatedCases: doubleAnnotation.doubleAnnotatedCount,
+    interRaterExactAgreementRate: doubleAnnotation.exactAgreementRate,
+    interRaterKappa: doubleAnnotation.interRaterKappa,
+    scoreBandAgreementRate: doubleAnnotation.scoreBandAgreementRate,
+    adjudicationCompletionRate: doubleAnnotation.adjudicationCompletionRate,
+    adjudicatedEvaluatorAgreementRate: doubleAnnotation.adjudicatedEvaluatorAgreementRate,
   };
   const expectedSuiteNames = DATASETS.map((item) => item.name);
   const actualSuiteNames = suites.map((suite) => suite.name);
@@ -113,20 +135,30 @@ export function evaluatePrivateTutorQuality({ evaluations = runPrivateTutorRelea
     evidenceLeaks: metrics.evidenceLeakCount <= PRIVATE_TUTOR_RELEASE_THRESHOLDS.maximumEvidenceLeakCount,
     anchorAgreement: metrics.anchorAgreementRate !== null && metrics.anchorAgreementRate >= PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumAnchorAgreementRate,
     repeatability: metrics.repeatabilityRate !== null && metrics.repeatabilityRate >= PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumRepeatabilityRate,
+    doubleAnnotationCoverage: metrics.doubleAnnotatedCases >= PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumDoubleAnnotatedCases,
+    interRaterConsistency: metrics.interRaterKappa >= PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumInterRaterKappa,
+    adjudicationComplete: metrics.adjudicationCompletionRate >= PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumAdjudicationCompletionRate,
+    adjudicatedEvaluatorAgreement: metrics.adjudicatedEvaluatorAgreementRate >= PRIVATE_TUTOR_RELEASE_THRESHOLDS.minimumAdjudicatedEvaluatorAgreementRate,
   };
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     evaluationVersion: PRIVATE_TUTOR_RELEASE_EVALUATION_VERSION,
     dataset: {
       fingerprint,
       expectedFingerprint: PRIVATE_TUTOR_DATASET_FINGERPRINT,
       suites: DATASETS.map((item) => ({ name: item.name, setVersion: item.setVersion, total: item.cases.length, versions: item.versions })),
+      doubleAnnotation: {
+        setVersion: PRIVATE_TUTOR_DOUBLE_ANNOTATION_SET_VERSION,
+        total: privateTutorDoubleAnnotationCases.length,
+        protocol: PRIVATE_TUTOR_DOUBLE_ANNOTATION_PROTOCOL,
+      },
     },
     thresholds: PRIVATE_TUTOR_RELEASE_THRESHOLDS,
     metrics,
     gates,
     suites,
-    passed: Object.values(gates).every(Boolean) && suites.every((suite) => suite.passed),
+    doubleAnnotation,
+    passed: Object.values(gates).every(Boolean) && suites.every((suite) => suite.passed) && doubleAnnotation.passed,
   };
 }
 
@@ -135,7 +167,7 @@ export function loadPrivateTutorEvaluationBaseline(path = BASELINE_URL) {
   return JSON.parse(raw);
 }
 
-export function buildPrivateTutorEvaluationBaseline(qualityReport, { baselineId = "private-tutor-evaluation-v2-2026-08-26" } = {}) {
+export function buildPrivateTutorEvaluationBaseline(qualityReport, { baselineId = "private-tutor-evaluation-v3-2026-08-26" } = {}) {
   return {
     schemaVersion: PRIVATE_TUTOR_BASELINE_SCHEMA_VERSION,
     baselineId,
@@ -189,10 +221,11 @@ export function comparePrivateTutorEvaluationBaseline(currentReport, baseline, {
 
 export function evaluatePrivateTutorReleaseGate({
   evaluations = runPrivateTutorReleaseEvaluations(),
+  doubleAnnotation = runPrivateTutorDoubleAnnotationEvaluation(),
   baseline = loadPrivateTutorEvaluationBaseline(),
   migrations = privateTutorEvaluationMigrations,
 } = {}) {
-  const quality = evaluatePrivateTutorQuality({ evaluations });
+  const quality = evaluatePrivateTutorQuality({ evaluations, doubleAnnotation });
   const versionDrift = comparePrivateTutorEvaluationBaseline(quality, baseline, { migrations });
   const gates = {
     ...quality.gates,
@@ -401,6 +434,7 @@ function printHumanReport(report) {
       console.error(`- ${failure.id}: ${failure.reason} (${failure.actualClassification ?? failure.actualSemanticStatus ?? failure.actualScoreBand ?? "no classification"})`);
     }
   }
+  console.log(`Double annotation ${report.doubleAnnotation.setVersion}: ${report.doubleAnnotation.doubleAnnotatedCount}/${report.doubleAnnotation.total} complete; kappa ${report.doubleAnnotation.interRaterKappa}; adjudicated evaluator agreement ${report.doubleAnnotation.adjudicatedEvaluatorAgreementRate}`);
   console.log(`Version drift: ${report.versionDrift.passed ? "PASS" : "FAIL"}; changed decisions ${report.versionDrift.summary.changedDecisionCount}; maximum score drift ${report.versionDrift.summary.maximumAbsoluteScoreDrift}`);
   console.log(`Release gate: ${report.passed ? "PASS" : "FAIL"}; dataset ${report.dataset.fingerprint}`);
   for (const [name, passed] of Object.entries(report.gates)) console.log(`- ${name}: ${passed ? "pass" : "fail"}`);

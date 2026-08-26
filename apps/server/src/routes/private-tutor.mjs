@@ -121,6 +121,12 @@ import {
   setPrivateTutorPackageDeactivated,
   updatePrivateTutorLearningPreferences,
 } from "../services/private-tutor-learning-preferences.mjs";
+import {
+  listPrivateTutorEvaluationReviewQueue,
+  privateTutorEvaluationReviewQueueItem,
+  recomputePrivateTutorMasteryEvidence,
+  resolvePrivateTutorEvaluationReview,
+} from "../services/private-tutor-evaluation-review.mjs";
 
 const LOCAL_TEAM_ID = "team_local";
 const LOCAL_USER_ID = "usr_local";
@@ -492,6 +498,79 @@ export async function handlePrivateTutorRoutes({
     } catch (err) {
       sendJson(res, 400, { error: err.message });
     }
+    return true;
+  }
+
+  const evaluationReviewMatch = url.pathname.match(/^\/api\/private-tutor\/evaluation-reviews\/([^/]+)$/);
+  if (url.pathname === "/api/private-tutor/evaluation-reviews" || evaluationReviewMatch) {
+    if (actor?.privateTutorLearnerId || !["owner", "admin"].includes(actor?.role)) {
+      sendJson(res, 403, { error: "private_tutor_professional_role_required" });
+      return true;
+    }
+    if (url.pathname === "/api/private-tutor/evaluation-reviews" && req.method === "GET") {
+      const queue = listPrivateTutorEvaluationReviewQueue(state, {
+        ownerTeamId: actor.teamId,
+        status: url.searchParams.get("status") ?? "required",
+        limit: url.searchParams.get("limit") ?? 50,
+      });
+      sendJson(res, 200, { queue });
+      return true;
+    }
+    if (evaluationReviewMatch && req.method === "POST") {
+      const attemptId = decodeURIComponent(evaluationReviewMatch[1]);
+      const body = await readJson(req).catch(() => ({}));
+      const result = resolvePrivateTutorEvaluationReview(state, attemptId, body, { actor, now, nextId });
+      if (!result.ok) {
+        sendJson(res, result.status, {
+          error: result.error,
+          ...(result.decisionFingerprint ? { decisionFingerprint: result.decisionFingerprint } : {}),
+        });
+        return true;
+      }
+      const learner = state.privateTutorLearners.find((row) => row.id === result.attempt.learnerId && row.status === "active");
+      let recomputation = { changed: false, snapshot: null, activePackage: false };
+      let intelligence = learner ? currentPrivateTutorIntelligence(state, learner.id) : {};
+      if (!result.replayed && learner) {
+        recomputation = recomputePrivateTutorMasteryEvidence(state, learner, {
+          contentPackageId: result.attempt.contentPackageId ?? activeContentPackageId(learner),
+          contentPackageVersion: result.attempt.contentPackageVersion,
+          reviewId: result.review.id,
+          now,
+        });
+        if (recomputation.changed && recomputation.activePackage) {
+          intelligence = refreshPrivateTutorIntelligence(state, learner, {
+            now,
+            nextId,
+            reason: "human_evaluation_review_completed",
+          });
+        }
+        recordAudit(state, {
+          learner,
+          actor,
+          action: "evaluation_review_completed",
+          details: {
+            reviewId: result.review.id,
+            attemptId: result.attempt.id,
+            decision: result.review.decision,
+            finalEvidenceEligible: result.review.finalEvidenceEligible,
+            masteryRecomputed: recomputation.changed,
+          },
+          now,
+          nextId,
+        });
+        (persistStateNow ?? persistStateSoon)();
+      }
+      sendJson(res, 200, {
+        review: result.review,
+        item: privateTutorEvaluationReviewQueueItem(state, result.attempt),
+        snapshot: snapshotView(recomputation.snapshot ?? state.privateTutorSnapshots.find((row) => row.learnerId === result.attempt.learnerId)),
+        masteryRecomputed: recomputation.changed,
+        ...intelligence,
+        replayed: result.replayed,
+      });
+      return true;
+    }
+    sendJson(res, 405, { error: "method_not_allowed" });
     return true;
   }
 
