@@ -1717,7 +1717,14 @@ describe("work item summary presentation", () => {
         },
       },
     });
-    mocks.deliverWorkItem.mockResolvedValue({ workItem: completedItem });
+    mocks.deliverWorkItem.mockResolvedValue({
+      workItem: completedItem,
+      delivery: {
+        baseBranch: "main",
+        deliveredCommit: "1234567890abcdef",
+        deliveredAt: "2026-08-07T08:02:00.000Z",
+      },
+    });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Approve and apply locally" }));
@@ -1728,6 +1735,12 @@ describe("work item summary presentation", () => {
     await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_1", "local_merge", 2));
     expect(mocks.transitionWorkItem).not.toHaveBeenCalled();
     expect(await screen.findByText("This work is complete")).toBeTruthy();
+    const receipt = screen.getByLabelText("Local delivery receipt");
+    expect(within(receipt).getByText("Applied successfully")).toBeTruthy();
+    expect(within(receipt).getByText("main")).toBeTruthy();
+    expect(within(receipt).getByText("1234567890ab")).toBeTruthy();
+    expect(within(receipt).getByText("2 file(s) applied")).toBeTruthy();
+    expect(within(receipt).getByText("Login tests passed.")).toBeTruthy();
   });
 
   it("offers a material-specific rerun only when a change is waiting for the next execution", async () => {

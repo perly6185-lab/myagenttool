@@ -22,6 +22,7 @@ export function WorkItemDetailShell() {
   const setSelectedProjectId = useUiStore((state) => state.setSelectedProjectId);
   const setSelectedWorktreeId = useUiStore((state) => state.setSelectedWorktreeId);
   const setWorktreeOpenIntent = useUiStore((state) => state.setWorktreeOpenIntent);
+  const setWorktreeReviewContext = useUiStore((state) => state.setWorktreeReviewContext);
   const navigate = usePageNavigation();
   const setWorkItemSection = useUiStore((state) => state.setSelectedWorkItemSection);
   const closeWorkItem = useUiStore((state) => state.closeWorkItem);
@@ -78,6 +79,7 @@ export function WorkItemDetailShell() {
                     setSelectedProjectId(projectId);
                     setSelectedWorktreeId(worktreeId);
                     setWorktreeOpenIntent({ worktreeId, view: "changes" });
+                    setWorktreeReviewContext({ workItemId, worktreeId });
                     closeWorkItem();
                     navigate("projects");
                   }}

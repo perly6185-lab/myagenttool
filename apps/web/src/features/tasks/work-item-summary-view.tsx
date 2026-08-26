@@ -343,6 +343,12 @@ type MyTemplateDraftPreview = {
   };
 };
 
+type LocalDeliveryReceipt = {
+  baseBranch: string | null;
+  deliveredCommit: string | null;
+  deliveredAt: string | null;
+};
+
 export function WorkItemSummaryView({
   workItemId,
   onOpenExpert,
@@ -420,6 +426,7 @@ export function WorkItemSummaryView({
   const [acceptOpen, setAcceptOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [completionWriteback, setCompletionWriteback] = useState<"local_only" | "sync_close">("local_only");
+  const [localDeliveryReceipt, setLocalDeliveryReceipt] = useState<LocalDeliveryReceipt | null>(null);
   const [reopenConfirmOpen, setReopenConfirmOpen] = useState(false);
   const [previewAsset, setPreviewAsset] = useState<NonNullable<LocalWorkItem["inputAssets"]>[number] | null>(null);
   const [materialOfficePreview, setMaterialOfficePreview] = useState<string | null>(null);
@@ -481,6 +488,7 @@ export function WorkItemSummaryView({
     setAcceptOpen(false);
     setReportOpen(false);
     setCompletionWriteback("local_only");
+    setLocalDeliveryReceipt(null);
     setReopenConfirmOpen(false);
     setPreviewAsset(null);
     setOpeningResultFileKey(null);
@@ -664,10 +672,20 @@ export function WorkItemSummaryView({
       ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
     }));
   const changedFiles = deliveryReport?.changedFiles ?? [];
-  const deliveryWorktreeId = observability?.delivery?.worktreeId ?? null;
+  const deliveryWorktreeId = observability?.delivery?.worktreeId ?? observability?.latestRun?.localDelivery?.worktreeId ?? null;
   const resultSummary = outcome?.summary ?? deliveryReport?.summary ?? item.lastProgressSummary
     ?? (executionKind === "article_import" ? latestPassedVerification?.summary ?? null : null);
   const fullResult = outcome?.fullReport ?? deliveryReport?.summary ?? item.lastProgressSummary ?? null;
+  const persistedLocalDelivery = observability?.latestRun?.localDelivery;
+  const completedLocalDeliveryReceipt = localDeliveryReceipt ?? (
+    persistedLocalDelivery?.mode === "local_merge" && persistedLocalDelivery.deliveredAt
+      ? {
+          baseBranch: persistedLocalDelivery.baseBranch ?? null,
+          deliveredCommit: persistedLocalDelivery.deliveredCommit ?? null,
+          deliveredAt: persistedLocalDelivery.deliveredAt,
+        }
+      : null
+  );
   const objectiveResultVerification = item.resultVerification ?? null;
   const resultVerification = outcome?.verification ?? deliveryReport?.verification
     ?? (objectiveResultVerification && objectiveResultVerification.status !== "not_required"
@@ -1482,10 +1500,31 @@ export function WorkItemSummaryView({
         current = verification.workItem;
         setItem(current);
       }
-      const response = observability?.delivery
-        ? await api.deliverWorkItem(current.id, observability.delivery.mode, current.revision) as { workItem: LocalWorkItem }
+      const response: {
+        workItem: LocalWorkItem;
+        delivery?: {
+          baseBranch?: string | null;
+          deliveredCommit?: string | null;
+          deliveredAt?: string | null;
+        };
+      } = observability?.delivery
+        ? await api.deliverWorkItem(current.id, observability.delivery.mode, current.revision) as {
+            workItem: LocalWorkItem;
+            delivery?: {
+              baseBranch?: string | null;
+              deliveredCommit?: string | null;
+              deliveredAt?: string | null;
+            };
+          }
         : await api.transitionWorkItem(current.id, "close", current.revision) as { workItem: LocalWorkItem };
       setItem(response.workItem);
+      if (observability?.delivery?.mode === "local_merge") {
+        setLocalDeliveryReceipt({
+          baseBranch: response.delivery?.baseBranch ?? null,
+          deliveredCommit: response.delivery?.deliveredCommit ?? observability.delivery.review?.reviewedCommit ?? null,
+          deliveredAt: response.delivery?.deliveredAt ?? response.workItem.updatedAt ?? null,
+        });
+      }
       setAcceptOpen(false);
       setSyncNotice(null);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-completed", workItemId: item.id } }));
@@ -2085,6 +2124,20 @@ export function WorkItemSummaryView({
             <div className="min-w-0 flex-1">
               <h4 className="font-semibold">{copy.completedTitle}</h4>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.completedHint}</p>
+              {completedLocalDeliveryReceipt ? (
+                <div className="mt-3 rounded-lg border border-success/30 bg-background/80 p-3" aria-label={language === "zh" ? "本地交付回执" : "Local delivery receipt"}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold">{language === "zh" ? "本地交付回执" : "Local delivery receipt"}</p>
+                    <Badge tone="success">{language === "zh" ? "应用成功" : "Applied successfully"}</Badge>
+                  </div>
+                  <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                    <div><dt className="text-muted-foreground">{language === "zh" ? "目标分支" : "Target branch"}</dt><dd className="mt-0.5 break-all font-mono text-foreground">{completedLocalDeliveryReceipt.baseBranch ?? (language === "zh" ? "本地基准分支" : "Local base branch")}</dd></div>
+                    <div><dt className="text-muted-foreground">{language === "zh" ? "交付提交" : "Delivered commit"}</dt><dd className="mt-0.5 break-all font-mono text-foreground">{completedLocalDeliveryReceipt.deliveredCommit?.slice(0, 12) ?? (language === "zh" ? "已由本地 Git 确认" : "Confirmed by local Git")}</dd></div>
+                    <div><dt className="text-muted-foreground">{language === "zh" ? "修改范围" : "Change scope"}</dt><dd className="mt-0.5 text-foreground">{language === "zh" ? `${changedFiles.length} 个文件已应用` : `${changedFiles.length} file(s) applied`}</dd></div>
+                    <div><dt className="text-muted-foreground">{language === "zh" ? "验证结果" : "Verification"}</dt><dd className="mt-0.5 text-foreground">{resultVerification?.summary ?? (language === "zh" ? "审核与验证均已通过" : "Review and verification passed")}</dd></div>
+                  </dl>
+                </div>
+              ) : null}
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button size="sm" aria-expanded={resultExpanded} aria-controls={resultSectionId} onClick={() => setResultExpanded((expanded) => !expanded)}>
                   {resultExpanded ? copy.hideResult : copy.action.completed}

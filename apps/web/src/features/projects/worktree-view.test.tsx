@@ -38,6 +38,7 @@ afterEach(() => {
     selectedInvocationId: null,
     selectedWorktreeId: "wt_docs",
     worktreeOpenIntent: null,
+    worktreeReviewContext: null,
     officecliPreviewPath: null,
   });
 });
@@ -59,7 +60,10 @@ describe("WorktreeView session history", () => {
     apiMock.listInvocationEvents.mockResolvedValue({
       invocationId: "inv_new", events: [], nextCursor: null, hasMore: false, retentionTruncated: false,
     });
-    useUiStore.setState({ worktreeOpenIntent: { worktreeId: "wt_docs", view: "changes" } });
+    useUiStore.setState({
+      worktreeOpenIntent: { worktreeId: "wt_docs", view: "changes" },
+      worktreeReviewContext: { workItemId: "lwi_review", worktreeId: "wt_docs" },
+    });
 
     renderWorktree();
 
@@ -67,6 +71,12 @@ describe("WorktreeView session history", () => {
     expect(await screen.findByText("+const reviewed = true;")).toBeTruthy();
     expect(apiMock.worktreeDiff).toHaveBeenCalledWith("wt_docs");
     expect(useUiStore.getState().worktreeOpenIntent).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Return to task" }));
+    expect(useUiStore.getState().section).toBe("task");
+    expect(useUiStore.getState().selectedWorkItemId).toBe("lwi_review");
+    expect(useUiStore.getState().selectedWorktreeId).toBeNull();
+    expect(useUiStore.getState().worktreeReviewContext).toBeNull();
   });
 
   it("opens a source delivery handed off from task results", async () => {

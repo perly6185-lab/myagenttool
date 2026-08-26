@@ -34,6 +34,7 @@ import { cn } from "@/lib/cn";
 import type { InvocationSnapshot, WorktreeSnapshot } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { installWorktreeViewTranslations } from "@/lib/i18n/worktree-view-resources";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
 
 installWorktreeViewTranslations();
 
@@ -101,6 +102,10 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const worktreeOpenIntent = useUiStore((s) => s.worktreeOpenIntent);
   const setWorktreeOpenIntent = useUiStore((s) => s.setWorktreeOpenIntent);
+  const worktreeReviewContext = useUiStore((s) => s.worktreeReviewContext);
+  const setWorktreeReviewContext = useUiStore((s) => s.setWorktreeReviewContext);
+  const openWorkItem = useUiStore((s) => s.openWorkItem);
+  const navigate = usePageNavigation();
   const requestedOfficeDocument = useUiStore((s) => s.officecliPreviewPath);
   const setOfficecliPreviewPath = useUiStore((s) => s.setOfficecliPreviewPath);
 
@@ -497,22 +502,40 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
       setGit(null);
     });
   }
+  function returnToReviewTask() {
+    if (!worktreeReviewContext || worktreeReviewContext.worktreeId !== worktree.id) return;
+    const taskId = worktreeReviewContext.workItemId;
+    setWorktreeReviewContext(null);
+    setSelectedWorktreeId(null);
+    openWorkItem(taskId, { mode: "summary", section: "overview" });
+    navigate("task");
+  }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setSelectedWorktreeId(null)}
-          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" />
-          {project?.name ?? t("worktreeView.project")}
-        </button>
-        <span className="text-muted-foreground">/</span>
-        <span className="font-medium">{worktree.branch}</span>
-        {worktree.isMain ? <Badge tone="neutral">{t("worktreeView.main")}</Badge> : <Badge tone="neutral">{t("worktreeView.worktree")}</Badge>}
-        {worktree.link ? <WorktreeLinkPopover worktree={worktree} /> : null}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setWorktreeReviewContext(null);
+              setSelectedWorktreeId(null);
+            }}
+            className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <ChevronLeft className="size-4" />
+            {project?.name ?? t("worktreeView.project")}
+          </button>
+          <span className="text-muted-foreground">/</span>
+          <span className="break-all font-medium">{worktree.branch}</span>
+          {worktree.isMain ? <Badge tone="neutral">{t("worktreeView.main")}</Badge> : <Badge tone="neutral">{t("worktreeView.worktree")}</Badge>}
+          {worktree.link ? <WorktreeLinkPopover worktree={worktree} /> : null}
+        </div>
+        {worktreeReviewContext?.worktreeId === worktree.id ? (
+          <Button size="sm" variant="secondary" onClick={returnToReviewTask}>
+            <ChevronLeft aria-hidden />{t("worktreeView.returnToTask")}
+          </Button>
+        ) : null}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">

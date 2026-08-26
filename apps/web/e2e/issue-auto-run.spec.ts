@@ -277,7 +277,13 @@ async function mockApi(page: Page) {
         revision: Number(workItem?.revision ?? 0) + 1,
         updatedAt: "2026-07-24T00:04:00.000Z",
       };
-      return route.fulfill({ json: { workItem } });
+      return route.fulfill({ json: {
+        workItem,
+        delivery: {
+          mode: "local_merge", worktreeId: "wt_1", branchName: "ai/e2e-route",
+          baseBranch: "main", deliveredCommit: "reviewed-commit", deliveredAt: "2026-07-24T00:04:00.000Z",
+        },
+      } });
     }
     if (url.pathname === "/api/worktrees/wt_1/files" && method === "GET") {
       return route.fulfill({ json: { tree: [] } });
@@ -564,8 +570,10 @@ for (const fixture of [
     await expect(page.getByRole("button", { name: "apps/web/src/login.ts", exact: true })).toBeVisible();
     await expect(page.getByText("+export const loginFixed = true;")).toBeVisible();
 
-    await page.goto("/?section=task&task=lwi_1", { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Return to task" }).click();
+    await expect(page).toHaveURL(/section=task.*task=lwi_1/);
     const reopenedDetail = page.getByRole("dialog", { name: "Local issue details" });
+    await expect(reopenedDetail).toBeVisible();
     const deliveryRequest = page.waitForRequest((request) =>
       request.url().endsWith("/api/work-items/lwi_1/delivery/local") && request.method() === "POST");
     await reopenedDetail.getByRole("button", { name: "Approve and apply locally" }).click();
@@ -574,6 +582,13 @@ for (const fixture of [
     await confirm.getByRole("button", { name: "Apply locally" }).click();
     await deliveryRequest;
     await expect(reopenedDetail.getByText("This work is complete")).toBeVisible();
+    const receipt = reopenedDetail.getByLabel("Local delivery receipt");
+    await expect(receipt.getByText("Applied successfully")).toBeVisible();
+    await expect(receipt.getByText("main")).toBeVisible();
+    await expect(receipt.getByText("reviewed-com")).toBeVisible();
+    await expect(receipt.getByText("2 file(s) applied")).toBeVisible();
+    await expect(receipt.getByText("Login regression tests passed.")).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   });
 }
 
