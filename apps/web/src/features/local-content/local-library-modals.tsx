@@ -1,8 +1,9 @@
-import { Check, Copy, Download, Eye, FolderOpen, Link2, ShieldCheck, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { Check, Copy, Download, Eye, FolderOpen, ImageIcon, Link2, ShieldCheck, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { Field } from "@/components/common/field";
+import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -10,6 +11,13 @@ import type { LocalContentPreview, LocalContentRecord } from "./local-content-ty
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
 import type { LocalLibraryCopy } from "./local-library-copy";
 import { localContentApi } from "./local-content-api";
+import {
+  imageMime,
+  markdownImageCount,
+  markdownImageReferences,
+  parseMarkdownDocument,
+  resolveDeliveryAssetPath,
+} from "@/features/tasks/work-item-delivery-preview-model";
 
 function formatBytes(value: number | null, locale: string) {
   if (value == null) return "—";
@@ -36,6 +44,73 @@ function metadataText(metadata: Record<string, unknown>, key: string) {
 
 function canRemoveFromLibrary(record: LocalContentRecord) {
   return record.kind === "article" && record.source.type === "channel_article_import" && typeof record.metadata.channelKnowledgeItemId === "string";
+}
+
+function isMarkdownPreview(preview: LocalContentPreview) {
+  return preview.kind === "article"
+    && (preview.mimeType?.toLowerCase() === "text/markdown" || /\.(?:md|mdown|markdown|mdx)$/i.test(preview.originalName));
+}
+
+function LocalContentMarkdownPreview({
+  contentId,
+  originalName,
+  text,
+  imageUnavailableLabel,
+  imageLoadedLabel,
+}: {
+  contentId: string;
+  originalName: string;
+  text: string;
+  imageUnavailableLabel: string;
+  imageLoadedLabel: (count: number) => string;
+}) {
+  const document = useMemo(() => parseMarkdownDocument(text), [text]);
+  const references = useMemo(() => markdownImageReferences(document.body), [document.body]);
+  const imageCount = useMemo(() => markdownImageCount(document.body), [document.body]);
+  const [imageSources, setImageSources] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const objectUrls: string[] = [];
+    setImageSources({});
+    if (!references.length) return undefined;
+
+    void Promise.all(references.map(async (reference) => {
+      const assetPath = resolveDeliveryAssetPath(originalName, reference);
+      if (!assetPath) return null;
+      try {
+        const bytes = await localContentApi.previewAssetBytes(contentId, assetPath);
+        const source = URL.createObjectURL(new Blob([bytes], { type: imageMime(assetPath) }));
+        objectUrls.push(source);
+        return [reference, source] as const;
+      } catch {
+        return null;
+      }
+    })).then((entries) => {
+      if (cancelled) {
+        for (const source of objectUrls) URL.revokeObjectURL(source);
+        return;
+      }
+      setImageSources(Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => Boolean(entry))));
+    });
+
+    return () => {
+      cancelled = true;
+      for (const source of objectUrls) URL.revokeObjectURL(source);
+    };
+  }, [contentId, originalName, references]);
+
+  return (
+    <div className="max-h-[60vh] overflow-auto rounded-lg border border-border bg-muted/35 p-3">
+      {imageCount ? <p className="mb-4 flex items-center gap-2 rounded-md border border-primary/25 bg-primary/[0.045] px-3 py-2 text-xs text-muted-foreground" role="status"><ImageIcon className="size-4 shrink-0 text-primary" aria-hidden />{imageLoadedLabel(imageCount)}</p> : null}
+      <MarkdownBlock
+        text={document.body}
+        variant="document"
+        imageUnavailableLabel={imageUnavailableLabel}
+        resolveImageSrc={(src) => imageSources[src] ?? null}
+      />
+    </div>
+  );
 }
 
 function ArchiveButton({ record, copy, onRemoved }: { record: LocalContentRecord; copy: LocalLibraryCopy; onRemoved: (record: LocalContentRecord) => void }) {
@@ -335,7 +410,13 @@ export function PreviewModal({
         ) : preview ? (
           <>
             {preview.truncated ? <p className="text-xs text-warning">{copy.previewTruncated.replace("{{size}}", new Intl.NumberFormat(locale, { style: "unit", unit: "megabyte", maximumFractionDigits: 1 }).format(preview.totalBytes / (1024 * 1024)))}</p> : null}
-            <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/35 p-3 text-sm leading-relaxed" tabIndex={0}>{preview.text}</pre>
+            {isMarkdownPreview(preview) ? <LocalContentMarkdownPreview
+              contentId={preview.contentId}
+              originalName={preview.originalName}
+              text={preview.text}
+              imageUnavailableLabel={copy.previewImageUnavailable}
+              imageLoadedLabel={(count) => copy.previewImagesLoaded.replace("{{count}}", String(count))}
+            /> : <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/35 p-3 text-sm leading-relaxed" tabIndex={0}>{preview.text}</pre>}
             <div className="flex flex-wrap justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => void copyText()} disabled={!navigator.clipboard}>{copied ? <Check aria-hidden /> : <Copy aria-hidden />}{copied ? copy.copied : copy.copyText}</Button>
               <Button size="sm" variant="ghost" onClick={downloadText}><Download aria-hidden />{copy.downloadText}</Button>

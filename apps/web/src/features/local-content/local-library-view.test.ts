@@ -188,7 +188,7 @@ describe("local library task targeting", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Safe preview" }));
     expect(await screen.findByText("Safe plain-text preview")).toBeTruthy();
-    expect(screen.getByText(/HTML and scripts are not executed/i)).toBeTruthy();
+    expect(screen.getByText(/Markdown is rendered safely/i)).toBeTruthy();
     fireEvent.click(within(screen.getByRole("dialog", { name: "Safe full-text preview" })).getByRole("button", { name: "Locate original" }));
 
     await waitFor(() => expect(mocks.reveal).toHaveBeenCalledWith("lc_11111111111111111111111111111111"));
