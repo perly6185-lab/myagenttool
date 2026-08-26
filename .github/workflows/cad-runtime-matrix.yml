@@ -1,0 +1,36 @@
+name: CAD runtime matrix
+
+on:
+  pull_request:
+    paths:
+      - "apps/server/src/services/cad-preview.mjs"
+      - "apps/server/src/workers/cad-preview.py"
+      - "tools/dev/cad-runtime-requirements.txt"
+      - "tools/dev/setup-ezdxf-cad-runtime.mjs"
+      - ".github/workflows/cad-runtime-matrix.yml"
+  workflow_dispatch:
+
+jobs:
+  readiness:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm cad:runtime:setup
+        env:
+          MYAGENTTOOL_CAD_BOOTSTRAP_PYTHON: python
+      - run: node --input-type=module -e "import { inspectCadDocument, renderCadDocument } from './apps/server/src/services/cad-preview.mjs'; const projectPath='./apps/server/test/fixtures/cad'; const info=await inspectCadDocument({projectPath,relativeFile:'deterministic.dxf'}); const view=await renderCadDocument({projectPath,relativeFile:'deterministic.dxf',visibleLayers:['Walls','Notes']}); if(info.version!=='AC1027'||!view.svg.startsWith('<svg')) process.exit(1);"

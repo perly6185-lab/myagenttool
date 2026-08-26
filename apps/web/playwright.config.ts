@@ -2,6 +2,7 @@ import { defineConfig, devices } from "playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
+  testIgnore: "cad-real.spec.ts",
   timeout: 30_000,
   fullyParallel: true,
   workers: process.env.CI ? 4 : 2,
