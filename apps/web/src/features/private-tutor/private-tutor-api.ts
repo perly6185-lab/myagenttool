@@ -120,11 +120,19 @@ export interface PrivateTutorEvaluation {
   contradictedCriteria?: string[];
   thresholds?: { evidence?: number; review?: number; voiceEvidence?: number };
   score?: number;
+  scoreBand?: string;
+  anchorId?: string | null;
+  anchorDescription?: string | null;
+  contentScore?: number;
+  contentMaximum?: number;
+  sourceScore?: number;
   passedCount?: number;
   totalCount?: number;
   firstIncorrectStep?: number | null;
   requiresReview?: boolean;
   missingSourceRefs?: string[];
+  unknownSourceRefs?: string[];
+  reviewReason?: string | null;
   explanation?: string;
   criteria?: Array<Record<string, unknown>>;
   steps?: Array<{

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { finalizePrivateTutorEvaluation, PRIVATE_TUTOR_EVALUATION_SCHEMA_VERSION } from "../src/services/private-tutor-evaluation-contract.mjs";
-import { runLanguageCausalSemanticGoldenReplay, runMathLinearStepsGoldenReplay } from "../src/services/private-tutor-evaluation-replay.mjs";
+import { runConceptualRubricConsistencyReplay, runLanguageCausalSemanticGoldenReplay, runMathLinearStepsGoldenReplay } from "../src/services/private-tutor-evaluation-replay.mjs";
 import { judgePrivateTutorAnswer } from "../src/services/private-tutor-assessment.mjs";
 import { createPrivateTutorPackageRegistry, seedPrivateTutorContentPackages } from "../src/services/private-tutor-package-registry.mjs";
 import { mathSubjectPlugin, MATH_STEP_EVALUATOR_VERSION } from "../src/services/plugins/math-plugin.mjs";
@@ -94,6 +94,22 @@ test("the calibrated language golden replay rejects negation and reversed causal
   assert.equal(replay.falsePositiveCount, 0);
   assert.equal(replay.falseNegativeCount, 0);
   assert.equal(replay.evidenceLeakCount, 0);
+  assert.equal(replay.passed, true);
+  assert.deepEqual(replay.failed, []);
+});
+
+test("the anchored conceptual rubric is repeatable and agrees with every scoring anchor", () => {
+  const replay = runConceptualRubricConsistencyReplay();
+  assert.equal(replay.setVersion, "1.0.0");
+  assert.equal(replay.total, 11);
+  assert.equal(replay.matchedCount, replay.total);
+  assert.equal(replay.falsePositiveCount, 0);
+  assert.equal(replay.falseNegativeCount, 0);
+  assert.equal(replay.evidenceLeakCount, 0);
+  assert.equal(replay.anchorAgreementCount, replay.total);
+  assert.equal(replay.anchorAgreementRate, 1);
+  assert.equal(replay.repeatableCount, replay.total);
+  assert.equal(replay.repeatabilityRate, 1);
   assert.equal(replay.passed, true);
   assert.deepEqual(replay.failed, []);
 });

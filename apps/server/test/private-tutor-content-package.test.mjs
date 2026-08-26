@@ -84,13 +84,30 @@ test("M6 advanced evaluators expose explainable results and conservative evidenc
     { accepted: false, error: "private_tutor_code_sandbox_rejected" },
   );
 
-  const conceptQuestion = registry.getPackage("conceptual-source-reasoning-v1").knowledgeComponents[0].dailyQuestions[0];
+  const conceptPackage = registry.getPackage("conceptual-source-reasoning-v1");
+  assert.equal(conceptPackage.version, "2.0.0");
+  const conceptQuestion = conceptPackage.knowledgeComponents[0].dailyQuestions[0];
+  assert.equal(conceptQuestion.id, "practice-concept-source-001-v2");
   const concept = conceptualSubjectPlugin.evaluator({ rawAnswer: "[ref:chapter-1] 形成性反馈可以发现差距并及时纠正，从而调整学习策略。", responseKind: "answer" }, conceptQuestion);
   assert.equal(concept.correct, true);
+  assert.equal(concept.evidenceTier, "rubric_anchored");
+  assert.equal(concept.evaluation.score, 1);
+  assert.equal(concept.evaluation.scoreBand, "proficient");
+  assert.equal(concept.evaluation.anchorId, "anchor-proficient-v1");
   assert.equal(concept.evaluation.missingSourceRefs.length, 0);
   const missingCitation = conceptualSubjectPlugin.evaluator({ rawAnswer: "形成性反馈可以发现差距并及时纠正，从而调整学习策略。", responseKind: "answer" }, conceptQuestion);
   assert.equal(missingCitation.evidenceEligible, false);
+  assert.equal(missingCitation.evaluation.score, 0.85);
+  assert.equal(missingCitation.evaluation.scoreBand, "developing");
+  assert.equal(missingCitation.evaluation.requiresReview, true);
+  assert.equal(missingCitation.evaluation.reviewReason, "missing_required_source");
   assert.deepEqual(missingCitation.evaluation.missingSourceRefs, ["chapter-1"]);
+  const boundary = conceptualSubjectPlugin.evaluator({ rawAnswer: "[ref:chapter-1] 形成性反馈可以发现差距。", responseKind: "answer" }, conceptQuestion);
+  assert.equal(boundary.correct, false);
+  assert.equal(boundary.evaluation.score, 0.75);
+  assert.equal(boundary.evaluation.scoreBand, "developing");
+  assert.equal(boundary.evaluation.requiresReview, true);
+  assert.equal(boundary.evaluation.reviewReason, "score_near_proficiency_boundary");
 });
 
 test("computer-science plugin grades supported choices and fails closed for unsupported answers", () => {

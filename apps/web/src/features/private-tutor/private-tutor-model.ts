@@ -5,7 +5,7 @@ export interface EvaluationCapabilities {
   stepEvaluation: boolean;
   speechEvaluation: boolean;
   visualInteractions: boolean;
-  semanticEvaluation?: boolean | "authored_rubric" | "source_grounded_rubric";
+  semanticEvaluation?: boolean | "authored_rubric" | "source_grounded_rubric" | "causal-semantic-v2" | "anchored-concept-rubric-v2";
   codeExecution?: boolean;
   sourceGrounding?: boolean;
 }

@@ -1760,9 +1760,9 @@ test("M6 advanced subject evaluators expose versioned feedback while only eligib
   await switchPackage("conceptual-source-reasoning-v1");
   const conceptModelsBefore = runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "conceptual-source-reasoning-v1").length;
   const conceptWithoutSource = await practice({
-    idempotencyKey: "m5-advanced-concept-no-source",
+    idempotencyKey: "m6-anchored-concept-no-source",
     knowledgeId: "source-grounded-explanation",
-    questionRevisionId: "practice-concept-source-001-v1",
+    questionRevisionId: "practice-concept-source-001-v2",
     rawAnswer: "形成性反馈可以发现差距并及时纠正，从而调整学习策略。",
     responseKind: "answer",
     independent: true,
@@ -1771,13 +1771,37 @@ test("M6 advanced subject evaluators expose versioned feedback while only eligib
   });
   assert.equal(conceptWithoutSource.status, 201);
   assert.equal(conceptWithoutSource.body.attempt.evidenceEligible, false);
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.evaluatorVersion, "2.0.0");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.rubricVersion, "2.0.0");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.contentPackageVersion, "2.0.0");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.score, 0.85);
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.scoreBand, "developing");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.anchorId, "anchor-developing-v1");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.reviewStatus, "required");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.reviewReason, "missing_required_source");
   assert.deepEqual(conceptWithoutSource.body.attempt.evaluation.missingSourceRefs, ["chapter-1"]);
   assert.equal(conceptWithoutSource.body.snapshot.knowledge[0].mastery, null);
   assert.equal(runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "conceptual-source-reasoning-v1").length, conceptModelsBefore);
-  const groundedConcept = await practice({
-    idempotencyKey: "m5-advanced-concept-grounded",
+  const conceptBoundary = await practice({
+    idempotencyKey: "m6-anchored-concept-boundary",
     knowledgeId: "source-grounded-explanation",
-    questionRevisionId: "practice-concept-source-001-v1",
+    questionRevisionId: "practice-concept-source-001-v2",
+    rawAnswer: "[ref:chapter-1] 形成性反馈可以发现差距。",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+  });
+  assert.equal(conceptBoundary.status, 201);
+  assert.equal(conceptBoundary.body.attempt.correct, false);
+  assert.equal(conceptBoundary.body.attempt.evidenceEligible, false);
+  assert.equal(conceptBoundary.body.attempt.evaluation.score, 0.75);
+  assert.equal(conceptBoundary.body.attempt.evaluation.reviewStatus, "required");
+  assert.equal(conceptBoundary.body.attempt.evaluation.reviewReason, "score_near_proficiency_boundary");
+  const groundedConcept = await practice({
+    idempotencyKey: "m6-anchored-concept-grounded",
+    knowledgeId: "source-grounded-explanation",
+    questionRevisionId: "practice-concept-source-001-v2",
     rawAnswer: "[ref:chapter-1] 形成性反馈可以发现差距并及时纠正，从而调整学习策略。",
     responseKind: "answer",
     independent: true,
@@ -1786,5 +1810,10 @@ test("M6 advanced subject evaluators expose versioned feedback while only eligib
   });
   assert.equal(groundedConcept.status, 201);
   assert.equal(groundedConcept.body.attempt.evidenceEligible, true);
+  assert.equal(groundedConcept.body.attempt.evidenceTier, "rubric_anchored");
+  assert.equal(groundedConcept.body.attempt.evaluation.score, 1);
+  assert.equal(groundedConcept.body.attempt.evaluation.scoreBand, "proficient");
+  assert.equal(groundedConcept.body.attempt.evaluation.anchorId, "anchor-proficient-v1");
+  assert.equal(groundedConcept.body.attempt.evaluation.reviewStatus, "not_required");
   assert.equal(groundedConcept.body.snapshot.knowledge[0].evidenceCount, 1);
 });

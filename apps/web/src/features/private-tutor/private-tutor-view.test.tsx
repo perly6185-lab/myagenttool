@@ -270,4 +270,15 @@ describe("private tutor evaluation feedback", () => {
       explanation: "表达完整，但当前语音置信度不足。",
     })).toBe("表达完整，但当前语音置信度不足。");
   });
+
+  it("surfaces conceptual anchor-review feedback", () => {
+    expect(formatPrivateTutorEvaluationFeedback({
+      score: 0.75,
+      scoreBand: "developing",
+      anchorId: "anchor-developing-v1",
+      reviewReason: "score_near_proficiency_boundary",
+      requiresReview: true,
+      explanation: "回答接近熟练锚点，建议复核：说明如何调整学习。",
+    })).toBe("回答接近熟练锚点，建议复核：说明如何调整学习。");
+  });
 });
