@@ -29,6 +29,8 @@ function externalBindingEmergencyStopped(state, provider, repository, issueNumbe
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor, state,
   listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+  reconcileWorkItemRecordBindings, reconcileVisibleWorkItemRecordBindings,
+  refreshWorkItemRecordBinding, refreshWorkItemRecordBindingsBatch,
   listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
   listReportDeliveries, getReportDelivery, previewReportDelivery, sendReportDelivery,
   listActivity, listComments, createComment, updateComment, deleteComment,
@@ -53,6 +55,12 @@ export async function handleWorkItemRoutes({
   updateAttention,
   githubSyncDiagnostics,
   suggestWorkItemDraft,
+  previewIntentTaskPlan,
+  commitIntentTaskPlan,
+  prepareLedgerPostingPlan,
+  commitLedgerPostingPlan,
+  getLedgerPostingPlan,
+  createResultRepairTask,
   listMyTemplateRoutingFeedback,
   removeMyTemplateRoutingFeedback,
   previewMyTemplateDraft,
@@ -84,6 +92,23 @@ export async function handleWorkItemRoutes({
   removeContentReference,
   captureDataContextSnapshot,
 }) {
+  async function reconcileRecordBindings(workItemId, { blockExecution = false } = {}) {
+    if (typeof reconcileWorkItemRecordBindings !== "function") return null;
+    const result = await reconcileWorkItemRecordBindings({ workItemId }, actor);
+    if (result?.status !== 200) return result;
+    if (blockExecution && result.body?.executionBlocked) {
+      return {
+        status: 409,
+        body: {
+          error: "work_item_record_bindings_stale",
+          currentRevision: result.body.currentRevision,
+          blockingBindings: result.body.blockingBindings ?? [],
+        },
+      };
+    }
+    return null;
+  }
+
   if (url.pathname === "/api/work-item-auto-scheduler" && req.method === "GET") {
     sendJson(res, 200, previewAutoScheduler({ teamId: actor?.teamId ?? null }));
     return true;
@@ -291,6 +316,18 @@ export async function handleWorkItemRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/work-items/assist/intent-plan" && req.method === "POST") {
+    const result = previewIntentTaskPlan(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/assist/intent-plan/commit" && req.method === "POST") {
+    const result = commitIntentTaskPlan(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (url.pathname === "/api/work-items/my-template-learning" && req.method === "GET") {
     const result = listMyTemplateRoutingFeedback({
       projectId: url.searchParams.get("projectId"),
@@ -406,6 +443,11 @@ export async function handleWorkItemRoutes({
   }
 
   if (url.pathname === "/api/work-items/attention" && req.method === "GET") {
+    if (typeof reconcileVisibleWorkItemRecordBindings === "function") {
+      await reconcileVisibleWorkItemRecordBindings({
+        projectId: url.searchParams.get("projectId") || null,
+      }, actor);
+    }
     const result = listAttention(Object.fromEntries(url.searchParams), actor);
     sendJson(res, result.status, result.body);
     return true;
@@ -443,6 +485,11 @@ export async function handleWorkItemRoutes({
 
   if (url.pathname === "/api/work-items/bulk" && req.method === "PATCH") {
     const result = bulkUpdateWorkItems(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (url.pathname === "/api/work-items/record-bindings/refresh" && req.method === "POST") {
+    const result = await refreshWorkItemRecordBindingsBatch(await readJson(req), actor);
     sendJson(res, result.status, result.body);
     return true;
   }
@@ -606,6 +653,15 @@ export async function handleWorkItemRoutes({
     } else {
       sendJson(res, result.status, result.body);
     }
+    return true;
+  }
+
+  const resultRepairMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/result-repair$/);
+  if (resultRepairMatch && req.method === "POST") {
+    const result = createResultRepairTask({
+      workItemId: decodeURIComponent(resultRepairMatch[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
     return true;
   }
 
@@ -887,8 +943,14 @@ export async function handleWorkItemRoutes({
 
   const applicationExecutionMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/application-invocations$/);
   if (applicationExecutionMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(applicationExecutionMatch[1]);
+    const freshnessFailure = await reconcileRecordBindings(workItemId, { blockExecution: true });
+    if (freshnessFailure) {
+      sendJson(res, freshnessFailure.status, freshnessFailure.body);
+      return true;
+    }
     const result = startApplicationExecution({
-      workItemId: decodeURIComponent(applicationExecutionMatch[1]), ...(await readJson(req)),
+      workItemId, ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);
     return true;
@@ -983,6 +1045,11 @@ export async function handleWorkItemRoutes({
   const executionMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/(worktrees|auto-runs)$/);
   if (executionMatch && req.method === "POST") {
     const workItemId = decodeURIComponent(executionMatch[1]);
+    const freshnessFailure = await reconcileRecordBindings(workItemId, { blockExecution: true });
+    if (freshnessFailure) {
+      sendJson(res, freshnessFailure.status, freshnessFailure.body);
+      return true;
+    }
     const detail = getWorkItem({ workItemId }, actor);
     if (!detail.ok) {
       sendJson(res, detail.status, detail.body);
@@ -1113,6 +1180,36 @@ export async function handleWorkItemRoutes({
     return true;
   }
 
+  const ledgerPostingPlanMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/ledger-posting-plan(?:\/(commit))?$/);
+  if (ledgerPostingPlanMatch) {
+    const workItemId = decodeURIComponent(ledgerPostingPlanMatch[1]);
+    const command = ledgerPostingPlanMatch[2] ?? null;
+    const body = req.method === "POST" ? await readJson(req) : {};
+    let result;
+    if (req.method === "GET" && !command) {
+      result = getLedgerPostingPlan({ workItemId }, actor);
+    } else if (req.method === "POST" && !command) {
+      result = prepareLedgerPostingPlan({ workItemId, ...body }, actor);
+    } else if (req.method === "POST" && command === "commit") {
+      result = await commitLedgerPostingPlan({ workItemId, ...body }, actor);
+    } else {
+      return false;
+    }
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const recordBindingRefreshMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/record-bindings\/([^/]+)\/refresh$/);
+  if (recordBindingRefreshMatch && req.method === "POST") {
+    const result = await refreshWorkItemRecordBinding({
+      workItemId: decodeURIComponent(recordBindingRefreshMatch[1]),
+      bindingId: decodeURIComponent(recordBindingRefreshMatch[2]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   const match = url.pathname.match(/^\/api\/work-items\/([^/]+)(?:\/(close|reopen|archive|restore|activity))?$/);
   if (!match) return false;
   const workItemId = decodeURIComponent(match[1]);
@@ -1123,6 +1220,11 @@ export async function handleWorkItemRoutes({
     return true;
   }
   if (req.method === "GET" && !action) {
+    const freshnessFailure = await reconcileRecordBindings(workItemId);
+    if (freshnessFailure) {
+      sendJson(res, freshnessFailure.status, freshnessFailure.body);
+      return true;
+    }
     const result = getWorkItem({ workItemId }, actor);
     sendJson(res, result.status, result.body);
     return true;

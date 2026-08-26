@@ -1,0 +1,104 @@
+import { ApiError, apiBase, csrfHeaders, ensureSession, request } from "@/lib/api/request";
+import type { HostAuthMethod, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileTransfer, HostPurpose, HostTlsActivationProfile, SshHost } from "./host-types";
+
+export const MAX_HOST_UPLOAD_BYTES = 10 * 1024 * 1024;
+export const MAX_HOST_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
+export const hostApi = {
+  list: () => request<{ hosts: SshHost[]; count: number }>("GET", "/api/hosts"),
+  get: (hostId: string) => request<{ host: SshHost }>("GET", `/api/hosts/${encodeURIComponent(hostId)}`),
+  create: (input: { name: string; host: string; port: number; user: string; authMethod: HostAuthMethod; purposes: HostPurpose[]; networkPolicy: "public_only" | "allow_private_network" }) =>
+    request<{ target: SshHost }>("POST", "/api/hosts", input),
+  update: (hostId: string, input: { expectedRevision: number; name?: string; host?: string; port?: number; user?: string; authMethod?: HostAuthMethod; purposes?: HostPurpose[]; networkPolicy?: "public_only" | "allow_private_network" }) =>
+    request<{ host: SshHost }>("PATCH", `/api/hosts/${encodeURIComponent(hostId)}`, input),
+  observeFingerprint: (hostId: string) =>
+    request<{ host: SshHost; observation: { fingerprint: string; resolvedAddress: string } }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/observe-fingerprint`, {}, true, 30_000),
+  confirmFingerprint: (hostId: string, fingerprint: string, expectedRevision: number) =>
+    request<{ host: SshHost }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/confirm-fingerprint`, { fingerprint, expectedRevision }),
+  verify: (hostId: string) =>
+    request<{ host: SshHost; verification: { capabilities: SshHost["capabilities"] } }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/verify`, {}, true, 30_000),
+  scopes: (hostId: string) =>
+    request<{ scopes: HostFileScope[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/file-scopes`),
+  publishScopes: () =>
+    request<{ scopes: HostFileScopeOption[]; count: number }>("GET", "/api/host-file-scopes?purpose=site_publish"),
+  certificateScopes: () =>
+    request<{ scopes: HostFileScopeOption[]; count: number }>("GET", "/api/host-file-scopes?purpose=tls_certificate"),
+  createScope: (hostId: string, input: { label: string; purpose: HostFileScopePurpose; rootPath: string; permissions?: Array<"list" | "upload" | "download"> }) =>
+    request<{ scope: HostFileScope }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/file-scopes`, input, true, 30_000),
+  updateScope: (hostId: string, scopeId: string, input: { expectedRevision: number; label?: string; rootPath?: string; purpose?: HostFileScopePurpose; status?: "ready" | "disabled"; permissions?: Array<"list" | "upload" | "download"> }) =>
+    request<{ scope: HostFileScope }>("PATCH", `/api/hosts/${encodeURIComponent(hostId)}/file-scopes/${encodeURIComponent(scopeId)}`, input, true, 30_000),
+  tlsProfiles: (hostId: string) =>
+    request<{ profiles: HostTlsActivationProfile[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/tls-activation-profiles`),
+  createTlsProfile: (hostId: string, input: { label: string; certificateScopeId: string; containerName: string }) =>
+    request<{ profile: HostTlsActivationProfile }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/tls-activation-profiles`, { ...input, type: "docker_nginx" }, true, 30_000),
+  entries: (scopeId: string, path = "") =>
+    request<{ scope: HostFileScope; path: string; entries: HostFileEntry[]; count: number }>("GET", `/api/host-file-scopes/${encodeURIComponent(scopeId)}/entries?path=${encodeURIComponent(path)}`, undefined, true, 30_000),
+  transfers: (hostId: string) =>
+    request<{ transfers: HostFileTransfer[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/file-transfers`),
+  upload: uploadHostFile,
+  download: downloadHostFile,
+};
+
+async function uploadHostFile(scopeId: string, file: File, options: { directory: string; conflictPolicy: HostFileConflictPolicy; overwriteConfirmed: boolean; retryOf?: string | null; onProgress?: (progress: number) => void }): Promise<{ task: HostFileTransfer }> {
+  await ensureSession();
+  const query = new URLSearchParams({ directory: options.directory, filename: file.name, conflictPolicy: options.conflictPolicy });
+  if (options.retryOf) query.set("retryOf", options.retryOf);
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${apiBase}/api/host-file-scopes/${encodeURIComponent(scopeId)}/transfers/upload?${query}`);
+    xhr.withCredentials = true;
+    xhr.timeout = 120_000;
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("X-Transfer-Confirmed", "true");
+    if (options.overwriteConfirmed) xhr.setRequestHeader("X-Overwrite-Confirmed", "true");
+    for (const [key, value] of Object.entries(csrfHeaders("POST"))) xhr.setRequestHeader(key, value);
+    xhr.upload.onprogress = (event) => options.onProgress?.(event.lengthComputable ? Math.round((event.loaded / event.total) * 80) : 20);
+    xhr.onload = () => {
+      const data = parseJson(xhr.responseText);
+      if (xhr.status >= 200 && xhr.status < 300) { options.onProgress?.(100); resolve(data as { task: HostFileTransfer }); }
+      else reject(apiError(data, xhr.status));
+    };
+    xhr.onerror = () => reject(new ApiError("host_file_transfer_network_error", "The upload connection failed.", 0));
+    xhr.ontimeout = () => reject(new ApiError("host_file_transfer_timeout", "The upload timed out.", 408));
+    xhr.send(file);
+  });
+}
+
+async function downloadHostFile(scopeId: string, options: { path: string; retryOf?: string | null; onProgress?: (progress: number) => void }): Promise<{ blob: Blob; fileName: string; transferId: string | null }> {
+  await ensureSession();
+  const response = await fetch(`${apiBase}/api/host-file-scopes/${encodeURIComponent(scopeId)}/transfers/download`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...csrfHeaders("POST") },
+    body: JSON.stringify({ path: options.path, confirmed: true, retryOf: options.retryOf ?? null }),
+  });
+  if (!response.ok) throw apiError(await response.json().catch(() => ({})), response.status);
+  const total = Number(response.headers.get("Content-Length") ?? 0);
+  const reader = response.body?.getReader();
+  const chunks: BlobPart[] = [];
+  let received = 0;
+  if (reader) {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const copy = new Uint8Array(value.length);
+      copy.set(value);
+      chunks.push(copy.buffer);
+      received += value.length;
+      options.onProgress?.(total ? Math.round((received / total) * 100) : 50);
+    }
+  }
+  options.onProgress?.(100);
+  const fileName = options.path.split("/").pop() || "download";
+  return { blob: new Blob(chunks, { type: "application/octet-stream" }), fileName, transferId: response.headers.get("X-Host-Transfer-Id") };
+}
+
+function parseJson(value: string): unknown {
+  try { return value ? JSON.parse(value) : {}; } catch { return {}; }
+}
+
+function apiError(value: unknown, status: number) {
+  const data = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const code = typeof data.error === "string" ? data.error : "host_file_transfer_failed";
+  return new ApiError(code, code, status, data);
+}

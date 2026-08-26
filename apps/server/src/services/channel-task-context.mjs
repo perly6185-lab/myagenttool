@@ -77,13 +77,24 @@ export function normalizeChannelAttachmentAssets(assets, { terminalId, projectId
     if (asset.readiness?.state !== "ready") throw contextError("channel_attachment_not_ready");
     return {
       id: String(asset.id).slice(0, 200),
+      originalName: asset.originalName
+        ? String(asset.originalName).replace(/[\r\n\t]/g, " ").slice(0, 200)
+        : undefined,
       path: String(asset.path).slice(0, 1_000),
       family: String(asset.family ?? "unknown").slice(0, 100),
+      mimeType: asset.mimeType ? String(asset.mimeType).slice(0, 120) : null,
+      size: Number.isSafeInteger(asset.size) && asset.size >= 0 ? asset.size : null,
+      resourceClass: ["small", "medium", "large", "unknown"].includes(asset.resourceClass)
+        ? asset.resourceClass
+        : "unknown",
+      capabilities: Array.isArray(asset.capabilities)
+        ? [...new Set(asset.capabilities.map((capability) => String(capability).slice(0, 40)).filter(Boolean))].slice(0, 20)
+        : [],
       hash: String(asset.hash).slice(0, 200),
       version: String(asset.version).slice(0, 200),
       terminalId,
       projectId,
-      readiness: { state: "ready" },
+      readiness: { state: "ready", reason: String(asset.readiness?.reason ?? "channel_attachment_ingested").slice(0, 100) },
     };
   });
 }

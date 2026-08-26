@@ -26,6 +26,88 @@ test("heuristicDecision maps today's intents onto the contract", () => {
   assert.ok(d.confidence > 0 && d.confidence < 1);
 });
 
+test("local ordinary-language tasks require positive work-type evidence", async () => {
+  const officeMissing = await resolveDecision({
+    link: { type: "local_issue", title: "整理为台账" },
+    issueBody: "整理为台账",
+    projectContext: { channelOrigin: true, inputAssets: [] },
+  });
+  assert.equal(officeMissing.path, "clarify");
+  assert.equal(officeMissing.workKind, "office");
+  assert.match(officeMissing.clarifyingQuestions[0], /原始文件/);
+  let unsafeDeciderCalls = 0;
+  const guardedMissing = await resolveDecision({
+    link: { type: "local_issue", title: "整理为台账" },
+    issueBody: "整理为台账",
+    projectContext: { channelOrigin: true, inputAssets: [] },
+    fastPath: false,
+    decideIssuePath: async () => {
+      unsafeDeciderCalls += 1;
+      return { path: "develop", confidence: 0.99, rationale: "guess and execute" };
+    },
+  });
+  assert.equal(guardedMissing.path, "clarify");
+  assert.equal(unsafeDeciderCalls, 0, "missing source material is resolved before any model route can guess");
+
+  const officeReady = await resolveDecision({
+    link: { type: "local_issue", title: "整理为台账" },
+    issueBody: "整理为台账",
+    projectContext: { channelOrigin: true, inputAssets: [{ id: "asset_1", name: "source.xlsx" }] },
+  });
+  assert.equal(officeReady.path, "office");
+  assert.equal(officeReady.workKind, "office");
+  const officeAgent = await resolveDecision({
+    link: { type: "local_issue", title: "把附件整理为台账" },
+    projectContext: { channelOrigin: true, inputAssets: [{ id: "asset_1", name: "source.xlsx" }] },
+    fastPath: false,
+    decideIssuePath: async () => ({ path: "develop", confidence: 0.9, rationale: "concrete deliverable" }),
+  });
+  assert.equal(officeAgent.workKind, "office", "agent routing keeps the deterministic business work type");
+  const blankTemplate = await resolveDecision({
+    link: { type: "local_issue", title: "新建一个空白台账模板" },
+    projectContext: { channelOrigin: true, inputAssets: [] },
+  });
+  assert.equal(blankTemplate.path, "office", "creating a blank template does not require a source workbook");
+  assert.equal(blankTemplate.workKind, "office");
+
+  const programming = await resolveDecision({ link: { type: "local_issue", title: "修复 API 的单元测试" }, projectContext: { channelOrigin: true } });
+  assert.equal(programming.path, "develop");
+  assert.equal(programming.workKind, "development");
+
+  const design = await resolveDecision({ link: { type: "local_issue", title: "设计一个登录页原型图" }, projectContext: { channelOrigin: true } });
+  assert.equal(design.path, "design");
+  assert.equal(design.workKind, "product_design");
+
+  const creative = await resolveDecision({ link: { type: "local_issue", title: "制作一张活动海报" }, projectContext: { channelOrigin: true } });
+  assert.equal(creative.path, "creative");
+  assert.equal(creative.workKind, "creative");
+
+  const content = await resolveDecision({ link: { type: "local_issue", title: "写一篇公众号文章" }, projectContext: { channelOrigin: true } });
+  assert.equal(content.path, "content");
+  assert.equal(content.workKind, "content");
+
+  const declaredArticle = await resolveDecision({
+    link: { type: "local_issue", title: "文章创作" },
+    issueBody: "用户完整目标：把今天编码工作写成文章和图片后发布",
+    projectContext: { channelOrigin: true, taskKind: "content_article" },
+  });
+  assert.equal(declaredArticle.path, "content", "coding source context must not turn an article task into development");
+  const declaredImage = await resolveDecision({
+    link: { type: "local_issue", title: "图片创作" },
+    issueBody: "用户完整目标：把今天编码工作写成文章和图片后发布",
+    projectContext: { channelOrigin: true, taskKind: "content_image" },
+  });
+  assert.equal(declaredImage.path, "creative");
+
+  const general = await resolveDecision({ link: { type: "local_issue", title: "帮我翻译这段说明" }, projectContext: { channelOrigin: true } });
+  assert.equal(general.path, "general");
+  assert.equal(general.workKind, "general");
+
+  const unknown = await resolveDecision({ link: { type: "local_issue", title: "处理一下" }, projectContext: { channelOrigin: true } });
+  assert.equal(unknown.path, "clarify");
+  assert.equal(unknown.workKind, "unknown");
+});
+
 test("intentForPath derives the legacy intent field", () => {
   assert.equal(intentForPath("develop"), "change");
   assert.equal(intentForPath("design"), "investigation");

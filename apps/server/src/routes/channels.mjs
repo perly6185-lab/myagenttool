@@ -17,6 +17,7 @@ export async function handleChannelRoutes({
   routeChannelTask,
   dismissChannelTask,
   retryChannelTask,
+  reconcileWechatDraftChannelTask,
   rerouteChannelTask,
   takeoverChannelTask,
   replyChannelTask,
@@ -168,6 +169,20 @@ export async function handleChannelRoutes({
     const actions = { route: routeChannelTask, dismiss: dismissChannelTask, retry: retryChannelTask, reroute: rerouteChannelTask, takeover: takeoverChannelTask };
     const action = actions[channelTask[2]];
     const result = typeof action === "function" ? await action(id, actor) : { status: 501, body: { error: "unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const wechatDraftReconciliation = url.pathname.match(/^\/api\/channel-tasks\/([^/]+)\/wechat-draft-reconciliation$/);
+  if (wechatDraftReconciliation && req.method === "POST") {
+    const body = await readJson(req);
+    const result = typeof reconcileWechatDraftChannelTask === "function"
+      ? await reconcileWechatDraftChannelTask(
+        decodeURIComponent(wechatDraftReconciliation[1]),
+        body?.outcome,
+        actor,
+      )
+      : { status: 501, body: { error: "unavailable" } };
     sendJson(res, result.status, result.body);
     return true;
   }

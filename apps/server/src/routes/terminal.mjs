@@ -1,4 +1,5 @@
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
+import { MAX_HOST_UPLOAD_BYTES } from "../services/host-files.mjs";
 
 export async function handleTerminalRoutes({
   req,
@@ -8,8 +9,21 @@ export async function handleTerminalRoutes({
   readJson,
   actor,
   state,
+  confirmSshHostFingerprint,
   createSshTarget,
   createSshConnectionTest,
+  observeSshHostFingerprint,
+  updateSshTarget,
+  verifySshHostConnection,
+  listHostFileScopes,
+  createHostFileScope,
+  updateHostFileScope,
+  listHostFileEntries,
+  listHostFileTransfers,
+  uploadHostFile,
+  downloadHostFile,
+  listHostTlsActivationProfiles,
+  createHostTlsActivationProfile,
   createManagedTerminalSession,
   queueTerminalBridgeAction,
   nextTerminalBridgeAction,
@@ -23,11 +37,22 @@ export async function handleTerminalRoutes({
     return true;
   }
 
-  if (req.method === "POST" && url.pathname === "/api/ssh-targets") {
+  if (req.method === "GET" && url.pathname === "/api/hosts") {
+    const hosts = state.sshTargets.filter((target) => sshTargetVisible(actor, target) && myHostTarget(target));
+    sendJson(res, 200, { hosts, count: hosts.length });
+    return true;
+  }
+
+  if (req.method === "POST" && ["/api/ssh-targets", "/api/hosts"].includes(url.pathname)) {
     const body = await readJson(req);
     let target;
     try {
-      target = createSshTarget({ ...body, createdByUserId: actor?.userId, ownerTeamId: actor?.teamId });
+      target = createSshTarget({
+        ...body,
+        ...(url.pathname === "/api/hosts" && body.purposes == null && body.purpose == null ? { purposes: ["file_transfer"] } : {}),
+        createdByUserId: actor?.userId,
+        ownerTeamId: actor?.teamId,
+      });
     } catch (error) {
       sendJson(res, 400, {
         error: "invalid_ssh_target",
@@ -36,6 +61,220 @@ export async function handleTerminalRoutes({
       return true;
     }
     sendJson(res, 201, { target, capability: state.terminalRuntimeCapability });
+    return true;
+  }
+
+  const hostMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)$/);
+  if (req.method === "GET" && hostMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostMatch[1]));
+    if (!target) sendJson(res, 404, { error: "ssh_target_not_found" });
+    else sendJson(res, 200, { host: target });
+    return true;
+  }
+  if (req.method === "PATCH" && hostMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    try {
+      const result = updateSshTarget(target, await readJson(req));
+      sendJson(res, result.ok ? 200 : result.status, result.ok ? { host: result.target } : { error: result.error, ...(result.currentRevision ? { currentRevision: result.currentRevision } : {}) });
+    } catch (error) {
+      sendJson(res, 400, { error: "invalid_ssh_target", message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const observeFingerprintMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/observe-fingerprint$/);
+  if (req.method === "POST" && observeFingerprintMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(observeFingerprintMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const result = await observeSshHostFingerprint(target);
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { host: result.target, observation: result.observation } : { error: result.error, host: result.target });
+    return true;
+  }
+
+  const confirmFingerprintMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/confirm-fingerprint$/);
+  if (req.method === "POST" && confirmFingerprintMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(confirmFingerprintMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const result = confirmSshHostFingerprint(target, await readJson(req));
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { host: result.target } : { error: result.error, ...(result.currentRevision ? { currentRevision: result.currentRevision } : {}) });
+    return true;
+  }
+
+  const verifyHostMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/verify$/);
+  if (req.method === "POST" && verifyHostMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(verifyHostMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const result = await verifySshHostConnection(target);
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { host: result.target, verification: result.verification } : { error: result.error, host: result.target });
+    return true;
+  }
+
+  const hostScopesMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/file-scopes$/);
+  if (hostScopesMatch && ["GET", "POST"].includes(req.method)) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostScopesMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    if (req.method === "GET") {
+      const scopes = listHostFileScopes(target);
+      sendJson(res, 200, { scopes, count: scopes.length });
+      return true;
+    }
+    const result = await createHostFileScope(target, await readJson(req), actor);
+    sendJson(res, result.ok ? 201 : result.status, result.ok ? { scope: result.scope } : { error: result.error });
+    return true;
+  }
+
+  const hostTlsProfilesMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/tls-activation-profiles$/);
+  if (hostTlsProfilesMatch && ["GET", "POST"].includes(req.method)) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostTlsProfilesMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    if (req.method === "GET") {
+      const profiles = listHostTlsActivationProfiles(target);
+      sendJson(res, 200, { profiles, count: profiles.length });
+      return true;
+    }
+    const result = await createHostTlsActivationProfile(target, await readJson(req), actor);
+    sendJson(res, result.ok ? 201 : result.status, result.ok ? { profile: result.profile } : { error: result.error });
+    return true;
+  }
+
+  const hostScopeMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/file-scopes\/([^/]+)$/);
+  if (req.method === "PATCH" && hostScopeMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostScopeMatch[1]));
+    const scope = target ? findVisibleHostFileScope(state, actor, decodeURIComponent(hostScopeMatch[2])) : null;
+    if (!target || !scope || scope.sshTargetId !== target.id) {
+      sendJson(res, 404, { error: "host_file_scope_not_found" });
+      return true;
+    }
+    const result = await updateHostFileScope(target, scope, await readJson(req));
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { scope: result.scope } : { error: result.error, ...(result.currentRevision ? { currentRevision: result.currentRevision } : {}) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/host-file-scopes") {
+    const purpose = String(url.searchParams.get("purpose") ?? "").trim();
+    const scopes = state.hostFileScopes
+      .filter((scope) => findVisibleHostFileScope(state, actor, scope.id) === scope)
+      .filter((scope) => !purpose || scope.purpose === purpose)
+      .map((scope) => {
+        const host = findVisibleSshTarget(state, actor, scope.sshTargetId);
+        if (!host || !myHostTarget(host)) return null;
+        return {
+          ...scope,
+          host: {
+            id: host.id,
+            name: host.name,
+            host: host.host,
+            connectionStatus: host.connectionStatus,
+            capabilities: host.capabilities,
+          },
+        };
+      })
+      .filter(Boolean);
+    sendJson(res, 200, { scopes, count: scopes.length });
+    return true;
+  }
+
+  const scopeEntriesMatch = url.pathname.match(/^\/api\/host-file-scopes\/([^/]+)\/entries$/);
+  if (req.method === "GET" && scopeEntriesMatch) {
+    const scope = findVisibleHostFileScope(state, actor, decodeURIComponent(scopeEntriesMatch[1]));
+    const target = scope ? findVisibleSshTarget(state, actor, scope.sshTargetId) : null;
+    if (!scope || !target) {
+      sendJson(res, 404, { error: "host_file_scope_not_found" });
+      return true;
+    }
+    const result = await listHostFileEntries(target, scope, url.searchParams.get("path") ?? "");
+    sendJson(res, result.ok ? 200 : result.status, result.ok
+      ? { scope: result.scope, path: result.path, entries: result.entries, count: result.count }
+      : { error: result.error });
+    return true;
+  }
+
+  const hostTransfersMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/file-transfers$/);
+  if (req.method === "GET" && hostTransfersMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostTransfersMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const transfers = listHostFileTransfers(target);
+    sendJson(res, 200, { transfers, count: transfers.length });
+    return true;
+  }
+
+  const scopeUploadMatch = url.pathname.match(/^\/api\/host-file-scopes\/([^/]+)\/transfers\/upload$/);
+  if (req.method === "POST" && scopeUploadMatch) {
+    const scope = findVisibleHostFileScope(state, actor, decodeURIComponent(scopeUploadMatch[1]));
+    const target = scope ? findVisibleSshTarget(state, actor, scope.sshTargetId) : null;
+    if (!scope || !target) {
+      sendJson(res, 404, { error: "host_file_scope_not_found" });
+      return true;
+    }
+    if (String(req.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase() !== "application/octet-stream") {
+      sendJson(res, 415, { error: "host_file_upload_content_type_invalid" });
+      return true;
+    }
+    let bytes;
+    try {
+      bytes = await readBoundedBody(req, MAX_HOST_UPLOAD_BYTES);
+    } catch (error) {
+      sendJson(res, error?.status ?? 400, { error: error?.code ?? "host_file_upload_invalid" });
+      return true;
+    }
+    const result = await uploadHostFile(target, scope, bytes, {
+      directory: url.searchParams.get("directory") ?? "",
+      filename: url.searchParams.get("filename") ?? "",
+      conflictPolicy: url.searchParams.get("conflictPolicy") ?? "deny",
+      confirmed: req.headers["x-transfer-confirmed"] === "true",
+      overwriteConfirmed: req.headers["x-overwrite-confirmed"] === "true",
+      retryOf: url.searchParams.get("retryOf") ?? null,
+    }, actor);
+    sendJson(res, result.ok ? 201 : result.status, result.ok ? { task: result.task } : { error: result.error, ...(result.task ? { task: result.task } : {}) });
+    return true;
+  }
+
+  const scopeDownloadMatch = url.pathname.match(/^\/api\/host-file-scopes\/([^/]+)\/transfers\/download$/);
+  if (req.method === "POST" && scopeDownloadMatch) {
+    const scope = findVisibleHostFileScope(state, actor, decodeURIComponent(scopeDownloadMatch[1]));
+    const target = scope ? findVisibleSshTarget(state, actor, scope.sshTargetId) : null;
+    if (!scope || !target) {
+      sendJson(res, 404, { error: "host_file_scope_not_found" });
+      return true;
+    }
+    const body = await readJson(req);
+    const result = await downloadHostFile(target, scope, body, actor);
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error, ...(result.task ? { task: result.task } : {}) });
+      return true;
+    }
+    const encodedName = encodeURIComponent(result.fileName).replace(/'/g, "%27");
+    res.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(result.bytes.length),
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodedName}`,
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "X-Host-Transfer-Id": result.task.id,
+    });
+    res.end(result.bytes);
     return true;
   }
 
@@ -145,6 +384,19 @@ export async function handleTerminalRoutes({
   return false;
 }
 
+async function readBoundedBody(req, maxBytes) {
+  const declared = Number(req.headers["content-length"] ?? 0);
+  if (Number.isFinite(declared) && declared > maxBytes) throw Object.assign(new Error("upload_too_large"), { code: "host_file_upload_size_invalid", status: 413 });
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) throw Object.assign(new Error("upload_too_large"), { code: "host_file_upload_size_invalid", status: 413 });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total);
+}
+
 function findVisibleTerminalSession(state, actor, terminalSessionId) {
   const session = state.terminalSessions.find((item) => item.terminalSessionId === terminalSessionId);
   if (!session) return null;
@@ -166,6 +418,17 @@ function findVisibleSshTarget(state, actor, targetId) {
   const target = state.sshTargets.find((item) => item.id === targetId);
   if (!target) return null;
   return sshTargetVisible(actor, target) ? target : null;
+}
+
+function myHostTarget(target) {
+  return Array.isArray(target?.purposes) && target.purposes.some((purpose) => ["file_transfer", "site_publish", "tls_certificate"].includes(purpose));
+}
+
+function findVisibleHostFileScope(state, actor, scopeId) {
+  const scope = state.hostFileScopes.find((item) => item.id === scopeId);
+  if (!scope) return null;
+  if (!actor?.teamId) return scope;
+  return (scope.ownerTeamId ?? LOCAL_TEAM_ID) === actor.teamId ? scope : null;
 }
 
 function sshTargetVisible(actor, target) {

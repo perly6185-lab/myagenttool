@@ -120,7 +120,7 @@ test("acquireSessionProfile: registry default → env override → disable", () 
 test("listSessions merges the registry with durable rows without mutating state", () => {
   const { state, manager } = makeManager();
   const sessions = manager.listSessions();
-  assert.equal(sessions.length, 4);
+  assert.equal(sessions.length, 5);
   assert.equal(sessions[0].site, "zhihu");
   assert.equal(sessions[0].status, "unknown");
   assert.equal(sessions[0].lastProbeAt, null);
@@ -139,7 +139,18 @@ test("listSessions merges the registry with durable rows without mutating state"
   assert.equal(jianshu.heartbeatTier, "manual");
   assert.equal(jianshu.heartbeatIntervalMinutes, null);
   assert.equal(jianshu.status, "unknown");
+  const wechat = sessions.find((s) => s.site === "wechat_official");
+  assert.ok(wechat);
+  assert.equal(wechat.heartbeatTier, "manual");
+  assert.equal(wechat.accountScoped, true);
+  assert.ok(wechat.profileDir.replace(/\\/g, "/").endsWith(".myagenttool-wechat_official-profile"));
   assert.equal(state.sessions.length, 0); // listing alone records nothing
+});
+
+test("wechat official resolves the built-in publisher CLI", () => {
+  const resolved = resolveSessionSiteConfig("wechat_official", {});
+  assert.ok(Array.isArray(resolved.command));
+  assert.ok(resolved.command[1].replace(/\\/g, "/").endsWith("tools/wechat-official-site/src/cli.mjs"));
 });
 
 test("sessionHealthSweep never touches manual-tier sites (qichacha quota / xiaohongshu + jianshu risk discipline)", async (t) => {

@@ -27,6 +27,7 @@ import {
   inspectLocalQuotationTemplate,
   writeLocalQuotationDraft,
 } from "../src/services/business-routine-executors.mjs";
+import { projectRoutineDefinitionToTaskTemplate } from "../src/services/task-template-runtime.mjs";
 import { sameProjectPath } from "../src/services/projects.mjs";
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
@@ -163,6 +164,29 @@ function createCaseAndDefinition(service) {
   }, ACTOR_A).body.routineDefinition;
   return { entity, businessCase, definition };
 }
+
+test("lists only valid published routines as single-task templates", () => {
+  const { state, service } = harness();
+  state.routineDefinitions.push(
+    {
+      id: "rtd_valid", familyId: "rtd_valid", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_a",
+      name: "客户方案", version: 1, state: "published", triggerDocumentTypes: ["customer_reference"],
+      dataRequirements: [{ id: "customer", kind: "contact", label: "客户", required: true }],
+      mutationPolicy: null, steps: [{ key: "generate", kind: "generate", label: "生成方案", required: true }],
+    },
+    {
+      id: "rtd_recipe", familyId: "rtd_recipe", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_a",
+      name: "方案与后续任务", version: 1, state: "published", triggerDocumentTypes: ["customer_reference"],
+      dataRequirements: [], mutationPolicy: null,
+      steps: [{ key: "create", kind: "create_issue", label: "创建后续任务", required: true }],
+    },
+  );
+  const listed = service.listTaskTemplates({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.body.taskTemplates.map((template) => template.id), ["rtd_valid"]);
+  assert.equal(listed.body.taskTemplates[0].state, "published");
+  assert.equal(projectRoutineDefinitionToTaskTemplate(state.routineDefinitions[1]).ok, false);
+});
 
 test("published Routine selection normalizes common work-type names and fails closed", () => {
   const aliases = [

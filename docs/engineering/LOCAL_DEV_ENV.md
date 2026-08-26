@@ -24,6 +24,7 @@ Root commands:
 
 ```text
 pnpm install
+pnpm system:check
 pnpm dev
 pnpm dev:restart-changed
 pnpm test
@@ -61,6 +62,34 @@ If the project later changes stack, keep the same intent:
 - One dependency install command.
 - One full local dev command.
 - One verification command.
+
+## System dependencies
+
+Audio and video output acceptance uses `ffprobe` to derive duration, dimensions,
+codec, sampling rate, and channel count. `pnpm install` includes a platform
+specific project fallback, so local development does not require administrator
+access. The runtime prefers a system `ffprobe` from `PATH` and then falls back
+to the installed project binary.
+
+Run `pnpm system:check` after installation. For a shared machine, the preferred
+system installation is:
+
+```text
+# macOS (Homebrew)
+brew install ffmpeg
+
+# Debian / Ubuntu
+sudo apt-get update && sudo apt-get install ffmpeg
+
+# Windows (WinGet)
+winget install Gyan.FFmpeg.Shared
+```
+
+Set `MYAGENTTOOL_FFPROBE_PATH` only when the binary is installed at a custom
+location. Probing is isolated to the project file path, uses fixed arguments,
+and times out after five seconds. If probing fails or `ffprobe` is unavailable,
+file-level output checks still run, but media quality gates that require
+duration or dimensions remain unverified rather than being silently accepted.
 
 ## Local Services
 

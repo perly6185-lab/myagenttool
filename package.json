@@ -17,15 +17,29 @@
     },
     "onlyBuiltDependencies": [
       "electron",
-      "node-pty"
+      "node-pty",
+      "@ffprobe-installer/darwin-arm64",
+      "@ffprobe-installer/darwin-x64",
+      "@ffprobe-installer/linux-arm",
+      "@ffprobe-installer/linux-arm64",
+      "@ffprobe-installer/linux-ia32",
+      "@ffprobe-installer/linux-x64",
+      "@ffprobe-installer/win32-ia32",
+      "@ffprobe-installer/win32-x64"
     ],
     "patchedDependencies": {
       "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
     }
   },
   "scripts": {
+    "postinstall": "node tools/dev/prepare-system-dependencies.mjs",
+    "system:check": "node tools/dev/check-system-dependencies.mjs",
+    "eval:intent": "node tools/dev/intent-understanding-eval.mjs",
+    "eval:intent:channel": "node tools/dev/channel-intent-replay.mjs",
+    "eval:channel:blackbox": "node --test apps/server/test/channel-ordinary-user-blackbox.test.mjs",
     "dev": "node tools/dev/run-local-demo.mjs",
     "test:documents:e2e": "playwright test -c apps/web/playwright.config.ts",
+    "test:cad:real-e2e": "playwright test -c apps/web/playwright.cad-real.config.ts",
     "test:user-journey:e2e": "playwright test -c apps/web/playwright.config.ts documents.spec.ts home-entry.spec.ts issue-auto-run.spec.ts mail-entry.spec.ts recovery.spec.ts shell-navigation.spec.ts workflow-memory-routine.spec.ts workflow-memory-pilot-real-server.spec.ts my-template-real-server.spec.ts private-tutor-real-server.spec.ts",
     "eval:mail-classifier": "node tools/dev/mail-classifier-release-eval.mjs",
     "release:mail": "pnpm eval:mail-classifier && node --test apps/server/test/mail-folder-organization.test.mjs apps/server/test/mail-folder-suggestions.test.mjs apps/server/test/mail-classification.test.mjs apps/server/test/mail-query-index.test.mjs tools/dev/test/mail-classifier-release-eval.test.mjs tools/dev/test/mail-rollout-pilot.test.mjs",
@@ -54,8 +68,10 @@
     "canvas:register-app": "node tools/dev/register-canvas-application.mjs",
     "claude:register-app": "node tools/dev/register-claude-application.mjs",
     "officecli:register-app": "node tools/dev/register-officecli-application.mjs",
+    "cad:runtime:setup": "node tools/dev/setup-ezdxf-cad-runtime.mjs",
     "gmail:register-app": "node tools/dev/register-gmail-application.mjs",
     "gmail:register-send-app": "node tools/dev/register-gmail-send-application.mjs",
+    "wechat:official:register": "node tools/dev/register-wechat-official-application.mjs",
     "mail:163:register": "node tools/dev/register-163-mail-application.mjs",
     "mail:163:setup": "pwsh -NoProfile -ExecutionPolicy Bypass -File tools/mail-mcp/setup-163.ps1",
     "test": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present test && pnpm smoke:local && pnpm smoke:port",
@@ -155,6 +171,7 @@
     "feishu:import": "node tools/feishu-doc-imports/src/cli.mjs",
     "smoke:ci": "node tools/dev/run-ci-smokes.mjs",
     "smoke:ssh-target": "node tools/dev/ssh-target-smoke.mjs",
+    "verify:my-site:ssh-real": "node tools/dev/my-site-ssh-real-validation.mjs",
     "smoke:terminal": "node tools/dev/terminal-smoke.mjs",
     "smoke:tool-contract": "node tools/dev/tool-registry-contract-smoke.mjs",
     "smoke:tool-review-client": "node tools/dev/tool-registry-review-client-smoke.mjs",
@@ -250,7 +267,6 @@
   "devDependencies": {
     "electron": "^43.1.1",
     "electron-builder": "^26.15.3",
-    "playwright": "^1.61.1",
     "typescript": "^5.7.2"
   },
   "dependencies": {
@@ -267,6 +283,7 @@
     "imapflow": "^1.0.195",
     "mailparser": "^3.7.4",
     "node-pty": "^1.1.0",
+    "playwright": "^1.61.1",
     "zod": "4.4.3"
   },
   "optionalDependencies": {

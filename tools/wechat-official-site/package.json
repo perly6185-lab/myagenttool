@@ -1,0 +1,13 @@
+{
+  "name": "@myagenttool/wechat-official-site",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Governed browser-assisted WeChat Official Account session and draft synchronization plugin.",
+  "type": "module",
+  "dependencies": {
+    "@myagenttool/session-engine": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test ./test/*.test.mjs"
+  }
+}

@@ -106,6 +106,19 @@ const SESSION_SITES = Object.freeze([
     heartbeatIntervalMinutes: null,
     profileDir: resolveProfileDir("jianshu"),
   },
+  {
+    // First write-capable site plugin. It reuses one locally persisted browser
+    // profile, but is probed only immediately before a user-requested draft
+    // operation. No heartbeat opens the publisher in the background.
+    site: "wechat_official",
+    displayName: "微信公众号",
+    authMethod: "persistent_profile",
+    heartbeatTier: "manual",
+    heartbeatIntervalMinutes: null,
+    accountScoped: true,
+    packageDirectory: "wechat-official-site",
+    profileDir: resolveProfileDir("wechat_official"),
+  },
 ]);
 
 /** @param {string} site @returns {typeof SESSION_SITES[number] | undefined} */
@@ -159,9 +172,11 @@ function isArgv(value) {
  * @returns {string | null}
  */
 function defaultCliPath(site) {
+  const entry = findSessionSite(site);
+  if (!entry) return null;
   const here = fileURLToPath(new URL(".", import.meta.url));
   const repoRoot = resolve(here, "../../../..");
-  const cli = resolve(repoRoot, "tools", `${site}-imports`, "src", "cli.mjs");
+  const cli = resolve(repoRoot, "tools", entry.packageDirectory ?? `${site}-imports`, "src", "cli.mjs");
   return existsSync(cli) ? cli : null;
 }
 
@@ -279,6 +294,7 @@ export function createSessionManager({ state, now, appendEvent, persistStateSoon
         authMethod: entry.authMethod,
         heartbeatTier: entry.heartbeatTier,
         heartbeatIntervalMinutes: entry.heartbeatIntervalMinutes,
+        accountScoped: entry.accountScoped === true,
         profileDir: entry.profileDir,
         status: row?.status ?? "unknown",
         lastProbeAt: row?.lastProbeAt ?? null,
@@ -460,10 +476,23 @@ export function createSessionManager({ state, now, appendEvent, persistStateSoon
       row = { id: `session_${site}`, site, createdAt: at };
       state.sessions = [...state.sessions, row];
     }
+    row.status = "active";
+    row.lastProbeOk = true;
+    row.detail = site === "wechat_official"
+      ? "公众号后台登录已完成；后续草稿任务会复用此登录状态。"
+      : "Interactive login completed; the saved profile will be reused.";
     row.lastReauthAt = at;
     row.updatedAt = at;
     persistStateSoon();
     return row;
+  }
+
+  /** Fold a site-operation result into the same user-visible login card. */
+  function recordExecutionStatus(site, { status, detail } = {}) {
+    const normalizedStatus = ["active", "unknown", "expired", "needs_login"].includes(status)
+      ? status
+      : "unknown";
+    return recordProbe(site, normalizedStatus, true, String(detail ?? "").slice(0, 500));
   }
 
   /**
@@ -492,6 +521,7 @@ export function createSessionManager({ state, now, appendEvent, persistStateSoon
     listSessions,
     probeSite,
     seedLogin,
+    recordExecutionStatus,
     sessionHealthSweep,
     acquireProfile: (site, env = process.env) => acquireSessionProfile(site, env),
   };

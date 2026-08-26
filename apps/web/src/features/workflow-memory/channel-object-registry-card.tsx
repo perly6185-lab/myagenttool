@@ -186,7 +186,8 @@ export function ChannelObjectRegistryCard() {
     if (!importPreview) return;
     setPending(true); setError(null);
     try {
-      await workflowMemoryApi.confirmChannelObjectImport(importPreview.id);
+      const grant = await workflowMemoryApi.issueApprovalGrant("channel_object_import_confirm", importPreview.id);
+      await workflowMemoryApi.confirmChannelObjectImport(importPreview.id, grant.token);
       setImportPreview(null); setImportFile(null); setNotice(`已导入 ${importPreview.acceptedRows} 条${KIND_COPY[importPreview.kind]}。`);
       await queryClient.invalidateQueries({ queryKey: ["channel-objects", projectId] });
     } catch (caught) { setError(caught instanceof Error ? caught.message : "确认导入失败，请稍后重试。"); }
@@ -208,7 +209,8 @@ export function ChannelObjectRegistryCard() {
     if (!syncPreview) return;
     setSyncing(true); setError(null);
     try {
-      const result = await workflowMemoryApi.confirmChannelObjectConnectorSync(syncPreview.id);
+      const grant = await workflowMemoryApi.issueApprovalGrant("channel_object_connector_sync_confirm", syncPreview.id);
+      const result = await workflowMemoryApi.confirmChannelObjectConnectorSync(syncPreview.id, grant.token);
       setSyncPreview(null);
       setNotice(`同步完成：新增或更新 ${result.sync.imported} 条，失败 ${result.sync.failed} 条。`);
       await queryClient.invalidateQueries({ queryKey: ["channel-objects", projectId] });
@@ -331,7 +333,7 @@ export function ChannelObjectRegistryCard() {
               <p className="font-medium">{importPreview.fileName}：新增 {importPreview.diff?.created ?? importPreview.acceptedRows}，修改 {importPreview.diff?.updated ?? 0}，无变化 {importPreview.diff?.unchanged ?? 0}，移除 {importPreview.diff?.removed ?? 0}，错误 {importPreview.errorRows}</p>
               <div className="flex gap-2">
                 <Button size="sm" variant="ghost" onClick={() => setImportPreview(null)}>取消</Button>
-                <Button size="sm" onClick={() => void confirmImport()} disabled={pending || importPreview.errorRows > 0 || importPreview.acceptedRows === 0}>确认加入</Button>
+                <Button size="sm" onClick={() => void confirmImport()} disabled={pending || importPreview.errorRows > 0 || importPreview.acceptedRows === 0}>审批并加入</Button>
               </div>
             </div>
             {importPreview.errors.length ? <ul className="mt-2 list-disc pl-5 text-xs text-destructive">{importPreview.errors.slice(0, 5).map((item) => <li key={`${item.rowNumber}-${item.error}`}>第 {item.rowNumber} 行：{item.error}</li>)}</ul> : <p className="mt-2 text-xs text-muted-foreground">前 {Math.min(importPreview.previewRows.length, 20)} 条已通过校验，确认后才会写入。</p>}
@@ -384,9 +386,9 @@ export function ChannelObjectRegistryCard() {
           <div className="mt-3 rounded-lg border bg-background p-3 text-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="font-medium">同步预览：新增 {syncPreview.creates} 条，更新 {syncPreview.updates} 条，无变化 {syncPreview.unchanged} 条</p>
-              <div className="flex gap-2"><Button size="sm" variant="ghost" onClick={() => setSyncPreview(null)}>取消</Button><Button size="sm" onClick={() => void confirmSync()} disabled={syncing || syncPreview.creates + syncPreview.updates === 0}>确认同步</Button></div>
+              <div className="flex gap-2"><Button size="sm" variant="ghost" onClick={() => setSyncPreview(null)}>取消</Button><Button size="sm" onClick={() => void confirmSync()} disabled={syncing || syncPreview.creates + syncPreview.updates === 0}>审批并同步</Button></div>
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">确认后只更新本地业务对象，不会修改外部系统。</p>
+            <p className="mt-2 text-xs text-muted-foreground">审批会签发一次性授权；只更新本地业务对象，不会修改外部系统。</p>
             {syncPreview.sampleRows.length ? <ul className="mt-2 list-disc pl-5 text-xs">{syncPreview.sampleRows.slice(0, 5).map((row) => <li key={`${row.businessKey}-${row.change}`}>{row.change === "create" ? "新增" : row.change === "update" ? "更新" : "不变"}：{row.label}</li>)}</ul> : null}
           </div>
         ) : null}

@@ -108,3 +108,45 @@ test("免打扰消息会等到窗口结束后补发", () => {
   assert.equal(service.sweep().processed, 1);
   assert.equal(deliveries.length, 1);
 });
+
+test("同一目标的多个完成通知合并，重复恢复通知不会重复入批次", () => {
+  const { service, deliveries, state, setNow } = harness();
+  state.channelTaskThreads[0].workGoalId = "goal_1";
+  state.channelTaskThreads[0].status = "succeeded";
+  state.channelTaskThreads.push({ id: "thread_2", channelId: "chn_1", conversationId: "conv_1", workGoalId: "goal_1", summary: "生成客户方案", status: "succeeded", createdAt: "2026-08-19T11:00:00.000Z" });
+  const first = service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "succeeded", content: "报价已整理" });
+  const duplicate = service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "succeeded", content: "报价已整理" });
+  const second = service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_2", event: "succeeded", content: "方案已生成" });
+  assert.equal(first.batched, true);
+  assert.equal(duplicate.deduplicated, true);
+  assert.equal(second.batched, true);
+  assert.equal(deliveries.length, 0);
+  assert.equal(state.channelNotificationBatches.length, 1);
+  assert.equal(state.channelNotificationBatches[0].items.length, 2);
+  assert.deepEqual(state.channelNotificationBatches[0].threadIds, ["thread_1", "thread_2"]);
+  setNow("2026-08-19T12:01:00.000Z");
+  assert.equal(service.sweep().processed, 1);
+  assert.equal(deliveries.length, 1);
+  assert.match(deliveries[0].content, /任务完成汇总（2 项）/);
+  assert.match(deliveries[0].content, /整理报价.*报价已整理/);
+  assert.match(deliveries[0].content, /生成客户方案.*方案已生成/);
+});
+
+test("不同目标各自汇总，失败和等待用户即使免打扰也立即送达", () => {
+  const { service, deliveries, state } = harness({ now: "2026-08-19T23:00:00.000Z" });
+  state.channelTaskThreads[0].workGoalId = "goal_1";
+  state.channelTaskThreads.push(
+    { id: "thread_2", channelId: "chn_1", conversationId: "conv_1", workGoalId: "goal_1", summary: "任务二", status: "running", createdAt: "2026-08-19T11:00:00.000Z" },
+    { id: "thread_3", channelId: "chn_1", conversationId: "conv_1", workGoalId: "goal_2", summary: "任务三", status: "running", createdAt: "2026-08-19T11:00:00.000Z" },
+    { id: "thread_4", channelId: "chn_1", conversationId: "conv_1", workGoalId: "goal_2", summary: "任务四", status: "running", createdAt: "2026-08-19T11:00:00.000Z" },
+  );
+  service.setPolicy({ channelId: "chn_1", conversationId: "conv_1", patch: { quietHours: { enabled: true, start: "22:00", end: "08:00", timezone: "UTC" } } });
+  service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_1", event: "succeeded", content: "完成" });
+  service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_3", event: "succeeded", content: "完成" });
+  assert.equal(state.channelNotificationBatches.length, 2);
+  service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_2", event: "failed", content: "执行失败，需要处理" });
+  service.notifyTaskEvent({ channelId: "chn_1", conversationId: "conv_1", threadId: "thread_4", event: "waiting_user", content: "请补充资料" });
+  assert.equal(deliveries.length, 2);
+  assert.match(deliveries[0].content, /执行失败/);
+  assert.match(deliveries[1].content, /请补充资料/);
+});

@@ -8,6 +8,7 @@ import { validSessionCsrf } from "../services/identity-security.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
 import { handleApplicationRoutes } from "../routes/applications.mjs";
+import { handleArticleExtractorPluginRoutes } from "../routes/article-extractor-plugins.mjs";
 import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
@@ -35,6 +36,9 @@ import { handleSessionRoutes } from "../routes/sessions.mjs";
 import { handleWorkflowMemoryRoutes } from "../routes/workflow-memory.mjs";
 import { handleChannelObjectRoutes } from "../routes/channel-objects.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
+import { handleSiteRoutes } from "../routes/sites.mjs";
+import { handleSitePilotRoutes } from "../routes/site-pilot.mjs";
+import { handleSiteCredentialRoutes } from "../routes/site-credentials.mjs";
 import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
 import { handlePrivateTutorRoutes } from "../routes/private-tutor.mjs";
 import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
@@ -116,6 +120,12 @@ export function createHttpServer({
   updateWorkItemAttention,
   getWorkItemGithubSyncDiagnostics,
   suggestWorkItemDraft,
+  previewIntentTaskPlan,
+  commitIntentTaskPlan,
+  prepareLedgerPostingPlan,
+  commitLedgerPostingPlan,
+  getLedgerPostingPlan,
+  createResultRepairTask,
   listMyTemplateRoutingFeedback,
   removeMyTemplateRoutingFeedback,
   previewMyTemplateDraft,
@@ -153,6 +163,11 @@ export function createHttpServer({
   createArticleDerivative,
   listArticleDerivatives,
   getArticleDerivative,
+  listArticleExtractorPlugins,
+  planArticleExtractorPluginInstall,
+  installArticleExtractorPlugin,
+  disableArticleExtractorPlugin,
+  activateArticleExtractorPlugin,
   addWorkItemMaterials,
   removeWorkItemMaterial,
   restoreWorkItemMaterial,
@@ -215,6 +230,7 @@ export function createHttpServer({
   listWorkflowBusinessRoutineCandidates,
   createRoutineDraftFromDiscovery,
   listBusinessRoutineDefinitions,
+  listTaskTemplates,
   updateBusinessRoutineDefinition,
   createBusinessRoutineDefinitionVersion,
   publishBusinessRoutineDefinition,
@@ -224,6 +240,7 @@ export function createHttpServer({
   activateLedgerDefinition,
   disableLedgerDefinition,
   inspectLedgerTargetIdentity,
+  readBusinessLedgerRecord,
   previewLedgerUpsert,
   previewLedgerBatchUpsert,
   commitLedgerUpsertPreview,
@@ -351,8 +368,21 @@ export function createHttpServer({
   setApplicationAutoRecovery,
   setApplicationHealthProbe,
   transitionApplication,
+  confirmSshHostFingerprint,
   createSshTarget,
+  updateSshTarget,
   createSshConnectionTest,
+  observeSshHostFingerprint,
+  verifySshHostConnection,
+  listHostFileScopes,
+  createHostFileScope,
+  updateHostFileScope,
+  listHostFileEntries,
+  listHostFileTransfers,
+  uploadHostFile,
+  downloadHostFile,
+  listHostTlsActivationProfiles,
+  createHostTlsActivationProfile,
   createManagedTerminalSession,
   queueTerminalBridgeAction,
   nextTerminalBridgeAction,
@@ -522,7 +552,9 @@ export function createHttpServer({
   readRetrievedLocalContent,
   getLocalContentCatalogStats,
   previewLocalContent,
+  previewLocalContentAsset,
   refreshLocalContent,
+  archiveLocalContent,
   getLocalContentHealth,
   resolveLocalContentOriginal,
   resolveLocalContentContainer,
@@ -535,6 +567,10 @@ export function createHttpServer({
   getHomeWorkbench,
   listWorkItemAttention,
   getWorkItem,
+  reconcileWorkItemRecordBindings,
+  reconcileVisibleWorkItemRecordBindings,
+  refreshWorkItemRecordBinding,
+  refreshWorkItemRecordBindingsBatch,
   createWorkItem,
   createWorkItemFromExternal,
   captureWorkItemDataContext,
@@ -564,6 +600,45 @@ export function createHttpServer({
   suggestPlanningPlan,
   executePlanningRecommendedAction,
   decidePlanningRecommendedAction,
+  listSites,
+  getSite,
+  createSite,
+  updateSite,
+  listSiteEntries,
+  getSiteEntry,
+  createSiteEntry,
+  updateSiteEntry,
+  listSiteAssets,
+  uploadSiteAsset,
+  updateSiteAsset,
+  deleteSiteAsset,
+  getSiteAssetContent,
+  previewSite,
+  createSitePublicationPlan,
+  getSitePublicationPlan,
+  confirmSitePublicationPlan,
+  listSitePublications,
+  createSiteRollbackPlan,
+  confirmSiteRollbackPlan,
+  listSiteDeploymentProviders,
+  configureSiteDeploymentTarget,
+  verifySiteDeploymentTarget,
+  configureSiteDomainTlsBinding,
+  configureSiteDomainTlsDeployment,
+  verifySiteDomainTlsDns,
+  issueSiteDomainTlsStaging,
+  deploySiteDomainTlsStaging,
+  startSitePilotSession,
+  getActiveSitePilotSession,
+  updateSitePilotSession,
+  deleteSitePilotSession,
+  getSitePilotSummary,
+  listSitePilotCampaigns,
+  createSitePilotCampaign,
+  updateSitePilotCampaign,
+  deleteSitePilotCampaign,
+  createSitePilotInvitation,
+  resolveSitePilotWorkspace,
   registerChannel,
   listChannels,
   listChannelInteractions,
@@ -580,6 +655,7 @@ export function createHttpServer({
   routeChannelTask,
   dismissChannelTask,
   retryChannelTask,
+  reconcileWechatDraftChannelTask,
   rerouteChannelTask,
   takeoverChannelTask,
   replyChannelTask,
@@ -595,6 +671,8 @@ export function createHttpServer({
   finalizePrivateTutorLearnerDeletion = null,
   privateTutorReleaseBuildId = "development-unversioned",
   identityProviderCore = null,
+  provisionSiteCredential,
+  revokeSiteCredential,
 }) {
   const identityPolicy = identityPolicyFromEnv();
   const loopbackToken = configuredLoopbackToken();
@@ -673,14 +751,29 @@ export function createHttpServer({
         && /^\/api\/projects\/[^/]+\/task-material-drafts\/[^/]+\/files\/[^/]+$/.test(url.pathname);
       const binaryTemplateLearningUpload = req.method === "POST"
         && /^\/api\/workflow-memory\/template-learning\/[^/]+\/files$/.test(url.pathname);
+      const binarySiteAssetUpload = req.method === "PUT"
+        && /^\/api\/sites\/[^/]+\/assets$/.test(url.pathname);
+      const binaryHostFileUpload = req.method === "POST"
+        && /^\/api\/host-file-scopes\/[^/]+\/transfers\/upload$/.test(url.pathname);
       if (["POST", "PUT", "PATCH"].includes(req.method) && url.pathname.startsWith("/api/")
-        && !binaryTaskMaterialUpload && !binaryTemplateLearningUpload) {
+        && !binaryTaskMaterialUpload && !binaryTemplateLearningUpload && !binarySiteAssetUpload && !binaryHostFileUpload) {
         const contentType = String(req.headers["content-type"] ?? "").trim().toLowerCase();
         if (contentType && !contentType.startsWith("application/json")) {
           sendJson(res, 415, { error: "unsupported_content_type", message: "API writes must declare application/json." });
           return;
         }
       }
+
+      if (await handleSiteCredentialRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        desktopToken: process.env.MYAGENT_DESKTOP_CREDENTIAL_TOKEN ?? "",
+        provision: provisionSiteCredential,
+        revoke: revokeSiteCredential,
+      })) return;
 
       const bridgePath = url.pathname.startsWith("/api/bridge/");
       // External providers authenticate webhook deliveries with endpoint-specific
@@ -895,8 +988,8 @@ export function createHttpServer({
         req, res, url, sendJson, readJson, actor,
         rebuildLocalContentCatalog, searchLocalContent, browseLocalContentDirectories, describeLocalContentRetrieval,
         retrieveLocalContentDirectories, retrieveLocalContentSummaries, readRetrievedLocalContent,
-        getLocalContentCatalogStats, previewLocalContent,
-        refreshLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
+        getLocalContentCatalogStats, previewLocalContent, previewLocalContentAsset,
+        refreshLocalContent, archiveLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
       })) {
         return;
       }
@@ -907,6 +1000,7 @@ export function createHttpServer({
         routeChannelTask,
         dismissChannelTask,
         retryChannelTask,
+        reconcileWechatDraftChannelTask,
         rerouteChannelTask,
         takeoverChannelTask,
         replyChannelTask,
@@ -1021,6 +1115,7 @@ export function createHttpServer({
         listBusinessRoutineCandidates: listWorkflowBusinessRoutineCandidates,
         createRoutineDraft: createRoutineDraftFromDiscovery,
         listBusinessRoutineDefinitions,
+        listTaskTemplates,
         updateBusinessRoutineDefinition,
         createBusinessRoutineDefinitionVersion,
         publishBusinessRoutineDefinition,
@@ -1030,6 +1125,7 @@ export function createHttpServer({
         activateLedgerDefinition,
         disableLedgerDefinition,
         inspectLedgerTargetIdentity,
+        readBusinessLedgerRecord,
         previewLedgerUpsert,
         previewLedgerBatchUpsert,
         commitLedgerUpsertPreview,
@@ -1118,6 +1214,8 @@ export function createHttpServer({
       if (await handleWorkItemRoutes({
         req, res, url, sendJson, readJson, actor, state,
         listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+        reconcileWorkItemRecordBindings, reconcileVisibleWorkItemRecordBindings,
+        refreshWorkItemRecordBinding, refreshWorkItemRecordBindingsBatch,
         listReportDrafts: listWorkItemReportDrafts,
         getReportDraft: getWorkItemReportDraft,
         generateReportDraft: generateWorkItemReportDraft,
@@ -1177,6 +1275,12 @@ export function createHttpServer({
         updateAttention: updateWorkItemAttention,
         githubSyncDiagnostics: getWorkItemGithubSyncDiagnostics,
         suggestWorkItemDraft,
+        previewIntentTaskPlan,
+        commitIntentTaskPlan,
+        prepareLedgerPostingPlan,
+        commitLedgerPostingPlan,
+        getLedgerPostingPlan,
+        createResultRepairTask,
         listMyTemplateRoutingFeedback,
         removeMyTemplateRoutingFeedback,
         previewMyTemplateDraft,
@@ -1229,6 +1333,57 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleSitePilotRoutes({
+        req, res, url, sendJson, readJson, actor,
+        startSitePilotSession,
+        getActiveSitePilotSession,
+        updateSitePilotSession,
+        deleteSitePilotSession,
+        getSitePilotSummary,
+        listSitePilotCampaigns,
+        createSitePilotCampaign,
+        updateSitePilotCampaign,
+        deleteSitePilotCampaign,
+        createSitePilotInvitation,
+      })) {
+        return;
+      }
+
+      if (await handleSiteRoutes({
+        req, res, url, sendJson, readJson, actor,
+        resolveSitePilotWorkspace,
+        listSites,
+        getSite,
+        createSite,
+        updateSite,
+        listEntries: listSiteEntries,
+        getEntry: getSiteEntry,
+        createEntry: createSiteEntry,
+        updateEntry: updateSiteEntry,
+        listAssets: listSiteAssets,
+        uploadAsset: uploadSiteAsset,
+        updateAsset: updateSiteAsset,
+        deleteAsset: deleteSiteAsset,
+        getAssetContent: getSiteAssetContent,
+        previewSite,
+        createPublicationPlan: createSitePublicationPlan,
+        getPublicationPlan: getSitePublicationPlan,
+        confirmPublicationPlan: confirmSitePublicationPlan,
+        listPublications: listSitePublications,
+        createRollbackPlan: createSiteRollbackPlan,
+        confirmRollbackPlan: confirmSiteRollbackPlan,
+        listDeploymentProviders: listSiteDeploymentProviders,
+        configureDeploymentTarget: configureSiteDeploymentTarget,
+        verifyDeploymentTarget: verifySiteDeploymentTarget,
+        configureDomainTlsBinding: configureSiteDomainTlsBinding,
+        configureDomainTlsDeployment: configureSiteDomainTlsDeployment,
+        verifyDomainTlsDns: verifySiteDomainTlsDns,
+        issueDomainTlsStaging: issueSiteDomainTlsStaging,
+        deployDomainTlsStaging: deploySiteDomainTlsStaging,
+      })) {
+        return;
+      }
+
       if (handleLoopRoutineRoutes({ req, res, url, sendJson, currentLoopRoutineProjectContext })) {
         return;
       }
@@ -1238,6 +1393,7 @@ export function createHttpServer({
         listSessions,
         probeSessionSite,
         reseedSessionSite,
+        actor,
       })) {
         return;
       }
@@ -1327,6 +1483,22 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleArticleExtractorPluginRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        actor,
+        listPlugins: listArticleExtractorPlugins,
+        planInstall: planArticleExtractorPluginInstall,
+        installPlugin: installArticleExtractorPlugin,
+        disablePlugin: disableArticleExtractorPlugin,
+        activatePlugin: activateArticleExtractorPlugin,
+      })) {
+        return;
+      }
+
       if (await handleApplicationRoutes({
         req,
         res,
@@ -1369,8 +1541,21 @@ export function createHttpServer({
         readJson,
         actor,
         state,
+        confirmSshHostFingerprint,
         createSshTarget,
+        updateSshTarget,
         createSshConnectionTest,
+        observeSshHostFingerprint,
+        verifySshHostConnection,
+        listHostFileScopes,
+        createHostFileScope,
+        updateHostFileScope,
+        listHostFileEntries,
+        listHostFileTransfers,
+        uploadHostFile,
+        downloadHostFile,
+        listHostTlsActivationProfiles,
+        createHostTlsActivationProfile,
         createManagedTerminalSession,
         queueTerminalBridgeAction,
         nextTerminalBridgeAction,
@@ -1658,8 +1843,8 @@ function setCors(req, res) {
     res.setHeader("Vary", "Origin");
   }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token,X-Loopback-Token");
-  res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token,X-Loopback-Token,X-Transfer-Confirmed,X-Overwrite-Confirmed");
+  res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range,X-Host-Transfer-Id");
 }
 
 async function readJson(req) {

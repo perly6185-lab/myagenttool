@@ -126,22 +126,34 @@ export async function request<T = unknown>(
   retry = true,
   timeoutMs = REQUEST_TIMEOUT_MS,
   extraHeaders?: Record<string, string>,
+  userSignal?: AbortSignal,
 ): Promise<T> {
   const hadSession = await ensureSession();
   const headers: Record<string, string> = { ...csrfHeaders(method), ...extraHeaders };
   if (body) headers["Content-Type"] = "application/json";
-  const response = await fetch(`${apiBase}${path}`, {
-    method,
-    headers: Object.keys(headers).length ? headers : undefined,
-    credentials: "include",
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), timeoutMs);
+  const abortFromUser = () => controller.abort(userSignal?.reason);
+  if (userSignal?.aborted) abortFromUser();
+  else userSignal?.addEventListener("abort", abortFromUser, { once: true });
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase}${path}`, {
+      method,
+      headers: Object.keys(headers).length ? headers : undefined,
+      credentials: "include",
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } finally {
+    globalThis.clearTimeout(timeout);
+    userSignal?.removeEventListener("abort", abortFromUser);
+  }
   if (response.status === 401 && retry && hadSession) {
     sessionReady = false;
     sessionChecked = false;
     await ensureSession();
-    return request<T>(method, path, body, false, timeoutMs, extraHeaders);
+    return request<T>(method, path, body, false, timeoutMs, extraHeaders, userSignal);
   }
   if (response.status === 204) return undefined as T;
   const data = await response.json().catch(() => ({}));

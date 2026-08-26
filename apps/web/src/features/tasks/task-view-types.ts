@@ -1,4 +1,5 @@
 import type { WorkItemContentReference } from "@/features/local-content/local-content-types";
+import type { LedgerPostingPlan, TaskRecordBinding } from "@myagenttool/protocol/task-resources";
 
 export type GithubItem = {
   type: "issue" | "pr";
@@ -38,6 +39,47 @@ export type LocalWorkItem = {
   type: "task" | "bug" | "feature" | "initiative";
   status: "backlog" | "ready" | "in_progress" | "review" | "blocked" | "done";
   priority: "p0" | "p1" | "p2" | "p3";
+  intentId?: string | null;
+  intentStatement?: string;
+  taskKind?: string;
+  workGoalId?: string | null;
+  artifactContract?: { consumes: string[]; produces: string[]; requirements?: Array<Record<string, unknown>> };
+  resultVerification?: {
+    schemaVersion: number;
+    status: "passed" | "failed" | "not_required";
+    summary: string;
+    checks: Array<{
+      kind: string;
+      status: "passed" | "failed";
+      summary: string;
+      expected?: Record<string, unknown>;
+      actual?: Record<string, unknown>;
+    }>;
+    verificationChecks: Array<{
+      kind: string;
+      status: "passed" | "failed";
+      summary: string;
+    }>;
+    repair: {
+      required: true;
+      mode: "independent_task";
+      reasons: string[];
+      suggestedRequest: string;
+    } | null;
+    digest: string;
+  } | null;
+  repairOfWorkItemId?: string | null;
+  resultRepairReasons?: string[];
+  platformTarget?: { id: string; label: string } | null;
+  artifactHandoffs?: Array<{
+    sourceWorkItemId: string;
+    kinds: string[];
+    assetIds: string[];
+    status: "attached" | "awaiting_artifact";
+    at: string;
+  }>;
+  creationBasis?: "explicit_user_intent" | "channel_ingest_rule" | "saved_automation" | "required_guard" | "imported";
+  planningHorizon?: "committed";
   executionPolicy?: "inherit" | "auto" | "manual" | "paused";
   state: "open" | "closed";
   businessState?: "open" | "closed";
@@ -107,6 +149,18 @@ export type LocalWorkItem = {
     evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string; sourceAutoRunId?: string | null;
   }[];
   inputAssets?: WorkItemAssetRef[];
+  recordBindings?: TaskRecordBinding[];
+  ledgerPostingPlanId?: string | null;
+  ledgerPostingPlan?: (LedgerPostingPlan & {
+    id: string;
+    revision: number;
+    status: string;
+    previewId: string | null;
+    batchPreviewId: string | null;
+    previewIds: string[];
+    invalidatedAt?: string | null;
+    invalidatedReason?: string | null;
+  }) | null;
   localContentRefs?: WorkItemContentReference[];
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
@@ -411,13 +465,85 @@ export type LocalWorkItem = {
   parent?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" } | null;
   subIssues?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
   subIssuesSummary?: { total: number; completed: number; percentCompleted: number };
-  blockedBy?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed"; resolved: boolean }[];
+  intentPeers?: { id: string; localRef: string; title: string; taskKind: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
+  workGoal?: {
+    id: string;
+    title: string;
+    statement: string;
+    outcome: string;
+    status: "active" | "completed" | string;
+    planVersion: number;
+    platforms: Array<{ id: string; label: string }>;
+    progress?: { total: number; completed: number };
+    userSummary?: {
+      schemaVersion: 1;
+      goalId: string;
+      title: string;
+      outcome: string;
+      status: string;
+      progress: { total: number; completed: number; cancelled: number; failed: number; running: number; waiting: number; needsUser: number; percent: number };
+      quality: { passed: number; failed: number; unchecked: number };
+      nextStep: string;
+      nextAction?: {
+        kind: "none" | "repair_result" | "open_task" | "view_progress" | "view_waiting" | string;
+        workItemId: string | null;
+        label: string;
+      };
+      latestChange: { id: string; status: string; summary: string; updatedAt: string | null } | null;
+    } | null;
+  } | null;
+  publicationReadiness?: {
+    state: "ready" | "needs_setup";
+    reason: string;
+    platformId: string | null;
+    connection: {
+      applicationId: string;
+      applicationName: string;
+      facadeId: string;
+      displayName: string;
+      requiresApproval: boolean;
+    } | null;
+  } | null;
+  draftSyncReadiness?: {
+    state: "ready" | "needs_setup";
+    reason: string;
+    platformId: string | null;
+    connection: {
+      applicationId: string;
+      applicationName: string;
+      facadeId: string;
+      displayName: string;
+      requiresApproval: boolean;
+    } | null;
+  } | null;
+  goalTasks?: Array<{
+    id: string;
+    localRef: string;
+    title: string;
+    taskKind: string;
+    status: LocalWorkItem["status"];
+    state: "open" | "closed";
+    dependencyIds: string[];
+    platformTarget?: { id: string; label: string } | null;
+  }>;
+  blockedBy?: {
+    id: string;
+    localRef: string;
+    title: string;
+    status: LocalWorkItem["status"];
+    state: "open" | "closed";
+    resolved: boolean;
+    taskResolved?: boolean;
+    artifactResolved?: boolean;
+    unresolvedArtifactKinds?: string[];
+  }[];
   blocks?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
   createdAt?: string;
   updatedAt: string;
 };
 export type WorkItemAssetRef = {
   id: string | null;
+  contentId?: string | null;
   originalName?: string;
   path: string;
   family: string;
@@ -543,7 +669,7 @@ export type WorkItemActivity = {
 };
 export type WorkItemAttention = {
   id: string;
-  kind: "github_conflict" | "github_deleted" | "execution_approval" | "execution_input" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
+  kind: "record_binding_stale" | "github_conflict" | "github_deleted" | "execution_approval" | "execution_input" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
   severity: "low" | "medium" | "high";
   workItemId: string | null;
   planningProjectId?: string | null;
@@ -563,6 +689,7 @@ export type WorkItemAttentionMetrics = {
   breached: number;
   claimed: number;
   pendingApprovals: number;
+  staleRecords: number;
   oldestAgeSeconds: number;
 };
 export type LocalWorkItemAutoRun = {
@@ -583,7 +710,7 @@ export type LocalWorkItemAutoRun = {
     redactions?: number;
   } | null;
   decision?: {
-    path: string; decidedBy: string; confidence: number; rationale?: string | null;
+    path: string; workKind?: string | null; decidedBy: string; confidence: number; rationale?: string | null;
     via?: string | null; latencyMs?: number | null; clarifyingQuestions?: string[] | null;
     suggestedActions?: Array<{ id: string; label: string; description?: string; payload?: { repoUrl?: string } | null }> | null;
     evidence?: { policyVersion: string; modelVersion: string | null; minConfidence: number; inputDigest: string } | null;
@@ -722,6 +849,7 @@ export type LocalWorkItemObservability = {
 export type WorkItemOutcomeFile = {
   name: string;
   path: string | null;
+  contentId?: string | null;
   projectId: string | null;
   worktreeId: string | null;
   status: "available" | "unavailable";

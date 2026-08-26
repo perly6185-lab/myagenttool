@@ -114,6 +114,8 @@ function projectFileEntries({ item, deliveryReport, fullReport, invocationSummar
   const candidates = [
     ...(item?.outputAssets ?? []).map((asset) => ({
       path: asset?.path,
+      name: asset?.originalName,
+      contentId: asset?.contentId ?? null,
       worktreeId: asset?.worktreeId ?? defaultWorktreeId,
     })),
     ...(deliveryReport?.changedFiles ?? []).map((path) => ({ path, worktreeId: defaultWorktreeId })),
@@ -129,6 +131,23 @@ function projectFileEntries({ item, deliveryReport, fullReport, invocationSummar
   for (const candidate of candidates) {
     const originalPath = normalizedFilePath(candidate.path);
     if (systemMaterialBookkeepingPath(originalPath)) continue;
+    if (candidate.contentId) {
+      const name = String(candidate.name ?? fileName(originalPath) ?? "本地资料").trim().slice(0, 300) || "本地资料";
+      const key = `local-content:${candidate.contentId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({
+        name,
+        path: null,
+        contentId: candidate.contentId,
+        projectId: fileContext?.projectId ?? null,
+        worktreeId: null,
+        status: "available",
+        preview: BROWSABLE_DOCUMENT_EXTENSIONS.has(fileExtension(name)) ? "document" : "unsupported",
+      });
+      if (entries.length >= 50) break;
+      continue;
+    }
     let path = safeRelativePath(originalPath);
     let worktreeId = candidate.worktreeId ?? defaultWorktreeId;
     let status = "available";
@@ -173,8 +192,9 @@ export function projectWorkItemOutcome({
   invocationSummary = null,
   fileContext = null,
 } = {}) {
-  const fullReport = latestRun?.report ?? deliveryReport?.summary ?? null;
-  if (!fullReport) {
+  const fullReport = latestRun?.report ?? deliveryReport?.summary ?? item?.lastProgressSummary ?? null;
+  const fileEntries = projectFileEntries({ item, deliveryReport, fullReport, invocationSummary, fileContext });
+  if (!fullReport && !fileEntries.length) {
     return {
       status: latestRun && ["done", "pr_open", "report_posted"].includes(latestRun.status) ? "missing" : "pending",
       summary: null,
@@ -188,11 +208,9 @@ export function projectWorkItemOutcome({
     };
   }
 
-  const fileEntries = projectFileEntries({ item, deliveryReport, fullReport, invocationSummary, fileContext });
-
   return {
     status: "available",
-    summary: headlineFrom(fullReport),
+    summary: fullReport ? headlineFrom(fullReport) : null,
     fullReport,
     highlights: highlightsFrom(fullReport),
     warnings: warningsFrom(fullReport),

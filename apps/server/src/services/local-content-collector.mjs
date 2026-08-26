@@ -164,6 +164,60 @@ export async function collectLocalContent({
     addRelation(task.ownerTeamId, task.contentId, id, "produces_output");
   }
 
+  for (const item of state.channelKnowledgeItems ?? []) {
+    if (item.status !== "ready" || item.archivedAt || !item.markdownPath) continue;
+    const path = safeRelativePath(item.markdownPath);
+    const id = contentId("article", item.ownerTeamId ?? LOCAL_TEAM_ID, item.id);
+    if (selectedSources.has("articles")) {
+      const inspected = inspectOriginal(dataRoot, path);
+      const cached = reusableExtraction(existingRecords.get(id), inspected, false);
+      const body = cached?.body ?? (inspected.available ? readBoundedText(inspected.absolutePath, inspected.size) : "");
+      const title = articleTitle(body) || item.title || basename(path || "article.md");
+      addRecord(catalogRecord({
+        id,
+        ownerTeamId: item.ownerTeamId ?? LOCAL_TEAM_ID,
+        projectId: item.projectId ?? null,
+        workItemId: item.workItemId ?? null,
+        kind: "article",
+        title,
+        body,
+        summary: boundedSummary(body, title),
+        storageMode: "managed",
+        rootKind: "application_data",
+        rootId: "channel-knowledge",
+        relativePath: path,
+        mimeType: "text/markdown",
+        size: inspected.size,
+        sha256: cached?.sha256 ?? (inspected.available ? fileDigest(inspected.absolutePath, inspected.size) : null),
+        sourceType: "channel_article_import",
+        sourceId: item.canonicalUrl ?? item.sourceUrl ?? item.id,
+        occurredAt: item.publishedAt ?? item.completedAt ?? item.createdAt ?? null,
+        importedAt: item.completedAt ?? null,
+        modifiedAt: inspected.modifiedAt,
+        originalAvailable: inspected.available,
+        unavailableReason: inspected.reason,
+        indexStatus: inspected.available ? (inspected.size > MAX_EXTRACTED_BYTES ? "partial" : "ready") : "missing",
+        metadata: {
+          channelKnowledgeItemId: item.id,
+          channelId: item.channelId ?? null,
+          conversationId: item.conversationId ?? null,
+          canonicalUrl: item.canonicalUrl ?? null,
+          manifestPath: item.manifestPath ?? null,
+          htmlPath: item.htmlPath ?? null,
+          provider: item.provider ?? null,
+          author: item.author ?? null,
+          extraction: inspected.available ? {
+            state: inspected.size > MAX_EXTRACTED_BYTES ? "partial" : "ready",
+            reason: inspected.size > MAX_EXTRACTED_BYTES ? "search_text_truncated" : null,
+            truncated: inspected.size > MAX_EXTRACTED_BYTES,
+          } : null,
+        },
+        indexedAt,
+      }), `managed:${path}`);
+    }
+    articlePaths.set(`managed:${path}`, id);
+  }
+
   for (const task of tasks.values()) {
     for (const asset of task.item.inputAssets ?? []) {
       const source = taskInputSource(state, stateStorePath, task.item, asset);
@@ -187,6 +241,13 @@ export async function collectLocalContent({
       addRelation(task.ownerTeamId, task.contentId, id, "uses_input");
     }
     for (const asset of task.item.outputAssets ?? []) {
+      if (asset.contentId) {
+        const outputs = outputsByTask.get(task.item.id) ?? [];
+        outputs.push(asset.contentId);
+        outputsByTask.set(task.item.id, outputs);
+        addRelation(task.ownerTeamId, task.contentId, asset.contentId, "produces_output");
+        continue;
+      }
       const source = taskAssetSource(state, task.item, asset);
       const key = rootPathKey(source, source.relativePath);
       const articleId = articlePaths.get(key);

@@ -1,4 +1,5 @@
-import { Eye, FolderOpen, Link2, ShieldCheck } from "lucide-react";
+import { Check, Copy, Download, Eye, FolderOpen, Link2, ShieldCheck, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { Field } from "@/components/common/field";
@@ -8,6 +9,7 @@ import { Modal } from "@/components/ui/modal";
 import type { LocalContentPreview, LocalContentRecord } from "./local-content-types";
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
 import type { LocalLibraryCopy } from "./local-library-copy";
+import { localContentApi } from "./local-content-api";
 
 function formatBytes(value: number | null, locale: string) {
   if (value == null) return "—";
@@ -32,6 +34,28 @@ function metadataText(metadata: Record<string, unknown>, key: string) {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function canRemoveFromLibrary(record: LocalContentRecord) {
+  return record.kind === "article" && record.source.type === "channel_article_import" && typeof record.metadata.channelKnowledgeItemId === "string";
+}
+
+function ArchiveButton({ record, copy, onRemoved }: { record: LocalContentRecord; copy: LocalLibraryCopy; onRemoved: (record: LocalContentRecord) => void }) {
+  const [removing, setRemoving] = useState(false);
+  const [failed, setFailed] = useState(false);
+  async function remove() {
+    if (removing) return;
+    setRemoving(true);
+    try {
+      await localContentApi.archive(record.id);
+      onRemoved(record);
+    } catch {
+      setFailed(true);
+    } finally {
+      setRemoving(false);
+    }
+  }
+  return <Button variant="ghost" disabled={removing} onClick={() => void remove()}><Trash2 aria-hidden />{removing ? copy.removing : failed ? copy.removeFailed : copy.removeFromLibrary}</Button>;
+}
+
 function DetailField({ label, value }: { label: string; value: string }) {
   return <div className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-0.5 text-sm [overflow-wrap:anywhere]">{value}</dd></div>;
 }
@@ -44,6 +68,7 @@ export function LocalContentDetailModal({
   onPreview,
   onLocate,
   onChoose,
+  onRemoved,
 }: {
   target: LocalContentRecord | null;
   copy: LocalLibraryCopy;
@@ -52,8 +77,10 @@ export function LocalContentDetailModal({
   onPreview: (record: LocalContentRecord) => void;
   onLocate: (record: LocalContentRecord) => void;
   onChoose: (record: LocalContentRecord) => void;
+  onRemoved: (record: LocalContentRecord) => void;
 }) {
   if (!target) return null;
+  const canRemove = canRemoveFromLibrary(target);
   const taskName = metadataText(target.metadata, "taskTitle") ?? target.relations.find((relation) => relation.title)?.title ?? "—";
   const projectName = metadataText(target.metadata, "projectName") ?? target.projectId ?? "—";
   const sender = metadataText(target.metadata, "from");
@@ -79,6 +106,7 @@ export function LocalContentDetailModal({
         {target.original.available ? <Button variant="secondary" onClick={() => onPreview(target)}><Eye aria-hidden />{copy.preview}</Button> : null}
         {target.original.available && target.storageMode !== "state_record" ? <Button variant="ghost" onClick={() => onLocate(target)}><FolderOpen aria-hidden />{copy.locate}</Button> : null}
         {target.original.available ? <Button onClick={() => onChoose(target)}>{copy.addToTask}</Button> : null}
+        {canRemove ? <ArchiveButton record={target} copy={copy} onRemoved={onRemoved} /> : null}
       </div>}
     >
       <div className="space-y-5">
@@ -268,6 +296,30 @@ export function PreviewModal({
   onLocate,
   onChoose,
 }: PreviewModalProps) {
+  const [copied, setCopied] = useState(false);
+
+  async function copyText() {
+    if (!preview?.text || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(preview.text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  function downloadText() {
+    if (!preview?.text) return;
+    const blob = new Blob([preview.text], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${(target?.title || "myagenttool-content").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80)}.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <Modal open={Boolean(target)} onClose={onClose} title={copy.previewTitle} description={target?.title} size="lg">
       <div className="space-y-3">
@@ -285,6 +337,8 @@ export function PreviewModal({
             {preview.truncated ? <p className="text-xs text-warning">{copy.previewTruncated.replace("{{size}}", new Intl.NumberFormat(locale, { style: "unit", unit: "megabyte", maximumFractionDigits: 1 }).format(preview.totalBytes / (1024 * 1024)))}</p> : null}
             <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/35 p-3 text-sm leading-relaxed" tabIndex={0}>{preview.text}</pre>
             <div className="flex flex-wrap justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => void copyText()} disabled={!navigator.clipboard}>{copied ? <Check aria-hidden /> : <Copy aria-hidden />}{copied ? copy.copied : copy.copyText}</Button>
+              <Button size="sm" variant="ghost" onClick={downloadText}><Download aria-hidden />{copy.downloadText}</Button>
               {target && target.storageMode !== "state_record" ? <Button size="sm" variant="ghost" disabled={locating} onClick={() => onLocate(target)}><FolderOpen aria-hidden />{copy.locate}</Button> : null}
               {target ? <Button size="sm" onClick={() => onChoose(target)}>{copy.addToTask}</Button> : null}
             </div>

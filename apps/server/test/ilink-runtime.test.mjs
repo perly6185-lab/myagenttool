@@ -32,7 +32,7 @@ test("iLink runtime persists QR login without exposing the bot token", async () 
         statusCalls += 1;
         return { ret: 0, status: "confirmed", bot_token: "secret", baseurl: "https://ilinkai.weixin.qq.com", ilink_bot_id: "bot-1" };
       },
-      sendMessage: async () => ({ clientId: "msg-1" }),
+      sendMessage: async () => ({ clientId: "msg-1", providerReceiptId: "accepted-1" }),
     }),
     importChannelEvent: async () => ({ ok: true }),
     mapChannelIdentity: () => ({ ok: true }),
@@ -49,7 +49,7 @@ test("iLink runtime persists QR login without exposing the bot token", async () 
   assert.doesNotMatch(JSON.stringify(state), /secret/);
   assert.equal(secrets.values().next().value.botToken, "secret");
   const sent = await runtime.sendApplicationMessage({ channelId: "chn_1", toUser: "wx-user", content: "hello", replyContext: { contextToken: "ctx" } });
-  assert.deepEqual(sent, { ok: true, msgid: "msg-1" });
+  assert.deepEqual(sent, { ok: true, confirmed: false, msgid: "accepted-1", clientId: "msg-1" });
 });
 
 test("iLink reconnect keeps the previous credential when QR acquisition fails", async () => {
@@ -290,6 +290,7 @@ test("iLink runtime downloads inbound media and passes governed attachment candi
   const credentials = { load: () => ({ botToken: "secret", baseUrl: "https://example.test" }), save: () => {}, remove: () => {} };
   let runtime;
   let imported;
+  const typingSignals = [];
   let firstPoll = true;
   const runtimeClient = {
     notifyStart: async () => {},
@@ -311,6 +312,7 @@ test("iLink runtime downloads inbound media and passes governed attachment candi
       };
     },
     downloadMedia: async () => ({ bytes: Buffer.from("png-bytes"), contentType: "image/png" }),
+    sendTyping: async (payload) => { typingSignals.push(payload); },
   };
   runtime = createIlinkRuntime({
     state,
@@ -331,6 +333,7 @@ test("iLink runtime downloads inbound media and passes governed attachment candi
   assert.equal(imported.msgType, "image");
   assert.equal(imported.replyContext.contextToken, "ctx-media");
   assert.equal(imported.attachmentCandidates[0].filename, "image-99.png");
+  assert.deepEqual(typingSignals, [{ toUser: "wx-user", contextToken: "ctx-media", status: 1 }]);
   runtime.stop();
 });
 
@@ -583,10 +586,11 @@ test("iLink runtime resolves confined output assets and sends encrypted media wi
     deliveryId: "cdl_1",
     mediaAssets: [{ projectId: "prj_media", path: "result.png", size: bytes.length, hash: `sha256:${createHash("sha256").update(bytes).digest("hex")}` }],
   });
-  assert.deepEqual(result, { ok: true, msgid: "msg-out" });
+  assert.deepEqual(result, { ok: true, confirmed: false, msgid: null, clientId: "msg-out" });
   assert.equal(uploaded[0].mediaType, 1);
   assert.deepEqual(uploaded[0].bytes, bytes);
   assert.equal(sent[0].mediaItems[0].type, 2);
   assert.equal(sent[0].mediaItems[0].image_item.media.encrypt_query_param, "uploaded");
   assert.equal(sent[0].clientId, "cdl_1");
+  assert.equal(sent[0].fromUserId, undefined);
 });

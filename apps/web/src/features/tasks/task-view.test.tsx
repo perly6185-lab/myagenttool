@@ -7,8 +7,12 @@ const mocks = vi.hoisted(() => ({
   listWorkItemAttention: vi.fn(),
   getWorkItemExternalIssueFunnel: vi.fn(),
   updateWorkItemAttention: vi.fn(),
+  refreshWorkItemRecordBindingsBatch: vi.fn(),
   listGithubItems: vi.fn(),
   createWorkItem: vi.fn(),
+  suggestWorkItemDraft: vi.fn(),
+  previewWorkItemIntentPlan: vi.fn(),
+  commitWorkItemIntentPlan: vi.fn(),
   inspectArticleImport: vi.fn(),
   startArticleImport: vi.fn(),
   listArticleImports: vi.fn(),
@@ -119,8 +123,12 @@ vi.mock("@/data/use-console-actions", () => ({
     listWorkItemAttention: mocks.listWorkItemAttention,
     getWorkItemExternalIssueFunnel: mocks.getWorkItemExternalIssueFunnel,
     updateWorkItemAttention: mocks.updateWorkItemAttention,
+    refreshWorkItemRecordBindingsBatch: mocks.refreshWorkItemRecordBindingsBatch,
     listGithubItems: mocks.listGithubItems,
     createWorkItem: mocks.createWorkItem,
+    suggestWorkItemDraft: mocks.suggestWorkItemDraft,
+    previewWorkItemIntentPlan: mocks.previewWorkItemIntentPlan,
+    commitWorkItemIntentPlan: mocks.commitWorkItemIntentPlan,
     inspectArticleImport: mocks.inspectArticleImport,
     startArticleImport: mocks.startArticleImport,
     listArticleImports: mocks.listArticleImports,
@@ -233,8 +241,30 @@ describe("TaskView local work items", () => {
     mocks.listAutoRuns.mockResolvedValue({ autoRuns: [] });
     mocks.listWorkItemAutoRunBatches.mockResolvedValue({ batches: [] });
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
+    mocks.refreshWorkItemRecordBindingsBatch.mockResolvedValue({ refreshedCount: 0 });
     mocks.getWorkItemExternalIssueFunnel.mockResolvedValue({ metrics: { total: 0, notStarted: 0, running: 0, review: 0, completed: 0, stalled: 0 }, stalls: [] });
     mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
+    mocks.suggestWorkItemDraft.mockResolvedValue({
+      draft: {
+        acceptanceCriteria: ["The requested outcome is complete"],
+        verificationSop: ["Exercise the real user flow"],
+      },
+    });
+    mocks.previewWorkItemIntentPlan.mockResolvedValue({
+      plan: {
+        tasks: [{
+          key: "general", kind: "general", title: "Prepared task",
+          outcome: "Produce a reviewable result", requires: [], approvalRequired: false,
+        }],
+        clarification: null,
+      },
+      summary: {
+        taskCount: 1, requiresRepository: false, approvalTaskCount: 0,
+        canCommit: true, canStartAi: true,
+        nextStep: "The execution-plan draft is ready. Confirm to continue.",
+      },
+    });
+    mocks.commitWorkItemIntentPlan.mockResolvedValue({ workItems: [{ id: "lwi_simple" }] });
     mocks.listArticleImports.mockResolvedValue({ jobs: [], latest: null });
     mocks.listArticleDerivatives.mockResolvedValue({ derivatives: [] });
     mocks.listWorkItemReportDrafts.mockResolvedValue({ reportDrafts: [], count: 0 });
@@ -269,6 +299,39 @@ describe("TaskView local work items", () => {
     expect(screen.getAllByText("Conflict")).toHaveLength(2);
   });
 
+  it("refreshes and confirms stale business materials from the attention queue", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    mocks.listWorkItemAttention.mockResolvedValue({
+      items: [{
+        id: "record_binding_stale:lwi_7", kind: "record_binding_stale", severity: "high",
+        workItemId: "lwi_7", localRef: "LOCAL-7", title: "Customer brief",
+        createdAt: "2026-07-24T00:00:00.000Z", dueAt: "2026-07-24T04:00:00.000Z",
+        slaStatus: "within_sla", history: [], handling: null, resolution: null,
+        details: {
+          workItemRevision: 7,
+          bindingIds: ["binding_customer", "binding_orders"],
+          bindingCount: 2,
+          states: ["stale"],
+          executionBlocked: true,
+          postingBlocked: true,
+          refreshable: true,
+        },
+      }],
+      metrics: { backlog: 1, breached: 0, claimed: 0, pendingApprovals: 0, staleRecords: 1, oldestAgeSeconds: 0 },
+    });
+    mocks.refreshWorkItemRecordBindingsBatch.mockResolvedValue({ refreshedCount: 1 });
+
+    render(<TaskView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh and confirm" }));
+
+    await waitFor(() => expect(mocks.refreshWorkItemRecordBindingsBatch).toHaveBeenCalledWith([{
+      id: "lwi_7",
+      expectedRevision: 7,
+      bindingIds: ["binding_customer", "binding_orders"],
+    }]));
+    expect(await screen.findByText("Refreshed and confirmed business materials for 1 task(s).")).toBeTruthy();
+  });
+
   it("creates a task from the modal", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_2" } });
@@ -296,7 +359,6 @@ describe("TaskView local work items", () => {
 
   it("uses the same low-decision creator on the ordinary task page", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_simple" } });
     render(<TaskView localOnly />);
 
     expect(screen.getByText("Local").parentElement?.className).toContain("hidden");
@@ -315,13 +377,16 @@ describe("TaskView local work items", () => {
     expect(screen.queryByLabelText("Priority")).toBeNull();
     expect(screen.queryByLabelText("Verification SOP")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Save only" }));
+    await screen.findByTestId("home-intent-task-plan");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and save" }));
 
-    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(mocks.commitWorkItemIntentPlan).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "prj_1",
       title: "Prepare a short customer update",
       dueDate: null,
-      priority: "p2",
-      executionPolicy: "manual",
+      mode: "task",
+      acceptanceCriteria: ["The requested outcome is complete"],
+      verificationSop: ["Exercise the real user flow"],
     })));
   });
 

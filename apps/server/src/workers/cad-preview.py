@@ -9,6 +9,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 import ezdxf
+import PIL
 from ezdxf import bbox, recover
 from ezdxf.addons.drawing import Frontend, RenderContext, layout as page_layout, svg
 
@@ -19,6 +20,8 @@ MAX_TEXTS = 10_000
 MAX_TEXT_LENGTH = 2_000
 MAX_WARNINGS = 500
 SVG_NS = "http://www.w3.org/2000/svg"
+EXPECTED_EZDXF = "1.4.4"
+EXPECTED_PILLOW = "12.3.0"
 ALLOWED_TAGS = {"svg", "g", "defs", "style", "path", "rect", "line", "polyline", "polygon", "circle", "ellipse", "text", "tspan", "use", "clipPath"}
 ALLOWED_ATTRS = {"id", "class", "d", "transform", "viewBox", "width", "height", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "points", "fill", "stroke", "stroke-width", "stroke-opacity", "fill-opacity", "clip-path", "preserveAspectRatio", "href"}
 
@@ -69,6 +72,8 @@ def sanitize_svg(value: str) -> str:
 
 def main() -> None:
     try:
+        if sys.version_info[:2] != (3, 12) or ezdxf.__version__ != EXPECTED_EZDXF or PIL.__version__ != EXPECTED_PILLOW:
+            fail("ezdxf_unavailable", "CAD preview runtime does not match the pinned version contract.")
         request = json.loads(sys.stdin.read())
         source = str(request["file"])
         action = request.get("action", "inspect")
@@ -91,9 +96,9 @@ def main() -> None:
             for entity in space:
                 if len(entities) >= MAX_ENTITIES:
                     fail("cad_entity_limit_exceeded", "Drawing contains too many entities.")
-                entities.append(entity)
+                entities.append((space.name, entity))
         texts = []
-        for entity in entities:
+        for layout_name, entity in entities:
             kind = entity.dxftype()
             text = ""
             if kind == "TEXT":
@@ -103,12 +108,17 @@ def main() -> None:
             elif kind == "ATTRIB":
                 text = clean_text(entity.dxf.text)
             if text and len(texts) < MAX_TEXTS:
-                texts.append({"text": text, "type": kind, "layer": clean_text(entity.dxf.layer)})
+                insert = entity.dxf.get("insert")
+                texts.append({"text": text, "type": kind, "layer": clean_text(entity.dxf.layer), "layout": layout_name, "x": None if insert is None else float(insert.x), "y": None if insert is None else float(insert.y)})
 
         if selected_layout not in layouts:
             fail("cad_layout_not_found", "Requested layout does not exist.")
         target = document.modelspace() if selected_layout == "Model" else document.paperspace(selected_layout)
         extents = bbox.extents(target, fast=True)
+        layout_extents = {}
+        for space in document.layouts:
+            bounds = bbox.extents(space, fast=True)
+            layout_extents[space.name] = None if not bounds.has_data else {"min": list(bounds.extmin), "max": list(bounds.extmax)}
         response = {
             "ok": True,
             "version": document.dxfversion,
@@ -116,7 +126,8 @@ def main() -> None:
             "extents": None if not extents.has_data else {"min": list(extents.extmin), "max": list(extents.extmax)},
             "layouts": layouts,
             "layers": layers,
-            "entityCounts": dict(Counter(entity.dxftype() for entity in entities)),
+            "layoutExtents": layout_extents,
+            "entityCounts": dict(Counter(entity.dxftype() for _, entity in entities)),
             "texts": texts,
             "warnings": [clean_text(item) for item in auditor.errors[:MAX_WARNINGS]],
             "audit": {"errors": len(auditor.errors), "fixes": len(auditor.fixes)},

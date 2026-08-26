@@ -14,6 +14,7 @@ import { dirname, extname, resolve, sep } from "node:path";
 import ExcelJS from "exceljs";
 
 import { businessRoutineSchemaVersion } from "@myagenttool/protocol/business-routine";
+import { normalizeBusinessLedgerRecordRef } from "@myagenttool/protocol/task-resources";
 
 import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
@@ -1032,6 +1033,73 @@ export function createLedgerUpsertService({
           },
         },
       };
+    } catch (error) {
+      return serviceError(error);
+    }
+  }
+
+  /**
+   * Read one business record through an existing, active file ledger. The
+   * returned identity is stable for a business key but carries the current
+   * file revision so callers can detect drift before execution or writing.
+   * Only mapped business fields are returned; connector paths and provider
+   * details remain private to this service.
+   */
+  async function readBusinessLedgerRecord({ ledgerDefinitionId, recordId = null, businessKey = null } = {}, actor = null) {
+    const definition = definitionFor(ledgerDefinitionId, actor);
+    if (!definition) return { status: 404, body: { error: "ledger_definition_not_found" } };
+    const context = contextFor(definition, actor);
+    if (!context) return { status: 409, body: { error: "ledger_definition_not_active" } };
+    const requestedRecordId = boundedText(recordId, 200);
+    const requestedBusinessKey = boundedText(businessKey, 500);
+    if (!requestedRecordId && !requestedBusinessKey) {
+      return { status: 400, body: { error: "ledger_record_selector_required" } };
+    }
+    try {
+      const { target } = await targetFor(definition, context);
+      const buffer = await readFile(target);
+      const targetRevision = ledgerContentRevision(buffer, definition.format);
+      const loaded = definition.format === "csv"
+        ? { rows: parseCsv(buffer, definition.formattingPolicy.csvDelimiter).rows }
+        : await loadWorkbook(buffer, definition);
+      const headerOffset = definition.headerRow - 1;
+      const headers = loaded.rows[headerOffset];
+      const indexes = headerIndex(headers ?? []);
+      validateMappedHeaders(definition, indexes);
+      const keyColumn = definition.fieldMappings[definition.businessKeyField];
+      const keyIndex = indexes.get(keyColumn);
+      const matches = [];
+      for (let rowIndex = headerOffset + 1; rowIndex < loaded.rows.length; rowIndex += 1) {
+        const row = loaded.rows[rowIndex] ?? [];
+        const rowBusinessKey = boundedText(normalizeCellValue(row[keyIndex]), 500);
+        if (!rowBusinessKey) continue;
+        const stableRecordId = `blr_${sha256(`${definition.id}:${rowBusinessKey}`).slice(0, 40)}`;
+        if ((requestedBusinessKey && rowBusinessKey === requestedBusinessKey)
+          || (requestedRecordId && stableRecordId === requestedRecordId)) {
+          matches.push({ row, rowIndex, rowBusinessKey, stableRecordId });
+        }
+      }
+      if (matches.length > 1) return { status: 409, body: { error: "ledger_duplicate_business_key" } };
+      const match = matches[0];
+      if (!match) return { status: 404, body: { error: "ledger_record_not_found" } };
+      const fields = Object.fromEntries(Object.entries(definition.fieldMappings).map(([field, column]) => [
+        field,
+        protectedCellValue(field, normalizeCellValue(match.row[indexes.get(column)])),
+      ]));
+      const recordType = boundedText(definition.documentType, 100);
+      const fingerprint = `sha256:${sha256(JSON.stringify({ recordType, businessKey: match.rowBusinessKey, fields }))}`;
+      const record = normalizeBusinessLedgerRecordRef({
+        ledgerDefinitionId: definition.id,
+        recordId: match.stableRecordId,
+        recordType,
+        businessKey: match.rowBusinessKey,
+        title: `${recordType} ${match.rowBusinessKey}`,
+        revision: targetRevision,
+        fingerprint,
+        observedAt: now(),
+      });
+      if (!record) return { status: 500, body: { error: "ledger_record_normalization_failed" } };
+      return { status: 200, body: { record, fields, rowNumber: match.rowIndex + 1, targetRevision } };
     } catch (error) {
       return serviceError(error);
     }
@@ -2162,6 +2230,7 @@ export function createLedgerUpsertService({
     activateDefinition,
     disableDefinition,
     inspectTargetIdentity,
+    readBusinessLedgerRecord,
     previewUpsert,
     commitPreview,
     previewBatchUpsert,

@@ -12,7 +12,7 @@
 //   clarify   — aligned when it parked for input.
 // Everything still in flight (or failed for infra reasons) is inconclusive.
 
-const PATHS = ["develop", "design", "prototype", "clarify", "decompose"];
+const PATHS = ["develop", "office", "general", "design", "creative", "content", "prototype", "clarify", "decompose"];
 
 export function routingPathFor(run = {}) {
   return run.decision?.path;
@@ -25,6 +25,12 @@ export function actualRoutingPathFor(run = {}) {
 export function alignmentFor(path, status) {
   if (path === "develop") {
     if (status === "pr_open") return "aligned";
+    if (status === "blocked") return "misaligned";
+    return "inconclusive";
+  }
+  if (["office", "general", "creative", "content"].includes(path)) {
+    if (status === "done" || status === "report_posted") return "aligned";
+    if (status === "pr_open") return "diverted";
     if (status === "blocked") return "misaligned";
     return "inconclusive";
   }

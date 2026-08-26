@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -24,6 +24,7 @@ const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 
 function harness({
   clock = () => "2026-07-24T00:00:00.000Z",
+  projectPath = null,
   store,
   persistStateSoon,
   budgetStatusFor = () => null,
@@ -39,6 +40,7 @@ function harness({
   inspectTaskMaterialDraft,
   resolveClaimedTaskMaterial,
   resolveLocalContentReference,
+  probeMediaAsset,
 } = {}) {
   let counter = 0;
   const events = [];
@@ -54,8 +56,8 @@ function harness({
       { id: "usr_c", teamId: "team_a" },
     ],
     projects: [
-      { id: "prj_a", ownerTeamId: "team_a" },
-      { id: "prj_b", ownerTeamId: "team_b" },
+      { id: "prj_a", ownerTeamId: "team_a", ...(projectPath ? { path: projectPath } : {}) },
+      { id: "prj_b", ownerTeamId: "team_b", ...(projectPath ? { path: projectPath } : {}) },
     ],
   };
   const service = createWorkItemService({
@@ -82,9 +84,477 @@ function harness({
     inspectTaskMaterialDraft,
     resolveClaimedTaskMaterial,
     resolveLocalContentReference,
+    probeMediaAsset,
   });
   return { state, events, alerts, service };
 }
+
+test("desktop intent planning creates discrete typed tasks instead of one giant task", () => {
+  const { service, state } = harness();
+  const input = {
+    projectId: "prj_a",
+    title: "分析系统为什么报错，修好后测试，再部署上线",
+    body: "分析系统为什么报错，修好后测试，再部署上线",
+    mode: "ai",
+    idempotencyKey: "desktop-plan-software-1",
+  };
+  const preview = service.previewIntentTaskPlan(input, ACTOR_A);
+  assert.equal(preview.status, 200);
+  assert.deepEqual(preview.body.plan.tasks.map((task) => task.kind), [
+    "software_analysis", "software_implementation", "software_verification", "software_deployment",
+  ]);
+  assert.equal(preview.body.summary.requiresRepository, true);
+  assert.equal(preview.body.summary.approvalTaskCount, 1);
+
+  const committed = service.commitIntentTaskPlan(input, ACTOR_A);
+  assert.equal(committed.status, 201);
+  assert.equal(committed.body.workItems.length, 4);
+  assert.equal(state.workGoals.length, 1);
+  assert.deepEqual(state.workGoals[0].taskIds, committed.body.workItems.map((item) => item.id));
+  assert.equal(committed.body.workItems[0].taskKind, "software_analysis");
+  assert.deepEqual(committed.body.workItems[1].dependencyIds, [committed.body.workItems[0].id]);
+  assert.deepEqual(committed.body.workItems[2].dependencyIds, [committed.body.workItems[1].id]);
+  assert.equal(committed.body.workItems[3].status, "backlog");
+  assert.equal(committed.body.workItems[3].waitingOn, "me");
+
+  const replay = service.commitIntentTaskPlan(input, ACTOR_A);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(state.workItems.length, 4);
+});
+
+test("work items persist provider-neutral record bindings and require managed refreshes", () => {
+  const { service, state } = harness();
+  const fingerprint = `sha256:${"b".repeat(64)}`;
+  const binding = {
+    id: "binding_customer",
+    slotKey: "customer",
+    direction: "input",
+    role: "required",
+    ledgerDefinitionId: "ledger_customer",
+    record: {
+      ledgerDefinitionId: "ledger_customer",
+      recordId: "blr_customer_1",
+      recordType: "customer",
+      businessKey: "CUS-001",
+      title: "客户 A",
+      revision: "revision-1",
+      fingerprint,
+      observedAt: "2026-08-26T08:00:00Z",
+    },
+    selection: { fieldKeys: ["name"], queryId: null, rowLimit: 1 },
+    snapshot: { revision: "revision-1", fingerprint, capturedAt: "2026-08-26T08:00:00Z", evidenceRefs: [{ artifactId: "art_customer", field: "name" }] },
+    resolution: { source: "explicit_user", confidence: 1, state: "resolved", reasons: ["用户明确选择"] },
+  };
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "为客户 A 制作方案",
+    recordBindings: [binding],
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.recordBindings[0].record.recordId, "blr_customer_1");
+  const workItemId = created.body.workItem.id;
+  const managed = service.updateWorkItem({
+    workItemId,
+    expectedRevision: created.body.workItem.revision,
+    recordBindings: [{ ...binding, resolution: { ...binding.resolution, state: "stale" } }],
+  }, ACTOR_A);
+  assert.equal(managed.status, 409);
+  assert.equal(managed.body.error, "work_item_record_bindings_require_managed_update");
+
+  const stored = state.workItems.find((item) => item.id === workItemId);
+  stored.recordBindings[0].resolution.state = "stale";
+  const admission = service.beginExecution({ workItemId, kind: "auto_run" }, ACTOR_A);
+  assert.equal(admission.status, 409);
+  assert.equal(admission.body.error, "work_item_record_bindings_stale");
+  assert.deepEqual(admission.body.blockingBindings, [{ bindingId: "binding_customer", state: "stale" }]);
+
+  stored.executionBindings = [{ kind: "auto_run", targetId: "run_1" }];
+  const blocked = service.updateWorkItem({
+    workItemId,
+    expectedRevision: stored.revision,
+    recordBindings: [binding],
+  }, ACTOR_A);
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, "work_item_record_bindings_immutable");
+});
+
+test("work item record bindings keep IDs unique and allow one primary ledger only", () => {
+  const { service } = harness();
+  const fingerprint = `sha256:${"c".repeat(64)}`;
+  const binding = {
+    id: "binding_output_a",
+    direction: "output",
+    role: "primary_ledger",
+    ledgerDefinitionId: "ledger_customer",
+    record: null,
+    selection: { fieldKeys: ["name"], queryId: null, rowLimit: 1 },
+    snapshot: null,
+    resolution: { source: "template_default", confidence: 0.8, state: "needs_confirmation", reasons: ["等待确认"] },
+  };
+  const duplicate = service.createWorkItem({
+    projectId: "prj_a",
+    title: "重复绑定",
+    recordBindings: [binding, { ...binding }],
+  }, ACTOR_A);
+  assert.equal(duplicate.status, 400);
+  assert.equal(duplicate.body.error, "duplicate_work_item_record_binding");
+
+  const secondPrimary = service.createWorkItem({
+    projectId: "prj_a",
+    title: "多个主台账",
+    recordBindings: [binding, { ...binding, id: "binding_output_b" }],
+  }, ACTOR_A);
+  assert.equal(secondPrimary.status, 400);
+  assert.equal(secondPrimary.body.error, "multiple_primary_work_item_ledgers");
+});
+
+test("desktop intent planning asks one ordinary clarification before ambiguous publishing", () => {
+  const { service } = harness();
+  const preview = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "写文章和做图片，然后发布到公众号和小红书",
+  }, ACTOR_A);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.summary.canCommit, false);
+  assert.equal(preview.body.plan.clarification.kind, "publication_content_mapping");
+  const committed = service.commitIntentTaskPlan({
+    projectId: "prj_a",
+    title: "写文章和做图片，然后发布到公众号和小红书",
+    mode: "ai",
+    idempotencyKey: "desktop-plan-publish-1",
+  }, ACTOR_A);
+  assert.equal(committed.status, 409);
+  assert.equal(committed.body.error, "intent_clarification_required");
+});
+
+test("desktop intent planning asks for scope instead of silently creating a vague task", () => {
+  const { service } = harness();
+  const preview = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "按这个优化一下",
+  }, ACTOR_A);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.summary.canCommit, false);
+  assert.equal(preview.body.plan.tasks.length, 0);
+  assert.equal(preview.body.plan.clarification.kind, "task_scope");
+  assert.match(preview.body.summary.nextStep, /优化或修改什么/);
+});
+
+test("desktop intent planning continues from a short clarification answer without rewriting the request", () => {
+  const { service } = harness();
+  const initial = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "帮我处理一下这批合同",
+  }, ACTOR_A);
+  assert.equal(initial.body.plan.clarification.kind, "professional_action");
+
+  const continued = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "帮我处理一下这批合同",
+    clarificationAnswer: "审查条款风险",
+  }, ACTOR_A);
+  assert.equal(continued.body.summary.canCommit, true);
+  assert.deepEqual(continued.body.plan.tasks.map((task) => task.kind), ["legal_contract_review"]);
+
+  const committed = service.commitIntentTaskPlan({
+    projectId: "prj_a",
+    title: "帮我处理一下这批合同",
+    clarificationAnswer: "审查条款风险",
+    mode: "task",
+    idempotencyKey: "desktop-clarification-continuation-1",
+  }, ACTOR_A);
+  assert.equal(committed.status, 201);
+  assert.equal(committed.body.workItems[0].taskKind, "legal_contract_review");
+});
+
+test("desktop intent planning can save media work but refuses AI until a real capability exists", () => {
+  const { service, state } = harness();
+  const input = {
+    projectId: "prj_a",
+    title: "做三张产品配图",
+    body: "做三张产品配图",
+  };
+  const preview = service.previewIntentTaskPlan(input, ACTOR_A);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.summary.canCommit, true);
+  assert.equal(preview.body.summary.canStartAi, false);
+  assert.deepEqual(preview.body.summary.capabilityBlockers.map((blocker) => blocker.taskKind), ["content_image"]);
+
+  const refused = service.commitIntentTaskPlan({
+    ...input, mode: "ai", idempotencyKey: "desktop-image-ai-blocked",
+  }, ACTOR_A);
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, "intent_task_capability_required");
+  assert.equal(state.workItems.length, 0);
+
+  const saved = service.commitIntentTaskPlan({
+    ...input, mode: "task", idempotencyKey: "desktop-image-saved",
+  }, ACTOR_A);
+  assert.equal(saved.status, 201);
+  assert.equal(saved.body.workItems[0].taskKind, "content_image");
+  assert.equal(saved.body.workItems[0].executionPolicy, "manual");
+});
+
+test("desktop continuation work asks before binding a completed task result and records the real handoff", () => {
+  const { service } = harness();
+  const sourceResult = service.createWorkItem({
+    projectId: "prj_a",
+    title: "登录问题分析",
+    body: "已经确认登录回调处理错误。",
+    type: "task",
+    status: "done",
+    priority: "p2",
+    labels: [],
+    assigneeIds: [],
+    acceptanceCriteria: ["根因已经确认"],
+    verificationSop: ["复核分析证据"],
+    artifactContract: { consumes: [], produces: ["software_analysis"], requirements: [] },
+    outputAssets: [{
+      id: "asset_login_analysis",
+      originalName: "登录问题分析.md",
+      path: "results/login-analysis.md",
+      terminalId: "dev_local",
+      family: "markdown",
+      capabilities: [],
+    }],
+  }, ACTOR_A);
+  assert.equal(sourceResult.status, 201);
+  const source = sourceResult.body.workItem;
+  const request = {
+    projectId: "prj_a",
+    title: "根据已有分析修复登录问题并跑测试，部署先别做",
+    body: "根据已有分析修复登录问题并跑测试，部署先别做",
+  };
+
+  const needsChoice = service.previewIntentTaskPlan(request, ACTOR_A);
+  assert.equal(needsChoice.status, 200);
+  assert.equal(needsChoice.body.summary.canCommit, false);
+  assert.equal(needsChoice.body.plan.sourceSelection.required, true);
+  assert.deepEqual(needsChoice.body.plan.sourceSelection.candidates.map((candidate) => candidate.workItemId), [source.id]);
+
+  const selected = service.previewIntentTaskPlan({ ...request, sourceWorkItemId: source.id }, ACTOR_A);
+  assert.equal(selected.status, 200);
+  assert.equal(selected.body.summary.canCommit, true);
+  assert.deepEqual(selected.body.plan.tasks.map((task) => task.kind), ["software_implementation", "software_verification"]);
+  assert.equal(selected.body.plan.tasks[0].externalSource.workItemId, source.id);
+  assert.deepEqual(selected.body.plan.tasks[0].artifactContract.consumes, ["software_analysis"]);
+  assert.equal(selected.body.plan.tasks[1].externalSource, undefined);
+
+  const missingChoice = service.commitIntentTaskPlan({
+    ...request, mode: "task", idempotencyKey: "continue-login-without-source",
+  }, ACTOR_A);
+  assert.equal(missingChoice.status, 409);
+  assert.equal(missingChoice.body.error, "intent_source_selection_required");
+
+  const committed = service.commitIntentTaskPlan({
+    ...request,
+    sourceWorkItemId: source.id,
+    mode: "task",
+    idempotencyKey: "continue-login-with-source",
+  }, ACTOR_A);
+  assert.equal(committed.status, 201);
+  const implementation = committed.body.workItems[0];
+  assert.deepEqual(implementation.dependencyIds, [source.id]);
+  assert.equal(implementation.inputAssets[0].id, "asset_login_analysis");
+  assert.equal(implementation.artifactHandoffs[0].sourceWorkItemId, source.id);
+  assert.equal(implementation.artifactHandoffs[0].status, "attached");
+  assert.deepEqual(implementation.artifactHandoffs[0].kinds, ["software_analysis"]);
+  assert.deepEqual(committed.body.workItems[1].dependencyIds, [implementation.id]);
+});
+
+test("desktop task basket exclusions re-plan without the removed task kind", () => {
+  const { service } = harness();
+  const preview = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "写一篇深度文章、做漫画和口播",
+    excludeKinds: ["content_comic"],
+  }, ACTOR_A);
+  assert.equal(preview.status, 200);
+  assert.deepEqual(preview.body.plan.tasks.map((task) => task.kind), ["content_article", "content_voiceover"]);
+  assert.deepEqual(preview.body.plan.excludedKinds, ["content_comic"]);
+});
+
+test("desktop continuation never labels an invalid existing output as an attached artifact", () => {
+  const { service } = harness();
+  const source = service.createWorkItem({
+    projectId: "prj_a",
+    title: "登录问题分析",
+    body: "分析记录",
+    type: "task",
+    status: "done",
+    priority: "p2",
+    acceptanceCriteria: ["给出根因"],
+    verificationSop: ["复核格式"],
+    artifactContract: {
+      consumes: [],
+      produces: ["software_analysis"],
+      requirements: [{ kind: "software_analysis", minCount: 1, extensions: [".md"] }],
+    },
+    outputAssets: [{
+      id: "asset_invalid_analysis",
+      originalName: "analysis.png",
+      path: "results/analysis.png",
+      terminalId: "dev_local",
+      family: "image",
+      capabilities: [],
+    }],
+  }, ACTOR_A).body.workItem;
+  const committed = service.commitIntentTaskPlan({
+    projectId: "prj_a",
+    title: "根据已有分析修复登录问题",
+    sourceWorkItemId: source.id,
+    mode: "task",
+    idempotencyKey: "continue-with-invalid-analysis",
+  }, ACTOR_A);
+  assert.equal(committed.status, 409);
+  assert.equal(committed.body.error, "intent_source_artifacts_invalid");
+  assert.match(committed.body.validationErrors[0], /software_analysis/);
+});
+
+test("existing-result selection uses the same explicit handoff contract for content and business work", () => {
+  const { service } = harness();
+  const createSource = ({ title, produces, assetId, path }) => service.createWorkItem({
+    projectId: "prj_a",
+    title,
+    body: `${title}已经完成。`,
+    type: "task",
+    status: "done",
+    priority: "p2",
+    labels: [],
+    assigneeIds: [],
+    acceptanceCriteria: ["结果可供后续任务使用"],
+    verificationSop: ["复核结果文件"],
+    artifactContract: { consumes: [], produces: [produces], requirements: [] },
+    outputAssets: [{ id: assetId, originalName: path.split("/").at(-1), path, terminalId: "dev_local", family: "markdown", capabilities: [] }],
+  }, ACTOR_A).body.workItem;
+  const analysis = createSource({ title: "产品分析", produces: "analysis_report", assetId: "asset_product_analysis", path: "results/product-analysis.md" });
+  const research = createSource({ title: "客户调研", produces: "business_research", assetId: "asset_customer_research", path: "results/customer-research.md" });
+
+  const content = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "基于已有分析写一篇深度文章并做3张配图",
+    sourceWorkItemId: analysis.id,
+  }, ACTOR_A);
+  assert.equal(content.status, 200);
+  assert.deepEqual(content.body.plan.tasks.map((task) => task.kind), ["content_article", "content_image"]);
+  assert.equal(content.body.plan.tasks[0].externalSource.workItemId, analysis.id);
+  assert.deepEqual(content.body.plan.tasks[1].requires, ["content_article"]);
+
+  const business = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "根据已有结果准备客户方案并邮件发给王总",
+    sourceWorkItemId: research.id,
+  }, ACTOR_A);
+  assert.equal(business.status, 200);
+  assert.deepEqual(business.body.plan.tasks.map((task) => task.kind), ["business_document", "business_communication"]);
+  assert.equal(business.body.plan.tasks[0].externalSource.workItemId, research.id);
+  assert.deepEqual(business.body.plan.tasks[1].requires, ["business_document"]);
+
+  const foreign = service.previewIntentTaskPlan({
+    projectId: "prj_b",
+    title: "根据已有结果准备客户方案",
+    sourceWorkItemId: research.id,
+  }, ACTOR_B);
+  assert.equal(foreign.status, 400);
+  assert.equal(foreign.body.error, "intent_source_work_item_invalid");
+});
+
+test("desktop result repair creates one independent task and preserves the failed result", () => {
+  const { service, state } = harness();
+  const planned = service.commitIntentTaskPlan({
+    projectId: "prj_a",
+    title: "准备客户方案",
+    mode: "task",
+    idempotencyKey: "business-document-for-repair",
+  }, ACTOR_A);
+  assert.equal(planned.status, 201);
+  const source = state.workItems.find((item) => item.id === planned.body.workItems[0].id);
+  source.status = "blocked";
+  source.outputAssets = [{
+    id: "asset_wrong_format",
+    originalName: "customer-notes.png",
+    path: "results/customer-notes.png",
+    terminalId: "dev_local",
+    family: "document",
+    size: 20,
+    capabilities: [],
+  }];
+
+  const repaired = service.createResultRepairTask({ workItemId: source.id }, ACTOR_A);
+  assert.equal(repaired.status, 201, JSON.stringify(repaired.body));
+  assert.equal(repaired.body.replayed, false);
+  assert.equal(repaired.body.workItem.repairOfWorkItemId, source.id);
+  assert.equal(repaired.body.workItem.status, "backlog");
+  assert.equal(repaired.body.workItem.executionPolicy, "manual");
+  assert.deepEqual(repaired.body.workItem.dependencyIds, []);
+  assert.equal(repaired.body.workItem.inputAssets[0].id, "asset_wrong_format");
+  assert.equal(repaired.body.workItem.artifactHandoffs[0].sourceWorkItemId, source.id);
+  assert.equal(repaired.body.workItem.artifactHandoffs[0].status, "attached");
+  assert.deepEqual(repaired.body.workItem.artifactHandoffs[0].kinds, ["failed_output_evidence"]);
+  assert.equal(repaired.body.workItem.artifactHandoffs[0].evidenceOnly, true);
+  assert.deepEqual(repaired.body.workItem.artifactContract.consumes, ["failed_output_evidence"]);
+  assert.ok(!repaired.body.workItem.artifactHandoffs[0].kinds.includes("business_document"));
+  assert.match(repaired.body.workItem.body, /独立返工任务/);
+  assert.equal(source.status, "blocked");
+  assert.equal(source.outputAssets[0].id, "asset_wrong_format");
+  assert.ok(state.workGoals[0].taskIds.includes(repaired.body.workItem.id));
+
+  const replay = service.createResultRepairTask({ workItemId: source.id }, ACTOR_A);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.workItem.id, repaired.body.workItem.id);
+  assert.equal(state.workItems.filter((item) => item.repairOfWorkItemId === source.id).length, 1);
+
+  const foreign = service.createResultRepairTask({ workItemId: source.id }, ACTOR_B);
+  assert.equal(foreign.status, 404);
+});
+
+test("result repair reuses original materials without inventing a missing artifact dependency", () => {
+  const { service, state } = harness();
+  const source = service.createWorkItem({
+    projectId: "prj_a",
+    title: "深度文章",
+    body: "根据访谈资料撰写文章。",
+    status: "blocked",
+    taskKind: "content_article",
+    acceptanceCriteria: ["生成文章文件"],
+    artifactContract: {
+      consumes: ["source_material"],
+      produces: ["article_draft"],
+      requirements: [{ kind: "article_draft", minCount: 1, extensions: [".md"] }],
+    },
+    inputAssets: [{
+      id: "asset_interview",
+      originalName: "interview.md",
+      path: "materials/interview.md",
+      terminalId: "dev_local",
+      family: "markdown",
+      capabilities: [],
+    }],
+  }, ACTOR_A).body.workItem;
+
+  const repaired = service.createResultRepairTask({ workItemId: source.id }, ACTOR_A);
+  assert.equal(repaired.status, 201);
+  assert.deepEqual(repaired.body.workItem.dependencyIds, []);
+  assert.equal(repaired.body.workItem.artifactHandoffs?.length ?? 0, 0);
+  assert.equal(repaired.body.workItem.inputAssets[0].id, "asset_interview");
+  assert.equal(state.workItems.find((item) => item.id === source.id).status, "blocked");
+
+  const active = service.createWorkItem({
+    projectId: "prj_a",
+    title: "尚未执行的文章",
+    status: "ready",
+    taskKind: "content_article",
+    artifactContract: {
+      consumes: [], produces: ["article_draft"],
+      requirements: [{ kind: "article_draft", minCount: 1, extensions: [".md"] }],
+    },
+  }, ACTOR_A).body.workItem;
+  const refused = service.createResultRepairTask({ workItemId: active.id }, ACTOR_A);
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, "work_item_result_repair_not_ready");
+});
 
 test("projects work-item status and verification changes immediately", () => {
   const changes = [];
@@ -953,6 +1423,191 @@ test("structured acceptance and verification gate completion", () => {
   }, ACTOR_A).status, 200);
 });
 
+test("an enforced content result contract blocks completion until the output is valid", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "写文章",
+    taskKind: "content_article",
+    acceptanceCriteria: ["形成文章稿件"],
+    artifactContract: {
+      consumes: [],
+      produces: ["article_draft"],
+      requirements: [{ kind: "article_draft", minCount: 1, extensions: [".md"], families: ["markdown"] }],
+    },
+  }, ACTOR_A).body.workItem;
+  const stored = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  stored.outputAssets = [{ id: "empty_article", path: "outputs/article.md", family: "markdown", terminalId: "dev_local", size: 0 }];
+  const rejected = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    status: "done",
+  }, ACTOR_A);
+  assert.equal(rejected.status, 409);
+  assert.equal(rejected.body.error, "work_item_result_verification_incomplete");
+
+  const attached = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    outputAssets: [{ id: "article_md", path: "outputs/article.md", family: "markdown", terminalId: "dev_local", size: 128 }],
+    status: "review",
+  }, ACTOR_A);
+  assert.equal(attached.status, 200);
+  const verified = service.recordVerification({
+    workItemId: created.id,
+    expectedRevision: attached.body.workItem.revision,
+    kind: "manual",
+    status: "passed",
+    summary: "文章稿件已检查。",
+    acceptanceResults: [{ criterion: "形成文章稿件", status: "passed", note: "文章文件存在且格式正确。" }],
+    evidence: [{ kind: "asset", ref: "outputs/article.md", summary: "文章稿件", assetId: "article_md", terminalId: "dev_local" }],
+  }, ACTOR_A);
+  assert.equal(verified.status, 201);
+  const completed = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: verified.body.workItem.revision,
+    status: "done",
+  }, ACTOR_A);
+  assert.equal(completed.status, 200, JSON.stringify(completed.body));
+  assert.equal(completed.body.workItem.resultVerification.status, "passed");
+});
+
+test("software completion requires passed test and build records", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "实现并验证功能",
+    taskKind: "software_implementation",
+    acceptanceCriteria: ["实现完成"],
+    artifactContract: {
+      consumes: [],
+      produces: ["software_change"],
+      requirements: [{ kind: "software_change", minCount: 1 }],
+      verification: { requiredKinds: ["test", "build"] },
+    },
+  }, ACTOR_A).body.workItem;
+  const attached = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    outputAssets: [{ id: "change", path: "outputs/change.diff", terminalId: "dev_local", size: 20 }],
+  }, ACTOR_A);
+  assert.equal(attached.status, 200);
+  const testRecord = service.recordVerification({
+    workItemId: created.id,
+    expectedRevision: attached.body.workItem.revision,
+    kind: "test",
+    status: "passed",
+    summary: "测试通过",
+    acceptanceResults: [{ criterion: "实现完成", status: "passed", note: "测试通过" }],
+    evidence: [{ kind: "run", ref: "test-run", summary: "测试运行" }],
+  }, ACTOR_A);
+  assert.equal(testRecord.status, 201);
+  const missingBuild = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: testRecord.body.workItem.revision,
+    status: "done",
+  }, ACTOR_A);
+  assert.equal(missingBuild.status, 409);
+  assert.equal(missingBuild.body.error, "work_item_result_verification_incomplete");
+  const buildRecord = service.recordVerification({
+    workItemId: created.id,
+    expectedRevision: testRecord.body.workItem.revision,
+    kind: "build",
+    status: "passed",
+    summary: "构建通过",
+    acceptanceResults: [{ criterion: "实现完成", status: "passed", note: "构建通过" }],
+    evidence: [{ kind: "run", ref: "build-run", summary: "构建运行" }],
+  }, ACTOR_A);
+  assert.equal(buildRecord.status, 201);
+  const completed = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: buildRecord.body.workItem.revision,
+    status: "done",
+  }, ACTOR_A);
+  assert.equal(completed.status, 200);
+  assert.equal(completed.body.workItem.resultVerification.status, "passed");
+});
+
+test("work-item output updates derive local article metrics before completion verification", () => {
+  const root = mkdtempSync(join(tmpdir(), "work-item-output-"));
+  try {
+    mkdirSync(join(root, "outputs"));
+    writeFileSync(join(root, "outputs", "article.md"), "# 背景\n内容\n## 分析\n内容", "utf8");
+    const { service } = harness({ projectPath: root });
+    const created = service.createWorkItem({
+      projectId: "prj_a",
+      title: "自动检查文章",
+      taskKind: "content_article",
+      acceptanceCriteria: ["文章结构合格"],
+      artifactContract: {
+        consumes: [],
+        produces: ["article_draft"],
+        requirements: [{ kind: "article_draft", minCount: 1, extensions: [".md"], quality: { minChars: 5, minSections: 2 } }],
+      },
+    }, ACTOR_A).body.workItem;
+    const attached = service.updateWorkItem({
+      workItemId: created.id,
+      expectedRevision: created.revision,
+      outputAssets: [{ id: "article", path: "outputs/article.md", terminalId: "dev_local", size: 20 }],
+    }, ACTOR_A);
+    assert.equal(attached.status, 200);
+    assert.equal(attached.body.workItem.outputAssets[0].contentMetrics.sectionCount, 2);
+    const verified = service.recordVerification({
+      workItemId: created.id,
+      expectedRevision: attached.body.workItem.revision,
+      kind: "manual",
+      status: "passed",
+      summary: "文章结构已检查",
+      acceptanceResults: [{ criterion: "文章结构合格", status: "passed", note: "章节指标达标" }],
+      evidence: [{ kind: "asset", ref: "outputs/article.md", summary: "文章文件", assetId: "article", terminalId: "dev_local" }],
+    }, ACTOR_A);
+    const completed = service.updateWorkItem({
+      workItemId: created.id,
+      expectedRevision: verified.body.workItem.revision,
+      status: "done",
+    }, ACTOR_A);
+    assert.equal(completed.status, 200);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("work-item output updates persist trusted media probe metrics", () => {
+  const root = mkdtempSync(join(tmpdir(), "work-item-media-"));
+  try {
+    writeFileSync(join(root, "video.mp4"), "placeholder", "utf8");
+    const { service } = harness({
+      projectPath: root,
+      probeMediaAsset: () => ({
+        format: { duration: "42.5", format_name: "mov,mp4" },
+        streams: [{ codec_type: "video", codec_name: "h264", width: 1920, height: 1080 }],
+      }),
+    });
+    const created = service.createWorkItem({
+      projectId: "prj_a",
+      title: "检查视频",
+      taskKind: "content_video",
+      acceptanceCriteria: ["视频规格合格"],
+      artifactContract: {
+        consumes: [],
+        produces: ["video_package"],
+        requirements: [{ kind: "video_package", minCount: 1, extensions: [".mp4"], quality: { minWidth: 1280, minHeight: 720 } }],
+      },
+    }, ACTOR_A).body.workItem;
+    const attached = service.updateWorkItem({
+      workItemId: created.id,
+      expectedRevision: created.revision,
+      outputAssets: [{ id: "video", path: "video.mp4", family: "video", terminalId: "dev_local", size: 20 }],
+    }, ACTOR_A);
+    assert.equal(attached.status, 200);
+    assert.deepEqual(attached.body.workItem.outputAssets[0].contentMetrics, {
+      source: "media_probe", durationSeconds: 42.5, width: 1920, height: 1080, codec: "h264",
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a combined status and acceptance edit evaluates the candidate completion gate", () => {
   const { service } = harness();
   const item = service.createWorkItem({
@@ -1227,6 +1882,47 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   assert.equal(resolved.resolution.note, "Handled");
 });
 
+test("stale business records remain actionable until refreshed", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Refresh customer material" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((candidate) => candidate.id === item.id);
+  stored.recordBindings = [{
+    id: "binding_customer",
+    direction: "input",
+    role: "required",
+    record: { title: "Acme" },
+    resolution: { state: "stale" },
+  }];
+  state.workItemActivities.unshift({
+    id: "wia_stale",
+    workItemId: item.id,
+    action: "record_bindings_freshness_changed",
+    actorId: "system_record_freshness",
+    createdAt: "2026-07-24T00:00:00.000Z",
+  });
+  const attention = service.listAttention({ kind: "record_binding_stale" }, ACTOR_A).body;
+  assert.equal(attention.count, 1);
+  assert.equal(attention.metrics.staleRecords, 1);
+  assert.equal(attention.items[0].severity, "high");
+  assert.deepEqual(attention.items[0].details, {
+    workItemRevision: 1,
+    bindingIds: ["binding_customer"],
+    bindingCount: 1,
+    states: ["stale"],
+    executionBlocked: true,
+    postingBlocked: true,
+    refreshable: true,
+  });
+  assert.equal(service.updateAttention({
+    attentionIds: [attention.items[0].id], action: "resolve",
+  }, ACTOR_A).body.error, "work_item_record_binding_attention_requires_refresh");
+
+  stored.executionBindings = [{ kind: "auto_run", targetId: "aur_started" }];
+  assert.equal(service.listAttention({ kind: "record_binding_stale" }, ACTOR_A).body.items[0].details.refreshable, false);
+  stored.recordBindings[0].resolution.state = "resolved";
+  assert.equal(service.listAttention({ kind: "record_binding_stale" }, ACTOR_A).body.count, 0);
+});
+
 test("adds and removes scoped local content references without copying bytes", async () => {
   const contentId = `lc_${"a".repeat(32)}`;
   const resolutions = [];
@@ -1275,7 +1971,7 @@ test("adds and removes scoped local content references without copying bytes", a
   assert.deepEqual(removed.body.workItem.localContentRefs, []);
 });
 
-test("AI clarification is exposed as input work instead of an approval", () => {
+test("AI execution input is exposed as input work instead of an approval for any route", () => {
   const { service, state } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "Clarify scope" }, ACTOR_A).body.workItem;
   state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "ar_question" }];
@@ -1284,7 +1980,7 @@ test("AI clarification is exposed as input work instead of an approval", () => {
     status: "needs_input",
     phase: "waiting_for_input",
     createdAt: "2026-07-24T00:30:00.000Z",
-    decision: { path: "clarify", clarifyingQuestions: ["Include archived projects?"] },
+    decision: { path: "office", clarifyingQuestions: ["Include archived projects?"] },
   }];
 
   const attention = service.listAttention({}, ACTOR_A).body;
@@ -1771,6 +2467,223 @@ test("parent and sub-issues expose progress and reject hierarchy cycles", () => 
   assert.equal(service.createWorkItem({
     projectId: "prj_c", title: "Wrong project", parentId: parent.id,
   }, ACTOR_A).status, 400);
+});
+
+test("explicit intent groups independent tasks without creating hierarchy or dependencies", () => {
+  const { service } = harness();
+  const article = service.createWorkItem({
+    projectId: "prj_a",
+    title: "写深度文章",
+    intentId: "intent_content_1",
+    intentStatement: "基于资料写文章和漫画",
+    taskKind: "content_article",
+    creationBasis: "explicit_user_intent",
+  }, ACTOR_A);
+  const comic = service.createWorkItem({
+    projectId: "prj_a",
+    title: "制作漫画",
+    intentId: "intent_content_1",
+    intentStatement: "基于资料写文章和漫画",
+    taskKind: "content_comic",
+    creationBasis: "explicit_user_intent",
+  }, ACTOR_A);
+  assert.equal(article.status, 201);
+  assert.equal(comic.status, 201);
+  const detail = service.getWorkItem({ workItemId: article.body.workItem.id }, ACTOR_A).body.workItem;
+  assert.equal(detail.parent, null);
+  assert.deepEqual(detail.dependencyIds, []);
+  assert.equal(detail.intentPeers.length, 1);
+  assert.equal(detail.intentPeers[0].id, comic.body.workItem.id);
+  assert.equal(detail.intentPeers[0].taskKind, "content_comic");
+});
+
+test("one work goal keeps atomic tasks connected by real artifact dependencies", () => {
+  const { service, state } = harness();
+  state.workGoals = [{
+    id: "goal_daily_coding", ownerTeamId: "team_a", projectId: "prj_a",
+    title: "把今天编码成果整理并发布", statement: "整理成文章和图片后发布",
+    outcome: "形成并发布内容", status: "active", planVersion: 1, platforms: [], taskIds: [], artifacts: [],
+  }];
+  const digest = service.createWorkItem({
+    projectId: "prj_a", title: "编码成果整理", workGoalId: "goal_daily_coding",
+    intentId: "goal_daily_coding", intentStatement: "整理成文章和图片后发布",
+    taskKind: "coding_digest", artifactContract: { consumes: [], produces: ["coding_digest"] },
+  }, ACTOR_A).body.workItem;
+  const article = service.createWorkItem({
+    projectId: "prj_a", title: "文章创作", workGoalId: "goal_daily_coding",
+    intentId: "goal_daily_coding", intentStatement: "整理成文章和图片后发布",
+    taskKind: "content_article", dependencyIds: [digest.id],
+    artifactContract: { consumes: ["coding_digest"], produces: ["article_draft"] },
+  }, ACTOR_A).body.workItem;
+  assert.deepEqual(article.dependencyIds, [digest.id]);
+  state.workItems.find((item) => item.id === digest.id).outputAssets = [{
+    id: "digest_md", path: "outputs/coding-digest.md", family: "text", mimeType: "text/markdown",
+    terminalId: "dev_local", size: 128, resourceClass: "small", hash: "digest-hash", version: null,
+    worktreeId: null, capabilities: [], readiness: { state: "ready", reason: "task_output" },
+  }];
+  const completed = service.updateWorkItem({
+    workItemId: digest.id, expectedRevision: digest.revision, status: "done",
+  }, ACTOR_A);
+  assert.equal(completed.status, 200, JSON.stringify(completed.body));
+  const detail = service.getWorkItem({ workItemId: article.id }, ACTOR_A).body.workItem;
+  assert.equal(detail.workGoal.id, "goal_daily_coding");
+  assert.equal(detail.goalTasks.length, 2);
+  assert.equal(detail.workGoal.userSummary.progress.total, 2);
+  assert.match(detail.workGoal.userSummary.nextStep, /文章创作/);
+  assert.equal(detail.inputAssets[0].id, "digest_md");
+  assert.equal(detail.artifactHandoffs[0].status, "attached");
+  assert.equal(detail.blockedBy[0].resolved, true);
+});
+
+test("delivery report files become typed goal artifacts before a dependent task is unlocked", () => {
+  const { service, state } = harness();
+  state.workGoals = [{
+    id: "goal_delivery_artifacts", ownerTeamId: "team_a", projectId: "prj_a",
+    title: "整理编码成果并写文章", statement: "先整理再写文章",
+    outcome: "得到文章", status: "active", planVersion: 1, platforms: [], taskIds: [], artifacts: [],
+  }];
+  const digest = service.createWorkItem({
+    projectId: "prj_a", title: "编码成果整理", workGoalId: "goal_delivery_artifacts",
+    intentId: "goal_delivery_artifacts", intentStatement: "先整理再写文章",
+    taskKind: "coding_digest", artifactContract: { consumes: [], produces: ["coding_digest"] },
+  }, ACTOR_A).body.workItem;
+  const article = service.createWorkItem({
+    projectId: "prj_a", title: "文章创作", workGoalId: "goal_delivery_artifacts",
+    intentId: "goal_delivery_artifacts", intentStatement: "先整理再写文章",
+    taskKind: "content_article", dependencyIds: [digest.id],
+    artifactContract: { consumes: ["coding_digest"], produces: ["article_draft"] },
+  }, ACTOR_A).body.workItem;
+  const storedDigest = state.workItems.find((item) => item.id === digest.id);
+  storedDigest.executionBindings = [{ kind: "auto_run", targetId: "run_digest", worktreeId: "wt_digest" }];
+  state.autoRuns = [{
+    id: "run_digest", localIssueId: digest.id, updatedAt: "2026-07-24T00:00:00.000Z",
+    deliveryReport: { changedFiles: ["outputs/coding-digest.md"], changedFilesBaseCommit: "base-1" },
+  }];
+
+  const completed = service.updateWorkItem({
+    workItemId: digest.id, expectedRevision: storedDigest.revision, status: "done",
+  }, ACTOR_A);
+  assert.equal(completed.status, 200, JSON.stringify(completed.body));
+  const storedArticle = state.workItems.find((item) => item.id === article.id);
+  assert.equal(storedDigest.outputAssets[0].path, "outputs/coding-digest.md");
+  assert.equal(storedDigest.outputAssets[0].family, "markdown");
+  assert.equal(storedArticle.inputAssets[0].path, "outputs/coding-digest.md");
+  assert.equal(storedArticle.artifactHandoffs[0].status, "attached");
+});
+
+test("artifact manifests keep a dependent blocked when quantity or format is invalid", () => {
+  const { service, state } = harness();
+  state.workGoals = [{
+    id: "goal_images", ownerTeamId: "team_a", projectId: "prj_a", title: "制作配图并适配",
+    statement: "做3张配图", outcome: "得到平台包", status: "active", planVersion: 1,
+    platforms: [], taskIds: [], artifacts: [],
+  }];
+  const images = service.createWorkItem({
+    projectId: "prj_a", title: "制作3张配图", workGoalId: "goal_images",
+    intentId: "goal_images", intentStatement: "做3张配图", taskKind: "content_image",
+    artifactContract: {
+      consumes: [], produces: ["image_set"],
+      requirements: [{ kind: "image_set", minCount: 3, extensions: [".png", ".jpg"], families: ["image"] }],
+    },
+  }, ACTOR_A).body.workItem;
+  const adaptation = service.createWorkItem({
+    projectId: "prj_a", title: "平台适配", workGoalId: "goal_images",
+    intentId: "goal_images", intentStatement: "做3张配图", taskKind: "platform_adaptation",
+    dependencyIds: [images.id], artifactContract: { consumes: ["image_set"], produces: ["platform_package"] },
+  }, ACTOR_A).body.workItem;
+  const storedImages = state.workItems.find((item) => item.id === images.id);
+  storedImages.outputAssets = [
+    { id: "img_1", path: "outputs/one.png", family: "image", terminalId: "dev_local" },
+    { id: "wrong_2", path: "outputs/two.md", family: "markdown", terminalId: "dev_local" },
+  ];
+  const completed = service.updateWorkItem({
+    workItemId: images.id, expectedRevision: storedImages.revision, status: "done",
+  }, ACTOR_A);
+  assert.equal(completed.status, 200, JSON.stringify(completed.body));
+  assert.equal(storedImages.artifactManifest[0].status, "invalid");
+  assert.equal(storedImages.artifactManifest[0].actualCount, 1);
+  const storedAdaptation = state.workItems.find((item) => item.id === adaptation.id);
+  assert.equal(storedAdaptation.inputAssets.length, 0);
+  assert.equal(storedAdaptation.artifactHandoffs[0].status, "awaiting_artifact");
+  assert.match(storedAdaptation.artifactHandoffs[0].validationErrors[0], /至少 3 个/);
+});
+
+test("a publication asks for approval only after its final platform package is attached", () => {
+  const { service, state } = harness();
+  state.workGoals = [{
+    id: "goal_publish", ownerTeamId: "team_a", projectId: "prj_a", title: "发布文章",
+    statement: "发布到公众号", outcome: "完成发布", status: "active", planVersion: 1,
+    platforms: [{ id: "wechat_official", label: "公众号" }], taskIds: [], artifacts: [],
+  }];
+  const adaptation = service.createWorkItem({
+    projectId: "prj_a", title: "公众号适配", workGoalId: "goal_publish",
+    intentId: "goal_publish", intentStatement: "发布到公众号", taskKind: "platform_adaptation",
+    artifactContract: {
+      consumes: [], produces: ["platform_package"],
+      requirements: [{ kind: "platform_package", minCount: 1, extensions: [".md"] }],
+    },
+  }, ACTOR_A).body.workItem;
+  const publish = service.createWorkItem({
+    projectId: "prj_a", title: "发布到公众号", workGoalId: "goal_publish",
+    intentId: "goal_publish", intentStatement: "发布到公众号", taskKind: "content_publish",
+    platformTarget: { id: "wechat_official", label: "公众号" }, dependencyIds: [adaptation.id],
+    artifactContract: { consumes: ["platform_package"], produces: ["publication_receipt"] },
+  }, ACTOR_A).body.workItem;
+  state.channelTaskRequests = [{
+    id: "ctr_publish", workItemId: publish.id, threadId: "cth_publish", status: "waiting_artifacts",
+  }];
+  state.channelTaskThreads = [{
+    id: "cth_publish", workItemId: publish.id, status: "waiting_upstream", statusHistory: [],
+  }];
+  const storedAdaptation = state.workItems.find((item) => item.id === adaptation.id);
+  storedAdaptation.outputAssets = [{
+    id: "wechat_final", path: "outputs/wechat-final.md", family: "markdown", hash: "hash-final", version: "v1", terminalId: "dev_local",
+  }];
+  const completed = service.updateWorkItem({
+    workItemId: adaptation.id, expectedRevision: storedAdaptation.revision, status: "done",
+  }, ACTOR_A);
+  assert.equal(completed.status, 200, JSON.stringify(completed.body));
+  assert.equal(state.channelTaskRequests[0].status, "pending");
+  assert.equal(state.channelTaskRequests[0].approvalSnapshot.platform.id, "wechat_official");
+  assert.equal(state.channelTaskRequests[0].approvalSnapshot.artifacts[0].id, "wechat_final");
+  assert.equal(state.channelTaskThreads[0].status, "waiting_approval");
+  assert.equal(state.channelTaskThreads[0].waitingFor, "publication_review");
+
+  const firstDigest = state.channelTaskRequests[0].previewDigest;
+  const revised = service.updateWorkItem({
+    workItemId: adaptation.id,
+    expectedRevision: storedAdaptation.revision,
+    status: "done",
+    outputAssets: [{
+      id: "wechat_final_v2", path: "outputs/wechat-final-v2.md", family: "markdown",
+      hash: "hash-final-v2", version: "v2", terminalId: "dev_local",
+    }],
+  }, ACTOR_A);
+  assert.equal(revised.status, 200, JSON.stringify(revised.body));
+  assert.notEqual(state.channelTaskRequests[0].previewDigest, firstDigest);
+  assert.deepEqual(state.workItems.find((item) => item.id === publish.id).inputAssets.map((asset) => asset.id), ["wechat_final_v2"]);
+  assert.equal(state.channelTaskThreads[0].previousRiskPreviewDigest, firstDigest);
+  assert.match(state.channelTaskThreads[0].artifactVersionChangeNotice, /发布内容已更新/);
+});
+
+test("suggestions cannot be persisted as work items and intent metadata is immutable", () => {
+  const { service } = harness();
+  const suggested = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Maybe write an article",
+    planningHorizon: "suggested",
+  }, ACTOR_A);
+  assert.equal(suggested.status, 400);
+  assert.equal(suggested.body.error, "invalid_work_item_planning_horizon");
+
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Committed task" }, ACTOR_A).body.workItem;
+  const changed = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    intentId: "intent_retrofit",
+  }, ACTOR_A);
+  assert.equal(changed.status, 400);
+  assert.equal(changed.body.error, "work_item_intent_fields_immutable");
 });
 
 test("execution admission creates the Run before its contract and rejects duplicate auto-runs", () => {

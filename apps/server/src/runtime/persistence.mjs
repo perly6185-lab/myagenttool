@@ -117,6 +117,7 @@ export const persistedArrayKeys = [
   // Session-manager durable rows (one per registered site) — without this the
   // SQLite backing silently drops probe/reseed history on restart.
   "sessions",
+  "siteOperationReceipts",
   "events",
   "refusals",
   "traces",
@@ -174,6 +175,8 @@ export const persistedArrayKeys = [
   "issueClaims",
   "issueClaimEvents",
   "workItems",
+  "workGoals",
+  "channelUserPreferences",
   "myTemplateRoutingFeedback",
   "myTemplateOutcomeFeedback",
   "myTemplateGovernanceInterventions",
@@ -190,6 +193,8 @@ export const persistedArrayKeys = [
   "workItemReportDeliveries",
   "workItemAttentionOperations",
   "articleImportJobs",
+  "articleExtractorPlugins",
+  "channelKnowledgeItems",
   "githubWorkItemWebhookDeliveries",
   "githubWorkItemWebhookFailures",
   "workItemOperationalAlerts",
@@ -198,6 +203,21 @@ export const persistedArrayKeys = [
   "alertOutbox",
   "planningProjects",
   "planningProjectItems",
+  "sites",
+  "siteEntries",
+  "siteEntryRevisions",
+  "siteAssets",
+  "sitePublicationPlans",
+  "sitePublications",
+  "siteDeploymentTargets",
+  "siteDomainTlsBindings",
+  "sitePilotSessions",
+  "sitePilotCampaigns",
+  "sitePilotInvitations",
+  "sitePilotSandboxes",
+  "hostFileScopes",
+  "hostTlsActivationProfiles",
+  "hostFileTransfers",
   "workflowSources",
   "workflowScanJobs",
   "workflowIntakeObservations",
@@ -273,8 +293,11 @@ export const persistedArrayKeys = [
   "channelIntakeGroups",
   "channelTaskThreads",
   "channelTaskRevisions",
+  "workGoalChanges",
   "channelTaskRequests",
+  "channelIntentLearningSamples",
   "ilinkAccounts",
+  "taskLedgerPostingPlans",
 ];
 
 // NOTE: `devices` is deliberately absent from both key lists — it restores
@@ -359,6 +382,7 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "ledgerBatchUpsertPreviews", owner: "ownerTeamId" },
   { key: "ledgerBatchMutationJournals", owner: "ownerTeamId" },
   { key: "ledgerMutationAudits", owner: "ownerTeamId" },
+  { key: "taskLedgerPostingPlans", owner: "ownerTeamId" },
 ];
 
 /**

@@ -6,22 +6,31 @@ from __future__ import annotations
 from collections import Counter
 import json
 from pathlib import Path
+import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
 import ezdxf
+import PIL
 from ezdxf import recover
 from ezdxf.addons.drawing import Frontend, RenderContext, layout, svg
 
 
 EXPECTED_EZDXF_VERSION = "1.4.4"
+EXPECTED_PILLOW_VERSION = "12.3.0"
 MAX_PROBE_SVG_BYTES = 64 * 1024
 
 
 def main() -> None:
+    if sys.version_info[:2] != (3, 12):
+        raise SystemExit(f"expected Python 3.12, found {sys.version.split()[0]}")
     if ezdxf.__version__ != EXPECTED_EZDXF_VERSION:
         raise SystemExit(
             f"expected ezdxf {EXPECTED_EZDXF_VERSION}, found {ezdxf.__version__}"
+        )
+    if PIL.__version__ != EXPECTED_PILLOW_VERSION:
+        raise SystemExit(
+            f"expected Pillow {EXPECTED_PILLOW_VERSION}, found {PIL.__version__}"
         )
 
     with tempfile.TemporaryDirectory(prefix="myagenttool-ezdxf-probe-") as root:

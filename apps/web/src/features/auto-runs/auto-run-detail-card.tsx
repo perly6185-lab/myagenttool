@@ -80,7 +80,7 @@ export function AutoRunDetailCard({
         {run.status === "report_posted" && run.decision?.path === "design" ? (
           <DesignApproval run={run} onDone={onReload} />
         ) : null}
-        {run.status === "needs_input" && run.decision?.path === "clarify" ? (
+        {run.status === "needs_input" ? (
           <ClarifyAnswer run={run} onDone={onReload} />
         ) : null}
         {run.status === "plan_proposed" && run.decision?.path === "decompose" ? (

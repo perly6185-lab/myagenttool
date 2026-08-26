@@ -19,6 +19,9 @@ test("downloads, validates, confines, hashes, and governs a Channel attachment",
   assert.equal(assets.length, 1);
   assert.equal(assets[0].projectId, "project-1");
   assert.equal(assets[0].terminalId, "terminal-1");
+  assert.equal(assets[0].originalName, "report.png");
+  assert.equal(assets[0].mimeType, "image/png");
+  assert.equal(assets[0].size, png.length);
   assert.equal(assets[0].readiness.state, "ready");
   assert.deepEqual(readFileSync(join(root, assets[0].path)), png);
 });
@@ -52,6 +55,8 @@ test("stores trusted provider bytes through the same media and asset checks", as
     terminalId: "terminal-1",
   })]);
   assert.equal(asset.family, "audio");
+  assert.equal(asset.originalName, "voice.wav");
+  assert.equal(asset.mimeType, "audio/wav");
   assert.ok(asset.capabilities.includes("preview"));
   assert.deepEqual(readFileSync(join(root, asset.path)), wav);
   await assert.rejects(() => ingestChannelAttachmentBytes({
@@ -62,4 +67,19 @@ test("stores trusted provider bytes through the same media and asset checks", as
     projectId: "project-1",
     terminalId: "terminal-1",
   }), /active_channel_attachment_refused/);
+});
+
+test("preserves a safe Unicode source name for the task while confining the stored file", async () => {
+  const root = mkdtempSync(join(tmpdir(), "channel-attachment-unicode-"));
+  const asset = await ingestChannelAttachmentBytes({
+    filename: "客户订单明细.xlsx",
+    bytes: Buffer.from("PK\u0003\u0004safe-workbook"),
+    contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    projectPath: root,
+    projectId: "project-1",
+    terminalId: "terminal-1",
+  });
+  assert.equal(asset.originalName, "客户订单明细.xlsx");
+  assert.match(asset.path, /^\.myagenttool\/channel-attachments\/[^/]+-客户订单明细\.xlsx$/);
+  assert.deepEqual(readFileSync(join(root, asset.path)), Buffer.from("PK\u0003\u0004safe-workbook"));
 });

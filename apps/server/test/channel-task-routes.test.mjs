@@ -39,6 +39,22 @@ test("human task reply route passes bounded user content to its handler", async 
   assert.equal(response.body.content, "已确认，人工正在继续处理。");
 });
 
+test("WeChat draft reconciliation route passes only the user's outcome to its handler", async () => {
+  let response;
+  const actor = { userId: "usr_1", teamId: "team_1" };
+  const handled = await handleChannelRoutes({
+    req: { method: "POST" },
+    res: {},
+    url: new URL("http://local/api/channel-tasks/ctr_1/wechat-draft-reconciliation"),
+    sendJson: (_res, status, body) => { response = { status, body }; },
+    readJson: async () => ({ outcome: "confirmed_not_saved", sourceDecisionId: "untrusted" }),
+    actor,
+    reconcileWechatDraftChannelTask: async (id, outcome, receivedActor) => ({ status: 200, body: { ok: true, id, outcome, actor: receivedActor } }),
+  });
+  assert.equal(handled, true);
+  assert.deepEqual(response, { status: 200, body: { ok: true, id: "ctr_1", outcome: "confirmed_not_saved", actor } });
+});
+
 test("channel diagnostics route is read-only and owner-scoped by its service handler", async () => {
   let response;
   const handled = await handleChannelRoutes({

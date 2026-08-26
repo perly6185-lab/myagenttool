@@ -7,6 +7,12 @@ import { useUiStore } from "@/store/ui-store";
 
 const mocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
+  refreshWorkItemRecordBinding: vi.fn(),
+  getWorkItemLedgerPostingPlan: vi.fn(),
+  prepareWorkItemLedgerPostingPlan: vi.fn(),
+  issueApprovalGrant: vi.fn(),
+  commitWorkItemLedgerPostingPlan: vi.fn(),
+  createWorkItemResultRepair: vi.fn(),
   updateWorkItem: vi.fn(),
   suggestWorkItemDraft: vi.fn(),
   listMyTemplateDefinitions: vi.fn(),
@@ -38,6 +44,9 @@ const mocks = vi.hoisted(() => ({
   revealTaskMaterial: vi.fn(),
   previewTaskMaterialOffice: vi.fn(),
   taskMaterialContentUrl: vi.fn((workItemId, assetId, download = false) => `/materials/${workItemId}/${assetId}${download ? "?download=1" : ""}`),
+  previewLocalContent: vi.fn(),
+  previewLocalContentAsset: vi.fn(),
+  revealLocalContent: vi.fn(),
 }));
 
 vi.mock("@/data/use-console-state", () => ({
@@ -47,6 +56,12 @@ vi.mock("@/data/use-console-state", () => ({
 vi.mock("@/data/use-console-actions", () => ({
   api: {
     getWorkItem: mocks.getWorkItem,
+    refreshWorkItemRecordBinding: mocks.refreshWorkItemRecordBinding,
+    getWorkItemLedgerPostingPlan: mocks.getWorkItemLedgerPostingPlan,
+    prepareWorkItemLedgerPostingPlan: mocks.prepareWorkItemLedgerPostingPlan,
+    issueApprovalGrant: mocks.issueApprovalGrant,
+    commitWorkItemLedgerPostingPlan: mocks.commitWorkItemLedgerPostingPlan,
+    createWorkItemResultRepair: mocks.createWorkItemResultRepair,
     updateWorkItem: mocks.updateWorkItem,
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
     listMyTemplateDefinitions: mocks.listMyTemplateDefinitions,
@@ -78,6 +93,14 @@ vi.mock("@/data/use-console-actions", () => ({
     revealTaskMaterial: mocks.revealTaskMaterial,
     previewTaskMaterialOffice: mocks.previewTaskMaterialOffice,
     taskMaterialContentUrl: mocks.taskMaterialContentUrl,
+  },
+}));
+
+vi.mock("@/features/local-content/local-content-api", () => ({
+  localContentApi: {
+    preview: mocks.previewLocalContent,
+    previewAssetBytes: mocks.previewLocalContentAsset,
+    reveal: mocks.revealLocalContent,
   },
 }));
 
@@ -135,6 +158,24 @@ beforeEach(async () => {
   mocks.projectAssetDescriptor.mockResolvedValue({ descriptor: { path: "summary/REPORT.md" } });
   mocks.projectAssetPreview.mockResolvedValue({ path: "summary/REPORT.md", text: "# Report\n\nThe report is ready.", size: 40, truncated: false });
   mocks.readWorktreeFile.mockResolvedValue({ content: "plain text", truncated: false });
+  mocks.previewLocalContent.mockResolvedValue({
+    preview: {
+      contentId: "lc_0123456789abcdef0123456789abcdef",
+      title: "Saved article",
+      kind: "article",
+      format: "plain_text",
+      text: "# Saved article\n\nThe article is available locally.",
+      truncated: false,
+      bytesRead: 55,
+      totalBytes: 55,
+      mimeType: "text/markdown",
+      originalName: "saved-article.md",
+      activeContentExecuted: false,
+      remoteResourcesLoaded: false,
+    },
+  });
+  mocks.revealLocalContent.mockResolvedValue({ revealed: true, name: "saved-article.md" });
+  mocks.previewLocalContentAsset.mockResolvedValue(new ArrayBuffer(8));
   window.myagenttoolDesktop = undefined;
 });
 
@@ -145,6 +186,177 @@ afterEach(() => {
 });
 
 describe("work item summary presentation", () => {
+  it("turns a malformed task response into a retryable ordinary-user error", async () => {
+    mocks.getWorkItem.mockResolvedValueOnce({}).mockResolvedValueOnce({ workItem: item() });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("could not be loaded");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByRole("heading", { name: "Prepare customer update" })).toBeTruthy();
+    expect(mocks.getWorkItem).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows bounded business materials without connector details", async () => {
+    const fingerprint = `sha256:${"d".repeat(64)}`;
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        recordBindings: [{
+          id: "binding_customer",
+          slotKey: "customer",
+          direction: "input",
+          role: "required",
+          ledgerDefinitionId: "ledger_customer",
+          record: {
+            ledgerDefinitionId: "ledger_customer",
+            recordId: "blr_customer_1",
+            recordType: "customer",
+            businessKey: "CUS-001",
+            title: "Acme Corporation",
+            revision: "revision-1",
+            fingerprint,
+            observedAt: "2026-08-26T08:00:00Z",
+          },
+          selection: { fieldKeys: ["customer"], queryId: null, rowLimit: 1 },
+          snapshot: { revision: "revision-1", fingerprint, capturedAt: "2026-08-26T08:00:00Z", evidenceRefs: [] },
+          resolution: { source: "explicit_user", confidence: 1, state: "needs_confirmation", reasons: ["Confirm the record"] },
+        }],
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const materials = await screen.findByRole("heading", { name: "Business materials" });
+    const section = materials.closest("section");
+    expect(section?.textContent).toContain("Acme Corporation");
+    expect(section?.textContent).toContain("CUS-001");
+    expect(section?.textContent).toContain("Needs confirmation");
+    expect(section?.textContent).not.toContain("ledger_customer");
+    expect(section?.textContent).not.toContain("blr_customer_1");
+  });
+
+  it("refreshes a stale business material and confirms the new snapshot", async () => {
+    const oldFingerprint = `sha256:${"e".repeat(64)}`;
+    const newFingerprint = `sha256:${"f".repeat(64)}`;
+    const staleBinding = {
+      id: "binding_customer",
+      slotKey: "customer",
+      direction: "input" as const,
+      role: "required" as const,
+      ledgerDefinitionId: "ledger_customer",
+      record: {
+        ledgerDefinitionId: "ledger_customer",
+        recordId: "blr_customer_1",
+        recordType: "customer",
+        businessKey: "CUS-001",
+        title: "Acme Corporation",
+        revision: "revision-1",
+        fingerprint: oldFingerprint,
+        observedAt: "2026-08-26T08:00:00Z",
+      },
+      selection: { fieldKeys: ["customer"], queryId: null, rowLimit: 1 },
+      snapshot: { revision: "revision-1", fingerprint: oldFingerprint, capturedAt: "2026-08-26T08:00:00Z", evidenceRefs: [] },
+      resolution: { source: "explicit_user" as const, confidence: 1, state: "stale" as const, reasons: ["The record changed"] },
+    };
+    const refreshedBinding = {
+      ...staleBinding,
+      record: { ...staleBinding.record, revision: "revision-2", fingerprint: newFingerprint, observedAt: "2026-08-26T08:01:00Z" },
+      snapshot: { ...staleBinding.snapshot, revision: "revision-2", fingerprint: newFingerprint, capturedAt: "2026-08-26T08:01:00Z" },
+      resolution: { ...staleBinding.resolution, state: "resolved" as const },
+    };
+    mocks.refreshWorkItemRecordBinding.mockResolvedValue({ workItem: item({ revision: 3, recordBindings: [refreshedBinding] }) });
+    mocks.getWorkItem.mockResolvedValue({ workItem: item({ recordBindings: [staleBinding] }) });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh and confirm" }));
+    await waitFor(() => expect(mocks.refreshWorkItemRecordBinding).toHaveBeenCalledWith("lwi_1", "binding_customer", 2));
+    expect(await screen.findByText("The business material was refreshed and confirmed; the task will use the current record version.")).toBeTruthy();
+  });
+
+  it("shows a ledger preview and requires an approval grant before committing", async () => {
+    mocks.getWorkItem.mockResolvedValue({ workItem: item({ ledgerPostingPlanId: "tpp_1" }) });
+    mocks.getWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: { id: "tpp_1", status: "proposed", state: "proposed", revision: 1 },
+      preview: { changedCells: [{ field: "status", before: "draft", after: "ready" }] },
+      batchPreview: null,
+    });
+    mocks.issueApprovalGrant.mockResolvedValue({ grantId: "apg_1", token: "issued-token", expiresAt: "2026-08-26T00:10:00Z" });
+    mocks.commitWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: { id: "tpp_1", status: "committed", state: "committed", revision: 2 },
+    });
+
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByRole("heading", { name: "Ledger change approval" })).toBeTruthy();
+    expect(await screen.findByText("status")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Approve and write ledger" }));
+
+    await waitFor(() => expect(mocks.issueApprovalGrant).toHaveBeenCalledWith("ledger_posting_plan_commit", "tpp_1"));
+    expect(mocks.commitWorkItemLedgerPostingPlan).toHaveBeenCalledWith("lwi_1", {
+      planId: "tpp_1",
+      expectedRevision: 2,
+      approvalToken: "issued-token",
+    });
+    expect(await screen.findByText("The ledger was updated and the change was recorded.")).toBeTruthy();
+  });
+
+  it("regenerates an invalidated ledger plan from the current task revision", async () => {
+    const operation = {
+      ledgerDefinitionId: "ldg_orders",
+      recordId: null,
+      action: "create" as const,
+      fields: { order_number: "ORD-001" },
+      sourceEvidence: [{ artifactId: "artifact_order", field: "order_number" }],
+      approvalRequired: true,
+    };
+    mocks.getWorkItem.mockResolvedValue({ workItem: item({ revision: 3, ledgerPostingPlanId: "tpp_old" }) });
+    mocks.getWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: {
+        schemaVersion: 2,
+        id: "tpp_old",
+        workItemId: "lwi_1",
+        resultRevision: 2,
+        primary: operation,
+        related: [],
+        status: "invalidated",
+        state: "invalidated",
+        revision: 2,
+        invalidatedReason: "work_item_revision_changed",
+      },
+      preview: { changedCells: [{ field: "order_number", before: null, after: "ORD-001" }] },
+      batchPreview: null,
+    });
+    mocks.prepareWorkItemLedgerPostingPlan.mockResolvedValue({
+      plan: {
+        schemaVersion: 2,
+        id: "tpp_fresh",
+        workItemId: "lwi_1",
+        resultRevision: 3,
+        primary: operation,
+        related: [],
+        status: "proposed",
+        state: "proposed",
+        revision: 1,
+      },
+      preview: { changedCells: [{ field: "order_number", before: null, after: "ORD-001" }] },
+      batchPreview: null,
+    });
+
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByText("Refresh required")).toBeTruthy();
+    expect(screen.queryByText("order_number")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh plan and review again" }));
+
+    await waitFor(() => expect(mocks.prepareWorkItemLedgerPostingPlan).toHaveBeenCalledWith("lwi_1", {
+      expectedRevision: 3,
+      primary: operation,
+      related: [],
+    }));
+    expect(await screen.findByText("The proposed write was checked against the current task revision. Review the fresh diff before approving.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve and write ledger" })).toBeTruthy();
+    expect(screen.getByText("order_number")).toBeTruthy();
+  });
+
   it("explains the automatically matched My template without asking the user to choose it", async () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({
@@ -343,6 +555,47 @@ describe("work item summary presentation", () => {
     expect(onCreateTaskDraft).toHaveBeenLastCalledWith(expect.stringContaining("Follow up on “Prepare customer update”"));
   });
 
+  it("explains failed result checks and opens one independent repair task", async () => {
+    const onOpenWorkItem = vi.fn();
+    const failedItem = item({
+      status: "blocked",
+      executionState: "failed",
+      resultVerification: {
+        schemaVersion: 2,
+        status: "failed",
+        summary: "One result check failed.",
+        checks: [{
+          kind: "business_document",
+          status: "failed",
+          summary: "A customer proposal document is still missing.",
+          expected: { minCount: 1 },
+          actual: { qualifiedCount: 0 },
+        }],
+        verificationChecks: [],
+        repair: {
+          required: true,
+          mode: "independent_task",
+          reasons: ["A customer proposal document is still missing."],
+          suggestedRequest: "Repair the missing customer proposal document.",
+        },
+        digest: "sha256:failed-result",
+      },
+    });
+    const repair = item({ id: "lwi_repair", title: "Prepare customer update repair", status: "backlog" });
+    mocks.getWorkItem.mockResolvedValue({ workItem: failedItem });
+    mocks.createWorkItemResultRepair.mockResolvedValue({ workItem: repair, replayed: false });
+
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onOpenWorkItem={onOpenWorkItem} />);
+
+    expect(await screen.findByText("This result is not complete yet")).toBeTruthy();
+    expect(screen.getByText("A customer proposal document is still missing.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create repair task from checks" }));
+
+    await waitFor(() => expect(mocks.createWorkItemResultRepair).toHaveBeenCalledWith("lwi_1"));
+    expect(onOpenWorkItem).toHaveBeenCalledWith("lwi_repair");
+    expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
+  });
+
   it("saves a completed ordinary task as a new learning My template after confirming the extracted result", async () => {
     const completed = item({
       state: "closed",
@@ -374,11 +627,11 @@ describe("work item summary presentation", () => {
     mocks.createMyTemplateDraft.mockResolvedValue({ workItem: item({ ...completed, myTemplateDraft: draft }), draft });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Save as My template" }));
-    expect(await screen.findByRole("heading", { name: "Save as a new My template" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Use this approach next time" }));
+    expect(await screen.findByRole("heading", { name: "Remember this approach" })).toBeTruthy();
     expect(screen.getByDisplayValue("Customer update")).toBeTruthy();
     expect(screen.getByText(/One case is enough to review and enable/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Confirm and save template" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remember this approach" }));
 
     await waitFor(() => expect(mocks.createMyTemplateDraft).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
       expectedRevision: 2,
@@ -388,7 +641,7 @@ describe("work item summary presentation", () => {
       expectedOutput: "Customer update document",
     })));
     expect(await screen.findByText("Saved for review and activation")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Save as My template" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use this approach next time" })).toBeNull();
   });
 
   it("records whether a completed My template result met expectations without conflating technical failures", async () => {
@@ -870,6 +1123,59 @@ describe("work item summary presentation", () => {
     expect(useUiStore.getState().section).toBe("dashboard");
   });
 
+  it("previews and reveals a managed local-knowledge deliverable without exposing its host path", async () => {
+    const contentId = "lc_0123456789abcdef0123456789abcdef";
+    mocks.previewLocalContent.mockResolvedValueOnce({
+      preview: {
+        contentId,
+        title: "Saved article",
+        kind: "article",
+        format: "plain_text",
+        text: "# Saved article\n\nThe article is available locally.\n\n![Chart](assets/001-chart.png)",
+        truncated: false,
+        bytesRead: 90,
+        totalBytes: 90,
+        mimeType: "text/markdown",
+        originalName: "saved-article.md",
+        activeContentExecuted: false,
+        remoteResourcesLoaded: false,
+      },
+    });
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "done", executionState: "completed", waitingOn: "none" }),
+      observability: {
+        latestRun: null,
+        outcome: {
+          status: "available",
+          summary: "Saved one article to the local library.",
+          fullReport: "Saved one article to the local library.",
+          highlights: [], warnings: [], files: ["Saved article.md"],
+          fileEntries: [{
+            name: "Saved article.md", path: null, contentId, projectId: "prj_1", worktreeId: null,
+            status: "available", preview: "document",
+          }],
+          verification: null,
+          deliveredAt: "2026-08-20T10:01:34.428Z",
+        },
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View result" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Browse file: Saved article.md" }));
+    await waitFor(() => expect(mocks.previewLocalContent).toHaveBeenCalledWith(contentId));
+    const preview = await screen.findByRole("dialog", { name: "Saved article.md" });
+    expect(within(preview).getByRole("heading", { name: "Saved article" })).toBeTruthy();
+    expect(within(preview).getByText("The article is available locally.")).toBeTruthy();
+    await waitFor(() => expect(mocks.previewLocalContentAsset).toHaveBeenCalledWith(contentId, "assets/001-chart.png"));
+    expect(mocks.projectAssetDescriptor).not.toHaveBeenCalled();
+    fireEvent.click(within(preview).getByRole("button", { name: "Close" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open containing folder: Saved article.md" }));
+    await waitFor(() => expect(mocks.revealLocalContent).toHaveBeenCalledWith(contentId));
+    expect(document.body.textContent).not.toContain("Application Support");
+  });
+
   it("reveals a deliverable in its local folder without leaving the task", async () => {
     const revealContainedAsset = vi.fn().mockResolvedValue({ revealed: true });
     window.myagenttoolDesktop = { revealContainedAsset };
@@ -1092,7 +1398,7 @@ describe("work item summary presentation", () => {
     })));
   });
 
-  it("answers AI clarification from the task and resumes the same run", async () => {
+  it("answers an executor question from the task and resumes the same run", async () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({ executionState: "awaiting_approval", waitingOn: "me" }),
       observability: {
@@ -1102,7 +1408,7 @@ describe("work item summary presentation", () => {
           phase: "waiting_for_input",
           updatedAt: "2026-08-07T01:00:00.000Z",
           decision: {
-            path: "clarify",
+            path: "office",
             decidedBy: "agent",
             confidence: 0.8,
             clarifyingQuestions: ["Should an invalid timezone fall back to UTC or stop scheduling?"],

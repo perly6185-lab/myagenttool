@@ -391,7 +391,7 @@ test("health counts channel child rows and terminal delivery failures", () => {
     { id: "chdl_b", channelId, status: "failed_terminal" },
   );
   const health = service.channelHealth({ channelId }, owner);
-  assert.deepEqual(health.body.counts, { events: 1, conversations: 1, deliveries: 2, failedDeliveries: 1 });
+  assert.deepEqual(health.body.counts, { events: 1, conversations: 1, deliveries: 2, failedDeliveries: 1, unconfirmedDeliveries: 0 });
 });
 
 test("diagnostics reports pipeline health without exposing message content or secrets", () => {
@@ -401,16 +401,24 @@ test("diagnostics reports pipeline health without exposing message content or se
   state.channelEvents.push(
     {
       id: "chev_diag_1", channelId, status: "imported", receivedAt: "2026-07-15T00:00:01.000Z",
-      content: SECRET, mediaFailure: null,
+      content: SECRET, mediaFailure: null, conversationId: "chcv_diag_1",
+      sharedContentStatus: "ready", sharedContentUrls: ["https://example.com/private-article-path"],
+      sharedContentDetectedAt: "2026-07-15T00:00:01.000Z", sharedContentCompletedAt: "2026-07-15T00:00:01.500Z",
+      sharedContentAcknowledgement: { status: "queued", deliveryId: "chdl_diag_1" }, replyDeliveryId: null,
     },
     {
       id: "chev_diag_2", channelId, status: "refused", receivedAt: "2026-07-15T00:00:02.000Z",
       content: "private user content", intentDecision: { reason: "not_authorized" },
+      sharedContentRoute: {
+        sourceEventId: "chev_diag_1", target: "needs_confirmation", status: "awaiting_confirmation",
+        reason: "shared_content_or_active_task_ambiguous", activeTaskCount: 1,
+        decidedAt: "2026-07-15T00:00:02.000Z",
+      },
     },
   );
   state.channelConversations.push({ id: "chcv_diag_1", channelId });
   state.channelDeliveries.push(
-    { id: "chdl_diag_1", channelId, status: "delivered", createdAt: "2026-07-15T00:00:03.000Z", updatedAt: "2026-07-15T00:00:04.000Z" },
+    { id: "chdl_diag_1", channelId, status: "delivered", createdAt: "2026-07-15T00:00:03.000Z", updatedAt: "2026-07-15T00:00:04.000Z", dedupeKey: "channel-shared-content:chev_diag_1:reading" },
     { id: "chdl_diag_2", channelId, status: "failed_terminal", attempts: 3, lastErrorCode: "network_error", createdAt: "2026-07-15T00:00:05.000Z", updatedAt: "2026-07-15T00:00:06.000Z", content: SECRET },
   );
   state.channelTaskThreads.push({ id: "cth_diag_1", channelId, status: "queued" });
@@ -423,10 +431,17 @@ test("diagnostics reports pipeline health without exposing message content or se
   assert.deepEqual(diagnostics.body.pipeline.inbound, { imported: 1, refused: 1 });
   assert.deepEqual(diagnostics.body.pipeline.outbound, { delivered: 1, failed_terminal: 1 });
   assert.deepEqual(diagnostics.body.pipeline.tasks, { queued: 1 });
+  assert.equal(diagnostics.body.links[0].status, "ready");
+  assert.deepEqual(diagnostics.body.links[0].hosts, ["example.com"]);
+  assert.equal(diagnostics.body.links[0].acknowledgement.status, "delivered");
+  assert.equal(diagnostics.body.links[0].finalReply.status, "not_queued");
+  assert.equal(diagnostics.body.links[0].route.target, "needs_confirmation");
+  assert.equal(diagnostics.body.links[0].route.status, "awaiting_confirmation");
   assert.equal(diagnostics.body.failures[0].code, "network_error");
   assert.equal(diagnostics.body.failures[1].code, "not_authorized");
   assert.ok(!JSON.stringify(diagnostics.body).includes(SECRET));
   assert.ok(!JSON.stringify(diagnostics.body).includes("private user content"));
+  assert.ok(!JSON.stringify(diagnostics.body).includes("private-article-path"));
 });
 
 test("diagnostics preserves channel tenancy opacity", () => {

@@ -24,6 +24,7 @@ import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits, claudeRequestContext } from "./round-telemetry.mjs";
 import { createAgentLineSink } from "./agent-line-sink.mjs";
 import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
+import { mergeCodexCliResult } from "./codex-cli-result.mjs";
 import { createInvocationPool, resolveBridgeConcurrency, refreshedConcurrency } from "./invocation-pool.mjs";
 import { createCancellationWatcher } from "./cancellation-watcher.mjs";
 import {
@@ -1320,7 +1321,9 @@ async function runInvocation(work, { shutdownSignal = null } = {}) {
     async (line) => {
       const result = await handleAgentLine(invocationId, line, adapter, roundState, commandWatchdog);
       if (result) {
-        finalResult = result;
+        finalResult = adapter.outputFormat === "codex_jsonl"
+          ? mergeCodexCliResult(finalResult, result)
+          : result;
       }
     },
     { onError: (error, line) => console.error(`[desktop] ${invocationId} stdout line handling failed (continuing): ${error instanceof Error ? error.message : String(error)} — line: ${String(line).slice(0, 200)}`) },

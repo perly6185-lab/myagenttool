@@ -17,6 +17,7 @@ async function mockApi(page: Page) {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === "/api/state") return route.fulfill({ json: state });
+    if (url.pathname === "/api/cad-preview/readiness") return route.fulfill({ json: { state: "ready", ready: true, summary: "Managed DXF runtime is ready." } });
     if (url.pathname.endsWith("/documents")) return route.fulfill({ json: { projectId: "prj_1", worktreeId: url.searchParams.get("worktree"), truncated: false, scanned: 4, documents: [
       { projectId: "prj_1", worktreeId: url.searchParams.get("worktree"), name: "report.docx", path: "docs/report.docx", type: "docx", gitStatus: "clean" },
       { projectId: "prj_1", worktreeId: url.searchParams.get("worktree"), name: "searchable.pdf", path: "docs/searchable.pdf", type: "pdf", gitStatus: "clean" },
@@ -24,7 +25,7 @@ async function mockApi(page: Page) {
       { projectId: "prj_1", worktreeId: url.searchParams.get("worktree"), name: "deterministic.dxf", path: "drawings/deterministic.dxf", type: "dxf", gitStatus: "clean" },
     ] } });
     if (url.pathname.endsWith("/cad-document/layout")) return route.fulfill({ json: { path: "drawings/deterministic.dxf", size: 384, svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><path d="M0 50L100 50L100 0" fill="none" stroke="white"/><text x="10" y="40" fill="white">Lobby</text></svg>' } });
-    if (url.pathname.endsWith("/cad-document")) return route.fulfill({ json: { path: "drawings/deterministic.dxf", size: 384, version: "AC1027", units: 6, extents: { min: [0, 0, 0], max: [100, 50, 0] }, layouts: ["Model"], layers: ["Walls", "Notes"], entityCounts: { LINE: 2, TEXT: 1 }, texts: [{ text: "Lobby", type: "TEXT", layer: "Notes" }], warnings: [], audit: { errors: 0, fixes: 0 } } });
+    if (url.pathname.endsWith("/cad-document")) return route.fulfill({ json: { path: "drawings/deterministic.dxf", size: 384, version: "AC1027", units: 6, extents: { min: [0, 0, 0], max: [100, 50, 0] }, layoutExtents: { Model: { min: [0, 0, 0], max: [100, 50, 0] }, Sheet: { min: [0, 0, 0], max: [200, 100, 0] } }, layouts: ["Model", "Sheet"], layers: ["Walls", "Notes"], entityCounts: { LINE: 2, TEXT: 1 }, texts: [{ text: "Lobby", type: "TEXT", layer: "Notes", layout: "Model", x: 10, y: 10 }], warnings: [], audit: { errors: 0, fixes: 0 } } });
     if (url.pathname.endsWith("/pdf-document")) {
       const pdf = url.searchParams.get("path")?.endsWith("protected.pdf") ? protectedPdf : searchablePdf;
       const range = request.headers().range;
@@ -155,12 +156,36 @@ test("browses a deterministic DXF with layers, search, and zoom", async ({ page 
   await expect(page.getByText("Version: AC1027")).toBeVisible();
   await expect(page.locator('iframe[title="CAD layout Model"]')).toBeVisible();
   await page.getByLabel("Search CAD text").fill("lobby");
-  await expect(page.getByText("Lobby")).toBeVisible();
+  await page.getByRole("button", { name: /Lobby/ }).click();
+  await expect(page.getByLabel("CAD text highlight Lobby")).toBeVisible();
   await page.getByText("Walls", { exact: true }).click();
   await expect.poll(() => layoutRequests.at(-1)?.searchParams.getAll("layers")).toEqual(["Notes"]);
   expect(layoutRequests.at(-1)?.searchParams.get("layersMode")).toBe("selected");
   await page.getByLabel("Zoom in").click();
-  await expect(page.getByText("125%")).toBeVisible();
+  const zoomBeforeWheel = await page.locator("span").filter({ hasText: /%/ }).first().textContent();
+  await page.getByLabel("CAD pan and zoom viewport").hover();
+  await page.mouse.wheel(0, -120);
+  await expect.poll(async () => page.locator("span").filter({ hasText: /%/ }).first().textContent()).not.toBe(zoomBeforeWheel);
+  const viewport = page.getByLabel("CAD pan and zoom viewport");
+  const canvas = viewport.locator("div.absolute.left-0.top-0");
+  const transformBeforeDrag = await canvas.getAttribute("style");
+  const bounds = await viewport.boundingBox();
+  if (!bounds) throw new Error("CAD viewport has no bounds");
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width / 2 + 50, bounds.y + bounds.height / 2 + 30);
+  await page.mouse.up();
+  await expect.poll(() => canvas.getAttribute("style")).not.toBe(transformBeforeDrag);
+  await page.getByLabel("Fit CAD width").click();
+  await page.getByLabel("Fit CAD page").click();
+  await page.getByLabel("Search CAD layers").fill("wall");
+  await expect(page.getByText("Notes", { exact: true })).toBeHidden();
+  await page.getByLabel("Search CAD layers").fill("");
+  await page.getByRole("button", { name: "None", exact: true }).click();
+  await expect.poll(() => layoutRequests.at(-1)?.searchParams.getAll("layers")).toEqual([]);
+  await page.getByRole("complementary").getByRole("button", { name: "All", exact: true }).click();
+  await page.getByLabel("CAD layout").selectOption("Sheet");
+  await expect(page.getByText("Viewing Sheet")).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("cad-preview-desktop.png"), fullPage: true });
 });
 

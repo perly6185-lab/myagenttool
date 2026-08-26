@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { launchOptions, contextOptions } from "../src/launch.mjs";
+import { browserChannelCandidates, classifyBrowserLaunchError, launchOptions, contextOptions } from "../src/launch.mjs";
 import { scrollToBottom } from "../src/scroll.mjs";
 
 test("launchOptions: headless + anti-automation arg by default", () => {
@@ -23,6 +23,18 @@ test("launchOptions: channel passes through when set", () => {
   assert.equal(opts.headless, false);
   assert.equal(opts.channel, "chrome");
   assert.ok(opts.args.includes("--disable-blink-features=AutomationControlled"));
+});
+
+test("automatic browser selection prefers the platform browser and falls back", () => {
+  assert.deepEqual(browserChannelCandidates("auto", "darwin"), ["chrome", "msedge"]);
+  assert.deepEqual(browserChannelCandidates("auto", "win32"), ["msedge", "chrome"]);
+  assert.deepEqual(browserChannelCandidates("chrome", "win32"), ["chrome"]);
+  assert.equal(launchOptions({ headless: false, channel: "auto" }).channel, undefined);
+});
+
+test("browser launch failures distinguish missing browsers from occupied profiles", () => {
+  assert.equal(classifyBrowserLaunchError(new Error("Executable doesn't exist")).code, "session_browser_unavailable");
+  assert.equal(classifyBrowserLaunchError(new Error("ProcessSingleton profile is locked")).code, "session_profile_in_use");
 });
 
 test("contextOptions: desktop UA, zh-CN locale, Shanghai timezone", () => {

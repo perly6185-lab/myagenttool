@@ -11,9 +11,8 @@ import { useUiStore } from "@/store/ui-store";
 export function MeView({ embedded = false }: { embedded?: boolean }) {
   const { t } = useAppTranslation();
   const navigate = usePageNavigation();
-  const professionalTaskView = useUiStore((state) => state.workItemDetailPreference) === "expert";
-  const setWorkItemDetailPreference = useUiStore((state) => state.setWorkItemDetailPreference);
-  const setTaskArea = useUiStore((state) => state.setTaskArea);
+  const professionalMode = useUiStore((state) => state.experienceMode) === "professional";
+  const setExperienceMode = useUiStore((state) => state.setExperienceMode);
 
   return (
     <div className={`mx-auto flex w-full max-w-2xl flex-col gap-3 ${embedded ? "pb-4" : ""}`}>
@@ -42,23 +41,19 @@ export function MeView({ embedded = false }: { embedded?: boolean }) {
           </PreferenceRow>
           <PreferenceRow
             icon={ListTree}
-            label={t("me.professionalTaskView")}
-            description={t("me.professionalTaskViewHint")}
+            label={t("me.professionalMode")}
+            description={t("me.professionalModeHint")}
           >
             <button
               type="button"
               role="switch"
-              aria-checked={professionalTaskView}
-              aria-label={t("me.professionalTaskView")}
-              onClick={() => {
-                const next = professionalTaskView ? "summary" : "expert";
-                setWorkItemDetailPreference(next);
-                if (next === "summary") setTaskArea("overview");
-              }}
-              className={`relative h-6 w-11 rounded-full transition-colors ${professionalTaskView ? "bg-primary" : "bg-muted-foreground/35"}`}
+              aria-checked={professionalMode}
+              aria-label={t("me.professionalMode")}
+              onClick={() => setExperienceMode(professionalMode ? "ordinary" : "professional")}
+              className={`relative h-6 w-11 rounded-full transition-colors ${professionalMode ? "bg-primary" : "bg-muted-foreground/35"}`}
             >
               <span
-                className={`absolute top-0.5 size-5 rounded-full bg-background shadow-sm transition-transform ${professionalTaskView ? "translate-x-5" : "translate-x-0.5"}`}
+                className={`absolute top-0.5 size-5 rounded-full bg-background shadow-sm transition-transform ${professionalMode ? "translate-x-5" : "translate-x-0.5"}`}
                 aria-hidden="true"
               />
             </button>

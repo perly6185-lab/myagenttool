@@ -225,6 +225,13 @@ export function LocalLibraryView() {
     }
   }
 
+  function handleRemovedFromLibrary() {
+    setPreviewTarget(null);
+    setDetailTarget(null);
+    setLocateFeedback(copy.removedFromLibrary);
+    content.refetch();
+  }
+
   function goToAddedTask() {
     if (!addedTask) return;
     openWorkItem(addedTask.id, { section: "assets" });
@@ -267,7 +274,7 @@ export function LocalLibraryView() {
       {catalog ? (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground" role="status">
           <span>{copy.indexed.replace("{{count}}", String(catalog.total)).replace("{{available}}", String(catalog.available))}</span>
-          {catalog.lastRebuiltAt ? <span>{copy.lastIndexed.replace("{{time}}", new Intl.DateTimeFormat(i18n.language, { dateStyle: "medium", timeStyle: "short" }).format(new Date(catalog.lastRebuiltAt)))}</span> : null}
+          {catalog.lastRebuiltAt ? <span>{copy.lastIndexed.replace("{{time}}", new Date(catalog.lastRebuiltAt).toLocaleString(i18n.language))}</span> : null}
         </div>
       ) : null}
       {rebuildError ? <p className="rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-sm text-destructive" role="alert">{rebuildError}</p> : null}
@@ -485,6 +492,7 @@ export function LocalLibraryView() {
         onPreview={(record) => { setDetailTarget(null); setPreviewTarget(record); }}
         onLocate={(record) => void locateOriginal(record)}
         onChoose={(record) => { setDetailTarget(null); choose(record); }}
+        onRemoved={handleRemovedFromLibrary}
       /></Suspense> : null}
     </div>
   );

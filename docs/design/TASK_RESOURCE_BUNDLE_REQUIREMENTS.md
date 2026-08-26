@@ -8,6 +8,7 @@
 
 相关设计：
 
+- [任务模板、台账记录与离散任务设计](TASK_TEMPLATE_LEDGER_RECORD_DESIGN.md)
 - [Local Content Library Delivery Plan](../engineering/LOCAL_CONTENT_LIBRARY_PLAN.md)
 - [Local Content and Local AI Integration Design](../engineering/LOCAL_CONTENT_AI_INTEGRATION_DESIGN.md)
 - [ADR 0026: Local Content Library](../engineering/ADR_0026_LOCAL_CONTENT_LIBRARY.md)

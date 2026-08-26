@@ -81,7 +81,7 @@ test("roleAutoRunPrompt gives read-only work a generic inspection contract", () 
 });
 
 test("roleAutoRunPrompt gives every role the same bounded discovery contract", () => {
-  for (const path of ["develop", "design", "prototype", "clarify", "decompose"]) {
+  for (const path of ["develop", "office", "general", "design", "creative", "content", "prototype", "clarify", "decompose"]) {
     const prompt = roleAutoRunPrompt({ type: "local_issue", number: 9, title: "Bounded scan" }, { path });
     assert.match(prompt, /git status --short --untracked-files=no/, `${path} uses the bounded status check`);
     assert.match(prompt, /rg --files \./, `${path} names the forbidden broad scan`);
@@ -108,6 +108,22 @@ test("roleAutoRunPrompt role variants: design and clarify forbid changes; protot
   assert.match(roleAutoRunPrompt(base, { path: "prototype" }), /time-boxed, runnable prototype/);
 });
 
+test("roleAutoRunPrompt separates office, general, creative, and content work from source-code development", () => {
+  const base = { type: "local_issue", number: 12, title: "Create the requested deliverable", url: null };
+  const office = roleAutoRunPrompt(base, { path: "office" });
+  assert.match(office, /deliverables\/office\//);
+  assert.match(office, /not a source-code implementation/i);
+  const general = roleAutoRunPrompt(base, { path: "general" });
+  assert.match(general, /deliverables\/general\//);
+  assert.match(general, /Do not reinterpret.*software development/i);
+  const creative = roleAutoRunPrompt(base, { path: "creative" });
+  assert.match(creative, /deliverables\/creative\//);
+  assert.doesNotMatch(creative, /ASCII wireframe/);
+  const content = roleAutoRunPrompt(base, { path: "content" });
+  assert.match(content, /deliverables\/content\//);
+  assert.match(content, /article, copy, social-media post/i);
+});
+
 test("roleAutoRunPrompt: unknown path falls back to develop; missing body omits the section", () => {
   const prompt = roleAutoRunPrompt({ type: "issue", number: 7, title: "X", url: null }, { path: "bogus" });
   assert.match(prompt, /implement the change/);
@@ -119,7 +135,7 @@ test("roleAutoRunPrompt caps an oversized issue body", () => {
     { type: "issue", number: 8, title: "Big", url: null },
     { path: "develop", issueBody: "x".repeat(10_000) },
   );
-  assert.ok(prompt.length < 9_000, "body stays capped while fixed safety and delivery guidance remains present");
+  assert.ok(prompt.length < 10_000, "body stays capped while fixed safety and delivery guidance remains present");
   assert.ok(!prompt.includes("x".repeat(6_001)), "the untrusted body itself is still capped at 6000 characters");
 });
 

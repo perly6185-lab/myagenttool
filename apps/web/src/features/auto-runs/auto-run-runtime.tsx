@@ -24,7 +24,7 @@ export function AutoRunRoutingFeedback({ run, onSaved }: { run: AutoRunRecord; o
       <summary className="cursor-pointer text-primary">{t("routingFeedback.title")}</summary>
       <div className="mt-2 flex flex-wrap gap-2 rounded bg-muted p-2">
         <Select className="h-7 w-32 text-xs" value={path} onChange={(event) => setPath(event.target.value)}>
-          {["develop", "design", "prototype", "clarify", "decompose"].map((value) => <option key={value} value={value}>{value}</option>)}
+          {["develop", "office", "general", "design", "creative", "content", "prototype", "clarify", "decompose"].map((value) => <option key={value} value={value}>{value}</option>)}
         </Select>
         <Input className="h-7 min-w-48 flex-1 text-xs" value={reason} onChange={(event) => setReason(event.target.value)} placeholder={t("routingFeedback.reason")} />
         <Button size="sm" disabled={saving || !reason.trim()} onClick={() => {

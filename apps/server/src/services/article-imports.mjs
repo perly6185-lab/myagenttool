@@ -200,8 +200,10 @@ export async function inspectArticle({
   resolveHostname,
   signal,
   limits = ARTICLE_IMPORT_LIMITS,
+  extractorPlugin = null,
 } = {}) {
   const canonicalUrl = canonicalizeArticleUrl(url);
+  const extractorManifest = extractorManifestForUrl(extractorPlugin, canonicalUrl);
   if (detectArticleSource(canonicalUrl) === "feishu") {
     // Feishu docs are JS-rendered SPAs; the plain-HTTP preview cannot read them
     // and launching a browser here would block the preview for ~a minute. Return
@@ -343,7 +345,10 @@ export async function inspectArticle({
   const html = page.bytes.toString("utf8");
   const provider = detectArticleSource(page.url);
   assertArticlePage(html, page.url, provider);
-  const parsed = parseArticleDocument(html, page.url, provider, limits.mediaCount);
+  const parsed = parseArticleDocument(html, page.url, provider, limits.mediaCount, extractorManifest);
+  if (extractorManifest && parsed.plainText.length < extractorManifest.minimumTextLength) {
+    throw articleError("article_plugin_content_incomplete");
+  }
   return {
     sourceUrl: String(url),
     canonicalUrl,
@@ -358,6 +363,11 @@ export async function inspectArticle({
     media: parsed.media.map(({ token, ...item }) => item),
     mediaCounts: countMedia(parsed.media),
     markdownPreview: parsed.markdown.slice(0, 2_000),
+    extractorPlugin: extractorManifest ? {
+      id: extractorManifest.id,
+      version: extractorManifest.version,
+      checksum: extractorPlugin.checksum ?? null,
+    } : null,
     fetchedAt: new Date().toISOString(),
     _document: parsed,
   };
@@ -568,6 +578,7 @@ export async function importArticleToWorktree({
   resolveHostname,
   signal,
   limits = ARTICLE_IMPORT_LIMITS,
+  extractorPlugin = null,
 } = {}) {
   // Feishu public docs (JS-rendered SPA), Zhihu (secng/zse-ck JS-challenge
   // WAF), Qichacha (login wall + view quota), Xiaohongshu (login-gated note
@@ -598,7 +609,7 @@ export async function importArticleToWorktree({
         ? await inspectXiaohongshuArticle({ url, signal, limits })
         : source === "jianshu"
           ? await inspectJianshuArticle({ url, signal, limits })
-          : await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
+          : await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits, extractorPlugin });
   const publishedAt = inspection.publishedAt ?? importedAt.slice(0, 10);
   const relativeDirectory = buildArticleRelativeDirectory({
     provider: inspection.provider,
@@ -668,6 +679,7 @@ export async function importArticleToWorktree({
       publishedAt,
       publishedAtSource: inspection.publishedAt ? "source" : "imported",
       importedAt,
+      extractorPlugin: inspection.extractorPlugin ?? null,
       localIssueId: workItemId,
       outputs: {
         markdown: "article.md",
@@ -1353,6 +1365,7 @@ export function createArticleImportService({
   persistStateSoon = () => {},
   createInvocation = null,
   startInvocationIfAllowed = null,
+  resolveExtractorPlugin = () => null,
   store,
 } = {}) {
   const jobs = new Map();
@@ -1392,7 +1405,8 @@ export function createArticleImportService({
       return { ok: false, status: 404, body: { error: "project_not_found" } };
     }
     try {
-      const result = await inspectArticle({ url: input.url, fetchImpl, resolveHostname });
+      const extractorPlugin = resolveExtractorPlugin(input.url, actor?.teamId ?? "team_local");
+      const result = await inspectArticle({ url: input.url, fetchImpl, resolveHostname, extractorPlugin });
       delete result._document;
       return { ok: true, status: 200, body: { inspection: result } };
     } catch (error) {
@@ -1445,6 +1459,7 @@ export function createArticleImportService({
       result: null,
       controller: new AbortController(),
       actor,
+      ownerTeamId: actor?.teamId ?? "team_local",
       worktreePath: worktree.path ?? worktree.worktreePath,
     };
     const binding = workItemService.recordExecutionBinding({
@@ -1540,24 +1555,54 @@ export function createArticleImportService({
       }
       const relativeDirectory = relative(root, directory).split(sep).join("/");
       const analysisRelativePath = `${relativeDirectory}/analysis.md`;
-      const stored = (state.workItems ?? []).find((candidate) => candidate.id === job.workItemId);
-      if (!stored) throw articleError("work_item_not_found");
+      const sourceItem = (state.workItems ?? []).find((candidate) => candidate.id === job.workItemId);
+      if (!sourceItem) throw articleError("work_item_not_found");
+      const sourceAsset = (sourceItem.outputAssets ?? []).find((asset) => asset.path === job.result.markdownPath);
+      if (!sourceAsset) throw articleError("article_import_source_asset_missing");
+      const analysisTask = workItemService.createWorkItem({
+        projectId: sourceItem.projectId,
+        title: `深度分析：${job.result.inspection?.title ?? sourceItem.title}`.slice(0, 300),
+        body: [
+          "基于已入库的文章资料形成一份可独立使用的深度分析报告。",
+          `来源任务：${sourceItem.localRef ?? sourceItem.id}`,
+          `来源文件：${job.result.markdownPath}`,
+          "本任务只负责分析，不自动创建文章、漫画、口播、视频或发布任务。",
+        ].join("\n"),
+        type: "task",
+        status: "in_progress",
+        priority: "p3",
+        executionPolicy: "manual",
+        taskKind: "knowledge_analysis",
+        intentId: `article-analysis:${job.id}`,
+        intentStatement: `深度分析已入库文章：${job.result.inspection?.title ?? sourceItem.title}`,
+        creationBasis: "explicit_user_intent",
+        planningHorizon: "committed",
+        inputAssets: [{ ...sourceAsset }],
+        idempotencyKey: `article-analysis:${job.id}:${sourceHash}`.slice(0, 200),
+      }, actor);
+      if (!analysisTask.ok) throw articleError(analysisTask.body?.error ?? "article_analysis_task_create_failed");
+      let analysisItem = (state.workItems ?? []).find((candidate) => candidate.id === analysisTask.body.workItem.id);
+      if (!analysisItem) throw articleError("article_analysis_task_not_found");
       const outputAssets = [
-        ...(stored.outputAssets ?? []).filter((asset) => asset.path !== analysisRelativePath),
-        articleAsset(analysisRelativePath, "markdown", Buffer.byteLength(renderArticleAnalysisMarkdown(analysis)), stored, job.worktreeId),
+        ...(analysisItem.outputAssets ?? []).filter((asset) => asset.path !== analysisRelativePath),
+        articleAsset(analysisRelativePath, "markdown", Buffer.byteLength(renderArticleAnalysisMarkdown(analysis)), analysisItem, job.worktreeId),
       ];
       const updated = workItemService.updateWorkItem({
-        workItemId: stored.id,
-        expectedRevision: stored.revision,
+        workItemId: analysisItem.id,
+        expectedRevision: analysisItem.revision,
         outputAssets,
+        status: "done",
+        waitingOn: "none",
       }, actor);
       if (!updated.ok) throw articleError(updated.body?.error ?? "article_analysis_asset_binding_failed");
+      analysisItem = (state.workItems ?? []).find((candidate) => candidate.id === analysisItem.id) ?? analysisItem;
       job.result.analysisPath = analysisRelativePath;
+      job.result.analysisWorkItemId = analysisItem.id;
       persistJobs();
       return {
         ok: true,
         status: 200,
-        body: { analysis, analysisPath: analysisRelativePath },
+        body: { analysis, analysisPath: analysisRelativePath, workItem: updated.body.workItem },
       };
     } catch (error) {
       return articleFailure(error);
@@ -1714,7 +1759,7 @@ export function createArticleImportService({
         && invocation.requestedBy === (actor?.userId ?? "usr_local"));
       if (existing) {
         const metadata = existing.options?.metadata?.articleDerivative;
-        if (metadata?.workItemId !== String(input.workItemId ?? "")
+        if ((metadata?.sourceWorkItemId ?? metadata?.workItemId) !== String(input.workItemId ?? "")
           || metadata?.sourceJobId !== String(input.jobId ?? "")
           || articleDerivativeMetadataFingerprint(metadata) !== requestFingerprint) {
           return { ok: false, status: 409, body: { error: "article_derivative_idempotency_conflict" } };
@@ -1751,6 +1796,35 @@ export function createArticleImportService({
       });
       const derivativeId = nextId("article_derivative");
       const generatedAt = now();
+      const sourceAsset = (stored.outputAssets ?? []).find((asset) => asset.path === sourceJob.result.markdownPath);
+      if (!sourceAsset) throw articleError("article_import_source_asset_missing");
+      const derivativeLabel = request.kind === "video_script" ? "视频脚本" : "文章二创";
+      const derivativeTask = workItemService.createWorkItem({
+        projectId: stored.projectId,
+        title: `${derivativeLabel}：${sourceJob.result.inspection?.title ?? stored.title}`.slice(0, 300),
+        body: [
+          `基于已入库资料完成${derivativeLabel}，形成可独立审阅的内容成品。`,
+          `来源任务：${stored.localRef ?? stored.id}`,
+          `来源文件：${sourceJob.result.markdownPath}`,
+          `目标受众：${request.audience || request.targetAge || "未特别限定"}`,
+          "本任务不会自动创建其他创作任务或平台发布任务。",
+        ].join("\n"),
+        type: "task",
+        status: "ready",
+        priority: "p3",
+        executionPolicy: "auto",
+        waitingOn: "ai",
+        taskKind: request.kind === "video_script" ? "content_video" : "content_article",
+        intentId: `article-derivative:${derivativeId}`,
+        intentStatement: `${derivativeLabel}：${sourceJob.result.inspection?.title ?? stored.title}`,
+        creationBasis: "explicit_user_intent",
+        planningHorizon: "committed",
+        inputAssets: [{ ...sourceAsset }],
+        idempotencyKey: `article-derivative-task:${idempotencyKey || derivativeId}`.slice(0, 200),
+      }, actor);
+      if (!derivativeTask.ok) throw articleError(derivativeTask.body?.error ?? "article_derivative_task_create_failed");
+      const targetItem = (state.workItems ?? []).find((candidate) => candidate.id === derivativeTask.body.workItem.id);
+      if (!targetItem) throw articleError("article_derivative_task_not_found");
       const analysisRelativePath = sourceJob.result.analysisPath
         ?? `${relative(root, sourceDirectory).split(sep).join("/")}/analysis.md`;
       const analysisAbsolutePath = resolve(root, analysisRelativePath);
@@ -1766,7 +1840,7 @@ export function createArticleImportService({
         outputPath,
         sourceUrl: sourceJob.canonicalUrl ?? sourceJob.result.inspection?.sourceUrl ?? null,
         generatedAt,
-        workItemId: stored.id,
+        workItemId: targetItem.id,
       });
       const invocation = createInvocation(prompt, selected.agent, {
         actor,
@@ -1777,8 +1851,9 @@ export function createArticleImportService({
           worktreeId: sourceJob.worktreeId,
           articleDerivative: {
             id: derivativeId,
-            workItemId: stored.id,
-            ownerTeamId: stored.ownerTeamId,
+            workItemId: targetItem.id,
+            sourceWorkItemId: stored.id,
+            ownerTeamId: targetItem.ownerTeamId,
             requestedBy: actor?.userId ?? "usr_local",
             sourceJobId: sourceJob.id,
             sourcePath: sourceJob.result.markdownPath,
@@ -1802,7 +1877,7 @@ export function createArticleImportService({
       });
       const invocationMetadata = invocation.options?.metadata?.articleDerivative;
       if (invocationMetadata?.id !== derivativeId) {
-        if (invocationMetadata?.workItemId !== stored.id
+        if ((invocationMetadata?.sourceWorkItemId ?? invocationMetadata?.workItemId) !== stored.id
           || invocationMetadata?.sourceJobId !== sourceJob.id
           || articleDerivativeMetadataFingerprint(invocationMetadata) !== requestFingerprint) {
           return { ok: false, status: 409, body: { error: "article_derivative_idempotency_conflict" } };
@@ -1811,7 +1886,7 @@ export function createArticleImportService({
         return { ok: true, status: 200, body: { derivative: articleDerivativeView(invocation) } };
       }
       const binding = workItemService.recordExecutionBinding({
-        workItemId: stored.id,
+        workItemId: targetItem.id,
         kind: "article_derivative",
         targetId: derivativeId,
         worktreeId: sourceJob.worktreeId,
@@ -1851,7 +1926,7 @@ export function createArticleImportService({
     const invocations = (state.invocations ?? [])
       .filter((invocation) => {
         const metadata = invocation.options?.metadata?.articleDerivative;
-        return metadata?.workItemId === String(workItemId ?? "")
+        return (metadata?.sourceWorkItemId ?? metadata?.workItemId) === String(workItemId ?? "")
           && metadata?.sourceJobId === String(jobId ?? "");
       })
       .sort((left, right) => String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? "")))
@@ -1919,6 +1994,8 @@ export function createArticleImportService({
         workItemId: stored.id,
         expectedRevision: stored.revision,
         outputAssets,
+        status: "done",
+        waitingOn: "none",
       }, internalActor);
       if (!updated.ok) throw articleError(updated.body?.error ?? "article_derivative_asset_binding_failed");
       workItemService.createComment?.({
@@ -2045,6 +2122,7 @@ export function createArticleImportService({
         resolveHostname,
         signal: job.controller.signal,
         limits,
+        extractorPlugin: resolveExtractorPlugin(job.sourceUrl, job.ownerTeamId ?? "team_local"),
       });
       const stored = (state.workItems ?? []).find((candidate) => candidate.id === job.workItemId);
       if (!stored) throw articleError("work_item_not_found");
@@ -2098,6 +2176,7 @@ export function createArticleImportService({
     state.articleImportJobs = [...jobs.values()].map((job) => ({
       ...jobView(job),
       sourceUrl: job.sourceUrl,
+      ownerTeamId: job.ownerTeamId ?? null,
     }));
   }
 
@@ -2246,7 +2325,7 @@ function findArticleDerivativeInvocation(state, { workItemId, sourceJobId, deriv
   return (state.invocations ?? []).find((invocation) => {
     const metadata = invocation.options?.metadata?.articleDerivative;
     return metadata?.id === derivativeId
-      && metadata?.workItemId === workItemId
+      && (metadata?.sourceWorkItemId ?? metadata?.workItemId) === workItemId
       && metadata?.sourceJobId === sourceJobId;
   }) ?? null;
 }
@@ -2272,6 +2351,7 @@ function articleDerivativeView(invocation) {
     invocationId: invocation.id,
     sourceJobId: metadata.sourceJobId,
     workItemId: metadata.workItemId,
+    sourceWorkItemId: metadata.sourceWorkItemId ?? metadata.workItemId,
     worktreeId: invocation.worktreeId,
     kind: metadata.kind,
     tone: metadata.tone,
@@ -2343,10 +2423,11 @@ async function writeArticleAnalysisFiles({ root, jsonPath, markdownPath, analysi
   }
 }
 
-function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPORT_LIMITS.mediaCount) {
+function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPORT_LIMITS.mediaCount, extractorManifest = null) {
   const document = parse(html);
   const structured = extractStructuredArticleData(document, provider, pageUrl);
-  const content = findProviderContent(document, provider);
+  const content = findExtractorNode(document, extractorManifest?.extraction?.content)
+    ?? findProviderContent(document, provider);
   const root = content ?? findNode(document, (node) => node.tagName === "body") ?? document;
   const media = [];
   const context = { pageUrl, media };
@@ -2370,6 +2451,7 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
     cleanHtml = `${cleanHtml}\n${structuredTokens.map((item) => `<figure>${item.token}</figure>`).join("\n")}`.trim();
   }
   const title = firstNonEmpty(
+    extractorFieldText(document, extractorManifest?.extraction?.title),
     provider === "xiaohongshu" ? structured.title : "",
     metaContent(document, "property", "og:title"),
     metaContent(document, "name", "twitter:title"),
@@ -2380,6 +2462,7 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
     "Imported article",
   );
   const author = firstNonEmpty(
+    extractorFieldText(document, extractorManifest?.extraction?.author),
     metaContent(document, "name", "author"),
     metaContent(document, "property", "article:author"),
     metaContent(document, "property", "og:article:author"),
@@ -2387,7 +2470,9 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
     structured.author,
     provider === "wechat" ? textContent(findNode(document, (node) => attr(node, "id") === "js_name")) : "",
   ) || null;
-  const publishedAt = structured.publishedAt ?? extractPublishedAt(document, html, provider);
+  const publishedAt = extractExtractorPublishedAt(document, extractorManifest?.extraction?.publishedAt)
+    ?? structured.publishedAt
+    ?? extractPublishedAt(document, html, provider);
   return {
     title: cleanText(title),
     author: author ? cleanText(author) : null,
@@ -2415,6 +2500,46 @@ function providerFieldText(document, provider, field) {
     if (cleanText(value)) return value;
   }
   return "";
+}
+
+function extractorManifestForUrl(plugin, value) {
+  const manifest = plugin?.manifest;
+  if (!manifest || manifest.kind !== "article_extractor" || manifest.schemaVersion !== 1) return null;
+  const hostname = new URL(value).hostname.toLowerCase();
+  return Array.isArray(manifest.hosts) && manifest.hosts.includes(hostname) ? manifest : null;
+}
+
+function findExtractorNode(document, selectors) {
+  for (const selector of selectors ?? []) {
+    const node = findNode(document, (candidate) => matchesSimpleSelector(candidate, selector));
+    if (node) return node;
+  }
+  return null;
+}
+
+function extractorFieldText(document, selectors) {
+  return textContent(findExtractorNode(document, selectors));
+}
+
+function extractExtractorPublishedAt(document, selectors) {
+  const node = findExtractorNode(document, selectors);
+  if (!node) return null;
+  const value = firstNonEmpty(attr(node, "datetime"), attr(node, "content"), textContent(node));
+  if (!value) return null;
+  const dateOnly = String(value).match(/\d{4}-\d{2}-\d{2}/)?.[0];
+  if (dateOnly && isValidDateOnly(dateOnly)) return dateOnly;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
+
+function matchesSimpleSelector(node, selector) {
+  if (!node?.tagName) return false;
+  const match = String(selector).match(/^([a-z][a-z0-9-]*)?(?:#([A-Za-z_][\w-]*))?(?:\.([A-Za-z_][\w-]*))?$/);
+  if (!match) return false;
+  const [, tagName, id, className] = match;
+  return (!tagName || node.tagName === tagName)
+    && (!id || attr(node, "id") === id)
+    && (!className || hasClass(node, className));
 }
 
 function findProviderContent(document, provider) {

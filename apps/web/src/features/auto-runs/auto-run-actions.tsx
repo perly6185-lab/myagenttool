@@ -78,7 +78,7 @@ export function AutoRunActions({ run, pending, onAction }: AutoRunActionsProps) 
           <span className="text-xs text-muted-foreground">
             {t("autoRuns.needsApproval")}
             {run.pendingApproval.riskLevel ? ` · risk: ${run.pendingApproval.riskLevel}` : ""}
-            {run.pendingApproval.riskTags.length ? ` (${run.pendingApproval.riskTags.join(", ")})` : ""}. The {run.decision?.path ?? "develop"} agent will edit code for this issue.
+            {run.pendingApproval.riskTags.length ? ` (${run.pendingApproval.riskTags.join(", ")})` : ""}. The {run.decision?.path ?? "develop"} worker will process this task within its approved scope.
           </span>
           <div className="flex shrink-0 gap-2">
             <Button

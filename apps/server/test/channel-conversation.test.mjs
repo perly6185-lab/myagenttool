@@ -16,7 +16,7 @@ import { createChannelService } from "../src/services/channels.mjs";
 const NOW = "2026-07-15T00:00:00.000Z";
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, routeChannelTask, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, cancelAutoRun, classifyIntent, createConsultation, notifyHumanTakeover, notifyTaskEvent, resendDelivery, setNotificationPolicy, operationMode = "team" } = {}) {
+function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, routeChannelTask, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, retryDirectTask, reconcileWechatDraftTask, cancelAutoRun, classifyIntent, createConsultation, inspectSharedLink, trackKnowledgeCaptureTask, attachKnowledgeToWorkItem, resolveKnowledgeLocation, notifyHumanTakeover, notifyTaskEvent, resendDelivery, acknowledgeDelivery, setNotificationPolicy, updateWorkItem, operationMode = "team" } = {}) {
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
   const events = [];
   const refusals = [];
@@ -61,6 +61,8 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
     routeChannelTask,
     answerClarify,
     retryAutoRun,
+    retryDirectTask,
+    reconcileWechatDraftTask,
     cancelAutoRun,
     classifyIntent,
     createConsultation: createConsultation
@@ -69,10 +71,16 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
         return createConsultation({ ...args, state, nextId });
       }
       : null,
+    inspectSharedLink,
+    trackKnowledgeCaptureTask,
+    attachKnowledgeToWorkItem,
+    resolveKnowledgeLocation,
     resendDelivery,
+    acknowledgeDelivery,
     notifyHumanTakeover,
     notifyTaskEvent,
     setNotificationPolicy,
+    updateWorkItem,
     replySender: (reply) => { replies.push(reply); },
     intakeQuietMs,
     intentTimeoutMs,
@@ -92,13 +100,14 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
   channelService.mapChannelIdentity({ channelId, externalUserId: "wx_alice", userId: "usr_local" }, owner);
 
   let msgSeq = 0;
-  function receive(content, { from = "wx_alice", attachmentAssets = [], mediaFailure = null } = {}) {
+  function receive(content, { from = "wx_alice", attachmentAssets = [], attachmentDiscoveries = [], mediaFailure = null } = {}) {
     const imported = channelService.importChannelEvent({
       channelId,
       providerMessageId: `msg_${++msgSeq}`,
       externalUserId: from,
       content,
       attachmentAssets,
+      attachmentDiscoveries,
       mediaFailure,
     });
     if (!imported.ok) return { imported, dispatched: null };
@@ -250,6 +259,116 @@ test("multiple natural messages tell the user that they were merged", async () =
   const proposal = harness.replies.at(-1)?.content ?? "";
   assert.match(proposal, /已合并你刚才的 2 条消息/);
   assert.equal(harness.state.channelTaskThreads[0].sourceEventIds.length, 2);
+});
+
+test("an attachment followed by its instruction stays in one intake task", async () => {
+  const harness = makeHarness({ intakeQuietMs: 50 });
+  harness.bindTaskProject("proj_a");
+  const attachment = {
+    id: "asset-ledger-source",
+    path: ".myagenttool/channel-attachments/source.xlsx",
+    originalName: "source.xlsx",
+    family: "file",
+    hash: "sha256:source",
+    version: "v1",
+    terminalId: "dev_local",
+    projectId: "proj_a",
+    readiness: { state: "ready" },
+  };
+  const discovery = {
+    status: "ready",
+    assetId: attachment.id,
+    fileName: attachment.originalName,
+    format: "xlsx",
+    rowCount: 2,
+    columnCount: 2,
+    recognizedFields: ["customer", "amount"],
+    keyCandidates: [],
+  };
+
+  const received = harness.receive("", { attachmentAssets: [attachment], attachmentDiscoveries: [discovery] }).dispatched;
+  assert.match(received.reply, /已收到文件/);
+  const supplemented = harness.receive("整理为台账").dispatched;
+  assert.equal(supplemented.reply, null);
+  await new Promise((resolve) => setTimeout(resolve, 70));
+
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+  const thread = harness.state.channelTaskThreads[0];
+  assert.equal(thread.sourceEventIds.length, 2);
+  assert.deepEqual(thread.attachmentAssets.map((asset) => asset.id), [attachment.id]);
+  assert.match(thread.summary, /整理为台账/);
+  assert.match(harness.replies.at(-1)?.content ?? "", /已合并你刚才的 2 条消息/);
+});
+
+test("an instruction sent after the attachment quiet window completes the same draft", async () => {
+  const calls = [];
+  const harness = makeHarness({
+    intakeQuietMs: 1,
+    operationMode: "personal",
+    createChannelTaskIssue: async (args) => {
+      calls.push(args);
+      return { ok: true, number: 31, workItemId: "wi_late_attachment", autoRoute: true, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  const attachment = {
+    id: "asset-late-source", path: ".myagenttool/channel-attachments/late.xlsx", originalName: "late.xlsx",
+    family: "file", hash: "sha256:late", version: "v1", terminalId: "dev_local", projectId: "proj_a",
+    readiness: { state: "ready" },
+  };
+  harness.receive("", { attachmentAssets: [attachment] });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const thread = harness.state.channelTaskThreads[0];
+  assert.equal(thread.waitingFor, "draft_input");
+  assert.match(harness.replies.at(-1).content, /希望如何处理/);
+
+  const supplemented = await harness.receive("整理为客户台账").dispatched;
+  assert.match(supplemented.reply, /已补充到当前任务/);
+  assert.equal(thread.waitingFor, "confirmation");
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+
+  await harness.receive("确认").dispatched;
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].inputAssets.map((asset) => asset.id), [attachment.id]);
+});
+
+test("a source file supplied to a blocked preview revises the same task instead of opening another", async () => {
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async () => ({
+      ok: true, number: 32, workItemId: "wi_blocked_source", autoRoute: false,
+      requiresDataPlan: true,
+      executionPreview: { previewReady: false, requiredFields: ["原始文件"] },
+    }),
+  });
+  harness.bindTaskProject("proj_a");
+  await harness.receive("/task 整理为客户台账").dispatched;
+  const thread = harness.state.channelTaskThreads.at(-1);
+  assert.equal(thread.waitingFor, "data_sources");
+  const attachment = {
+    id: "asset-blocked-source", path: ".myagenttool/channel-attachments/customers.xlsx", originalName: "customers.xlsx",
+    family: "file", hash: "sha256:customers", version: "v1", terminalId: "dev_local", projectId: "proj_a",
+    readiness: { state: "ready" },
+  };
+  const supplied = await harness.receive("这是原始文件", { attachmentAssets: [attachment] }).dispatched;
+  assert.match(supplied.reply, /原执行预览已失效/);
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+  assert.deepEqual(thread.attachmentAssets.map((asset) => asset.id), [attachment.id]);
+  assert.equal(thread.status, "awaiting_confirmation");
+});
+
+test("a source-dependent office draft asks for the file before creating a task", async () => {
+  let filed = 0;
+  const harness = makeHarness({ intakeQuietMs: 1, createChannelTaskIssue: async () => { filed += 1; return { ok: true, number: 33 }; } });
+  harness.bindTaskProject("proj_a");
+  harness.receive("请整理为客户台账");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const thread = harness.state.channelTaskThreads[0];
+  assert.equal(thread.waitingFor, "draft_input");
+  const confirmed = await harness.receive("确认").dispatched;
+  assert.match(confirmed.reply, /还不能开始/);
+  assert.match(confirmed.reply, /原始 CSV\/Excel/);
+  assert.equal(filed, 0);
 });
 
 test("natural-language active-task queries stay read-only and do not create a new task", () => {
@@ -465,6 +584,32 @@ test("confirmation and cancellation without an active task stay conversational",
   assert.equal(harness.state.channelTaskThreads.length, 0);
 });
 
+test("ordinary users can explicitly save, inspect, and apply a Channel preference", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    intakeQuietMs: 1,
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return { ok: true, number: 7, workItemId: "wi_preference", autoRoute: false, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+  });
+  const saved = harness.receive("记住：文章控制在 2000 字左右");
+  assert.match(saved.dispatched.reply, /记住了：文章控制在 2000 字左右/);
+  const listed = harness.receive("我的偏好");
+  assert.match(listed.dispatched.reply, /文章控制在 2000 字左右/);
+
+  harness.bindTaskProject("proj_a");
+  harness.receive("请写一篇公众号文章");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await harness.receive("确认").dispatched;
+
+  assert.equal(filed.length, 1);
+  assert.deepEqual(filed[0].userPreferences, [{ key: "article_length", value: "文章控制在 2000 字左右" }]);
+  const forgotten = harness.receive("忘记这个偏好");
+  assert.match(forgotten.dispatched.reply, /已忘记/);
+  assert.equal(harness.state.channelUserPreferences[0].status, "deleted");
+});
+
 test("capability questions are answered without creating a task", () => {
   const harness = makeHarness();
   const result = harness.receive("你好，你能做什么？").dispatched;
@@ -472,6 +617,1240 @@ test("capability questions are answered without creating a task", () => {
   assert.match(result.reply, /图片、语音或文件/);
   assert.equal(harness.state.channelIntakeGroups.length, 0);
   assert.equal(harness.state.channelTaskThreads.length, 0);
+});
+
+test("a bare WeChat article link creates and completes a tracked knowledge-capture task", async () => {
+  const inspected = [];
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => {
+      inspected.push(url);
+      return {
+        provider: "wechat",
+        canonicalUrl: url.replace("?scene=1", ""),
+        title: "移动端知识助手",
+        author: "示例作者",
+        publishedAt: "2026-08-14",
+        textLength: 1200,
+        mediaCounts: { images: 2, audio: 0, video: 0 },
+        _document: { markdown: "围绕本地知识、受控记忆和确认写回开展工作。" },
+        knowledge: { status: "saved", itemId: "knowledge_1", replayed: false, warningCount: 0 },
+      };
+    },
+  });
+
+  const result = await harness.receive("https://mp.weixin.qq.com/s/article-one?scene=1").dispatched;
+
+  assert.equal(inspected.length, 1);
+  assert.match(result.reply, /已收纳到本地资料库/);
+  assert.match(result.reply, /《移动端知识助手》/);
+  assert.match(result.reply, /没有自动开始二创/);
+  assert.match(result.reply, /每一种都会创建独立任务/);
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+  assert.equal(harness.state.channelTaskThreads[0].workKind, "knowledge_capture");
+  assert.equal(harness.state.channelTaskThreads[0].status, "succeeded");
+  assert.equal(harness.state.channelIntakeGroups.length, 0);
+  assert.equal(harness.state.channelConversations[0].sharedContentContext.items.length, 1);
+  assert.equal(harness.state.channelConversations[0].sharedContentContext.items[0].archiveStatus, "saved");
+  assert.match(harness.replies[0].content, /正在读取并收纳/);
+});
+
+test("a Channel link is acknowledged and inspected even while another task is active", async () => {
+  let resolveInspection;
+  const inspection = new Promise((resolve) => { resolveInspection = resolve; });
+  const harness = makeHarness({
+    inspectSharedLink: async () => inspection,
+  });
+  harness.receive("你好");
+  harness.replies.length = 0;
+  const conversation = harness.state.channelConversations[0];
+  harness.state.channelTaskThreads.push({
+    id: "cth_active_link",
+    channelId: harness.channelId,
+    conversationId: conversation.id,
+    summary: "正在处理中的任务",
+    status: "running",
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  conversation.activeTaskThreadId = "cth_active_link";
+
+  const pending = harness.receive("https://example.com/active-task-link").dispatched;
+  assert.equal(harness.replies.length, 1);
+  assert.match(harness.replies[0].content, /收到链接，正在读取并收纳/);
+  assert.match(harness.replies[0].content, /不会自动修改当前任务/);
+  assert.equal(harness.state.channelEvents.at(-1).sharedContentStatus, "inspecting");
+  assert.equal(harness.state.channelEvents.at(-1).sharedContentActiveTaskCount, 1);
+  assert.equal(harness.state.channelEvents.at(-1).sharedContentAcknowledgement.status, "queued");
+
+  resolveInspection({
+    provider: "web",
+    canonicalUrl: "https://example.com/active-task-link",
+    title: "进行中任务收到的资料",
+    textLength: 600,
+    _document: { markdown: "链接正文。" },
+    knowledge: { status: "saved", itemId: "knowledge_active_task_link" },
+  });
+  const result = await pending;
+  assert.match(result.reply, /已收纳到本地资料库/);
+  assert.equal(harness.state.channelEvents.at(-1).sharedContentStatus, "ready");
+  assert.equal(harness.state.channelEvents.at(-1).sharedContentCompletedAt, NOW);
+  assert.equal(harness.state.channelConversations[0].sharedContentContext.items.length, 1);
+});
+
+test("one explicit creative intent creates independent material-backed tasks", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    inspectSharedLink: async ({ url }) => ({
+      provider: "web", canonicalUrl: url, title: "可复用的本地资料",
+      _document: { markdown: "这份资料只负责入库，创作由新的独立任务完成。" },
+      knowledge: { status: "saved", itemId: "knowledge_atomic_content" },
+    }),
+    resolveKnowledgeLocation: ({ itemId }) => ({ itemId, contentId: "lc_atomic_content", title: "可复用的本地资料" }),
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return {
+        ok: true,
+        number: filed.length,
+        localRef: `LOCAL-${filed.length}`,
+        workItemId: `wi_atomic_${filed.length}`,
+        autoRoute: true,
+        executionPreview: { previewReady: true, requiredFields: [] },
+      };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  await harness.receive("https://example.com/atomic-content").dispatched;
+
+  const preview = await harness.receive("基于这些资料写深度文章、做漫画和口播").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  assert.equal(filed.length, 0);
+  const created = await harness.receive("确认执行").dispatched;
+
+  assert.match(created.reply, /创建 3 个独立任务/);
+  assert.match(created.reply, /可分别进行：文章创作、漫画、口播/);
+  assert.doesNotMatch(created.reply, /LOCAL-/);
+  assert.deepEqual(filed.map((input) => input.taskKind), [
+    "content_article", "content_comic", "content_voiceover",
+  ]);
+  assert.equal(new Set(filed.map((input) => input.intentId)).size, 1);
+  assert.ok(filed.every((input) => input.creationBasis === "explicit_user_intent"));
+  assert.ok(filed.every((input) => input.knowledgeItemIds[0] === "knowledge_atomic_content"));
+  assert.equal(harness.state.channelTaskThreads.filter((thread) => thread.workKind !== "knowledge_capture").length, 3);
+});
+
+test("ordinary user can preview and edit a multi-intent task basket before creation", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return {
+        ok: true,
+        number: filed.length,
+        localRef: `LOCAL-${filed.length}`,
+        workItemId: `wi_basket_${filed.length}`,
+        autoRoute: true,
+        executionPreview: { previewReady: true, requiredFields: [] },
+      };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+
+  const preview = await harness.receive("先规划一下：写一篇深度文章、做漫画和口播").dispatched;
+
+  assert.equal(preview.data.previewOnly, true);
+  assert.equal(preview.data.plannedTaskCount, 3);
+  assert.equal(filed.length, 0);
+  assert.match(preview.reply, /暂不创建或执行/);
+  assert.match(preview.reply, /文章创作/);
+  assert.ok(harness.state.channelConversations[0].pendingTaskBasket);
+
+  const revised = await harness.receive("去掉漫画").dispatched;
+
+  assert.equal(revised.data.revised, true);
+  assert.equal(revised.data.plannedTaskCount, 2);
+  assert.doesNotMatch(revised.reply, /漫画/);
+  assert.equal(filed.length, 0);
+
+  const confirmed = await harness.receive("确认执行").dispatched;
+
+  assert.match(confirmed.reply, /创建 2 个独立任务/);
+  assert.deepEqual(filed.map((input) => input.taskKind), ["content_article", "content_voiceover"]);
+  assert.equal(harness.state.channelConversations[0].pendingTaskBasket, null);
+});
+
+test("a multi-intent coding-to-publication request creates one goal with typed dependencies", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return {
+        ok: true,
+        number: filed.length,
+        localRef: `LOCAL-${filed.length}`,
+        workItemId: `wi_goal_${filed.length}`,
+        autoRoute: input.autoRoute,
+        executionPreview: { previewReady: true, requiredFields: [] },
+      };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+
+  const question = await harness.receive("把今天编码的工作整理为文章、图片，发布到公众号和小红书").dispatched;
+  assert.equal(question.data.clarificationKind, "publication_content_mapping");
+  assert.match(question.reply, /文章发公众号，图片发小红书/);
+  assert.equal(filed.length, 0);
+
+  const preview = await harness.receive("文章发公众号，图片发小红书").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  assert.equal(filed.length, 0);
+  const result = await harness.receive("确认执行").dispatched;
+
+  assert.match(result.reply, /创建 8 个独立任务/);
+  assert.match(result.reply, /2 个发布任务已建立/);
+  assert.doesNotMatch(result.reply, /LOCAL-/);
+  assert.deepEqual(filed.map((input) => input.taskKind), [
+    "coding_digest", "content_article", "content_image",
+    "platform_adaptation", "wechat_draft_sync", "content_publish", "platform_adaptation", "content_publish",
+  ]);
+  assert.equal(new Set(filed.map((input) => input.workGoalId)).size, 1);
+  assert.deepEqual(filed[1].dependencyIds, ["wi_goal_1"]);
+  assert.deepEqual(filed[2].dependencyIds, ["wi_goal_1"]);
+  assert.deepEqual(filed[3].dependencyIds, ["wi_goal_2"]);
+  assert.deepEqual(filed[4].dependencyIds, ["wi_goal_4"]);
+  assert.deepEqual(filed[5].dependencyIds, ["wi_goal_4", "wi_goal_5"]);
+  assert.deepEqual(filed[6].dependencyIds, ["wi_goal_3"]);
+  assert.deepEqual(filed[7].dependencyIds, ["wi_goal_7"]);
+  assert.equal(filed[4].autoRoute, false);
+  assert.equal(filed[5].autoRoute, false);
+  assert.equal(filed[7].autoRoute, false);
+  assert.deepEqual(harness.state.channelTaskRequests.map((request) => request.status), ["waiting_artifacts", "waiting_artifacts", "waiting_artifacts"]);
+  assert.deepEqual(harness.state.channelTaskThreads.filter((thread) => thread.taskKind === "content_publish")
+    .map((thread) => thread.status), ["waiting_upstream", "waiting_upstream"]);
+  assert.equal(harness.state.workGoals.length, 1);
+  assert.deepEqual(harness.state.workGoals[0].platforms.map((platform) => platform.id), ["wechat_official", "xiaohongshu"]);
+  assert.ok(harness.state.channelTaskThreads.every((thread) => thread.workGoalId === harness.state.workGoals[0].id));
+  assert.deepEqual(harness.state.channelTaskThreads.map((thread) => thread.taskKind), filed.map((input) => input.taskKind));
+
+  const progress = await harness.receive("进度").dispatched;
+  assert.match(progress.reply, /整体进度：已完成 0\/8 个任务/);
+  assert.match(progress.reply, /1 项进行中，7 项等待成品/);
+  assert.match(progress.reply, /编码成果整理：排队中/);
+  assert.match(progress.reply, /发布：公众号、小红书会在内容准备好后请你最终确认/);
+  assert.doesNotMatch(progress.reply, /当前任务/);
+
+  const paused = await harness.receive("暂停这件事").dispatched;
+  assert.match(paused.reply, /已暂停这件事中尚未开始的 8 个任务/);
+  const resumed = await harness.receive("继续这件事").dispatched;
+  assert.match(resumed.reply, /已恢复这件事的 8 个任务/);
+  const cancelled = await harness.receive("取消这件事").dispatched;
+  assert.match(cancelled.reply, /已取消这件事尚未完成的 8 个任务/);
+  assert.equal(harness.state.workGoals[0].status, "cancelled");
+  assert.ok(harness.state.channelTaskThreads.every((thread) => thread.status === "cancelled"));
+});
+
+test("an ambiguous publishing destination is clarified before the goal is created", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return {
+        ok: true,
+        number: filed.length,
+        localRef: `LOCAL-${filed.length}`,
+        workItemId: `wi_platform_${filed.length}`,
+        autoRoute: input.autoRoute,
+        executionPreview: { previewReady: true, requiredFields: [] },
+      };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+
+  const question = await harness.receive("把今天编码的工作整理为文章、图片，发布到对应平台").dispatched;
+  assert.match(question.reply, /希望发布到哪些平台/);
+  assert.equal(question.data.taskCount, 0);
+  assert.equal(filed.length, 0);
+  assert.equal(harness.state.workGoals.length, 0);
+
+  const mappingQuestion = await harness.receive("公众号和小红书").dispatched;
+  assert.equal(mappingQuestion.data.clarificationKind, "publication_content_mapping");
+  assert.match(mappingQuestion.reply, /各自发布到哪里/);
+  assert.equal(filed.length, 0);
+
+  const preview = await harness.receive("文章发公众号，图片发小红书").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  const resolved = await harness.receive("确认执行").dispatched;
+  assert.match(resolved.reply, /创建 8 个独立任务/);
+  assert.equal(filed.length, 8);
+  assert.equal(harness.state.channelConversations[0].pendingTaskPlanClarification ?? null, null);
+  assert.deepEqual(filed.filter((input) => input.taskKind === "content_publish")
+    .map((input) => input.platformTarget.label), ["公众号", "小红书"]);
+});
+
+test("a vague professional request is clarified and the answer resumes one independent task", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return {
+        ok: true,
+        number: filed.length,
+        localRef: `LOCAL-${filed.length}`,
+        workItemId: `wi_professional_${filed.length}`,
+        autoRoute: input.autoRoute,
+        executionPreview: { previewReady: true, requiredFields: [] },
+      };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+
+  const question = await harness.receive("帮我处理一下这批合同").dispatched;
+  assert.equal(question.data.clarificationKind, "professional_action");
+  assert.match(question.reply, /希望我做什么/);
+  assert.equal(filed.length, 0);
+
+  const result = await harness.receive("审查条款风险").dispatched;
+  assert.match(result.reply, /创建 1 个独立任务/);
+  assert.deepEqual(filed.map((input) => input.taskKind), ["legal_contract_review"]);
+  assert.equal(harness.state.channelConversations[0].pendingTaskPlanClarification ?? null, null);
+});
+
+test("an explicitly named publication account is resolved before the task basket is confirmed", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return {
+        ok: true,
+        number: filed.length,
+        localRef: `LOCAL-${filed.length}`,
+        workItemId: `wi_account_${filed.length}`,
+        autoRoute: input.autoRoute,
+        executionPreview: { previewReady: true, requiredFields: [] },
+      };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  const application = (id, name, accountId) => ({
+    id, name, accountId, ownerTeamId: "team_local", status: "active",
+    capabilityFacades: ["draft_sync", "publish"].map((operation) => ({
+      id: `${id}_${operation}`,
+      directInvocation: true,
+      requiresApproval: true,
+      siteOperationContract: {
+        platformId: "wechat_official",
+        operation,
+        inputArtifactKinds: ["wechat_article_package"],
+        outputArtifactKinds: [`${operation}_receipt`],
+      },
+    })),
+  });
+  harness.state.applications.push(
+    application("app_personal", "个人公众号", "account_personal"),
+    application("app_company", "公司公众号", "account_company"),
+  );
+
+  const preview = await harness.receive("把现成文章发到公司的第二个公众号").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  assert.equal(preview.data.plannedTaskCount, 3);
+  assert.equal(filed.length, 0);
+  const result = await harness.receive("确认执行").dispatched;
+  assert.match(result.reply, /创建 3 个独立任务/);
+  assert.deepEqual(filed.map((input) => input.taskKind), ["platform_adaptation", "wechat_draft_sync", "content_publish"]);
+  assert.ok(filed.every((input) => input.platformTarget.applicationId === "app_company"));
+  assert.ok(filed.every((input) => input.platformTarget.accountId === "account_company"));
+  assert.equal(harness.state.channelConversations[0].pendingTaskPlanClarification ?? null, null);
+});
+
+test("publication account setup refreshes the pending choice and resumes the original request", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return { ok: true, number: filed.length, workItemId: `wi_refreshed_account_${filed.length}`, autoRoute: input.autoRoute, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  const application = (id, name, accountId) => ({
+    id, name, accountId, ownerTeamId: "team_local", status: "active",
+    capabilityFacades: ["draft_sync", "publish"].map((operation) => ({
+      id: `${id}_${operation}`, directInvocation: true, requiresApproval: true,
+      siteOperationContract: { platformId: "wechat_official", operation, inputArtifactKinds: ["wechat_article_package"], outputArtifactKinds: [`${operation}_receipt`] },
+    })),
+  });
+
+  const blocked = await harness.receive("把现成文章发到公司的第二个公众号").dispatched;
+  assert.equal(blocked.data.clarificationKind, "account_choice");
+  assert.match(blocked.reply, /当前没有找到可用的已连接账号/);
+
+  harness.state.applications.push(
+    application("app_personal", "个人公众号", "account_personal"),
+    application("app_company", "公司公众号", "account_company"),
+  );
+  const resumed = await harness.receive("已连接").dispatched;
+  assert.equal(resumed.data.previewOnly, true);
+  assert.equal(resumed.data.plannedTaskCount, 3);
+  assert.equal(filed.length, 0);
+
+  const created = await harness.receive("确认执行").dispatched;
+  assert.match(created.reply, /创建 3 个独立任务/);
+  assert.ok(filed.every((input) => input.platformTarget.applicationId === "app_company"));
+  assert.ok(filed.every((input) => input.platformTarget.accountId === "account_company"));
+});
+
+test("alternative publication targets require a choice before task creation", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return { ok: true, number: filed.length, localRef: `LOCAL-${filed.length}`, workItemId: `wi_choice_${filed.length}`, autoRoute: input.autoRoute, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  const question = await harness.receive("把今天编码的工作整理为文章、图片，发布到公众号或小红书").dispatched;
+  assert.equal(question.data.clarificationKind, "platform_choice");
+  assert.equal(filed.length, 0);
+  const mappingQuestion = await harness.receive("公众号").dispatched;
+  assert.equal(mappingQuestion.data.clarificationKind, "publication_content_mapping");
+  const preview = await harness.receive("文章和图片都发公众号").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  const resolved = await harness.receive("确认执行").dispatched;
+  assert.match(resolved.reply, /创建 6 个独立任务/);
+  assert.equal(filed.filter((input) => input.taskKind === "content_publish").length, 1);
+  assert.equal(filed.find((input) => input.taskKind === "content_publish").platformTarget.id, "wechat_official");
+});
+
+test("batch admission refuses the whole plan before creating a partial goal", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return { ok: true, number: filed.length, workItemId: `wi_batch_${filed.length}`, autoRoute: input.autoRoute, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  await harness.receive("你好").dispatched;
+  harness.state.channelConversations[0].recentRuns = Array.from({ length: 9 }, () => Date.parse(NOW));
+  const preview = await harness.receive("写一篇深度文章，同时做漫画和口播").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  const result = await harness.receive("确认执行").dispatched;
+  assert.equal(result.status, "refused");
+  assert.match(result.reply, /没有创建任何任务/);
+  assert.equal(filed.length, 0);
+  assert.equal(harness.state.workGoals.length, 0);
+});
+
+test("a partial creation failure leaves an explicit repairable goal", async () => {
+  let attempts = 0;
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      attempts += 1;
+      if (attempts === 2) return { ok: false, reason: "temporary_create_failure" };
+      return { ok: true, number: attempts, workItemId: `wi_partial_${attempts}`, autoRoute: input.autoRoute, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  const preview = await harness.receive("写一篇深度文章，同时做漫画和口播").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  const result = await harness.receive("确认执行").dispatched;
+  assert.equal(result.status, "dispatched");
+  assert.equal(result.data.taskCount, 2);
+  assert.equal(result.data.failedCount, 1);
+  assert.match(result.reply, /标记为待修复/);
+  assert.equal(harness.state.workGoals[0].status, "needs_repair");
+  assert.equal(harness.state.workGoals[0].failedSteps.length, 1);
+  assert.equal(harness.state.workGoals[0].failedSteps[0].kind, "content_comic");
+});
+
+test("confirm publication routes the prepared request instead of creating a duplicate task", async () => {
+  const routed = [];
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return { ok: true, number: 1, workItemId: "unexpected", autoRoute: false, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+    routeChannelTask: async (id, _actor, options) => {
+      routed.push({ id, options });
+      return { status: 200, body: { ok: true, workItemId: "wi_publish_ready" } };
+    },
+  });
+  await harness.receive("你好").dispatched;
+  const conversation = harness.state.channelConversations[0];
+  harness.state.channelTaskRequests.push({
+    id: "ctr_publish_ready", channelId: harness.channelId, conversationId: conversation.id,
+    threadId: "cth_publish_ready", workItemId: "wi_publish_ready", status: "pending",
+    previewDigest: "digest-v1", approvalSnapshot: { digest: "digest-v1" }, previewReady: true,
+  });
+  harness.state.channelTaskThreads.push({
+    id: "cth_publish_ready", channelId: harness.channelId, conversationId: conversation.id,
+    workItemId: "wi_publish_ready", channelTaskRequestId: "ctr_publish_ready",
+    taskKind: "content_publish", status: "waiting_approval", waitingFor: "publication_review",
+    riskPreviewDigest: "digest-v1", statusHistory: [], summary: "发布最终文章",
+    publicationPreview: { platform: { id: "wechat_official", label: "公众号" }, artifacts: [{ id: "final", path: "final.md" }] },
+    createdAt: NOW, updatedAt: NOW,
+  });
+  conversation.activeTaskThreadId = "cth_publish_ready";
+  const result = await harness.receive("确认发布").dispatched;
+  assert.equal(result.status, "dispatched");
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0].id, "ctr_publish_ready");
+  assert.equal(routed[0].options.idempotencyKey, "channel-route:ctr_publish_ready");
+  assert.equal(filed.length, 0);
+  assert.equal(harness.state.channelTaskThreads.at(-1).status, "queued");
+  assert.equal(harness.state.channelTaskThreads.at(-1).executionAttempt.outcome, "accepted");
+  assert.equal(harness.state.channelTaskThreads.at(-1).executionContract.idempotencyKey, "channel-route:ctr_publish_ready");
+});
+
+test("raw knowledge cannot be turned directly into a publish task", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "web", canonicalUrl: url, title: "原始资料",
+      _document: { markdown: "原始资料不是已审核成品。" },
+      knowledge: { status: "saved", itemId: "knowledge_raw_publish" },
+    }),
+    createChannelTaskIssue: async (input) => { filed.push(input); return { ok: true, number: 1, workItemId: "should_not_create" }; },
+  });
+  await harness.receive("https://example.com/raw-publish").dispatched;
+
+  const result = await harness.receive("把它发布到公众号").dispatched;
+
+  assert.match(result.reply, /不是已审核的内容成品/);
+  assert.equal(result.data.gate, "approved_output_required");
+  assert.equal(filed.length, 0);
+});
+
+test("software and business goals use the same independent-task boundary", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return {
+        ok: true,
+        number: filed.length,
+        workItemId: `wi_cross_domain_${filed.length}`,
+        autoRoute: !["software_deployment", "business_communication"].includes(input.taskKind),
+        executionPreview: { previewReady: true, requiredFields: [] },
+      };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+
+  const developmentPreview = await harness.receive("实现这个功能、完成测试并部署上线").dispatched;
+  assert.equal(developmentPreview.data.previewOnly, true);
+  const development = await harness.receive("确认执行").dispatched;
+  assert.match(development.reply, /创建 3 个独立任务/);
+  assert.deepEqual(filed.map((input) => input.taskKind), [
+    "software_implementation", "software_verification", "software_deployment",
+  ]);
+
+  filed.length = 0;
+  const businessPreview = await harness.receive("完成市场调研、准备方案并发送邮件给客户").dispatched;
+  assert.equal(businessPreview.data.previewOnly, true);
+  const business = await harness.receive("确认执行").dispatched;
+  assert.match(business.reply, /创建 3 个独立任务/);
+  assert.deepEqual(filed.map((input) => input.taskKind), [
+    "business_research", "business_document", "business_communication",
+  ]);
+});
+
+test("a recent link keeps continuation analysis separate from a running task", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "web", canonicalUrl: url, title: "活动任务旁的资料",
+      _document: { markdown: "这份资料应当独立分析，不能静默改写运行中的任务。" },
+      knowledge: { status: "saved", itemId: "knowledge_isolated_analysis" },
+    }),
+    createConsultation: ({ state, nextId }) => {
+      const invocation = { id: nextId("inv"), status: "queued", options: { metadata: { channelConsultation: true } } };
+      state.invocations.push(invocation);
+      return invocation;
+    },
+  });
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const running = {
+    id: "cth_running_with_material", channelId: harness.channelId, conversationId: conversation.id,
+    summary: "保持不变的运行任务", status: "running", createdAt: NOW, updatedAt: NOW,
+  };
+  harness.state.channelTaskThreads.push(running);
+  conversation.activeTaskThreadId = running.id;
+  await harness.receive("https://example.com/isolated-analysis").dispatched;
+
+  const continued = await harness.receive("继续").dispatched;
+
+  assert.match(continued.reply, /已开始分析《活动任务旁的资料》/);
+  assert.equal(harness.consultationCalls.length, 1);
+  assert.equal(running.summary, "保持不变的运行任务");
+  assert.equal(running.sharedContentIds, undefined);
+  const routeEvent = harness.state.channelEvents.at(-1);
+  assert.equal(routeEvent.sharedContentRoute.target, "analysis");
+  assert.equal(routeEvent.sharedContentRoute.reason, "recent_shared_content_priority");
+  assert.equal(routeEvent.sharedContentRoute.taskThreadId, null);
+});
+
+test("an ambiguous material implementation request asks where to route it", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "web", canonicalUrl: url, title: "待分流资料",
+      _document: { markdown: "可以用于分析、当前任务补充或独立任务。" },
+      knowledge: { status: "saved", itemId: "knowledge_route_choice" },
+    }),
+    createConsultation: ({ state, nextId }) => {
+      const invocation = { id: nextId("inv"), status: "queued", options: { metadata: { channelConsultation: true } } };
+      state.invocations.push(invocation);
+      return invocation;
+    },
+  });
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  harness.state.channelTaskThreads.push({
+    id: "cth_route_choice", channelId: harness.channelId, conversationId: conversation.id,
+    summary: "现有任务", status: "running", createdAt: NOW, updatedAt: NOW,
+  });
+  conversation.activeTaskThreadId = "cth_route_choice";
+  await harness.receive("https://example.com/route-choice").dispatched;
+
+  const ambiguous = harness.receive("按这个优化").dispatched;
+  assert.match(ambiguous.reply, /分析资料.*加入当前任务.*创建新任务/);
+  assert.match(ambiguous.reply, /不会修改当前任务/);
+  assert.equal(conversation.pendingSharedContentRoute.status, "awaiting_confirmation");
+  assert.equal(harness.state.channelEvents.at(-1).sharedContentRoute.target, "needs_confirmation");
+
+  const chosen = await harness.receive("分析资料").dispatched;
+  assert.match(chosen.reply, /已开始分析《待分流资料》/);
+  assert.equal(conversation.pendingSharedContentRoute, null);
+  assert.equal(harness.state.channelEvents.at(-1).sharedContentRoute.target, "analysis");
+  assert.equal(harness.state.channelEvents.at(-1).sharedContentRoute.reason, "confirmed_route_choice");
+});
+
+test("a persisted route choice can create an independent material-backed task draft", async () => {
+  const harness = makeHarness({
+    intakeQuietMs: 1,
+    inspectSharedLink: async ({ url }) => ({
+      provider: "web", canonicalUrl: url, title: "独立任务资料",
+      _document: { markdown: "这份资料应进入一个新的可确认任务。" },
+      knowledge: { status: "saved", itemId: "knowledge_new_task_choice" },
+    }),
+  });
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const running = {
+    id: "cth_running_before_new_task", channelId: harness.channelId, conversationId: conversation.id,
+    summary: "原运行任务", status: "running", createdAt: NOW, updatedAt: NOW,
+  };
+  harness.state.channelTaskThreads.push(running);
+  conversation.activeTaskThreadId = running.id;
+  await harness.receive("https://example.com/new-task-choice").dispatched;
+  harness.receive("按这个优化");
+  assert.equal(JSON.parse(JSON.stringify(conversation)).pendingSharedContentRoute.status, "awaiting_confirmation");
+
+  const chosen = harness.receive("创建新任务").dispatched;
+  assert.match(chosen.reply, /正在整理/);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(conversation.pendingSharedContentRoute, null);
+  assert.equal(running.summary, "原运行任务");
+  const draft = harness.state.channelTaskThreads.find((thread) => thread.id !== running.id && thread.workKind !== "knowledge_capture");
+  assert.equal(draft.status, "awaiting_confirmation");
+  assert.equal(draft.parentThreadId, undefined);
+  assert.equal(draft.sharedContentIds.length, 1);
+  assert.match(draft.summary, /独立任务资料/);
+  const routeEvent = harness.state.channelEvents.find((event) => event.sharedContentRoute?.target === "new_task");
+  assert.equal(routeEvent.sharedContentRoute.reason, "confirmed_route_choice");
+});
+
+test("explicitly adding link material attaches the asset without creating a follow-up task", async () => {
+  const attachedCalls = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    inspectSharedLink: async ({ url }) => ({
+      provider: "web", canonicalUrl: url, title: "明确加入的资料",
+      _document: { markdown: "只有用户明确选择后才能进入任务链路。" },
+      knowledge: { status: "saved", itemId: "knowledge_explicit_attach" },
+    }),
+    attachKnowledgeToWorkItem: (input) => {
+      attachedCalls.push(input);
+      return { ok: true, attachedCount: 1, workItemId: input.workItemId };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const running = {
+    id: "cth_explicit_attach", channelId: harness.channelId, conversationId: conversation.id,
+    workItemId: "wi_current", summary: "原任务保持冻结", status: "running", createdAt: NOW, updatedAt: NOW,
+  };
+  harness.state.channelTaskThreads.push(running);
+  conversation.activeTaskThreadId = running.id;
+  await harness.receive("https://example.com/explicit-attach").dispatched;
+
+  const attached = await harness.receive("加入当前任务").dispatched;
+
+  assert.match(attached.reply, /加入当前任务/);
+  assert.match(attached.reply, /没有创建后续任务/);
+  assert.equal(attachedCalls.length, 1);
+  assert.equal(attachedCalls[0].workItemId, "wi_current");
+  assert.deepEqual(attachedCalls[0].knowledgeItemIds, ["knowledge_explicit_attach"]);
+  assert.equal(running.summary, "原任务保持冻结");
+  assert.equal(running.sharedContentIds, undefined);
+  assert.equal(harness.state.channelTaskThreads.filter((thread) => thread.workKind !== "knowledge_capture").length, 1);
+  const routeEvent = harness.state.channelEvents.at(-1);
+  assert.equal(routeEvent.sharedContentRoute.target, "current_task");
+  assert.equal(routeEvent.sharedContentRoute.status, "attached");
+  assert.equal(routeEvent.sharedContentRoute.taskThreadId, running.id);
+});
+
+test("saved article capture is visible in My Tasks and a natural follow-up returns its local path", async () => {
+  const tracked = [];
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "wechat",
+      canonicalUrl: url,
+      title: "本地知识文章",
+      textLength: 800,
+      _document: { markdown: "这是一篇已经保存的文章。" },
+      knowledge: { status: "saved", itemId: "knowledge_local_path", replayed: false, warningCount: 0 },
+    }),
+    trackKnowledgeCaptureTask: ({ thread, items }) => {
+      tracked.push({ status: thread.status, itemIds: items.map((item) => item.knowledgeItemId) });
+      return { ok: true, workItemId: "lwi_knowledge_1", localRef: "LOCAL-8" };
+    },
+    resolveKnowledgeLocation: ({ itemId, ownerTeamId }) => {
+      assert.equal(itemId, "knowledge_local_path");
+      assert.equal(ownerTeamId, "team_local");
+      return {
+        title: "本地知识文章",
+        absolutePath: "/Users/test/Library/Application Support/MyAgentTool/state/knowledge/article.md",
+      };
+    },
+  });
+
+  const saved = await harness.receive("https://mp.weixin.qq.com/s/local-path").dispatched;
+  assert.match(saved.reply, /已记录到“我的任务”（LOCAL-8）/);
+  assert.match(saved.reply, /本地存放路径/);
+  assert.equal(harness.state.channelTaskThreads[0].workItemId, "lwi_knowledge_1");
+  assert.deepEqual(tracked.map((entry) => entry.status), ["running", "succeeded"]);
+  assert.deepEqual(tracked.at(-1).itemIds, ["knowledge_local_path"]);
+
+  const location = harness.receive("本地存放路径").dispatched;
+  assert.match(location.reply, /《本地知识文章》/);
+  assert.match(location.reply, /\/Users\/test\/Library\/Application Support\/MyAgentTool\/state\/knowledge\/article\.md/);
+  assert.match(location.reply, /“我的任务”（LOCAL-8）/);
+  assert.equal(location.data.action, "local_location");
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+
+  harness.state.channelTaskThreads[0].workItemId = null;
+  harness.state.channelTaskThreads[0].workItemLocalRef = null;
+  const recovered = harness.conversationService.recoverTaskThreads();
+  assert.equal(recovered.reconciled, 1);
+  assert.equal(harness.state.channelTaskThreads[0].workItemId, "lwi_knowledge_1");
+});
+
+test("a readable link degrades to preview when local knowledge saving fails", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "wechat", canonicalUrl: url, title: "只读预览资料",
+      _document: { markdown: "正文仍然可以读取。" },
+      knowledge: { status: "not_saved", reason: "disk_unavailable" },
+    }),
+  });
+
+  const result = await harness.receive("https://mp.weixin.qq.com/s/preview-only").dispatched;
+
+  assert.match(result.reply, /未能保存到本地资料库/);
+  assert.match(result.reply, /仍可继续分析/);
+  assert.equal(harness.state.channelConversations[0].sharedContentContext.items[0].archiveStatus, "not_saved");
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+  assert.equal(harness.state.channelTaskThreads[0].workKind, "knowledge_capture");
+  assert.equal(harness.state.channelTaskThreads[0].status, "failed");
+});
+
+test("a user can naturally opt out of saving a shared link", async () => {
+  const calls = [];
+  const harness = makeHarness({
+    inspectSharedLink: async (input) => {
+      calls.push(input);
+      return {
+        provider: "web", canonicalUrl: input.url, title: "临时资料",
+        _document: { markdown: "只预览，不收纳。" },
+        knowledge: { status: "preview" },
+      };
+    },
+  });
+
+  const result = await harness.receive("只预览不要保存 https://example.com/article").dispatched;
+
+  assert.equal(calls[0].save, false);
+  assert.match(result.reply, /已读取内容/);
+  assert.doesNotMatch(result.reply, /已收纳/);
+  assert.equal(harness.state.channelConversations[0].sharedContentContext.items[0].archiveStatus, "preview");
+  assert.equal(harness.state.channelTaskThreads.length, 0);
+});
+
+test("a restricted article link fails its capture task with a simple recovery message", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async () => { throw Object.assign(new Error("article_download_challenge"), { code: "article_download_challenge" }); },
+  });
+
+  const result = await harness.receive("https://mp.weixin.qq.com/s/restricted").dispatched;
+
+  assert.match(result.reply, /稍后重试/);
+  assert.doesNotMatch(result.reply, /插件|checksum|适配/);
+  assert.equal(harness.state.channelEvents.at(-1).sharedContentStatus, "failed");
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+  assert.equal(harness.state.channelTaskThreads[0].status, "failed");
+  assert.equal(harness.state.channelTaskThreads[0].workKind, "knowledge_capture");
+  assert.equal(harness.state.channelConversations[0].pendingLinkPluginProposal.status, "awaiting_confirmation");
+  assert.equal(harness.state.channelIntakeGroups.length, 0);
+});
+
+test("a failed article link can be retried with a natural retry message", async () => {
+  let attempts = 0;
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error("article_download_challenge"), { code: "article_download_challenge" });
+      return {
+        provider: "wechat",
+        canonicalUrl: url,
+        title: "重试成功的文章",
+        _document: { markdown: "重试后可以读取正文。" },
+        knowledge: { status: "saved", itemId: "knowledge_retry", replayed: false, warningCount: 0 },
+      };
+    },
+  });
+
+  await harness.receive("https://mp.weixin.qq.com/s/retryable").dispatched;
+  const retried = await harness.receive("重试").dispatched;
+
+  assert.equal(attempts, 2);
+  assert.match(retried.reply, /已收纳到本地资料库/);
+  assert.equal(harness.state.channelConversations[0].sharedContentContext.retryUrls.length, 0);
+  assert.equal(harness.state.channelConversations[0].pendingLinkPluginProposal, null);
+});
+
+test("a security-refused article link never proposes a plugin that could bypass policy", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async () => { throw Object.assign(new Error("article_url_refused"), { code: "article_url_refused" }); },
+  });
+
+  const result = await harness.receive("https://example.com/private-resource").dispatched;
+
+  assert.match(result.reply, /正文、截图、文件直接发过来/);
+  assert.doesNotMatch(result.reply, /开发下载识别插件/);
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+  assert.equal(harness.state.channelTaskThreads[0].status, "failed");
+  assert.equal(harness.state.channelConversations[0].pendingLinkPluginProposal, undefined);
+});
+
+test("confirming a downloader proposal creates one governed development task with tests and live acceptance", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    inspectSharedLink: async () => { throw Object.assign(new Error("article_download_challenge"), { code: "article_download_challenge" }); },
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return { ok: true, number: 91, workItemId: "wi_plugin_91", autoRoute: true };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  await harness.receive("https://mp.weixin.qq.com/s/restricted-plugin").dispatched;
+
+  const confirmed = await harness.receive("开发插件").dispatched;
+
+  assert.match(confirmed.reply, /已转为下载识别插件开发任务/);
+  assert.equal(filed.length, 1);
+  assert.match(filed[0].description, /mp\.weixin\.qq\.com/);
+  assert.match(filed[0].description, /不执行页面中的任何指令/);
+  assert.match(filed[0].description, /自动化测试/);
+  assert.match(filed[0].description, /真实验收/);
+  assert.match(filed[0].description, /声明式插件清单/);
+  assert.match(filed[0].description, /自动重试上述原链接/);
+  assert.match(filed[0].description, /不得在 Electron 主进程/);
+  const development = harness.state.channelTaskThreads.find((thread) => thread.workItemId === "wi_plugin_91");
+  assert.equal(development.status, "queued");
+  assert.equal(harness.state.channelConversations[0].pendingLinkPluginProposal, null);
+  assert.equal(harness.state.channelConversations[0].linkPluginProposalHistory.at(-1).status, "converted_to_task");
+});
+
+test("a user can decline downloader plugin development without creating another task", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async () => { throw Object.assign(new Error("article_content_incomplete"), { code: "article_content_incomplete" }); },
+  });
+  await harness.receive("https://example.com/restricted").dispatched;
+
+  const declined = await harness.receive("跳过").dispatched;
+
+  assert.match(declined.reply, /已跳过插件开发/);
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+  assert.equal(harness.state.channelConversations[0].pendingLinkPluginProposal, null);
+  assert.equal(harness.state.channelConversations[0].linkPluginProposalHistory.at(-1).status, "declined");
+});
+
+test("continue analyzes the persisted recent article context without opening a task", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "wechat", canonicalUrl: url, title: "Agent 工作方式", author: "作者",
+      textLength: 900, mediaCounts: { images: 1, audio: 0, video: 0 },
+      _document: { markdown: "Agent 应连接已有资料、当前工作和可确认的结果。" },
+      knowledge: { status: "saved", itemId: "knowledge_article_two" },
+    }),
+    createConsultation: ({ state, nextId }) => {
+      const invocation = { id: nextId("inv"), status: "queued", options: { metadata: { channelConsultation: true } } };
+      state.invocations.push(invocation);
+      return invocation;
+    },
+  });
+  await harness.receive("https://mp.weixin.qq.com/s/article-two").dispatched;
+
+  const continued = harness.receive("继续").dispatched;
+
+  assert.match(continued.reply, /已开始分析《Agent 工作方式》/);
+  assert.equal(harness.consultationCalls.length, 1);
+  assert.match(harness.consultationCalls[0].text, /Agent 应连接已有资料/);
+  assert.match(harness.consultationCalls[0].text, /区分原文信息与自己的推断/);
+  assert.equal(harness.state.channelTaskThreads.length, 1);
+  assert.equal(harness.state.channelTaskThreads[0].status, "succeeded");
+});
+
+test("shared-content consultation delivers the real agent answer instead of a CLI completion status", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "web", canonicalUrl: url, title: "普通用户频道设计",
+      _document: { markdown: "频道应保留上下文，并把资料分析和任务修改分开。" },
+      knowledge: { status: "saved", itemId: "knowledge_real_consultation_answer" },
+    }),
+    createConsultation: ({ nextId, state, eventId, conversationId }) => {
+      const invocation = {
+        id: nextId("inv"), status: "queued", result: null,
+        options: { metadata: { channelConsultation: true, channel: { eventId, conversationId } } },
+      };
+      state.invocations.push(invocation);
+      return invocation;
+    },
+  });
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const running = {
+    id: "cth_running_during_consultation", channelId: harness.channelId, conversationId: conversation.id,
+    summary: "现有运行任务", status: "running", createdAt: NOW, updatedAt: NOW,
+  };
+  harness.state.channelTaskThreads.push(running);
+  conversation.activeTaskThreadId = running.id;
+  await harness.receive("https://example.com/channel-design").dispatched;
+  harness.receive("继续");
+  const invocation = harness.state.invocations.find((candidate) => candidate.options?.metadata?.channelConsultation);
+  invocation.status = "succeeded";
+  invocation.result = {
+    summary: "Codex CLI completed.",
+    output: { latestMessage: "核心建议是：资料分析保持只读，只有用户明确选择后才进入任务。" },
+  };
+
+  const synced = harness.conversationService.syncConsultationFromInvocation(invocation);
+  const reply = harness.replies.at(-1).content;
+
+  assert.equal(synced.status, "answered");
+  assert.match(reply, /资料分析保持只读/);
+  assert.doesNotMatch(reply, /Codex CLI completed/);
+  assert.match(reply, /加入当前任务/);
+  assert.match(reply, /创建新任务/);
+  assert.match(reply, /不会改动现有任务/);
+  const consultationEvent = harness.state.channelEvents.find((event) => event.consultationInvocationId === invocation.id);
+  assert.equal(consultationEvent.consultationAnswerUsable, true);
+  assert.equal(consultationEvent.sharedContentRoute.status, "answered");
+  assert.match(conversation.sharedContentContext.lastAnalysis, /资料分析保持只读/);
+});
+
+test("shared-content consultation retries once and then gives an honest recovery path when answers stay unusable", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "web", canonicalUrl: url, title: "待重新分析资料",
+      _document: { markdown: "需要生成真实分析，不能把执行状态当答案。" },
+      knowledge: { status: "saved", itemId: "knowledge_missing_consultation_answer" },
+    }),
+    createConsultation: ({ nextId, state, eventId, conversationId, attempt = 1, retryReason = null, retryOfInvocationId = null }) => {
+      const invocation = {
+        id: nextId("inv"), status: "queued", result: null,
+        options: { metadata: {
+          channelConsultation: true,
+          channelConsultationAttempt: attempt,
+          channelConsultationRetryReason: retryReason,
+          channelConsultationRetryOfInvocationId: retryOfInvocationId,
+          channel: { eventId, conversationId },
+        } },
+      };
+      state.invocations.push(invocation);
+      return invocation;
+    },
+  });
+  await harness.receive("https://example.com/retry-analysis").dispatched;
+  harness.receive("继续");
+  const firstInvocation = harness.state.invocations.find((candidate) => candidate.options?.metadata?.channelConsultation);
+  firstInvocation.status = "succeeded";
+  firstInvocation.result = { summary: "Codex CLI completed." };
+
+  const firstSync = harness.conversationService.syncConsultationFromInvocation(firstInvocation);
+  assert.equal(firstSync.status, "retrying");
+  assert.equal(harness.consultationCalls.length, 2);
+  const invocation = harness.state.invocations.at(-1);
+  assert.equal(invocation.options.metadata.channelConsultationAttempt, 2);
+  assert.equal(invocation.options.metadata.channelConsultationRetryReason, "answer_missing");
+  assert.equal(invocation.options.metadata.channelConsultationRetryOfInvocationId, firstInvocation.id);
+  invocation.status = "succeeded";
+  invocation.result = { summary: "Codex CLI completed." };
+
+  harness.conversationService.syncConsultationFromInvocation(invocation);
+  const reply = harness.replies.at(-1).content;
+  const consultationEvent = harness.state.channelEvents.find((event) => event.consultationInvocationId === invocation.id);
+
+  assert.match(reply, /没有生成可用的分析内容/);
+  assert.match(reply, /重新分析/);
+  assert.doesNotMatch(reply, /Codex CLI completed|把这些建议落实/);
+  assert.equal(consultationEvent.consultationAnswerUsable, false);
+  assert.equal(consultationEvent.sharedContentRoute.status, "answer_missing");
+  assert.equal(harness.state.channelConversations[0].sharedContentContext.status, "ready");
+  assert.equal(harness.state.channelConversations[0].sharedContentContext.lastAnalysis, null);
+  assert.equal(harness.events.at(-1).type, "channel_consultation_answer_missing");
+  assert.equal(harness.state.channelIntentMetrics.experience.consultationAutoRetries, 1);
+  assert.equal(harness.state.channelIntentMetrics.experience.consultationAnswerMissing, 1);
+  assert.equal(harness.state.channelIntentMetrics.experience.consultationAutoRetryExhausted, 1);
+});
+
+test("an automatic consultation retry can recover without duplicating the final reply", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "web", canonicalUrl: url, title: "自动恢复资料",
+      _document: { markdown: "普通用户不需要知道第一次模型输出为空。" },
+      knowledge: { status: "saved", itemId: "knowledge_auto_retry_recovery" },
+    }),
+    createConsultation: ({ nextId, state, eventId, conversationId, attempt = 1, retryReason = null, retryOfInvocationId = null }) => {
+      const invocation = {
+        id: nextId("inv"), status: "queued", result: null,
+        options: { metadata: {
+          channelConsultation: true,
+          channelConsultationAttempt: attempt,
+          channelConsultationRetryReason: retryReason,
+          channelConsultationRetryOfInvocationId: retryOfInvocationId,
+          channel: { eventId, conversationId },
+        } },
+      };
+      state.invocations.push(invocation);
+      return invocation;
+    },
+  });
+  await harness.receive("https://example.com/auto-retry").dispatched;
+  harness.receive("继续");
+  const repliesBeforeCompletion = harness.replies.length;
+  const first = harness.state.invocations.find((candidate) => candidate.options?.metadata?.channelConsultationAttempt === 1);
+  first.status = "succeeded";
+  first.result = { summary: "Codex CLI completed." };
+
+  const retrying = harness.conversationService.syncConsultationFromInvocation(first);
+  const second = harness.state.invocations.find((candidate) => candidate.options?.metadata?.channelConsultationAttempt === 2);
+  assert.equal(retrying.status, "retrying");
+  assert.equal(harness.replies.length, repliesBeforeCompletion);
+  second.status = "succeeded";
+  second.result = { output: { latestMessage: "恢复后的有效答案：系统已经正确关联最近资料。" } };
+
+  const completed = harness.conversationService.syncConsultationFromInvocation(second);
+  assert.equal(completed.status, "answered");
+  assert.equal(harness.replies.length, repliesBeforeCompletion + 1);
+  assert.match(harness.replies.at(-1).content, /恢复后的有效答案/);
+  assert.equal(harness.state.channelIntentMetrics.experience.consultationAnswers, 1);
+  assert.equal(harness.state.channelIntentMetrics.experience.consultationAutoRetryRecovered, 1);
+  assert.equal(harness.state.channelIntentMetrics.experience.consultationAutoRetryExhausted, 0);
+  assert.equal(harness.conversationService.syncConsultationFromInvocation(first).status, "answered");
+  assert.equal(harness.replies.length, repliesBeforeCompletion + 1);
+});
+
+test("ordinary material references select the intended recent article and clarify a bare pronoun", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "web", canonicalUrl: url, title: url.endsWith("one") ? "第一篇资料" : "第二篇资料",
+      _document: { markdown: url.endsWith("one") ? "第一篇独有内容" : "第二篇独有内容" },
+      knowledge: { status: "saved", itemId: url.endsWith("one") ? "knowledge_reference_one" : "knowledge_reference_two" },
+    }),
+    createConsultation: ({ nextId, state, eventId, conversationId }) => {
+      const invocation = {
+        id: nextId("inv"), status: "queued", result: null,
+        options: { metadata: { channelConsultation: true, channel: { eventId, conversationId } } },
+      };
+      state.invocations.push(invocation);
+      return invocation;
+    },
+  });
+  await harness.receive("https://example.com/one").dispatched;
+  await harness.receive("https://example.com/two").dispatched;
+
+  const selected = harness.receive("只看第二篇，它讲了什么").dispatched;
+  assert.match(selected.reply, /已开始分析《第二篇资料》/);
+  assert.equal(harness.consultationCalls.length, 1);
+  assert.match(harness.consultationCalls[0].text, /第二篇独有内容/);
+  assert.doesNotMatch(harness.consultationCalls[0].text, /第一篇独有内容/);
+  const secondItemId = harness.state.channelConversations[0].sharedContentContext.items.find((item) => item.title === "第二篇资料").id;
+  assert.deepEqual(harness.state.channelEvents.at(-1).sharedContentIds, [secondItemId]);
+  assert.equal(harness.state.channelEvents.at(-1).sharedContentRoute.reason, "contextual_material_question");
+
+  const clarified = harness.receive("刚才那个").dispatched;
+  assert.match(clarified.reply, /想了解哪一部分/);
+  assert.equal(clarified.data.needsClarification, true);
+  assert.equal(harness.consultationCalls.length, 1);
+  assert.equal(harness.state.channelIntentMetrics.experience.targetedClarifications, 1);
+});
+
+test("ordinary shared-content phrases replay into the recent material context without creating work", async (t) => {
+  const cases = [
+    { phrase: "这个怎么样", reason: "contextual_material_question" },
+    { phrase: "你怎么看刚才那个链接", reason: "contextual_material_question" },
+    { phrase: "重新分析", reason: "explicit_analysis_choice" },
+    { phrase: "再分析一次", reason: "explicit_analysis_choice" },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.phrase, async () => {
+      const harness = makeHarness({
+        inspectSharedLink: async ({ url }) => ({
+          provider: "web", canonicalUrl: url, title: "最近分享的资料",
+          _document: { markdown: "这段正文用于普通用户表达回放。" },
+          knowledge: { status: "saved", itemId: `knowledge_replay_${scenario.phrase.length}` },
+        }),
+        createConsultation: ({ nextId, state, eventId, conversationId }) => {
+          const invocation = {
+            id: nextId("inv"), status: "queued", result: null,
+            options: { metadata: { channelConsultation: true, channel: { eventId, conversationId } } },
+          };
+          state.invocations.push(invocation);
+          return invocation;
+        },
+      });
+      await harness.receive("https://example.com/replay").dispatched;
+
+      const result = harness.receive(scenario.phrase).dispatched;
+
+      assert.match(result.reply, /已开始分析《最近分享的资料》/);
+      assert.equal(harness.consultationCalls.length, 1);
+      assert.match(harness.consultationCalls[0].text, /这段正文用于普通用户表达回放/);
+      assert.equal(harness.state.channelEvents.at(-1).sharedContentRoute.reason, scenario.reason);
+      assert.equal(harness.state.channelTaskThreads.filter((thread) => thread.workKind !== "knowledge_capture").length, 0);
+    });
+  }
+});
+
+test("a timed-out consultation retries once and records an ordinary-user recovery", () => {
+  const harness = makeHarness({
+    createConsultation: ({ nextId, state, eventId, conversationId, attempt = 1, retryReason = null, retryOfInvocationId = null }) => {
+      const invocation = {
+        id: nextId("inv"), status: "queued", result: null,
+        options: { metadata: {
+          channelConsultation: true,
+          channelConsultationAttempt: attempt,
+          channelConsultationRetryReason: retryReason,
+          channelConsultationRetryOfInvocationId: retryOfInvocationId,
+          channel: { eventId, conversationId },
+        } },
+      };
+      state.invocations.push(invocation);
+      return invocation;
+    },
+  });
+  harness.receive("为什么这次发布失败？");
+  const repliesBeforeCompletion = harness.replies.length;
+  const first = harness.state.invocations[0];
+  first.status = "timed_out";
+
+  const retrying = harness.conversationService.syncConsultationFromInvocation(first);
+  assert.equal(retrying.status, "retrying");
+  assert.equal(harness.replies.length, repliesBeforeCompletion);
+  const second = harness.state.invocations.at(-1);
+  assert.equal(second.options.metadata.channelConsultationRetryReason, "invocation_timed_out");
+  second.status = "succeeded";
+  second.result = { output: { latestMessage: "检查结果表明，发布前测试没有通过。" } };
+
+  harness.conversationService.syncConsultationFromInvocation(second);
+  assert.match(harness.replies.at(-1).content, /发布前测试没有通过/);
+  assert.equal(harness.state.channelIntentMetrics.experience.consultationTimeouts, 1);
+  assert.equal(harness.state.channelIntentMetrics.experience.consultationAutoRetries, 1);
+  assert.equal(harness.state.channelIntentMetrics.experience.consultationAutoRetryRecovered, 1);
+});
+
+test("multiple shared articles form one comparison context and survive plain state serialization", async () => {
+  const harness = makeHarness({
+    inspectSharedLink: async ({ url }) => ({
+      provider: "wechat", canonicalUrl: url, title: url.endsWith("one") ? "第一篇" : "第二篇",
+      _document: { markdown: url.endsWith("one") ? "第一篇正文" : "第二篇正文" },
+      knowledge: { status: "saved", itemId: url.endsWith("one") ? "knowledge_one" : "knowledge_two" },
+    }),
+  });
+  await harness.receive("https://mp.weixin.qq.com/s/one").dispatched;
+  const second = await harness.receive("https://mp.weixin.qq.com/s/two").dispatched;
+
+  assert.match(second.reply, /共 2 篇/);
+  const restored = JSON.parse(JSON.stringify(harness.state.channelConversations[0]));
+  assert.deepEqual(restored.sharedContentContext.activeItemIds.length, 2);
+  assert.deepEqual(restored.sharedContentContext.items.map((item) => item.title), ["第一篇", "第二篇"]);
+});
+
+test("an explicit request turns recent article context into one confirmable task draft", async () => {
+  const harness = makeHarness({
+    intakeQuietMs: 1,
+    inspectSharedLink: async ({ url }) => ({
+      provider: "wechat", canonicalUrl: url, title: "可借鉴的 Agent 设计",
+      _document: { markdown: "建议增加连续资料上下文。" },
+      knowledge: { status: "saved", itemId: "knowledge_task_source" },
+    }),
+  });
+  await harness.receive("https://mp.weixin.qq.com/s/task-source").dispatched;
+
+  const queued = harness.receive("按这些建议完善当前项目").dispatched;
+  assert.match(queued.reply, /正在整理/);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(harness.state.channelTaskThreads.length, 2);
+  const thread = harness.state.channelTaskThreads.find((candidate) => candidate.workKind !== "knowledge_capture");
+  assert.equal(thread.status, "awaiting_confirmation");
+  assert.equal(thread.workKind, "development");
+  assert.match(thread.summary, /可借鉴的 Agent 设计/);
+  assert.match(thread.summary, /https:\/\/mp\.weixin\.qq\.com\/s\/task-source/);
+});
+
+test("a task draft never reuses an analysis that does not cover newly shared material", async () => {
+  let articleNumber = 0;
+  const harness = makeHarness({
+    intakeQuietMs: 1,
+    inspectSharedLink: async ({ url }) => {
+      articleNumber += 1;
+      return {
+        provider: "wechat", canonicalUrl: url, title: `资料 ${articleNumber}`,
+        _document: { markdown: `正文 ${articleNumber}` },
+        knowledge: { status: "saved", itemId: `knowledge_${articleNumber}` },
+      };
+    },
+  });
+  await harness.receive("https://mp.weixin.qq.com/s/first-source").dispatched;
+  const context = harness.state.channelConversations[0].sharedContentContext;
+  context.lastAnalysis = "只针对第一篇的旧结论";
+  context.lastAnalysisItemIds = [...context.activeItemIds];
+  context.lastAnalysisAt = NOW;
+  await harness.receive("https://mp.weixin.qq.com/s/second-source").dispatched;
+
+  harness.receive("按这些建议完善当前项目");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const thread = harness.state.channelTaskThreads.find((candidate) => candidate.workKind !== "knowledge_capture");
+  assert.match(thread.summary, /资料 1/);
+  assert.match(thread.summary, /资料 2/);
+  assert.doesNotMatch(thread.summary, /只针对第一篇的旧结论/);
 });
 
 test("ordinary questions stay consultation and offer an optional work path", () => {
@@ -539,6 +1918,44 @@ test("a completed consultation is recovered after restart and delivered only onc
   assert.match(harness.replies.at(-1).content, /依赖检查未通过/);
   assert.deepEqual(harness.conversationService.recoverConsultations(), { recovered: 0 });
   assert.equal(harness.state.channelTaskThreads.length, 0);
+});
+
+test("restart recovery creates at most one consultation retry and later delivers it once", () => {
+  const harness = makeHarness({
+    createConsultation: ({ nextId, state, eventId, conversationId, attempt = 1, retryReason = null, retryOfInvocationId = null }) => {
+      const invocation = {
+        id: nextId("inv"), status: "queued", result: null,
+        options: { metadata: {
+          channelConsultation: true,
+          channelConsultationAttempt: attempt,
+          channelConsultationRetryReason: retryReason,
+          channelConsultationRetryOfInvocationId: retryOfInvocationId,
+          channel: { eventId, conversationId },
+        } },
+      };
+      state.invocations.push(invocation);
+      return invocation;
+    },
+  });
+  harness.receive("这个方案靠谱吗？");
+  const first = harness.state.invocations[0];
+  first.status = "succeeded";
+  first.result = { summary: "Codex CLI completed." };
+
+  assert.deepEqual(harness.conversationService.recoverConsultations(), { recovered: 0 });
+  assert.equal(harness.state.invocations.length, 2);
+  assert.deepEqual(harness.conversationService.recoverConsultations(), { recovered: 0 });
+  assert.equal(harness.state.invocations.length, 2);
+
+  const second = harness.state.invocations[1];
+  second.status = "succeeded";
+  second.result = { output: { latestMessage: "方案可行，但需要先验证数据来源。" } };
+  const repliesBeforeRecovery = harness.replies.length;
+  assert.deepEqual(harness.conversationService.recoverConsultations(), { recovered: 1 });
+  assert.equal(harness.replies.length, repliesBeforeRecovery + 1);
+  assert.match(harness.replies.at(-1).content, /需要先验证数据来源/);
+  assert.deepEqual(harness.conversationService.recoverConsultations(), { recovered: 0 });
+  assert.equal(harness.replies.length, repliesBeforeRecovery + 1);
 });
 
 test("multiple pending drafts require an explicit task selection before confirmation", async () => {
@@ -619,7 +2036,11 @@ test("natural task confirmation files one merged task and records the thread", a
     createChannelTaskIssue: async (args) => { calls.push(args); return { ok: true, number: 77, workItemId: "wi_77", localRef: "LOCAL-77" }; },
   });
   harness.bindTaskProject("proj_a");
-  harness.receive("请整理这批客户反馈");
+  harness.receive("请整理这批客户反馈", { attachmentAssets: [{
+    id: "asset_feedback", path: ".myagenttool/channel-attachments/feedback.xlsx", originalName: "feedback.xlsx",
+    hash: "sha256:feedback", version: "v1", family: "file", terminalId: "dev_local", projectId: "proj_a",
+    readiness: { state: "ready" },
+  }] });
   harness.receive("重点看重复问题和高优先级");
   await new Promise((resolve) => setTimeout(resolve, 10));
   const thread = harness.state.channelTaskThreads[0];
@@ -689,6 +2110,50 @@ test("completed task feedback creates a revision record and can preserve the ori
   assert.equal(harness.state.channelTaskRevisions[0].status, "cancelled");
 });
 
+test("vague completed-task feedback asks one clarification before creating a revision", () => {
+  const harness = makeHarness();
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const thread = {
+    id: "cth_vague_revision", shortRef: "T-VAGUE-REV", channelId: harness.channelId, conversationId: conversation.id,
+    sourceEventIds: [], messages: [], summary: "整理客户报价", status: "succeeded",
+    resultSummary: "已生成报价汇总", createdAt: NOW, updatedAt: NOW,
+  };
+  harness.state.channelTaskThreads.push(thread);
+
+  const clarification = harness.receive("这个不对").dispatched;
+  assert.match(clarification.reply, /资料\/数据不对、理解目标不对，还是格式\/样式不对/);
+  assert.equal(clarification.data.reason, "revision_needs_clarification");
+  assert.equal(harness.state.channelTaskRevisions.length, 0);
+
+  const revised = harness.receive("格式不对，请保持原样").dispatched;
+  assert.equal(revised.data.type, "output_style_correction");
+  assert.equal(harness.state.channelTaskRevisions.length, 1);
+  assert.equal(thread.status, "awaiting_confirmation");
+
+  harness.receive("取消");
+  const interpreted = harness.receive("理解目标不对").dispatched;
+  assert.equal(interpreted.data.type, "interpretation_correction");
+  assert.equal(harness.state.channelTaskRevisions.length, 2);
+});
+
+test("natural data correction feedback recognizes object wording", () => {
+  const harness = makeHarness();
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const thread = {
+    id: "cth_object_revision", shortRef: "T-OBJECT-REV", channelId: harness.channelId, conversationId: conversation.id,
+    sourceEventIds: [], messages: [], summary: "整理客户报价", status: "succeeded",
+    resultSummary: "已生成报价汇总", createdAt: NOW, updatedAt: NOW,
+  };
+  harness.state.channelTaskThreads.push(thread);
+
+  const revised = harness.receive("客户不是这个，按上个月那份报价来").dispatched;
+  assert.equal(revised.data.type, "data_correction");
+  assert.equal(harness.state.channelTaskRevisions.length, 1);
+  assert.equal(thread.status, "awaiting_confirmation");
+});
+
 test("multiple historical results require a target before natural correction", () => {
   const harness = makeHarness();
   harness.receive("/help");
@@ -749,12 +2214,12 @@ test("personal mode confirms directly into the single visible queue", async () =
   });
   harness.bindTaskProject("proj_a");
 
-  harness.receive("先处理第一件事");
+  harness.receive("请检查第一项发布状态");
   await new Promise((resolve) => setTimeout(resolve, 10));
   const first = await harness.receive("确认").dispatched;
   assert.equal(first.status, "dispatched");
 
-  harness.receive("另外 第二件事");
+  harness.receive("另外 生成第二项发布摘要");
   await new Promise((resolve) => setTimeout(resolve, 10));
   const second = await harness.receive("确认").dispatched;
   const threads = harness.state.channelTaskThreads;
@@ -947,6 +2412,35 @@ test("restart recovery replays durable terminal state and requeues unfinished wo
   assert.equal(unfinished.queuePosition, 1);
 });
 
+test("restart recovery marks interrupted confirmation attempts retryable", () => {
+  const harness = makeHarness({ operationMode: "personal" });
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const thread = {
+    id: "cth_interrupted_confirm", shortRef: "T-INTERRUPTED", channelId: harness.channelId,
+    conversationId: conversation.id, status: "waiting_approval", waitingFor: "approval",
+    channelTaskRequestId: "ctr_interrupted_confirm", createdAt: NOW, updatedAt: NOW,
+    executionAttempt: {
+      count: 1, operationKey: "channel-route:ctr_interrupted_confirm", outcome: "started", startedAt: NOW,
+    },
+  };
+  harness.state.channelTaskThreads.push(thread);
+  harness.state.channelTaskRequests.push({
+    id: "ctr_interrupted_confirm", threadId: thread.id, channelId: harness.channelId,
+    conversationId: conversation.id, status: "pending",
+    executionAttempt: {
+      count: 1, operationKey: "channel-route:ctr_interrupted_confirm", outcome: "started", startedAt: NOW,
+    },
+  });
+
+  harness.conversationService.recoverTaskThreads();
+
+  assert.equal(thread.executionAttempt.outcome, "interrupted");
+  assert.equal(thread.executionAttempt.error, "process_restart");
+  assert.equal(harness.state.channelTaskRequests[0].executionAttempt.outcome, "interrupted");
+  assert.equal(thread.status, "waiting_approval");
+});
+
 test("natural task can be cancelled without filing", async () => {
   let filed = 0;
   const harness = makeHarness({ intakeQuietMs: 1, createChannelTaskIssue: async () => { filed += 1; return { ok: true, number: 1 }; } });
@@ -1033,6 +2527,375 @@ test("natural task controls list and address threads without internal ids", asyn
   assert.match(cancelled.dispatched.reply, new RegExp(`${ref} 已取消`));
 });
 
+test("ordinary users can cancel a named task without stopping independent work", () => {
+  let harness;
+  harness = makeHarness({
+    updateWorkItem: ({ workItemId, expectedRevision, ...changes }) => {
+      const item = harness.state.workItems.find((candidate) => candidate.id === workItemId);
+      assert.equal(item.revision, expectedRevision);
+      Object.assign(item, changes, { revision: item.revision + 1, updatedAt: NOW });
+      return { ok: true, status: 200, body: { workItem: item } };
+    },
+  });
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const goalId = "goal_named_cancel";
+  harness.state.workGoals.push({
+    id: goalId, conversationId: conversation.id, ownerTeamId: "team_local", projectId: null,
+    title: "制作文章和图片并发布", status: "active",
+    taskIds: ["wi_article", "wi_image", "wi_xhs_adapt", "wi_xhs_publish"], failedSteps: [],
+  });
+  conversation.activeWorkGoalId = goalId;
+  harness.state.workItems.push(
+    { id: "wi_article", workGoalId: goalId, dependencyIds: [], revision: 1, status: "ready", executionPolicy: "inherit" },
+    { id: "wi_image", workGoalId: goalId, dependencyIds: [], revision: 1, status: "ready", executionPolicy: "inherit" },
+    { id: "wi_xhs_adapt", workGoalId: goalId, dependencyIds: ["wi_image"], revision: 1, status: "ready", executionPolicy: "inherit" },
+    { id: "wi_xhs_publish", workGoalId: goalId, dependencyIds: ["wi_xhs_adapt"], revision: 1, status: "ready", executionPolicy: "inherit" },
+  );
+  harness.state.channelTaskThreads.push(
+    { id: "cth_article", shortRef: "T-ARTICLE", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_article", taskTitle: "文章创作", taskKind: "content_article", status: "queued", sourceEventIds: [], messages: [] },
+    { id: "cth_image", shortRef: "T-IMAGE", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_image", taskTitle: "图片创作", taskKind: "content_image", status: "queued", sourceEventIds: [], messages: [] },
+    { id: "cth_xhs_adapt", shortRef: "T-XHS-ADAPT", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_xhs_adapt", taskTitle: "小红书内容适配", taskKind: "platform_adaptation", status: "waiting_upstream", dependencyTaskTitles: ["图片创作"], sourceEventIds: [], messages: [] },
+    { id: "cth_xhs_publish", shortRef: "T-XHS-PUBLISH", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_xhs_publish", taskTitle: "发布到小红书", taskKind: "content_publish", platformTarget: { id: "xiaohongshu", label: "小红书" }, status: "waiting_upstream", dependencyTaskTitles: ["小红书内容适配"], sourceEventIds: [], messages: [] },
+  );
+
+  const cancelled = harness.receive("取消图片").dispatched;
+  assert.match(cancelled.reply, /“图片创作”任务已取消/);
+  assert.match(cancelled.reply, /受影响的 2 个下游任务/);
+  assert.match(cancelled.reply, /其他独立任务继续/);
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_article").status, "queued");
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_image").status, "cancelled");
+  assert.deepEqual(harness.state.channelTaskThreads.filter((thread) => thread.id.startsWith("cth_xhs_")).map((thread) => thread.status), ["needs_attention", "needs_attention"]);
+  assert.equal(harness.state.workItems.find((item) => item.id === "wi_image").executionPolicy, "paused");
+
+  const progress = harness.receive("进度").dispatched;
+  assert.match(progress.reply, /2 项因上游异常受阻/);
+  assert.match(progress.reply, /其他 1 项任务不受影响/);
+  assert.match(progress.reply, /文章创作：排队中/);
+});
+
+test("named pause and priority controls change only the intended task", () => {
+  let harness;
+  const updates = [];
+  harness = makeHarness({
+    updateWorkItem: ({ workItemId, expectedRevision, ...changes }) => {
+      const item = harness.state.workItems.find((candidate) => candidate.id === workItemId);
+      assert.equal(item.revision, expectedRevision);
+      updates.push({ workItemId, changes });
+      Object.assign(item, changes, { revision: item.revision + 1, updatedAt: NOW });
+      return { ok: true, status: 200, body: { workItem: item } };
+    },
+  });
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const goalId = "goal_named_controls";
+  harness.state.workGoals.push({ id: goalId, conversationId: conversation.id, ownerTeamId: "team_local", title: "内容发布", status: "active", taskIds: ["wi_image", "wi_article", "wi_xhs_publish", "wi_wechat_publish"] });
+  conversation.activeWorkGoalId = goalId;
+  harness.state.workItems.push(
+    { id: "wi_image", workGoalId: goalId, dependencyIds: [], revision: 1, status: "ready", executionPolicy: "inherit", priority: "p2" },
+    { id: "wi_article", workGoalId: goalId, dependencyIds: [], revision: 1, status: "ready", executionPolicy: "inherit", priority: "p2" },
+    { id: "wi_xhs_publish", workGoalId: goalId, dependencyIds: [], revision: 1, status: "ready", executionPolicy: "inherit", priority: "p2" },
+    { id: "wi_wechat_publish", workGoalId: goalId, dependencyIds: [], revision: 1, status: "ready", executionPolicy: "inherit", priority: "p2" },
+  );
+  harness.state.channelTaskThreads.push(
+    { id: "cth_a_image", shortRef: "T-IMAGE", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_image", taskTitle: "图片创作", taskKind: "content_image", status: "queued", createdAt: "2026-07-15T00:00:01.000Z", sourceEventIds: [], messages: [] },
+    { id: "cth_z_article", shortRef: "T-ARTICLE", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_article", taskTitle: "文章创作", taskKind: "content_article", status: "queued", createdAt: "2026-07-15T00:00:02.000Z", sourceEventIds: [], messages: [] },
+    { id: "cth_xhs_publish", shortRef: "T-XHS-PUBLISH", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_xhs_publish", taskTitle: "发布到小红书", taskKind: "content_publish", platformTarget: { id: "xiaohongshu", label: "小红书" }, status: "waiting_upstream", sourceEventIds: [], messages: [] },
+    { id: "cth_wechat_publish", shortRef: "T-WECHAT-PUBLISH", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_wechat_publish", taskTitle: "发布到公众号", taskKind: "content_publish", platformTarget: { id: "wechat_official", label: "公众号" }, status: "waiting_upstream", sourceEventIds: [], messages: [] },
+  );
+
+  const prioritized = harness.receive("先做文章").dispatched;
+  assert.match(prioritized.reply, /已优先处理“文章创作”/);
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_z_article").queuePosition, 1);
+  assert.deepEqual(updates.at(-1), { workItemId: "wi_article", changes: { priority: "p0" } });
+
+  const paused = harness.receive("小红书先不发").dispatched;
+  assert.match(paused.reply, /“发布到小红书”已暂停/);
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_xhs_publish").status, "paused");
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_wechat_publish").status, "waiting_upstream");
+
+  const ambiguous = harness.receive("取消发布").dispatched;
+  assert.match(ambiguous.reply, /对应多个任务/);
+  assert.match(ambiguous.reply, /发布到小红书/);
+  assert.match(ambiguous.reply, /发布到公众号/);
+});
+
+test("a compound goal adjustment is previewed before changing only the named task", async () => {
+  let harness;
+  const updates = [];
+  harness = makeHarness({
+    operationMode: "personal",
+    updateWorkItem: ({ workItemId, expectedRevision, ...changes }) => {
+      const item = harness.state.workItems.find((candidate) => candidate.id === workItemId);
+      assert.equal(item.revision, expectedRevision);
+      updates.push({ workItemId, changes });
+      Object.assign(item, changes, { revision: item.revision + 1, updatedAt: NOW });
+      return { ok: true, status: 200, body: { workItem: item } };
+    },
+  });
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const goalId = "goal_dynamic_modify";
+  harness.state.workGoals.push({ id: goalId, conversationId: conversation.id, ownerTeamId: "team_local", projectId: null, title: "制作文章和图片", status: "active", taskIds: ["wi_article", "wi_image"] });
+  conversation.activeWorkGoalId = goalId;
+  harness.state.workItems.push(
+    { id: "wi_article", workGoalId: goalId, revision: 1, status: "ready", executionPolicy: "inherit", dependencyIds: [], body: "写文章" },
+    { id: "wi_image", workGoalId: goalId, revision: 1, status: "ready", executionPolicy: "inherit", dependencyIds: [], body: "做图片" },
+  );
+  harness.state.channelTaskThreads.push(
+    { id: "cth_dynamic_article", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_article", taskTitle: "文章创作", taskKind: "content_article", status: "queued", sourceEventIds: [], messages: [] },
+    { id: "cth_dynamic_image", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_image", taskTitle: "图片创作", taskKind: "content_image", status: "queued", sourceEventIds: [], messages: [] },
+  );
+
+  const preview = await harness.receive("文章改成1500字，图片不动").dispatched;
+  assert.equal(preview.data.previewOnly, true);
+  assert.match(preview.reply, /尚未执行/);
+  assert.match(preview.reply, /其余 1 个任务保持不变/);
+  assert.equal(updates.length, 0);
+
+  const applied = await harness.receive("确认调整").dispatched;
+  assert.match(applied.reply, /调整已应用/);
+  assert.deepEqual(updates.map((entry) => entry.workItemId), ["wi_article"]);
+  assert.match(harness.state.workItems.find((item) => item.id === "wi_article").body, /1500字/);
+  assert.equal(harness.state.workItems.find((item) => item.id === "wi_image").body, "做图片");
+  assert.equal(conversation.pendingWorkGoalChange, null);
+
+  const duplicate = await harness.receive("确认调整").dispatched;
+  assert.match(duplicate.reply, /已经应用，不会重复/);
+  assert.equal(updates.length, 1);
+});
+
+test("a goal adjustment is refreshed instead of applying after its target changes", async () => {
+  let harness;
+  let updateCount = 0;
+  harness = makeHarness({
+    operationMode: "personal",
+    updateWorkItem: () => { updateCount += 1; return { ok: true }; },
+  });
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const goalId = "goal_dynamic_stale";
+  harness.state.workGoals.push({ id: goalId, conversationId: conversation.id, ownerTeamId: "team_local", projectId: null, title: "文章发布", status: "active", planVersion: 1, taskIds: ["wi_article", "wi_adapt"] });
+  conversation.activeWorkGoalId = goalId;
+  harness.state.workItems.push(
+    { id: "wi_article", workGoalId: goalId, revision: 1, status: "ready", executionPolicy: "inherit", dependencyIds: [], body: "写文章", artifactContract: { produces: ["article_draft"], consumes: [] }, outputAssets: [] },
+    { id: "wi_adapt", workGoalId: goalId, revision: 1, status: "ready", executionPolicy: "inherit", dependencyIds: ["wi_article"], artifactContract: { produces: ["platform_package"], consumes: ["article_draft"] }, outputAssets: [] },
+  );
+  harness.state.channelTaskThreads.push(
+    { id: "cth_stale_article", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_article", taskTitle: "文章创作", taskKind: "content_article", status: "queued" },
+    { id: "cth_stale_adapt", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_adapt", taskTitle: "公众号内容适配", taskKind: "platform_adaptation", platformTarget: { id: "wechat_official", label: "公众号" }, status: "waiting_upstream" },
+  );
+
+  const preview = await harness.receive("文章改成1500字").dispatched;
+  assert.match(preview.reply, /连带影响/);
+  harness.state.workItems[0].revision = 2;
+  harness.state.workItems[0].outputAssets = [{ id: "asset_new", version: "v2", path: "article-v2.md" }];
+  harness.state.channelTaskThreads[0].status = "succeeded";
+
+  const stale = await harness.receive("确认调整").dispatched;
+  assert.equal(stale.data.stale, true);
+  assert.equal(stale.data.refreshed, true);
+  assert.match(stale.reply, /旧预览没有执行/);
+  assert.match(stale.reply, /已更新这次调整/);
+  assert.equal(updateCount, 0);
+  assert.ok(conversation.pendingWorkGoalChange);
+});
+
+test("cancelling a goal adjustment preserves every existing task", async () => {
+  let updateCount = 0;
+  const harness = makeHarness({ updateWorkItem: () => { updateCount += 1; return { ok: true }; } });
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const goalId = "goal_dynamic_cancel_preview";
+  harness.state.workGoals.push({ id: goalId, conversationId: conversation.id, ownerTeamId: "team_local", projectId: null, title: "软件交付", status: "active", taskIds: ["wi_verify", "wi_deploy"] });
+  conversation.activeWorkGoalId = goalId;
+  harness.state.workItems.push(
+    { id: "wi_verify", workGoalId: goalId, revision: 1, dependencyIds: [] },
+    { id: "wi_deploy", workGoalId: goalId, revision: 1, dependencyIds: [] },
+  );
+  harness.state.channelTaskThreads.push(
+    { id: "cth_verify", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_verify", taskTitle: "软件验证", taskKind: "software_verification", status: "queued" },
+    { id: "cth_deploy", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_deploy", taskTitle: "部署发布", taskKind: "software_deployment", status: "queued" },
+  );
+
+  assert.match((await harness.receive("部署先暂停，测试继续").dispatched).reply, /确认调整/);
+  const cancelled = await harness.receive("取消调整").dispatched;
+  assert.match(cancelled.reply, /现有任务保持原样/);
+  assert.equal(updateCount, 0);
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_deploy").status, "queued");
+});
+
+test("confirming a platform rebind creates the replacement before retiring only that platform chain", async () => {
+  let harness;
+  const filed = [];
+  harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return { ok: true, number: filed.length, workItemId: `wi_rebind_new_${filed.length}`, autoRoute: input.autoRoute, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+    updateWorkItem: ({ workItemId, expectedRevision, ...changes }) => {
+      const item = harness.state.workItems.find((candidate) => candidate.id === workItemId);
+      assert.equal(item.revision, expectedRevision);
+      Object.assign(item, changes, { revision: item.revision + 1 });
+      return { ok: true, status: 200, body: { workItem: item } };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const goalId = "goal_dynamic_rebind";
+  const wechat = { id: "wechat_official", label: "公众号" };
+  const xhs = { id: "xiaohongshu", label: "小红书" };
+  harness.state.workGoals.push({ id: goalId, conversationId: conversation.id, ownerTeamId: "team_local", projectId: "proj_a", title: "多平台内容发布", status: "active", taskIds: ["wi_article", "wi_video", "wi_wx_adapt", "wi_wx_publish", "wi_xhs_adapt", "wi_xhs_publish"], domains: ["content"], platforms: [wechat, xhs] });
+  conversation.activeWorkGoalId = goalId;
+  harness.state.workItems.push(
+    { id: "wi_article", workGoalId: goalId, ownerTeamId: "team_local", revision: 1, status: "ready", dependencyIds: [], artifactContract: { produces: ["article_draft"], consumes: [] } },
+    { id: "wi_video", workGoalId: goalId, ownerTeamId: "team_local", revision: 1, status: "done", dependencyIds: [], artifactContract: { produces: ["video_package"], consumes: [] } },
+    { id: "wi_wx_adapt", workGoalId: goalId, ownerTeamId: "team_local", revision: 1, status: "ready", dependencyIds: ["wi_article"], artifactContract: { produces: ["wechat_article_package"], consumes: ["article_draft"] } },
+    { id: "wi_wx_publish", workGoalId: goalId, ownerTeamId: "team_local", revision: 1, status: "ready", dependencyIds: ["wi_wx_adapt"], artifactContract: { produces: ["publication_receipt"], consumes: ["wechat_article_package"] } },
+    { id: "wi_xhs_adapt", workGoalId: goalId, ownerTeamId: "team_local", revision: 1, status: "ready", dependencyIds: ["wi_article"], artifactContract: { produces: ["platform_package"], consumes: ["article_draft"] } },
+    { id: "wi_xhs_publish", workGoalId: goalId, ownerTeamId: "team_local", revision: 1, status: "ready", dependencyIds: ["wi_xhs_adapt"], artifactContract: { produces: ["publication_receipt"], consumes: ["platform_package"] } },
+  );
+  harness.state.channelTaskThreads.push(
+    { id: "cth_article_rebind", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_article", taskTitle: "文章创作", taskKind: "content_article", status: "queued" },
+    { id: "cth_video_rebind", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_video", taskTitle: "视频创作", taskKind: "content_video", status: "succeeded" },
+    { id: "cth_wx_adapt_rebind", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_wx_adapt", taskTitle: "公众号内容适配", taskKind: "platform_adaptation", platformTarget: wechat, status: "waiting_upstream" },
+    { id: "cth_wx_publish_rebind", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_wx_publish", taskTitle: "发布到公众号", taskKind: "content_publish", platformTarget: wechat, status: "waiting_upstream" },
+    { id: "cth_xhs_adapt_rebind", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_xhs_adapt", taskTitle: "小红书内容适配", taskKind: "platform_adaptation", platformTarget: xhs, status: "waiting_upstream" },
+    { id: "cth_xhs_publish_rebind", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_xhs_publish", taskTitle: "发布到小红书", taskKind: "content_publish", platformTarget: xhs, status: "waiting_upstream" },
+  );
+
+  const preview = await harness.receive("小红书改发视频，公众号还是文章").dispatched;
+  assert.match(preview.reply, /小红书改用“视频”发布/);
+  assert.equal(filed.length, 0);
+  const applied = await harness.receive("确认调整").dispatched;
+  assert.match(applied.reply, /新增 2 个任务/);
+  assert.deepEqual(filed.map((input) => input.taskKind), ["platform_adaptation", "content_publish"]);
+  assert.deepEqual(filed[0].dependencyIds, ["wi_video"]);
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_xhs_adapt_rebind").status, "cancelled");
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_xhs_publish_rebind").status, "cancelled");
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_wx_publish_rebind").status, "waiting_upstream");
+});
+
+test("a business goal can add an internal check while cancelling only external communication", async () => {
+  let harness;
+  const filed = [];
+  harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return { ok: true, number: filed.length, workItemId: `wi_business_new_${filed.length}`, autoRoute: input.autoRoute, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+    updateWorkItem: ({ workItemId, expectedRevision, ...changes }) => {
+      const item = harness.state.workItems.find((candidate) => candidate.id === workItemId);
+      assert.equal(item.revision, expectedRevision);
+      Object.assign(item, changes, { revision: item.revision + 1 });
+      return { ok: true, status: 200, body: { workItem: item } };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const goalId = "goal_dynamic_business";
+  harness.state.workGoals.push({ id: goalId, conversationId: conversation.id, ownerTeamId: "team_local", projectId: "proj_a", title: "准备并发送客户方案", status: "active", taskIds: ["wi_document", "wi_communication"], domains: ["business"] });
+  conversation.activeWorkGoalId = goalId;
+  harness.state.workItems.push(
+    { id: "wi_document", workGoalId: goalId, ownerTeamId: "team_local", revision: 1, status: "ready", executionPolicy: "inherit", dependencyIds: [], artifactContract: { produces: ["business_document"], consumes: [] } },
+    { id: "wi_communication", workGoalId: goalId, ownerTeamId: "team_local", revision: 1, status: "ready", executionPolicy: "inherit", dependencyIds: ["wi_document"], artifactContract: { produces: ["communication_receipt"], consumes: ["business_document"] } },
+  );
+  harness.state.channelTaskThreads.push(
+    { id: "cth_business_document", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_document", taskTitle: "客户方案", taskKind: "business_document", status: "queued" },
+    { id: "cth_business_communication", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_communication", taskTitle: "发送给客户", taskKind: "business_communication", status: "waiting_upstream" },
+  );
+
+  const preview = await harness.receive("方案继续做，但不要发送；另外核对客户付款记录").dispatched;
+  assert.match(preview.reply, /保持“客户方案”不变/);
+  assert.match(preview.reply, /取消“发送给客户”/);
+  assert.match(preview.reply, /新增“商务调研”/);
+  assert.equal(filed.length, 0);
+
+  const applied = await harness.receive("确认调整").dispatched;
+  assert.match(applied.reply, /新增 1 个任务/);
+  assert.equal(filed[0].taskKind, "business_research");
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_business_document").status, "queued");
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_business_communication").status, "cancelled");
+});
+
+test("a partial replacement creation is rolled back before the old publication chain changes", async () => {
+  let harness;
+  let attempts = 0;
+  harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      attempts += 1;
+      if (attempts === 2) return { ok: false, reason: "simulated_create_failure" };
+      return { ok: true, number: attempts, workItemId: `wi_partial_${attempts}`, autoRoute: input.autoRoute, executionPreview: { previewReady: true, requiredFields: [] } };
+    },
+    updateWorkItem: () => ({ ok: true, status: 200, body: {} }),
+  });
+  harness.bindTaskProject("proj_a");
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const goalId = "goal_dynamic_partial_rebind";
+  const xhs = { id: "xiaohongshu", label: "小红书" };
+  harness.state.workGoals.push({ id: goalId, conversationId: conversation.id, ownerTeamId: "team_local", projectId: "proj_a", title: "小红书发布", status: "active", planVersion: 1, taskIds: ["wi_video", "wi_old_adapt", "wi_old_publish"], domains: ["content"], platforms: [xhs] });
+  conversation.activeWorkGoalId = goalId;
+  harness.state.workItems.push(
+    { id: "wi_video", workGoalId: goalId, revision: 1, status: "done", dependencyIds: [], artifactContract: { produces: ["video_package"], consumes: [] }, outputAssets: [{ id: "video", version: "v1" }] },
+    { id: "wi_old_adapt", workGoalId: goalId, revision: 1, status: "ready", dependencyIds: ["wi_video"], artifactContract: { produces: ["platform_package"], consumes: ["video_package"] }, outputAssets: [] },
+    { id: "wi_old_publish", workGoalId: goalId, revision: 1, status: "ready", dependencyIds: ["wi_old_adapt"], artifactContract: { produces: ["publication_receipt"], consumes: ["platform_package"] }, outputAssets: [] },
+  );
+  harness.state.channelTaskThreads.push(
+    { id: "cth_partial_video", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_video", taskTitle: "视频创作", taskKind: "content_video", status: "succeeded" },
+    { id: "cth_partial_old_adapt", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_old_adapt", taskTitle: "小红书内容适配", taskKind: "platform_adaptation", platformTarget: xhs, status: "waiting_upstream" },
+    { id: "cth_partial_old_publish", channelId: harness.channelId, conversationId: conversation.id, workGoalId: goalId, workItemId: "wi_old_publish", taskTitle: "发布到小红书", taskKind: "content_publish", platformTarget: xhs, status: "waiting_upstream" },
+  );
+
+  await harness.receive("小红书改发视频").dispatched;
+  const applied = await harness.receive("确认调整").dispatched;
+  assert.equal(applied.data.applied, false);
+  assert.match(applied.reply, /已清理本次新增/);
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_partial_old_adapt").status, "waiting_upstream");
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_partial_old_publish").status, "waiting_upstream");
+  const replacementThreads = harness.state.channelTaskThreads.filter((thread) => thread.workGoalId === goalId && thread.id.startsWith("cth_") && !["cth_partial_video", "cth_partial_old_adapt", "cth_partial_old_publish"].includes(thread.id));
+  assert.equal(replacementThreads.length, 1);
+  assert.equal(replacementThreads[0].status, "cancelled");
+});
+
+test("restart recovery rolls back creation-only interrupted goal changes without duplication", () => {
+  const harness = makeHarness({ cancelAutoRun: () => ({ ok: true }) });
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  const proposal = {
+    id: "wgc_interrupted",
+    channelId: harness.channelId,
+    conversationId: conversation.id,
+    goalId: "goal_restart_change",
+    status: "applying",
+    createdAt: NOW,
+    appliedOperations: {
+      "create:add:content_video:再加视频": { status: "completed", taskThreadIds: ["cth_interrupted_new"], taskCount: 1 },
+    },
+  };
+  conversation.pendingWorkGoalChange = proposal;
+  harness.state.workGoalChanges = [proposal];
+  harness.state.workItems.push({ id: "wi_interrupted_new", revision: 1, status: "ready", executionPolicy: "auto" });
+  harness.state.channelTaskThreads.push({
+    id: "cth_interrupted_new", channelId: harness.channelId, conversationId: conversation.id,
+    workGoalId: proposal.goalId, workItemId: "wi_interrupted_new", taskTitle: "视频创作",
+    taskKind: "content_video", status: "queued", autoRunId: "ar_interrupted",
+  });
+
+  harness.conversationService.recoverTaskThreads();
+
+  assert.equal(conversation.pendingWorkGoalChange, null);
+  assert.equal(proposal.status, "failed_rolled_back");
+  assert.equal(proposal.rolledBackTaskCount, 1);
+  assert.equal(harness.state.channelTaskThreads[0].status, "cancelled");
+  assert.equal(harness.state.workItems[0].status, "blocked");
+});
+
 test("ordinary progress questions return the current task without a task id", () => {
   const harness = makeHarness();
   harness.receive("/help");
@@ -1050,6 +2913,87 @@ test("ordinary progress questions return the current task without a task id", ()
 
   const eta = harness.receive("还有多久").dispatched;
   assert.match(eta.reply, /前面还有 2 个任务/);
+});
+
+test("a failed result check can create one independent repair task while preserving the original result", async () => {
+  const filed = [];
+  const harness = makeHarness({
+    operationMode: "personal",
+    createChannelTaskIssue: async (input) => {
+      filed.push(input);
+      return { ok: true, number: 91, workItemId: "wi_repair", autoRoute: true };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  harness.receive("你好");
+  const conversation = harness.state.channelConversations[0];
+  harness.state.workItems.push({
+    id: "wi_original", title: "客户方案", revision: 1, status: "done", state: "closed",
+    taskKind: "business_document", intentId: "goal_business", workGoalId: "goal_business",
+    artifactContract: { consumes: [], produces: ["business_document"], requirements: [{ kind: "business_document", minCount: 1, extensions: [".docx"] }] },
+    outputAssets: [{ id: "wrong", path: "outputs/notes.txt", size: 10 }],
+  });
+  harness.state.channelTaskThreads.push({
+    id: "cth_original", channelId: harness.channelId, conversationId: conversation.id,
+    workGoalId: "goal_business", workItemId: "wi_original", taskTitle: "客户方案",
+    taskKind: "business_document", status: "succeeded", resultSummary: "已生成客户方案初稿",
+  });
+
+  const result = await harness.receive("按检查结果修改").dispatched;
+
+  assert.equal(result.data.resultRepair, true);
+  assert.match(result.reply, /独立返工任务/);
+  assert.equal(filed.length, 1);
+  assert.equal(harness.state.channelTaskThreads.find((thread) => thread.id === "cth_original").status, "succeeded");
+  const repair = harness.state.channelTaskThreads.find((thread) => thread.repairOfThreadId === "cth_original");
+  assert.ok(repair);
+  assert.equal(repair.taskTitle, "客户方案返工");
+  assert.deepEqual(filed[0].dependencyIds, []);
+  assert.deepEqual(filed[0].artifactContract.consumes, ["failed_output_evidence"]);
+  assert.equal(filed[0].resultRepairSpec.handoff.evidenceOnly, true);
+});
+
+test("waiting tasks explain the exact upstream output in ordinary language", () => {
+  const harness = makeHarness();
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  harness.state.channelTaskThreads.push({
+    id: "cth_waiting_article", shortRef: "T-WAITING", channelId: harness.channelId,
+    conversationId: conversation.id, sourceEventIds: [], messages: [],
+    summary: "制作公众号发布版本", status: "waiting_upstream",
+    dependencyTaskTitles: ["文章创作"], requiredArtifactKinds: ["article_draft"],
+  });
+  conversation.activeTaskThreadId = "cth_waiting_article";
+
+  const progress = harness.receive("现在做到哪了").dispatched;
+  assert.match(progress.reply, /正在等待“文章创作”完成并交付文章稿件/);
+  assert.match(progress.reply, /不需要重复发送/);
+  assert.match(progress.reply, /需要确认最终文件时我会通知你/);
+  assert.doesNotMatch(progress.reply, /T-WAITING|article_draft/);
+});
+
+test("ordinary users can ask why a task was done and see its recorded basis", () => {
+  const harness = makeHarness();
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  harness.state.channelTaskThreads.push({
+    id: "cth_basis", shortRef: "T-BASIS", channelId: harness.channelId,
+    conversationId: conversation.id, workItemId: "wi_basis", sourceEventIds: ["evt_1"],
+    messages: [{ eventId: "evt_1", content: "整理本周报价" }],
+    summary: "整理本周报价", status: "succeeded", waitingFor: null,
+    workMode: { name: "按报价资料整理成客户可读版本" },
+  });
+  harness.state.workItems.push({
+    id: "wi_basis",
+    ownerTeamId: "team_local",
+    acceptanceCriteria: ["客户名称和金额保持一致"],
+    dataContextSnapshot: { sources: [{ kind: "file", displayName: "本周报价.xlsx" }] },
+  });
+  const explained = harness.receive("查看依据").dispatched;
+  assert.match(explained.reply, /处理依据/);
+  assert.match(explained.reply, /本周报价\.xlsx/);
+  assert.match(explained.reply, /客户名称和金额保持一致/);
+  assert.equal(explained.data.taskExplanation, true);
 });
 
 test("natural status questions stay read-only and follow the current task", () => {
@@ -1247,6 +3191,40 @@ test("ordinary users can request the latest result again without a task id", () 
   assert.equal(harness.state.channelTaskThreads.at(-1).lastDeliveryStatus, "queued");
 });
 
+test("ordinary users can confirm the latest visible result without acknowledging unrelated text", () => {
+  const acknowledgements = [];
+  const harness = makeHarness({
+    intakeQuietMs: 1,
+    acknowledgeDelivery: (input) => {
+      acknowledgements.push(input);
+      return { ok: true, deliveryId: "del_visible", alreadyConfirmed: false };
+    },
+  });
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  harness.state.channelTaskThreads.push({
+    id: "cth_visible", shortRef: "T-VISIBLE", channelId: harness.channelId, conversationId: conversation.id,
+    sourceEventIds: [], messages: [], summary: "整理文章", status: "succeeded", resultSummary: "文章已完成",
+    lastDeliveryId: "del_visible", lastDeliveryStatus: "sent_unconfirmed", workItemId: "wi_visible",
+    createdAt: NOW, updatedAt: NOW,
+  });
+  harness.state.channelDeliveries.push({
+    id: "del_visible", channelId: harness.channelId, conversationId: conversation.id,
+    status: "sent_unconfirmed", attempts: 1, content: "文章已完成", createdAt: NOW, updatedAt: NOW,
+    taskContext: { threadId: "cth_visible", workItemId: "wi_visible", deliveryKind: "result" },
+  });
+
+  const received = harness.receive("收到").dispatched;
+  assert.match(received.reply, /已确认你收到了任务结果/);
+  assert.equal(acknowledgements.length, 1);
+  assert.equal(acknowledgements[0].threadId, "cth_visible");
+  assert.ok(acknowledgements[0].sourceEventId);
+
+  harness.state.channelDeliveries[0].taskContext.deliveryKind = "status_notification";
+  harness.receive("收到订单后，请继续整理报价");
+  assert.equal(acknowledgements.length, 1);
+});
+
 test("progress question without tasks gives a next action instead of creating work", () => {
   const harness = makeHarness();
   const result = harness.receive("当前进度").dispatched;
@@ -1279,7 +3257,7 @@ test("ordinary users can select and cancel a task by its list position", () => {
   assert.match(listed.dispatched.reply, /1\. 排队中：排队中的任务/);
   assert.doesNotMatch(listed.dispatched.reply, /T-POSITION/);
   const selected = harness.receive("继续第一个任务");
-  assert.match(selected.dispatched.reply, /已切换到 这个任务/);
+  assert.match(selected.dispatched.reply, /已切换到这个任务/);
   const cancelled = harness.receive("取消");
   assert.equal(cancelled.dispatched.reply, "这个任务已取消。");
   assert.equal(harness.state.channelTaskThreads[0].status, "cancelled");
@@ -1294,7 +3272,7 @@ test("natural context phrases address the latest task without requiring a task i
   assert.match(status.dispatched.reply, /当前任务 .*等待确认/);
   assert.doesNotMatch(status.dispatched.reply, new RegExp(thread.shortRef));
   const selected = harness.receive("继续刚才的任务");
-  assert.match(selected.dispatched.reply, /已切换到 这个任务/);
+  assert.match(selected.dispatched.reply, /已切换到这个任务/);
   assert.equal(harness.state.channelConversations[0].activeTaskThreadId, thread.id);
 });
 
@@ -1363,6 +3341,99 @@ test("invocation completion syncs the task thread to waiting-user state", () => 
   assert.equal(thread.resultSummary, "请告诉我目标环境");
 });
 
+test("WeChat draft session expiry pauses safely and resumes the same direct task after login", async () => {
+  const retries = [];
+  const harness = makeHarness({
+    retryDirectTask: async (requestId, options) => {
+      retries.push({ requestId, sourceDecisionId: options.sourceDecisionId });
+      return { status: 200, body: { ok: true, invocationId: "inv_wechat_retry" } };
+    },
+  });
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const thread = {
+    id: "cth_wechat_login", shortRef: "T-WECHAT", channelId: harness.channelId,
+    conversationId: conversation.id, workItemId: "wi_wechat", channelTaskRequestId: "ctr_wechat",
+    sourceEventIds: [], messages: [], summary: "保存公众号草稿", status: "running", waitingFor: null,
+  };
+  harness.state.channelTaskThreads.push(thread);
+  harness.state.channelTaskRequests.push({
+    id: "ctr_wechat", channelId: harness.channelId, conversationId: conversation.id,
+    threadId: thread.id, workItemId: thread.workItemId, status: "routed", invocationId: "inv_wechat_expired",
+  });
+  const invocation = {
+    id: "inv_wechat_expired", status: "succeeded",
+    result: { output: { output: JSON.stringify({
+      status: "session_expired", sideEffectState: "not_started", retryable: true,
+      summary: "需要重新登录",
+    }) } },
+    options: { metadata: {
+      channel: { channelId: harness.channelId, conversationId: conversation.id, threadId: thread.id, workItemId: thread.workItemId },
+      wechatDraftTask: { workItemId: thread.workItemId },
+    } },
+  };
+
+  harness.conversationService.syncTaskThreadFromInvocation(invocation, { notify: false });
+  assert.equal(thread.status, "needs_attention");
+  assert.equal(thread.waitingFor, "wechat_login");
+  assert.equal(thread.attentionReason, "wechat_login_required");
+  assert.match(harness.receive("进度").dispatched.reply, /网站登录.*扫码登录/);
+
+  const resumed = await harness.receive("继续").dispatched;
+  assert.equal(resumed.status, "dispatched");
+  assert.match(resumed.reply, /继续保存原公众号草稿/);
+  assert.equal(thread.status, "queued");
+  assert.equal(thread.invocationId, "inv_wechat_retry");
+  assert.equal(retries[0].requestId, "ctr_wechat");
+  assert.ok(retries[0].sourceDecisionId);
+});
+
+test("an unconfirmed WeChat draft result requires reconciliation and never retries blindly", async () => {
+  let retries = 0;
+  const reconciliations = [];
+  const harness = makeHarness({
+    retryDirectTask: async () => { retries += 1; return { status: 200, body: {} }; },
+    reconcileWechatDraftTask: async (requestId, outcome, options) => {
+      reconciliations.push({ requestId, outcome, sourceDecisionId: options.sourceDecisionId });
+      return outcome === "confirmed_saved"
+        ? { status: 200, body: { ok: true, reconciled: true } }
+        : { status: 200, body: { ok: true, invocationId: "inv_reconciled_retry" } };
+    },
+  });
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const thread = {
+    id: "cth_wechat_unknown", shortRef: "T-UNKNOWN", channelId: harness.channelId,
+    conversationId: conversation.id, workItemId: "wi_unknown", channelTaskRequestId: "ctr_unknown",
+    sourceEventIds: [], messages: [], summary: "保存公众号草稿", status: "running", waitingFor: null,
+  };
+  harness.state.channelTaskThreads.push(thread);
+  harness.state.channelTaskRequests.push({ id: "ctr_unknown", channelId: harness.channelId, threadId: thread.id, workItemId: thread.workItemId, status: "routed" });
+  harness.conversationService.syncTaskThreadFromInvocation({
+    id: "inv_unknown", status: "failed",
+    result: { output: { output: JSON.stringify({ status: "unconfirmed", sideEffectState: "unknown", summary: "结果未知" }) } },
+    options: { metadata: {
+      channel: { channelId: harness.channelId, conversationId: conversation.id, threadId: thread.id, workItemId: thread.workItemId },
+      wechatDraftTask: { workItemId: thread.workItemId },
+    } },
+  }, { notify: false });
+
+  assert.equal(thread.waitingFor, "wechat_draft_reconcile");
+  assert.match(harness.receive("进度").dispatched.reply, /避免重复草稿.*已找到草稿.*确认未保存/);
+  const continued = await harness.receive("继续").dispatched;
+  assert.match(continued.reply, /不会自动重试.*草稿箱核对/);
+  assert.equal(retries, 0);
+
+  const reconciled = await harness.receive("确认未保存").dispatched;
+  assert.match(reconciled.reply, /正在重新保存/);
+  assert.equal(thread.status, "queued");
+  assert.equal(thread.invocationId, "inv_reconciled_retry");
+  assert.deepEqual(reconciliations.map(({ requestId, outcome }) => ({ requestId, outcome })), [
+    { requestId: "ctr_unknown", outcome: "confirmed_not_saved" },
+  ]);
+  assert.ok(reconciliations[0].sourceDecisionId);
+});
+
 test("a natural reply answers a waiting-user thread and preserves its channel binding", async () => {
   const answers = [];
   const harness = makeHarness({
@@ -1391,6 +3462,35 @@ test("a natural reply answers a waiting-user thread and preserves its channel bi
   assert.equal(thread.status, "running");
   assert.equal(thread.invocationId, "inv_resume");
   assert.equal(thread.messages.at(-1).content, "目标环境是 production");
+});
+
+test("a second execution question is returned specifically and remains on the same task", async () => {
+  const harness = makeHarness({
+    answerClarify: async (autoRunId) => ({
+      ok: true,
+      resumed: false,
+      waitingForInput: true,
+      autoRun: {
+        id: autoRunId,
+        status: "needs_input",
+        decision: { path: "office", clarifyingQuestions: ["请再上传包含客户编号的订单表"] },
+      },
+    }),
+  });
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const thread = {
+    id: "cth_second_question", shortRef: "T-ASK", channelId: harness.channelId, conversationId: conversation.id,
+    sourceEventIds: [], messages: [], summary: "整理订单台账", status: "waiting_user", waitingFor: "user_input",
+    autoRunId: "run_second_question",
+  };
+  harness.state.channelTaskThreads.push(thread);
+
+  const answered = await harness.receive("先按客户名称匹配").dispatched;
+
+  assert.equal(thread.status, "waiting_user");
+  assert.equal(answered.data.taskThreadId, thread.id);
+  assert.match(answered.reply, /客户编号的订单表/);
 });
 
 test("a media reply to a waiting-user thread is forwarded as governed input", async () => {
@@ -1473,6 +3573,48 @@ test("a low-confidence classifier asks for clarification instead of creating wor
   assert.match(result.dispatched.reply, /还不确定/);
   assert.equal(harness.state.channelIntakeGroups.length, 0);
   assert.equal(harness.state.channelTaskThreads.length, 0);
+  assert.equal(harness.state.channelIntentLearningSamples.length, 1);
+  assert.equal(harness.state.channelIntentLearningSamples[0].reason, "low_confidence");
+  assert.equal(harness.state.channelIntentLearningSamples[0].status, "pending_review");
+  assert.equal(harness.state.channelIntentMetrics.experience.difficultSamples, 1);
+  assert.equal(harness.state.channelIntentMetrics.experience.pendingReviewSamples, 1);
+});
+
+test("真实 Channel 困难表达先脱敏记录，用户选择后才进入可回放集合", () => {
+  const harness = makeHarness();
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  harness.state.channelTaskThreads.push(
+    { id: "cth_article_focus", shortRef: "T-ARTICLE", channelId: harness.channelId, conversationId: conversation.id, taskTitle: "文章创作", taskKind: "content_article", status: "queued", createdAt: NOW },
+    { id: "cth_video_focus", shortRef: "T-VIDEO", channelId: harness.channelId, conversationId: conversation.id, taskTitle: "视频创作", taskKind: "content_video", status: "queued", createdAt: NOW },
+  );
+
+  const unclear = harness.receive("这个先停一下").dispatched;
+  assert.match(unclear.reply, /不能确定.*这个/);
+  assert.equal(harness.state.channelIntentLearningSamples.at(-1).reason, "focus_missing");
+  assert.equal(harness.state.channelIntentLearningSamples.at(-1).status, "pending_review");
+
+  const selected = harness.receive("选择 T-VIDEO").dispatched;
+  assert.match(selected.reply, /已切换到 T-VIDEO/);
+  const resolved = harness.state.channelIntentLearningSamples.find((sample) => sample.reason === "focus_missing");
+  assert.equal(resolved.status, "resolved");
+  assert.deepEqual(resolved.expected, { intent: "task_control", controlKind: "select", taskKind: "content_video" });
+  assert.equal(harness.state.channelIntentMetrics.experience.replayReadySamples, 1);
+
+  const correction = harness.receive("不是文章，是视频").dispatched;
+  assert.match(correction.reply, /已切换到这个任务/);
+  const correctionSample = harness.state.channelIntentLearningSamples.find((sample) => sample.reason === "user_correction");
+  assert.equal(correctionSample.status, "resolved");
+  assert.equal(correctionSample.expected.taskKind, "content_video");
+  assert.equal(harness.state.channelIntentMetrics.experience.resolvedCorrections, 2);
+});
+
+test("困难表达样本不会把联系方式和凭据写进持久状态或审计事件", () => {
+  const harness = makeHarness({ classifyIntent: () => ({ intent: "ambiguous", confidence: 0.1 }) });
+  harness.receive("处理 user@example.com 13800138000 token=abcdef123456");
+  const serialized = JSON.stringify({ samples: harness.state.channelIntentLearningSamples, events: harness.events });
+  assert.doesNotMatch(serialized, /user@example\.com|13800138000|abcdef123456/);
+  assert.match(harness.state.channelIntentLearningSamples[0].redactedText, /\[邮箱\].*\[号码\].*\[敏感信息\]/);
 });
 
 test("classifier output is normalized and recorded without trusting its task reference", () => {
@@ -1510,11 +3652,16 @@ test("async intent adapters can confirm a task and structured actions are honore
       : { intent: "new_task", confidence: 0.95 },
   });
   harness.bindTaskProject("proj_a");
-  await harness.receive("请整理这批资料").dispatched;
+  await harness.receive("请检查发布状态").dispatched;
   await new Promise((resolve) => setTimeout(resolve, 10));
   const confirmed = await harness.receive("确认执行").dispatched;
   assert.equal(confirmed.status, "dispatched");
   assert.deepEqual(calls, ["filed"]);
+  const thread = harness.state.channelTaskThreads.at(-1);
+  assert.equal(thread.executionAttempt.outcome, "accepted");
+  assert.equal(thread.executionAttempt.count, 1);
+  assert.equal(thread.executionContract.snapshot.workItemId, "wi_21");
+  assert.match(thread.executionContract.digest, /^[a-f0-9]{64}$/);
 });
 
 test("custom intent adapters cannot turn ambiguous prose into execution controls", async () => {
@@ -1525,7 +3672,7 @@ test("custom intent adapters cannot turn ambiguous prose into execution controls
     classifyIntent: () => ({ intent: "confirm", confidence: 1 }),
   });
   harness.bindTaskProject("proj_a");
-  harness.receive("请整理这批资料");
+  harness.receive("请检查发布状态");
   await new Promise((resolve) => setTimeout(resolve, 10));
 
   const result = harness.receive("嗯嗯").dispatched;
@@ -1596,7 +3743,7 @@ test("a long-running channel task can be explicitly handed to a human", async ()
     createChannelTaskIssue: async () => ({ ok: true, number: 12, workItemId: "wi_12" }),
   });
   harness.bindTaskProject("proj_a");
-  harness.receive("请处理这批数据");
+  harness.receive("请检查这批任务的处理状态");
   await new Promise((resolve) => setTimeout(resolve, 10));
   const thread = harness.state.channelTaskThreads[0];
   await harness.receive("确认").dispatched;
@@ -1615,7 +3762,7 @@ test("timeout sweep first asks for attention, then moves stale work to human tak
     createChannelTaskIssue: async () => ({ ok: true, number: 13, workItemId: "wi_13" }),
   });
   harness.bindTaskProject("proj_a");
-  harness.receive("请处理超时任务");
+  harness.receive("请检查超时任务的处理状态");
   await new Promise((resolve) => setTimeout(resolve, 10));
   const thread = harness.state.channelTaskThreads[0];
   await harness.receive("确认").dispatched;
@@ -1738,6 +3885,55 @@ test("没有 Invocation 的澄清和失败会立即投影到微信线程", () =>
   assert.equal(thread.status, "failed");
   assert.match(thread.resultSummary, /execution contract unavailable/);
   assert.equal(notifications.at(-1).event, "failed");
+});
+
+test("an upstream runtime failure blocks only real descendants", () => {
+  const notifications = [];
+  const harness = makeHarness({ notifyTaskEvent: (notification) => { notifications.push(notification); return { ok: true }; } });
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const goalId = "goal_runtime_failure";
+  harness.state.workGoals.push({ id: goalId, conversationId: conversation.id, ownerTeamId: "team_local", title: "创作内容", status: "active", taskIds: ["wi_source", "wi_dependent", "wi_independent"] });
+  conversation.activeWorkGoalId = goalId;
+  const source = {
+    id: "cth_source_failure", channelId: harness.channelId, conversationId: conversation.id,
+    workGoalId: goalId, workItemId: "wi_source", taskTitle: "图片创作", taskKind: "content_image",
+    status: "running", autoRunId: "aur_source_failure", summary: "制作图片", createdAt: NOW,
+  };
+  const dependent = {
+    id: "cth_dependent_failure", channelId: harness.channelId, conversationId: conversation.id,
+    workGoalId: goalId, workItemId: "wi_dependent", taskTitle: "发布到小红书", taskKind: "content_publish",
+    status: "waiting_upstream", summary: "发布图片", dependencyTaskTitles: ["图片创作"], createdAt: NOW,
+  };
+  const independent = {
+    id: "cth_independent_failure", channelId: harness.channelId, conversationId: conversation.id,
+    workGoalId: goalId, workItemId: "wi_independent", taskTitle: "文章创作", taskKind: "content_article",
+    status: "queued", summary: "创作文章", createdAt: NOW,
+  };
+  harness.state.channelTaskThreads.push(source, dependent, independent);
+  harness.state.workItems.push(
+    { id: "wi_source", workGoalId: goalId, dependencyIds: [], channelOrigin: { channelId: harness.channelId, conversationId: conversation.id, threadId: source.id } },
+    { id: "wi_dependent", workGoalId: goalId, dependencyIds: ["wi_source"], channelOrigin: { channelId: harness.channelId, conversationId: conversation.id, threadId: dependent.id } },
+    { id: "wi_independent", workGoalId: goalId, dependencyIds: [], channelOrigin: { channelId: harness.channelId, conversationId: conversation.id, threadId: independent.id } },
+  );
+  const autoRun = {
+    id: "aur_source_failure", localIssueId: "wi_source", status: "failed", phase: "failed",
+    error: "image generation failed", updatedAt: NOW,
+  };
+  harness.state.autoRuns.push(autoRun);
+
+  harness.conversationService.syncTaskThreadFromAutoRun(autoRun);
+  assert.equal(source.status, "failed");
+  assert.equal(dependent.status, "needs_attention");
+  assert.equal(dependent.waitingFor, "upstream_unavailable");
+  assert.equal(independent.status, "queued");
+  assert.match(notifications.at(-1).content, /受影响的 1 个下游任务/);
+  assert.match(notifications.at(-1).content, /其他独立任务继续/);
+
+  harness.conversationService.recoverTaskThreads();
+  assert.equal(dependent.status, "needs_attention");
+  assert.equal(dependent.waitingFor, "upstream_unavailable");
+  assert.equal(independent.status, "queued");
 });
 
 test("自动状态通知入队失败后会释放去重标记并在下一次复核重试", () => {

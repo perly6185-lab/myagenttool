@@ -48,3 +48,4 @@ scratch_diff.txt
 
 # Claude Code local settings
 .claude/settings.local.json
+.runtime/

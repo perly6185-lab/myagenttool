@@ -191,7 +191,7 @@ export function summarizeAutoRuns(autoRuns = [], { sloTargets = null, routingThr
   const timeToPrSeconds = [];
   // Routing decisions (slice 5 will evaluate them against outcomes).
   const decisions = {
-    byPath: { develop: 0, design: 0, prototype: 0, clarify: 0 },
+    byPath: { develop: 0, office: 0, general: 0, design: 0, creative: 0, content: 0, prototype: 0, clarify: 0 },
     byDecidedBy: { agent: 0, heuristic: 0 },
     // How the decision was reached: heuristic (no decider), fast-path (lexical
     // signal skipped the decider), agent, or fallback (decider failed).

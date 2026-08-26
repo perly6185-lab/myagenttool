@@ -80,6 +80,105 @@ test("enabled mode admits one task, binds its reserved Run, and does not duplica
   assert.equal(events.some((event) => event.type === "work_item_auto_scheduler_started"), true);
 });
 
+test("enabled mode reconciles business records before execution admission", async () => {
+  const { state } = fixture("enabled");
+  Object.assign(state.workItems[0], {
+    localNumber: 1,
+    localRef: "LOCAL-1",
+    title: "Use current customer record",
+    body: "",
+    terminalId: "dev_local",
+    createdBy: "usr_a",
+  });
+  let beginCount = 0;
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    getWorkItem: ({ workItemId }) => ({ ok: true, body: { workItem: state.workItems.find((item) => item.id === workItemId) } }),
+    reconcileRecordBindings: async () => ({
+      status: 200,
+      body: {
+        executionBlocked: true,
+        blockingBindings: [{ bindingId: "binding_customer", state: "stale" }],
+      },
+    }),
+    beginExecution: () => {
+      beginCount += 1;
+      return { ok: true, body: { operation: { id: "weo_1" } } };
+    },
+  });
+  const result = await service.sweep();
+  assert.equal(result.starts[0].started, false);
+  assert.equal(result.starts[0].reason, "work_item_record_bindings_stale");
+  assert.equal(beginCount, 0);
+});
+
+test("enabled mode runs an explicit non-repository task through a direct invocation", async () => {
+  const { state, events } = fixture("enabled");
+  Object.assign(state.workItems[0], {
+    taskKind: "business_document",
+    localNumber: 1,
+    localRef: "LOCAL-1",
+    title: "整理客户方案",
+    body: "根据现有资料整理一份可审阅的客户方案",
+    terminalId: "dev_local",
+    createdBy: "usr_a",
+  });
+  let admittedKind = null;
+  let boundKind = null;
+  let directStarts = 0;
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    appendEvent: (event) => events.push(event),
+    getWorkItem: () => ({ ok: true, body: { workItem: state.workItems[0] } }),
+    beginExecution: ({ kind }) => {
+      admittedKind = kind;
+      return { ok: true, body: { operation: { id: "weo_direct" } } };
+    },
+    abortExecution: () => ({ ok: true }),
+    recordExecutionBinding: ({ kind, targetId }) => {
+      boundKind = kind;
+      state.workItems[0].executionBindings.push({ kind, targetId });
+      return { ok: true };
+    },
+    startDirectInvocation: async ({ item, agent }) => {
+      directStarts += 1;
+      assert.equal(item.taskKind, "business_document");
+      assert.equal(agent.id, "agt_codex_cli");
+      return { id: "inv_direct_1" };
+    },
+  });
+  const result = await service.sweep();
+  assert.equal(result.starts[0].started, true);
+  assert.equal(result.starts[0].executionKind, "application_invocation");
+  assert.equal(admittedKind, "application_invocation");
+  assert.equal(boundKind, "application_invocation");
+  assert.equal(directStarts, 1);
+  assert.equal(events.some((event) => event.type === "work_item_direct_scheduler_started"), true);
+});
+
+test("enabled mode does not start specialized media work without a declared capability", async () => {
+  const { state } = fixture("enabled");
+  Object.assign(state.workItems[0], {
+    taskKind: "content_video", localRef: "LOCAL-1", title: "制作视频",
+    body: "生成一个视频成品", terminalId: "dev_local", createdBy: "usr_a",
+  });
+  let starts = 0;
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    getWorkItem: () => ({ ok: true, body: { workItem: state.workItems[0] } }),
+    beginExecution: () => { throw new Error("must not admit unavailable media work"); },
+    startDirectInvocation: async () => { starts += 1; return { id: "unexpected" }; },
+  });
+  const result = await service.sweep();
+  assert.equal(result.starts[0].started, false);
+  assert.equal(result.starts[0].reason, "specialized_capability_unavailable:content_video");
+  assert.equal(result.starts[0].capabilityReadiness.requiredCapability, "视频生成能力");
+  assert.equal(starts, 0);
+});
+
 test("unchanged shadow decisions are logged once and off mode is inert", async () => {
   const { events, service } = fixture();
   await service.sweep();

@@ -41,6 +41,7 @@ import {
 } from "./task-view-types";
 import { WorktreeOptionsForm } from "./worktree-options-form";
 import { deriveWorkItemUserStatus, type WorkItemUserStatus } from "./work-item-user-status";
+import { WorkItemViewSwitch } from "./work-item-view-switch";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
 
@@ -236,6 +237,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
   const [attentionNextCursor, setAttentionNextCursor] = useState<string | null>(null);
   const [attentionMetrics, setAttentionMetrics] = useState<WorkItemAttentionMetrics | null>(null);
+  const staleRecordAttentionItems = attentionItems.filter((item) =>
+    item.kind === "record_binding_stale" && item.details.refreshable === true);
   const [externalFunnel, setExternalFunnel] = useState<{
     metrics: { total: number; notStarted: number; running: number; review: number; completed: number; stalled: number };
     stalls: { kind: "execution_failed" | "writeback_pending" | "imported_not_started" | "review_waiting"; workItemId: string; localRef: string; title: string; provider: string; issueNumber: number; since: string }[];
@@ -269,9 +272,13 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const storedSelectedLocalMode = useUiStore((state) => state.selectedWorkItemMode) ?? "summary";
   const persistSelectedLocalMode = useUiStore((state) => state.setSelectedWorkItemMode);
   const preferredLocalMode = useUiStore((state) => state.workItemDetailPreference) ?? "summary";
+  const composerDraftTask = useUiStore((state) => state.composerDraftTask);
   const setComposerDraftTask = useUiStore((state) => state.setComposerDraftTask);
   const [selectedLocalId, setSelectedLocalIdState] = useState<string | null>(storedSelectedLocalId ?? null);
   const [selectedLocalMode, setSelectedLocalModeState] = useState(storedSelectedLocalId ? storedSelectedLocalMode : "summary");
+  useEffect(() => {
+    if (localOnly && composerDraftTask?.trim()) setCreateLocalOpen(true);
+  }, [composerDraftTask, localOnly]);
   const setSelectedLocalId = (id: string | null) => {
     setSelectedLocalIdState(id);
     persistSelectedLocalId?.(id);
@@ -311,6 +318,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const [localLoading, setLocalLoading] = useState(true);
   const [localLoadError, setLocalLoadError] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [liveSyncError, setLiveSyncError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   useEffect(() => {
@@ -326,7 +334,10 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
     });
   };
   const updateSelectedAttention = (action: "claim" | "resolve" | "reopen") => {
-    const ids = [...selectedAttentionIds];
+    const ids = attentionItems
+      .filter((item) => selectedAttentionIds.has(item.id))
+      .filter((item) => action !== "resolve" || item.kind !== "record_binding_stale")
+      .map((item) => item.id);
     if (!ids.length) return;
     void execute(() => api.updateWorkItemAttention(
       ids,
@@ -339,6 +350,32 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
         setNotice(`${ids.length} · ${action === "claim" ? t("approvals.handle") : action === "reopen" ? t("taskLocal.reopen") : t("tasks.localStatus.done")}`);
         setNonce((value) => value + 1);
       }
+    });
+  };
+  const refreshRecordBindingAttention = (attention: WorkItemAttention[]) => {
+    const refreshable = attention.filter((item) => item.kind === "record_binding_stale"
+      && item.workItemId
+      && item.details.refreshable === true);
+    const items = refreshable.map((item) => ({
+      id: item.workItemId!,
+      expectedRevision: Number(item.details.workItemRevision),
+      bindingIds: Array.isArray(item.details.bindingIds)
+        ? item.details.bindingIds.filter((bindingId): bindingId is string => typeof bindingId === "string")
+        : [],
+    })).filter((item) => Number.isInteger(item.expectedRevision) && item.bindingIds.length > 0);
+    if (!items.length) return;
+    setActionNotice(null);
+    void execute(() => api.refreshWorkItemRecordBindingsBatch(items)).then((ok) => {
+      if (!ok) return;
+      const refreshedAttentionIds = new Set(refreshable.map((item) => item.id));
+      setSelectedAttentionIds((current) => new Set([...current].filter((id) => !refreshedAttentionIds.has(id))));
+      setActionNotice(i18n.language.startsWith("zh")
+        ? `已刷新并确认 ${items.length} 个任务的业务资料。`
+        : `Refreshed and confirmed business materials for ${items.length} task(s).`);
+      setNonce((value) => value + 1);
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", {
+        detail: { source: "work-item-record-binding-batch-refresh", count: items.length },
+      }));
     });
   };
   const loadMoreLocal = () => {
@@ -718,7 +755,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
           </details>
         ) : null}
 
-        {tab !== "local" && notice ? <p className="text-xs text-muted-foreground">{notice}</p> : null}
+        {notice ? <p className="text-xs text-muted-foreground">{notice}</p> : null}
+        {actionNotice ? <p className="text-xs text-muted-foreground" role="status">{actionNotice}</p> : null}
         {liveSyncError ? <p className="text-xs text-destructive">{liveSyncError}</p> : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
@@ -774,6 +812,47 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                 onOpen={setSelectedLocalId}
               />
             </Suspense>
+            {localOnly && staleRecordAttentionItems.length ? (
+              <section
+                className="space-y-3 rounded-lg border border-warning/40 bg-warning/5 p-3"
+                aria-label={i18n.language.startsWith("zh") ? "过期业务资料批量处理" : "Stale business material batch actions"}
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold">
+                      {i18n.language.startsWith("zh") ? "业务资料等待确认" : "Business materials need confirmation"}
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      {i18n.language.startsWith("zh")
+                        ? `${staleRecordAttentionItems.length} 个任务的资料已变化，继续前需要刷新确认。`
+                        : `${staleRecordAttentionItems.length} task(s) have changed materials. Refresh them before continuing.`}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={pending}
+                    onClick={() => refreshRecordBindingAttention(staleRecordAttentionItems)}
+                  >
+                    <RefreshCw className="mr-1 size-4" />
+                    {i18n.language.startsWith("zh") ? "全部刷新并确认" : "Refresh and confirm all"}
+                  </Button>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {staleRecordAttentionItems.map((attention) => (
+                    <button
+                      key={attention.id}
+                      type="button"
+                      className="rounded border border-border bg-background p-2 text-left text-sm hover:border-primary/40"
+                      onClick={() => attention.workItemId && setSelectedLocalId(attention.workItemId)}
+                    >
+                      <span className="block truncate font-medium">{attention.title}</span>
+                      <span className="text-xs text-muted-foreground">{attention.localRef ?? "—"}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
             {!localOnly ? <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <h3 className="text-sm font-semibold">{t("approvals.pending", { count: attentionItems.length })}</h3>
@@ -788,6 +867,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                     </label>
                     <Select value={attentionKind} onChange={(event) => setAttentionKind(event.target.value)} className="h-7 w-full text-xs">
                       <option value="">{t("evidence.show")}</option>
+                      <option value="record_binding_stale">{i18n.language.startsWith("zh") ? "业务资料已过期" : "Business material is stale"}</option>
                       <option value="github_conflict">{t("taskLocal.github.conflict")}</option>
                       <option value="github_deleted">{t("workItemGithub.deleted")}</option>
                       <option value="execution_approval">{t("approvals.kind.invocation_approval")}</option>
@@ -815,11 +895,12 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                   </div>
                 </div>
                 {attentionMetrics ? (
-                  <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
                     <div className="rounded bg-background p-2"><strong>{attentionMetrics.backlog}</strong> {t("planningPortfolio.attention")}</div>
                     <div className="rounded bg-background p-2"><strong>{attentionMetrics.breached}</strong> {t("planningSchedule.overdue")}</div>
                     <div className="rounded bg-background p-2"><strong>{attentionMetrics.claimed}</strong> {t("approvals.handling")}</div>
                     <div className="rounded bg-background p-2"><strong>{attentionMetrics.pendingApprovals}</strong> {t("approvals.kind.invocation_approval")}</div>
+                    <div className="rounded bg-background p-2"><strong>{attentionMetrics.staleRecords ?? 0}</strong> {i18n.language.startsWith("zh") ? "资料待确认" : "stale materials"}</div>
                   </div>
                 ) : null}
                 {selectedAttentionIds.size ? (
@@ -828,9 +909,18 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                     <button type="button" className="text-primary hover:underline" onClick={() => updateSelectedAttention("claim")}>
                       {t("approvals.handle")}
                     </button>
-                    <button type="button" className="text-primary hover:underline" onClick={() => updateSelectedAttention("resolve")}>
-                      {t("tasks.localStatus.done")}
-                    </button>
+                    {attentionItems.some((item) => selectedAttentionIds.has(item.id)
+                      && item.kind === "record_binding_stale" && item.details.refreshable === true) ? (
+                        <button type="button" className="text-primary hover:underline"
+                          onClick={() => refreshRecordBindingAttention(attentionItems.filter((item) => selectedAttentionIds.has(item.id)))}>
+                          {i18n.language.startsWith("zh") ? "批量刷新并确认" : "Refresh and confirm"}
+                        </button>
+                      ) : null}
+                    {attentionItems.some((item) => selectedAttentionIds.has(item.id) && item.kind !== "record_binding_stale") ? (
+                      <button type="button" className="text-primary hover:underline" onClick={() => updateSelectedAttention("resolve")}>
+                        {t("tasks.localStatus.done")}
+                      </button>
+                    ) : null}
                     {showResolvedAttention ? (
                       <button type="button" className="text-primary hover:underline" onClick={() => updateSelectedAttention("reopen")}>
                         {t("taskLocal.reopen")}
@@ -850,7 +940,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                           return next;
                         })} />
                       <Badge tone={attention.severity === "high" ? "danger" : attention.severity === "medium" ? "warning" : "neutral"}>
-                        {attention.kind === "github_conflict" ? t("taskLocal.github.conflict")
+                        {attention.kind === "record_binding_stale" ? i18n.language.startsWith("zh") ? "业务资料已过期" : "Business material is stale"
+                          : attention.kind === "github_conflict" ? t("taskLocal.github.conflict")
                           : attention.kind === "github_deleted" ? t("workItemGithub.deleted")
                           : attention.kind === "execution_approval" ? t("approvals.kind.invocation_approval")
                           : attention.kind === "execution_input" ? i18n.language.startsWith("zh") ? "AI 等待回答" : "AI needs an answer"
@@ -868,6 +959,12 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                             ? ` · ${(attention.details.context as { affectedCount: number }).affectedCount}`
                             : ""}
                         </span>
+                      ) : null}
+                      {attention.kind === "record_binding_stale" && attention.details.refreshable === true ? (
+                        <button type="button" className="text-primary hover:underline"
+                          onClick={() => refreshRecordBindingAttention([attention])}>
+                          {i18n.language.startsWith("zh") ? "刷新并确认" : "Refresh and confirm"}
+                        </button>
                       ) : null}
                       <span className={attention.slaStatus === "breached" ? "text-destructive" : "text-muted-foreground"}>
                         {new Date(attention.dueAt).toLocaleString()}
@@ -893,7 +990,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                       {attention.handling?.expiresAt ? (
                         <span className="text-muted-foreground">{new Date(attention.handling.expiresAt).toLocaleTimeString()}</span>
                       ) : null}
-                      {attention.resolution ? (
+                      {attention.kind === "record_binding_stale" ? null : attention.resolution ? (
                         <button type="button" className="text-primary hover:underline"
                           onClick={() => updateAttention(attention.id, "reopen")}>
                           {t("taskLocal.reopen")}
@@ -1090,6 +1187,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
             <HomeTaskComposer
               inline
               showTrigger={false}
+              draftGoal={composerDraftTask}
+              onDraftGoalApplied={() => setComposerDraftTask(null)}
               projectId={state?.currentProjectId ?? projects[0]?.id ?? null}
               projectName={projects.find((item) => item.id === (state?.currentProjectId ?? projects[0]?.id))?.name}
               projects={projects.map((item) => ({ id: item.id, name: item.name }))}
@@ -1107,7 +1206,10 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                 setTab("local");
                 setSelectedLocalId(workItemId);
               }}
-              onOpenSetup={(section) => navigate(section)}
+              onOpenSetup={(section, draft) => {
+                if (draft?.trim()) setComposerDraftTask(draft);
+                navigate(section);
+              }}
               onOpenProjects={() => {
                 setCreateLocalOpen(false);
                 navigate("projects");
@@ -1185,6 +1287,14 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
       }} title={i18n.language.startsWith("zh") ? "任务详情" : t("taskLocal.details")} size={selectedLocalMode === "expert" ? "full" : "2xl"}>
         {selectedLocalId ? (
           <div className="space-y-4">
+            <div className="flex justify-end">
+              <WorkItemViewSwitch
+                mode={selectedLocalMode}
+                language={i18n.language.startsWith("zh") ? "zh" : "en"}
+                disabled={selectedLocalDirty}
+                onChange={setSelectedLocalMode}
+              />
+            </div>
             {importHandoff?.workItemId === selectedLocalId ? (
               <div className="flex flex-col gap-2 rounded-lg border border-success/35 bg-success/[0.06] p-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="status">
                 <div>
@@ -1248,9 +1358,6 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
               </>
             ) : (
               <>
-                <Button size="sm" variant="ghost" disabled={selectedLocalDirty} onClick={() => setSelectedLocalMode("summary")}>
-                  ← {i18n.language.startsWith("zh") ? "返回任务摘要" : "Back to task summary"}
-                </Button>
                 <LocalWorkItemDetail
                   workItemId={selectedLocalId}
                   projects={projects}

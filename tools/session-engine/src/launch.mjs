@@ -25,8 +25,25 @@ const UA =
  */
 export function launchOptions(config) {
   const opts = { headless: config.headless, args: ["--disable-blink-features=AutomationControlled"] };
-  if (config.channel) opts.channel = config.channel;
+  if (config.channel && config.channel !== "auto") opts.channel = config.channel;
   return opts;
+}
+
+export function browserChannelCandidates(channel, platform = process.platform) {
+  const requested = String(channel ?? "auto").trim().toLowerCase();
+  if (requested && requested !== "auto") return [requested];
+  return platform === "win32" ? ["msedge", "chrome"] : ["chrome", "msedge"];
+}
+
+export function classifyBrowserLaunchError(error) {
+  const message = String(error?.message ?? error);
+  if (/processsingleton|profile.*(?:in use|locked)|user data directory.*(?:in use|already)|另一个.*(?:浏览器|进程)/i.test(message)) {
+    return Object.assign(new Error("session_profile_in_use"), { code: "session_profile_in_use", cause: error });
+  }
+  if (/executable doesn'?t exist|distribution .* is not found|browser.*(?:not found|not installed)|could not find.*(?:chrome|edge)/i.test(message)) {
+    return Object.assign(new Error("session_browser_unavailable"), { code: "session_browser_unavailable", cause: error });
+  }
+  return error;
 }
 
 /**
@@ -45,16 +62,28 @@ export function contextOptions() {
  * @returns {Promise<{ page: import("playwright").Page, close: () => Promise<void> }>}
  */
 export async function openContext(config) {
-  if (config.profileDir) {
-    const context = await chromium.launchPersistentContext(config.profileDir, {
-      ...launchOptions(config),
-      ...contextOptions(),
-    });
-    const page = context.pages()[0] ?? (await context.newPage());
-    return { page, close: () => context.close().catch(() => {}) };
+  const candidates = browserChannelCandidates(config.channel);
+  let missingBrowserError = null;
+  for (const channel of candidates) {
+    const candidateConfig = { ...config, channel };
+    try {
+      if (config.profileDir) {
+        const context = await chromium.launchPersistentContext(config.profileDir, {
+          ...launchOptions(candidateConfig),
+          ...contextOptions(),
+        });
+        const page = context.pages()[0] ?? (await context.newPage());
+        return { page, close: () => context.close().catch(() => {}), channel };
+      }
+      const browser = await chromium.launch(launchOptions(candidateConfig));
+      const context = await browser.newContext(contextOptions());
+      const page = await context.newPage();
+      return { page, close: () => browser.close().catch(() => {}), channel };
+    } catch (error) {
+      const classified = classifyBrowserLaunchError(error);
+      if (classified?.code !== "session_browser_unavailable") throw classified;
+      missingBrowserError = classified;
+    }
   }
-  const browser = await chromium.launch(launchOptions(config));
-  const context = await browser.newContext(contextOptions());
-  const page = await context.newPage();
-  return { page, close: () => browser.close().catch(() => {}) };
+  throw missingBrowserError ?? Object.assign(new Error("session_browser_unavailable"), { code: "session_browser_unavailable" });
 }

@@ -166,7 +166,7 @@ export function buildPublicState({
     return owner !== undefined && owner === teamId;
   };
   const eventVisible = (event) => {
-    if (!String(event?.type ?? "").startsWith("ssh.target.")) return true;
+    if (!String(event?.type ?? "").startsWith("ssh.")) return true;
     return sshTargetIdVisible(event?.data?.targetId);
   };
   const projects = (state.projects ?? []).filter((p) => projectVisible(p.id) && p.hiddenFromNavigation !== true);
@@ -287,7 +287,7 @@ export function buildPublicState({
     (rows ?? []).filter((row) => teamId == null || visibleChannelIds.has(row?.channelId));
   const channelIdentities = byChannel(state.channelIdentities);
   const channelEvents = byChannel(state.channelEvents);
-  const channelConversations = byChannel(state.channelConversations);
+  const channelConversations = byChannel(state.channelConversations).map(publicChannelConversation);
   const channelDeliveries = byChannel(state.channelDeliveries);
   const channelNotificationPolicies = byChannel(state.channelNotificationPolicies);
   const channelNotificationBatches = byChannel(state.channelNotificationBatches);
@@ -344,6 +344,9 @@ export function buildPublicState({
     autoRuns,
     invocations: visibleInvocations,
     deliveries: channelDeliveries,
+    workItems: (state.workItems ?? []).filter(
+      (item) => teamId == null || (item.ownerTeamId ?? LOCAL_TEAM_ID) === teamId,
+    ),
   });
   // #1143 issue claims carry a projectId; project-team scoping is the boundary.
   const issueClaims = byProject(state.issueClaims);
@@ -825,6 +828,22 @@ export function buildPublicState({
       readinessForChannel: channelReadiness,
       runtimeAccountForChannel: channelRuntimeAccount,
     }),
+  };
+}
+
+function publicChannelConversation(conversation) {
+  if (!conversation?.sharedContentContext) return conversation;
+  const {
+    lastAnalysis: _lastAnalysis,
+    items = [],
+    ...sharedContentContext
+  } = conversation.sharedContentContext;
+  return {
+    ...conversation,
+    sharedContentContext: {
+      ...sharedContentContext,
+      items: items.map(({ excerpt: _excerpt, archiveFailureReason: _archiveFailureReason, ...item }) => item),
+    },
   };
 }
 

@@ -96,7 +96,7 @@ export function pendingDecisions({
       out.push({ id: `decompose:${r.id}`, kind: "decomposition", title: "Decomposition plan awaiting approval", subtitle: autoRunContext(r), ref: { autoRunId: r.id }, ...common });
     } else if (r?.status === "report_posted" && path === "design" && r?.designApproval == null) {
       out.push({ id: `design:${r.id}`, kind: "design", title: "Design report awaiting approval", subtitle: autoRunContext(r), ref: { autoRunId: r.id }, ...common });
-    } else if (r?.status === "needs_input" && path === "clarify" && !r?.clarifyAnswer) {
+    } else if (r?.status === "needs_input" && !r?.clarifyAnswer) {
       // clarifyAnswer set → the human already answered (status stays needs_input).
       out.push({ id: `clarify:${r.id}`, kind: "clarify", title: "Agent needs an answer", subtitle: autoRunContext(r), ref: { autoRunId: r.id }, ...common });
     } else if (r?.status === "pr_open" && r?.prNumber && r?.prState !== "MERGED" && r?.prState !== "CLOSED") {

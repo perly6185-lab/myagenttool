@@ -65,3 +65,19 @@ test("unsupported or malformed files produce a bounded non-executing result", as
   assert.equal(result.status, "unsupported");
   assert.equal(fileDiscoveryReply([result]), null);
 });
+
+test("legacy XLS is refused explicitly with a safe recovery instruction", async () => {
+  const projectPath = await mkdtemp(join(tmpdir(), "myagenttool-file-discovery-"));
+  const bytes = Buffer.from("D0CF11E0A1B11AE1", "hex");
+  await writeFile(join(projectPath, "legacy.xls"), bytes);
+  const hash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const result = await discoverChannelFileAsset({
+    projectPath,
+    asset: { id: "asset_xls", projectId: "prj_local", path: "legacy.xls", originalName: "历史台账.xls", hash },
+  });
+
+  assert.equal(result.status, "unsupported");
+  assert.equal(result.reason, "file_discovery_legacy_xls_unsupported");
+  assert.equal(result.format, "xls");
+  assert.match(fileDiscoveryReply([result]), /另存为 \.xlsx 或 CSV/);
+});

@@ -12,6 +12,8 @@ import { isSpawnedChildBody, decompositionChildBody, extractProjectFieldsBlock }
 import { judgmentEvidence } from "./auto-run-judge.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { resolveAutoRunVerifyCommandFor } from "./worktree-verify.mjs";
+import { propagateCompletedWorkGoalTask } from "./work-goal-artifacts.mjs";
+import { verifyWorkItemResult } from "./work-item-result-verification.mjs";
 import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } from "./auto-run-design.mjs";
 import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
 import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
@@ -37,7 +39,7 @@ import {
 // O2: decision paths whose runs may be auto-approved by operator policy — the
 // non-code paths (a design brief / a clarify question / a throwaway spike),
 // never `develop` (which edits product code and opens a PR).
-const AUTO_APPROVABLE_PATHS = new Set(["design", "clarify", "prototype", "decompose"]);
+const AUTO_APPROVABLE_PATHS = new Set(["office", "general", "design", "creative", "content", "clarify", "prototype", "decompose"]);
 const DELIVERY_REVIEW_MAX_ATTEMPTS = 3;
 const DELIVERY_REVIEW_RETRY_DELAY_MS = 5 * 60_000;
 
@@ -228,10 +230,15 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
         }));
       }
     }
+    const resultVerification = item.resultVerificationContract?.enforced === true
+      ? verifyWorkItemResult(item)
+      : null;
+    if (resultVerification) item.resultVerification = resultVerification;
     const completionReady = !(item.acceptanceCriteria ?? []).length
       || ((item.acceptanceCriteria ?? []).every((criterion) =>
         (item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed"))
-        && (item.verificationRecords ?? []).some((record) => record.status === "passed"));
+        && (item.verificationRecords ?? []).some((record) => record.status === "passed"))
+      && (!resultVerification || resultVerification.status === "passed");
     const effectiveTargetStatus = targetStatus === "done" && !completionReady ? "review" : targetStatus;
     const targetWaitingOn = ["needs_input", "awaiting_approval"].includes(status)
       ? "me"
@@ -251,6 +258,9 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
           action: "verification_recorded", actorId: "usr_autorun", createdAt: item.updatedAt,
           details: { autoRunId: autoRun.id, verificationId: item.verificationRecords[0].id },
         });
+      }
+      if (effectiveTargetStatus === "done") {
+        propagateCompletedWorkGoalTask({ state, source: item, now });
       }
       continue;
     }
@@ -276,6 +286,9 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
       },
     });
     changed.push(item);
+    if (effectiveTargetStatus === "done") {
+      propagateCompletedWorkGoalTask({ state, source: item, now });
+    }
   }
   return changed;
 }
@@ -417,6 +430,50 @@ export function createAutoRunService({
     } catch {
       return null;
     }
+  }
+
+  function extractRunInputRequest(invocation) {
+    const result = invocation?.result;
+    const summary = extractRunSummary(invocation) ?? "";
+    const structured = [
+      result?.needsInput,
+      result?.inputRequest,
+      result?.output?.needsInput,
+      result?.output?.inputRequest,
+    ].find((value) => value === true || (value && typeof value === "object"));
+    const statusRequestsInput = [result?.status, result?.output?.status]
+      .some((value) => ["needs_input", "waiting_for_input"].includes(String(value ?? "").toLowerCase()));
+    let questions = [];
+    if (structured && typeof structured === "object") {
+      questions = [structured.questions, structured.requiredFields, structured.missing]
+        .flatMap((value) => Array.isArray(value) ? value : value ? [value] : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean)
+        .slice(0, 10);
+    }
+    let report = summary;
+    const marker = summary.match(/(?:^|\n)NeedsInput:\s*(\{[^\n]*\})\s*$/i);
+    if (marker) {
+      try {
+        const parsed = JSON.parse(marker[1]);
+        questions = [...questions, ...(Array.isArray(parsed?.questions) ? parsed.questions : [])]
+          .map((value) => String(value).trim())
+          .filter(Boolean)
+          .slice(0, 10);
+      } catch {
+        // A malformed marker still falls through to the conservative text
+        // detector; it is never treated as proof that the task completed.
+      }
+      report = summary.replace(marker[0], "").trim();
+    }
+    const normalized = summary.replace(/\s+/g, " ").trim();
+    const textRequestsInput = Boolean(normalized)
+      && /(?:请|需要你|还需要|请先)(?:提供|补充|上传|发送|说明|确认)|无法.{0,40}(?:缺少|不明确|未提供)|cannot.{0,60}without|please (?:provide|upload|send|specify|confirm)|need(?:s|ed)? .{0,50}(?:input|material|file|details|information|path|confirmation) before/i.test(normalized);
+    return {
+      requested: Boolean(structured || statusRequestsInput || marker || textRequestsInput),
+      questions: [...new Set(questions)],
+      report: report || summary || null,
+    };
   }
 
   // Governed child-issue spawning (slice 4): a design/prototype deliverable
@@ -1121,6 +1178,7 @@ export function createAutoRunService({
           path: decision.path,
           decidedBy: decision.decidedBy,
           confidence: decision.confidence,
+          workKind: decision.workKind ?? null,
           rationale: decision.rationale,
         },
       });
@@ -1705,7 +1763,7 @@ export function createAutoRunService({
         : pendingAutoRun?.operationIntent ?? null,
       phase: decision.path === "clarify"
         ? "understanding"
-        : decision.path === "develop"
+        : ["develop", "office", "general", "creative", "content"].includes(decision.path)
           ? "implementing"
           : "planning",
       executionBudget: {
@@ -2381,6 +2439,26 @@ export function createAutoRunService({
         // issues, not a diff. Read the agent's decomposition/PLAN.json, build +
         // validate the governed tree, and park at plan_proposed for a human to
         // approve (Slice 3 does the fan-out). No commit, no verify, no PR.
+        const inputRequest = extractRunInputRequest(invocation);
+        if (inputRequest.requested && autoRun.decision?.path !== "clarify") {
+          runTx(() => {
+            autoRun.clarifyAnswer = null;
+            autoRun.phase = "waiting_for_input";
+            autoRun.decision = {
+              ...(autoRun.decision ?? {}),
+              clarifyingQuestions: inputRequest.questions.length
+                ? inputRequest.questions
+                : autoRun.decision?.clarifyingQuestions ?? [],
+            };
+            setAutoRunStatus(autoRun, "needs_input", {
+              report: inputRequest.report,
+              error: null,
+            });
+          });
+          maybeWriteIssueStatus(autoRun, worktree, "review");
+          return autoRun;
+        }
+
         if (autoRun.decision?.path === "decompose") {
           const proposal = buildDecompositionProposal(autoRun, worktree, invocation);
           maybePostIssueReport(autoRun, worktree, proposal.comment);
@@ -2430,10 +2508,11 @@ export function createAutoRunService({
               ? "inspect"
               : autoRun.decision?.path
               ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
-            if (path === "design" || path === "prototype" || path === "evaluate" || path === "summarize" || path === "inspect") {
+            const runSummary = extractRunSummary(invocation);
+            if (path === "general" || path === "design" || path === "prototype" || path === "evaluate" || path === "summarize" || path === "inspect") {
               const reportFile = path === "summarize" ? "summary/REPORT.md" : (path === "evaluate" ? "evaluate/REPORT.md" : null);
               const fileReport = reportFile && typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, reportFile) : null;
-              const summary = (fileReport && fileReport.trim()) || extractRunSummary(invocation) || "Investigation complete — no code change was needed.";
+              const summary = (fileReport && fileReport.trim()) || runSummary || "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
               if (autoRunReactionSuperseded(autoRun, invocation, "child issue creation")) return null;
@@ -2530,6 +2609,45 @@ export function createAutoRunService({
               ...(spawn?.error ? { spawnError: spawn.error } : {}),
             }));
             maybeWriteIssueStatus(autoRun, worktree, "review");
+            return autoRun;
+          }
+
+          // Office, creative, and content runs produce user files, not product
+          // code. A local task delivers the committed governed artifacts
+          // directly; running repository tests or opening a PR would apply the
+          // wrong acceptance model and previously produced confusing failures.
+          if (commitResult.hasCommits
+            && autoRun.link?.type === "local_issue"
+            && ["office", "general", "creative", "content"].includes(decidedPath)) {
+            let changed = [];
+            if (typeof listWorktreeChangedFiles === "function") {
+              try { changed = (await listWorktreeChangedFiles(autoRun.worktreeId)) ?? []; } catch { changed = []; }
+            }
+            if (autoRunReactionSuperseded(autoRun, invocation, "artifact inspection")) return null;
+            const expectedPrefix = `deliverables/${decidedPath}/`;
+            const deliverables = changed.map(String).filter((path) => path.startsWith(expectedPrefix));
+            if (!deliverables.length) {
+              runTx(() => setAutoRunStatus(autoRun, "blocked", {
+                error: `The ${decidedPath} task did not create a verified deliverable under ${expectedPrefix}.`,
+              }));
+              return autoRun;
+            }
+            const summary = extractRunSummary(invocation) || `Task completed — ${deliverables.length} deliverable(s) created.`;
+            runTx(() => setAutoRunStatus(autoRun, "done", {
+              error: null,
+              localDelivery: {
+                worktreeId: autoRun.worktreeId,
+                branchName: worktree.branchName ?? worktree.branch ?? autoRun.branchName ?? null,
+              },
+              deliveryReport: {
+                summary,
+                verification: { passed: true, verified: true, summary: "Deliverable files were created in the governed output directory." },
+                changedFiles: deliverables.slice(0, 100),
+                changedFilesBaseCommit: worktree.baseCommit ?? null,
+                changedFilesHydratedAt: now(),
+                completedAt: invocation.completedAt ?? now(),
+              },
+            }));
             return autoRun;
           }
         }
@@ -3969,7 +4087,7 @@ export function createAutoRunService({
     if (!autoRun) throw new Error("Auto-run not found.");
     // #1151: a repeated answer must not dispatch another continuation or
     // overwrite the recorded customer decision. First answer wins.
-    if (autoRun.clarifyAnswer) {
+    if (autoRun.clarifyAnswer && autoRun.status !== "needs_input") {
       return {
         ok: true,
         alreadyDecided: { decidedBy: autoRun.clarifyAnswer.by ?? null, decidedAt: autoRun.clarifyAnswer.at ?? null, status: "answered" },
@@ -3978,7 +4096,6 @@ export function createAutoRunService({
         selectedAction: autoRun.clarifyAnswer.selectedAction ?? null,
       };
     }
-    if ((autoRun.decision?.path ?? null) !== "clarify") throw new Error("Only a clarify run's questions can be answered.");
     if (autoRun.status !== "needs_input") throw new Error("Only a run awaiting input can be answered.");
     const text = String(answers ?? "").trim();
     const validInputAssets = (Array.isArray(inputAssets) ? inputAssets : [])
@@ -4062,6 +4179,27 @@ export function createAutoRunService({
         || (worktree && !localWorkItem.executionContractConfirmedAt)) {
         throw new Error("The work item execution contract must be prepared before the clarification can resume.");
       }
+      const knownAssetIds = new Set((localWorkItem.inputAssets ?? []).map((asset) => asset?.id).filter(Boolean));
+      const addedAssets = validInputAssets.filter((asset) => !knownAssetIds.has(asset.id));
+      if (addedAssets.length) {
+        runTx(() => {
+          localWorkItem.inputAssets = [...(localWorkItem.inputAssets ?? []), ...addedAssets].slice(0, 100);
+          localWorkItem.materialChangesPending = true;
+          localWorkItem.revision = (Number(localWorkItem.revision) || 0) + 1;
+          localWorkItem.updatedAt = now();
+          localWorkItem.lastModifiedBy = by;
+          (state.workItemActivities ??= []).unshift({
+            id: nextId("wia"),
+            workItemId: localWorkItem.id,
+            ownerTeamId: localWorkItem.ownerTeamId,
+            projectId: localWorkItem.projectId,
+            action: "clarification_materials_added",
+            actorId: by,
+            createdAt: now(),
+            details: { autoRunId: autoRun.id, assetIds: addedAssets.map((asset) => asset.id) },
+          });
+        });
+      }
     }
     const plan = autoRun.executionPlan ?? null;
     if (!worktree && (!plan || !(plan.acceptanceCriteria ?? []).length || !(plan.verificationSop ?? []).length)) {
@@ -4086,6 +4224,10 @@ export function createAutoRunService({
         // title-only fast path bypass it.
         fastPath: false,
         epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
+        projectContext: {
+          channelOrigin: Boolean(autoRun.channelOrigin),
+          inputAssets: localWorkItem?.inputAssets ?? validInputAssets,
+        },
       });
       if (autoRun.status !== "needs_input" || autoRun.clarificationResume?.token !== resumeToken) {
         return { ok: true, resumed: false, reason: "clarification_resume_cancelled", autoRun };
@@ -4226,8 +4368,9 @@ export function createAutoRunService({
       runTx(() => {
         autoRun.clarificationResume = null;
         autoRun.invocationId = invocation.id;
-        autoRun.phase = nextPath === "develop" ? "implementing" : "planning";
-        autoRun.executionStage = nextPath === "develop" ? "execution" : "analysis";
+        const artifactExecution = ["develop", "office", "general", "creative", "content"].includes(nextPath);
+        autoRun.phase = artifactExecution ? "implementing" : "planning";
+        autoRun.executionStage = artifactExecution ? "execution" : "analysis";
         setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null });
         appendEvent({
           invocationId: invocation.id,
@@ -4480,7 +4623,7 @@ export function createAutoRunService({
       error.currentRevision = currentRevision;
       throw error;
     }
-    if (!["develop", "design", "prototype", "clarify", "decompose"].includes(actualPath)) {
+    if (!["develop", "office", "general", "design", "creative", "content", "prototype", "clarify", "decompose"].includes(actualPath)) {
       throw new Error("A valid actual routing path is required.");
     }
     const note = String(reason ?? "").trim();

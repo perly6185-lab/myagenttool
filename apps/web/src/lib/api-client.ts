@@ -28,6 +28,7 @@ import type {
   ToolInvocationRequest,
   ToolInvocationResponse,
 } from "@/lib/console-state";
+import type { BusinessLedgerRecordRef, LedgerPostingPlan, TaskRecordBinding, TaskTemplateContractV2 } from "@myagenttool/protocol/task-resources";
 import {
   ApiError,
   apiBase,
@@ -2069,6 +2070,27 @@ export const api = {
   /** Mint a single-use, action-scoped approval grant — the real token behind approvalToken (APPROVAL_GRANTS.md). */
   issueApprovalGrant: (action: string, targetId: string) =>
     request<{ grantId: string; token: string; expiresAt: string }>("POST", "/api/approvals/grants", { action, targetId }),
+  listArticleExtractorPlugins: () =>
+    request<{ plugins: Array<{ id: string; pluginId: string; name: string; enabled: boolean; activeVersion: string; hosts: string[]; versions: Array<{ version: string; checksum: string; installedAt: string; installedBy: string }>; createdAt: string; updatedAt: string }> }>(
+      "GET",
+      "/api/article-extractor-plugins",
+    ),
+  planArticleExtractorPluginInstall: (manifest: Record<string, unknown>) =>
+    request<{ manifest: Record<string, unknown>; checksum: string; approval: { action: string; targetId: string } }>(
+      "POST",
+      "/api/article-extractor-plugins/install-plan",
+      { manifest },
+    ),
+  installArticleExtractorPlugin: (manifest: Record<string, unknown>, approvalToken: string) =>
+    request<{ plugin: Record<string, unknown> }>("POST", "/api/article-extractor-plugins", { manifest, approvalToken }),
+  disableArticleExtractorPlugin: (pluginId: string, approvalToken: string) =>
+    request<{ plugin: Record<string, unknown> }>("POST", `/api/article-extractor-plugins/${encodeURIComponent(pluginId)}/disable`, { approvalToken }),
+  activateArticleExtractorPluginVersion: (pluginId: string, version: string, approvalToken: string) =>
+    request<{ plugin: Record<string, unknown> }>(
+      "POST",
+      `/api/article-extractor-plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/activate`,
+      { approvalToken },
+    ),
   /** Governed rollback of an applied Claude patch authorization (#914): requires a
    * fresh single-use grant for (rollback_patch, authorizationId). */
   rollbackClaudeApply: (authorizationId: string, approvalToken: string) =>
@@ -2292,16 +2314,18 @@ export const api = {
   },
   projectPdfRange: (id: string, path: string, start: number, end: number, worktreeId?: string) =>
     requestByteRange(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`, start, end),
-  cadDocumentInfo: (id: string, path: string, worktreeId?: string) =>
-    request<{ path: string; size: number; version: string; units: number; extents: { min: number[]; max: number[] } | null; layouts: string[]; layers: string[]; entityCounts: Record<string, number>; texts: Array<{ text: string; type: string; layer: string }>; warnings: string[]; audit: { errors: number; fixes: number } }>(
+  cadDocumentInfo: (id: string, path: string, worktreeId?: string, signal?: AbortSignal) =>
+    request<{ path: string; size: number; version: string; units: number; extents: { min: number[]; max: number[] } | null; layoutExtents: Record<string, { min: number[]; max: number[] } | null>; layouts: string[]; layers: string[]; entityCounts: Record<string, number>; texts: Array<{ text: string; type: string; layer: string; layout: string; x: number | null; y: number | null }>; warnings: string[]; audit: { errors: number; fixes: number } }>(
       "GET",
       `/api/projects/${encodeURIComponent(id)}/cad-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+      undefined, true, REQUEST_TIMEOUT_MS, undefined, signal,
     ),
-  cadDocumentLayout: (id: string, path: string, layout: string, layers: string[], worktreeId?: string) => {
+  cadRuntimeReadiness: () => request<{ state: "ready" | "not_installed" | "repair_required"; ready: boolean; summary: string }>("GET", "/api/cad-preview/readiness"),
+  cadDocumentLayout: (id: string, path: string, layout: string, layers: string[], worktreeId?: string, signal?: AbortSignal) => {
     const query = new URLSearchParams({ path, layout, layersMode: "selected" });
     if (worktreeId) query.set("worktree", worktreeId);
     for (const layer of layers) query.append("layers", layer);
-    return request<{ path: string; size: number; svg: string }>("GET", `/api/projects/${encodeURIComponent(id)}/cad-document/layout?${query}`);
+    return request<{ path: string; size: number; svg: string }>("GET", `/api/projects/${encodeURIComponent(id)}/cad-document/layout?${query}`, undefined, true, REQUEST_TIMEOUT_MS, undefined, signal);
   },
   // Content search within a registered project root (Agent Workspace #161).
   projectSearch: (id: string, q: string) =>
@@ -2529,6 +2553,15 @@ export const api = {
     carriedFromDate?: string | null;
     milestone?: string;
     estimatePoints?: number;
+    intentId?: string | null;
+    intentStatement?: string;
+    taskKind?: string;
+    workGoalId?: string | null;
+    artifactContract?: { consumes: string[]; produces: string[] };
+    platformTarget?: { id: string; label: string } | null;
+    dependencyIds?: string[];
+    creationBasis?: "explicit_user_intent" | "channel_ingest_rule" | "saved_automation" | "required_guard" | "imported";
+    planningHorizon?: "committed";
     parentId?: string | null;
     idempotencyKey?: string;
     routineDefinitionId?: string;
@@ -2556,6 +2589,7 @@ export const api = {
       capabilities: string[];
       readiness: { state: "ready" | "waiting_capability"; reason: string };
     }>;
+    recordBindings?: TaskRecordBinding[];
     materialDraftId?: string;
     materialDraftRevision?: number;
   }) => request("POST", "/api/work-items", payload),
@@ -2573,6 +2607,8 @@ export const api = {
     acceptanceCriteria?: string[];
   }) => request("POST", "/api/work-items/from-external", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
+  createWorkItemResultRepair: (id: string) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/result-repair`, {}),
   suggestWorkItemDraft: (payload: {
     projectId: string;
     title: string;
@@ -2581,8 +2617,83 @@ export const api = {
     materialDraftRevision?: number;
   }) =>
     request("POST", "/api/work-items/assist/draft", payload),
+  previewWorkItemIntentPlan: (payload: {
+    projectId: string;
+    title: string;
+    body?: string;
+    materialDraftId?: string;
+    materialDraftRevision?: number;
+    sourceWorkItemId?: string;
+    sourceQuery?: string;
+    excludeKinds?: string[];
+    excludeTaskKeys?: string[];
+    clarificationAnswer?: string;
+  }) => request("POST", "/api/work-items/assist/intent-plan", payload),
+  commitWorkItemIntentPlan: (payload: {
+    projectId: string;
+    title: string;
+    body?: string;
+    mode: "task" | "ai";
+    idempotencyKey: string;
+    dueDate?: string | null;
+    acceptanceCriteria?: string[];
+    verificationSop?: string[];
+    myTemplateBinding?: {
+      definitionId: string;
+      familyId: string;
+      version: number;
+      matchReasons: string[];
+      userConfirmedResult?: boolean;
+    };
+    materialDraftId?: string;
+    materialDraftRevision?: number;
+    sourceWorkItemId?: string;
+    excludeKinds?: string[];
+    excludeTaskKeys?: string[];
+    clarificationAnswer?: string;
+  }) => request("POST", "/api/work-items/assist/intent-plan/commit", payload),
   listMyTemplateDefinitions: () =>
     request("GET", "/api/workflow-memory/business-routine-definitions"),
+  listTaskTemplates: (projectId?: string) =>
+    request<{ taskTemplates: TaskTemplateContractV2[]; count: number }>(
+      "GET",
+      `/api/workflow-memory/task-templates${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
+    ),
+  getBusinessLedgerRecord: (ledgerDefinitionId: string, selector: { recordId?: string; businessKey?: string }) => {
+    const query = new URLSearchParams();
+    if (selector.recordId) query.set("recordId", selector.recordId);
+    if (selector.businessKey) query.set("businessKey", selector.businessKey);
+    return request<{
+      record: BusinessLedgerRecordRef;
+      fields: Record<string, string | number | boolean | null>;
+      rowNumber: number;
+      targetRevision: string;
+    }>(
+      "GET",
+      `/api/workflow-memory/ledger-definitions/${encodeURIComponent(ledgerDefinitionId)}/records?${query.toString()}`,
+    );
+  },
+  getWorkItemLedgerPostingPlan: (workItemId: string) =>
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[]; invalidatedAt?: string | null; invalidatedReason?: string | null }; preview: Record<string, unknown> | null; batchPreview: Record<string, unknown> | null }>(
+      "GET",
+      `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan`,
+    ),
+  prepareWorkItemLedgerPostingPlan: (workItemId: string, payload: {
+    expectedRevision: number;
+    primary?: LedgerPostingPlan["primary"];
+    related?: LedgerPostingPlan["related"];
+  }) =>
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[]; invalidatedAt?: string | null; invalidatedReason?: string | null }; preview: Record<string, unknown> | null; batchPreview: Record<string, unknown> | null }>(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan`,
+      payload,
+    ),
+  commitWorkItemLedgerPostingPlan: (workItemId: string, payload: { planId: string; expectedRevision: number; approvalToken: string }) =>
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[]; invalidatedAt?: string | null; invalidatedReason?: string | null } }>(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan/commit`,
+      payload,
+    ),
   listMyTemplateLearning: (projectId?: string) =>
     request("GET", `/api/work-items/my-template-learning${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   removeMyTemplateLearning: (feedbackId: string) =>
@@ -2626,6 +2737,21 @@ export const api = {
     request("POST", `/api/work-items/my-template-governance/${encodeURIComponent(familyId)}/resume-observation`, payload),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
+  refreshWorkItemRecordBinding: (workItemId: string, bindingId: string, expectedRevision: number) =>
+    request(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/record-bindings/${encodeURIComponent(bindingId)}/refresh`,
+      { expectedRevision },
+    ),
+  refreshWorkItemRecordBindingsBatch: (items: Array<{
+    id: string;
+    expectedRevision: number;
+    bindingIds: string[];
+  }>) => request(
+    "POST",
+    "/api/work-items/record-bindings/refresh",
+    { items },
+  ),
   claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/claim`, payload),
   releaseWorkItemClaim: (id: string, idempotencyKey?: string) =>
@@ -2899,6 +3025,12 @@ export const api = {
   routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
   dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),
   retryChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/retry`),
+  reconcileWechatDraftTask: (id: string, outcome: "confirmed_saved" | "confirmed_not_saved") =>
+    request<{ ok: boolean; reconciled?: boolean; invocationId?: string }>(
+      "POST",
+      `/api/channel-tasks/${encodeURIComponent(id)}/wechat-draft-reconciliation`,
+      { outcome },
+    ),
   rerouteChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reroute`),
   takeoverChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/takeover`),
   replyChannelTask: (id: string, content: string) => request<{ ok: boolean; deliveryId: string; threadId: string }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reply`, { content }),

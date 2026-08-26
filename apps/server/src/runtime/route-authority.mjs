@@ -34,9 +34,17 @@ const manageRules = [
   /^\/api\/users$/,
   /^\/api\/observability\/delete$/,
   /^\/api\/mail\/task-policies$/,
+  /^\/api\/hosts(?:\/[^/]+(?:\/(?:observe-fingerprint|confirm-fingerprint|verify))?)?$/,
+  /^\/api\/hosts\/[^/]+\/file-scopes(?:\/[^/]+)?$/,
+  /^\/api\/hosts\/[^/]+\/tls-activation-profiles$/,
+  /^\/api\/sites\/[^/]+\/deployment-target(?:\/verify)?$/,
+  /^\/api\/sites\/[^/]+\/domain-tls-binding(?:\/deployment)?$/,
+  /^\/api\/site-pilot\/campaigns(?:\/[^/]+(?:\/invitations)?)?$/,
 ];
 
 const operateRules = [
+  /^\/api\/host-file-scopes\/[^/]+\/transfers(?:\/(?:upload|download))?$/,
+  /^\/api\/sites\/[^/]+\/domain-tls-binding\/(?:verify-dns|issue-staging|deploy-staging)$/,
   /^\/api\/approvals\/grants$/,
   /^\/api\/approvals\/[^/]+\/(?:approve|deny)$/,
   /^\/api\/pending-decisions\/[^/]+\/(?:claim|release)$/,
@@ -49,7 +57,7 @@ const operateRules = [
   /^\/api\/tools\/[^/]+\/invocations$/,
   /^\/api\/claude-apply\/authorizations\/[^/]+\/rollback$/,
   /^\/api\/channels\/[^/]+\/deliveries\/[^/]+\/retry$/,
-  /^\/api\/channel-tasks\/[^/]+\/(?:route|dismiss|retry|reroute|takeover)$/,
+  /^\/api\/channel-tasks\/[^/]+\/(?:route|dismiss|retry|reroute|takeover|wechat-draft-reconciliation)$/,
   /^\/api\/automations\/[^/]+\/run$/,
   /^\/api\/report-schedule\/post-now$/,
   /^\/api\/applications\/[^/]+\/orchestrations\/[^/]+\/run$/,

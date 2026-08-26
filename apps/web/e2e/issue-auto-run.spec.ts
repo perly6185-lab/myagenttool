@@ -5,6 +5,7 @@ let workItem: Record<string, unknown> | null;
 let autoRunStarted: boolean;
 let importedViaExternal: boolean;
 let autoRunReady: boolean;
+let repairWorkItem: Record<string, unknown> | null;
 
 async function mockApi(page: Page) {
   await page.route("http://127.0.0.1:5001/api/**", async (route) => {
@@ -41,6 +42,36 @@ async function mockApi(page: Page) {
         updatedAt: "2026-07-24T00:00:00.000Z",
       };
       return route.fulfill({ status: 201, json: { workItem } });
+    }
+    if (url.pathname === "/api/work-items/assist/intent-plan" && method === "POST") {
+      const body = request.postDataJSON();
+      return route.fulfill({ json: {
+        plan: {
+          tasks: [{
+            key: "general", kind: "general", title: body.title,
+            outcome: "Produce a reviewable result", requires: [], approvalRequired: false,
+          }],
+          clarification: null,
+        },
+        summary: {
+          taskCount: 1, requiresRepository: false, approvalTaskCount: 0,
+          canCommit: true, canStartAi: true,
+          nextStep: "The task plan is ready. Confirm to save it.",
+        },
+      } });
+    }
+    if (url.pathname === "/api/work-items/assist/intent-plan/commit" && method === "POST") {
+      const body = request.postDataJSON();
+      workItem = {
+        id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
+        title: body.title, body: body.body ?? "", type: "task", priority: "p2",
+        status: "backlog", state: "open", labels: [], assigneeIds: [],
+        acceptanceCriteria: body.acceptanceCriteria ?? [], verificationSop: body.verificationSop ?? [],
+        waitingOn: "none", dueDate: body.dueDate ?? null, plannedDate: null,
+        executionState: "unclaimed", executionBindings: [], revision: 1, archivedAt: null,
+        updatedAt: "2026-07-24T00:00:00.000Z",
+      };
+      return route.fulfill({ status: 201, json: { workItems: [workItem] } });
     }
     if (url.pathname === "/api/work-items/assist/draft" && method === "POST") {
       return route.fulfill({ json: {
@@ -181,6 +212,25 @@ async function mockApi(page: Page) {
         },
       } } });
     }
+    if (url.pathname === "/api/work-items/lwi_1/result-repair" && method === "POST") {
+      repairWorkItem = {
+        ...(workItem ?? {}),
+        id: "lwi_repair",
+        localRef: "LOCAL-2",
+        title: "Customer proposal repair",
+        body: "Repair the failed document format check only.",
+        status: "backlog",
+        state: "open",
+        executionPolicy: "manual",
+        repairOfWorkItemId: "lwi_1",
+        resultVerification: null,
+        revision: 1,
+      };
+      return route.fulfill({ status: 201, json: { workItem: repairWorkItem, replayed: false } });
+    }
+    if (url.pathname === "/api/work-items/lwi_repair" && method === "GET") {
+      return route.fulfill({ json: { workItem: repairWorkItem, observability: { nextAction: "prepare_execution", attention: [], latestRun: null, delivery: null } } });
+    }
     if (url.pathname === "/api/work-items/lwi_1" && method === "PATCH") {
       const body = request.postDataJSON();
       const establishesExecutionContract = Array.isArray(body.acceptanceCriteria) && Array.isArray(body.verificationSop);
@@ -231,11 +281,38 @@ test.beforeEach(async ({ page }) => {
   autoRunStarted = false;
   importedViaExternal = false;
   autoRunReady = true;
+  repairWorkItem = null;
   await page.addInitScript(() => {
     window.localStorage.setItem("myagenttool.token", "e2e-token");
     window.localStorage.setItem("myagenttool-ui", JSON.stringify({ version: 1, state: { locale: "en" } }));
   });
   await mockApi(page);
+});
+
+test("creates a separate repair task from failed result checks without auto-starting it", async ({ page }) => {
+  workItem = {
+    id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
+    title: "Customer proposal", body: "Prepare the customer proposal.", type: "task", priority: "p2",
+    status: "blocked", state: "open", labels: [], assigneeIds: [], waitingOn: "none",
+    acceptanceCriteria: ["Deliver a DOCX proposal"], verificationSop: ["Check the output format"],
+    executionPolicy: "manual", executionState: "blocked", executionBindings: [], revision: 2, archivedAt: null,
+    updatedAt: "2026-07-24T00:00:00.000Z",
+    resultVerification: {
+      schemaVersion: 1, status: "failed", summary: "The output format is invalid.", digest: "repair-digest",
+      checks: [{ kind: "artifact_format", status: "failed", summary: "Expected a DOCX document, but received a PNG file." }],
+      verificationChecks: [],
+      repair: { required: true, mode: "independent_task", reasons: ["Output format is invalid"], suggestedRequest: "Create a DOCX proposal." },
+    },
+  };
+  await page.goto("/?section=task&task=lwi_1", { waitUntil: "domcontentloaded" });
+  const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail.getByTestId("result-repair-card")).toBeVisible();
+  const request = page.waitForRequest((candidate) => candidate.url().endsWith("/api/work-items/lwi_1/result-repair") && candidate.method() === "POST");
+  await detail.getByRole("button", { name: "Create repair task from checks" }).click();
+  await request;
+  await expect(page.getByRole("heading", { name: "Customer proposal repair" })).toBeVisible();
+  expect(repairWorkItem).toMatchObject({ repairOfWorkItemId: "lwi_1", executionPolicy: "manual", status: "backlog" });
+  expect(workItem).toMatchObject({ id: "lwi_1", status: "blocked" });
 });
 
 test("creates an ordinary task from the mobile task modal without a dead collapsed form", async ({ page }) => {
@@ -252,6 +329,8 @@ test("creates an ordinary task from the mobile task modal without a dead collaps
   await expect(confirm).toBeVisible();
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await dialog.getByRole("button", { name: "Save only" }).click();
+  await expect(dialog.getByTestId("home-intent-task-plan")).toBeVisible();
+  await dialog.getByRole("button", { name: "Confirm and save" }).click();
   await expect(dialog.getByText("Task created and added to your boards.")).toBeVisible();
 });
 
@@ -349,13 +428,15 @@ test("creates an issue, routes AI execution, and reaches reviewed local delivery
   await page.getByRole("button", { name: "New task" }).click();
   await page.getByRole("textbox", { name: "Create a task" }).fill("Implement browser chain");
   await page.getByRole("button", { name: "Save only" }).click();
+  await expect(page.getByTestId("home-intent-task-plan")).toBeVisible();
+  await page.getByRole("button", { name: "Confirm and save" }).click();
 
   // Open the authoritative Local Issue after creation, then switch to the
   // expert execution surface explicitly (the summary view is the default).
   await page.goto("/?section=task&task=lwi_1");
   const createdDetail = page.getByRole("dialog", { name: "Local issue details" });
   await createdDetail.getByRole("button", { name: "Technical and audit details" }).click();
-  await expect(createdDetail.getByRole("button", { name: "Back to task summary" })).toBeVisible();
+  await expect(createdDetail.getByRole("button", { name: "Professional view" })).toHaveAttribute("aria-pressed", "true");
   await expect(createdDetail.getByRole("tab", { name: "Process", exact: true })).toBeVisible();
   await createdDetail.getByRole("tab", { name: "Process", exact: true }).click();
   const autoRunRequest = page.waitForRequest((request) =>

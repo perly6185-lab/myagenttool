@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   projectPdfRange: vi.fn(),
   cadDocumentInfo: vi.fn(),
   cadDocumentLayout: vi.fn(),
+  cadRuntimeReadiness: vi.fn(),
   selectProject: vi.fn(),
   setSection: vi.fn(),
   setOfficecliPreviewPath: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("@/data/use-console-actions", () => ({
     projectPdfRange: mocks.projectPdfRange,
     cadDocumentInfo: mocks.cadDocumentInfo,
     cadDocumentLayout: mocks.cadDocumentLayout,
+    cadRuntimeReadiness: mocks.cadRuntimeReadiness,
     selectProject: mocks.selectProject,
   },
 }));
@@ -73,8 +75,9 @@ beforeEach(async () => {
   mocks.manageOfficeDocument.mockResolvedValue({ operation: "copy", source: "docs/report.docx", destination: "docs/copy-of-report.docx" });
   mocks.projectPdfSource.mockResolvedValue({ url: "http://localhost/report.pdf", httpHeaders: { Authorization: "Bearer test" } });
   mocks.projectPdfRange.mockResolvedValue({ data: new ArrayBuffer(8), total: 2048 });
-  mocks.cadDocumentInfo.mockResolvedValue({ path: "drawings/plan.dxf", size: 512, version: "AC1027", units: 6, extents: { min: [0, 0, 0], max: [100, 50, 0] }, layouts: ["Model", "Sheet 1"], layers: ["Walls", "Notes"], entityCounts: { LINE: 4, TEXT: 1 }, texts: [{ text: "Lobby", type: "TEXT", layer: "Notes" }], warnings: [], audit: { errors: 0, fixes: 0 } });
+  mocks.cadDocumentInfo.mockResolvedValue({ path: "drawings/plan.dxf", size: 512, version: "AC1027", units: 6, extents: { min: [0, 0, 0], max: [100, 50, 0] }, layoutExtents: { Model: { min: [0, 0, 0], max: [100, 50, 0] }, "Sheet 1": { min: [0, 0, 0], max: [200, 100, 0] } }, layouts: ["Model", "Sheet 1"], layers: ["Walls", "Notes"], entityCounts: { LINE: 4, TEXT: 1 }, texts: [{ text: "Lobby", type: "TEXT", layer: "Notes", layout: "Model", x: 10, y: 10 }], warnings: [], audit: { errors: 0, fixes: 0 } });
   mocks.cadDocumentLayout.mockResolvedValue({ path: "drawings/plan.dxf", size: 512, svg: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>' });
+  mocks.cadRuntimeReadiness.mockResolvedValue({ state: "ready", ready: true, summary: "Managed DXF runtime is ready." });
 });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -121,9 +124,31 @@ describe("DocumentsView interaction", () => {
     expect(await screen.findByText("Version: AC1027")).toBeTruthy();
     expect(await screen.findByTitle("CAD layout Model")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Search CAD text"), { target: { value: "lobby" } });
-    expect(screen.getByText("Lobby")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Lobby/ }));
+    expect(screen.getByLabelText("CAD text highlight Lobby").className).toContain("border-orange-300");
     fireEvent.click(screen.getByText("Walls").closest("label")!.querySelector("input")!);
-    await waitFor(() => expect(mocks.cadDocumentLayout).toHaveBeenLastCalledWith("prj_1", "drawings/plan.dxf", "Model", ["Notes"], undefined));
+    await waitFor(() => expect(mocks.cadDocumentLayout).toHaveBeenLastCalledWith("prj_1", "drawings/plan.dxf", "Model", ["Notes"], undefined, expect.any(AbortSignal)));
+    fireEvent.change(screen.getByLabelText("Search CAD layers"), { target: { value: "wall" } });
+    expect(screen.queryByText("Notes")).toBeNull();
+    fireEvent.change(screen.getByLabelText("CAD layout"), { target: { value: "Sheet 1" } });
+    await waitFor(() => expect(mocks.cadDocumentLayout).toHaveBeenLastCalledWith("prj_1", "drawings/plan.dxf", "Sheet 1", ["Notes"], undefined, expect.any(AbortSignal)));
+    expect(screen.getByText("Viewing Sheet 1")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Fit CAD width"));
+    fireEvent.click(screen.getByLabelText("Fit CAD page"));
+    expect(screen.getByText("Managed DXF runtime is ready.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry detection" }));
+    await waitFor(() => expect(mocks.cadRuntimeReadiness).toHaveBeenCalledTimes(2));
+  });
+
+  it("retries a failed CAD layout render without leaving Documents", async () => {
+    mocks.projectDocuments.mockResolvedValue({ projectId: "prj_1", worktreeId: null, truncated: false, scanned: 1, documents: [{ projectId: "prj_1", worktreeId: null, name: "plan.dxf", path: "drawings/plan.dxf", type: "dxf", gitStatus: "clean" }] });
+    mocks.cadDocumentLayout.mockRejectedValueOnce(new ApiError("cad_processing_timeout", "timeout", 400));
+    renderView();
+    fireEvent.click(await screen.findByText("plan.dxf"));
+    expect(await screen.findByText("CAD preview unavailable")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry preview" }));
+    expect(await screen.findByTitle("CAD layout Model")).toBeTruthy();
+    expect(mocks.cadDocumentLayout).toHaveBeenCalledTimes(2);
   });
 
   it("discovers, previews, filters, and hands a document to a worktree", async () => {

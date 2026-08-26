@@ -160,6 +160,19 @@ export async function discoverChannelFileAsset({ asset, projectPath, projectId =
     if (asset.hash && String(asset.hash) !== contentHash) {
       return { status: "stale", reason: "file_discovery_source_changed", contentHash };
     }
+    if (extension === ".xls") {
+      return {
+        status: "unsupported",
+        reason: "file_discovery_legacy_xls_unsupported",
+        assetId: clean(asset.id, 200) || null,
+        fileName: clean(asset.originalName ?? asset.name ?? scoped.relativePath.split("/").at(-1), 300) || "旧版 Excel 文件",
+        format: "xls",
+        size: fileStat.size,
+        contentHash,
+        readOnly: true,
+        nextActions: ["请在 Excel 或 WPS 中另存为 .xlsx 或 CSV 后重新发送"],
+      };
+    }
     let headers = [];
     let rowCount = 0;
     let format = extension.slice(1);
@@ -203,14 +216,19 @@ export async function discoverChannelFileAsset({ asset, projectPath, projectId =
 }
 
 export function fileDiscoveryReply(discoveries = []) {
-  const ready = (Array.isArray(discoveries) ? discoveries : []).filter((row) => row?.status === "ready");
-  if (!ready.length) return null;
-  return ready.slice(0, 3).map((row) => {
+  const rows = Array.isArray(discoveries) ? discoveries : [];
+  const ready = rows.filter((row) => row?.status === "ready");
+  const messages = ready.slice(0, 3).map((row) => {
     const fields = row.recognizedFields?.slice(0, 8).join("、") || "暂未识别业务字段";
     const kinds = row.likelyKinds?.length ? `，看起来像${row.likelyKinds.join("、")}资料` : "";
     const keys = row.keyCandidates?.length
       ? `可按${row.keyCandidates.map((key) => key.name).slice(0, 3).join("、")}定位记录`
       : "暂未找到明确的记录编号";
     return `已只读检查 ${row.fileName}：${row.rowCount} 条记录、${row.columnCount} 个字段${kinds}。识别到：${fields}；${keys}。`;
-  }).join("\n");
+  });
+  const legacyXls = rows.filter((row) => row?.reason === "file_discovery_legacy_xls_unsupported");
+  for (const row of legacyXls.slice(0, 3)) {
+    messages.push(`已收到 ${row.fileName ?? "旧版 Excel 文件"}，但它是旧版 .xls 格式，当前不能安全读取。请在 Excel 或 WPS 中另存为 .xlsx 或 CSV 后重新发送；原文件不会被修改。`);
+  }
+  return messages.length ? messages.join("\n") : null;
 }

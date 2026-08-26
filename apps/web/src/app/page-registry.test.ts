@@ -14,6 +14,7 @@ describe("page ownership registry (#1505)", () => {
       "privateTutor",
       "mail",
       "localLibrary",
+      "mySite",
       "task",
       "workflowMemory",
       "projects",
@@ -26,11 +27,14 @@ describe("page ownership registry (#1505)", () => {
       expect(pageRegistration(key)).toMatchObject({ surface: "entry", visibility: "contextual" });
     }
     expect(pageRegistration("workflowMemory")).toMatchObject({ surface: "entry", visibility: "primary" });
+    expect(pageRegistration("mySite")).toMatchObject({ surface: "entry", visibility: "primary", authority: "ordinary" });
   });
 
   it("assigns configuration to Settings and execution records to Trace", () => {
     expect(pageRegistration("applications")).toMatchObject({ surface: "settings", authority: "manage" });
     expect(pageRegistration("channels")).toMatchObject({ surface: "settings", authority: "manage" });
+    expect(pageRegistration("siteSettings")).toMatchObject({ surface: "settings", authority: "manage" });
+    expect(pageRegistration("myHosts")).toMatchObject({ surface: "settings", authority: "manage" });
     expect(pageRegistration("invocations")).toMatchObject({ surface: "trace", authority: "audit" });
     expect(pageRegistration("audit")).toMatchObject({ surface: "trace", authority: "audit" });
   });

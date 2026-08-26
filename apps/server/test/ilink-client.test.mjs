@@ -15,6 +15,7 @@ test("iLink client uses Tencent-compatible QR POST, headers, long-poll, and send
       calls.push({ url, options });
       if (url.includes("get_bot_qrcode")) return response({ ret: 0, qrcode: "qr-1", qrcode_img_content: "https://liteapp.weixin.qq.com/q/qr-1" });
       if (url.includes("getupdates")) return response({ ret: 0, msgs: [], get_updates_buf: "cursor-2" });
+      if (url.includes("getconfig")) return response({ ret: 0, typing_ticket: "typing-1" });
       return response({ ret: 0 });
     },
   });
@@ -22,6 +23,7 @@ test("iLink client uses Tencent-compatible QR POST, headers, long-poll, and send
   const qr = await client.getQrCode({ localTokenList: ["old-token"] });
   const updates = await client.getUpdates({ cursor: "cursor-1", timeoutMs: 100 });
   const sent = await client.sendMessage({ toUser: "wx-user", content: "hello", contextToken: "ctx-1", clientId: "cdl_1" });
+  await client.sendTyping({ toUser: "wx-user", contextToken: "ctx-1" });
 
   assert.equal(qr.qrcode, "qr-1");
   assert.equal(updates.get_updates_buf, "cursor-2");
@@ -36,10 +38,32 @@ test("iLink client uses Tencent-compatible QR POST, headers, long-poll, and send
   const sendBody = JSON.parse(calls[2].options.body);
   assert.deepEqual(sendBody.base_info, { channel_version: "2.4.6", bot_agent: "MyAgentTool/0.2.0" });
   assert.equal(sendBody.msg.to_user_id, "wx-user");
+  assert.equal(sendBody.msg.from_user_id, "");
   assert.equal(sendBody.msg.context_token, "ctx-1");
   assert.equal(sendBody.msg.client_id, "cdl_1");
+  assert.equal(sendBody.msg.message_id, undefined);
   assert.equal(sendBody.msg.item_list[0].text_item.text, "hello");
+  assert.equal(sendBody.msg.item_list[0].create_time_ms, undefined);
+  assert.equal(sendBody.msg.item_list[0].is_completed, undefined);
   assert.equal(sendBody.msg.message_type, 2);
+  const configBody = JSON.parse(calls[3].options.body);
+  assert.equal(configBody.ilink_user_id, "wx-user");
+  assert.equal(configBody.context_token, "ctx-1");
+  const typingBody = JSON.parse(calls[4].options.body);
+  assert.equal(typingBody.ilink_user_id, "wx-user");
+  assert.equal(typingBody.typing_ticket, "typing-1");
+  assert.equal(typingBody.status, 1);
+});
+
+test("iLink typing acknowledgement fails closed when getconfig omits its ticket", async () => {
+  const client = createIlinkClient({
+    token: "bot-secret",
+    fetchImpl: async () => response({ ret: 0 }),
+  });
+  await assert.rejects(
+    () => client.sendTyping({ toUser: "wx-user", contextToken: "ctx-1" }),
+    (error) => error.code === "typing_ticket_missing",
+  );
 });
 
 test("iLink QR status supports Tencent verification-code and redirect parameters", async () => {
@@ -82,6 +106,16 @@ test("iLink sendMessage accepts Tencent success responses without an explicit re
   });
   const sent = await client.sendMessage({ toUser: "wx-user", content: "hello" });
   assert.match(sent.clientId, /^[0-9a-f-]{36}$/);
+  assert.equal(sent.providerReceiptId, null);
+});
+
+test("iLink sendMessage preserves a real provider receipt when one is returned", async () => {
+  const client = createIlinkClient({
+    fetchImpl: async () => response({ ret: 0, msgid: "wx-provider-1" }),
+  });
+  const sent = await client.sendMessage({ toUser: "wx-user", content: "hello", clientId: "local-1" });
+  assert.equal(sent.clientId, "local-1");
+  assert.equal(sent.providerReceiptId, "wx-provider-1");
 });
 
 test("iLink client rejects malformed non-object send responses", async () => {

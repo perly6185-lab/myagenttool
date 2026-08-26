@@ -1136,8 +1136,8 @@ export const workflowMemoryApi = {
     fileName: string;
     content: string;
   }) => request<{ import: ChannelObjectImportPreview; canConfirm: boolean }>("POST", "/api/channel-objects/import/preview", body),
-  confirmChannelObjectImport: (importId: string) =>
-    request<{ import: ChannelObjectImportPreview; objects?: ChannelObjectRecord[]; replayed: boolean }>("POST", "/api/channel-objects/import/confirm", { importId }),
+  confirmChannelObjectImport: (importId: string, approvalToken: string) =>
+    request<{ import: ChannelObjectImportPreview; objects?: ChannelObjectRecord[]; replayed: boolean }>("POST", "/api/channel-objects/import/confirm", { importId, approvalToken }),
   listChannelObjectConnectors: (projectId?: string) => request<{ connectors: ChannelObjectConnector[] }>("GET", `/api/channel-objects/connectors${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   listChannelObjectConnectorConfigs: (projectId?: string) => request<{ configs: ChannelObjectConnectorConfig[]; count: number }>("GET", `/api/channel-objects/connector-configs${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   listChannelObjectFileSources: (projectId?: string, kind?: ChannelObjectKind) => request<{ sources: ChannelObjectFileSource[]; count: number }>("GET", `/api/channel-objects/file-sources?${new URLSearchParams({ ...(projectId ? { projectId } : {}), ...(kind ? { kind } : {}) }).toString()}`),
@@ -1152,10 +1152,12 @@ export const workflowMemoryApi = {
   testChannelObjectConnectorConfig: (id: string) => request<{ config: ChannelObjectConnectorConfig; ok: boolean; error: string | null }>("POST", `/api/channel-objects/connector-configs/${encodeURIComponent(id)}/test`, {}),
   previewChannelObjectConnectorSync: (body: { configId?: string; connectorId?: string; projectId?: string; kind: ChannelObjectKind }) =>
     request<{ preview: ChannelObjectSyncPreview; canConfirm: boolean }>("POST", "/api/channel-objects/sync/preview", body),
-  confirmChannelObjectConnectorSync: (previewId: string) =>
-    request<{ preview: ChannelObjectSyncPreview; sync: { id: string; status: string; imported: number; failed: number }; replayed: boolean }>("POST", "/api/channel-objects/sync/confirm", { previewId }),
+  issueApprovalGrant: (action: string, targetId: string) =>
+    request<{ grantId: string; token: string; expiresAt: string }>("POST", "/api/approvals/grants", { action, targetId }),
+  confirmChannelObjectConnectorSync: (previewId: string, approvalToken: string) =>
+    request<{ preview: ChannelObjectSyncPreview; sync: { id: string; status: string; imported: number; failed: number }; replayed: boolean }>("POST", "/api/channel-objects/sync/confirm", { previewId, approvalToken }),
   syncChannelObjectConnector: (body: { connectorId: string; projectId: string; kind?: ChannelObjectKind }) =>
-    request<{ sync: { id: string; status: string; imported: number; failed: number } }>("POST", "/api/channel-objects/sync", body),
+    request<{ preview: ChannelObjectSyncPreview; canConfirm: boolean; approvalRequired: true; approval: { action: string; targetId: string } }>("POST", "/api/channel-objects/sync", body),
   createWorkflowSource: (body: {
     projectId: string;
     relativePath?: string;

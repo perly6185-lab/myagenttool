@@ -153,6 +153,25 @@ export function ProfessionalWorkSummary({
         />
       </div>
 
+      {item.workGoal ? (
+        <div className="rounded-md border border-primary/20 bg-background/60 p-3 text-xs" data-testid="professional-work-goal">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-semibold">{zh ? "工作目标与产物契约" : "Work goal and artifact contract"}</span>
+            <Badge tone={item.workGoal.status === "completed" ? "success" : "neutral"}>{statusLabel(item.workGoal.status, zh)}</Badge>
+          </div>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <p><span className="text-muted-foreground">{zh ? "目标" : "Goal"}：</span>{item.workGoal.title}</p>
+            <p><span className="text-muted-foreground">{zh ? "专业任务" : "Task kind"}：</span>{item.taskKind ?? "general"}</p>
+            <p><span className="text-muted-foreground">{zh ? "需要产物" : "Consumes"}：</span>{item.artifactContract?.consumes.join("、") || "—"}</p>
+            <p><span className="text-muted-foreground">{zh ? "交付产物" : "Produces"}：</span>{item.artifactContract?.produces.join("、") || "—"}</p>
+            {item.platformTarget ? <p><span className="text-muted-foreground">{zh ? "目标平台" : "Platform"}：</span>{item.platformTarget.label}</p> : null}
+            <p><span className="text-muted-foreground">{zh ? "产物交接" : "Artifact handoffs"}：</span>{item.artifactHandoffs?.length ?? 0}</p>
+            {item.publicationReadiness ? <p><span className="text-muted-foreground">{zh ? "发布连接" : "Publishing connection"}：</span>{item.publicationReadiness.state === "ready" ? (item.publicationReadiness.connection?.displayName ?? (zh ? "已就绪" : "Ready")) : (zh ? "待配置" : "Needs setup")}</p> : null}
+            {item.draftSyncReadiness ? <p><span className="text-muted-foreground">{zh ? "公众号草稿连接" : "WeChat draft connection"}：</span>{item.draftSyncReadiness.state === "ready" ? (item.draftSyncReadiness.connection?.displayName ?? (zh ? "已就绪" : "Ready")) : (zh ? "待配置" : "Needs setup")}</p> : null}
+          </div>
+        </div>
+      ) : null}
+
       {mutation ? (
         <div className="rounded-md border border-warning/30 bg-warning/[0.05] p-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">

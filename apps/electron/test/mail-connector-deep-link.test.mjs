@@ -17,6 +17,11 @@ test("desktop handoff accepts only allowlisted routes and parameters", () => {
     document: "docs/a.docx",
   });
   assert.equal(desktopRouteFromArgv(["MyAgentTool.exe", "myagenttool://open?section=audit&desktopAction=run-command"]), null);
+  assert.deepEqual(desktopRouteFromArgv(["MyAgentTool.exe", "myagenttool://open?section=sessions&desktopAction=open-desktop-page&site=wechat_official"]), {
+    section: "sessions",
+    desktopAction: "open-desktop-page",
+    site: "wechat_official",
+  });
 });
 
 test("desktop handoff renderer URL retains the API address", () => {
