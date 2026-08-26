@@ -163,7 +163,6 @@ export function runCadWorker(request, { timeoutMs, signal, spawnProcess = spawn,
       failure = error;
       child.kill("SIGTERM");
       killTimer = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, terminateGraceMs);
-      killTimer.unref?.();
     };
     const abort = () => stop(new CadPreviewError("cad_processing_cancelled", "CAD processing was cancelled."));
     const timer = setTimeout(() => stop(new CadPreviewError("cad_processing_timeout", `CAD processing timed out after ${timeoutMs} ms.`)), timeoutMs);
