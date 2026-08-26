@@ -2313,16 +2313,18 @@ export const api = {
   },
   projectPdfRange: (id: string, path: string, start: number, end: number, worktreeId?: string) =>
     requestByteRange(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`, start, end),
-  cadDocumentInfo: (id: string, path: string, worktreeId?: string) =>
-    request<{ path: string; size: number; version: string; units: number; extents: { min: number[]; max: number[] } | null; layouts: string[]; layers: string[]; entityCounts: Record<string, number>; texts: Array<{ text: string; type: string; layer: string }>; warnings: string[]; audit: { errors: number; fixes: number } }>(
+  cadDocumentInfo: (id: string, path: string, worktreeId?: string, signal?: AbortSignal) =>
+    request<{ path: string; size: number; version: string; units: number; extents: { min: number[]; max: number[] } | null; layoutExtents: Record<string, { min: number[]; max: number[] } | null>; layouts: string[]; layers: string[]; entityCounts: Record<string, number>; texts: Array<{ text: string; type: string; layer: string; layout: string; x: number | null; y: number | null }>; warnings: string[]; audit: { errors: number; fixes: number } }>(
       "GET",
       `/api/projects/${encodeURIComponent(id)}/cad-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+      undefined, true, REQUEST_TIMEOUT_MS, undefined, signal,
     ),
-  cadDocumentLayout: (id: string, path: string, layout: string, layers: string[], worktreeId?: string) => {
+  cadRuntimeReadiness: () => request<{ state: "ready" | "not_installed" | "repair_required"; ready: boolean; summary: string }>("GET", "/api/cad-preview/readiness"),
+  cadDocumentLayout: (id: string, path: string, layout: string, layers: string[], worktreeId?: string, signal?: AbortSignal) => {
     const query = new URLSearchParams({ path, layout, layersMode: "selected" });
     if (worktreeId) query.set("worktree", worktreeId);
     for (const layer of layers) query.append("layers", layer);
-    return request<{ path: string; size: number; svg: string }>("GET", `/api/projects/${encodeURIComponent(id)}/cad-document/layout?${query}`);
+    return request<{ path: string; size: number; svg: string }>("GET", `/api/projects/${encodeURIComponent(id)}/cad-document/layout?${query}`, undefined, true, REQUEST_TIMEOUT_MS, undefined, signal);
   },
   // Content search within a registered project root (Agent Workspace #161).
   projectSearch: (id: string, q: string) =>
