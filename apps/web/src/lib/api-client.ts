@@ -28,6 +28,7 @@ import type {
   ToolInvocationRequest,
   ToolInvocationResponse,
 } from "@/lib/console-state";
+import type { BusinessLedgerRecordRef, LedgerPostingPlan, TaskRecordBinding, TaskTemplateContractV2 } from "@myagenttool/protocol/task-resources";
 import {
   ApiError,
   apiBase,
@@ -2588,6 +2589,7 @@ export const api = {
       capabilities: string[];
       readiness: { state: "ready" | "waiting_capability"; reason: string };
     }>;
+    recordBindings?: TaskRecordBinding[];
     materialDraftId?: string;
     materialDraftRevision?: number;
   }) => request("POST", "/api/work-items", payload),
@@ -2652,6 +2654,46 @@ export const api = {
   }) => request("POST", "/api/work-items/assist/intent-plan/commit", payload),
   listMyTemplateDefinitions: () =>
     request("GET", "/api/workflow-memory/business-routine-definitions"),
+  listTaskTemplates: (projectId?: string) =>
+    request<{ taskTemplates: TaskTemplateContractV2[]; count: number }>(
+      "GET",
+      `/api/workflow-memory/task-templates${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
+    ),
+  getBusinessLedgerRecord: (ledgerDefinitionId: string, selector: { recordId?: string; businessKey?: string }) => {
+    const query = new URLSearchParams();
+    if (selector.recordId) query.set("recordId", selector.recordId);
+    if (selector.businessKey) query.set("businessKey", selector.businessKey);
+    return request<{
+      record: BusinessLedgerRecordRef;
+      fields: Record<string, string | number | boolean | null>;
+      rowNumber: number;
+      targetRevision: string;
+    }>(
+      "GET",
+      `/api/workflow-memory/ledger-definitions/${encodeURIComponent(ledgerDefinitionId)}/records?${query.toString()}`,
+    );
+  },
+  getWorkItemLedgerPostingPlan: (workItemId: string) =>
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[]; invalidatedAt?: string | null; invalidatedReason?: string | null }; preview: Record<string, unknown> | null; batchPreview: Record<string, unknown> | null }>(
+      "GET",
+      `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan`,
+    ),
+  prepareWorkItemLedgerPostingPlan: (workItemId: string, payload: {
+    expectedRevision: number;
+    primary?: LedgerPostingPlan["primary"];
+    related?: LedgerPostingPlan["related"];
+  }) =>
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[]; invalidatedAt?: string | null; invalidatedReason?: string | null }; preview: Record<string, unknown> | null; batchPreview: Record<string, unknown> | null }>(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan`,
+      payload,
+    ),
+  commitWorkItemLedgerPostingPlan: (workItemId: string, payload: { planId: string; expectedRevision: number; approvalToken: string }) =>
+    request<{ plan: LedgerPostingPlan & { id: string; revision: number; status: string; previewId: string | null; batchPreviewId: string | null; previewIds: string[]; invalidatedAt?: string | null; invalidatedReason?: string | null } }>(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/ledger-posting-plan/commit`,
+      payload,
+    ),
   listMyTemplateLearning: (projectId?: string) =>
     request("GET", `/api/work-items/my-template-learning${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   removeMyTemplateLearning: (feedbackId: string) =>
@@ -2695,6 +2737,21 @@ export const api = {
     request("POST", `/api/work-items/my-template-governance/${encodeURIComponent(familyId)}/resume-observation`, payload),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
+  refreshWorkItemRecordBinding: (workItemId: string, bindingId: string, expectedRevision: number) =>
+    request(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/record-bindings/${encodeURIComponent(bindingId)}/refresh`,
+      { expectedRevision },
+    ),
+  refreshWorkItemRecordBindingsBatch: (items: Array<{
+    id: string;
+    expectedRevision: number;
+    bindingIds: string[];
+  }>) => request(
+    "POST",
+    "/api/work-items/record-bindings/refresh",
+    { items },
+  ),
   claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/claim`, payload),
   releaseWorkItemClaim: (id: string, idempotencyKey?: string) =>

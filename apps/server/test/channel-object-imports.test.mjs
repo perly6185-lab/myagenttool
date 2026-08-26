@@ -20,10 +20,21 @@ function harness() {
   const serviceOptions = {
     state, now: () => "2026-08-17T00:00:00.000Z", nextId: (prefix) => `${prefix}_${++counter}`,
     appendEvent: () => {}, persistStateSoon: () => {},
+    validateApprovalToken: (token, request) => token === "issued-token"
+      && ["channel_object_import_confirm", "channel_object_connector_sync_confirm"].includes(request.action)
+      ? { approved: true, grantId: "apg_1" }
+      : { approved: false, reason: "grant_required" },
   };
   const registry = createChannelObjectRegistryService(serviceOptions);
   const imports = createChannelObjectImportService({ ...serviceOptions, upsertChannelObject: registry.upsertChannelObject, setChannelObjectStatus: registry.setChannelObjectStatus });
-  const connectors = createChannelObjectConnectorService({ ...serviceOptions, upsertChannelObject: registry.upsertChannelObject });
+  const connectors = createChannelObjectConnectorService({
+    ...serviceOptions,
+    upsertChannelObject: registry.upsertChannelObject,
+    validateApprovalToken: (token, request) => token === "issued-token"
+      && request.action === "channel_object_connector_sync_confirm"
+      ? { approved: true, grantId: "apg_1" }
+      : { approved: false, reason: "grant_required" },
+  });
   return { state, imports, connectors };
 }
 
@@ -59,7 +70,10 @@ test("imports JSON only after confirmation, is replay-safe, and masks account da
   }, ACTOR);
   assert.equal(preview.body.canConfirm, true);
   assert.equal(h.state.channelObjectRecords.length, 0);
-  const confirmed = h.imports.confirmChannelObjectImport({ importId: preview.body.import.id }, ACTOR);
+  const denied = h.imports.confirmChannelObjectImport({ importId: preview.body.import.id }, ACTOR);
+  assert.equal(denied.status, 409);
+  assert.equal(denied.body.error, "channel_object_import_approval_required");
+  const confirmed = h.imports.confirmChannelObjectImport({ importId: preview.body.import.id, approvalToken: "issued-token" }, ACTOR);
   assert.equal(confirmed.status, 200);
   assert.equal(confirmed.body.objects[0].fields.accountNumber, "****5678");
   assert.equal(confirmed.body.objects[0].source, "local_file");
@@ -75,7 +89,7 @@ test("local CSV data flows into Channel object verification and revision invalid
     projectId: "prj_a", kind: "contact", format: "csv", fileName: "contacts.csv",
     content: base64("姓名,邮箱\n张三,zhangsan@example.test\n"),
   }, ACTOR);
-  const confirmed = h.imports.confirmChannelObjectImport({ importId: preview.body.import.id }, ACTOR);
+  const confirmed = h.imports.confirmChannelObjectImport({ importId: preview.body.import.id, approvalToken: "issued-token" }, ACTOR);
   assert.equal(confirmed.status, 200);
   const before = resolveChannelObjectRequests({
     state: h.state, projectId: "prj_a", ownerTeamId: "team_a", text: "把报价单发给张三", riskLevel: "external_communication",
@@ -94,7 +108,7 @@ test("local CSV data flows into Channel object verification and revision invalid
     content: base64("姓名,邮箱\n李四,lisi@example.test\n"),
   }, ACTOR);
   assert.deepEqual(nextPreview.body.import.diff, { created: 1, updated: 0, unchanged: 0, removed: 1 });
-  assert.equal(h.imports.confirmChannelObjectImport({ importId: nextPreview.body.import.id }, ACTOR).status, 200);
+  assert.equal(h.imports.confirmChannelObjectImport({ importId: nextPreview.body.import.id, approvalToken: "issued-token" }, ACTOR).status, 200);
   assert.equal(h.state.channelObjectRecords.some((row) => row.label === "张三" && row.status === "disabled"), true);
   assert.equal(h.state.channelObjectRecords.some((row) => row.label === "李四" && row.status === "active"), true);
   assert.equal(h.state.channelObjectFileSources[0].revision, 2);
@@ -107,7 +121,7 @@ test("imports after-sales CSV fields through the local file connector", async ()
     content: base64("售后单号,订单号,客户,售后问题,处理结果\nAS-1,O-1,海棠科技,设备异常,更换配件\n"),
   }, ACTOR);
   assert.equal(preview.status, 201);
-  const confirmed = h.imports.confirmChannelObjectImport({ importId: preview.body.import.id }, ACTOR);
+  const confirmed = h.imports.confirmChannelObjectImport({ importId: preview.body.import.id, approvalToken: "issued-token" }, ACTOR);
   assert.equal(confirmed.status, 200, JSON.stringify(confirmed));
   assert.equal(confirmed.body.objects[0].fields.case_number, "AS-1");
   assert.equal(confirmed.body.objects[0].fields.issue, "设备异常");
@@ -121,7 +135,7 @@ test("imports return records with order linkage, quantity, amount, and status", 
     content: base64("退货单号,订单号,退货数量,退货金额,退货状态,退货原因\nRT-1,O-1,2,1200,已完成,客户换货\n"),
   }, ACTOR);
   assert.equal(preview.status, 201, JSON.stringify(preview));
-  const confirmed = h.imports.confirmChannelObjectImport({ importId: preview.body.import.id }, ACTOR);
+  const confirmed = h.imports.confirmChannelObjectImport({ importId: preview.body.import.id, approvalToken: "issued-token" }, ACTOR);
   assert.equal(confirmed.status, 200, JSON.stringify(confirmed));
   assert.deepEqual(confirmed.body.objects[0].fields, {
     return_number: "RT-1", order_number: "O-1", quantity: "2", return_amount: "1200", return_status: "已完成", return_reason: "客户换货",
@@ -139,7 +153,7 @@ test("reads the first XLSX sheet and syncs existing business entities through a 
     projectId: "prj_a", kind: "contact", format: "xlsx", fileName: "contacts.xlsx", content: Buffer.from(bytes).toString("base64"),
   }, ACTOR);
   assert.equal(preview.body.import.acceptedRows, 1);
-  assert.equal(h.imports.confirmChannelObjectImport({ importId: preview.body.import.id }, ACTOR).status, 200);
+  assert.equal(h.imports.confirmChannelObjectImport({ importId: preview.body.import.id, approvalToken: "issued-token" }, ACTOR).status, 200);
 
   h.state.businessEntities.push({
     id: "entity_1", ownerTeamId: "team_a", projectId: "prj_a", entityType: "customer", businessKey: "customer-王五",
@@ -147,7 +161,12 @@ test("reads the first XLSX sheet and syncs existing business entities through a 
   });
   const connectors = h.connectors.listChannelObjectConnectors();
   assert.equal(connectors.body.connectors[0].id, "business_entities");
-  const sync = await h.connectors.syncChannelObjectConnector({ connectorId: "business_entities", projectId: "prj_a", kind: "contact" }, ACTOR);
+  const beforeSyncCount = h.state.channelObjectRecords.length;
+  const syncPreview = await h.connectors.syncChannelObjectConnector({ connectorId: "business_entities", projectId: "prj_a", kind: "contact" }, ACTOR);
+  assert.equal(syncPreview.status, 201);
+  assert.equal(syncPreview.body.approvalRequired, true);
+  assert.equal(h.state.channelObjectRecords.length, beforeSyncCount);
+  const sync = h.connectors.confirmChannelObjectConnectorSync({ previewId: syncPreview.body.preview.id, approvalToken: "issued-token" }, ACTOR);
   assert.equal(sync.status, 200);
   assert.equal(sync.body.sync.imported, 1);
   assert.equal(h.state.channelObjectRecords.some((row) => row.label === "王五" && row.source === "business_entities"), true);
@@ -166,6 +185,10 @@ test("external connector configuration stores only a credential reference and re
   const service = createChannelObjectConnectorService({
     state, now: () => "2026-08-17T00:00:00.000Z", nextId: (prefix) => `${prefix}_${++counter}`,
     appendEvent: () => {}, persistStateSoon: () => {}, upsertChannelObject: registry.upsertChannelObject,
+    validateApprovalToken: (token, request) => token === "issued-token"
+      && request.action === "channel_object_connector_sync_confirm"
+      ? { approved: true, grantId: "apg_1" }
+      : { approved: false, reason: "grant_required" },
     adapters: {
       crm: {
         id: "crm", name: "示例 CRM", kinds: ["contact"],
@@ -186,7 +209,10 @@ test("external connector configuration stores only a credential reference and re
   assert.equal(preview.status, 201);
   assert.equal(preview.body.preview.creates, 1);
   assert.equal(state.channelObjectRecords.length, 0);
-  const confirmed = service.confirmChannelObjectConnectorSync({ previewId: preview.body.preview.id }, ACTOR);
+  const denied = service.confirmChannelObjectConnectorSync({ previewId: preview.body.preview.id }, ACTOR);
+  assert.equal(denied.status, 409);
+  assert.equal(denied.body.error, "channel_object_sync_approval_required");
+  const confirmed = service.confirmChannelObjectConnectorSync({ previewId: preview.body.preview.id, approvalToken: "issued-token" }, ACTOR);
   assert.equal(confirmed.status, 200);
   assert.equal(confirmed.body.sync.imported, 1);
   assert.equal(service.confirmChannelObjectConnectorSync({ previewId: preview.body.preview.id }, ACTOR).body.replayed, true);

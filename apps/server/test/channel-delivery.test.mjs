@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { createWecomClient } from "../src/gateway/wecom-client.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
 import {
+  MANUAL_RESEND_COOLDOWN_MS,
   MAX_DELIVERY_ATTEMPTS,
   backoffMs,
   createChannelDeliveryService,
@@ -121,6 +122,7 @@ function makeDeliveryHarness({ sendMessage } = {}) {
       refusals.push(refusal);
       if (refusal.event) events.push(refusal.event);
     },
+    validateApprovalToken: () => ({ approved: true }),
     sendMessage: sendMessage ?? (async (args) => {
       sent.push(args);
       return { ok: true, msgid: `wx_msg_${sent.length}` };
@@ -158,6 +160,51 @@ test("a queued delivery sends, records the provider receipt, and leaves evidence
   assert.equal(harness.events.at(-1).type, "channel_delivery_recorded");
   assert.equal(harness.state.channelNotificationLog[0].deliveryStatus, "delivered");
   assert.ok(harness.state.channelNotificationLog[0].deliveredAt);
+});
+
+test("a provider acceptance without a receipt stays explicitly unconfirmed and can be retried with a fresh client id", async () => {
+  const sent = [];
+  const harness = makeDeliveryHarness({
+    sendMessage: async (args) => {
+      sent.push(args);
+      return { ok: true, confirmed: false, clientId: args.deliveryId };
+    },
+  });
+  const queued = harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    content: "provider accepted this message",
+  });
+
+  assert.equal((await harness.service.sweepChannelDeliveries()).processed, 1);
+  const delivery = harness.state.channelDeliveries.find((row) => row.id === queued.deliveryId);
+  assert.equal(delivery.status, "sent_unconfirmed");
+  assert.equal(delivery.providerReceiptId, null);
+  assert.equal(delivery.providerClientId, queued.deliveryId);
+  assert.equal(harness.events.at(-1).type, "channel_delivery_unconfirmed");
+
+  const coolingDown = harness.service.retryChannelDelivery({
+    channelId: harness.channelId,
+    deliveryId: delivery.id,
+    approvalToken: "ok",
+  }, owner);
+  assert.equal(coolingDown.ok, false);
+  assert.equal(coolingDown.status, 409);
+  assert.equal(coolingDown.body.error, "delivery_retry_cooldown");
+  assert.equal(sent.length, 1);
+
+  harness.advance(MANUAL_RESEND_COOLDOWN_MS);
+  const retried = harness.service.retryChannelDelivery({
+    channelId: harness.channelId,
+    deliveryId: delivery.id,
+    approvalToken: "ok",
+  }, owner);
+  assert.equal(retried.ok, true);
+  const retryClientId = delivery.providerClientId;
+  assert.match(retryClientId, new RegExp(`^${delivery.id}-retry-`));
+  await harness.service.sweepChannelDeliveries();
+  assert.equal(sent[1].deliveryId, retryClientId);
+  assert.equal(delivery.status, "sent_unconfirmed");
 });
 
 test("a disabled channel pauses outbound delivery and resumes after re-enable", async () => {
@@ -262,6 +309,69 @@ test("task thread keeps delivery failure state and can resend the latest result"
   assert.equal(harness.state.channelDeliveries.at(-1).content, "任务已完成\n结果内容");
 });
 
+test("an accepted result suppresses duplicate resend until its cooldown expires", async () => {
+  const harness = makeDeliveryHarness({ sendMessage: async (args) => ({ ok: true, confirmed: false, clientId: args.deliveryId }) });
+  harness.state.channelTaskThreads.push({
+    id: "cth_cooldown", channelId: harness.channelId, conversationId: harness.conversationId,
+    status: "succeeded", summary: "已完成", workItemId: "wi_cooldown",
+  });
+  harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    content: "已经生成的结果",
+    taskContext: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_cooldown", workItemId: "wi_cooldown", deliveryKind: "result" },
+  });
+  await harness.service.sweepChannelDeliveries();
+  const source = harness.state.channelDeliveries.at(-1);
+
+  const blocked = harness.service.resendChannelDelivery({
+    channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_cooldown",
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.reason, "recently_accepted");
+  assert.equal(harness.state.channelDeliveries.length, 1);
+
+  harness.advance(MANUAL_RESEND_COOLDOWN_MS);
+  const resent = harness.service.resendChannelDelivery({
+    channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_cooldown",
+  });
+  assert.equal(resent.ok, true);
+  assert.equal(harness.state.channelDeliveries.length, 2);
+  assert.equal(harness.state.channelDeliveries.at(-1).resendOfDeliveryId, source.id);
+  assert.equal(harness.state.channelDeliveries.at(-1).resendCount, 1);
+});
+
+test("a legacy link result without taskContext can be resent through its source event", () => {
+  const harness = makeDeliveryHarness();
+  harness.state.channelTaskThreads.push({
+    id: "cth_legacy", channelId: harness.channelId, conversationId: harness.conversationId,
+    status: "succeeded", summary: "收纳链接资料", resultSummary: "已收纳 1 份资料。",
+    workItemId: "wi_legacy", sourceEventIds: ["chev_legacy"],
+  });
+  harness.state.channelDeliveries.push({
+    id: "cdl_legacy", channelId: harness.channelId, conversationId: harness.conversationId,
+    ownerTeamId: "team_local", invocationId: null, taskContext: null, sourceContext: null,
+    toUser: "wx_alice", replyContext: null, content: "已收纳到本地资料库。\n历史结果内容",
+    mediaAssets: [], dedupeKey: "channel-event:chev_legacy:reply", status: "delivered",
+    attempts: 1, nextAttemptAt: null, providerReceiptId: "accepted-legacy",
+    providerClientId: null, lastErrorCode: null, createdAt: "2026-08-14T00:00:00.000Z",
+    updatedAt: "2026-08-14T00:00:01.000Z",
+  });
+
+  const resent = harness.service.resendChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    threadId: "cth_legacy",
+  });
+
+  assert.equal(resent.ok, true);
+  const copy = harness.state.channelDeliveries.at(-1);
+  assert.equal(copy.content, "已收纳到本地资料库。\n历史结果内容");
+  assert.equal(copy.taskContext.threadId, "cth_legacy");
+  assert.equal(copy.taskContext.workItemId, "wi_legacy");
+  assert.equal(copy.taskContext.deliveryKind, "result");
+});
+
 test("exported channel result can be resent even when its original delivery row is absent", () => {
   const harness = makeDeliveryHarness();
   const conversation = harness.state.channelConversations.find((candidate) => candidate.id === harness.conversationId);
@@ -306,6 +416,77 @@ test("delivery recovery rebuilds the task snapshot after restart", () => {
   assert.equal(harness.state.channelTaskThreads[0].lastDeliveryStatus, "failed_terminal");
   assert.equal(harness.state.channelTaskThreads[0].lastDeliveryError, "network_error");
   assert.equal(harness.state.channelTaskThreads[0].nextAction, "在控制台重试消息投递");
+});
+
+test("delivery recovery reclassifies historical iLink acceptance without changing its chronology", () => {
+  const harness = makeDeliveryHarness();
+  harness.state.channels.find((channel) => channel.id === harness.channelId).provider = "wechat_ilink";
+  harness.state.channelTaskThreads.push({
+    id: "cth_legacy_ilink", channelId: harness.channelId, conversationId: harness.conversationId,
+    status: "succeeded", summary: "已完成", workItemId: "wi_legacy_ilink",
+  });
+  harness.state.channelDeliveries.push({
+    id: "cdl_legacy_ilink", channelId: harness.channelId, conversationId: harness.conversationId,
+    status: "delivered", attempts: 1, providerReceiptId: "acceptance-only", content: "历史任务结果",
+    mediaAssets: [], createdAt: "2026-08-14T00:00:00.000Z", updatedAt: "2026-08-14T00:00:01.000Z",
+    taskContext: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_legacy_ilink", workItemId: "wi_legacy_ilink", deliveryKind: "result" },
+  });
+  const restarted = createChannelDeliveryService({
+    state: harness.state, now: () => "2026-08-25T08:00:00.000Z", nextId: () => "unused",
+    appendEvent: () => {}, sendMessage: async () => ({ ok: true }),
+  });
+
+  assert.deepEqual(restarted.recoverThreadDeliveryState(), { recovered: 1 });
+  const delivery = harness.state.channelDeliveries.at(-1);
+  assert.equal(delivery.status, "sent_unconfirmed");
+  assert.equal(delivery.providerAcceptedAt, "2026-08-14T00:00:01.000Z");
+  assert.equal(delivery.nextManualRetryAt, "2026-08-14T00:10:01.000Z");
+  assert.equal(delivery.updatedAt, "2026-08-14T00:00:01.000Z");
+  assert.equal(harness.state.channelTaskThreads.at(-1).lastDeliveryStatus, "sent_unconfirmed");
+});
+
+test("an explicit channel-user receipt confirms visibility and survives restart migration", async () => {
+  const harness = makeDeliveryHarness({ sendMessage: async (args) => ({ ok: true, confirmed: false, clientId: args.deliveryId }) });
+  harness.state.channels.find((channel) => channel.id === harness.channelId).provider = "wechat_ilink";
+  harness.state.channelTaskThreads.push({
+    id: "cth_visible", channelId: harness.channelId, conversationId: harness.conversationId,
+    status: "succeeded", summary: "已完成", workItemId: "wi_visible",
+  });
+  harness.state.channelDeliveries.push({
+    id: "cdl_older_unconfirmed", channelId: harness.channelId, conversationId: harness.conversationId,
+    status: "sent_unconfirmed", attempts: 1, content: "旧结果", createdAt: "2027-01-15T07:59:00.000Z", updatedAt: "2027-01-15T07:59:01.000Z",
+    taskContext: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_visible", workItemId: "wi_visible", deliveryKind: "result" },
+  });
+  const queued = harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId, conversationId: harness.conversationId, content: "任务结果",
+    taskContext: { channelId: harness.channelId, conversationId: harness.conversationId, threadId: "cth_visible", workItemId: "wi_visible", deliveryKind: "result" },
+  });
+  await harness.service.sweepChannelDeliveries();
+
+  const confirmed = harness.service.acknowledgeChannelDelivery({
+    channelId: harness.channelId, conversationId: harness.conversationId,
+    threadId: "cth_visible", sourceEventId: "chev_receipt",
+  });
+  assert.equal(confirmed.ok, true);
+  const delivery = harness.state.channelDeliveries.find((row) => row.id === queued.deliveryId);
+  assert.equal(delivery.status, "delivered");
+  assert.equal(delivery.userConfirmedByEventId, "chev_receipt");
+  assert.equal(delivery.nextManualRetryAt, null);
+  assert.equal(harness.state.channelTaskThreads.at(-1).lastDeliveryStatus, "delivered");
+  assert.equal(harness.state.channelTaskThreads.at(-1).nextAction, "查看任务结果");
+  assert.equal(harness.events.at(-1).type, "channel_delivery_user_confirmed");
+
+  const repeated = harness.service.acknowledgeChannelDelivery({
+    channelId: harness.channelId, conversationId: harness.conversationId,
+    threadId: "cth_visible", sourceEventId: "chev_receipt_again",
+  });
+  assert.equal(repeated.ok, true);
+  assert.equal(repeated.alreadyConfirmed, true);
+  assert.equal(harness.state.channelDeliveries.find((row) => row.id === "cdl_older_unconfirmed").status, "sent_unconfirmed");
+
+  assert.deepEqual(harness.service.recoverThreadDeliveryState(), { recovered: 1 });
+  assert.equal(delivery.status, "delivered");
+  assert.ok(delivery.userConfirmedAt);
 });
 
 test("a delivered status notification never masquerades as a delivered task result", async () => {

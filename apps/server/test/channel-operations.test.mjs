@@ -106,6 +106,54 @@ test("channelOperations can use runtime readiness instead of stale state fields"
   assert.equal(rows[0].health, "ok");
 });
 
+test("channelOperations exposes delayed iLink visibility as actionable delivery health", () => {
+  const rows = channelOperations({
+    channels: [{ id: "chn_ilink", provider: "wechat_ilink", status: "enabled" }],
+    channelDeliveries: [{
+      id: "cdl_unconfirmed", channelId: "chn_ilink", status: "sent_unconfirmed",
+      providerAcceptedAt: "2026-08-25T08:00:00.000Z", nextManualRetryAt: "2026-08-25T08:10:00.000Z",
+      taskContext: { threadId: "thread_1", deliveryKind: "result" },
+    }],
+    readinessForChannel: () => ({ account: true, session: true, worker: true }),
+    now: () => "2026-08-25T08:02:00.000Z",
+  });
+
+  assert.equal(rows[0].health, "attention");
+  assert.equal(rows[0].counts.unconfirmedDeliveries, 1);
+  assert.deepEqual(rows[0].deliveryHealth, {
+    state: "outbound_delayed",
+    unconfirmedCount: 1,
+    delayedCount: 1,
+    latestDeliveryId: "cdl_unconfirmed",
+    latestAcceptedAt: "2026-08-25T08:00:00.000Z",
+    retryAfter: "2026-08-25T08:10:00.000Z",
+  });
+});
+
+test("channelOperations does not turn an old unconfirmed chat acknowledgement into a task-result alert", () => {
+  const rows = channelOperations({
+    channels: [{ id: "chn_ilink", provider: "wechat_ilink", status: "enabled" }],
+    channelDeliveries: [{
+      id: "cdl_chat", channelId: "chn_ilink", status: "sent_unconfirmed",
+      providerAcceptedAt: "2026-08-25T08:00:00.000Z",
+      taskContext: { deliveryKind: "status_notification" },
+    }],
+    readinessForChannel: () => ({ account: true, session: true, worker: true }),
+    now: () => "2026-08-25T09:00:00.000Z",
+  });
+
+  assert.equal(rows[0].health, "ok");
+  assert.equal(rows[0].counts.unconfirmedDeliveries, 1);
+  assert.deepEqual(rows[0].deliveryHealth, {
+    state: "healthy",
+    unconfirmedCount: 0,
+    delayedCount: 0,
+    latestDeliveryId: null,
+    latestAcceptedAt: null,
+    retryAfter: null,
+  });
+});
+
 test("channelOperations exposes only a sanitized iLink runtime summary", () => {
   const rows = channelOperations({
     channels: [{ id: "chn_ilink", provider: "wechat_ilink", status: "enabled" }],

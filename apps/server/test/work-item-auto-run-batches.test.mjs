@@ -17,6 +17,7 @@ function repoAgent(id, deviceId = "dev_a") {
 
 function fixture({
   startAutoRun: startAutoRunOverride,
+  reconcileRecordBindings,
   agents = [repoAgent("agt_codex_cli")],
   projects = [{ id: "prj_a", defaultAgentId: null }],
 } = {}) {
@@ -52,6 +53,7 @@ function fixture({
       status: workItems.has(workItemId) ? 200 : 404,
       body: workItems.has(workItemId) ? { workItem: workItems.get(workItemId) } : { error: "not_found" },
     }),
+    reconcileRecordBindings,
     beginExecution: () => ({ ok: true, body: { operation: { id: `op_${++sequence}` } } }),
     abortExecution: () => ({ ok: true }),
     recordExecutionBinding: () => ({ ok: true }),
@@ -80,6 +82,27 @@ function fixture({
     },
   };
 }
+
+test("batch execution reconciles business records before admission", async () => {
+  const { state, service, runScheduledPumps } = fixture({
+    reconcileRecordBindings: async () => ({
+      status: 200,
+      body: {
+        executionBlocked: true,
+        blockingBindings: [{ bindingId: "binding_customer", state: "stale" }],
+      },
+    }),
+  });
+  const created = await service.createBatch({ workItemIds: ["lwi_1"] }, {
+    userId: "usr_a", teamId: "team_a", role: "operator",
+  });
+  assert.equal(created.status, 201);
+  await runScheduledPumps();
+  const batch = service.listBatches({}, { teamId: "team_a" }).body.batches[0];
+  assert.equal(batch.status, "completed_with_failures");
+  assert.equal(batch.items[0].error, "work_item_record_bindings_stale");
+  assert.equal(state.autoRuns.length, 0);
+});
 
 test("durable work-item batch enforces concurrency and backfills the next slot", async () => {
   const { state, service, runScheduledPumps } = fixture();

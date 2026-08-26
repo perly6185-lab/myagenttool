@@ -17,6 +17,7 @@ import { channelFailureCopy, channelResultCopy } from "./channel-user-copy.mjs";
 
 export const CHANNEL_DELIVERY_RETRY_ACTION = "channel.delivery.retry";
 export const MAX_DELIVERY_ATTEMPTS = 5;
+export const MANUAL_RESEND_COOLDOWN_MS = 10 * 60 * 1000;
 const BASE_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 10 * 60 * 1000;
 const RATE_LIMIT_BACKOFF_MS = 60 * 1000;
@@ -100,7 +101,12 @@ export function createChannelDeliveryService({
       thread.nextAction = "在控制台重试消息投递";
       thread.lastProgressAt = now();
       thread.lastProgressSummary = "任务结果已生成，但消息投递失败";
+    } else if (status === "sent_unconfirmed" && resultDelivery) {
+      thread.nextAction = "如微信未显示结果，可在控制台再次发送";
+      thread.lastProgressAt = now();
+      thread.lastProgressSummary = "任务结果已被微信接口接受，但客户端展示尚未确认";
     } else if (status === "delivered" && resultDelivery) {
+      thread.nextAction = "查看任务结果";
       thread.lastProgressAt = now();
       thread.lastProgressSummary = "任务结果已发送给你";
     }
@@ -109,6 +115,22 @@ export function createChannelDeliveryService({
   /** Rebuild the thread's delivery snapshot after a process restart. */
   function recoverThreadDeliveryState() {
     const latestByThread = new Map();
+    const timestamp = now();
+    runTx(() => {
+      for (const delivery of state.channelDeliveries ?? []) {
+        const channel = findChannel(delivery.channelId);
+        if (channel?.provider !== "wechat_ilink" || delivery.status !== "delivered" || delivery.userConfirmedAt) continue;
+        // Older builds treated iLink's message_id as proof that WeChat rendered
+        // the text. It is only an acceptance id, so migrate the durable state
+        // without rewriting the original delivery chronology.
+        const acceptedCandidate = delivery.providerAcceptedAt ?? delivery.updatedAt ?? delivery.createdAt ?? timestamp;
+        const acceptedMs = Date.parse(acceptedCandidate);
+        delivery.status = "sent_unconfirmed";
+        delivery.providerAcceptedAt = Number.isFinite(acceptedMs) ? acceptedCandidate : timestamp;
+        delivery.nextManualRetryAt = delivery.nextManualRetryAt
+          ?? new Date(Date.parse(delivery.providerAcceptedAt) + MANUAL_RESEND_COOLDOWN_MS).toISOString();
+      }
+    });
     for (const delivery of state.channelDeliveries ?? []) {
       const threadId = delivery.taskContext?.threadId;
       if (!threadId) continue;
@@ -212,6 +234,15 @@ export function createChannelDeliveryService({
       attempts: 0,
       nextAttemptAt: timestamp,
       providerReceiptId: null,
+      providerClientId: null,
+      providerAcceptedAt: null,
+      nextManualRetryAt: null,
+      lastResentAt: null,
+      resendCount: 0,
+      resendOfDeliveryId: null,
+      userConfirmedAt: null,
+      userConfirmedByEventId: null,
+      userReportedMissingAt: null,
       lastErrorCode: null,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -312,34 +343,47 @@ export function createChannelDeliveryService({
     const send = senderFor(delivery);
     try {
       if (typeof send !== "function") throw Object.assign(new Error("no_sender"), { errcode: "no_sender" });
-      outcome = await send({ channelId: delivery.channelId, deliveryId: delivery.id, toUser: delivery.toUser, content: delivery.content, mediaAssets: delivery.mediaAssets ?? [], replyContext: delivery.replyContext ?? null });
+      outcome = await send({ channelId: delivery.channelId, deliveryId: delivery.providerClientId || delivery.id, toUser: delivery.toUser, content: delivery.content, mediaAssets: delivery.mediaAssets ?? [], replyContext: delivery.replyContext ?? null });
     } catch (error) {
       outcome = { ok: false, retryable: true, errcode: error?.errcode ?? "transport_error" };
     }
 
     if (outcome?.ok) {
+      const confirmed = outcome.confirmed !== false;
+      const acceptedStatus = confirmed ? "delivered" : "sent_unconfirmed";
       runTx(() => {
-        delivery.status = "delivered";
+        delivery.status = acceptedStatus;
         delivery.providerReceiptId = outcome.msgid || null;
+        delivery.providerClientId = outcome.clientId || delivery.providerClientId || delivery.id;
+        delivery.providerAcceptedAt = now();
+        delivery.nextManualRetryAt = confirmed
+          ? null
+          : new Date(Date.parse(delivery.providerAcceptedAt) + MANUAL_RESEND_COOLDOWN_MS).toISOString();
         delivery.lastErrorCode = null;
         delivery.updatedAt = now();
-        updateThreadDelivery(delivery, "delivered");
-        // Delivery evidence (parent AC #8): the receipt joins the audit spine.
+        updateThreadDelivery(delivery, acceptedStatus);
+        // Delivery evidence distinguishes provider acceptance from confirmed
+        // user-visible delivery. iLink may issue a message_id while the client
+        // remains empty, so that id must not turn this state into `delivered`.
         appendEvent({
           invocationId: delivery.invocationId,
-          type: "channel_delivery_recorded",
-          level: "info",
-          message: `Channel ${delivery.channelId}: delivery ${delivery.id} delivered.`,
+          type: confirmed ? "channel_delivery_recorded" : "channel_delivery_unconfirmed",
+          level: confirmed ? "info" : "warn",
+          message: confirmed
+            ? `Channel ${delivery.channelId}: delivery ${delivery.id} delivered.`
+            : `Channel ${delivery.channelId}: delivery ${delivery.id} accepted without confirmed user delivery.`,
           data: {
             channelId: delivery.channelId,
             deliveryId: delivery.id,
             conversationId: delivery.conversationId,
             providerReceiptId: delivery.providerReceiptId,
+            providerClientId: delivery.providerClientId,
+            confirmed,
             attempts: delivery.attempts,
           },
         });
       });
-      return { status: "delivered" };
+      return { status: acceptedStatus };
     }
 
     const errcode = String(outcome?.errcode ?? "unknown");
@@ -599,9 +643,10 @@ export function createChannelDeliveryService({
   }
 
   /**
-   * Operator recovery lever (S7): re-queue one terminally-failed delivery.
+   * Operator recovery lever (S7): re-queue one terminally-failed or
+   * provider-accepted-but-unconfirmed delivery.
    * Owner-team scoped (foreign → 404) and approval-gated — a human explicitly
-   * re-authorizes the send. Only `failed_terminal` rows are eligible.
+   * re-authorizes the send. Confirmed deliveries remain ineligible.
    */
   function retryChannelDelivery({ channelId, deliveryId, approvalToken } = {}, actor = null) {
     const channel = findChannel(String(channelId ?? ""));
@@ -614,8 +659,20 @@ export function createChannelDeliveryService({
     if (!delivery) {
       return { ok: false, status: 404, body: { error: "delivery_not_found" } };
     }
-    if (delivery.status !== "failed_terminal") {
+    if (!["failed_terminal", "sent_unconfirmed"].includes(delivery.status)) {
       return { ok: false, status: 409, body: { error: "delivery_not_retryable", status: delivery.status } };
+    }
+    if (delivery.status === "sent_unconfirmed" && Date.parse(delivery.nextManualRetryAt ?? "") > Date.parse(now())) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "delivery_retry_cooldown",
+          reason: "微信已接受上一条消息，立即重发可能造成延迟重复。",
+          retryAfter: delivery.nextManualRetryAt,
+          deliveryId: delivery.id,
+        },
+      };
     }
     const approval = typeof validateApprovalToken === "function"
       ? validateApprovalToken(approvalToken, { action: CHANNEL_DELIVERY_RETRY_ACTION, targetId: delivery.id, actor })
@@ -637,6 +694,12 @@ export function createChannelDeliveryService({
     runTx(() => {
       delivery.status = "queued";
       delivery.attempts = 0;
+      // An explicit retry must use a fresh provider idempotency key; otherwise
+      // iLink may dedupe the corrected payload against the prior silent drop.
+      delivery.providerClientId = `${delivery.id}-retry-${Date.parse(now())}`;
+      delivery.resendCount = Number(delivery.resendCount ?? 0) + 1;
+      delivery.lastResentAt = now();
+      delivery.nextManualRetryAt = null;
       delivery.lastErrorCode = null;
       delivery.nextAttemptAt = now();
       delivery.updatedAt = now();
@@ -658,21 +721,46 @@ export function createChannelDeliveryService({
    * it does not bypass the normal outbound retry/audit pipeline.
    */
   function resendChannelDelivery({ channelId, conversationId, threadId } = {}) {
+    const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+      candidate.id === String(threadId ?? "")
+      && candidate.channelId === String(channelId ?? "")
+      && candidate.conversationId === String(conversationId ?? "")) ?? null;
     let source = (state.channelDeliveries ?? [])
       .filter((delivery) => delivery.channelId === String(channelId ?? "")
         && delivery.conversationId === String(conversationId ?? "")
         && delivery.taskContext?.threadId === String(threadId ?? "")
         && (delivery.invocationId || delivery.taskContext?.workItemId)
-        && ["delivered", "failed_terminal", "retrying", "queued"].includes(delivery.status)
+        && ["delivered", "sent_unconfirmed", "failed_terminal", "retrying", "queued"].includes(delivery.status)
         && (delivery.content || delivery.mediaAssets?.length))
       .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? "")))[0] ?? null;
+    if (!source && thread?.sourceEventIds?.length) {
+      // Deliveries created before taskContext correlation was introduced are
+      // still recoverable through their immutable source-event dedupe key.
+      // Without this bridge, an old completed link task is visible in “我的任务”
+      // but “重发结果” incorrectly reports that no result exists.
+      const legacyReplyKeys = new Set(thread.sourceEventIds.map((eventId) => `channel-event:${eventId}:reply`));
+      source = (state.channelDeliveries ?? [])
+        .filter((delivery) => delivery.channelId === thread.channelId
+          && delivery.conversationId === thread.conversationId
+          && legacyReplyKeys.has(delivery.dedupeKey)
+          && ["delivered", "sent_unconfirmed", "failed_terminal", "retrying", "queued"].includes(delivery.status)
+          && (delivery.content || delivery.mediaAssets?.length))
+        .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? "")))[0] ?? null;
+      if (source) {
+        source = {
+          ...source,
+          taskContext: {
+            channelId: thread.channelId,
+            conversationId: thread.conversationId,
+            threadId: thread.id,
+            workItemId: thread.workItemId ?? null,
+            deliveryKind: "result",
+          },
+        };
+      }
+    }
     if (!source) {
-      const thread = (state.channelTaskThreads ?? []).find((candidate) =>
-        candidate.id === String(threadId ?? "")
-        && candidate.channelId === String(channelId ?? "")
-        && candidate.conversationId === String(conversationId ?? "")
-        && candidate.exportedAsset?.path);
-      if (thread) {
+      if (thread?.exportedAsset?.path) {
         source = {
           channelId: thread.channelId,
           conversationId: thread.conversationId,
@@ -690,6 +778,20 @@ export function createChannelDeliveryService({
       }
     }
     if (!source) return { ok: false, reason: "no_result" };
+    if (source.status === "sent_unconfirmed") {
+      runTx(() => {
+        const persisted = (state.channelDeliveries ?? []).find((delivery) => delivery.id === source.id);
+        if (persisted) persisted.userReportedMissingAt = now();
+      });
+    }
+    if (source.status === "sent_unconfirmed" && Date.parse(source.nextManualRetryAt ?? "") > Date.parse(now())) {
+      return {
+        ok: false,
+        reason: "recently_accepted",
+        deliveryId: source.id,
+        retryAfter: source.nextManualRetryAt,
+      };
+    }
     const queued = enqueueChannelDelivery({
       channelId: source.channelId,
       conversationId: source.conversationId,
@@ -700,6 +802,12 @@ export function createChannelDeliveryService({
     });
     if (!queued.ok) return queued;
     runTx(() => {
+      const copy = (state.channelDeliveries ?? []).find((delivery) => delivery.id === queued.deliveryId);
+      if (copy) {
+        copy.resendOfDeliveryId = source.id ?? null;
+        copy.resendCount = Number(source.resendCount ?? 0) + 1;
+        copy.lastResentAt = now();
+      }
       appendEvent({
         invocationId: source.invocationId,
         type: "channel_delivery_resend_requested",
@@ -711,6 +819,53 @@ export function createChannelDeliveryService({
     return { ...queued, sourceDeliveryId: source.id };
   }
 
+  /**
+   * Treat an explicit reply from the same channel conversation as the delivery
+   * receipt iLink cannot provide. The caller must resolve the discrete task;
+   * this service validates the exact conversation and latest result again.
+   */
+  function acknowledgeChannelDelivery({ channelId, conversationId, threadId, sourceEventId = null } = {}) {
+    const matching = (state.channelDeliveries ?? [])
+      .filter((delivery) => delivery.channelId === String(channelId ?? "")
+        && delivery.conversationId === String(conversationId ?? "")
+        && delivery.taskContext?.threadId === String(threadId ?? "")
+        && delivery.taskContext?.deliveryKind === "result")
+      .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "")
+        .localeCompare(String(left.updatedAt ?? left.createdAt ?? "")));
+    const latest = matching[0] ?? null;
+    const delivery = latest?.status === "sent_unconfirmed" ? latest : null;
+    if (!delivery) {
+      const confirmed = latest?.status === "delivered" && latest.userConfirmedAt ? latest : null;
+      return confirmed
+        ? { ok: true, deliveryId: confirmed.id, alreadyConfirmed: true, confirmedAt: confirmed.userConfirmedAt }
+        : { ok: false, reason: "no_unconfirmed_result" };
+    }
+    const confirmedAt = now();
+    runTx(() => {
+      delivery.status = "delivered";
+      delivery.userConfirmedAt = confirmedAt;
+      delivery.userConfirmedByEventId = sourceEventId ? String(sourceEventId).slice(0, 200) : null;
+      delivery.nextManualRetryAt = null;
+      delivery.lastErrorCode = null;
+      delivery.updatedAt = confirmedAt;
+      updateThreadDelivery(delivery, "delivered");
+      appendEvent({
+        invocationId: delivery.invocationId,
+        type: "channel_delivery_user_confirmed",
+        level: "info",
+        message: `Channel ${delivery.channelId}: delivery ${delivery.id} confirmed visible by the channel user.`,
+        data: {
+          channelId: delivery.channelId,
+          conversationId: delivery.conversationId,
+          deliveryId: delivery.id,
+          threadId: delivery.taskContext?.threadId ?? null,
+          sourceEventId: delivery.userConfirmedByEventId,
+        },
+      });
+    });
+    return { ok: true, deliveryId: delivery.id, alreadyConfirmed: false, confirmedAt };
+  }
+
   return {
     enqueueChannelDelivery,
     enqueueChannelDeliveryBatch,
@@ -720,6 +875,7 @@ export function createChannelDeliveryService({
     attemptDelivery,
     retryChannelDelivery,
     resendChannelDelivery,
+    acknowledgeChannelDelivery,
     recoverThreadDeliveryState,
   };
 }

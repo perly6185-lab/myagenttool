@@ -45,6 +45,7 @@ export function createWorkItemAutoSchedulerService({
   now = () => new Date().toISOString(),
   appendEvent = () => {},
   getWorkItem = null,
+  reconcileRecordBindings = null,
   beginExecution = null,
   abortExecution = null,
   recordExecutionBinding = null,
@@ -197,6 +198,19 @@ export function createWorkItemAutoSchedulerService({
       return { started: false, reason: "scheduler_dependencies_unavailable" };
     }
     const actor = actorFor(candidate);
+    if (typeof reconcileRecordBindings === "function") {
+      const freshness = await reconcileRecordBindings({ workItemId: candidate.id }, actor);
+      if (freshness?.status !== 200) {
+        return { started: false, reason: freshness?.body?.error ?? "record_binding_freshness_check_failed" };
+      }
+      if (freshness.body?.executionBlocked) {
+        return {
+          started: false,
+          reason: "work_item_record_bindings_stale",
+          blockingBindings: freshness.body.blockingBindings ?? [],
+        };
+      }
+    }
     const detail = getWorkItem({ workItemId: candidate.id }, actor);
     if (!detail.ok) return { started: false, reason: detail.body?.error ?? "work_item_not_found" };
     const item = detail.body.workItem;

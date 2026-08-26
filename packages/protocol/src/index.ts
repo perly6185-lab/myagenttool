@@ -18,3 +18,4 @@ export * from "./refusal.js";
 export * from "./canvas.js";
 export * from "./identity.js";
 export * from "./work-profile.js";
+export * from "./task-resources.js";

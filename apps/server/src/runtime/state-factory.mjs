@@ -324,6 +324,7 @@ export function createServerState({ defaultProjectPath, now }) {
     ledgerBatchUpsertPreviews: [],
     ledgerBatchMutationJournals: [],
     ledgerMutationAudits: [],
+    taskLedgerPostingPlans: [],
     businessPilotEvidenceReceipts: [],
     businessPilotDrafts: [],
     businessPilotCollections: [],

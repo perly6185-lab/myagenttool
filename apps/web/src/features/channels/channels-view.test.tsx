@@ -19,7 +19,7 @@ const action = vi.hoisted(() => ({
 }));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: () => ({ data: {
   channelIntentMetrics: { total: 4, lowConfidence: 0, ambiguous: 1, experience: { consultationAnswers: 3, consultationAnswerMissing: 1, consultationTimeouts: 1, consultationAutoRetries: 2, consultationAutoRetryRecovered: 1, consultationAutoRetryExhausted: 1, difficultSamples: 5, pendingReviewSamples: 2, resolvedCorrections: 3, replayReadySamples: 3, deduplicatedOccurrences: 4 } },
-  channelOperations: [{ id: "chn_1", provider: "wecom", name: "Ops", status: "enabled", readiness: { callback: true }, ready: true, health: "ok", capabilityAllowlist: [], counts: { identities: 1, conversations: 1, events: 1, deliveries: 1, failedDeliveries: 0, injectionFlagged: 0 }, lastInboundAt: "2026-08-13T12:00:00.000Z", lastOutboundAt: "2026-08-13T12:01:00.000Z", lastDeliveredAt: "2026-08-13T12:01:00.000Z", pipeline: { inbound: { imported: 1 }, outbound: { delivered: 1 } }, recentLinks: [{ eventId: "evt_link", conversationId: "conv_1", hosts: ["mp.weixin.qq.com"], status: "ready", detectedAt: "2026-08-13T12:00:10.000Z", completedAt: "2026-08-13T12:00:20.000Z", activeTaskCount: 1, acknowledgement: { deliveryId: "del_ack", status: "delivered", attempts: 1, updatedAt: "2026-08-13T12:00:11.000Z" }, finalReply: { deliveryId: "del_final", status: "delivered", attempts: 1, updatedAt: "2026-08-13T12:00:21.000Z" }, route: { target: "current_task_follow_up", status: "queued", reason: "confirmed_route_choice", activeTaskCount: 1, decidedAt: "2026-08-13T12:00:30.000Z" }, failureCode: null }] }],
+  channelOperations: [{ id: "chn_1", provider: "wechat_ilink", name: "Ops", status: "enabled", readiness: { account: true, session: true, worker: true }, ready: true, health: "attention", capabilityAllowlist: [], counts: { identities: 1, conversations: 1, events: 1, deliveries: 1, failedDeliveries: 0, unconfirmedDeliveries: 1, injectionFlagged: 0 }, deliveryHealth: { state: "outbound_delayed", unconfirmedCount: 1, delayedCount: 1, latestDeliveryId: "del_unconfirmed", latestAcceptedAt: "2026-08-13T12:01:00.000Z", retryAfter: "2026-08-13T12:11:00.000Z" }, lastInboundAt: "2026-08-13T12:00:00.000Z", lastOutboundAt: "2026-08-13T12:01:00.000Z", lastDeliveredAt: null, pipeline: { inbound: { imported: 1 }, outbound: { sent_unconfirmed: 1 } }, recentLinks: [{ eventId: "evt_link", conversationId: "conv_1", hosts: ["mp.weixin.qq.com"], status: "ready", detectedAt: "2026-08-13T12:00:10.000Z", completedAt: "2026-08-13T12:00:20.000Z", activeTaskCount: 1, acknowledgement: { deliveryId: "del_ack", status: "sent_unconfirmed", attempts: 1, updatedAt: "2026-08-13T12:00:11.000Z" }, finalReply: { deliveryId: "del_final", status: "sent_unconfirmed", attempts: 1, updatedAt: "2026-08-13T12:00:21.000Z" }, route: { target: "current_task_follow_up", status: "queued", reason: "confirmed_route_choice", activeTaskCount: 1, decidedAt: "2026-08-13T12:00:30.000Z" }, failureCode: null }] }],
   channelDeliveries: [], projects: [],
   channelConversations: [{
     id: "conv_1", channelId: "chn_1", externalUserId: "wx_alice", status: "active",
@@ -49,6 +49,10 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 describe("ChannelsView task operations", () => {
   it("defaults to a simple view and reveals diagnostics only on demand", async () => {
     render(<ChannelsView />);
+    expect(screen.getByTestId("channel-outbound-delay-fallback").textContent).toContain("微信回复可能延迟");
+    expect(screen.getByTestId("channel-outbound-delay-fallback").textContent).toContain("收消息和任务执行仍然正常");
+    expect(screen.getByRole("button", { name: "查看本地结果" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重新连接微信" })).toBeTruthy();
     expect(screen.getByTestId("channel-shared-materials").textContent).toContain("最近分享的资料（2）");
     expect(screen.getByText("移动端知识助手")).toBeTruthy();
     expect(screen.getByText("已分析")).toBeTruthy();
@@ -73,7 +77,7 @@ describe("ChannelsView task operations", () => {
     expect((screen.getByTestId("channel-task-device") as HTMLSelectElement).disabled).toBe(true);
     expect(screen.getByTestId("channel-diagnostics-summary").textContent).toContain("入站 已接收 1");
     expect(screen.getByTestId("channel-link-diagnostics").textContent).toContain("mp.weixin.qq.com");
-    expect(screen.getByTestId("channel-link-diagnostics").textContent).toContain("即时回执：已送达");
+    expect(screen.getByTestId("channel-link-diagnostics").textContent).toContain("即时回执：微信已接受，未确认送达");
     expect(screen.getByTestId("channel-link-diagnostics").textContent).toContain("未自动修改任务");
     expect(screen.getByTestId("channel-link-diagnostics").textContent).toContain("已明确安排到当前任务之后");
     expect(screen.getByText("run failed")).toBeTruthy();

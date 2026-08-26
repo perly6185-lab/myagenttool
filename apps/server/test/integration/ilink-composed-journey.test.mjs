@@ -109,7 +109,9 @@ test("composed iLink journey: poll → import → channel reply queue → provid
   assert.equal(state.channelDeliveries[0].replyContext.contextToken, "ctx-composed");
 
   await deps.sweepChannelDeliveries();
-  assert.equal(state.channelDeliveries[0].status, "delivered");
+  assert.equal(state.channelDeliveries[0].status, "sent_unconfirmed");
+  assert.equal(state.channelDeliveries[0].providerReceiptId, null);
+  assert.equal(state.channelDeliveries[0].providerClientId, state.channelDeliveries[0].id);
   assert.equal(sent.length, 1);
   assert.match(sent[0].content, /直接发送文字、图片、语音或文件/);
   assert.equal(sent[0].contextToken, "ctx-composed");
@@ -241,7 +243,7 @@ test("composed iLink journey: poll → import → channel reply queue → provid
   assert.ok(terminalDelivery);
   assert.doesNotMatch(terminalDelivery.content, /继续执行中/);
   await deps.sweepChannelDeliveries();
-  assert.equal(terminalDelivery.status, "delivered");
+  assert.equal(terminalDelivery.status, "sent_unconfirmed");
 
   const highRiskImported = await deps.importChannelEvent({
     channelId: channel.id,

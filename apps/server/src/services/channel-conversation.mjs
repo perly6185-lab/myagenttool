@@ -83,7 +83,7 @@ import {
 // single-user setup. Do not reveal whether the sender was unmapped, disabled,
 // or blocked by an allowlist.
 const GENERIC_DENIED_REPLY = "当前消息暂时无法处理。请在桌面端打开“频道”，确认微信已绑定且处于在线状态；首次使用请复制绑定口令，在微信 ClawBot 对话中发送。";
-const USAGE_REPLY = `直接发送文字、图片、语音或文件即可。\n\n我会先理解你的需求：\n• 想了解：我先回答问题\n• 只读查看：范围明确时直接处理，不会修改文件\n• 一句话包含多项工作：我会先列出任务篮，回复“确认执行”后才创建\n• 一件事进行中：可以说“文章改成 1500 字，图片不动”或“小红书改发视频”，我会先预览变化\n• 修改、发送或其他有风险操作：先说明影响并请你确认\n• 任务处理中：可以问“进度”\n• 想知道依据：回复“查看依据”或“为什么这样做”\n• 需要普通授权：按提示回复“确认授权”或“拒绝授权”\n• 结果不满意：直接说哪里需要修改\n• 想让我记住习惯：回复“记住：文章控制在 2000 字左右”；回复“我的偏好”查看\n\n常用操作：确认、取消、进度、查看依据、确认授权、拒绝授权、重试、重发结果、转人工。`;
+const USAGE_REPLY = `直接发送文字、图片、语音或文件即可。\n\n我会先理解你的需求：\n• 想了解：我先回答问题\n• 只读查看：范围明确时直接处理，不会修改文件\n• 一句话包含多项工作：我会先列出任务篮，回复“确认执行”后才创建\n• 一件事进行中：可以说“文章改成 1500 字，图片不动”或“小红书改发视频”，我会先预览变化\n• 修改、发送或其他有风险操作：先说明影响并请你确认\n• 任务处理中：可以问“进度”\n• 想知道依据：回复“查看依据”或“为什么这样做”\n• 需要普通授权：按提示回复“确认授权”或“拒绝授权”\n• 收到任务结果：回复“收到结果”，桌面端会关闭送达提醒\n• 结果不满意：直接说哪里需要修改\n• 想让我记住习惯：回复“记住：文章控制在 2000 字左右”；回复“我的偏好”查看\n\n常用操作：确认、取消、进度、查看依据、确认授权、拒绝授权、重试、重发结果、收到结果、转人工。`;
 
 // A staged confirmation goes stale after this long — a fresh /run is required
 // (mirrors the approval-grant TTL: a confirm-click artifact, not a work queue).
@@ -146,6 +146,8 @@ const TASK_PROGRESS_COLLOQUIAL = /^(?:(?:这个|当前|刚才(?:那个)?|上一�
 const TASK_RESULT_RESEND_REQUESTS = new Set(["重发结果", "再发一次", "再发一次结果", "把结果发我", "重新发送结果", "结果再发一次"]);
 const TASK_RESULT_RESEND_NATURAL = /^(?:(?:结果|消息|文件)?(?:没收到|没有收到|没看见|没看到)|(?:把)?(?:结果|消息|文件)?(?:再发|重新发|发给我|发我)(?:给我)?(?:一下|一遍|一份)?(?:结果|消息|文件)?)$/i;
 const TASK_RESULT_MISSING_NATURAL = /^(?:我)?(?:还)?(?:没收到|没有收到|没看见|没看到)(?:任务)?(?:结果|消息|文件)(?:呢|啊|呀)?[？?！!。]*$/i;
+const TASK_RESULT_RECEIVED_EXPLICIT = /^(?:(?:我)?(?:已经|已)?(?:收到|看见|看到)(?:了)?(?:这个|刚才的|任务)?(?:结果|消息|文件)(?:了)?|(?:这个|刚才的|任务)?(?:结果|消息|文件)(?:已经|已)?(?:收到|看见|看到)(?:了)?)(?:谢谢|多谢)?[，,。.!！?？]*$/i;
+const TASK_RESULT_RECEIVED_BARE = /^(?:好(?:的)?[，,、\s]*)?(?:收到|收到了|已收到|已经收到|看到了|看见了)(?:谢谢|多谢)?[，,。.!！?？]*$/i;
 const WECHAT_DRAFT_CONFIRMED_SAVED = /^(?:我)?(?:已经|已)?(?:在草稿箱(?:里|中)?|去草稿箱)?(?:找到|看见|看到)(?:了)?(?:这个|该|那篇)?(?:公众号)?草稿$|^(?:确认)?(?:已经|已)保存(?:成功)?$|^草稿箱(?:里|中)?(?:有|存在)(?:这个|该|那篇)?草稿$/i;
 const WECHAT_DRAFT_CONFIRMED_NOT_SAVED = /^(?:我)?(?:在草稿箱(?:里|中)?)?(?:没|没有|未)(?:找到|看见|看到)(?:这个|该|那篇)?(?:公众号)?草稿$|^(?:确认)?(?:没有|没|未)保存(?:成功)?$|^草稿箱(?:里|中)?(?:没有|没)(?:这个|该|那篇)?草稿$/i;
 const TASK_CANCEL_NATURAL = /^(?:(?:把)?(?:这个|当前|刚才|上一个)(?:的|那个)?(?:任务|事情|工作)?[，,、\s]*)?(?:不用做了|不要做了|别做了|取消掉|取消吧|作废)(?:吧)?[？?！!。]*$/i;
@@ -219,6 +221,7 @@ export function createChannelConversationService({
   resolveKnowledgeLocation = null,
   replySender = null,
   resendDelivery = null,
+  acknowledgeDelivery = null,
   enqueueChannelDelivery = null,
   updateWorkItem = null,
   resolveProjectPath = null,
@@ -1476,6 +1479,32 @@ function sharedContentContinuation(text, conversation) {
     return Number.isInteger(index) && index > 0 && index <= 10 ? { action: match[1] ?? "status", index } : null;
   }
 
+  function resultReceiptControl(value, conversation) {
+    const explicit = TASK_RESULT_RECEIVED_EXPLICIT.test(value);
+    const bare = TASK_RESULT_RECEIVED_BARE.test(value);
+    if (!explicit && !bare) return null;
+    const deliveries = (state.channelDeliveries ?? [])
+      .filter((delivery) => delivery.channelId === conversation.channelId
+        && delivery.conversationId === conversation.id)
+      .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "")
+        .localeCompare(String(left.updatedAt ?? left.createdAt ?? "")));
+    const latestResult = deliveries.find((delivery) => delivery.taskContext?.deliveryKind === "result") ?? null;
+    const candidate = explicit
+      ? latestResult?.status === "sent_unconfirmed" ? latestResult : null
+      : deliveries[0]?.status === "sent_unconfirmed" && deliveries[0]?.taskContext?.deliveryKind === "result"
+        ? deliveries[0]
+        : null;
+    if (!candidate?.taskContext?.threadId) return null;
+    const thread = (state.channelTaskThreads ?? []).find((item) =>
+      item.id === candidate.taskContext.threadId
+      && item.channelId === conversation.channelId
+      && item.conversationId === conversation.id
+      && ["succeeded", "failed"].includes(item.status)) ?? null;
+    return thread
+      ? { kind: "ack_delivery", ref: threadRef(thread), deliveryId: candidate.id, friendly: true }
+      : null;
+  }
+
   function taskControl(text, conversation = null) {
     const value = normalizedText(text);
     const lower = value.toLowerCase();
@@ -1488,6 +1517,8 @@ function sharedContentContinuation(text, conversation) {
     if (/^(?:暂停)(?:这件事|整个事情|全部步骤|整个任务)$/i.test(value)) return { kind: "goal_pause", ref: null, friendly: true };
     if (/^(?:继续|恢复)(?:这件事|整个事情|全部步骤|整个任务)$/i.test(value)) return { kind: "goal_resume", ref: null, friendly: true };
     if (conversation) {
+      const receipt = resultReceiptControl(value, conversation);
+      if (receipt) return receipt;
       const contextual = contextualTaskControl(value, conversation, recentTaskThreads(conversation).slice(0, 20));
       if (contextual?.kind === "focus_missing") return { kind: "focus_missing", ref: null, friendly: true };
       if (contextual?.kind === "focus_clarify") {
@@ -5957,6 +5988,34 @@ function sharedContentContinuation(text, conversation) {
         const statusLabel = control.friendly ? "当前任务" : threadRef(referenced);
         return settle(event, { status: "dispatched", reply: taskStatusReply(referenced, { label: statusLabel }), data: { taskThreadId: referenced.id, status: referenced.status } });
       }
+      if (control.kind === "ack_delivery") {
+        const confirmed = typeof acknowledgeDelivery === "function"
+          ? acknowledgeDelivery({
+            channelId: referenced.channelId,
+            conversationId: referenced.conversationId,
+            threadId: referenced.id,
+            sourceEventId: event.id,
+          })
+          : { ok: false, reason: "acknowledgement_unavailable" };
+        if (!confirmed?.ok) {
+          return settle(event, {
+            status: "dispatched",
+            reply: "谢谢反馈。我没有找到与这句话对应的待确认结果，任务记录没有改变。",
+            data: { taskThreadId: referenced.id, reason: confirmed?.reason ?? "acknowledgement_failed" },
+          });
+        }
+        runTx(() => {
+          event.taskThreadId = referenced.id;
+          event.deliveryAcknowledgementId = confirmed.deliveryId;
+        });
+        return settle(event, {
+          status: "dispatched",
+          reply: confirmed.alreadyConfirmed
+            ? "好的，这个结果之前已经确认收到。"
+            : "好的，已确认你收到了任务结果；桌面端的送达提醒也会自动关闭。",
+          data: { taskThreadId: referenced.id, deliveryId: confirmed.deliveryId, deliveryAcknowledged: true },
+        });
+      }
       if (control.kind === "prioritize") {
         if (!["queued", "waiting_upstream"].includes(referenced.status)) {
           return settle(event, {
@@ -6093,6 +6152,13 @@ function sharedContentContinuation(text, conversation) {
           ? resendDelivery({ channelId: referenced.channelId, conversationId: referenced.conversationId, threadId: referenced.id })
           : { ok: false, reason: "resend_unavailable" };
         if (!resent?.ok) {
+          if (resent?.reason === "recently_accepted") {
+            return settle(event, {
+              status: "dispatched",
+              reply: "微信已接受上一条结果，当前可能只是展示延迟。为避免之后收到重复消息，我暂时没有再次发送；结果已保存在“我的任务”中。",
+              data: { taskThreadId: referenced.id, reason: resent.reason, retryAfter: resent.retryAfter ?? null },
+            });
+          }
           return settle(event, { status: "dispatched", reply: referenced.resultSummary ? "当前还没有可重发的任务结果，请稍后再试。" : "这个任务还没有生成结果，完成后可以回复“重发结果”。", data: { taskThreadId: referenced.id, reason: resent?.reason ?? "resend_failed" } });
         }
         runTx(() => {
@@ -7460,6 +7526,9 @@ function sharedContentContinuation(text, conversation) {
     const deliveryStatus = thread?.lastDeliveryStatus;
     if (deliveryStatus === "failed_terminal") {
       return "结果已经生成，但消息发送失败；回复“重发结果”再次发送。";
+    }
+    if (deliveryStatus === "sent_unconfirmed") {
+      return "结果已被微信接口接受，但平台没有确认客户端已经显示；如果微信里没有结果，可以回复“重发结果”。";
     }
     if (["queued", "sending", "retrying"].includes(deliveryStatus)) {
       return deliveryStatus === "retrying"

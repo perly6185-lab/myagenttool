@@ -26,6 +26,49 @@ describe("channelTaskUserState", () => {
     expect(result.action).toBe("retry_delivery");
   });
 
+  it("does not call an iLink provider acceptance a confirmed delivery", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "succeeded", resultSummary: "已生成结果" }),
+      delivery: { id: "delivery_1", channelId: "channel_1", conversationId: "conversation_1", status: "sent_unconfirmed", attempts: 1 },
+    });
+
+    expect(result.label).toBe("微信未确认送达");
+    expect(result.nextStep).toContain("没有确认客户端已经显示");
+    expect(result.actionLabel).toBe("再次发送结果");
+  });
+
+  it("suppresses duplicate resend during the provider-acceptance cooldown", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "succeeded", resultSummary: "已生成结果", workItemId: "work_1" }),
+      delivery: {
+        id: "delivery_1", channelId: "channel_1", conversationId: "conversation_1",
+        status: "sent_unconfirmed", attempts: 1, nextManualRetryAt: "2026-08-25T08:10:00.000Z",
+      },
+      now: Date.parse("2026-08-25T08:05:00.000Z"),
+    });
+
+    expect(result.nextStep).toContain("避免之后收到重复消息");
+    expect(result.action).toBe("view_task");
+    expect(result.actionLabel).toBe("查看本地结果");
+  });
+
+  it("keeps a running task visible when only a progress notification is unconfirmed", () => {
+    const result = channelTaskUserState({
+      thread: thread({ status: "running" }),
+      delivery: {
+        id: "delivery_progress",
+        channelId: "channel_1",
+        conversationId: "conversation_1",
+        status: "sent_unconfirmed",
+        attempts: 1,
+        taskContext: { threadId: "thread_1", deliveryKind: "status_notification" },
+      },
+    });
+
+    expect(result.label).toBe("执行中");
+    expect(result.action).not.toBe("retry_delivery");
+  });
+
   it("turns a failed task with a retry action into a clear next step", () => {
     const result = channelTaskUserState({
       thread: thread({ status: "failed" }),

@@ -12,6 +12,7 @@ import {
   FolderOpen,
   Library,
   Download,
+  Database,
   Eye,
   ExternalLink,
   MessageSquare,
@@ -75,6 +76,235 @@ import {
 } from "./work-item-delivery-preview-model";
 
 export { deriveWorkItemUserStatus } from "./work-item-user-status";
+
+function recordBindingStateLabel(state: string, language: string) {
+  const labels: Record<string, [string, string]> = {
+    resolved: ["已就绪", "Ready"],
+    needs_confirmation: ["待确认", "Needs confirmation"],
+    stale: ["资料已变化", "Stale"],
+    unavailable: ["暂不可用", "Unavailable"],
+  };
+  return labels[state]?.[language === "zh" ? 0 : 1] ?? state;
+}
+
+function WorkItemRecordBindings({
+  item,
+  language,
+  locked,
+  pendingId,
+  onRefresh,
+  error,
+}: {
+  item: LocalWorkItem;
+  language: string;
+  locked: boolean;
+  pendingId: string | null;
+  onRefresh: (binding: NonNullable<LocalWorkItem["recordBindings"]>[number]) => void;
+  error: string | null;
+}) {
+  const bindings = item.recordBindings ?? [];
+  if (!bindings.length) return null;
+  return (
+    <section className="rounded-xl border border-border p-4" aria-labelledby={`work-item-records-${item.id}`}>
+      <div className="flex items-start gap-2">
+        <Database className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 id={`work-item-records-${item.id}`} className="text-sm font-semibold">{language === "zh" ? "业务资料" : "Business materials"}</h4>
+            <Badge tone="neutral">{bindings.length}</Badge>
+          </div>
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+            {language === "zh" ? "本任务已限定可使用的业务记录；执行时只读取声明的范围。" : "This task has a bounded set of business records; execution reads only the declared scope."}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 space-y-2">
+        {bindings.map((binding) => {
+          const record = binding.record;
+          const purpose = binding.direction === "output"
+            ? (language === "zh" ? "结果归档" : "Result archive")
+            : binding.role === "required"
+              ? (language === "zh" ? "必须使用" : "Required")
+              : (language === "zh" ? "可供参考" : "Reference");
+          return (
+            <div key={binding.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-muted/45 px-3 py-2 text-sm">
+              <span className="min-w-[8rem] flex-1 truncate">{record?.title ?? (language === "zh" ? "待生成的业务记录" : "Business record to be created")}</span>
+              {record?.businessKey ? <span className="text-xs text-muted-foreground">{record.businessKey}</span> : null}
+              <Badge tone="neutral">{purpose}</Badge>
+              <Badge tone={binding.resolution.state === "resolved" ? "success" : "warning"}>
+                {recordBindingStateLabel(binding.resolution.state, language)}
+              </Badge>
+              {binding.selection.fieldKeys.length ? <span className="max-w-[16rem] truncate text-xs text-muted-foreground">{binding.selection.fieldKeys.join(", ")}</span> : null}
+              {!locked && ["stale", "needs_confirmation"].includes(binding.resolution.state) ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={pendingId === binding.id}
+                  onClick={() => onRefresh(binding)}
+                >
+                  {pendingId === binding.id ? <RefreshCw className="size-3.5 animate-spin" aria-hidden /> : <RefreshCw className="size-3.5" aria-hidden />}
+                  {language === "zh" ? "刷新并确认" : "Refresh and confirm"}
+                </Button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      {locked && bindings.some((binding) => ["stale", "needs_confirmation"].includes(binding.resolution.state)) ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {language === "zh" ? "任务已开始执行，当前资料快照已固定；如需更换资料，请创建新的任务。" : "Execution has started, so the current material snapshot is fixed. Create a new task to use different material."}
+        </p>
+      ) : null}
+      {error ? <p className="mt-2 text-sm text-destructive" role="alert">{error}</p> : null}
+    </section>
+  );
+}
+
+type LedgerPostingPlanResponse = {
+  plan: NonNullable<LocalWorkItem["ledgerPostingPlan"]>;
+  preview: Record<string, unknown> | null;
+  batchPreview: Record<string, unknown> | null;
+};
+
+function WorkItemLedgerPostingPlan({
+  item,
+  language,
+  canOperate,
+}: {
+  item: LocalWorkItem;
+  language: string;
+  canOperate: boolean;
+}) {
+  const [data, setData] = useState<LedgerPostingPlanResponse | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!item.ledgerPostingPlanId) {
+      setData(null);
+      setError(null);
+      return () => { active = false; };
+    }
+    void api.getWorkItemLedgerPostingPlan(item.id)
+      .then((result) => {
+        if (active) setData(result as LedgerPostingPlanResponse);
+      })
+      .catch(() => {
+        if (active) setError(language === "zh" ? "台账变更计划暂时无法加载。" : "The ledger posting plan could not be loaded.");
+      });
+    return () => { active = false; };
+  }, [item.id, item.ledgerPostingPlanId, item.revision, language]);
+
+  if (!item.ledgerPostingPlanId && !error) return null;
+  const plan = data?.plan ?? null;
+  const preview = data?.preview ?? data?.batchPreview;
+  const changedCells = Array.isArray(preview?.changedCells)
+    ? preview.changedCells as Array<{ field?: string; before?: unknown; after?: unknown }>
+    : [];
+  const committed = plan?.status === "committed" || plan?.state === "committed";
+  const invalidated = plan?.status === "invalidated" || plan?.state === "invalidated";
+
+  const refresh = async () => {
+    if (!plan || pending || !canOperate || !invalidated) return;
+    setPending(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.prepareWorkItemLedgerPostingPlan(item.id, {
+        expectedRevision: item.revision,
+        primary: plan.primary,
+        related: plan.related,
+      });
+      setData(result as LedgerPostingPlanResponse);
+      setNotice(language === "zh"
+        ? "已按当前任务修订重新检查拟写入内容，请核对新差异后重新审批。"
+        : "The proposed write was checked against the current task revision. Review the fresh diff before approving.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "task-ledger-posting-refreshed", workItemId: item.id } }));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message.includes("revision")
+        ? (language === "zh" ? "任务再次发生变化，请重新加载后生成方案。" : "The task changed again. Reload it before generating a fresh plan.")
+        : (language === "zh" ? "暂时无法重新生成台账方案，请稍后重试。" : "A fresh ledger plan could not be generated. Try again later."));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const commit = async () => {
+    if (!plan || pending || !canOperate) return;
+    setPending(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const grant = await api.issueApprovalGrant("ledger_posting_plan_commit", plan.id);
+      const result = await api.commitWorkItemLedgerPostingPlan(item.id, {
+        planId: plan.id,
+        expectedRevision: item.revision,
+        approvalToken: grant.token,
+      });
+      setData((current) => current ? { ...current, plan: result.plan } : current);
+      setNotice(language === "zh" ? "台账已写入，变更已记录。" : "The ledger was updated and the change was recorded.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "task-ledger-posting-committed", workItemId: item.id } }));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      const stale = message.includes("stale") || message.includes("revision");
+      if (stale) {
+        try {
+          const latest = await api.getWorkItemLedgerPostingPlan(item.id);
+          setData(latest as LedgerPostingPlanResponse);
+        } catch { /* keep the current preview and recovery message */ }
+      }
+      setError(stale
+        ? (language === "zh" ? "任务或资料已变化，旧审批已失效。请重新生成方案。" : "The task or materials changed, so the old approval is no longer valid. Generate a fresh plan.")
+        : (language === "zh" ? "台账写入未完成，请检查最新状态后重新审批。" : "The ledger was not updated. Check the latest state before approving again."));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <section className="rounded-xl border border-warning/40 bg-warning/[0.04] p-4" aria-labelledby={`work-item-ledger-plan-${item.id}`}>
+      <div className="flex items-start gap-2">
+        <Database className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <h4 id={`work-item-ledger-plan-${item.id}`} className="text-sm font-semibold">{language === "zh" ? "台账变更审批" : "Ledger change approval"}</h4>
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+            {committed
+              ? (language === "zh" ? "这项变更已经写入本地台账。" : "This change has been written to the local ledger.")
+              : invalidated
+                ? (language === "zh" ? "任务或资料已变化，旧方案和审批已失效。请基于当前资料重新生成。" : "The task or materials changed, so the old plan and approval are no longer valid. Generate a fresh plan from the current data.")
+              : (language === "zh" ? "请先检查变更预览，再批准写入本地台账。" : "Review the change preview before approving the local ledger write.")}
+          </p>
+        </div>
+        {plan ? <Badge tone={committed ? "success" : "warning"}>{committed ? (language === "zh" ? "已完成" : "Committed") : invalidated ? (language === "zh" ? "需刷新" : "Refresh required") : (language === "zh" ? "待审批" : "Pending approval")}</Badge> : null}
+      </div>
+      {!invalidated && changedCells.length ? (
+        <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-background">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-border text-muted-foreground"><tr><th className="px-3 py-2">{language === "zh" ? "字段" : "Field"}</th><th className="px-3 py-2">{language === "zh" ? "之前" : "Before"}</th><th className="px-3 py-2">{language === "zh" ? "之后" : "After"}</th></tr></thead>
+            <tbody>{changedCells.slice(0, 50).map((cell, index) => <tr key={`${cell.field ?? "field"}-${index}`} className="border-b border-border last:border-0"><td className="px-3 py-2 font-medium">{cell.field ?? "—"}</td><td className="px-3 py-2">{String(cell.before ?? "—")}</td><td className="px-3 py-2">{String(cell.after ?? "—")}</td></tr>)}</tbody>
+          </table>
+        </div>
+      ) : null}
+      {!committed && plan && canOperate ? (
+        <div className="mt-3 flex justify-end">
+          {invalidated ? (
+            <Button size="sm" disabled={pending} onClick={() => void refresh()}>
+              <RefreshCw className={pending ? "animate-spin" : undefined} aria-hidden />
+              {pending ? (language === "zh" ? "重新生成中…" : "Generating…") : (language === "zh" ? "刷新方案并重新审批" : "Refresh plan and review again")}
+            </Button>
+          ) : (
+            <Button size="sm" disabled={pending} onClick={() => void commit()}><CheckCircle2 aria-hidden />{pending ? (language === "zh" ? "审批并写入中…" : "Approving and writing…") : (language === "zh" ? "审批并写入台账" : "Approve and write ledger")}</Button>
+          )}
+        </div>
+      ) : null}
+      {notice ? <p className="mt-2 text-sm text-success" role="status">{notice}</p> : null}
+      {error ? <p className="mt-2 text-sm text-destructive" role="alert">{error}</p> : null}
+    </section>
+  );
+}
 
 type TaskTemplateCandidate = {
   templateId: string;
@@ -195,6 +425,8 @@ export function WorkItemSummaryView({
   const [materialPreviewError, setMaterialPreviewError] = useState<string | null>(null);
   const [materialRevealPendingId, setMaterialRevealPendingId] = useState<string | null>(null);
   const [materialRevealError, setMaterialRevealError] = useState<string | null>(null);
+  const [recordBindingRefreshPendingId, setRecordBindingRefreshPendingId] = useState<string | null>(null);
+  const [recordBindingRefreshError, setRecordBindingRefreshError] = useState<string | null>(null);
   const [openingResultFileKey, setOpeningResultFileKey] = useState<string | null>(null);
   const [resultFileError, setResultFileError] = useState<string | null>(null);
   const [resultPreviewFile, setResultPreviewFile] = useState<WorkItemOutcomeFile | null>(null);
@@ -217,6 +449,8 @@ export function WorkItemSummaryView({
     setMaterialAddUndo(null);
     setMaterialRevealPendingId(null);
     setMaterialRevealError(null);
+    setRecordBindingRefreshPendingId(null);
+    setRecordBindingRefreshError(null);
     setMaterialOfficePreview(null);
     setMaterialPreviewPending(false);
     setMaterialPreviewError(null);
@@ -680,6 +914,25 @@ export function WorkItemSummaryView({
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
+  };
+  const refreshRecordBinding = async (binding: NonNullable<LocalWorkItem["recordBindings"]>[number]) => {
+    if (recordBindingRefreshPendingId || !binding.record || (item.executionBindings ?? []).length) return;
+    setRecordBindingRefreshPendingId(binding.id);
+    setRecordBindingRefreshError(null);
+    try {
+      const response = await api.refreshWorkItemRecordBinding(
+        item.id,
+        binding.id,
+        item.revision,
+      ) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setSyncNotice(language === "zh" ? "业务资料已刷新并确认，任务将使用当前记录版本。" : "The business material was refreshed and confirmed; the task will use the current record version.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-record-binding-refresh", workItemId: item.id } }));
+    } catch {
+      setRecordBindingRefreshError(language === "zh" ? "业务资料暂时无法刷新，请稍后重试。" : "The business material could not be refreshed. Try again later.");
+    } finally {
+      setRecordBindingRefreshPendingId(null);
+    }
   };
   const removeMaterial = async (assetId: string) => {
     if (materialPendingId) return;
@@ -2303,6 +2556,17 @@ export function WorkItemSummaryView({
         ) : null}
         {materialError ? <p className="mt-2 text-sm text-destructive" role="alert">{materialError}</p> : null}
       </section>
+
+      <WorkItemRecordBindings
+        item={item}
+        language={language}
+        locked={Boolean((item.executionBindings ?? []).length)}
+        pendingId={recordBindingRefreshPendingId}
+        onRefresh={(binding) => void refreshRecordBinding(binding)}
+        error={recordBindingRefreshError}
+      />
+
+      <WorkItemLedgerPostingPlan item={item} language={language} canOperate={canOperate} />
 
       <section className="rounded-xl border border-border p-4" aria-labelledby={`work-item-collaboration-${item.id}`}>
         <h4 id={`work-item-collaboration-${item.id}`} className="text-sm font-semibold">{copy.collaborationTitle}</h4>

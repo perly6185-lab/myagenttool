@@ -6,6 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { businessRoutineSchemaVersion, normalizeLocalIssueRoutineBinding } from "@myagenttool/protocol/business-routine";
+import { normalizeTaskRecordBinding } from "@myagenttool/protocol/task-resources";
 import { actorCanAccessProject, findUser, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { listDevices } from "../runtime/device.mjs";
 import { homeWorkbenchReadModel } from "../read-models/home-workbench.mjs";
@@ -349,6 +350,27 @@ function validateDraft(input, { partial = false } = {}) {
     const assets = normalizeAssetRefs(input.inputAssets ?? []);
     if (!assets) return { error: "invalid_work_item_input_assets" };
     value.inputAssets = assets;
+  }
+  if (!partial || Object.hasOwn(input, "recordBindings")) {
+    const rawBindings = Object.hasOwn(input, "recordBindings") ? input.recordBindings : [];
+    if (!Array.isArray(rawBindings) || rawBindings.length > 50) {
+      return { error: "invalid_work_item_record_bindings" };
+    }
+    const bindings = [];
+    const bindingIds = new Set();
+    let primaryLedgerCount = 0;
+    for (const candidate of rawBindings) {
+      const normalized = normalizeTaskRecordBinding(candidate);
+      if (!normalized.ok) return { error: normalized.error };
+      if (bindingIds.has(normalized.value.id)) return { error: "duplicate_work_item_record_binding" };
+      bindingIds.add(normalized.value.id);
+      if (normalized.value.direction === "output" && normalized.value.role === "primary_ledger") {
+        primaryLedgerCount += 1;
+      }
+      bindings.push(normalized.value);
+    }
+    if (primaryLedgerCount > 1) return { error: "multiple_primary_work_item_ledgers" };
+    value.recordBindings = bindings;
   }
   if (!partial || Object.hasOwn(input, "requiredCapabilities")) {
     const capabilities = strings(input.requiredCapabilities ?? [], { limit: 20, maxLength: 40 });
@@ -1859,6 +1881,33 @@ export function createWorkItemService({
       && (!workItemId || item.id === workItemId));
     const rows = [];
     for (const item of items) {
+      const staleRecordBindings = (item.recordBindings ?? []).filter((recordBinding) =>
+        recordBinding.record && recordBinding.resolution?.state !== "resolved");
+      if (staleRecordBindings.length && !item.archivedAt) {
+        const freshnessActivity = (state.workItemActivities ?? []).find((activity) =>
+          activity.workItemId === item.id && activity.action === "record_bindings_freshness_changed");
+        const executionBlocked = staleRecordBindings.some((recordBinding) => recordBinding.direction === "input");
+        rows.push({
+          id: `record_binding_stale:${item.id}`,
+          kind: "record_binding_stale",
+          severity: executionBlocked ? "high" : "medium",
+          workItemId: item.id,
+          localRef: item.localRef,
+          projectId: item.projectId,
+          title: item.title,
+          createdAt: freshnessActivity?.createdAt ?? item.updatedAt,
+          details: {
+            workItemRevision: item.revision,
+            bindingIds: staleRecordBindings.map((recordBinding) => recordBinding.id),
+            bindingCount: staleRecordBindings.length,
+            states: [...new Set(staleRecordBindings.map((recordBinding) =>
+              recordBinding.resolution?.state ?? "unavailable"))],
+            executionBlocked,
+            postingBlocked: true,
+            refreshable: (item.executionBindings ?? []).length === 0,
+          },
+        });
+      }
       const binding = githubBinding(item);
       if (binding?.conflict) rows.push({
         id: `github_conflict:${item.id}`, kind: "github_conflict", severity: "high",
@@ -1935,6 +1984,9 @@ export function createWorkItemService({
       const handling = operation?.handling && Date.parse(operation.handling.expiresAt ?? operation.handling.claimedAt) > at
         ? operation.handling
         : null;
+      const resolution = row.kind === "record_binding_stale"
+        ? null
+        : operation?.resolution ?? null;
       const hours = row.severity === "high" ? 4 : row.severity === "medium" ? 24 : 72;
       const dueAt = new Date(Date.parse(row.createdAt) + hours * 3_600_000).toISOString();
       const history = row.workItemId ? (state.workItemActivities ?? [])
@@ -1947,7 +1999,7 @@ export function createWorkItemService({
         ...row, dueAt, slaStatus: Date.parse(dueAt) < at ? "breached" : "within_sla", history,
         updatedAt: operation?.history?.[0]?.createdAt ?? row.createdAt,
         handling,
-        resolution: operation?.resolution ?? null,
+        resolution,
       };
     });
     const allDecorated = derivedRows.filter((row) => !updatedSince || row.updatedAt > updatedSince);
@@ -1977,6 +2029,7 @@ export function createWorkItemService({
           breached: openRows.filter((row) => row.slaStatus === "breached").length,
           claimed: openRows.filter((row) => row.handling).length,
           pendingApprovals: openRows.filter((row) => row.kind === "recommended_action_approval").length,
+          staleRecords: openRows.filter((row) => row.kind === "record_binding_stale").length,
           oldestAgeSeconds: oldestCreatedAt ? Math.max(0, Math.floor((at - Date.parse(oldestCreatedAt)) / 1_000)) : 0,
         },
       },
@@ -1997,6 +2050,13 @@ export function createWorkItemService({
     }
     const visible = new Set(listAttention({ includeResolved: "1" }, actor).body.items.map((item) => item.id));
     if (ids.some((id) => !visible.has(id))) return { ok: false, status: 404, body: { error: "work_item_attention_not_found" } };
+    if (action === "resolve" && ids.some((id) => id.startsWith("record_binding_stale:"))) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_record_binding_attention_requires_refresh" },
+      };
+    }
     const timestamp = now();
     const operations = state.workItemAttentionOperations ?? [];
     const replayed = key && ids.every((attentionId) => operations.some((operation) =>
@@ -4868,6 +4928,17 @@ export function createWorkItemService({
       && (item.executionBindings ?? []).length) {
       return { ok: false, status: 409, body: { error: "work_item_my_template_binding_immutable" } };
     }
+    if (Object.hasOwn(changes, "recordBindings")) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: (item.executionBindings ?? []).length
+            ? "work_item_record_bindings_immutable"
+            : "work_item_record_bindings_require_managed_update",
+        },
+      };
+    }
     if (Object.hasOwn(changes, "terminalId")) {
       return {
         ok: false,
@@ -5541,6 +5612,14 @@ export function createWorkItemService({
     if (expectedRevision !== item.revision) {
       return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
     }
+    const blockingBindings = recordBindingExecutionBlock(item);
+    if (blockingBindings) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_record_bindings_stale", currentRevision: item.revision, blockingBindings },
+      };
+    }
     if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)
       || Buffer.byteLength(JSON.stringify(parameters), "utf8") > 256 * 1024
       || ["capability", "capabilityId", "applicationId", "toolName", "command", "argv", "terminalId", "projectId", "worktreeId", "requiresApproval"]
@@ -5788,6 +5867,14 @@ export function createWorkItemService({
     return null;
   }
 
+  function recordBindingExecutionBlock(item) {
+    const blockingBindings = (item.recordBindings ?? [])
+      .filter((binding) => binding.direction === "input" && binding.record
+        && binding.resolution?.state !== "resolved")
+      .map((binding) => ({ bindingId: binding.id, state: binding.resolution?.state ?? "unavailable" }));
+    return blockingBindings.length ? blockingBindings : null;
+  }
+
   function beginExecution({
     workItemId, kind, agentId = null,
   } = {}, actor = null) {
@@ -5798,6 +5885,14 @@ export function createWorkItemService({
     }
     if (item.state !== "open" || item.archivedAt) {
       return { ok: false, status: 409, body: { error: "work_item_execution_not_open" } };
+    }
+    const blockingBindings = recordBindingExecutionBlock(item);
+    if (blockingBindings) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_record_bindings_stale", currentRevision: item.revision, blockingBindings },
+      };
     }
     const timestamp = now();
     const currentOperation = activeExecutionOperation(item, timestamp);

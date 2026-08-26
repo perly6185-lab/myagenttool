@@ -556,6 +556,57 @@ test("target identity uses raw content hash and detects source drift", async () 
   }
 });
 
+test("readBusinessLedgerRecord returns a stable bounded reference and detects duplicate keys", async () => {
+  const h = harness();
+  try {
+    const path = join(h.root, "ledgers/inquiries.csv");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "Inquiry No,Customer,Amount,Account Number\r\nRFQ-401,Acme,10,123456789\r\n");
+    const definition = await activate(h, createCsvDefinition(h, {
+      fieldMappings: { inquiry_number: "Inquiry No", customer: "Customer", amount: "Amount", account_number: "Account Number" },
+      requiredFields: ["inquiry_number", "customer"],
+    }));
+
+    const first = await h.ledgerService.readBusinessLedgerRecord({
+      ledgerDefinitionId: definition.id,
+      businessKey: "RFQ-401",
+    }, ACTOR);
+    assert.equal(first.status, 200);
+    assert.equal(first.body.record.recordId.startsWith("blr_"), true);
+    assert.equal(first.body.record.businessKey, "RFQ-401");
+    assert.equal(first.body.fields.customer, "Acme");
+    assert.equal(first.body.fields.account_number, "[redacted]");
+    assert.equal(JSON.stringify(first.body).includes("ledgers/inquiries.csv"), false);
+
+    const byId = await h.ledgerService.readBusinessLedgerRecord({
+      ledgerDefinitionId: definition.id,
+      recordId: first.body.record.recordId,
+    }, ACTOR);
+    assert.equal(byId.status, 200);
+    assert.equal(byId.body.record.recordId, first.body.record.recordId);
+    assert.equal(byId.body.record.fingerprint, first.body.record.fingerprint);
+
+    writeFileSync(path, "Inquiry No,Customer,Amount,Account Number\r\nRFQ-401,Acme Ltd,10,123456789\r\n");
+    const changed = await h.ledgerService.readBusinessLedgerRecord({
+      ledgerDefinitionId: definition.id,
+      businessKey: "RFQ-401",
+    }, ACTOR);
+    assert.equal(changed.status, 200);
+    assert.equal(changed.body.record.recordId, first.body.record.recordId);
+    assert.notEqual(changed.body.record.fingerprint, first.body.record.fingerprint);
+
+    writeFileSync(path, "Inquiry No,Customer,Amount,Account Number\r\nRFQ-401,Acme,10,123456789\r\nRFQ-401,Other,11,987654321\r\n");
+    const duplicate = await h.ledgerService.readBusinessLedgerRecord({
+      ledgerDefinitionId: definition.id,
+      businessKey: "RFQ-401",
+    }, ACTOR);
+    assert.equal(duplicate.status, 409);
+    assert.equal(duplicate.body.error, "ledger_duplicate_business_key");
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("public ledger diffs redact sensitive field values while preserving internal execution data", async () => {
   const h = harness();
   try {

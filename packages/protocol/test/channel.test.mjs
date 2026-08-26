@@ -27,6 +27,7 @@ test("channel vocabulary is the ADR 0012 closed set", () => {
     "queued",
     "sending",
     "delivered",
+    "sent_unconfirmed",
     "retrying",
     "failed_terminal",
   ]);

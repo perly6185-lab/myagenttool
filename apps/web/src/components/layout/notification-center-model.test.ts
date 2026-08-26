@@ -29,6 +29,7 @@ describe("notification center model (#1537)", () => {
     expect(model.approvals.count).toBe(1);
     expect(model.failures.count).toBe(2);
     expect(model.completions.count).toBe(3);
+    expect(model.channelDeliveries.count).toBe(0);
     expect(model.offline).toBe(false);
     expect(model.fallback).toBe(true);
     expect(model.eventIds).toEqual([
@@ -85,5 +86,56 @@ describe("notification center model (#1537)", () => {
       items: [{ id: "followup:wfr_1", title: "Update customer", target: "work_item" }],
     });
     expect(model.eventIds).toContain("followup:wfr_1");
+  });
+
+  it("surfaces a delayed iLink result globally and links directly to its local result", () => {
+    const state = {
+      device: { status: "online" },
+      pendingDecisions: [],
+      invocations: [],
+      channelOperations: [{
+        id: "chn_1", provider: "wechat_ilink", name: "我的微信",
+        deliveryHealth: { state: "outbound_delayed", latestDeliveryId: "del_1", delayedCount: 1, unconfirmedCount: 1 },
+      }],
+      channelDeliveries: [{
+        id: "del_1", channelId: "chn_1", conversationId: "conv_1", status: "sent_unconfirmed", attempts: 1,
+        taskContext: { threadId: "thread_1", workItemId: "work_1", deliveryKind: "result" },
+      }],
+      channelTaskThreads: [{
+        id: "thread_1", channelId: "chn_1", conversationId: "conv_1", summary: "整理公众号文章",
+        status: "succeeded", workItemId: "work_1", lastDeliveryId: "del_1",
+      }],
+    } as unknown as ConsoleSnapshot;
+
+    const model = deriveNotificationCenterModel(state, {
+      isError: false,
+      isLoading: false,
+      liveUpdates: true,
+    });
+
+    expect(model.channelDeliveries).toEqual({
+      count: 1,
+      items: [{ id: "work_1", title: "整理公众号文章 · 微信可能尚未显示", target: "work_item" }],
+    });
+    expect(model.eventIds).toContain("channel-delivery:del_1:unconfirmed");
+  });
+
+  it("surfaces stale business records as actionable work-item notifications", () => {
+    const state = { device: { status: "online" }, pendingDecisions: [], invocations: [] } as unknown as ConsoleSnapshot;
+    const model = deriveNotificationCenterModel(state, {
+      isError: false,
+      isLoading: false,
+      liveUpdates: true,
+      recordBindingAttentionItems: [{
+        id: "record_binding_stale:lwi_1",
+        workItemId: "lwi_1",
+        title: "Prepare account review",
+      }],
+    });
+    expect(model.businessRecords).toEqual({
+      count: 1,
+      items: [{ id: "lwi_1", title: "Prepare account review", target: "work_item" }],
+    });
+    expect(model.eventIds).toContain("business-record:record_binding_stale:lwi_1");
   });
 });

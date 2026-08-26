@@ -3,13 +3,15 @@ import type { ConsoleSnapshot, InvocationSnapshot, PendingDecision, WorkItem } f
 export interface NotificationItem {
   id: string;
   title: string;
-  target: "work_item" | "invocation" | "decision" | "template";
+  target: "work_item" | "invocation" | "decision" | "template" | "channel";
 }
 
 export interface NotificationCenterModel {
   approvals: { count: number; items: NotificationItem[] };
   failures: { count: number; items: NotificationItem[] };
   followUps: { count: number; items: NotificationItem[] };
+  businessRecords: { count: number; items: NotificationItem[] };
+  channelDeliveries: { count: number; items: NotificationItem[] };
   completions: { count: number; items: NotificationItem[] };
   offline: boolean;
   fallback: boolean;
@@ -34,7 +36,12 @@ function workItem(item: WorkItem): NotificationItem {
  */
 export function deriveNotificationCenterModel(
   state: ConsoleSnapshot | null | undefined,
-  options: { isError: boolean; isLoading: boolean; liveUpdates: boolean },
+  options: {
+    isError: boolean;
+    isLoading: boolean;
+    liveUpdates: boolean;
+    recordBindingAttentionItems?: Array<{ id: string; workItemId: string; title: string }>;
+  },
 ): NotificationCenterModel {
   const board = state?.workBoard?.states;
   const approvals = state?.pendingDecisions ?? [];
@@ -52,6 +59,26 @@ export function deriveNotificationCenterModel(
   const followUpItems = board?.follow_up.items
     .filter((item) => item.kind === "work_item_follow_up_reminder")
     .map(workItem) ?? [];
+  const businessRecordAttention = options.recordBindingAttentionItems ?? [];
+  const businessRecordItems = businessRecordAttention.map((item) => ({
+    id: item.workItemId,
+    title: item.title,
+    target: "work_item" as const,
+  }));
+  const channelDeliveryIssues = (state?.channelOperations ?? [])
+    .filter((channel) => channel.provider === "wechat_ilink" && channel.deliveryHealth?.state === "outbound_delayed")
+    .map((channel) => {
+      const delivery = (state?.channelDeliveries ?? []).find((candidate) => candidate.id === channel.deliveryHealth?.latestDeliveryId) ?? null;
+      const thread = (state?.channelTaskThreads ?? []).find((candidate) =>
+        candidate.channelId === channel.id
+        && (candidate.id === delivery?.taskContext?.threadId || candidate.lastDeliveryId === delivery?.id)) ?? null;
+      return {
+        eventId: `channel-delivery:${delivery?.id ?? channel.id}:unconfirmed`,
+        item: thread?.workItemId
+          ? { id: thread.workItemId, title: `${thread.summary || "任务结果"} · 微信可能尚未显示`, target: "work_item" as const }
+          : { id: channel.id, title: `${channel.name || "微信"} · 结果可能尚未显示`, target: "channel" as const },
+      };
+    });
   const offline = options.isError || state?.device?.status === "offline";
 
   return {
@@ -67,6 +94,14 @@ export function deriveNotificationCenterModel(
       count: followUpItems.length,
       items: followUpItems,
     },
+    businessRecords: {
+      count: businessRecordItems.length,
+      items: businessRecordItems,
+    },
+    channelDeliveries: {
+      count: channelDeliveryIssues.length,
+      items: channelDeliveryIssues.map((issue) => issue.item),
+    },
     completions: {
       count: board?.done.count ?? completedInvocations.length,
       items: completionItems,
@@ -77,6 +112,8 @@ export function deriveNotificationCenterModel(
       ...approvals.map((item) => `approval:${item.id}`),
       ...failureItems.map((item) => `failure:${item.id}`),
       ...followUpItems.map((item) => item.id),
+      ...businessRecordAttention.map((item) => `business-record:${item.id}`),
+      ...channelDeliveryIssues.map((issue) => issue.eventId),
       ...completionItems.map((item) => `completion:${item.id}`),
       ...(offline ? ["execution:offline"] : []),
     ],
