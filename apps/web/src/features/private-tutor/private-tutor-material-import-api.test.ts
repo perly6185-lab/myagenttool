@@ -8,6 +8,9 @@ import {
   getPrivateTutorKnowledgeMapDraft,
   updatePrivateTutorKnowledgeMapDraft,
   confirmPrivateTutorKnowledgeMapDraft,
+  generatePrivateTutorAuthoredContent,
+  updatePrivateTutorAuthoredContent,
+  confirmPrivateTutorAuthoredContent,
   publishPrivateTutorKnowledgeMapDraft,
 } from "@/features/private-tutor/private-tutor-api";
 import * as apiRequest from "@/lib/api/request";
@@ -48,6 +51,8 @@ const fakeDraft = {
   ],
   validationIssues: [],
   confirmation: null,
+  authoredContentVersions: [],
+  activeAuthoredContentVersion: null,
   status: "in_review" as const,
   createdAt: "2026-08-25T00:00:00.000Z",
   updatedAt: "2026-08-25T00:00:00.000Z",
@@ -121,6 +126,30 @@ describe("private tutor material import & draft API", () => {
     expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/confirm", {
       expectedRevision: 3,
       acknowledgeSourceReview: true,
+    });
+  });
+
+  it("generatePrivateTutorAuthoredContent requests a source-grounded content version", async () => {
+    const authoredContent = { id: "kmd_xyz789_content_v1", version: 1, revision: 1 };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ draft: fakeDraft, authoredContent });
+    await generatePrivateTutorAuthoredContent("kmd_xyz789", { forceRegenerate: true });
+    expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/author-content", { forceRegenerate: true });
+  });
+
+  it("updatePrivateTutorAuthoredContent saves the current content revision", async () => {
+    const authoredContent = { id: "kmd_xyz789_content_v1", version: 1, revision: 2, knowledgeContents: [] };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ draft: fakeDraft, authoredContent });
+    await updatePrivateTutorAuthoredContent("kmd_xyz789", { knowledgeContents: [] });
+    expect(spy).toHaveBeenCalledWith("PUT", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/authored-content", { knowledgeContents: [] });
+  });
+
+  it("confirmPrivateTutorAuthoredContent binds review to the current content revision", async () => {
+    const authoredContent = { id: "kmd_xyz789_content_v1", version: 1, revision: 2 };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ draft: fakeDraft, authoredContent });
+    await confirmPrivateTutorAuthoredContent("kmd_xyz789", { expectedRevision: 2, acknowledgeContentReview: true });
+    expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/authored-content/confirm", {
+      expectedRevision: 2,
+      acknowledgeContentReview: true,
     });
   });
 

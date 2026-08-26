@@ -8,6 +8,7 @@ export interface EvaluationCapabilities {
   semanticEvaluation?: boolean | "authored_rubric" | "source_grounded_rubric" | "causal-semantic-v2" | "anchored-concept-rubric-v2";
   codeExecution?: boolean;
   sourceGrounding?: boolean;
+  evidenceConfidenceCapped?: boolean;
 }
 
 export interface ContentTargetAudience {
@@ -24,6 +25,9 @@ export interface LearningContentPackage {
   sourceType: ContentSourceType;
   version: string;
   license: string;
+  status?: "published" | "disabled";
+  contentChecksum?: string;
+  releasedAt?: string;
   targetAudience?: ContentTargetAudience;
   evaluationCapabilities?: EvaluationCapabilities;
   modules?: Module[];
@@ -107,6 +111,89 @@ export interface DraftCandidateQuestion {
   kind: string;
 }
 
+export interface AuthoredRubricCriterion {
+  id: string;
+  label: string;
+  weight: number;
+  acceptedPhrases: string[];
+  partialPhrases: string[];
+  sourceRef: string;
+}
+
+export interface AuthoredRubric {
+  version: string;
+  profile: "anchored-concept-rubric-v2";
+  passBand: string;
+  reviewThreshold: number;
+  sourceWeight: number;
+  requiredSourceRefs: string[];
+  availableSourceRefs: string[];
+  bands: Array<{ id: string; minScore: number; maxScore: number }>;
+  anchors: Array<{ id: string; band: string; description: string; sample: string }>;
+  criteria: AuthoredRubricCriterion[];
+}
+
+export interface AuthoredQuestion {
+  id: string;
+  questionId: string;
+  knowledgeId: string;
+  context: "diagnostic" | "tutoring" | "practice" | "review";
+  difficulty: number;
+  kind: "rubric_response";
+  prompt: string;
+  referenceAnswer: string;
+  requiredSourceRefs: string[];
+  sourceRefs: DraftSourceRef[];
+  rubric: AuthoredRubric;
+  evidencePolicy: "practice_only_until_runtime_validation";
+  provenance: "rule_extracted";
+}
+
+export interface AuthoredKnowledgeContent {
+  knowledgeId: string;
+  sourceRefs: DraftSourceRef[];
+  teachingContent: {
+    coreConcept: string;
+    explanation: string;
+    provenance: "source_excerpt";
+    guidance: string;
+    guidanceProvenance: "rule_extracted";
+    keyPoints: string[];
+    hints: string[];
+    methods: { default: string };
+  };
+  diagnosticQuestions: AuthoredQuestion[];
+  tutoringQuestions: AuthoredQuestion[];
+  dailyQuestions: AuthoredQuestion[];
+  reviewQuestions: AuthoredQuestion[];
+}
+
+export interface AuthoredContentVersion {
+  id: string;
+  draftId: string;
+  learningProfileId: string;
+  schemaVersion: number;
+  generatorVersion: string;
+  version: number;
+  revision: number;
+  sourceMapRevision: number;
+  sourceMapFingerprint: string;
+  status: "in_review" | "confirmed" | "superseded" | "published";
+  knowledgeContents: AuthoredKnowledgeContent[];
+  validationIssues: DraftValidationIssue[];
+  confirmation: {
+    revision: number;
+    fingerprint: string;
+    confirmedBy: string;
+    confirmedAt: string;
+    acknowledgement: "teaching_content_and_rubrics_reviewed";
+  } | null;
+  generatedBy: string;
+  generatedAt: string;
+  updatedAt: string;
+  publishedAt?: string;
+}
+
 export interface DraftModule {
   id: string;
   name: string;
@@ -172,7 +259,9 @@ export interface KnowledgeMapDraft {
     confirmedAt: string;
     acknowledgement: "source_map_reviewed";
   } | null;
-  status: "in_review" | "confirmed" | "published" | "discarded";
+  authoredContentVersions: AuthoredContentVersion[];
+  activeAuthoredContentVersion: number | null;
+  status: "in_review" | "confirmed" | "content_in_review" | "content_confirmed" | "published" | "discarded";
   publishedPackageId?: string;
   createdAt: string;
   updatedAt: string;

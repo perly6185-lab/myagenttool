@@ -1,6 +1,7 @@
 import { getCurrentSession } from "@/lib/api-client";
 import { request } from "@/lib/api/request";
 import type {
+  AuthoredContentVersion,
   ContentSourceType,
   KnowledgeGraphData,
   KnowledgeMapDraft,
@@ -8,7 +9,7 @@ import type {
   MaterialDocument,
 } from "./private-tutor-model";
 
-export type { ContentSourceType, KnowledgeGraphData, KnowledgeMapDraft, LearningContentPackage, MaterialDocument };
+export type { AuthoredContentVersion, ContentSourceType, KnowledgeGraphData, KnowledgeMapDraft, LearningContentPackage, MaterialDocument };
 
 export interface PrivateTutorLearner {
   id: string;
@@ -887,6 +888,10 @@ export interface PrivateTutorKnowledgeMapDraftResult {
   draft: KnowledgeMapDraft;
 }
 
+export interface PrivateTutorAuthoredContentResult extends PrivateTutorKnowledgeMapDraftResult {
+  authoredContent: AuthoredContentVersion;
+}
+
 export async function listPrivateTutorMaterials() {
   const result = await request<PrivateTutorMaterialListResult>("GET", "/api/private-tutor/materials");
   return result.materials;
@@ -965,6 +970,35 @@ export async function confirmPrivateTutorKnowledgeMapDraft(draftId: string, inpu
     input,
   );
   return result.draft;
+}
+
+export async function generatePrivateTutorAuthoredContent(draftId: string, input: { forceRegenerate?: boolean } = {}) {
+  return request<PrivateTutorAuthoredContentResult>(
+    "POST",
+    `/api/private-tutor/knowledge-map-drafts/${encodeURIComponent(draftId)}/author-content`,
+    input,
+  );
+}
+
+export async function updatePrivateTutorAuthoredContent(draftId: string, input: {
+  knowledgeContents: AuthoredContentVersion["knowledgeContents"];
+}) {
+  return request<PrivateTutorAuthoredContentResult>(
+    "PUT",
+    `/api/private-tutor/knowledge-map-drafts/${encodeURIComponent(draftId)}/authored-content`,
+    input,
+  );
+}
+
+export async function confirmPrivateTutorAuthoredContent(draftId: string, input: {
+  expectedRevision: number;
+  acknowledgeContentReview: true;
+}) {
+  return request<PrivateTutorAuthoredContentResult>(
+    "POST",
+    `/api/private-tutor/knowledge-map-drafts/${encodeURIComponent(draftId)}/authored-content/confirm`,
+    input,
+  );
 }
 
 export async function publishPrivateTutorKnowledgeMapDraft(draftId: string) {

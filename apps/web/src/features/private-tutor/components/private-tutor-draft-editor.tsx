@@ -4,8 +4,11 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
 import {
+  confirmPrivateTutorAuthoredContent,
   confirmPrivateTutorKnowledgeMapDraft,
+  generatePrivateTutorAuthoredContent,
   publishPrivateTutorKnowledgeMapDraft,
+  updatePrivateTutorAuthoredContent,
   updatePrivateTutorKnowledgeMapDraft,
   type KnowledgeMapDraft,
   type MaterialDocument,
@@ -28,10 +31,15 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
 
   const errorCount = draft.validationIssues.filter((i) => i.severity === "error").length;
   const warningCount = draft.validationIssues.filter((i) => i.severity === "warning").length;
-  const confirmed = draft.status === "confirmed"
-    && draft.confirmation?.revision === draft.revision;
-  const canConfirm = errorCount === 0 && draft.draftKnowledgeComponents.length > 0 && !confirmed;
-  const canPublish = errorCount === 0 && confirmed;
+  const mapConfirmed = draft.confirmation?.revision === draft.revision;
+  const activeAuthoredContent = draft.authoredContentVersions?.find((item) => item.version === draft.activeAuthoredContentVersion) ?? null;
+  const authoredErrorCount = activeAuthoredContent?.validationIssues.filter((issue) => issue.severity === "error").length ?? 0;
+  const contentConfirmed = activeAuthoredContent?.status === "confirmed"
+    && activeAuthoredContent.confirmation?.revision === activeAuthoredContent.revision;
+  const canConfirm = errorCount === 0 && draft.draftKnowledgeComponents.length > 0 && !mapConfirmed;
+  const canAuthor = errorCount === 0 && mapConfirmed && !activeAuthoredContent;
+  const canConfirmContent = mapConfirmed && Boolean(activeAuthoredContent) && authoredErrorCount === 0 && !contentConfirmed;
+  const canPublish = errorCount === 0 && mapConfirmed && contentConfirmed;
 
   const selectedKc = draft.draftKnowledgeComponents.find((kc) => kc.id === selectedKcId);
   const selectedSourceRefs = selectedKc?.sourceRefs?.length ? selectedKc.sourceRefs : selectedKc?.sourceRef ? [selectedKc.sourceRef] : [];
@@ -39,6 +47,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
     ref,
     section: material.sections.find((section) => section.id === ref.sectionId),
   })).filter((item) => item.section);
+  const selectedAuthoredContent = activeAuthoredContent?.knowledgeContents.find((item) => item.knowledgeId === selectedKcId) ?? null;
 
   async function saveDraft(updates: Partial<KnowledgeMapDraft>) {
     setBusy(true);
@@ -85,12 +94,89 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
         acknowledgeSourceReview: true,
       });
       setDraft(confirmedDraft);
-      setSaveMessage("来源与知识结构已确认，可以发布。");
+      setSaveMessage("来源与知识结构已确认，可以生成教学内容。");
     } catch (err) {
       setError(err instanceof Error ? err.message : "确认失败，请检查来源和知识结构。");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function authorContent(forceRegenerate = false) {
+    setBusy(true);
+    setError("");
+    setSaveMessage("");
+    try {
+      const result = await generatePrivateTutorAuthoredContent(draft.id, { forceRegenerate });
+      setDraft(result.draft);
+      setSaveMessage(`教学内容 v${result.authoredContent.version} 已生成，请逐项复核讲解、题目、参考答案和评分锚点。`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "生成教学内容失败，请重新确认知识地图。" );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmContent() {
+    if (!activeAuthoredContent) return;
+    setBusy(true);
+    setError("");
+    setSaveMessage("");
+    try {
+      const saved = await updatePrivateTutorAuthoredContent(draft.id, {
+        knowledgeContents: activeAuthoredContent.knowledgeContents,
+      });
+      if (saved.authoredContent.validationIssues.some((issue) => issue.severity === "error")) {
+        setDraft(saved.draft);
+        setError("教学内容仍有校验错误，请修正后再确认。" );
+        return;
+      }
+      const result = await confirmPrivateTutorAuthoredContent(draft.id, {
+        expectedRevision: saved.authoredContent.revision,
+        acknowledgeContentReview: true,
+      });
+      setDraft(result.draft);
+      setSaveMessage("教学内容和评分锚点已确认，可以发布。" );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "教学内容确认失败，请检查校验结果。" );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAuthoredContent() {
+    if (!activeAuthoredContent) return;
+    setBusy(true);
+    setError("");
+    setSaveMessage("");
+    try {
+      const result = await updatePrivateTutorAuthoredContent(draft.id, {
+        knowledgeContents: activeAuthoredContent.knowledgeContents,
+      });
+      setDraft(result.draft);
+      setSaveMessage("教学内容修订已保存，需重新确认后才能发布。" );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存教学内容失败，请检查来源约束。" );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function updateSelectedAuthoredContent(updater: (item: NonNullable<typeof selectedAuthoredContent>) => NonNullable<typeof selectedAuthoredContent>) {
+    if (!activeAuthoredContent || !selectedAuthoredContent) return;
+    const nextContent = {
+      ...activeAuthoredContent,
+      status: "in_review" as const,
+      confirmation: null,
+      knowledgeContents: activeAuthoredContent.knowledgeContents.map((item) =>
+        item.knowledgeId === selectedAuthoredContent.knowledgeId ? updater(item) : item),
+    };
+    setDraft({
+      ...draft,
+      status: "content_in_review",
+      authoredContentVersions: draft.authoredContentVersions.map((item) =>
+        item.version === nextContent.version ? nextContent : item),
+    });
   }
 
   async function publish() {
@@ -108,7 +194,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
 
   function updateKc(kcId: string, updates: Partial<DraftKnowledgeComponent>) {
     const nextKcs = draft.draftKnowledgeComponents.map((kc) => (kc.id === kcId ? { ...kc, ...updates } : kc));
-    setDraft({ ...draft, draftKnowledgeComponents: nextKcs, confirmation: null, status: "in_review" });
+    setDraft({ ...draft, draftKnowledgeComponents: nextKcs, confirmation: null, activeAuthoredContentVersion: null, status: "in_review" });
   }
 
   function removeKc(kcId: string) {
@@ -116,7 +202,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
       ...kc,
       prerequisiteDraftIds: kc.prerequisiteDraftIds.filter((id) => id !== kcId),
     }));
-    setDraft({ ...draft, draftKnowledgeComponents: reorderKnowledge(nextKcs), confirmation: null, status: "in_review" });
+    setDraft({ ...draft, draftKnowledgeComponents: reorderKnowledge(nextKcs), confirmation: null, activeAuthoredContentVersion: null, status: "in_review" });
     if (selectedKcId === kcId) setSelectedKcId(null);
   }
 
@@ -129,7 +215,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
       : [...kc.prerequisiteDraftIds, prereqId];
     const nextKcs = draft.draftKnowledgeComponents.map((item) =>
       item.id === kcId ? { ...item, prerequisiteDraftIds: nextIds } : item);
-    setDraft({ ...draft, draftKnowledgeComponents: nextKcs, confirmation: null, status: "in_review" });
+    setDraft({ ...draft, draftKnowledgeComponents: nextKcs, confirmation: null, activeAuthoredContentVersion: null, status: "in_review" });
     void saveDraft({ draftKnowledgeComponents: nextKcs });
   }
 
@@ -144,7 +230,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
     const right = next.findIndex((item) => item.id === target.id);
     [next[left], next[right]] = [next[right], next[left]];
     const reordered = reorderKnowledge(next);
-    setDraft({ ...draft, draftKnowledgeComponents: reordered, confirmation: null, status: "in_review" });
+    setDraft({ ...draft, draftKnowledgeComponents: reordered, confirmation: null, activeAuthoredContentVersion: null, status: "in_review" });
     void saveDraft({ draftKnowledgeComponents: reordered });
   }
 
@@ -172,7 +258,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
       second,
       ...draft.draftKnowledgeComponents.slice(index + 1),
     ]);
-    setDraft({ ...draft, draftKnowledgeComponents: next, confirmation: null, status: "in_review" });
+    setDraft({ ...draft, draftKnowledgeComponents: next, confirmation: null, activeAuthoredContentVersion: null, status: "in_review" });
     void saveDraft({ draftKnowledgeComponents: next });
   }
 
@@ -207,7 +293,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
             .map((id) => id === nextKnowledge.id ? selectedKc.id : id))],
         };
       }));
-    setDraft({ ...draft, draftKnowledgeComponents: next, confirmation: null, status: "in_review" });
+    setDraft({ ...draft, draftKnowledgeComponents: next, confirmation: null, activeAuthoredContentVersion: null, status: "in_review" });
     void saveDraft({ draftKnowledgeComponents: next });
   }
 
@@ -224,7 +310,7 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
             </div>
             <input
               value={draft.packageName}
-              onChange={(e) => setDraft({ ...draft, packageName: e.target.value, confirmation: null, status: "in_review" })}
+              onChange={(e) => setDraft({ ...draft, packageName: e.target.value, confirmation: null, activeAuthoredContentVersion: null, status: "in_review" })}
               className="mt-1 w-full max-w-md rounded border-none bg-transparent p-0 text-xl font-bold focus:ring-0"
               aria-label="内容包名称"
             />
@@ -234,8 +320,15 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
             <Button variant="secondary" onClick={onClose} disabled={busy}>返回</Button>
             <Button variant="secondary" onClick={() => void saveDraft({})} disabled={busy}>保存草稿</Button>
             <Button variant="secondary" onClick={() => void confirm()} disabled={!canConfirm || busy}>
-              {confirmed ? "已确认" : "确认来源与结构"}
+              {mapConfirmed ? "知识地图已确认" : "确认来源与结构"}
             </Button>
+            {canAuthor ? <Button variant="secondary" onClick={() => void authorContent()} disabled={busy}>生成教学内容</Button> : null}
+            {activeAuthoredContent ? <Button variant="secondary" onClick={() => void authorContent(true)} disabled={busy}>重新生成</Button> : null}
+            {activeAuthoredContent ? (
+              <Button variant="secondary" onClick={() => void confirmContent()} disabled={!canConfirmContent || busy}>
+                {contentConfirmed ? "教学内容已确认" : "确认教学内容"}
+              </Button>
+            ) : null}
             <Button onClick={() => void publish()} disabled={!canPublish || busy}>
               {busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
               发布为学习内容包
@@ -251,7 +344,9 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
                 {errorCount > 0 ? <span className="flex items-center gap-1 text-rose-600"><XCircle className="size-3" /> {errorCount} 个错误</span> : null}
                 {warningCount > 0 ? <span className="flex items-center gap-1 text-amber-600"><GitBranch className="size-3" /> {warningCount} 个提示</span> : null}
                 {errorCount === 0 && warningCount === 0 ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="size-3" /> 校验通过</span> : null}
-                {confirmed ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="size-3" /> 已确认</span> : null}
+                {mapConfirmed ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="size-3" /> 地图已确认</span> : null}
+                {activeAuthoredContent ? <span className="flex items-center gap-1 text-sky-600">教学内容 v{activeAuthoredContent.version}</span> : null}
+                {contentConfirmed ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="size-3" /> 内容已确认</span> : null}
               </div>
             </div>
 
@@ -377,6 +472,122 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
                     </div>
                   </div>
                 ) : null)}
+
+                {selectedAuthoredContent ? (
+                  <div className="space-y-4 rounded-xl border border-emerald-200 bg-emerald-50/40 p-4 dark:border-emerald-900 dark:bg-emerald-950/20">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">教学内容复核 · v{activeAuthoredContent?.version}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">讲解和参考答案必须来自原文；教学提示和问题标为规则生成。</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full bg-background px-2 py-1 text-xs">{contentConfirmed ? "已确认" : "待确认"}</span>
+                        <Button size="sm" variant="secondary" onClick={() => void saveAuthoredContent()} disabled={busy}>保存教学内容</Button>
+                      </div>
+                    </div>
+                    <label className="block text-xs font-medium text-muted-foreground">
+                      原文讲解
+                      <textarea
+                        aria-label="原文讲解"
+                        value={selectedAuthoredContent.teachingContent.explanation}
+                        onChange={(event) => updateSelectedAuthoredContent((item) => ({
+                          ...item,
+                          teachingContent: { ...item.teachingContent, explanation: event.target.value },
+                        }))}
+                        rows={4}
+                        className="mt-1 w-full rounded-lg border bg-background p-2 text-sm leading-relaxed text-foreground"
+                      />
+                    </label>
+                    <label className="block text-xs font-medium text-muted-foreground">
+                      学习引导（规则生成）
+                      <textarea
+                        aria-label="学习引导"
+                        value={selectedAuthoredContent.teachingContent.guidance}
+                        onChange={(event) => updateSelectedAuthoredContent((item) => ({
+                          ...item,
+                          teachingContent: { ...item.teachingContent, guidance: event.target.value },
+                        }))}
+                        rows={2}
+                        className="mt-1 w-full rounded-lg border bg-background p-2 text-sm text-foreground"
+                      />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                      <span className="rounded bg-background p-2">诊断 {selectedAuthoredContent.diagnosticQuestions.length}</span>
+                      <span className="rounded bg-background p-2">辅导 {selectedAuthoredContent.tutoringQuestions.length}</span>
+                      <span className="rounded bg-background p-2">独立练习 {selectedAuthoredContent.dailyQuestions.length}</span>
+                      <span className="rounded bg-background p-2">复习 {selectedAuthoredContent.reviewQuestions.length}</span>
+                    </div>
+                    {selectedAuthoredContent.dailyQuestions[0] ? (
+                      <div className="space-y-3 rounded-lg bg-background p-3">
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground">
+                            独立练习
+                            <textarea
+                              aria-label="独立练习题目"
+                              value={selectedAuthoredContent.dailyQuestions[0].prompt}
+                              onChange={(event) => updateSelectedAuthoredContent((item) => ({
+                                ...item,
+                                dailyQuestions: item.dailyQuestions.map((question, index) =>
+                                  index === 0 ? { ...question, prompt: event.target.value } : question),
+                              }))}
+                              rows={2}
+                              className="mt-1 w-full rounded-lg border bg-card p-2 text-sm text-foreground"
+                            />
+                          </label>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground">
+                            参考答案（原文约束）
+                            <textarea
+                              aria-label="参考答案"
+                              value={selectedAuthoredContent.dailyQuestions[0].referenceAnswer}
+                              onChange={(event) => updateSelectedAuthoredContent((item) => ({
+                                ...item,
+                                dailyQuestions: item.dailyQuestions.map((question, index) =>
+                                  index === 0 ? { ...question, referenceAnswer: event.target.value } : question),
+                              }))}
+                              rows={3}
+                              className="mt-1 w-full rounded-lg border bg-card p-2 text-sm leading-relaxed text-foreground"
+                            />
+                          </label>
+                        </div>
+                        <div>
+                          <p className="text-xs font-medium text-muted-foreground">评分锚点</p>
+                          <div className="mt-2 space-y-2">
+                            {selectedAuthoredContent.dailyQuestions[0].rubric.anchors.map((anchor) => (
+                              <div key={anchor.id} className="rounded border p-2">
+                                <p className="font-medium">{anchor.band}</p>
+                                <p className="mt-1 text-muted-foreground">{anchor.description}</p>
+                                <label className="mt-1 block text-muted-foreground">
+                                  示例
+                                  <textarea
+                                    aria-label={`${anchor.band} 评分锚点示例`}
+                                    value={anchor.sample}
+                                    onChange={(event) => updateSelectedAuthoredContent((item) => ({
+                                      ...item,
+                                      dailyQuestions: item.dailyQuestions.map((question, questionIndex) =>
+                                        questionIndex === 0 ? {
+                                          ...question,
+                                          rubric: {
+                                            ...question.rubric,
+                                            anchors: question.rubric.anchors.map((candidate) =>
+                                              candidate.id === anchor.id ? { ...candidate, sample: event.target.value } : candidate),
+                                          },
+                                        } : question),
+                                    }))}
+                                    rows={2}
+                                    className="mt-1 w-full rounded border bg-card p-2 text-foreground"
+                                  />
+                                </label>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <p className="text-xs text-amber-700 dark:text-amber-300">当前题目仅形成练习反馈；M7.4 运行时验证前不写入高置信度掌握证据。</p>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="flex h-full flex-col items-center justify-center text-center text-muted-foreground">

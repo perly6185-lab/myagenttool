@@ -1414,7 +1414,62 @@ Details on bubble sort.
   assert.equal(confirmRes.body.draft.status, "confirmed");
   assert.equal(confirmRes.body.draft.confirmation.revision, updateRes.body.draft.revision);
 
-  // 6. Publish Draft
+  const missingContentPublish = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/publish`, {
+    token: "tok_personal",
+    method: "POST",
+  });
+  assert.equal(missingContentPublish.status, 400);
+  assert.equal(missingContentPublish.body.error, "authored_content_not_generated");
+
+  // 6. Generate and confirm source-grounded teaching content.
+  const authorRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/author-content`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {},
+  });
+  assert.equal(authorRes.status, 201);
+  assert.equal(authorRes.body.authoredContent.status, "in_review");
+  assert.equal(authorRes.body.authoredContent.validationIssues.length, 0);
+  assert.equal(authorRes.body.authoredContent.knowledgeContents.length, confirmRes.body.draft.draftKnowledgeComponents.length);
+
+  const unconfirmedContentPublish = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/publish`, {
+    token: "tok_personal",
+    method: "POST",
+  });
+  assert.equal(unconfirmedContentPublish.status, 400);
+  assert.equal(unconfirmedContentPublish.body.error, "authored_content_confirmation_required");
+
+  const editedContents = structuredClone(authorRes.body.authoredContent.knowledgeContents);
+  editedContents[0].teachingContent.guidance = "先定位原文，再用自己的话解释这一知识点。";
+  const updateContentRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/authored-content`, {
+    token: "tok_personal",
+    method: "PUT",
+    body: { knowledgeContents: editedContents },
+  });
+  assert.equal(updateContentRes.status, 200);
+  assert.equal(updateContentRes.body.authoredContent.revision, 2);
+  assert.equal(updateContentRes.body.authoredContent.confirmation, null);
+
+  const staleConfirmContent = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/authored-content/confirm`, {
+    token: "tok_personal",
+    method: "POST",
+    body: { expectedRevision: 1, acknowledgeContentReview: true },
+  });
+  assert.equal(staleConfirmContent.status, 409);
+  assert.equal(staleConfirmContent.body.error, "authored_content_revision_conflict");
+
+  const confirmContentRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/authored-content/confirm`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      expectedRevision: updateContentRes.body.authoredContent.revision,
+      acknowledgeContentReview: true,
+    },
+  });
+  assert.equal(confirmContentRes.status, 200);
+  assert.equal(confirmContentRes.body.authoredContent.status, "confirmed");
+
+  // 7. Publish Draft
   const publishRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/publish`, {
     token: "tok_personal",
     method: "POST",
@@ -1423,7 +1478,7 @@ Details on bubble sort.
   assert.equal(publishRes.body.success, true);
   const publishedPackageId = publishRes.body.packageId;
 
-  // 7. Verify Content Package Registered
+  // 8. Verify Content Package Registered
   const packageRes = await call(`/api/private-tutor/content-packages/${publishedPackageId}`, {
     token: "tok_personal",
   });
@@ -1432,9 +1487,12 @@ Details on bubble sort.
   assert.equal(packageRes.body.package.sourceType, "user_material");
   assert.equal(packageRes.body.package.evaluationCapabilities.deterministicGrading, false);
   assert.equal(packageRes.body.package.evaluationCapabilities.sourceGrounding, true);
+  assert.equal(packageRes.body.package.evaluationCapabilities.semanticEvaluation, "source_grounded_rubric");
   assert.equal(packageRes.body.package.knowledgeComponents.every((item) => item.sourceGrounding === "user_confirmed"), true);
+  assert.equal(packageRes.body.package.knowledgeComponents.every((item) => item.dailyQuestions.length === 1), true);
+  assert.equal(packageRes.body.package.knowledgeComponents.every((item) => item.dailyQuestions[0].evidencePolicy === "practice_only_until_runtime_validation"), true);
 
-  // 8. Delete Material
+  // 9. Delete Material
   const deleteRes = await call(`/api/private-tutor/materials/${materialId}`, {
     token: "tok_personal",
     method: "DELETE",

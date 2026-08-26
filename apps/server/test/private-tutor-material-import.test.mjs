@@ -16,6 +16,10 @@ import {
   updateKnowledgeMapDraft,
   validateDraft,
 } from "../src/services/private-tutor-graph-extractor.mjs";
+import {
+  confirmAuthoredContentVersion,
+  generateAuthoredContentVersion,
+} from "../src/services/private-tutor-content-authoring.mjs";
 
 const unavailableOcr = {
   readiness: () => ({ state: "unavailable", providerId: null, reason: "test_local_ocr_unavailable" }),
@@ -470,13 +474,20 @@ Content of KC 2.
   });
   assert.equal(confirmed.status, "confirmed");
 
+  const authored = generateAuthoredContentVersion(state, draft.id, { actorId: "usr_learner" });
+  confirmAuthoredContentVersion(state, draft.id, {
+    actorId: "usr_learner",
+    expectedRevision: authored.revision,
+    acknowledgeContentReview: true,
+  });
+
   const packageId = publishKnowledgeMapDraft(state, draft.id);
 
   assert.ok(packageId.startsWith("pkg-user-"));
   assert.equal(state.privateTutorContentPackages.length, 1);
   assert.equal(state.privateTutorContentPackages[0].sourceType, "user_material");
   assert.equal(state.privateTutorContentPackages[0].evaluationCapabilities.deterministicGrading, false);
-  assert.equal(state.privateTutorContentPackages[0].evaluationCapabilities.semanticEvaluation, true);
+  assert.equal(state.privateTutorContentPackages[0].evaluationCapabilities.semanticEvaluation, "source_grounded_rubric");
   assert.equal(state.privateTutorContentPackages[0].evaluationCapabilities.sourceGrounding, true);
   assert.equal(state.privateTutorContentPackages[0].source.sourceHash, doc.sourceHash);
 

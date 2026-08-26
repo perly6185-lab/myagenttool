@@ -118,6 +118,11 @@ import {
   updateKnowledgeMapDraft,
 } from "../services/private-tutor-graph-extractor.mjs";
 import {
+  confirmAuthoredContentVersion,
+  generateAuthoredContentVersion,
+  updateAuthoredContentVersion,
+} from "../services/private-tutor-content-authoring.mjs";
+import {
   privateTutorLearningPreferences,
   setPrivateTutorPackageDeactivated,
   updatePrivateTutorLearningPreferences,
@@ -481,6 +486,53 @@ export async function handlePrivateTutorRoutes({
       return true;
     }
     sendJson(res, 405, { error: "method_not_allowed" });
+    return true;
+  }
+
+  const authorContentMatch = url.pathname.match(/^\/api\/private-tutor\/knowledge-map-drafts\/([^/]+)\/author-content$/);
+  const authoredContentMatch = url.pathname.match(/^\/api\/private-tutor\/knowledge-map-drafts\/([^/]+)\/authored-content$/);
+  const confirmAuthoredContentMatch = url.pathname.match(/^\/api\/private-tutor\/knowledge-map-drafts\/([^/]+)\/authored-content\/confirm$/);
+  if (authorContentMatch || authoredContentMatch || confirmAuthoredContentMatch) {
+    const learnerId = actor?.privateTutorLearnerId || actor?.userId;
+    if (!learnerId) {
+      sendJson(res, 403, { error: "private_tutor_learner_required" });
+      return true;
+    }
+    const match = authorContentMatch || authoredContentMatch || confirmAuthoredContentMatch;
+    const draftId = decodeURIComponent(match[1]);
+    const draft = state.privateTutorKnowledgeMapDrafts.find((item) => item.id === draftId);
+    if (!draft || draft.learningProfileId !== learnerId) {
+      sendJson(res, 404, { error: "draft_not_found" });
+      return true;
+    }
+    const requiredMethod = authoredContentMatch ? "PUT" : "POST";
+    if (req.method !== requiredMethod) {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    try {
+      const authoredContent = authorContentMatch
+        ? generateAuthoredContentVersion(state, draftId, {
+            actorId: actor.userId,
+            forceRegenerate: body.forceRegenerate === true,
+            now: now(),
+          })
+        : authoredContentMatch
+          ? updateAuthoredContentVersion(state, draftId, body, now())
+          : confirmAuthoredContentVersion(state, draftId, {
+              actorId: actor.userId,
+              expectedRevision: body.expectedRevision,
+              acknowledgeContentReview: body.acknowledgeContentReview,
+              now: now(),
+            });
+      persistStateSoon();
+      sendJson(res, authorContentMatch ? 201 : 200, { draft, authoredContent });
+    } catch (error) {
+      const code = String(error?.message ?? "authored_content_operation_failed");
+      const conflict = code.endsWith("_revision_conflict") || code.endsWith("_source_map_changed");
+      sendJson(res, conflict ? 409 : 400, { error: code });
+    }
     return true;
   }
 

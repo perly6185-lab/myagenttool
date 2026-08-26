@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { authoredContentFingerprint, requireConfirmedAuthoredContent } from "./private-tutor-content-authoring.mjs";
 
 export const DRAFT_SCHEMA_VERSION = 2;
 
@@ -137,6 +138,8 @@ export function generateKnowledgeMapDraft({
     draftKnowledgeComponents,
     validationIssues: [],
     confirmation: null,
+    authoredContentVersions: [],
+    activeAuthoredContentVersion: null,
     status: "in_review",
     createdAt: now,
     updatedAt: now,
@@ -168,6 +171,10 @@ export function updateKnowledgeMapDraft(state, draftId, patch, now = new Date().
   }
   draft.revision = Math.max(1, Number(draft.revision) || 1) + 1;
   draft.confirmation = null;
+  for (const content of draft.authoredContentVersions ?? []) {
+    if (content.status !== "published") content.status = "superseded";
+  }
+  draft.activeAuthoredContentVersion = null;
   draft.status = "in_review";
   draft.updatedAt = now;
   draft.validationIssues = validateDraft(draft.draftKnowledgeComponents, {
@@ -358,11 +365,12 @@ export function publishKnowledgeMapDraft(state, draftId, now = new Date().toISOS
   });
   if (draft.validationIssues.some((issue) => issue.severity === "error")) throw new Error("draft_has_validation_errors");
   const fingerprint = knowledgeMapDraftFingerprint(draft);
-  if (draft.status !== "confirmed"
-    || draft.confirmation?.revision !== draft.revision
+  if (draft.confirmation?.revision !== draft.revision
     || draft.confirmation?.fingerprint !== fingerprint) {
     throw new Error("draft_confirmation_required");
   }
+  const authoredContent = requireConfirmedAuthoredContent(draft);
+  const authoredByKnowledge = new Map(authoredContent.knowledgeContents.map((item) => [item.knowledgeId, item]));
 
   const packageId = `pkg-user-${draft.id.replace("kmd_", "")}`;
   const pkg = {
@@ -371,7 +379,7 @@ export function publishKnowledgeMapDraft(state, draftId, now = new Date().toISOS
     subjectId: draft.subjectId,
     domain: draft.domain,
     sourceType: "user_material",
-    version: "1.0.0",
+    version: `${authoredContent.version}.0.0`,
     license: "user_private",
     source: {
       materialDocumentId: draft.materialDocumentId,
@@ -379,11 +387,16 @@ export function publishKnowledgeMapDraft(state, draftId, now = new Date().toISOS
       parserVersion: draft.sourceSnapshot.parserVersion,
       mapFingerprint: fingerprint,
       confirmedAt: draft.confirmation.confirmedAt,
+      authoredContentVersion: authoredContent.version,
+      authoredContentRevision: authoredContent.revision,
+      authoredContentFingerprint: authoredContentFingerprint(authoredContent),
+      authoredContentConfirmedAt: authoredContent.confirmation.confirmedAt,
+      generatorVersion: authoredContent.generatorVersion,
     },
     targetAudience: { stage: "custom", description: "用户导入并确认的自定义学习资料", prerequisites: [] },
     evaluationCapabilities: {
       deterministicGrading: false,
-      semanticEvaluation: true,
+      semanticEvaluation: "source_grounded_rubric",
       evidenceConfidenceCapped: true,
       sourceGrounding: true,
       stepEvaluation: false,
@@ -407,25 +420,45 @@ export function publishKnowledgeMapDraft(state, draftId, now = new Date().toISOS
           .map((knowledge) => knowledge.id),
       })),
     })),
-    knowledgeComponents: draft.draftKnowledgeComponents.map((knowledge) => ({
-      id: knowledge.id,
-      name: knowledge.name,
-      shortDescription: knowledge.shortDescription,
-      topicId: knowledge.topicId,
-      orderIndex: knowledge.orderIndex,
-      prerequisiteKnowledgeIds: knowledge.prerequisiteDraftIds,
-      learningObjectives: knowledge.learningObjectives,
-      questions: knowledge.candidateQuestions,
-      sourceRefs: knowledgeSourceRefs(knowledge),
-      sourceGrounding: "user_confirmed",
-      misconceptions: [],
-      downstreamImpact: 3,
-      visualSceneId: null,
-    })),
+    knowledgeComponents: draft.draftKnowledgeComponents.map((knowledge) => {
+      const authored = authoredByKnowledge.get(knowledge.id);
+      return {
+        id: knowledge.id,
+        name: knowledge.name,
+        shortDescription: knowledge.shortDescription,
+        topicId: knowledge.topicId,
+        orderIndex: knowledge.orderIndex,
+        prerequisiteKnowledgeIds: knowledge.prerequisiteDraftIds,
+        learningObjectives: knowledge.learningObjectives,
+        sourceRefs: knowledgeSourceRefs(knowledge),
+        sourceGrounding: "user_confirmed",
+        teachingContent: authored.teachingContent,
+        diagnosticQuestions: authored.diagnosticQuestions,
+        tutoringQuestions: authored.tutoringQuestions,
+        dailyQuestions: authored.dailyQuestions,
+        reviewQuestions: authored.reviewQuestions,
+        contentVersion: authoredContent.version,
+        contentReview: structuredClone(authoredContent.confirmation),
+        misconceptions: [],
+        downstreamImpact: 3,
+        visualSceneId: null,
+      };
+    }),
     schemaVersion: 1,
+    status: "published",
+    releasedAt: now,
     createdAt: now,
     updatedAt: now,
   };
+  pkg.contentChecksum = createHash("sha256").update(JSON.stringify({
+    name: pkg.name,
+    subjectId: pkg.subjectId,
+    domain: pkg.domain,
+    version: pkg.version,
+    source: pkg.source,
+    modules: pkg.modules,
+    knowledgeComponents: pkg.knowledgeComponents,
+  })).digest("hex");
 
   state.privateTutorContentPackages.push(pkg);
   state.privateTutorModules.push(...pkg.modules.map((module) => ({ ...module, packageId: pkg.id, createdAt: now })));
@@ -439,6 +472,8 @@ export function publishKnowledgeMapDraft(state, draftId, now = new Date().toISOS
   draft.status = "published";
   draft.publishedPackageId = pkg.id;
   draft.updatedAt = now;
+  authoredContent.status = "published";
+  authoredContent.publishedAt = now;
   return pkg.id;
 }
 
