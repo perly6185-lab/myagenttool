@@ -7525,6 +7525,7 @@ export function createServerRuntimeServices({
     disableLedgerDefinition: ledgerUpsertService.disableDefinition,
     previewLedgerUpsert: ledgerUpsertService.previewUpsert,
     inspectLedgerTargetIdentity: ledgerUpsertService.inspectTargetIdentity,
+    readBusinessLedgerRecord: ledgerUpsertService.readBusinessLedgerRecord,
     commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
     previewLedgerBatchUpsert: ledgerUpsertService.previewBatchUpsert,
     commitLedgerBatchUpsertPreview: ledgerUpsertService.commitBatchPreview,

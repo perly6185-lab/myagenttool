@@ -74,6 +74,7 @@ export async function handleWorkflowMemoryRoutes({
   activateLedgerDefinition,
   disableLedgerDefinition,
   inspectLedgerTargetIdentity,
+  readBusinessLedgerRecord,
   previewLedgerUpsert,
   previewLedgerBatchUpsert,
   commitLedgerUpsertPreview,
@@ -728,6 +729,19 @@ export async function handleWorkflowMemoryRoutes({
   if (ledgerIdentity && req.method === "GET") {
     const result = await inspectLedgerTargetIdentity({
       ledgerDefinitionId: decodeURIComponent(ledgerIdentity[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const ledgerRecord = url.pathname.match(
+    /^\/api\/workflow-memory\/ledger-definitions\/([^/]+)\/records$/,
+  );
+  if (ledgerRecord && req.method === "GET") {
+    const result = await readBusinessLedgerRecord({
+      ledgerDefinitionId: decodeURIComponent(ledgerRecord[1]),
+      recordId: url.searchParams.get("recordId"),
+      businessKey: url.searchParams.get("businessKey"),
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

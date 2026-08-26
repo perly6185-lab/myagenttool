@@ -1007,6 +1007,7 @@ export function createHttpServer({
         activateLedgerDefinition,
         disableLedgerDefinition,
         inspectLedgerTargetIdentity,
+        readBusinessLedgerRecord,
         previewLedgerUpsert,
         previewLedgerBatchUpsert,
         commitLedgerUpsertPreview,
