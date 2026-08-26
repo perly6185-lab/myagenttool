@@ -19,6 +19,7 @@ import { createServerState } from "./runtime/state-factory.mjs";
 import { acquireStateLock } from "./runtime/state-lock.mjs";
 import { applyRetentionPolicies } from "./services/retention.mjs";
 import { createMailQueryIndex, mailQueryIndexPath, openMailQueryIndexDatabase } from "./services/mail-query-index.mjs";
+import { cleanupCadPreviewTemps } from "./services/cad-preview.mjs";
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
@@ -30,6 +31,7 @@ const persistenceEnabled = !isSelfCheck && process.env.MYAGENTTOOL_STATE_DISABLE
 const stateStorePath = resolve(process.env.MYAGENTTOOL_STATE_PATH ?? ".myagenttool/state/local-demo-state.json");
 const stateSchemaVersion = 1;
 const defaultProjectPath = resolve(process.env.MYAGENTTOOL_PROJECT_PATH ?? process.cwd());
+cleanupCadPreviewTemps();
 
 // #890 single-writer lock: acquire BEFORE the composer restores/writes the state
 // file, so a second live server on the same host refuses to start instead of

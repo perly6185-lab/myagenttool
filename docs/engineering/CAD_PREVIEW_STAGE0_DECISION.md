@@ -109,6 +109,27 @@ server-owned executable identity and an independent fixed argument allowlist.
 - Metadata and SVG are transient and bounded; CAD bytes and full render output
   never enter public state, audit snapshots, or logs.
 
+## Managed DXF runtime
+
+Run `pnpm cad:runtime:setup` from the repository root to create the ignored
+`.runtime/cad-preview-a` or `cad-preview-b` Python 3.12 virtual environment.
+The setup uses the version- and SHA-256-locked
+`tools/dev/cad-runtime-requirements.txt`, runs the fixed readiness probe, and
+atomically switches `cad-preview-active.json` only when the probe succeeds.
+The previous slot remains available when installation or verification fails. An
+operator may instead set `MYAGENTTOOL_CAD_PYTHON` to an absolute, separately
+managed compatible virtual-environment launcher.
+
+Production preview never searches `PATH`. Every request rechecks the Python,
+ezdxf, and Pillow version contract inside the worker. The source is copied from
+an `O_NOFOLLOW` file descriptor into a private mode-0600 snapshot, parsed only
+from that snapshot, and deleted on every outcome. A timed-out worker receives
+`SIGTERM`, then `SIGKILL` after the fixed grace period if it has not exited.
+The server removes abandoned `myagenttool-cad-preview-*` request directories at
+startup. `/api/cad-preview/readiness` exposes the bounded local probe used by
+the Documents retry-detection control. The `CAD runtime matrix` workflow runs
+installation and a real fixture render on Windows, macOS, and Linux.
+
 ## Follow-up gate
 
 The next PR may implement ezdxf Application readiness and the confined DXF

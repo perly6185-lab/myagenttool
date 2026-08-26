@@ -45,6 +45,7 @@ export function SettingsHomeView({ embedded = false }: { embedded?: boolean }) {
   const { data: state } = useConsoleState();
   const sessionUser = useSessionUser();
   const canManage = canManageProfessionalSettings(sessionUser?.role);
+  const professionalMode = useUiStore((store) => store.experienceMode) === "professional";
   const query = useUiStore((store) => store.settingsQuery);
   const setQuery = useUiStore((store) => store.setSettingsQuery);
   const selectedCategory = useUiStore((store) => store.settingsCategory);
@@ -233,16 +234,17 @@ export function SettingsHomeView({ embedded = false }: { embedded?: boolean }) {
   const categories = useMemo(() => MY_SETTINGS_CATEGORIES.map((category) => ({
     ...category,
     pages: category.sections
+      .filter((key) => (key !== "siteSettings" && key !== "myHosts") || professionalMode)
       .filter((key) => canDiscoverProfessionalPage(key, sessionUser?.role))
       .map((key) => pageRegistration(key))
       .filter((page) => !normalized || matchesSettingsQuery(`${t(page.labelKey)} ${t(page.blurbKey)} ${settingsSearchAliases(page.key)}`, normalized)),
-  })).filter((category) => category.pages.length > 0), [normalized, sessionUser?.role, t]);
+  })).filter((category) => category.pages.length > 0), [normalized, professionalMode, sessionUser?.role, t]);
   const quickAccessPages = useMemo(() => {
     const keys = [...favoriteSections, ...recentSections.filter((key) => !favoriteSections.includes(key))];
     return keys
-      .filter((key, index) => keys.indexOf(key) === index && canDiscoverProfessionalPage(key, sessionUser?.role))
+      .filter((key, index) => keys.indexOf(key) === index && ((key !== "siteSettings" && key !== "myHosts") || professionalMode) && canDiscoverProfessionalPage(key, sessionUser?.role))
       .map((key) => pageRegistration(key));
-  }, [favoriteSections, recentSections, sessionUser?.role]);
+  }, [favoriteSections, professionalMode, recentSections, sessionUser?.role]);
 
   const readyAgents = (state?.agents ?? []).filter((item) => item.status !== "disabled" && item.health?.status !== "unhealthy").length;
   const readyApplications = (state?.applications ?? []).filter((item) => item.status === "active" && item.localReadiness?.state !== "repair_required").length;

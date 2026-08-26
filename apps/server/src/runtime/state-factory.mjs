@@ -262,6 +262,29 @@ export function createServerState({ defaultProjectPath, now }) {
     workItemReportDeliveries: [],
     planningProjects: [],
     planningProjectItems: [],
+    // "My Site": team-owned drafts, immutable revisions, governed publication
+    // plans/releases, and non-secret deployment target metadata.
+    sites: [],
+    siteEntries: [],
+    siteEntryRevisions: [],
+    siteAssets: [],
+    sitePublicationPlans: [],
+    sitePublications: [],
+    siteDeploymentTargets: [],
+    siteDomainTlsBindings: [],
+    sitePilotSessions: [],
+    sitePilotCampaigns: [],
+    sitePilotInvitations: [],
+    sitePilotSandboxes: [],
+    // Verified SSH directory roots. These contain metadata and opaque host
+    // references only; remote file contents and credentials are never durable.
+    hostFileScopes: [],
+    // Fixed, non-shell TLS activation profiles. Container names and scope
+    // references are durable; commands and credentials are never persisted.
+    hostTlsActivationProfiles: [],
+    // Transfer metadata and audit status only. Uploaded/downloaded bytes are
+    // intentionally never stored in the control-plane snapshot.
+    hostFileTransfers: [],
     // Epic #1547: local-first, evidence-backed requirement-to-delivery memory.
     // These records store derived metadata, relationships, and versioned
     // profiles; raw local file contents remain outside durable state by default.

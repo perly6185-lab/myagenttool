@@ -20,7 +20,7 @@ import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../
 import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
-import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
+import { CadPreviewError, cadRuntimeReadiness, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
 import { assetCapabilityMatrix, deriveAssetRuntimeReadiness, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
 import { AssetPreviewError, readAssetPreview } from "../services/asset-preview.mjs";
 import { openAssetInSystemApplication, revealAssetInFileManager } from "../services/asset-reveal.mjs";
@@ -288,6 +288,11 @@ export async function handleProjectRoutes({
   submitWorktreeReview,
   projectGithubItems,
 }) {
+  if (url.pathname === "/api/cad-preview/readiness" && req.method === "GET") {
+    res.setHeader("Cache-Control", "private, no-store");
+    sendJson(res, 200, cadRuntimeReadiness());
+    return true;
+  }
   if (req.method === "GET" && url.pathname === "/api/projects") {
     sendJson(res, 200, { projects: state.projects, currentProjectId: state.currentProjectId, currentProject: currentProject() });
     return true;
@@ -1139,7 +1144,10 @@ export async function handleProjectRoutes({
     const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
     if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
     const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
-    const args = { projectPath: rootPath, relativeFile: url.searchParams.get("path") ?? "" };
+    const controller = new AbortController();
+    const abortDisconnectedRender = () => { if (!res.writableEnded) controller.abort(); };
+    res.once("close", abortDisconnectedRender);
+    const args = { projectPath: rootPath, relativeFile: url.searchParams.get("path") ?? "", signal: controller.signal };
     try {
       const result = cadDocumentMatch[2]
         ? await renderCadDocument({ ...args, layout: url.searchParams.get("layout") ?? "Model", visibleLayers: url.searchParams.get("layersMode") === "selected" ? url.searchParams.getAll("layers") : undefined })
@@ -1149,8 +1157,10 @@ export async function handleProjectRoutes({
       sendJson(res, 200, result);
     } catch (error) {
       const code = error instanceof CadPreviewError ? error.code : "cad_processing_failed";
-      const status = code === "cad_not_found" ? 404 : code === "cad_file_too_large" || code === "cad_output_too_large" || code.endsWith("_limit_exceeded") ? 413 : code === "ezdxf_unavailable" || code === "oda_unavailable" ? 503 : 400;
-      sendJson(res, status, { error: code, message: error instanceof CadPreviewError ? error.message : "CAD preview could not be produced." });
+      const status = code === "cad_processing_cancelled" ? 499 : code === "cad_not_found" ? 404 : code === "cad_file_too_large" || code === "cad_output_too_large" || code.endsWith("_limit_exceeded") ? 413 : code === "ezdxf_unavailable" || code === "oda_unavailable" ? 503 : 400;
+      if (!res.destroyed) sendJson(res, status, { error: code, message: error instanceof CadPreviewError ? error.message : "CAD preview could not be produced." });
+    } finally {
+      res.off("close", abortDisconnectedRender);
     }
     return true;
   }

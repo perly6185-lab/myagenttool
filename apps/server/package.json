@@ -14,15 +14,21 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@alicloud/pop-core": "1.8.0",
     "@ffprobe-installer/ffprobe": "2.1.2",
     "@myagenttool/adapters": "workspace:*",
     "@myagenttool/protocol": "workspace:*",
     "@myagenttool/shared": "workspace:*",
     "@napi-rs/canvas": "^1.0.2",
+    "@noble/hashes": "2.2.0",
     "@openai/codex": "0.146.0-alpha.3",
+    "acme-client": "5.4.0",
+    "ali-oss": "6.23.0",
     "exceljs": "^4.4.0",
     "parse5": "^7.3.0",
     "pdfjs-dist": "^6.2.108",
+    "ssh2": "1.17.0",
+    "tldts": "7.4.11",
     "yaml": "^2.8.1"
   },
   "devDependencies": {

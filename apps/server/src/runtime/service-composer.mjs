@@ -178,6 +178,9 @@ import { createTemplateLearningService } from "../services/template-learning.mjs
 import { createWorkflowMemoryInsightsService } from "../services/workflow-memory-insights.mjs";
 import { createInquiryIntakeTriggerService } from "../services/inquiry-intake-triggers.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
+import { createSiteService } from "../services/sites.mjs";
+import { createSiteDomainTlsAdapter } from "../services/site-domain-tls-adapter.mjs";
+import { createSitePilotService } from "../services/site-pilot.mjs";
 import {
   autoRunVerificationTimeoutMs,
   resolveAutoRunVerificationPlan,
@@ -200,8 +203,16 @@ import { canDeleteObservabilityData, deleteObservabilityData, deletionScopes } f
 import { DEFAULT_SLO_TARGETS, evaluateSloAlert, summarizeAutoRunSlos } from "../services/auto-run-slo.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
+import { createSshHostConnector } from "../services/ssh-host-connector.mjs";
+import { createHostFileService } from "../services/host-files.mjs";
+import { createHostTlsActivationProfileService } from "../services/host-tls-activation-profiles.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 import { createExternalIssueProviderClient } from "../services/external-issue-provider.mjs";
+import { createSiteCredentialVault } from "../services/site-credential-vault.mjs";
+import { createCloudflarePagesAdapter } from "../services/cloudflare-pages-adapter.mjs";
+import { createAliyunOssCdnAdapter } from "../services/aliyun-oss-cdn-adapter.mjs";
+import { createSshStaticSiteAdapter } from "../services/ssh-static-site-adapter.mjs";
+import { createSshTlsCertificateAdapter } from "../services/ssh-tls-certificate-adapter.mjs";
 
 export { enrichAlertOwnership };
 
@@ -226,6 +237,9 @@ export function createServerRuntimeServices({
   ilinkCredentialStore = null,
   ilinkClientFactory = undefined,
   channelObjectConnectorAdapters = {},
+  // Integration-only seam for real-host acceptance. Production leaves this
+  // unset and receives the strict public-HTTPS SSH adapter from createSiteService.
+  siteSshAdapterFactory = null,
 }) {
   let idCounter = 1;
   let invocationService = null;
@@ -241,6 +255,7 @@ export function createServerRuntimeServices({
   // the last writes before shutdown are captured. A no-op until the mirror is primed
   // (and always, when there is no SQLite backing).
   let durableSync = () => {};
+  const sshHostConnector = createSshHostConnector();
   const {
     persistStateSoon,
     persistStateNow,
@@ -1049,6 +1064,56 @@ export function createServerRuntimeServices({
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
   });
+  const siteCredentialVault = createSiteCredentialVault();
+  const sshSiteAdapter = typeof siteSshAdapterFactory === "function"
+    ? siteSshAdapterFactory({ state, sshHostConnector, resolveCredential: siteCredentialVault.resolveCredential })
+    : createSshStaticSiteAdapter({ state, sshHostConnector, resolveCredential: siteCredentialVault.resolveCredential });
+  const domainTlsAdapter = createSiteDomainTlsAdapter();
+  const stagingCaPath = String(process.env.MYAGENTTOOL_ACME_STAGING_CA_FILE ?? "").trim();
+  const stagingCaPem = stagingCaPath && existsSync(resolve(stagingCaPath))
+    ? readFileSync(resolve(stagingCaPath), "utf8").slice(0, 1024 * 1024)
+    : process.env.MYAGENTTOOL_ACME_STAGING_CA_PEM ?? "";
+  const tlsCertificateAdapter = createSshTlsCertificateAdapter({
+    state,
+    sshHostConnector,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    stagingCaPem,
+  });
+  const siteService = createSiteService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    publishRoot: process.env.MYAGENTTOOL_SITE_RELEASE_ROOT
+      ? resolve(process.env.MYAGENTTOOL_SITE_RELEASE_ROOT)
+      : stateStorePath
+        ? resolve(dirname(stateStorePath), "sites")
+        : null,
+    assetRoot: process.env.MYAGENTTOOL_SITE_ASSET_ROOT
+      ? resolve(process.env.MYAGENTTOOL_SITE_ASSET_ROOT)
+      : stateStorePath
+        ? resolve(dirname(stateStorePath), "site-assets")
+        : null,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    domainTlsAdapter,
+    tlsCertificateAdapter,
+    deploymentAdapters: {
+      cloudflare_pages: createCloudflarePagesAdapter(),
+      aliyun_oss_cdn: createAliyunOssCdnAdapter(),
+      ssh_static: sshSiteAdapter,
+    },
+  });
+  const sitePilotService = createSitePilotService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    store,
+    provisionSandbox: siteService.provisionPilotSandbox,
+    purgeSandbox: siteService.purgePilotSandbox,
+  });
 
   const {
     applicationHealthSweep,
@@ -1213,13 +1278,16 @@ export function createServerRuntimeServices({
   };
 
   const {
+    confirmSshHostFingerprint,
     createManagedTerminalSession,
     createSshConnectionTest,
     createSshTarget,
     nextTerminalBridgeAction,
+    observeSshHostFingerprint,
     queueTerminalBridgeAction,
     recordTerminalBridgeEvent,
     recordTerminalEvidence,
+    verifySshHostConnection,
   } = createTerminalService({
     state,
     now,
@@ -1229,6 +1297,28 @@ export function createServerRuntimeServices({
     summarizeText,
     uniqueStrings,
     codexSessionForInvocation,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    sshHostConnector,
+    store,
+  });
+  const hostFileService = createHostFileService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    sshHostConnector,
+    store,
+  });
+  const hostTlsActivationProfileService = createHostTlsActivationProfileService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    sshHostConnector,
     store,
   });
 
@@ -7788,6 +7878,47 @@ export function createServerRuntimeServices({
     suggestPlanningPlan: planningProjectService.suggestPlan,
     executePlanningRecommendedAction: planningProjectService.executeRecommendedAction,
     decidePlanningRecommendedAction: planningProjectService.decideRecommendedAction,
+    listSites: siteService.listSites,
+    getSite: siteService.getSite,
+    createSite: siteService.createSite,
+    updateSite: siteService.updateSite,
+    listSiteEntries: siteService.listEntries,
+    getSiteEntry: siteService.getEntry,
+    createSiteEntry: siteService.createEntry,
+    updateSiteEntry: siteService.updateEntry,
+    listSiteAssets: siteService.listAssets,
+    uploadSiteAsset: siteService.uploadAsset,
+    updateSiteAsset: siteService.updateAsset,
+    deleteSiteAsset: siteService.deleteAsset,
+    getSiteAssetContent: siteService.getAssetContent,
+    previewSite: siteService.previewSite,
+    createSitePublicationPlan: siteService.createPublicationPlan,
+    getSitePublicationPlan: siteService.getPublicationPlan,
+    confirmSitePublicationPlan: siteService.confirmPublicationPlan,
+    listSitePublications: siteService.listPublications,
+    createSiteRollbackPlan: siteService.createRollbackPlan,
+    confirmSiteRollbackPlan: siteService.confirmRollbackPlan,
+    listSiteDeploymentProviders: siteService.listDeploymentProviders,
+    configureSiteDeploymentTarget: siteService.configureDeploymentTarget,
+    verifySiteDeploymentTarget: siteService.verifyDeploymentTarget,
+    configureSiteDomainTlsBinding: siteService.configureDomainTlsBinding,
+    configureSiteDomainTlsDeployment: siteService.configureDomainTlsDeployment,
+    verifySiteDomainTlsDns: siteService.verifyDomainTlsDns,
+    issueSiteDomainTlsStaging: siteService.issueDomainTlsStaging,
+    deploySiteDomainTlsStaging: siteService.deployDomainTlsStaging,
+    startSitePilotSession: sitePilotService.startSession,
+    getActiveSitePilotSession: sitePilotService.getActiveSession,
+    updateSitePilotSession: sitePilotService.updateSession,
+    deleteSitePilotSession: sitePilotService.deleteSession,
+    getSitePilotSummary: sitePilotService.getSummary,
+    listSitePilotCampaigns: sitePilotService.listCampaigns,
+    createSitePilotCampaign: sitePilotService.createCampaign,
+    updateSitePilotCampaign: sitePilotService.updateCampaign,
+    deleteSitePilotCampaign: sitePilotService.deleteCampaign,
+    createSitePilotInvitation: sitePilotService.createInvitation,
+    resolveSitePilotWorkspace: sitePilotService.resolveWorkspace,
+    provisionSiteCredential: siteCredentialVault.provision,
+    revokeSiteCredential: siteCredentialVault.revoke,
     createChannelTaskIssue,
     routeChannelTask,
     dismissChannelTask,
@@ -7872,8 +8003,20 @@ export function createServerRuntimeServices({
     setApplicationHealthProbe,
     applicationHealthSweep,
     transitionApplication,
+    confirmSshHostFingerprint,
     createSshTarget,
     createSshConnectionTest,
+    observeSshHostFingerprint,
+    verifySshHostConnection,
+    listHostFileScopes: hostFileService.listScopes,
+    createHostFileScope: hostFileService.createScope,
+    updateHostFileScope: hostFileService.updateScope,
+    listHostFileEntries: hostFileService.listEntries,
+    listHostFileTransfers: hostFileService.listTransfers,
+    uploadHostFile: hostFileService.uploadFile,
+    downloadHostFile: hostFileService.downloadFile,
+    listHostTlsActivationProfiles: hostTlsActivationProfileService.listProfiles,
+    createHostTlsActivationProfile: hostTlsActivationProfileService.createProfile,
     createManagedTerminalSession,
     queueTerminalBridgeAction,
     nextTerminalBridgeAction,

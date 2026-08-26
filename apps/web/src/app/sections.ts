@@ -7,9 +7,11 @@ import {
   FolderKanban,
   Files,
   Gauge,
+  HardDrive,
   GitCompare,
   KeyRound,
   GitPullRequest,
+  Globe2,
   Inbox,
   KanbanSquare,
   LayoutDashboard,
@@ -30,6 +32,7 @@ import {
   Workflow,
   Wrench,
   Settings,
+  SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
 import type { SectionKey } from "@/store/ui-store";
@@ -65,6 +68,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "dashboard", labelKey: "sections.dashboard.label", icon: LayoutDashboard, blurbKey: "sections.dashboard.blurb", group: "work" },
   { key: "mail", labelKey: "sections.mail.label", icon: Inbox, blurbKey: "sections.mail.blurb", group: "work" },
   { key: "localLibrary", labelKey: "sections.localLibrary.label", icon: Files, blurbKey: "sections.localLibrary.blurb", group: "work" },
+  { key: "mySite", labelKey: "sections.mySite.label", icon: Globe2, blurbKey: "sections.mySite.blurb", group: "work" },
   { key: "me", labelKey: "sections.me.label", icon: UserRound, blurbKey: "sections.me.blurb", group: "work" },
   { key: "workBoard", labelKey: "sections.workBoard.label", icon: KanbanSquare, blurbKey: "sections.workBoard.blurb", group: "work" },
   { key: "planning", labelKey: "sections.planning.label", icon: CalendarRange, blurbKey: "sections.planning.blurb", group: "work" },
@@ -87,6 +91,8 @@ export const SECTIONS: SectionDef[] = [
   { key: "audit", labelKey: "sections.audit.label", icon: ScrollText, blurbKey: "sections.audit.blurb", group: "oversee" },
   // Configure — the registry + setup.
   { key: "settings", labelKey: "sections.settings.label", icon: Settings, blurbKey: "sections.settings.blurb", group: "configure" },
+  { key: "myHosts", labelKey: "sections.myHosts.label", icon: HardDrive, blurbKey: "sections.myHosts.blurb", group: "configure" },
+  { key: "siteSettings", labelKey: "sections.siteSettings.label", icon: SlidersHorizontal, blurbKey: "sections.siteSettings.blurb", group: "configure" },
   { key: "projects", labelKey: "sections.projects.label", icon: FolderKanban, blurbKey: "sections.projects.blurb", group: "configure" },
   { key: "agents", labelKey: "sections.agents.label", icon: Boxes, blurbKey: "sections.agents.blurb", group: "configure" },
   { key: "agentSkills", labelKey: "sections.agentSkills.label", icon: Wand2, blurbKey: "sections.agentSkills.blurb", group: "configure" },
@@ -124,7 +130,7 @@ export interface PageRegistration extends SectionDef {
   legacyAliases: readonly string[];
 }
 
-const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "mail", "localLibrary", "task", "workflowMemory", "projects", "me"]);
+const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "mail", "localLibrary", "mySite", "task", "workflowMemory", "projects", "me"]);
 const ENTRY_CONTEXTUAL = new Set<SectionKey>([
   "workBoard", "externalWork", "autoRuns", "approvals", "planning", "workspace", "documents", "workflowMemory", "canvas",
 ]);
@@ -176,7 +182,7 @@ export const PAGE_REGISTRY: PageRegistration[] = SECTIONS.map((section) => {
   };
 });
 
-const ENTRY_ORDER: SectionKey[] = ["dashboard", "mail", "localLibrary", "task", "workflowMemory", "projects", "me"];
+const ENTRY_ORDER: SectionKey[] = ["dashboard", "mail", "localLibrary", "mySite", "task", "workflowMemory", "projects", "me"];
 export const ENTRY_SECTIONS = ENTRY_ORDER.map((key) => pageRegistration(key));
 
 export const SURFACE_GROUPS: Array<{
