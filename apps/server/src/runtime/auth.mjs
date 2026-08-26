@@ -87,6 +87,8 @@ export function resolveActor(state, req, { now = () => new Date().toISOString(),
       sessionId: cookieSession.record.id,
       sessionExpiresAt: cookieSession.record.absoluteExpiresAt,
       csrfHash: cookieSession.record.csrfHash,
+      privateTutorLearnerId: cookieSession.record.privateTutorChildMode?.learnerId ?? null,
+      privateTutorChildModeEnteredAt: cookieSession.record.privateTutorChildMode?.enteredAt ?? null,
     };
   }
 
@@ -119,6 +121,8 @@ export function resolveActor(state, req, { now = () => new Date().toISOString(),
     sessionId: null,
     sessionExpiresAt: record?.expiresAt ?? null,
     csrfHash: null,
+    privateTutorLearnerId: null,
+    privateTutorChildModeEnteredAt: null,
   };
 }
 

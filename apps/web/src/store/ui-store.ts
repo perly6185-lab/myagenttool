@@ -19,6 +19,7 @@ import {
 
 export type SectionKey =
   | "dashboard"
+  | "privateTutor"
   | "mail"
   | "localLibrary"
   | "mySite"
@@ -197,6 +198,7 @@ export const UI_STORE_PERSIST_KEY = LOCALE_STORAGE_KEY;
 export const SECTION_KEYS: SectionKey[] = [
   "settings",
   "dashboard",
+  "privateTutor",
   "mail",
   "localLibrary",
   "mySite",

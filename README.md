@@ -160,6 +160,8 @@ currently placeholders until their M0 implementation issues are started.
 
 ## Documentation
 
+- [“我的私教”产品需求](docs/design/MY_PRIVATE_TUTOR_REQUIREMENTS.md)
+- [“我的私教”开发计划](docs/engineering/MY_PRIVATE_TUTOR_DEVELOPMENT_PLAN.md)
 - [Product Scope](docs/vision/PRODUCT.md)
 - [Roadmap](docs/vision/ROADMAP.md)
 - [Architecture](docs/vision/ARCHITECTURE.md)

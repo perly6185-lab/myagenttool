@@ -18,6 +18,7 @@ import {
   ListChecks,
   ListTodo,
   MessagesSquare,
+  GraduationCap,
   MonitorSmartphone,
   PanelsTopLeft,
   UserRound,
@@ -66,6 +67,7 @@ export interface SectionDef {
 export const SECTIONS: SectionDef[] = [
   // Work — the daily home: start a task, live in a project.
   { key: "dashboard", labelKey: "sections.dashboard.label", icon: LayoutDashboard, blurbKey: "sections.dashboard.blurb", group: "work" },
+  { key: "privateTutor", labelKey: "sections.privateTutor.label", icon: GraduationCap, blurbKey: "sections.privateTutor.blurb", group: "work" },
   { key: "mail", labelKey: "sections.mail.label", icon: Inbox, blurbKey: "sections.mail.blurb", group: "work" },
   { key: "localLibrary", labelKey: "sections.localLibrary.label", icon: Files, blurbKey: "sections.localLibrary.blurb", group: "work" },
   { key: "mySite", labelKey: "sections.mySite.label", icon: Globe2, blurbKey: "sections.mySite.blurb", group: "work" },
@@ -130,7 +132,7 @@ export interface PageRegistration extends SectionDef {
   legacyAliases: readonly string[];
 }
 
-const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "mail", "localLibrary", "mySite", "task", "workflowMemory", "projects", "me"]);
+const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "privateTutor", "mail", "localLibrary", "mySite", "task", "workflowMemory", "projects", "me"]);
 const ENTRY_CONTEXTUAL = new Set<SectionKey>([
   "workBoard", "externalWork", "autoRuns", "approvals", "planning", "workspace", "documents", "workflowMemory", "canvas",
 ]);
@@ -182,7 +184,7 @@ export const PAGE_REGISTRY: PageRegistration[] = SECTIONS.map((section) => {
   };
 });
 
-const ENTRY_ORDER: SectionKey[] = ["dashboard", "mail", "localLibrary", "mySite", "task", "workflowMemory", "projects", "me"];
+const ENTRY_ORDER: SectionKey[] = ["dashboard", "privateTutor", "mail", "localLibrary", "mySite", "task", "workflowMemory", "projects", "me"];
 export const ENTRY_SECTIONS = ENTRY_ORDER.map((key) => pageRegistration(key));
 
 export const SURFACE_GROUPS: Array<{

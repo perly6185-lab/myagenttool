@@ -83,6 +83,19 @@ export function App() {
   const pageAllowed = backgroundSection === "settings" || canDiscoverProfessionalPage(backgroundSection, sessionUser?.role);
   const View = SECTION_VIEWS[backgroundSection === "task" ? TASK_AREA_VIEWS[taskArea] : backgroundSection];
 
+  if (section === "privateTutor") {
+    const PrivateTutorView = SECTION_VIEWS.privateTutor;
+    return (
+      <main className="h-full overflow-y-auto bg-background p-2 sm:p-4">
+        <ErrorBoundary resetKey={PrivateTutorView} onRetry={() => location.reload()}>
+          <Suspense fallback={<div role="status" className="py-8 text-center text-sm text-muted-foreground">{t("tasks.loading")}</div>}>
+            <PrivateTutorView />
+          </Suspense>
+        </ErrorBoundary>
+      </main>
+    );
+  }
+
   return (
     <div className="flex h-full overflow-hidden">
       <DeferredCommandPalette />

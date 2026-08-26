@@ -41,6 +41,7 @@ export const zhCNResources = {
       assetActions: { label: "可用操作", preview: "预览", edit: "编辑", openExternal: "外部打开", unavailable: "不可用" },
       sections: {
         settings: { label: "我的设置", blurb: "高级能力、治理、资源与运行记录" },
+        privateTutor: { label: "我的私教", blurb: "围绕我正在学的内容，找到真正不会的地方并把它学会" },
         planning: { label: "规划", blurb: "本地项目列表与状态看板" },
         dashboard: { label: "我的首页", blurb: "发起任务并查看真正需要你处理的事项" }, mail: { label: "我的邮箱", blurb: "收发邮件并继续整理成工作" }, localLibrary: { label: "我的资料", blurb: "查找本地原件并引用到任务" }, mySite: { label: "我的站点", blurb: "发布和维护你的官网内容" }, me: { label: "我的设置", blurb: "本地账号、语言、外观及更多设置" }, workBoard: { label: "任务状态", blurb: "需要时查看任务的生命周期状态" },
         workspace: { label: "工作区", blurb: "集中查看项目文件、记录与历史" }, documents: { label: "资产", blurb: "预览和管理项目文档、图纸、图片与视频" }, workflowMemory: { label: "我的模板", blurb: "从本地历史工作中学习可复用的处理方法" }, canvas: { label: "画布", blurb: "绘制和编辑图表及 Excalidraw 场景" },
@@ -63,7 +64,7 @@ export const zhCNResources = {
         project: "项目", currentProject: "当前项目", projectSwitchFailed: "项目切换失败，仍保留原项目", section: "栏目", connected: "已连接", connecting: "连接中", offline: "服务器离线", deviceOnline: "在线且就绪", deviceOffline: "离线", deviceUnknown: "未知",
         pending: "{{count}} 项待处理", attention: "{{count}} 项需关注", registerProject: "注册项目", close: "关闭",
         navigation: { entry: "工作", entryHint: "这台电脑上的日常工作", settings: "设置", settingsHint: "配置当前电脑及其能力", trace: "运行记录", traceHint: "查看任务运行、证据和审计历史", home: "我的首页", tasks: "我的任务", projects: "我的项目", todo: "待我处理", queue: "队列", attention: "待我处理", openSettings: "打开设置", openTrace: "打开运行记录" },
-        mobileNav: { label: "主导航", home: "我的首页", mail: "我的邮箱", library: "资料库", tasks: "我的任务", projects: "我的项目", todo: "待我处理", me: "我的设置", todoCounts: "待我处理：{{active}} 项排队或运行中，{{attention}} 项需要操作" },
+        mobileNav: { label: "主导航", home: "我的首页", tutor: "我的私教", mail: "我的邮箱", library: "资料库", tasks: "我的任务", projects: "我的项目", todo: "待我处理", me: "我的设置", todoCounts: "待我处理：{{active}} 项排队或运行中，{{attention}} 项需要操作" },
         contextNav: { task: "任务栏目", project: "项目栏目", overview: "概览", process: "过程", assets: "资产", verification: "验收", report: "汇报", trace: "追溯", tasks: "任务", worktrees: "工作树", automation: "自动化", settings: "设置", returnTo: "返回{{destination}}" },
         taskTrace: { principal: "操作者", terminal: "终端", authority: "有效权限", reason: "原因", schedulingSettings: "调度设置", summary: "任务链路摘要", route: "路由与 Agent", notSelected: "尚未选择", waiting: "排队决策", noWaiting: "没有排队延迟记录", retries: "故障恢复", retryCount_one: "重试 {{count}} 次", retryCount_other: "重试 {{count}} 次", finalEvidence: "最终证据", evidenceCount_one: "{{count}} 项证据", evidenceCount_other: "{{count}} 项证据" },
         taskTraceStages: { creation: "创建", routing: "路由", queue: "排队", execution: "执行", approval: "审批", tool: "工具调用", verification: "验收", retry:

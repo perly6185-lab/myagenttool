@@ -10,6 +10,9 @@ import {
 import { createProjectRecord } from "../services/projects.mjs";
 import { createTerminalRuntimeCapability } from "../services/terminal.mjs";
 import { createDefaultReportSchedule } from "../services/report-schedule.mjs";
+import { privateTutorSeedQuestionRevisions } from "../services/private-tutor-assessment.mjs";
+import { seedPrivateTutorQuestionContent } from "../services/private-tutor-content.mjs";
+import { privateTutorPackageRegistryFromState, seedPrivateTutorContentPackages } from "../services/private-tutor-package-registry.mjs";
 import { DEFAULT_DEVICE_ID, defineDeviceAlias } from "./device.mjs";
 
 const defaultAgentIds = [
@@ -56,6 +59,49 @@ export function createServerState({ defaultProjectPath, now }) {
     // directories the user explicitly registered as projects.
     workProfileInferences: [createInitialWorkProfileInference(defaultProject, now)],
     workProfileAuditEvents: [],
+    // My Private Tutor keeps every learning object learner-scoped. Guardian
+    // links are the authorization boundary; platform owner/admin is not an
+    // implicit grant to a child's learning data.
+    privateTutorLearners: [],
+    privateTutorGuardianLinks: [],
+    privateTutorSnapshots: [],
+    privateTutorAttempts: [],
+    privateTutorAssessments: [],
+    privateTutorLearnerModels: [],
+    privateTutorStrategyDecisions: [],
+    privateTutorLearningPlans: [],
+    privateTutorSessions: [],
+    privateTutorSessionEvents: [],
+    privateTutorVoiceTurns: [],
+    privateTutorVoiceEvents: [],
+    privateTutorIdempotencyRecords: [],
+    privateTutorAuditEvents: [],
+    privateTutorErrorCases: [],
+    privateTutorErrorThemes: [],
+    privateTutorReviewSchedules: [],
+    privateTutorGuardianPreferences: [],
+    privateTutorReleaseEvaluations: [],
+    privateTutorPilotCohorts: [],
+    privateTutorPilotParticipations: [],
+    privateTutorPilotConsents: [],
+    privateTutorPilotIncidents: [],
+    privateTutorPilotCheckIns: [],
+    privateTutorPilotDeletionRequests: [],
+    privateTutorQuestionRevisions: [],
+    privateTutorQuestionReviews: [],
+    privateTutorContentEvents: [],
+    privateTutorGuardianInvitations: [],
+    privateTutorDataPolicies: [],
+    privateTutorDeletionReports: [],
+    privateTutorDeletionJobs: [],
+    privateTutorContentPackages: [],
+    privateTutorModules: [],
+    privateTutorTopics: [],
+    privateTutorKnowledgeComponents: [],
+    privateTutorSubjectPlugins: [],
+    privateTutorMaterialDocuments: [],
+    privateTutorKnowledgeMapDrafts: [],
+    privateTutorLearningPreferences: [],
     applications: [],
     applicationInstallRuns: [],
     applicationRecoveryActions: [],
@@ -389,6 +435,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // in the durable public state snapshot.
     ilinkAccounts: [],
   };
+  const privateTutorContentCreatedAt = now();
+  seedPrivateTutorContentPackages(state, privateTutorContentCreatedAt);
+  seedPrivateTutorQuestionContent(state, privateTutorSeedQuestionRevisions(privateTutorContentCreatedAt), privateTutorContentCreatedAt);
   defineDeviceAlias(state);
   return { defaultProject, state };
 }

@@ -25,7 +25,11 @@ test("P4.13 durable state snapshots are private to the local user", () => {
       sameProjectPath: () => false,
     });
     persistence.persistStateNow();
-    assert.equal(statSync(stateStorePath).mode & 0o777, 0o600);
+    // chmod is best-effort on Windows (files report 0o666 regardless of the
+    // requested mode), so the privacy assertion only holds on POSIX.
+    if (process.platform !== "win32") {
+      assert.equal(statSync(stateStorePath).mode & 0o777, 0o600);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -51,6 +51,10 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
   const db = new DatabaseSync(path);
   try {
     db.exec("PRAGMA journal_mode = WAL;");
+    // Explicit erasure flows depend on SQLite overwriting deleted cells rather
+    // than merely unlinking them from the b-tree. WAL frames are truncated by
+    // compactForErasure after the logical delete has committed.
+    db.exec("PRAGMA secure_delete = ON;");
     runMigrations(db);
   } catch (error) {
     try {
@@ -292,11 +296,27 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
     return { reaped: Number(info?.changes ?? 0) };
   }
 
+  // Compliance-sensitive deletion barrier. Call only after the record deletes
+  // have committed: VACUUM rewrites the main database, then the checkpoint
+  // removes historical WAL frames that could otherwise retain deleted payloads.
+  function compactForErasure() {
+    db.exec("VACUUM;");
+    const checkpoint = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    const checkpointBusy = Number(checkpoint?.busy ?? 0);
+    const remainingLogFrames = Number(checkpoint?.log ?? 0);
+    return {
+      secureDelete: true,
+      walCheckpointed: checkpointBusy === 0 && remainingLogFrames === 0,
+      checkpointBusy,
+      remainingLogFrames,
+    };
+  }
+
   function close() {
     db.close();
   }
 
-  return { get, query, transaction, importSnapshot, replaceSnapshot, readSnapshot, appendHistory, queryHistory, deleteHistory, redactHistory, reapHistory, close, schemaVersion: SCHEMA_VERSION };
+  return { get, query, transaction, importSnapshot, replaceSnapshot, readSnapshot, appendHistory, queryHistory, deleteHistory, redactHistory, reapHistory, compactForErasure, close, schemaVersion: SCHEMA_VERSION };
 }
 
 /**

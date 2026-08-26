@@ -59,6 +59,7 @@ import { createChannelIntentAdapter, resolveChannelIntentConfig } from "../servi
 import { createChannelConsultationAdapter, resolveChannelConsultationConfig } from "../services/channel-consultation-adapter.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
 import { createChannelNotificationService } from "../services/channel-notifications.mjs";
+import { erasePrivateTutorLearnerData, PRIVATE_TUTOR_LEARNER_COLLECTION_KEYS } from "../services/private-tutor-governance.mjs";
 import {
   channelObjectValidationMatches,
   channelObjectValidationSummary,
@@ -242,6 +243,7 @@ export function createServerRuntimeServices({
   siteSshAdapterFactory = null,
 }) {
   let idCounter = 1;
+  const privateTutorReleaseBuildId = resolvePrivateTutorReleaseBuildId({ protocolVersion, stateSchemaVersion });
   let invocationService = null;
   let codexEventHandlers = {
     createCodexEvidenceRecord: () => null,
@@ -7379,9 +7381,117 @@ export function createServerRuntimeServices({
     store,
   });
 
+  const finalizePrivateTutorLearnerDeletion = ({ learnerId, collectionKeys, report, job = null }) => {
+      const attemptedAt = now();
+      if (job) Object.assign(job, {
+        status: "erasing",
+        attempts: Number(job.attempts ?? 0) + 1,
+        lastAttemptAt: attemptedAt,
+        updatedAt: attemptedAt,
+      });
+      // First barrier propagates logical deletes to the authoritative backing.
+      const logicalPersistence = persistStateNow();
+      let durableResidualCount = 0;
+      if (sqliteStore) {
+        for (const key of collectionKeys) {
+          durableResidualCount += sqliteStore.query(key, (row) =>
+            row?.learnerId === learnerId || (key === "privateTutorLearners" && row?.id === learnerId)).length;
+        }
+        durableResidualCount += sqliteStore.query("privateTutorPilotCohorts", (row) => row?.enrolledLearnerIds?.includes(learnerId)).length;
+        durableResidualCount += sqliteStore.query("identitySessions", (row) => row?.privateTutorChildMode?.learnerId === learnerId).length;
+      }
+      let compaction = { secureDelete: false, walCheckpointed: false, checkpointBusy: null, remainingLogFrames: null };
+      let compactionError = null;
+      try {
+        if (sqliteStore?.compactForErasure) compaction = sqliteStore.compactForErasure();
+      } catch (error) {
+        compactionError = error?.message ?? String(error);
+      }
+      const sqliteErasureComplete = !sqliteStore || (
+        compaction.secureDelete === true
+        && compaction.walCheckpointed === true
+        && Number(compaction.checkpointBusy ?? 0) === 0
+        && Number(compaction.remainingLogFrames ?? 0) === 0
+        && !compactionError
+      );
+      const verification = {
+        backing: sqliteStore ? "sqlite" : persistenceEnabled ? "json" : "memory",
+        durableResidualCount,
+        secureDelete: compaction.secureDelete,
+        walCheckpointed: compaction.walCheckpointed,
+        checkpointBusy: compaction.checkpointBusy,
+        remainingLogFrames: compaction.remainingLogFrames,
+        logicalPersistenceSucceeded: logicalPersistence?.ok !== false,
+        jsonRollbackArtifactUpdated: false,
+        compactionError,
+        verifiedAt: now(),
+      };
+      const mediaVerified = verification.durableResidualCount === 0
+        && verification.logicalPersistenceSucceeded
+        && sqliteErasureComplete;
+      const audit = state.privateTutorAuditEvents.find((row) => row.details?.deletionReportId === report.id);
+      if (mediaVerified) {
+        report.status = "completed";
+        if (job) Object.assign(job, { status: "completed", subjectId: null, lastError: null, completedAt: attemptedAt, updatedAt: attemptedAt });
+        if (audit) Object.assign(audit, { action: "learner_deleted", at: attemptedAt });
+      } else {
+        report.status = "erasure_failed";
+        if (job) Object.assign(job, {
+          status: "erasure_failed",
+          lastError: compactionError ?? (logicalPersistence?.ok === false ? "logical_persistence_failed" : `durable_residuals:${durableResidualCount}`),
+          updatedAt: attemptedAt,
+        });
+      }
+      report.durableVerification = verification;
+      const reportPersistence = persistStateNow();
+      const rollbackArtifact = exportJsonSnapshot();
+      verification.jsonRollbackArtifactUpdated = persistenceEnabled ? rollbackArtifact?.ok === true : false;
+      verification.ok = mediaVerified
+        && reportPersistence?.ok !== false
+        && (!persistenceEnabled || verification.jsonRollbackArtifactUpdated);
+      // The first report write and rollback export prove that the logically
+      // deleted state is durable. Write once more after adding the proof fields
+      // so a restart sees the same completed verification returned to the
+      // caller, rather than the pre-verification object.
+      const finalEvidencePersistence = persistStateNow();
+      const finalRollbackArtifact = exportJsonSnapshot();
+      const finalEvidencePersisted = finalEvidencePersistence?.ok !== false;
+      const finalRollbackUpdated = !persistenceEnabled || finalRollbackArtifact?.ok === true;
+      verification.jsonRollbackArtifactUpdated = persistenceEnabled
+        ? verification.jsonRollbackArtifactUpdated && finalRollbackUpdated
+        : false;
+      verification.ok = verification.ok && finalEvidencePersisted && finalRollbackUpdated;
+      if (!verification.ok) {
+        if (job && job.subjectId == null) {
+          Object.assign(job, {
+            status: "erasure_failed",
+            subjectId: learnerId,
+            completedAt: null,
+            lastError: reportPersistence?.ok === false || !finalEvidencePersisted
+              ? "deletion_report_persistence_failed"
+              : "rollback_artifact_update_failed",
+            updatedAt: now(),
+          });
+        }
+        report.status = "erasure_failed";
+        if (audit) audit.action = "learner_deletion_requested";
+        // Best effort: never leave a tentatively completed job in the backing
+        // after the final evidence barrier itself failed.
+        persistStateNow();
+        exportJsonSnapshot();
+      }
+      return {
+        ...verification,
+        reportPersisted: reportPersistence?.ok !== false && finalEvidencePersisted,
+        ok: verification.ok,
+      };
+    };
+
   const httpDependencies = {
     state,
     now,
+    privateTutorReleaseBuildId,
+    finalizePrivateTutorLearnerDeletion,
     // #1302 long-poll: the bridge cancellations route waits on this shared signal.
     cancellationSignal,
     recordRoundEvent,
@@ -8131,6 +8241,32 @@ export function createServerRuntimeServices({
     upsertBudget,
   };
 
+  // A deletion request is durably recorded before learner rows are removed.
+  // Resume any interrupted second phase during boot; completed jobs have their
+  // raw subject id scrubbed and are therefore intentionally not retryable.
+  for (const job of state.privateTutorDeletionJobs ?? []) {
+    if (job.status === "completed" || !job.subjectId) continue;
+    const report = state.privateTutorDeletionReports.find((row) => row.id === job.reportId);
+    if (!report) continue;
+    try {
+      erasePrivateTutorLearnerData(state, job.subjectId, report, now());
+      finalizePrivateTutorLearnerDeletion({
+        learnerId: job.subjectId,
+        collectionKeys: PRIVATE_TUTOR_LEARNER_COLLECTION_KEYS,
+        report,
+        job,
+      });
+    } catch (error) {
+      Object.assign(job, {
+        status: "erasure_failed",
+        lastError: error?.message ?? String(error),
+        lastAttemptAt: now(),
+        updatedAt: now(),
+      });
+      persistStateNow();
+    }
+  }
+
   return {
     httpDependencies,
     startLocalContentIndexing: localContentCatalogService.start,
@@ -8196,4 +8332,34 @@ function nextIdCounterAfterState(state) {
   };
   visit(state);
   return max + 1;
+}
+
+function resolvePrivateTutorReleaseBuildId({ protocolVersion, stateSchemaVersion }) {
+  const explicit = String(process.env.MYAGENTTOOL_BUILD_ID ?? process.env.GITHUB_SHA ?? "").trim();
+  if (explicit) return `artifact:${explicit.slice(0, 160)}`;
+  const sources = [
+    "./service-composer.mjs",
+    "./persistence.mjs",
+    "./store/sqlite-store.mjs",
+    "../routes/private-tutor.mjs",
+    "../routes/private-tutor-support.mjs",
+    "../services/private-tutor-assessment.mjs",
+    "../services/private-tutor-content.mjs",
+    "../services/private-tutor-family.mjs",
+    "../services/private-tutor-governance.mjs",
+    "../services/private-tutor-pilot.mjs",
+    "../services/private-tutor-review.mjs",
+    "../services/private-tutor-session.mjs",
+  ];
+  try {
+    const hash = createHash("sha256");
+    hash.update(`protocol:${protocolVersion}:schema:${stateSchemaVersion}\n`);
+    for (const source of sources) {
+      hash.update(`${source}\n`);
+      hash.update(readFileSync(new URL(source, import.meta.url)));
+    }
+    return `source:${hash.digest("hex")}`;
+  } catch {
+    return `development:${protocolVersion}:schema-${stateSchemaVersion}`;
+  }
 }
