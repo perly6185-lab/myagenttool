@@ -177,6 +177,46 @@ test("auto-run verification and judgment become work-item evidence", () => {
   assert.equal(item.verificationRecords.length, 1);
 });
 
+test("a verified local software delivery projects Git changes and every required verification kind", () => {
+  let counter = 0;
+  const item = {
+    id: "lwi_code", ownerTeamId: "team_local", projectId: "prj_1", terminalId: "dev_local_001",
+    status: "in_progress", state: "open", revision: 1,
+    acceptanceCriteria: ["The implementation works"],
+    artifactContract: {
+      produces: ["software_change"],
+      requirements: [{ kind: "software_change", minCount: 1, extensions: [".diff"] }],
+      verification: { requiredKinds: ["test", "build"] },
+    },
+    resultVerificationContract: { enforced: true },
+    executionBindings: [{ kind: "auto_run", targetId: "aur_code" }],
+  };
+  const autoRun = {
+    id: "aur_code", worktreeId: "wtr_code", updatedAt: "2026-08-26T00:00:00.000Z",
+    link: { type: "local_issue", number: 2 },
+    localDelivery: { worktreeId: "wtr_code", branchName: "local-2" },
+    deliveryReport: {
+      changedFiles: ["src/session.mjs", "test/session.test.mjs"],
+      changedFilesBaseCommit: "a".repeat(40),
+      completedAt: "2026-08-26T00:00:00.000Z",
+    },
+    verification: { verified: true, passed: true, summary: "Project verification passed", commands: ["pnpm test:ci"] },
+    judgment: { solved: true, summary: "Acceptance satisfied" },
+  };
+  const state = { workItems: [item], workItemActivities: [] };
+  syncBoundWorkItemsForAutoRun({
+    state, autoRun, status: "done",
+    now: () => "2026-08-26T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_${++counter}`,
+  });
+
+  assert.equal(item.status, "review", "local delivery still waits for the user's apply action");
+  assert.deepEqual(item.verificationRecords.map((record) => record.kind).sort(), ["build", "test"]);
+  assert.equal(item.executionArtifacts[0].kind, "software_change");
+  assert.deepEqual(item.executionArtifacts[0].changedFiles, autoRun.deliveryReport.changedFiles);
+  assert.equal(item.resultVerification.status, "passed");
+});
+
 test("auto-run cannot close a criteria-bearing item without completion evidence", () => {
   const state = {
     workItems: [{

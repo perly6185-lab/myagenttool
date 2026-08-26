@@ -130,6 +130,30 @@ test("software result verification requires both passed test and build evidence"
   assert.deepEqual(resultVerificationEvidence(item, result).map((entry) => entry.ref).sort(), ["build_1", "outputs/change.diff", "test_1"]);
 });
 
+test("authoritative Auto-run Worktree changes satisfy software-change artifact evidence", () => {
+  const item = {
+    taskKind: "software_implementation",
+    artifactContract: {
+      requirements: [{ kind: "software_change", minCount: 1, extensions: [".diff"] }],
+      verification: { requiredKinds: ["test", "build"] },
+    },
+    outputAssets: [],
+    executionArtifacts: [{
+      id: "aur_1:software_change", kind: "software_change", source: "auto_run",
+      autoRunId: "aur_1", worktreeId: "wtr_1",
+      changedFiles: ["src/session.mjs"], changedFileCount: 1,
+    }],
+    verificationRecords: [
+      { id: "test_1", kind: "test", status: "passed" },
+      { id: "build_1", kind: "build", status: "passed" },
+    ],
+  };
+  const result = verifyWorkItemResult(item);
+  assert.equal(result.status, "passed");
+  assert.equal(result.checks[0].actual.qualifiedCount, 1);
+  assert.deepEqual(resultVerificationEvidence(item, result).map((entry) => entry.ref).sort(), ["build_1", "test_1", "wtr_1"]);
+});
+
 test("failed checks produce an independent repair proposal instead of extending the original task", () => {
   const result = verifyWorkItemResult({
     title: "客户方案",

@@ -198,16 +198,55 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
     // project planning/waiting state; otherwise a delayed reconciliation of an
     // earlier failure can overwrite a later successful review result.
     if (autoRunBindings.at(-1)?.targetId !== autoRun.id) continue;
+    const changedFiles = Array.isArray(autoRun.deliveryReport?.changedFiles)
+      ? autoRun.deliveryReport.changedFiles.map(String).filter(Boolean).slice(0, 100)
+      : [];
+    if (
+      status === "done"
+      && autoRun.link?.type === "local_issue"
+      && autoRun.localDelivery?.worktreeId
+      && changedFiles.length > 0
+      && (item.artifactContract?.produces ?? []).includes("software_change")
+    ) {
+      const artifact = {
+        id: `${autoRun.id}:software_change`,
+        kind: "software_change",
+        source: "auto_run",
+        autoRunId: autoRun.id,
+        worktreeId: autoRun.localDelivery.worktreeId,
+        changedFiles,
+        changedFileCount: changedFiles.length,
+        baseCommit: autoRun.deliveryReport?.changedFilesBaseCommit ?? null,
+        completedAt: autoRun.deliveryReport?.completedAt ?? autoRun.updatedAt ?? now(),
+      };
+      item.executionArtifacts = [
+        ...(item.executionArtifacts ?? []).filter((candidate) => candidate?.id !== artifact.id),
+        artifact,
+      ].slice(-100);
+    }
     let verificationRecorded = false;
     if (["pr_open", "report_posted", "done", "blocked"].includes(status)
-      && autoRun.verification?.verified
-      && !(item.verificationRecords ?? []).some((record) => record.sourceAutoRunId === autoRun.id)) {
+      && autoRun.verification?.verified) {
       const recordedAt = now();
-      const record = {
+      const requiredKinds = Array.isArray(item.artifactContract?.verification?.requiredKinds)
+        ? item.artifactContract.verification.requiredKinds.map(String).filter(Boolean)
+        : [];
+      // The project owner configures one governed verification plan (often a
+      // test:ci command) for the run. A successful receipt satisfies each facet
+      // the task contract required; keep separate records so the result gate can
+      // explain which required facet is covered without pretending extra runs.
+      const evidenceKinds = requiredKinds.length ? [...new Set(requiredKinds)] : ["test"];
+      const missingKinds = evidenceKinds.filter((kind) => !(item.verificationRecords ?? []).some(
+        (record) => record.sourceAutoRunId === autoRun.id && record.kind === kind,
+      ));
+      const command = Array.isArray(autoRun.verification.commands) && autoRun.verification.commands.length
+        ? autoRun.verification.commands.join(" && ").slice(0, 2_000)
+        : null;
+      const records = missingKinds.map((kind) => ({
         id: nextId("wvr"),
-        kind: "test",
+        kind,
         status: autoRun.verification.passed ? "passed" : "failed",
-        command: null,
+        command,
         summary: autoRun.verification.summary ?? "Auto-run verification",
         evidence: [
           { kind: "run", ref: autoRun.id, summary: "Auto-run" },
@@ -217,15 +256,20 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
         sourceAutoRunId: autoRun.id,
         recordedAt,
         recordedBy: "usr_autorun",
-      };
-      (item.verificationRecords ??= []).unshift(record);
-      verificationRecorded = true;
+      }));
+      if (records.length) {
+        (item.verificationRecords ??= []).unshift(...records);
+        verificationRecorded = true;
+      }
       if ((item.acceptanceCriteria ?? []).length && autoRun.judgment?.solved != null) {
+        const verificationId = records[0]?.id
+          ?? (item.verificationRecords ?? []).find((record) => record.sourceAutoRunId === autoRun.id)?.id
+          ?? null;
         item.acceptanceResults = item.acceptanceCriteria.map((criterion) => ({
           criterion,
           status: autoRun.judgment.solved ? "passed" : "failed",
           note: autoRun.judgment.summary ?? (autoRun.judgment.solved ? "Auto-run acceptance passed." : "Auto-run acceptance failed."),
-          verificationId: record.id,
+          verificationId,
           updatedAt: recordedAt,
         }));
       }
@@ -2678,7 +2722,12 @@ export function createAutoRunService({
             summary: "Verification is required, but no verification command is configured.",
           };
         }
-        autoRun.verification = { passed: verification.passed, verified: verification.verified, summary: verification.summary ?? null };
+        autoRun.verification = {
+          passed: verification.passed,
+          verified: verification.verified,
+          summary: verification.summary ?? null,
+          ...(Array.isArray(verification.commands) ? { commands: verification.commands } : {}),
+        };
         if (!verification.passed) {
           // Self-repair: feed the failing check back to the agent for another attempt
           // in the SAME worktree, rather than blocking on the first failure. Bounded

@@ -144,7 +144,7 @@ export type LocalWorkItem = {
   }[];
   acceptanceResults?: { criterion: string; status: "passed" | "failed" | "not_tested"; note: string; verificationId: string }[];
   verificationRecords?: {
-    id: string; kind: "test" | "lint" | "typecheck" | "manual" | "review";
+    id: string; kind: "test" | "build" | "lint" | "typecheck" | "manual" | "review";
     status: "passed" | "failed"; command: string | null; summary: string;
     evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string; sourceAutoRunId?: string | null;
   }[];
@@ -164,6 +164,17 @@ export type LocalWorkItem = {
   localContentRefs?: WorkItemContentReference[];
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
+  executionArtifacts?: {
+    id: string;
+    kind: string;
+    source: "auto_run" | string;
+    autoRunId: string;
+    worktreeId: string;
+    changedFiles: string[];
+    changedFileCount: number;
+    baseCommit?: string | null;
+    completedAt?: string | null;
+  }[];
   channelTaskContract?: {
     schemaVersion: number;
     source: string;
