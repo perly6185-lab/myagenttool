@@ -2,6 +2,7 @@ import { resolve, sep } from "node:path";
 
 import { DEFAULT_DEVICE_ID } from "../runtime/device.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { buildHostDiagnosticSummary } from "./host-diagnostic-summary.mjs";
 import { createSshHostConnector, normalizeSshFingerprint, sshDiagnosticPlanForInput, sshDiagnosticCommand, SshHostConnectorError } from "./ssh-host-connector.mjs";
 
 // A local managed terminal is the broadest execution surface on the bridge (an
@@ -289,16 +290,17 @@ export function createTerminalService({
     try {
       const result = await sshHostConnector.runFixedCommand(target, resolved.credential, action, parameters, { operationTimeoutMs: 120_000 });
       const output = sanitizeSshDiagnosticOutput(action, String(result?.value?.output ?? "")).slice(0, 8_000);
+      const summary = buildHostDiagnosticSummary(action, output);
       runTx(() => {
         appendEvent({
           invocationId: null,
           type: "ssh.host_diagnostic.completed",
           level: "info",
           message: "A confirmed read-only SSH host diagnostic completed.",
-          data: { targetId: target.id, action, command, parameters, requestedBy: actor?.userId ?? "usr_local", outputPreview: summarizeText(output, 500) },
+          data: { targetId: target.id, action, parameters, requestedBy: actor?.userId ?? "usr_local", summary },
         });
       });
-      return { ok: true, action, command, output, resolvedAddress: result.resolvedAddress };
+      return { ok: true, action, command, output, summary, resolvedAddress: result.resolvedAddress };
     } catch (error) {
       const code = error instanceof SshHostConnectorError ? error.code : "ssh_fixed_command_failed";
       return { ok: false, status: code === "ssh_host_fingerprint_changed" ? 409 : 502, error: code };
