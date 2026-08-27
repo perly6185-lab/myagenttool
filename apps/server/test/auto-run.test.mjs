@@ -351,6 +351,13 @@ test("a reserved Local Issue Run is durable before its writable workspace exists
   state.workItems = [{
     id: "wi_1301",
     revision: 4,
+    executionIntentContractSnapshot: {
+      schemaVersion: 1,
+      digest: "intent-contract-digest",
+      status: "ready",
+      goal: "Implement the requested behavior.",
+      conflicts: [],
+    },
     dataContextSnapshot: {
       schemaVersion: 1,
       id: "dcs:wi_1301:4",
@@ -376,6 +383,7 @@ test("a reserved Local Issue Run is durable before its writable workspace exists
   assert.equal(replay.replayed, true);
   assert.match(frozen.executionContract.digest, /^[0-9a-f]{64}$/);
   assert.equal(frozen.executionContract.dataContextSnapshot.digest, "context-source-digest");
+  assert.equal(frozen.executionContract.intentContract.digest, "intent-contract-digest");
   assert.throws(() => svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
     acceptanceCriteria: ["A changed criterion must not replace the frozen contract."],
     verificationSop: ["Run the focused automated test."],
@@ -425,6 +433,38 @@ test("a reserved Local Issue Run cannot materialize before its contract is froze
   );
   assert.equal(state.worktrees.length, 0);
   assert.equal(calls.createInvocation.length, 0);
+});
+
+test("a reserved Run cannot freeze a conflicting intent contract", async () => {
+  const { svc } = makeAutoRun();
+  const link = { type: "local_issue", number: 1303, title: "Resolve intent first", url: null, state: "open" };
+  const reserved = await svc.reserveAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "wi_1303",
+    agentId: "agt_1",
+    name: "local-1303-resolve-intent",
+    issueBody: "Do not guess across an intent conflict.",
+  });
+  await svc.decideReservedAutoRun(reserved.autoRun.id);
+  state.workItems = [{
+    id: "wi_1303",
+    revision: 1,
+    executionIntentContractSnapshot: {
+      schemaVersion: 1,
+      digest: "intent-conflict-digest",
+      status: "needs_clarification",
+      conflicts: [{ code: "read_only_with_change_targets" }],
+    },
+  }];
+
+  assert.throws(() => svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
+    acceptanceCriteria: ["The result is complete."],
+    verificationSop: ["Review the result."],
+    confirmedBy: "ai_policy",
+    confirmedAt: "2026-08-07T00:00:00.000Z",
+  }), /requires clarification/i);
+  assert.equal(reserved.autoRun.executionContract, undefined);
 });
 
 test("a recovered reserved Run reuses a materialized worktree when invocation startup was interrupted", async () => {
@@ -1613,6 +1653,14 @@ test("self-repair: a failing check re-attempts (preApproved), then blocks after 
 
 test("auto-run binds the local content manifest and materialization receipts to the run", async () => {
   const materialized = [];
+  const declarationSnapshot = {
+    schemaVersion: 1,
+    workItemRevision: 4,
+    deliveryDestination: "task",
+    digest: `sha256:${"d".repeat(64)}`,
+    sources: [{ kind: "local_content", sourceId: `lc_${"b".repeat(32)}`, referenceId: "wcr_1", purpose: "required_input", allowedOperations: ["read"] }],
+  };
+  state.workItems = [{ id: "work_refs", projectId: sourceProjectId, dataContextSnapshot: declarationSnapshot }];
   const { svc, calls } = makeAutoRun({
     materializeTaskMaterials: async (input) => {
       materialized.push(input);
@@ -1630,6 +1678,15 @@ test("auto-run binds the local content manifest and materialization receipts to 
           status: "ready",
           preparedAt: "2026-08-14T00:00:00.000Z",
         }],
+        executionContextSnapshot: {
+          schemaVersion: 1,
+          workItemId: "work_refs",
+          declarationDigest: declarationSnapshot.digest,
+          entryCount: 1,
+          entries: [],
+          capturedAt: "2026-08-14T00:00:00.000Z",
+          digest: `sha256:${"e".repeat(64)}`,
+        },
       };
     },
   });
@@ -1644,7 +1701,9 @@ test("auto-run binds the local content manifest and materialization receipts to 
   });
   assert.equal(materialized.length, 1);
   assert.equal(materialized[0].workItemId, "work_refs");
+  assert.equal(materialized[0].contextSnapshot.digest, declarationSnapshot.digest);
   assert.equal(result.autoRun.inputMaterialization.receipts[0].contentId, `lc_${"b".repeat(32)}`);
+  assert.equal(result.autoRun.executionContextSnapshot.digest, `sha256:${"e".repeat(64)}`);
   assert.match(calls.createInvocation[0].task, /Context manifest: \.myagenttool\/inputs\/work_refs\/manifest\.json/);
   assert.match(calls.createInvocation[0].task, /use its directory and summary fields/);
   assert.match(calls.createInvocation[0].task, /untrusted data/);
@@ -2037,7 +2096,8 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   );
   assert.equal(autoRun.status, "failed", "a cross-terminal retry cannot mutate the run");
 
-  const { invocation: second } = await svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" } });
+  const retry = await svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" }, idempotencyKey: "retry-97" });
+  const { invocation: second } = retry;
 
   assert.equal(autoRun.status, "running", "retried run is live again");
   assert.equal(autoRun.invocationId, second.id, "record points at the fresh invocation");
@@ -2046,6 +2106,16 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   assert.equal(calls.createInvocation.length, 2);
   assert.match(calls.createInvocation[1].task, /implement the change/, "role prompt rebuilt from the decision");
   assert.equal(calls.createInvocation[1].options.timeoutSeconds, 900, "stored retry budget matches the configured turn budget");
+  assert.equal(retry.actionReceipt.status, "succeeded");
+  assert.equal(retry.actionReceipt.messageCode, "retry_started");
+  const originalReceiptId = retry.actionReceipt.id;
+  autoRun.executionActionReceipts = [];
+  const replay = await svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" }, idempotencyKey: "retry-97" });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.invocation.id, second.id);
+  assert.equal(replay.actionReceipt.id, originalReceiptId);
+  assert.equal(replay.actionReceipt.replayed, true);
+  assert.equal(calls.createInvocation.length, 2, "the same action key cannot start a duplicate invocation");
 });
 
 test("retryAutoRun migrates a legacy Demo Agent failure to the project's Codex agent", async () => {
@@ -2184,7 +2254,7 @@ test("reverifyAutoRun runs the platform gate and upgrades an unverified complete
   autoRun.status = "done";
   autoRun.verification = { passed: true, verified: false, summary: "No verification command configured." };
 
-  const result = await svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" } });
+  const result = await svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" }, idempotencyKey: "reverify-198" });
 
   assert.equal(result.autoRun.status, "done");
   assert.equal(result.autoRun.verification.verified, true);
@@ -2192,6 +2262,10 @@ test("reverifyAutoRun runs the platform gate and upgrades an unverified complete
   assert.deepEqual(result.autoRun.verification.commands, ["node --test apps/server/test/example.test.mjs"]);
   assert.equal(calls.verify.length, 1);
   assert.ok(calls.events.some((event) => event.type === "auto_run_reverified"));
+  assert.equal(result.actionReceipt.messageCode, "verification_passed");
+  const replay = await svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" }, idempotencyKey: "reverify-198" });
+  assert.equal(replay.replayed, true);
+  assert.equal(calls.verify.length, 1, "replaying the same action does not rerun verification");
 });
 
 test("reverifyAutoRun blocks a completed run when the reproduced platform check fails", async () => {
@@ -3133,7 +3207,7 @@ test("E3: answerClarify posts the answer and resumes the same run in develop", a
   assert.equal(autoRun.status, "needs_input");
   const before = calls.report.length;
 
-  const result = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use Redis, TTL 5 min." });
+  const result = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use Redis, TTL 5 min.", idempotencyKey: "answer-110" });
   assert.equal(result.ok, true);
   assert.equal(result.resumed, true);
   assert.equal(autoRun.clarifyAnswer.by, "usr_pm");
@@ -3144,6 +3218,11 @@ test("E3: answerClarify posts the answer and resumes the same run in develop", a
   assert.equal(autoRun.status, "running");
   assert.equal(calls.createInvocation.length, 2, "a continuation is created on the existing Auto-run");
   assert.match(calls.createInvocation[1].task, /Use Redis, TTL 5 min/);
+  assert.equal(result.actionReceipt.messageCode, "answer_resumed");
+  const replay = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use Redis, TTL 5 min.", idempotencyKey: "answer-110" });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.resumed, true);
+  assert.equal(calls.createInvocation.length, 2, "the same answer cannot dispatch twice");
 });
 
 test("E3: a reserved clarify Run waits without a worktree and materializes only after the answer", async () => {

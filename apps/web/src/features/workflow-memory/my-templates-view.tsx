@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, BrainCircuit, Check, Eye, FileInput, FileOutput, History, Loader2, PencilLine, Plus, RotateCcw, Sparkles, Trash2 } from "lucide-react";
+import { ArrowRight, Check, Eye, FileInput, FileOutput, History, Loader2, PencilLine, Plus, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,22 +13,9 @@ import { buildMyTemplateSummaries, type MyTemplateState } from "@/features/workf
 import { MyTemplateSetupWizard } from "@/features/workflow-memory/my-template-setup-wizard";
 import { workflowMemoryApi, type TemplateLearningTask } from "@/features/workflow-memory/workflow-memory-api";
 import { ChannelObjectRegistryCard } from "@/features/workflow-memory/channel-object-registry-card";
+import { TaskPreferencesPanel, type TaskExecutionPreference, type TaskRoutingPreference } from "@/features/workflow-memory/task-preferences-panel";
 import { WorkflowMemoryView } from "@/features/workflow-memory/workflow-memory-view";
 import type { MyTemplateDraft } from "@/lib/api-client";
-
-type MyTemplateLearningFeedback = {
-  id: string;
-  projectId: string;
-  workItemId: string;
-  workItem: { id: string; localRef: string; title: string } | null;
-  intentTerms: string[];
-  rejectedOutput: string | null;
-  selectedOutput: string;
-  reason: string;
-  createdAt: string;
-  state?: "active" | "conflict";
-  conflictingOutputs?: string[];
-};
 
 type MyTemplateOutcomeSummary = {
   familyId: string;
@@ -296,7 +283,11 @@ export function MyTemplatesView() {
   });
   const learningQuery = useQuery({
     queryKey: ["my-template-learning"],
-    queryFn: () => api.listMyTemplateLearning() as Promise<{ feedback: MyTemplateLearningFeedback[]; count: number }>,
+    queryFn: () => api.listMyTemplateLearning() as Promise<{ feedback: TaskRoutingPreference[]; count: number }>,
+  });
+  const planActualPreferencesQuery = useQuery({
+    queryKey: ["work-item-plan-actual-preferences"],
+    queryFn: () => api.listWorkItemPlanActualPreferences() as Promise<{ feedback: TaskExecutionPreference[]; count: number }>,
   });
   const ocrReadinessQuery = useQuery({
     queryKey: ["workflow-memory", "ocr-readiness"],
@@ -329,6 +320,7 @@ export function MyTemplatesView() {
     definitionsQuery.data?.routineDefinitions ?? [],
   ), [definitionsQuery.data?.routineDefinitions, sources]);
   const learningFeedback = learningQuery.data?.feedback ?? [];
+  const planActualPreferences = planActualPreferencesQuery.data?.feedback ?? [];
   const outcomeFeedback = outcomesQuery.data?.feedback ?? [];
   const taskDrafts = taskDraftsQuery.data?.drafts ?? [];
   const learningTaskBySource = new Map((templateTasksQuery.data?.tasks ?? [])
@@ -348,9 +340,6 @@ export function MyTemplatesView() {
   const learningStagesRef = useRef<Map<string, TemplateLearningTask["stage"]> | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number; phase: "copying" | "organizing" } | null>(null);
   const [recoverySourceId, setRecoverySourceId] = useState<string | null>(null);
-  const [learningToRemove, setLearningToRemove] = useState<MyTemplateLearningFeedback | null>(null);
-  const [learningRemovePending, setLearningRemovePending] = useState(false);
-  const [learningRemoveError, setLearningRemoveError] = useState<string | null>(null);
   const [detailFamilyId, setDetailFamilyId] = useState<string | null>(null);
   const [feedbackToCorrect, setFeedbackToCorrect] = useState<MyTemplateOutcomeFeedback | null>(null);
   const [correctedOutcome, setCorrectedOutcome] = useState<MyTemplateOutcomeFeedback["outcome"]>("met_expectations");
@@ -477,19 +466,30 @@ export function MyTemplatesView() {
     }
   };
 
-  const removeLearning = async () => {
-    if (!learningToRemove || learningRemovePending) return;
-    setLearningRemovePending(true);
-    setLearningRemoveError(null);
-    try {
-      await api.removeMyTemplateLearning(learningToRemove.id);
-      await queryClient.invalidateQueries({ queryKey: ["my-template-learning"] });
-      setLearningToRemove(null);
-    } catch (caught) {
-      setLearningRemoveError(caught instanceof Error ? caught.message : "无法撤销这条学习");
-    } finally {
-      setLearningRemovePending(false);
-    }
+  const removeRoutingPreference = async (preference: TaskRoutingPreference) => {
+    await api.removeMyTemplateLearning(preference.id);
+    await queryClient.invalidateQueries({ queryKey: ["my-template-learning"] });
+  };
+
+  const updateExecutionPreference = async (preference: TaskExecutionPreference, input: {
+    decisions: Array<{ code: string; resolution: "keep_plan" | "prefer_actual" }>;
+    note: string;
+  }) => {
+    await api.recordWorkItemPlanActualFeedback(preference.workItemId, {
+      expectedPlanActualDigest: preference.planActualDigest,
+      expectedFeedbackRevision: preference.revision,
+      decisions: input.decisions,
+      note: input.note,
+    });
+    await queryClient.invalidateQueries({ queryKey: ["work-item-plan-actual-preferences"] });
+  };
+
+  const removeExecutionPreference = async (preference: TaskExecutionPreference) => {
+    await api.removeWorkItemPlanActualPreference(preference.id);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["work-item-plan-actual-preferences"] }),
+      queryClient.invalidateQueries({ queryKey: ["work-item", preference.workItemId] }),
+    ]);
   };
 
   const saveOutcomeCorrection = async () => {
@@ -686,57 +686,16 @@ export function MyTemplatesView() {
         </div>
       ) : null}
 
-      <details className="order-5 rounded-xl border bg-card">
-        <summary className="flex cursor-pointer items-center gap-2 px-5 py-4 text-sm font-medium">
-          <BrainCircuit className="size-4 text-primary" aria-hidden="true" />
-          学习与纠正记录
-          <Badge tone="neutral">{learningFeedback.length} 条</Badge>
-        </summary>
-        <Card className="border-0 shadow-none">
-        <CardContent className="border-t p-5">
-          <div className="flex items-start gap-3">
-            <BrainCircuit className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
-            <div>
-              <h2 id="learned-preferences-heading" className="font-semibold">系统记住的选择</h2>
-              <p className="mt-1 text-sm text-muted-foreground">这里来自你对任务结果的纠正，只帮助以后判断相似任务，不会改变已有任务。</p>
-            </div>
-          </div>
-          {learningQuery.isLoading ? (
-            <p className="mt-4 flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />正在读取…</p>
-          ) : learningQuery.isError ? (
-            <p className="mt-4 text-sm text-destructive" role="alert">暂时无法读取系统记住的选择。</p>
-          ) : learningFeedback.length ? (
-            <ul className="mt-4 divide-y rounded-lg border" aria-labelledby="learned-preferences-heading">
-              {learningFeedback.map((feedback) => {
-                const project = projects.find((candidate) => candidate.id === feedback.projectId);
-                const subject = feedback.intentTerms.length ? `任务提到“${feedback.intentTerms.join("、")}”时` : "遇到相似任务时";
-                return (
-                  <li key={feedback.id} className="flex flex-wrap items-center justify-between gap-3 p-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm"><span className="font-medium">{subject}</span>，优先得到“{feedback.selectedOutput}”{feedback.rejectedOutput ? `，而不是“${feedback.rejectedOutput}”` : "（由你确认）"}。</p>
-                        {feedback.state === "conflict" ? <Badge tone="warning">存在冲突</Badge> : <Badge tone="success">正在使用</Badge>}
-                      </div>
-                      {feedback.state === "conflict" ? (
-                        <p className="mt-1 text-xs text-warning">你曾为类似任务选择不同结果；创建任务时系统会先请你确认。</p>
-                      ) : null}
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {project?.name ?? "当前项目"}{feedback.workItem ? ` · 来自 ${feedback.workItem.localRef} ${feedback.workItem.title}` : ""}
-                      </p>
-                    </div>
-                    <Button size="sm" variant="ghost" onClick={() => { setLearningRemoveError(null); setLearningToRemove(feedback); }}>
-                      <Trash2 />忘记这条
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            <p className="mt-4 rounded-lg border border-dashed p-3 text-sm text-muted-foreground">还没有记住任何纠正。以后在任务中点击“结果不对”，确认后的选择会出现在这里。</p>
-          )}
-        </CardContent>
-        </Card>
-      </details>
+      <TaskPreferencesPanel
+        projects={projects}
+        routingPreferences={learningFeedback}
+        executionPreferences={planActualPreferences}
+        loading={learningQuery.isLoading || planActualPreferencesQuery.isLoading}
+        error={learningQuery.isError || planActualPreferencesQuery.isError}
+        onRemoveRouting={removeRoutingPreference}
+        onUpdateExecution={updateExecutionPreference}
+        onRemoveExecution={removeExecutionPreference}
+      />
 
       {taskDrafts.length ? (
         <section className="order-2" aria-labelledby="task-template-drafts-heading">
@@ -1100,29 +1059,6 @@ export function MyTemplatesView() {
             </section> : null}
             {caseNotice ? <p className="rounded-lg border border-success/30 bg-success/[0.05] p-3 text-sm text-success" role="status">{caseNotice}</p> : null}
             {caseError ? <p className="text-sm text-destructive" role="alert">{caseError}</p> : null}
-          </div>
-        ) : null}
-      </Modal>
-
-      <Modal
-        open={Boolean(learningToRemove)}
-        onClose={() => !learningRemovePending && setLearningToRemove(null)}
-        title="让系统忘记这条选择？"
-        description="撤销后，系统不再用这条偏好判断未来任务。已经创建或执行的任务不会改变。"
-        closeDisabled={learningRemovePending}
-        footer={(
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" disabled={learningRemovePending} onClick={() => setLearningToRemove(null)}>取消</Button>
-            <Button variant="destructive" disabled={learningRemovePending} onClick={() => { void removeLearning(); }}>
-              {learningRemovePending ? <Loader2 className="animate-spin" /> : <Trash2 />}确认忘记
-            </Button>
-          </div>
-        )}
-      >
-        {learningToRemove ? (
-          <div className="space-y-3 text-sm">
-            <p>系统将忘记：优先得到“{learningToRemove.selectedOutput}”{learningToRemove.rejectedOutput ? `，而不是“${learningToRemove.rejectedOutput}”` : "（由你确认）"}。</p>
-            {learningRemoveError ? <p role="alert" className="text-destructive">{learningRemoveError}</p> : null}
           </div>
         ) : null}
       </Modal>

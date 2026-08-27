@@ -54,6 +54,8 @@ export type WorkItemResourceReference = {
   businessRole: string | null;
   locality: WorkResource["locality"];
   sourceLabel: string;
+  capabilities?: string[];
+  allowedPurposes?: Array<"query_source" | "change_target" | "reference">;
   addedBy: string;
   createdAt: string;
   versionPinned: boolean;

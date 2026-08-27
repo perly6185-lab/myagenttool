@@ -224,7 +224,7 @@ describe("RoutineWorkPanel", () => {
     render(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
 
     expect(screen.queryByRole("button", { name: "Mark step complete" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Run this step" }));
+    fireEvent.click(screen.getByRole("button", { name: "Prepare this result" }));
     expect(actions.onExecute).toHaveBeenCalledWith("quotation");
     expect(actions.onComplete).not.toHaveBeenCalled();
   });

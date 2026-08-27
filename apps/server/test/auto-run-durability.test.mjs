@@ -27,7 +27,49 @@ function harness({ wireStore }) {
   const { state, defaultProject } = createServerState({ defaultProjectPath: projectPath, now });
   state.autoRuns = [
     { id: "aur_demo", status: "running", invocationId: null, worktreeId: null, updatedAt: now(), createdAt: now(), link: null },
-    { id: "aur_gate", status: "awaiting_approval", invocationId: "inv_gate", worktreeId: null, updatedAt: now(), createdAt: now(), link: null },
+    {
+      id: "aur_gate", status: "awaiting_approval", invocationId: "inv_gate", worktreeId: null,
+      updatedAt: now(), createdAt: now(), link: null,
+      executionActionReceipts: [{
+        schemaVersion: 1,
+        id: "ear_gate",
+        kind: "retry_execution",
+        status: "accepted",
+        messageCode: "request_accepted",
+        impact: "none",
+        nextOwner: "ai",
+        requestedAt: "2026-07-14T00:00:00.000Z",
+        updatedAt: "2026-07-14T00:00:00.000Z",
+        sourceTargetId: "inv_gate",
+        targetId: null,
+        idempotencyKey: "durable-gate-key",
+        requestDigest: "durable-gate-digest",
+      }],
+      executionActionIdempotencyLedger: [{
+        schemaVersion: 1,
+        idempotencyKey: "durable-gate-key",
+        kind: "retry_execution",
+        requestDigest: "durable-gate-digest",
+        receiptId: "ear_gate",
+        requestedAt: "2026-07-14T00:00:00.000Z",
+        updatedAt: "2026-07-14T00:00:00.000Z",
+        receipt: {
+          schemaVersion: 1,
+          id: "ear_gate",
+          kind: "retry_execution",
+          status: "accepted",
+          messageCode: "request_accepted",
+          impact: "none",
+          nextOwner: "ai",
+          requestedAt: "2026-07-14T00:00:00.000Z",
+          updatedAt: "2026-07-14T00:00:00.000Z",
+          sourceTargetId: "inv_gate",
+          targetId: null,
+          idempotencyKey: "durable-gate-key",
+          requestDigest: "durable-gate-digest",
+        },
+      }],
+    },
   ];
   const persistence = createPersistenceRuntime({ state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject, sameProjectPath: () => false });
   const svc = createAutoRunService({
@@ -65,6 +107,23 @@ test("#1001 (5d-2 hot path) a granted-approval sync survives a crash via the Sto
     const run = (reload().autoRuns ?? []).find((r) => r.id === "aur_gate");
     assert(run, "the auto-run is durable");
     assert.equal(run.status, "running");
+  } finally {
+    cleanup();
+  }
+});
+
+test("an execution-action reconciliation and its safe-retry evidence survive restart", () => {
+  const { svc, reload, cleanup } = harness({ wireStore: true });
+  try {
+    const result = svc.reconcileExecutionAction("aur_gate");
+    assert.equal(result.actionReceipt.status, "safe_to_retry");
+
+    const run = (reload().autoRuns ?? []).find((candidate) => candidate.id === "aur_gate");
+    assert.equal(run.executionActionReceipts[0].status, "safe_to_retry");
+    assert.equal(run.executionActionReceipts[0].messageCode, "safe_to_retry");
+    assert.equal(run.executionActionReceipts[0].impact, "none");
+    assert.equal(run.executionActionIdempotencyLedger[0].receipt.status, "safe_to_retry");
+    assert.equal(run.executionActionIdempotencyLedger[0].receipt.messageCode, "safe_to_retry");
   } finally {
     cleanup();
   }

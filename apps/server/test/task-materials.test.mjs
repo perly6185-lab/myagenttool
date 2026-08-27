@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -145,12 +145,133 @@ test("structured work resources materialize as bounded execution-only snapshots 
     assert.equal(manifest.entries[0].resourceId, resourceId);
     assert.equal(manifest.entries[0].locality, "remote");
     assert.equal(manifest.entries[0].rowCount, 1);
+    assert.equal(manifest.entries[0].role, "query_source");
+    assert.deepEqual(manifest.entries[0].access, {
+      read: true, query: true, proposeChange: false, commitChange: false,
+    });
+    assert.equal(statSync(join(worktreePath, prepared.assets[0].path)).mode & 0o222, 0);
+    assert.match(prepared.executionContextSnapshot.digest, /^sha256:[a-f0-9]{64}$/);
 
     currentVersion = "sha256:version-2";
     const drifted = await fx.service.materialize({ workItemId: "work_resource", worktree: { id: "wt_resource", path: worktreePath }, actor });
     assert.equal(drifted.ok, false);
     assert.equal(drifted.error, "work_resource_version_changed");
     assert.equal(drifted.currentVersion, currentVersion);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("a change target without runtime commit capability is refused before execution", async () => {
+  const fx = fixture({ resolveWorkResourceReference: async () => {
+    throw new Error("the source resolver must not run before the permission gate");
+  } });
+  try {
+    fx.state.workItems = [{
+      id: "work_change_denied",
+      ownerTeamId: "team_1",
+      projectId: "project_1",
+      inputAssets: [],
+      taskResourceRefs: [{
+        id: "wrr_denied",
+        resourceId: `wres_${"d".repeat(32)}`,
+        purpose: "change_target",
+        title: "远程客户台账",
+        locality: "remote",
+        capabilities: ["read", "query", "propose_change"],
+        allowedPurposes: ["reference", "query_source"],
+      }],
+    }];
+    const worktreePath = join(fx.root, "denied-worktree");
+    mkdirSync(worktreePath, { recursive: true });
+    const prepared = await fx.service.materialize({
+      workItemId: "work_change_denied",
+      worktree: { id: "wt_denied", path: worktreePath },
+      actor,
+    });
+    assert.equal(prepared.ok, false);
+    assert.equal(prepared.error, "work_resource_change_permission_unavailable");
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("a frozen execution context excludes later references and ignores future role edits", async () => {
+  const bytes = Buffer.from("frozen source", "utf8");
+  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const firstContentId = `lc_${"f".repeat(32)}`;
+  const secondContentId = `lc_${"e".repeat(32)}`;
+  const fx = fixture({
+    resolveLocalContentReference: async ({ contentId }) => ({
+      ok: true,
+      sourceType: "bytes",
+      bytes,
+      size: bytes.length,
+      sha256: digest,
+      originalName: `${contentId}.md`,
+      record: { id: contentId, kind: "article", title: contentId, mimeType: "text/markdown" },
+    }),
+  });
+  try {
+    const first = { id: "wcr_frozen", contentId: firstContentId, purpose: "required_input", selectedFingerprint: digest };
+    fx.state.workItems = [{
+      id: "work_frozen",
+      ownerTeamId: "team_1",
+      projectId: "project_1",
+      inputAssets: [],
+      localContentRefs: [
+        first,
+        { id: "wcr_later", contentId: secondContentId, purpose: "reference", selectedFingerprint: digest },
+      ],
+      taskResourceRefs: [],
+    }];
+    const contextSnapshot = {
+      workItemRevision: 3,
+      digest: `sha256:${"a".repeat(64)}`,
+      deliveryDestination: "task",
+      sources: [{
+        kind: "local_content",
+        sourceId: firstContentId,
+        referenceId: first.id,
+        purpose: "required_input",
+        version: digest,
+        allowedOperations: ["read"],
+      }],
+    };
+    const worktreePath = join(fx.root, "frozen-worktree");
+    mkdirSync(worktreePath, { recursive: true });
+    const prepared = await fx.service.materialize({
+      workItemId: "work_frozen",
+      worktree: { id: "wt_frozen", path: worktreePath },
+      actor,
+      contextSnapshot,
+    });
+    assert.equal(prepared.ok, true);
+    assert.equal(prepared.assets.length, 1);
+    assert.equal(prepared.assets[0].contentId, firstContentId);
+    assert.equal(prepared.executionContextSnapshot.declarationDigest, contextSnapshot.digest);
+
+    first.purpose = "reference";
+    const roleEdited = await fx.service.materialize({
+      workItemId: "work_frozen",
+      worktree: { id: "wt_frozen", path: worktreePath },
+      actor,
+      contextSnapshot,
+    });
+    assert.equal(roleEdited.ok, true);
+    assert.equal(roleEdited.receipts[0].role, "required_input");
+    assert.equal(roleEdited.executionContextSnapshot.digest, prepared.executionContextSnapshot.digest);
+
+    fx.state.workItems[0].localContentRefs = [fx.state.workItems[0].localContentRefs[1]];
+    const removedFromFutureRun = await fx.service.materialize({
+      workItemId: "work_frozen",
+      worktree: { id: "wt_frozen", path: worktreePath },
+      actor,
+      contextSnapshot,
+    });
+    assert.equal(removedFromFutureRun.ok, true);
+    assert.equal(removedFromFutureRun.assets.length, 1);
+    assert.equal(removedFromFutureRun.assets[0].contentId, firstContentId);
   } finally {
     fx.cleanup();
   }

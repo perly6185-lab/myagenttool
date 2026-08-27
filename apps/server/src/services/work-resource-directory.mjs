@@ -291,6 +291,8 @@ export function createWorkResourceDirectoryService({
     if (resolved.status >= 400) return resolved;
     const resource = resolved.resource;
     if (!resource.taskBinding.supported) return { status: 409, body: { error: "work_resource_binding_unavailable" } };
+    const allowedPurposes = resource.taskBinding.purposes.filter((purpose) =>
+      purpose !== "change_target" || resource.capabilities.includes("commit_change"));
     return {
       status: 200,
       body: {
@@ -307,7 +309,8 @@ export function createWorkResourceDirectoryService({
         refreshMode: resource.actions.refreshMode,
         managementSection: resource.actions.managementSection,
         contentId: resource.internal.contentId ?? null,
-        allowedPurposes: resource.taskBinding.purposes,
+        capabilities: [...resource.capabilities],
+        allowedPurposes,
       },
     };
   }
@@ -323,7 +326,7 @@ export function createWorkResourceDirectoryService({
     if (expectedVersion && resource.currentVersion && expectedVersion !== resource.currentVersion) {
       return { ok: false, status: 409, error: "work_resource_version_changed", currentVersion: resource.currentVersion, resource: publicResource(resource) };
     }
-    if (resource.internal.contentId) {
+    if (resource.internal.domain === "local_content" && resource.internal.contentId) {
       return { ok: true, status: 200, kind: "local_content", contentId: resource.internal.contentId, resource: publicResource(resource) };
     }
     const allRows = recordsForResource(state, resource, teamOf(actor));

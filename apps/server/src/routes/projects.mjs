@@ -15,10 +15,9 @@ import { computeDeckOps } from "../services/officecli-deck-ops.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
-import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
+import { computeProjectAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
 import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
-import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
 import { CadPreviewError, cadRuntimeReadiness, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
 import { assetCapabilityMatrix, deriveAssetRuntimeReadiness, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
@@ -46,6 +45,21 @@ function canonicalRepositoryUrl(value) {
 function continuationRunView(run) {
   if (!run) return null;
   return { id: run.autoRun?.id ?? run.id, status: run.autoRun?.status ?? run.status };
+}
+
+function withoutExecutionActionInternals(autoRun) {
+  if (!autoRun) return autoRun;
+  const {
+    executionActionReceipts: _executionActionReceipts,
+    executionActionIdempotencyLedger: _executionActionIdempotencyLedger,
+    ...visible
+  } = autoRun;
+  return visible;
+}
+
+function executionActionResultView(result) {
+  if (!result?.autoRun) return result;
+  return { ...result, autoRun: withoutExecutionActionInternals(result.autoRun) };
 }
 
 /**
@@ -259,6 +273,7 @@ export async function handleProjectRoutes({
   startAutoRun,
   retryAutoRun,
   reverifyAutoRun,
+  reconcileExecutionAction,
   cancelAutoRun,
   stopAutoRunDelivery,
   mergeAutoRunPr,
@@ -468,10 +483,19 @@ export async function handleProjectRoutes({
         terminalId: body?.terminalId,
         timezoneOffset: body?.timezoneOffset,
         feedback: body?.feedback,
+        idempotencyKey: body?.idempotencyKey,
+        expectedWorkItemRevision: body?.expectedWorkItemRevision,
+        expectedTargetStatus: body?.expectedTargetStatus,
       });
-      sendJson(res, 200, result);
+      sendJson(res, 200, executionActionResultView(result));
     } catch (error) {
-      sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "auto_run_retry_failed",
+        message: errorMessage(error),
+        ...(error?.actionReceipt ? { actionReceipt: error.actionReceipt } : {}),
+        ...(error?.currentWorkItemRevision == null ? {} : { currentWorkItemRevision: error.currentWorkItemRevision }),
+        ...(error?.currentTargetStatus == null ? {} : { currentTargetStatus: error.currentTargetStatus }),
+      });
     }
     return true;
   }
@@ -482,7 +506,7 @@ export async function handleProjectRoutes({
     try {
       const body = await readJson(req);
       const result = cancelAutoRun(decodeURIComponent(autoRunCancelMatch[1]), { actor, terminalId: body?.terminalId });
-      sendJson(res, 200, result);
+      sendJson(res, 200, executionActionResultView(result));
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_cancel_failed", message: errorMessage(error) });
     }
@@ -495,7 +519,7 @@ export async function handleProjectRoutes({
     try {
       const body = await readJson(req);
       const result = stopAutoRunDelivery(decodeURIComponent(autoRunStopDeliveryMatch[1]), { actor, reason: body?.reason });
-      sendJson(res, 200, result);
+      sendJson(res, 200, executionActionResultView(result));
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_stop_delivery_failed", message: errorMessage(error) });
     }
@@ -510,10 +534,34 @@ export async function handleProjectRoutes({
       const result = await reverifyAutoRun(decodeURIComponent(autoRunReverifyMatch[1]), {
         actor,
         terminalId: body?.terminalId,
+        idempotencyKey: body?.idempotencyKey,
+        expectedWorkItemRevision: body?.expectedWorkItemRevision,
+        expectedTargetStatus: body?.expectedTargetStatus,
       });
-      sendJson(res, 200, result);
+      sendJson(res, 200, executionActionResultView(result));
     } catch (error) {
-      sendJson(res, 400, { error: "auto_run_reverify_failed", message: errorMessage(error) });
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "auto_run_reverify_failed",
+        message: errorMessage(error),
+        ...(error?.actionReceipt ? { actionReceipt: error.actionReceipt } : {}),
+        ...(error?.currentWorkItemRevision == null ? {} : { currentWorkItemRevision: error.currentWorkItemRevision }),
+        ...(error?.currentTargetStatus == null ? {} : { currentTargetStatus: error.currentTargetStatus }),
+      });
+    }
+    return true;
+  }
+
+  const autoRunExecutionActionReconcileMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/execution-actions\/reconcile$/);
+  if (autoRunExecutionActionReconcileMatch && req.method === "POST") {
+    const autoRunId = decodeURIComponent(autoRunExecutionActionReconcileMatch[1]);
+    if (denyForeignAutoRun(autoRunId)) return true;
+    try {
+      sendJson(res, 200, executionActionResultView(reconcileExecutionAction(autoRunId)));
+    } catch (error) {
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "execution_action_reconcile_failed",
+        message: errorMessage(error),
+      });
     }
     return true;
   }
@@ -588,6 +636,9 @@ export async function handleProjectRoutes({
         answers: ranBody?.answers,
         selectedAction: ranBody?.selectedAction,
         repoUrl: ranBody?.repoUrl,
+        idempotencyKey: ranBody?.idempotencyKey,
+        expectedWorkItemRevision: ranBody?.expectedWorkItemRevision,
+        expectedTargetStatus: ranBody?.expectedTargetStatus,
       });
       const continuation = await continueStructuredClarification({
         state,
@@ -600,9 +651,15 @@ export async function handleProjectRoutes({
         startAutoRun,
         persistStateSoon,
       });
-      sendJson(res, 200, { ...result, ...continuation });
+      sendJson(res, 200, executionActionResultView({ ...result, ...continuation }));
     } catch (error) {
-      sendJson(res, 400, { error: "clarify_answer_failed", message: errorMessage(error) });
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "clarify_answer_failed",
+        message: errorMessage(error),
+        ...(error?.actionReceipt ? { actionReceipt: error.actionReceipt } : {}),
+        ...(error?.currentWorkItemRevision == null ? {} : { currentWorkItemRevision: error.currentWorkItemRevision }),
+        ...(error?.currentTargetStatus == null ? {} : { currentTargetStatus: error.currentTargetStatus }),
+      });
     }
     return true;
   }
@@ -650,6 +707,7 @@ export async function handleProjectRoutes({
     const enriched = autoRuns.map((run) => {
       const { idempotencyKey: _routingIdempotencyKey, ...routingOverride } = run.routingOverride ?? {};
       let out = run.routingOverride ? { ...run, routingOverride } : run;
+      out = withoutExecutionActionInternals(out);
       // Derived terminal grade (clean / degraded / unverified success, or failed)
       // for a per-run quality badge; null while the run is still in flight.
       const finalStatus = deriveFinalStatus(run);
@@ -755,21 +813,7 @@ export async function handleProjectRoutes({
   if (readinessMatch && req.method === "GET") {
     // U1 preflight: can this project run an auto-run, and what's missing?
     const projectId = decodeURIComponent(readinessMatch[1]);
-    const project = (state.projects ?? []).find((p) => p.id === projectId) ?? null;
-    const agent = project?.defaultAgentId ? (state.agents ?? []).find((a) => a.id === project.defaultAgentId) ?? null : null;
-    // Capacity waits remain in-flight for the operator but deliberately release
-    // an execution slot until their durable retry becomes due.
-    const settledSet = new Set(["waiting_capacity", "pr_open", "report_posted", "needs_input", "plan_proposed", "decomposed", "blocked", "done", "failed", "cancelled"]);
-    const readiness = computeAutoRunReadiness({
-      project,
-      agent,
-      deviceLinked: state.device?.unlinkState === "linked" || (state.devices ?? []).length > 0,
-      budget: typeof budgetStatusFor === "function" && project ? budgetStatusFor(project.id) : null,
-      verifyCommand: resolveAutoRunVerifyCommandFor({ verifyCommandName: project?.verifyCommandName ?? null }),
-      settings: state.autoRunSettings ?? {},
-      breaker: state.autoRunBreaker ?? null,
-      activeCount: (state.autoRuns ?? []).filter((r) => !settledSet.has(r.status)).length,
-    });
+    const readiness = computeProjectAutoRunReadiness({ state, projectId, budgetStatusFor });
     sendJson(res, 200, { readiness });
     return true;
   }

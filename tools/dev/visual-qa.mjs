@@ -14,6 +14,7 @@ const srcRoot = resolve(webRoot, "src");
 const artifactDir = resolve(repoRoot, ".myagenttool/visual-qa");
 const distIndex = resolve(webRoot, "dist/index.html");
 const requireBrowser = process.argv.includes("--require-browser");
+const scenarioFilter = process.argv.find((argument) => argument.startsWith("--scenario="))?.slice("--scenario=".length) ?? null;
 
 const indexHtml = readIfExists(resolve(webRoot, "index.html"));
 const sections = readIfExists(resolve(srcRoot, "app/sections.ts"));
@@ -203,7 +204,14 @@ async function captureScreenshots(driver) {
     const browser = await driver.module.chromium.launch();
     try {
       for (const viewport of viewports) {
-        for (const scenario of visualScenarios(baseline)) {
+        const scenarios = visualScenarios(baseline);
+        const selectedScenarios = scenarioFilter
+          ? scenarios.filter((scenario) => scenario.name === scenarioFilter)
+          : scenarios;
+        if (scenarioFilter && selectedScenarios.length === 0) {
+          throw new Error(`Unknown visual QA scenario: ${scenarioFilter}`);
+        }
+        for (const scenario of selectedScenarios) {
           const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
           await page.route("**/api/state", (route) => {
             if (scenario.disconnected) {
@@ -217,6 +225,10 @@ async function captureScreenshots(driver) {
               const workItemId = path.match(/^\/api\/work-items\/([^/]+)$/)?.[1];
               const body = path.endsWith("/home-workbench")
                 ? scenario.homeFixture.workbench
+                : path.endsWith("/attention")
+                  ? { items: [], metrics: null, nextCursor: null }
+                  : path.endsWith("/external-funnel")
+                    ? { metrics: { total: 0, notStarted: 0, running: 0, review: 0, completed: 0, stalled: 0 }, stalls: [] }
                 : path.endsWith("/comments")
                   ? { comments: [] }
                   : workItemId
@@ -227,7 +239,13 @@ async function captureScreenshots(driver) {
                         const retryable = homeItem?.executionState === "failed" && homeItem.nextAction.kind === "retry";
                         return {
                           workItem: retryable ? { ...workItem, executionState: "failed" } : workItem,
-                          observability: retryable
+                          observability: scenario.executionReview && decodedId === scenario.workItemId
+                            ? {
+                                latestRun: { id: scenario.executionReview.targetId, status: scenario.executionReview.targetStatus, phase: scenario.executionReview.stage, updatedAt: scenario.executionReview.updatedAt },
+                                executionReview: scenario.executionReview,
+                                ...(scenario.runHistory ? { runHistory: scenario.runHistory } : {}),
+                              }
+                            : retryable
                             ? { latestRun: { id: homeItem.nextAction.targetId, status: "failed" } }
                             : null,
                         };
@@ -250,6 +268,21 @@ async function captureScreenshots(driver) {
               }),
             }));
           }
+          if (scenario.startConfirmation) {
+            await page.route(/\/api\/projects\/[^/]+\/auto-run-readiness$/, (route) => route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({
+                readiness: {
+                  ready: true,
+                  checks: [
+                    { key: "agent", label: "Coding agent", status: "ok", detail: "Task assistant is healthy." },
+                    { key: "verify", label: "Verification", status: "warn", detail: "No verify command is configured." },
+                  ],
+                },
+              }),
+            }));
+          }
           if (scenario.reportFixture) {
             await page.route(/\/api\/work-items(?:[/?].*)?$/, (route) => fulfillReportFixture(route, scenario.reportFixture));
           }
@@ -260,6 +293,12 @@ async function captureScreenshots(driver) {
           // occur. DOM readiness plus the scenario assertions is the stable gate.
           await page.goto(`${webUrl}/?api=${encodeURIComponent(apiUrl)}`, { waitUntil: "domcontentloaded" });
           await assertVisualState(page, scenario);
+          if (scenario.name === "execution-start-queued") {
+            await page.locator('[data-testid="execution-start-status"]:visible').scrollIntoViewIfNeeded();
+          }
+          if (["execution-review-running", "execution-review-failed", "execution-review-unknown"].includes(scenario.name)) {
+            await page.locator('[data-testid="execution-review-card"]:visible').scrollIntoViewIfNeeded();
+          }
           const filePath = resolve(screenshotDir, `${scenario.name}-${viewport.name}.png`);
           await page.screenshot({ path: filePath, fullPage: true });
           const layout = await page.evaluate(() => ({
@@ -398,6 +437,27 @@ function visualScenarios(baseline) {
     { name: "work-item-summary-review", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_review" },
     { name: "work-item-summary-completed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_completed" },
     { name: "work-item-summary-failed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_failed" },
+    { name: "execution-start-confirmation", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_start", startConfirmation: true },
+    { name: "execution-start-queued", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_start_queued" },
+    { name: "execution-review-running", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_execution_review", executionReview: executionReviewVisualFixture(homeFixture.workbench.generatedAt) },
+    {
+      name: "execution-review-failed",
+      state: structuredClone(homeState),
+      invocationId: null,
+      homeFixture,
+      workItemId: "lwi_visual_failed",
+      executionReview: failedExecutionReviewVisualFixture(homeFixture.workbench.generatedAt),
+      runHistory: failedExecutionReviewHistory(homeFixture.workbench.generatedAt),
+    },
+    {
+      name: "execution-review-unknown",
+      state: structuredClone(homeState),
+      invocationId: null,
+      homeFixture,
+      workItemId: "lwi_visual_failed",
+      executionReview: unknownExecutionReviewVisualFixture(homeFixture.workbench.generatedAt),
+      runHistory: failedExecutionReviewHistory(homeFixture.workbench.generatedAt),
+    },
     { name: "running", state: withRun("running"), invocationId: "inv_visual_running" },
     { name: "succeeded", state: withRun("succeeded", { summary: "Authentication boundaries reviewed; no unsafe write was performed." }), invocationId: "inv_visual_succeeded" },
     {
@@ -516,7 +576,10 @@ async function assertVisualState(page, scenario) {
   }
   if (scenario.name === "channel-task-failed") {
     await page.locator('[data-testid="channel-task-operations"]:visible').waitFor({ timeout: 15_000 });
-    for (const label of ["Issue #42", "Retry", "Reroute", "Take over"]) await page.getByText(label, { exact: true }).waitFor();
+    for (const label of ["Retry", "Take over"]) await page.getByRole("button", { name: label, exact: true }).waitFor();
+    await page.getByRole("button", { name: /^(Advanced info|高级信息)$/ }).click();
+    await page.getByRole("link", { name: "Issue #42", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Reroute", exact: true }).waitFor();
     return;
   }
   if (scenario.name === "follow-up-reminder") {
@@ -529,8 +592,11 @@ async function assertVisualState(page, scenario) {
 
   if (scenario.name === "local-task-center") {
     await page.getByRole("heading", { name: "Tasks", exact: true }).waitFor({ timeout: 15_000 });
-    const title = page.getByText("Confirm the overdue customer launch commitment and publish the recovery timeline", { exact: true });
-    await (page.viewportSize().width < 640 ? title.first() : title.last()).waitFor();
+    await page
+      .getByText("Confirm the overdue customer launch commitment and publish the recovery timeline", { exact: true })
+      .filter({ visible: true })
+      .first()
+      .waitFor();
     if (await page.getByRole("tab", { name: /Issue inbox/ }).count()) {
       throw new Error("local task center exposes the external Issue inbox");
     }
@@ -539,8 +605,11 @@ async function assertVisualState(page, scenario) {
   if (scenario.name === "external-work") {
     await page.getByRole("heading", { name: "External work", exact: true }).waitFor({ timeout: 15_000 });
     await page.getByRole("tab", { name: /Issue inbox/ }).waitFor();
-    const title = page.getByText("Investigate the authentication regression", { exact: true });
-    await (page.viewportSize().width < 640 ? title.first() : title.last()).waitFor();
+    await page
+      .getByText("Investigate the authentication regression", { exact: true })
+      .filter({ visible: true })
+      .first()
+      .waitFor();
     return;
   }
   if (scenario.reportFixture) {
@@ -627,6 +696,79 @@ async function assertVisualState(page, scenario) {
     await detail.getByRole("button", { name: "Retry AI work" }).click();
     await page.getByRole("dialog", { name: "Retry AI work?" }).waitFor();
     await page.getByText(/additional run time and cost/).waitFor();
+    return;
+  }
+  if (scenario.name === "execution-start-confirmation") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    await detail.locator('[data-testid="work-item-summary-view"]').waitFor({ timeout: 15_000 });
+    await detail.getByRole("button", { name: "Review and start AI" }).click();
+    const confirmation = page.getByRole("dialog", { name: "Confirm AI start" });
+    await confirmation.waitFor();
+    await confirmation.getByText("Goal", { exact: true }).waitFor();
+    await confirmation.getByText("Done when", { exact: true }).waitFor();
+    await confirmation.getByText("What AI may use", { exact: true }).waitFor();
+    await confirmation.getByRole("button", { name: "Confirm and start AI" }).waitFor();
+    return;
+  }
+  if (scenario.name === "execution-start-queued") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    await detail.locator('[data-testid="execution-start-status"]').waitFor({ timeout: 15_000 });
+    await detail.getByText("AI accepted the task and is queued", { exact: true }).waitFor();
+    await detail.getByText(/scheduler will use priority and deadline risk/i).waitFor();
+    await detail.getByRole("button", { name: "Cancel this start" }).waitFor();
+    if (await detail.getByRole("button", { name: "Review and start AI" }).count()) {
+      throw new Error("queued start repeats the AI start action");
+    }
+    return;
+  }
+  if (scenario.name === "execution-review-running") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    const review = detail.locator('[data-testid="execution-review-card"]');
+    await review.waitFor({ timeout: 15_000 });
+    await review.getByText("AI is verifying the result", { exact: true }).waitFor();
+    await review.getByText("Checks are running", { exact: true }).waitFor();
+    await review.getByText("pnpm test", { exact: true }).waitFor();
+    await review.getByText(/Nothing has been applied/).waitFor();
+    if (await detail.locator('[data-testid="execution-start-status"]').count()) {
+      throw new Error("running execution repeats the start receipt card");
+    }
+    if (await detail.getByText("Current progress", { exact: true }).count()) {
+      throw new Error("running execution repeats the legacy progress card");
+    }
+    return;
+  }
+  if (scenario.name === "execution-review-failed") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    const review = detail.locator('[data-testid="execution-review-card"]');
+    await review.waitFor({ timeout: 15_000 });
+    await review.getByText("This execution encountered a problem", { exact: true }).waitFor();
+    await review.getByText("This run did not complete normally.", { exact: true }).waitFor();
+    await review.getByText("The checks found an issue that needs attention.", { exact: true }).waitFor();
+    await review.getByText(/cannot confirm whether external data was affected/).waitFor();
+    await review.getByRole("button", { name: "Retry AI work", exact: true }).waitFor();
+    await review.getByText("Next: You", { exact: true }).waitFor();
+    await review.getByText("View 2 recent attempt(s)", { exact: true }).click();
+    const attemptHistory = review.locator('[data-testid="execution-attempt-history"]');
+    await attemptHistory.getByText("Checks failed", { exact: true }).first().waitFor();
+    await review.getByText("View 2 recent attempt(s)", { exact: true }).click();
+    if (await review.getByRole("button", { name: "Ask AI to fix", exact: true }).count()) {
+      throw new Error("failed execution exposes competing primary recovery actions");
+    }
+    if (await detail.getByText("Current progress", { exact: true }).count()) {
+      throw new Error("failed execution repeats the legacy progress card");
+    }
+    return;
+  }
+  if (scenario.name === "execution-review-unknown") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    const review = detail.locator('[data-testid="execution-review-card"]');
+    await review.waitFor({ timeout: 15_000 });
+    await review.getByText("Action result is not confirmed", { exact: true }).waitFor();
+    await review.getByText("Recheck the status before trying this action again.", { exact: true }).waitFor();
+    await review.getByRole("button", { name: "Recheck action status", exact: true }).waitFor();
+    if (await review.getByRole("button", { name: "Retry AI work", exact: true }).count()) {
+      throw new Error("unknown execution action still invites a duplicate retry");
+    }
     return;
   }
   const homeComposer = page.locator('[data-testid="home-task-composer"] textarea[aria-label="Create a task"]:visible');
@@ -915,6 +1057,50 @@ function homeWorkbenchFixture(projectId) {
       outputAssets: [{ id: "asset_visual_completed_report", path: "reports/approved-leadership-update.md", family: "markdown", terminalId: "local", hash: null, version: null, capabilities: ["asset.read"], readiness: { state: "ready", reason: "ready" } }],
     }),
     baseItem("lwi_visual_long", "LOCAL-105", "Coordinate an unusually long cross-organization delivery commitment without losing the meaningful end of this title on a narrow mobile screen", { dueDate: date(2), plannedDate: date(3), requesterName: "A requester with a very long organization-facing display name", requesterRelation: "manager" }),
+    baseItem("lwi_visual_start", "LOCAL-107", "Prepare the customer launch risk update", {
+      status: "backlog", executionState: "unclaimed", plannedDate: null, waitingOn: "none",
+      body: "Summarize the current launch risks for the customer and keep the result concise.",
+      intentStatement: "Prepare a customer-ready launch risk update",
+      acceptanceCriteria: ["The update covers every open launch risk", "The wording is suitable for the customer"],
+      verificationSop: ["Compare the update with the launch risk register", "Review the final wording before delivery"],
+      executionContractSource: "assisted", executionContractConfirmedAt: null,
+      executionContractGate: { ready: false, missing: ["confirmation"], source: "assisted", confirmedAt: null },
+      inputAssets: [{ id: "asset_visual_risks", originalName: "launch-risks.xlsx", path: "/workspace/launch-risks.xlsx", family: "spreadsheet", terminalId: "local", hash: null, version: "3", capabilities: ["asset.read"], readiness: { state: "ready", reason: "ready" } }],
+      localContentRefs: [{ id: "wcr_visual_notes", contentId: "lc_visual_notes", purpose: "reference", title: "Customer communication notes", kind: "material", addedBy: "usr_local", createdAt: generatedAt, fingerprintPinned: true }],
+      taskResourceRefs: [{ id: "wrr_visual_crm", resourceId: "wr_visual_crm", purpose: "query_source", title: "CRM launch accounts", resourceKind: "table", businessRole: "customer", locality: "remote", sourceLabel: "CRM", addedBy: "usr_local", createdAt: generatedAt, versionPinned: true }],
+      myTemplateBinding: { schemaVersion: 1, definitionId: "rtd_visual_update", familyId: "family_visual_update", version: 2, name: "Customer launch update", expectedOutput: "A concise customer-ready risk update", matchReasons: ["The expected result matches"], snapshot: { name: "Customer launch update", description: "Prepare a concise update", expectedOutput: "A concise customer-ready risk update", steps: [] }, snapshotHash: "visual-template-hash", matchedAt: generatedAt },
+    }),
+    baseItem("lwi_visual_start_queued", "LOCAL-108", "Prepare the queued customer launch update", {
+      status: "ready", executionState: "unclaimed", plannedDate: null, waitingOn: "ai", executionPolicy: "auto",
+      body: "Prepare the customer launch update after higher-priority work.",
+      intentStatement: "Prepare a customer-ready launch update",
+      acceptanceCriteria: ["The update is customer-ready"],
+      verificationSop: ["Review the final update"],
+      executionContractSource: "assisted", executionContractConfirmedAt: generatedAt,
+      executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: generatedAt },
+      executionStartReceipt: {
+        schemaVersion: 1, id: "wsr_visual_queued", status: "queued", requestedAt: generatedAt, requestedBy: "usr_local",
+        confirmedRevision: 3, contractDigest: "visual-start-digest", updatedAt: generatedAt, startedAt: null,
+        executionKind: null, targetId: null, agentId: "agt_visual_codex", phase: null,
+        reasonCode: "waiting_for_turn", reasonDetail: null, cancelledAt: null, cancelledBy: null, canCancel: true,
+      },
+    }),
+    baseItem("lwi_visual_execution_review", "LOCAL-109", "Verify the customer launch implementation", {
+      status: "in_progress", executionState: "verifying", plannedDate: null, waitingOn: "ai", executionPolicy: "auto",
+      body: "Implement the launch update and verify it before review.",
+      intentStatement: "Implement and verify the customer launch update",
+      acceptanceCriteria: ["The launch update is implemented", "Automated checks pass"],
+      verificationSop: ["Run pnpm test", "Review the changed files"],
+      executionContractSource: "manual", executionContractConfirmedAt: generatedAt,
+      executionContractGate: { ready: true, missing: [], source: "manual", confirmedAt: generatedAt },
+      executionBindings: [{ kind: "auto_run", targetId: "aur_visual_execution_review", createdAt: generatedAt }],
+      executionStartReceipt: {
+        schemaVersion: 1, id: "wsr_visual_execution_review", status: "started", requestedAt: generatedAt, requestedBy: "usr_local",
+        confirmedRevision: 3, contractDigest: "visual-execution-review-digest", updatedAt: generatedAt, startedAt: generatedAt,
+        executionKind: "auto_run", targetId: "aur_visual_execution_review", agentId: "agt_visual_codex", phase: "verifying",
+        reasonCode: null, reasonDetail: null, cancelledAt: null, cancelledBy: null, canCancel: false,
+      },
+    }),
   ];
   const home = ({ id, executionState, attentionReason, waitingOn, nextAction, ai, secondaryReasons = [] }) => {
     const item = rows.find((candidate) => candidate.id === id);
@@ -948,6 +1134,114 @@ function homeWorkbenchFixture(projectId) {
       items,
     },
   };
+}
+
+function executionReviewVisualFixture(generatedAt) {
+  return {
+    schemaVersion: 1,
+    state: "verifying",
+    stage: "verifying",
+    stages: [
+      { key: "accepted", status: "complete", at: generatedAt },
+      { key: "preparing", status: "complete", at: generatedAt },
+      { key: "working", status: "complete", at: generatedAt },
+      { key: "verifying", status: "current", at: generatedAt },
+      { key: "review", status: "pending", at: null },
+    ],
+    executionKind: "auto_run",
+    targetId: "aur_visual_execution_review",
+    targetStatus: "verifying",
+    agentId: "agt_visual_codex",
+    agentName: "Codex CLI",
+    acceptedAt: generatedAt,
+    startedAt: generatedAt,
+    updatedAt: generatedAt,
+    completedAt: null,
+    needsAttention: false,
+    attentionCode: null,
+    verification: {
+      status: "running", verified: false, passed: null, commands: ["pnpm test"], command: "pnpm test", exitCode: null,
+      summary: "Running the project test suite.", checkedAt: null, durationMs: null, evidenceCount: 0, checks: [],
+    },
+    impact: { status: "none", reasonCode: "changes_isolated_until_confirmation" },
+    riskReasons: [],
+    recommendedAction: { kind: "open_details", reasonCode: "execution_in_progress", requiresConfirmation: false, nextOwner: "ai" },
+  };
+}
+
+function failedExecutionReviewVisualFixture(generatedAt) {
+  return {
+    schemaVersion: 1,
+    state: "failed",
+    stage: "verifying",
+    stages: [
+      { key: "accepted", status: "complete", at: generatedAt },
+      { key: "preparing", status: "complete", at: generatedAt },
+      { key: "working", status: "complete", at: generatedAt },
+      { key: "verifying", status: "attention", at: generatedAt },
+      { key: "review", status: "pending", at: null },
+    ],
+    executionKind: "auto_run",
+    targetId: "aur_failed",
+    targetStatus: "failed",
+    agentId: "agt_visual_codex",
+    agentName: "Codex CLI",
+    acceptedAt: generatedAt,
+    startedAt: generatedAt,
+    updatedAt: generatedAt,
+    completedAt: null,
+    needsAttention: true,
+    attentionCode: "verification_failed",
+    verification: {
+      status: "failed", verified: true, passed: false, commands: ["pnpm test"], command: "pnpm test", exitCode: 1,
+      summary: "One automated check failed; no result was applied.", checkedAt: generatedAt, durationMs: 8_400, evidenceCount: 1,
+      checks: [{ id: "check_visual_failed", kind: "test", status: "failed", summary: "One task summary test failed." }],
+    },
+    impact: { status: "unknown", reasonCode: "external_impact_not_recorded" },
+    riskReasons: [
+      { code: "execution_failed", severity: "high", scope: "execution" },
+      { code: "verification_failed", severity: "high", scope: "verification" },
+      { code: "external_impact_unknown", severity: "high", scope: "external_impact" },
+    ],
+    recommendedAction: { kind: "retry_execution", reasonCode: "execution_failed", requiresConfirmation: true, nextOwner: "me" },
+  };
+}
+
+function unknownExecutionReviewVisualFixture(generatedAt) {
+  return {
+    ...failedExecutionReviewVisualFixture(generatedAt),
+    actionReceipt: {
+      schemaVersion: 1,
+      id: "ear_visual_unknown",
+      kind: "retry_execution",
+      status: "unknown",
+      messageCode: "request_accepted",
+      impact: "unknown",
+      nextOwner: "me",
+      requestedAt: generatedAt,
+      updatedAt: generatedAt,
+      completedAt: null,
+      targetId: null,
+      errorCode: null,
+      errorMessage: null,
+      replayed: false,
+    },
+  };
+}
+
+function failedExecutionReviewHistory(generatedAt) {
+  return [
+    {
+      attempt: 1, invocationId: "inv_visual_failed_1", status: "failed", current: false, updatedAt: generatedAt,
+      summary: "The first attempt stopped during verification.",
+      verification: { status: "failed", command: "pnpm test", summary: "One task summary test failed." },
+    },
+    {
+      attempt: 2, invocationId: "inv_visual_failed_2", status: "failed", current: true, updatedAt: generatedAt,
+      summary: "The retry reached verification but did not pass.",
+      verification: { status: "failed", command: "pnpm test", summary: "The same task summary test still fails." },
+    },
+  ];
 }
 
 function reportVisualFixture(status, projectId) {

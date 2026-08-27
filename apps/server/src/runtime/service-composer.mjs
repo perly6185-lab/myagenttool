@@ -2208,7 +2208,7 @@ export function createServerRuntimeServices({
     return { ok: true, ...result };
   }
 
-  const { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, stopAutoRunDelivery, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, reconcileExecutionAction, attemptFailover, cancelAutoRun, stopAutoRunDelivery, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -2577,6 +2577,7 @@ export function createServerRuntimeServices({
     beginExecution: workItemService.beginExecution,
     abortExecution: workItemService.abortExecution,
     recordExecutionBinding: workItemService.recordExecutionBinding,
+    recordExecutionStartOutcome: workItemService.recordExecutionStartOutcome,
     reserveAutoRun,
     enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
     failAutoRunUnderstanding,
@@ -7438,6 +7439,7 @@ export function createServerRuntimeServices({
     startAutoRun,
     retryAutoRun,
     reverifyAutoRun,
+    reconcileExecutionAction,
     recoverTimedOutCodexApproval: codexApprovalRecovery.recoverTimedOutApproval,
     processPlanningRecommendedActions,
     cancelAutoRun,
@@ -7570,6 +7572,7 @@ export function createServerRuntimeServices({
     refreshWorkItemResourceReference: workItemService.refreshResourceReference,
     inspectWorkItemResourceReferences: workItemService.inspectResourceReferences,
     removeWorkItemResourceReference: workItemService.removeResourceReference,
+    updateWorkItemTaskContext: workItemService.updateTaskContext,
     updateWorkItem: workItemService.updateWorkItem,
     recordWorkItemProgress: workItemService.recordWorkItemProgress,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,
@@ -7624,8 +7627,14 @@ export function createServerRuntimeServices({
     activateMyTemplateDraft: workItemService.activateMyTemplateDraft,
     listMyTemplateOutcomeFeedback: workItemService.listMyTemplateOutcomeFeedback,
     recordMyTemplateOutcomeFeedback: workItemService.recordMyTemplateOutcomeFeedback,
+    listPlanActualFeedback: workItemService.listPlanActualFeedback,
+    removePlanActualFeedback: workItemService.removePlanActualFeedback,
+    recordPlanActualFeedback: workItemService.recordPlanActualFeedback,
     resumeMyTemplateGovernanceObservation: workItemService.resumeMyTemplateGovernanceObservation,
     prepareWorkItemExecutionContract: workItemService.prepareExecutionContract,
+    confirmWorkItemExecutionContractAndSchedule: workItemService.confirmExecutionContractAndSchedule,
+    cancelWorkItemExecutionStart: workItemService.cancelExecutionStart,
+    recheckWorkItemExecutionStart: workItemService.recheckExecutionStart,
     listWorkItemReportDrafts: workItemService.listReportDrafts,
     getWorkItemReportDraft: workItemService.getReportDraft,
     generateWorkItemReportDraft: workItemService.generateReportDraft,

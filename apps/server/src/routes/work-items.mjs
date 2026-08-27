@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { computeProjectAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 
 function externalIssuePolicyFor(state, projectId) {
   const policy = state?.projects?.find((project) => project.id === projectId)?.externalIssuePolicy ?? {};
@@ -28,7 +29,7 @@ function externalBindingEmergencyStopped(state, provider, repository, issueNumbe
 
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor, state,
-  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, updateTaskContext, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
   reconcileWorkItemRecordBindings, reconcileVisibleWorkItemRecordBindings,
   refreshWorkItemRecordBinding, refreshWorkItemRecordBindingsBatch,
   listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
@@ -72,8 +73,15 @@ export async function handleWorkItemRoutes({
   activateMyTemplateDraft,
   listMyTemplateOutcomeFeedback,
   recordMyTemplateOutcomeFeedback,
+  listPlanActualFeedback,
+  removePlanActualFeedback,
+  recordPlanActualFeedback,
   resumeMyTemplateGovernanceObservation,
   prepareExecutionContract,
+  confirmExecutionContractAndSchedule,
+  cancelExecutionStart,
+  recheckExecutionStart,
+  budgetStatusFor,
   retryWorkItemAlert,
   inspectArticleImport,
   startArticleImport,
@@ -357,6 +365,24 @@ export async function handleWorkItemRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/work-items/plan-actual-preferences" && req.method === "GET") {
+    const result = listPlanActualFeedback({
+      projectId: url.searchParams.get("projectId"),
+      limit: url.searchParams.get("limit"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const planActualPreferenceMatch = url.pathname.match(/^\/api\/work-items\/plan-actual-preferences\/([^/]+)$/);
+  if (planActualPreferenceMatch && req.method === "DELETE") {
+    const result = removePlanActualFeedback({
+      feedbackId: decodeURIComponent(planActualPreferenceMatch[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (url.pathname === "/api/work-items/my-template-drafts" && req.method === "GET") {
     const result = listMyTemplateDrafts({ projectId: url.searchParams.get("projectId") }, actor);
     sendJson(res, result.status, result.body);
@@ -440,6 +466,16 @@ export async function handleWorkItemRoutes({
   if (myTemplateOutcomeMatch && req.method === "POST") {
     const result = recordMyTemplateOutcomeFeedback({
       workItemId: decodeURIComponent(myTemplateOutcomeMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const planActualFeedbackMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/plan-actual-feedback$/);
+  if (planActualFeedbackMatch && req.method === "POST") {
+    const result = recordPlanActualFeedback({
+      workItemId: decodeURIComponent(planActualFeedbackMatch[1]),
       ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);
@@ -1088,6 +1124,70 @@ export async function handleWorkItemRoutes({
     return true;
   }
 
+  const executionContractMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/execution-contract\/(prepare|confirm)$/);
+  if (executionContractMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(executionContractMatch[1]);
+    const action = executionContractMatch[2];
+    const body = await readJson(req);
+    const freshnessFailure = await reconcileRecordBindings(workItemId, { blockExecution: action === "confirm" });
+    if (freshnessFailure) {
+      sendJson(res, freshnessFailure.status, freshnessFailure.body);
+      return true;
+    }
+    const detail = getWorkItem({ workItemId }, actor);
+    if (!detail.ok) {
+      sendJson(res, detail.status, detail.body);
+      return true;
+    }
+    const item = detail.body.workItem;
+    if (action === "prepare") {
+      const prepared = prepareExecutionContract({
+        workItemId,
+        expectedRevision: body?.expectedRevision,
+        confirm: false,
+        draftOverride: body?.draftOverride ?? null,
+      }, actor);
+      sendJson(res, prepared.status, prepared.body);
+      return true;
+    }
+
+    const alreadyScheduled = item.executionContractGate?.ready === true
+      && item.executionPolicy === "auto"
+      && item.waitingOn === "ai";
+    if (alreadyScheduled) {
+      sendJson(res, 200, { workItem: item, replayed: true });
+      return true;
+    }
+    if (!(item.acceptanceCriteria ?? []).length || !(item.verificationSop ?? []).length) {
+      sendJson(res, 409, { error: "work_item_execution_plan_required" });
+      return true;
+    }
+    const readiness = computeProjectAutoRunReadiness({ state, projectId: item.projectId, budgetStatusFor });
+    if (!readiness.ready) {
+      sendJson(res, 409, { error: "work_item_auto_run_not_ready", readiness });
+      return true;
+    }
+    const confirmed = confirmExecutionContractAndSchedule({
+      workItemId,
+      expectedRevision: body?.expectedRevision,
+    }, actor);
+    sendJson(res, confirmed.status, {
+      ...confirmed.body,
+      ...(confirmed.ok ? { readiness } : {}),
+    });
+    return true;
+  }
+
+  const executionStartActionMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/execution-start\/(cancel|recheck)$/);
+  if (executionStartActionMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(executionStartActionMatch[1]);
+    const body = await readJson(req);
+    const action = executionStartActionMatch[2] === "cancel" ? cancelExecutionStart : recheckExecutionStart;
+    const result = action({ workItemId, expectedRevision: body?.expectedRevision }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   const executionMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/(worktrees|auto-runs)$/);
   if (executionMatch && req.method === "POST") {
     const workItemId = decodeURIComponent(executionMatch[1]);
@@ -1250,6 +1350,16 @@ export async function handleWorkItemRoutes({
     const result = await refreshWorkItemRecordBinding({
       workItemId: decodeURIComponent(recordBindingRefreshMatch[1]),
       bindingId: decodeURIComponent(recordBindingRefreshMatch[2]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const taskContextMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/task-context$/);
+  if (taskContextMatch && req.method === "PATCH") {
+    const result = updateTaskContext({
+      workItemId: decodeURIComponent(taskContextMatch[1]),
       ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);

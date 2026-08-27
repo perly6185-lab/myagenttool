@@ -290,10 +290,15 @@ export function LocalLibraryView() {
         eyebrow={copy.eyebrow}
         title={copy.title}
         description={copy.description}
-        actions={libraryView === "all" ? <Button size="sm" variant="secondary" disabled={rebuilding} onClick={() => void rebuild()}>
-          <RefreshCw className={cn("size-4", rebuilding && "animate-spin")} aria-hidden />
-          {rebuilding ? copy.rebuilding : hasIndexedContent ? copy.refresh : copy.build}
-        </Button> : undefined}
+        actions={<>
+          <Button size="sm" variant="secondary" onClick={() => navigate("documents")}>
+            {copy.openProjectFiles}
+          </Button>
+          {libraryView === "all" ? <Button size="sm" variant="secondary" disabled={rebuilding} onClick={() => void rebuild()}>
+            <RefreshCw className={cn("size-4", rebuilding && "animate-spin")} aria-hidden />
+            {rebuilding ? copy.rebuilding : hasIndexedContent ? copy.refresh : copy.build}
+          </Button> : null}
+        </>}
       />
 
       <div className="flex flex-wrap gap-2 border-b border-border pb-3" role="tablist" aria-label={copy.title}>

@@ -689,8 +689,8 @@ test("shows the ten-case batch and binds one completed UI journey to pilot evide
   await expect(ledgerDialog.getByText("RFQ-PILOT-001")).toBeVisible();
   await ledgerDialog.getByRole("button", { name: "Approve ledger change" }).click();
 
-  await dailyWork.getByRole("button", { name: "Run this step" }).click();
-  await dailyWork.getByRole("button", { name: "Run this step" }).click();
+  await dailyWork.getByRole("button", { name: "Load approved information" }).click();
+  await dailyWork.getByRole("button", { name: "Prepare this result" }).click();
   await dailyWork.getByRole("button", { name: "Review quotation details" }).click();
   const inputs = page.getByRole("dialog", { name: "Confirm quotation details" });
   const templateSelect = inputs.getByLabel("Quotation template");

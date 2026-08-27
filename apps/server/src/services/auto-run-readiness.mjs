@@ -1,3 +1,5 @@
+import { resolveAutoRunVerifyCommandFor } from "./worktree-verify.mjs";
+
 /*
  * U1 — auto-run readiness preflight. Turns "why won't this project run / what's
  * missing" into a plain checklist an operator can read before hitting [Auto]:
@@ -86,4 +88,25 @@ export function computeAutoRunReadiness({
   }
 
   return { checks, ready: checks.every((c) => c.status !== "blocked") };
+}
+
+export function computeProjectAutoRunReadiness({ state, projectId, budgetStatusFor } = {}) {
+  const project = (state?.projects ?? []).find((candidate) => candidate.id === projectId) ?? null;
+  const agent = project?.defaultAgentId
+    ? (state?.agents ?? []).find((candidate) => candidate.id === project.defaultAgentId) ?? null
+    : null;
+  const settledStatuses = new Set([
+    "waiting_capacity", "pr_open", "report_posted", "needs_input", "plan_proposed",
+    "decomposed", "blocked", "done", "failed", "cancelled",
+  ]);
+  return computeAutoRunReadiness({
+    project,
+    agent,
+    deviceLinked: state?.device?.unlinkState === "linked" || (state?.devices ?? []).length > 0,
+    budget: typeof budgetStatusFor === "function" && project ? budgetStatusFor(project.id) : null,
+    verifyCommand: resolveAutoRunVerifyCommandFor({ verifyCommandName: project?.verifyCommandName ?? null }),
+    settings: state?.autoRunSettings ?? {},
+    breaker: state?.autoRunBreaker ?? null,
+    activeCount: (state?.autoRuns ?? []).filter((run) => !settledStatuses.has(run.status)).length,
+  });
 }

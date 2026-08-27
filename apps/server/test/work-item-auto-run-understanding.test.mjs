@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createWorkItemAutoRunUnderstandingService,
+  workItemIntentContractInstructions,
   workItemOperationInstructions,
   workItemTemplateInstructions,
 } from "../src/services/work-item-auto-run-understanding.mjs";
@@ -51,6 +52,23 @@ test("formats an enforced read-only boundary for Channel work", () => {
   assert.match(instructions, /READ ONLY/);
   assert.match(instructions, /Do not create, modify, delete, move, or rename files/);
   assert.equal(workItemOperationInstructions({ channelTaskContract: { operationIntent: { accessMode: "write" } } }), "");
+});
+
+test("formats the frozen intent contract as a no-reinterpretation boundary", () => {
+  const instructions = workItemIntentContractInstructions({
+    executionIntentContractSnapshot: {
+      goal: "生成客户报价单",
+      action: { accessMode: "write", operation: "create_output" },
+      expectedOutput: "报价单.xlsx",
+      delivery: { destination: "task", platformLabel: null },
+    },
+  });
+
+  assert.match(instructions, /Intent contract \(frozen for this run\)/);
+  assert.match(instructions, /Goal: 生成客户报价单/);
+  assert.match(instructions, /Expected output: 报价单\.xlsx/);
+  assert.match(instructions, /Do not reinterpret/);
+  assert.equal(workItemIntentContractInstructions({}), "");
 });
 
 test("formats the mail response restricted boundary before generic write handling", () => {
@@ -191,6 +209,7 @@ test("enqueue returns immediately and advances the persisted Run in background",
   assert.equal(calls.contextSummary.digest, calls.projectContext.digest);
   assert.equal("documents" in calls.contextSummary, false);
   assert.equal(autoRun.executionPlan.contextSummary.digest, calls.projectContext.digest);
+  assert.equal(autoRun.executionPlan.intentContract, null);
 });
 
 test("read-only Channel work carries its boundary into the real auto-run start", async () => {

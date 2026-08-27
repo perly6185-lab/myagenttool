@@ -96,6 +96,21 @@ export function workItemAtomicTaskInstructions(workItem) {
   return [...common, ...(specialized[workItem?.taskKind] ?? [])].filter(Boolean).join("\n");
 }
 
+export function workItemIntentContractInstructions(workItem) {
+  const contract = workItem?.executionIntentContractSnapshot ?? workItem?.intentContract ?? null;
+  if (!contract) return "";
+  return [
+    "Intent contract (frozen for this run):",
+    `Goal: ${contract.goal || workItem?.title || "Complete this task"}`,
+    `Action boundary: ${contract.action?.accessMode ?? "unknown"} / ${contract.action?.operation ?? "unknown"}.`,
+    contract.expectedOutput ? `Expected output: ${contract.expectedOutput}.` : "",
+    `Result destination: ${contract.delivery?.destination ?? "task"}.`,
+    contract.delivery?.platformLabel ? `Authorized platform: ${contract.delivery.platformLabel}.` : "",
+    "Do not reinterpret the task into a different output, template, write scope, or delivery destination.",
+    "If the contract cannot be satisfied as written, stop and request clarification instead of guessing.",
+  ].filter(Boolean).join("\n");
+}
+
 export function createWorkItemAutoRunUnderstandingService({
   state,
   getWorkItem,
@@ -205,6 +220,7 @@ export function createWorkItemAutoRunUnderstandingService({
           contextSummary: autoRun.understandingContext ?? understandingContext.summary,
           risks: contractDraft?.risks ?? autoRun.executionPlan?.risks ?? [],
           evidence: contractDraft?.evidence ?? autoRun.executionPlan?.evidence ?? null,
+          intentContract: workItem.intentContract ?? workItem.executionIntentContractSnapshot ?? null,
           confirmedBy: ["assisted", "agent_assisted"].includes(workItem.executionContractSource) ? "ai_policy" : "user",
           confirmedAt: workItem.executionContractConfirmedAt,
         });
@@ -219,6 +235,7 @@ export function createWorkItemAutoRunUnderstandingService({
       const issueBody = [
         workItem.body,
         workItemAtomicTaskInstructions(workItem),
+        workItemIntentContractInstructions(workItem),
         workItemOperationInstructions(workItem),
         workItemTemplateInstructions(workItem),
         `Acceptance criteria (frozen for this run):\n${workItem.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}`,
