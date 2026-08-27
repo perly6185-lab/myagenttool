@@ -39,6 +39,7 @@ import { createLocalMailSemanticAdapter, resolveMailSemanticConfig } from "../se
 import { createMailboxService, isMailClassificationEnabled } from "../services/mailbox.mjs";
 import { createLocalContentCatalogService } from "../services/local-content-catalog.mjs";
 import { createWorkResourceDirectoryService } from "../services/work-resource-directory.mjs";
+import { createMaterialWorkSessionService } from "../services/material-work-sessions.mjs";
 import {
   createLocalContentRetrievalAuthorizer,
   createLocalContentRetrievalService,
@@ -547,6 +548,15 @@ export function createServerRuntimeServices({
     readLocalContentText: localContentCatalogService.readTextChunk,
     authorizeRetrieval: createLocalContentRetrievalAuthorizer({ state, teamOf }),
     appendEvent,
+  });
+  const materialWorkSessionService = createMaterialWorkSessionService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    appendEvent,
+    store,
+    getLocalContent: localContentCatalogService.get,
   });
   const persistIndexedContentStateSoon = (sources, reason) => (...args) => {
     const result = persistStateSoon(...args);
@@ -7517,6 +7527,11 @@ export function createServerRuntimeServices({
     getWorkResource: workResourceDirectoryService.getResource,
     previewWorkResource: workResourceDirectoryService.previewResource,
     refreshWorkResource: workResourceDirectoryService.refreshResource,
+    createMaterialWorkSession: materialWorkSessionService.createSession,
+    createMaterialWorkSessionFromChannel: materialWorkSessionService.createFromChannel,
+    getMaterialWorkSession: materialWorkSessionService.getSession,
+    addMaterialWorkSessionMessage: materialWorkSessionService.addMessage,
+    cancelMaterialWorkSession: materialWorkSessionService.cancelSession,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
     listChannelInteractions: channelService.listChannelInteractions,
