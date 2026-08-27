@@ -135,8 +135,14 @@ test("runs only confirmed, allowlisted read-only diagnostics after host verifica
   assert.equal(result.ok, true);
   assert.equal(result.command, "df -h");
   assert.match(result.output, /Filesystem/);
+  assert.equal(result.summary.finding, "disk_capacity_healthy");
+  assert.equal(result.summary.impact, "no_issue_detected");
   assert.deepEqual(resolvedCredentials, [`credential://ssh/${target.id}`]);
   assert.equal(events.at(-1)?.type, "ssh.host_diagnostic.completed");
+  assert.equal(events.at(-1)?.data?.outputPreview, undefined);
+  assert.equal(events.at(-1)?.data?.command, undefined);
+  assert.equal(JSON.stringify(events.at(-1)).includes("/dev/sda1"), false);
+  assert.deepEqual(events.at(-1)?.data?.summary, result.summary);
 
   assert.deepEqual(await service.runSshHostDiagnostic(target, "shell", { userId: "usr_operator" }), {
     ok: false, status: 400, error: "ssh_diagnostic_unsupported",
@@ -154,5 +160,11 @@ test("plans ordinary host questions without producing arbitrary shell", () => {
   assert.deepEqual(service.planSshHostDiagnostic("查看 nginx 服务状态"), {
     ok: true, action: "service_status", parameters: { serviceName: "nginx" },
     command: "systemctl status --no-pager --lines=30 nginx || true", risk: "read_only",
+  });
+  assert.deepEqual(service.planSshHostDiagnostic("检查最近系统日志"), {
+    ok: true, action: "recent_logs", command: "journalctl -n 40 --no-pager", risk: "read_only",
+  });
+  assert.deepEqual(service.planSshHostDiagnostic("检查网络状态"), {
+    ok: true, action: "network_info", command: "ip -brief address", risk: "read_only",
   });
 });

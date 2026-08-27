@@ -49,6 +49,14 @@ async function mockOrdinaryHostApi(page: Page, fixture: { host?: HostFixture; sc
     if (path === "/api/hosts") return route.fulfill({ json: { hosts: [currentHost], count: 1 } });
     if (path === `/api/hosts/${currentHost.id}/file-scopes`) return route.fulfill({ json: { scopes: currentScope ? [currentScope] : [], count: currentScope ? 1 : 0 } });
     if (path === `/api/hosts/${currentHost.id}/file-transfers`) return route.fulfill({ json: { transfers: fixture.transfers ?? [], count: fixture.transfers?.length ?? 0 } });
+    if (path === `/api/hosts/${currentHost.id}/assistant/plan`) return route.fulfill({ json: { plan: { action: "disk_usage", command: "df -h", risk: "read_only" } } });
+    if (path === `/api/hosts/${currentHost.id}/diagnostics`) return route.fulfill({ json: { result: {
+      action: "disk_usage",
+      command: "df -h",
+      output: "Filesystem\n/dev/private-volume 20G 19G 1G 95% /private/path",
+      resolvedAddress: "10.10.10.222",
+      summary: { version: 1, severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space", facts: [{ key: "disk_used_percent", value: "95%", severity: "critical" }] },
+    } } });
     if (path === "/api/work-items") return route.fulfill({ json: { workItems: [], count: 0, hasMore: false, nextCursor: null } });
     if (path === "/api/work-items/attention") return route.fulfill({ json: { items: [], metrics: null, nextCursor: null } });
     if (path === "/api/planning-projects") return route.fulfill({ json: { projects: [] } });
@@ -176,4 +184,33 @@ test("ordinary extreme transfer states stay safe and readable at 320 px", async 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.getByText(/设备空间不足.*文件结果可能不完整/).scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath("my-hosts-extreme-transfers-320.png") });
+});
+
+test("ordinary host diagnosis leads with a conclusion and keeps technical evidence folded at 320 px", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.addInitScript(() => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({
+      state: { locale: "zh-CN", section: "myHosts", experienceMode: "ordinary" },
+      version: 1,
+    }));
+  });
+  await mockOrdinaryHostApi(page);
+  await page.goto("/?section=myHosts");
+
+  await page.getByRole("button", { name: "检查磁盘空间" }).click();
+  await expect(page.getByText("剩余空间和最高使用比例")).toBeVisible();
+  await expect(page.getByText("df -h")).toHaveCount(0);
+  await page.getByRole("button", { name: "确认检查" }).click();
+
+  await expect(page.getByText("设备空间严重不足")).toBeVisible();
+  await expect(page.getByText(/上传、保存或发布文件可能失败/)).toBeVisible();
+  await expect(page.getByText(/先清理设备空间，再核对目标文件/)).toBeVisible();
+  await expect(page.getByTestId("diagnostic-summary").getByText("95%", { exact: true })).toBeVisible();
+  const evidence = page.locator("details").filter({ hasText: "技术证据" });
+  await expect(evidence).not.toHaveAttribute("open", "");
+  await expect(evidence.getByText("df -h")).toBeHidden();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.getByText("设备空间严重不足").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("my-hosts-ai-diagnosis-320.png") });
 });

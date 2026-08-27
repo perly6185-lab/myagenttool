@@ -35,8 +35,8 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { ApiError } from "@/lib/api/request";
 import { useUiStore } from "@/store/ui-store";
 import { MAX_HOST_DOWNLOAD_BYTES, MAX_HOST_UPLOAD_BYTES, hostApi } from "./host-api";
-import { HOST_DIAGNOSTIC_QUICK_ACTIONS, hostDiagnosticPlan, suggestHostDiagnostic } from "./host-assistant";
-import type { HostAuthMethod, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileTransfer, SshHost } from "./host-types";
+import { HOST_DIAGNOSTIC_QUICK_ACTIONS, hostDiagnosticPlan, hostDiagnosticPlanCopy, hostDiagnosticSummaryCopy, suggestHostDiagnostic } from "./host-assistant";
+import type { HostAuthMethod, HostDiagnosticResult, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileTransfer, SshHost } from "./host-types";
 
 type DetailTab = "overview" | "files" | "transfers" | "settings";
 
@@ -181,7 +181,7 @@ function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host
     </div>
     {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div className="min-w-0 flex-1"><p className="text-sm font-medium">{recovery.title}</p><p className="mt-1 text-xs text-muted-foreground">{recovery.detail}</p></div><Button onClick={() => onContinue(recovery.allowPrivate ? { allowPrivate: true } : undefined)}>{recovery.action}<ChevronRight /></Button></div> : null}
     {professional && host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
-    <HostAssistant host={host} zh={zh} />
+    <HostAssistant host={host} zh={zh} professional={professional} />
   </div>;
 }
 
@@ -207,58 +207,52 @@ function Summary({ icon: Icon, label, value }: { icon: typeof Server; label: str
   return <div className="rounded-lg border p-3"><Icon className="size-5 text-primary" /><p className="mt-3 text-xs text-muted-foreground">{label}</p><p className="mt-1 text-sm font-medium">{value}</p></div>;
 }
 
-function HostAssistant({ host, zh }: { host: SshHost; zh: boolean }) {
+function HostAssistant({ host, zh, professional }: { host: SshHost; zh: boolean; professional: boolean }) {
   const [input, setInput] = useState("");
   const [plan, setPlan] = useState<ReturnType<typeof suggestHostDiagnostic>>(null);
-  const [output, setOutput] = useState<string | null>(null);
+  const [result, setResult] = useState<HostDiagnosticResult | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const planMutation = useMutation({
     mutationFn: () => hostApi.planDiagnostic(host.id, input.trim()),
     onSuccess: (result) => { choose({ ...hostDiagnosticPlan(result.plan.action, result.plan.parameters), command: result.plan.command, parameters: result.plan.parameters }); },
-    onError: () => { setPlan(null); setOutput(null); setMessage(zh ? "暂时无法理解这项请求。可以试试磁盘、内存、进程、端口或容器状态。" : "I could not map that request safely. Try disk, memory, processes, ports, or Docker status."); },
+    onError: () => { setPlan(null); setResult(null); setMessage(zh ? "暂时无法安全判断需要检查什么。请选择下面的一项固定检查。" : "I could not safely determine what to check. Choose one of the fixed checks below."); },
   });
   const mutation = useMutation({
     mutationFn: (next: NonNullable<typeof plan>) => next.parameters ? hostApi.diagnose(host.id, next.action, next.parameters) : hostApi.diagnose(host.id, next.action),
-    onSuccess: (result) => { setOutput(result.result.output || (zh ? "主机没有返回内容。" : "The host returned no output.")); setMessage(null); },
-    onError: (error) => { setOutput(null); setMessage(errorText(error, zh)); },
+    onSuccess: (response) => { setResult(response.result); setMessage(null); },
+    onError: (error) => { setResult(null); setMessage(diagnosticFailureText(error, zh)); },
   });
-  const choose = (next: NonNullable<typeof plan>) => { setPlan(next); setOutput(null); setMessage(null); };
-  const submit = () => { if (input.trim()) planMutation.mutate(); };
+  useEffect(() => { setInput(""); setPlan(null); setResult(null); setMessage(null); }, [host.id]);
+  useEffect(() => { if (host.connectionStatus !== "ready") { setPlan(null); setResult(null); } }, [host.connectionStatus]);
+  const choose = (next: NonNullable<typeof plan>) => { setPlan(next); setResult(null); setMessage(null); };
+  const busy = planMutation.isPending || mutation.isPending;
+  const submit = () => { if (input.trim() && !busy) planMutation.mutate(); };
   const ready = host.connectionStatus === "ready";
+  const planCopy = plan ? hostDiagnosticPlanCopy(plan, zh) : null;
   return <div className="rounded-lg border bg-card p-4" data-testid="host-assistant">
-    <div className="flex flex-wrap items-start gap-3"><span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><Bot className="size-5" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{zh ? "AI 主机助手" : "AI host assistant"}</p><StatusBadge tone="neutral"><Sparkles className="size-3" />{zh ? "安全建议" : "Safe suggestions"}</StatusBadge></div><p className="mt-1 text-xs text-muted-foreground">{zh ? "用一句话描述你想了解的内容。当前先使用可审计的安全建议模板，只建议只读诊断，执行前会展示命令并等待确认。" : "Describe what you want to know. For now, auditable safe templates suggest read-only diagnostics and show the command before you confirm."}</p></div></div>
-    <div className="mt-4 flex flex-col gap-2 sm:flex-row"><Input value={input} placeholder={zh ? "例如：看看磁盘还剩多少空间" : "For example: show remaining disk space"} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submit(); }} /><Button variant="secondary" disabled={!input.trim() || !ready || planMutation.isPending} onClick={submit}>{planMutation.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />}{zh ? "生成建议" : "Suggest"}</Button></div>
-    <div className="mt-3 flex flex-wrap gap-2">{HOST_DIAGNOSTIC_QUICK_ACTIONS.map((item) => <Button key={item.action} size="sm" variant="ghost" disabled={!ready} onClick={() => choose(hostDiagnosticPlan(item.action))}>{item.title}</Button>)}</div>
+    <div className="flex flex-wrap items-start gap-3"><span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><Bot className="size-5" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{zh ? "AI 主机助手" : "AI host assistant"}</p><StatusBadge tone="neutral"><Sparkles className="size-3" />{zh ? "只读检查" : "Read-only checks"}</StatusBadge></div><p className="mt-1 text-xs text-muted-foreground">{zh ? "说出你遇到的问题。助手只会选择固定检查，执行前说明检查内容，完成后给出结论、影响和下一步。" : "Describe the problem. The assistant selects only fixed checks, explains what will be inspected, and then reports the finding, impact, and next step."}</p></div></div>
+    <div className="mt-4 flex flex-col gap-2 sm:flex-row"><Input disabled={busy} value={input} placeholder={zh ? "例如：看看磁盘还剩多少空间" : "For example: show remaining disk space"} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submit(); }} /><Button variant="secondary" disabled={!input.trim() || !ready || busy} onClick={submit}>{planMutation.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />}{zh ? "生成建议" : "Suggest"}</Button></div>
+    <div className="mt-3 flex flex-wrap gap-2">{HOST_DIAGNOSTIC_QUICK_ACTIONS.map((item) => <Button key={item.action} size="sm" variant="ghost" disabled={!ready || busy} onClick={() => choose(hostDiagnosticPlan(item.action))}>{hostDiagnosticPlanCopy(item, zh).title}</Button>)}</div>
     {!ready ? <p className="mt-3 rounded-lg bg-warning/10 p-3 text-xs text-muted-foreground">{zh ? "请先完成主机连接验证，助手才会访问设备。" : "Complete host connection verification before the assistant can access this device."}</p> : null}
-    {plan ? <div className="mt-4 space-y-3 rounded-lg border border-primary/25 bg-primary/[0.04] p-3"><div><p className="text-sm font-medium">{plan.title}</p><p className="mt-1 text-xs text-muted-foreground">{plan.explanation}</p></div><code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{plan.command || (zh ? "需要先指定服务名称" : "Specify a service name first")}</code><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{zh ? "只读 · 不会上传、删除或重启服务" : "Read-only · no upload, deletion, or service restart"}</span><Button disabled={!ready || !plan.command || mutation.isPending} onClick={() => mutation.mutate(plan)}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "确认并执行" : "Confirm and run"}</Button></div></div> : null}
+    {plan && planCopy && !result ? <div className="mt-4 space-y-3 rounded-lg border border-primary/25 bg-primary/[0.04] p-3"><div><p className="text-sm font-medium">{planCopy.title}</p><p className="mt-1 text-xs text-muted-foreground">{planCopy.explanation}</p></div><div className="rounded-md bg-muted p-3 text-sm"><span className="text-xs text-muted-foreground">{zh ? "将检查" : "Will check"}</span><p className="mt-1 font-medium">{planCopy.check}</p></div>{professional ? <code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{plan.command || (zh ? "需要先指定服务名称" : "Specify a service name first")}</code> : null}<div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{zh ? "只读 · 不会上传、删除、清理或重启服务" : "Read-only · no upload, deletion, cleanup, or service restart"}</span><Button disabled={!ready || !plan.command || mutation.isPending} onClick={() => mutation.mutate(plan)}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{professional ? (zh ? "确认并执行" : "Confirm and run") : (zh ? "确认检查" : "Confirm check")}</Button></div></div> : null}
     {message ? <p role="status" className="mt-3 rounded-lg bg-muted p-3 text-sm text-muted-foreground">{message}</p> : null}
-    {output !== null ? <div className="mt-4"><div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground"><CheckCircle2 className="size-4 text-primary" />{zh ? "诊断结果（本次会话显示）" : "Diagnostic result (shown for this session)"}</div><DiagnosticInsights action={plan?.action ?? null} output={output} zh={zh} /><pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-muted p-3 text-xs leading-5">{output}</pre></div> : null}
+    {result ? <div className="mt-4"><div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground"><CheckCircle2 className="size-4 text-primary" />{zh ? "检查结果（仅本次会话保留技术输出）" : "Check result (technical output is session-only)"}</div><DiagnosticSummaryPanel summary={result.summary} zh={zh} /><details className="mt-3 rounded-lg border p-3" open={professional}><summary className="cursor-pointer text-xs font-medium">{zh ? "技术证据" : "Technical evidence"}</summary><div className="mt-3 space-y-2"><code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{result.command}</code>{result.resolvedAddress ? <p className="break-all text-xs text-muted-foreground">{zh ? "本次连接地址" : "Connection address"}: {result.resolvedAddress}</p> : null}<pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs leading-5">{result.output || (zh ? "设备没有返回原始输出。" : "The device returned no raw output.")}</pre><p className="text-xs text-muted-foreground">{zh ? "原始输出只在本次页面会话显示，不写入诊断审计。" : "Raw output is shown only in this page session and is not written to diagnostic audit records."}</p></div></details></div> : null}
   </div>;
 }
 
-function DiagnosticInsights({ action, output, zh }: { action: string | null; output: string; zh: boolean }) {
-  const lines = output.split("\n").map((line) => line.trim()).filter(Boolean);
-  const cards: string[] = [];
-  if (action === "disk_usage") {
-    for (const line of lines) {
-      const match = line.match(/(\d+)%\s+(.+)$/);
-      if (match) cards.push(`${match[2]} · ${match[1]}%`);
-    }
-  } else if (action === "memory_usage") {
-    const memory = lines.find((line) => /^Mem:/i.test(line));
-    if (memory) {
-      const fields = memory.split(/\s+/);
-      if (fields.length >= 7) cards.push(`${zh ? "已用" : "Used"} ${fields[2]} / ${fields[1]} · ${zh ? "可用" : "Available"} ${fields[6]}`);
-    }
-  } else if (action === "processes") {
-    cards.push(`${zh ? "显示进程" : "Processes shown"}: ${Math.max(0, lines.length - 1)}`);
-  } else if (action === "listening_ports") {
-    cards.push(`${zh ? "监听项" : "Listening entries"}: ${Math.max(0, lines.length - 1)}`);
-  } else if (action === "docker_status") {
-    cards.push(`${zh ? "运行中容器" : "Running containers"}: ${lines.length}`);
-  }
-  if (!cards.length) return null;
-  return <div className="grid gap-2 sm:grid-cols-2" data-testid="diagnostic-insights">{cards.slice(0, 6).map((card) => <div key={card} className="rounded-lg border bg-card px-3 py-2 text-xs font-medium">{card}</div>)}</div>;
+function diagnosticFailureText(error: unknown, zh: boolean) {
+  const code = error instanceof ApiError ? error.code : "";
+  if (code === "ssh_fixed_command_failed" || code === "ssh_diagnostic_unsupported") return zh ? "这台设备无法完成该项只读检查，设备和文件没有被修改。请选择另一项检查或查看专业设置。" : "This device could not complete that read-only check. No device settings or files were changed. Choose another check or review Professional settings.";
+  if (code === "ssh_fixed_command_timeout" || code === "ssh_connection_timeout") return zh ? "检查等待超时，设备和文件没有被修改。确认设备在线后再手动重试。" : "The check timed out. No device settings or files were changed. Confirm the device is online before retrying manually.";
+  if (["ssh_connection_failed", "ssh_connection_refused", "ssh_host_unreachable"].includes(code)) return zh ? "检查期间无法连接设备，文件没有被访问。请先恢复设备连接。" : "The device could not be reached during the check. No files were accessed. Restore the device connection first.";
+  return `${errorText(error, zh)} ${zh ? "没有自动修改设备。" : "The device was not changed automatically."}`;
+}
+
+function DiagnosticSummaryPanel({ summary, zh }: { summary: HostDiagnosticSummary; zh: boolean }) {
+  const copy = hostDiagnosticSummaryCopy(summary, zh);
+  const tone = summary.severity === "healthy" ? "success" : summary.severity === "critical" ? "danger" : summary.severity === "warning" ? "warning" : "neutral";
+  const severity = summary.severity === "healthy" ? (zh ? "正常" : "Looks good") : summary.severity === "critical" ? (zh ? "需要处理" : "Needs attention") : summary.severity === "warning" ? (zh ? "请留意" : "Warning") : summary.severity === "unknown" ? (zh ? "无法确认" : "Unknown") : (zh ? "信息" : "Information");
+  return <div className="space-y-3 rounded-lg border p-3" data-testid="diagnostic-summary"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium">{copy.finding}</p><StatusBadge tone={tone}>{severity}</StatusBadge></div>{copy.facts.length ? <div className="grid gap-2 sm:grid-cols-2">{copy.facts.map((item) => <div key={`${item.key}-${item.value}`} className="rounded-md bg-muted px-3 py-2 text-xs"><span className="text-muted-foreground">{item.label}</span><strong className="mt-1 block text-sm">{item.value}</strong></div>)}</div> : null}<div className="grid gap-2 text-sm sm:grid-cols-2"><div className="rounded-md bg-muted/60 p-3"><span className="text-xs text-muted-foreground">{zh ? "影响" : "Impact"}</span><p className="mt-1">{copy.impact}</p></div><div className="rounded-md bg-primary/[0.06] p-3"><span className="text-xs text-muted-foreground">{zh ? "下一步" : "Next step"}</span><p className="mt-1 font-medium">{copy.nextAction}</p></div></div></div>;
 }
 
 function RemoteFiles({ host, scopes, loading, error, zh, professional, onAdd }: { host: SshHost; scopes: HostFileScope[]; loading: boolean; error: unknown; zh: boolean; professional: boolean; onAdd: () => void }) {
