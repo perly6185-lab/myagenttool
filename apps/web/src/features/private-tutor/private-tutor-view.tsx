@@ -45,6 +45,7 @@ import {
   getCurrentPrivateTutorAssessment,
   getCurrentPrivateTutorSession,
   getPrivateTutorLearningHistory,
+  getPrivateTutorLearningTrial,
   getPrivateTutorLearningPreferences,
   getPrivateTutorProfile,
   getPrivateTutorDataPolicy,
@@ -65,6 +66,8 @@ import {
   retryPrivateTutorLearnerDeletion,
   startPrivateTutorAssessment,
   startPrivateTutorSession,
+  startPrivateTutorLearningTrial,
+  stopPrivateTutorLearningTrial,
   updatePrivateTutorDataPolicy,
   updatePrivateTutorLearningPreferences,
   type PrivateTutorAssessment,
@@ -77,6 +80,7 @@ import {
   type PrivateTutorLearner,
   type PrivateTutorLearningPlan,
   type PrivateTutorLearningHistory,
+  type PrivateTutorLearningTrial,
   type PrivateTutorLearningPreferences,
   type PrivateTutorLearningPreferencesPatch,
   type PrivateTutorFollowUpMode,
@@ -350,7 +354,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [diagnosticDismissed, setDiagnosticDismissed] = useState(false);
-  const [initialLearningRoute, setInitialLearningRoute] = useState<"choose" | "diagnostic" | "content">("choose");
+  const [initialLearningRoute, setInitialLearningRoute] = useState<"choose" | "quick" | "diagnostic" | "content">("choose");
   const [learningPreferences, setLearningPreferences] = useState<PrivateTutorLearningPreferences>(() => defaultPrivateTutorLearningPreferences(learnerId));
 
   useEffect(() => {
@@ -391,13 +395,16 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
 
   async function finishDiagnostic() {
     try {
+      const quickStart = assessment?.mode === "quick";
       const result = await getPrivateTutorSnapshot();
+      const lesson = quickStart ? await startPrivateTutorSession("easy") : null;
       setLearnerState(serverLearnerState(result.learner, result.snapshot));
       setLearnerModel(result.learnerModel ?? null);
       setStrategyDecision(result.strategyDecision ?? null);
       setLearningPlan(result.learningPlan ?? null);
       setDiagnosticDismissed(true);
-      setTab("map");
+      setTab(quickStart ? "today" : "map");
+      if (lesson) setTutoringSession(lesson.session);
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : "知识地图暂时无法读取，请稍后再试。";
@@ -512,8 +519,21 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     return (
       <InitialLearningRoute
         learnerName={learnerState.learner.displayName}
+        onQuick={() => setInitialLearningRoute("quick")}
         onDiagnostic={() => setInitialLearningRoute("diagnostic")}
         onContent={() => setInitialLearningRoute("content")}
+      />
+    );
+  }
+  if (needsInitialLearningRoute && initialLearningRoute === "quick") {
+    return (
+      <QuickStartExperience
+        learnerName={learnerState.learner.displayName}
+        onBack={() => setInitialLearningRoute("choose")}
+        onStarted={(startedAssessment) => {
+          setAssessment(startedAssessment);
+          setInitialLearningRoute("diagnostic");
+        }}
       />
     );
   }
@@ -610,16 +630,21 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
   );
 }
 
-function InitialLearningRoute({ learnerName, onDiagnostic, onContent }: { learnerName: string; onDiagnostic: () => void; onContent: () => void }) {
+function InitialLearningRoute({ learnerName, onQuick, onDiagnostic, onContent }: { learnerName: string; onQuick: () => void; onDiagnostic: () => void; onContent: () => void }) {
   return (
     <div className="mx-auto flex min-h-[70vh] max-w-4xl items-center justify-center p-4">
       <Card className="w-full overflow-hidden">
         <div className="bg-[linear-gradient(135deg,#059669,#0f766e)] p-7 text-white sm:p-9">
           <p className="text-sm text-emerald-100">你好，{learnerName}</p>
           <h1 className="mt-2 text-3xl font-bold">先选择这次想学什么</h1>
-          <p className="mt-3 max-w-2xl leading-7 text-emerald-50">可以用当前课程先做摸底，也可以先导入自己的教材。选择教材不会被当成已经掌握，历史学习记录也不会被覆盖。</p>
+          <p className="mt-3 max-w-2xl leading-7 text-emerald-50">可以选一个知识点快速开始，也可以做完整摸底或先导入自己的教材。没有测到的内容不会被当成薄弱，历史学习记录也不会被覆盖。</p>
         </div>
-        <div className="grid gap-4 p-6 sm:grid-cols-2 sm:p-8">
+        <div className="grid gap-4 p-6 sm:grid-cols-3 sm:p-8">
+          <button type="button" onClick={onQuick} className="rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-5 text-left transition hover:border-amber-500 dark:border-amber-900 dark:bg-amber-950/30">
+            <Sparkles className="size-8 text-amber-600" />
+            <span className="mt-4 block text-lg font-bold">快速学一个知识点</span>
+            <span className="mt-2 block text-sm leading-6 text-muted-foreground">自己选知识点，完成 3 题后直接进入 5 分钟私教。</span>
+          </button>
           <button type="button" onClick={onDiagnostic} className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/60 p-5 text-left transition hover:border-emerald-500 dark:border-emerald-900 dark:bg-emerald-950/30">
             <BrainCircuit className="size-8 text-emerald-600" />
             <span className="mt-4 block text-lg font-bold">用当前内容开始摸底</span>
@@ -630,6 +655,84 @@ function InitialLearningRoute({ learnerName, onDiagnostic, onContent }: { learne
             <span className="mt-4 block text-lg font-bold">选择课程或导入我的教材</span>
             <span className="mt-2 block text-sm leading-6 text-muted-foreground">支持已有内容包、PDF、Markdown 和文本资料。</span>
           </button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function QuickStartExperience({ learnerName, onBack, onStarted }: { learnerName: string; onBack: () => void; onStarted: (assessment: PrivateTutorAssessment) => void }) {
+  const [activePackage, setActivePackage] = useState<LearningContentPackage | null>(null);
+  const [targetKnowledgeId, setTargetKnowledgeId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    let current = true;
+    void getPrivateTutorActiveContentPackage()
+      .then((pkg) => {
+        if (!current) return;
+        setActivePackage(pkg);
+        setTargetKnowledgeId(pkg?.knowledgeComponents?.[0]?.id ?? "");
+      })
+      .catch(() => {
+        if (current) setMessage("当前学习内容暂时无法读取，请返回后选择课程或教材。");
+      })
+      .finally(() => {
+        if (current) setLoading(false);
+      });
+    return () => { current = false; };
+  }, []);
+
+  async function startQuickDiagnostic() {
+    if (!targetKnowledgeId) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      onStarted(await startPrivateTutorAssessment({ mode: "quick", targetKnowledgeId }));
+    } catch {
+      setMessage("这个知识点暂时没有 3 道可验证的摸底题，请选择其他知识点或使用完整摸底。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const knowledge = activePackage?.knowledgeComponents ?? [];
+  return (
+    <div className="mx-auto min-h-[70vh] max-w-5xl p-4 sm:p-7">
+      <Button variant="secondary" onClick={onBack}>返回开始方式</Button>
+      <Card className="mt-5 overflow-hidden">
+        <div className="bg-[linear-gradient(135deg,#d97706,#b45309)] p-7 text-white sm:p-9">
+          <p className="text-sm text-amber-100">{learnerName}，先从眼前最想解决的一点开始</p>
+          <h1 className="mt-2 text-3xl font-bold">选择一个知识点，3 题后开始学</h1>
+          <p className="mt-3 max-w-2xl leading-7 text-amber-50">约 3 分钟快速摸底，只判断这个知识点；完成后直接进入 5 分钟私教。其他知识不会因为没测到而被判为薄弱。</p>
+        </div>
+        <div className="p-6 sm:p-8">
+          {loading ? <p className="text-sm text-muted-foreground">正在读取当前课程…</p> : null}
+          {!loading && activePackage ? <p className="text-sm font-medium">当前课程：{activePackage.name}</p> : null}
+          {!loading && knowledge.length ? (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {knowledge.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-pressed={targetKnowledgeId === item.id}
+                  onClick={() => setTargetKnowledgeId(item.id)}
+                  className={cn("rounded-xl border-2 p-4 text-left transition", targetKnowledgeId === item.id ? "border-amber-500 bg-amber-50 dark:bg-amber-950/30" : "bg-card hover:border-amber-300")}
+                >
+                  <span className="font-semibold">{item.name}</span>
+                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">{item.shortDescription ?? "先快速确认当前理解，再决定怎样讲。"}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {!loading && !knowledge.length && !message ? <p className="mt-4 text-sm text-muted-foreground">当前课程还没有可选择的知识点。</p> : null}
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <Button size="lg" disabled={busy || loading || !targetKnowledgeId} onClick={() => void startQuickDiagnostic()}>{busy ? "正在准备…" : "开始 3 题快速摸底"}</Button>
+            <span className="text-xs text-muted-foreground">答错不扣分，也不会展示排名。</span>
+          </div>
+          {message ? <p role="alert" className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-200">{message}</p> : null}
         </div>
       </Card>
     </div>
@@ -659,6 +762,7 @@ function DiagnosticExperience({
   const [message, setMessage] = useState("");
   const questionStartedAt = useRef(Date.now());
   const answerKey = useRef(newClientKey("diagnostic"));
+  const quick = assessment?.mode === "quick";
 
   useEffect(() => {
     setAnswer("");
@@ -784,8 +888,8 @@ function DiagnosticExperience({
         <Card className="overflow-hidden">
           <div className="bg-emerald-600 p-7 text-white sm:p-9">
             <Star className="size-11 fill-amber-300 text-amber-300" />
-            <h1 className="mt-4 text-3xl font-bold">我已经更了解你了</h1>
-            <p className="mt-2 text-emerald-50">完成了 {assessment.result.answeredCount} 道自适应题。先看看你已经站稳的地方。</p>
+            <h1 className="mt-4 text-3xl font-bold">{quick ? "3 题快速摸底完成" : "我已经更了解你了"}</h1>
+            <p className="mt-2 text-emerald-50">完成了 {assessment.result.answeredCount} 道{quick ? "定向" : "自适应"}题。{quick ? "现在直接用 5 分钟把这个知识点向前推进。" : "先看看你已经站稳的地方。"}</p>
             {assessment.runtimeValidationId ? <p className="mt-2 text-xs text-emerald-100">其中 {assessment.evidenceAnswerCount ?? 0} 道通过来源量表运行校准并形成受限置信度证据。</p> : null}
           </div>
           <div className="grid gap-5 p-6 sm:grid-cols-2 sm:p-8">
@@ -798,7 +902,7 @@ function DiagnosticExperience({
               <p className="mt-2 text-sm leading-6 text-amber-900 dark:text-amber-100">{focus.length ? focus.join("、") : "继续用新题巩固正在学习的知识点。"}</p>
             </div>
             <div className="sm:col-span-2 text-center">
-              <Button size="lg" disabled={busy} onClick={() => void finish()}>{busy ? "正在生成…" : "看看我的知识地图"}</Button>
+              <Button size="lg" disabled={busy} onClick={() => void finish()}>{busy ? "正在生成…" : quick ? "开始 5 分钟私教" : "看看我的知识地图"}</Button>
               {message ? <p role="alert" className="mt-3 text-sm text-rose-600">{message}</p> : null}
             </div>
           </div>
@@ -813,7 +917,7 @@ function DiagnosticExperience({
   return (
     <div className="mx-auto max-w-4xl p-4 sm:p-7">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div><p className="text-sm font-semibold text-emerald-700">AI 摸底</p><p className="text-xs text-muted-foreground">第 {assessment.answeredCount + 1} 题 · 约 {assessment.minQuestions} 至 {assessment.maxQuestions} 题</p></div>
+        <div><p className="text-sm font-semibold text-emerald-700">{quick ? "3 题快速摸底" : "AI 摸底"}</p><p className="text-xs text-muted-foreground">第 {assessment.answeredCount + 1} 题 · {quick ? `共 ${assessment.maxQuestions} 题` : `约 ${assessment.minQuestions} 至 ${assessment.maxQuestions} 题`}</p></div>
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => void pause()}><CirclePause />暂停</Button>
       </div>
       <div className="mb-6 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} /></div>
@@ -1177,6 +1281,14 @@ function TodayLearning({
     setBusy(false);
   }
 
+  async function recordFollowUpResolution(followUpId: string, resolution: "resolved" | "unresolved") {
+    setBusy(true);
+    setFollowUpMessage("");
+    const result = await onAction({ action: "follow_up_feedback", followUpId, resolution });
+    setFollowUpMessage(result.error ?? (resolution === "resolved" ? "已记下：这次追问解决了问题。" : "已记下：这次还没解决，后续试学报告会如实保留。"));
+    setBusy(false);
+  }
+
   async function submit(responseKind: "answer" | "dont_know", rawAnswer = answer, source: "screen" | "visual" = "screen") {
     const question = session?.currentActivity?.question;
     if (!question) return;
@@ -1413,6 +1525,15 @@ function TodayLearning({
               <p className="mt-2 text-sm leading-6">{latestFollowUp.response}</p>
               {latestFollowUp.sourceRefs.map((ref) => <blockquote key={`${ref.sectionId}:${ref.pageNumber ?? ""}`} className="mt-3 border-l-2 border-sky-400 pl-3 text-xs leading-5 text-muted-foreground">{ref.excerpt}<span className="mt-1 block">{ref.sectionId}{ref.pageNumber ? ` · 第 ${ref.pageNumber} 页` : ""}</span></blockquote>)}
               <p className="mt-3 text-[11px] text-muted-foreground">本次追问不产生练习证据。</p>
+              <div className="mt-3 border-t border-sky-200 pt-3 dark:border-sky-900">
+                <p className="text-xs font-medium">这次回答解决你的问题了吗？</p>
+                {latestFollowUp.resolution ? <p className="mt-2 text-xs text-muted-foreground">已记录：{latestFollowUp.resolution === "resolved" ? "解决了" : "还没解决"}</p> : (
+                  <div className="mt-2 flex gap-2">
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => void recordFollowUpResolution(latestFollowUp.id, "resolved")}>解决了</Button>
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => void recordFollowUpResolution(latestFollowUp.id, "unresolved")}>还没解决</Button>
+                  </div>
+                )}
+              </div>
             </div>
           ) : null}
         </Card>
@@ -1620,6 +1741,10 @@ function reviewPhaseLabel(phase: "correction" | "similar" | "variation" | "delay
 
 function Growth({ state: _state }: { state: LearnerTutorState }) {
   const [history, setHistory] = useState<PrivateTutorLearningHistory | null>(null);
+  const [trial, setTrial] = useState<PrivateTutorLearningTrial | null>(null);
+  const [trialGoal, setTrialGoal] = useState("验证我能否在私教指导下掌握当前课程");
+  const [trialBusy, setTrialBusy] = useState(false);
+  const [trialMessage, setTrialMessage] = useState("");
   const [selectedPackageKey, setSelectedPackageKey] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1629,10 +1754,11 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
     let current = true;
     setLoading(true);
     setError("");
-    void getPrivateTutorLearningHistory()
-      .then((value) => {
+    void Promise.all([getPrivateTutorLearningHistory(), getPrivateTutorLearningTrial()])
+      .then(([value, learningTrial]) => {
         if (!current) return;
         setHistory(value);
+        setTrial(learningTrial);
         setSelectedPackageKey((selected) => value.packages.some((item) => historyPackageKey(item) === selected)
           ? selected
           : value.packages[0] ? historyPackageKey(value.packages[0]) : "");
@@ -1645,6 +1771,32 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
     return () => { current = false; };
   }, [loadAttempt]);
 
+  async function beginTrial() {
+    setTrialBusy(true);
+    setTrialMessage("");
+    try {
+      setTrial(await startPrivateTutorLearningTrial(trialGoal));
+      setTrialMessage("14 天试学已开始。指标只会来自之后的真实学习记录。");
+    } catch (startError) {
+      setTrialMessage(startError instanceof Error ? startError.message : "暂时无法开始试学。");
+    } finally {
+      setTrialBusy(false);
+    }
+  }
+
+  async function endTrial() {
+    setTrialBusy(true);
+    setTrialMessage("");
+    try {
+      setTrial(await stopPrivateTutorLearningTrial());
+      setTrialMessage("试学已提前结束，已有记录和样本状态会继续保留。");
+    } catch (stopError) {
+      setTrialMessage(stopError instanceof Error ? stopError.message : "暂时无法结束试学。");
+    } finally {
+      setTrialBusy(false);
+    }
+  }
+
   const selectedPackage = history?.packages.find((item) => historyPackageKey(item) === selectedPackageKey)
     ?? history?.packages[0]
     ?? null;
@@ -1653,6 +1805,37 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
       <p className="text-sm font-medium text-violet-600">看见自己的进步</p>
       <h1 className="mt-1 text-2xl font-bold">我的成长</h1>
       <p className="mt-2 text-sm text-muted-foreground">这里没有排名，只按教材版本和章节记录真实完成情况、独立作答与复习安排。</p>
+      {!loading && !error ? (
+        <Card className="mt-6 overflow-hidden border-violet-200 dark:border-violet-900">
+          <div className="bg-violet-50/70 p-5 dark:bg-violet-950/30">
+            <p className="text-sm font-semibold text-violet-700 dark:text-violet-300">14 天真实课程试学</p>
+            <h2 className="mt-1 text-lg font-bold">验证次日还能不能想起、延迟复测是否站稳、追问是否真正解决</h2>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">自动化测试只验证记录是否正确；只有你真实学习产生的样本，才会进入这里的结果。14 天学习期后会保留 48 小时，只结算最后产生的复测与追问反馈。</p>
+          </div>
+          {!trial ? (
+            <div className="p-5">
+              <label className="text-sm font-medium">这次想验证什么？
+                <input aria-label="试学目标" value={trialGoal} onChange={(event) => setTrialGoal(event.target.value.slice(0, 160))} className="mt-2 h-11 w-full rounded-lg border bg-card px-3 font-normal" />
+              </label>
+              <Button className="mt-4" disabled={trialBusy || trialGoal.trim().length < 2} onClick={() => void beginTrial()}>{trialBusy ? "正在开始…" : "开始 14 天试学"}</Button>
+            </div>
+          ) : (
+            <div className="p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold">{trial.contentPackageName}</p><p className="mt-1 text-sm text-muted-foreground">目标：{trial.goal}</p></div><span className="rounded-full bg-violet-100 px-3 py-1.5 text-xs font-medium text-violet-800 dark:bg-violet-950 dark:text-violet-200">{trialStatusLabel(trial.status)} · 第 {trial.progress.dayIndex}/{trial.durationDays} 天</span></div>
+              <div className="mt-5 grid gap-3 sm:grid-cols-4">
+                <TrialMetric label="真实参与天数" value={`${trial.progress.activeDayCount}/${trial.durationDays}`} detail={`${trial.progress.completedSessionCount} 节完整学习`} />
+                <TrialMetric label="次日回忆保持" value={formatHistoryRate(trial.metrics.nextDayRecall.retentionRate)} detail={`${trial.metrics.nextDayRecall.correctCount}/${trial.metrics.nextDayRecall.attemptedCount} 次已完成 · ${trial.metrics.nextDayRecall.opportunityCount} 次到期`} ready={trial.readiness.nextDayRecallReady} />
+                <TrialMetric label="延迟复测保持" value={formatHistoryRate(trial.metrics.delayedReview.retentionRate)} detail={`${trial.metrics.delayedReview.correctCount}/${trial.metrics.delayedReview.attemptedCount} 次已完成 · ${trial.metrics.delayedReview.opportunityCount} 次到期`} ready={trial.readiness.delayedReviewReady} />
+                <TrialMetric label="追问解决率" value={formatHistoryRate(trial.metrics.followUps.resolutionRate)} detail={`${trial.metrics.followUps.resolvedCount}/${trial.metrics.followUps.feedbackCount} 次已反馈追问`} ready={trial.readiness.followUpResolutionReady} />
+              </div>
+              {trial.status === "observing" ? <div role="status" className="mt-4 rounded-xl border border-violet-200 bg-violet-50 p-4 text-sm leading-6 text-violet-900 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-100"><p className="font-medium">学习期已结束，正在等待最后复测</p><p className="mt-1 text-xs">观察期只补收第 14 天产生的次日回忆、延迟复测和已有追问反馈；新课程不会进入本轮报告。预计 {formatHistoryDate(trial.observationEndsAt)} 完成结算。</p></div> : null}
+              <p className="mt-4 text-xs text-muted-foreground">每项至少需要 {trial.readiness.minimumSampleCount} 个样本才标记为“可初步判断”；样本不足时显示暂无，不补算成绩。</p>
+              {trial.status === "active" ? <Button className="mt-4" size="sm" variant="secondary" disabled={trialBusy} onClick={() => void endTrial()}>{trialBusy ? "正在保存…" : "提前结束并保留记录"}</Button> : null}
+            </div>
+          )}
+          {trialMessage ? <p role="status" className="mx-5 mb-5 rounded-lg bg-muted p-3 text-sm">{trialMessage}</p> : null}
+        </Card>
+      ) : null}
       {loading ? <p className="mt-6 text-sm text-muted-foreground">正在整理学习历史…</p> : null}
       {error ? <Card className="mt-6 border-amber-200 p-5"><p role="alert" className="text-sm text-amber-800 dark:text-amber-200">{error}</p><Button className="mt-3" size="sm" variant="secondary" onClick={() => setLoadAttempt((value) => value + 1)}>重新读取</Button></Card> : null}
       {!loading && !error && history ? (
@@ -1697,6 +1880,14 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
       ) : null}
     </section>
   );
+}
+
+function TrialMetric({ label, value, detail, ready }: { label: string; value: string; detail: string; ready?: boolean }) {
+  return <div className="rounded-xl bg-muted/55 p-3"><p className="text-lg font-bold">{value}</p><p className="mt-1 text-xs font-medium">{label}</p><p className="mt-1 text-[11px] text-muted-foreground">{detail}{ready == null ? "" : ` · ${ready ? "可初步判断" : "样本不足"}`}</p></div>;
+}
+
+function trialStatusLabel(status: PrivateTutorLearningTrial["status"]) {
+  return { active: "试学中", observing: "观察结算中", completed: "已完成", stopped: "已提前结束" }[status];
 }
 
 function HistoryMetric({ label, value }: { label: string; value: string }) {

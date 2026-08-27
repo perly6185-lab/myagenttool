@@ -61,6 +61,7 @@ export function ensurePrivateTutorCollections(state) {
     "privateTutorPackageActivations",
     "privateTutorContentMigrationPreviews",
     "privateTutorContentMigrationApplications",
+    "privateTutorLearningTrials",
   ]) {
     if (!Array.isArray(state[key])) state[key] = [];
   }

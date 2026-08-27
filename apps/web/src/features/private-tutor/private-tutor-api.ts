@@ -127,6 +127,8 @@ export interface PrivateTutorAssessment {
   contentPackageVersion: string | null;
   subjectId: string;
   activationId?: string | null;
+  mode?: "full" | "quick";
+  targetKnowledgeId?: string | null;
   status: "active" | "paused" | "completed";
   revision: number;
   startedAt: string;
@@ -510,7 +512,45 @@ export interface PrivateTutorFollowUp {
   grounding: "source_excerpt" | "reviewed_curriculum";
   sourceRefs: Array<{ sectionId: string; pageNumber: number | null; excerpt: string }>;
   evidenceEligible: false;
+  resolution?: "resolved" | "unresolved" | null;
+  resolutionRecordedAt?: string | null;
   createdAt: string;
+}
+
+export interface PrivateTutorLearningTrial {
+  id: string;
+  learnerId: string;
+  contentPackageId: string;
+  contentPackageVersion: string;
+  contentPackageName: string;
+  goal: string;
+  durationDays: number;
+  observationDays: number;
+  status: "active" | "observing" | "completed" | "stopped";
+  startedAt: string;
+  endsAt: string;
+  observationEndsAt: string;
+  stoppedAt: string | null;
+  completedAt: string | null;
+  progress: {
+    dayIndex: number;
+    activeDayCount: number;
+    daysRemaining: number;
+    completedSessionCount: number;
+  };
+  metrics: {
+    planDays: { startedCount: number; completedCount: number; completionRate: number | null };
+    nextDayRecall: { opportunityCount: number; attemptedCount: number; correctCount: number; retentionRate: number | null };
+    delayedReview: { opportunityCount: number; attemptedCount: number; correctCount: number; retentionRate: number | null };
+    followUps: { askedCount: number; feedbackCount: number; resolvedCount: number; resolutionRate: number | null; feedbackCoverageRate: number | null };
+  };
+  readiness: {
+    minimumSampleCount: number;
+    nextDayRecallReady: boolean;
+    delayedReviewReady: boolean;
+    followUpResolutionReady: boolean;
+  };
+  generatedAt: string;
 }
 
 export interface PrivateTutorVoiceTurn {
@@ -1363,6 +1403,21 @@ export async function getPrivateTutorLearningHistory() {
   return result.history;
 }
 
+export async function getPrivateTutorLearningTrial() {
+  const result = await request<{ trial: PrivateTutorLearningTrial | null }>("GET", "/api/private-tutor/profile/learning-trial");
+  return result.trial;
+}
+
+export async function startPrivateTutorLearningTrial(goal: string) {
+  const result = await request<{ trial: PrivateTutorLearningTrial }>("POST", "/api/private-tutor/profile/learning-trial/start", { goal });
+  return result.trial;
+}
+
+export async function stopPrivateTutorLearningTrial() {
+  const result = await request<{ trial: PrivateTutorLearningTrial }>("POST", "/api/private-tutor/profile/learning-trial/stop", {});
+  return result.trial;
+}
+
 export async function rebalancePrivateTutorLearningPlan(missedDayIndex: number) {
   return request<PrivateTutorIntelligence>(
     "POST",
@@ -1406,6 +1461,7 @@ export async function resumePrivateTutorSession(sessionId: string) {
 export async function actOnPrivateTutorSession(sessionId: string, input:
   | { action: "continue" | "hint" }
   | { action: "follow_up"; mode: PrivateTutorFollowUpMode; question?: string }
+  | { action: "follow_up_feedback"; followUpId: string; resolution: "resolved" | "unresolved" }
   | {
     action: "answer";
     idempotencyKey: string;
@@ -1464,11 +1520,15 @@ export async function getCurrentPrivateTutorAssessment() {
   return result.assessment;
 }
 
-export async function startPrivateTutorAssessment() {
+export async function startPrivateTutorAssessment(input: {
+  mode?: "full" | "quick";
+  targetKnowledgeId?: string;
+  restart?: boolean;
+} = {}) {
   const result = await request<{ assessment: PrivateTutorAssessment }>(
     "POST",
     "/api/private-tutor/profile/assessments/start",
-    {},
+    input,
   );
   return result.assessment;
 }

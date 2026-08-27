@@ -188,6 +188,8 @@ export function privateTutorSessionView(session, state) {
       grounding: item.grounding,
       sourceRefs: item.sourceRefs.map((ref) => ({ ...ref })),
       evidenceEligible: false,
+      resolution: item.resolution ?? null,
+      resolutionRecordedAt: item.resolutionRecordedAt ?? null,
       createdAt: item.createdAt,
     })),
     pausedAt: session.pausedAt,
