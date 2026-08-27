@@ -111,5 +111,7 @@ export interface HostFileTransfer {
   retryOf: string | null;
   errorCode: string | null;
   createdAt: string;
+  startedAt?: string;
+  updatedAt?: string;
   completedAt: string | null;
 }

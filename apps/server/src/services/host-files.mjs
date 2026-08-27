@@ -14,6 +14,7 @@ export const MAX_HOST_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_HOST_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 const TRANSFER_CHUNK_BYTES = 64 * 1024;
 const MAX_TRANSFER_ATTEMPTS = 3;
+const STALE_TRANSFER_MS = 5 * 60_000;
 const FORBIDDEN_ROOTS = ["/", "/boot", "/dev", "/etc", "/proc", "/root", "/run", "/sys"];
 const DISCOVERY_PARENTS = ["/srv/myagenttool-sites", "/srv/www", "/var/www", "/opt/myagenttool/sites"];
 const MAX_SCOPE_SUGGESTIONS = 12;
@@ -79,6 +80,23 @@ function sftpWrite(sftp, handle, buffer, offset, length, position) {
   return new Promise((resolve, reject) => {
     sftp.write(handle, buffer, offset, length, position, (error) => error ? reject(error) : resolve());
   });
+}
+
+async function ensureUploadCapacity(sftp, directory, requiredBytes) {
+  if (typeof sftp?.ext_openssh_statvfs !== "function") return;
+  let stats;
+  try {
+    stats = await sftpCall(sftp, "ext_openssh_statvfs", directory);
+  } catch {
+    // Capacity discovery is optional. The bounded SFTP write still owns the final result.
+    return;
+  }
+  const blockSize = Number(stats?.f_frsize ?? stats?.f_bsize);
+  const availableBlocks = Number(stats?.f_bavail);
+  const availableBytes = blockSize * availableBlocks;
+  if (Number.isFinite(availableBytes) && availableBytes >= 0 && availableBytes < requiredBytes) {
+    throw new HostFileScopeError("ssh_sftp_no_space", "The remote device does not have enough available storage.", 507);
+  }
 }
 
 function attrsType(attrs) {
@@ -281,6 +299,24 @@ function publicEntry(item, relativePath) {
 export function createHostFileService({ state, now, nextId, appendEvent, persistStateSoon, resolveCredential, sshHostConnector, store }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
+  function reconcileInterruptedTransfers(target) {
+    const timestamp = now();
+    const currentTime = Date.parse(timestamp);
+    if (!Number.isFinite(currentTime)) return;
+    const interrupted = state.hostFileTransfers.filter((transfer) => {
+      if (transfer.sshTargetId !== target.id || transfer.status !== "running") return false;
+      const lastProgress = Date.parse(transfer.updatedAt ?? transfer.startedAt ?? transfer.createdAt);
+      return Number.isFinite(lastProgress) && currentTime - lastProgress >= STALE_TRANSFER_MS;
+    });
+    if (!interrupted.length) return;
+    runTx(() => {
+      for (const transfer of interrupted) {
+        Object.assign(transfer, { status: "failed", errorCode: "host_file_transfer_interrupted", completedAt: timestamp, updatedAt: timestamp });
+        appendEvent({ invocationId: null, type: "ssh.host_file_transfer.interrupted", level: "warning", message: "A governed SSH file transfer ended without a confirmed result.", data: { targetId: target.id, scopeId: transfer.scopeId, transferId: transfer.id, direction: transfer.direction } });
+      }
+    });
+  }
+
   function listScopes(target) {
     return state.hostFileScopes.filter((scope) => scope.sshTargetId === target.id);
   }
@@ -404,6 +440,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
   }
 
   function listTransfers(target) {
+    reconcileInterruptedTransfers(target);
     return state.hostFileTransfers
       .filter((transfer) => transfer.sshTargetId === target.id)
       .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
@@ -487,6 +524,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
       if (!credential?.ok) throw new HostFileScopeError(credential?.error ?? "ssh_credential_unavailable", "The SSH credential is unavailable.", 409);
       const result = await sshHostConnector.runSftp(target, credential.credential, async (sftp) => {
         const directory = await inspectBrowseDirectory(sftp, scope.resolvedRootPath, remoteDirectory);
+        await ensureUploadCapacity(sftp, directory, body.length);
         let finalName = requestedName;
         let finalPath = posix.join(directory, finalName);
         const existing = await optionalLstat(sftp, finalPath);
