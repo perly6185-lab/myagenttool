@@ -1,6 +1,7 @@
 import { CalendarDays, Database, FileStack, Folder, FolderTree, Inbox, Mail } from "lucide-react";
 import { cn } from "@/lib/cn";
 import type { LocalContentCatalogStats, LocalContentKind } from "./local-content-types";
+import { localContentSourceLabels } from "./local-content-source-labels";
 import type { LocalLibraryCopy } from "./local-library-copy";
 
 type DirectoryItem = { value: string; label: string; count: number };
@@ -134,7 +135,7 @@ export function LocalContentDirectory({
   copy,
   catalog,
   projects,
-  sourceLabels,
+  language,
   kind,
   projectId,
   sourceType,
@@ -152,7 +153,7 @@ export function LocalContentDirectory({
   copy: LocalLibraryCopy;
   catalog: LocalContentCatalogStats;
   projects: Array<{ id: string; name: string }>;
-  sourceLabels: Record<string, string>;
+  language: "zh" | "en";
   kind: "all" | LocalContentKind;
   projectId: string;
   sourceType: string;
@@ -167,6 +168,7 @@ export function LocalContentDirectory({
   onMailAccount: (accountId: string) => void;
   onMailFolder: (accountId: string, folderId: string) => void;
 }) {
+  const sourceLabels = localContentSourceLabels(language);
   const directoryAll = kind === "all" && projectId === "all" && sourceType === "all" && yearMonth === "all" && mailAccountId === "all" && mailFolderId === "all";
   const kinds = (Object.entries(catalog.byKind) as Array<[LocalContentKind, { count: number; available: number } | undefined]>)
     .filter((entry): entry is [LocalContentKind, { count: number; available: number }] => Boolean(entry[1]?.count))
