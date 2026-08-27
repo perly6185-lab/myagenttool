@@ -1483,7 +1483,7 @@ export async function handlePrivateTutorRoutes({
         sendJson(res, result.status, { error: result.error });
         return true;
       }
-      recordAudit(state, { learner, actor, action: "learning_trial_started", details: { trialId: result.trial.id, durationDays: result.trial.durationDays }, now, nextId });
+      recordAudit(state, { learner, actor, action: "learning_trial_started", details: { trialId: result.trial.id, durationDays: result.trial.durationDays, observationDays: result.trial.observationDays }, now, nextId });
       persistStateSoon();
       sendJson(res, 201, { trial: result.trial });
       return true;

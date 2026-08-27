@@ -1,4 +1,5 @@
 export const PRIVATE_TUTOR_LEARNING_TRIAL_DAYS = 14;
+export const PRIVATE_TUTOR_LEARNING_TRIAL_OBSERVATION_DAYS = 2;
 export const PRIVATE_TUTOR_LEARNING_TRIAL_MINIMUM_SAMPLES = 3;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -27,10 +28,12 @@ export function startPrivateTutorLearningTrial(state, learner, input, {
     contentPackageName: contentPackage.name,
     goal,
     durationDays: PRIVATE_TUTOR_LEARNING_TRIAL_DAYS,
+    observationDays: PRIVATE_TUTOR_LEARNING_TRIAL_OBSERVATION_DAYS,
     status: "active",
     startedBy: actorId,
     startedAt,
     endsAt: addDays(startedAt, PRIVATE_TUTOR_LEARNING_TRIAL_DAYS),
+    observationEndsAt: addDays(startedAt, PRIVATE_TUTOR_LEARNING_TRIAL_DAYS + PRIVATE_TUTOR_LEARNING_TRIAL_OBSERVATION_DAYS),
     stoppedAt: null,
     completedAt: null,
     updatedAt: startedAt,
@@ -56,9 +59,16 @@ export function latestPrivateTutorLearningTrialView(state, learnerId, at) {
 export function completeExpiredPrivateTutorLearningTrials(state, at) {
   let changed = false;
   for (const trial of state.privateTutorLearningTrials ?? []) {
-    if (trial.status !== "active" || Date.parse(trial.endsAt) > Date.parse(at)) continue;
-    Object.assign(trial, { status: "completed", completedAt: trial.endsAt, updatedAt: at });
-    changed = true;
+    if (!["active", "observing"].includes(trial.status)) continue;
+    const atTime = Date.parse(at);
+    const observationEndsAt = observationEndsAtOf(trial);
+    if (atTime >= Date.parse(observationEndsAt)) {
+      Object.assign(trial, { status: "completed", completedAt: observationEndsAt, updatedAt: at });
+      changed = true;
+    } else if (trial.status === "active" && atTime >= Date.parse(trial.endsAt)) {
+      Object.assign(trial, { status: "observing", updatedAt: at });
+      changed = true;
+    }
   }
   return changed;
 }
@@ -80,35 +90,42 @@ export function recordPrivateTutorFollowUpResolution(session, input, { now }) {
 }
 
 function currentPrivateTutorLearningTrial(state, learnerId) {
-  return (state.privateTutorLearningTrials ?? []).find((row) => row.learnerId === learnerId && row.status === "active") ?? null;
+  return (state.privateTutorLearningTrials ?? []).find((row) => row.learnerId === learnerId && ["active", "observing"].includes(row.status)) ?? null;
 }
 
 function privateTutorLearningTrialView(state, trial, at) {
-  const observationEnd = [at, trial.stoppedAt, trial.completedAt, trial.endsAt]
+  const observationEndsAt = observationEndsAtOf(trial);
+  const observationEnd = [at, trial.stoppedAt, trial.completedAt, observationEndsAt]
     .filter(Boolean)
     .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
-  const inWindow = (value) => {
+  const inObservationWindow = (value) => {
     const time = Date.parse(value);
     return Number.isFinite(time) && time >= Date.parse(trial.startedAt) && time <= Date.parse(observationEnd);
+  };
+  const inLearningWindow = (value) => {
+    const time = Date.parse(value);
+    return Number.isFinite(time) && time >= Date.parse(trial.startedAt) && time <= Date.parse(trial.endsAt);
   };
   const samePackage = (row) => row.contentPackageId === trial.contentPackageId
     && (!row.contentPackageVersion || row.contentPackageVersion === trial.contentPackageVersion);
   const allSessions = (state.privateTutorSessions ?? []).filter((row) => row.learnerId === trial.learnerId
-    && samePackage(row) && inWindow(row.startedAt ?? row.completedAt));
-  const sessions = allSessions.filter((row) => row.status === "completed" && inWindow(row.completedAt));
+    && samePackage(row) && inLearningWindow(row.startedAt ?? row.completedAt) && inObservationWindow(row.startedAt ?? row.completedAt));
+  const sessions = allSessions.filter((row) => row.status === "completed" && inObservationWindow(row.completedAt));
   const attempts = (state.privateTutorAttempts ?? []).filter((row) => row.learnerId === trial.learnerId
-    && samePackage(row) && inWindow(row.createdAt));
+    && samePackage(row) && inObservationWindow(row.createdAt));
   const schedules = (state.privateTutorReviewSchedules ?? []).filter((row) => row.learnerId === trial.learnerId
-    && samePackage(row) && inWindow(row.createdAt));
+    && samePackage(row) && inLearningWindow(row.createdAt) && inObservationWindow(row.createdAt));
   const activeDays = new Set([
     ...allSessions.map((row) => String(row.startedAt ?? row.completedAt).slice(0, 10)),
-    ...attempts.map((row) => String(row.createdAt).slice(0, 10)),
+    ...attempts.filter((row) => inLearningWindow(row.createdAt)).map((row) => String(row.createdAt).slice(0, 10)),
   ]);
   const planDays = planDayMetrics(allSessions);
   const nextDayRecall = nextDayRecallMetrics(sessions, attempts, observationEnd);
   const delayedReview = delayedReviewMetrics(schedules, attempts, observationEnd);
   const followUps = followUpMetrics(allSessions, trial, observationEnd);
-  const dayIndex = Math.max(1, Math.min(trial.durationDays, Math.floor((Date.parse(observationEnd) - Date.parse(trial.startedAt)) / DAY_MS) + 1));
+  const learningProgressEnd = [observationEnd, trial.endsAt]
+    .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
+  const dayIndex = Math.max(1, Math.min(trial.durationDays, Math.floor((Date.parse(learningProgressEnd) - Date.parse(trial.startedAt)) / DAY_MS) + 1));
   return {
     id: trial.id,
     learnerId: trial.learnerId,
@@ -117,9 +134,11 @@ function privateTutorLearningTrialView(state, trial, at) {
     contentPackageName: trial.contentPackageName,
     goal: trial.goal,
     durationDays: trial.durationDays,
+    observationDays: trial.observationDays ?? PRIVATE_TUTOR_LEARNING_TRIAL_OBSERVATION_DAYS,
     status: trial.status,
     startedAt: trial.startedAt,
     endsAt: trial.endsAt,
+    observationEndsAt,
     stoppedAt: trial.stoppedAt,
     completedAt: trial.completedAt,
     progress: {
@@ -183,7 +202,10 @@ function delayedReviewMetrics(schedules, attempts, observationEnd) {
   let attemptedCount = 0;
   let correctCount = 0;
   for (const item of opportunities) {
-    const delayed = attempts.find((row) => row.reviewScheduleId === item.schedule.id && row.reviewPhase === "delayed");
+    const delayed = attempts.find((row) => row.reviewScheduleId === item.schedule.id
+      && row.reviewPhase === "delayed"
+      && Date.parse(row.createdAt) >= Date.parse(item.dueAt)
+      && Date.parse(row.createdAt) <= Date.parse(observationEnd));
     if (!delayed) continue;
     attemptedCount += 1;
     if (delayed.correct === true) correctCount += 1;
@@ -194,9 +216,15 @@ function delayedReviewMetrics(schedules, attempts, observationEnd) {
 function followUpMetrics(sessions, trial, observationEnd) {
   const values = sessions.flatMap((session) => session.followUps ?? []).filter((row) => {
     const created = Date.parse(row.createdAt);
-    return created >= Date.parse(trial.startedAt) && created <= Date.parse(observationEnd);
+    return created >= Date.parse(trial.startedAt)
+      && created <= Date.parse(trial.endsAt)
+      && created <= Date.parse(observationEnd);
   });
-  const feedback = values.filter((row) => ["resolved", "unresolved"].includes(row.resolution));
+  const feedback = values.filter((row) => {
+    if (!["resolved", "unresolved"].includes(row.resolution)) return false;
+    const recordedAt = Date.parse(row.resolutionRecordedAt ?? row.createdAt);
+    return recordedAt <= Date.parse(observationEnd);
+  });
   const resolved = feedback.filter((row) => row.resolution === "resolved");
   return {
     askedCount: values.length,
@@ -213,4 +241,9 @@ function rate(numerator, denominator) {
 
 function addDays(iso, days) {
   return new Date(Date.parse(iso) + days * DAY_MS).toISOString();
+}
+
+function observationEndsAtOf(trial) {
+  return trial.observationEndsAt
+    ?? addDays(trial.endsAt, trial.observationDays ?? PRIVATE_TUTOR_LEARNING_TRIAL_OBSERVATION_DAYS);
 }

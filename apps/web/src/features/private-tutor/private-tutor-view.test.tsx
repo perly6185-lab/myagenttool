@@ -400,8 +400,8 @@ describe("My private tutor personal learning information architecture", () => {
     apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
     apiMocks.startLearningTrial.mockResolvedValue({
       id: "ptlt_1", learnerId: activeProfile.id, contentPackageId: "demo-math-foundations-v1", contentPackageVersion: "1.0.0",
-      contentPackageName: "初中数学基础：一元一次方程", goal: "验证方程学习效果", durationDays: 14, status: "active",
-      startedAt: "2026-08-27T00:00:00.000Z", endsAt: "2026-09-10T00:00:00.000Z", stoppedAt: null, completedAt: null,
+      contentPackageName: "初中数学基础：一元一次方程", goal: "验证方程学习效果", durationDays: 14, observationDays: 2, status: "active",
+      startedAt: "2026-08-27T00:00:00.000Z", endsAt: "2026-09-10T00:00:00.000Z", observationEndsAt: "2026-09-12T00:00:00.000Z", stoppedAt: null, completedAt: null,
       progress: { dayIndex: 1, activeDayCount: 0, daysRemaining: 13, completedSessionCount: 0 },
       metrics: {
         planDays: { startedCount: 0, completedCount: 0, completionRate: null },
@@ -421,8 +421,34 @@ describe("My private tutor personal learning information architecture", () => {
 
     await waitFor(() => expect(apiMocks.startLearningTrial).toHaveBeenCalledWith("验证方程学习效果"));
     expect(await screen.findByText("试学中 · 第 1/14 天")).toBeTruthy();
+    expect(screen.getByText(/14 天学习期后会保留 48 小时/)).toBeTruthy();
     expect(screen.getAllByText("暂无").length).toBeGreaterThanOrEqual(3);
     expect(screen.getAllByText(/· 样本不足$/).length).toBe(3);
+  });
+
+  it("explains the observation tail without counting new lessons", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.learningTrial.mockResolvedValue({
+      id: "ptlt_observing", learnerId: activeProfile.id, contentPackageId: "demo-math-foundations-v1", contentPackageVersion: "1.0.0",
+      contentPackageName: "初中数学基础：一元一次方程", goal: "验证方程学习效果", durationDays: 14, observationDays: 2, status: "observing",
+      startedAt: "2026-08-27T00:00:00.000Z", endsAt: "2026-09-10T00:00:00.000Z", observationEndsAt: "2026-09-12T00:00:00.000Z", stoppedAt: null, completedAt: null,
+      progress: { dayIndex: 14, activeDayCount: 12, daysRemaining: 0, completedSessionCount: 11 },
+      metrics: {
+        planDays: { startedCount: 12, completedCount: 11, completionRate: 0.9167 },
+        nextDayRecall: { opportunityCount: 10, attemptedCount: 9, correctCount: 7, retentionRate: 0.7778 },
+        delayedReview: { opportunityCount: 10, attemptedCount: 8, correctCount: 6, retentionRate: 0.75 },
+        followUps: { askedCount: 8, feedbackCount: 7, resolvedCount: 5, resolutionRate: 0.7143, feedbackCoverageRate: 0.875 },
+      },
+      readiness: { minimumSampleCount: 3, nextDayRecallReady: true, delayedReviewReady: true, followUpResolutionReady: true },
+      generatedAt: "2026-09-10T12:00:00.000Z",
+    });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的成长" }));
+
+    expect(await screen.findByText("观察结算中 · 第 14/14 天")).toBeTruthy();
+    expect(screen.getByText("学习期已结束，正在等待最后复测")).toBeTruthy();
+    expect(screen.getByText(/新课程不会进入本轮报告/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "提前结束并保留记录" })).toBeNull();
   });
 
   it("chooses diagnostic or a concrete chapter before activating personal material", async () => {
