@@ -1810,7 +1810,7 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
           <div className="bg-violet-50/70 p-5 dark:bg-violet-950/30">
             <p className="text-sm font-semibold text-violet-700 dark:text-violet-300">14 天真实课程试学</p>
             <h2 className="mt-1 text-lg font-bold">验证次日还能不能想起、延迟复测是否站稳、追问是否真正解决</h2>
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">自动化测试只验证记录是否正确；只有你真实学习产生的样本，才会进入这里的结果。</p>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">自动化测试只验证记录是否正确；只有你真实学习产生的样本，才会进入这里的结果。14 天学习期后会保留 48 小时，只结算最后产生的复测与追问反馈。</p>
           </div>
           {!trial ? (
             <div className="p-5">
@@ -1828,6 +1828,7 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
                 <TrialMetric label="延迟复测保持" value={formatHistoryRate(trial.metrics.delayedReview.retentionRate)} detail={`${trial.metrics.delayedReview.correctCount}/${trial.metrics.delayedReview.attemptedCount} 次已完成 · ${trial.metrics.delayedReview.opportunityCount} 次到期`} ready={trial.readiness.delayedReviewReady} />
                 <TrialMetric label="追问解决率" value={formatHistoryRate(trial.metrics.followUps.resolutionRate)} detail={`${trial.metrics.followUps.resolvedCount}/${trial.metrics.followUps.feedbackCount} 次已反馈追问`} ready={trial.readiness.followUpResolutionReady} />
               </div>
+              {trial.status === "observing" ? <div role="status" className="mt-4 rounded-xl border border-violet-200 bg-violet-50 p-4 text-sm leading-6 text-violet-900 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-100"><p className="font-medium">学习期已结束，正在等待最后复测</p><p className="mt-1 text-xs">观察期只补收第 14 天产生的次日回忆、延迟复测和已有追问反馈；新课程不会进入本轮报告。预计 {formatHistoryDate(trial.observationEndsAt)} 完成结算。</p></div> : null}
               <p className="mt-4 text-xs text-muted-foreground">每项至少需要 {trial.readiness.minimumSampleCount} 个样本才标记为“可初步判断”；样本不足时显示暂无，不补算成绩。</p>
               {trial.status === "active" ? <Button className="mt-4" size="sm" variant="secondary" disabled={trialBusy} onClick={() => void endTrial()}>{trialBusy ? "正在保存…" : "提前结束并保留记录"}</Button> : null}
             </div>
@@ -1886,7 +1887,7 @@ function TrialMetric({ label, value, detail, ready }: { label: string; value: st
 }
 
 function trialStatusLabel(status: PrivateTutorLearningTrial["status"]) {
-  return { active: "试学中", completed: "已完成", stopped: "已提前结束" }[status];
+  return { active: "试学中", observing: "观察结算中", completed: "已完成", stopped: "已提前结束" }[status];
 }
 
 function HistoryMetric({ label, value }: { label: string; value: string }) {
