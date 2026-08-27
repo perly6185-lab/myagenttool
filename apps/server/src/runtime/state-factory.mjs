@@ -110,6 +110,7 @@ export function createServerState({ defaultProjectPath, now }) {
     privateTutorMaterialDocuments: [],
     privateTutorKnowledgeMapDrafts: [],
     privateTutorLearningPreferences: [],
+    privateTutorLearningTrials: [],
     applications: [],
     applicationInstallRuns: [],
     applicationRecoveryActions: [],

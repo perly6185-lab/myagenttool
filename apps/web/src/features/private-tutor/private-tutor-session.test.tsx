@@ -222,6 +222,13 @@ describe("My private tutor resumable daily session", () => {
     expect(screen.getByText("等式两边始终做相同的事情。")).toBeTruthy();
     expect(screen.getByText("sec_2 · 第 7 页")).toBeTruthy();
     expect(screen.getByText("本次追问不产生练习证据。")).toBeTruthy();
+    expect(screen.getByText("这次回答解决你的问题了吗？")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "解决了" }));
+    await waitFor(() => expect(apiMocks.action).toHaveBeenLastCalledWith(explain.id, {
+      action: "follow_up_feedback",
+      followUpId: "ptfu_1",
+      resolution: "resolved",
+    }));
   });
 
   it("summarizes independent completion, help used, and the next review without ranking", async () => {

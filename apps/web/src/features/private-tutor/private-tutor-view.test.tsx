@@ -18,6 +18,9 @@ const apiMocks = vi.hoisted(() => ({
   getPackage: vi.fn(),
   activatePackage: vi.fn(),
   learningHistory: vi.fn(),
+  learningTrial: vi.fn(),
+  startLearningTrial: vi.fn(),
+  stopLearningTrial: vi.fn(),
   learningPreferences: vi.fn(),
   updateLearningPreferences: vi.fn(),
 }));
@@ -83,6 +86,9 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
   getPrivateTutorReviewBook: () => Promise.resolve(emptyReviewBook),
   getPrivateTutorLearningHistory: apiMocks.learningHistory,
+  getPrivateTutorLearningTrial: apiMocks.learningTrial,
+  startPrivateTutorLearningTrial: apiMocks.startLearningTrial,
+  stopPrivateTutorLearningTrial: apiMocks.stopLearningTrial,
   getPrivateTutorLearningPreferences: apiMocks.learningPreferences,
   updatePrivateTutorLearningPreferences: apiMocks.updateLearningPreferences,
   getPrivateTutorWeeklyReport: () => Promise.reject(new Error("not used")),
@@ -215,6 +221,9 @@ describe("My private tutor personal learning information architecture", () => {
         recentSessions: [{ id: "session-1", status: "completed", moduleId: "mod-equations", moduleName: "一元一次方程与等式性质", knowledgeId: "integer", knowledgeTitle: "有理数运算", planId: "plan-1", planDayIndex: 1, practiceCount: 3, evidenceCount: 2, startedAt: "2026-08-25T08:00:00.000Z", completedAt: "2026-08-25T08:20:00.000Z", reviewAt: "2026-08-26T08:20:00.000Z" }],
       }],
     });
+    apiMocks.learningTrial.mockReset().mockResolvedValue(null);
+    apiMocks.startLearningTrial.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.stopLearningTrial.mockReset().mockRejectedValue(new Error("not used"));
     apiMocks.learningPreferences.mockReset().mockResolvedValue(learningPreferences);
     apiMocks.updateLearningPreferences.mockReset().mockImplementation(async (patch) => ({ ...learningPreferences, ...patch, revision: 2 }));
   });
@@ -385,6 +394,35 @@ describe("My private tutor personal learning information architecture", () => {
     expect(screen.getByText("当前计划：完成 1/7 天，进行中 1 天。")).toBeTruthy();
     expect(screen.getByText("有理数运算")).toBeTruthy();
     expect(apiMocks.learningHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a fourteen-day real-course trial without inventing early results", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.startLearningTrial.mockResolvedValue({
+      id: "ptlt_1", learnerId: activeProfile.id, contentPackageId: "demo-math-foundations-v1", contentPackageVersion: "1.0.0",
+      contentPackageName: "初中数学基础：一元一次方程", goal: "验证方程学习效果", durationDays: 14, status: "active",
+      startedAt: "2026-08-27T00:00:00.000Z", endsAt: "2026-09-10T00:00:00.000Z", stoppedAt: null, completedAt: null,
+      progress: { dayIndex: 1, activeDayCount: 0, daysRemaining: 13, completedSessionCount: 0 },
+      metrics: {
+        planDays: { startedCount: 0, completedCount: 0, completionRate: null },
+        nextDayRecall: { opportunityCount: 0, attemptedCount: 0, correctCount: 0, retentionRate: null },
+        delayedReview: { opportunityCount: 0, attemptedCount: 0, correctCount: 0, retentionRate: null },
+        followUps: { askedCount: 0, feedbackCount: 0, resolvedCount: 0, resolutionRate: null, feedbackCoverageRate: null },
+      },
+      readiness: { minimumSampleCount: 3, nextDayRecallReady: false, delayedReviewReady: false, followUpResolutionReady: false },
+      generatedAt: "2026-08-27T00:00:00.000Z",
+    });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的成长" }));
+
+    expect(await screen.findByRole("heading", { name: /验证次日还能不能想起/ })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("试学目标"), { target: { value: "验证方程学习效果" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始 14 天试学" }));
+
+    await waitFor(() => expect(apiMocks.startLearningTrial).toHaveBeenCalledWith("验证方程学习效果"));
+    expect(await screen.findByText("试学中 · 第 1/14 天")).toBeTruthy();
+    expect(screen.getAllByText("暂无").length).toBeGreaterThanOrEqual(3);
+    expect(screen.getAllByText(/· 样本不足$/).length).toBe(3);
   });
 
   it("chooses diagnostic or a concrete chapter before activating personal material", async () => {
