@@ -79,6 +79,7 @@ import {
   type PrivateTutorLearningHistory,
   type PrivateTutorLearningPreferences,
   type PrivateTutorLearningPreferencesPatch,
+  type PrivateTutorFollowUpMode,
   type PrivateTutorProfileMigrationReport,
   type PrivateTutorSession,
   type PrivateTutorSessionPace,
@@ -937,6 +938,8 @@ function TodayLearning({
   const [subtitle, setSubtitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [followUpQuestion, setFollowUpQuestion] = useState("");
+  const [followUpMessage, setFollowUpMessage] = useState("");
   const recognitionRef = useRef<PrivateTutorRecognitionController | null>(null);
   const attemptKeyRef = useRef(newClientKey("tutoring"));
   const dailyTargetMinutes = Math.max(5, preferences.dailyMinutes);
@@ -961,6 +964,8 @@ function TodayLearning({
   useEffect(() => {
     setAnswer("");
     setMessage("");
+    setFollowUpQuestion("");
+    setFollowUpMessage("");
     setInterimTranscript("");
     setPendingVoiceTurn(null);
     attemptKeyRef.current = newClientKey("tutoring");
@@ -1158,6 +1163,20 @@ function TodayLearning({
     setBusy(false);
   }
 
+  async function askFollowUp(mode: PrivateTutorFollowUpMode) {
+    const question = followUpQuestion.trim();
+    if (mode === "question" && !question) {
+      setFollowUpMessage("先写下想问的问题。私教只会依据当前资料回答。");
+      return;
+    }
+    setBusy(true);
+    setFollowUpMessage("");
+    const result = await onAction({ action: "follow_up", mode, question: question || undefined });
+    setFollowUpMessage(result.error ?? "");
+    if (!result.error && mode === "question") setFollowUpQuestion("");
+    setBusy(false);
+  }
+
   async function submit(responseKind: "answer" | "dont_know", rawAnswer = answer, source: "screen" | "visual" = "screen") {
     const question = session?.currentActivity?.question;
     if (!question) return;
@@ -1279,6 +1298,7 @@ function TodayLearning({
     summary: "学习总结",
   };
   const completedActivities = session.progress.filter((item) => item.status === "completed").length;
+  const latestFollowUp = (session.followUps ?? []).filter((item) => item.activityKind === current.kind).at(-1) ?? null;
 
   return (
     <div className="grid gap-5">
@@ -1366,6 +1386,35 @@ function TodayLearning({
             </div>
           ) : null}
           <p className="mt-3 text-[11px] leading-4 text-muted-foreground">本站后端不接收或保存原始音频；浏览器语音服务可能按设备设置处理音频。口音、音色和流利度不会作为掌握度证据。</p>
+        </Card>
+        <Card className="p-5">
+          <p className="flex items-center gap-2 text-sm font-semibold"><BookHeart className="size-4 text-sky-600" />问当前教材</p>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">回答只使用当前已发布教材或审核课程；超出资料范围会明确说明，也不会计入掌握度。</p>
+          <textarea
+            aria-label="向私教追问"
+            value={followUpQuestion}
+            disabled={busy}
+            onChange={(event) => setFollowUpQuestion(event.target.value.slice(0, 500))}
+            rows={3}
+            className="mt-3 w-full resize-y rounded-xl border bg-card px-3 py-2 text-sm"
+            placeholder="例如：这句话为什么成立？"
+          />
+          <div className="mt-3 grid gap-2">
+            <Button size="sm" disabled={busy || !followUpQuestion.trim()} onClick={() => void askFollowUp("question")}>基于资料回答</Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void askFollowUp("explain_again")}>换种讲法</Button>
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void askFollowUp("source_example")}>资料内例子</Button>
+            </div>
+          </div>
+          {followUpMessage ? <p role="alert" className="mt-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100">{followUpMessage}</p> : null}
+          {latestFollowUp ? (
+            <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-900 dark:bg-sky-950/30">
+              <p className="text-xs font-semibold text-sky-700 dark:text-sky-300">{latestFollowUp.grounding === "source_excerpt" ? "依据当前教材摘录" : "依据审核课程内容"}</p>
+              <p className="mt-2 text-sm leading-6">{latestFollowUp.response}</p>
+              {latestFollowUp.sourceRefs.map((ref) => <blockquote key={`${ref.sectionId}:${ref.pageNumber ?? ""}`} className="mt-3 border-l-2 border-sky-400 pl-3 text-xs leading-5 text-muted-foreground">{ref.excerpt}<span className="mt-1 block">{ref.sectionId}{ref.pageNumber ? ` · 第 ${ref.pageNumber} 页` : ""}</span></blockquote>)}
+              <p className="mt-3 text-[11px] text-muted-foreground">本次追问不产生练习证据。</p>
+            </div>
+          ) : null}
         </Card>
         <Card className="p-5">
           <p className="flex items-center gap-2 text-sm font-semibold"><Heart className="size-4 text-rose-500" />卡住了也没关系</p>
