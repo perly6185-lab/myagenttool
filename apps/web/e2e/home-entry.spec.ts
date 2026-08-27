@@ -470,7 +470,7 @@ test("creates a Home task, reviews its plan, then schedules AI from simple detai
   await detail.getByRole("button", { name: "Let AI start" }).click();
   await expect(detail.getByText(/execution plan is ready/i)).toBeVisible();
   expect(scheduled).toBe(false);
-  await expect(detail.getByText("Customer-ready weekly update")).toBeVisible();
+  await expect(detail.getByTestId("work-item-intent-summary").getByText("Customer-ready weekly update")).toBeVisible();
 
   await detail.getByRole("button", { name: "Let AI start" }).click();
   await expect(detail.getByText(/set to automatic/i)).toBeVisible();
