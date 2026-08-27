@@ -552,6 +552,160 @@ Acceptance signals:
 - Can tell managed proof from after-the-fact import.
 - Can produce a concise audit summary.
 
+## Flow: Ordinary User Captures, Asks, And Acts On Personal Material
+
+Primary user: ordinary local user
+
+Frequency: high
+
+User job: state what they want to accomplish, let AI use the right personal
+material, verify the result, and continue into a saved outcome or controlled
+work without learning retrieval technology.
+
+Entry point: first-level `My files` / `我的资料` destination.
+
+Goal-first happy path:
+
+```text
+Open My files
+-> state a goal such as “compare the two proposals and recommend the next step”
+-> see which material AI intends to use
+-> add or remove candidates when the scope is ambiguous
+-> read a result that leads with the requested outcome
+-> open a cited source in safe preview
+-> continue asking, save the result, or create a scoped task
+```
+
+Material-first happy path:
+
+```text
+Open one item or select several items
+-> choose Ask, Summarize, Compare, Extract, Create, or Plan next steps
+-> edit the prefilled natural-language goal when needed
+-> read and verify the result
+-> keep the result or continue into controlled work
+```
+
+Add-and-use path:
+
+```text
+Add a file, folder, text, image, or supported link
+-> see whether the authoritative original remains in place
+-> receive three relevant suggestions for what AI can do with it
+-> start one suggestion or return to My files
+```
+
+Existing-material path:
+
+```text
+Open My files
+-> ask a question over already indexed articles, mail, tasks, inputs, and outputs
+-> deterministic search finds a bounded candidate set
+-> the answer distinguishes direct support, inference, conflict, and insufficient evidence
+-> create a task only after reviewing the references that will enter its scope
+```
+
+Recovery:
+
+```text
+Original moved, changed, or cannot be parsed
+-> preserve the last valid index and answer history
+-> explain which citation is affected
+-> locate or select the original again, refresh the record, or remove it from the question
+
+Model, network, OCR, or semantic ranking unavailable
+-> keep lexical search, safe preview, original location, and add-to-task available
+-> never present general model knowledge as an answer from My files
+```
+
+What not to show:
+
+- FTS, embedding, RAG, chunk, vector score, or model prompt details.
+- Absolute paths, root IDs, source fingerprints, or unrestricted candidate lists.
+- MCP, provider-adapter, parser, or index-version terminology.
+- Material outside the explicit question scope.
+- A destructive action implied by deleting a collection, answer, or index.
+- A catalog dashboard that makes index counts and health the primary value.
+- SSH commands, uploads, publication, or deletion executed directly from a
+  material conversation without the existing preview and approval flow.
+
+Usability test tasks:
+
+- Explain three useful things AI can do here without being told about search or RAG.
+- Start with “prepare next steps from recent customer feedback” and confirm the material used.
+- Add one local file and explain whether it was copied or left in place.
+- Ask a fuzzy question and open the exact source supporting the answer.
+- Ask across conflicting material and identify the disagreement.
+- Compare two selected items and save the result as a new versioned outcome.
+- Turn the answer into a task that contains only the confirmed references.
+- Complete the same flow at 390 px without opening technical settings.
+
+Acceptance signals:
+
+- Can describe useful outcomes before learning how material is indexed.
+- Finds `Add material`, the goal input, and `Ask these materials` without explanation.
+- Can describe the scope before asking and the source after answering.
+- Can distinguish cited facts from AI inference or insufficient evidence.
+- Can create a task without granting access to the whole library.
+- Understands that host, site, send, and delete actions require a separate confirmation.
+- Search and preview remain useful while every model-backed enhancement is off.
+
+Design contract:
+
+- [“我的资料”意图驱动的 AI 工作入口需求与开发规划](LOCAL_PERSONAL_BRAIN_REQUIREMENTS.md)
+- [Local Content and Local AI Integration Design](../engineering/LOCAL_CONTENT_AI_INTEGRATION_DESIGN.md)
+- [Task Resource Bundle and Hidden Data Capabilities](TASK_RESOURCE_BUNDLE_REQUIREMENTS.md)
+
+## Flow: Channel Routes Material Without Polluting Tasks
+
+Primary user: ordinary user sending a message, link, or attachment from a
+connected Channel
+
+User job: save, understand, or act on shared material without deciding whether
+the system needs a content record, AI invocation, or work item.
+
+```text
+Receive a Channel message
+-> identify save, understand, or act intent
+-> save: create material and capture progress only
+-> understand: run a bounded read-only consultation and return the answer
+-> act: preview a task with only confirmed messages and material
+-> confirm: create the task and retain Channel provenance
+-> report task progress and result back to the originating Channel
+```
+
+Design rules:
+
+- Saving material never creates a work item or occupies the task queue.
+- A bare file, image, or voice attachment is copied into managed local material,
+  deduplicated by content hash, and indexed independently of tasks.
+- An immediate follow-up such as `整理刚才的文件` may reference only the latest
+  attachment batch; unrelated older Channel history is excluded.
+- A read-only consultation never mutates the current task.
+- `Add to current task` adds explicit material references only.
+- `Create new task` requires a goal and confirmation before execution.
+- A Channel identity never expands the bound user's material visibility.
+- Old capture work items remain historical; restart recovery does not backfill
+  new work items for material-only operations.
+
+Usability test tasks:
+
+- Send a link and confirm it appears in My files but not My tasks.
+- Send a file without instructions and confirm it appears as `Material` in My
+  files while task count and focus remain unchanged.
+- Send the same file again and confirm the existing managed original is reused.
+- Ask for a summary and confirm no task was created.
+- Add the material to one selected active task and inspect its exact references.
+- Create a new task and confirm unrelated Channel history is absent.
+- Receive completion in the originating Channel and explicitly save the result.
+
+Acceptance signals:
+
+- The user can predict whether a task will be created from the reply wording.
+- Material capture does not change task counts, focus, or queue position.
+- Analysis does not gain write tools or silently attach to an active task.
+- Task creation preserves Channel provenance and a bounded material scope.
+
 ## Cross-Role Prototype Checklist
 
 Before coding a non-trivial UI workflow, produce a low-fidelity prototype or

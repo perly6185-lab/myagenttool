@@ -218,6 +218,49 @@ export async function collectLocalContent({
     articlePaths.set(`managed:${path}`, id);
   }
 
+  for (const item of state.channelAttachmentKnowledgeItems ?? []) {
+    if (item.status !== "ready" || item.archivedAt || !item.relativePath) continue;
+    const path = safeRelativePath(item.relativePath);
+    if (!path || !selectedSources.has("materials")) continue;
+    const id = contentId("material", item.ownerTeamId ?? LOCAL_TEAM_ID, item.id);
+    const record = await assetRecord({
+      id,
+      ownerTeamId: item.ownerTeamId ?? LOCAL_TEAM_ID,
+      projectId: item.projectId ?? null,
+      workItemId: null,
+      kind: "material",
+      asset: {
+        id: item.assetId ?? item.id,
+        originalName: item.originalName ?? "Channel 资料",
+        family: item.family ?? "file",
+        mimeType: item.mimeType ?? null,
+        size: item.size ?? null,
+        hash: item.sha256 ? `sha256:${item.sha256}` : null,
+        path,
+      },
+      source: { kind: "application_data", id: "channel-attachments", path: dataRoot, relativePath: path },
+      taskTitle: null,
+      projectName: (state.projects ?? []).find((project) => project.id === item.projectId)?.name ?? null,
+      indexedAt,
+      existingRecord: existingRecords.get(id),
+      parseDocument,
+    });
+    record.summary = boundedSummary(record.searchBody, item.originalName ?? "Channel 资料");
+    record.sourceType = "channel_attachment_import";
+    record.sourceId = item.sha256 ?? item.assetId ?? item.id;
+    record.occurredAt = item.createdAt ?? null;
+    record.importedAt = item.completedAt ?? item.createdAt ?? null;
+    record.metadata = {
+      ...record.metadata,
+      channelAttachmentKnowledgeItemId: item.id,
+      channelId: item.channelId ?? null,
+      conversationId: item.conversationId ?? null,
+      sourceEventId: item.eventId ?? null,
+      originalName: item.originalName ?? null,
+    };
+    addRecord(record, `managed:${path}`);
+  }
+
   for (const task of tasks.values()) {
     for (const asset of task.item.inputAssets ?? []) {
       const source = taskInputSource(state, stateStorePath, task.item, asset);
@@ -395,7 +438,9 @@ async function assetRecord({
     kind,
     title,
     body,
-    summary: boundedSummary(body, `${kind === "task_input" ? "Input for" : "Output from"} ${taskTitle || "local task"}`),
+    summary: boundedSummary(body, kind === "material"
+      ? title
+      : `${kind === "task_input" ? "Input for" : "Output from"} ${taskTitle || "local task"}`),
     storageMode: source.kind === "application_data" ? "managed" : "referenced",
     rootKind: source.kind,
     rootId: source.id,

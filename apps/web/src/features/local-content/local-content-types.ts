@@ -1,4 +1,4 @@
-export type LocalContentKind = "article" | "mail" | "task" | "task_input" | "task_output";
+export type LocalContentKind = "article" | "material" | "mail" | "task" | "task_input" | "task_output";
 
 export type LocalContentRecord = {
   id: string;

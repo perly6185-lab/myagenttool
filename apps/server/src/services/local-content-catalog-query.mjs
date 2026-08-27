@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 
-export const LOCAL_CONTENT_KINDS = new Set(["article", "mail", "task", "task_input", "task_output"]);
-export const LOCAL_CONTENT_INDEX_SOURCES = new Set(["articles", "mail", "work_items"]);
+export const LOCAL_CONTENT_KINDS = new Set(["article", "material", "mail", "task", "task_input", "task_output"]);
+export const LOCAL_CONTENT_INDEX_SOURCES = new Set(["articles", "materials", "mail", "work_items"]);
 
 const MAX_SEARCH_QUERY = 500;
 export const MAX_SEARCH_OFFSET = 1_000_000;
 const SOURCE_KINDS = Object.freeze({
   articles: ["article"],
+  materials: ["material"],
   mail: ["mail"],
   work_items: ["task", "task_input", "task_output"],
 });
@@ -75,6 +76,7 @@ export function decodeSearchCursor(value, expectedBinding) {
 
 export function sourceForKind(kind) {
   if (kind === "article") return "articles";
+  if (kind === "material") return "materials";
   if (kind === "mail") return "mail";
   return "work_items";
 }

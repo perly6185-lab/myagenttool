@@ -24,7 +24,7 @@ const LocalContentDetailModal = lazy(() => import("./local-library-modals").then
 const LocalContentDirectory = lazy(() => import("./local-content-directory").then((module) => ({ default: module.LocalContentDirectory })));
 const LocalContentCard = lazy(() => import("./local-content-card").then((module) => ({ default: module.LocalContentCard })));
 
-const KINDS: LocalContentKind[] = ["article", "mail", "task", "task_input", "task_output"];
+const KINDS: LocalContentKind[] = ["article", "material", "mail", "task", "task_input", "task_output"];
 const TASK_PAGE_SIZE = 200;
 const MAX_TASK_CANDIDATES = 1_000;
 
@@ -56,8 +56,8 @@ export function LocalLibraryView() {
   const language = i18n.language.startsWith("zh") ? "zh" : "en";
   const copy = COPY[language];
   const sourceLabels: Record<string, string> = language === "zh"
-    ? { article_import: "导入文章", mail_archive: "归档邮件", mail_cache: "邮件缓存", local_task: "任务", work_item: "任务", task_input: "任务输入", task_material: "任务资料", task_output: "任务结果" }
-    : { article_import: "Imported article", mail_archive: "Archived mail", mail_cache: "Mail cache", local_task: "Task", work_item: "Task", task_input: "Task input", task_material: "Task material", task_output: "Task result" };
+    ? { article_import: "导入文章", channel_article_import: "Channel 文章", channel_attachment_import: "Channel 附件", mail_archive: "归档邮件", mail_cache: "邮件缓存", local_task: "任务", work_item: "任务", task_input: "任务输入", task_material: "任务资料", task_output: "任务结果" }
+    : { article_import: "Imported article", channel_article_import: "Channel article", channel_attachment_import: "Channel attachment", mail_archive: "Archived mail", mail_cache: "Mail cache", local_task: "Task", work_item: "Task", task_input: "Task input", task_material: "Task material", task_output: "Task result" };
   const { data: consoleState } = useConsoleState();
   const navigate = usePageNavigation();
   const selectedWorkItemId = useUiStore((state) => state.selectedWorkItemId);

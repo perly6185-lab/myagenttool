@@ -114,32 +114,59 @@ export function createLocalContentCatalogService({
   let started = false;
   let closed = false;
 
-  const managedChannelKnowledgeRow = (requestedId, teamId) => {
+  const managedChannelContentRow = (requestedId, teamId) => {
     const item = (state.channelKnowledgeItems ?? []).find((candidate) =>
       candidate?.status === "ready"
       && (candidate.ownerTeamId ?? LOCAL_TEAM_ID) === teamId
       && contentId("article", candidate.ownerTeamId ?? LOCAL_TEAM_ID, candidate.id) === requestedId) ?? null;
-    if (!item?.markdownPath) return null;
+    if (item?.markdownPath) {
+      return {
+        id: requestedId,
+        owner_team_id: teamId,
+        project_id: item.projectId ?? null,
+        work_item_id: item.workItemId ?? null,
+        kind: "article",
+        title: item.title ?? "未命名资料",
+        summary: item.title ?? "未命名资料",
+        storage_mode: "managed",
+        root_kind: "application_data",
+        root_id: "channel-knowledge",
+        relative_path: item.markdownPath,
+        state_collection: null,
+        state_id: null,
+        mime_type: "text/markdown",
+        size: null,
+        sha256: null,
+        source_type: "channel_article_import",
+        source_id: item.canonicalUrl ?? item.sourceUrl ?? item.id,
+        metadata_json: JSON.stringify({ channelKnowledgeItemId: item.id }),
+      };
+    }
+    const attachment = (state.channelAttachmentKnowledgeItems ?? []).find((candidate) =>
+      candidate?.status === "ready"
+      && (candidate.ownerTeamId ?? LOCAL_TEAM_ID) === teamId
+      && contentId("material", candidate.ownerTeamId ?? LOCAL_TEAM_ID, candidate.id) === requestedId) ?? null;
+    if (!attachment?.relativePath) return null;
     return {
       id: requestedId,
       owner_team_id: teamId,
-      project_id: item.projectId ?? null,
-      work_item_id: item.workItemId ?? null,
-      kind: "article",
-      title: item.title ?? "未命名资料",
-      summary: item.title ?? "未命名资料",
+      project_id: attachment.projectId ?? null,
+      work_item_id: null,
+      kind: "material",
+      title: attachment.originalName ?? "Channel 资料",
+      summary: attachment.originalName ?? "Channel 资料",
       storage_mode: "managed",
       root_kind: "application_data",
-      root_id: "channel-knowledge",
-      relative_path: item.markdownPath,
+      root_id: "channel-attachments",
+      relative_path: attachment.relativePath,
       state_collection: null,
       state_id: null,
-      mime_type: "text/markdown",
-      size: null,
-      sha256: null,
-      source_type: "channel_article_import",
-      source_id: item.canonicalUrl ?? item.sourceUrl ?? item.id,
-      metadata_json: JSON.stringify({ channelKnowledgeItemId: item.id }),
+      mime_type: attachment.mimeType ?? null,
+      size: attachment.size ?? null,
+      sha256: attachment.sha256 ?? null,
+      source_type: "channel_attachment_import",
+      source_id: attachment.sha256 ?? attachment.assetId ?? attachment.id,
+      metadata_json: JSON.stringify({ channelAttachmentKnowledgeItemId: attachment.id }),
     };
   };
 
@@ -341,7 +368,7 @@ export function createLocalContentCatalogService({
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
     const requestedId = String(contentId ?? "");
     const row = db.prepare("SELECT * FROM local_content_records WHERE id = ? AND owner_team_id = ?")
-      .get(requestedId, teamId) ?? managedChannelKnowledgeRow(requestedId, teamId);
+      .get(requestedId, teamId) ?? managedChannelContentRow(requestedId, teamId);
     if (!row) return { ok: false, status: 404, error: "local_content_not_found" };
     if (projectId && row.project_id && row.project_id !== String(projectId)) {
       return { ok: false, status: 404, error: "local_content_not_found" };
@@ -751,11 +778,17 @@ export function createLocalContentCatalogService({
   async function archive({ contentId: requestedContentId } = {}, actor = null) {
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
     const requestedId = String(requestedContentId ?? "");
-    const item = (state.channelKnowledgeItems ?? []).find((candidate) =>
+    const article = (state.channelKnowledgeItems ?? []).find((candidate) =>
       candidate?.status === "ready"
       && !candidate.archivedAt
       && (candidate.ownerTeamId ?? LOCAL_TEAM_ID) === teamId
       && contentId("article", candidate.ownerTeamId ?? LOCAL_TEAM_ID, candidate.id) === requestedId) ?? null;
+    const attachment = (state.channelAttachmentKnowledgeItems ?? []).find((candidate) =>
+      candidate?.status === "ready"
+      && !candidate.archivedAt
+      && (candidate.ownerTeamId ?? LOCAL_TEAM_ID) === teamId
+      && contentId("material", candidate.ownerTeamId ?? LOCAL_TEAM_ID, candidate.id) === requestedId) ?? null;
+    const item = article ?? attachment;
     if (!item) return { status: 404, body: { error: "local_content_not_found" } };
 
     runTx(() => {
@@ -789,7 +822,7 @@ export function createLocalContentCatalogService({
       status: 200,
       body: {
         health: ids.map((id) => {
-          const row = byId.get(id) ?? managedChannelKnowledgeRow(id, teamId);
+          const row = byId.get(id) ?? managedChannelContentRow(id, teamId);
           if (!row) return { contentId: id, state: "missing_record", available: false, reason: "local_content_not_found" };
           if (row.storage_mode === "state_record") {
             const resolved = resolveStateRecord(row, state);
@@ -811,7 +844,7 @@ export function createLocalContentCatalogService({
     const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
     const requestedId = String(contentId ?? "");
     const row = db.prepare("SELECT * FROM local_content_records WHERE id = ? AND owner_team_id = ?")
-      .get(requestedId, teamId) ?? managedChannelKnowledgeRow(requestedId, teamId);
+      .get(requestedId, teamId) ?? managedChannelContentRow(requestedId, teamId);
     if (!row) return { ok: false, status: 404, error: "local_content_not_found" };
     if (row.storage_mode === "state_record") return unresolved("local_content_original_not_file", 409);
     const locator = catalogFileLocator({ row, state, stateStorePath, mailArchiveRoot });

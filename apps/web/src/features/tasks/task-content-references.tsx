@@ -29,7 +29,7 @@ const COPY = {
     reveal: "定位原件或所在目录：{{name}}",
     repaired: "资料记录已刷新，将在下次执行时使用当前原件。",
     recoveryFailed: "暂时无法恢复，请确认原件仍在原目录，或从资料库重新选择。",
-    kinds: { article: "文章", mail: "邮件", task: "任务", task_input: "任务输入", task_output: "任务输出" },
+    kinds: { article: "文章", material: "资料", mail: "邮件", task: "任务", task_input: "任务输入", task_output: "任务输出" },
   },
   en: {
     title: "Library references",
@@ -52,7 +52,7 @@ const COPY = {
     reveal: "Locate original or containing folder: {{name}}",
     repaired: "The library record was refreshed. The current original will be used for the next run.",
     recoveryFailed: "Recovery failed. Confirm the original is still in its folder, or select it again from the library.",
-    kinds: { article: "Article", mail: "Mail", task: "Task", task_input: "Task input", task_output: "Task output" },
+    kinds: { article: "Article", material: "Material", mail: "Mail", task: "Task", task_input: "Task input", task_output: "Task output" },
   },
 } as const;
 

@@ -6,10 +6,11 @@ import { test } from "node:test";
 
 import { createServerState } from "../src/runtime/state-factory.mjs";
 import { createServerRuntimeServices } from "../src/runtime/service-composer.mjs";
+import { ingestChannelAttachmentBytes } from "../src/services/channel-attachment-ingestion.mjs";
 
 const NOW = "2026-08-20T12:00:00.000Z";
 
-test("restart recovery backfills a completed Channel article capture into My Tasks", async () => {
+test("restart recovery keeps a completed Channel article capture out of My Tasks", async () => {
   const root = mkdtempSync(join(tmpdir(), "myagenttool-channel-knowledge-task-"));
   const projectPath = join(root, "project");
   const stateStorePath = join(root, "state", "local.json");
@@ -100,28 +101,99 @@ test("restart recovery backfills a completed Channel article capture into My Tas
     await runtime.flushLocalContentIndexing();
 
     const thread = seeded.state.channelTaskThreads.find((candidate) => candidate.id === "cth_knowledge_existing");
-    const task = seeded.state.workItems.find((candidate) => candidate.id === thread.workItemId);
-    assert.ok(task);
-    assert.equal(task.status, "done");
-    assert.match(task.title, /保存资料：已保存文章/);
-    assert.match(task.body, /mp\.weixin\.qq\.com\/s\/existing/);
-    assert.match(task.body, /已保存文章\.md（可在本任务的交付文件中打开）/);
-    assert.doesNotMatch(task.body, new RegExp(absolutePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.equal(task.channelOrigin.threadId, thread.id);
-    assert.equal(task.outputAssets.length, 1);
-    assert.equal(task.outputAssets[0].id, "asset_channel_knowledge_channel_knowledge_existing");
-    assert.match(task.outputAssets[0].contentId, /^lc_[a-f0-9]{32}$/);
-    assert.equal(task.outputAssets[0].path, relativePath);
-    assert.equal(task.outputAssets[0].originalName, "已保存文章.md");
-    assert.equal(seeded.state.channelKnowledgeItems[0].workItemId, task.id);
-    assert.match(thread.workItemLocalRef, /^LOCAL-/);
+    assert.equal(thread.workItemId ?? null, null);
+    assert.equal(thread.workItemLocalRef ?? null, null);
+    assert.equal(seeded.state.channelKnowledgeItems[0].workItemId ?? null, null);
+    assert.equal(seeded.state.workItems.some((item) => item.taskKind === "knowledge_capture"), false);
     const catalog = await runtime.httpDependencies.searchLocalContent({ query: "已保存文章" }, {
       userId: "usr_local", teamId: "team_local", role: "owner",
     });
-    const article = catalog.body.results.find((record) => record.id === task.outputAssets[0].contentId);
+    const article = catalog.body.results.find((record) => record.metadata?.channelKnowledgeItemId === "channel_knowledge_existing");
     assert.ok(article, JSON.stringify({ indexing, catalog: catalog.body }));
-    assert.equal(article.workItemId, task.id);
-    assert.equal(article.relations.some((relation) => relation.type === "produces_output"), true);
+    assert.equal(article.workItemId, null);
+    assert.equal(article.source.type, "channel_article_import");
+    assert.equal(article.relations.some((relation) => relation.type === "produces_output"), false);
+    assert.equal(article.relativePath, relativePath);
+    assert.equal(article.original.available, true);
+  } finally {
+    await runtime?.closeRuntimeServices();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the composed Channel pipeline saves a bare attachment to My files without creating a task", async () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-channel-attachment-task-"));
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "local.json");
+  mkdirSync(projectPath, { recursive: true });
+  mkdirSync(dirname(stateStorePath), { recursive: true });
+  let runtime = null;
+  try {
+    const seeded = createServerState({ defaultProjectPath: projectPath, now: () => NOW });
+    seeded.state.channels.push({
+      id: "chn_attachment",
+      provider: "ilink",
+      ownerTeamId: "team_local",
+      taskProjectId: seeded.defaultProject.id,
+      taskTerminalId: "dev_local_001",
+      operationMode: "personal",
+      status: "enabled",
+      taskDailyLimit: 50,
+    });
+    seeded.state.channelIdentities.push({
+      id: "chid_attachment",
+      channelId: "chn_attachment",
+      externalUserId: "wx_owner",
+      userId: "usr_local",
+    });
+    const asset = await ingestChannelAttachmentBytes({
+      filename: "客户反馈.txt",
+      bytes: Buffer.from("客户希望缩短交付时间。\n"),
+      contentType: "text/plain",
+      projectPath,
+      projectId: seeded.defaultProject.id,
+      terminalId: "dev_local_001",
+    });
+    runtime = createServerRuntimeServices({
+      namespace: "test",
+      protocolVersion: "0.0.0",
+      state: seeded.state,
+      defaultProject: seeded.defaultProject,
+      defaultProjectPath: projectPath,
+      persistenceEnabled: false,
+      stateStorePath,
+      stateSchemaVersion: 1,
+      dispatchLeaseMs: 30_000,
+      now: () => NOW,
+    });
+
+    const imported = await runtime.httpDependencies.importChannelEvent({
+      channelId: "chn_attachment",
+      providerMessageId: "msg_attachment_1",
+      externalUserId: "wx_owner",
+      msgType: "file",
+      content: "[文件附件：客户反馈.txt]",
+      attachmentAssets: [asset],
+    });
+    assert.equal(imported.ok, true);
+    assert.equal(seeded.state.channelTaskThreads.length, 0);
+    assert.equal(seeded.state.workItems.length, 0);
+    assert.equal(seeded.state.channelAttachmentKnowledgeItems.length, 1);
+    const event = seeded.state.channelEvents.find((candidate) => candidate.providerMessageId === "msg_attachment_1");
+    assert.equal(event.attachmentKnowledgeStatus, "saved");
+    assert.match(event.replyText, /保存到“我的资料”/);
+    assert.match(event.replyText, /不会创建任务/);
+
+    await runtime.startLocalContentIndexing();
+    await runtime.flushLocalContentIndexing();
+    const catalog = await runtime.httpDependencies.searchLocalContent({ query: "缩短交付时间" }, {
+      userId: "usr_local", teamId: "team_local", role: "owner",
+    });
+    const material = catalog.body.results.find((record) => record.source.type === "channel_attachment_import");
+    assert.ok(material, JSON.stringify(catalog.body));
+    assert.equal(material.kind, "material");
+    assert.equal(material.workItemId, null);
+    assert.equal(material.original.available, true);
   } finally {
     await runtime?.closeRuntimeServices();
     rmSync(root, { recursive: true, force: true });

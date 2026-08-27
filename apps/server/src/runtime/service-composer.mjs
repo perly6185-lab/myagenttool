@@ -173,6 +173,7 @@ import { createBusinessCaseDiscoveryService } from "../services/business-case-di
 import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree, inspectArticle } from "../services/article-imports.mjs";
 import { createArticleExtractorPluginService } from "../services/article-extractor-plugins.mjs";
 import { createChannelKnowledgeService } from "../services/channel-knowledge.mjs";
+import { createChannelAttachmentKnowledgeService } from "../services/channel-attachment-knowledge.mjs";
 import { createSessionManager } from "../services/session-manager.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createTemplateLearningService } from "../services/template-learning.mjs";
@@ -733,6 +734,17 @@ export function createServerRuntimeServices({
     }),
     store,
   });
+  const channelAttachmentKnowledgeService = createChannelAttachmentKnowledgeService({
+    state,
+    stateStorePath,
+    now,
+    nextId,
+    persistStateSoon: persistIndexedContentStateSoon(["materials"], "channel_attachment_changed"),
+    store,
+  });
+  const resolveChannelKnowledgeLocation = ({ itemId, ownerTeamId = LOCAL_TEAM_ID } = {}) =>
+    channelKnowledgeService.getItemLocation({ itemId, ownerTeamId })
+    ?? channelAttachmentKnowledgeService.getItemLocation({ itemId, ownerTeamId });
   // Session manager: login-state observability + keep-alive for profile-backed
   // site plugins (zhihu today). Dormant by design — the sweep only runs when
   // index.mjs is gated on via MYAGENTTOOL_SESSION_MANAGER_ENABLED.
@@ -3251,7 +3263,7 @@ export function createServerRuntimeServices({
     }
     const workItemActor = { userId: principal.id, teamId: principal.teamId, role: "member", deviceId: terminalId };
     const knowledgeLocations = [...new Map((Array.isArray(knowledgeItemIds) ? knowledgeItemIds : [])
-      .map((itemId) => channelKnowledgeService.getItemLocation({
+      .map((itemId) => resolveChannelKnowledgeLocation({
         itemId,
         ownerTeamId: channelOwnerTeamId ?? LOCAL_TEAM_ID,
       }))
@@ -5050,160 +5062,6 @@ export function createServerRuntimeServices({
     createInvocation: (...args) => invocationService?.createInvocation(...args),
     now,
   });
-  const trackChannelKnowledgeCaptureTask = ({ thread, channel, conversation, event, urls = [], items = [] } = {}) => {
-    if (!thread?.id || !channel?.id || !conversation?.id) {
-      return { ok: false, reason: "channel_knowledge_task_context_required" };
-    }
-    const ownerTeamId = channel.ownerTeamId ?? LOCAL_TEAM_ID;
-    const project = (state.projects ?? []).find((candidate) => candidate.id === channel.taskProjectId)
-      ?? (state.projects ?? []).find((candidate) =>
-        (candidate.ownerTeamId ?? LOCAL_TEAM_ID) === ownerTeamId && candidate.hiddenFromNavigation !== true)
-      ?? null;
-    if (!project || (project.ownerTeamId ?? LOCAL_TEAM_ID) !== (channel.ownerTeamId ?? LOCAL_TEAM_ID)) {
-      return { ok: false, reason: "channel_knowledge_task_project_unavailable" };
-    }
-    const identity = (state.channelIdentities ?? []).find((candidate) =>
-      candidate.channelId === channel.id && candidate.externalUserId === thread.externalUserId) ?? null;
-    const principal = identity?.userId
-      ? (state.users ?? []).find((candidate) => candidate.id === identity.userId) ?? null
-      : null;
-    if (!principal || (principal.teamId ?? LOCAL_TEAM_ID) !== (channel.ownerTeamId ?? LOCAL_TEAM_ID)) {
-      return { ok: false, reason: "channel_knowledge_task_identity_unavailable" };
-    }
-    const actor = {
-      userId: principal.id,
-      teamId: principal.teamId ?? LOCAL_TEAM_ID,
-      role: "member",
-      deviceId: channel.taskTerminalId ?? null,
-    };
-    const uniqueUrls = [...new Set(urls.map(String).filter(Boolean))].slice(0, 3);
-    const locations = [...new Map(items.map((item) => channelKnowledgeService.getItemLocation({
-      itemId: item.knowledgeItemId,
-      ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
-    })).filter(Boolean).map((location) => [location.itemId, location])).values()];
-    const managedFileName = (location) => {
-      const safeTitle = String(location?.title ?? "本地资料")
-        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
-        .trim()
-        .slice(0, 175) || "本地资料";
-      return /\.md$/i.test(safeTitle) ? safeTitle : `${safeTitle}.md`;
-    };
-    const terminal = thread.status === "succeeded" || thread.status === "failed" || thread.status === "cancelled";
-    const title = items.length
-      ? `保存资料：${String(items.at(-1)?.title ?? "Channel 分享内容").slice(0, 100)}`
-      : String(thread.summary ?? "保存 Channel 分享资料").slice(0, 120);
-    const body = [
-      "从 Channel 接收分享链接，并保存为可检索的本地资料。",
-      uniqueUrls.length ? `\n来源链接：\n${uniqueUrls.map((url) => `- ${url}`).join("\n")}` : null,
-      terminal ? `\n处理结果：${thread.resultSummary || (thread.status === "succeeded" ? "已保存到本地资料库。" : "本次保存未完成。")}` : "\n处理状态：正在下载、识别并保存正文。",
-      locations.length
-        ? `\n交付文件：\n${locations.map((location) => `- ${managedFileName(location)}（可在本任务的交付文件中打开）`).join("\n")}`
-        : null,
-    ].filter(Boolean).join("\n").slice(0, 10_000);
-    const desiredStatus = thread.status === "succeeded"
-      ? "done"
-      : thread.status === "failed" || thread.status === "cancelled"
-        ? "blocked"
-        : "in_progress";
-    const idempotencyKey = `channel-knowledge-thread:${thread.id}`;
-    let stored = thread.workItemId
-      ? (state.workItems ?? []).find((candidate) => candidate.id === thread.workItemId) ?? null
-      : (state.workItems ?? []).find((candidate) =>
-        candidate.ownerTeamId === actor.teamId && candidate.createIdempotencyKey === idempotencyKey) ?? null;
-    if (!stored) {
-      const created = workItemService.createWorkItem({
-        projectId: project.id,
-        title,
-        body,
-        type: "task",
-        status: desiredStatus,
-        executionPolicy: "manual",
-        waitingOn: "none",
-        priority: "p3",
-        labels: ["channel", "knowledge-capture", "local-knowledge", UNTRUSTED_INPUT_LABEL],
-        taskKind: "knowledge_capture",
-        creationBasis: "channel_ingest_rule",
-        planningHorizon: "committed",
-        requiredCapabilities: [],
-        idempotencyKey,
-      }, actor);
-      if (!created.ok) return { ok: false, reason: created.body?.error ?? "channel_knowledge_task_create_failed" };
-      stored = (state.workItems ?? []).find((candidate) => candidate.id === created.body.workItem.id) ?? null;
-    }
-    if (!stored) return { ok: false, reason: "channel_knowledge_task_not_found" };
-    const managedOutputs = locations.map((location) => {
-      return {
-        id: `asset_channel_knowledge_${location.itemId}`.slice(0, 100),
-        contentId: location.contentId,
-        originalName: managedFileName(location),
-        path: location.relativePath,
-        family: "markdown",
-        mimeType: "text/markdown",
-        terminalId: stored.terminalId ?? channel.taskTerminalId,
-        size: null,
-        resourceClass: "small",
-        hash: null,
-        version: null,
-        capabilities: ["discover", "preview", "inspect", "open_external", "attach_evidence"],
-        readiness: { state: "ready", reason: "managed_channel_knowledge" },
-      };
-    }).filter((asset) => asset.terminalId);
-    const desiredOutputs = managedOutputs.length
-      ? [
-        ...(stored.outputAssets ?? []).filter((asset) => !String(asset.id ?? "").startsWith("asset_channel_knowledge_")),
-        ...managedOutputs,
-      ].slice(0, 100)
-      : stored.outputAssets ?? [];
-    const workItemNeedsUpdate = stored.title !== title
-      || stored.body !== body
-      || stored.status !== desiredStatus
-      || JSON.stringify(stored.outputAssets ?? []) !== JSON.stringify(desiredOutputs);
-    if (workItemNeedsUpdate) {
-      const updated = workItemService.updateWorkItem({
-        workItemId: stored.id,
-        expectedRevision: stored.revision,
-        title,
-        body,
-        status: desiredStatus,
-        outputAssets: desiredOutputs,
-      }, actor);
-      if (!updated.ok) return { ok: false, reason: updated.body?.error ?? "channel_knowledge_task_update_failed" };
-      stored = (state.workItems ?? []).find((candidate) => candidate.id === stored.id) ?? stored;
-    }
-    const originChanged = stored.channelOrigin?.threadId !== thread.id;
-    const knowledgeLinksChanged = locations.some((location) => {
-      const knowledge = (state.channelKnowledgeItems ?? []).find((item) => item.id === location.itemId);
-      return knowledge && knowledge.workItemId !== stored.id;
-    });
-    if (originChanged || knowledgeLinksChanged) channelTaskRunTx(() => {
-      if (originChanged) {
-        stored.channelOrigin = {
-          channelId: channel.id,
-          conversationId: conversation.id,
-          messageId: event?.id ?? thread.sourceEventIds?.[0] ?? null,
-          principalId: principal.id,
-          traceId: stored.id,
-          threadId: thread.id,
-        };
-        stored.revision = Number(stored.revision ?? 0) + 1;
-        stored.updatedAt = now();
-      }
-      for (const location of locations) {
-        const knowledge = (state.channelKnowledgeItems ?? []).find((item) => item.id === location.itemId);
-        if (knowledge) {
-          knowledge.workItemId = stored.id;
-          knowledge.updatedAt = now();
-        }
-      }
-    });
-    if (terminal && locations.length) {
-      void localContentCatalogService.requestAutomaticIncremental({
-        reason: "channel_knowledge_capture_completed",
-        sources: ["articles", "work_items"],
-      }).catch(() => {});
-    }
-    return { ok: true, workItemId: stored.id, localRef: stored.localRef ?? null };
-  };
   const attachChannelKnowledgeToWorkItem = ({ workItemId, channel, externalUserId, knowledgeItemIds = [] } = {}) => {
     if (!workItemId || !channel?.id) return { ok: false, reason: "channel_knowledge_task_context_required" };
     const identity = (state.channelIdentities ?? []).find((candidate) =>
@@ -5225,7 +5083,7 @@ export function createServerRuntimeServices({
     if (!stored) return { ok: false, reason: "work_item_not_found" };
     let attachedCount = 0;
     for (const itemId of [...new Set(knowledgeItemIds)].slice(0, 20)) {
-      const location = channelKnowledgeService.getItemLocation({ itemId, ownerTeamId: actor.teamId });
+      const location = resolveChannelKnowledgeLocation({ itemId, ownerTeamId: actor.teamId });
       if (!location?.contentId) continue;
       if ((stored.localContentRefs ?? []).some((reference) => reference.contentId === location.contentId)) continue;
       const attached = workItemService.addContentReference({
@@ -5274,9 +5132,21 @@ export function createServerRuntimeServices({
       onMetric: recordChannelIntentBridgeMetric,
     })?.classify,
     createConsultation: channelConsultationAdapter?.enqueue,
-    trackKnowledgeCaptureTask: trackChannelKnowledgeCaptureTask,
     attachKnowledgeToWorkItem: attachChannelKnowledgeToWorkItem,
-    resolveKnowledgeLocation: (input) => channelKnowledgeService.getItemLocation(input),
+    resolveKnowledgeLocation: resolveChannelKnowledgeLocation,
+    captureAttachmentKnowledge: async ({ channel, conversation, event, assets }) => {
+      const project = (state.projects ?? []).find((candidate) => candidate.id === channel?.taskProjectId) ?? null;
+      if (!project?.path) return { ok: false, reason: "channel_attachment_project_unavailable", items: [], failures: [] };
+      return channelAttachmentKnowledgeService.capture({
+        channelId: channel.id,
+        conversationId: conversation.id,
+        eventId: event.id,
+        ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
+        projectId: channel.taskProjectId,
+        projectPath: project.path,
+        assets,
+      });
+    },
     inspectSharedLink: async (input) => {
       if (input.save === false) {
         const inspection = await inspectArticle({

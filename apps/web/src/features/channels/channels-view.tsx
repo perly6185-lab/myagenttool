@@ -309,7 +309,8 @@ export function ChannelsView() {
               devices={state?.devices ?? []}
               projects={(state?.projects ?? []).filter((p) => p.status !== "archived")}
               tasks={(state?.channelTaskRequests ?? []).filter((task) => task.channelId === channel.id)}
-              threads={(state?.channelTaskThreads ?? []).filter((thread) => thread.channelId === channel.id)}
+              threads={(state?.channelTaskThreads ?? []).filter((thread) =>
+                thread.channelId === channel.id && thread.workKind !== "knowledge_capture")}
               revisions={(state?.channelTaskRevisions ?? []).filter((revision) => revision.channelId === channel.id)}
               notificationPolicies={(state?.channelNotificationPolicies ?? []).filter((policy) => policy.channelId === channel.id)}
               lifecycleSummaries={(state?.channelLifecycleSummaries ?? []).filter((summary) => summary.projectId === channel.taskProjectId)}
@@ -327,8 +328,8 @@ function QuickStartGuide() {
     <details className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3" data-testid="channel-quick-start">
       <summary className="cursor-pointer text-sm font-medium">快速上手：像聊天一样使用</summary>
       <div className="mt-3 grid gap-3 text-xs text-muted-foreground sm:grid-cols-3">
-        <div><p className="font-medium text-foreground">1. 直接说需求</p><p className="mt-1">例如：帮我整理这份客户反馈。</p></div>
-        <div><p className="font-medium text-foreground">2. 安全开始</p><p className="mt-1">明确的只读请求直接处理；修改或发送前会先展示影响并请你确认。</p></div>
+        <div><p className="font-medium text-foreground">1. 发资料或说需求</p><p className="mt-1">单独发送文件、图片或链接会保存到“我的资料”，不会自动创建任务；也可以直接提问。</p></div>
+        <div><p className="font-medium text-foreground">2. 需要行动再创建任务</p><p className="mt-1">总结等只读请求直接处理；修改或发送前会展示影响并请你确认。</p></div>
         <div><p className="font-medium text-foreground">3. 随时补充和看进度</p><p className="mt-1">可以问“现在做到哪了”，也可以继续发送文字、图片、语音或文件。</p></div>
       </div>
     </details>

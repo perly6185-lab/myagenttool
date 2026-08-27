@@ -1586,6 +1586,7 @@ export interface ChannelTaskThread {
   messages: { eventId: string; content?: string; receivedAt?: string }[];
   attachmentAssets?: unknown[];
   summary: string;
+  workKind?: string | null;
   status: string;
   waitingFor?: string | null;
   workItemId?: string | null;

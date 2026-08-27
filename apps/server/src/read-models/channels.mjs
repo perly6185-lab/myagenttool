@@ -98,7 +98,8 @@ export function channelOperations({
   return channels.map((channel) => {
     const events = byChannel(channelEvents, channel.id);
     const deliveries = byChannel(channelDeliveries, channel.id);
-    const taskThreads = byChannel(channelTaskThreads, channel.id);
+    const taskThreads = byChannel(channelTaskThreads, channel.id)
+      .filter((thread) => thread.workKind !== "knowledge_capture");
     const failed = deliveries.filter((row) => row.status === "failed_terminal");
     const unconfirmed = deliveries.filter((row) => row.status === "sent_unconfirmed");
     const resultDeliveryIds = new Set(taskThreads.map((thread) => thread.lastDeliveryId).filter(Boolean));

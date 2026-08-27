@@ -1,4 +1,4 @@
-import { Archive, Eye, FileInput, FileOutput, FileText, FolderOpen, Info, Mail } from "lucide-react";
+import { Archive, Eye, File, FileInput, FileOutput, FileText, FolderOpen, Info, Mail } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -35,6 +35,7 @@ type LocalContentCardProps = {
 
 function kindIcon(kind: LocalContentKind) {
   if (kind === "mail") return Mail;
+  if (kind === "material") return File;
   if (kind === "task_input") return FileInput;
   if (kind === "task_output") return FileOutput;
   if (kind === "task") return FileText;
