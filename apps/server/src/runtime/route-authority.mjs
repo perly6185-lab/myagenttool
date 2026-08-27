@@ -52,6 +52,7 @@ const operateRules = [
   /^\/api\/pending-decisions\/[^/]+\/(?:claim|release)$/,
   /^\/api\/invocations$/,
   /^\/api\/invocations\/[^/]+\/(?:cancel|troubleshoot)$/,
+  /^\/api\/auto-runs\/[^/]+\/reverify$/,
   /^\/api\/compare-runs$/,
   /^\/api\/compare-runs\/[^/]+\/(?:prefer|promote)$/,
   /^\/api\/local-schedule\/(?:apply|rollover|urgent)$/,

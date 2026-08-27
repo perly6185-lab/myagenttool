@@ -66,6 +66,7 @@ test("execution, approval, recovery, and retry writes admit operators", () => {
     ["POST", "/api/approvals/invocation-1/approve"],
     ["POST", "/api/invocations"],
     ["POST", "/api/invocations/invocation-1/cancel"],
+    ["POST", "/api/auto-runs/auto-run-1/reverify"],
     ["POST", "/api/compare-runs/compare-1/promote"],
     ["POST", "/api/local-schedule/apply"],
     ["POST", "/api/capabilities/demo.run/invocations"],

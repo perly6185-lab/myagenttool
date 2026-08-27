@@ -119,10 +119,21 @@ async function completeCodingAttempt({
     result: { summary, output: { summary, latestMessage: summary } },
   });
 
-  await waitForValue(
-    () => autoRun.status === "done" && autoRun.deliveryReview?.invocationId ? autoRun.deliveryReview : null,
-    "verification and independent delivery review",
-  );
+  try {
+    await waitForValue(
+      () => autoRun.status === "done" && autoRun.deliveryReview?.invocationId ? autoRun.deliveryReview : null,
+      "verification and independent delivery review",
+      30_000,
+    );
+  } catch (error) {
+    throw new Error([
+      String(error instanceof Error ? error.message : error),
+      `Auto-run status: ${autoRun.status ?? "unknown"}`,
+      `Auto-run error: ${autoRun.error ?? "none"}`,
+      `Verification: ${JSON.stringify(autoRun.verification ?? null)}`,
+      `Delivery review: ${JSON.stringify(autoRun.deliveryReview ?? null)}`,
+    ].join("\n"));
+  }
   const reviewInvocation = state.invocations.find(
     (candidate: { id: string }) => candidate.id === autoRun.deliveryReview.invocationId,
   );
@@ -293,6 +304,10 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
   await page.reload({ waitUntil: "domcontentloaded" });
   detail = page.getByRole("dialog", { name: "Local issue details" });
   await expect(detail.getByText("Hardened expiry validation and added malformed-session regression coverage.").first()).toBeVisible();
+  const intentSummary = detail.getByTestId("work-item-intent-summary");
+  await expect(intentSummary.getByText("Here’s what I understand")).toBeVisible();
+  await expect(intentSummary.getByText("Implement expiry handling in the login session module")).toBeVisible();
+  expect(await intentSummary.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   const reviewChanges = detail.getByRole("button", { name: "Review changes" });
   await reviewChanges.focus();
   await expect(reviewChanges).toBeFocused();

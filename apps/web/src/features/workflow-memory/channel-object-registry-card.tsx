@@ -200,7 +200,7 @@ export function ChannelObjectRegistryCard() {
     try {
       const result = await workflowMemoryApi.previewChannelObjectConnectorSync({ connectorId, configId, projectId, kind });
       setSyncPreview(result.preview);
-      setNotice(result.canConfirm ? "已生成同步差异，请确认后写入本地对象。" : "同步检查完成，没有需要更新的对象。");
+      setNotice(result.canConfirm ? "已读取最新批次并生成差异；尚未写入，请确认后更新本地业务数据。" : "已读取最新批次，没有需要更新的本地业务数据。");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "同步失败，请检查连接器状态。"); }
     finally { setSyncing(false); }
   };
@@ -236,7 +236,7 @@ export function ChannelObjectRegistryCard() {
     setPending(true); setError(null); setNotice(null);
     try {
       const result = await workflowMemoryApi.testChannelObjectConnectorConfig(config.id);
-      setNotice(result.ok ? "连接测试通过，可以预览同步。" : "连接测试未通过，请检查凭据引用。要求仍保持只读。 ");
+      setNotice(result.ok ? "连接检查通过；本次只验证可用性，没有读取批次或同步数据。" : "连接检查未通过，请检查凭据引用；没有读取或修改数据。");
       await queryClient.invalidateQueries({ queryKey: ["channel-object-connector-configs", projectId] });
     } catch (caught) { setError(caught instanceof Error ? caught.message : "连接测试失败，请稍后重试。"); }
     finally { setPending(false); }
@@ -385,17 +385,17 @@ export function ChannelObjectRegistryCard() {
         {showProfessionalSettings && syncPreview ? (
           <div className="mt-3 rounded-lg border bg-background p-3 text-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="font-medium">同步预览：新增 {syncPreview.creates} 条，更新 {syncPreview.updates} 条，无变化 {syncPreview.unchanged} 条</p>
-              <div className="flex gap-2"><Button size="sm" variant="ghost" onClick={() => setSyncPreview(null)}>取消</Button><Button size="sm" onClick={() => void confirmSync()} disabled={syncing || syncPreview.creates + syncPreview.updates === 0}>审批并同步</Button></div>
+              <p className="font-medium">同步预览：新增 {syncPreview.creates} 条，更新 {syncPreview.updates} 条，删除 {syncPreview.deletes} 条，无变化 {syncPreview.unchanged} 条</p>
+              <div className="flex gap-2"><Button size="sm" variant="ghost" onClick={() => setSyncPreview(null)}>取消</Button><Button size="sm" onClick={() => void confirmSync()} disabled={syncing || syncPreview.creates + syncPreview.updates === 0}>确认更新本地数据</Button></div>
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">审批会签发一次性授权；只更新本地业务对象，不会修改外部系统。</p>
+            <p className="mt-2 text-xs text-muted-foreground">预览只读取外部数据。确认后会签发一次性授权，仅新增或更新本地业务对象；本次不会删除本地记录，也不会修改外部系统。</p>
             {syncPreview.sampleRows.length ? <ul className="mt-2 list-disc pl-5 text-xs">{syncPreview.sampleRows.slice(0, 5).map((row) => <li key={`${row.businessKey}-${row.change}`}>{row.change === "create" ? "新增" : row.change === "update" ? "更新" : "不变"}：{row.label}</li>)}</ul> : null}
           </div>
         ) : null}
         {showProfessionalSettings && connectorList.length ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border p-3 text-sm">
-            <span className="font-medium">同步本地业务数据</span>
-            <span className="text-xs text-muted-foreground">只读同步，不会修改外部系统</span>
+            <span className="font-medium">连接检查与数据同步</span>
+            <span className="text-xs text-muted-foreground">检查连接不读取批次；同步前必须先预览差异</span>
             <div className="grid w-full gap-2">
               {connectorList.filter((connector) => connector.kinds.includes(kind)).map((connector) => {
                 const config = connectorConfigList.find((item) => item.connectorId === connector.id);
@@ -403,8 +403,8 @@ export function ChannelObjectRegistryCard() {
                   <span className="min-w-32">{connector.name}</span>
                   {!connector.id.startsWith("business_") ? <Input className="max-w-xs" value={credentialRefs[connector.id] ?? ""} onChange={(event) => setCredentialRefs((current) => ({ ...current, [connector.id]: event.target.value }))} placeholder={config?.credentialConfigured ? "已配置凭据引用" : "凭据引用（不填 token）"} /> : null}
                   {!connector.id.startsWith("business_") ? <Button size="sm" variant="secondary" onClick={() => void saveConnectorConfig(connector.id, config)} disabled={pending || !credentialRefs[connector.id] && !config?.credentialConfigured}>保存配置</Button> : null}
-                  {config ? <><Badge tone={config.health === "ready" ? "success" : config.health === "error" ? "danger" : "neutral"}>{config.health === "ready" ? "连接正常" : config.health === "error" ? "需要检查" : "未测试"}</Badge><Button size="sm" variant="ghost" onClick={() => void testConnector(config)} disabled={pending}>测试连接</Button></> : null}
-                  {connector.id.startsWith("business_") ? <Button size="sm" variant="secondary" onClick={() => void sync(connector.id)} disabled={syncing || !projectId}>{syncing ? <Loader2 className="animate-spin" /> : null}预览同步</Button> : config?.status === "enabled" ? <Button size="sm" variant="secondary" onClick={() => void sync(config.connectorId, config.id)} disabled={syncing || !projectId}>{syncing ? <Loader2 className="animate-spin" /> : null}预览同步</Button> : null}
+                  {config ? <><Badge tone={config.health === "ready" ? "success" : config.health === "error" ? "danger" : "neutral"}>{config.health === "ready" ? "连接正常" : config.health === "error" ? "需要检查" : "未测试"}</Badge><Button size="sm" variant="ghost" onClick={() => void testConnector(config)} disabled={pending}>仅检查连接</Button></> : null}
+                  {connector.id.startsWith("business_") ? <Button size="sm" variant="secondary" onClick={() => void sync(connector.id)} disabled={syncing || !projectId}>{syncing ? <Loader2 className="animate-spin" /> : null}读取并预览同步</Button> : config?.status === "enabled" ? <Button size="sm" variant="secondary" onClick={() => void sync(config.connectorId, config.id)} disabled={syncing || !projectId}>{syncing ? <Loader2 className="animate-spin" /> : null}读取并预览同步</Button> : null}
                 </div>;
               })}
             </div>

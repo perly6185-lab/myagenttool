@@ -17,11 +17,19 @@ const mocks = vi.hoisted(() => ({
   preview: vi.fn(),
   reveal: vi.fn(),
   createTask: vi.fn(),
+  listResources: vi.fn(),
+  getResource: vi.fn(),
+  refreshResource: vi.fn(),
+  previewResource: vi.fn(),
+  addResourceToWorkItem: vi.fn(),
   listWorkItems: vi.fn(),
   navigate: vi.fn(),
 }));
 
-vi.mock("./local-content-api", () => ({ localContentApi: mocks }));
+vi.mock("./local-content-api", () => ({
+  localContentApi: mocks,
+  workResourceApi: { list: mocks.listResources, get: mocks.getResource, refresh: mocks.refreshResource, preview: mocks.previewResource, addToWorkItem: mocks.addResourceToWorkItem },
+}));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: () => ({ data: { projects: [{ id: "project-a", name: "Project A" }] } }) }));
 vi.mock("@/hooks/use-page-navigation", () => ({ usePageNavigation: () => mocks.navigate }));
 vi.mock("@/lib/api-client", async (importOriginal) => ({
@@ -116,6 +124,36 @@ describe("local library task targeting", () => {
       id: "created-a", projectId: "project-a", state: "open", status: "backlog",
       title: "Use Local architecture brief", revision: 1,
     } });
+    mocks.listResources.mockResolvedValue({
+      resources: [{
+        id: `wres_${"c".repeat(32)}`,
+        displayName: "Customer ledger",
+        resourceKind: "table",
+        businessRole: "contact",
+        locality: "remote",
+        projectId: "project-a",
+        source: { type: "connector", label: "Company CRM", localContentLinked: false },
+        capabilities: ["preview", "read", "query", "propose_change"],
+        availability: "ready",
+        currentVersion: "2",
+        rowCount: null,
+        lastFreshAt: "2026-08-26T10:00:00.000Z",
+        summary: "Customer ledger · read on demand",
+        preview: { supported: true, kind: "structured_rows" },
+        taskBinding: { supported: true, purposes: ["query_source", "reference"] },
+        actions: { canRefresh: true, refreshMode: "connection_check", canLocate: false, managementSection: "workflowMemory" },
+        details: { freshness: "current", statusReason: null, connectionHealth: "ready" },
+      }],
+      count: 1,
+      limit: 100,
+      offset: 0,
+      hasMore: false,
+      views: { tablesAndLedgers: 1 },
+    });
+    mocks.getResource.mockImplementation(async () => ({ resource: (await mocks.listResources()).resources[0] }));
+    mocks.refreshResource.mockImplementation(async () => ({ resource: (await mocks.listResources()).resources[0], refreshed: true, mode: "connection_check" }));
+    mocks.previewResource.mockResolvedValue({ preview: { kind: "structured_rows", columns: ["email"], rows: [{ id: "row-1", label: "Alice", kind: "contact", status: "active", fields: { email: "alice@example.com" } }], truncated: false } });
+    mocks.addResourceToWorkItem.mockResolvedValue({ workItem: { ...tasks[0], title: "Prepare design", localRef: "TASK-1", revision: 4 } });
   });
 
   afterEach(cleanup);
@@ -158,6 +196,46 @@ describe("local library task targeting", () => {
       "open-a",
       expect.objectContaining({ purpose: "reference" }),
     ));
+  });
+
+  it("keeps local and remote tables in My files and binds a remote ledger by resource id", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Tables & ledgers" }));
+    expect(await screen.findByText("Customer ledger")).toBeTruthy();
+    expect(screen.getByText("Remote")).toBeTruthy();
+    expect(screen.getByText("Company CRM")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add to task: Customer ledger" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Target task" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Add reference" }));
+
+    await waitFor(() => expect(mocks.addResourceToWorkItem).toHaveBeenCalledWith(
+      "open-a",
+      { resourceId: `wres_${"c".repeat(32)}`, expectedRevision: 3, purpose: "query_source" },
+    ));
+  });
+
+  it("shows connected resources in All resources without copying them into the local index", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
+
+    expect(await screen.findByRole("heading", { name: "Connected business resources" })).toBeTruthy();
+    expect(screen.getByText(/controlled snapshot only when the task starts/i)).toBeTruthy();
+    expect(screen.getByText("Customer ledger")).toBeTruthy();
+    expect(mocks.search).toHaveBeenCalled();
+  });
+
+  it("opens resource details and runs a connection check without syncing remote rows", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
+
+    fireEvent.click(await screen.findByRole("button", { name: "View details: Customer ledger" }));
+    expect(await screen.findByRole("dialog", { name: "Resource details" })).toBeTruthy();
+    await waitFor(() => expect(mocks.getResource).toHaveBeenCalledWith(`wres_${"c".repeat(32)}`));
+    expect(screen.getByText(/does not fetch a new batch, sync, or modify data/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Check connection" }));
+    await waitFor(() => expect(mocks.refreshResource).toHaveBeenCalledWith(`wres_${"c".repeat(32)}`));
   });
 
   it("creates an unfinished task when there is no eligible target, then adds the reference", async () => {

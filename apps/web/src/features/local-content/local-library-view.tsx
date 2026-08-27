@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Library, ListFilter, RefreshCw, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Library, ListFilter, RefreshCw, Search, Table2, X } from "lucide-react";
 import { EmptyState } from "@/components/common/empty-state";
 import { Field } from "@/components/common/field";
 import { SectionHeading } from "@/components/common/section-heading";
@@ -13,8 +13,8 @@ import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useUiStore } from "@/store/ui-store";
 import type { LocalWorkItem, LocalWorkItemResult } from "@/features/tasks/task-view-types";
-import { localContentApi } from "./local-content-api";
-import type { LocalContentKind, LocalContentRecord } from "./local-content-types";
+import { localContentApi, workResourceApi } from "./local-content-api";
+import type { LocalContentKind, LocalContentRecord, WorkResource } from "./local-content-types";
 import { COPY } from "./local-library-copy";
 import { useLocalContentFilters } from "./use-local-content-filters";
 
@@ -23,6 +23,9 @@ const PreviewModal = lazy(() => import("./local-library-modals").then((module) =
 const LocalContentDetailModal = lazy(() => import("./local-library-modals").then((module) => ({ default: module.LocalContentDetailModal })));
 const LocalContentDirectory = lazy(() => import("./local-content-directory").then((module) => ({ default: module.LocalContentDirectory })));
 const LocalContentCard = lazy(() => import("./local-content-card").then((module) => ({ default: module.LocalContentCard })));
+const WorkResourceCard = lazy(() => import("./work-resource-card").then((module) => ({ default: module.WorkResourceCard })));
+const WorkResourceDetailModal = lazy(() => import("./work-resource-card").then((module) => ({ default: module.WorkResourceDetailModal })));
+const WorkResourcePreviewModal = lazy(() => import("./work-resource-card").then((module) => ({ default: module.WorkResourcePreviewModal })));
 
 const KINDS: LocalContentKind[] = ["article", "material", "mail", "task", "task_input", "task_output"];
 const TASK_PAGE_SIZE = 200;
@@ -70,6 +73,13 @@ export function LocalLibraryView() {
     advancedFilterCount, activeFilterCount, searchQuery,
   } = useLocalContentFilters();
   const [selected, setSelected] = useState<LocalContentRecord | null>(null);
+  const [selectedResource, setSelectedResource] = useState<WorkResource | null>(null);
+  const [libraryView, setLibraryView] = useState<"all" | "tables">("all");
+  const [resourceLocality, setResourceLocality] = useState<"all" | "local" | "remote">("all");
+  const [resourcePreviewTarget, setResourcePreviewTarget] = useState<WorkResource | null>(null);
+  const [resourceDetailTarget, setResourceDetailTarget] = useState<WorkResource | null>(null);
+  const [resourceRefreshing, setResourceRefreshing] = useState(false);
+  const [resourceRefreshError, setResourceRefreshError] = useState(false);
   const [targetTaskId, setTargetTaskId] = useState("");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
@@ -92,6 +102,16 @@ export function LocalLibraryView() {
     queryKey: ["local-content", "search", searchQuery, stats.data?.catalog.lastRebuiltAt],
     queryFn: () => localContentApi.search(searchQuery),
   });
+  const resources = useQuery({
+    queryKey: ["work-resources", libraryView, query, projectId, resourceLocality],
+    queryFn: () => workResourceApi.list({
+      resourceKind: libraryView === "tables" ? "table" : undefined,
+      q: query.trim() || undefined,
+      projectId: projectId === "all" ? undefined : projectId,
+      locality: libraryView === "tables" && resourceLocality !== "all" ? resourceLocality : undefined,
+      limit: 100,
+    }),
+  });
   const workItems = useQuery({
     queryKey: ["local-content", "work-items"],
     queryFn: loadTaskCandidates,
@@ -103,16 +123,29 @@ export function LocalLibraryView() {
     enabled: Boolean(previewTarget),
     retry: false,
   });
+  const resourcePreview = useQuery({
+    queryKey: ["work-resources", "preview", resourcePreviewTarget?.id],
+    queryFn: () => workResourceApi.preview(resourcePreviewTarget!.id),
+    enabled: Boolean(resourcePreviewTarget),
+    retry: false,
+  });
+  const resourceDetail = useQuery({
+    queryKey: ["work-resources", "detail", resourceDetailTarget?.id],
+    queryFn: () => workResourceApi.get(resourceDetailTarget!.id),
+    enabled: Boolean(resourceDetailTarget),
+    retry: false,
+  });
+  const selectedTarget = selectedResource ?? selected;
   const candidates = useMemo(
-    () => selected ? openTasksFor(selected, workItems.data?.workItems ?? []) : [],
-    [selected, workItems.data?.workItems],
+    () => selectedTarget ? (workItems.data?.workItems ?? []).filter((item) => item.state === "open" && item.status !== "done" && (!selectedTarget.projectId || item.projectId === selectedTarget.projectId)) : [],
+    [selectedTarget, workItems.data?.workItems],
   );
 
   useEffect(() => {
-    if (!selected || !candidates.length) return;
+    if (!selectedTarget || !candidates.length) return;
     if (candidates.some((item) => item.id === targetTaskId)) return;
     setTargetTaskId(candidates.some((item) => item.id === selectedWorkItemId) ? selectedWorkItemId! : candidates[0].id);
-  }, [candidates, selected, selectedWorkItemId, targetTaskId]);
+  }, [candidates, selectedTarget, selectedWorkItemId, targetTaskId]);
 
   useEffect(() => {
     if (advancedFilterCount) setAdvancedOpen(true);
@@ -120,6 +153,7 @@ export function LocalLibraryView() {
 
   function choose(record: LocalContentRecord) {
     setSelected(record);
+    setSelectedResource(null);
     setTargetTaskId("");
     setAddError(null);
     setAddedTask(null);
@@ -128,9 +162,21 @@ export function LocalLibraryView() {
     setCreateTaskTitle(copy.createTaskDefault.replace("{{title}}", record.title));
   }
 
+  function chooseResource(resource: WorkResource) {
+    setSelected(null);
+    setSelectedResource(resource);
+    setTargetTaskId("");
+    setAddError(null);
+    setAddedTask(null);
+    setPurpose("required_input");
+    setCreateProjectId(resource.projectId ?? consoleState?.projects?.[0]?.id ?? "");
+    setCreateTaskTitle(copy.createTaskDefault.replace("{{title}}", resource.displayName));
+  }
+
   function closePicker() {
     if (adding || creatingTask) return;
     setSelected(null);
+    setSelectedResource(null);
     setTargetTaskId("");
     setAddError(null);
     setAddedTask(null);
@@ -153,15 +199,21 @@ export function LocalLibraryView() {
 
   async function addReference() {
     const task = candidates.find((item) => item.id === targetTaskId);
-    if (!selected || !task || adding) return;
+    if (!selectedTarget || !task || adding) return;
     setAdding(true);
     setAddError(null);
     try {
-      const response = await localContentApi.addToWorkItem(task.id, {
-        contentId: selected.id,
-        expectedRevision: task.revision,
-        purpose,
-      });
+      const response = selectedResource
+        ? await workResourceApi.addToWorkItem(task.id, {
+          resourceId: selectedResource.id,
+          expectedRevision: task.revision,
+          purpose: purpose === "reference" ? "reference" : "query_source",
+        })
+        : await localContentApi.addToWorkItem(task.id, {
+          contentId: selected!.id,
+          expectedRevision: task.revision,
+          purpose,
+        });
       const next = response.workItem as LocalWorkItem;
       setAddedTask(next);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "local-content-reference-add", workItemId: next.id } }));
@@ -178,7 +230,7 @@ export function LocalLibraryView() {
   }
 
   async function createTaskAndAddReference() {
-    if (!selected || !createProjectId || !createTaskTitle.trim() || creatingTask) return;
+    if (!selectedTarget || !createProjectId || !createTaskTitle.trim() || creatingTask) return;
     setCreatingTask(true);
     setAddError(null);
     let created: LocalWorkItem | null = null;
@@ -186,15 +238,21 @@ export function LocalLibraryView() {
       const response = await localContentApi.createTask({
         projectId: createProjectId,
         title: createTaskTitle.trim(),
-        body: selected.summary || selected.title,
-        idempotencyKey: `local-content:${selected.id}:${createProjectId}:${createTaskTitle.trim().toLocaleLowerCase()}`.slice(0, 200),
+        body: selectedTarget.summary || ("title" in selectedTarget ? selectedTarget.title : selectedTarget.displayName),
+        idempotencyKey: `work-resource:${selectedTarget.id}:${createProjectId}:${createTaskTitle.trim().toLocaleLowerCase()}`.slice(0, 200),
       });
       created = response.workItem as LocalWorkItem;
-      const attached = await localContentApi.addToWorkItem(created.id, {
-        contentId: selected.id,
-        expectedRevision: created.revision,
-        purpose,
-      });
+      const attached = selectedResource
+        ? await workResourceApi.addToWorkItem(created.id, {
+          resourceId: selectedResource.id,
+          expectedRevision: created.revision,
+          purpose: purpose === "reference" ? "reference" : "query_source",
+        })
+        : await localContentApi.addToWorkItem(created.id, {
+          contentId: selected!.id,
+          expectedRevision: created.revision,
+          purpose,
+        });
       setAddedTask(attached.workItem as LocalWorkItem);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "local-content-task-create", workItemId: created.id } }));
       await workItems.refetch();
@@ -225,6 +283,27 @@ export function LocalLibraryView() {
     }
   }
 
+  async function refreshResource() {
+    if (!resourceDetailTarget || resourceRefreshing) return;
+    setResourceRefreshing(true);
+    setResourceRefreshError(false);
+    try {
+      const response = await workResourceApi.refresh(resourceDetailTarget.id);
+      setResourceDetailTarget(response.resource);
+      await Promise.all([resourceDetail.refetch(), resources.refetch()]);
+    } catch {
+      setResourceRefreshError(true);
+    } finally {
+      setResourceRefreshing(false);
+    }
+  }
+
+  function manageResource(resource: WorkResource) {
+    setResourceDetailTarget(null);
+    setResourceRefreshError(false);
+    if (resource.actions.managementSection === "workflowMemory") navigate("workflowMemory");
+  }
+
   function handleRemovedFromLibrary() {
     setPreviewTarget(null);
     setDetailTarget(null);
@@ -242,11 +321,13 @@ export function LocalLibraryView() {
   const catalog = stats.data?.catalog;
   const hasIndexedContent = (catalog?.total ?? 0) > 0;
   const projects = consoleState?.projects ?? [];
-  const taskProjects = selected?.projectId
-    ? projects.filter((project) => project.id === selected.projectId)
+  const taskProjects = selectedTarget?.projectId
+    ? projects.filter((project) => project.id === selectedTarget.projectId)
     : projects;
   const truncatedFacetGroups = Object.values(catalog?.facets?.coverage ?? {}).filter((coverage) => coverage.truncated).length;
   const records = content.data?.results ?? [];
+  const connectedResources = (resources.data?.resources ?? []).filter((resource) =>
+    resource.source.type === "connector" || (resource.source.type === "local_file" && !resource.source.localContentLinked));
   const indexing = (catalog?.indexing?.queued ?? 0) + (catalog?.indexing?.running ?? 0) > 0;
   const previewErrorCode = preview.error instanceof ApiError ? preview.error.code : null;
   const previewErrorCopy = previewErrorCode === "local_content_preview_unsupported"
@@ -265,11 +346,28 @@ export function LocalLibraryView() {
         eyebrow={copy.eyebrow}
         title={copy.title}
         description={copy.description}
-        actions={<Button size="sm" variant="secondary" disabled={rebuilding} onClick={() => void rebuild()}>
+        actions={libraryView === "all" ? <Button size="sm" variant="secondary" disabled={rebuilding} onClick={() => void rebuild()}>
           <RefreshCw className={cn("size-4", rebuilding && "animate-spin")} aria-hidden />
           {rebuilding ? copy.rebuilding : hasIndexedContent ? copy.refresh : copy.build}
-        </Button>}
+        </Button> : undefined}
       />
+
+      <div className="flex flex-wrap gap-2 border-b border-border pb-3" role="tablist" aria-label={copy.title}>
+        <Button size="sm" variant={libraryView === "all" ? "primary" : "ghost"} role="tab" aria-selected={libraryView === "all"} onClick={() => setLibraryView("all")}><Library aria-hidden />{copy.allContentView}</Button>
+        <Button size="sm" variant={libraryView === "tables" ? "primary" : "ghost"} role="tab" aria-selected={libraryView === "tables"} onClick={() => setLibraryView("tables")}><Table2 aria-hidden />{copy.tablesView}</Button>
+      </div>
+
+      {libraryView === "tables" ? <div className="space-y-4">
+        <p className="text-sm text-muted-foreground">{copy.tablesViewHint}</p>
+        <div className="grid gap-3 rounded-xl border border-border bg-card p-4 sm:grid-cols-[minmax(16rem,1fr)_14rem_12rem]">
+          <Field label={copy.tableSearch}><div className="relative"><Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" aria-hidden /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.tableSearch} className="pl-9" /></div></Field>
+          <Field label={copy.project}><Select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="all">{copy.allProjects}</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</Select></Field>
+          <Field label={copy.locality}><Select value={resourceLocality} onChange={(event) => setResourceLocality(event.target.value as typeof resourceLocality)}><option value="all">{copy.allLocalities}</option><option value="local">{copy.localOnly}</option><option value="remote">{copy.remoteOnly}</option></Select></Field>
+        </div>
+        {resources.isError ? <EmptyState title={copy.loadFailed} action={<Button size="sm" variant="secondary" onClick={() => void resources.refetch()}>{copy.retry}</Button>} /> : resources.isLoading ? <div className="grid gap-3 md:grid-cols-2" aria-busy="true">{[0, 1, 2, 3].map((item) => <div key={item} className="h-40 animate-pulse rounded-xl border border-border bg-muted/40" />)}</div> : !resources.data?.resources.length ? <EmptyState title={copy.noTableResources} hint={copy.noTableResourcesHint} /> : <Suspense fallback={<div className="grid gap-3 md:grid-cols-2" aria-busy="true"><div className="h-40 animate-pulse rounded-xl border border-border bg-muted/40" /></div>}><div className="grid gap-3 md:grid-cols-2">{resources.data.resources.map((resource) => <WorkResourceCard key={resource.id} resource={resource} locale={i18n.language} onDetails={() => { setResourceRefreshError(false); setResourceDetailTarget(resource); }} onPreview={() => setResourcePreviewTarget(resource)} onChoose={() => chooseResource(resource)} />)}</div></Suspense>}
+      </div> : null}
+
+      {libraryView === "all" ? <div className="space-y-5">
 
       {catalog ? (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground" role="status">
@@ -361,6 +459,13 @@ export function LocalLibraryView() {
         </Field>
       </div> : null}
 
+      {resources.isError ? <p className="rounded-lg border border-warning/40 bg-warning/[0.07] px-3 py-2 text-sm" role="status">{copy.connectedLoadFailed}</p>
+        : resources.isLoading ? <div className="grid gap-3 md:grid-cols-2" aria-label={copy.connectedResources} aria-busy="true"><div className="h-40 animate-pulse rounded-xl border border-border bg-muted/40" /></div>
+          : connectedResources.length ? <section className="space-y-3" aria-labelledby="connected-resources-title">
+            <div><h2 id="connected-resources-title" className="text-sm font-semibold">{copy.connectedResources}</h2><p className="mt-1 text-xs text-muted-foreground">{copy.connectedResourcesHint}</p></div>
+            <Suspense fallback={<div className="grid gap-3 md:grid-cols-2" aria-busy="true"><div className="h-40 animate-pulse rounded-xl border border-border bg-muted/40" /></div>}><div className="grid gap-3 md:grid-cols-2">{connectedResources.map((resource) => <WorkResourceCard key={resource.id} resource={resource} locale={i18n.language} onDetails={() => { setResourceRefreshError(false); setResourceDetailTarget(resource); }} onPreview={() => setResourcePreviewTarget(resource)} onChoose={() => chooseResource(resource)} />)}</div></Suspense>
+          </section> : null}
+
       <div className={cn(hasIndexedContent && "grid items-start gap-4 xl:grid-cols-[17rem_minmax(0,1fr)]")}>
         {hasIndexedContent && catalog ? <Suspense fallback={<div className="h-64 animate-pulse rounded-xl border border-border bg-muted/40" />}><LocalContentDirectory
           copy={copy}
@@ -440,9 +545,10 @@ export function LocalLibraryView() {
           ) : null}
         </div>
       </div>
+      </div> : null}
 
-      {selected ? <Suspense fallback={null}><AddToTaskModal
-        open={Boolean(selected)}
+      {selectedTarget ? <Suspense fallback={null}><AddToTaskModal
+        open={Boolean(selectedTarget)}
         copy={copy}
         adding={adding}
         addedTask={addedTask}
@@ -467,6 +573,28 @@ export function LocalLibraryView() {
         onCreateTaskTitleChange={setCreateTaskTitle}
         onAdd={() => void addReference()}
         onCreateTask={() => void createTaskAndAddReference()}
+      /></Suspense> : null}
+
+      {resourceDetailTarget ? <Suspense fallback={null}><WorkResourceDetailModal
+        resource={resourceDetail.data?.resource ?? resourceDetailTarget}
+        locale={i18n.language}
+        refreshing={resourceRefreshing}
+        refreshError={resourceRefreshError || resourceDetail.isError}
+        onClose={() => { setResourceDetailTarget(null); setResourceRefreshError(false); }}
+        onManage={() => manageResource(resourceDetail.data?.resource ?? resourceDetailTarget)}
+        onRefresh={() => void refreshResource()}
+        onPreview={() => { setResourcePreviewTarget(resourceDetail.data?.resource ?? resourceDetailTarget); setResourceDetailTarget(null); }}
+        onChoose={() => { chooseResource(resourceDetail.data?.resource ?? resourceDetailTarget); setResourceDetailTarget(null); }}
+      /></Suspense> : null}
+
+      {resourcePreviewTarget ? <Suspense fallback={null}><WorkResourcePreviewModal
+        resource={resourcePreviewTarget}
+        preview={resourcePreview.data?.preview ?? null}
+        loading={resourcePreview.isLoading}
+        error={resourcePreview.isError}
+        locale={i18n.language}
+        onClose={() => setResourcePreviewTarget(null)}
+        onRetry={() => void resourcePreview.refetch()}
       /></Suspense> : null}
 
       {previewTarget ? <Suspense fallback={null}><PreviewModal

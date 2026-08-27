@@ -1,4 +1,4 @@
-import type { WorkItemContentReference } from "@/features/local-content/local-content-types";
+import type { WorkItemContentReference, WorkItemResourceReference } from "@/features/local-content/local-content-types";
 import type { LedgerPostingPlan, TaskRecordBinding } from "@myagenttool/protocol/task-resources";
 
 export type GithubItem = {
@@ -162,6 +162,7 @@ export type LocalWorkItem = {
     invalidatedReason?: string | null;
   }) | null;
   localContentRefs?: WorkItemContentReference[];
+  taskResourceRefs?: WorkItemResourceReference[];
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
   executionArtifacts?: {
@@ -181,6 +182,7 @@ export type LocalWorkItem = {
     domain: string;
     riskLevel: string;
     goal: string;
+    outputExpectation?: string | null;
     workMode?: {
       schemaVersion: number;
       state: "matched" | "needs_confirmation" | "generic" | string;
@@ -703,6 +705,85 @@ export type WorkItemAttentionMetrics = {
   staleRecords: number;
   oldestAgeSeconds: number;
 };
+export type LocalWorkItemDeliveryEvidence = {
+  schemaVersion: number;
+  status: "ready" | "review_pending" | "changes_requested" | "verification_failed" | "verification_missing" | "review_inconsistent" | "evidence_incomplete" | string;
+  risk: "low" | "medium" | "high" | "unknown" | string;
+  domain: "development" | "office" | "other" | string;
+  review: {
+    status: "queued" | "running" | "completed" | "failed" | "unavailable" | string;
+    source: string;
+    verdict: "approved" | "changes_requested" | null;
+    summary: string | null;
+    structured: boolean;
+    findings: { severity: "low" | "medium" | "high"; file: string | null; line: number | null; message: string; suggestion: string | null; confidence: "low" | "medium" | "high" | null }[];
+    findingCounts: { low: number; medium: number; high: number; total: number };
+    blockingCount: number;
+    consistency: "consistent" | "inconsistent" | "unknown";
+    reviewedCommit: string | null;
+    reviewer: string | null;
+    invocationId: string | null;
+    completedAt: string | null;
+  };
+  verification: {
+    status: "passed" | "failed" | "missing";
+    passed: boolean | null;
+    verified: boolean;
+    command: string | null;
+    commands: string[];
+    exitCode: number | null;
+    summary: string | null;
+  };
+  blockingReasonCodes: string[];
+  actionPreview: {
+    mode: "local_merge" | "pull_request" | null;
+    operation: "apply_local_changes" | "create_pull_request" | "update_pull_request" | "apply_office_result";
+    targetType: "local_project" | "pull_request" | "office_artifact";
+    artifactKind?: "source_code" | "office_artifact";
+    deliveryTransport?: "local_merge" | "pull_request" | null;
+    worktreeId: string | null;
+    branchName: string | null;
+    remoteUrl: string | null;
+    changedFileCount: number;
+    changedFiles: string[];
+    officeDetails?: {
+      targetFiles: string[];
+      targetResources?: Array<{ resourceId: string; displayName: string; locality: "local" | "remote" }>;
+      estimatedAffectedRows: number | null;
+      fields: string[];
+      operation: string | null;
+      writeMode: string | null;
+      reversible: boolean | null;
+      batch?: {
+        state: string;
+        targetCount: number;
+        operationCount: number;
+        successCount: number;
+        failedCount: number;
+        restoredCount?: number;
+        pendingCount?: number;
+        unknownCount?: number;
+        rollback: {
+          status: "prepared" | "partial" | "rolled_back" | "not_available" | string;
+          restoredTargets: number;
+          blockedTargets: number;
+        };
+        details: {
+          id: string | null;
+          businessKey: string | null;
+          action: string | null;
+          rowNumber: number | null;
+          state: string;
+          changedFields: string[];
+        }[];
+      } | null;
+    } | null;
+    reviewedCommit: string | null;
+    requiresConfirmation: true;
+    canProceed: boolean;
+    blockedReasonCodes: string[];
+  };
+};
 export type LocalWorkItemAutoRun = {
   id: string;
   status: string;
@@ -732,11 +813,12 @@ export type LocalWorkItemAutoRun = {
     worktreeId: string; branchName: string | null; mode?: "local_merge" | "pull_request";
     baseBranch?: string | null; deliveredCommit?: string | null;
     deliveredAt?: string | null; promotedAt?: string | null; prNumber?: number | null; prUrl?: string | null;
+    existingPullRequest?: { number: number | null; url: string | null; state: string | null } | null;
   } | null;
   clarifyAnswer?: { by?: string | null; at?: string | null; text?: string | null } | null;
   deliveryReport?: {
     summary: string | null;
-    verification: { passed: boolean; verified: boolean; summary: string | null } | null;
+    verification: { passed: boolean; verified: boolean; summary: string | null; command?: string | null; commands?: string[]; exitCode?: number | null } | null;
     changedFiles: string[];
     completedAt: string | null;
   } | null;
@@ -752,6 +834,7 @@ export type LocalWorkItemAutoRun = {
     reviewedCommit: string | null;
     errorCode: string | null;
     nextRetryAt?: string | null;
+    structured?: boolean;
   } | null;
   deliveryStopped?: {
     stoppedAt: string;
@@ -816,6 +899,7 @@ export type LocalWorkItemObservability = {
     remoteUrl: string | null;
     report: LocalWorkItemAutoRun["deliveryReport"];
     aiReview: LocalWorkItemAutoRun["deliveryReview"];
+    evidence?: LocalWorkItemDeliveryEvidence | null;
     review: {
       verdict: "approved" | "changes_requested";
       summary: string | null;
@@ -828,6 +912,7 @@ export type LocalWorkItemObservability = {
       createdAt: string | null;
     } | null;
   } | null;
+  deliveryEvidence?: LocalWorkItemDeliveryEvidence | null;
   activeClaim: { actorId: string | null; claimedAt: string | null; expiresAt: string | null } | null;
   cost: {
     knownUsd: number; unknownEntries: number; entryCount: number;

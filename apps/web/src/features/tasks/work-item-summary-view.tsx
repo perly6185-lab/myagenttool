@@ -41,7 +41,7 @@ import { TaskContentReferences } from "./task-content-references";
 import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
 import { myTemplateExpectedOutput } from "@/features/workflow-memory/my-template-model";
 import { ApiError, type BusinessRoutineDefinition } from "@/lib/api-client";
-import type { LocalWorkItem, LocalWorkItemObservability, WorkItemComment, WorkItemOutcomeFile } from "./task-view-types";
+import type { LocalWorkItem, LocalWorkItemDeliveryEvidence, LocalWorkItemObservability, WorkItemComment, WorkItemOutcomeFile } from "./task-view-types";
 import { deriveWorkItemUserStatus } from "./work-item-user-status";
 import { WorkItemJobOverview } from "./work-item-job-overview";
 import { isLocalWorkItem } from "./work-item-response";
@@ -50,11 +50,13 @@ import {
   WAITING_LABEL,
   aiPhaseDescription,
   deriveDeliveryDecision,
+  deriveWorkItemIntentSummary,
   executionStateLabel,
   expertSectionFor,
   latestExecutionKind,
   resultPresentation,
   type DeliveryDecision,
+  type WorkItemIntentSummary,
 } from "./work-item-summary-model";
 import {
   DeliverableFileList,
@@ -451,7 +453,7 @@ export function WorkItemSummaryView({
   const [repairError, setRepairError] = useState<string | null>(null);
   const [resultExpanded, setResultExpanded] = useState(false);
   const [discussionOpen, setDiscussionOpen] = useState(false);
-  const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | null>(null);
+  const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | "reverify" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingTemplateClarification, setPendingTemplateClarification] = useState<PendingTemplateClarification | null>(null);
   const [templateCorrectionOpen, setTemplateCorrectionOpen] = useState(false);
@@ -712,7 +714,19 @@ export function WorkItemSummaryView({
   const deliveryReport = observability?.delivery?.report ?? observability?.latestRun?.deliveryReport ?? null;
   const deliveryAiReview = observability?.delivery?.aiReview ?? observability?.latestRun?.deliveryReview ?? null;
   const deliveryReview = observability?.delivery?.review ?? null;
-  const reviewFindings = deliveryReview?.comments?.length
+  const deliveryEvidence: LocalWorkItemDeliveryEvidence | null = observability?.deliveryEvidence
+    ?? observability?.delivery?.evidence
+    ?? null;
+  const deliveryEvidenceNotReady = Boolean(deliveryEvidence && !deliveryEvidence.actionPreview.canProceed);
+  const reviewFindings = deliveryEvidence?.review.findings?.length
+    ? deliveryEvidence.review.findings.map((finding) => ({
+      path: finding.file,
+      body: finding.message,
+      ...(finding.line ? { line: finding.line } : {}),
+      severity: finding.severity,
+      ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
+    }))
+    : deliveryReview?.comments?.length
     ? deliveryReview.comments
     : (deliveryAiReview?.findings ?? []).map((finding) => ({
       path: finding.file,
@@ -721,7 +735,7 @@ export function WorkItemSummaryView({
       severity: finding.severity,
       ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
     }));
-  const changedFiles = deliveryReport?.changedFiles ?? [];
+  const changedFiles = deliveryEvidence?.actionPreview.changedFiles ?? deliveryReport?.changedFiles ?? [];
   const deliveryWorktreeId = observability?.delivery?.worktreeId ?? observability?.latestRun?.localDelivery?.worktreeId ?? null;
   const resultSummary = outcome?.summary ?? deliveryReport?.summary ?? item.lastProgressSummary
     ?? (executionKind === "article_import" ? latestPassedVerification?.summary ?? null : null);
@@ -784,34 +798,92 @@ export function WorkItemSummaryView({
     language,
     mode: observability?.delivery?.mode ?? null,
     changedFiles,
-    reviewVerdict: deliveryReview?.verdict ?? deliveryAiReview?.verdict ?? null,
-    reviewStatus: deliveryAiReview?.status ?? null,
-    verification: resultVerification,
+    reviewVerdict: deliveryEvidence?.review.verdict ?? deliveryReview?.verdict ?? deliveryAiReview?.verdict ?? null,
+    reviewStatus: deliveryEvidence?.review.status ?? deliveryAiReview?.status ?? null,
+    reviewFindings,
+    reviewSummary: deliveryEvidence?.review.summary ?? deliveryReview?.summary ?? deliveryAiReview?.summary ?? null,
+    evidenceStatus: deliveryEvidence?.status ?? null,
+    verification: deliveryEvidence?.verification.status
+      ? { passed: deliveryEvidence.verification.passed === true, verified: deliveryEvidence.verification.verified, summary: deliveryEvidence.verification.summary }
+      : resultVerification,
     executionKind,
+    taskKind: item.taskKind,
+    taskText: `${item.title}\n${item.body}`,
     resultFiles,
   });
+  const intentSummary = deriveWorkItemIntentSummary({ item, domain: deliveryDecision.domain, language, completed: status === "completed" });
   const deliveryMode = observability?.delivery?.mode ?? null;
+  const officeDelivery = deliveryDecision.domain === "office";
+  const deliveryOperation = deliveryEvidence?.actionPreview.operation ?? null;
+  const updatesPullRequest = deliveryOperation === "update_pull_request";
   const acceptActionLabel = deliveryMode === "pull_request"
-    ? language === "zh" ? "审核通过并创建 Pull Request" : "Approve and create pull request"
+    ? updatesPullRequest
+      ? officeDelivery
+        ? language === "zh" ? "审核通过并更新办公结果 PR" : "Approve and update office result PR"
+        : language === "zh" ? "审核通过并更新 Pull Request" : "Approve and update pull request"
+      : officeDelivery
+        ? language === "zh" ? "审核通过并创建办公结果 PR" : "Approve and create office result PR"
+        : language === "zh" ? "审核通过并创建 Pull Request" : "Approve and create pull request"
+    : officeDelivery
+      ? language === "zh" ? "审核通过并应用办公结果" : "Approve and apply office result"
     : deliveryMode === "local_merge"
       ? language === "zh" ? "审核通过并应用到本地" : "Approve and apply locally"
       : language === "zh" ? "审核通过并完成任务" : "Approve and complete task";
+  const deliveryRun = observability?.latestRun;
+  const isDevelopmentDelivery = deliveryEvidence?.domain === "development"
+    || (!officeDelivery && deliveryMode != null && Boolean(deliveryWorktreeId));
+  const canRerunVerification = Boolean(
+    isDevelopmentDelivery
+      && deliveryRun
+      && ["done", "pr_open", "blocked", "cancelled"].includes(deliveryRun.status),
+  );
+  const deliveryNeedsAiFix = Boolean(
+    ["changes_requested", "verification_failed"].includes(deliveryEvidence?.status ?? "")
+      || deliveryEvidence?.review.verdict === "changes_requested"
+      || deliveryReview?.verdict === "changes_requested"
+      || deliveryAiReview?.verdict === "changes_requested"
+      || (resultVerification?.verified === true && resultVerification.passed === false)
+      || ["failed", "blocked"].includes(deliveryRun?.status ?? ""),
+  );
+  const canAskAiToFix = Boolean(
+    isDevelopmentDelivery
+      && deliveryRun
+      && deliveryNeedsAiFix
+      && (["failed", "blocked"].includes(deliveryRun.status)
+        || ["done", "report_posted", "plan_proposed", "pr_open"].includes(deliveryRun.status)),
+  );
   const acceptDialogTitle = deliveryMode === "pull_request"
-    ? language === "zh" ? "确认审核通过并创建 Pull Request？" : "Approve and create a pull request?"
+    ? updatesPullRequest
+      ? language === "zh" ? "确认审核通过并更新现有 Pull Request？" : "Approve and update the existing pull request?"
+      : language === "zh" ? "确认审核通过并创建 Pull Request？" : "Approve and create a pull request?"
+    : officeDelivery
+      ? language === "zh" ? "确认审核通过并应用办公结果？" : "Approve and apply the office result?"
     : deliveryMode === "local_merge"
       ? language === "zh" ? "确认审核通过并应用到本地？" : "Approve and apply this delivery locally?"
       : copy.acceptTitle;
   const acceptDialogDescription = deliveryMode === "pull_request"
-    ? language === "zh"
-      ? "系统会用当前交付创建一个待审核的 Pull Request，不会直接合并到远端主分支。创建后，本地任务继续保留在审核阶段。"
-      : "The current delivery will become a reviewable pull request without merging into the remote base branch. The local task remains in review afterward."
+    ? updatesPullRequest
+      ? language === "zh"
+        ? "系统会先把当前分支的最新改动推送到已有 Pull Request；不会新建重复 PR，也不会直接合并远端主分支。"
+        : "The latest branch changes will be pushed to the existing pull request. No duplicate PR will be created and the remote base branch will not be merged."
+      : language === "zh"
+        ? "系统会用当前交付创建一个待审核的 Pull Request，不会直接合并到远端主分支。创建后，本地任务继续保留在审核阶段。"
+        : "The current delivery will become a reviewable pull request without merging into the remote base branch. The local task remains in review afterward."
+    : officeDelivery
+      ? language === "zh"
+        ? "系统只会应用当前预览中的办公结果和范围；不会自动对外发送、删除其他资料或扩大处理范围。"
+        : "Only the office result and scope shown in the preview will be applied. Nothing will be sent externally, deleted, or expanded automatically."
     : deliveryMode === "local_merge"
       ? language === "zh"
         ? "系统会把已审核的 Worktree 改动应用到本地基准分支并完成任务；不会推送或合并任何远端分支。"
         : "The reviewed worktree changes will be applied to the local base branch and the task will be completed. No remote branch will be pushed or merged."
       : copy.acceptDescription;
   const acceptDialogConfirm = deliveryMode === "pull_request"
-    ? language === "zh" ? "确认创建 Pull Request" : "Create pull request"
+    ? updatesPullRequest
+      ? language === "zh" ? "确认更新 Pull Request" : "Update pull request"
+      : language === "zh" ? "确认创建 Pull Request" : "Create pull request"
+    : officeDelivery
+      ? language === "zh" ? "确认应用办公结果" : "Apply office result"
     : deliveryMode === "local_merge"
       ? language === "zh" ? "确认应用到本地" : "Apply locally"
       : copy.acceptConfirm;
@@ -819,6 +891,9 @@ export function WorkItemSummaryView({
     `${finding.severity ? `[${finding.severity}] ` : ""}${finding.path ?? "Code"}${finding.line ? `:${finding.line}` : ""}: ${finding.body}`,
     finding.suggestion ? `Suggested fix: ${finding.suggestion}` : null,
   ].filter(Boolean).join("\n")).join("\n\n");
+  const askAiFixFeedback = reviewFeedback?.trim()
+    || deliveryEvidence?.verification.summary?.trim()
+    || (language === "zh" ? "请根据当前复核和验证结果修复问题，保持任务范围不变，并重新运行验证。" : "Fix the issues identified by the current review and verification, keep the scope unchanged, and rerun verification.");
 
   const openResultFile = async (file: WorkItemOutcomeFile) => {
     if (!file.contentId && (!file.projectId || !file.path || (file.preview === "unsupported" && !file.worktreeId))) {
@@ -1396,6 +1471,35 @@ export function WorkItemSummaryView({
       setActionPending(null);
     }
   };
+  const rerunDeliveryVerification = async () => {
+    const run = observability?.latestRun;
+    if (!run || actionPending || !canRerunVerification) return;
+    setActionPending("reverify");
+    setActionError(null);
+    try {
+      await api.reverifyAutoRun(run.id);
+      setSyncNotice(language === "zh" ? "验证已重新开始，完成后会刷新本次交付证据。" : "Verification has restarted. The delivery evidence will refresh when it finishes.");
+      setRefreshVersion((version) => version + 1);
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-reverification-started", workItemId: item.id, autoRunId: run.id } }));
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : (language === "zh" ? "验证暂时无法重新执行，请稍后重试。" : "Verification could not be rerun. Try again later."));
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const askAiToFix = () => {
+    if (!canAskAiToFix || actionPending) return;
+    void sendChangeRequest(askAiFixFeedback, "revision");
+  };
+  const openPullRequestConfirmation = () => {
+    if (actionPending || deliveryMode !== "pull_request" || deliveryEvidenceNotReady) return;
+    if (observability?.delivery?.review?.verdict !== "approved") {
+      setActionError(copy.deliveryReviewRequired);
+      return;
+    }
+    setCompletionWriteback("local_only");
+    setAcceptOpen(true);
+  };
   const answerAiClarification = async () => {
     const run = observability?.latestRun;
     const answer = clarifyAnswer.trim();
@@ -1527,6 +1631,10 @@ export function WorkItemSummaryView({
     }
     if (observability?.delivery && observability.delivery.review?.verdict !== "approved") {
       setActionError(copy.deliveryReviewRequired);
+      return;
+    }
+    if (deliveryEvidenceNotReady) {
+      setActionError(language === "zh" ? "当前复核或验证证据还不完整，不能确认交付。请先处理预览中的阻塞原因。" : "The review or verification evidence is incomplete, so delivery cannot be confirmed yet. Resolve the blockers shown in the preview first.");
       return;
     }
     setActionPending("complete");
@@ -1720,6 +1828,12 @@ export function WorkItemSummaryView({
         </div> : null}
       </header>
 
+      <WorkItemIntentCard
+        summary={intentSummary}
+        language={language}
+        onEdit={canOperate && status !== "completed" ? () => onOpenExpert("overview") : undefined}
+      />
+
       {status !== "completed" ? <section className="rounded-xl border border-primary/30 bg-primary/[0.055] p-4" aria-labelledby={`work-item-next-${item.id}`}>
         <div className="flex gap-3">
           <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground"><CircleDot className="size-4" aria-hidden /></span>
@@ -1889,61 +2003,6 @@ export function WorkItemSummaryView({
           <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
           <span className="min-w-0 flex-1">{syncNotice}</span>
         </div>
-      ) : null}
-
-      {item.channelTaskContract?.workMode ? (
-        <section
-          className={`rounded-xl border p-4 ${item.channelTaskContract.workMode.state === "needs_confirmation" ? "border-warning/35 bg-warning/[0.05]" : "border-primary/25 bg-primary/[0.035]"}`}
-          aria-label={language === "zh" ? "我会这样处理" : "How this task will be handled"}
-          data-testid="work-mode-summary"
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <Bot className="size-4 text-primary" aria-hidden />
-            <h4 className="text-sm font-semibold">{language === "zh" ? "我会这样处理" : "How I’ll handle this"}</h4>
-            <Badge tone={item.channelTaskContract.workMode.state === "matched" ? "success" : "warning"}>
-              {item.channelTaskContract.workMode.state === "matched"
-                ? (language === "zh" ? "已整理" : "Ready")
-                : item.channelTaskContract.workMode.state === "needs_confirmation"
-                  ? (language === "zh" ? "等你确认" : "Needs confirmation")
-                  : (language === "zh" ? "按本次要求" : "This request")}
-            </Badge>
-          </div>
-          <p className="mt-2 text-sm font-medium">
-            {item.channelTaskContract.workMode.state === "needs_confirmation"
-              ? (language === "zh" ? "我还不能确定具体怎么处理。" : "I need your confirmation before choosing how to handle this.")
-              : item.channelTaskContract.workMode.name}
-          </p>
-          {item.channelTaskContract.workMode.expectedOutput ? (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {language === "zh" ? "预期结果：" : "Expected result: "}{item.channelTaskContract.workMode.expectedOutput}
-            </p>
-          ) : null}
-          {item.channelTaskContract.workMode.data.sources.length ? (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {language === "zh" ? "本次使用：" : "Using: "}
-              {item.channelTaskContract.workMode.data.sources.map((source) => `${source.fileName ?? "本地资料"}${source.revision != null ? `（第${source.revision}版）` : ""}`).join("、")}
-            </p>
-          ) : null}
-          {item.channelTaskContract.workMode.confirmationRequired ? (
-            <p className="mt-2 text-xs text-warning-foreground">
-              {language === "zh" ? "涉及资料选择、文件修改或对外操作，开始前会先让你确认。" : "Source selection, file changes, or external actions require confirmation before starting."}
-            </p>
-          ) : null}
-          {item.channelTaskContract.workMode.state === "needs_confirmation" && item.channelTaskContract.workMode.candidates.length ? (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {language === "zh" ? "可能的方式：" : "Possible modes: "}
-              {item.channelTaskContract.workMode.candidates.map((candidate) => candidate.name ?? candidate.expectedOutput).filter(Boolean).join("、")}
-            </p>
-          ) : null}
-          <details className="mt-3 rounded-lg border border-border/70 bg-background/50 px-3 py-2 text-xs">
-            <summary className="cursor-pointer font-medium">{language === "zh" ? "查看处理依据" : "View supporting details"}</summary>
-            <div className="mt-2 space-y-1 text-muted-foreground">
-              <p>{language === "zh" ? "处理依据：" : "Basis: "}{item.channelTaskContract.workMode.source === "my_template" ? (language === "zh" ? "参考了之前确认过的做法" : "A previously confirmed approach") : item.channelTaskContract.workMode.source === "suggested" ? (language === "zh" ? "等待本次确认" : "Awaiting confirmation") : (language === "zh" ? "本次临时整理" : "This request")}{item.channelTaskContract.workMode.version != null ? ` · v${item.channelTaskContract.workMode.version}` : ""}</p>
-              <p>{language === "zh" ? "资料检查记录：" : "Source check: "}{item.channelTaskContract.workMode.trace.dataPlanDigest ?? "—"}</p>
-              <p>{language === "zh" ? "处理记录：" : "Processing record: "}{item.channelTaskContract.workMode.digest}</p>
-            </div>
-          </details>
-        </section>
       ) : null}
 
       {item.channelTaskContract?.dataPlan && item.channelTaskContract.dataPlan.status !== "not_required" ? (
@@ -2328,7 +2387,19 @@ export function WorkItemSummaryView({
             </div>
           ) : null}
           <div className="mt-3">
-            <DeliveryDecisionCard decision={deliveryDecision} copy={copy} scopeLabel={presentation.completedScope} />
+            <DeliveryDecisionCard
+              decision={deliveryDecision}
+              copy={copy}
+              scopeLabel={presentation.completedScope}
+              actionPreview={deliveryEvidence?.actionPreview ?? null}
+              language={language}
+              onViewChanges={deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
+              onRerunVerification={canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
+              onAskAiToFix={canAskAiToFix ? askAiToFix : undefined}
+              onCreatePullRequest={deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
+              actionDisabled={Boolean(actionPending)}
+              verificationPending={actionPending === "reverify"}
+            />
           </div>
           {observability?.delivery ? (
             <div className={`mt-3 rounded-lg border px-3 py-3 ${deliveryReview?.verdict === "approved" ? "border-success/35 bg-success/[0.06]" : deliveryReview?.verdict === "changes_requested" ? "border-destructive/35 bg-destructive/[0.05]" : "border-warning/35 bg-warning/[0.05]"}`}>
@@ -2509,7 +2580,7 @@ export function WorkItemSummaryView({
               <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("follow_up"); setChangeRequestOpen(true); }}><MessageSquare aria-hidden />{language === "zh" ? "继续追问" : "Ask follow-up"}</Button>
               <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("revision"); setChangeRequestOpen(true); }}>{copy.requestChanges}</Button>
               <Button
-                disabled={!executionContractReady || Boolean(actionPending) || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
+                disabled={!executionContractReady || Boolean(actionPending) || deliveryEvidenceNotReady || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
                 onClick={() => { setCompletionWriteback("local_only"); setAcceptOpen(true); }}
               >
                 <CheckCircle2 aria-hidden />{acceptActionLabel}
@@ -2630,7 +2701,7 @@ export function WorkItemSummaryView({
             <div className="flex items-center gap-2">
               <FileText className="size-4 text-primary" aria-hidden />
               <h4 id={`work-item-materials-${item.id}`} className="text-sm font-semibold">{copy.referenceFiles}</h4>
-              <Badge tone="neutral">{(item.inputAssets?.length ?? 0) + (item.localContentRefs?.length ?? 0)}</Badge>
+              <Badge tone="neutral">{(item.inputAssets?.length ?? 0) + (item.localContentRefs?.length ?? 0) + (item.taskResourceRefs?.length ?? 0)}</Badge>
             </div>
             <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
               {status === "completed" ? copy.materialCompletedHint : materialChangesApplyOnRerun ? copy.materialRunningHint : copy.materialHint}
@@ -2956,7 +3027,7 @@ export function WorkItemSummaryView({
                   <RefreshCw aria-hidden />{copy.requestChanges}
                 </Button>
                 <Button
-                  disabled={!executionContractReady || !outcomeReady || Boolean(actionPending) || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
+                  disabled={!executionContractReady || !outcomeReady || Boolean(actionPending) || deliveryEvidenceNotReady || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
                   onClick={() => { setReportOpen(false); setCompletionWriteback("local_only"); setAcceptOpen(true); }}
                 >
                   <CheckCircle2 aria-hidden />{acceptActionLabel}
@@ -2967,11 +3038,22 @@ export function WorkItemSummaryView({
         )}
       >
         <div className="space-y-4">
-          <DeliveryDecisionCard decision={deliveryDecision} copy={copy} />
+          <DeliveryDecisionCard
+            decision={deliveryDecision}
+            copy={copy}
+            actionPreview={deliveryEvidence?.actionPreview ?? null}
+            language={language}
+            onViewChanges={deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
+            onRerunVerification={canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
+            onAskAiToFix={canAskAiToFix ? askAiToFix : undefined}
+            onCreatePullRequest={deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
+            actionDisabled={Boolean(actionPending)}
+            verificationPending={actionPending === "reverify"}
+          />
 
 
-          <section className="rounded-lg border border-primary/25 bg-primary/[0.035] p-4">
-            <h3 className="text-sm font-semibold">{language === "zh" ? "可选动作与影响" : "Available actions and impact"}</h3>
+          <details className="rounded-lg border border-primary/25 bg-primary/[0.035] p-4">
+            <summary className="cursor-pointer text-sm font-semibold">{language === "zh" ? "查看动作影响" : "Available actions and impact"}</summary>
             <div className="mt-3 grid gap-3 lg:grid-cols-2">
               <div className="rounded-md bg-background/75 px-3 py-2.5">
                 <p className="text-sm font-semibold">{copy.requestChanges}</p>
@@ -2988,7 +3070,7 @@ export function WorkItemSummaryView({
                 <p className="mt-1 text-sm leading-relaxed">{deliveryDecision.confirmRisk}</p>
               </div>
             </div>
-          </section>
+          </details>
 
           <section className={`rounded-lg border p-4 ${deliveryReview?.verdict === "approved" ? "border-success/35 bg-success/[0.06]" : deliveryReview?.verdict === "changes_requested" ? "border-destructive/35 bg-destructive/[0.05]" : "border-border bg-muted/30"}`}>
             <div className="flex flex-wrap items-center gap-2">
@@ -3208,37 +3290,105 @@ function CollaborationStage({
   );
 }
 
+function WorkItemIntentCard({
+  summary,
+  language,
+  onEdit,
+}: {
+  summary: WorkItemIntentSummary;
+  language: "zh" | "en";
+  onEdit?: () => void;
+}) {
+  const tone = summary.state === "aligned" ? "success" : summary.state === "needs_confirmation" ? "warning" : "neutral";
+  return (
+    <section
+      className={`rounded-xl border p-4 ${summary.state === "needs_confirmation" ? "border-warning/35 bg-warning/[0.055]" : "border-primary/25 bg-primary/[0.035]"}`}
+      aria-label={language === "zh" ? "AI 对任务的理解" : "AI understanding of the task"}
+      data-testid="work-item-intent-summary"
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <BrainCircuit className="size-4 text-primary" aria-hidden />
+            <h4 className="text-sm font-semibold">{language === "zh" ? "我理解你要做的是" : "Here’s what I understand"}</h4>
+            <Badge tone={tone}>{summary.statusLabel}</Badge>
+          </div>
+          <p className="mt-2 text-base font-medium leading-relaxed">{summary.goal}</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{summary.confidenceReason}</p>
+        </div>
+        {onEdit ? <Button className="shrink-0" size="sm" variant="secondary" onClick={onEdit}>{language === "zh" ? "修改理解" : "Correct this"}</Button> : null}
+      </div>
+      <dl className="mt-3 grid gap-2 sm:grid-cols-3">
+        <div className="rounded-lg bg-background/70 px-3 py-2.5">
+          <dt className="text-xs font-medium text-muted-foreground">{language === "zh" ? "预期结果" : "Expected result"}</dt>
+          <dd className="mt-1 text-sm leading-relaxed">{summary.expectedOutcome}</dd>
+        </div>
+        <div className="rounded-lg bg-background/70 px-3 py-2.5">
+          <dt className="text-xs font-medium text-muted-foreground">{language === "zh" ? "本次范围" : "Scope"}</dt>
+          <dd className="mt-1 text-sm leading-relaxed">{summary.scope}</dd>
+        </div>
+        <div className="rounded-lg bg-background/70 px-3 py-2.5">
+          <dt className="text-xs font-medium text-muted-foreground">{language === "zh" ? "不会直接做" : "Safety boundary"}</dt>
+          <dd className="mt-1 text-sm leading-relaxed">{summary.boundary}</dd>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
 function DeliveryDecisionCard({
   decision,
   copy,
   scopeLabel,
+  actionPreview,
+  language,
+  onViewChanges,
+  onRerunVerification,
+  onAskAiToFix,
+  onCreatePullRequest,
+  actionDisabled = false,
+  verificationPending = false,
 }: {
   decision: DeliveryDecision;
   copy: SummaryCopy;
   scopeLabel?: string;
+  actionPreview?: LocalWorkItemDeliveryEvidence["actionPreview"] | null;
+  language: "zh" | "en";
+  onViewChanges?: () => void;
+  onRerunVerification?: () => void;
+  onAskAiToFix?: () => void;
+  onCreatePullRequest?: () => void;
+  actionDisabled?: boolean;
+  verificationPending?: boolean;
 }) {
-  const tone = decision.state === "ready" ? "success" : decision.state === "changes" ? "danger" : decision.state === "waiting" ? "neutral" : "warning";
+  const confirmedProblem = decision.state === "changes" && decision.risk === "high";
+  const tone = decision.state === "ready" ? "success" : confirmedProblem ? "danger" : decision.state === "waiting" ? "neutral" : "warning";
   const riskLabel = {
     low: copy.riskLow,
     medium: copy.riskMedium,
     high: copy.riskHigh,
     unknown: copy.riskUnknown,
   }[decision.risk];
+  const showPullRequestAction = ["create_pull_request", "update_pull_request"].includes(actionPreview?.operation ?? "") && actionPreview?.canProceed && Boolean(onCreatePullRequest);
+  const hasDeliveryAction = Boolean(onViewChanges || onRerunVerification || onAskAiToFix || showPullRequestAction);
   return (
     <section className={`rounded-lg border p-4 ${
       decision.state === "ready"
         ? "border-success/35 bg-success/[0.06]"
-        : decision.state === "changes"
+        : confirmedProblem
           ? "border-destructive/35 bg-destructive/[0.05]"
           : "border-warning/35 bg-warning/[0.05]"
     }`} aria-label={copy.decisionSummary}>
       <div className="flex flex-wrap items-center gap-2">
         {decision.state === "ready"
           ? <CheckCircle2 className="size-5 text-success" aria-hidden />
-          : <AlertTriangle className={`size-5 ${decision.state === "changes" ? "text-destructive" : "text-warning"}`} aria-hidden />}
+          : <AlertTriangle className={`size-5 ${confirmedProblem ? "text-destructive" : "text-warning"}`} aria-hidden />}
         <h3 className="font-semibold">{decision.headline}</h3>
+        <Badge tone="neutral">{decision.domainLabel}</Badge>
+        <Badge tone={tone}>{copy.resultStatus}: {decision.statusLabel}</Badge>
         <Badge tone={tone}>{copy.resultRisk}: {riskLabel}</Badge>
       </div>
+      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{decision.riskReason}</p>
       <div className="mt-3 grid gap-3 lg:grid-cols-3">
         <div className="rounded-md bg-background/75 px-3 py-2.5">
           <p className="text-xs font-medium text-muted-foreground">{scopeLabel ?? copy.completedScope}</p>
@@ -3253,6 +3403,127 @@ function DeliveryDecisionCard({
           <p className="mt-1.5 text-sm font-medium leading-relaxed">{decision.recommendation}</p>
         </div>
       </div>
+      {actionPreview ? (
+        <div className="mt-3 rounded-md border border-border/80 bg-background/60 px-3 py-2.5" data-testid="delivery-action-preview">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs font-medium text-muted-foreground">{language === "zh" ? "应用前预览" : "Before-apply preview"}</p>
+            <Badge tone={actionPreview.canProceed ? "success" : "warning"}>
+              {actionPreview.canProceed ? (language === "zh" ? "满足确认条件" : "Ready for confirmation") : (language === "zh" ? "暂不能应用" : "Not ready to apply")}
+            </Badge>
+          </div>
+          <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+            <div><dt className="inline text-muted-foreground">{language === "zh" ? "动作：" : "Action: "}</dt><dd className="inline">{actionPreview.operation === "update_pull_request" ? (language === "zh" ? "更新现有 Pull Request" : "Update existing pull request") : actionPreview.operation === "create_pull_request" ? (language === "zh" ? "创建 Pull Request" : "Create pull request") : actionPreview.operation === "apply_office_result" ? (language === "zh" ? "应用办公结果" : "Apply office result") : (language === "zh" ? "应用到本地项目" : "Apply to local project")}</dd></div>
+            <div><dt className="inline text-muted-foreground">{language === "zh" ? "范围：" : "Scope: "}</dt><dd className="inline">{language === "zh" ? `${actionPreview.changedFileCount || actionPreview.officeDetails?.targetFiles.length || 0} 个文件` : `${actionPreview.changedFileCount || actionPreview.officeDetails?.targetFiles.length || 0} file(s)`}</dd></div>
+            {actionPreview.branchName ? <div className="min-w-0"><dt className="inline text-muted-foreground">{language === "zh" ? "分支：" : "Branch: "}</dt><dd className="break-all font-mono">{actionPreview.branchName}</dd></div> : null}
+            {actionPreview.officeDetails ? (
+              <>
+                {actionPreview.officeDetails.targetFiles.length ? <div className="min-w-0 sm:col-span-2"><dt className="inline text-muted-foreground">{language === "zh" ? "目标资料：" : "Target files: "}</dt><dd className="inline break-all">{actionPreview.officeDetails.targetFiles.join("、")}</dd></div> : null}
+                {actionPreview.officeDetails.targetResources?.length ? <div className="min-w-0 sm:col-span-2"><dt className="inline text-muted-foreground">{language === "zh" ? "资料来源：" : "Resource source: "}</dt><dd className="inline break-all">{actionPreview.officeDetails.targetResources.map((resource) => `${resource.displayName} · ${resource.locality === "local" ? (language === "zh" ? "本地" : "Local") : (language === "zh" ? "远程" : "Remote")}`).join("；")}</dd></div> : null}
+                {actionPreview.officeDetails.estimatedAffectedRows != null ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "预计记录：" : "Estimated records: "}</dt><dd className="inline">{actionPreview.officeDetails.estimatedAffectedRows}</dd></div> : null}
+                {actionPreview.officeDetails.fields.length ? <div className="min-w-0 sm:col-span-2"><dt className="inline text-muted-foreground">{language === "zh" ? "字段范围：" : "Fields: "}</dt><dd className="inline break-all">{actionPreview.officeDetails.fields.join("、")}</dd></div> : null}
+                <div><dt className="inline text-muted-foreground">{language === "zh" ? "失败保护：" : "Failure protection: "}</dt><dd className="inline">{actionPreview.officeDetails.reversible === true ? (language === "zh" ? "系统已记录恢复依据" : "Recovery evidence recorded") : actionPreview.officeDetails.reversible === false ? (language === "zh" ? "未准备自动恢复" : "Automatic recovery not prepared") : (language === "zh" ? "待确认" : "Unknown")}</dd></div>
+              </>
+            ) : null}
+                <div><dt className="inline text-muted-foreground">{language === "zh" ? "确认：" : "Confirmation: "}</dt><dd className="inline">{language === "zh" ? "仍需人工确认" : "Human confirmation is still required"}</dd></div>
+          </dl>
+          {actionPreview.officeDetails?.batch ? (
+            <OfficeBatchResult batch={actionPreview.officeDetails.batch} copy={copy} language={language} />
+          ) : null}
+        </div>
+      ) : null}
+      {actionPreview && hasDeliveryAction ? (
+        <div className="mt-3 rounded-md border border-primary/20 bg-primary/[0.04] px-3 py-2.5" data-testid="development-actions">
+          <p className="text-xs font-medium text-muted-foreground">{decision.domain === "development" ? copy.developmentActions : language === "zh" ? "可执行动作" : "Available actions"}</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {onViewChanges ? <Button size="sm" variant="secondary" disabled={actionDisabled} onClick={onViewChanges}>
+              <FolderOpen aria-hidden />{copy.viewChanges}
+            </Button> : null}
+            {onRerunVerification ? <Button size="sm" variant="secondary" disabled={actionDisabled} onClick={onRerunVerification}>
+              <CheckCircle2 aria-hidden />{verificationPending ? copy.verifying : copy.rerunVerification}
+            </Button> : null}
+            {onAskAiToFix ? <Button size="sm" variant={confirmedProblem ? "primary" : "secondary"} disabled={actionDisabled} onClick={onAskAiToFix}>
+              <Wrench aria-hidden />{copy.askAiToFix}
+            </Button> : null}
+            {showPullRequestAction ? (
+              <Button size="sm" disabled={actionDisabled} onClick={onCreatePullRequest}>
+                <ExternalLink aria-hidden />{actionPreview.operation === "update_pull_request" ? (language === "zh" ? "更新 Pull Request" : "Update Pull Request") : copy.createPullRequest}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </section>
+  );
+}
+
+function OfficeBatchResult({
+  batch,
+  copy,
+  language,
+}: {
+  batch: NonNullable<NonNullable<LocalWorkItemDeliveryEvidence["actionPreview"]["officeDetails"]>["batch"]>;
+  copy: SummaryCopy;
+  language: "zh" | "en";
+}) {
+  const stateLabel: Record<string, [string, string]> = {
+    pending: ["待处理", "Pending"],
+    waiting: ["等待执行", "Waiting"],
+    committing: ["处理中", "Committing"],
+    partial: ["部分完成", "Partial"],
+    committed: ["已完成", "Committed"],
+    rolled_back: ["已回滚", "Rolled back"],
+    needs_attention: ["需要处理", "Needs attention"],
+    invalidated: ["已失效", "Invalidated"],
+    expired: ["已过期", "Expired"],
+  };
+  const rollbackLabel: Record<string, [string, string]> = {
+    prepared: ["系统已准备自动恢复", "Automatic recovery prepared"],
+    available: ["已记录恢复保障", "Recovery evidence recorded"],
+    partial: ["部分回滚", "Partial"],
+    rolled_back: ["已回滚", "Rolled back"],
+    not_available: ["无回滚记录", "Not available"],
+  };
+  const state = stateLabel[batch.state]?.[language === "zh" ? 0 : 1] ?? batch.state;
+  const rollback = rollbackLabel[batch.rollback.status]?.[language === "zh" ? 0 : 1] ?? batch.rollback.status;
+  return (
+    <div className="mt-3 rounded-md border border-border/80 bg-background/60 px-3 py-2.5" data-testid="office-batch-result">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-xs font-medium text-muted-foreground">{copy.officeBatchResult}</p>
+        <Badge tone={batch.failedCount > 0 || batch.rollback.status === "partial" ? "warning" : batch.state === "committed" ? "success" : "neutral"}>{state}</Badge>
+      </div>
+      <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
+        <div><dt className="inline text-muted-foreground">{copy.batchSuccess}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{batch.successCount}</dd></div>
+        {(batch.restoredCount ?? batch.rollback.restoredTargets) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "已恢复：" : "Restored: "}</dt><dd className="inline">{batch.restoredCount ?? batch.rollback.restoredTargets}</dd></div> : null}
+        <div><dt className="inline text-muted-foreground">{copy.batchFailed}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{batch.failedCount}</dd></div>
+        {(batch.pendingCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "待处理：" : "Pending: "}</dt><dd className="inline">{batch.pendingCount}</dd></div> : null}
+        {(batch.unknownCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "状态未知：" : "Unknown: "}</dt><dd className="inline">{batch.unknownCount}</dd></div> : null}
+        <div><dt className="inline text-muted-foreground">{copy.batchRollback}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{rollback}</dd></div>
+      </dl>
+      {batch.rollback.restoredTargets || batch.rollback.blockedTargets ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          {language === "zh"
+            ? `已恢复 ${batch.rollback.restoredTargets} 项，受阻 ${batch.rollback.blockedTargets} 项`
+            : `${batch.rollback.restoredTargets} restored, ${batch.rollback.blockedTargets} blocked`}
+        </p>
+      ) : null}
+      <details className="mt-2">
+        <summary className="cursor-pointer text-xs font-medium">
+          {language === "zh" ? `${copy.batchDetails}（${batch.operationCount}）` : `${copy.batchDetails} (${batch.operationCount})`}
+        </summary>
+        {batch.details.length ? (
+          <ul className="mt-2 space-y-1.5">
+            {batch.details.slice(0, 8).map((detail, index) => (
+              <li key={detail.id ?? `${detail.businessKey ?? "item"}-${index}`} className="rounded bg-muted/40 px-2.5 py-2 text-xs">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="font-medium">{detail.businessKey ?? (language === "zh" ? `第 ${detail.rowNumber ?? "?"} 行` : `Row ${detail.rowNumber ?? "?"}`)}</span>
+                  <Badge tone={detail.state === "committed" ? "success" : ["invalidated", "expired"].includes(detail.state) ? "danger" : "neutral"}>{stateLabel[detail.state]?.[language === "zh" ? 0 : 1] ?? detail.state}</Badge>
+                </div>
+                {detail.changedFields.length ? <p className="mt-1 text-muted-foreground">{language === "zh" ? "字段：" : "Fields: "}{detail.changedFields.join("、")}</p> : null}
+              </li>
+            ))}
+          </ul>
+        ) : <p className="mt-2 text-xs text-muted-foreground">{copy.batchNoDetails}</p>}
+      </details>
+    </div>
   );
 }

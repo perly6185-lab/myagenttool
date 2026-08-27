@@ -54,6 +54,7 @@ import { planDiscreteTasks } from "./discrete-task-planner.mjs";
 import { validateTaskPlan } from "./task-plan-contract.mjs";
 import { taskPlanCapabilityReadiness } from "./task-capability-readiness.mjs";
 import { applyResultRepairSpec, buildResultRepairTaskSpec } from "./result-repair-task.mjs";
+import { buildDeliveryEvidence } from "./work-item-delivery-evidence.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -775,6 +776,7 @@ function buildDataContextSnapshot({
   capturedAt,
   inputAssets = [],
   localContentRefs = [],
+  taskResourceRefs = [],
   channelTaskContract = null,
 } = {}) {
   const channelOrigin = channelTaskContract?.source === "channel";
@@ -808,6 +810,22 @@ function buildDataContextSnapshot({
       version: reference?.selectedFingerprint ? String(reference.selectedFingerprint).slice(0, 200) : null,
       hash: reference?.selectedFingerprint ? String(reference.selectedFingerprint).slice(0, 200) : null,
       purpose: ["reference", "required_input"].includes(reference?.purpose) ? reference.purpose : "reference",
+      trust: "untrusted_reference",
+    });
+  }
+  for (const reference of Array.isArray(taskResourceRefs) ? taskResourceRefs.slice(0, 20) : []) {
+    const sourceId = reference?.resourceId ?? reference?.id ?? null;
+    if (!sourceId) continue;
+    sources.push({
+      sourceId: String(sourceId).slice(0, 300),
+      kind: "work_resource",
+      origin: reference?.locality === "remote" ? "remote_resource_reference" : "local_resource_reference",
+      name: String(reference?.title ?? "工作资料").replace(/[\r\n\t]/g, " ").slice(0, 300),
+      path: null,
+      family: reference?.resourceKind ? String(reference.resourceKind).slice(0, 80) : null,
+      version: reference?.selectedVersion ? String(reference.selectedVersion).slice(0, 200) : null,
+      hash: null,
+      purpose: ["query_source", "change_target", "reference"].includes(reference?.purpose) ? reference.purpose : "reference",
       trust: "untrusted_reference",
     });
   }
@@ -848,6 +866,7 @@ function compareDataContextSnapshot(item) {
     capturedAt: item?.createdAt ?? item?.updatedAt,
     inputAssets: item?.inputAssets,
     localContentRefs: item?.localContentRefs,
+    taskResourceRefs: item?.taskResourceRefs,
     channelTaskContract: item?.channelTaskContract,
   });
   const current = buildDataContextSnapshot({
@@ -856,6 +875,7 @@ function compareDataContextSnapshot(item) {
     capturedAt: baseline.capturedAt,
     inputAssets: item?.inputAssets,
     localContentRefs: item?.localContentRefs,
+    taskResourceRefs: item?.taskResourceRefs,
     channelTaskContract: item?.channelTaskContract,
   });
   const baselineByKey = new Map((baseline.sources ?? []).map((source) => [
@@ -975,6 +995,11 @@ function contentReferenceView(reference) {
   return { ...visible, fingerprintPinned: Boolean(reference?.selectedFingerprint) };
 }
 
+function taskResourceReferenceView(reference) {
+  const { selectedVersion: _selectedVersion, ...visible } = reference ?? {};
+  return { ...visible, versionPinned: Boolean(reference?.selectedVersion) };
+}
+
 export function createWorkItemService({
   state,
   now,
@@ -995,6 +1020,7 @@ export function createWorkItemService({
   inspectTaskMaterialDraft = null,
   resolveClaimedTaskMaterial = null,
   resolveLocalContentReference = null,
+  resolveWorkResourceReference = null,
   probeMediaAsset = null,
   store,
 }) {
@@ -1669,6 +1695,7 @@ export function createWorkItemService({
       ...publicItem,
       dataContext: dataContextView(item),
       localContentRefs: (item.localContentRefs ?? []).map(contentReferenceView),
+      taskResourceRefs: (item.taskResourceRefs ?? []).map(taskResourceReferenceView),
       acceptanceCriteria: visibleAcceptanceCriteria,
       acceptanceCriteriaSource: (publicItem.acceptanceCriteria ?? []).length
         ? publicItem.executionContractSource ?? "structured"
@@ -2504,6 +2531,54 @@ export function createWorkItemService({
       changedFiles: [],
       completedAt: latestExecutionInvocation?.completedAt ?? latestRun?.updatedAt ?? null,
     } : null);
+    const storedLedgerPreview = item.channelTaskContract?.ledgerMutationPreview ?? item.ledgerMutationPreview ?? null;
+    const liveLedgerBatch = storedLedgerPreview?.kind === "batch" && storedLedgerPreview.id
+      ? (state.ledgerBatchUpsertPreviews ?? []).find((batch) =>
+        batch.id === storedLedgerPreview.id
+        && batch.ownerTeamId === item.ownerTeamId
+        && batch.projectId === item.projectId) ?? null
+      : null;
+    const liveLedgerJournal = liveLedgerBatch
+      ? (state.ledgerBatchMutationJournals ?? [])
+        .filter((journal) => journal.batchPreviewId === liveLedgerBatch.id && journal.ownerTeamId === item.ownerTeamId)
+        .sort((left, right) => String(left.updatedAt ?? "").localeCompare(String(right.updatedAt ?? "")))
+        .at(-1) ?? null
+      : null;
+    const liveLedgerChildren = liveLedgerBatch
+      ? (liveLedgerBatch.childPreviewIds ?? []).map((previewId) =>
+        (state.ledgerUpsertPreviews ?? []).find((preview) =>
+          preview.id === previewId && preview.ownerTeamId === item.ownerTeamId && preview.projectId === item.projectId)
+          ?? { id: previewId, state: "unknown", missing: true })
+      : [];
+    const staleLedgerBatch = storedLedgerPreview?.kind === "batch" && storedLedgerPreview.id && !liveLedgerBatch;
+    const evidenceItem = liveLedgerBatch || staleLedgerBatch
+      ? {
+          ...item,
+          channelTaskContract: {
+            ...(item.channelTaskContract ?? {}),
+            ledgerMutationPreview: {
+              ...(liveLedgerBatch ?? storedLedgerPreview),
+              kind: "batch",
+              state: staleLedgerBatch ? "needs_attention" : liveLedgerBatch.state,
+              children: staleLedgerBatch ? [] : liveLedgerChildren,
+              journal: staleLedgerBatch ? null : liveLedgerJournal,
+              evidenceStale: staleLedgerBatch,
+            },
+          },
+        }
+      : item;
+    const deliveryEvidence = pendingLocalDelivery
+      ? buildDeliveryEvidence({
+        item: evidenceItem,
+        autoRun: latestRun,
+        deliveryReport: projectedDeliveryReport,
+        deliveryReview: deliveryReview ?? projectedDeliveryReview,
+        deliveryMode,
+        worktreeId: latestRun.localDelivery.worktreeId,
+        branchName: latestRun.localDelivery.branchName ?? deliveryWorktree?.branchName ?? null,
+        remoteUrl: deliveryRemoteUrl,
+      })
+      : null;
     const taskOutcome = projectWorkItemOutcome({
       item,
       latestRun,
@@ -2749,7 +2824,9 @@ export function createWorkItemService({
               reviewInvocationId: deliveryReview.reviewInvocationId ?? null,
               createdAt: deliveryReview.createdAt ?? null,
             } : null,
+            evidence: deliveryEvidence,
           } : null,
+          deliveryEvidence,
           activeClaim: activeClaim ? {
             actorId: activeClaim.claimedBy ?? null,
             claimedAt: activeClaim.claimedAt ?? null,
@@ -3262,6 +3339,7 @@ export function createWorkItemService({
               capturedAt: stored.updatedAt,
               inputAssets: stored.inputAssets,
               localContentRefs: stored.localContentRefs,
+              taskResourceRefs: stored.taskResourceRefs,
               channelTaskContract: stored.channelTaskContract,
             });
           });
@@ -3347,6 +3425,7 @@ export function createWorkItemService({
         capturedAt: repair.updatedAt,
         inputAssets: repair.inputAssets,
         localContentRefs: repair.localContentRefs,
+        taskResourceRefs: repair.taskResourceRefs,
         channelTaskContract: repair.channelTaskContract,
       });
       const goal = source.workGoalId
@@ -4750,6 +4829,7 @@ export function createWorkItemService({
       externalBindings: [],
       executionBindings: [],
       localContentRefs: [],
+      taskResourceRefs: [],
       materialChangesPending: false,
     };
     const materialDraftId = input.materialDraftId == null ? null : String(input.materialDraftId).trim();
@@ -4777,6 +4857,7 @@ export function createWorkItemService({
       capturedAt: timestamp,
       inputAssets: workItem.inputAssets,
       localContentRefs: workItem.localContentRefs,
+      taskResourceRefs: workItem.taskResourceRefs,
       channelTaskContract: workItem.channelTaskContract,
     });
     workItem.dataContextSnapshotHistory = [];
@@ -6875,6 +6956,7 @@ export function createWorkItemService({
           capturedAt: timestamp,
           inputAssets: item.inputAssets,
           localContentRefs: item.localContentRefs,
+          taskResourceRefs: item.taskResourceRefs,
           channelTaskContract: item.channelTaskContract,
         }),
         confirmedAt: confirm === true ? timestamp : null,
@@ -7007,6 +7089,211 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
   }
 
+  async function addResourceReference({
+    workItemId, resourceId, expectedRevision, purpose = "reference",
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") {
+      return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    }
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    if (typeof resolveWorkResourceReference !== "function") {
+      return { ok: false, status: 503, body: { error: "work_resource_resolver_unavailable" } };
+    }
+    const resolved = await resolveWorkResourceReference({ resourceId, projectId: item.projectId }, actor);
+    if (resolved?.status >= 400) return { ok: false, status: resolved.status, body: resolved.body };
+    const resource = resolved?.body;
+    if (!resource || (resource.projectId && resource.projectId !== item.projectId)) {
+      return { ok: false, status: 409, body: { error: "work_resource_project_mismatch" } };
+    }
+    if (!(resource.allowedPurposes ?? []).includes(purpose)) {
+      return { ok: false, status: 400, body: { error: "work_resource_reference_purpose_invalid" } };
+    }
+    const existingLocal = (item.localContentRefs ?? []).find((reference) => reference.resourceId === resource.resourceId);
+    const existingResource = (item.taskResourceRefs ?? []).find((reference) => reference.resourceId === resource.resourceId);
+    if (existingLocal || existingResource) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), reference: existingLocal ? contentReferenceView(existingLocal) : taskResourceReferenceView(existingResource), replayed: true } };
+    }
+    if ((item.localContentRefs ?? []).length + (item.taskResourceRefs ?? []).length >= 20) {
+      return { ok: false, status: 409, body: { error: "work_resource_reference_limit_exceeded" } };
+    }
+    let reference;
+    let targetCollection;
+    if (resource.contentId) {
+      if (typeof resolveLocalContentReference !== "function") {
+        return { ok: false, status: 503, body: { error: "local_content_resolver_unavailable" } };
+      }
+      const original = await resolveLocalContentReference({ contentId: resource.contentId, projectId: item.projectId }, actor);
+      if (!original?.ok) return { ok: false, status: original?.status ?? 409, body: { error: original?.error ?? "local_content_original_unavailable" } };
+      reference = {
+        id: nextId("wcr"),
+        contentId: resource.contentId,
+        resourceId: resource.resourceId,
+        purpose: purpose === "query_source" ? "required_input" : purpose === "change_target" ? "required_input" : purpose,
+        selectedFingerprint: original.sha256 ?? null,
+        title: resource.title,
+        kind: original.record?.kind ?? resource.resourceKind,
+        addedBy: actorUser(actor),
+        createdAt: now(),
+      };
+      targetCollection = "localContentRefs";
+    } else {
+      reference = {
+        id: nextId("wrr"),
+        resourceId: resource.resourceId,
+        purpose,
+        title: resource.title,
+        resourceKind: resource.resourceKind,
+        businessRole: resource.businessRole,
+        locality: resource.locality,
+        sourceLabel: resource.sourceLabel,
+        selectedVersion: resource.currentVersion,
+        addedBy: actorUser(actor),
+        createdAt: now(),
+      };
+      targetCollection = "taskResourceRefs";
+    }
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      item[targetCollection] = [...(item[targetCollection] ?? []), reference];
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "work_resource_reference_added", {
+        referenceId: reference.id,
+        resourceId: reference.resourceId,
+        purpose,
+        locality: resource.locality,
+        appliesTo: active ? "future_execution" : "next_execution",
+      });
+    });
+    return { ok: true, status: 201, body: { workItem: workItemView(item, actor), reference: targetCollection === "localContentRefs" ? contentReferenceView(reference) : taskResourceReferenceView(reference), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
+  async function refreshResourceReference({ workItemId, referenceId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    const reference = (item.taskResourceRefs ?? []).find((candidate) => candidate.id === String(referenceId));
+    if (!reference) return { ok: false, status: 404, body: { error: "work_resource_reference_not_found" } };
+    if (typeof resolveWorkResourceReference !== "function") return { ok: false, status: 503, body: { error: "work_resource_resolver_unavailable" } };
+    const resolved = await resolveWorkResourceReference({ resourceId: reference.resourceId, projectId: item.projectId }, actor);
+    if (resolved?.status >= 400) return { ok: false, status: resolved.status, body: resolved.body };
+    const resource = resolved?.body;
+    if (!resource || (resource.projectId && resource.projectId !== item.projectId)) {
+      return { ok: false, status: 409, body: { error: "work_resource_project_mismatch" } };
+    }
+    if (resource.availability && resource.availability !== "ready") {
+      return { ok: false, status: 409, body: { error: "work_resource_unavailable" } };
+    }
+    if (!(resource.allowedPurposes ?? []).includes(reference.purpose)) {
+      return { ok: false, status: 409, body: { error: "work_resource_reference_purpose_invalid" } };
+    }
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      reference.selectedVersion = resource.currentVersion ?? null;
+      reference.title = resource.title;
+      reference.resourceKind = resource.resourceKind;
+      reference.businessRole = resource.businessRole;
+      reference.locality = resource.locality;
+      reference.sourceLabel = resource.sourceLabel;
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "work_resource_reference_refreshed", {
+        referenceId: reference.id,
+        resourceId: reference.resourceId,
+        versionPinned: Boolean(reference.selectedVersion),
+        appliesTo: active ? "future_execution" : "next_execution",
+      });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), reference: taskResourceReferenceView(reference), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
+  async function inspectResourceReferences({ workItemId } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const normalizeFingerprint = (value) => String(value ?? "").replace(/^sha256:/, "");
+    const localChecks = await Promise.all((item.localContentRefs ?? []).map(async (reference) => {
+      const blocking = reference.purpose !== "reference";
+      if (typeof resolveLocalContentReference !== "function") {
+        return { referenceId: reference.id, kind: "local_content", title: reference.title, purpose: reference.purpose, locality: "local", sourceLabel: "本机资料", status: "unknown", blocking, versionPinned: Boolean(reference.selectedFingerprint), canAcceptCurrentVersion: false, canRecheck: true, recovery: "recheck" };
+      }
+      const resolved = await resolveLocalContentReference({ contentId: reference.contentId, projectId: item.projectId }, actor);
+      if (!resolved?.ok) {
+        return { referenceId: reference.id, kind: "local_content", title: reference.title, purpose: reference.purpose, locality: "local", sourceLabel: "本机资料", status: "unavailable", blocking, versionPinned: Boolean(reference.selectedFingerprint), canAcceptCurrentVersion: false, canRecheck: true, recovery: "locate_or_replace", reason: resolved?.error ?? "local_content_original_unavailable" };
+      }
+      const changed = Boolean(reference.selectedFingerprint)
+        && normalizeFingerprint(reference.selectedFingerprint) !== normalizeFingerprint(resolved.sha256);
+      return { referenceId: reference.id, kind: "local_content", title: reference.title, purpose: reference.purpose, locality: "local", sourceLabel: "本机资料", status: changed ? "changed" : "ready", blocking, versionPinned: Boolean(reference.selectedFingerprint), canAcceptCurrentVersion: false, canRecheck: true, recovery: changed ? "refresh_local_record" : null };
+    }));
+    const structuredChecks = await Promise.all((item.taskResourceRefs ?? []).map(async (reference) => {
+      const blocking = reference.purpose !== "reference";
+      if (typeof resolveWorkResourceReference !== "function") {
+        return { referenceId: reference.id, kind: "work_resource", title: reference.title, purpose: reference.purpose, locality: reference.locality, sourceLabel: reference.sourceLabel, status: "unknown", blocking, versionPinned: Boolean(reference.selectedVersion), canAcceptCurrentVersion: false, canRecheck: true, recovery: "recheck" };
+      }
+      const resolved = await resolveWorkResourceReference({ resourceId: reference.resourceId, projectId: item.projectId }, actor);
+      if (resolved?.status >= 400 || !resolved?.body) {
+        return { referenceId: reference.id, kind: "work_resource", title: reference.title, purpose: reference.purpose, locality: reference.locality, sourceLabel: reference.sourceLabel, status: "unavailable", blocking, versionPinned: Boolean(reference.selectedVersion), canAcceptCurrentVersion: false, canRecheck: true, recovery: "manage_source", reason: resolved?.body?.error ?? "work_resource_unavailable" };
+      }
+      const resource = resolved.body;
+      const unavailable = resource.availability && resource.availability !== "ready";
+      const changed = !unavailable && Boolean(reference.selectedVersion) && Boolean(resource.currentVersion)
+        && String(reference.selectedVersion) !== String(resource.currentVersion);
+      return {
+        referenceId: reference.id,
+        kind: "work_resource",
+        title: reference.title,
+        purpose: reference.purpose,
+        locality: reference.locality,
+        sourceLabel: reference.sourceLabel,
+        status: unavailable ? "unavailable" : changed ? "changed" : "ready",
+        blocking,
+        versionPinned: Boolean(reference.selectedVersion),
+        canAcceptCurrentVersion: changed,
+        canRecheck: true,
+        recovery: unavailable ? "manage_source" : changed ? "accept_current_version" : null,
+        ...(unavailable ? { reason: "work_resource_unavailable" } : {}),
+      };
+    }));
+    const references = [...localChecks, ...structuredChecks];
+    const counts = references.reduce((summary, reference) => {
+      summary[reference.status] += 1;
+      if (reference.blocking && reference.status !== "ready") summary.blocking += 1;
+      return summary;
+    }, { ready: 0, changed: 0, unavailable: 0, unknown: 0, blocking: 0 });
+    return { ok: true, status: 200, body: { preflight: { checkedAt: now(), executable: counts.blocking === 0, counts, references } } };
+  }
+
+  function removeResourceReference({ workItemId, referenceId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    const structured = (item.taskResourceRefs ?? []).find((candidate) => candidate.id === String(referenceId));
+    const local = (item.localContentRefs ?? []).find((candidate) => candidate.id === String(referenceId) && candidate.resourceId);
+    const reference = structured ?? local;
+    if (!reference) return { ok: false, status: 404, body: { error: "work_resource_reference_not_found" } };
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      if (structured) item.taskResourceRefs = (item.taskResourceRefs ?? []).filter((candidate) => candidate.id !== reference.id);
+      else item.localContentRefs = (item.localContentRefs ?? []).filter((candidate) => candidate.id !== reference.id);
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "work_resource_reference_removed", { referenceId: reference.id, resourceId: reference.resourceId, appliesTo: active ? "future_execution" : "next_execution" });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
   return {
     listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
     listReportDrafts: reportDraftService.list,
@@ -7039,5 +7326,9 @@ export function createWorkItemService({
     restoreMaterial,
     addContentReference,
     removeContentReference,
+    addResourceReference,
+    refreshResourceReference,
+    inspectResourceReferences,
+    removeResourceReference,
   };
 }

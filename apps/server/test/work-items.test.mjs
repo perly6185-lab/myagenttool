@@ -40,6 +40,7 @@ function harness({
   inspectTaskMaterialDraft,
   resolveClaimedTaskMaterial,
   resolveLocalContentReference,
+  resolveWorkResourceReference,
   probeMediaAsset,
 } = {}) {
   let counter = 0;
@@ -84,6 +85,7 @@ function harness({
     inspectTaskMaterialDraft,
     resolveClaimedTaskMaterial,
     resolveLocalContentReference,
+    resolveWorkResourceReference,
     probeMediaAsset,
   });
   return { state, events, alerts, service };
@@ -1971,6 +1973,73 @@ test("adds and removes scoped local content references without copying bytes", a
   assert.deepEqual(removed.body.workItem.localContentRefs, []);
 });
 
+test("binds a structured work resource to a task without copying connector rows", async () => {
+  const resourceId = `wres_${"c".repeat(32)}`;
+  let currentVersion = "4";
+  const { service, state } = harness({
+    resolveWorkResourceReference: async () => ({
+      status: 200,
+      body: {
+        resourceId,
+        projectId: "prj_a",
+        title: "客户台账",
+        resourceKind: "table",
+        businessRole: "contact",
+        locality: "remote",
+        sourceLabel: "CRM",
+        currentVersion,
+        contentId: null,
+        allowedPurposes: ["query_source", "reference"],
+      },
+    }),
+  });
+  const created = service.createWorkItem({ projectId: "prj_a", title: "检查客户状态" }, ACTOR_A).body.workItem;
+  const added = await service.addResourceReference({
+    workItemId: created.id,
+    resourceId,
+    expectedRevision: created.revision,
+    purpose: "query_source",
+  }, ACTOR_A);
+
+  assert.equal(added.status, 201);
+  assert.equal(added.body.reference.resourceId, resourceId);
+  assert.equal(added.body.reference.locality, "remote");
+  assert.equal(added.body.reference.versionPinned, true);
+  assert.equal(Object.hasOwn(added.body.reference, "selectedVersion"), false);
+  assert.equal(added.body.workItem.taskResourceRefs.length, 1);
+  assert.equal(state.workItems[0].taskResourceRefs[0].sourceLabel, "CRM");
+  assert.equal(Object.hasOwn(state.workItems[0].taskResourceRefs[0], "rows"), false);
+
+  currentVersion = "5";
+  const drifted = await service.inspectResourceReferences({ workItemId: created.id }, ACTOR_A);
+  assert.equal(drifted.status, 200);
+  assert.equal(drifted.body.preflight.executable, false);
+  assert.deepEqual(drifted.body.preflight.counts, { ready: 0, changed: 1, unavailable: 0, unknown: 0, blocking: 1 });
+  assert.equal(drifted.body.preflight.references[0].canAcceptCurrentVersion, true);
+  assert.equal(Object.hasOwn(drifted.body.preflight.references[0], "currentVersion"), false);
+  const refreshed = await service.refreshResourceReference({
+    workItemId: created.id,
+    referenceId: added.body.reference.id,
+    expectedRevision: added.body.workItem.revision,
+  }, ACTOR_A);
+  assert.equal(refreshed.status, 200);
+  assert.equal(refreshed.body.reference.versionPinned, true);
+  assert.equal(Object.hasOwn(refreshed.body.reference, "selectedVersion"), false);
+  assert.equal(state.workItems[0].taskResourceRefs[0].selectedVersion, "5");
+  assert.equal(state.workItemActivities.some((activity) => activity.action === "work_resource_reference_refreshed"), true);
+  const ready = await service.inspectResourceReferences({ workItemId: created.id }, ACTOR_A);
+  assert.equal(ready.body.preflight.executable, true);
+  assert.equal(ready.body.preflight.references[0].status, "ready");
+
+  const removed = service.removeResourceReference({
+    workItemId: created.id,
+    referenceId: added.body.reference.id,
+    expectedRevision: refreshed.body.workItem.revision,
+  }, ACTOR_A);
+  assert.equal(removed.status, 200);
+  assert.deepEqual(removed.body.workItem.taskResourceRefs, []);
+});
+
 test("AI execution input is exposed as input work instead of an approval for any route", () => {
   const { service, state } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "Clarify scope" }, ACTOR_A).body.workItem;
@@ -3109,6 +3178,10 @@ test("detail exposes the readable delivery report and independent AI review", ()
   assert.equal(detail.delivery.review.source, "ai");
   assert.equal(detail.delivery.review.reviewerName, "Codex");
   assert.equal(detail.delivery.review.comments[0].severity, "high");
+  assert.equal(detail.deliveryEvidence.status, "changes_requested");
+  assert.equal(detail.deliveryEvidence.review.findingCounts.high, 1);
+  assert.equal(detail.deliveryEvidence.verification.status, "passed");
+  assert.equal(detail.deliveryEvidence.actionPreview.canProceed, false);
   assert.deepEqual(detail.runHistory, [], "the independent review is not presented as another execution attempt");
 
   state.autoRuns[0].deliveryReview = { ...state.autoRuns[0].deliveryReview, status: "queued", verdict: null };
@@ -3116,6 +3189,51 @@ test("detail exposes the readable delivery report and independent AI review", ()
   state.worktreeReviews = [];
   const running = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability;
   assert.equal(running.delivery.aiReview.status, "running", "an acknowledged review is no longer shown as merely queued");
+});
+
+test("detail projects the current Ledger batch instead of a stale channel snapshot", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "更新客户台账", taskKind: "business_spreadsheet" }, ACTOR_A).body.workItem;
+  const storedItem = state.workItems[0];
+  storedItem.channelTaskContract = {
+    goal: "更新客户台账",
+    dataMutationPreview: { operation: "update", estimatedAffectedRows: 2, requiredFields: ["status"] },
+    ledgerMutationPreview: { kind: "batch", id: "lbp_live", state: "pending", revision: 1, children: [] },
+  };
+  storedItem.executionBindings = [{ kind: "auto_run", targetId: "aur_office", worktreeId: "wtr_office", createdAt: "2026-07-24T00:01:00.000Z" }];
+  state.autoRuns = [{
+    id: "aur_office", projectId: "prj_a", status: "done", invocationId: "inv_office",
+    link: { type: "local_issue", number: item.localNumber },
+    decision: { path: "office", workKind: "office" },
+    localDelivery: { worktreeId: "wtr_office", branchName: "office-ledger" },
+    deliveryReport: { summary: "Prepared ledger update.", verification: { passed: true, verified: true, summary: "Workbook validated." }, changedFiles: ["客户台账.xlsx"] },
+    deliveryReview: { status: "completed", verdict: "approved", summary: "Result structure is valid.", findings: [] },
+    updatedAt: "2026-07-24T00:02:00.000Z",
+  }];
+  state.worktrees = [{ id: "wtr_office", projectId: "prj_a", branchName: "office-ledger" }];
+  state.ledgerBatchUpsertPreviews = [{
+    id: "lbp_live", ownerTeamId: "team_a", projectId: "prj_a", state: "partial", revision: 4,
+    childPreviewIds: ["lup_1", "lup_2", "lup_missing"], targetCount: 3, operationCount: 3,
+  }];
+  state.ledgerUpsertPreviews = [
+    { id: "lup_1", ownerTeamId: "team_a", projectId: "prj_a", state: "rolled_back", businessKey: "CUS-001", action: "update", changedCells: [{ field: "status" }] },
+    { id: "lup_2", ownerTeamId: "team_a", projectId: "prj_a", state: "invalidated", businessKey: "CUS-002", action: "update", changedCells: [{ field: "status" }] },
+  ];
+  state.ledgerBatchMutationJournals = [{
+    id: "lbj_live", batchPreviewId: "lbp_live", ownerTeamId: "team_a", projectId: "prj_a", status: "partial",
+    appliedPreviewIds: ["lup_1"], snapshots: [{ restored: true }, { restored: false, blockedReason: "target_changed" }],
+    rollback: { restoredTargets: 1, blockedTargets: 1 }, updatedAt: "2026-07-24T00:03:00.000Z",
+  }];
+
+  const evidence = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability.deliveryEvidence;
+  assert.equal(evidence.status, "office_batch_attention");
+  assert.equal(evidence.actionPreview.officeDetails.batch.state, "partial");
+  assert.equal(evidence.actionPreview.officeDetails.batch.successCount, 0);
+  assert.equal(evidence.actionPreview.officeDetails.batch.restoredCount, 1);
+  assert.equal(evidence.actionPreview.officeDetails.batch.failedCount, 1);
+  assert.equal(evidence.actionPreview.officeDetails.batch.unknownCount, 1);
+  assert.equal(evidence.actionPreview.officeDetails.batch.details[1].businessKey, "CUS-002");
+  assert.equal(evidence.actionPreview.officeDetails.batch.details[2].state, "unknown");
 });
 
 test("AI issue assistance returns an editable draft without creating work", () => {

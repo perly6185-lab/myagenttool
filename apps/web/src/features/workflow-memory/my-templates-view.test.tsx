@@ -207,7 +207,9 @@ describe("MyTemplatesView", () => {
         status: "preview",
         creates: 1,
         updates: 0,
+        deletes: 0,
         unchanged: 0,
+        effects: { readsExternal: true, writesExternal: false, upsertsLocal: true, deletesLocal: false },
         totalRows: 1,
         sampleRows: [{ label: "张三", businessKey: "customer-zhang", change: "create" }],
         expiresAt: "2026-08-26T01:00:00.000Z",
@@ -224,13 +226,35 @@ describe("MyTemplatesView", () => {
 
     renderView();
     fireEvent.click(await screen.findByRole("button", { name: "查看专业设置" }));
-    fireEvent.click(await screen.findByRole("button", { name: "预览同步" }));
-    expect(await screen.findByText(/同步预览：新增 1 条/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "审批并同步" }));
+    expect(await screen.findByText("连接检查与数据同步")).toBeTruthy();
+    expect(screen.getByText(/检查连接不读取批次/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "读取并预览同步" }));
+    expect(await screen.findByText(/同步预览：新增 1 条，更新 0 条，删除 0 条/)).toBeTruthy();
+    expect(screen.getByText(/本次不会删除本地记录，也不会修改外部系统/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "确认更新本地数据" }));
 
     await waitFor(() => expect(mocks.issueApprovalGrant).toHaveBeenCalledWith("channel_object_connector_sync_confirm", "csync_preview_1"));
     expect(mocks.confirmChannelObjectConnectorSync).toHaveBeenCalledWith("csync_preview_1", "issued-token");
     expect(await screen.findByText("同步完成：新增或更新 1 条，失败 0 条。")).toBeTruthy();
+  });
+
+  it("checks a remote connection without reading or syncing a data batch", async () => {
+    mocks.listChannelObjectConnectors.mockResolvedValue({
+      connectors: [{ id: "crm_read_only", name: "客户 CRM", mode: "read_only", kinds: ["contact"], configured: true }],
+    });
+    mocks.listChannelObjectConnectorConfigs.mockResolvedValue({
+      configs: [{ id: "config-1", projectId: "project-1", connectorId: "crm_read_only", name: "客户 CRM", kinds: ["contact"], status: "enabled", credentialConfigured: true, health: "unknown", lastTestAt: null, errorCode: null, revision: 1, createdAt: "2026-08-27T00:00:00.000Z", updatedAt: "2026-08-27T00:00:00.000Z" }],
+      count: 1,
+    });
+    mocks.testChannelObjectConnectorConfig.mockResolvedValue({ ok: true, error: null, config: { id: "config-1", health: "ready" } });
+
+    renderView();
+    fireEvent.click(await screen.findByRole("button", { name: "查看专业设置" }));
+    fireEvent.click(await screen.findByRole("button", { name: "仅检查连接" }));
+
+    await waitFor(() => expect(mocks.testChannelObjectConnectorConfig).toHaveBeenCalledWith("config-1"));
+    expect(await screen.findByText(/只验证可用性，没有读取批次或同步数据/)).toBeTruthy();
+    expect(mocks.previewChannelObjectConnectorSync).not.toHaveBeenCalled();
   });
 
   it("shows ordinary users what each learned template receives and produces", async () => {

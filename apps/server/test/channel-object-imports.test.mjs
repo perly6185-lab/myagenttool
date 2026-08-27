@@ -165,6 +165,8 @@ test("reads the first XLSX sheet and syncs existing business entities through a 
   const syncPreview = await h.connectors.syncChannelObjectConnector({ connectorId: "business_entities", projectId: "prj_a", kind: "contact" }, ACTOR);
   assert.equal(syncPreview.status, 201);
   assert.equal(syncPreview.body.approvalRequired, true);
+  assert.equal(syncPreview.body.preview.deletes, 0);
+  assert.deepEqual(syncPreview.body.preview.effects, { readsExternal: true, writesExternal: false, upsertsLocal: true, deletesLocal: false });
   assert.equal(h.state.channelObjectRecords.length, beforeSyncCount);
   const sync = h.connectors.confirmChannelObjectConnectorSync({ previewId: syncPreview.body.preview.id, approvalToken: "issued-token" }, ACTOR);
   assert.equal(sync.status, 200);

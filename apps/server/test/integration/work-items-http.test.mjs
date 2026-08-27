@@ -1007,6 +1007,19 @@ test("approved local delivery fast-forwards the base and only then closes the is
   });
   assert.equal(verified.status, 201);
   detail = await call(`/api/work-items/${item.id}`);
+  const blockedBeforeVerification = await call(`/api/work-items/${item.id}/delivery/local`, {
+    method: "POST", body: { expectedRevision: detail.body.workItem.revision },
+  });
+  assert.equal(blockedBeforeVerification.status, 409);
+  assert.equal(blockedBeforeVerification.body.error, "work_item_delivery_evidence_not_ready");
+  assert.deepEqual(blockedBeforeVerification.body.blockingReasonCodes, ["verification_required"]);
+  autoRun.deliveryReport = {
+    summary: "Delivery is ready.",
+    verification: { passed: true, verified: true, command: "manual review", exitCode: 0, summary: "Delivery reviewed." },
+    changedFiles: [`DELIVERY-${item.localNumber}.txt`],
+    completedAt: new Date().toISOString(),
+  };
+  detail = await call(`/api/work-items/${item.id}`);
   const delivered = await call(`/api/work-items/${item.id}/delivery/local`, {
     method: "POST", body: { expectedRevision: detail.body.workItem.revision },
   });
@@ -1493,6 +1506,15 @@ test("local content search and task references are tenant-scoped through the rea
   assert.match(preview.body.preview.text, /HTTP local library integration phrase/);
   assert.equal((await call("/api/local-content?q=integration%20phrase", { token: "tok_b" })).body.count, 0);
   assert.equal((await call(`/api/local-content/${content.id}/preview`, { token: "tok_b" })).status, 404);
+  const directory = await call("/api/resources?projectId=prj_a&resourceKind=task_output");
+  assert.equal(directory.status, 200);
+  const resource = directory.body.resources.find((candidate) => candidate.displayName === "library-source.txt");
+  assert.ok(resource);
+  assert.match(resource.id, /^wres_[a-f0-9]{32}$/);
+  assert.equal(resource.locality, "local");
+  assert.equal(JSON.stringify(resource).includes(content.id), false);
+  assert.equal((await call(`/api/resources/${resource.id}/preview`)).status, 200);
+  assert.equal((await call(`/api/resources/${resource.id}`, { token: "tok_b" })).status, 404);
 
   const consumer = await call("/api/work-items", {
     method: "POST",
@@ -1518,6 +1540,15 @@ test("local content search and task references are tenant-scoped through the rea
   );
   assert.equal(removed.status, 200);
   assert.deepEqual(removed.body.workItem.localContentRefs, []);
+
+  const resourceAttached = await call(`/api/work-items/${consumer.body.workItem.id}/resources`, {
+    method: "POST",
+    body: { resourceId: resource.id, expectedRevision: removed.body.workItem.revision, purpose: "reference" },
+  });
+  assert.equal(resourceAttached.status, 201);
+  assert.equal(resourceAttached.body.reference.resourceId, resource.id);
+  assert.equal(Object.hasOwn(resourceAttached.body.reference, "selectedFingerprint"), false);
+  assert.equal(resourceAttached.body.workItem.localContentRefs[0].resourceId, resource.id);
 });
 
 test("completed My template result feedback is recorded and summarized through HTTP", async () => {
@@ -1816,6 +1847,34 @@ test("Channel connector configuration, health check, and sync preview are team s
   });
   assert.equal(confirmed.status, 200);
   assert.equal(confirmed.body.preview.status, "confirmed");
+  const resources = await call("/api/resources?projectId=prj_a&resourceKind=table");
+  const connectorResource = resources.body.resources.find((resource) => resource.source.label === "本地联系人");
+  assert.ok(connectorResource);
+  const consumer = await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "检查连接台账", type: "task" },
+  });
+  const attached = await call(`/api/work-items/${consumer.body.workItem.id}/resources`, {
+    method: "POST",
+    body: { resourceId: connectorResource.id, expectedRevision: consumer.body.workItem.revision, purpose: "query_source" },
+  });
+  assert.equal(attached.status, 201);
+  const preflight = await call(`/api/work-items/${consumer.body.workItem.id}/resource-preflight`);
+  assert.equal(preflight.status, 200);
+  assert.equal(preflight.body.preflight.executable, true);
+  assert.equal(preflight.body.preflight.references[0].status, "ready");
+  assert.equal((await call(`/api/work-items/${consumer.body.workItem.id}/resource-preflight`, { token: "tok_b" })).status, 404);
+  const refreshedReference = await call(`/api/work-items/${consumer.body.workItem.id}/resources/${attached.body.reference.id}/refresh`, {
+    method: "POST",
+    body: { expectedRevision: attached.body.workItem.revision },
+  });
+  assert.equal(refreshedReference.status, 200);
+  assert.equal(refreshedReference.body.reference.versionPinned, true);
+  assert.equal((await call(`/api/work-items/${consumer.body.workItem.id}/resources/${attached.body.reference.id}/refresh`, {
+    token: "tok_b",
+    method: "POST",
+    body: { expectedRevision: refreshedReference.body.workItem.revision },
+  })).status, 404);
   assert.equal((await call(`/api/channel-objects/connector-configs/${saved.body.config.id}/status`, {
     method: "PATCH", body: { status: "disabled", expectedRevision: tested.body.config.revision },
   })).status, 200);

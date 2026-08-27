@@ -36,12 +36,27 @@ export type LocalContentRecord = {
 export type WorkItemContentReference = {
   id: string;
   contentId: string;
+  resourceId?: string;
   purpose: "reference" | "required_input";
   title: string;
   kind: LocalContentKind;
   addedBy: string;
   createdAt: string;
   fingerprintPinned: boolean;
+};
+
+export type WorkItemResourceReference = {
+  id: string;
+  resourceId: string;
+  purpose: "query_source" | "change_target" | "reference";
+  title: string;
+  resourceKind: WorkResource["resourceKind"];
+  businessRole: string | null;
+  locality: WorkResource["locality"];
+  sourceLabel: string;
+  addedBy: string;
+  createdAt: string;
+  versionPinned: boolean;
 };
 
 export type LocalContentCatalogStats = {
@@ -88,4 +103,62 @@ export type LocalContentPreview = {
   extraction?: { parserVersion: number; pageCount: number | null; cellCount: number | null };
   activeContentExecuted: false;
   remoteResourcesLoaded: false;
+};
+
+export type WorkResource = {
+  id: string;
+  displayName: string;
+  resourceKind: "table" | "document" | "mail" | "task_output";
+  businessRole: string | null;
+  locality: "local" | "remote";
+  projectId: string | null;
+  source: { type: "local_content" | "local_file" | "connector"; label: string; localContentLinked: boolean };
+  capabilities: Array<"preview" | "read" | "query" | "propose_change" | "commit_change">;
+  availability: "ready" | "stale" | "unavailable" | "archived";
+  currentVersion: string | null;
+  rowCount: number | null;
+  lastFreshAt: string | null;
+  summary: string | null;
+  preview: { supported: boolean; kind: "local_content" | "structured_rows" };
+  taskBinding: { supported: boolean; purposes: Array<"query_source" | "change_target" | "reference" | "required_input"> };
+  actions: {
+    canRefresh: boolean;
+    refreshMode: "local_index" | "connection_check" | null;
+    canLocate: boolean;
+    managementSection: "localLibrary" | "workflowMemory";
+  };
+  details: {
+    freshness: "current" | "stale" | "unavailable";
+    statusReason: string | null;
+    connectionHealth: string | null;
+  };
+};
+
+export type WorkResourcePreview = {
+  kind: "plain_text" | "structured_rows";
+  text?: string;
+  columns?: string[];
+  rows?: Array<{ id: string; label: string; kind: string; status: string; fields: Record<string, string | null> }>;
+  truncated: boolean;
+};
+
+export type WorkItemResourcePreflight = {
+  checkedAt: string;
+  executable: boolean;
+  counts: { ready: number; changed: number; unavailable: number; unknown: number; blocking: number };
+  references: Array<{
+    referenceId: string;
+    kind: "local_content" | "work_resource";
+    title: string;
+    purpose: string;
+    locality: "local" | "remote";
+    sourceLabel: string;
+    status: "ready" | "changed" | "unavailable" | "unknown";
+    blocking: boolean;
+    versionPinned: boolean;
+    canAcceptCurrentVersion: boolean;
+    canRecheck: boolean;
+    recovery: "recheck" | "locate_or_replace" | "refresh_local_record" | "manage_source" | "accept_current_version" | null;
+    reason?: string;
+  }>;
 };

@@ -22,8 +22,56 @@ export async function handleLocalContentRoutes({
   getLocalContentHealth,
   resolveLocalContentOriginal,
   resolveLocalContentContainer,
+  listWorkResources,
+  getWorkResource,
+  previewWorkResource,
+  refreshWorkResource,
   revealLocalContentOriginal = revealFileInFileManager,
 }) {
+  if (req.method === "GET" && url.pathname === "/api/resources") {
+    const result = typeof listWorkResources === "function"
+      ? await listWorkResources({
+        query: url.searchParams.get("q") ?? "",
+        resourceKind: url.searchParams.get("resourceKind"),
+        businessRole: url.searchParams.get("businessRole"),
+        locality: url.searchParams.get("locality"),
+        projectId: url.searchParams.get("projectId"),
+        availability: url.searchParams.get("availability"),
+        limit: url.searchParams.get("limit"),
+        offset: url.searchParams.get("offset"),
+      }, actor)
+      : { status: 503, body: { error: "work_resource_directory_unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const resourcePreviewMatch = url.pathname.match(/^\/api\/resources\/([^/]+)\/preview$/);
+  if (req.method === "GET" && resourcePreviewMatch) {
+    const result = typeof previewWorkResource === "function"
+      ? await previewWorkResource({ resourceId: decodeURIComponent(resourcePreviewMatch[1]) }, actor)
+      : { status: 503, body: { error: "work_resource_directory_unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const resourceRefreshMatch = url.pathname.match(/^\/api\/resources\/([^/]+)\/refresh$/);
+  if (req.method === "POST" && resourceRefreshMatch) {
+    const result = typeof refreshWorkResource === "function"
+      ? await refreshWorkResource({ resourceId: decodeURIComponent(resourceRefreshMatch[1]) }, actor)
+      : { status: 503, body: { error: "work_resource_directory_unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const resourceMatch = url.pathname.match(/^\/api\/resources\/([^/]+)$/);
+  if (req.method === "GET" && resourceMatch) {
+    const result = typeof getWorkResource === "function"
+      ? await getWorkResource({ resourceId: decodeURIComponent(resourceMatch[1]) }, actor)
+      : { status: 503, body: { error: "work_resource_directory_unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/local-content/retrieval/contracts") {
     const result = typeof describeLocalContentRetrieval === "function"
       ? describeLocalContentRetrieval()

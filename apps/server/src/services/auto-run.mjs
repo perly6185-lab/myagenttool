@@ -1741,8 +1741,20 @@ export function createAutoRunService({
         releaseIssueClaimsForAutoRun(autoRunId, { outcome: "released_failed" });
       }
       if (pendingAutoRun) {
-        runTx(() => setAutoRunStatus(pendingAutoRun, "failed", {
-          error: `Could not enter implementation: ${String(error?.message ?? error)}`,
+        const errorCode = String(error?.code ?? "task_material_preparation_failed").slice(0, 200);
+        const recoverableInputErrors = new Set([
+          "local_content_original_changed",
+          "local_content_original_unavailable",
+          "local_content_original_unreadable",
+          "work_resource_version_changed",
+          "work_resource_unavailable",
+        ]);
+        const needsInput = recoverableInputErrors.has(errorCode);
+        runTx(() => setAutoRunStatus(pendingAutoRun, needsInput ? "needs_input" : "failed", {
+          error: needsInput
+            ? `A required resource changed or is unavailable (${errorCode}). Review the task's library references and accept the current version before retrying.`
+            : `Could not enter implementation: ${String(error?.message ?? error)}`,
+          errorCode,
         }));
       }
       throw error;
@@ -2682,6 +2694,12 @@ export function createAutoRunService({
               localDelivery: {
                 worktreeId: autoRun.worktreeId,
                 branchName: worktree.branchName ?? worktree.branch ?? autoRun.branchName ?? null,
+                ...(autoRun.localDelivery?.existingPullRequest
+                  ? {
+                      mode: "pull_request",
+                      existingPullRequest: autoRun.localDelivery.existingPullRequest,
+                    }
+                  : {}),
               },
               deliveryReport: {
                 summary,
@@ -2849,6 +2867,12 @@ export function createAutoRunService({
             localDelivery: {
               worktreeId: autoRun.worktreeId,
               branchName: worktree.branchName ?? worktree.branch ?? autoRun.branchName ?? null,
+              ...(autoRun.localDelivery?.existingPullRequest
+                ? {
+                    mode: "pull_request",
+                    existingPullRequest: autoRun.localDelivery.existingPullRequest,
+                  }
+                : {}),
             },
             deliveryReport: {
               summary: extractRunSummary(invocation),
@@ -3106,8 +3130,21 @@ export function createAutoRunService({
     }
     const revisingLocalOutcome = autoRun.link?.type === "local_issue"
       && ["done", "report_posted", "plan_proposed"].includes(autoRun.status);
-    if (!["failed", "blocked"].includes(autoRun.status) && !revisingLocalOutcome) {
-      throw new Error("Only a failed or blocked auto-run, or a reviewable local outcome, can be retried.");
+    const revisingOpenPullRequest = autoRun.link?.type === "local_issue"
+      && autoRun.status === "pr_open"
+      && autoRun.localDelivery?.mode === "pull_request"
+      && Boolean(autoRun.prNumber || autoRun.prUrl || autoRun.localDelivery?.prNumber || autoRun.localDelivery?.prUrl)
+      && !["MERGED", "CLOSED"].includes(String(autoRun.prState ?? "").toUpperCase());
+    const existingPullRequest = revisingOpenPullRequest
+      ? {
+          number: autoRun.prNumber ?? autoRun.localDelivery?.prNumber ?? null,
+          url: autoRun.prUrl ?? autoRun.localDelivery?.prUrl ?? null,
+          state: autoRun.prState ?? autoRun.localDelivery?.prState ?? "OPEN",
+        }
+      : null;
+    const revisingReviewableOutcome = revisingLocalOutcome || revisingOpenPullRequest;
+    if (!["failed", "blocked"].includes(autoRun.status) && !revisingReviewableOutcome) {
+      throw new Error("Only a failed or blocked auto-run, a reviewable local outcome, or an open pull request can be retried.");
     }
     const retryStartedAt = now();
     const retryPlannedDate = localDateKeyForOffset(retryStartedAt, timezoneOffset);
@@ -3216,7 +3253,7 @@ export function createAutoRunService({
     // claim before creating an invocation so a simultaneous late-approval
     // recovery (or a second retry click) cannot launch a duplicate run.
     if (
-      (!["failed", "blocked"].includes(autoRun.status) && !revisingLocalOutcome)
+      (!["failed", "blocked"].includes(autoRun.status) && !revisingReviewableOutcome)
       || (autoRun.invocationId ?? null) !== retrySourceInvocationId
     ) {
       throw new Error("Another retry has already started for this auto-run.");
@@ -3305,7 +3342,7 @@ export function createAutoRunService({
           noProgressStreak: 0,
         };
         autoRun.timeoutRecovery = null;
-        if (revisingLocalOutcome) {
+        if (revisingReviewableOutcome) {
           autoRun.outcomeHistory = [{
             status: autoRun.status,
             report: autoRun.report ?? autoRun.deliveryReport?.summary ?? null,
@@ -3318,7 +3355,7 @@ export function createAutoRunService({
           }, ...(autoRun.outcomeHistory ?? [])].slice(0, 20);
           autoRun.report = null;
         }
-        if (revisingLocalOutcome && autoRun.deliveryReport) {
+        if (revisingReviewableOutcome && (autoRun.deliveryReport || autoRun.localDelivery)) {
           autoRun.deliveryHistory = [{
             report: autoRun.deliveryReport ?? null,
             review: autoRun.deliveryReview ?? null,
@@ -3327,6 +3364,18 @@ export function createAutoRunService({
           }, ...(autoRun.deliveryHistory ?? [])].slice(0, 20);
           autoRun.deliveryReport = null;
           autoRun.deliveryReview = null;
+        }
+        if (revisingOpenPullRequest) {
+          // Keep the remote PR open for audit while returning this run to an
+          // undelivered local state. After repair and independent review, the
+          // governed delivery action republishes the same branch and resolves
+          // the already-open PR idempotently.
+          autoRun.localDelivery = {
+            worktreeId: autoRun.worktreeId,
+            branchName: worktree.branchName ?? worktree.branch ?? autoRun.branchName ?? null,
+            mode: "pull_request",
+            existingPullRequest,
+          };
         }
         setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
         scheduleBoundWorkItemsForRetry({
@@ -3411,7 +3460,8 @@ export function createAutoRunService({
     } catch (error) {
       verification = {
         passed: false,
-        verified: true,
+        verified: false,
+        unavailable: true,
         summary: `Verification error: ${String(error?.message ?? error)}`,
       };
     }
@@ -3426,7 +3476,9 @@ export function createAutoRunService({
       };
       autoRun.verificationAttempt = {
         ...autoRun.verificationAttempt,
-        status: verification.verified
+        status: verification.unavailable
+          ? "unavailable"
+          : verification.verified
           ? (verification.passed ? "passed" : "failed")
           : "unconfigured",
         completedAt: now(),
@@ -3445,7 +3497,9 @@ export function createAutoRunService({
         invocationId: autoRun.invocationId,
         type: "auto_run_reverified",
         level: verification.verified && verification.passed ? "info" : "warn",
-        message: verification.verified
+        message: verification.unavailable
+          ? `Auto-run ${autoRun.id} could not be reverified because the platform verifier failed.`
+          : verification.verified
           ? `Auto-run ${autoRun.id} platform verification ${verification.passed ? "passed" : "failed"}.`
           : `Auto-run ${autoRun.id} could not be reverified because no platform verification command was available.`,
         data: {
@@ -3458,6 +3512,9 @@ export function createAutoRunService({
       });
     });
 
+    if (verification.unavailable) {
+      throw new Error(verification.summary ?? "The platform verifier is unavailable.");
+    }
     if (!verification.verified) {
       throw new Error("No platform verification command is configured for this project.");
     }

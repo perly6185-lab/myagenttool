@@ -38,6 +38,7 @@ import { createMailFolderOrganizationService, isMailAutomaticOrganizationEnabled
 import { createLocalMailSemanticAdapter, resolveMailSemanticConfig } from "../services/mail-semantic-classifier.mjs";
 import { createMailboxService, isMailClassificationEnabled } from "../services/mailbox.mjs";
 import { createLocalContentCatalogService } from "../services/local-content-catalog.mjs";
+import { createWorkResourceDirectoryService } from "../services/work-resource-directory.mjs";
 import {
   createLocalContentRetrievalAuthorizer,
   createLocalContentRetrievalService,
@@ -535,6 +536,8 @@ export function createServerRuntimeServices({
   let enqueueWorkItemReportDeliveryBatch = () => ({ ok: false, reason: "delivery_unavailable" });
   let invalidateStaleTaskLedgerPostingPlan = () => false;
   let reconcileTaskRecordBindings = async () => ({ status: 200, body: { changed: false, blocked: false } });
+  let resolveWorkResourceReference = async () => ({ status: 503, body: { error: "work_resource_resolver_unavailable" } });
+  let resolveWorkResourceExecution = async () => ({ ok: false, status: 503, error: "work_resource_resolver_unavailable" });
   const localContentCatalogService = createLocalContentCatalogService({
     state, stateStorePath, now, persistStateSoon, store, autoIndex: true,
   });
@@ -557,6 +560,7 @@ export function createServerRuntimeServices({
   const taskMaterialService = createTaskMaterialService({
     state, stateStorePath, now, nextId, persistStateSoon: persistTaskMaterialStateSoon, appendEvent, store,
     resolveLocalContentReference: localContentCatalogService.resolveOriginal,
+    resolveWorkResourceReference: (input, actor) => resolveWorkResourceExecution(input, actor),
   });
   // Channel services compose later because they depend on Work Items and
   // Invocations. These narrow late-bound hooks preserve lifecycle projection.
@@ -588,6 +592,7 @@ export function createServerRuntimeServices({
     inspectTaskMaterialDraft: taskMaterialService.getDraft,
     resolveClaimedTaskMaterial: taskMaterialService.resolveClaimedAsset,
     resolveLocalContentReference: localContentCatalogService.resolveOriginal,
+    resolveWorkResourceReference: (input, actor) => resolveWorkResourceReference(input, actor),
   });
   let releaseRoutineLedgerReservations = () => {};
   const businessRoutineService = createBusinessRoutineService({
@@ -642,6 +647,15 @@ export function createServerRuntimeServices({
     persistStateSoon,
     store,
   });
+  const workResourceDirectoryService = createWorkResourceDirectoryService({
+    state,
+    searchLocalContent: localContentCatalogService.search,
+    previewLocalContent: localContentCatalogService.preview,
+    refreshLocalContent: localContentCatalogService.refresh,
+    testConnectorConfig: channelObjectConnectorService.testChannelObjectConnectorConfig,
+  });
+  resolveWorkResourceReference = workResourceDirectoryService.resolveTaskReference;
+  resolveWorkResourceExecution = workResourceDirectoryService.resolveExecutionReference;
   refreshChannelMutationSourceIdentity = (identity, actor) =>
     channelMutationBindingService.refreshSourceIdentity(identity, actor);
   const ledgerUpsertService = createLedgerUpsertService({
@@ -7499,6 +7513,10 @@ export function createServerRuntimeServices({
     getLocalContentHealth: localContentCatalogService.health,
     resolveLocalContentOriginal: localContentCatalogService.resolveOriginal,
     resolveLocalContentContainer: localContentCatalogService.resolveContainer,
+    listWorkResources: workResourceDirectoryService.listResources,
+    getWorkResource: workResourceDirectoryService.getResource,
+    previewWorkResource: workResourceDirectoryService.previewResource,
+    refreshWorkResource: workResourceDirectoryService.refreshResource,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
     listChannelInteractions: channelService.listChannelInteractions,
@@ -7533,6 +7551,10 @@ export function createServerRuntimeServices({
     restoreWorkItemMaterial: workItemService.restoreMaterial,
     addWorkItemContentReference: workItemService.addContentReference,
     removeWorkItemContentReference: workItemService.removeContentReference,
+    addWorkItemResourceReference: workItemService.addResourceReference,
+    refreshWorkItemResourceReference: workItemService.refreshResourceReference,
+    inspectWorkItemResourceReferences: workItemService.inspectResourceReferences,
+    removeWorkItemResourceReference: workItemService.removeResourceReference,
     updateWorkItem: workItemService.updateWorkItem,
     recordWorkItemProgress: workItemService.recordWorkItemProgress,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,

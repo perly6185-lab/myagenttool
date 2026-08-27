@@ -2912,6 +2912,9 @@ export const api = {
     timezoneOffset: new Date().getTimezoneOffset(),
     ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
   }),
+  reverifyAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/reverify`, {
+    timezoneOffset: new Date().getTimezoneOffset(),
+  }),
   cancelAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/cancel`),
   stopAutoRunDelivery: (id: string, reason?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/stop-delivery`, { reason }),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person

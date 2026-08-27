@@ -81,6 +81,8 @@ export type SummaryCopy = {
   deliverableTitle: string;
   deliverableHint: string;
   decisionSummary: string;
+  resultStatus: string;
+  riskReason: string;
   completedScope: string;
   checkResult: string;
   recommendedNext: string;
@@ -159,6 +161,19 @@ export type SummaryCopy = {
   aiReviewNoFindings: string;
   sendAiReviewBack: string;
   verificationEvidence: string;
+  developmentActions: string;
+  viewChanges: string;
+  rerunVerification: string;
+  verifying: string;
+  askAiToFix: string;
+  createPullRequest: string;
+  actionUnavailable: string;
+  officeBatchResult: string;
+  batchSuccess: string;
+  batchFailed: string;
+  batchRollback: string;
+  batchDetails: string;
+  batchNoDetails: string;
   readinessTitle: string;
   readinessChecking: string;
   readinessBlocked: string;
@@ -285,6 +300,8 @@ export const COPY: Record<"zh" | "en", SummaryCopy> = {
     deliverableTitle: "AI 交付了什么",
     deliverableHint: "先看普通用户能理解的结论、风险和建议动作；技术证据仍完整保留。",
     decisionSummary: "审核结论",
+    resultStatus: "结果状态",
+    riskReason: "为什么这样判断",
     completedScope: "AI 完成了什么",
     checkResult: "检查结果",
     recommendedNext: "建议下一步",
@@ -363,6 +380,19 @@ export const COPY: Record<"zh" | "en", SummaryCopy> = {
     aiReviewNoFindings: "未发现阻止交付的问题。",
     sendAiReviewBack: "交回 AI 修复",
     verificationEvidence: "系统如何验证",
+    developmentActions: "开发类动作",
+    viewChanges: "查看变更",
+    rerunVerification: "补跑验证",
+    verifying: "正在验证…",
+    askAiToFix: "让 AI 修复",
+    createPullRequest: "创建 Pull Request",
+    actionUnavailable: "当前状态不可用",
+    officeBatchResult: "关联台账批次结果",
+    batchSuccess: "当前生效",
+    batchFailed: "失败",
+    batchRollback: "回滚",
+    batchDetails: "批次详情",
+    batchNoDetails: "暂无逐条批次记录。",
     readinessTitle: "执行前检查",
     readinessChecking: "正在确认 AI、代码仓库和安全开关…",
     readinessBlocked: "还差一步才能交给 AI",
@@ -487,6 +517,8 @@ export const COPY: Record<"zh" | "en", SummaryCopy> = {
     deliverableTitle: "What AI delivered",
     deliverableHint: "Start with a plain-language conclusion, risk, and recommended action. Technical evidence remains available.",
     decisionSummary: "Review conclusion",
+    resultStatus: "Result status",
+    riskReason: "Why this status",
     completedScope: "What AI completed",
     checkResult: "Checks",
     recommendedNext: "Recommended next step",
@@ -565,6 +597,19 @@ export const COPY: Record<"zh" | "en", SummaryCopy> = {
     aiReviewNoFindings: "No delivery-blocking issues were found.",
     sendAiReviewBack: "Send back to AI",
     verificationEvidence: "How it was verified",
+    developmentActions: "Development actions",
+    viewChanges: "View changes",
+    rerunVerification: "Rerun verification",
+    verifying: "Verifying…",
+    askAiToFix: "Ask AI to fix",
+    createPullRequest: "Create Pull Request",
+    actionUnavailable: "Unavailable in the current state",
+    officeBatchResult: "Related ledger batch result",
+    batchSuccess: "Applied",
+    batchFailed: "Failed",
+    batchRollback: "Rollback",
+    batchDetails: "Batch details",
+    batchNoDetails: "No per-item batch records are available.",
     readinessTitle: "Preflight",
     readinessChecking: "Checking the AI, repository, and safety controls…",
     readinessBlocked: "AI cannot start yet",
