@@ -1295,10 +1295,16 @@ export function createAutoRunService({
     const confirmedBy = executionPlan.confirmedBy ?? "ai_policy";
     const localWorkItem = (state.workItems ?? []).find((item) =>
       item.id === (autoRun.localIssueId ?? autoRun.executionChainId));
-    const dataContextSnapshot = localWorkItem?.dataContextSnapshot
+    const executionBinding = [...(localWorkItem?.executionBindings ?? [])].reverse().find((binding) =>
+      binding.kind === "auto_run" && binding.targetId === autoRun.id);
+    const frozenContext = executionBinding?.contextSnapshot ?? localWorkItem?.dataContextSnapshot ?? null;
+    const dataContextSnapshot = frozenContext
       ? {
-        ...localWorkItem.dataContextSnapshot,
-        sources: (localWorkItem.dataContextSnapshot.sources ?? []).map((source) => ({ ...source })),
+        ...frozenContext,
+        sources: (frozenContext.sources ?? []).map((source) => ({
+          ...source,
+          allowedOperations: [...(source.allowedOperations ?? ["read"])],
+        })),
       }
       : null;
     const frozenDataContextDigest = autoRun.executionContract
@@ -1691,16 +1697,35 @@ export function createAutoRunService({
         });
       }
       if (taskMaterialWorkItemId && typeof materializeTaskMaterials === "function") {
-        const prepared = await materializeTaskMaterials({ workItemId: taskMaterialWorkItemId, worktree, actor });
+        const materialWorkItem = (state.workItems ?? []).find((item) => item.id === String(taskMaterialWorkItemId));
+        const materialBinding = [...(materialWorkItem?.executionBindings ?? [])].reverse().find((binding) =>
+          binding.kind === "auto_run" && binding.targetId === autoRunId);
+        const contextSnapshot = pendingAutoRun?.executionContract?.dataContextSnapshot
+          ?? materialBinding?.contextSnapshot
+          ?? materialWorkItem?.dataContextSnapshot
+          ?? null;
+        const prepared = await materializeTaskMaterials({
+          workItemId: taskMaterialWorkItemId,
+          worktree,
+          actor,
+          contextSnapshot,
+        });
         if (!prepared?.ok) {
           const error = new Error(prepared?.error ?? "task_material_preparation_failed");
           error.code = prepared?.error ?? "task_material_preparation_failed";
+          throw error;
+        }
+        if (pendingAutoRun?.executionContextSnapshot && prepared.executionContextSnapshot
+          && pendingAutoRun.executionContextSnapshot.digest !== prepared.executionContextSnapshot.digest) {
+          const error = new Error("task_execution_context_changed");
+          error.code = "task_execution_context_changed";
           throw error;
         }
         if (pendingAutoRun && (prepared.manifest || prepared.receipts?.length)) {
           preparedInputMaterialization = {
             manifest: prepared.manifest ?? null,
             receipts: (prepared.receipts ?? []).slice(0, 20),
+            executionContextSnapshot: prepared.executionContextSnapshot ?? null,
             ...(prepared.skippedReferences?.length
               ? { skippedReferences: prepared.skippedReferences.slice(0, 20) }
               : {}),
@@ -1708,12 +1733,14 @@ export function createAutoRunService({
           };
           runTx(() => {
             pendingAutoRun.inputMaterialization = preparedInputMaterialization;
+            pendingAutoRun.executionContextSnapshot ??= prepared.executionContextSnapshot ?? null;
             pendingAutoRun.updatedAt = now();
           });
         } else if (prepared.manifest || prepared.receipts?.length) {
           preparedInputMaterialization = {
             manifest: prepared.manifest ?? null,
             receipts: (prepared.receipts ?? []).slice(0, 20),
+            executionContextSnapshot: prepared.executionContextSnapshot ?? null,
             ...(prepared.skippedReferences?.length
               ? { skippedReferences: prepared.skippedReferences.slice(0, 20) }
               : {}),
@@ -1757,6 +1784,8 @@ export function createAutoRunService({
           "local_content_original_unreadable",
           "work_resource_version_changed",
           "work_resource_unavailable",
+          "work_resource_change_permission_unavailable",
+          "task_execution_context_changed",
         ]);
         const needsInput = recoverableInputErrors.has(errorCode);
         runTx(() => setAutoRunStatus(pendingAutoRun, needsInput ? "needs_input" : "failed", {
@@ -1822,6 +1851,9 @@ export function createAutoRunService({
       executionPlan: executionPlan ?? pendingAutoRun?.executionPlan ?? null,
       executionContract: pendingAutoRun?.executionContract ?? null,
       inputMaterialization: preparedInputMaterialization,
+      executionContextSnapshot: pendingAutoRun?.executionContextSnapshot
+        ?? preparedInputMaterialization?.executionContextSnapshot
+        ?? null,
       channelOrigin: normalizedChannelOrigin(channelOrigin ?? pendingAutoRun?.channelOrigin),
       operationIntent: operationIntent && typeof operationIntent === "object"
         ? structuredClone(operationIntent)

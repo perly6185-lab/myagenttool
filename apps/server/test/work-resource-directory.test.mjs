@@ -83,6 +83,23 @@ test("returns bounded sanitized structured previews", async () => {
   assert.equal(Object.hasOwn(previewed.body.preview.rows[0].fields, "token"), false);
 });
 
+test("task roles follow actual source capabilities and never elevate a remote query source", async () => {
+  const { service } = fixture();
+  const listed = await service.listResources({ projectId: "prj_1", resourceKind: "table" }, ACTOR);
+  const local = listed.body.resources.find((resource) => resource.locality === "local");
+  const remote = listed.body.resources.find((resource) => resource.locality === "remote");
+
+  const localBinding = await service.resolveTaskReference({ resourceId: local.id, projectId: "prj_1" }, ACTOR);
+  assert.equal(localBinding.status, 200);
+  assert.ok(localBinding.body.capabilities.includes("commit_change"));
+  assert.ok(localBinding.body.allowedPurposes.includes("change_target"));
+
+  const remoteBinding = await service.resolveTaskReference({ resourceId: remote.id, projectId: "prj_1" }, ACTOR);
+  assert.equal(remoteBinding.status, 200);
+  assert.equal(remoteBinding.body.capabilities.includes("commit_change"), false);
+  assert.deepEqual(remoteBinding.body.allowedPurposes, ["query_source", "reference"]);
+});
+
 test("does not expose another team's resources or project existence", async () => {
   const { service } = fixture();
   const result = await service.listResources({ projectId: "prj_2" }, ACTOR);

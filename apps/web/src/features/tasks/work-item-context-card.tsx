@@ -71,11 +71,8 @@ function methodLabel(method: TaskContextSummary["method"], zh: boolean) {
 }
 
 function editableRoles(material: TaskContextSummary["materials"][number]): EditableMaterialRole[] {
-  if (material.source === "my_materials") return ["required_input", "reference"];
-  if (["local_resource", "remote_resource"].includes(material.source)) {
-    return ["reference", "query_source", "change_target"];
-  }
-  return [];
+  return (material.allowedRoles ?? []).filter((role): role is EditableMaterialRole =>
+    ["required_input", "reference", "query_source", "change_target"].includes(role));
 }
 
 type WorkItemContextCardProps = {
@@ -202,7 +199,7 @@ function WorkItemContextCardContent({
         onClose={() => { if (!pending) setEditing(false); }}
         closeDisabled={pending}
         title={zh ? "调整 AI 的任务范围" : "Adjust AI task scope"}
-        description={zh ? "这里只改变本任务怎样使用资料、结果放在哪里，不会修改原始资料或 Channel 消息。" : "This only changes how this task uses materials and where its result goes. It does not edit the source materials or Channel messages."}
+        description={zh ? "保存范围不会立即修改资料；执行时也只能改动你明确允许、且连接支持写回的目标。" : "Saving the scope does not immediately edit data. During execution, only explicitly allowed targets with write-back support may be changed."}
         footer={<div className="flex justify-end gap-2"><Button variant="secondary" disabled={pending} onClick={() => setEditing(false)}>{zh ? "取消" : "Cancel"}</Button><Button disabled={pending} onClick={() => void save()}>{pending ? (zh ? "保存中…" : "Saving…") : (zh ? "保存任务范围" : "Save scope")}</Button></div>}
       >
         <div className="space-y-4">
@@ -211,7 +208,13 @@ function WorkItemContextCardContent({
             <div className="mt-2 space-y-2">
               {editableMaterials.map((material) => (
                 <label key={material.id} className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-[minmax(0,1fr)_11rem] sm:items-center">
-                  <span className="min-w-0"><span className="block truncate text-sm font-medium">{material.title}</span><span className="text-xs text-muted-foreground">{sourceLabel(material.source, zh)}</span></span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{material.title}</span>
+                    <span className="text-xs text-muted-foreground">{sourceLabel(material.source, zh)}</span>
+                    {["local_resource", "remote_resource"].includes(material.source) && !(material.allowedRoles ?? []).includes("change_target")
+                      ? <span className="block text-xs text-muted-foreground">{zh ? "当前连接只支持读取或查询，不能直接写回" : "This connection supports reading or querying, not direct write-back"}</span>
+                      : null}
+                  </span>
                   <Select
                     aria-label={`${material.title} ${zh ? "资料作用" : "material role"}`}
                     value={materialRoles[material.id] ?? material.role}

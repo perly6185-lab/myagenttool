@@ -13,8 +13,8 @@ describe("WorkItemContextCard", () => {
       origin: { kind: "channel", label: "采购协作", provider: "wechat_ilink", channelId: "chn_1", conversationId: "conv_1", threadId: "cth_1", sourceMessageCount: 2 },
       method: { kind: "template", name: "报价整理", definitionId: "rtd_1", familyId: "rtf_1", version: 3, expectedOutput: "比价表.xlsx", snapshotHash: "hash" },
       materials: [
-        { id: "asset_1", title: "报价单.xlsx", role: "required_input", source: "channel_attachment", locality: "local", availability: "ready", versionPolicy: "pinned" },
-        { id: "resource_1", title: "供应商台账", role: "change_target", source: "local_resource", locality: "local", availability: "selected", versionPolicy: "pinned" },
+        { id: "asset_1", title: "报价单.xlsx", role: "required_input", allowedRoles: ["required_input"], source: "channel_attachment", locality: "local", availability: "ready", versionPolicy: "pinned" },
+        { id: "resource_1", title: "供应商台账", role: "change_target", allowedRoles: ["reference", "query_source", "change_target"], source: "local_resource", locality: "local", availability: "selected", versionPolicy: "pinned" },
       ],
       delivery: { destination: "channel", label: "采购协作", channelId: "chn_1", conversationId: "conv_1", status: null },
     } as NonNullable<LocalWorkItem["taskContextSummary"]>;
@@ -51,7 +51,7 @@ describe("WorkItemContextCard", () => {
       schemaVersion: 1,
       origin: { kind: "channel", label: "采购协作", provider: "wechat_ilink", channelId: "chn_1", conversationId: "conv_1", threadId: "cth_1", sourceMessageCount: 1 },
       method: { kind: "custom", name: "本任务方案", definitionId: null, familyId: null, version: null, expectedOutput: null, snapshotHash: null },
-      materials: [{ id: "resource_1", title: "供应商台账", role: "query_source", source: "remote_resource", locality: "remote", availability: "selected", versionPolicy: "pinned" }],
+      materials: [{ id: "resource_1", title: "供应商台账", role: "query_source", allowedRoles: ["reference", "query_source", "change_target"], source: "local_resource", locality: "local", availability: "selected", versionPolicy: "pinned" }],
       delivery: { destination: "channel", label: "采购协作", channelId: "chn_1", conversationId: "conv_1", status: null },
     } as NonNullable<LocalWorkItem["taskContextSummary"]>;
 
@@ -65,5 +65,20 @@ describe("WorkItemContextCard", () => {
       deliveryDestination: "task",
       materialRoles: [{ id: "resource_1", role: "change_target" }],
     }));
+  });
+
+  it("explains a read-only connector and does not offer a write role", () => {
+    const summary = {
+      schemaVersion: 1,
+      origin: { kind: "manual", label: "manual", provider: null, channelId: null, conversationId: null, threadId: null, sourceMessageCount: 0 },
+      method: { kind: "custom", name: "本任务方案", definitionId: null, familyId: null, version: null, expectedOutput: null, snapshotHash: null },
+      materials: [{ id: "resource_remote", title: "公司 CRM", role: "query_source", allowedRoles: ["reference", "query_source"], source: "remote_resource", locality: "remote", availability: "selected", versionPolicy: "pinned" }],
+      delivery: { destination: "task", label: "task", channelId: null, conversationId: null, status: null },
+    } as NonNullable<LocalWorkItem["taskContextSummary"]>;
+
+    render(<WorkItemContextCard summary={summary} language="zh" onUpdate={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "调整范围" }));
+    expect(screen.getByText("当前连接只支持读取或查询，不能直接写回")).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "允许修改" })).toBeNull();
   });
 });

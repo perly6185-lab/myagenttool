@@ -76,7 +76,7 @@ const TASK_CREATION_BASES = new Set([
 const ARTIFACT_KINDS_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const CHANNEL_TASK_DOMAINS = new Set(["general", "office", "development", "design", "product_design", "creative", "content"]);
 const CHANNEL_TASK_RISK_LEVELS = new Set(["low", "local_change", "external_communication", "financial", "destructive"]);
-const DATA_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1;
+const DATA_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 2;
 // Friendly aliases normalized to canonical p0–p3 before validation, so callers
 // may pass "critical"/"high"/"medium"/"low" etc. (mirrors the alias→canonical
 // pattern in normalizeClaudePermissionMode). Invalid values still reject.
@@ -773,6 +773,14 @@ function dataContextSourceFingerprint(source) {
   return source?.version || source?.hash || null;
 }
 
+function materialAllowedOperations(purpose, capabilities = []) {
+  const operations = ["read"];
+  if (["query_source", "change_target"].includes(purpose)) operations.push("query");
+  if (purpose === "change_target" && capabilities.includes("propose_change")) operations.push("propose_change");
+  if (purpose === "change_target" && capabilities.includes("commit_change")) operations.push("commit_change");
+  return operations;
+}
+
 function buildDataContextSnapshot({
   workItemId,
   workItemRevision,
@@ -781,22 +789,26 @@ function buildDataContextSnapshot({
   localContentRefs = [],
   taskResourceRefs = [],
   channelTaskContract = null,
+  channelOrigin = null,
+  taskContextControl = null,
 } = {}) {
-  const channelOrigin = channelTaskContract?.source === "channel";
+  const fromChannel = channelTaskContract?.source === "channel" || Boolean(channelOrigin?.channelId);
   const sources = [];
   for (const asset of Array.isArray(inputAssets) ? inputAssets.slice(0, 100) : []) {
     const sourceId = asset?.id ?? asset?.path ?? asset?.originalName ?? null;
     if (!sourceId) continue;
     sources.push({
       sourceId: String(sourceId).slice(0, 300),
+      referenceId: asset?.id ? String(asset.id).slice(0, 200) : null,
       kind: "asset",
-      origin: channelOrigin ? "channel_attachment" : "work_item_input",
+      origin: fromChannel ? "channel_attachment" : "work_item_input",
       name: String(asset?.originalName ?? asset?.path ?? "输入材料").replace(/[\r\n\t]/g, " ").slice(0, 300),
       path: asset?.path ? String(asset.path).replaceAll("\\", "/").slice(0, 1_000) : null,
       family: asset?.family ? String(asset.family).slice(0, 80) : null,
       version: asset?.version ? String(asset.version).slice(0, 200) : null,
       hash: asset?.hash ? String(asset.hash).slice(0, 200) : null,
       purpose: "required_input",
+      allowedOperations: ["read"],
       trust: "untrusted_reference",
     });
   }
@@ -805,6 +817,7 @@ function buildDataContextSnapshot({
     if (!sourceId) continue;
     sources.push({
       sourceId: String(sourceId).slice(0, 300),
+      referenceId: reference?.id ? String(reference.id).slice(0, 200) : null,
       kind: "local_content",
       origin: "local_content_reference",
       name: String(reference?.title ?? "本地内容").replace(/[\r\n\t]/g, " ").slice(0, 300),
@@ -813,14 +826,20 @@ function buildDataContextSnapshot({
       version: reference?.selectedFingerprint ? String(reference.selectedFingerprint).slice(0, 200) : null,
       hash: reference?.selectedFingerprint ? String(reference.selectedFingerprint).slice(0, 200) : null,
       purpose: ["reference", "required_input"].includes(reference?.purpose) ? reference.purpose : "reference",
+      allowedOperations: ["read"],
       trust: "untrusted_reference",
     });
   }
   for (const reference of Array.isArray(taskResourceRefs) ? taskResourceRefs.slice(0, 20) : []) {
     const sourceId = reference?.resourceId ?? reference?.id ?? null;
     if (!sourceId) continue;
+    const purpose = ["query_source", "change_target", "reference"].includes(reference?.purpose) ? reference.purpose : "reference";
+    const capabilities = Array.isArray(reference?.capabilities)
+      ? reference.capabilities.filter((capability) => ["read", "query", "propose_change", "commit_change"].includes(capability)).slice(0, 10)
+      : [];
     sources.push({
       sourceId: String(sourceId).slice(0, 300),
+      referenceId: reference?.id ? String(reference.id).slice(0, 200) : null,
       kind: "work_resource",
       origin: reference?.locality === "remote" ? "remote_resource_reference" : "local_resource_reference",
       name: String(reference?.title ?? "工作资料").replace(/[\r\n\t]/g, " ").slice(0, 300),
@@ -828,7 +847,8 @@ function buildDataContextSnapshot({
       family: reference?.resourceKind ? String(reference.resourceKind).slice(0, 80) : null,
       version: reference?.selectedVersion ? String(reference.selectedVersion).slice(0, 200) : null,
       hash: null,
-      purpose: ["query_source", "change_target", "reference"].includes(reference?.purpose) ? reference.purpose : "reference",
+      purpose,
+      allowedOperations: materialAllowedOperations(purpose, capabilities),
       trust: "untrusted_reference",
     });
   }
@@ -838,6 +858,7 @@ function buildDataContextSnapshot({
   ])).values()].slice(0, 120);
   const canonical = uniqueSources.map((source) => ({
     sourceId: source.sourceId,
+    referenceId: source.referenceId,
     kind: source.kind,
     origin: source.origin,
     name: source.name,
@@ -846,8 +867,11 @@ function buildDataContextSnapshot({
     version: source.version,
     hash: source.hash,
     purpose: source.purpose,
+    allowedOperations: source.allowedOperations,
   }));
-  const digest = createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+  const deliveryDestination = taskContextControl?.deliveryDestination === "task" ? "task"
+    : fromChannel ? "channel" : "task";
+  const digest = createHash("sha256").update(JSON.stringify({ sources: canonical, deliveryDestination })).digest("hex");
   const hasUnversioned = uniqueSources.some((source) => !dataContextSourceFingerprint(source));
   return {
     schemaVersion: DATA_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
@@ -858,6 +882,7 @@ function buildDataContextSnapshot({
     status: uniqueSources.length === 0 ? "empty" : hasUnversioned ? "partial" : "captured",
     sources: uniqueSources,
     sourceCount: uniqueSources.length,
+    deliveryDestination,
     digest,
   };
 }
@@ -871,6 +896,8 @@ function compareDataContextSnapshot(item) {
     localContentRefs: item?.localContentRefs,
     taskResourceRefs: item?.taskResourceRefs,
     channelTaskContract: item?.channelTaskContract,
+    channelOrigin: item?.channelOrigin,
+    taskContextControl: item?.taskContextControl,
   });
   const current = buildDataContextSnapshot({
     workItemId: item?.id,
@@ -880,6 +907,8 @@ function compareDataContextSnapshot(item) {
     localContentRefs: item?.localContentRefs,
     taskResourceRefs: item?.taskResourceRefs,
     channelTaskContract: item?.channelTaskContract,
+    channelOrigin: item?.channelOrigin,
+    taskContextControl: item?.taskContextControl,
   });
   const baselineByKey = new Map((baseline.sources ?? []).map((source) => [
     `${source.kind}:${dataContextSourceKey(source)}`,
@@ -905,6 +934,13 @@ function compareDataContextSnapshot(item) {
   }
   for (const [key, source] of currentByKey) {
     if (!baselineByKey.has(key)) changes.push({ kind: "added", sourceId: source.sourceId, name: source.name });
+  }
+  if (!changes.length && Number(baseline.schemaVersion) >= 2 && baseline.digest !== current.digest) {
+    changes.push({
+      kind: "scope_changed",
+      previous: baseline.digest,
+      current: current.digest,
+    });
   }
   const status = changes.length
     ? "stale"
@@ -3390,6 +3426,8 @@ export function createWorkItemService({
               localContentRefs: stored.localContentRefs,
               taskResourceRefs: stored.taskResourceRefs,
               channelTaskContract: stored.channelTaskContract,
+              channelOrigin: stored.channelOrigin,
+              taskContextControl: stored.taskContextControl,
             });
           });
           item = workItemView(stored, actor);
@@ -3476,6 +3514,8 @@ export function createWorkItemService({
         localContentRefs: repair.localContentRefs,
         taskResourceRefs: repair.taskResourceRefs,
         channelTaskContract: repair.channelTaskContract,
+        channelOrigin: repair.channelOrigin,
+        taskContextControl: repair.taskContextControl,
       });
       const goal = source.workGoalId
         ? (state.workGoals ?? []).find((candidate) => candidate.id === source.workGoalId
@@ -5114,6 +5154,8 @@ export function createWorkItemService({
       localContentRefs: workItem.localContentRefs,
       taskResourceRefs: workItem.taskResourceRefs,
       channelTaskContract: workItem.channelTaskContract,
+      channelOrigin: workItem.channelOrigin,
+      taskContextControl: workItem.taskContextControl,
     });
     workItem.dataContextSnapshotHistory = [];
     const assetReadiness = evaluateAssetRequirements(
@@ -6267,6 +6309,21 @@ export function createWorkItemService({
       agentId: agentId ? String(agentId) : null,
       startedAt: timestamp,
       expiresAt: new Date(Date.parse(timestamp) + EXECUTION_OPERATION_TTL_MS).toISOString(),
+      contextSnapshot: {
+        ...buildDataContextSnapshot({
+          workItemId: item.id,
+          workItemRevision: item.revision,
+          capturedAt: timestamp,
+          inputAssets: item.inputAssets,
+          localContentRefs: item.localContentRefs,
+          taskResourceRefs: item.taskResourceRefs,
+          channelTaskContract: item.channelTaskContract,
+          channelOrigin: item.channelOrigin,
+          taskContextControl: item.taskContextControl,
+        }),
+        confirmedAt: timestamp,
+        confirmedBy: holderId,
+      },
     };
     runTx(() => {
       if (!claimActive) {
@@ -6351,12 +6408,30 @@ export function createWorkItemService({
       && (item.executionOperation?.id !== String(operationId) || item.executionOperation.kind !== kind)) {
       return { ok: false, status: 409, body: { error: "work_item_execution_operation_conflict" } };
     }
+    const bindingCreatedAt = now();
     const binding = {
       kind,
       targetId: String(targetId),
       worktreeId: worktreeId ? String(worktreeId) : null,
       terminalId: item.terminalId,
-      createdAt: now(),
+      createdAt: bindingCreatedAt,
+      contextSnapshot: item.executionOperation?.contextSnapshot
+        ? structuredClone(item.executionOperation.contextSnapshot)
+        : {
+          ...buildDataContextSnapshot({
+            workItemId: item.id,
+            workItemRevision: item.revision,
+            capturedAt: bindingCreatedAt,
+            inputAssets: item.inputAssets,
+            localContentRefs: item.localContentRefs,
+            taskResourceRefs: item.taskResourceRefs,
+            channelTaskContract: item.channelTaskContract,
+            channelOrigin: item.channelOrigin,
+            taskContextControl: item.taskContextControl,
+          }),
+          confirmedAt: bindingCreatedAt,
+          confirmedBy: actorUser(actor),
+        },
     };
     runTx(() => {
       item.executionBindings = [...(item.executionBindings ?? []), binding];
@@ -7236,6 +7311,8 @@ export function createWorkItemService({
           localContentRefs: item.localContentRefs,
           taskResourceRefs: item.taskResourceRefs,
           channelTaskContract: item.channelTaskContract,
+          channelOrigin: item.channelOrigin,
+          taskContextControl: item.taskContextControl,
         }),
         confirmedAt: confirm === true ? timestamp : null,
         confirmedBy: confirm === true ? actorUser(actor) : null,
@@ -7399,7 +7476,7 @@ export function createWorkItemService({
     }
     let reference;
     let targetCollection;
-    if (resource.contentId) {
+    if (resource.contentId && purpose !== "change_target") {
       if (typeof resolveLocalContentReference !== "function") {
         return { ok: false, status: 503, body: { error: "local_content_resolver_unavailable" } };
       }
@@ -7427,6 +7504,8 @@ export function createWorkItemService({
         businessRole: resource.businessRole,
         locality: resource.locality,
         sourceLabel: resource.sourceLabel,
+        capabilities: Array.isArray(resource.capabilities) ? resource.capabilities.slice(0, 20) : [],
+        allowedPurposes: Array.isArray(resource.allowedPurposes) ? resource.allowedPurposes.slice(0, 10) : [],
         selectedVersion: resource.currentVersion,
         addedBy: actorUser(actor),
         createdAt: now(),
@@ -7480,6 +7559,8 @@ export function createWorkItemService({
       reference.businessRole = resource.businessRole;
       reference.locality = resource.locality;
       reference.sourceLabel = resource.sourceLabel;
+      reference.capabilities = Array.isArray(resource.capabilities) ? resource.capabilities.slice(0, 20) : [];
+      reference.allowedPurposes = Array.isArray(resource.allowedPurposes) ? resource.allowedPurposes.slice(0, 10) : [];
       item.materialChangesPending = true;
       item.revision += 1;
       item.updatedAt = now();
@@ -7620,7 +7701,9 @@ export function createWorkItemService({
       }
       const allowed = local
         ? ["reference", "required_input"]
-        : ["reference", "query_source", "change_target"];
+        : Array.isArray(resource.allowedPurposes) && resource.allowedPurposes.length
+          ? resource.allowedPurposes
+          : ["reference", "query_source"];
       if (!allowed.includes(role)) {
         return { ok: false, status: 400, body: { error: "work_item_context_material_role_not_allowed", referenceId, allowed } };
       }
@@ -7650,6 +7733,20 @@ export function createWorkItemService({
       item.revision += 1;
       item.updatedAt = timestamp;
       item.lastModifiedBy = actorUser(actor);
+      item.dataContextSnapshotHistory = item.dataContextSnapshot
+        ? [item.dataContextSnapshot, ...(item.dataContextSnapshotHistory ?? [])].slice(0, 5)
+        : (item.dataContextSnapshotHistory ?? []);
+      item.dataContextSnapshot = buildDataContextSnapshot({
+        workItemId: item.id,
+        workItemRevision: item.revision,
+        capturedAt: timestamp,
+        inputAssets: item.inputAssets,
+        localContentRefs: item.localContentRefs,
+        taskResourceRefs: item.taskResourceRefs,
+        channelTaskContract: item.channelTaskContract,
+        channelOrigin: item.channelOrigin,
+        taskContextControl: item.taskContextControl,
+      });
       recordActivity(item, actor, "task_context_corrected", {
         delivery: { from: currentDestination, to: nextDestination },
         materials: materialChanges.map(({ reference, from, role }) => ({

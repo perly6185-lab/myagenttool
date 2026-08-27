@@ -74,6 +74,8 @@ test("projects one channel, template, material, and delivery context without dup
     ["报价单.xlsx", "required_input", "channel_attachment"],
     ["客户台账", "query_source", "remote_resource"],
   ]);
+  assert.deepEqual(summary.materials[0].allowedRoles, ["required_input"]);
+  assert.deepEqual(summary.materials[1].allowedRoles, ["reference", "query_source"]);
   assert.deepEqual(summary.delivery, {
     destination: "channel",
     label: "采购协作",

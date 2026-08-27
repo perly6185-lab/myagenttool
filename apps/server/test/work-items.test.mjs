@@ -125,7 +125,15 @@ test("task context correction updates canonical material roles and result destin
   const stored = state.workItems.find((item) => item.id === created.id);
   stored.channelOrigin = { channelId: "chn_quote", conversationId: "conv_quote", threadId: "cth_quote" };
   stored.localContentRefs = [{ id: "wcr_rules", contentId: "lc_rules", title: "采购规则", purpose: "reference" }];
-  stored.taskResourceRefs = [{ id: "wrr_ledger", resourceId: "res_ledger", title: "供应商台账", purpose: "query_source", locality: "remote" }];
+  stored.taskResourceRefs = [{
+    id: "wrr_ledger",
+    resourceId: "res_ledger",
+    title: "供应商台账",
+    purpose: "query_source",
+    locality: "local",
+    capabilities: ["read", "query", "propose_change", "commit_change"],
+    allowedPurposes: ["reference", "query_source", "change_target"],
+  }];
   state.channels = [{ id: "chn_quote", ownerTeamId: "team_a", name: "采购协作" }];
 
   const corrected = service.updateTaskContext({
@@ -141,6 +149,9 @@ test("task context correction updates canonical material roles and result destin
   assert.equal(corrected.status, 200);
   assert.equal(stored.localContentRefs[0].purpose, "required_input");
   assert.equal(stored.taskResourceRefs[0].purpose, "change_target");
+  assert.equal(stored.dataContextSnapshot.schemaVersion, 2);
+  assert.equal(stored.dataContextSnapshot.deliveryDestination, "task");
+  assert.ok(stored.dataContextSnapshot.sources.find((source) => source.referenceId === "wrr_ledger").allowedOperations.includes("commit_change"));
   assert.equal(corrected.body.workItem.taskContextSummary.delivery.destination, "task");
   assert.deepEqual(corrected.body.workItem.taskContextSummary.materials.map((material) => [material.id, material.role]), [
     ["wcr_rules", "required_input"],
@@ -166,6 +177,22 @@ test("task context correction rejects unsupported roles and locks after executio
   }, ACTOR_A);
   assert.equal(invalid.status, 400);
   assert.equal(invalid.body.error, "work_item_context_material_role_not_allowed");
+
+  stored.taskResourceRefs = [{
+    id: "wrr_remote",
+    resourceId: "res_remote",
+    title: "远程只读台账",
+    purpose: "query_source",
+    locality: "remote",
+    allowedPurposes: ["reference", "query_source"],
+  }];
+  const elevated = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: stored.revision,
+    materialRoles: [{ id: "wrr_remote", role: "change_target" }],
+  }, ACTOR_A);
+  assert.equal(elevated.status, 400);
+  assert.equal(elevated.body.error, "work_item_context_material_role_not_allowed");
 
   stored.executionBindings = [{ kind: "auto_run", targetId: "run_1" }];
   const locked = service.updateTaskContext({
@@ -2126,6 +2153,40 @@ test("binds a structured work resource to a task without copying connector rows"
   assert.deepEqual(removed.body.workItem.taskResourceRefs, []);
 });
 
+test("keeps a writable local ledger as a governed resource instead of downgrading it to a file reference", async () => {
+  const resourceId = `wres_${"d".repeat(32)}`;
+  const { service, state } = harness({
+    resolveWorkResourceReference: async () => ({
+      status: 200,
+      body: {
+        resourceId,
+        projectId: "prj_a",
+        title: "客户台账.xlsx",
+        resourceKind: "table",
+        businessRole: "contact",
+        locality: "local",
+        sourceLabel: "客户台账.xlsx",
+        currentVersion: "sha256:v1",
+        contentId: `lc_${"e".repeat(32)}`,
+        capabilities: ["read", "query", "propose_change", "commit_change"],
+        allowedPurposes: ["query_source", "change_target", "reference"],
+      },
+    }),
+  });
+  const created = service.createWorkItem({ projectId: "prj_a", title: "更新客户台账" }, ACTOR_A).body.workItem;
+  const added = await service.addResourceReference({
+    workItemId: created.id,
+    resourceId,
+    expectedRevision: created.revision,
+    purpose: "change_target",
+  }, ACTOR_A);
+
+  assert.equal(added.status, 201);
+  assert.equal(added.body.workItem.localContentRefs.length, 0);
+  assert.equal(added.body.workItem.taskResourceRefs[0].purpose, "change_target");
+  assert.ok(state.workItems[0].taskResourceRefs[0].capabilities.includes("commit_change"));
+});
+
 test("AI execution input is exposed as input work instead of an approval for any route", () => {
   const { service, state } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "Clarify scope" }, ACTOR_A).body.workItem;
@@ -2896,6 +2957,8 @@ test("execution admission creates the Run before its contract and rejects duplic
   }, ACTOR_A);
   assert.equal(admitted.status, 201);
   assert.equal(admitted.body.claim.claimedBy, "usr_a");
+  assert.equal(admitted.body.operation.contextSnapshot.schemaVersion, 2);
+  assert.equal(admitted.body.operation.contextSnapshot.workItemRevision, item.revision);
   assert.equal(service.beginExecution({
     workItemId: item.id,
     kind: "auto_run",
@@ -2915,6 +2978,9 @@ test("execution admission creates the Run before its contract and rejects duplic
   }, ACTOR_A);
   assert.equal(recorded.status, 200);
   assert.equal(recorded.body.workItem.executionOperation, null);
+  assert.equal(recorded.body.binding.contextSnapshot.digest, admitted.body.operation.contextSnapshot.digest);
+  admitted.body.operation.contextSnapshot.sources.push({ sourceId: "late_mutation" });
+  assert.equal(recorded.body.binding.contextSnapshot.sources.length, 0);
   assert.equal(service.beginExecution({
     workItemId: item.id,
     kind: "auto_run",

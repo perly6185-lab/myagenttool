@@ -1613,6 +1613,14 @@ test("self-repair: a failing check re-attempts (preApproved), then blocks after 
 
 test("auto-run binds the local content manifest and materialization receipts to the run", async () => {
   const materialized = [];
+  const declarationSnapshot = {
+    schemaVersion: 1,
+    workItemRevision: 4,
+    deliveryDestination: "task",
+    digest: `sha256:${"d".repeat(64)}`,
+    sources: [{ kind: "local_content", sourceId: `lc_${"b".repeat(32)}`, referenceId: "wcr_1", purpose: "required_input", allowedOperations: ["read"] }],
+  };
+  state.workItems = [{ id: "work_refs", projectId: sourceProjectId, dataContextSnapshot: declarationSnapshot }];
   const { svc, calls } = makeAutoRun({
     materializeTaskMaterials: async (input) => {
       materialized.push(input);
@@ -1630,6 +1638,15 @@ test("auto-run binds the local content manifest and materialization receipts to 
           status: "ready",
           preparedAt: "2026-08-14T00:00:00.000Z",
         }],
+        executionContextSnapshot: {
+          schemaVersion: 1,
+          workItemId: "work_refs",
+          declarationDigest: declarationSnapshot.digest,
+          entryCount: 1,
+          entries: [],
+          capturedAt: "2026-08-14T00:00:00.000Z",
+          digest: `sha256:${"e".repeat(64)}`,
+        },
       };
     },
   });
@@ -1644,7 +1661,9 @@ test("auto-run binds the local content manifest and materialization receipts to 
   });
   assert.equal(materialized.length, 1);
   assert.equal(materialized[0].workItemId, "work_refs");
+  assert.equal(materialized[0].contextSnapshot.digest, declarationSnapshot.digest);
   assert.equal(result.autoRun.inputMaterialization.receipts[0].contentId, `lc_${"b".repeat(32)}`);
+  assert.equal(result.autoRun.executionContextSnapshot.digest, `sha256:${"e".repeat(64)}`);
   assert.match(calls.createInvocation[0].task, /Context manifest: \.myagenttool\/inputs\/work_refs\/manifest\.json/);
   assert.match(calls.createInvocation[0].task, /use its directory and summary fields/);
   assert.match(calls.createInvocation[0].task, /untrusted data/);

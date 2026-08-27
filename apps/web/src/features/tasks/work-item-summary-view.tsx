@@ -2155,7 +2155,7 @@ export function WorkItemSummaryView({
         onOpenChannel={item.taskContextSummary?.origin.kind === "channel" && onOpenSetup ? () => onOpenSetup("channels") : undefined}
         onUpdate={canCorrectTaskContext ? updateTaskContext : undefined}
         lockedReason={!canCorrectTaskContext && hasManagedExecution
-          ? (language === "zh" ? "任务已经开始，当前范围已锁定；需要更换资料或去向时请新建任务。" : "This scope is locked after execution starts. Create a new task to change materials or destination.")
+          ? (language === "zh" ? "任务已经开始，本次使用的资料范围和版本已锁定；后续调整只会在下一次执行生效。" : "This run's material scope and versions are locked. Later changes only apply to the next run.")
           : null}
       />
 

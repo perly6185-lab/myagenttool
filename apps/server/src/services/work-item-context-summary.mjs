@@ -49,6 +49,7 @@ function mergeMaterial(materials, candidate) {
     ...existing,
     role,
     availability,
+    allowedRoles: existing.allowedRoles ?? candidate.allowedRoles ?? [],
     versionPolicy: existing.versionPolicy === "pinned" || candidate.versionPolicy === "pinned"
       ? "pinned"
       : "latest_at_start",
@@ -144,6 +145,7 @@ function projectMaterials(item, origin) {
       recordId: null,
       title: text(asset.originalName, 300) ?? fileName(asset.path) ?? "任务文件",
       role: "required_input",
+      allowedRoles: ["required_input"],
       source: channelAttachment ? "channel_attachment" : "task_file",
       locality: "local",
       availability: asset.readiness?.state === "ready" ? "ready" : "pending",
@@ -159,6 +161,7 @@ function projectMaterials(item, origin) {
       recordId: null,
       title: text(reference.title, 300) ?? "我的资料",
       role: reference.purpose === "required_input" ? "required_input" : "reference",
+      allowedRoles: ["reference", "required_input"],
       source: "my_materials",
       locality: "local",
       availability: "selected",
@@ -174,6 +177,12 @@ function projectMaterials(item, origin) {
       recordId: null,
       title: text(reference.title, 300) ?? "工作资料",
       role: ["query_source", "change_target"].includes(reference.purpose) ? reference.purpose : "reference",
+      allowedRoles: [...new Set([
+        ...((Array.isArray(reference.allowedPurposes) && reference.allowedPurposes.length)
+          ? reference.allowedPurposes
+          : ["reference", "query_source"]),
+        reference.purpose,
+      ])].filter((role) => ["reference", "query_source", "change_target"].includes(role)),
       source: reference.locality === "remote" ? "remote_resource" : "local_resource",
       locality: reference.locality === "remote" ? "remote" : "local",
       availability: "selected",
@@ -190,6 +199,7 @@ function projectMaterials(item, origin) {
       recordId: text(binding.record?.recordId, 200),
       title: text(binding.record?.title, 300) ?? (output ? "结果业务记录" : "业务记录"),
       role: output ? "output" : binding.role === "required" ? "required_input" : "reference",
+      allowedRoles: [output ? "output" : binding.role === "required" ? "required_input" : "reference"],
       source: "business_record",
       locality: "managed",
       availability: binding.resolution?.state === "resolved" ? "ready"

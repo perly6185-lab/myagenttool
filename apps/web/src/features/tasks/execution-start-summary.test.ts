@@ -47,7 +47,7 @@ describe("execution start summary", () => {
         schemaVersion: 1,
         origin: { kind: "channel", label: "采购协作", provider: "wechat_ilink", channelId: "chn_1", conversationId: "conv_1", threadId: "cth_1", sourceMessageCount: 1 },
         method: { kind: "template", name: "报价整理", definitionId: "rtd_1", familyId: "rtf_1", version: 2, expectedOutput: "比价表.xlsx", snapshotHash: "hash" },
-        materials: [{ id: "asset_1", title: "报价单.xlsx", role: "required_input", source: "channel_attachment", locality: "local", availability: "ready", versionPolicy: "pinned" }],
+        materials: [{ id: "asset_1", title: "报价单.xlsx", role: "required_input", allowedRoles: ["required_input"], source: "channel_attachment", locality: "local", availability: "ready", versionPolicy: "pinned" }],
         delivery: { destination: "channel", label: "采购协作", channelId: "chn_1", conversationId: "conv_1", status: null },
       },
     } as unknown as LocalWorkItem;
@@ -99,7 +99,7 @@ describe("execution start summary", () => {
         schemaVersion: 1,
         origin: { kind: "manual", label: "manual", provider: null, channelId: null, conversationId: null, threadId: null, sourceMessageCount: 0 },
         method: { kind: "custom", name: "处理方式待确认", definitionId: null, familyId: null, version: null, expectedOutput: null, snapshotHash: null },
-        materials: [{ id: "resource_1", title: "供应商台账", role: "change_target", source: "remote_resource", locality: "remote", availability: "selected", versionPolicy: "pinned" }],
+        materials: [{ id: "resource_1", title: "供应商台账", role: "change_target", allowedRoles: ["change_target"], source: "remote_resource", locality: "remote", availability: "selected", versionPolicy: "pinned" }],
         delivery: { destination: "task", label: "task", channelId: null, conversationId: null, status: null },
       },
     } as unknown as LocalWorkItem;

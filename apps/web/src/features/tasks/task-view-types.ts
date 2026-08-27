@@ -207,6 +207,7 @@ export type LocalWorkItem = {
       id: string;
       title: string;
       role: "required_input" | "reference" | "query_source" | "change_target" | "output";
+      allowedRoles: Array<"required_input" | "reference" | "query_source" | "change_target" | "output">;
       source: "channel_attachment" | "task_file" | "my_materials" | "local_resource" | "remote_resource" | "business_record";
       sources?: string[];
       locality: "local" | "remote" | "managed";

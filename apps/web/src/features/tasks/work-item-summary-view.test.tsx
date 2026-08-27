@@ -524,7 +524,7 @@ describe("work item summary presentation", () => {
         schemaVersion: 1,
         origin: { kind: "channel", label: "采购协作", provider: "wechat_ilink", channelId: "chn_1", conversationId: "conv_1", threadId: "cth_1", sourceMessageCount: 1 },
         method: { kind: "custom", name: "本任务方案", definitionId: null, familyId: null, version: null, expectedOutput: "更新后的供应商台账", snapshotHash: null },
-        materials: [{ id: "wrr_1", title: "供应商台账", role: "query_source", source: "remote_resource", locality: "remote", availability: "selected", versionPolicy: "pinned" }],
+        materials: [{ id: "wrr_1", title: "供应商台账", role: "query_source", allowedRoles: ["reference", "query_source", "change_target"], source: "local_resource", locality: "local", availability: "selected", versionPolicy: "pinned" }],
         delivery: { destination: "channel", label: "采购协作", channelId: "chn_1", conversationId: "conv_1", status: null },
       },
     });
