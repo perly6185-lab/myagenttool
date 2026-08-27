@@ -45,6 +45,7 @@ import {
   getCurrentPrivateTutorAssessment,
   getCurrentPrivateTutorSession,
   getPrivateTutorLearningHistory,
+  getPrivateTutorLearningTrial,
   getPrivateTutorLearningPreferences,
   getPrivateTutorProfile,
   getPrivateTutorDataPolicy,
@@ -65,6 +66,8 @@ import {
   retryPrivateTutorLearnerDeletion,
   startPrivateTutorAssessment,
   startPrivateTutorSession,
+  startPrivateTutorLearningTrial,
+  stopPrivateTutorLearningTrial,
   updatePrivateTutorDataPolicy,
   updatePrivateTutorLearningPreferences,
   type PrivateTutorAssessment,
@@ -77,6 +80,7 @@ import {
   type PrivateTutorLearner,
   type PrivateTutorLearningPlan,
   type PrivateTutorLearningHistory,
+  type PrivateTutorLearningTrial,
   type PrivateTutorLearningPreferences,
   type PrivateTutorLearningPreferencesPatch,
   type PrivateTutorFollowUpMode,
@@ -1277,6 +1281,14 @@ function TodayLearning({
     setBusy(false);
   }
 
+  async function recordFollowUpResolution(followUpId: string, resolution: "resolved" | "unresolved") {
+    setBusy(true);
+    setFollowUpMessage("");
+    const result = await onAction({ action: "follow_up_feedback", followUpId, resolution });
+    setFollowUpMessage(result.error ?? (resolution === "resolved" ? "已记下：这次追问解决了问题。" : "已记下：这次还没解决，后续试学报告会如实保留。"));
+    setBusy(false);
+  }
+
   async function submit(responseKind: "answer" | "dont_know", rawAnswer = answer, source: "screen" | "visual" = "screen") {
     const question = session?.currentActivity?.question;
     if (!question) return;
@@ -1513,6 +1525,15 @@ function TodayLearning({
               <p className="mt-2 text-sm leading-6">{latestFollowUp.response}</p>
               {latestFollowUp.sourceRefs.map((ref) => <blockquote key={`${ref.sectionId}:${ref.pageNumber ?? ""}`} className="mt-3 border-l-2 border-sky-400 pl-3 text-xs leading-5 text-muted-foreground">{ref.excerpt}<span className="mt-1 block">{ref.sectionId}{ref.pageNumber ? ` · 第 ${ref.pageNumber} 页` : ""}</span></blockquote>)}
               <p className="mt-3 text-[11px] text-muted-foreground">本次追问不产生练习证据。</p>
+              <div className="mt-3 border-t border-sky-200 pt-3 dark:border-sky-900">
+                <p className="text-xs font-medium">这次回答解决你的问题了吗？</p>
+                {latestFollowUp.resolution ? <p className="mt-2 text-xs text-muted-foreground">已记录：{latestFollowUp.resolution === "resolved" ? "解决了" : "还没解决"}</p> : (
+                  <div className="mt-2 flex gap-2">
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => void recordFollowUpResolution(latestFollowUp.id, "resolved")}>解决了</Button>
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => void recordFollowUpResolution(latestFollowUp.id, "unresolved")}>还没解决</Button>
+                  </div>
+                )}
+              </div>
             </div>
           ) : null}
         </Card>
@@ -1720,6 +1741,10 @@ function reviewPhaseLabel(phase: "correction" | "similar" | "variation" | "delay
 
 function Growth({ state: _state }: { state: LearnerTutorState }) {
   const [history, setHistory] = useState<PrivateTutorLearningHistory | null>(null);
+  const [trial, setTrial] = useState<PrivateTutorLearningTrial | null>(null);
+  const [trialGoal, setTrialGoal] = useState("验证我能否在私教指导下掌握当前课程");
+  const [trialBusy, setTrialBusy] = useState(false);
+  const [trialMessage, setTrialMessage] = useState("");
   const [selectedPackageKey, setSelectedPackageKey] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1729,10 +1754,11 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
     let current = true;
     setLoading(true);
     setError("");
-    void getPrivateTutorLearningHistory()
-      .then((value) => {
+    void Promise.all([getPrivateTutorLearningHistory(), getPrivateTutorLearningTrial()])
+      .then(([value, learningTrial]) => {
         if (!current) return;
         setHistory(value);
+        setTrial(learningTrial);
         setSelectedPackageKey((selected) => value.packages.some((item) => historyPackageKey(item) === selected)
           ? selected
           : value.packages[0] ? historyPackageKey(value.packages[0]) : "");
@@ -1745,6 +1771,32 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
     return () => { current = false; };
   }, [loadAttempt]);
 
+  async function beginTrial() {
+    setTrialBusy(true);
+    setTrialMessage("");
+    try {
+      setTrial(await startPrivateTutorLearningTrial(trialGoal));
+      setTrialMessage("14 天试学已开始。指标只会来自之后的真实学习记录。");
+    } catch (startError) {
+      setTrialMessage(startError instanceof Error ? startError.message : "暂时无法开始试学。");
+    } finally {
+      setTrialBusy(false);
+    }
+  }
+
+  async function endTrial() {
+    setTrialBusy(true);
+    setTrialMessage("");
+    try {
+      setTrial(await stopPrivateTutorLearningTrial());
+      setTrialMessage("试学已提前结束，已有记录和样本状态会继续保留。");
+    } catch (stopError) {
+      setTrialMessage(stopError instanceof Error ? stopError.message : "暂时无法结束试学。");
+    } finally {
+      setTrialBusy(false);
+    }
+  }
+
   const selectedPackage = history?.packages.find((item) => historyPackageKey(item) === selectedPackageKey)
     ?? history?.packages[0]
     ?? null;
@@ -1753,6 +1805,36 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
       <p className="text-sm font-medium text-violet-600">看见自己的进步</p>
       <h1 className="mt-1 text-2xl font-bold">我的成长</h1>
       <p className="mt-2 text-sm text-muted-foreground">这里没有排名，只按教材版本和章节记录真实完成情况、独立作答与复习安排。</p>
+      {!loading && !error ? (
+        <Card className="mt-6 overflow-hidden border-violet-200 dark:border-violet-900">
+          <div className="bg-violet-50/70 p-5 dark:bg-violet-950/30">
+            <p className="text-sm font-semibold text-violet-700 dark:text-violet-300">14 天真实课程试学</p>
+            <h2 className="mt-1 text-lg font-bold">验证次日还能不能想起、延迟复测是否站稳、追问是否真正解决</h2>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">自动化测试只验证记录是否正确；只有你真实学习产生的样本，才会进入这里的结果。</p>
+          </div>
+          {!trial ? (
+            <div className="p-5">
+              <label className="text-sm font-medium">这次想验证什么？
+                <input aria-label="试学目标" value={trialGoal} onChange={(event) => setTrialGoal(event.target.value.slice(0, 160))} className="mt-2 h-11 w-full rounded-lg border bg-card px-3 font-normal" />
+              </label>
+              <Button className="mt-4" disabled={trialBusy || trialGoal.trim().length < 2} onClick={() => void beginTrial()}>{trialBusy ? "正在开始…" : "开始 14 天试学"}</Button>
+            </div>
+          ) : (
+            <div className="p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold">{trial.contentPackageName}</p><p className="mt-1 text-sm text-muted-foreground">目标：{trial.goal}</p></div><span className="rounded-full bg-violet-100 px-3 py-1.5 text-xs font-medium text-violet-800 dark:bg-violet-950 dark:text-violet-200">{trialStatusLabel(trial.status)} · 第 {trial.progress.dayIndex}/{trial.durationDays} 天</span></div>
+              <div className="mt-5 grid gap-3 sm:grid-cols-4">
+                <TrialMetric label="真实参与天数" value={`${trial.progress.activeDayCount}/${trial.durationDays}`} detail={`${trial.progress.completedSessionCount} 节完整学习`} />
+                <TrialMetric label="次日回忆保持" value={formatHistoryRate(trial.metrics.nextDayRecall.retentionRate)} detail={`${trial.metrics.nextDayRecall.correctCount}/${trial.metrics.nextDayRecall.attemptedCount} 次已完成 · ${trial.metrics.nextDayRecall.opportunityCount} 次到期`} ready={trial.readiness.nextDayRecallReady} />
+                <TrialMetric label="延迟复测保持" value={formatHistoryRate(trial.metrics.delayedReview.retentionRate)} detail={`${trial.metrics.delayedReview.correctCount}/${trial.metrics.delayedReview.attemptedCount} 次已完成 · ${trial.metrics.delayedReview.opportunityCount} 次到期`} ready={trial.readiness.delayedReviewReady} />
+                <TrialMetric label="追问解决率" value={formatHistoryRate(trial.metrics.followUps.resolutionRate)} detail={`${trial.metrics.followUps.resolvedCount}/${trial.metrics.followUps.feedbackCount} 次已反馈追问`} ready={trial.readiness.followUpResolutionReady} />
+              </div>
+              <p className="mt-4 text-xs text-muted-foreground">每项至少需要 {trial.readiness.minimumSampleCount} 个样本才标记为“可初步判断”；样本不足时显示暂无，不补算成绩。</p>
+              {trial.status === "active" ? <Button className="mt-4" size="sm" variant="secondary" disabled={trialBusy} onClick={() => void endTrial()}>{trialBusy ? "正在保存…" : "提前结束并保留记录"}</Button> : null}
+            </div>
+          )}
+          {trialMessage ? <p role="status" className="mx-5 mb-5 rounded-lg bg-muted p-3 text-sm">{trialMessage}</p> : null}
+        </Card>
+      ) : null}
       {loading ? <p className="mt-6 text-sm text-muted-foreground">正在整理学习历史…</p> : null}
       {error ? <Card className="mt-6 border-amber-200 p-5"><p role="alert" className="text-sm text-amber-800 dark:text-amber-200">{error}</p><Button className="mt-3" size="sm" variant="secondary" onClick={() => setLoadAttempt((value) => value + 1)}>重新读取</Button></Card> : null}
       {!loading && !error && history ? (
@@ -1797,6 +1879,14 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
       ) : null}
     </section>
   );
+}
+
+function TrialMetric({ label, value, detail, ready }: { label: string; value: string; detail: string; ready?: boolean }) {
+  return <div className="rounded-xl bg-muted/55 p-3"><p className="text-lg font-bold">{value}</p><p className="mt-1 text-xs font-medium">{label}</p><p className="mt-1 text-[11px] text-muted-foreground">{detail}{ready == null ? "" : ` · ${ready ? "可初步判断" : "样本不足"}`}</p></div>;
+}
+
+function trialStatusLabel(status: PrivateTutorLearningTrial["status"]) {
+  return { active: "试学中", completed: "已完成", stopped: "已提前结束" }[status];
 }
 
 function HistoryMetric({ label, value }: { label: string; value: string }) {
