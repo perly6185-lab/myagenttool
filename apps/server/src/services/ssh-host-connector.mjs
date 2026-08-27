@@ -143,14 +143,26 @@ function connectionOptions(target, address, credential, hostVerifier, timeoutMs)
 function sanitizedConnectionError(error) {
   if (error instanceof SshHostConnectorError) return error;
   const level = String(error?.level ?? "");
+  const code = String(error?.code ?? "").toUpperCase();
   if (level === "client-authentication") return new SshHostConnectorError("ssh_authentication_failed", "SSH authentication failed.");
-  if (level === "client-timeout") return new SshHostConnectorError("ssh_connection_timeout", "The SSH connection timed out.");
+  if (level === "client-timeout" || code === "ETIMEDOUT") return new SshHostConnectorError("ssh_connection_timeout", "The SSH connection timed out.");
+  if (code === "ECONNREFUSED") return new SshHostConnectorError("ssh_connection_refused", "The SSH service refused the connection.");
+  if (code === "EHOSTUNREACH" || code === "ENETUNREACH") return new SshHostConnectorError("ssh_host_unreachable", "The SSH host could not be reached.");
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return new SshHostConnectorError("ssh_host_unresolvable", "The SSH host could not be resolved.");
   return new SshHostConnectorError("ssh_connection_failed", "The SSH connection could not be established.");
 }
 
 function sanitizedSftpOperationError(error) {
   if (error instanceof SshHostConnectorError) return error;
   if (error?.safeForSftpBoundary === true && /^site_(?:deployment|tls)_[a-z0-9_]+$/.test(String(error?.code ?? ""))) return error;
+  const code = String(error?.code ?? "").toUpperCase();
+  const message = String(error?.message ?? "");
+  if (code === "3" || code === "EACCES" || code === "EPERM" || /permission denied|operation not permitted/i.test(message)) {
+    return new SshHostConnectorError("ssh_sftp_permission_denied", "The remote file operation is no longer permitted.");
+  }
+  if (code === "ENOSPC" || code === "EDQUOT" || /no space left|disk quota (?:exceeded|reached)|quota exceeded/i.test(message)) {
+    return new SshHostConnectorError("ssh_sftp_no_space", "The remote device does not have enough available storage.");
+  }
   return new SshHostConnectorError("ssh_sftp_operation_failed", "The remote file operation did not complete.");
 }
 

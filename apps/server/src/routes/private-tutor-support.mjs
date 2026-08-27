@@ -18,6 +18,10 @@ export function ensurePrivateTutorCollections(state) {
     "privateTutorGuardianLinks",
     "privateTutorSnapshots",
     "privateTutorAttempts",
+    "privateTutorEvaluationReviews",
+    "privateTutorGoldenCandidates",
+    "privateTutorGoldenCandidateReviews",
+    "privateTutorGoldenCandidateEvents",
     "privateTutorAssessments",
     "privateTutorLearnerModels",
     "privateTutorStrategyDecisions",
@@ -53,6 +57,10 @@ export function ensurePrivateTutorCollections(state) {
     "privateTutorSubjectPlugins",
     "privateTutorMaterialDocuments",
     "privateTutorKnowledgeMapDrafts",
+    "privateTutorRuntimeValidations",
+    "privateTutorPackageActivations",
+    "privateTutorContentMigrationPreviews",
+    "privateTutorContentMigrationApplications",
   ]) {
     if (!Array.isArray(state[key])) state[key] = [];
   }

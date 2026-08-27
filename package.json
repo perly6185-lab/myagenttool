@@ -36,6 +36,8 @@
     "system:check": "node tools/dev/check-system-dependencies.mjs",
     "eval:intent": "node tools/dev/intent-understanding-eval.mjs",
     "eval:intent:channel": "node tools/dev/channel-intent-replay.mjs",
+    "eval:private-tutor": "node tools/dev/private-tutor-eval.mjs",
+    "release:private-tutor": "node tools/dev/private-tutor-eval.mjs",
     "eval:channel:blackbox": "node --test apps/server/test/channel-ordinary-user-blackbox.test.mjs",
     "dev": "node tools/dev/run-local-demo.mjs",
     "test:documents:e2e": "playwright test -c apps/web/playwright.config.ts",

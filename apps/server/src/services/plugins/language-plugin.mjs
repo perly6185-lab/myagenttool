@@ -1,17 +1,18 @@
 import { evaluateAuthoredRubric } from "./authored-rubric.mjs";
+import { evaluateLanguageSemanticResponse, LANGUAGE_SEMANTIC_EVALUATOR_VERSION } from "./language-semantic-evaluator.mjs";
 
 export const LANGUAGE_SUBJECT_ID = "language_learning";
 
 export const languageSubjectPlugin = Object.freeze({
   subjectId: LANGUAGE_SUBJECT_ID,
-  version: "1.0.0",
+  version: "2.0.0",
   visualTemplates: [],
   getCapabilities() {
     return {
       deterministicGrading: true,
       stepEvaluation: false,
       speechEvaluation: true,
-      semanticEvaluation: "authored_rubric",
+      semanticEvaluation: LANGUAGE_SEMANTIC_EVALUATOR_VERSION,
       visualInteractions: false,
       supportedQuestionKinds: ["choice", "semantic_response"],
     };
@@ -23,6 +24,9 @@ export const languageSubjectPlugin = Object.freeze({
     if (input.responseKind !== "answer") return { accepted: false, error: "invalid_private_tutor_response_kind" };
     if (question.kind === "choice") return evaluateChoice(input, question);
     if (question.kind !== "semantic_response") return { accepted: false, error: "private_tutor_question_kind_unsupported" };
+    if (question.rubric?.profile === LANGUAGE_SEMANTIC_EVALUATOR_VERSION) {
+      return evaluateLanguageSemanticResponse(input, question);
+    }
     const result = evaluateAuthoredRubric(input.rawAnswer, question.rubric);
     if (!result.accepted) return result;
     const speechConfidence = input.source === "voice_confirmed" ? Number(input.recognitionConfidence) : null;

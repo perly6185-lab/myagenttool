@@ -81,6 +81,29 @@ test("fails closed when the observed fingerprint changes", async () => {
   }, { password: "do-not-leak" }), { code: "ssh_host_fingerprint_changed" });
 });
 
+test("classifies refused, timed out, and unreachable connections without exposing socket details", async () => {
+  const target = {
+    host: "host.example", port: 22, user: "deploy", authMethod: "password_ref", networkPolicy: "public_only",
+    knownHostFingerprint: sshHostFingerprint(HOST_KEY),
+  };
+  for (const [socketCode, expected] of [
+    ["ECONNREFUSED", "ssh_connection_refused"],
+    ["ETIMEDOUT", "ssh_connection_timeout"],
+    ["EHOSTUNREACH", "ssh_host_unreachable"],
+    ["ENETUNREACH", "ssh_host_unreachable"],
+  ]) {
+    class FailingClient extends EventEmitter {
+      connect() { setImmediate(() => this.emit("error", Object.assign(new Error("socket detail must stay private"), { code: socketCode }))); }
+      end() {}
+    }
+    const connector = createSshHostConnector({ ClientClass: FailingClient, lookup: async () => [{ address: "93.184.216.22", family: 4 }] });
+    await assert.rejects(
+      connector.verifyConnection(target, { password: "secret" }),
+      (error) => error.code === expected && !error.message.includes("socket detail"),
+    );
+  }
+});
+
 test("SFTP callback preserves only explicitly safe deployment failures", async () => {
   const ClientClass = fakeClientClass();
   const connector = createSshHostConnector({ ClientClass, lookup: async () => [{ address: "93.184.216.23", family: 4 }] });
@@ -100,6 +123,14 @@ test("SFTP callback preserves only explicitly safe deployment failures", async (
   await assert.rejects(
     connector.runSftp(target, { password: "secret" }, async () => { throw Object.assign(new Error("password=secret"), { code: "unsafe_detail" }); }),
     (error) => error.code === "ssh_sftp_operation_failed" && !error.message.includes("secret"),
+  );
+  await assert.rejects(
+    connector.runSftp(target, { password: "secret" }, async () => { throw Object.assign(new Error("private remote path"), { code: 3 }); }),
+    (error) => error.code === "ssh_sftp_permission_denied" && !error.message.includes("private remote path"),
+  );
+  await assert.rejects(
+    connector.runSftp(target, { password: "secret" }, async () => { throw Object.assign(new Error("No space left on device: /private/path"), { code: 4 }); }),
+    (error) => error.code === "ssh_sftp_no_space" && !error.message.includes("private/path"),
   );
 });
 

@@ -54,7 +54,7 @@ export function defaultLearningPreferences() {
 }
 
 export function privateTutorLearningPreferences(state, learnerId) {
-  const row = state.privateTutorLearningPreferences.find((entry) => entry.learnerId === learnerId);
+  const row = state.privateTutorLearningPreferences?.find((entry) => entry.learnerId === learnerId);
   if (!row) return { learnerId, ...DEFAULTS, revision: 0, schemaVersion: LEARNING_PREFERENCES_SCHEMA_VERSION, updatedAt: null };
   return { ...row };
 }
@@ -63,6 +63,7 @@ export function privateTutorLearningPreferences(state, learnerId) {
 // values reject the whole update so a malformed client cannot silently persist
 // a half-valid row. Returns { ok, preferences, error }.
 export function updatePrivateTutorLearningPreferences(state, learnerId, patch, { now, nextId }) {
+  state.privateTutorLearningPreferences ??= [];
   const current = state.privateTutorLearningPreferences.find((entry) => entry.learnerId === learnerId);
   const base = current ? { ...current } : {
     id: nextId("lpref"),

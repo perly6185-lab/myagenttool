@@ -118,34 +118,44 @@ export function decidePrivateTutorStrategy({ model, attempts, previousDecision =
   };
 }
 
-export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "diagnostic_completed", carryForwardKnowledgeId = null }) {
+export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "diagnostic_completed", carryForwardKnowledgeId = null, scopeKnowledgeIds = null, dailyMinutes = 20, planIntensity = "standard" }) {
   if (!decision) return null;
-  const measured = model.knowledge
+  const scope = new Set(Array.isArray(scopeKnowledgeIds) && scopeKnowledgeIds.length
+    ? scopeKnowledgeIds
+    : model.knowledge.map((item) => item.id));
+  const scoped = model.knowledge.filter((item) => scope.has(item.id));
+  const measured = scoped
     .filter((item) => item.mastery != null)
     .sort((left, right) => priorityScore(right) - priorityScore(left));
-  const primary = model.knowledge.find((item) => item.id === carryForwardKnowledgeId)
-    ?? model.knowledge.find((item) => item.id === decision.targetKnowledgeId)
-    ?? measured[0];
-  const alternatives = measured.filter((item) => item.id !== primary.id);
+  const candidates = measured.length ? measured : scoped;
+  const primary = candidates.find((item) => item.id === carryForwardKnowledgeId)
+    ?? candidates.find((item) => item.id === decision.targetKnowledgeId)
+    ?? candidates[0];
+  if (!primary) return null;
+  const alternatives = candidates.filter((item) => item.id !== primary.id);
   const secondary = alternatives[0] ?? primary;
   const tertiary = alternatives[1] ?? secondary;
+  const plannedMinutes = Math.max(5, Math.min(180, Math.round(Number(dailyMinutes) || 20)));
+  const intensity = ["relaxed", "standard", "intensive"].includes(planIntensity) ? planIntensity : "standard";
   const pattern = [
-    { item: primary, activity: "teach", strategy: decision.strategy, minutes: 20 },
-    { item: secondary, activity: "repair", strategy: basicStrategy(secondary), minutes: 20 },
-    { item: primary, activity: "independent_practice", strategy: "fluency_practice", minutes: 20 },
-    { item: tertiary, activity: "teach", strategy: basicStrategy(tertiary), minutes: 20 },
-    { item: primary, activity: "transfer", strategy: "transfer_challenge", minutes: 20 },
-    { item: secondary, activity: "spaced_review", strategy: "transfer_challenge", minutes: 20 },
-    { item: primary, activity: "mixed_check", strategy: "transfer_challenge", minutes: 20 },
+    { item: primary, activity: "teach", strategy: decision.strategy },
+    { item: secondary, activity: "repair", strategy: basicStrategy(secondary) },
+    { item: primary, activity: "independent_practice", strategy: "fluency_practice" },
+    { item: tertiary, activity: intensity === "relaxed" ? "spaced_review" : "teach", strategy: basicStrategy(tertiary) },
+    { item: primary, activity: "transfer", strategy: "transfer_challenge" },
+    { item: secondary, activity: intensity === "intensive" ? "mixed_check" : "spaced_review", strategy: "transfer_challenge" },
+    { item: primary, activity: "mixed_check", strategy: "transfer_challenge" },
   ];
   const generatedAt = now();
   return {
     generatedAt,
     reason,
+    dailyMinutes: plannedMinutes,
+    planIntensity: intensity,
     studentReason: reason === "missed_day_rescheduled"
       ? "昨天没完成也没关系，计划已经顺延，今天从最合适的位置继续。"
       : decision.studentReason,
-    days: pattern.map(({ item, activity, strategy, minutes }, index) => ({
+    days: pattern.map(({ item, activity, strategy }, index) => ({
       dayIndex: index + 1,
       date: addDays(generatedAt, index),
       status: "planned",
@@ -153,7 +163,7 @@ export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "
       knowledgeTitle: item.title,
       activity,
       title: activityTitle(activity, item.title),
-      minutes,
+      minutes: plannedMinutes,
       strategy,
       rationale: index === 0 ? decision.studentReason : rationale(activity, item.title),
     })),

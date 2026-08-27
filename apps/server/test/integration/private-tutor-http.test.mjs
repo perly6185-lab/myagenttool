@@ -5,7 +5,7 @@ process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { after, before, test } from "node:test";
@@ -37,6 +37,9 @@ before(async () => {
     { id: "usr_parent_b", teamId: "team_family_b", role: "owner" },
     { id: "usr_admin", teamId: "team_family_b", role: "admin" },
     { id: "usr_reviewer", teamId: "team_family_b", role: "admin" },
+    { id: "usr_tutor_reviewer_a", teamId: "team_personal", role: "admin" },
+    { id: "usr_tutor_reviewer_b", teamId: "team_personal", role: "admin" },
+    { id: "usr_tutor_reviewer_c", teamId: "team_personal", role: "owner" },
     { id: "usr_parent_c", teamId: "team_family_c", role: "viewer" },
     { id: "usr_personal", teamId: "team_personal", role: "viewer" },
     { id: "usr_personal_race", teamId: "team_personal", role: "viewer" },
@@ -48,6 +51,9 @@ before(async () => {
     { token: "tok_parent_b", userId: "usr_parent_b", expiresAt },
     { token: "tok_admin", userId: "usr_admin", expiresAt },
     { token: "tok_reviewer", userId: "usr_reviewer", expiresAt },
+    { token: "tok_tutor_reviewer_a", userId: "usr_tutor_reviewer_a", expiresAt },
+    { token: "tok_tutor_reviewer_b", userId: "usr_tutor_reviewer_b", expiresAt },
+    { token: "tok_tutor_reviewer_c", userId: "usr_tutor_reviewer_c", expiresAt },
     { token: "tok_parent_c", userId: "usr_parent_c", expiresAt },
     { token: "tok_personal", userId: "usr_personal", expiresAt },
     { token: "tok_personal_race", userId: "usr_personal_race", expiresAt },
@@ -239,6 +245,18 @@ test("profile sub-resources resolve the owned profile and stay account-scoped", 
 
   const plan = await call("/api/private-tutor/profile/learning-plan", { token: "tok_personal" });
   assert.equal(plan.status, 200);
+
+  const history = await call("/api/private-tutor/profile/learning-history", { token: "tok_personal" });
+  assert.equal(history.status, 200);
+  assert.equal(history.body.history.learnerId, profileId);
+  assert.equal(history.body.history.summary.practiceAttemptCount, 1);
+  assert.equal(history.body.history.packages[0].packageVersion, "1.0.0");
+  assert.equal(JSON.stringify(history.body).includes("normalizedAnswer"), false);
+
+  const foreignHistory = await call("/api/private-tutor/profile/learning-history", { token: "tok_personal_race" });
+  assert.equal(foreignHistory.status, 200);
+  assert.notEqual(foreignHistory.body.history.learnerId, profileId);
+  assert.equal(foreignHistory.body.history.summary.practiceAttemptCount, 0);
 
   const review = await call("/api/private-tutor/profile/review", { token: "tok_personal" });
   assert.equal(review.status, 200);
@@ -717,6 +735,28 @@ test("the adaptive diagnostic is resumable, server-graded, idempotent, and produ
   assert.equal(runtimeState.privateTutorAttempts[0].source, "visual");
   tutoringSession = recalled.body.session;
   assert.equal(tutoringSession.currentActivity.kind, "explain");
+
+  const attemptsBeforeFollowUp = runtimeState.privateTutorAttempts.length;
+  const snapshotBeforeFollowUp = JSON.stringify(runtimeState.privateTutorSnapshots.find((row) => row.learnerId === learnerId));
+  const groundedFollowUp = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, {
+    method: "POST",
+    body: { action: "follow_up", mode: "question", question: "为什么两边要做相同操作？" },
+  });
+  assert.equal(groundedFollowUp.status, 200);
+  assert.equal(groundedFollowUp.body.followUp.evidenceEligible, false);
+  assert.equal(groundedFollowUp.body.followUp.grounding, "reviewed_curriculum");
+  assert.match(groundedFollowUp.body.followUp.response, /不会读取题目答案/);
+  assert.equal(groundedFollowUp.body.session.currentActivity.kind, "explain");
+  assert.equal(runtimeState.privateTutorAttempts.length, attemptsBeforeFollowUp);
+  assert.equal(JSON.stringify(runtimeState.privateTutorSnapshots.find((row) => row.learnerId === learnerId)), snapshotBeforeFollowUp);
+  tutoringSession = groundedFollowUp.body.session;
+
+  const rejectedFollowUp = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, {
+    method: "POST",
+    body: { action: "follow_up", mode: "question", question: "x".repeat(501) },
+  });
+  assert.equal(rejectedFollowUp.status, 400);
+  assert.equal(rejectedFollowUp.body.error, "invalid_private_tutor_follow_up_question");
 
   const pausedSession = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/pause`, { method: "POST", body: {} });
   assert.equal(pausedSession.status, 200);
@@ -1388,7 +1428,82 @@ Details on bubble sort.
   assert.equal(updateRes.status, 200);
   assert.equal(updateRes.body.draft.packageName, "Algorithms 101");
 
-  // 5. Publish Draft
+  // 5. Publishing is blocked until the current grounded map is confirmed.
+  const unconfirmedPublish = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/publish`, {
+    token: "tok_personal",
+    method: "POST",
+  });
+  assert.equal(unconfirmedPublish.status, 400);
+  assert.equal(unconfirmedPublish.body.error, "draft_confirmation_required");
+
+  const confirmRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/confirm`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      expectedRevision: updateRes.body.draft.revision,
+      acknowledgeSourceReview: true,
+    },
+  });
+  assert.equal(confirmRes.status, 200);
+  assert.equal(confirmRes.body.draft.status, "confirmed");
+  assert.equal(confirmRes.body.draft.confirmation.revision, updateRes.body.draft.revision);
+
+  const missingContentPublish = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/publish`, {
+    token: "tok_personal",
+    method: "POST",
+  });
+  assert.equal(missingContentPublish.status, 400);
+  assert.equal(missingContentPublish.body.error, "authored_content_not_generated");
+
+  // 6. Generate and confirm source-grounded teaching content.
+  const authorRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/author-content`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {},
+  });
+  assert.equal(authorRes.status, 201);
+  assert.equal(authorRes.body.authoredContent.status, "in_review");
+  assert.equal(authorRes.body.authoredContent.validationIssues.length, 0);
+  assert.equal(authorRes.body.authoredContent.knowledgeContents.length, confirmRes.body.draft.draftKnowledgeComponents.length);
+
+  const unconfirmedContentPublish = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/publish`, {
+    token: "tok_personal",
+    method: "POST",
+  });
+  assert.equal(unconfirmedContentPublish.status, 400);
+  assert.equal(unconfirmedContentPublish.body.error, "authored_content_confirmation_required");
+
+  const editedContents = structuredClone(authorRes.body.authoredContent.knowledgeContents);
+  editedContents[0].teachingContent.guidance = "先定位原文，再用自己的话解释这一知识点。";
+  const updateContentRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/authored-content`, {
+    token: "tok_personal",
+    method: "PUT",
+    body: { knowledgeContents: editedContents },
+  });
+  assert.equal(updateContentRes.status, 200);
+  assert.equal(updateContentRes.body.authoredContent.revision, 2);
+  assert.equal(updateContentRes.body.authoredContent.confirmation, null);
+
+  const staleConfirmContent = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/authored-content/confirm`, {
+    token: "tok_personal",
+    method: "POST",
+    body: { expectedRevision: 1, acknowledgeContentReview: true },
+  });
+  assert.equal(staleConfirmContent.status, 409);
+  assert.equal(staleConfirmContent.body.error, "authored_content_revision_conflict");
+
+  const confirmContentRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/authored-content/confirm`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      expectedRevision: updateContentRes.body.authoredContent.revision,
+      acknowledgeContentReview: true,
+    },
+  });
+  assert.equal(confirmContentRes.status, 200);
+  assert.equal(confirmContentRes.body.authoredContent.status, "confirmed");
+
+  // 7. Publish Draft
   const publishRes = await call(`/api/private-tutor/knowledge-map-drafts/${draftId}/publish`, {
     token: "tok_personal",
     method: "POST",
@@ -1397,7 +1512,7 @@ Details on bubble sort.
   assert.equal(publishRes.body.success, true);
   const publishedPackageId = publishRes.body.packageId;
 
-  // 6. Verify Content Package Registered
+  // 8. Verify Content Package Registered
   const packageRes = await call(`/api/private-tutor/content-packages/${publishedPackageId}`, {
     token: "tok_personal",
   });
@@ -1405,14 +1520,194 @@ Details on bubble sort.
   assert.equal(packageRes.body.package.name, "Algorithms 101");
   assert.equal(packageRes.body.package.sourceType, "user_material");
   assert.equal(packageRes.body.package.evaluationCapabilities.deterministicGrading, false);
+  assert.equal(packageRes.body.package.evaluationCapabilities.sourceGrounding, true);
+  assert.equal(packageRes.body.package.evaluationCapabilities.semanticEvaluation, "source_grounded_rubric");
+  assert.equal(packageRes.body.package.knowledgeComponents.every((item) => item.sourceGrounding === "user_confirmed"), true);
+  assert.equal(packageRes.body.package.knowledgeComponents.every((item) => item.dailyQuestions.length === 1), true);
+  assert.equal(packageRes.body.package.knowledgeComponents.every((item) => item.dailyQuestions[0].evidencePolicy === "practice_only_until_runtime_validation"), true);
 
-  // 7. Delete Material
+  const otherAccountPackage = await call(`/api/private-tutor/content-packages/${publishedPackageId}`, {
+    token: "tok_migrate",
+  });
+  assert.equal(otherAccountPackage.status, 404);
+
+  // 9. Calibrate authored rubrics and start from a selected chapter without inventing mastery.
+  const moduleId = packageRes.body.package.modules[0].id;
+  const activationRes = await call("/api/private-tutor/profile/content-package/activate", {
+    token: "tok_personal",
+    method: "POST",
+    body: { packageId: publishedPackageId, entryMode: "chapter", startModuleId: moduleId },
+  });
+  assert.equal(activationRes.status, 200, JSON.stringify(activationRes.body));
+  assert.equal(activationRes.body.activation.entryMode, "chapter");
+  assert.equal(activationRes.body.runtimeValidation.status, "passed");
+  assert.equal(activationRes.body.runtimeValidation.questions.every((item) => item.status === "passed"), true);
+  assert.equal(activationRes.body.learningPlan.days.length, 7);
+  assert.equal(activationRes.body.snapshot.knowledge.every((item) => item.mastery === null && item.evidenceCount === 0), true);
+
+  let sessionRes = await call("/api/private-tutor/profile/tutoring-sessions/start", {
+    token: "tok_personal",
+    method: "POST",
+    body: { pace: "easy" },
+  });
+  assert.equal(sessionRes.status, 201, JSON.stringify(sessionRes.body));
+  const sessionId = sessionRes.body.session.id;
+  const paused = await call(`/api/private-tutor/profile/tutoring-sessions/${sessionId}/pause`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {},
+  });
+  assert.equal(paused.status, 200);
+  assert.equal(paused.body.session.status, "paused");
+  sessionRes = await call(`/api/private-tutor/profile/tutoring-sessions/${sessionId}/resume`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {},
+  });
+  assert.equal(sessionRes.status, 200);
+  assert.equal(sessionRes.body.session.status, "active");
+
+  const internalPackage = runtimeState.privateTutorContentPackages.find((item) => item.id === publishedPackageId);
+  let actionIndex = 0;
+  while (sessionRes.body.session.status === "active") {
+    const activity = sessionRes.body.session.currentActivity;
+    let body;
+    if (activity.question) {
+      const authoredQuestion = internalPackage.knowledgeComponents
+        .flatMap((item) => item.tutoringQuestions)
+        .find((item) => item.id === activity.question.revisionId);
+      const answer = authoredQuestion.rubric.anchors.find((item) => item.band === "proficient").sample;
+      body = {
+        action: "answer",
+        idempotencyKey: `m7-runtime-session-${actionIndex}`,
+        questionRevisionId: activity.question.revisionId,
+        rawAnswer: answer,
+        responseKind: "answer",
+        source: "screen",
+      };
+    } else {
+      body = { action: "continue" };
+    }
+    sessionRes = await call(`/api/private-tutor/profile/tutoring-sessions/${sessionId}/actions`, {
+      token: "tok_personal",
+      method: "POST",
+      body,
+    });
+    assert.equal([200, 201].includes(sessionRes.status), true, JSON.stringify(sessionRes.body));
+    if (sessionRes.body.answer) {
+      assert.equal(sessionRes.body.answer.evidenceEligible, true);
+      assert.equal(sessionRes.body.answer.evidenceTier, "rubric_runtime_validated");
+      assert.equal(sessionRes.body.answer.evaluation.confidence, 0.85);
+    }
+    actionIndex += 1;
+    assert.ok(actionIndex <= 6);
+  }
+  assert.equal(sessionRes.body.session.status, "completed");
+  assert.equal(sessionRes.body.learningPlan.days[0].status, "completed");
+  assert.equal(sessionRes.body.session.summary.evidenceCount, 3);
+
+  const diagnosticReactivation = await call("/api/private-tutor/profile/content-package/activate", {
+    token: "tok_personal",
+    method: "POST",
+    body: { packageId: publishedPackageId, entryMode: "diagnostic" },
+  });
+  assert.equal(diagnosticReactivation.status, 200, JSON.stringify(diagnosticReactivation.body));
+  assert.equal(diagnosticReactivation.body.learningPlan, null);
+  const stalePlanStart = await call("/api/private-tutor/profile/tutoring-sessions/start", {
+    token: "tok_personal",
+    method: "POST",
+    body: { pace: "easy" },
+  });
+  assert.equal(stalePlanStart.status, 409);
+  assert.equal(stalePlanStart.body.error, "private_tutor_learning_plan_required");
+
+  // 10. Deleting the source freezes derived learning while keeping versioned history explainable.
   const deleteRes = await call(`/api/private-tutor/materials/${materialId}`, {
     token: "tok_personal",
     method: "DELETE",
   });
   assert.equal(deleteRes.status, 200);
   assert.equal(deleteRes.body.deleted, true);
+  assert.equal(deleteRes.body.deactivation.deactivatedPackageCount, 1);
+  assert.equal(internalPackage.status, "source_removed");
+  assert.equal(runtimeState.privateTutorRuntimeValidations.find((item) => item.packageId === publishedPackageId).status, "revoked");
+  assert.equal(runtimeState.privateTutorLearningPlans.find((item) => item.contentPackageId === publishedPackageId).status, "source_unavailable");
+  const blockedAfterDelete = await call("/api/private-tutor/profile/tutoring-sessions/start", {
+    token: "tok_personal",
+    method: "POST",
+    body: { pace: "easy" },
+  });
+  assert.equal(blockedAfterDelete.status, 409);
+  assert.equal(blockedAfterDelete.body.error, "private_tutor_source_material_unavailable");
+  const restoredMath = await call("/api/private-tutor/profile/content-package", {
+    token: "tok_personal",
+    method: "PUT",
+    body: { packageId: "demo-math-foundations-v1" },
+  });
+  assert.equal(restoredMath.status, 200);
+});
+
+test("accepts preserved PDF bytes and exposes page-grounded extraction metadata", async () => {
+  const bytes = readFileSync(new URL("../../../../docs/Loop-Engineering-IEEE-中文版-优化版.pdf", import.meta.url));
+  const uploaded = await call("/api/private-tutor/materials", {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      fileName: "loop-engineering.pdf",
+      fileType: "pdf",
+      fileContent: bytes.toString("base64"),
+      fileEncoding: "base64",
+      fileSize: bytes.length,
+    },
+  });
+
+  assert.equal(uploaded.status, 201);
+  assert.equal(uploaded.body.material.status, "parsed");
+  assert.equal(uploaded.body.material.extraction.pageCount, 16);
+  assert.equal(uploaded.body.material.extraction.textPageCount, 16);
+  assert.equal(uploaded.body.material.extraction.method, "pdf_text");
+  assert.match(uploaded.body.material.pages[0].text, /循环工程/);
+  assert.equal(uploaded.body.material.pages.some((page) => /%PDF-|endstream|xref/.test(page.text)), false);
+  assert.equal("rawText" in uploaded.body.material, false);
+
+  const materialId = uploaded.body.material.id;
+  const otherAccount = await call(`/api/private-tutor/materials/${materialId}`, { token: "tok_migrate" });
+  assert.equal(otherAccount.status, 404);
+
+  const replayed = await call("/api/private-tutor/materials", {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      fileName: "loop-engineering.pdf",
+      fileType: "pdf",
+      fileContent: bytes.toString("base64"),
+      fileEncoding: "base64",
+      fileSize: bytes.length,
+    },
+  });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.material.id, materialId);
+
+  const decodedAsText = await call("/api/private-tutor/materials", {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      fileName: "broken.pdf",
+      fileType: "pdf",
+      fileContent: "%PDF-1.4 binary decoded as text",
+      fileEncoding: "utf8",
+      fileSize: 31,
+    },
+  });
+  assert.equal(decodedAsText.status, 400);
+  assert.equal(decodedAsText.body.error, "pdf_binary_required");
+
+  const removed = await call(`/api/private-tutor/materials/${materialId}`, {
+    token: "tok_personal",
+    method: "DELETE",
+  });
+  assert.equal(removed.status, 200);
 });
 
 test("math and computer-science packages share the learning runtime without contaminating mastery", async () => {
@@ -1607,7 +1902,7 @@ test("math and computer-science packages share the learning runtime without cont
   });
 });
 
-test("M5 advanced subject evaluators expose feedback while only eligible evidence updates mastery", async () => {
+test("M6 advanced subject evaluators expose versioned feedback while only eligible evidence updates mastery", async () => {
   const token = "tok_personal";
   const switchPackage = async (packageId) => call("/api/private-tutor/profile/content-package", {
     token,
@@ -1619,10 +1914,10 @@ test("M5 advanced subject evaluators expose feedback while only eligible evidenc
   const mathSwitch = await switchPackage("demo-math-foundations-v1");
   const mathBefore = mathSwitch.body.snapshot.knowledge.find((item) => item.id === "balance").evidenceCount;
   const math = await practice({
-    idempotencyKey: "m5-advanced-math-steps",
+    idempotencyKey: "m6-advanced-math-steps",
     knowledgeId: "balance",
     questionRevisionId: "practice-balance-steps-001-v1",
-    rawAnswer: "x + 3 - 3 = 8 - 3\nx = 5",
+    rawAnswer: "x = 8 - 3\nx = 5",
     responseKind: "answer",
     independent: true,
     usedHint: false,
@@ -1631,16 +1926,42 @@ test("M5 advanced subject evaluators expose feedback while only eligible evidenc
   });
   assert.equal(math.status, 201);
   assert.equal(math.body.attempt.correct, true);
-  assert.equal(math.body.attempt.evidenceTier, "deterministic_steps");
+  assert.equal(math.body.attempt.evidenceTier, "deterministic_math_steps_v2");
   assert.equal(math.body.attempt.evaluation.passedCount, 2);
+  assert.equal(math.body.attempt.evaluation.schemaVersion, 1);
+  assert.equal(math.body.attempt.evaluation.evaluatorId, "private-tutor:math");
+  assert.equal(math.body.attempt.evaluation.evaluatorVersion, "2.0.0");
+  assert.equal(math.body.attempt.evaluation.profile, "linear-equation-v2");
+  assert.equal(math.body.attempt.evaluation.confidence, 1);
+  assert.equal(math.body.attempt.evaluation.reviewStatus, "not_required");
+  assert.match(math.body.attempt.evaluation.decisionFingerprint, /^[a-f0-9]{64}$/);
   assert.equal(math.body.snapshot.knowledge.find((item) => item.id === "balance").evidenceCount, mathBefore + 1);
+
+  const invalidMath = await practice({
+    idempotencyKey: "m6-advanced-math-invalid",
+    knowledgeId: "balance",
+    questionRevisionId: "practice-balance-steps-001-v1",
+    rawAnswer: "x + 3 = 5\nx = 2",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+    durationSeconds: 25,
+  });
+  assert.equal(invalidMath.status, 201);
+  assert.equal(invalidMath.body.attempt.correct, false);
+  assert.equal(invalidMath.body.attempt.evidenceEligible, true);
+  assert.equal(invalidMath.body.attempt.evaluation.firstIncorrectStep, 0);
+  assert.equal(invalidMath.body.attempt.evaluation.steps[0].classification, "single_side_change");
+  assert.match(invalidMath.body.attempt.evaluation.explanation, /等式两边|两边必须/);
+  assert.equal(invalidMath.body.snapshot.knowledge.find((item) => item.id === "balance").evidenceCount, mathBefore + 2);
 
   await switchPackage("language-causal-explanations-v1");
   const languageModelsBefore = runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "language-causal-explanations-v1").length;
   const languageLowConfidence = await practice({
-    idempotencyKey: "m5-advanced-language-low-confidence",
+    idempotencyKey: "m6-language-low-confidence",
     knowledgeId: "language-cause-effect",
-    questionRevisionId: "practice-language-cause-001-v1",
+    questionRevisionId: "practice-language-cause-001-v2",
     rawAnswer: "Plants grow because sunlight supplies energy.",
     responseKind: "answer",
     independent: true,
@@ -1650,14 +1971,43 @@ test("M5 advanced subject evaluators expose feedback while only eligible evidenc
     durationSeconds: 20,
   });
   assert.equal(languageLowConfidence.status, 201);
+  assert.equal(languageLowConfidence.body.attempt.correct, true);
   assert.equal(languageLowConfidence.body.attempt.evidenceEligible, false);
+  assert.equal(languageLowConfidence.body.attempt.evidenceTier, "practice_only");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.evaluatorVersion, "2.0.0");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.contentPackageVersion, "2.0.0");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.contentRevisionId, "practice-language-cause-001-v2");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.rubricVersion, "2.0.0");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.semanticStatus, "complete_review_required");
+  assert.equal(languageLowConfidence.body.attempt.evaluation.confidence, 0.8);
+  assert.equal(languageLowConfidence.body.attempt.evaluation.reviewStatus, "required");
   assert.equal(languageLowConfidence.body.snapshot.knowledge[0].mastery, null);
   assert.equal(languageLowConfidence.body.snapshot.knowledge[0].evidenceCount, 0);
   assert.equal(runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "language-causal-explanations-v1").length, languageModelsBefore);
-  const languageConfirmed = await practice({
-    idempotencyKey: "m5-advanced-language-confirmed",
+
+  const reversedLanguage = await practice({
+    idempotencyKey: "m6-language-reversed-causality",
     knowledgeId: "language-cause-effect",
-    questionRevisionId: "practice-language-cause-001-v1",
+    questionRevisionId: "practice-language-cause-001-v2",
+    rawAnswer: "Sunlight supplies energy because plants grow.",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+    durationSeconds: 20,
+  });
+  assert.equal(reversedLanguage.status, 201);
+  assert.equal(reversedLanguage.body.attempt.correct, false);
+  assert.equal(reversedLanguage.body.attempt.evidenceEligible, false);
+  assert.equal(reversedLanguage.body.attempt.evaluation.semanticStatus, "causal_direction_reversed");
+  assert.equal(reversedLanguage.body.attempt.evaluation.reviewStatus, "not_required");
+  assert.match(reversedLanguage.body.attempt.evaluation.explanation, /因果方向写反/);
+  assert.equal(reversedLanguage.body.snapshot.knowledge[0].evidenceCount, 0);
+
+  const languageConfirmed = await practice({
+    idempotencyKey: "m6-language-confirmed",
+    knowledgeId: "language-cause-effect",
+    questionRevisionId: "practice-language-cause-001-v2",
     rawAnswer: "Plants grow because sunlight supplies energy.",
     responseKind: "answer",
     independent: true,
@@ -1667,6 +2017,10 @@ test("M5 advanced subject evaluators expose feedback while only eligible evidenc
   });
   assert.equal(languageConfirmed.status, 201);
   assert.equal(languageConfirmed.body.attempt.evidenceEligible, true);
+  assert.equal(languageConfirmed.body.attempt.evidenceTier, "rubric_calibrated");
+  assert.equal(languageConfirmed.body.attempt.evaluation.semanticStatus, "complete_high_confidence");
+  assert.equal(languageConfirmed.body.attempt.evaluation.confidence, 1);
+  assert.equal(languageConfirmed.body.attempt.evaluation.reviewStatus, "not_required");
   assert.equal(languageConfirmed.body.snapshot.knowledge[0].evidenceCount, 1);
 
   await switchPackage("programming-functions-v1");
@@ -1701,9 +2055,9 @@ test("M5 advanced subject evaluators expose feedback while only eligible evidenc
   await switchPackage("conceptual-source-reasoning-v1");
   const conceptModelsBefore = runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "conceptual-source-reasoning-v1").length;
   const conceptWithoutSource = await practice({
-    idempotencyKey: "m5-advanced-concept-no-source",
+    idempotencyKey: "m6-anchored-concept-no-source",
     knowledgeId: "source-grounded-explanation",
-    questionRevisionId: "practice-concept-source-001-v1",
+    questionRevisionId: "practice-concept-source-001-v2",
     rawAnswer: "形成性反馈可以发现差距并及时纠正，从而调整学习策略。",
     responseKind: "answer",
     independent: true,
@@ -1712,13 +2066,37 @@ test("M5 advanced subject evaluators expose feedback while only eligible evidenc
   });
   assert.equal(conceptWithoutSource.status, 201);
   assert.equal(conceptWithoutSource.body.attempt.evidenceEligible, false);
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.evaluatorVersion, "2.0.0");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.rubricVersion, "2.0.0");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.contentPackageVersion, "2.0.0");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.score, 0.85);
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.scoreBand, "developing");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.anchorId, "anchor-developing-v1");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.reviewStatus, "required");
+  assert.equal(conceptWithoutSource.body.attempt.evaluation.reviewReason, "missing_required_source");
   assert.deepEqual(conceptWithoutSource.body.attempt.evaluation.missingSourceRefs, ["chapter-1"]);
   assert.equal(conceptWithoutSource.body.snapshot.knowledge[0].mastery, null);
   assert.equal(runtimeState.privateTutorLearnerModels.filter((item) => item.contentPackageId === "conceptual-source-reasoning-v1").length, conceptModelsBefore);
-  const groundedConcept = await practice({
-    idempotencyKey: "m5-advanced-concept-grounded",
+  const conceptBoundary = await practice({
+    idempotencyKey: "m6-anchored-concept-boundary",
     knowledgeId: "source-grounded-explanation",
-    questionRevisionId: "practice-concept-source-001-v1",
+    questionRevisionId: "practice-concept-source-001-v2",
+    rawAnswer: "[ref:chapter-1] 形成性反馈可以发现差距。",
+    responseKind: "answer",
+    independent: true,
+    usedHint: false,
+    source: "screen",
+  });
+  assert.equal(conceptBoundary.status, 201);
+  assert.equal(conceptBoundary.body.attempt.correct, false);
+  assert.equal(conceptBoundary.body.attempt.evidenceEligible, false);
+  assert.equal(conceptBoundary.body.attempt.evaluation.score, 0.75);
+  assert.equal(conceptBoundary.body.attempt.evaluation.reviewStatus, "required");
+  assert.equal(conceptBoundary.body.attempt.evaluation.reviewReason, "score_near_proficiency_boundary");
+  const groundedConcept = await practice({
+    idempotencyKey: "m6-anchored-concept-grounded",
+    knowledgeId: "source-grounded-explanation",
+    questionRevisionId: "practice-concept-source-001-v2",
     rawAnswer: "[ref:chapter-1] 形成性反馈可以发现差距并及时纠正，从而调整学习策略。",
     responseKind: "answer",
     independent: true,
@@ -1727,5 +2105,157 @@ test("M5 advanced subject evaluators expose feedback while only eligible evidenc
   });
   assert.equal(groundedConcept.status, 201);
   assert.equal(groundedConcept.body.attempt.evidenceEligible, true);
+  assert.equal(groundedConcept.body.attempt.evidenceTier, "rubric_anchored");
+  assert.equal(groundedConcept.body.attempt.evaluation.score, 1);
+  assert.equal(groundedConcept.body.attempt.evaluation.scoreBand, "proficient");
+  assert.equal(groundedConcept.body.attempt.evaluation.anchorId, "anchor-proficient-v1");
+  assert.equal(groundedConcept.body.attempt.evaluation.reviewStatus, "not_required");
   assert.equal(groundedConcept.body.snapshot.knowledge[0].evidenceCount, 1);
+
+  const learnerQueueForbidden = await call("/api/private-tutor/evaluation-reviews");
+  assert.equal(learnerQueueForbidden.status, 403);
+  const otherTeamQueue = await call("/api/private-tutor/evaluation-reviews", { token: "tok_admin" });
+  assert.equal(otherTeamQueue.status, 200);
+  assert.equal(otherTeamQueue.body.queue.some((item) => item.attemptId === conceptBoundary.body.attempt.id), false);
+  const queue = await call("/api/private-tutor/evaluation-reviews", { token: "tok_tutor_reviewer_a" });
+  assert.equal(queue.status, 200);
+  const boundaryItem = queue.body.queue.find((item) => item.attemptId === conceptBoundary.body.attempt.id);
+  assert.ok(boundaryItem);
+  assert.equal(boundaryItem.evaluation.reviewStatus, "required");
+  assert.equal(boundaryItem.automatedCorrect, false);
+
+  const staleReview = await call(`/api/private-tutor/evaluation-reviews/${conceptBoundary.body.attempt.id}`, {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: {
+      idempotencyKey: "concept-boundary-stale",
+      decisionFingerprint: "f".repeat(64),
+      decision: "confirmed_correct",
+      reasonCode: "rubric_interpretation",
+    },
+  });
+  assert.equal(staleReview.status, 409);
+  assert.equal(staleReview.body.error, "private_tutor_evaluation_review_stale_decision");
+
+  const reviewBody = {
+    idempotencyKey: "concept-boundary-review-once",
+    decisionFingerprint: boundaryItem.evaluation.decisionFingerprint,
+    decision: "confirmed_correct",
+    reasonCode: "rubric_interpretation",
+    note: "The cited response satisfies the proficiency boundary after independent rubric review.",
+  };
+  const reviewed = await call(`/api/private-tutor/evaluation-reviews/${conceptBoundary.body.attempt.id}`, {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: reviewBody,
+  });
+  assert.equal(reviewed.status, 200);
+  assert.equal(reviewed.body.replayed, false);
+  assert.equal(reviewed.body.review.finalCorrect, true);
+  assert.equal(reviewed.body.review.finalEvidenceEligible, true);
+  assert.equal(reviewed.body.item.evaluation.reviewStatus, "completed");
+  assert.equal(reviewed.body.item.evaluation.decisionFingerprint, boundaryItem.evaluation.decisionFingerprint);
+  assert.equal(reviewed.body.snapshot.knowledge[0].mastery, 0.74);
+  assert.equal(reviewed.body.snapshot.knowledge[0].evidenceCount, 2);
+  assert.equal(reviewed.body.learnerModel.reason, "human_evaluation_review_completed");
+  assert.equal(reviewed.body.learnerModel.knowledge[0].evidenceCount, 2);
+
+  const replayedReview = await call(`/api/private-tutor/evaluation-reviews/${conceptBoundary.body.attempt.id}`, {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: reviewBody,
+  });
+  assert.equal(replayedReview.status, 200);
+  assert.equal(replayedReview.body.replayed, true);
+  assert.equal(replayedReview.body.snapshot.knowledge[0].evidenceCount, 2);
+  assert.equal(runtimeState.privateTutorEvaluationReviews.filter((item) => item.attemptId === conceptBoundary.body.attempt.id).length, 1);
+  assert.equal(runtimeState.privateTutorAuditEvents.some((item) => item.action === "evaluation_review_completed" && item.details.attemptId === conceptBoundary.body.attempt.id), true);
+
+  assert.equal((await call("/api/private-tutor/golden-candidates")).status, 403);
+  const otherTeamCandidates = await call("/api/private-tutor/golden-candidates", { token: "tok_admin" });
+  assert.equal(otherTeamCandidates.status, 200);
+  assert.equal(otherTeamCandidates.body.candidates.length, 0);
+  const rejectedIdentifier = await call("/api/private-tutor/golden-candidates", {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: {
+      evaluationReviewId: reviewed.body.review.id,
+      classification: "content_defect",
+      deidentifiedAnswer: "Contact learner@example.com about usr_personal.",
+      rationale: "This intentionally contains identifiers and must be rejected.",
+    },
+  });
+  assert.equal(rejectedIdentifier.status, 422);
+  assert.equal(rejectedIdentifier.body.error, "private_tutor_golden_candidate_not_deidentified");
+  assert.deepEqual(rejectedIdentifier.body.detected.sort(), ["account_identifier", "email"]);
+
+  const migrationBlocked = await call("/api/private-tutor/golden-candidates", {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: {
+      evaluationReviewId: reviewed.body.review.id,
+      classification: "rubric_defect",
+      deidentifiedAnswer: "[ref:chapter-1] 形成性反馈能发现差距。",
+      rationale: "The proficiency boundary needs a future versioned rubric correction.",
+      expectedScore: 0.75,
+      expectedScoreBand: "developing",
+    },
+  });
+  assert.equal(migrationBlocked.status, 201, JSON.stringify(migrationBlocked.body));
+  assert.equal(migrationBlocked.body.candidate.status, "migration_required");
+  const blockedApproval = await call(`/api/private-tutor/golden-candidates/${migrationBlocked.body.candidate.id}/reviews`, {
+    token: "tok_tutor_reviewer_b",
+    method: "POST",
+    body: { decision: "approved", evidence: "The classification is valid but still requires a migration." },
+  });
+  assert.equal(blockedApproval.status, 409);
+  assert.equal(blockedApproval.body.error, "private_tutor_golden_candidate_migration_required");
+
+  const candidateCreated = await call("/api/private-tutor/golden-candidates", {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: {
+      evaluationReviewId: reviewed.body.review.id,
+      classification: "content_defect",
+      deidentifiedAnswer: "[ref:chapter-1] 形成性反馈能发现差距。",
+      rationale: "The reviewed boundary response should become a deidentified content regression candidate.",
+      expectedScore: 0.75,
+      expectedScoreBand: "developing",
+    },
+  });
+  assert.equal(candidateCreated.status, 201);
+  assert.equal(candidateCreated.body.candidate.status, "in_review");
+  assert.equal(candidateCreated.body.candidate.goldenArtifact.expected.correct, true);
+  assert.equal("learnerId" in candidateCreated.body.candidate, false);
+  assert.equal(JSON.stringify(candidateCreated.body.candidate.goldenArtifact).includes(reviewed.body.item.learnerId), false);
+  const candidateId = candidateCreated.body.candidate.id;
+  const candidateSelfReview = await call(`/api/private-tutor/golden-candidates/${candidateId}/reviews`, {
+    token: "tok_tutor_reviewer_a",
+    method: "POST",
+    body: { decision: "approved", evidence: "The creator must not approve this candidate." },
+  });
+  assert.equal(candidateSelfReview.status, 409);
+  assert.equal(candidateSelfReview.body.error, "private_tutor_golden_candidate_self_review_forbidden");
+
+  const firstCandidateReview = await call(`/api/private-tutor/golden-candidates/${candidateId}/reviews`, {
+    token: "tok_tutor_reviewer_b",
+    method: "POST",
+    body: { decision: "approved", evidence: "First independent review confirms the redaction and expected label." },
+  });
+  assert.equal(firstCandidateReview.status, 200);
+  assert.equal(firstCandidateReview.body.candidate.status, "in_review");
+  assert.equal(firstCandidateReview.body.candidate.approvals, 1);
+  const secondCandidateReview = await call(`/api/private-tutor/golden-candidates/${candidateId}/reviews`, {
+    token: "tok_tutor_reviewer_c",
+    method: "POST",
+    body: { decision: "approved", evidence: "Second independent review confirms the candidate without promoting it automatically." },
+  });
+  assert.equal(secondCandidateReview.status, 200);
+  assert.equal(secondCandidateReview.body.candidate.status, "approved");
+  assert.equal(secondCandidateReview.body.candidate.approvals, 2);
+  const approvedCandidates = await call("/api/private-tutor/golden-candidates?status=approved", { token: "tok_tutor_reviewer_b" });
+  assert.deepEqual(approvedCandidates.body.candidates.map((item) => item.id), [candidateId]);
+  assert.equal(runtimeState.privateTutorGoldenCandidateReviews.filter((item) => item.candidateId === candidateId).length, 2);
+  assert.equal(runtimeState.privateTutorAuditEvents.some((item) => item.action === "golden_candidate_created" && item.details.candidateId === candidateId), true);
+  assert.equal(runtimeState.privateTutorAuditEvents.filter((item) => item.action === "golden_candidate_reviewed" && item.details.candidateId === candidateId).length, 2);
 });

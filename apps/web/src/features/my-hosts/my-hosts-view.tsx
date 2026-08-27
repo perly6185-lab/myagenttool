@@ -55,6 +55,13 @@ function errorText(error: unknown, zh: boolean) {
     ssh_host_unreachable: ["找不到这台设备，请检查地址、网络连接和防火墙。", "This device could not be reached. Check its address, network connection, and firewall."],
     ssh_host_unresolvable: ["找不到这个主机地址，请检查输入是否正确。", "This host address could not be found. Check that it was entered correctly."],
     ssh_host_address_forbidden: ["出于安全原因，不能连接这个地址。请填写这台设备明确可识别的地址。", "This address cannot be connected for safety reasons. Enter an address that clearly identifies this device."],
+    ssh_sftp_permission_denied: ["设备不再允许操作这个文件夹。请检查文件夹权限后再继续。", "The device no longer allows access to this folder. Check the folder permission before continuing."],
+    ssh_sftp_no_space: ["设备可用空间不足。请先清理空间，再核对文件并重新开始。", "The device does not have enough available space. Free some space, check the file, and start again."],
+    ssh_sftp_unavailable: ["设备当前未提供文件连接。请检查设备连接和 SFTP 设置。", "The device is not currently providing file access. Check the device connection and SFTP settings."],
+    ssh_sftp_operation_timeout: ["文件操作超时，无法确认最终结果。请先核对设备上的文件。", "The file operation timed out, so its final result is unknown. Check the file on the device first."],
+    ssh_sftp_operation_failed: ["文件操作没有完成，最终结果无法确认。请先核对设备上的文件。", "The file operation did not finish, so its final result is unknown. Check the file on the device first."],
+    host_file_transfer_failed: ["文件传输没有完成，最终结果无法确认。请先核对设备上的文件。", "The file transfer did not finish, so its final result is unknown. Check the file on the device first."],
+    host_file_transfer_interrupted: ["应用在确认结果前中断。请先核对设备上的文件，避免重复传输。", "The app stopped before confirming the result. Check the file on the device first to avoid a duplicate transfer."],
     host_file_scope_symlink_forbidden: ["这个目录是快捷入口。为避免跳出允许范围，请选择它指向的真实目录。", "This directory is a shortcut. Choose its real target so access cannot leave the approved range."],
     host_file_scope_escape_blocked: ["远程目录已偏离批准范围，浏览已停止。", "The remote directory moved outside its approved range, so browsing stopped."],
     host_file_listing_too_large: ["该目录项目过多，请先在主机上整理为更小的子目录。", "This directory has too many items. Organize it into smaller subdirectories first."],
@@ -71,114 +78,129 @@ function errorText(error: unknown, zh: boolean) {
     ssh_fixed_command_timeout: ["主机诊断超时，请稍后重试。", "The host diagnostic timed out. Try again later."],
   };
   if (messages[code]) return messages[code][zh ? 0 : 1];
+  if (error instanceof ApiError) return zh ? "操作未能完成，请稍后重试或检查设备状态。" : "The operation could not be completed. Try again later or check the device status.";
   return error instanceof Error ? error.message : (zh ? "操作未能完成。" : "The operation could not be completed.");
 }
 
-function hostStatus(host: SshHost, zh: boolean) {
-  if (host.connectionStatus === "ready") return { tone: "success" as const, label: zh ? "连接正常" : "Ready" };
-  if (host.connectionStatus === "fingerprint_pending") return { tone: "warning" as const, label: zh ? "等待确认指纹" : "Confirm fingerprint" };
-  if (host.connectionStatus === "error") return { tone: "danger" as const, label: zh ? "需要检查" : "Needs attention" };
-  return { tone: "neutral" as const, label: zh ? "尚未完成设置" : "Setup incomplete" };
+function hostStatus(host: SshHost, zh: boolean, professional: boolean) {
+  if (host.connectionStatus === "ready") return { tone: "success" as const, label: professional ? (zh ? "连接正常" : "Ready") : (zh ? "可以使用" : "Ready to use") };
+  if (host.connectionStatus === "fingerprint_pending") return { tone: "warning" as const, label: professional ? (zh ? "等待确认指纹" : "Confirm fingerprint") : (zh ? "请确认设备" : "Confirm device") };
+  if (host.connectionStatus === "error") {
+    if (!professional && host.lastConnectionError?.code === "ssh_connection_refused") return { tone: "danger" as const, label: zh ? "连接服务未开启" : "Connection service is off" };
+    if (!professional && ["ssh_connection_timeout", "ssh_connection_failed", "ssh_host_unreachable"].includes(host.lastConnectionError?.code ?? "")) return { tone: "danger" as const, label: zh ? "设备离线" : "Device offline" };
+    return { tone: "danger" as const, label: professional ? (zh ? "需要检查" : "Needs attention") : (zh ? "需要处理" : "Action needed") };
+  }
+  return { tone: "neutral" as const, label: professional ? (zh ? "尚未完成设置" : "Setup incomplete") : (zh ? "继续设置" : "Continue setup") };
 }
 
 export function MyHostsView() {
   const { i18n } = useAppTranslation();
   const zh = i18n.language.startsWith("zh");
   const professional = useUiStore((state) => state.experienceMode) === "professional";
-  const setExperienceMode = useUiStore((state) => state.setExperienceMode);
   const queryClient = useQueryClient();
-  const hosts = useQuery({ queryKey: ["my-hosts"], queryFn: hostApi.list, enabled: professional });
+  const hosts = useQuery({ queryKey: ["my-hosts"], queryFn: hostApi.list });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<DetailTab>("overview");
   const [setupOpen, setSetupOpen] = useState(false);
+  const [setupForNewHost, setSetupForNewHost] = useState(false);
   const [setupAllowPrivate, setSetupAllowPrivate] = useState(false);
-  const [openSetupAfterLoad, setOpenSetupAfterLoad] = useState(false);
   const selected = hosts.data?.hosts.find((host) => host.id === selectedId) ?? hosts.data?.hosts[0] ?? null;
 
   useEffect(() => {
     if (!selectedId && hosts.data?.hosts[0]) setSelectedId(hosts.data.hosts[0].id);
   }, [hosts.data?.hosts, selectedId]);
 
-  useEffect(() => {
-    if (!professional || !openSetupAfterLoad || hosts.isLoading || hosts.error) return;
-    setOpenSetupAfterLoad(false);
-    if (!hosts.data?.hosts.length) {
-      setSelectedId(null);
-      setSetupOpen(true);
-    }
-  }, [hosts.data?.hosts.length, hosts.error, hosts.isLoading, openSetupAfterLoad, professional]);
-
   const refresh = async () => queryClient.invalidateQueries({ queryKey: ["my-hosts"] });
-  const copy = zh ? {
-    eyebrow: "我的设置 · 专业能力", title: "我的主机", description: "安全连接自有主机，并把远程文件限制在经过验证的专用目录内。",
-    add: "添加主机", empty: "尚未添加主机", emptyHint: "添加后会依次保存安全凭据、确认主机指纹，并配置受控文件范围。",
-  } : {
-    eyebrow: "My settings · Professional", title: "My hosts", description: "Connect self-hosted servers and keep remote access inside verified dedicated directories.",
-    add: "Add host", empty: "No hosts yet", emptyHint: "Add one to save a secure credential, confirm its fingerprint, and configure a governed file range.",
-  };
-
-  if (!professional) return <div className="space-y-5"><SectionHeading eyebrow={zh ? "我的设置" : "My settings"} title={zh ? "连接我的主机" : "Connect my host"} description={zh ? "连接自己的电脑或服务器。高级 SSH 设置会在需要时显示。" : "Connect your own computer or server. Advanced SSH settings appear only when needed."} /><Notice title={zh ? "连接你的电脑或服务器" : "Connect your computer or server"} detail={zh ? "输入主机地址和登录信息，应用会先验证连接，再让你选择允许访问的文件夹。" : "Enter the host address and sign-in details. We will verify the connection before asking which folders may be accessed."} action={<Button onClick={() => { setOpenSetupAfterLoad(true); setExperienceMode("professional"); }}><Plus />{zh ? "开始连接" : "Start connecting"}</Button>} /></div>;
+  const copy = zh
+    ? professional
+      ? {
+          eyebrow: "我的主机 · 专业视图", title: "我的主机", description: "安全连接自有主机，并把远程文件限制在经过验证的专用目录内。",
+          add: "添加主机", empty: "尚未添加主机", emptyHint: "添加后会依次保存安全凭据、确认主机身份，并配置受控文件范围。",
+        }
+      : {
+          eyebrow: "我的主机", title: "连接和使用我的设备", description: "查看设备状态、浏览已允许的文件，并安全完成上传和下载。",
+          add: "连接设备", empty: "还没有连接设备", emptyHint: "输入设备地址和登录信息，验证成功后即可选择允许访问的文件夹。",
+        }
+    : professional
+      ? {
+          eyebrow: "My hosts · Professional view", title: "My hosts", description: "Connect self-hosted servers and keep remote access inside verified dedicated directories.",
+          add: "Add host", empty: "No hosts yet", emptyHint: "Add one to save a secure credential, confirm host identity, and configure a governed file range.",
+        }
+      : {
+          eyebrow: "My hosts", title: "Connect and use my devices", description: "Check device health, browse approved files, and safely upload or download.",
+          add: "Connect device", empty: "No devices connected", emptyHint: "Enter the device address and sign-in details, then choose which folder may be accessed.",
+        };
 
   if (hosts.isLoading) return <Notice title={zh ? "正在读取主机…" : "Loading hosts…"} loading />;
   if (hosts.error) return <Notice title={zh ? "暂时无法读取主机" : "Hosts are temporarily unavailable"} detail={errorText(hosts.error, zh)} action={<Button variant="secondary" onClick={() => void hosts.refetch()}><RefreshCw />{zh ? "重试" : "Retry"}</Button>} />;
 
   return <div className="space-y-5">
-    <SectionHeading eyebrow={copy.eyebrow} title={copy.title} description={copy.description} actions={<Button onClick={() => { setSelectedId(null); setSetupOpen(true); }}><Plus />{copy.add}</Button>} />
-    {!hosts.data?.hosts.length ? <Notice title={copy.empty} detail={copy.emptyHint} action={<Button onClick={() => setSetupOpen(true)}><Plus />{copy.add}</Button>} /> : (
+    <SectionHeading eyebrow={copy.eyebrow} title={copy.title} description={copy.description} actions={<Button onClick={() => { setSetupForNewHost(true); setSetupOpen(true); }}><Plus />{copy.add}</Button>} />
+    {!hosts.data?.hosts.length ? <Notice title={copy.empty} detail={copy.emptyHint} action={<Button onClick={() => { setSetupForNewHost(true); setSetupOpen(true); }}><Plus />{copy.add}</Button>} /> : (
       <div className="grid min-h-[480px] gap-4 lg:grid-cols-[250px_minmax(0,1fr)]">
         <Card className="h-fit"><CardContent className="p-2">{hosts.data.hosts.map((host) => {
-          const status = hostStatus(host, zh);
+          const status = hostStatus(host, zh, professional);
           return <button key={host.id} type="button" onClick={() => { setSelectedId(host.id); setTab("overview"); }} className={`w-full rounded-lg p-3 text-left transition-colors ${selected?.id === host.id ? "bg-primary/10" : "hover:bg-muted"}`}>
             <span className="flex items-center gap-2"><Server className="size-4 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm font-medium">{host.name}</span></span>
-            <span className="mt-2 flex items-center justify-between gap-2"><StatusBadge tone={status.tone}>{status.label}</StatusBadge><span className="truncate font-mono text-[11px] text-muted-foreground">{host.host}</span></span>
+            <span className="mt-2 flex items-center justify-between gap-2"><StatusBadge tone={status.tone}>{status.label}</StatusBadge>{professional ? <span className="truncate font-mono text-[11px] text-muted-foreground">{host.host}</span> : null}</span>
           </button>;
         })}</CardContent></Card>
-        {selected ? <HostDetail host={selected} tab={tab} setTab={setTab} zh={zh} onContinue={(options) => { setSetupAllowPrivate(Boolean(options?.allowPrivate)); setSetupOpen(true); }} /> : null}
+        {selected ? <HostDetail host={selected} tab={tab} setTab={setTab} zh={zh} professional={professional} onContinue={(options) => { setSetupForNewHost(false); setSetupAllowPrivate(Boolean(options?.allowPrivate)); setSetupOpen(true); }} /> : null}
       </div>
     )}
-    <HostSetupDialog open={setupOpen} initialHost={selectedId ? selected : null} allowPrivateByDefault={setupAllowPrivate} zh={zh} onClose={() => { setSetupOpen(false); setSetupAllowPrivate(false); }} onChanged={refresh} />
+    <HostSetupDialog open={setupOpen} initialHost={setupForNewHost ? null : selected} allowPrivateByDefault={setupAllowPrivate} zh={zh} professional={professional} onClose={() => { setSetupOpen(false); setSetupForNewHost(false); setSetupAllowPrivate(false); }} onChanged={refresh} />
   </div>;
 }
 
-function HostDetail({ host, tab, setTab, zh, onContinue }: { host: SshHost; tab: DetailTab; setTab: (tab: DetailTab) => void; zh: boolean; onContinue: (options?: { allowPrivate?: boolean }) => void }) {
+function HostDetail({ host, tab, setTab, zh, professional, onContinue }: { host: SshHost; tab: DetailTab; setTab: (tab: DetailTab) => void; zh: boolean; professional: boolean; onContinue: (options?: { allowPrivate?: boolean }) => void }) {
   const scopes = useQuery({ queryKey: ["my-host-scopes", host.id], queryFn: () => hostApi.scopes(host.id) });
   const labels: Record<DetailTab, string> = zh
     ? { overview: "概览", files: "远程文件", transfers: "传输任务", settings: "设置" }
     : { overview: "Overview", files: "Remote files", transfers: "Transfers", settings: "Settings" };
-  const status = hostStatus(host, zh);
-  return <Card className="min-w-0"><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>{host.name}</CardTitle><p className="mt-1 font-mono text-xs text-muted-foreground">{host.user}@{host.host}:{host.port}</p></div><StatusBadge tone={status.tone}>{status.label}</StatusBadge></div><div className="mt-3 flex flex-wrap gap-1 border-b">{(Object.keys(labels) as DetailTab[]).map((key) => <button key={key} type="button" onClick={() => setTab(key)} className={`border-b-2 px-3 py-2 text-sm ${tab === key ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{labels[key]}</button>)}</div></CardHeader>
+  const visibleTabs = (Object.keys(labels) as DetailTab[]).filter((key) => professional || key !== "settings");
+  const visibleTab = professional || tab !== "settings" ? tab : "overview";
+  const status = hostStatus(host, zh, professional);
+  return <Card className="min-w-0"><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>{host.name}</CardTitle>{professional ? <p className="mt-1 font-mono text-xs text-muted-foreground">{host.user}@{host.host}:{host.port}</p> : <p className="mt-1 text-xs text-muted-foreground">{zh ? "自己的电脑或服务器" : "Your computer or server"}</p>}</div><StatusBadge tone={status.tone}>{status.label}</StatusBadge></div><div className="mt-3 flex flex-wrap gap-1 border-b">{visibleTabs.map((key) => <button key={key} type="button" onClick={() => setTab(key)} className={`border-b-2 px-3 py-2 text-sm ${visibleTab === key ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{labels[key]}</button>)}</div></CardHeader>
     <CardContent>
-      {tab === "overview" ? <HostOverview host={host} scopeCount={scopes.data?.count ?? 0} zh={zh} onContinue={onContinue} /> : null}
-      {tab === "files" ? <RemoteFiles host={host} scopes={scopes.data?.scopes ?? []} loading={scopes.isLoading} error={scopes.error} zh={zh} onAdd={onContinue} /> : null}
-      {tab === "transfers" ? <TransferHistory host={host} scopes={scopes.data?.scopes ?? []} zh={zh} /> : null}
-      {tab === "settings" ? <HostTechnicalSettings host={host} zh={zh} /> : null}
+      {visibleTab === "overview" ? <HostOverview host={host} scopeCount={scopes.data?.count ?? 0} zh={zh} professional={professional} onContinue={onContinue} /> : null}
+      {visibleTab === "files" ? <RemoteFiles host={host} scopes={scopes.data?.scopes ?? []} loading={scopes.isLoading} error={scopes.error} zh={zh} professional={professional} onAdd={onContinue} /> : null}
+      {visibleTab === "transfers" ? <TransferHistory host={host} scopes={scopes.data?.scopes ?? []} zh={zh} professional={professional} onInspectFiles={() => setTab("files")} onInspectHost={() => setTab("overview")} /> : null}
+      {professional && visibleTab === "settings" ? <HostTechnicalSettings host={host} zh={zh} /> : null}
     </CardContent>
   </Card>;
 }
 
-function HostOverview({ host, scopeCount, zh, onContinue }: { host: SshHost; scopeCount: number; zh: boolean; onContinue: (options?: { allowPrivate?: boolean }) => void }) {
+function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host: SshHost; scopeCount: number; zh: boolean; professional: boolean; onContinue: (options?: { allowPrivate?: boolean }) => void }) {
   const ready = host.connectionStatus === "ready";
-  const privateNetworkBlocked = host.lastConnectionError?.code === "ssh_host_private_network_blocked";
-  const hasConnectionError = host.connectionStatus === "error";
-  const bannerTitle = !ready
-    ? privateNetworkBlocked ? (zh ? "需要允许访问内网设备" : "Local-network access needs approval") : (zh ? "继续完成安全连接" : "Complete secure connection")
-    : (zh ? "添加一个文件范围" : "Add a file range");
-  const bannerDetail = !ready
-    ? privateNetworkBlocked ? (zh ? "这是局域网地址。允许后会重新检查设备连接。" : "This is a local-network address. Approve it to check the device again.") : (zh ? "输入登录信息后，系统会验证设备并保护远程文件。" : "After sign-in, we will verify the device and protect remote files.")
-    : (zh ? "只有批准目录内的文件可以被查看。" : "Only files inside an approved directory can be viewed.");
-  const bannerActionLabel = !ready
-    ? privateNetworkBlocked ? (zh ? "允许内网并重试" : "Allow local network and retry") : (hasConnectionError ? (zh ? "检查并重试" : "Check and retry") : (zh ? "继续设置" : "Continue setup"))
-    : (zh ? "继续设置" : "Continue setup");
+  const recovery = hostRecovery(host, zh, professional);
   return <div className="space-y-4">
     <div className="grid gap-3 sm:grid-cols-3">
-      <Summary icon={ready ? CheckCircle2 : TriangleAlert} label={zh ? "连接" : "Connection"} value={ready ? (zh ? "已验证" : "Verified") : (zh ? "未完成" : "Incomplete")} />
-      <Summary icon={FolderLock} label={zh ? "文件范围" : "File ranges"} value={zh ? `${scopeCount} 个` : String(scopeCount)} />
-      <Summary icon={ShieldCheck} label={zh ? "访问方式" : "Access"} value={zh ? "范围内受控传输" : "Governed transfers"} />
+      <Summary icon={ready ? CheckCircle2 : TriangleAlert} label={professional ? (zh ? "连接" : "Connection") : (zh ? "设备状态" : "Device status")} value={ready ? professional ? (zh ? "已验证" : "Verified") : (zh ? "可以使用" : "Ready to use") : professional ? (zh ? "未完成" : "Incomplete") : (zh ? "需要处理" : "Action needed")} />
+      <Summary icon={FolderLock} label={professional ? (zh ? "文件范围" : "File ranges") : (zh ? "允许访问的文件夹" : "Approved folders")} value={zh ? `${scopeCount} 个` : String(scopeCount)} />
+      <Summary icon={ShieldCheck} label={zh ? "文件操作" : "File access"} value={professional ? (zh ? "范围内受控传输" : "Governed transfers") : (zh ? "仅限已允许文件夹" : "Approved folders only")} />
     </div>
-    {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div><p className="text-sm font-medium">{bannerTitle}</p><p className="mt-1 text-xs text-muted-foreground">{bannerDetail}</p></div><Button onClick={() => onContinue(privateNetworkBlocked ? { allowPrivate: true } : undefined)}>{bannerActionLabel}<ChevronRight /></Button></div> : null}
-    {host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
+    {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div className="min-w-0 flex-1"><p className="text-sm font-medium">{recovery.title}</p><p className="mt-1 text-xs text-muted-foreground">{recovery.detail}</p></div><Button onClick={() => onContinue(recovery.allowPrivate ? { allowPrivate: true } : undefined)}>{recovery.action}<ChevronRight /></Button></div> : null}
+    {professional && host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
     <HostAssistant host={host} zh={zh} />
   </div>;
+}
+
+function hostRecovery(host: SshHost, zh: boolean, professional: boolean) {
+  if (host.connectionStatus === "ready") return professional
+    ? { title: zh ? "添加一个文件范围" : "Add a file range", detail: zh ? "只有批准目录内的文件可以被查看。" : "Only files inside an approved directory can be viewed.", action: zh ? "继续设置" : "Continue setup", allowPrivate: false }
+    : { title: zh ? "选择允许访问的文件夹" : "Choose an approved folder", detail: zh ? "选择后只能查看和操作这个文件夹内的内容。" : "Only files in the folder you choose can be viewed or changed.", action: zh ? "选择文件夹" : "Choose folder", allowPrivate: false };
+  const code = host.lastConnectionError?.code ?? "";
+  if (code === "ssh_host_private_network_blocked") return professional
+    ? { title: zh ? "需要允许访问内网设备" : "Local-network access needs approval", detail: zh ? "这是局域网地址。允许后会重新检查设备连接。" : "This is a local-network address. Approve it to check the device again.", action: zh ? "允许内网并重试" : "Allow local network and retry", allowPrivate: true }
+    : { title: zh ? "需要允许连接局域网设备" : "Local-device permission needed", detail: zh ? "尚未连接或访问文件。确认许可后才会重试。" : "No connection or file access has occurred. MyAgentTool will retry only after you approve it.", action: zh ? "允许并重试" : "Allow and retry", allowPrivate: true };
+  if (!professional && ["ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid"].includes(code)) return { title: zh ? "登录信息需要更新" : "Sign-in details need updating", detail: zh ? `${errorText(new ApiError(code, code, 0), zh)} 连接尚未建立，文件没有被访问。` : `${errorText(new ApiError(code, code, 0), zh)} The connection was not established and no files were accessed.`, action: zh ? "重新输入登录信息" : "Update sign-in details", allowPrivate: false };
+  if (!professional && code === "ssh_host_fingerprint_changed") return { title: zh ? "设备身份发生变化" : "Device identity changed", detail: zh ? "为保护文件，连接已在访问文件前停止。请确认你仍在连接同一台设备。" : "The connection stopped before file access. Confirm that this is still the same device.", action: zh ? "检查设备身份" : "Check device identity", allowPrivate: false };
+  if (!professional && code === "ssh_connection_refused") return { title: zh ? "设备在线，但连接服务未开启" : "The device is online, but its connection service is off", detail: zh ? "文件没有被访问。请在设备上开启远程登录或 SSH，并确认端口设置。" : "No files were accessed. Turn on Remote Login or SSH on the device and check the port.", action: zh ? "检查连接设置" : "Check connection settings", allowPrivate: false };
+  if (!professional && ["ssh_connection_timeout", "ssh_connection_failed", "ssh_host_unreachable"].includes(code)) return { title: zh ? "设备暂时离线" : "The device is temporarily offline", detail: zh ? "当前没有访问设备文件。请确认设备已开机、网络正常，再重新连接。" : "No device files were accessed. Make sure the device is on and connected to the network, then reconnect.", action: zh ? "设备上线后重试" : "Retry when online", allowPrivate: false };
+  if (!professional && code === "ssh_host_unresolvable") return { title: zh ? "找不到这个设备地址" : "This device address cannot be found", detail: zh ? "文件没有被访问。请检查设备名称或地址是否正确。" : "No files were accessed. Check the device name or address.", action: zh ? "修改设备地址" : "Change device address", allowPrivate: false };
+  if (!professional && code === "ssh_host_address_forbidden") return { title: zh ? "这个设备地址不能使用" : "This device address cannot be used", detail: errorText(new ApiError(code, code, 0), zh), action: zh ? "修改设备地址" : "Change device address", allowPrivate: false };
+  if (!professional && host.connectionStatus === "fingerprint_pending") return { title: zh ? "确认这是你的设备" : "Confirm this is your device", detail: zh ? "首次连接需要你确认设备身份，然后才能查看文件。" : "Confirm the device on the first connection before viewing files.", action: zh ? "确认设备" : "Confirm device", allowPrivate: false };
+  return { title: professional ? (zh ? "继续完成安全连接" : "Complete secure connection") : (zh ? "继续连接这台设备" : "Continue connecting this device"), detail: professional ? (zh ? "输入登录信息后，系统会验证设备并保护远程文件。" : "After sign-in, we will verify the device and protect remote files.") : (zh ? "检查地址和登录信息后即可继续。" : "Check the address and sign-in details to continue."), action: professional ? host.connectionStatus === "error" ? (zh ? "检查并重试" : "Check and retry") : (zh ? "继续设置" : "Continue setup") : (zh ? "继续设置" : "Continue setup"), allowPrivate: false };
 }
 
 function Summary({ icon: Icon, label, value }: { icon: typeof Server; label: string; value: string }) {
@@ -239,16 +261,20 @@ function DiagnosticInsights({ action, output, zh }: { action: string | null; out
   return <div className="grid gap-2 sm:grid-cols-2" data-testid="diagnostic-insights">{cards.slice(0, 6).map((card) => <div key={card} className="rounded-lg border bg-card px-3 py-2 text-xs font-medium">{card}</div>)}</div>;
 }
 
-function RemoteFiles({ host, scopes, loading, error, zh, onAdd }: { host: SshHost; scopes: HostFileScope[]; loading: boolean; error: unknown; zh: boolean; onAdd: () => void }) {
+function RemoteFiles({ host, scopes, loading, error, zh, professional, onAdd }: { host: SshHost; scopes: HostFileScope[]; loading: boolean; error: unknown; zh: boolean; professional: boolean; onAdd: () => void }) {
   const [scopeId, setScopeId] = useState<string>("");
   useEffect(() => { if (!scopeId && scopes[0]) setScopeId(scopes[0].id); }, [scopeId, scopes]);
-  if (loading) return <Notice title={zh ? "正在读取文件范围…" : "Loading file ranges…"} loading />;
-  if (error) return <Notice title={zh ? "无法读取文件范围" : "File ranges unavailable"} detail={errorText(error, zh)} />;
-  if (!scopes.length) return <Notice title={zh ? "尚未配置文件范围" : "No file range configured"} detail={zh ? "请选择主机管理员准备好的专用目录。系统不会允许浏览主目录或系统目录。" : "Choose a dedicated directory prepared by the host administrator. Home and system directories are not allowed."} action={<Button disabled={host.connectionStatus !== "ready"} onClick={onAdd}><Plus />{zh ? "添加文件范围" : "Add file range"}</Button>} />;
+  if (loading) return <Notice title={professional ? (zh ? "正在读取文件范围…" : "Loading file ranges…") : (zh ? "正在读取允许的文件夹…" : "Loading approved folders…")} loading />;
+  if (error) return <Notice title={professional ? (zh ? "无法读取文件范围" : "File ranges unavailable") : (zh ? "无法读取允许的文件夹" : "Approved folders unavailable")} detail={errorText(error, zh)} />;
+  if (!scopes.length) return <Notice title={professional ? (zh ? "尚未配置文件范围" : "No file range configured") : (zh ? "还没有允许访问的文件夹" : "No approved folder yet")} detail={professional ? (zh ? "请选择主机管理员准备好的专用目录。系统不会允许浏览主目录或系统目录。" : "Choose a dedicated directory prepared by the host administrator. Home and system directories are not allowed.") : (zh ? "请选择这台设备上专门用于当前工作的文件夹；应用不会访问其他位置。" : "Choose a folder dedicated to this work. The app will not access other locations.")} action={<Button disabled={host.connectionStatus !== "ready"} onClick={onAdd}><Plus />{professional ? (zh ? "添加文件范围" : "Add file range") : (zh ? "选择文件夹" : "Choose folder")}</Button>} />;
   const scope = scopes.find((item) => item.id === scopeId) ?? scopes[0];
   const transferEnabled = scope.permissions.includes("upload") || scope.permissions.includes("download");
   const certificateOnly = scope.purpose === "tls_certificate";
-  return <div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><Select aria-label={zh ? "选择文件范围" : "Select file range"} value={scope.id} onChange={(event) => setScopeId(event.target.value)} className="max-w-xs">{scopes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select><StatusBadge tone={scope.status === "ready" ? "success" : "warning"}>{scope.status === "ready" ? (certificateOnly ? (zh ? "证书专用" : "Certificate only") : transferEnabled ? (zh ? "受控传输" : "Governed transfer") : (zh ? "只读范围" : "Read-only range")) : (zh ? "已停用" : "Disabled")}</StatusBadge><ScopeEditButton host={host} scope={scope} zh={zh} /><Button size="sm" variant="secondary" onClick={onAdd}><Plus />{zh ? "添加范围" : "Add range"}</Button></div>{scope.status === "ready" ? certificateOnly ? <TlsActivationProfiles host={host} scope={scope} zh={zh} /> : <FileBrowser key={scope.id} scope={scope} zh={zh} /> : <Notice title={zh ? "此文件范围已停用" : "This file range is disabled"} detail={zh ? "在“范围设置”中重新启用后才能浏览。" : "Enable it again in Range settings before browsing."} />}</div>;
+  return <div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><Select aria-label={professional ? (zh ? "选择文件范围" : "Select file range") : (zh ? "选择允许的文件夹" : "Select approved folder")} value={scope.id} onChange={(event) => setScopeId(event.target.value)} className="max-w-xs">{scopes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select><StatusBadge tone={scope.status === "ready" ? "success" : "warning"}>{scope.status === "ready" ? (certificateOnly ? professional ? (zh ? "证书专用" : "Certificate only") : (zh ? "由我的站点管理" : "Managed by My Site") : transferEnabled ? professional ? (zh ? "受控传输" : "Governed transfer") : (zh ? "可上传和下载" : "Upload and download") : professional ? (zh ? "只读范围" : "Read-only range") : (zh ? "只可查看" : "View only")) : (zh ? "已停用" : "Disabled")}</StatusBadge>{professional || !certificateOnly ? <ScopeEditButton host={host} scope={scope} zh={zh} professional={professional} /> : null}<Button size="sm" variant="secondary" onClick={onAdd}><Plus />{professional ? (zh ? "添加范围" : "Add range") : (zh ? "添加文件夹" : "Add folder")}</Button></div>{scope.status === "ready" ? certificateOnly ? professional ? <TlsActivationProfiles host={host} scope={scope} zh={zh} /> : <ManagedCertificateFolderNotice zh={zh} /> : <FileBrowser key={scope.id} scope={scope} zh={zh} /> : <Notice title={professional ? (zh ? "此文件范围已停用" : "This file range is disabled") : (zh ? "此文件夹已停用" : "This folder is disabled")} detail={professional ? (zh ? "在“范围设置”中重新启用后才能浏览。" : "Enable it again in Range settings before browsing.") : (zh ? "在“文件夹设置”中重新启用后才能浏览。" : "Enable it again in Folder settings before browsing.")} />}</div>;
+}
+
+function ManagedCertificateFolderNotice({ zh }: { zh: boolean }) {
+  return <div className="rounded-lg border bg-muted/20 p-4"><div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><ShieldCheck className="size-5" /></span><div><p className="text-sm font-medium">{zh ? "这个文件夹由“我的站点”安全管理" : "This folder is safely managed by My Site"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "它用于网站 HTTPS，不会在这里开放浏览、上传或下载。需要管理网站时，请前往“我的站点”。" : "It is used for website HTTPS and cannot be browsed, uploaded to, or downloaded here. Use My Site to manage the website."}</p></div></div></div>;
 }
 
 function TlsActivationProfiles({ host, scope, zh }: { host: SshHost; scope: HostFileScope; zh: boolean }) {
@@ -263,7 +289,7 @@ function TlsActivationProfiles({ host, scope, zh }: { host: SshHost; scope: Host
   return <div className="space-y-4 rounded-lg border p-4"><div><p className="text-sm font-medium">{zh ? "证书专用范围不可浏览或下载" : "Certificate-only range cannot be browsed or downloaded"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "只有证书管理器能写入固定文件名。先由主机管理员准备专用 Docker Nginx 容器，再登记容器名称；系统不会接受 Shell 或 Nginx 配置片段。" : "Only the certificate manager can write fixed filenames. Have the host administrator prepare a dedicated Docker Nginx container, then register its name. Shell commands and Nginx snippets are not accepted."}</p></div>{matching.map((profile) => <div key={profile.id} className="flex items-center justify-between gap-3 rounded-lg bg-muted p-3"><span><span className="block text-sm font-medium">{profile.label}</span><code className="text-xs text-muted-foreground">{profile.containerName}</code></span><StatusBadge tone={profile.status === "ready" ? "success" : "warning"}>{profile.status === "ready" ? (zh ? "已验证" : "Verified") : profile.status}</StatusBadge></div>)}<div className="flex flex-wrap items-end gap-2"><Field label={zh ? "Docker Nginx 容器名称" : "Docker Nginx container name"}><Input value={containerName} placeholder="myagenttool-site-nginx" onChange={(event) => setContainerName(event.target.value)} /></Field><Button disabled={!containerName.trim() || create.isPending} onClick={() => create.mutate()}>{create.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "验证固定激活配置" : "Verify fixed activation"}</Button></div>{profiles.error || create.error ? <p role="alert" className="text-sm text-destructive">{errorText(profiles.error ?? create.error, zh)}</p> : null}</div>;
 }
 
-function ScopeEditButton({ host, scope, zh }: { host: SshHost; scope: HostFileScope; zh: boolean }) {
+function ScopeEditButton({ host, scope, zh, professional }: { host: SshHost; scope: HostFileScope; zh: boolean; professional: boolean }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ label: scope.label, rootPath: scope.rootPath, purpose: scope.purpose, disabled: scope.status === "disabled", upload: scope.permissions.includes("upload"), download: scope.permissions.includes("download") });
@@ -272,7 +298,7 @@ function ScopeEditButton({ host, scope, zh }: { host: SshHost; scope: HostFileSc
     mutationFn: () => hostApi.updateScope(host.id, scope.id, { expectedRevision: scope.revision, label: form.label, rootPath: form.rootPath, purpose: form.purpose, status: form.disabled ? "disabled" : "ready", permissions: ["list", ...(form.upload ? ["upload" as const] : []), ...(form.download ? ["download" as const] : [])] }),
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["my-host-scopes", host.id] }); await queryClient.invalidateQueries({ queryKey: ["host-file-entries", scope.id] }); setOpen(false); },
   });
-  return <><Button size="sm" variant="ghost" onClick={() => setOpen(true)}>{zh ? "范围设置" : "Range settings"}</Button><Modal open={open} onClose={() => setOpen(false)} title={zh ? "文件范围设置" : "File range settings"} description={zh ? "更改目录会重新连接主机，并再次验证完整路径边界。传输权限可随时单独关闭。" : "Changing the directory reconnects and verifies the path boundary again. Transfer permissions can be disabled independently."} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={() => setOpen(false)}>{zh ? "取消" : "Cancel"}</Button><Button disabled={!form.label.trim() || !form.rootPath.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "验证并保存" : "Verify and save"}</Button></div>}><div className="space-y-3"><Field label={zh ? "范围名称" : "Range name"}><Input value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} /></Field><Field label={zh ? "远程目录" : "Remote directory"}><Input className="font-mono" value={form.rootPath} onChange={(event) => setForm({ ...form, rootPath: event.target.value })} /></Field><Field label={zh ? "用途" : "Purpose"}><Select value={form.purpose} onChange={(event) => setForm({ ...form, purpose: event.target.value as HostFileScopePurpose })}><option value="site_publish">{zh ? "站点发布" : "Site publishing"}</option><option value="tls_certificate">{zh ? "HTTPS 证书专用" : "HTTPS certificates only"}</option><option value="general_files">{zh ? "普通文件" : "General files"}</option><option value="backup">{zh ? "备份" : "Backup"}</option></Select></Field>{form.purpose === "tls_certificate" ? <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "此范围不开放浏览、上传或下载，只供证书管理器写入。" : "This range does not allow browsing, uploads, or downloads. Only the certificate manager can write to it."}</p> : <div className="rounded-lg border p-3"><p className="mb-2 text-sm font-medium">{zh ? "允许的操作" : "Allowed operations"}</p><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.upload} onChange={(event) => setForm({ ...form, upload: event.target.checked })} />{zh ? "允许确认后上传（单文件最大 10 MB）" : "Allow confirmed uploads (10 MB per file)"}</label><label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={form.download} onChange={(event) => setForm({ ...form, download: event.target.checked })} />{zh ? "允许确认后下载（单文件最大 25 MB）" : "Allow confirmed downloads (25 MB per file)"}</label></div>}<label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.disabled} onChange={(event) => setForm({ ...form, disabled: event.target.checked })} />{zh ? "暂时停用此范围" : "Temporarily disable this range"}</label>{mutation.error ? <p role="alert" className="text-sm text-destructive">{errorText(mutation.error, zh)}</p> : null}</div></Modal></>;
+  return <><Button size="sm" variant="ghost" onClick={() => setOpen(true)}>{professional ? (zh ? "范围设置" : "Range settings") : (zh ? "文件夹设置" : "Folder settings")}</Button><Modal open={open} onClose={() => setOpen(false)} title={professional ? (zh ? "文件范围设置" : "File range settings") : (zh ? "允许访问的文件夹设置" : "Approved folder settings")} description={professional ? (zh ? "更改目录会重新连接主机，并再次验证完整路径边界。传输权限可随时单独关闭。" : "Changing the directory reconnects and verifies the path boundary again. Transfer permissions can be disabled independently.") : (zh ? "更改文件夹后会重新检查访问边界；上传和下载可以分别关闭。" : "Changing the folder rechecks its access boundary. Upload and download can be disabled separately.")} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={() => setOpen(false)}>{zh ? "取消" : "Cancel"}</Button><Button disabled={!form.label.trim() || !form.rootPath.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "验证并保存" : "Verify and save"}</Button></div>}><div className="space-y-3"><Field label={professional ? (zh ? "范围名称" : "Range name") : (zh ? "文件夹名称" : "Folder name")}><Input value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} /></Field><Field label={zh ? "远程目录" : "Remote directory"}><Input className="font-mono" value={form.rootPath} onChange={(event) => setForm({ ...form, rootPath: event.target.value })} /></Field><Field label={zh ? "用途" : "Purpose"}><Select value={form.purpose} onChange={(event) => setForm({ ...form, purpose: event.target.value as HostFileScopePurpose })}><option value="site_publish">{zh ? "站点发布" : "Site publishing"}</option><option value="tls_certificate">{zh ? "HTTPS 证书专用" : "HTTPS certificates only"}</option><option value="general_files">{zh ? "普通文件" : "General files"}</option><option value="backup">{zh ? "备份" : "Backup"}</option></Select></Field>{form.purpose === "tls_certificate" ? <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "此范围不开放浏览、上传或下载，只供证书管理器写入。" : "This range does not allow browsing, uploads, or downloads. Only the certificate manager can write to it."}</p> : <div className="rounded-lg border p-3"><p className="mb-2 text-sm font-medium">{zh ? "允许的操作" : "Allowed operations"}</p><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.upload} onChange={(event) => setForm({ ...form, upload: event.target.checked })} />{zh ? "允许确认后上传（单文件最大 10 MB）" : "Allow confirmed uploads (10 MB per file)"}</label><label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={form.download} onChange={(event) => setForm({ ...form, download: event.target.checked })} />{zh ? "允许确认后下载（单文件最大 25 MB）" : "Allow confirmed downloads (25 MB per file)"}</label></div>}<label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.disabled} onChange={(event) => setForm({ ...form, disabled: event.target.checked })} />{professional ? (zh ? "暂时停用此范围" : "Temporarily disable this range") : (zh ? "暂时停用此文件夹" : "Temporarily disable this folder")}</label>{mutation.error ? <p role="alert" className="text-sm text-destructive">{errorText(mutation.error, zh)}</p> : null}</div></Modal></>;
 }
 
 function FileBrowser({ scope, zh }: { scope: HostFileScope; zh: boolean }) {
@@ -398,7 +424,58 @@ function saveDownload(blob: Blob, fileName: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function TransferHistory({ host, scopes, zh }: { host: SshHost; scopes: HostFileScope[]; zh: boolean }) {
+const TRANSFER_ALWAYS_CHECK_ERRORS = new Set(["ssh_sftp_permission_denied", "ssh_sftp_no_space", "host_file_transfer_interrupted", "ssh_host_fingerprint_changed", "ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid", "ssh_sftp_unavailable"]);
+const AMBIGUOUS_UPLOAD_ERRORS = new Set(["ssh_connection_failed", "ssh_sftp_operation_timeout", "ssh_sftp_operation_failed", "host_file_transfer_failed"]);
+
+function transferNeedsInspection(task: HostFileTransfer) {
+  const code = task.errorCode ?? "";
+  return TRANSFER_ALWAYS_CHECK_ERRORS.has(code) || (task.direction === "upload" && AMBIGUOUS_UPLOAD_ERRORS.has(code));
+}
+
+function ordinaryTransferRecovery(task: HostFileTransfer, zh: boolean) {
+  if (task.errorCode === "ssh_sftp_permission_denied") return {
+    detail: zh ? "设备不再允许操作这个文件夹，传输已停止。文件结果可能不完整；请先检查文件夹权限和内容。" : "The device no longer allows access to this folder, so the transfer stopped. The file result may be incomplete; check the folder permission and contents first.",
+    action: "files" as const,
+    label: zh ? "检查文件夹" : "Check folder",
+  };
+  if (task.errorCode === "ssh_sftp_no_space") return {
+    detail: zh ? "设备空间不足，传输已停止。文件结果可能不完整；请先清理空间并核对文件。" : "The device ran out of space, so the transfer stopped. The file result may be incomplete; free space and check the file first.",
+    action: "host" as const,
+    label: zh ? "检查设备空间" : "Check device space",
+  };
+  if (task.errorCode === "ssh_sftp_operation_timeout") return {
+    detail: zh ? "文件操作超时，最终结果无法确认。请先核对设备上的文件，避免重复传输。" : "The file operation timed out and its final result is unknown. Check the file on the device first to avoid a duplicate transfer.",
+    action: "files" as const,
+    label: zh ? "核对文件" : "Check file",
+  };
+  if (task.errorCode === "host_file_transfer_interrupted") return {
+    detail: zh ? "应用在确认结果前中断，无法判断传输是否完成。请先核对设备上的文件，避免重复传输。" : "The app stopped before confirming the result, so completion is unknown. Check the file on the device first to avoid a duplicate transfer.",
+    action: "files" as const,
+    label: zh ? "核对文件" : "Check file",
+  };
+  if (["ssh_host_fingerprint_changed", "ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid", "ssh_sftp_unavailable"].includes(task.errorCode ?? "")) return {
+    detail: zh ? `${errorText(new ApiError(task.errorCode ?? "", task.errorCode ?? "", 0), zh)} 文件传输没有确认完成，请先检查设备连接。` : `${errorText(new ApiError(task.errorCode ?? "", task.errorCode ?? "", 0), zh)} The transfer was not confirmed complete; check the device connection first.`,
+    action: "host" as const,
+    label: zh ? "检查设备连接" : "Check device connection",
+  };
+  if (task.direction === "upload" && AMBIGUOUS_UPLOAD_ERRORS.has(task.errorCode ?? "")) return {
+    detail: zh ? "上传过程中连接中断，最终文件状态无法确认。请先核对设备上的文件，避免重复上传。" : "The connection stopped during upload, so the final file state is unknown. Check the file on the device first to avoid a duplicate upload.",
+    action: "files" as const,
+    label: zh ? "核对文件" : "Check file",
+  };
+  return {
+    detail: task.errorCode ? errorText(new ApiError(task.errorCode, task.errorCode, 0), zh) : (zh ? "这次传输没有完成。" : "This transfer did not finish."),
+    action: "retry" as const,
+    label: zh ? "重试" : "Retry",
+  };
+}
+
+function transferIsLongRunning(task: HostFileTransfer) {
+  const startedAt = Date.parse(task.startedAt ?? task.createdAt);
+  return task.status === "running" && Number.isFinite(startedAt) && Date.now() - startedAt >= 30_000;
+}
+
+function TransferHistory({ host, scopes, zh, professional, onInspectFiles, onInspectHost }: { host: SshHost; scopes: HostFileScope[]; zh: boolean; professional: boolean; onInspectFiles: () => void; onInspectHost: () => void }) {
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["host-file-transfers", host.id], queryFn: () => hostApi.transfers(host.id), refetchInterval: (current) => current.state.data?.transfers.some((item) => item.status === "running") ? 1_000 : false });
   const retryInput = useRef<HTMLInputElement>(null);
@@ -415,8 +492,14 @@ function TransferHistory({ host, scopes, zh }: { host: SshHost; scopes: HostFile
   const tasks = query.data?.transfers ?? [];
   return <div className="space-y-3"><input ref={retryInput} className="hidden" type="file" onChange={(event) => { setRetryFile(event.target.files?.[0] ?? null); event.target.value = ""; }} />{!tasks.length ? <Notice title={zh ? "尚无传输任务" : "No transfer jobs yet"} detail={zh ? "请在“远程文件”中选择上传，或在文件右侧选择下载。每次操作都会先显示确认信息。" : "Use Upload or Download in Remote files. Every operation shows a confirmation first."} /> : <div className="divide-y rounded-lg border">{tasks.map((task) => {
     const tone = task.status === "completed" ? "success" : task.status === "failed" ? "danger" : "warning";
-    const status = task.status === "completed" ? (zh ? "已完成" : "Completed") : task.status === "failed" ? (zh ? "失败" : "Failed") : (zh ? "进行中" : "In progress");
-    return <div key={task.id} className="space-y-2 p-3"><div className="flex flex-wrap items-center gap-2"><span className="grid size-8 place-items-center rounded-md bg-muted">{task.direction === "upload" ? <ArrowUpFromLine className="size-4" /> : <ArrowDownToLine className="size-4" />}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{task.fileName}</strong><code className="block truncate text-xs text-muted-foreground">/{task.remotePath}</code></span><StatusBadge tone={tone}>{status}</StatusBadge>{task.status === "failed" && task.attempt < task.maxAttempts && scopes.some((item) => item.id === task.scopeId && item.status === "ready" && item.permissions.includes(task.direction)) ? <Button size="sm" variant="secondary" onClick={() => beginRetry(task)}><RotateCcw />{zh ? "重试" : "Retry"}</Button> : null}</div>{task.status === "running" ? <TransferProgress value={task.progress} label={zh ? "正在处理" : "Processing"} /> : <div className="flex flex-wrap justify-between gap-2 text-xs text-muted-foreground"><span>{formatBytes(task.bytesTransferred)} / {formatBytes(task.bytesTotal)}</span><span>{zh ? `第 ${task.attempt}/${task.maxAttempts} 次` : `Attempt ${task.attempt}/${task.maxAttempts}`}{task.errorCode ? ` · ${task.errorCode}` : ""}</span></div>}</div>;
+    const longRunning = transferIsLongRunning(task);
+    const status = task.status === "completed" ? (zh ? "已完成" : "Completed") : task.status === "failed" ? (zh ? "失败" : "Failed") : longRunning ? (zh ? "耗时较长" : "Taking longer") : (zh ? "进行中" : "In progress");
+    const retryEligible = task.status === "failed" && task.attempt < task.maxAttempts && scopes.some((item) => item.id === task.scopeId && item.status === "ready" && item.permissions.includes(task.direction));
+    const canRetry = retryEligible && !transferNeedsInspection(task);
+    const recovery = ordinaryTransferRecovery(task, zh);
+    const inspectAction = !professional && task.status === "failed" && !canRetry && recovery.action !== "retry" ? <Button size="sm" variant="secondary" onClick={recovery.action === "files" ? onInspectFiles : onInspectHost}>{recovery.action === "files" ? <Folder className="size-4" /> : <Server className="size-4" />}{recovery.label}</Button> : null;
+    const primaryAction = canRetry ? <Button size="sm" variant="secondary" onClick={() => beginRetry(task)}><RotateCcw />{zh ? "重试" : "Retry"}</Button> : inspectAction;
+    return <div key={task.id} className="space-y-2 p-3"><div className={primaryAction ? "grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center" : ""}><div className="flex min-w-0 items-center gap-2"><span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted">{task.direction === "upload" ? <ArrowUpFromLine className="size-4" /> : <ArrowDownToLine className="size-4" />}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{task.fileName}</strong>{professional ? <code className="block truncate text-xs text-muted-foreground">/{task.remotePath}</code> : <span className="block text-xs text-muted-foreground">{task.direction === "upload" ? (zh ? "上传到设备" : "Upload to device") : (zh ? "从设备下载" : "Download from device")}</span>}</span><StatusBadge tone={tone}>{status}</StatusBadge></div>{primaryAction ? <div className="flex justify-start sm:justify-end">{primaryAction}</div> : null}</div>{task.status === "running" ? <><TransferProgress value={task.progress} label={longRunning ? (zh ? "仍在传输，请勿重复发起" : "Still transferring — do not start a duplicate") : (zh ? "正在处理" : "Processing")} />{longRunning && !professional ? <p className="text-xs text-muted-foreground">{zh ? "这次传输比平时久。请等待最终结果；完成前无法确认设备上的文件状态。" : "This transfer is taking longer than usual. Wait for the final result; the file state on the device is unknown until it finishes."}</p> : null}</> : <div className="space-y-1 text-xs text-muted-foreground"><div className="flex flex-wrap justify-between gap-2"><span>{formatBytes(task.bytesTransferred)} / {formatBytes(task.bytesTotal)}</span>{professional ? <span>{zh ? `第 ${task.attempt}/${task.maxAttempts} 次` : `Attempt ${task.attempt}/${task.maxAttempts}`}{task.errorCode ? ` · ${task.errorCode}` : ""}</span> : task.status === "completed" ? <span>{zh ? "文件传输已完成" : "File transfer completed"}</span> : null}</div>{!professional && task.status === "failed" ? <p role="alert" className="text-destructive">{recovery.detail}{canRetry ? (zh ? " 可以安全重试。" : " You can safely retry.") : ""}</p> : null}</div>}</div>;
   })}</div>}{retryTask && !scope ? <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{zh ? "原文件范围已不存在，不能重试。" : "The original file range no longer exists, so this transfer cannot be retried."}</p> : null}{retryTask?.direction === "upload" && !retryFile ? <Modal open onClose={closeRetry} title={zh ? "重新选择本地文件" : "Select the local file again"} description={zh ? "为避免保存本地文件内容，失败后需要重新选择文件。" : "Local file contents are not retained, so select the file again after a failure."} footer={<Button variant="secondary" onClick={closeRetry}>{zh ? "取消" : "Cancel"}</Button>}><Button onClick={() => retryInput.current?.click()}><ArrowUpFromLine />{zh ? "选择文件" : "Choose file"}</Button></Modal> : null}{retryTask && scope && (retryTask.direction === "download" || retryFile) ? <TransferConfirmDialog scope={scope} directory={retryTask.remoteDirectory} uploadFile={retryTask.direction === "upload" ? retryFile : null} downloadEntry={retryTask.direction === "download" ? { name: retryTask.fileName, path: retryTask.remotePath, type: "file", accessible: true, size: retryTask.bytesTotal, modifiedAt: null } : null} retryOf={retryTask.id} zh={zh} onClose={closeRetry} onCompleted={async () => queryClient.invalidateQueries({ queryKey: ["host-file-transfers", host.id] })} /> : null}</div>;
 }
 
@@ -437,19 +520,17 @@ type HostSetupStage = "connection" | "fingerprint" | "scope";
 
 function isPrivateNetworkHost(value: string) {
   const host = value.trim().toLowerCase().replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host === "::1") return true;
   const ipv4 = host.split(".").map(Number);
   if (ipv4.length === 4 && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
     return ipv4[0] === 10
-      || ipv4[0] === 127
-      || (ipv4[0] === 169 && ipv4[1] === 254)
+      || (ipv4[0] === 100 && ipv4[1] >= 64 && ipv4[1] <= 127)
       || (ipv4[0] === 172 && ipv4[1] >= 16 && ipv4[1] <= 31)
       || (ipv4[0] === 192 && ipv4[1] === 168);
   }
-  return host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb");
+  return host.startsWith("fc") || host.startsWith("fd");
 }
 
-function HostSetupDialog({ open, initialHost, allowPrivateByDefault, zh, onClose, onChanged }: { open: boolean; initialHost: SshHost | null; allowPrivateByDefault: boolean; zh: boolean; onClose: () => void; onChanged: () => Promise<unknown> }) {
+function HostSetupDialog({ open, initialHost, allowPrivateByDefault, zh, professional, onClose, onChanged }: { open: boolean; initialHost: SshHost | null; allowPrivateByDefault: boolean; zh: boolean; professional: boolean; onClose: () => void; onChanged: () => Promise<unknown> }) {
   const queryClient = useQueryClient();
   const [stage, setStage] = useState<HostSetupStage>("connection");
   const [host, setHost] = useState<SshHost | null>(null);
@@ -505,7 +586,8 @@ function HostSetupDialog({ open, initialHost, allowPrivateByDefault, zh, onClose
   const credentialProvided = form.authMethod === "password_ref" ? secret.password.length > 0 : keyAuthentication ? Boolean(secret.privateKey.trim()) : false;
   const existingHost = host ?? initialHost;
   const authChanged = Boolean(existingHost && existingHost.authMethod !== form.authMethod);
-  const credentialRequired = (!existingHost || authChanged) && form.authMethod !== "ssh_agent";
+  const credentialRepairRequired = Boolean(existingHost && ["ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid"].includes(existingHost.lastConnectionError?.code ?? ""));
+  const credentialRequired = (!existingHost || authChanged || credentialRepairRequired) && form.authMethod !== "ssh_agent";
   const showPrivateConsent = isPrivateNetworkHost(form.host) || privateDetected || form.allowPrivate;
 
   const connect = useMutation({
@@ -524,7 +606,7 @@ function HostSetupDialog({ open, initialHost, allowPrivateByDefault, zh, onClose
         : (await hostApi.create({ ...input, purposes: [...input.purposes] })).target;
       setHost(current);
 
-      const shouldSaveCredential = form.authMethod !== "ssh_agent" && (credentialProvided || !existingHost || authChanged);
+      const shouldSaveCredential = form.authMethod !== "ssh_agent" && (credentialProvided || !existingHost || authChanged || credentialRepairRequired);
       if (shouldSaveCredential) {
         if (!bridge?.saveSshHostCredential) throw new Error(zh ? "请使用桌面版安全保存主机密码或私钥。" : "Use the desktop app to save the host password or private key securely.");
         const result = await bridge.saveSshHostCredential({
@@ -577,7 +659,7 @@ function HostSetupDialog({ open, initialHost, allowPrivateByDefault, zh, onClose
     if (!Number.isInteger(port) || port < 1 || port > 65535) return setConnectionError(zh ? "端口必须是 1 到 65535 之间的整数。" : "Port must be an integer from 1 to 65535.");
     if (showPrivateConsent && !form.allowPrivate) return setConnectionError(zh ? "请先确认允许连接这台局域网设备。" : "Confirm that MyAgentTool may connect to this local-network device.");
     if (credentialRequired && !credentialProvided) return setConnectionError(form.authMethod === "password_ref" ? (zh ? "请输入登录密码。" : "Enter the login password.") : (zh ? "请输入私钥。" : "Enter the private key."));
-    if (form.authMethod !== "ssh_agent" && (credentialProvided || !existingHost || authChanged) && !bridge?.saveSshHostCredential) return setConnectionError(zh ? "请在 MyAgentTool 桌面版中完成连接，以便安全保存凭据。" : "Complete this connection in the MyAgentTool desktop app so the credential can be stored securely.");
+    if (form.authMethod !== "ssh_agent" && (credentialProvided || !existingHost || authChanged || credentialRepairRequired) && !bridge?.saveSshHostCredential) return setConnectionError(zh ? "请在 MyAgentTool 桌面版中完成连接，以便安全保存凭据。" : "Complete this connection in the MyAgentTool desktop app so the credential can be stored securely.");
     setConnectionError("");
     connect.mutate();
   };
@@ -601,12 +683,26 @@ function HostSetupDialog({ open, initialHost, allowPrivateByDefault, zh, onClose
     },
     onSuccess: async (data) => { setHost(data.host); await onChanged(); setStage("scope"); },
   });
-  const createScope = useMutation({ mutationFn: () => hostApi.createScope(host!.id, { label: scope.label, rootPath: scope.rootPath, purpose: scope.purpose, permissions: ["list", ...(scope.upload ? ["upload" as const] : []), ...(scope.download ? ["download" as const] : [])] }), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["my-host-scopes", host!.id] }); await onChanged(); onClose(); } });
+  const createScope = useMutation({ mutationFn: (input: { label: string; rootPath: string; purpose: HostFileScopePurpose; permissions: Array<"list" | "upload" | "download"> }) => hostApi.createScope(host!.id, input), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["my-host-scopes", host!.id] }); await onChanged(); onClose(); } });
   const mutationError = confirm.error ?? createScope.error;
   const pending = connect.isPending || confirm.isPending || createScope.isPending;
   const close = () => { if (!pending) onClose(); };
-  const modalTitle = stage === "connection" ? (zh ? "连接主机" : "Connect a host") : stage === "fingerprint" ? (zh ? "确认这台设备" : "Confirm this device") : (zh ? "添加文件范围" : "Add a file range");
-  const modalDescription = stage === "connection" ? (zh ? "填写地址和登录信息，系统会安全保存凭据并测试连接。" : "Enter the address and sign-in details. The credential is stored securely and the connection is tested.") : stage === "fingerprint" ? (zh ? "首次连接需要确认设备指纹，避免连接到错误设备。" : "The first connection requires a device fingerprint check to prevent connecting to the wrong device.") : (zh ? "连接已验证。现在可选择允许访问的专用目录。" : "The connection is verified. Now choose a dedicated directory that may be accessed.");
+  const modalTitle = stage === "connection"
+    ? professional ? (zh ? "连接主机" : "Connect a host") : (zh ? "连接我的设备" : "Connect my device")
+    : stage === "fingerprint"
+      ? professional ? (zh ? "确认这台设备" : "Confirm this device") : (zh ? "确认这是我的设备" : "Confirm this is my device")
+      : professional ? (zh ? "添加文件范围" : "Add a file range") : (zh ? "选择允许使用的文件夹" : "Choose a folder MyAgentTool may use");
+  const modalDescription = stage === "connection"
+    ? professional
+      ? (zh ? "填写地址和登录信息，系统会安全保存凭据并测试连接。" : "Enter the address and sign-in details. The credential is stored securely and the connection is tested.")
+      : (zh ? "输入这台设备的地址和登录信息。密码只会安全保存在当前电脑。" : "Enter this device's address and sign-in details. The password stays securely on this computer.")
+    : stage === "fingerprint"
+      ? professional
+        ? (zh ? "首次连接需要确认设备指纹，避免连接到错误设备。" : "The first connection requires a device fingerprint check to prevent connecting to the wrong device.")
+        : (zh ? "第一次连接时，请确认地址和设备是你预期的那一台。" : "On the first connection, confirm that this is the device you expected.")
+      : professional
+        ? (zh ? "连接已验证。现在可选择允许访问的专用目录。" : "The connection is verified. Now choose a dedicated directory that may be accessed.")
+        : (zh ? "连接成功。MyAgentTool 只会使用你在这里允许的文件夹。" : "Connected. MyAgentTool will only use the folder you approve here.");
   const stageIndex = stage === "connection" ? 0 : stage === "fingerprint" ? 1 : 2;
   const chooseScopeSuggestion = (suggestion: HostFileScopeSuggestion) => {
     setScopeRootTouched(true);
@@ -626,42 +722,60 @@ function HostSetupDialog({ open, initialHost, allowPrivateByDefault, zh, onClose
       setFingerprintCopied(false);
     }
   };
+  const scopeAccessOptions = <>
+    <Field label={zh ? "用途" : "Purpose"}><Select value={scope.purpose} onChange={(event) => setScope({ ...scope, purpose: event.target.value as HostFileScopePurpose })}>{host?.purposes.includes("site_publish") ? <option value="site_publish">{zh ? "站点发布" : "Site publishing"}</option> : null}{host?.purposes.includes("tls_certificate") || host?.purposes.includes("site_publish") ? <option value="tls_certificate">{zh ? "HTTPS 证书专用" : "HTTPS certificates only"}</option> : null}<option value="general_files">{zh ? "普通文件" : "General files"}</option><option value="backup">{zh ? "备份" : "Backup"}</option></Select></Field>
+    {scope.purpose === "tls_certificate" ? <p className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-warning">{zh ? "证书范围不会出现在文件浏览和下载入口；只有受控证书部署可以写入。" : "Certificate ranges are excluded from file browsing and downloads; only controlled certificate deployment can write to them."}</p> : <div className="rounded-lg border p-3"><p className="mb-2 text-sm font-medium">{zh ? "允许的传输" : "Allowed transfers"}</p><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={scope.upload} onChange={(event) => setScope({ ...scope, upload: event.target.checked })} />{zh ? "上传（最大 10 MB，默认保留两份）" : "Upload (10 MB max, keep both by default)"}</label><label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={scope.download} onChange={(event) => setScope({ ...scope, download: event.target.checked })} />{zh ? "下载（最大 25 MB，阻止敏感文件）" : "Download (25 MB max, sensitive files blocked)"}</label></div>}
+  </>;
+  const submitScope = () => createScope.mutate({ label: scope.label, rootPath: scope.rootPath, purpose: scope.purpose, permissions: ["list", ...(scope.upload ? ["upload" as const] : []), ...(scope.download ? ["download" as const] : [])] });
 
-  const footer = <div className="flex w-full flex-wrap justify-between gap-2"><Button variant="secondary" onClick={close}>{zh ? "稍后继续" : "Continue later"}</Button><div className="flex gap-2">{stage === "fingerprint" ? <Button variant="secondary" onClick={() => { setConnectionError(""); setStage("connection"); }}><ArrowLeft />{zh ? "返回修改" : "Back to edit"}</Button> : null}{stage === "connection" ? <Button disabled={connect.isPending} onClick={submitConnection}>{connect.isPending ? <Loader2 className="animate-spin" /> : <KeyRound />}{zh ? "连接并验证" : "Connect and verify"}</Button> : null}{stage === "fingerprint" ? <Button disabled={!fingerprintAccepted || confirm.isPending} onClick={() => confirm.mutate()}>{confirm.isPending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}{zh ? "确认并连接" : "Confirm and connect"}</Button> : null}{stage === "scope" ? <Button disabled={!scope.rootPath.trim() || createScope.isPending} onClick={() => createScope.mutate()}>{createScope.isPending ? <Loader2 className="animate-spin" /> : <FolderLock />}{zh ? "验证范围并完成" : "Verify range and finish"}</Button> : null}</div></div>;
+  const footer = <div className="flex w-full flex-wrap justify-between gap-2"><Button variant="secondary" onClick={close}>{zh ? "稍后继续" : "Continue later"}</Button><div className="flex gap-2">{stage === "fingerprint" ? <Button variant="secondary" onClick={() => { setConnectionError(""); setStage("connection"); }}><ArrowLeft />{zh ? "返回修改" : "Back to edit"}</Button> : null}{stage === "connection" ? <Button disabled={connect.isPending} onClick={submitConnection}>{connect.isPending ? <Loader2 className="animate-spin" /> : <KeyRound />}{professional ? (zh ? "连接并验证" : "Connect and verify") : (zh ? "连接这台设备" : "Connect this device")}</Button> : null}{stage === "fingerprint" ? <Button disabled={!fingerprintAccepted || confirm.isPending} onClick={() => confirm.mutate()}>{confirm.isPending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}{professional ? (zh ? "确认并连接" : "Confirm and connect") : (zh ? "确认设备并继续" : "Confirm device and continue")}</Button> : null}{stage === "scope" ? <Button disabled={!scope.rootPath.trim() || createScope.isPending} onClick={submitScope}>{createScope.isPending ? <Loader2 className="animate-spin" /> : <FolderLock />}{professional ? (zh ? "验证范围并完成" : "Verify range and finish") : (zh ? "使用这个文件夹并完成" : "Use this folder and finish")}</Button> : null}</div></div>;
 
   return <Modal open={open} onClose={close} title={modalTitle} description={modalDescription} size="lg" footer={footer}>
     <div className="space-y-4">
       <ol className="grid grid-cols-3 gap-1" aria-label={zh ? "连接进度" : "Connection progress"}>{[
-        zh ? "1. 登录信息" : "1. Sign-in details",
-        zh ? "2. 确认设备" : "2. Confirm device",
-        zh ? "3. 选择文件夹" : "3. Choose folder",
+        professional ? (zh ? "1. 登录信息" : "1. Sign-in details") : (zh ? "1. 连接设备" : "1. Connect device"),
+        professional ? (zh ? "2. 确认设备" : "2. Confirm device") : (zh ? "2. 确认是我的" : "2. Confirm it's mine"),
+        professional ? (zh ? "3. 选择文件夹" : "3. Choose folder") : (zh ? "3. 允许文件夹" : "3. Approve folder"),
       ].map((label, index) => <li key={label} className={`rounded-md px-2 py-2 text-center text-xs ${stageIndex === index ? "bg-primary text-primary-foreground" : stageIndex > index ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"}`}>{label}</li>)}</ol>
       {stage === "connection" ? <div className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2"><Field label={zh ? "主机地址" : "Host address"} required><Input required aria-invalid={connectionError && !form.host.trim() ? true : undefined} value={form.host} placeholder="10.10.10.222" onChange={(event) => { setConnectionError(""); setPrivateDetected(false); setForm({ ...form, host: event.target.value, allowPrivate: false }); }} /></Field><Field label={zh ? "登录用户" : "Login user"} required><Input required aria-invalid={connectionError && !form.user.trim() ? true : undefined} value={form.user} onChange={(event) => { setConnectionError(""); setForm({ ...form, user: event.target.value }); }} /></Field></div>
-        {form.authMethod === "password_ref" ? <Field label={zh ? "登录密码" : "Login password"} required={credentialRequired}><Input type="password" value={secret.password} autoComplete="new-password" placeholder={existingHost && !authChanged ? (zh ? "留空则使用已安全保存的密码" : "Leave blank to reuse the securely stored password") : ""} onChange={(event) => { setConnectionError(""); setSecret({ ...secret, password: event.target.value }); }} /></Field> : keyAuthentication ? <><Field label={zh ? "私钥" : "Private key"} required={credentialRequired}><Textarea rows={7} value={secret.privateKey} spellCheck={false} placeholder={existingHost && !authChanged ? (zh ? "留空则使用已安全保存的私钥" : "Leave blank to reuse the securely stored private key") : "-----BEGIN OPENSSH PRIVATE KEY-----"} onChange={(event) => { setConnectionError(""); setSecret({ ...secret, privateKey: event.target.value }); }} /></Field><Field label={zh ? "私钥口令（如有）" : "Key passphrase (if any)"}><Input type="password" value={secret.passphrase} autoComplete="new-password" onChange={(event) => setSecret({ ...secret, passphrase: event.target.value })} /></Field></> : null}
-        <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "密码或私钥只保存在本机操作系统的安全存储中，不会写入站点数据或日志。" : "The password or private key stays in this computer's OS secure storage and is not written to site data or logs."}</p>
-        {showPrivateConsent ? <label className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"><input className="mt-1" type="checkbox" checked={form.allowPrivate} onChange={(event) => { setConnectionError(""); setForm({ ...form, allowPrivate: event.target.checked }); }} /><span>{zh ? "这是局域网地址。允许 MyAgentTool 连接这台局域网设备。" : "This is a local-network address. Allow MyAgentTool to connect to this local device."}</span></label> : null}
+        <div className="grid gap-3 sm:grid-cols-2"><Field label={professional ? (zh ? "主机地址" : "Host address") : (zh ? "设备地址" : "Device address")} required><Input required aria-invalid={connectionError && !form.host.trim() ? true : undefined} value={form.host} placeholder="10.10.10.222" onChange={(event) => { setConnectionError(""); setPrivateDetected(false); setForm({ ...form, host: event.target.value, allowPrivate: false }); }} /></Field><Field label={professional ? (zh ? "登录用户" : "Login user") : (zh ? "登录账号" : "Sign-in account")} required><Input required aria-invalid={connectionError && !form.user.trim() ? true : undefined} value={form.user} onChange={(event) => { setConnectionError(""); setForm({ ...form, user: event.target.value }); }} /></Field></div>
+        {form.authMethod === "password_ref" ? <Field label={zh ? "登录密码" : "Login password"} required={credentialRequired}><Input type="password" value={secret.password} autoComplete="new-password" placeholder={existingHost && !authChanged && !credentialRepairRequired ? (zh ? "留空则使用已安全保存的密码" : "Leave blank to reuse the securely stored password") : ""} onChange={(event) => { setConnectionError(""); setSecret({ ...secret, password: event.target.value }); }} /></Field> : keyAuthentication ? <><Field label={zh ? "私钥" : "Private key"} required={credentialRequired}><Textarea rows={7} value={secret.privateKey} spellCheck={false} placeholder={existingHost && !authChanged && !credentialRepairRequired ? (zh ? "留空则使用已安全保存的私钥" : "Leave blank to reuse the securely stored private key") : "-----BEGIN OPENSSH PRIVATE KEY-----"} onChange={(event) => { setConnectionError(""); setSecret({ ...secret, privateKey: event.target.value }); }} /></Field><Field label={zh ? "私钥口令（如有）" : "Key passphrase (if any)"}><Input type="password" value={secret.passphrase} autoComplete="new-password" onChange={(event) => setSecret({ ...secret, passphrase: event.target.value })} /></Field></> : null}
+        <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{professional ? (zh ? "密码或私钥只保存在本机操作系统的安全存储中，不会写入站点数据或日志。" : "The password or private key stays in this computer's OS secure storage and is not written to site data or logs.") : (zh ? "登录信息只安全保存在当前电脑，不会同步到网站或写进日志。" : "Sign-in details stay securely on this computer and are never synced to the website or written to logs.")}</p>
+        {showPrivateConsent ? <label className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"><input className="mt-1" type="checkbox" checked={form.allowPrivate} onChange={(event) => { setConnectionError(""); setForm({ ...form, allowPrivate: event.target.checked }); }} /><span><strong className="block font-medium">{professional ? (zh ? "局域网连接许可" : "Local-network permission") : (zh ? "允许连接我的局域网设备" : "Allow access to my local device")}</strong><span className="mt-1 block text-muted-foreground">{professional ? (zh ? "这是局域网地址。允许 MyAgentTool 连接这台局域网设备。" : "This is a local-network address. Allow MyAgentTool to connect to this local device.") : (zh ? "这个地址只在你的局域网中可用。勾选后，MyAgentTool 才会尝试连接这台设备。" : "This address is only available on your local network. MyAgentTool will connect only after you approve it.")}</span></span></label> : null}
         <details className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">{zh ? "高级选项" : "Advanced options"}</summary><div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label={zh ? "主机名称" : "Host name"}><Input value={form.name} placeholder={zh ? "网站生产主机" : "Production website host"} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field><Field label={zh ? "端口" : "Port"} required><Input required type="number" min="1" max="65535" value={form.port} onChange={(event) => { setConnectionError(""); setForm({ ...form, port: event.target.value }); }} /></Field><Field label={zh ? "认证方式" : "Authentication"}><Select value={form.authMethod} onChange={(event) => { setConnectionError(""); setSecret({ privateKey: "", passphrase: "", password: "" }); setForm({ ...form, authMethod: event.target.value as HostAuthMethod }); }}><option value="password_ref">{zh ? "密码" : "Password"}</option><option value="private_key_ref">{zh ? "私钥" : "Private key"}</option><option value="managed_identity">{zh ? "托管身份" : "Managed identity"}</option><option value="ssh_agent">{zh ? "SSH Agent" : "SSH agent"}</option></Select></Field><label className="flex items-center gap-2 pt-6 text-sm"><input type="checkbox" checked={form.sitePublish} onChange={(event) => setForm({ ...form, sitePublish: event.target.checked })} />{zh ? "允许用于站点发布" : "Allow site publishing"}</label></div></details>
         {connectionError ? <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{connectionError}</p> : null}
       </div> : null}
       {stage === "fingerprint" ? <div className="space-y-3">
-        <div className="rounded-lg border p-4"><div className="flex items-center justify-between gap-2"><p className="text-sm font-medium">{zh ? "设备指纹" : "Device fingerprint"}</p><Button size="sm" variant="ghost" onClick={() => void copyFingerprint()}><Copy />{fingerprintCopied ? (zh ? "已复制" : "Copied") : (zh ? "复制" : "Copy")}</Button></div><code className="mt-2 block break-all rounded bg-muted p-3 text-xs">{host?.observedFingerprint ?? (zh ? "尚未读取" : "Not read yet")}</code></div>
-        <p className="text-sm text-muted-foreground">{zh ? "把上面的指纹与设备控制台或管理员提供的指纹核对。确认后，如果设备身份发生变化，系统会自动阻止连接。" : "Compare the fingerprint above with the device console or the value from its administrator. Future identity changes will automatically block the connection."}</p>
-        <details className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">{zh ? "不知道如何核对？" : "Not sure how to compare it?"}</summary><div className="mt-2 space-y-2 text-xs text-muted-foreground"><p>{zh ? "请在设备控制台执行下面的只读命令，或把指纹复制给设备管理员核对：" : "Run this read-only command in the device console, or copy the fingerprint to the device administrator:"}</p><code className="block overflow-x-auto rounded bg-muted p-2">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code></div></details>
-        <label className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"><input className="mt-1" type="checkbox" checked={fingerprintAccepted} onChange={(event) => setFingerprintAccepted(event.target.checked)} /><span>{zh ? "我已核对指纹，确认这是我要连接的设备。" : "I compared the fingerprint and confirmed this is the device I intend to connect to."}</span></label>
+        {professional ? <>
+          <FingerprintPanel host={host} copied={fingerprintCopied} zh={zh} onCopy={copyFingerprint} />
+          <p className="text-sm text-muted-foreground">{zh ? "把上面的指纹与设备控制台或管理员提供的指纹核对。确认后，如果设备身份发生变化，系统会自动阻止连接。" : "Compare the fingerprint above with the device console or the value from its administrator. Future identity changes will automatically block the connection."}</p>
+          <FingerprintHelp zh={zh} />
+        </> : <>
+          <div className="rounded-lg border border-success/30 bg-success/5 p-4"><p className="font-medium">{zh ? "已找到设备" : "Device found"}</p><dl className="mt-3 grid gap-2 text-sm sm:grid-cols-[100px_1fr]"><dt className="text-muted-foreground">{zh ? "设备地址" : "Device address"}</dt><dd className="break-all font-medium">{host?.host}</dd><dt className="text-muted-foreground">{zh ? "登录账号" : "Sign-in account"}</dt><dd className="break-all font-medium">{host?.user}</dd></dl></div>
+          <p className="text-sm text-muted-foreground">{zh ? "请确认上面的地址和账号属于你要连接的设备。确认后，如果设备身份发生变化，系统会自动停止连接并提醒你。" : "Confirm that the address and account belong to the device you intended to connect. If its identity changes later, MyAgentTool will stop and alert you."}</p>
+          <details className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">{zh ? "查看技术指纹" : "View technical fingerprint"}</summary><div className="mt-3 space-y-3"><FingerprintPanel host={host} copied={fingerprintCopied} zh={zh} onCopy={copyFingerprint} compact /><FingerprintHelp zh={zh} /></div></details>
+        </>}
+        <label className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"><input className="mt-1" type="checkbox" checked={fingerprintAccepted} onChange={(event) => setFingerprintAccepted(event.target.checked)} /><span>{professional ? (zh ? "我已核对指纹，确认这是我要连接的设备。" : "I compared the fingerprint and confirmed this is the device I intend to connect to.") : (zh ? "我确认这是我要连接的设备。" : "I confirm this is the device I intend to connect to.")}</span></label>
       </div> : null}
       {stage === "scope" ? <div className="space-y-3">
-        <div className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "系统只检查约定的网站和内容目录，不会扫描主目录或系统目录。选择一个推荐文件夹即可完成。" : "Only conventional website and content locations are checked. Home and system directories are never scanned. Choose a suggested folder to finish."}</div>
+        <div className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{professional ? (zh ? "系统只检查约定的网站和内容目录，不会扫描主目录或系统目录。选择一个推荐文件夹即可完成。" : "Only conventional website and content locations are checked. Home and system directories are never scanned. Choose a suggested folder to finish.") : (zh ? "已为你选中推荐文件夹。MyAgentTool 只能查看和操作这个文件夹内的内容，不会扫描其他位置。" : "The recommended folder is selected for you. MyAgentTool can only view or change files inside it and will not scan other locations.")}</div>
         {scopeSuggestions.isLoading ? <div className="flex items-center gap-2 rounded-lg border p-3 text-sm text-muted-foreground"><Loader2 className="animate-spin" />{zh ? "正在查找可安全访问的文件夹…" : "Finding folders that can be accessed safely…"}</div> : null}
-        {scopeSuggestions.data?.suggestions.length ? <fieldset className="space-y-2"><legend className="text-sm font-medium">{zh ? "推荐文件夹" : "Suggested folders"}</legend>{scopeSuggestions.data.suggestions.map((suggestion) => <label key={suggestion.rootPath} className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 ${scope.rootPath === suggestion.rootPath ? "border-primary bg-primary/[0.04]" : "hover:bg-muted/50"}`}><input className="mt-1" type="radio" name="scope-suggestion" checked={scope.rootPath === suggestion.rootPath} onChange={() => chooseScopeSuggestion(suggestion)} /><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2 text-sm font-medium">{suggestion.label}{suggestion.recommended ? <StatusBadge tone="success">{zh ? "推荐" : "Recommended"}</StatusBadge> : null}</span><code className="mt-1 block break-all text-xs text-muted-foreground">{suggestion.rootPath}</code><span className="mt-1 block text-xs text-muted-foreground">{suggestionReason(suggestion)}</span></span></label>)}</fieldset> : null}
+        {scopeSuggestions.data?.suggestions.length ? <fieldset className="space-y-2"><legend className="text-sm font-medium">{professional ? (zh ? "推荐文件夹" : "Suggested folders") : (zh ? "允许使用的文件夹" : "Folder to approve")}</legend>{scopeSuggestions.data.suggestions.map((suggestion) => <label key={suggestion.rootPath} className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 ${scope.rootPath === suggestion.rootPath ? "border-primary bg-primary/[0.04]" : "hover:bg-muted/50"}`}><input className="mt-1" type="radio" name="scope-suggestion" checked={scope.rootPath === suggestion.rootPath} onChange={() => chooseScopeSuggestion(suggestion)} /><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2 text-sm font-medium">{suggestion.label}{suggestion.recommended ? <StatusBadge tone="success">{zh ? "推荐" : "Recommended"}</StatusBadge> : null}</span><code className="mt-1 block break-all text-xs text-muted-foreground">{suggestion.rootPath}</code><span className="mt-1 block text-xs text-muted-foreground">{suggestionReason(suggestion)}</span></span></label>)}</fieldset> : null}
         {!scopeSuggestions.isLoading && !scopeSuggestions.data?.suggestions.length ? <p className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">{scopeSuggestions.error ? (zh ? "暂时无法自动查找文件夹，可以手动填写管理员提供的专用目录。" : "Folders could not be discovered automatically. Enter a dedicated directory provided by the administrator.") : (zh ? "没有找到约定的内容目录，请填写管理员提供的专用目录。" : "No conventional content directory was found. Enter a dedicated directory provided by the administrator.")}</p> : null}
-        <details open={manualScopeOpen} onToggle={(event) => setManualScopeOpen(event.currentTarget.open)} className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">{scopeSuggestions.data?.suggestions.length ? (zh ? "使用其他文件夹" : "Use another folder") : (zh ? "手动填写文件夹" : "Enter a folder manually")}</summary><div className="mt-3 space-y-3"><Field label={zh ? "范围名称" : "Range name"}><Input value={scope.label} onChange={(event) => setScope({ ...scope, label: event.target.value })} /></Field><Field label={zh ? "远程目录" : "Remote directory"} required><Input className="font-mono" value={scope.rootPath} placeholder="/srv/www/site" onChange={(event) => { setScopeRootTouched(true); setScope({ ...scope, rootPath: event.target.value }); }} /></Field></div></details>
-        <Field label={zh ? "用途" : "Purpose"}><Select value={scope.purpose} onChange={(event) => setScope({ ...scope, purpose: event.target.value as HostFileScopePurpose })}>{host?.purposes.includes("site_publish") ? <option value="site_publish">{zh ? "站点发布" : "Site publishing"}</option> : null}{host?.purposes.includes("tls_certificate") || host?.purposes.includes("site_publish") ? <option value="tls_certificate">{zh ? "HTTPS 证书专用" : "HTTPS certificates only"}</option> : null}<option value="general_files">{zh ? "普通文件" : "General files"}</option><option value="backup">{zh ? "备份" : "Backup"}</option></Select></Field>
-        {scope.purpose === "tls_certificate" ? <p className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-warning">{zh ? "证书范围不会出现在文件浏览和下载入口；只有受控证书部署可以写入。" : "Certificate ranges are excluded from file browsing and downloads; only controlled certificate deployment can write to them."}</p> : <div className="rounded-lg border p-3"><p className="mb-2 text-sm font-medium">{zh ? "允许的传输" : "Allowed transfers"}</p><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={scope.upload} onChange={(event) => setScope({ ...scope, upload: event.target.checked })} />{zh ? "上传（最大 10 MB，默认保留两份）" : "Upload (10 MB max, keep both by default)"}</label><label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={scope.download} onChange={(event) => setScope({ ...scope, download: event.target.checked })} />{zh ? "下载（最大 25 MB，阻止敏感文件）" : "Download (25 MB max, sensitive files blocked)"}</label></div>}
+        <details open={manualScopeOpen} onToggle={(event) => setManualScopeOpen(event.currentTarget.open)} className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">{scopeSuggestions.data?.suggestions.length ? (zh ? "使用其他文件夹" : "Use another folder") : (zh ? "手动填写文件夹" : "Enter a folder manually")}</summary><div className="mt-3 space-y-3"><Field label={professional ? (zh ? "范围名称" : "Range name") : (zh ? "文件夹名称" : "Folder name")}><Input value={scope.label} onChange={(event) => setScope({ ...scope, label: event.target.value })} /></Field><Field label={professional ? (zh ? "远程目录" : "Remote directory") : (zh ? "文件夹路径" : "Folder path")} required><Input className="font-mono" value={scope.rootPath} placeholder="/srv/www/site" onChange={(event) => { setScopeRootTouched(true); setScope({ ...scope, rootPath: event.target.value }); }} /></Field></div></details>
+        {professional ? scopeAccessOptions : <details className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">{zh ? "文件夹权限" : "Folder permissions"}</summary><div className="mt-3 space-y-3">{scopeAccessOptions}</div></details>}
       </div> : null}
       {mutationError ? <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(mutationError, zh)}</p> : null}
     </div>
   </Modal>;
+}
+
+function FingerprintPanel({ host, copied, zh, onCopy, compact = false }: { host: SshHost | null; copied: boolean; zh: boolean; onCopy: () => Promise<void>; compact?: boolean }) {
+  return <div className={compact ? "" : "rounded-lg border p-4"}><div className="flex items-center justify-between gap-2"><p className="text-sm font-medium">{zh ? "设备指纹" : "Device fingerprint"}</p><Button size="sm" variant="ghost" onClick={() => void onCopy()}><Copy />{copied ? (zh ? "已复制" : "Copied") : (zh ? "复制" : "Copy")}</Button></div><code className="mt-2 block break-all rounded bg-muted p-3 text-xs">{host?.observedFingerprint ?? (zh ? "尚未读取" : "Not read yet")}</code></div>;
+}
+
+function FingerprintHelp({ zh }: { zh: boolean }) {
+  return <details className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">{zh ? "如何核对指纹？" : "How do I compare the fingerprint?"}</summary><div className="mt-2 space-y-2 text-xs text-muted-foreground"><p>{zh ? "请在设备控制台执行下面的只读命令，或把指纹复制给设备管理员核对：" : "Run this read-only command in the device console, or copy the fingerprint to the device administrator:"}</p><code className="block overflow-x-auto rounded bg-muted p-2">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code></div></details>;
 }
 
 function Field({ label, children, required = false }: { label: string; children: React.ReactNode; required?: boolean }) { return <label className="space-y-1.5 text-sm"><span className={`font-medium ${required ? "after:ml-1 after:text-destructive after:content-['*']" : ""}`}>{label}</span>{children}</label>; }

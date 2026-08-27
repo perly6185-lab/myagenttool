@@ -13,6 +13,7 @@ import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
 import { handleLocalContentRoutes } from "../routes/local-content.mjs";
+import { handleMaterialWorkSessionRoutes } from "../routes/material-work-sessions.mjs";
 import { handleMailRoutes } from "../routes/mail.mjs";
 import { handleChannelRoutes } from "../routes/channels.mjs";
 import { handleCanvasSceneRoutes } from "../routes/canvas-scenes.mjs";
@@ -573,6 +574,10 @@ export function createHttpServer({
   getWorkResource,
   previewWorkResource,
   refreshWorkResource,
+  createMaterialWorkSession,
+  getMaterialWorkSession,
+  addMaterialWorkSessionMessage,
+  cancelMaterialWorkSession,
   listCanvasScenes,
   getCanvasScene,
   createCanvasScene,
@@ -1006,6 +1011,16 @@ export function createHttpServer({
         getLocalContentCatalogStats, previewLocalContent, previewLocalContentAsset,
         refreshLocalContent, archiveLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
         listWorkResources, getWorkResource, previewWorkResource, refreshWorkResource,
+      })) {
+        return;
+      }
+
+      if (await handleMaterialWorkSessionRoutes({
+        req, res, url, sendJson, readJson, actor,
+        createMaterialWorkSession,
+        getMaterialWorkSession,
+        addMaterialWorkSessionMessage,
+        cancelMaterialWorkSession,
       })) {
         return;
       }

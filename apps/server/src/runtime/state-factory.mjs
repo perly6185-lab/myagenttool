@@ -66,10 +66,18 @@ export function createServerState({ defaultProjectPath, now }) {
     privateTutorGuardianLinks: [],
     privateTutorSnapshots: [],
     privateTutorAttempts: [],
+    privateTutorEvaluationReviews: [],
+    privateTutorGoldenCandidates: [],
+    privateTutorGoldenCandidateReviews: [],
+    privateTutorGoldenCandidateEvents: [],
     privateTutorAssessments: [],
     privateTutorLearnerModels: [],
     privateTutorStrategyDecisions: [],
     privateTutorLearningPlans: [],
+    privateTutorPackageActivations: [],
+    privateTutorContentMigrationPreviews: [],
+    privateTutorContentMigrationApplications: [],
+    privateTutorRuntimeValidations: [],
     privateTutorSessions: [],
     privateTutorSessionEvents: [],
     privateTutorVoiceTurns: [],
@@ -160,6 +168,12 @@ export function createServerState({ defaultProjectPath, now }) {
     // independently of the formal task/worktree lifecycle.
     channelKnowledgeItems: [],
     channelAttachmentKnowledgeItems: [],
+    // Read-only, user-owned conversations over an immutable set of local
+    // content identities. Generation is composed separately; these records
+    // keep scope, messages, and citations durable across restart.
+    materialWorkSessions: [],
+    materialWorkMessages: [],
+    materialWorkCitations: [],
     // Login-managed site sessions (session-manager.mjs): one durable row per
     // registered site — last probe / reseed observations only, never cookie
     // material. Empty until the first probe/reseed records a row.

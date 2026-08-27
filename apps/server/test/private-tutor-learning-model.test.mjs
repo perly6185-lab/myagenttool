@@ -85,6 +85,16 @@ test("the seven-day plan uses 20-minute days and carries a missed goal forward w
   assert.equal(rescheduled.studentReason.includes("失败"), false);
 });
 
+test("the seven-day plan uses the learner's persisted time and intensity", () => {
+  const model = derivePrivateTutorLearnerModel({ snapshot: snapshotWith({ balance: 0.35 }), attempts: [], now });
+  const decision = decidePrivateTutorStrategy({ model, attempts: [] });
+  const plan = buildPrivateTutorSevenDayPlan({ model, decision, now, dailyMinutes: 35, planIntensity: "intensive" });
+  assert.equal(plan.dailyMinutes, 35);
+  assert.equal(plan.planIntensity, "intensive");
+  assert.equal(plan.days.every((day) => day.minutes === 35), true);
+  assert.equal(plan.days.some((day) => day.activity === "mixed_check"), true);
+});
+
 function snapshotWith(overrides) {
   const defaults = { integer: 0.85, "equation-meaning": 0.82, balance: 0.8, "word-problem": 0.84 };
   return {

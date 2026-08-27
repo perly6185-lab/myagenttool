@@ -44,6 +44,8 @@ import {
   answerPrivateTutorReview,
   getCurrentPrivateTutorAssessment,
   getCurrentPrivateTutorSession,
+  getPrivateTutorLearningHistory,
+  getPrivateTutorLearningPreferences,
   getPrivateTutorProfile,
   getPrivateTutorDataPolicy,
   getPrivateTutorSnapshot,
@@ -64,6 +66,7 @@ import {
   startPrivateTutorAssessment,
   startPrivateTutorSession,
   updatePrivateTutorDataPolicy,
+  updatePrivateTutorLearningPreferences,
   type PrivateTutorAssessment,
   type PrivateTutorDataPolicy,
   type PrivateTutorDeletionJobStatus,
@@ -73,6 +76,10 @@ import {
   type PrivateTutorReviewBook,
   type PrivateTutorLearner,
   type PrivateTutorLearningPlan,
+  type PrivateTutorLearningHistory,
+  type PrivateTutorLearningPreferences,
+  type PrivateTutorLearningPreferencesPatch,
+  type PrivateTutorFollowUpMode,
   type PrivateTutorProfileMigrationReport,
   type PrivateTutorSession,
   type PrivateTutorSessionPace,
@@ -81,8 +88,10 @@ import {
   type PrivateTutorVoiceTurn,
   type PrivateTutorWeeklyReport,
   getPrivateTutorActiveContentPackage,
+  getPrivateTutorContentPackage,
   listPrivateTutorContentPackages,
-  updatePrivateTutorActiveContentPackage,
+  activatePrivateTutorContentPackage,
+  type PrivateTutorPackageActivationResult,
   type LearningContentPackage,
   listPrivateTutorMaterials,
   generatePrivateTutorKnowledgeMapDraft,
@@ -91,6 +100,7 @@ import {
 } from "@/features/private-tutor/private-tutor-api";
 import { PrivateTutorMaterialImport } from "@/features/private-tutor/components/private-tutor-material-import";
 import { PrivateTutorDraftEditor } from "@/features/private-tutor/components/private-tutor-draft-editor";
+import { PrivateTutorContentMigration } from "@/features/private-tutor/components/private-tutor-content-migration";
 import {
   browserSpeechRecognitionAvailable,
   interruptPrivateTutorSpeech,
@@ -119,6 +129,25 @@ const SETTINGS_SPACES: Array<{
   { key: "teacher", title: "AI 私教", hint: "讲解方式、追问深度和反馈风格", audience: "我" },
   { key: "data", title: "学习数据", hint: "学习记录、导出、保留与清除", audience: "我" },
 ];
+
+function defaultPrivateTutorLearningPreferences(learnerId: string): PrivateTutorLearningPreferences {
+  return {
+    learnerId,
+    captions: true,
+    reducedMotion: typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true,
+    dailyMinutes: 20,
+    planIntensity: "standard",
+    teacherStyle: "heuristic_guidance",
+    explanationDepth: "concise_then_expand",
+    followUpStyle: "gentle_probe",
+    voicePreference: "push_to_talk",
+    learningGoal: null,
+    deactivatedPackageIds: [],
+    revision: 0,
+    schemaVersion: 1,
+    updatedAt: null,
+  };
+}
 
 export function PrivateTutorView() {
   const sessionUser = useSessionUser();
@@ -321,8 +350,8 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [diagnosticDismissed, setDiagnosticDismissed] = useState(false);
-  const [captions, setCaptions] = useState(true);
-  const [reducedMotion, setReducedMotion] = useState(() => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true);
+  const [initialLearningRoute, setInitialLearningRoute] = useState<"choose" | "diagnostic" | "content">("choose");
+  const [learningPreferences, setLearningPreferences] = useState<PrivateTutorLearningPreferences>(() => defaultPrivateTutorLearningPreferences(learnerId));
 
   useEffect(() => {
     let current = true;
@@ -330,8 +359,10 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     setAssessmentReady(false);
     setLoadError("");
     setDiagnosticDismissed(false);
-    void Promise.allSettled([getPrivateTutorSnapshot(), getCurrentPrivateTutorAssessment(), getCurrentPrivateTutorSession(), getPrivateTutorReviewBook()])
-      .then(([snapshotResult, assessmentResult, sessionResult, reviewResult]) => {
+    setInitialLearningRoute("choose");
+    setLearningPreferences(defaultPrivateTutorLearningPreferences(learnerId));
+    void Promise.allSettled([getPrivateTutorSnapshot(), getCurrentPrivateTutorAssessment(), getCurrentPrivateTutorSession(), getPrivateTutorReviewBook(), getPrivateTutorLearningPreferences()])
+      .then(([snapshotResult, assessmentResult, sessionResult, reviewResult, preferencesResult]) => {
         if (!current) return;
         if (snapshotResult.status === "fulfilled") {
           setLearnerState(serverLearnerState(snapshotResult.value.learner, snapshotResult.value.snapshot));
@@ -349,6 +380,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
         }
         setTutoringSession(sessionResult.status === "fulfilled" ? sessionResult.value : null);
         setReviewBook(reviewResult.status === "fulfilled" ? reviewResult.value : null);
+        if (preferencesResult.status === "fulfilled") setLearningPreferences(preferencesResult.value);
         setAssessmentReady(true);
       });
     return () => { current = false; };
@@ -437,7 +469,30 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     }
   }
 
+  function applyPackageActivation(result: PrivateTutorPackageActivationResult) {
+    if (result.snapshot) setLearnerState((current) => applyServerSnapshot(current, result.snapshot!));
+    setLearnerModel(result.learnerModel ?? null);
+    setStrategyDecision(result.strategyDecision ?? null);
+    setLearningPlan(result.learningPlan ?? null);
+    setAssessment(null);
+    setTutoringSession(null);
+    setDiagnosticDismissed(result.activation.entryMode === "chapter");
+    setInitialLearningRoute(result.activation.entryMode === "diagnostic" ? "diagnostic" : "choose");
+    setTab("today");
+  }
+
+  async function saveLearningPreferences(patch: PrivateTutorLearningPreferencesPatch) {
+    try {
+      const updated = await updatePrivateTutorLearningPreferences(patch);
+      setLearningPreferences(updated);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "学习偏好暂时没有保存，请重试。";
+    }
+  }
+
   const allKnowledgeUnknown = learnerState.knowledge.every((item) => item.level === "unknown");
+  const needsInitialLearningRoute = !assessment && allKnowledgeUnknown && !learningPlan;
   if (!assessmentReady) {
     return <div className="grid min-h-[65vh] place-items-center text-sm text-muted-foreground">正在准备专属于你的学习空间…</div>;
   }
@@ -453,7 +508,31 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
       </div>
     );
   }
-  if ((!assessment && allKnowledgeUnknown)
+  if (needsInitialLearningRoute && initialLearningRoute === "choose") {
+    return (
+      <InitialLearningRoute
+        learnerName={learnerState.learner.displayName}
+        onDiagnostic={() => setInitialLearningRoute("diagnostic")}
+        onContent={() => setInitialLearningRoute("content")}
+      />
+    );
+  }
+  if (needsInitialLearningRoute && initialLearningRoute === "content") {
+    return (
+      <div className="mx-auto max-w-6xl p-4 sm:p-7">
+        <Button className="mb-5" variant="secondary" onClick={() => setInitialLearningRoute("choose")}>返回开始方式</Button>
+        <TutorSettings
+          state={learnerState}
+          preferences={learningPreferences}
+          onPreferencesChange={saveLearningPreferences}
+          onPackageActivated={applyPackageActivation}
+          onProfileDeleted={() => window.location.reload()}
+          initialSpace="content"
+        />
+      </div>
+    );
+  }
+  if ((needsInitialLearningRoute && initialLearningRoute === "diagnostic")
     || (assessment != null && assessment.status !== "completed")
     || (assessment?.status === "completed" && !diagnosticDismissed)) {
     return (
@@ -513,21 +592,46 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
       </nav>
 
       <div className="p-4 sm:p-7">
-        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} strategyDecision={strategyDecision} session={tutoringSession} captions={captions} reducedMotion={reducedMotion} onReschedule={rescheduleToday} onStart={startLesson} onPause={pauseLesson} onResume={resumeLesson} onAction={actOnLesson} /> : null}
+        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} strategyDecision={strategyDecision} session={tutoringSession} preferences={learningPreferences} onReschedule={rescheduleToday} onStart={startLesson} onPause={pauseLesson} onResume={resumeLesson} onAction={actOnLesson} /> : null}
         {tab === "map" ? <KnowledgeMap state={learnerState} learnerModel={learnerModel} /> : null}
         {tab === "errors" ? <ErrorBook state={learnerState} reviewBook={reviewBook} onReviewBookChange={setReviewBook} onSnapshot={(snapshot) => setLearnerState((current) => applyServerSnapshot(current, snapshot))} /> : null}
         {tab === "growth" ? <Growth state={learnerState} /> : null}
         {tab === "settings" ? (
           <TutorSettings
             state={learnerState}
-            captions={captions}
-            onCaptionsChange={setCaptions}
-            reducedMotion={reducedMotion}
-            onReducedMotionChange={setReducedMotion}
+            preferences={learningPreferences}
+            onPreferencesChange={saveLearningPreferences}
+            onPackageActivated={applyPackageActivation}
             onProfileDeleted={() => window.location.reload()}
           />
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function InitialLearningRoute({ learnerName, onDiagnostic, onContent }: { learnerName: string; onDiagnostic: () => void; onContent: () => void }) {
+  return (
+    <div className="mx-auto flex min-h-[70vh] max-w-4xl items-center justify-center p-4">
+      <Card className="w-full overflow-hidden">
+        <div className="bg-[linear-gradient(135deg,#059669,#0f766e)] p-7 text-white sm:p-9">
+          <p className="text-sm text-emerald-100">你好，{learnerName}</p>
+          <h1 className="mt-2 text-3xl font-bold">先选择这次想学什么</h1>
+          <p className="mt-3 max-w-2xl leading-7 text-emerald-50">可以用当前课程先做摸底，也可以先导入自己的教材。选择教材不会被当成已经掌握，历史学习记录也不会被覆盖。</p>
+        </div>
+        <div className="grid gap-4 p-6 sm:grid-cols-2 sm:p-8">
+          <button type="button" onClick={onDiagnostic} className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/60 p-5 text-left transition hover:border-emerald-500 dark:border-emerald-900 dark:bg-emerald-950/30">
+            <BrainCircuit className="size-8 text-emerald-600" />
+            <span className="mt-4 block text-lg font-bold">用当前内容开始摸底</span>
+            <span className="mt-2 block text-sm leading-6 text-muted-foreground">先了解已经会什么，再生成七日计划。</span>
+          </button>
+          <button type="button" onClick={onContent} className="rounded-2xl border-2 border-sky-200 bg-sky-50/60 p-5 text-left transition hover:border-sky-500 dark:border-sky-900 dark:bg-sky-950/30">
+            <BookHeart className="size-8 text-sky-600" />
+            <span className="mt-4 block text-lg font-bold">选择课程或导入我的教材</span>
+            <span className="mt-2 block text-sm leading-6 text-muted-foreground">支持已有内容包、PDF、Markdown 和文本资料。</span>
+          </button>
+        </div>
+      </Card>
     </div>
   );
 }
@@ -682,6 +786,7 @@ function DiagnosticExperience({
             <Star className="size-11 fill-amber-300 text-amber-300" />
             <h1 className="mt-4 text-3xl font-bold">我已经更了解你了</h1>
             <p className="mt-2 text-emerald-50">完成了 {assessment.result.answeredCount} 道自适应题。先看看你已经站稳的地方。</p>
+            {assessment.runtimeValidationId ? <p className="mt-2 text-xs text-emerald-100">其中 {assessment.evidenceAnswerCount ?? 0} 道通过来源量表运行校准并形成受限置信度证据。</p> : null}
           </div>
           <div className="grid gap-5 p-6 sm:grid-cols-2 sm:p-8">
             <div className="rounded-2xl bg-emerald-50 p-5 dark:bg-emerald-950">
@@ -713,12 +818,15 @@ function DiagnosticExperience({
       </div>
       <div className="mb-6 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} /></div>
       <Card className="p-6 sm:p-9">
-        <p className="text-xs font-medium text-muted-foreground">{DIAGNOSTIC_KNOWLEDGE_LABELS[question.knowledgeId] ?? "数学理解"}</p>
+        <p className="text-xs font-medium text-muted-foreground">{DIAGNOSTIC_KNOWLEDGE_LABELS[question.knowledgeId] ?? "当前知识点"}</p>
         <h1 className="mt-3 text-2xl font-bold leading-relaxed">{question.prompt}</h1>
+        {question.sourceRefs?.length ? <p className="mt-3 text-xs text-muted-foreground">来源位置：{question.sourceRefs.map((ref) => `${ref.sectionId}${ref.pageNumber ? ` · 第 ${ref.pageNumber} 页` : ""}`).join("；")}</p> : null}
         {question.kind === "choice" && question.options ? (
           <div className="mt-7 grid gap-3">
             {question.options.map((option) => <button key={option.id} type="button" onClick={() => setAnswer(option.id)} className={cn("rounded-xl border-2 p-4 text-left transition", answer === option.id ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950" : "hover:border-emerald-300")}><span className="mr-3 font-bold uppercase">{option.id}</span>{option.label}</button>)}
           </div>
+        ) : question.kind === "rubric_response" ? (
+          <div className="mt-7"><label className="text-sm font-medium" htmlFor="diagnostic-answer">写下你的理解，并保留题目要求的来源标记</label><textarea id="diagnostic-answer" value={answer} onChange={(event) => setAnswer(event.target.value.slice(0, 4000))} placeholder="用自己的话解释，并写出 [ref:章节]" className="mt-2 min-h-36 w-full rounded-xl border-2 bg-card p-4 text-base leading-7 outline-none focus:border-emerald-500" /></div>
         ) : (
           <div className="mt-7"><label className="text-sm font-medium" htmlFor="diagnostic-answer">写下答案</label><input id="diagnostic-answer" value={answer} onChange={(event) => setAnswer(event.target.value.slice(0, 80))} onKeyDown={(event) => { if (event.key === "Enter") void submit("answer"); }} placeholder="例如：5、1/2 或 x=5" className="mt-2 h-14 w-full rounded-xl border-2 bg-card px-4 text-xl font-semibold outline-none focus:border-emerald-500" autoComplete="off" /></div>
         )}
@@ -781,13 +889,21 @@ function applyServerSnapshot(state: LearnerTutorState, snapshot: PrivateTutorSna
   };
 }
 
+export function formatPrivateTutorEvaluationFeedback(evaluation: PrivateTutorEvaluation | null | undefined) {
+  if (!evaluation) return null;
+  if (typeof evaluation.firstIncorrectStep === "number") {
+    const step = evaluation.steps?.[evaluation.firstIncorrectStep];
+    if (step?.feedback) return `第 ${evaluation.firstIncorrectStep + 1} 步：${step.feedback}`;
+  }
+  return evaluation.explanation ?? null;
+}
+
 function TodayLearning({
   state,
   learningPlan,
   strategyDecision,
   session,
-  captions,
-  reducedMotion,
+  preferences,
   onReschedule,
   onStart,
   onPause,
@@ -798,8 +914,7 @@ function TodayLearning({
   learningPlan: PrivateTutorLearningPlan | null;
   strategyDecision: PrivateTutorStrategyDecision | null;
   session: PrivateTutorSession | null;
-  captions: boolean;
-  reducedMotion: boolean;
+  preferences: PrivateTutorLearningPreferences;
   onReschedule: () => Promise<string | null>;
   onStart: (pace: PrivateTutorSessionPace) => Promise<string | null>;
   onPause: () => Promise<string | null>;
@@ -823,17 +938,34 @@ function TodayLearning({
   const [subtitle, setSubtitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [followUpQuestion, setFollowUpQuestion] = useState("");
+  const [followUpMessage, setFollowUpMessage] = useState("");
   const recognitionRef = useRef<PrivateTutorRecognitionController | null>(null);
   const attemptKeyRef = useRef(newClientKey("tutoring"));
-  const dailyProgress = Math.round((state.dailyMinutes / 20) * 100);
+  const dailyTargetMinutes = Math.max(5, preferences.dailyMinutes);
+  const dailyProgress = Math.min(100, Math.round((state.dailyMinutes / dailyTargetMinutes) * 100));
+  const captions = preferences.captions;
+  const reducedMotion = preferences.reducedMotion;
+  const voiceEnabled = preferences.voicePreference !== "text_only";
 
   useEffect(() => () => {
     recognitionRef.current?.abort();
     interruptPrivateTutorSpeech();
   }, []);
   useEffect(() => {
+    if (preferences.voicePreference === "text_only") {
+      recognitionRef.current?.abort();
+      recognitionRef.current = null;
+      setListening(false);
+      return;
+    }
+    setVoiceMode(preferences.voicePreference);
+  }, [preferences.voicePreference]);
+  useEffect(() => {
     setAnswer("");
     setMessage("");
+    setFollowUpQuestion("");
+    setFollowUpMessage("");
     setInterimTranscript("");
     setPendingVoiceTurn(null);
     attemptKeyRef.current = newClientKey("tutoring");
@@ -945,8 +1077,17 @@ function TodayLearning({
     else {
       setPendingVoiceTurn(null);
       setAnswer("");
-      setVoiceMessage(result.correct ? "听对了，也答对了。继续下一小步吧" : "答案已经确认。没关系，我会换一种讲法");
-      if (result.correct === false) attemptKeyRef.current = newClientKey("tutoring");
+      const feedback = formatPrivateTutorEvaluationFeedback(result.evaluation);
+      if (result.evidenceEligible === false) {
+        setVoiceMessage(feedback ?? "答案已确认，但这次结果需要复核后才会计入掌握度");
+        setMessage(feedback
+          ? `${feedback} 当前结果不会计入掌握度。`
+          : "答案已确认，但这次结果需要复核，不会计入掌握度。");
+        attemptKeyRef.current = newClientKey("tutoring");
+      } else {
+        setVoiceMessage(result.correct ? "听对了，也答对了。继续下一小步吧" : "答案已经确认。没关系，我会换一种讲法");
+        if (result.correct === false) attemptKeyRef.current = newClientKey("tutoring");
+      }
     }
     setBusy(false);
   }
@@ -1022,6 +1163,20 @@ function TodayLearning({
     setBusy(false);
   }
 
+  async function askFollowUp(mode: PrivateTutorFollowUpMode) {
+    const question = followUpQuestion.trim();
+    if (mode === "question" && !question) {
+      setFollowUpMessage("先写下想问的问题。私教只会依据当前资料回答。");
+      return;
+    }
+    setBusy(true);
+    setFollowUpMessage("");
+    const result = await onAction({ action: "follow_up", mode, question: question || undefined });
+    setFollowUpMessage(result.error ?? "");
+    if (!result.error && mode === "question") setFollowUpQuestion("");
+    setBusy(false);
+  }
+
   async function submit(responseKind: "answer" | "dont_know", rawAnswer = answer, source: "screen" | "visual" = "screen") {
     const question = session?.currentActivity?.question;
     if (!question) return;
@@ -1041,11 +1196,14 @@ function TodayLearning({
     });
     if (result.error) setMessage(result.error);
     else if (result.evidenceEligible === false) {
-      setMessage("已生成练习反馈，但当前结果需要补充或复核，不会计入掌握度。");
+      const feedback = formatPrivateTutorEvaluationFeedback(result.evaluation);
+      setMessage(feedback
+        ? `${feedback} 当前结果需要补充或复核，不会计入掌握度。`
+        : "已生成练习反馈，但当前结果需要补充或复核，不会计入掌握度。");
       attemptKeyRef.current = newClientKey("tutoring");
     }
     else if (result.correct === false) {
-      setMessage(result.evaluation?.explanation ?? "没关系，这次答案会帮助我换一种更合适的讲法。");
+      setMessage(formatPrivateTutorEvaluationFeedback(result.evaluation) ?? "没关系，这次答案会帮助我换一种更合适的讲法。");
       attemptKeyRef.current = newClientKey("tutoring");
     }
     setBusy(false);
@@ -1071,7 +1229,7 @@ function TodayLearning({
                 onClick={() => setPace(value)}
                 className={cn("rounded-full px-3 py-1.5 text-xs font-medium transition", pace === value ? "bg-white text-emerald-800" : "bg-emerald-700/70 text-emerald-50 hover:bg-emerald-700")}
               >
-                {{ easy: "轻松学 5 分钟", standard: "标准 20 分钟", review: "今天只复习 10 分钟" }[value]}
+                {{ easy: "轻松学 5 分钟", standard: `按我的设置 ${dailyTargetMinutes} 分钟`, review: "今天只复习 10 分钟" }[value]}
               </button>
             ))}
           </div>
@@ -1084,7 +1242,7 @@ function TodayLearning({
           <Card className="p-5">
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2 text-sm font-medium"><Clock3 className="size-4 text-emerald-600" />今日进度</span>
-              <span className="text-sm font-bold text-emerald-700">{state.dailyMinutes} / 20 分钟</span>
+              <span className="text-sm font-bold text-emerald-700">{state.dailyMinutes} / {dailyTargetMinutes} 分钟</span>
             </div>
             <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${dailyProgress}%` }} /></div>
             <p className="mt-3 text-xs leading-5 text-muted-foreground">随时可以暂停，明天会从这里继续，不会显示“失败”。</p>
@@ -1140,6 +1298,7 @@ function TodayLearning({
     summary: "学习总结",
   };
   const completedActivities = session.progress.filter((item) => item.status === "completed").length;
+  const latestFollowUp = (session.followUps ?? []).filter((item) => item.activityKind === current.kind).at(-1) ?? null;
 
   return (
     <div className="grid gap-5">
@@ -1195,6 +1354,7 @@ function TodayLearning({
           {current.question ? (
             <div className="mt-5">
               <p className="text-base font-semibold">{current.question.prompt}</p>
+              {current.question.sourceRefs?.length ? <p className="mt-2 text-xs text-muted-foreground">来源位置：{current.question.sourceRefs.map((ref) => `${ref.sectionId}${ref.pageNumber ? ` · 第 ${ref.pageNumber} 页` : ""}`).join("；")}</p> : null}
               {current.question.options ? <div className="mt-3 grid gap-2">{current.question.options.map((option) => <button key={option.id} type="button" disabled={busy} onClick={() => { setAnswer(option.id); void submit("answer", option.id); }} className="min-h-12 rounded-xl border-2 bg-card px-4 text-left text-sm font-medium hover:border-emerald-400 disabled:opacity-60">{option.label}</button>)}</div> : <div className="mt-3 flex flex-wrap items-end gap-3"><textarea value={answer} onChange={(event) => setAnswer(event.target.value.slice(0, 4000))} aria-label="写下答案" rows={current.question.kind === "numeric" ? 2 : 5} className="min-w-48 flex-1 resize-y rounded-xl border bg-card px-4 py-3 font-mono text-base" placeholder={current.question.kind === "math_steps" ? "每行写一个步骤，或用 => 分隔" : current.question.kind === "code" ? "写下受限函数或 return 表达式" : "写下你的答案"} /><Button className="min-h-12" disabled={busy} onClick={() => void submit("answer")}>{busy ? "正在检查…" : "提交答案"}</Button></div>}
               {current.hint ? <p className="mt-3 rounded-lg bg-sky-50 p-3 text-sm text-sky-900 dark:bg-sky-950 dark:text-sky-100">提示 {current.hintLevel}：{current.hint}</p> : null}
               {message ? <p role="status" className="mt-3 rounded-lg bg-muted p-3 text-sm">{message}</p> : null}
@@ -1206,10 +1366,12 @@ function TodayLearning({
       <aside className="grid content-start gap-4">
         <Card className="p-5">
           <p className="text-sm font-semibold">可以说，也可以点</p>
-          <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-muted/60 p-1" aria-label="语音交互模式">
-            {(["push_to_talk", "hands_free"] as const).map((mode) => <button key={mode} type="button" disabled={listening} onClick={() => { setVoiceMode(mode); recordVoiceEvent("mode_changed", mode); }} className={cn("rounded-lg px-2 py-2 text-xs font-medium", voiceMode === mode ? "bg-card text-foreground shadow-sm" : "text-muted-foreground")}>{mode === "push_to_talk" ? "点按说话" : "自由对话"}</button>)}
-          </div>
-          <button type="button" onClick={() => void toggleVoice()} className={cn("mt-4 flex min-h-24 w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed transition", listening ? "border-rose-400 bg-rose-50 text-rose-700 dark:bg-rose-950" : "border-emerald-300 bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950")}>{listening ? <MicOff className="size-7" /> : <Mic className="size-7" />}<span className="text-sm font-medium">{listening ? "停止聆听" : "开始说话"}</span></button>
+          {voiceEnabled ? <>
+            <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-muted/60 p-1" aria-label="语音交互模式">
+              {(["push_to_talk", "hands_free"] as const).map((mode) => <button key={mode} type="button" disabled={listening} onClick={() => { setVoiceMode(mode); recordVoiceEvent("mode_changed", mode); }} className={cn("rounded-lg px-2 py-2 text-xs font-medium", voiceMode === mode ? "bg-card text-foreground shadow-sm" : "text-muted-foreground")}>{mode === "push_to_talk" ? "点按说话" : "自由对话"}</button>)}
+            </div>
+            <button type="button" onClick={() => void toggleVoice()} className={cn("mt-4 flex min-h-24 w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed transition", listening ? "border-rose-400 bg-rose-50 text-rose-700 dark:bg-rose-950" : "border-emerald-300 bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950")}>{listening ? <MicOff className="size-7" /> : <Mic className="size-7" />}<span className="text-sm font-medium">{listening ? "停止聆听" : "开始说话"}</span></button>
+          </> : <p className="mt-3 rounded-xl bg-muted p-4 text-sm text-muted-foreground">你已在“我的设置”中选择纯文字学习，语音输入已关闭。</p>}
           {interimTranscript ? <p className="mt-3 rounded-lg bg-sky-50 p-3 text-sm text-sky-900 dark:bg-sky-950 dark:text-sky-100">正在识别：{interimTranscript}</p> : null}
           <p role="status" className="mt-3 text-xs leading-5 text-muted-foreground">{voiceMessage}</p>
           {pendingVoiceTurn ? (
@@ -1224,6 +1386,35 @@ function TodayLearning({
             </div>
           ) : null}
           <p className="mt-3 text-[11px] leading-4 text-muted-foreground">本站后端不接收或保存原始音频；浏览器语音服务可能按设备设置处理音频。口音、音色和流利度不会作为掌握度证据。</p>
+        </Card>
+        <Card className="p-5">
+          <p className="flex items-center gap-2 text-sm font-semibold"><BookHeart className="size-4 text-sky-600" />问当前教材</p>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">回答只使用当前已发布教材或审核课程；超出资料范围会明确说明，也不会计入掌握度。</p>
+          <textarea
+            aria-label="向私教追问"
+            value={followUpQuestion}
+            disabled={busy}
+            onChange={(event) => setFollowUpQuestion(event.target.value.slice(0, 500))}
+            rows={3}
+            className="mt-3 w-full resize-y rounded-xl border bg-card px-3 py-2 text-sm"
+            placeholder="例如：这句话为什么成立？"
+          />
+          <div className="mt-3 grid gap-2">
+            <Button size="sm" disabled={busy || !followUpQuestion.trim()} onClick={() => void askFollowUp("question")}>基于资料回答</Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void askFollowUp("explain_again")}>换种讲法</Button>
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void askFollowUp("source_example")}>资料内例子</Button>
+            </div>
+          </div>
+          {followUpMessage ? <p role="alert" className="mt-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100">{followUpMessage}</p> : null}
+          {latestFollowUp ? (
+            <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-900 dark:bg-sky-950/30">
+              <p className="text-xs font-semibold text-sky-700 dark:text-sky-300">{latestFollowUp.grounding === "source_excerpt" ? "依据当前教材摘录" : "依据审核课程内容"}</p>
+              <p className="mt-2 text-sm leading-6">{latestFollowUp.response}</p>
+              {latestFollowUp.sourceRefs.map((ref) => <blockquote key={`${ref.sectionId}:${ref.pageNumber ?? ""}`} className="mt-3 border-l-2 border-sky-400 pl-3 text-xs leading-5 text-muted-foreground">{ref.excerpt}<span className="mt-1 block">{ref.sectionId}{ref.pageNumber ? ` · 第 ${ref.pageNumber} 页` : ""}</span></blockquote>)}
+              <p className="mt-3 text-[11px] text-muted-foreground">本次追问不产生练习证据。</p>
+            </div>
+          ) : null}
         </Card>
         <Card className="p-5">
           <p className="flex items-center gap-2 text-sm font-semibold"><Heart className="size-4 text-rose-500" />卡住了也没关系</p>
@@ -1266,8 +1457,8 @@ function SevenDayPlan({ plan, onReschedule }: { plan: PrivateTutorLearningPlan; 
       </div>
       <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-7">
         {plan.days.map((day) => (
-          <div key={`${plan.id}-${day.dayIndex}`} className={cn("rounded-xl border p-3", day.dayIndex === 1 ? "border-emerald-400 bg-emerald-50 dark:bg-emerald-950" : "bg-card")}>
-            <p className="text-[11px] font-medium text-muted-foreground">{day.dayIndex === 1 ? "今天" : `第 ${day.dayIndex} 天`}</p>
+          <div key={`${plan.id}-${day.dayIndex}`} className={cn("rounded-xl border p-3", day.status === "completed" ? "border-emerald-300 bg-emerald-50/60 dark:bg-emerald-950" : day.status === "in_progress" ? "border-sky-400 bg-sky-50 dark:bg-sky-950" : "bg-card")}>
+            <p className="text-[11px] font-medium text-muted-foreground">{day.status === "completed" ? "已完成" : day.status === "in_progress" ? "正在学习" : `第 ${day.dayIndex} 天`}</p>
             <p className="mt-2 text-sm font-semibold leading-5">{day.title}</p>
             <p className="mt-2 text-[11px] text-muted-foreground">{day.minutes} 分钟</p>
           </div>
@@ -1409,6 +1600,7 @@ function ErrorBook({ state, reviewBook, onReviewBookChange, onSnapshot }: {
               <div className="mt-5 rounded-xl border bg-muted/35 p-4">
                 <p className="text-xs font-medium text-emerald-700">{reviewPhaseLabel(item.schedule.phase)}</p>
                 <p className="mt-2 text-lg font-semibold">{question.prompt}</p>
+                {question.sourceRefs?.length ? <p className="mt-2 text-xs text-muted-foreground">来源位置：{question.sourceRefs.map((ref) => `${ref.sectionId}${ref.pageNumber ? ` · 第 ${ref.pageNumber} 页` : ""}`).join("；")}</p> : null}
                 {question.kind === "choice" && question.options ? <div className="mt-4 grid gap-2">{question.options.map((option) => <button key={option.id} type="button" disabled={busy} onClick={() => setAnswer(option.id)} className={cn("rounded-lg border p-3 text-left text-sm", answer === option.id ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950" : "bg-card")}><span className="mr-2 font-bold uppercase">{option.id}</span>{option.label}</button>)}</div> : <input value={answer} disabled={busy} onChange={(event) => setAnswer(event.target.value.slice(0, 80))} onKeyDown={(event) => { if (event.key === "Enter" && answer.trim()) void submitReview(item, "answer"); }} aria-label="复习答案" placeholder="写下你的答案" autoComplete="off" className="mt-4 h-12 w-full rounded-lg border bg-card px-3 text-lg font-semibold" />}
                 <div className="mt-4 flex flex-wrap justify-between gap-2"><Button variant="ghost" disabled={busy} onClick={() => void submitReview(item, "dont_know")}>我还没想明白</Button><Button disabled={busy || !answer.trim()} onClick={() => void submitReview(item, "answer")}>{busy ? "正在保存…" : "提交答案"}</Button></div>
                 <div className="mt-4 border-t pt-4"><p className="text-xs text-muted-foreground">如果系统理解错了你的卡点，可以用自己的话修正：</p><div className="mt-2 flex flex-wrap gap-2"><input value={correction} onChange={(event) => setCorrection(event.target.value.slice(0, 240))} placeholder="例如：方法会了，只是刚才算错了" className="h-9 min-w-60 flex-1 rounded-md border bg-card px-3 text-sm" /><Button size="sm" variant="secondary" disabled={busy || !correction.trim()} onClick={() => void saveDiagnosis(item.id)}>修正错因</Button></div></div>
@@ -1426,36 +1618,125 @@ function reviewPhaseLabel(phase: "correction" | "similar" | "variation" | "delay
   return { correction: "先把原题讲清楚", similar: "换一道同类题", variation: "再试一道变式题", delayed: "间隔一天再确认" }[phase];
 }
 
-function Growth({ state }: { state: LearnerTutorState }) {
-  const bars = [32, 44, 41, 56, 63, 69, Math.min(92, 56 + state.completedSessions * 3)];
+function Growth({ state: _state }: { state: LearnerTutorState }) {
+  const [history, setHistory] = useState<PrivateTutorLearningHistory | null>(null);
+  const [selectedPackageKey, setSelectedPackageKey] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+
+  useEffect(() => {
+    let current = true;
+    setLoading(true);
+    setError("");
+    void getPrivateTutorLearningHistory()
+      .then((value) => {
+        if (!current) return;
+        setHistory(value);
+        setSelectedPackageKey((selected) => value.packages.some((item) => historyPackageKey(item) === selected)
+          ? selected
+          : value.packages[0] ? historyPackageKey(value.packages[0]) : "");
+      })
+      .catch((loadError) => {
+        if (!current) return;
+        setError(loadError instanceof Error ? loadError.message : "暂时无法读取学习历史。");
+      })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [loadAttempt]);
+
+  const selectedPackage = history?.packages.find((item) => historyPackageKey(item) === selectedPackageKey)
+    ?? history?.packages[0]
+    ?? null;
   return (
     <section>
       <p className="text-sm font-medium text-violet-600">看见自己的进步</p>
       <h1 className="mt-1 text-2xl font-bold">我的成长</h1>
-      <p className="mt-2 text-sm text-muted-foreground">这里没有排名，只记录你能独立做到的事情。</p>
-      <div className="mt-6 grid gap-4 sm:grid-cols-3">
-        <Card className="p-5"><GentleStat value={`${state.completedSessions}`} label="完成学习旅程" /></Card>
-        <Card className="p-5"><GentleStat value={`${state.independentAnswers}`} label="独立想出的答案" /></Card>
-        <Card className="p-5"><GentleStat value={`${state.streakDays} 天`} label="最近愿意来学习" /></Card>
-      </div>
-      <Card className="mt-5 p-5">
-        <div className="flex items-center justify-between"><h2 className="font-semibold">这一周的理解在变稳</h2><span className="text-xs text-muted-foreground">只和过去的自己比</span></div>
-        <div className="mt-6 flex h-44 items-end gap-3" aria-label="七天独立掌握趋势">
-          {bars.map((height, index) => <div key={index} className="flex flex-1 flex-col items-center gap-2"><div className="w-full max-w-12 rounded-t-xl bg-gradient-to-t from-violet-500 to-emerald-400 transition-all" style={{ height: `${height}%` }} /><span className="text-xs text-muted-foreground">{index + 1}</span></div>)}
-        </div>
-      </Card>
+      <p className="mt-2 text-sm text-muted-foreground">这里没有排名，只按教材版本和章节记录真实完成情况、独立作答与复习安排。</p>
+      {loading ? <p className="mt-6 text-sm text-muted-foreground">正在整理学习历史…</p> : null}
+      {error ? <Card className="mt-6 border-amber-200 p-5"><p role="alert" className="text-sm text-amber-800 dark:text-amber-200">{error}</p><Button className="mt-3" size="sm" variant="secondary" onClick={() => setLoadAttempt((value) => value + 1)}>重新读取</Button></Card> : null}
+      {!loading && !error && history ? (
+        <>
+          <div className="mt-6 grid gap-4 sm:grid-cols-3">
+            <Card className="p-5"><GentleStat value={formatHistoryRate(history.summary.planDayCompletionRate)} label={`已完成 ${history.summary.completedPlanDayCount}/${history.summary.startedPlanDayCount} 个开始过的计划日`} /></Card>
+            <Card className="p-5"><GentleStat value={formatHistoryRate(history.summary.independentCorrectRate)} label={`独立正确 ${history.summary.independentCorrectCount}/${history.summary.independentAttemptCount} 次`} /></Card>
+            <Card className="p-5"><GentleStat value={`${history.summary.dueReviewCount}`} label="已经到期、等待回想的复习" /></Card>
+          </div>
+          {history.packages.length === 0 ? (
+            <Card className="mt-5 p-6 text-center"><BookHeart className="mx-auto size-9 text-violet-500" /><p className="mt-3 font-medium">完成第一段学习后，这里会出现章节历史</p><p className="mt-1 text-sm text-muted-foreground">摸底、练习和会话记录不会被虚构成进度。</p></Card>
+          ) : (
+            <>
+              <Card className="mt-5 p-5">
+                <label className="text-sm font-medium">查看教材与版本
+                  <select value={selectedPackage ? historyPackageKey(selectedPackage) : ""} onChange={(event) => setSelectedPackageKey(event.target.value)} className="mt-2 h-11 w-full rounded-lg border bg-card px-3 font-normal sm:max-w-xl">
+                    {history.packages.map((item) => <option key={historyPackageKey(item)} value={historyPackageKey(item)}>{item.packageName} · v{item.packageVersion}</option>)}
+                  </select>
+                </label>
+                {selectedPackage ? <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted-foreground"><span className="rounded-full bg-muted px-3 py-1.5">{selectedPackage.activationCount} 次学习入口</span><span className="rounded-full bg-muted px-3 py-1.5">{selectedPackage.summary.practiceAttemptCount} 次作答</span><span className="rounded-full bg-muted px-3 py-1.5">{selectedPackage.summary.eligibleEvidenceCount} 条有效证据</span>{selectedPackage.summary.sourceRubric.attemptCount > 0 ? <span className="rounded-full bg-muted px-3 py-1.5">来源量表复核 {formatHistoryRate(selectedPackage.summary.sourceRubric.reviewCompletionRate)}{selectedPackage.summary.sourceRubric.pendingReviewCount ? ` · 待复核 ${selectedPackage.summary.sourceRubric.pendingReviewCount}` : ""}</span> : null}{!selectedPackage.contentDefinitionAvailable ? <span className="rounded-full bg-amber-100 px-3 py-1.5 text-amber-900">当前缺少该旧版本的章节定义</span> : null}</div> : null}
+              </Card>
+              {selectedPackage ? (
+                <div className="mt-5 grid gap-4">
+                  {selectedPackage.chapters.map((chapter) => (
+                    <Card key={chapter.moduleId} className="p-5">
+                      <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-medium text-violet-600">章节学习历史</p><h2 className="mt-1 font-semibold">{chapter.moduleName}</h2><p className="mt-1 text-xs text-muted-foreground">{chapter.topics.map((topic) => topic.topicName).join(" · ") || "旧版本章节"}</p></div><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">{chapter.summary.completedSessionCount} 次完整学习</span></div>
+                      <div className="mt-4 grid gap-3 text-sm sm:grid-cols-4">
+                        <HistoryMetric label="开始过的计划日" value={`${chapter.summary.completedPlanDayCount}/${chapter.summary.startedPlanDayCount}`} />
+                        <HistoryMetric label="证据有效率" value={formatHistoryRate(chapter.summary.evidenceEligibilityRate)} />
+                        <HistoryMetric label="独立正确率" value={formatHistoryRate(chapter.summary.independentCorrectRate)} />
+                        <HistoryMetric label="到期复习" value={`${chapter.summary.review.dueCount}`} />
+                      </div>
+                      {chapter.summary.currentPlan.scheduledDays > 0 ? <p className="mt-4 text-xs text-muted-foreground">当前计划：完成 {chapter.summary.currentPlan.completedDays}/{chapter.summary.currentPlan.scheduledDays} 天，进行中 {chapter.summary.currentPlan.inProgressDays} 天。</p> : null}
+                    </Card>
+                  ))}
+                  {selectedPackage.recentSessions.length > 0 ? <Card className="p-5"><h2 className="font-semibold">最近学习记录</h2><div className="mt-3 divide-y">{selectedPackage.recentSessions.slice(0, 5).map((session) => <div key={session.id} className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm"><div><p className="font-medium">{session.knowledgeTitle}</p><p className="text-xs text-muted-foreground">{session.moduleName} · {formatHistoryDate(session.completedAt ?? session.startedAt)}</p></div><span className="text-xs text-muted-foreground">练习 {session.practiceCount} 次 · 证据 {session.evidenceCount} 条</span></div>)}</div></Card> : null}
+                </div>
+              ) : null}
+            </>
+          )}
+        </>
+      ) : null}
     </section>
   );
+}
+
+function HistoryMetric({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-xl bg-muted/55 p-3"><p className="font-semibold">{value}</p><p className="mt-1 text-xs text-muted-foreground">{label}</p></div>;
+}
+
+function historyPackageKey(item: { packageId: string; packageVersion: string }) {
+  return `${item.packageId}@${item.packageVersion}`;
+}
+
+function formatHistoryRate(value: number | null) {
+  return value == null ? "暂无" : `${Math.round(value * 100)}%`;
+}
+
+function formatHistoryDate(value: string | null) {
+  if (!value) return "时间未记录";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "时间未记录" : date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
 }
 
 function GentleStat({ value, label }: { value: string; label: string }) {
   return <div><p className="text-2xl font-bold text-emerald-700 dark:text-emerald-300">{value}</p><p className="mt-1 text-xs text-muted-foreground">{label}</p></div>;
 }
 
-function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onReducedMotionChange, onProfileDeleted }: { state: LearnerTutorState; captions: boolean; onCaptionsChange: (value: boolean) => void; reducedMotion: boolean; onReducedMotionChange: (value: boolean) => void; onProfileDeleted: () => void }) {
-  const [space, setSpace] = useState<TutorSettingsSpace>("preferences");
-  const [teacherStyle, setTeacherStyle] = useState("启发式引导");
-  const [explanationDepth, setExplanationDepth] = useState("先简洁，再展开");
+function privateTutorOcrReasonLabel(reason: string | null | undefined) {
+  if (!reason) return "";
+  if (reason === "workflow_ocr_platform_unsupported") return "当前系统没有可用的本地 OCR 提供器";
+  if (reason === "workflow_ocr_disabled") return "本地 OCR 已被关闭";
+  if (reason === "workflow_ocr_provider_unavailable") return "本地 OCR 尚未安装或不可用";
+  if (reason === "workflow_ocr_timeout") return "本地 OCR 处理超时";
+  return "本地 OCR 未能完成识别";
+}
+
+function TutorSettings({ state, preferences, onPreferencesChange, onPackageActivated, onProfileDeleted, initialSpace = "preferences" }: { state: LearnerTutorState; preferences: PrivateTutorLearningPreferences; onPreferencesChange: (patch: PrivateTutorLearningPreferencesPatch) => Promise<string | null>; onPackageActivated: (result: PrivateTutorPackageActivationResult) => void; onProfileDeleted: () => void; initialSpace?: TutorSettingsSpace }) {
+  const [space, setSpace] = useState<TutorSettingsSpace>(initialSpace);
+  const [preferenceBusy, setPreferenceBusy] = useState(false);
+  const [preferenceMessage, setPreferenceMessage] = useState("");
+  const [goalDescription, setGoalDescription] = useState(preferences.learningGoal?.note ?? "");
+  const [goalWeeklyMinutes, setGoalWeeklyMinutes] = useState(preferences.learningGoal?.weeklyMinutes?.toString() ?? "");
+  const [goalTargetDate, setGoalTargetDate] = useState(preferences.learningGoal?.targetDate ?? "");
   const [packages, setPackages] = useState<LearningContentPackage[]>([]);
   const [activePackage, setActivePackage] = useState<LearningContentPackage | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1463,7 +1744,34 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
   const [showImport, setShowImport] = useState(false);
   const [materials, setMaterials] = useState<MaterialDocument[]>([]);
   const [activeDraft, setActiveDraft] = useState<{ material: MaterialDocument; draft: KnowledgeMapDraft } | null>(null);
+  const [pendingPackage, setPendingPackage] = useState<LearningContentPackage | null>(null);
+  const [entryMode, setEntryMode] = useState<"diagnostic" | "chapter">("diagnostic");
+  const [startModuleId, setStartModuleId] = useState("");
   const selected = SETTINGS_SPACES.find((item) => item.key === space) ?? SETTINGS_SPACES[0];
+
+  useEffect(() => {
+    setGoalDescription(preferences.learningGoal?.note ?? "");
+    setGoalWeeklyMinutes(preferences.learningGoal?.weeklyMinutes?.toString() ?? "");
+    setGoalTargetDate(preferences.learningGoal?.targetDate ?? "");
+  }, [preferences.revision, preferences.learningGoal]);
+
+  async function savePreference(patch: PrivateTutorLearningPreferencesPatch, success = "学习偏好已保存。") {
+    setPreferenceBusy(true);
+    setPreferenceMessage("");
+    const failure = await onPreferencesChange(patch);
+    setPreferenceMessage(failure ?? success);
+    setPreferenceBusy(false);
+  }
+
+  async function saveLearningGoal() {
+    const description = goalDescription.trim();
+    const weeklyMinutes = goalWeeklyMinutes ? Number(goalWeeklyMinutes) : null;
+    await savePreference({
+      learningGoal: description || weeklyMinutes || goalTargetDate
+        ? { targetTopicIds: preferences.learningGoal?.targetTopicIds ?? [], note: description, weeklyMinutes, targetDate: goalTargetDate || null }
+        : null,
+    }, "学习目标已保存。后续计划会保留这个目标。" );
+  }
 
   useEffect(() => {
     let current = true;
@@ -1483,7 +1791,14 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
 
   async function handleMaterialUploaded(material: MaterialDocument) {
     setShowImport(false);
-    setMaterials((prev) => [...prev, material]);
+    setMaterials((prev) => [...prev.filter((item) => item.id !== material.id), material]);
+    if (material.status !== "parsed") {
+      const reason = privateTutorOcrReasonLabel(material.extraction?.ocr.reason);
+      setError(material.status === "needs_ocr"
+        ? `这份 PDF 没有足够的可提取文字，本机 OCR 暂时无法完成识别${reason ? `（${reason}）` : ""}。资料已保留，但不会生成错误的知识地图。`
+        : "资料尚未解析完成，暂时不能生成知识地图。");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -1514,16 +1829,40 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
     }
   }
 
-  async function switchPackage(packageId: string) {
+  async function choosePackage(packageId: string) {
     setLoading(true);
     setError("");
     try {
-      await updatePrivateTutorActiveContentPackage(packageId);
-      // Refresh the snapshot to sync learner state and curriculum label
-      await getPrivateTutorSnapshot();
-      setActivePackage(packages.find(p => p.id === packageId) || null);
+      const pkg = await getPrivateTutorContentPackage(packageId);
+      setPendingPackage(pkg);
+      setEntryMode("diagnostic");
+      setStartModuleId(pkg.modules?.[0]?.id ?? "");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "切换失败，请重试。");
+      setError(err instanceof Error ? err.message : "无法读取内容包，请重试。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function activatePackage() {
+    if (!pendingPackage) return;
+    if (entryMode === "chapter" && !startModuleId) {
+      setError("请选择开始学习的章节。");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const result = await activatePrivateTutorContentPackage({
+        packageId: pendingPackage.id,
+        entryMode,
+        ...(entryMode === "chapter" ? { startModuleId } : {}),
+      });
+      setActivePackage(result.activePackage);
+      setPendingPackage(null);
+      onPackageActivated(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "内容包校准或激活失败，请检查内容后重试。");
     } finally {
       setLoading(false);
     }
@@ -1547,9 +1886,27 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
           <div className="flex items-start justify-between gap-3"><div><p className="text-xs text-muted-foreground">只影响我的私教体验</p><h2 className="mt-1 text-lg font-bold">{selected.title}</h2></div><UserRound className="size-6 text-emerald-600" /></div>
           {space === "preferences" ? (
             <div className="mt-6 grid gap-4">
-              <PreferenceToggle label="显示实时字幕" hint="语音教学时同步显示文字" checked={captions} onChange={onCaptionsChange} />
-              <PreferenceToggle label="减少动画" hint="使用静态图和单步切换，学习内容保持完整" checked={reducedMotion} onChange={onReducedMotionChange} />
+              <PreferenceToggle label="显示实时字幕" hint="语音教学时同步显示文字" checked={preferences.captions} disabled={preferenceBusy} onChange={(value) => void savePreference({ captions: value })} />
+              <PreferenceToggle label="减少动画" hint="使用静态图和单步切换，学习内容保持完整" checked={preferences.reducedMotion} disabled={preferenceBusy} onChange={(value) => void savePreference({ reducedMotion: value })} />
+              <div className="grid gap-4 rounded-xl border p-4 sm:grid-cols-2">
+                <label className="text-sm font-medium">每天可用时间
+                  <input aria-label="每天可用时间" type="number" min={5} max={180} value={preferences.dailyMinutes} disabled={preferenceBusy} onChange={(event) => void savePreference({ dailyMinutes: Number(event.target.value) }, "每日学习时长已保存，并会用于新计划和标准学习会话。") } className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal" />
+                </label>
+                <label className="text-sm font-medium">计划强度
+                  <select aria-label="计划强度" value={preferences.planIntensity} disabled={preferenceBusy} onChange={(event) => void savePreference({ planIntensity: event.target.value as PrivateTutorLearningPreferences["planIntensity"] }, "计划强度已保存，将用于下一次生成或重排计划。") } className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option value="relaxed">轻松</option><option value="standard">标准</option><option value="intensive">强化</option></select>
+                </label>
+              </div>
+              <div className="grid gap-3 rounded-xl border p-4">
+                <p className="text-sm font-medium">我的学习目标</p>
+                <textarea aria-label="学习目标" value={goalDescription} disabled={preferenceBusy} onChange={(event) => setGoalDescription(event.target.value.slice(0, 200))} rows={3} placeholder="例如：六周内读完前三章，并能独立解释核心概念" className="w-full rounded-lg border bg-card p-3 text-sm" />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-xs font-medium">每周投入分钟<input aria-label="每周投入分钟" type="number" min={5} max={180} value={goalWeeklyMinutes} disabled={preferenceBusy} onChange={(event) => setGoalWeeklyMinutes(event.target.value)} className="mt-1 h-9 w-full rounded-md border bg-card px-2 text-sm font-normal" /></label>
+                  <label className="text-xs font-medium">目标日期<input aria-label="目标日期" type="date" value={goalTargetDate} disabled={preferenceBusy} onChange={(event) => setGoalTargetDate(event.target.value)} className="mt-1 h-9 w-full rounded-md border bg-card px-2 text-sm font-normal" /></label>
+                </div>
+                <Button size="sm" variant="secondary" disabled={preferenceBusy} onClick={() => void saveLearningGoal()}>保存学习目标</Button>
+              </div>
               <div className="rounded-xl bg-muted/60 p-4"><p className="text-sm font-medium">当前学习档案</p><p className="mt-1 text-sm text-muted-foreground">{state.learner.displayName} · {state.learner.grade} · {state.learner.curriculum}</p></div>
+              {preferenceMessage ? <p role="status" className="rounded-lg bg-muted p-3 text-sm">{preferenceMessage}</p> : null}
             </div>
           ) : null}
           {space === "content" ? (
@@ -1566,6 +1923,35 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
                   <p className="mt-1 text-xs text-muted-foreground">{activePackage.targetAudience?.description || "通识与专业基础"}</p>
                 </div>
               ) : null}
+              {pendingPackage ? (
+                <div className="rounded-xl border border-sky-300 bg-sky-50/60 p-4 dark:border-sky-900 dark:bg-sky-950/30">
+                  <p className="text-sm font-semibold">如何开始“{pendingPackage.name}”</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">个人资料会先回放不足、发展中、熟练三档评分锚点；校准未通过时不会启动，也不会写入掌握证据。</p>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <label className={cn("cursor-pointer rounded-lg border p-3 text-sm", entryMode === "diagnostic" ? "border-sky-500 bg-card" : "bg-card/60")}>
+                      <input className="mr-2 accent-sky-600" type="radio" name="package-entry-mode" checked={entryMode === "diagnostic"} onChange={() => setEntryMode("diagnostic")} />
+                      先做练习模式摸底
+                      <span className="mt-1 block text-xs text-muted-foreground">根据可验证作答生成七日计划。</span>
+                    </label>
+                    <label className={cn("cursor-pointer rounded-lg border p-3 text-sm", entryMode === "chapter" ? "border-sky-500 bg-card" : "bg-card/60")}>
+                      <input className="mr-2 accent-sky-600" type="radio" name="package-entry-mode" checked={entryMode === "chapter"} onChange={() => setEntryMode("chapter")} />
+                      从指定章节开始
+                      <span className="mt-1 block text-xs text-muted-foreground">只确定学习起点，不假定已经掌握。</span>
+                    </label>
+                  </div>
+                  {entryMode === "chapter" ? (
+                    <label className="mt-3 block text-sm font-medium">开始章节
+                      <select value={startModuleId} onChange={(event) => setStartModuleId(event.target.value)} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal">
+                        {(pendingPackage.modules ?? []).map((module) => <option key={module.id} value={module.id}>{module.name}</option>)}
+                      </select>
+                    </label>
+                  ) : null}
+                  <div className="mt-4 flex gap-2">
+                    <Button size="sm" disabled={loading} onClick={() => void activatePackage()}>{loading ? "正在校准…" : "校准并开始"}</Button>
+                    <Button size="sm" variant="secondary" disabled={loading} onClick={() => setPendingPackage(null)}>取消</Button>
+                  </div>
+                </div>
+              ) : null}
               <div className="mt-2 grid gap-3">
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-medium">选择学习内容</p>
@@ -1579,10 +1965,10 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
                           <span className="text-sm font-bold">{pkg.name}</span>
                           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{pkg.sourceType}</span>
                         </div>
-                        <p className="mt-1 text-xs text-muted-foreground">{pkg.targetAudience?.stage ?? "全部阶段"} · {pkg.evaluationCapabilities?.deterministicGrading ? "支持确定性判题" : "主观开放评估"}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{pkg.targetAudience?.stage ?? "全部阶段"} · {pkg.sourceType === "user_material" ? "来源量表将在启动时校准" : pkg.evaluationCapabilities?.deterministicGrading ? "支持确定性判题" : "主观开放评估"}</p>
                       </div>
-                      <Button size="sm" variant={isActive ? "secondary" : "primary"} disabled={loading || isActive} onClick={() => void switchPackage(pkg.id)}>
-                        {isActive ? "正在学习" : "切换为此内容"}
+                      <Button size="sm" variant={isActive ? "secondary" : "primary"} disabled={loading || isActive} onClick={() => void choosePackage(pkg.id)}>
+                        {isActive ? "正在学习" : "选择开始方式"}
                       </Button>
                     </div>
                   );
@@ -1599,7 +1985,9 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
                           <span className="truncate font-medium">{m.fileName}</span>
                           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{m.fileType}</span>
                         </div>
-                        <span className="text-xs text-muted-foreground">{m.status === "parsed" ? "已解析" : m.status === "draft_ready" ? "草稿待确认" : m.status === "published" ? "已发布" : m.status}</span>
+                        <span className={cn("text-xs", m.status === "needs_ocr" ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
+                          {m.status === "parsed" ? "已解析" : m.status === "needs_ocr" ? "需要本地 OCR" : m.status === "draft_ready" ? "草稿待确认" : m.status === "published" ? "已发布" : m.status}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -1621,9 +2009,18 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
                   onPublished={(packageId) => void handleDraftPublished(packageId)}
                 />
               ) : null}
+
+              <PrivateTutorContentMigration />
             </div>
           ) : null}
-          {space === "teacher" ? <div className="mt-6 grid gap-4"><label className="text-sm font-medium">老师的讲解方式<select value={teacherStyle} onChange={(event) => setTeacherStyle(event.target.value)} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option>启发式引导</option><option>直接讲清概念</option><option>案例驱动</option><option>苏格拉底式追问</option></select></label><label className="text-sm font-medium">讲解深度<select value={explanationDepth} onChange={(event) => setExplanationDepth(event.target.value)} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option>先简洁，再展开</option><option>从基础完整讲起</option><option>只讲关键难点</option><option>按专业标准深入</option></select></label><div className="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">AI 私教会参考这些偏好组织讲解和追问，但掌握度仍由练习证据决定，不由 AI 主观判断。</div></div> : null}
+          {space === "teacher" ? <div className="mt-6 grid gap-4">
+            <label className="text-sm font-medium">老师的讲解方式<select aria-label="老师的讲解方式" value={preferences.teacherStyle} disabled={preferenceBusy} onChange={(event) => void savePreference({ teacherStyle: event.target.value as PrivateTutorLearningPreferences["teacherStyle"] })} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option value="heuristic_guidance">启发式引导</option><option value="direct_concept">直接讲清概念</option><option value="case_driven">案例驱动</option><option value="socratic_questioning">苏格拉底式追问</option></select></label>
+            <label className="text-sm font-medium">讲解深度<select aria-label="讲解深度" value={preferences.explanationDepth} disabled={preferenceBusy} onChange={(event) => void savePreference({ explanationDepth: event.target.value as PrivateTutorLearningPreferences["explanationDepth"] })} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option value="concise_then_expand">先简洁，再展开</option><option value="from_foundations">从基础完整讲起</option><option value="key_difficulties_only">只讲关键难点</option><option value="professional_depth">按专业标准深入</option></select></label>
+            <label className="text-sm font-medium">追问方式<select aria-label="追问方式" value={preferences.followUpStyle} disabled={preferenceBusy} onChange={(event) => void savePreference({ followUpStyle: event.target.value as PrivateTutorLearningPreferences["followUpStyle"] })} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option value="gentle_probe">温和追问理由</option><option value="direct_check">直接检查理解</option><option value="none">不主动追问</option></select></label>
+            <label className="text-sm font-medium">语音偏好<select aria-label="语音偏好" value={preferences.voicePreference} disabled={preferenceBusy} onChange={(event) => void savePreference({ voicePreference: event.target.value as PrivateTutorLearningPreferences["voicePreference"] })} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option value="push_to_talk">点按说话</option><option value="hands_free">自由对话</option><option value="text_only">只用文字</option></select></label>
+            <div className="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">这些偏好会保存到账户，并影响新学习会话的讲解、追问和语音入口；判题与掌握证据仍保持不变。</div>
+            {preferenceMessage ? <p role="status" className="rounded-lg bg-muted p-3 text-sm">{preferenceMessage}</p> : null}
+          </div> : null}
           {space === "data" ? <MyDataControls learnerName={state.learner.displayName} onProfileDeleted={onProfileDeleted} /> : null}
         </Card>
       </div>
@@ -1631,11 +2028,11 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
   );
 }
 
-function PreferenceToggle({ label, hint, checked, onChange }: { label: string; hint: string; checked: boolean; onChange: (checked: boolean) => void }) {
+function PreferenceToggle({ label, hint, checked, disabled = false, onChange }: { label: string; hint: string; checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void }) {
   return (
     <label className="flex cursor-pointer items-center justify-between gap-4 rounded-xl border p-4">
       <span><span className="block text-sm font-medium">{label}</span><span className="mt-1 block text-xs text-muted-foreground">{hint}</span></span>
-      <input type="checkbox" className="size-5 accent-emerald-600" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <input type="checkbox" className="size-5 accent-emerald-600" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
     </label>
   );
 }

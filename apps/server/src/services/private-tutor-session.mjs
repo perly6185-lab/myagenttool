@@ -10,6 +10,8 @@ export const PRIVATE_TUTOR_SESSION_PACES = {
   review: { totalMinutes: 10, budgets: [2, 1, 2, 3, 2] },
 };
 
+export const PRIVATE_TUTOR_FOLLOW_UP_MODES = ["question", "explain_again", "source_example"];
+
 const ACTIVITY_KINDS = ["recall", "explain", "guided_practice", "independent_check", "summary"];
 const KNOWLEDGE_CONTENT = {
   integer: content("有理数运算", "int", "先在数轴上看方向，再把符号和距离分开。", [
@@ -34,10 +36,12 @@ const KNOWLEDGE_CONTENT = {
   ]),
 };
 
-export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, decision, pace, now, state, contentPackageId = null }) {
-  const paceDefinition = PRIVATE_TUTOR_SESSION_PACES[pace];
+export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, decision, pace, now, state, contentPackageId = null, activationId = null, targetMinutes = null }) {
+  const paceDefinition = sessionPaceDefinition(pace, targetMinutes);
   if (!paceDefinition) return null;
-  const targetKnowledgeId = plan?.days?.[0]?.knowledgeId ?? decision?.targetKnowledgeId;
+  const planDayIndex = selectPlanDayIndex(plan);
+  const planDay = plan?.days?.[planDayIndex] ?? null;
+  const targetKnowledgeId = planDay?.knowledgeId ?? decision?.targetKnowledgeId;
   const runtime = contentPackageId ? sessionRuntime(state, contentPackageId, targetKnowledgeId) : null;
   const target = runtime?.content ?? KNOWLEDGE_CONTENT[targetKnowledgeId];
   if (!target) return null;
@@ -51,13 +55,14 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
       runtime ? runtimeQuestionId(runtime.knowledge, kind) : questionId(target.questionPrefix, kind),
     ),
     hintLevel: 0,
+    followUpCount: 0,
     attemptCount: 0,
     incorrectCount: 0,
     startedAt: index === 0 ? startedAt : null,
     completedAt: null,
   }));
   if (activities.some((activity) => ["recall", "guided_practice", "independent_check"].includes(activity.kind) && !activity.questionRevisionId)) return null;
-  return {
+  const session = {
     id,
     ownerTeamId,
     learnerId,
@@ -66,9 +71,11 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
     subjectId: runtime?.package.subjectId ?? "math",
     planId: plan?.id ?? null,
     decisionId: decision?.id ?? null,
+    activationId,
+    activationStatus: "active",
     targetKnowledgeId,
     targetTitle: target.title,
-    strategy: decision?.strategy ?? plan.days[0].strategy,
+    strategy: planDay?.strategy ?? decision?.strategy,
     pace,
     plannedMinutes: paceDefinition.totalMinutes,
     status: "active",
@@ -80,12 +87,38 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
     teachingMethod: initialMethod(decision?.strategy),
     intervention: null,
     evidenceAttemptIds: [],
+    practiceAttemptIds: [],
+    followUps: [],
+    planDayIndex: planDay ? planDay.dayIndex : null,
     startedAt,
     pausedAt: null,
     completedAt: null,
     updatedAt: startedAt,
     summary: null,
   };
+  if (planDay) {
+    planDay.status = "in_progress";
+    planDay.startedAt ??= startedAt;
+    plan.updatedAt = startedAt;
+  }
+  return session;
+}
+
+function sessionPaceDefinition(pace, targetMinutes) {
+  const base = PRIVATE_TUTOR_SESSION_PACES[pace];
+  if (!base || pace !== "standard" || targetMinutes == null) return base;
+  const totalMinutes = Math.max(5, Math.min(180, Math.round(Number(targetMinutes) || base.totalMinutes)));
+  if (totalMinutes === base.totalMinutes) return base;
+  const minimum = Array(base.budgets.length).fill(1);
+  let remaining = totalMinutes - minimum.length;
+  const weightTotal = base.budgets.reduce((sum, value) => sum + value, 0);
+  const additions = base.budgets.map((weight) => Math.floor((remaining * weight) / weightTotal));
+  let assigned = additions.reduce((sum, value) => sum + value, 0);
+  for (let index = 0; assigned < remaining; index = (index + 1) % additions.length) {
+    additions[index] += 1;
+    assigned += 1;
+  }
+  return { totalMinutes, budgets: minimum.map((value, index) => value + additions[index]) };
 }
 
 export function privateTutorSessionView(session, state) {
@@ -110,6 +143,8 @@ export function privateTutorSessionView(session, state) {
     subjectId: session.subjectId ?? "math",
     planId: session.planId,
     decisionId: session.decisionId,
+    activationId: session.activationId ?? null,
+    planDayIndex: session.planDayIndex ?? null,
     targetKnowledgeId: session.targetKnowledgeId,
     targetTitle: session.targetTitle,
     strategy: session.strategy,
@@ -123,6 +158,7 @@ export function privateTutorSessionView(session, state) {
       kind: activity.kind,
       budgetMinutes: activity.budgetMinutes,
       hintLevel: activity.hintLevel,
+      followUpCount: activity.followUpCount ?? 0,
       attemptCount: activity.attemptCount,
       instruction: instructionFor(activity.kind, contentDefinition, session.teachingMethod, preferences),
       question,
@@ -143,6 +179,17 @@ export function privateTutorSessionView(session, state) {
     subjectCapabilities: runtime?.capabilities ?? null,
     methodSwitchCount: session.methodSwitchCount,
     intervention: session.intervention,
+    followUps: (session.followUps ?? []).slice(-12).map((item) => ({
+      id: item.id,
+      activityKind: item.activityKind,
+      mode: item.mode,
+      question: item.question,
+      response: item.response,
+      grounding: item.grounding,
+      sourceRefs: item.sourceRefs.map((ref) => ({ ...ref })),
+      evidenceEligible: false,
+      createdAt: item.createdAt,
+    })),
     pausedAt: session.pausedAt,
     startedAt: session.startedAt,
     completedAt: session.completedAt,
@@ -158,6 +205,54 @@ export function revealPrivateTutorHint(session, now) {
   session.intervention = null;
   touch(session, now);
   return { ok: true };
+}
+
+export function answerPrivateTutorFollowUp(session, { mode, question, state, now, nextId }) {
+  const activity = currentActivity(session);
+  if (!activity) return { ok: false, error: "private_tutor_follow_up_not_available" };
+  if (!PRIVATE_TUTOR_FOLLOW_UP_MODES.includes(mode)) return { ok: false, error: "invalid_private_tutor_follow_up_mode" };
+  const normalizedQuestion = String(question ?? "").replace(/\s+/g, " ").trim();
+  if (mode === "question" && (!normalizedQuestion || normalizedQuestion.length > 500)) {
+    return { ok: false, error: "invalid_private_tutor_follow_up_question" };
+  }
+  if (normalizedQuestion.length > 500) return { ok: false, error: "invalid_private_tutor_follow_up_question" };
+
+  const runtime = session.contentPackageId ? sessionRuntime(state, session.contentPackageId, session.targetKnowledgeId) : null;
+  const contentDefinition = runtime?.content ?? KNOWLEDGE_CONTENT[session.targetKnowledgeId];
+  if (!contentDefinition) return { ok: false, error: "private_tutor_follow_up_not_available" };
+  if (mode === "explain_again") {
+    session.teachingMethod = alternateMethod(session.teachingMethod);
+    session.methodSwitchCount += 1;
+    session.intervention = null;
+  }
+
+  const sourceRefs = groundedSourceRefs(runtime?.knowledge);
+  const grounding = sourceRefs.length ? "source_excerpt" : "reviewed_curriculum";
+  const response = groundedFollowUpResponse({
+    mode,
+    question: normalizedQuestion,
+    contentDefinition,
+    teachingMethod: session.teachingMethod,
+    sourceRefs,
+  });
+  const createdAt = now();
+  const followUp = {
+    id: nextId("ptfu"),
+    activityKind: activity.kind,
+    mode,
+    question: normalizedQuestion || (mode === "explain_again" ? "请换一种讲法" : "请给一个资料内的例子"),
+    response,
+    grounding,
+    sourceRefs,
+    evidenceEligible: false,
+    createdAt,
+  };
+  activity.followUpCount = (activity.followUpCount ?? 0) + 1;
+  session.followUps ??= [];
+  session.followUps.push(followUp);
+  if (session.followUps.length > 12) session.followUps.splice(0, session.followUps.length - 12);
+  touch(session, () => createdAt);
+  return { ok: true, followUp: { ...followUp, sourceRefs: followUp.sourceRefs.map((ref) => ({ ...ref })) } };
 }
 
 export function completePrivateTutorActivity(session, now) {
@@ -182,11 +277,13 @@ export function completePrivateTutorActivity(session, now) {
   return { completed: session.status === "completed" };
 }
 
-export function recordPrivateTutorSessionAnswer(session, { correct, attemptId, now }) {
+export function recordPrivateTutorSessionAnswer(session, { correct, attemptId, evidenceEligible = true, now }) {
   const activity = currentActivity(session);
   if (!activity?.questionRevisionId) return { ok: false, error: "private_tutor_answer_not_available" };
   activity.attemptCount += 1;
-  session.evidenceAttemptIds.push(attemptId);
+  session.practiceAttemptIds ??= [];
+  session.practiceAttemptIds.push(attemptId);
+  if (evidenceEligible) session.evidenceAttemptIds.push(attemptId);
   if (correct) {
     session.consecutiveIncorrect = 0;
     session.intervention = null;
@@ -240,6 +337,17 @@ export function currentPrivateTutorActivity(session) {
   return currentActivity(session);
 }
 
+export function completePrivateTutorPlanDay(plan, session, at) {
+  if (!plan || !session || session.status !== "completed" || !session.planDayIndex) return false;
+  const day = plan.days?.find((item) => item.dayIndex === session.planDayIndex);
+  if (!day) return false;
+  day.status = "completed";
+  day.completedAt = at;
+  plan.status = plan.days.every((item) => item.status === "completed") ? "completed" : "active";
+  plan.updatedAt = at;
+  return true;
+}
+
 function content(title, questionPrefix, explanation, hints) {
   return { title, questionPrefix, explanation, hints };
 }
@@ -264,12 +372,12 @@ function sessionRuntime(state, contentPackageId, knowledgeId) {
   const registry = privateTutorPackageRegistryFromState(state);
   const pkg = registry.getPackage(contentPackageId);
   const knowledge = pkg?.knowledgeComponents?.find((item) => item.id === knowledgeId);
-  if (!pkg || !knowledge) return null;
+  if (!pkg || (pkg.status != null && pkg.status !== "published") || !knowledge) return null;
   const teaching = knowledge.teachingContent ?? {};
   return {
     package: pkg,
     knowledge,
-    capabilities: registry.getSubjectPlugin(pkg.subjectId)?.getCapabilities?.() ?? {
+    capabilities: registry.getSubjectPlugin(pkg.evaluationSubjectId ?? pkg.subjectId)?.getCapabilities?.() ?? {
       deterministicGrading: false,
       stepEvaluation: false,
       speechEvaluation: false,
@@ -277,7 +385,7 @@ function sessionRuntime(state, contentPackageId, knowledgeId) {
     },
     content: {
       title: knowledge.name ?? knowledge.id,
-      explanation: teaching.coreConcept ?? knowledge.shortDescription ?? "先理解核心概念，再用练习确认。",
+      explanation: teaching.explanation ?? teaching.guidance ?? teaching.coreConcept ?? knowledge.shortDescription ?? "先理解核心概念，再用练习确认。",
       hints: teaching.keyPoints?.length ? teaching.keyPoints : ["回到定义，逐项检查条件。"],
     },
   };
@@ -292,17 +400,52 @@ function runtimeQuestionId(knowledge, kind) {
   return null;
 }
 
+function groundedSourceRefs(knowledge) {
+  const refs = Array.isArray(knowledge?.sourceRefs) ? knowledge.sourceRefs : knowledge?.sourceRef ? [knowledge.sourceRef] : [];
+  const seen = new Set();
+  return refs.flatMap((ref) => {
+    const excerpt = String(ref?.excerpt ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
+    const sectionId = String(ref?.sectionId ?? "").trim();
+    if (!excerpt || !sectionId) return [];
+    const key = `${sectionId}:${ref?.pageNumber ?? ""}:${excerpt}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ sectionId, pageNumber: ref?.pageNumber ?? null, excerpt }];
+  }).slice(0, 4);
+}
+
+function groundedFollowUpResponse({ mode, question, contentDefinition, teachingMethod, sourceRefs }) {
+  const sourceText = sourceRefs.map((ref) => ref.excerpt).join(" ").slice(0, 1_200);
+  const groundedText = sourceText || contentDefinition.explanation;
+  const points = (contentDefinition.hints ?? []).filter(Boolean).slice(0, 3);
+  const sourceLimit = sourceRefs.length
+    ? "这段回答只依据下方教材摘录；资料没有覆盖的结论，我不会补写。"
+    : "这段回答只依据当前审核课程内容，不会读取题目答案，也不会改变掌握度。";
+
+  if (mode === "explain_again") {
+    const steps = points.length ? `可以拆成：${points.map((point, index) => `${index + 1}. ${point}`).join(" ")}` : groundedText;
+    return `换成“${methodLabel(teachingMethod)}”来讲：${steps} ${sourceLimit}`;
+  }
+  if (mode === "source_example") {
+    return sourceRefs.length
+      ? `用资料里的原句作例子：“${groundedText}”先指出它描述的核心关系，再用自己的话复述。${sourceLimit}`
+      : `用当前课程内容作例子：${groundedText} ${points[0] ?? "先找出核心条件，再按规则检查。"} ${sourceLimit}`;
+  }
+  return `关于“${question}”，当前资料能确认的是：${groundedText} ${sourceLimit}`;
+}
+
 function instructionFor(kind, contentDefinition, teachingMethod, preferences = null) {
   const styleFrame = preferences ? styleFraming(preferences) : null;
   const depthFrame = preferences ? depthFraming(preferences.explanationDepth) : null;
+  const followUpFrame = preferences ? followUpFraming(preferences.followUpStyle) : null;
   if (kind === "recall") return `先回想一下“${contentDefinition.title}”，看看昨天的理解还在不在。`;
   if (kind === "explain") {
     const base = `${contentDefinition.explanation} 当前讲法：${methodLabel(teachingMethod)}。`;
-    return `${base}${styleFrame ?? ""}${depthFrame ?? ""}`;
+    return `${base}${styleFrame ?? ""}${depthFrame ?? ""}${followUpFrame ?? ""}`;
   }
   if (kind === "guided_practice") {
     const base = "我会陪你做这一步；需要时可以逐级看提示。";
-    return `${base}${styleFrame ?? ""}`;
+    return `${base}${styleFrame ?? ""}${followUpFrame ?? ""}`;
   }
   if (kind === "independent_check") return "这是一道没见过的新题。先不看提示，自己验证能不能迁移。";
   return "看看今天学会了什么，以及下一次什么时候回来复习。";
@@ -328,6 +471,15 @@ function depthFraming(depth) {
     professional_depth: " 深度：按专业标准深入，包含严格的定义和边界条件。",
   };
   return frames[depth] ?? null;
+}
+
+function followUpFraming(style) {
+  const frames = {
+    gentle_probe: " 追问：先请你说出最确定的一点，再温和补问理由。",
+    direct_check: " 追问：直接用一个检查问题确认是否理解。",
+    none: " 追问：不额外追问，由你主动继续。",
+  };
+  return frames[style] ?? null;
 }
 
 function initialMethod(strategy) {
@@ -360,16 +512,18 @@ function methodLabel(method) {
 function buildSummary(session, completedAt) {
   const independent = session.activities.find((item) => item.kind === "independent_check");
   const hintedActivities = session.activities.filter((item) => item.hintLevel > 0).map((item) => item.kind);
+  const independentWithoutHelp = Boolean(independent?.completedAt && independent.hintLevel === 0 && (independent.followUpCount ?? 0) === 0);
   const reviewAt = new Date(completedAt);
   reviewAt.setUTCDate(reviewAt.getUTCDate() + 1);
   return {
     learned: `今天完成了“${session.targetTitle}”的回想、理解和练习。`,
-    independentCompleted: Boolean(independent?.completedAt && independent.hintLevel === 0),
+    independentCompleted: independentWithoutHelp,
     hintedActivities,
     methodSwitchCount: session.methodSwitchCount,
     evidenceCount: session.evidenceAttemptIds.length,
+    practiceCount: session.practiceAttemptIds?.length ?? session.evidenceAttemptIds.length,
     reviewAt: reviewAt.toISOString(),
-    nextStep: independent?.completedAt && independent.hintLevel === 0
+    nextStep: independentWithoutHelp
       ? "明天用另一道题快速回想，确认还能独立做到。"
       : "明天先从一个小提示开始，再用新题独立验证。",
   };
@@ -382,4 +536,10 @@ function currentActivity(session) {
 function touch(session, now) {
   session.revision += 1;
   session.updatedAt = now();
+}
+
+function selectPlanDayIndex(plan) {
+  const days = Array.isArray(plan?.days) ? plan.days : [];
+  const index = days.findIndex((item) => item.status === "in_progress" || item.status === "planned");
+  return index >= 0 ? index : 0;
 }
