@@ -132,3 +132,58 @@ test("requires explicit cloud confirmation before scheduling Codex OCR", async (
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("cancels a running OCR job through its abort signal", async () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-private-tutor-ocr-cancel-"));
+  const state = { privateTutorMaterialDocuments: [], privateTutorOcrJobs: [] };
+  let signal;
+  let markRecognitionStarted;
+  const recognitionStarted = new Promise((resolve) => {
+    markRecognitionStarted = resolve;
+  });
+  const service = createPrivateTutorMaterialOcrService({
+    state,
+    stateStorePath: join(root, "state.json"),
+    nextId: () => "ptocr_cancel",
+    ocrAdapter: {
+      readiness: () => ({ state: "ready", providerId: "codex-vision", requiresCloudConsent: true }),
+      recognize: async (input) => {
+        signal = input.signal;
+        markRecognitionStarted();
+        return await new Promise((resolve, reject) => {
+          input.signal.addEventListener("abort", () => {
+            const error = new Error("OCR cancelled.");
+            error.code = "workflow_ocr_cancelled";
+            reject(error);
+          }, { once: true });
+        });
+      },
+    },
+  });
+  try {
+    const bytes = Buffer.from("%PDF-cancel", "utf8");
+    const sourceHash = createHash("sha256").update(bytes).digest("hex");
+    const material = {
+      id: "mat_cancel",
+      learningProfileId: "learner_cancel",
+      fileType: "pdf",
+      status: "needs_ocr",
+      sourceHash,
+      managedSource: service.storeSource({ bytes, sourceHash, fileName: "cancel.pdf", fileType: "pdf" }),
+      extraction: { pageCount: 1 },
+    };
+    state.privateTutorMaterialDocuments.push(material);
+
+    const started = service.start(material, material.learningProfileId, { cloudAllowed: true });
+    await recognitionStarted;
+    const cancelled = service.cancel(started.job, material.learningProfileId);
+
+    assert.equal(signal.aborted, true);
+    assert.equal(cancelled.id, started.job.id);
+    const completed = await waitFor(() => started.job.status === "cancelled" && started.job);
+    assert.equal(completed.failureCode, "workflow_ocr_cancelled");
+    assert.equal(material.status, "needs_ocr");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
