@@ -57,6 +57,7 @@ import { applyResultRepairSpec, buildResultRepairTaskSpec } from "./result-repai
 import { buildDeliveryEvidence } from "./work-item-delivery-evidence.mjs";
 import { normalizeExecutionStartFailure, projectExecutionStartReceipt } from "./work-item-execution-start.mjs";
 import { projectWorkItemExecutionReview } from "./work-item-execution-review.mjs";
+import { projectWorkItemPlanActual } from "./work-item-plan-actual.mjs";
 import { projectWorkItemContextSummary } from "./work-item-context-summary.mjs";
 import { buildWorkItemIntentContract, freezeWorkItemIntentContract } from "./work-item-intent-contract.mjs";
 
@@ -2889,6 +2890,19 @@ export function createWorkItemService({
       deliveryEvidence,
       now: now(),
     });
+    const taskContextSummary = projectWorkItemContextSummary({
+      item,
+      state,
+      ownerTeamId: actorTeam(actor),
+    });
+    const planActual = projectWorkItemPlanActual({
+      item,
+      latestRun,
+      outcome: taskOutcome,
+      deliveryEvidence,
+      executionReview,
+      contextSummary: taskContextSummary,
+    });
     return {
       ok: true,
       status: 200,
@@ -2898,6 +2912,7 @@ export function createWorkItemService({
           executionChainId: item.id,
           nextAction,
           executionReview,
+          planActual,
           attention,
           latestRun: latestRun ? {
             id: latestRun.id,

@@ -3670,6 +3670,61 @@ test("detail exposes the readable delivery report and independent AI review", ()
   assert.equal(running.delivery.aiReview.status, "running", "an acknowledged review is no longer shown as merely queued");
 });
 
+test("detail reconciles the frozen plan with material, result, delivery, and verification receipts", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "更新客户台账" }, ACTOR_A).body.workItem;
+  const intentContract = {
+    goal: "更新客户台账",
+    expectedOutput: "客户台账.xlsx",
+    method: { kind: "template", definitionId: "rtd_customer", familyId: "family_customer", version: 2, name: "客户更新" },
+    action: { accessMode: "write", operation: "update" },
+    delivery: { destination: "task" },
+    verificationSop: ["运行工作簿检查"],
+  };
+  const stored = state.workItems[0];
+  stored.executionIntentContractSnapshot = intentContract;
+  stored.taskContextControl = { deliveryDestination: "task" };
+  stored.executionBindings = [{
+    kind: "auto_run", targetId: "aur_plan_actual", worktreeId: "wtr_plan_actual",
+    createdAt: "2026-07-24T00:01:00.000Z",
+  }];
+  state.autoRuns = [{
+    id: "aur_plan_actual", projectId: "prj_a", status: "done", invocationId: "inv_plan_actual",
+    link: { type: "local_issue", number: item.localNumber },
+    executionContract: {
+      intentContract,
+      dataContextSnapshot: { digest: "context-v1", sourceCount: 1, sources: [{ name: "原始客户台账" }] },
+    },
+    inputMaterialization: {
+      receipts: [{ referenceId: "wrr_customer", status: "ready" }],
+      executionContextSnapshot: { declarationDigest: "context-v1" },
+    },
+    localDelivery: { worktreeId: "wtr_plan_actual", branchName: "customer-update" },
+    deliveryReport: {
+      summary: "已生成更新后的客户台账。",
+      verification: { passed: true, verified: true, command: "pnpm check:workbook", exitCode: 0, summary: "工作簿检查通过。" },
+      changedFiles: ["客户台账.xlsx"],
+      completedAt: "2026-07-24T00:02:00.000Z",
+    },
+    deliveryReview: { status: "completed", verdict: "approved", structured: true, findings: [], summary: "结果符合范围。" },
+    updatedAt: "2026-07-24T00:02:00.000Z",
+  }];
+  state.worktrees = [{ id: "wtr_plan_actual", projectId: "prj_a", branchName: "customer-update" }];
+  state.invocations = [{
+    id: "inv_plan_actual", status: "succeeded",
+    options: { metadata: { autoRunId: "aur_plan_actual" } },
+    completedAt: "2026-07-24T00:02:00.000Z",
+  }];
+
+  const planActual = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability.planActual;
+
+  assert.equal(planActual.status, "matched");
+  assert.equal(planActual.planned.method.name, "客户更新");
+  assert.equal(planActual.actual.materializedCount, 1);
+  assert.deepEqual(planActual.actual.resultFiles, ["客户台账.xlsx"]);
+  assert.equal(planActual.checks.every((check) => check.status === "matched"), true);
+});
+
 test("detail projects the current Ledger batch instead of a stale channel snapshot", () => {
   const { service, state } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "更新客户台账", taskKind: "business_spreadsheet" }, ACTOR_A).body.workItem;

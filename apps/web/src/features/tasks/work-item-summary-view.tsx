@@ -40,6 +40,7 @@ import { ExecutionStartConfirmation } from "./execution-start-confirmation";
 import { deriveExecutionStartSummary } from "./execution-start-summary";
 import { ExecutionStartStatusCard } from "./execution-start-status-card";
 import { ExecutionReviewCard, type ExecutionActionReceipt } from "./execution-review-card";
+import { WorkItemPlanActualCard } from "./work-item-plan-actual-card";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
 import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
@@ -2184,6 +2185,14 @@ export function WorkItemSummaryView({
           reconcileActionPending={actionPending === "reconcile"}
           actionReceipt={executionReview.actionReceipt ?? executionActionReceipt}
           attemptHistory={observability?.runHistory ?? []}
+        />
+      ) : null}
+
+      {observability?.planActual ? (
+        <WorkItemPlanActualCard
+          plan={observability.planActual}
+          language={language}
+          onOpenDetails={() => onOpenExpert("process")}
         />
       ) : null}
 

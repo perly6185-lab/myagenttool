@@ -939,10 +939,52 @@ export type LocalWorkItemAutoRun = {
     actorId: string; recordedAt: string; revision: number;
   } | null;
 };
+export type WorkItemPlanActual = {
+  schemaVersion: 1;
+  runId: string;
+  status: "pending" | "matched" | "attention" | "unverified";
+  summaryCode: string;
+  planned: {
+    goal: string | null;
+    expectedOutput: string | null;
+    method: { kind: string; name: string | null; definitionId: string | null; familyId: string | null; version: number | null } | null;
+    materialCount: number;
+    materialNames: string[];
+    deliveryDestination: "task" | "channel" | string;
+    actionAccessMode: string;
+    verificationStepCount: number;
+  };
+  actual: {
+    resultStatus: string;
+    resultFiles: string[];
+    materializedCount: number;
+    skippedMaterialCount: number;
+    deliveryStatus: string | null;
+    verificationStatus: string;
+    impactStatus: string;
+  };
+  checks: Array<{
+    key: "method" | "materials" | "output" | "action" | "delivery" | "verification";
+    status: "matched" | "mismatch" | "unknown" | "pending";
+    reasonCode: string;
+    severity?: "low" | "medium" | "high";
+    correctionTarget?: string | null;
+    expected: Record<string, unknown> | null;
+    actual: Record<string, unknown> | null;
+  }>;
+  deviations: Array<{
+    code: string;
+    severity: "low" | "medium" | "high";
+    scope: string;
+    correctionTarget: string | null;
+  }>;
+  digest: string;
+};
 export type LocalWorkItemObservability = {
   executionChainId?: string;
   nextAction: "answer_ai" | "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
   executionReview?: WorkItemExecutionReview | null;
+  planActual?: WorkItemPlanActual | null;
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
   outcome?: {
