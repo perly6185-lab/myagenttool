@@ -7,7 +7,13 @@ import {
   generatePrivateTutorKnowledgeMapDraft,
   getPrivateTutorKnowledgeMapDraft,
   updatePrivateTutorKnowledgeMapDraft,
+  confirmPrivateTutorKnowledgeMapDraft,
+  generatePrivateTutorAuthoredContent,
+  updatePrivateTutorAuthoredContent,
+  confirmPrivateTutorAuthoredContent,
   publishPrivateTutorKnowledgeMapDraft,
+  activatePrivateTutorContentPackage,
+  getPrivateTutorLearningHistory,
 } from "@/features/private-tutor/private-tutor-api";
 import * as apiRequest from "@/lib/api/request";
 
@@ -34,6 +40,8 @@ const fakeDraft = {
   subjectId: "general",
   domain: "general",
   schemaVersion: 1,
+  revision: 1,
+  sourceSnapshot: { materialDocumentId: "mat_abc123", sourceHash: "deadbeef", parserVersion: 2, sectionCount: 1, pageCount: 1 },
   draftModules: [
     { id: "mod_1", name: "Module 1", description: "d", orderIndex: 1 },
   ],
@@ -44,6 +52,9 @@ const fakeDraft = {
     { id: "kc_1", topicId: "top_1", name: "KC 1", learningObjectives: ["goal"], prerequisiteDraftIds: [], orderIndex: 1 },
   ],
   validationIssues: [],
+  confirmation: null,
+  authoredContentVersions: [],
+  activeAuthoredContentVersion: null,
   status: "in_review" as const,
   createdAt: "2026-08-25T00:00:00.000Z",
   updatedAt: "2026-08-25T00:00:00.000Z",
@@ -106,10 +117,72 @@ describe("private tutor material import & draft API", () => {
     expect(spy).toHaveBeenCalledWith("PUT", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789", { packageName: "Renamed" });
   });
 
+  it("confirmPrivateTutorKnowledgeMapDraft sends revision-bound source acknowledgement", async () => {
+    const confirmedDraft = { ...fakeDraft, status: "confirmed" as const };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ draft: confirmedDraft });
+    const result = await confirmPrivateTutorKnowledgeMapDraft("kmd_xyz789", {
+      expectedRevision: 3,
+      acknowledgeSourceReview: true,
+    });
+    expect(result).toEqual(confirmedDraft);
+    expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/confirm", {
+      expectedRevision: 3,
+      acknowledgeSourceReview: true,
+    });
+  });
+
+  it("generatePrivateTutorAuthoredContent requests a source-grounded content version", async () => {
+    const authoredContent = { id: "kmd_xyz789_content_v1", version: 1, revision: 1 };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ draft: fakeDraft, authoredContent });
+    await generatePrivateTutorAuthoredContent("kmd_xyz789", { forceRegenerate: true });
+    expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/author-content", { forceRegenerate: true });
+  });
+
+  it("updatePrivateTutorAuthoredContent saves the current content revision", async () => {
+    const authoredContent = { id: "kmd_xyz789_content_v1", version: 1, revision: 2, knowledgeContents: [] };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ draft: fakeDraft, authoredContent });
+    await updatePrivateTutorAuthoredContent("kmd_xyz789", { knowledgeContents: [] });
+    expect(spy).toHaveBeenCalledWith("PUT", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/authored-content", { knowledgeContents: [] });
+  });
+
+  it("confirmPrivateTutorAuthoredContent binds review to the current content revision", async () => {
+    const authoredContent = { id: "kmd_xyz789_content_v1", version: 1, revision: 2 };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ draft: fakeDraft, authoredContent });
+    await confirmPrivateTutorAuthoredContent("kmd_xyz789", { expectedRevision: 2, acknowledgeContentReview: true });
+    expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/authored-content/confirm", {
+      expectedRevision: 2,
+      acknowledgeContentReview: true,
+    });
+  });
+
   it("publishPrivateTutorKnowledgeMapDraft calls publish endpoint", async () => {
     const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ success: true, packageId: "pkg-user-deadbeef" });
     const res = await publishPrivateTutorKnowledgeMapDraft("kmd_xyz789");
     expect(res).toEqual({ success: true, packageId: "pkg-user-deadbeef" });
     expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/knowledge-map-drafts/kmd_xyz789/publish");
+  });
+
+  it("activatePrivateTutorContentPackage preserves the selected chapter entry", async () => {
+    const activation = { id: "ptact_1", entryMode: "chapter", startModuleId: "mod_1" };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ activation });
+    const result = await activatePrivateTutorContentPackage({
+      packageId: "pkg-user-deadbeef",
+      entryMode: "chapter",
+      startModuleId: "mod_1",
+    });
+    expect(result).toEqual({ activation });
+    expect(spy).toHaveBeenCalledWith("POST", "/api/private-tutor/profile/content-package/activate", {
+      packageId: "pkg-user-deadbeef",
+      entryMode: "chapter",
+      startModuleId: "mod_1",
+    });
+  });
+
+  it("getPrivateTutorLearningHistory reads the account-scoped quality projection", async () => {
+    const history = { schemaVersion: 1, learnerId: "learner_xyz", packages: [] };
+    const spy = vi.spyOn(apiRequest, "request").mockResolvedValueOnce({ history });
+    const result = await getPrivateTutorLearningHistory();
+    expect(result).toEqual(history);
+    expect(spy).toHaveBeenCalledWith("GET", "/api/private-tutor/profile/learning-history");
   });
 });

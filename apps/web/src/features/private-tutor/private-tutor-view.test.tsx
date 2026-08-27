@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PrivateTutorView } from "@/features/private-tutor/private-tutor-view";
+import { formatPrivateTutorEvaluationFeedback, PrivateTutorView } from "@/features/private-tutor/private-tutor-view";
 import { ApiError } from "@/lib/api/request";
 
 const apiMocks = vi.hoisted(() => ({
@@ -10,6 +10,10 @@ const apiMocks = vi.hoisted(() => ({
   confirmMigration: vi.fn(),
   snapshot: vi.fn(),
   currentAssessment: vi.fn(),
+  listPackages: vi.fn(),
+  getPackage: vi.fn(),
+  activatePackage: vi.fn(),
+  learningHistory: vi.fn(),
 }));
 
 const sessionUser = { role: "viewer" } as const;
@@ -67,6 +71,7 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorAssessment: apiMocks.currentAssessment,
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
   getPrivateTutorReviewBook: () => Promise.resolve(emptyReviewBook),
+  getPrivateTutorLearningHistory: apiMocks.learningHistory,
   getPrivateTutorWeeklyReport: () => Promise.reject(new Error("not used")),
   getPrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
   updatePrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
@@ -88,18 +93,9 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   answerPrivateTutorReview: () => Promise.reject(new Error("not used")),
   correctPrivateTutorReviewDiagnosis: () => Promise.reject(new Error("not used")),
   rebalancePrivateTutorLearningPlan: () => Promise.reject(new Error("not used")),
-  listPrivateTutorContentPackages: () => Promise.resolve([
-    {
-      id: "demo-math-foundations-v1",
-      name: "初中数学基础：一元一次方程",
-      subjectId: "math",
-      domain: "math",
-      sourceType: "textbook",
-      version: "1.0.0",
-      targetAudience: { stage: "初中/通用基础" },
-      evaluationCapabilities: { deterministicGrading: true },
-    },
-  ]),
+  listPrivateTutorContentPackages: apiMocks.listPackages,
+  getPrivateTutorContentPackage: apiMocks.getPackage,
+  activatePrivateTutorContentPackage: apiMocks.activatePackage,
   getPrivateTutorActiveContentPackage: () => Promise.resolve({
     id: "demo-math-foundations-v1",
     name: "初中数学基础：一元一次方程",
@@ -110,7 +106,6 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
     targetAudience: { stage: "初中/通用基础" },
     evaluationCapabilities: { deterministicGrading: true },
   }),
-  updatePrivateTutorActiveContentPackage: () => Promise.resolve({ success: true, activePackageId: "demo-math-foundations-v1" }),
   listPrivateTutorMaterials: () => Promise.resolve([]),
   uploadPrivateTutorMaterial: () => Promise.reject(new Error("not used")),
   generatePrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
@@ -138,6 +133,61 @@ describe("My private tutor personal learning information architecture", () => {
     apiMocks.confirmMigration.mockReset().mockRejectedValue(new Error("not used"));
     apiMocks.snapshot.mockReset().mockResolvedValue({ learner: activeProfile, profile: activeProfile, snapshot: freshSnapshot, learnerModel: null, strategyDecision: null, learningPlan: null });
     apiMocks.currentAssessment.mockReset().mockResolvedValue(completedAssessment);
+    apiMocks.listPackages.mockReset().mockResolvedValue([{
+      id: "demo-math-foundations-v1",
+      name: "初中数学基础：一元一次方程",
+      subjectId: "math",
+      domain: "math",
+      sourceType: "textbook",
+      version: "1.0.0",
+      targetAudience: { stage: "初中/通用基础" },
+      evaluationCapabilities: { deterministicGrading: true },
+    }]);
+    apiMocks.getPackage.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.activatePackage.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.learningHistory.mockReset().mockResolvedValue({
+      schemaVersion: 1,
+      learnerId: activeProfile.id,
+      generatedAt: "2026-08-26T08:00:00.000Z",
+      definitions: {},
+      summary: {
+        packageCount: 1, chapterCount: 1, sessionCount: 2, completedSessionCount: 2,
+        startedPlanDayCount: 2, completedPlanDayCount: 1, planDayCompletionRate: 0.5,
+        practiceAttemptCount: 6, eligibleEvidenceCount: 4, evidenceEligibilityRate: 0.6667,
+        independentAttemptCount: 3, independentCorrectCount: 2, independentCorrectRate: 0.6667,
+        scheduledReviewCount: 2, completedReviewCount: 1, dueReviewCount: 1, upcomingReviewCount: 0,
+        sourceRubricAttemptCount: 3, sourceRubricRequiredReviewCount: 1, sourceRubricCompletedReviewCount: 1,
+        sourceRubricReviewCompletionRate: 1,
+      },
+      packages: [{
+        packageId: "demo-math-foundations-v1", packageVersion: "1.0.0", packageName: "初中数学基础：一元一次方程",
+        sourceType: "textbook", packageStatus: "published", contentDefinitionAvailable: true,
+        firstActivityAt: "2026-08-20T08:00:00.000Z", lastActivityAt: "2026-08-26T08:00:00.000Z",
+        activationCount: 1, assessmentCount: 1, completedAssessmentCount: 1,
+        summary: {
+          sessionCount: 2, completedSessionCount: 2, startedPlanDayCount: 2, completedPlanDayCount: 1,
+          planDayCompletionRate: 0.5, currentPlan: { planId: "plan-1", status: "active", scheduledDays: 7, completedDays: 1, inProgressDays: 1 },
+          practiceAttemptCount: 6, eligibleEvidenceCount: 4, evidenceEligibilityRate: 0.6667,
+          independentAttemptCount: 3, independentCorrectCount: 2, independentCorrectRate: 0.6667,
+          review: { scheduledCount: 2, completedCount: 1, dueCount: 1, upcomingCount: 0 },
+          sourceRubric: { attemptCount: 3, requiredReviewCount: 1, completedReviewCount: 1, pendingReviewCount: 0, reviewCompletionRate: 1 },
+        },
+        chapters: [{
+          moduleId: "mod-equations", moduleName: "一元一次方程与等式性质", orderIndex: 1, knowledgeCount: 4,
+          firstActivityAt: "2026-08-20T08:00:00.000Z", lastActivityAt: "2026-08-26T08:00:00.000Z",
+          summary: {
+            sessionCount: 2, completedSessionCount: 2, startedPlanDayCount: 2, completedPlanDayCount: 1,
+            planDayCompletionRate: 0.5, currentPlan: { planId: "plan-1", status: "active", scheduledDays: 7, completedDays: 1, inProgressDays: 1 },
+            practiceAttemptCount: 6, eligibleEvidenceCount: 4, evidenceEligibilityRate: 0.6667,
+            independentAttemptCount: 3, independentCorrectCount: 2, independentCorrectRate: 0.6667,
+            review: { scheduledCount: 2, completedCount: 1, dueCount: 1, upcomingCount: 0 },
+            sourceRubric: { attemptCount: 3, requiredReviewCount: 1, completedReviewCount: 1, pendingReviewCount: 0, reviewCompletionRate: 1 },
+          },
+          topics: [{ topicId: "top-foundations", topicName: "运算与方程基础", knowledgeIds: ["integer"] }],
+        }],
+        recentSessions: [{ id: "session-1", status: "completed", moduleId: "mod-equations", moduleName: "一元一次方程与等式性质", knowledgeId: "integer", knowledgeTitle: "有理数运算", planId: "plan-1", planDayIndex: 1, practiceCount: 3, evidenceCount: 2, startedAt: "2026-08-25T08:00:00.000Z", completedAt: "2026-08-25T08:20:00.000Z", reviewAt: "2026-08-26T08:20:00.000Z" }],
+      }],
+    });
   });
   afterEach(() => cleanup());
 
@@ -186,6 +236,60 @@ describe("My private tutor personal learning information architecture", () => {
     expect(screen.getByRole("button", { name: /学习数据/ })).toBeTruthy();
     expect(screen.queryByText("家庭与监护")).toBeNull();
     expect(screen.queryByText("家长入口")).toBeNull();
+  });
+
+  it("shows versioned chapter history and real long-term quality metrics", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的成长" }));
+
+    expect(await screen.findByText("已完成 1/2 个开始过的计划日")).toBeTruthy();
+    expect(screen.getByText("一元一次方程与等式性质")).toBeTruthy();
+    expect(screen.getByText("当前计划：完成 1/7 天，进行中 1 天。")).toBeTruthy();
+    expect(screen.getByText("有理数运算")).toBeTruthy();
+    expect(apiMocks.learningHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("chooses diagnostic or a concrete chapter before activating personal material", async () => {
+    const personalPackage = {
+      id: "pkg-user-feedback",
+      name: "形成性反馈",
+      subjectId: "general",
+      domain: "education",
+      sourceType: "user_material",
+      version: "1.0.0",
+      targetAudience: { stage: "custom" },
+      evaluationCapabilities: { deterministicGrading: false, sourceGrounding: true },
+      modules: [{ id: "mod-feedback", name: "第一章 学习证据", description: "", orderIndex: 1, topics: [] }],
+      knowledgeComponents: [],
+    } as const;
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.listPackages.mockResolvedValue([personalPackage]);
+    apiMocks.getPackage.mockResolvedValue(personalPackage);
+    apiMocks.activatePackage.mockResolvedValue({
+      activePackage: personalPackage,
+      snapshot: freshSnapshot,
+      activation: { id: "ptact_1", entryMode: "chapter", startModuleId: "mod-feedback", status: "active" },
+      runtimeValidation: { id: "ptrv_1", status: "passed" },
+      learnerModel: null,
+      strategyDecision: null,
+      learningPlan: null,
+    });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的设置" }));
+    fireEvent.click(screen.getByRole("button", { name: /学习内容/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "选择开始方式" }));
+
+    expect(await screen.findByText(/如何开始“形成性反馈”/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/从指定章节开始/));
+    expect((screen.getByLabelText("开始章节") as HTMLSelectElement).value).toBe("mod-feedback");
+    fireEvent.click(screen.getByRole("button", { name: "校准并开始" }));
+
+    await waitFor(() => expect(apiMocks.activatePackage).toHaveBeenCalledWith({
+      packageId: "pkg-user-feedback",
+      entryMode: "chapter",
+      startModuleId: "mod-feedback",
+    }));
   });
 
   it("shows unknown knowledge as unmeasured instead of weak", async () => {
@@ -248,5 +352,37 @@ describe("My private tutor personal learning information architecture", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("迁移校验没有完全通过");
     expect(apiMocks.getProfile).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "今日学习" })).toBeNull();
+  });
+});
+
+describe("private tutor evaluation feedback", () => {
+  it("surfaces the first incorrect math step before the general explanation", () => {
+    expect(formatPrivateTutorEvaluationFeedback({
+      firstIncorrectStep: 1,
+      explanation: "请检查整个解题过程。",
+      steps: [
+        { correct: true, feedback: "这一步正确。" },
+        { correct: false, feedback: "只改变等式一边会破坏平衡。" },
+      ],
+    })).toBe("第 2 步：只改变等式一边会破坏平衡。");
+  });
+
+  it("surfaces calibrated semantic-review feedback", () => {
+    expect(formatPrivateTutorEvaluationFeedback({
+      semanticStatus: "complete_review_required",
+      requiresReview: true,
+      explanation: "表达完整，但当前语音置信度不足。",
+    })).toBe("表达完整，但当前语音置信度不足。");
+  });
+
+  it("surfaces conceptual anchor-review feedback", () => {
+    expect(formatPrivateTutorEvaluationFeedback({
+      score: 0.75,
+      scoreBand: "developing",
+      anchorId: "anchor-developing-v1",
+      reviewReason: "score_near_proficiency_boundary",
+      requiresReview: true,
+      explanation: "回答接近熟练锚点，建议复核：说明如何调整学习。",
+    })).toBe("回答接近熟练锚点，建议复核：说明如何调整学习。");
   });
 });

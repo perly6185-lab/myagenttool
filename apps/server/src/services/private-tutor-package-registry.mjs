@@ -23,8 +23,12 @@ export function createPrivateTutorPackageRegistry({ packages = [], modules = [],
   return {
     listPackages(filters) {
       return [...packageMap.values()]
+        .filter((pkg) => pkg.status == null || pkg.status === "published")
         .filter((pkg) => !filters?.sourceType || pkg.sourceType === filters.sourceType)
         .filter((pkg) => !filters?.domain || pkg.domain === filters.domain)
+        .filter((pkg) => pkg.sourceType !== "user_material"
+          || !filters?.learningProfileId
+          || pkg.learningProfileId === filters.learningProfileId)
         .map((pkg) => packageSummary(pkg));
     },
     getPackage(packageId) {
@@ -98,6 +102,7 @@ function packageSummary(pkg) {
     domain: pkg.domain,
     sourceType: pkg.sourceType,
     version: pkg.version,
+    status: pkg.status ?? "published",
     license: pkg.license,
     targetAudience: structuredClone(pkg.targetAudience),
     evaluationCapabilities: structuredClone(pkg.evaluationCapabilities),

@@ -1,4 +1,9 @@
 import { privateTutorPackageRegistryFromState } from "./private-tutor-package-registry.mjs";
+import { finalizePrivateTutorEvaluation } from "./private-tutor-evaluation-contract.mjs";
+import {
+  applyPrivateTutorRuntimeEvidencePolicy,
+  privateTutorRuntimeValidation,
+} from "./private-tutor-adaptive-runtime.mjs";
 
 const KNOWLEDGE_ORDER = ["integer", "equation-meaning", "balance", "word-problem"];
 const PREREQUISITE = {
@@ -128,6 +133,18 @@ export function publicQuestion(question) {
     kind: question.kind,
     prompt: question.prompt,
     options: question.options?.map(({ id, label }) => ({ id, label })) ?? null,
+    ...(Array.isArray(question.requiredSourceRefs) && question.requiredSourceRefs.length > 0
+      ? { requiredSourceRefs: [...question.requiredSourceRefs] }
+      : {}),
+    ...(Array.isArray(question.sourceRefs) && question.sourceRefs.length > 0
+      ? {
+          sourceRefs: question.sourceRefs.map((ref) => ({
+            sectionId: ref.sectionId,
+            pageNumber: ref.pageNumber ?? null,
+            origin: ref.origin ?? null,
+          })),
+        }
+      : {}),
     contentPackageId: question.contentPackageId ?? null,
     contentPackageVersion: question.contentPackageVersion ?? null,
     subjectId: question.subjectId ?? null,
@@ -145,16 +162,7 @@ export function judgePrivateTutorAnswer(questionRevisionId, input = {}, state, p
     }
     try {
       const result = runtime.plugin.evaluator({ ...input, rawAnswer, responseKind }, question);
-      return result?.accepted === true
-        ? {
-            ...result,
-            evidenceEligible: result.evidenceEligible !== false,
-            evidenceTier: result.evidenceTier ?? "deterministic",
-            evaluation: result.evaluation ?? null,
-          }
-        : result?.accepted === false
-          ? result
-        : { accepted: false, error: "private_tutor_subject_plugin_failed" };
+      return finalizePrivateTutorEvaluation({ result, plugin: runtime.plugin, question });
     } catch {
       return { accepted: false, error: "private_tutor_subject_plugin_failed" };
     }
@@ -243,7 +251,11 @@ export function privateTutorDiagnosticConfig(state, packageId) {
   const runtime = packageRuntime(state, packageId);
   if (!runtime) return null;
   const questionCount = runtime.knowledge.reduce((total, item) => total + (item.diagnosticQuestions?.length ?? 0), 0);
-  if (!questionCount || runtime.package.evaluationCapabilities?.deterministicGrading !== true || !runtime.plugin) return null;
+  const runtimeValidated = runtime.package.sourceType === "user_material"
+    && Boolean(privateTutorRuntimeValidation(state, runtime.package.id, runtime.package.version));
+  if (!questionCount
+    || (!runtimeValidated && runtime.package.evaluationCapabilities?.deterministicGrading !== true)
+    || !runtime.plugin) return null;
   return {
     minQuestions: questionCount,
     maxQuestions: questionCount,
@@ -273,10 +285,10 @@ function diagnosticResultForKnowledge(answerSummaries, knowledgeOrder) {
 function packageRuntime(state, packageId) {
   const registry = privateTutorPackageRegistryFromState(state);
   const pkg = registry.getPackage(packageId);
-  if (!pkg) return null;
+  if (!pkg || (pkg.status != null && pkg.status !== "published")) return null;
   return {
     package: pkg,
-    plugin: registry.getSubjectPlugin(pkg.subjectId),
+    plugin: registry.getSubjectPlugin(pkg.evaluationSubjectId ?? pkg.subjectId),
     knowledge: pkg.knowledgeComponents ?? [],
   };
 }
@@ -296,7 +308,8 @@ function runtimeQuestion(revisionId, state, packageId) {
     ]) {
       const question = (questions ?? []).find((item) => item.id === revisionId || item.questionId === questionId);
       if (!question) continue;
-      return resolveRuntimeCatalogQuestion({ ...question, context }, state, runtime);
+      const resolved = resolveRuntimeCatalogQuestion({ ...question, context }, state, runtime);
+      return applyPrivateTutorRuntimeEvidencePolicy(state, runtime.package, resolved);
     }
   }
   return null;
@@ -306,13 +319,14 @@ function resolveRuntimeCatalogQuestion(question, state, runtime) {
   if (!question) return null;
   const hasGovernedRevision = state.privateTutorQuestionRevisions?.some((row) => row.questionId === question.questionId);
   const resolved = hasGovernedRevision ? resolveCatalogQuestion(question, state) : question;
-  return resolved ? {
+  const materialized = resolved ? {
     ...resolved,
     context: question.context ?? resolved.context,
     contentPackageId: runtime.package.id,
     contentPackageVersion: runtime.package.version,
     subjectId: runtime.package.subjectId,
   } : null;
+  return materialized ? applyPrivateTutorRuntimeEvidencePolicy(state, runtime.package, materialized) : null;
 }
 
 function runtimeDiagnosticCandidates(runtime, knowledgeId, answeredIds, state) {

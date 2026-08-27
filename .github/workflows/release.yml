@@ -54,6 +54,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Private tutor evaluation release gate
+        run: pnpm release:private-tutor -- --report .myagenttool/release-candidate/private-tutor-evaluation.json
+
       - name: Run release-candidate gate
         run: pnpm release:candidate
 

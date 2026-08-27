@@ -5,9 +5,10 @@ export interface EvaluationCapabilities {
   stepEvaluation: boolean;
   speechEvaluation: boolean;
   visualInteractions: boolean;
-  semanticEvaluation?: boolean | "authored_rubric" | "source_grounded_rubric";
+  semanticEvaluation?: boolean | "authored_rubric" | "source_grounded_rubric" | "causal-semantic-v2" | "anchored-concept-rubric-v2";
   codeExecution?: boolean;
   sourceGrounding?: boolean;
+  evidenceConfidenceCapped?: boolean;
 }
 
 export interface ContentTargetAudience {
@@ -24,6 +25,11 @@ export interface LearningContentPackage {
   sourceType: ContentSourceType;
   version: string;
   license: string;
+  status?: "published" | "disabled" | "source_removed";
+  learningProfileId?: string;
+  evaluationSubjectId?: string;
+  contentChecksum?: string;
+  releasedAt?: string;
   targetAudience?: ContentTargetAudience;
   evaluationCapabilities?: EvaluationCapabilities;
   modules?: Module[];
@@ -40,6 +46,43 @@ export interface MaterialSection {
   content: string;
 }
 
+export interface MaterialPage {
+  pageNumber: number;
+  text: string;
+  characterCount: number;
+  source: "pdf_text" | "local_ocr";
+  confidence: number | null;
+}
+
+export interface MaterialExtractionWarning {
+  code: string;
+  detail?: string;
+  pageNumbers?: number[];
+  limit?: number;
+}
+
+export interface MaterialExtraction {
+  parserVersion: number;
+  state: "ready" | "needs_ocr" | "empty";
+  method: "native_text" | "pdf_text" | "pdf_text_with_local_ocr" | "legacy_extracted_pdf_text";
+  pageCount: number | null;
+  processedPageCount: number | null;
+  characterCount: number;
+  textPageCount: number | null;
+  lowTextPageNumbers: number[];
+  truncated: boolean;
+  truncatedPages: boolean;
+  needsOcr: boolean;
+  ocr: {
+    required: boolean;
+    attempted: boolean;
+    state: "not_required" | "unavailable" | "completed" | "failed";
+    providerId: string | null;
+    reason: string | null;
+  };
+  warnings: MaterialExtractionWarning[];
+}
+
 export interface MaterialDocument {
   id: string;
   learningProfileId: string;
@@ -47,17 +90,21 @@ export interface MaterialDocument {
   fileType: "markdown" | "pdf" | "plain_text";
   fileSize: number;
   sourceHash: string;
-  status: "uploaded" | "parsing" | "parsed" | "draft_ready" | "published" | "failed" | "empty";
+  status: "uploaded" | "parsing" | "parsed" | "needs_ocr" | "draft_ready" | "published" | "failed" | "empty";
   rawText?: string;
+  pages?: MaterialPage[];
   sections: MaterialSection[];
+  extraction?: MaterialExtraction;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface DraftSourceRef {
+  sourceHash: string;
   sectionId: string;
   pageNumber: number | null;
   excerpt: string;
+  origin: "source" | "user_confirmed" | "ai_suggestion";
 }
 
 export interface DraftCandidateQuestion {
@@ -66,11 +113,95 @@ export interface DraftCandidateQuestion {
   kind: string;
 }
 
+export interface AuthoredRubricCriterion {
+  id: string;
+  label: string;
+  weight: number;
+  acceptedPhrases: string[];
+  partialPhrases: string[];
+  sourceRef: string;
+}
+
+export interface AuthoredRubric {
+  version: string;
+  profile: "anchored-concept-rubric-v2";
+  passBand: string;
+  reviewThreshold: number;
+  sourceWeight: number;
+  requiredSourceRefs: string[];
+  availableSourceRefs: string[];
+  bands: Array<{ id: string; minScore: number; maxScore: number }>;
+  anchors: Array<{ id: string; band: string; description: string; sample: string }>;
+  criteria: AuthoredRubricCriterion[];
+}
+
+export interface AuthoredQuestion {
+  id: string;
+  questionId: string;
+  knowledgeId: string;
+  context: "diagnostic" | "tutoring" | "practice" | "review";
+  difficulty: number;
+  kind: "rubric_response";
+  prompt: string;
+  referenceAnswer: string;
+  requiredSourceRefs: string[];
+  sourceRefs: DraftSourceRef[];
+  rubric: AuthoredRubric;
+  evidencePolicy: "practice_only_until_runtime_validation";
+  provenance: "rule_extracted";
+}
+
+export interface AuthoredKnowledgeContent {
+  knowledgeId: string;
+  sourceRefs: DraftSourceRef[];
+  teachingContent: {
+    coreConcept: string;
+    explanation: string;
+    provenance: "source_excerpt";
+    guidance: string;
+    guidanceProvenance: "rule_extracted";
+    keyPoints: string[];
+    hints: string[];
+    methods: { default: string };
+  };
+  diagnosticQuestions: AuthoredQuestion[];
+  tutoringQuestions: AuthoredQuestion[];
+  dailyQuestions: AuthoredQuestion[];
+  reviewQuestions: AuthoredQuestion[];
+}
+
+export interface AuthoredContentVersion {
+  id: string;
+  draftId: string;
+  learningProfileId: string;
+  schemaVersion: number;
+  generatorVersion: string;
+  version: number;
+  revision: number;
+  sourceMapRevision: number;
+  sourceMapFingerprint: string;
+  status: "in_review" | "confirmed" | "superseded" | "published";
+  knowledgeContents: AuthoredKnowledgeContent[];
+  validationIssues: DraftValidationIssue[];
+  confirmation: {
+    revision: number;
+    fingerprint: string;
+    confirmedBy: string;
+    confirmedAt: string;
+    acknowledgement: "teaching_content_and_rubrics_reviewed";
+  } | null;
+  generatedBy: string;
+  generatedAt: string;
+  updatedAt: string;
+  publishedAt?: string;
+}
+
 export interface DraftModule {
   id: string;
   name: string;
   description: string;
   sourceSectionId?: string;
+  sourceRef?: DraftSourceRef;
   orderIndex: number;
 }
 
@@ -80,6 +211,7 @@ export interface DraftTopic {
   name: string;
   description: string;
   sourceSectionId?: string;
+  sourceRef?: DraftSourceRef;
   orderIndex: number;
 }
 
@@ -91,6 +223,7 @@ export interface DraftKnowledgeComponent {
   learningObjectives: string[];
   prerequisiteDraftIds: string[];
   sourceRef?: DraftSourceRef;
+  sourceRefs?: DraftSourceRef[];
   candidateQuestions?: DraftCandidateQuestion[];
   orderIndex: number;
 }
@@ -109,11 +242,28 @@ export interface KnowledgeMapDraft {
   subjectId: string;
   domain: string;
   schemaVersion: number;
+  revision: number;
+  sourceSnapshot: {
+    materialDocumentId: string;
+    sourceHash: string;
+    parserVersion: number | null;
+    sectionCount: number;
+    pageCount: number | null;
+  };
   draftModules: DraftModule[];
   draftTopics: DraftTopic[];
   draftKnowledgeComponents: DraftKnowledgeComponent[];
   validationIssues: DraftValidationIssue[];
-  status: "in_review" | "published" | "discarded";
+  confirmation: {
+    revision: number;
+    fingerprint: string;
+    confirmedBy: string;
+    confirmedAt: string;
+    acknowledgement: "source_map_reviewed";
+  } | null;
+  authoredContentVersions: AuthoredContentVersion[];
+  activeAuthoredContentVersion: number | null;
+  status: "in_review" | "confirmed" | "content_in_review" | "content_confirmed" | "published" | "discarded";
   publishedPackageId?: string;
   createdAt: string;
   updatedAt: string;

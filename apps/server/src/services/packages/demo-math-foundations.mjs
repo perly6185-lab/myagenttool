@@ -50,6 +50,7 @@ export const demoMathFoundationsPackage = Object.freeze({
   evaluationCapabilities: {
     deterministicGrading: true,
     stepEvaluation: true,
+    stepEvaluationProfile: "linear-equation-v2",
     speechEvaluation: false,
     visualInteractions: true,
   },
@@ -212,6 +213,13 @@ export const demoMathFoundationsPackage = Object.freeze({
           difficulty: 2,
           kind: "math_steps",
           prompt: "分步骤解方程 x + 3 = 8。每行写一个等式。",
+          mathContract: {
+            version: "1.0.0",
+            profile: "linear-equation-v2",
+            variable: "x",
+            initialEquation: "x + 3 = 8",
+            expectedSolution: "5",
+          },
           expectedSteps: [
             { id: "subtract-both-sides", acceptedForms: ["x+3-3=8-3"], feedback: "第一步应在等式两边同时减 3。" },
             { id: "simplify", acceptedForms: ["x=5"], feedback: "第二步应化简得到 x=5。" },
