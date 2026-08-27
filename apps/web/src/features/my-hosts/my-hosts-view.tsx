@@ -85,39 +85,38 @@ export function MyHostsView() {
   const { i18n } = useAppTranslation();
   const zh = i18n.language.startsWith("zh");
   const professional = useUiStore((state) => state.experienceMode) === "professional";
-  const setExperienceMode = useUiStore((state) => state.setExperienceMode);
   const queryClient = useQueryClient();
-  const hosts = useQuery({ queryKey: ["my-hosts"], queryFn: hostApi.list, enabled: professional });
+  const hosts = useQuery({ queryKey: ["my-hosts"], queryFn: hostApi.list });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<DetailTab>("overview");
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupAllowPrivate, setSetupAllowPrivate] = useState(false);
-  const [openSetupAfterLoad, setOpenSetupAfterLoad] = useState(false);
   const selected = hosts.data?.hosts.find((host) => host.id === selectedId) ?? hosts.data?.hosts[0] ?? null;
 
   useEffect(() => {
     if (!selectedId && hosts.data?.hosts[0]) setSelectedId(hosts.data.hosts[0].id);
   }, [hosts.data?.hosts, selectedId]);
 
-  useEffect(() => {
-    if (!professional || !openSetupAfterLoad || hosts.isLoading || hosts.error) return;
-    setOpenSetupAfterLoad(false);
-    if (!hosts.data?.hosts.length) {
-      setSelectedId(null);
-      setSetupOpen(true);
-    }
-  }, [hosts.data?.hosts.length, hosts.error, hosts.isLoading, openSetupAfterLoad, professional]);
-
   const refresh = async () => queryClient.invalidateQueries({ queryKey: ["my-hosts"] });
-  const copy = zh ? {
-    eyebrow: "我的设置 · 专业能力", title: "我的主机", description: "安全连接自有主机，并把远程文件限制在经过验证的专用目录内。",
-    add: "添加主机", empty: "尚未添加主机", emptyHint: "添加后会依次保存安全凭据、确认主机指纹，并配置受控文件范围。",
-  } : {
-    eyebrow: "My settings · Professional", title: "My hosts", description: "Connect self-hosted servers and keep remote access inside verified dedicated directories.",
-    add: "Add host", empty: "No hosts yet", emptyHint: "Add one to save a secure credential, confirm its fingerprint, and configure a governed file range.",
-  };
-
-  if (!professional) return <div className="space-y-5"><SectionHeading eyebrow={zh ? "我的设置" : "My settings"} title={zh ? "连接我的主机" : "Connect my host"} description={zh ? "连接自己的电脑或服务器。高级 SSH 设置会在需要时显示。" : "Connect your own computer or server. Advanced SSH settings appear only when needed."} /><Notice title={zh ? "连接你的电脑或服务器" : "Connect your computer or server"} detail={zh ? "输入主机地址和登录信息，应用会先验证连接，再让你选择允许访问的文件夹。" : "Enter the host address and sign-in details. We will verify the connection before asking which folders may be accessed."} action={<Button onClick={() => { setOpenSetupAfterLoad(true); setExperienceMode("professional"); }}><Plus />{zh ? "开始连接" : "Start connecting"}</Button>} /></div>;
+  const copy = zh
+    ? professional
+      ? {
+          eyebrow: "我的主机 · 专业视图", title: "我的主机", description: "安全连接自有主机，并把远程文件限制在经过验证的专用目录内。",
+          add: "添加主机", empty: "尚未添加主机", emptyHint: "添加后会依次保存安全凭据、确认主机身份，并配置受控文件范围。",
+        }
+      : {
+          eyebrow: "我的主机", title: "连接和使用我的设备", description: "查看设备状态、浏览已允许的文件，并安全完成上传和下载。",
+          add: "连接设备", empty: "还没有连接设备", emptyHint: "输入设备地址和登录信息，验证成功后即可选择允许访问的文件夹。",
+        }
+    : professional
+      ? {
+          eyebrow: "My hosts · Professional view", title: "My hosts", description: "Connect self-hosted servers and keep remote access inside verified dedicated directories.",
+          add: "Add host", empty: "No hosts yet", emptyHint: "Add one to save a secure credential, confirm host identity, and configure a governed file range.",
+        }
+      : {
+          eyebrow: "My hosts", title: "Connect and use my devices", description: "Check device health, browse approved files, and safely upload or download.",
+          add: "Connect device", empty: "No devices connected", emptyHint: "Enter the device address and sign-in details, then choose which folder may be accessed.",
+        };
 
   if (hosts.isLoading) return <Notice title={zh ? "正在读取主机…" : "Loading hosts…"} loading />;
   if (hosts.error) return <Notice title={zh ? "暂时无法读取主机" : "Hosts are temporarily unavailable"} detail={errorText(hosts.error, zh)} action={<Button variant="secondary" onClick={() => void hosts.refetch()}><RefreshCw />{zh ? "重试" : "Retry"}</Button>} />;
@@ -130,50 +129,52 @@ export function MyHostsView() {
           const status = hostStatus(host, zh);
           return <button key={host.id} type="button" onClick={() => { setSelectedId(host.id); setTab("overview"); }} className={`w-full rounded-lg p-3 text-left transition-colors ${selected?.id === host.id ? "bg-primary/10" : "hover:bg-muted"}`}>
             <span className="flex items-center gap-2"><Server className="size-4 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm font-medium">{host.name}</span></span>
-            <span className="mt-2 flex items-center justify-between gap-2"><StatusBadge tone={status.tone}>{status.label}</StatusBadge><span className="truncate font-mono text-[11px] text-muted-foreground">{host.host}</span></span>
+            <span className="mt-2 flex items-center justify-between gap-2"><StatusBadge tone={status.tone}>{status.label}</StatusBadge>{professional ? <span className="truncate font-mono text-[11px] text-muted-foreground">{host.host}</span> : null}</span>
           </button>;
         })}</CardContent></Card>
-        {selected ? <HostDetail host={selected} tab={tab} setTab={setTab} zh={zh} onContinue={(options) => { setSetupAllowPrivate(Boolean(options?.allowPrivate)); setSetupOpen(true); }} /> : null}
+        {selected ? <HostDetail host={selected} tab={tab} setTab={setTab} zh={zh} professional={professional} onContinue={(options) => { setSetupAllowPrivate(Boolean(options?.allowPrivate)); setSetupOpen(true); }} /> : null}
       </div>
     )}
     <HostSetupDialog open={setupOpen} initialHost={selectedId ? selected : null} allowPrivateByDefault={setupAllowPrivate} zh={zh} onClose={() => { setSetupOpen(false); setSetupAllowPrivate(false); }} onChanged={refresh} />
   </div>;
 }
 
-function HostDetail({ host, tab, setTab, zh, onContinue }: { host: SshHost; tab: DetailTab; setTab: (tab: DetailTab) => void; zh: boolean; onContinue: (options?: { allowPrivate?: boolean }) => void }) {
+function HostDetail({ host, tab, setTab, zh, professional, onContinue }: { host: SshHost; tab: DetailTab; setTab: (tab: DetailTab) => void; zh: boolean; professional: boolean; onContinue: (options?: { allowPrivate?: boolean }) => void }) {
   const scopes = useQuery({ queryKey: ["my-host-scopes", host.id], queryFn: () => hostApi.scopes(host.id) });
   const labels: Record<DetailTab, string> = zh
     ? { overview: "概览", files: "远程文件", transfers: "传输任务", settings: "设置" }
     : { overview: "Overview", files: "Remote files", transfers: "Transfers", settings: "Settings" };
+  const visibleTabs = (Object.keys(labels) as DetailTab[]).filter((key) => professional || key !== "settings");
+  const visibleTab = professional || tab !== "settings" ? tab : "overview";
   const status = hostStatus(host, zh);
-  return <Card className="min-w-0"><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>{host.name}</CardTitle><p className="mt-1 font-mono text-xs text-muted-foreground">{host.user}@{host.host}:{host.port}</p></div><StatusBadge tone={status.tone}>{status.label}</StatusBadge></div><div className="mt-3 flex flex-wrap gap-1 border-b">{(Object.keys(labels) as DetailTab[]).map((key) => <button key={key} type="button" onClick={() => setTab(key)} className={`border-b-2 px-3 py-2 text-sm ${tab === key ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{labels[key]}</button>)}</div></CardHeader>
+  return <Card className="min-w-0"><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>{host.name}</CardTitle>{professional ? <p className="mt-1 font-mono text-xs text-muted-foreground">{host.user}@{host.host}:{host.port}</p> : <p className="mt-1 text-xs text-muted-foreground">{zh ? "自己的电脑或服务器" : "Your computer or server"}</p>}</div><StatusBadge tone={status.tone}>{status.label}</StatusBadge></div><div className="mt-3 flex flex-wrap gap-1 border-b">{visibleTabs.map((key) => <button key={key} type="button" onClick={() => setTab(key)} className={`border-b-2 px-3 py-2 text-sm ${visibleTab === key ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{labels[key]}</button>)}</div></CardHeader>
     <CardContent>
-      {tab === "overview" ? <HostOverview host={host} scopeCount={scopes.data?.count ?? 0} zh={zh} onContinue={onContinue} /> : null}
-      {tab === "files" ? <RemoteFiles host={host} scopes={scopes.data?.scopes ?? []} loading={scopes.isLoading} error={scopes.error} zh={zh} onAdd={onContinue} /> : null}
-      {tab === "transfers" ? <TransferHistory host={host} scopes={scopes.data?.scopes ?? []} zh={zh} /> : null}
-      {tab === "settings" ? <HostTechnicalSettings host={host} zh={zh} /> : null}
+      {visibleTab === "overview" ? <HostOverview host={host} scopeCount={scopes.data?.count ?? 0} zh={zh} professional={professional} onContinue={onContinue} /> : null}
+      {visibleTab === "files" ? <RemoteFiles host={host} scopes={scopes.data?.scopes ?? []} loading={scopes.isLoading} error={scopes.error} zh={zh} professional={professional} onAdd={onContinue} /> : null}
+      {visibleTab === "transfers" ? <TransferHistory host={host} scopes={scopes.data?.scopes ?? []} zh={zh} /> : null}
+      {professional && visibleTab === "settings" ? <HostTechnicalSettings host={host} zh={zh} /> : null}
     </CardContent>
   </Card>;
 }
 
-function HostOverview({ host, scopeCount, zh, onContinue }: { host: SshHost; scopeCount: number; zh: boolean; onContinue: (options?: { allowPrivate?: boolean }) => void }) {
+function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host: SshHost; scopeCount: number; zh: boolean; professional: boolean; onContinue: (options?: { allowPrivate?: boolean }) => void }) {
   const ready = host.connectionStatus === "ready";
   const privateNetworkBlocked = host.lastConnectionError?.code === "ssh_host_private_network_blocked";
   const hasConnectionError = host.connectionStatus === "error";
   const bannerTitle = !ready
     ? privateNetworkBlocked ? (zh ? "需要允许访问内网设备" : "Local-network access needs approval") : (zh ? "继续完成安全连接" : "Complete secure connection")
-    : (zh ? "添加一个文件范围" : "Add a file range");
+    : professional ? (zh ? "添加一个文件范围" : "Add a file range") : (zh ? "选择允许访问的文件夹" : "Choose an approved folder");
   const bannerDetail = !ready
     ? privateNetworkBlocked ? (zh ? "这是局域网地址。允许后会重新检查设备连接。" : "This is a local-network address. Approve it to check the device again.") : (zh ? "输入登录信息后，系统会验证设备并保护远程文件。" : "After sign-in, we will verify the device and protect remote files.")
-    : (zh ? "只有批准目录内的文件可以被查看。" : "Only files inside an approved directory can be viewed.");
+    : professional ? (zh ? "只有批准目录内的文件可以被查看。" : "Only files inside an approved directory can be viewed.") : (zh ? "选择后只能查看和操作这个文件夹内的内容。" : "Only files in the folder you choose can be viewed or changed.");
   const bannerActionLabel = !ready
     ? privateNetworkBlocked ? (zh ? "允许内网并重试" : "Allow local network and retry") : (hasConnectionError ? (zh ? "检查并重试" : "Check and retry") : (zh ? "继续设置" : "Continue setup"))
-    : (zh ? "继续设置" : "Continue setup");
+    : professional ? (zh ? "继续设置" : "Continue setup") : (zh ? "选择文件夹" : "Choose folder");
   return <div className="space-y-4">
     <div className="grid gap-3 sm:grid-cols-3">
       <Summary icon={ready ? CheckCircle2 : TriangleAlert} label={zh ? "连接" : "Connection"} value={ready ? (zh ? "已验证" : "Verified") : (zh ? "未完成" : "Incomplete")} />
-      <Summary icon={FolderLock} label={zh ? "文件范围" : "File ranges"} value={zh ? `${scopeCount} 个` : String(scopeCount)} />
-      <Summary icon={ShieldCheck} label={zh ? "访问方式" : "Access"} value={zh ? "范围内受控传输" : "Governed transfers"} />
+      <Summary icon={FolderLock} label={professional ? (zh ? "文件范围" : "File ranges") : (zh ? "允许访问的文件夹" : "Approved folders")} value={zh ? `${scopeCount} 个` : String(scopeCount)} />
+      <Summary icon={ShieldCheck} label={zh ? "文件操作" : "File access"} value={professional ? (zh ? "范围内受控传输" : "Governed transfers") : (zh ? "仅限已允许文件夹" : "Approved folders only")} />
     </div>
     {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div><p className="text-sm font-medium">{bannerTitle}</p><p className="mt-1 text-xs text-muted-foreground">{bannerDetail}</p></div><Button onClick={() => onContinue(privateNetworkBlocked ? { allowPrivate: true } : undefined)}>{bannerActionLabel}<ChevronRight /></Button></div> : null}
     {host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
@@ -239,16 +240,16 @@ function DiagnosticInsights({ action, output, zh }: { action: string | null; out
   return <div className="grid gap-2 sm:grid-cols-2" data-testid="diagnostic-insights">{cards.slice(0, 6).map((card) => <div key={card} className="rounded-lg border bg-card px-3 py-2 text-xs font-medium">{card}</div>)}</div>;
 }
 
-function RemoteFiles({ host, scopes, loading, error, zh, onAdd }: { host: SshHost; scopes: HostFileScope[]; loading: boolean; error: unknown; zh: boolean; onAdd: () => void }) {
+function RemoteFiles({ host, scopes, loading, error, zh, professional, onAdd }: { host: SshHost; scopes: HostFileScope[]; loading: boolean; error: unknown; zh: boolean; professional: boolean; onAdd: () => void }) {
   const [scopeId, setScopeId] = useState<string>("");
   useEffect(() => { if (!scopeId && scopes[0]) setScopeId(scopes[0].id); }, [scopeId, scopes]);
-  if (loading) return <Notice title={zh ? "正在读取文件范围…" : "Loading file ranges…"} loading />;
-  if (error) return <Notice title={zh ? "无法读取文件范围" : "File ranges unavailable"} detail={errorText(error, zh)} />;
-  if (!scopes.length) return <Notice title={zh ? "尚未配置文件范围" : "No file range configured"} detail={zh ? "请选择主机管理员准备好的专用目录。系统不会允许浏览主目录或系统目录。" : "Choose a dedicated directory prepared by the host administrator. Home and system directories are not allowed."} action={<Button disabled={host.connectionStatus !== "ready"} onClick={onAdd}><Plus />{zh ? "添加文件范围" : "Add file range"}</Button>} />;
+  if (loading) return <Notice title={professional ? (zh ? "正在读取文件范围…" : "Loading file ranges…") : (zh ? "正在读取允许的文件夹…" : "Loading approved folders…")} loading />;
+  if (error) return <Notice title={professional ? (zh ? "无法读取文件范围" : "File ranges unavailable") : (zh ? "无法读取允许的文件夹" : "Approved folders unavailable")} detail={errorText(error, zh)} />;
+  if (!scopes.length) return <Notice title={professional ? (zh ? "尚未配置文件范围" : "No file range configured") : (zh ? "还没有允许访问的文件夹" : "No approved folder yet")} detail={professional ? (zh ? "请选择主机管理员准备好的专用目录。系统不会允许浏览主目录或系统目录。" : "Choose a dedicated directory prepared by the host administrator. Home and system directories are not allowed.") : (zh ? "请选择这台设备上专门用于当前工作的文件夹；应用不会访问其他位置。" : "Choose a folder dedicated to this work. The app will not access other locations.")} action={<Button disabled={host.connectionStatus !== "ready"} onClick={onAdd}><Plus />{professional ? (zh ? "添加文件范围" : "Add file range") : (zh ? "选择文件夹" : "Choose folder")}</Button>} />;
   const scope = scopes.find((item) => item.id === scopeId) ?? scopes[0];
   const transferEnabled = scope.permissions.includes("upload") || scope.permissions.includes("download");
   const certificateOnly = scope.purpose === "tls_certificate";
-  return <div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><Select aria-label={zh ? "选择文件范围" : "Select file range"} value={scope.id} onChange={(event) => setScopeId(event.target.value)} className="max-w-xs">{scopes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select><StatusBadge tone={scope.status === "ready" ? "success" : "warning"}>{scope.status === "ready" ? (certificateOnly ? (zh ? "证书专用" : "Certificate only") : transferEnabled ? (zh ? "受控传输" : "Governed transfer") : (zh ? "只读范围" : "Read-only range")) : (zh ? "已停用" : "Disabled")}</StatusBadge><ScopeEditButton host={host} scope={scope} zh={zh} /><Button size="sm" variant="secondary" onClick={onAdd}><Plus />{zh ? "添加范围" : "Add range"}</Button></div>{scope.status === "ready" ? certificateOnly ? <TlsActivationProfiles host={host} scope={scope} zh={zh} /> : <FileBrowser key={scope.id} scope={scope} zh={zh} /> : <Notice title={zh ? "此文件范围已停用" : "This file range is disabled"} detail={zh ? "在“范围设置”中重新启用后才能浏览。" : "Enable it again in Range settings before browsing."} />}</div>;
+  return <div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><Select aria-label={professional ? (zh ? "选择文件范围" : "Select file range") : (zh ? "选择允许的文件夹" : "Select approved folder")} value={scope.id} onChange={(event) => setScopeId(event.target.value)} className="max-w-xs">{scopes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select><StatusBadge tone={scope.status === "ready" ? "success" : "warning"}>{scope.status === "ready" ? (certificateOnly ? (zh ? "证书专用" : "Certificate only") : transferEnabled ? professional ? (zh ? "受控传输" : "Governed transfer") : (zh ? "可上传和下载" : "Upload and download") : professional ? (zh ? "只读范围" : "Read-only range") : (zh ? "只可查看" : "View only")) : (zh ? "已停用" : "Disabled")}</StatusBadge><ScopeEditButton host={host} scope={scope} zh={zh} professional={professional} /><Button size="sm" variant="secondary" onClick={onAdd}><Plus />{professional ? (zh ? "添加范围" : "Add range") : (zh ? "添加文件夹" : "Add folder")}</Button></div>{scope.status === "ready" ? certificateOnly ? <TlsActivationProfiles host={host} scope={scope} zh={zh} /> : <FileBrowser key={scope.id} scope={scope} zh={zh} /> : <Notice title={professional ? (zh ? "此文件范围已停用" : "This file range is disabled") : (zh ? "此文件夹已停用" : "This folder is disabled")} detail={professional ? (zh ? "在“范围设置”中重新启用后才能浏览。" : "Enable it again in Range settings before browsing.") : (zh ? "在“文件夹设置”中重新启用后才能浏览。" : "Enable it again in Folder settings before browsing.")} />}</div>;
 }
 
 function TlsActivationProfiles({ host, scope, zh }: { host: SshHost; scope: HostFileScope; zh: boolean }) {
@@ -263,7 +264,7 @@ function TlsActivationProfiles({ host, scope, zh }: { host: SshHost; scope: Host
   return <div className="space-y-4 rounded-lg border p-4"><div><p className="text-sm font-medium">{zh ? "证书专用范围不可浏览或下载" : "Certificate-only range cannot be browsed or downloaded"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "只有证书管理器能写入固定文件名。先由主机管理员准备专用 Docker Nginx 容器，再登记容器名称；系统不会接受 Shell 或 Nginx 配置片段。" : "Only the certificate manager can write fixed filenames. Have the host administrator prepare a dedicated Docker Nginx container, then register its name. Shell commands and Nginx snippets are not accepted."}</p></div>{matching.map((profile) => <div key={profile.id} className="flex items-center justify-between gap-3 rounded-lg bg-muted p-3"><span><span className="block text-sm font-medium">{profile.label}</span><code className="text-xs text-muted-foreground">{profile.containerName}</code></span><StatusBadge tone={profile.status === "ready" ? "success" : "warning"}>{profile.status === "ready" ? (zh ? "已验证" : "Verified") : profile.status}</StatusBadge></div>)}<div className="flex flex-wrap items-end gap-2"><Field label={zh ? "Docker Nginx 容器名称" : "Docker Nginx container name"}><Input value={containerName} placeholder="myagenttool-site-nginx" onChange={(event) => setContainerName(event.target.value)} /></Field><Button disabled={!containerName.trim() || create.isPending} onClick={() => create.mutate()}>{create.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "验证固定激活配置" : "Verify fixed activation"}</Button></div>{profiles.error || create.error ? <p role="alert" className="text-sm text-destructive">{errorText(profiles.error ?? create.error, zh)}</p> : null}</div>;
 }
 
-function ScopeEditButton({ host, scope, zh }: { host: SshHost; scope: HostFileScope; zh: boolean }) {
+function ScopeEditButton({ host, scope, zh, professional }: { host: SshHost; scope: HostFileScope; zh: boolean; professional: boolean }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ label: scope.label, rootPath: scope.rootPath, purpose: scope.purpose, disabled: scope.status === "disabled", upload: scope.permissions.includes("upload"), download: scope.permissions.includes("download") });
@@ -272,7 +273,7 @@ function ScopeEditButton({ host, scope, zh }: { host: SshHost; scope: HostFileSc
     mutationFn: () => hostApi.updateScope(host.id, scope.id, { expectedRevision: scope.revision, label: form.label, rootPath: form.rootPath, purpose: form.purpose, status: form.disabled ? "disabled" : "ready", permissions: ["list", ...(form.upload ? ["upload" as const] : []), ...(form.download ? ["download" as const] : [])] }),
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["my-host-scopes", host.id] }); await queryClient.invalidateQueries({ queryKey: ["host-file-entries", scope.id] }); setOpen(false); },
   });
-  return <><Button size="sm" variant="ghost" onClick={() => setOpen(true)}>{zh ? "范围设置" : "Range settings"}</Button><Modal open={open} onClose={() => setOpen(false)} title={zh ? "文件范围设置" : "File range settings"} description={zh ? "更改目录会重新连接主机，并再次验证完整路径边界。传输权限可随时单独关闭。" : "Changing the directory reconnects and verifies the path boundary again. Transfer permissions can be disabled independently."} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={() => setOpen(false)}>{zh ? "取消" : "Cancel"}</Button><Button disabled={!form.label.trim() || !form.rootPath.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "验证并保存" : "Verify and save"}</Button></div>}><div className="space-y-3"><Field label={zh ? "范围名称" : "Range name"}><Input value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} /></Field><Field label={zh ? "远程目录" : "Remote directory"}><Input className="font-mono" value={form.rootPath} onChange={(event) => setForm({ ...form, rootPath: event.target.value })} /></Field><Field label={zh ? "用途" : "Purpose"}><Select value={form.purpose} onChange={(event) => setForm({ ...form, purpose: event.target.value as HostFileScopePurpose })}><option value="site_publish">{zh ? "站点发布" : "Site publishing"}</option><option value="tls_certificate">{zh ? "HTTPS 证书专用" : "HTTPS certificates only"}</option><option value="general_files">{zh ? "普通文件" : "General files"}</option><option value="backup">{zh ? "备份" : "Backup"}</option></Select></Field>{form.purpose === "tls_certificate" ? <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "此范围不开放浏览、上传或下载，只供证书管理器写入。" : "This range does not allow browsing, uploads, or downloads. Only the certificate manager can write to it."}</p> : <div className="rounded-lg border p-3"><p className="mb-2 text-sm font-medium">{zh ? "允许的操作" : "Allowed operations"}</p><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.upload} onChange={(event) => setForm({ ...form, upload: event.target.checked })} />{zh ? "允许确认后上传（单文件最大 10 MB）" : "Allow confirmed uploads (10 MB per file)"}</label><label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={form.download} onChange={(event) => setForm({ ...form, download: event.target.checked })} />{zh ? "允许确认后下载（单文件最大 25 MB）" : "Allow confirmed downloads (25 MB per file)"}</label></div>}<label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.disabled} onChange={(event) => setForm({ ...form, disabled: event.target.checked })} />{zh ? "暂时停用此范围" : "Temporarily disable this range"}</label>{mutation.error ? <p role="alert" className="text-sm text-destructive">{errorText(mutation.error, zh)}</p> : null}</div></Modal></>;
+  return <><Button size="sm" variant="ghost" onClick={() => setOpen(true)}>{professional ? (zh ? "范围设置" : "Range settings") : (zh ? "文件夹设置" : "Folder settings")}</Button><Modal open={open} onClose={() => setOpen(false)} title={professional ? (zh ? "文件范围设置" : "File range settings") : (zh ? "允许访问的文件夹设置" : "Approved folder settings")} description={professional ? (zh ? "更改目录会重新连接主机，并再次验证完整路径边界。传输权限可随时单独关闭。" : "Changing the directory reconnects and verifies the path boundary again. Transfer permissions can be disabled independently.") : (zh ? "更改文件夹后会重新检查访问边界；上传和下载可以分别关闭。" : "Changing the folder rechecks its access boundary. Upload and download can be disabled separately.")} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={() => setOpen(false)}>{zh ? "取消" : "Cancel"}</Button><Button disabled={!form.label.trim() || !form.rootPath.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "验证并保存" : "Verify and save"}</Button></div>}><div className="space-y-3"><Field label={professional ? (zh ? "范围名称" : "Range name") : (zh ? "文件夹名称" : "Folder name")}><Input value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} /></Field><Field label={zh ? "远程目录" : "Remote directory"}><Input className="font-mono" value={form.rootPath} onChange={(event) => setForm({ ...form, rootPath: event.target.value })} /></Field><Field label={zh ? "用途" : "Purpose"}><Select value={form.purpose} onChange={(event) => setForm({ ...form, purpose: event.target.value as HostFileScopePurpose })}><option value="site_publish">{zh ? "站点发布" : "Site publishing"}</option><option value="tls_certificate">{zh ? "HTTPS 证书专用" : "HTTPS certificates only"}</option><option value="general_files">{zh ? "普通文件" : "General files"}</option><option value="backup">{zh ? "备份" : "Backup"}</option></Select></Field>{form.purpose === "tls_certificate" ? <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "此范围不开放浏览、上传或下载，只供证书管理器写入。" : "This range does not allow browsing, uploads, or downloads. Only the certificate manager can write to it."}</p> : <div className="rounded-lg border p-3"><p className="mb-2 text-sm font-medium">{zh ? "允许的操作" : "Allowed operations"}</p><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.upload} onChange={(event) => setForm({ ...form, upload: event.target.checked })} />{zh ? "允许确认后上传（单文件最大 10 MB）" : "Allow confirmed uploads (10 MB per file)"}</label><label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={form.download} onChange={(event) => setForm({ ...form, download: event.target.checked })} />{zh ? "允许确认后下载（单文件最大 25 MB）" : "Allow confirmed downloads (25 MB per file)"}</label></div>}<label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.disabled} onChange={(event) => setForm({ ...form, disabled: event.target.checked })} />{professional ? (zh ? "暂时停用此范围" : "Temporarily disable this range") : (zh ? "暂时停用此文件夹" : "Temporarily disable this folder")}</label>{mutation.error ? <p role="alert" className="text-sm text-destructive">{errorText(mutation.error, zh)}</p> : null}</div></Modal></>;
 }
 
 function FileBrowser({ scope, zh }: { scope: HostFileScope; zh: boolean }) {
