@@ -3048,6 +3048,9 @@ test("AI handoff confirms and schedules the reviewed contract atomically and ide
   assert.equal(confirmed.body.workItem.waitingOn, "ai");
   assert.equal(confirmed.body.workItem.status, "ready");
   assert.equal(confirmed.body.workItem.revision, prepared.revision + 1);
+  assert.equal(confirmed.body.workItem.executionStartReceipt.status, "queued");
+  assert.equal(confirmed.body.workItem.executionStartReceipt.reasonCode, "waiting_for_turn");
+  assert.ok(confirmed.body.workItem.executionStartReceipt.id.startsWith("wsr_"));
 
   const replayed = service.confirmExecutionContractAndSchedule({
     workItemId: item.id,
@@ -3056,6 +3059,172 @@ test("AI handoff confirms and schedules the reviewed contract atomically and ide
   assert.equal(replayed.status, 200);
   assert.equal(replayed.body.replayed, true);
   assert.equal(replayed.body.workItem.revision, confirmed.body.workItem.revision);
+});
+
+test("a queued AI start can be cancelled without discarding its reviewed plan", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Prepare a cancellable start",
+    acceptanceCriteria: ["The result is complete."],
+    verificationSop: ["Review the result."],
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A).body.workItem;
+  const confirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A).body.workItem;
+
+  const cancelled = service.cancelExecutionStart({
+    workItemId: item.id,
+    expectedRevision: confirmed.revision,
+  }, ACTOR_A);
+  assert.equal(cancelled.status, 200);
+  assert.equal(cancelled.body.workItem.executionStartReceipt.status, "cancelled");
+  assert.equal(cancelled.body.workItem.executionPolicy, "paused");
+  assert.equal(cancelled.body.workItem.waitingOn, "none");
+  assert.deepEqual(cancelled.body.workItem.acceptanceCriteria, confirmed.acceptanceCriteria);
+  assert.deepEqual(cancelled.body.workItem.verificationSop, confirmed.verificationSop);
+
+  const replayed = service.cancelExecutionStart({
+    workItemId: item.id,
+    expectedRevision: confirmed.revision,
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.workItem.revision, cancelled.body.workItem.revision);
+});
+
+test("AI start outcomes are durable, idempotent, and become started with the execution binding", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Track scheduler handoff",
+    acceptanceCriteria: ["The handoff is visible."],
+    verificationSop: ["Inspect the handoff."],
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A).body.workItem;
+  const confirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A).body.workItem;
+
+  const blocked = service.recordExecutionStartOutcome({
+    workItemId: item.id,
+    status: "blocked",
+    reasonCode: "repository_agent_unavailable",
+    reasonDetail: "repository_agent_unavailable",
+  }, ACTOR_A);
+  assert.equal(blocked.body.workItem.executionStartReceipt.status, "blocked");
+  assert.equal(blocked.body.workItem.executionStartReceipt.reasonCode, "repository_agent_unavailable");
+  const replayed = service.recordExecutionStartOutcome({
+    workItemId: item.id,
+    status: "blocked",
+    reasonCode: "repository_agent_unavailable",
+    reasonDetail: "repository_agent_unavailable",
+  }, ACTOR_A);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.workItem.revision, blocked.body.workItem.revision);
+
+  const rechecked = service.recheckExecutionStart({
+    workItemId: item.id,
+    expectedRevision: blocked.body.workItem.revision,
+  }, ACTOR_A);
+  assert.equal(rechecked.status, 200);
+  assert.equal(rechecked.body.workItem.executionStartReceipt.status, "queued");
+  assert.equal(rechecked.body.workItem.executionStartReceipt.reasonCode, "waiting_for_turn");
+
+  const admission = service.beginExecution({ workItemId: item.id, kind: "auto_run", agentId: "agt_a" }, ACTOR_A);
+  assert.equal(admission.body.workItem.executionStartReceipt.status, "starting");
+  const bound = service.recordExecutionBinding({
+    workItemId: item.id,
+    kind: "auto_run",
+    targetId: "aur_start_receipt",
+    operationId: admission.body.operation.id,
+  }, ACTOR_A);
+  assert.equal(bound.status, 200);
+  assert.equal(bound.body.workItem.executionStartReceipt.status, "blocked", "a missing execution target is surfaced honestly");
+  assert.equal(bound.body.workItem.executionStartReceipt.targetId, "aur_start_receipt");
+  assert.equal(bound.body.workItem.executionStartReceipt.canCancel, false);
+  assert.ok(confirmed.executionStartReceipt.contractDigest);
+});
+
+test("AI start receipt reflects a changed execution policy and recheck resumes it", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Resume a start after settings changed",
+    acceptanceCriteria: ["The handoff resumes."],
+    verificationSop: ["Inspect the start receipt."],
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A).body.workItem;
+  const confirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A).body.workItem;
+  const disabled = service.updateWorkItem({
+    workItemId: item.id,
+    expectedRevision: confirmed.revision,
+    executionPolicy: "manual",
+  }, ACTOR_A).body.workItem;
+
+  assert.equal(disabled.executionStartReceipt.status, "blocked");
+  assert.equal(disabled.executionStartReceipt.reasonCode, "automatic_execution_disabled");
+
+  const rechecked = service.recheckExecutionStart({
+    workItemId: item.id,
+    expectedRevision: disabled.revision,
+  }, ACTOR_A);
+  assert.equal(rechecked.status, 200);
+  assert.equal(rechecked.body.replayed, false);
+  assert.equal(rechecked.body.workItem.executionPolicy, "auto");
+  assert.equal(rechecked.body.workItem.executionStartReceipt.status, "queued");
+  assert.equal(rechecked.body.workItem.executionStartReceipt.reasonCode, "waiting_for_turn");
+});
+
+test("AI start receipt resolves legacy office invocation binding ids", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Track an office execution",
+    acceptanceCriteria: ["The document is ready."],
+    verificationSop: ["Open the document."],
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A).body.workItem;
+  service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A);
+  const stored = state.workItems.find((candidate) => candidate.id === item.id);
+  stored.executionBindings = [{
+    kind: "application_invocation",
+    id: "inv_legacy_office",
+    terminalId: stored.terminalId,
+    createdAt: "2026-08-27T03:00:00.000Z",
+  }];
+  state.invocations = [{ id: "inv_legacy_office", status: "running", agentId: "agt_office" }];
+
+  const detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A);
+  assert.equal(detail.body.workItem.executionStartReceipt.status, "started");
+  assert.equal(detail.body.workItem.executionStartReceipt.executionKind, "application_invocation");
+  assert.equal(detail.body.workItem.executionStartReceipt.targetId, "inv_legacy_office");
+  assert.equal(detail.body.workItem.executionStartReceipt.phase, "running");
 });
 
 test("AI handoff prefers a validated decision-agent execution-plan draft", () => {

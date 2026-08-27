@@ -110,6 +110,26 @@ export type LocalWorkItem = {
   verificationSop?: string[];
   executionContractSource?: "manual" | "body_extracted" | "assisted" | null;
   executionContractConfirmedAt?: string | null;
+  executionStartReceipt?: {
+    schemaVersion: 1;
+    id: string;
+    status: "queued" | "starting" | "started" | "blocked" | "paused" | "cancelled";
+    requestedAt: string | null;
+    requestedBy: string | null;
+    confirmedRevision: number | null;
+    contractDigest: string | null;
+    updatedAt: string | null;
+    startedAt: string | null;
+    executionKind: "auto_run" | "application_invocation" | null;
+    targetId: string | null;
+    agentId: string | null;
+    phase: string | null;
+    reasonCode: string | null;
+    reasonDetail: string | null;
+    cancelledAt: string | null;
+    cancelledBy: string | null;
+    canCancel: boolean;
+  } | null;
   executionContractGate?: {
     ready: boolean;
     missing: ("acceptance_criteria" | "verification_sop" | "confirmation" | "confirmed_before_execution")[];

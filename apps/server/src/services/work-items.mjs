@@ -55,6 +55,7 @@ import { validateTaskPlan } from "./task-plan-contract.mjs";
 import { taskPlanCapabilityReadiness } from "./task-capability-readiness.mjs";
 import { applyResultRepairSpec, buildResultRepairTaskSpec } from "./result-repair-task.mjs";
 import { buildDeliveryEvidence } from "./work-item-delivery-evidence.mjs";
+import { normalizeExecutionStartFailure, projectExecutionStartReceipt } from "./work-item-execution-start.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -1623,6 +1624,7 @@ export function createWorkItemService({
     const {
       createIdempotencyKey: _createIdempotencyKey,
       followUpScheduleRevision: _followUpScheduleRevision,
+      executionStartRequest: _executionStartRequest,
       ...publicItem
     } = item;
     const bodyAcceptanceCriteria = (item.acceptanceCriteria ?? []).length
@@ -1722,6 +1724,7 @@ export function createWorkItemService({
       resultVerificationContract: item.resultVerificationContract ?? null,
       resultVerification,
       executionContractGate: executionContractGate(item),
+      executionStartReceipt: projectExecutionStartReceipt(item, state, { now: now() }),
       reviewContract: frozenReviewContract,
       reviewEvidence: reviewEvidence(item, frozenReviewContract),
       myTemplateOutcomeFeedback: templateOutcomeFeedback ? {
@@ -4374,6 +4377,29 @@ export function createWorkItemService({
       item.executionPolicy = "auto";
       item.waitingOn = "ai";
       if (item.status === "backlog") item.status = "ready";
+      item.executionStartRequest = {
+        schemaVersion: 1,
+        id: nextId("wsr"),
+        status: "queued",
+        requestedAt: timestamp,
+        requestedBy: actorUser(actor),
+        confirmedRevision: item.revision + 1,
+        contractDigest: createHash("sha256").update(JSON.stringify({
+          workItemId: item.id,
+          acceptanceCriteria: item.acceptanceCriteria,
+          verificationSop: item.verificationSop,
+          confirmedAt: timestamp,
+        })).digest("hex"),
+        updatedAt: timestamp,
+        startedAt: null,
+        executionKind: null,
+        targetId: null,
+        agentId: null,
+        reasonCode: "waiting_for_turn",
+        reasonDetail: null,
+        cancelledAt: null,
+        cancelledBy: null,
+      };
       item.revision += 1;
       item.updatedAt = timestamp;
       item.lastModifiedBy = actorUser(actor);
@@ -4391,6 +4417,120 @@ export function createWorkItemService({
       });
     });
     notifyWorkItemChanged(item, actor, "execution_contract_confirmed");
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: false } };
+  }
+
+  function cancelExecutionStart({ workItemId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    const receipt = projectExecutionStartReceipt(item, state, { now: now() });
+    if (receipt?.status === "cancelled") {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!item.executionStartRequest || !receipt?.canCancel || item.executionOperation
+      || (item.executionBindings ?? []).some((binding) => ["auto_run", "application_invocation"].includes(binding.kind))) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_start_cannot_cancel" } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      item.executionStartRequest = {
+        ...item.executionStartRequest,
+        status: "cancelled",
+        reasonCode: "cancelled_by_user",
+        reasonDetail: null,
+        cancelledAt: timestamp,
+        cancelledBy: actorUser(actor),
+        updatedAt: timestamp,
+      };
+      item.executionPolicy = "paused";
+      item.waitingOn = "none";
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_start_cancelled", { requestId: item.executionStartRequest.id });
+    });
+    notifyWorkItemChanged(item, actor, "execution_start_cancelled");
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: false } };
+  }
+
+  function recheckExecutionStart({ workItemId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const receipt = projectExecutionStartReceipt(item, state, { now: now() });
+    if (!item.executionStartRequest || !["queued", "blocked"].includes(receipt?.status ?? "")
+      || item.executionOperation || (item.executionBindings ?? []).some((binding) =>
+        ["auto_run", "application_invocation"].includes(binding.kind))) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_start_cannot_recheck" } };
+    }
+    if (receipt.status === "queued" && item.executionPolicy === "auto" && item.waitingOn === "ai"
+      && item.executionStartRequest.status === "queued" && item.executionStartRequest.reasonCode === "waiting_for_turn") {
+      notifyWorkItemChanged(item, actor, "execution_start_rechecked");
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      item.executionStartRequest = {
+        ...item.executionStartRequest,
+        status: "queued",
+        reasonCode: "waiting_for_turn",
+        reasonDetail: null,
+        updatedAt: timestamp,
+      };
+      item.executionPolicy = "auto";
+      item.waitingOn = "ai";
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_start_rechecked", { requestId: item.executionStartRequest.id });
+    });
+    notifyWorkItemChanged(item, actor, "execution_start_rechecked");
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: false } };
+  }
+
+  function recordExecutionStartOutcome({ workItemId, status, reasonCode, reasonDetail = null } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const request = item.executionStartRequest;
+    if (!request || request.status === "cancelled" || (item.executionBindings ?? []).some((binding) =>
+      ["auto_run", "application_invocation"].includes(binding.kind))) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    if (!["queued", "blocked"].includes(status)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_execution_start_outcome" } };
+    }
+    const normalizedCode = String(reasonCode ?? (status === "queued" ? "waiting_for_turn" : "execution_start_failed")).slice(0, 160);
+    const normalizedDetail = reasonDetail == null ? null : String(reasonDetail).slice(0, 500);
+    if (request.status === status && request.reasonCode === normalizedCode && request.reasonDetail === normalizedDetail) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      item.executionStartRequest = {
+        ...request,
+        status,
+        reasonCode: normalizedCode,
+        reasonDetail: normalizedDetail,
+        updatedAt: timestamp,
+      };
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_start_status_changed", {
+        requestId: request.id, status, reasonCode: normalizedCode,
+      });
+    });
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: false } };
   }
 
@@ -6124,6 +6264,16 @@ export function createWorkItemService({
     runTx(() => {
       const operation = item.executionOperation;
       item.executionOperation = null;
+      if (item.executionStartRequest && item.executionStartRequest.status !== "cancelled") {
+        const failure = normalizeExecutionStartFailure(reason);
+        item.executionStartRequest = {
+          ...item.executionStartRequest,
+          status: failure.status,
+          reasonCode: failure.reasonCode,
+          reasonDetail: failure.reasonDetail,
+          updatedAt: now(),
+        };
+      }
       if (item.claim?.status === "active" && item.claim.executionOperationId === operation.id) {
         item.claim = {
           ...item.claim,
@@ -6164,6 +6314,19 @@ export function createWorkItemService({
     };
     runTx(() => {
       item.executionBindings = [...(item.executionBindings ?? []), binding];
+      if (item.executionStartRequest && item.executionStartRequest.status !== "cancelled"
+        && ["auto_run", "application_invocation"].includes(kind)) {
+        item.executionStartRequest = {
+          ...item.executionStartRequest,
+          status: "started",
+          startedAt: binding.createdAt,
+          executionKind: kind,
+          targetId: binding.targetId,
+          reasonCode: null,
+          reasonDetail: null,
+          updatedAt: binding.createdAt,
+        };
+      }
       if (kind === "worktree" || kind === "auto_run") item.materialChangesPending = false;
       if (operationId != null) {
         item.executionOperation = null;
@@ -7384,7 +7547,7 @@ export function createWorkItemService({
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
-    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, confirmExecutionContractAndSchedule, retryWorkItemAlert,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, confirmExecutionContractAndSchedule, cancelExecutionStart, recheckExecutionStart, recordExecutionStartOutcome, retryWorkItemAlert,
     startApplicationExecution, requestApplicationExecutionApproval,
     applyLocalSchedulePlan,
     applyLocalScheduleRollover,

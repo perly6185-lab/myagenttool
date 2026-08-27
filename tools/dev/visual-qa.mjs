@@ -287,6 +287,9 @@ async function captureScreenshots(driver) {
           // occur. DOM readiness plus the scenario assertions is the stable gate.
           await page.goto(`${webUrl}/?api=${encodeURIComponent(apiUrl)}`, { waitUntil: "domcontentloaded" });
           await assertVisualState(page, scenario);
+          if (scenario.name === "execution-start-queued") {
+            await page.locator('[data-testid="execution-start-status"]:visible').scrollIntoViewIfNeeded();
+          }
           const filePath = resolve(screenshotDir, `${scenario.name}-${viewport.name}.png`);
           await page.screenshot({ path: filePath, fullPage: true });
           const layout = await page.evaluate(() => ({
@@ -426,6 +429,7 @@ function visualScenarios(baseline) {
     { name: "work-item-summary-completed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_completed" },
     { name: "work-item-summary-failed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_failed" },
     { name: "execution-start-confirmation", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_start", startConfirmation: true },
+    { name: "execution-start-queued", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_start_queued" },
     { name: "running", state: withRun("running"), invocationId: "inv_visual_running" },
     { name: "succeeded", state: withRun("succeeded", { summary: "Authentication boundaries reviewed; no unsafe write was performed." }), invocationId: "inv_visual_succeeded" },
     {
@@ -676,6 +680,17 @@ async function assertVisualState(page, scenario) {
     await confirmation.getByText("Done when", { exact: true }).waitFor();
     await confirmation.getByText("What AI may use", { exact: true }).waitFor();
     await confirmation.getByRole("button", { name: "Confirm and start AI" }).waitFor();
+    return;
+  }
+  if (scenario.name === "execution-start-queued") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    await detail.locator('[data-testid="execution-start-status"]').waitFor({ timeout: 15_000 });
+    await detail.getByText("AI accepted the task and is queued", { exact: true }).waitFor();
+    await detail.getByText(/scheduler will use priority and deadline risk/i).waitFor();
+    await detail.getByRole("button", { name: "Cancel this start" }).waitFor();
+    if (await detail.getByRole("button", { name: "Review and start AI" }).count()) {
+      throw new Error("queued start repeats the AI start action");
+    }
     return;
   }
   const homeComposer = page.locator('[data-testid="home-task-composer"] textarea[aria-label="Create a task"]:visible');
@@ -976,6 +991,21 @@ function homeWorkbenchFixture(projectId) {
       localContentRefs: [{ id: "wcr_visual_notes", contentId: "lc_visual_notes", purpose: "reference", title: "Customer communication notes", kind: "material", addedBy: "usr_local", createdAt: generatedAt, fingerprintPinned: true }],
       taskResourceRefs: [{ id: "wrr_visual_crm", resourceId: "wr_visual_crm", purpose: "query_source", title: "CRM launch accounts", resourceKind: "table", businessRole: "customer", locality: "remote", sourceLabel: "CRM", addedBy: "usr_local", createdAt: generatedAt, versionPinned: true }],
       myTemplateBinding: { schemaVersion: 1, definitionId: "rtd_visual_update", familyId: "family_visual_update", version: 2, name: "Customer launch update", expectedOutput: "A concise customer-ready risk update", matchReasons: ["The expected result matches"], snapshot: { name: "Customer launch update", description: "Prepare a concise update", expectedOutput: "A concise customer-ready risk update", steps: [] }, snapshotHash: "visual-template-hash", matchedAt: generatedAt },
+    }),
+    baseItem("lwi_visual_start_queued", "LOCAL-108", "Prepare the queued customer launch update", {
+      status: "ready", executionState: "unclaimed", plannedDate: null, waitingOn: "ai", executionPolicy: "auto",
+      body: "Prepare the customer launch update after higher-priority work.",
+      intentStatement: "Prepare a customer-ready launch update",
+      acceptanceCriteria: ["The update is customer-ready"],
+      verificationSop: ["Review the final update"],
+      executionContractSource: "assisted", executionContractConfirmedAt: generatedAt,
+      executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: generatedAt },
+      executionStartReceipt: {
+        schemaVersion: 1, id: "wsr_visual_queued", status: "queued", requestedAt: generatedAt, requestedBy: "usr_local",
+        confirmedRevision: 3, contractDigest: "visual-start-digest", updatedAt: generatedAt, startedAt: null,
+        executionKind: null, targetId: null, agentId: "agt_visual_codex", phase: null,
+        reasonCode: "waiting_for_turn", reasonDetail: null, cancelledAt: null, cancelledBy: null, canCancel: true,
+      },
     }),
   ];
   const home = ({ id, executionState, attentionReason, waitingOn, nextAction, ai, secondaryReasons = [] }) => {

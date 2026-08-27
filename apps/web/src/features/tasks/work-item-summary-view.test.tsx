@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   suggestWorkItemDraft: vi.fn(),
   prepareWorkItemExecutionContract: vi.fn(),
   confirmWorkItemExecutionContract: vi.fn(),
+  cancelWorkItemExecutionStart: vi.fn(),
+  recheckWorkItemExecutionStart: vi.fn(),
   listMyTemplateDefinitions: vi.fn(),
   recordMyTemplateOutcomeFeedback: vi.fn(),
   previewMyTemplateDraft: vi.fn(),
@@ -54,7 +56,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/data/use-console-state", () => ({
-  useConsoleState: () => ({ data: { users: [{ id: "usr_1", name: "Morgan" }] } }),
+  useConsoleState: () => ({ data: { users: [{ id: "usr_1", name: "Morgan" }], agents: [{ id: "agt_1", name: "Task assistant" }] } }),
 }));
 
 vi.mock("@/data/use-console-actions", () => ({
@@ -70,6 +72,8 @@ vi.mock("@/data/use-console-actions", () => ({
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
     prepareWorkItemExecutionContract: mocks.prepareWorkItemExecutionContract,
     confirmWorkItemExecutionContract: mocks.confirmWorkItemExecutionContract,
+    cancelWorkItemExecutionStart: mocks.cancelWorkItemExecutionStart,
+    recheckWorkItemExecutionStart: mocks.recheckWorkItemExecutionStart,
     listMyTemplateDefinitions: mocks.listMyTemplateDefinitions,
     recordMyTemplateOutcomeFeedback: mocks.recordMyTemplateOutcomeFeedback,
     previewMyTemplateDraft: mocks.previewMyTemplateDraft,
@@ -149,6 +153,30 @@ function item(overrides: Partial<LocalWorkItem> = {}): LocalWorkItem {
     archivedAt: null,
     updatedAt: "2026-08-05T00:00:00.000Z",
     executionState: "running",
+    ...overrides,
+  };
+}
+
+function startReceipt(overrides: Partial<NonNullable<LocalWorkItem["executionStartReceipt"]>> = {}): NonNullable<LocalWorkItem["executionStartReceipt"]> {
+  return {
+    schemaVersion: 1,
+    id: "wsr_1",
+    status: "queued",
+    requestedAt: "2026-08-05T00:01:00.000Z",
+    requestedBy: "usr_1",
+    confirmedRevision: 2,
+    contractDigest: "digest-1",
+    updatedAt: "2026-08-05T00:01:00.000Z",
+    startedAt: null,
+    executionKind: null,
+    targetId: null,
+    agentId: null,
+    phase: null,
+    reasonCode: "waiting_for_turn",
+    reasonDetail: null,
+    cancelledAt: null,
+    cancelledBy: null,
+    canCancel: true,
     ...overrides,
   };
 }
@@ -933,19 +961,77 @@ describe("work item summary presentation", () => {
         executionBindings: [],
       }),
     });
-    mocks.confirmWorkItemExecutionContract.mockResolvedValue({ workItem: item({ status: "ready", executionPolicy: "auto", waitingOn: "ai" }) });
+    const accepted = item({
+      status: "ready", executionState: "unclaimed", plannedDate: null,
+      executionPolicy: "auto", waitingOn: "ai", executionBindings: [],
+      executionStartReceipt: startReceipt(),
+    });
+    mocks.confirmWorkItemExecutionContract.mockResolvedValue({ workItem: accepted });
     const onOpenExpert = vi.fn();
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={onOpenExpert} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Review and start AI" }));
     expect(screen.getByRole("dialog", { name: "Confirm AI start" })).toBeTruthy();
+    mocks.getWorkItem.mockResolvedValue({ workItem: accepted });
     fireEvent.click(screen.getByRole("button", { name: "Confirm and start AI" }));
 
     await waitFor(() => expect(mocks.confirmWorkItemExecutionContract).toHaveBeenCalledWith("lwi_1", 2));
     expect(mocks.updateWorkItem).not.toHaveBeenCalled();
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
-    expect(await screen.findByText(/set to automatic/i)).toBeTruthy();
+    expect((await screen.findByTestId("execution-start-status")).textContent).toContain("AI accepted the task and is queued");
+    expect(screen.queryByRole("button", { name: "Review and start AI" })).toBeNull();
     expect(onOpenExpert).not.toHaveBeenCalled();
+  });
+
+  it("shows a durable queued start and lets the user cancel before execution begins", async () => {
+    const queued = item({
+      status: "ready", executionState: "unclaimed", plannedDate: null,
+      executionPolicy: "auto", waitingOn: "ai", executionBindings: [],
+      executionStartReceipt: startReceipt(),
+    });
+    mocks.getWorkItem.mockResolvedValue({ workItem: queued });
+    mocks.cancelWorkItemExecutionStart.mockResolvedValue({
+      workItem: item({
+        ...queued,
+        revision: 3,
+        executionPolicy: "paused",
+        waitingOn: "none",
+        executionStartReceipt: startReceipt({
+          status: "cancelled", reasonCode: "cancelled_by_user", canCancel: false,
+          cancelledAt: "2026-08-05T00:02:00.000Z", cancelledBy: "usr_1",
+        }),
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const status = await screen.findByTestId("execution-start-status");
+    expect(status.textContent).toContain("AI accepted the task and is queued");
+    expect(screen.queryByRole("button", { name: "Review and start AI" })).toBeNull();
+    fireEvent.click(within(status).getByRole("button", { name: "Cancel this start" }));
+
+    await waitFor(() => expect(mocks.cancelWorkItemExecutionStart).toHaveBeenCalledWith("lwi_1", 2));
+    expect(await screen.findByText("This start was cancelled")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Review and start AI" })).toBeTruthy();
+  });
+
+  it("requeues a blocked start through the dedicated scheduler recheck", async () => {
+    const blocked = item({
+      status: "ready", executionState: "unclaimed", plannedDate: null,
+      executionPolicy: "auto", waitingOn: "ai", executionBindings: [],
+      executionStartReceipt: startReceipt({ status: "blocked", reasonCode: "repository_agent_unavailable" }),
+    });
+    const queued = item({ ...blocked, revision: 3, executionStartReceipt: startReceipt() });
+    mocks.getWorkItem.mockResolvedValue({ workItem: blocked });
+    mocks.recheckWorkItemExecutionStart.mockResolvedValue({ workItem: queued, replayed: false });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const status = await screen.findByTestId("execution-start-status");
+    expect(status.textContent).toContain("No local development assistant is available");
+    mocks.getWorkItem.mockResolvedValue({ workItem: queued });
+    fireEvent.click(within(status).getByRole("button", { name: "Recheck" }));
+
+    await waitFor(() => expect(mocks.recheckWorkItemExecutionStart).toHaveBeenCalledWith("lwi_1", 2));
+    expect((await screen.findByTestId("execution-start-status")).textContent).toContain("AI accepted the task and is queued");
   });
 
   it("recovers a prepared but unconfirmed plan after reopening the task", async () => {
@@ -1480,7 +1566,12 @@ describe("work item summary presentation", () => {
     });
     mocks.updateWorkItem.mockResolvedValue({ workItem: bound });
     mocks.prepareWorkItemExecutionContract.mockResolvedValue({ workItem: prepared });
-    mocks.confirmWorkItemExecutionContract.mockResolvedValue({ workItem: item({ status: "ready", executionPolicy: "auto", waitingOn: "ai", revision: 6 }) });
+    const accepted = item({
+      status: "ready", executionState: "unclaimed", plannedDate: null,
+      executionPolicy: "auto", waitingOn: "ai", revision: 6, executionBindings: [],
+      executionStartReceipt: startReceipt({ confirmedRevision: 6 }),
+    });
+    mocks.confirmWorkItemExecutionContract.mockResolvedValue({ workItem: accepted });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Let AI start" }));
@@ -1503,11 +1594,12 @@ describe("work item summary presentation", () => {
     expect(await screen.findByRole("dialog", { name: "Confirm AI start" })).toBeTruthy();
     expect(mocks.updateWorkItem).toHaveBeenCalledTimes(1);
 
+    mocks.getWorkItem.mockResolvedValue({ workItem: accepted });
     fireEvent.click(screen.getByRole("button", { name: "Confirm and start AI" }));
     await waitFor(() => expect(mocks.confirmWorkItemExecutionContract).toHaveBeenCalledWith("lwi_1", prepared.revision));
     expect(mocks.suggestWorkItemDraft).toHaveBeenCalledTimes(1);
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
-    expect(await screen.findByText(/set to automatic/i)).toBeTruthy();
+    expect((await screen.findByTestId("execution-start-status")).textContent).toContain("AI accepted the task and is queued");
   });
 
   it("asks an existing local Issue for its desired result instead of exposing template choices", async () => {

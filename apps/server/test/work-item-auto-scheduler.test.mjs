@@ -461,6 +461,7 @@ test("an offline local agent leaves the task queued for a later sweep", async ()
   state.agents[0].status = "unavailable";
   Object.assign(state.workItems[0], { localNumber: 1, title: "Wait for desktop", terminalId: "dev_local" });
   let admissions = 0;
+  const outcomes = [];
   const service = createWorkItemAutoSchedulerService({
     state,
     now: () => "2026-08-08T04:00:00.000Z",
@@ -469,6 +470,7 @@ test("an offline local agent leaves the task queued for a later sweep", async ()
     abortExecution: () => ({ ok: true }),
     reserveAutoRun: async () => { throw new Error("must not reserve while offline"); },
     recordExecutionBinding: () => ({ ok: true }),
+    recordExecutionStartOutcome: (input) => { outcomes.push(input); return { ok: true }; },
     enqueueAutoRunUnderstanding: () => true,
   });
   const first = await service.sweep();
@@ -476,6 +478,37 @@ test("an offline local agent leaves the task queued for a later sweep", async ()
   assert.equal(admissions, 0);
   assert.equal(state.workItems[0].status, "ready");
   assert.equal(state.autoRuns.length, 0);
+  assert.deepEqual(outcomes, [{
+    workItemId: "lwi_1",
+    status: "blocked",
+    reasonCode: "repository_agent_unavailable",
+    reasonDetail: "repository_agent_unavailable",
+  }]);
+});
+
+test("a cancellation that races with a selected task is rechecked before admission", async () => {
+  const { state } = fixture("enabled");
+  Object.assign(state.workItems[0], {
+    executionPolicy: "auto",
+    localNumber: 1,
+    title: "Cancel before admission",
+    terminalId: "dev_local",
+  });
+  let admissions = 0;
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    getWorkItem: () => ({
+      ok: true,
+      body: { workItem: { ...state.workItems[0], executionPolicy: "paused", executionStartReceipt: { status: "cancelled" } } },
+    }),
+    beginExecution: () => { admissions += 1; return { ok: true, body: { operation: { id: "unexpected" } } }; },
+    recordExecutionStartOutcome: () => ({ ok: true }),
+  });
+
+  const result = await service.sweep();
+  assert.equal(result.starts[0].reason, "execution_cancelled");
+  assert.equal(admissions, 0);
 });
 
 test("a failed binding marks the reserved Run failed before reconciliation", async () => {

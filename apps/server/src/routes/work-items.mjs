@@ -76,6 +76,8 @@ export async function handleWorkItemRoutes({
   resumeMyTemplateGovernanceObservation,
   prepareExecutionContract,
   confirmExecutionContractAndSchedule,
+  cancelExecutionStart,
+  recheckExecutionStart,
   budgetStatusFor,
   retryWorkItemAlert,
   inspectArticleImport,
@@ -1142,6 +1144,16 @@ export async function handleWorkItemRoutes({
       ...confirmed.body,
       ...(confirmed.ok ? { readiness } : {}),
     });
+    return true;
+  }
+
+  const executionStartActionMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/execution-start\/(cancel|recheck)$/);
+  if (executionStartActionMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(executionStartActionMatch[1]);
+    const body = await readJson(req);
+    const action = executionStartActionMatch[2] === "cancel" ? cancelExecutionStart : recheckExecutionStart;
+    const result = action({ workItemId, expectedRevision: body?.expectedRevision }, actor);
+    sendJson(res, result.status, result.body);
     return true;
   }
 

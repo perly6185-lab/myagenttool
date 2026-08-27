@@ -2629,6 +2629,10 @@ export const api = {
   }) => request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-contract/prepare`, payload),
   confirmWorkItemExecutionContract: (id: string, expectedRevision: number) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-contract/confirm`, { expectedRevision }),
+  cancelWorkItemExecutionStart: (id: string, expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-start/cancel`, { expectedRevision }),
+  recheckWorkItemExecutionStart: (id: string, expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-start/recheck`, { expectedRevision }),
   previewWorkItemIntentPlan: (payload: {
     projectId: string;
     title: string;

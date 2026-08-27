@@ -186,3 +186,51 @@ test("repeated execution confirmation replays the scheduled state without anothe
   assert.equal(confirmed, false);
   assert.deepEqual(sent, { status: 200, body: { workItem: item, replayed: true } });
 });
+
+test("a pending execution start can be cancelled through its dedicated route", async () => {
+  let received;
+  let sent;
+  const handled = await handleWorkItemRoutes({
+    req: { method: "POST" },
+    res: {},
+    url: new URL("http://localhost/api/work-items/lwi_1/execution-start/cancel"),
+    readJson: async () => ({ expectedRevision: 7 }),
+    sendJson: (_res, status, body) => { sent = { status, body }; },
+    actor,
+    cancelExecutionStart: (input, requestActor) => {
+      received = { input, requestActor };
+      return { ok: true, status: 200, body: { workItem: preparedItem({ revision: 8 }), replayed: false } };
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(received, {
+    input: { workItemId: "lwi_1", expectedRevision: 7 },
+    requestActor: actor,
+  });
+  assert.equal(sent.status, 200);
+});
+
+test("a blocked execution start can request an immediate scheduler recheck", async () => {
+  let received;
+  let sent;
+  const handled = await handleWorkItemRoutes({
+    req: { method: "POST" },
+    res: {},
+    url: new URL("http://localhost/api/work-items/lwi_1/execution-start/recheck"),
+    readJson: async () => ({ expectedRevision: 9 }),
+    sendJson: (_res, status, body) => { sent = { status, body }; },
+    actor,
+    recheckExecutionStart: (input, requestActor) => {
+      received = { input, requestActor };
+      return { ok: true, status: 200, body: { workItem: preparedItem({ revision: 10 }), replayed: false } };
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(received, {
+    input: { workItemId: "lwi_1", expectedRevision: 9 },
+    requestActor: actor,
+  });
+  assert.equal(sent.status, 200);
+});

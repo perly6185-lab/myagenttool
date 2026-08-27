@@ -38,6 +38,7 @@ import { type SectionKey, type WorkItemSection } from "@/store/ui-store";
 import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item-progress-dialog";
 import { ExecutionStartConfirmation } from "./execution-start-confirmation";
 import { deriveExecutionStartSummary } from "./execution-start-summary";
+import { ExecutionStartStatusCard } from "./execution-start-status-card";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
 import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
@@ -457,7 +458,7 @@ export function WorkItemSummaryView({
   const [repairError, setRepairError] = useState<string | null>(null);
   const [resultExpanded, setResultExpanded] = useState(false);
   const [discussionOpen, setDiscussionOpen] = useState(false);
-  const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | "reverify" | null>(null);
+  const [actionPending, setActionPending] = useState<"start" | "cancel-start" | "recheck-start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | "reverify" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [startConfirmationOpen, setStartConfirmationOpen] = useState(false);
   const [pendingTemplateClarification, setPendingTemplateClarification] = useState<PendingTemplateClarification | null>(null);
@@ -617,6 +618,12 @@ export function WorkItemSummaryView({
   }, [observability?.delivery?.aiReview?.status]);
 
   useEffect(() => {
+    if (!item?.executionStartReceipt || !["queued", "starting"].includes(item.executionStartReceipt.status)) return undefined;
+    const timer = window.setTimeout(() => setRefreshVersion((version) => version + 1), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [item?.executionStartReceipt?.status, item?.executionStartReceipt?.updatedAt]);
+
+  useEffect(() => {
     if (!materialUndo) return undefined;
     const timer = window.setTimeout(() => setMaterialUndo(null), 8_000);
     return () => window.clearTimeout(timer);
@@ -660,6 +667,9 @@ export function WorkItemSummaryView({
   const presentation = resultPresentation(executionKind, language);
   const hasBoundAutoRun = item.executionBindings?.some((binding) => binding.kind === "auto_run") ?? false;
   const hasManagedExecution = Boolean(executionKind) || Boolean(item.executionState && item.executionState !== "unclaimed");
+  const startReceipt = item.executionStartReceipt ?? null;
+  const startRequestActive = Boolean(startReceipt && startReceipt.status !== "cancelled");
+  const startHandoffPending = Boolean(startReceipt && ["queued", "starting", "blocked", "paused"].includes(startReceipt.status));
   const executionContractReady = item.executionContractGate?.ready === true;
   const reviewAcceptanceCriteria = item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria;
   const reviewVerificationSop = item.reviewContract?.verificationSop ?? item.verificationSop ?? [];
@@ -677,7 +687,7 @@ export function WorkItemSummaryView({
       : hasManagedExecution
       ? 1
       : 0;
-  const startEligible = ["not_started", "scheduled"].includes(status) && !hasBoundAutoRun && !observability?.latestRun;
+  const startEligible = ["not_started", "scheduled"].includes(status) && !hasBoundAutoRun && !observability?.latestRun && !startRequestActive;
   const canCorrectMyTemplate = Boolean(item.myTemplateBinding && startEligible && canOperate);
   const learnedTemplateMatch = Boolean(item.myTemplateBinding?.matchReasons.some((reason) =>
     /纠正|corrected|correction/i.test(reason)));
@@ -711,7 +721,11 @@ export function WorkItemSummaryView({
   const clarificationSectionId = `work-item-human-action-${item.id}`;
   const firstClarificationQuestion = observability?.latestRun?.decision?.clarifyingQuestions?.find(Boolean) ?? null;
   const unresolvedDependency = item.blockedBy?.find((dependency) => !dependency.resolved) ?? null;
-  const primaryGuidance = pendingClarification
+  const primaryGuidance = startHandoffPending
+    ? (language === "zh"
+        ? "AI 启动请求已经保存；排队或待处理情况会在当前任务中持续更新。"
+        : "The AI start request is saved. Queue and action updates will continue in this task.")
+    : pendingClarification
     ? canOperate
       ? firstClarificationQuestion
         ? (language === "zh" ? `AI 需要你回答：${firstClarificationQuestion}` : `AI needs your answer: ${firstClarificationQuestion}`)
@@ -1479,8 +1493,8 @@ export function WorkItemSummaryView({
       setItem(response.workItem);
       setStartConfirmationOpen(false);
       setSyncNotice(language === "zh"
-        ? "任务已设为自动处理。AI 会按截止风险和优先级开始；需要你决定时会在当前任务中提问。"
-        : "The task is set to automatic. AI will start based on deadline risk and priority, and ask here only when a decision is needed.");
+        ? "AI 已接单。任务会按截止风险和优先级进入执行；排队或阻塞原因会显示在当前任务中。"
+        : "AI accepted the task. Execution follows deadline risk and priority, with queue or blocking reasons shown here.");
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-start-ai", workItemId: item.id } }));
       setRefreshVersion((version) => version + 1);
     } catch (caught) {
@@ -1624,6 +1638,46 @@ export function WorkItemSummaryView({
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-execution-policy", workItemId: item.id } }));
     } catch {
       setActionError(language === "zh" ? "自动处理设置更新失败，请重试。" : "The automatic-work setting could not be updated. Try again.");
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const cancelPendingExecutionStart = async () => {
+    if (actionPending || !startReceipt?.canCancel) return;
+    setActionPending("cancel-start");
+    setActionError(null);
+    try {
+      const response = await api.cancelWorkItemExecutionStart(item.id, item.revision) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setSyncNotice(language === "zh"
+        ? "本次启动已取消，AI 尚未开始执行。执行方案仍保留，需要时可以重新核对并启动。"
+        : "This start was cancelled before AI began. The plan is preserved so you can review and start it later.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-start-cancelled", workItemId: item.id } }));
+    } catch (caught) {
+      const changed = caught instanceof ApiError && caught.code === "work_item_revision_conflict";
+      setActionError(changed
+        ? (language === "zh" ? "任务状态刚刚发生变化，已刷新后请重新确认。" : "The task just changed. Review the refreshed status.")
+        : (language === "zh" ? "AI 可能已经开始，暂时无法取消。请查看最新执行状态。" : "AI may have started, so this request could not be cancelled. Check the latest status."));
+      setRefreshVersion((version) => version + 1);
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const recheckPendingExecutionStart = async () => {
+    if (actionPending || !startReceipt || !["queued", "blocked"].includes(startReceipt.status)) return;
+    setActionPending("recheck-start");
+    setActionError(null);
+    try {
+      const response = await api.recheckWorkItemExecutionStart(item.id, item.revision) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setReadiness(null);
+      setSyncNotice(language === "zh"
+        ? "已按最新状态重新检查并唤醒调度，启动结果会自动更新。"
+        : "The latest state was rechecked and scheduling was awakened. The start result will update automatically.");
+      setRefreshVersion((version) => version + 1);
+    } catch {
+      setActionError(language === "zh" ? "重新检查失败，已刷新任务状态。" : "Recheck failed. The task status has been refreshed.");
+      setRefreshVersion((version) => version + 1);
     } finally {
       setActionPending(null);
     }
@@ -1827,6 +1881,10 @@ export function WorkItemSummaryView({
       setStartConfirmationOpen(true);
       return;
     }
+    if (startHandoffPending) {
+      onOpenExpert("process");
+      return;
+    }
     if (primaryUsesProgress) {
       setProgressOpen(true);
       return;
@@ -1884,10 +1942,10 @@ export function WorkItemSummaryView({
           {item.priority !== "p0" ? <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void markUrgent()}>
             {language === "zh" ? "加急" : "Mark urgent"}
           </Button> : null}
-          {item.executionPolicy === "auto" ? <Button size="sm" variant="ghost" disabled={Boolean(actionPending)} onClick={() => void setAutomaticExecution("paused")}>
+          {item.executionPolicy === "auto" && !startReceipt?.canCancel ? <Button size="sm" variant="ghost" disabled={Boolean(actionPending)} onClick={() => void setAutomaticExecution("paused")}>
             {language === "zh" ? "暂停后续 AI 处理" : "Pause future AI work"}
           </Button> : null}
-          {item.executionPolicy === "paused" ? <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void setAutomaticExecution("auto")}>
+          {item.executionPolicy === "paused" && startReceipt?.status !== "cancelled" ? <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void setAutomaticExecution("auto")}>
             <Bot aria-hidden />{language === "zh" ? "恢复 AI 自动处理" : "Resume automatic AI work"}
           </Button> : null}
         </div> : null}
@@ -1898,6 +1956,18 @@ export function WorkItemSummaryView({
         language={language}
         onEdit={canOperate && status !== "completed" ? () => onOpenExpert("overview") : undefined}
       />
+
+      {startReceipt ? (
+        <ExecutionStartStatusCard
+          receipt={startReceipt}
+          language={language}
+          agentName={startReceipt.agentId ? consoleState?.agents?.find((agent) => agent.id === startReceipt.agentId)?.name ?? startReceipt.agentId : null}
+          pendingAction={actionPending === "cancel-start" ? "cancel" : actionPending === "recheck-start" ? "recheck" : null}
+          onRecheck={() => { void recheckPendingExecutionStart(); }}
+          onCancel={startReceipt.canCancel && canOperate ? () => { void cancelPendingExecutionStart(); } : undefined}
+          onOpenDetails={() => onOpenExpert("process")}
+        />
+      ) : null}
 
       {status !== "completed" ? <section className="rounded-xl border border-primary/30 bg-primary/[0.055] p-4" aria-labelledby={`work-item-next-${item.id}`}>
         <div className="flex gap-3">
@@ -1919,6 +1989,8 @@ export function WorkItemSummaryView({
                   ? language === "zh" ? "查看前置任务" : "View prerequisite"
                 : retryableRun
                 ? copy.retryAi
+                : startHandoffPending
+                  ? (language === "zh" ? "查看执行详情" : "Execution details")
                 : startEligible
                   ? actionPending === "start"
                     ? copy.startingAi

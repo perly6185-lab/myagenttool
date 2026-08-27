@@ -16,6 +16,7 @@ let server;
 let base;
 let runtimeState;
 let closeRuntimeServices;
+let sweepWorkItemAutoScheduler;
 const root = join(tmpdir(), `myagenttool-work-items-http-${process.pid}`);
 const projectAPath = join(root, "a");
 
@@ -55,6 +56,7 @@ before(async () => {
     persistenceEnabled: false, stateStorePath: join(root, "state", "local-demo-state.json"), stateSchemaVersion: 1, dispatchLeaseMs: 30_000, now,
   });
   const { httpDependencies } = runtimeServices;
+  sweepWorkItemAutoScheduler = httpDependencies.sweepWorkItemAutoScheduler;
   closeRuntimeServices = runtimeServices.closeRuntimeServices;
   server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -1087,6 +1089,101 @@ test("a local issue without a confirmed execution contract is prepared after han
   const detail = await call(`/api/work-items/${item.id}`);
   assert.equal(detail.body.workItem.executionContractSource, "assisted");
   assert.ok(detail.body.workItem.executionContractConfirmedAt);
+});
+
+test("the real HTTP confirmation returns one durable start receipt, supports pre-start cancellation, and binds one execution", async (t) => {
+  const project = runtimeState.projects.find((candidate) => candidate.id === "prj_a");
+  const agent = runtimeState.agents.find((candidate) =>
+    candidate.adapter?.type === "cli" && candidate.location?.type === "local_device" && candidate.id !== "agt_demo_cli");
+  assert.ok(project);
+  assert.ok(agent);
+  const previousAgentId = project.defaultAgentId;
+  const previousAgentStatus = agent.status;
+  const previousLifecycle = structuredClone(agent.lifecycle ?? null);
+  const previousHealth = structuredClone(agent.health ?? null);
+  const previousMode = runtimeState.autoRunSettings.workItemAutoSchedulerMode;
+  t.after(() => {
+    project.defaultAgentId = previousAgentId;
+    agent.status = previousAgentStatus;
+    agent.lifecycle = previousLifecycle;
+    agent.health = previousHealth;
+    runtimeState.autoRunSettings.workItemAutoSchedulerMode = previousMode;
+  });
+  project.defaultAgentId = agent.id;
+  agent.status = "available";
+  agent.lifecycle = { ...(agent.lifecycle ?? {}), state: "enabled" };
+  agent.health = { ...(agent.health ?? {}), status: "healthy" };
+  runtimeState.autoRunSettings.workItemAutoSchedulerMode = "off";
+
+  const cancellable = (await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Confirm then cancel before execution",
+      body: "Prove the start receipt survives the HTTP boundary.",
+      status: "ready",
+      priority: "p0",
+      acceptanceCriteria: ["One start receipt is visible."],
+      verificationSop: ["Read the start receipt."],
+    },
+  })).body.workItem;
+  const cancellablePrepared = await call(`/api/work-items/${cancellable.id}/execution-contract/prepare`, {
+    method: "POST", body: { expectedRevision: cancellable.revision },
+  });
+  assert.equal(cancellablePrepared.status, 200, JSON.stringify(cancellablePrepared.body));
+  const cancellableConfirmed = await call(`/api/work-items/${cancellable.id}/execution-contract/confirm`, {
+    method: "POST", body: { expectedRevision: cancellablePrepared.body.workItem.revision },
+  });
+  assert.equal(cancellableConfirmed.status, 200, JSON.stringify(cancellableConfirmed.body));
+  assert.equal(cancellableConfirmed.body.workItem.executionStartReceipt.status, "queued");
+  const cancelled = await call(`/api/work-items/${cancellable.id}/execution-start/cancel`, {
+    method: "POST", body: { expectedRevision: cancellableConfirmed.body.workItem.revision },
+  });
+  assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+  assert.equal(cancelled.body.workItem.executionStartReceipt.status, "cancelled");
+  assert.equal(cancelled.body.workItem.executionBindings?.length ?? 0, 0);
+
+  runtimeState.autoRunSettings.workItemAutoSchedulerMode = "enabled";
+  const runnable = (await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Confirm and bind exactly one execution",
+      body: "Prove the scheduler consumes one confirmed start request.",
+      status: "ready",
+      priority: "p0",
+      acceptanceCriteria: ["Exactly one execution is bound."],
+      verificationSop: ["Count the execution bindings."],
+    },
+  })).body.workItem;
+  const prepared = await call(`/api/work-items/${runnable.id}/execution-contract/prepare`, {
+    method: "POST", body: { expectedRevision: runnable.revision },
+  });
+  const confirmed = await call(`/api/work-items/${runnable.id}/execution-contract/confirm`, {
+    method: "POST", body: { expectedRevision: prepared.body.workItem.revision },
+  });
+  assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+  const requestId = confirmed.body.workItem.executionStartReceipt.id;
+  let started = null;
+  for (let attempt = 0; attempt < 10 && !started; attempt += 1) {
+    await sweepWorkItemAutoScheduler();
+    const detail = await call(`/api/work-items/${runnable.id}`);
+    if (detail.body.workItem.executionStartReceipt.status === "started") started = detail.body.workItem;
+  }
+  assert.ok(started, "the composed scheduler should bind the confirmed request");
+  assert.equal(started.executionStartReceipt.id, requestId);
+  assert.equal(started.executionStartReceipt.targetId, started.executionBindings[0].targetId);
+  assert.equal(started.executionBindings.filter((binding) => ["auto_run", "application_invocation"].includes(binding.kind)).length, 1);
+
+  const replayed = await call(`/api/work-items/${runnable.id}/execution-contract/confirm`, {
+    method: "POST", body: { expectedRevision: prepared.body.workItem.revision },
+  });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  await sweepWorkItemAutoScheduler();
+  const finalDetail = await call(`/api/work-items/${runnable.id}`);
+  assert.equal(finalDetail.body.workItem.executionBindings.filter((binding) =>
+    ["auto_run", "application_invocation"].includes(binding.kind)).length, 1);
 });
 
 test("local issues can be queued as a durable concurrency-limited Auto-run batch", async () => {
