@@ -2891,6 +2891,7 @@ async function handleTutoringSessionRoute({
       sendJson(res, 400, { error: "invalid_private_tutor_session_pace" });
       return true;
     }
+    const preferences = privateTutorLearningPreferences(state, learner.id);
     const session = createPrivateTutorSession({
       id: nextId("ptsess"),
       ownerTeamId: learner.ownerTeamId,
@@ -2902,6 +2903,7 @@ async function handleTutoringSessionRoute({
       state,
       contentPackageId,
       activationId: activation?.id ?? null,
+      targetMinutes: preferences.dailyMinutes,
     });
     if (!session) {
       sendJson(res, 409, { error: "private_tutor_session_content_unavailable" });
@@ -2975,7 +2977,8 @@ async function handleTutoringSessionRoute({
       const snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
       if (snapshot) {
         snapshot.completedSessions += 1;
-        snapshot.dailyMinutes = Math.min(20, Math.max(snapshot.dailyMinutes, session.plannedMinutes));
+        const preferences = privateTutorLearningPreferences(state, learner.id);
+        snapshot.dailyMinutes = Math.min(preferences.dailyMinutes, Math.max(snapshot.dailyMinutes, session.plannedMinutes));
         snapshot.revision += 1;
         snapshot.updatedAt = session.completedAt;
       }
@@ -3302,12 +3305,15 @@ function refreshPrivateTutorIntelligence(state, learner, {
     };
   }
 
+  const preferences = privateTutorLearningPreferences(state, learner.id);
   const planValue = buildPrivateTutorSevenDayPlan({
     model: learnerModel,
     decision: strategyDecision,
     now,
     reason,
     carryForwardKnowledgeId,
+    dailyMinutes: preferences.dailyMinutes,
+    planIntensity: preferences.planIntensity,
   });
   const previousPlan = state.privateTutorLearningPlans.find((row) =>
     row.learnerId === learner.id && sameContentPackage(row.contentPackageId, contentPackageId)) ?? null;

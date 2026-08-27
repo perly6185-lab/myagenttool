@@ -21,6 +21,46 @@ export interface PrivateTutorLearner {
   updatedAt: string;
 }
 
+export type PrivateTutorTeacherStyle = "heuristic_guidance" | "direct_concept" | "case_driven" | "socratic_questioning";
+export type PrivateTutorExplanationDepth = "concise_then_expand" | "from_foundations" | "key_difficulties_only" | "professional_depth";
+export type PrivateTutorFollowUpStyle = "gentle_probe" | "direct_check" | "none";
+export type PrivateTutorVoicePreference = "push_to_talk" | "hands_free" | "text_only";
+export type PrivateTutorPlanIntensity = "relaxed" | "standard" | "intensive";
+
+export interface PrivateTutorLearningPreferences {
+  learnerId: string;
+  captions: boolean;
+  reducedMotion: boolean;
+  dailyMinutes: number;
+  planIntensity: PrivateTutorPlanIntensity;
+  teacherStyle: PrivateTutorTeacherStyle;
+  explanationDepth: PrivateTutorExplanationDepth;
+  followUpStyle: PrivateTutorFollowUpStyle;
+  voicePreference: PrivateTutorVoicePreference;
+  learningGoal: {
+    targetTopicIds: string[];
+    weeklyMinutes: number | null;
+    targetDate: string | null;
+    note: string;
+  } | null;
+  deactivatedPackageIds: string[];
+  revision: number;
+  schemaVersion: number;
+  updatedAt: string | null;
+}
+
+export type PrivateTutorLearningPreferencesPatch = Partial<Pick<PrivateTutorLearningPreferences,
+  | "captions"
+  | "reducedMotion"
+  | "dailyMinutes"
+  | "planIntensity"
+  | "teacherStyle"
+  | "explanationDepth"
+  | "followUpStyle"
+  | "voicePreference"
+  | "learningGoal"
+>>;
+
 export interface PrivateTutorDeletionJobStatus {
   reportId: string;
   status: "pending_erasure" | "erasing" | "erasure_failed";
@@ -341,6 +381,8 @@ export interface PrivateTutorLearningPlan {
   startKnowledgeId?: string | null;
   reason: string;
   studentReason: string;
+  planIntensity?: PrivateTutorPlanIntensity;
+  dailyMinutes?: number;
   generatedAt: string;
   days: Array<{
     dayIndex: number;
@@ -747,6 +789,16 @@ export async function createPrivateTutorProfile(input: { displayName: string; gr
     created: boolean;
     migrationRequired: false;
   }>("POST", "/api/private-tutor/profile", input);
+}
+
+export async function getPrivateTutorLearningPreferences() {
+  const result = await request<{ preferences: PrivateTutorLearningPreferences }>("GET", "/api/private-tutor/profile/preferences");
+  return result.preferences;
+}
+
+export async function updatePrivateTutorLearningPreferences(preferences: PrivateTutorLearningPreferencesPatch) {
+  const result = await request<{ preferences: PrivateTutorLearningPreferences }>("PUT", "/api/private-tutor/profile/preferences", { preferences });
+  return result.preferences;
 }
 
 export interface PrivateTutorProfileMigrationCandidate {

@@ -11,7 +11,7 @@ import {
 } from "../src/services/private-tutor-session.mjs";
 import { updatePrivateTutorLearningPreferences } from "../src/services/private-tutor-learning-preferences.mjs";
 
-function fixture(pace = "standard") {
+function fixture(pace = "standard", targetMinutes = null) {
   let tick = 0;
   const now = () => new Date(Date.UTC(2026, 7, 20, 8, 0, tick++)).toISOString();
   return {
@@ -23,6 +23,7 @@ function fixture(pace = "standard") {
       plan: { id: "plan_1", days: [{ knowledgeId: "balance", strategy: "concept_rebuild" }] },
       decision: { id: "decision_1", targetKnowledgeId: "balance", strategy: "concept_rebuild" },
       pace,
+      targetMinutes,
       now,
     }),
   };
@@ -47,6 +48,14 @@ test("light and review modes keep the same safe phases within their shorter budg
     assert.equal(view.progress.reduce((total, item) => total + item.budgetMinutes, 0), expectedMinutes);
     assert.equal(view.progress.length, 5);
   }
+});
+
+test("a standard session scales its five safe phases to the persisted daily target", () => {
+  const { session } = fixture("standard", 35);
+  const view = privateTutorSessionView(session);
+  assert.equal(view.plannedMinutes, 35);
+  assert.equal(view.progress.reduce((total, item) => total + item.budgetMinutes, 0), 35);
+  assert.equal(view.progress.every((item) => item.budgetMinutes >= 1), true);
 });
 
 test("pause and resume preserve the exact activity", () => {
@@ -99,6 +108,7 @@ test("teaching preferences reframe the explanation without touching questions or
   updatePrivateTutorLearningPreferences(state, "learner_a", {
     teacherStyle: "socratic_questioning",
     explanationDepth: "professional_depth",
+    followUpStyle: "direct_check",
   }, { now: prefNow, nextId: (p) => `${p}_${++prefId}` });
 
   const styled = privateTutorSessionView(session, state);
@@ -117,6 +127,7 @@ test("teaching preferences reframe the explanation without touching questions or
   assert.ok(explainStyled.startsWith(explainPlain));
   assert.match(explainStyled, /连续追问/);
   assert.match(explainStyled, /专业标准深入/);
+  assert.match(explainStyled, /直接用一个检查问题/);
 
   const recallIndex = session.activities.findIndex((a) => a.kind === "recall");
   session.currentActivityIndex = recallIndex;

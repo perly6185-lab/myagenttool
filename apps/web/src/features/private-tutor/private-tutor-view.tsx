@@ -45,6 +45,7 @@ import {
   getCurrentPrivateTutorAssessment,
   getCurrentPrivateTutorSession,
   getPrivateTutorLearningHistory,
+  getPrivateTutorLearningPreferences,
   getPrivateTutorProfile,
   getPrivateTutorDataPolicy,
   getPrivateTutorSnapshot,
@@ -65,6 +66,7 @@ import {
   startPrivateTutorAssessment,
   startPrivateTutorSession,
   updatePrivateTutorDataPolicy,
+  updatePrivateTutorLearningPreferences,
   type PrivateTutorAssessment,
   type PrivateTutorDataPolicy,
   type PrivateTutorDeletionJobStatus,
@@ -75,6 +77,8 @@ import {
   type PrivateTutorLearner,
   type PrivateTutorLearningPlan,
   type PrivateTutorLearningHistory,
+  type PrivateTutorLearningPreferences,
+  type PrivateTutorLearningPreferencesPatch,
   type PrivateTutorProfileMigrationReport,
   type PrivateTutorSession,
   type PrivateTutorSessionPace,
@@ -124,6 +128,25 @@ const SETTINGS_SPACES: Array<{
   { key: "teacher", title: "AI 私教", hint: "讲解方式、追问深度和反馈风格", audience: "我" },
   { key: "data", title: "学习数据", hint: "学习记录、导出、保留与清除", audience: "我" },
 ];
+
+function defaultPrivateTutorLearningPreferences(learnerId: string): PrivateTutorLearningPreferences {
+  return {
+    learnerId,
+    captions: true,
+    reducedMotion: typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true,
+    dailyMinutes: 20,
+    planIntensity: "standard",
+    teacherStyle: "heuristic_guidance",
+    explanationDepth: "concise_then_expand",
+    followUpStyle: "gentle_probe",
+    voicePreference: "push_to_talk",
+    learningGoal: null,
+    deactivatedPackageIds: [],
+    revision: 0,
+    schemaVersion: 1,
+    updatedAt: null,
+  };
+}
 
 export function PrivateTutorView() {
   const sessionUser = useSessionUser();
@@ -327,8 +350,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [diagnosticDismissed, setDiagnosticDismissed] = useState(false);
   const [initialLearningRoute, setInitialLearningRoute] = useState<"choose" | "diagnostic" | "content">("choose");
-  const [captions, setCaptions] = useState(true);
-  const [reducedMotion, setReducedMotion] = useState(() => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true);
+  const [learningPreferences, setLearningPreferences] = useState<PrivateTutorLearningPreferences>(() => defaultPrivateTutorLearningPreferences(learnerId));
 
   useEffect(() => {
     let current = true;
@@ -337,8 +359,9 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     setLoadError("");
     setDiagnosticDismissed(false);
     setInitialLearningRoute("choose");
-    void Promise.allSettled([getPrivateTutorSnapshot(), getCurrentPrivateTutorAssessment(), getCurrentPrivateTutorSession(), getPrivateTutorReviewBook()])
-      .then(([snapshotResult, assessmentResult, sessionResult, reviewResult]) => {
+    setLearningPreferences(defaultPrivateTutorLearningPreferences(learnerId));
+    void Promise.allSettled([getPrivateTutorSnapshot(), getCurrentPrivateTutorAssessment(), getCurrentPrivateTutorSession(), getPrivateTutorReviewBook(), getPrivateTutorLearningPreferences()])
+      .then(([snapshotResult, assessmentResult, sessionResult, reviewResult, preferencesResult]) => {
         if (!current) return;
         if (snapshotResult.status === "fulfilled") {
           setLearnerState(serverLearnerState(snapshotResult.value.learner, snapshotResult.value.snapshot));
@@ -356,6 +379,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
         }
         setTutoringSession(sessionResult.status === "fulfilled" ? sessionResult.value : null);
         setReviewBook(reviewResult.status === "fulfilled" ? reviewResult.value : null);
+        if (preferencesResult.status === "fulfilled") setLearningPreferences(preferencesResult.value);
         setAssessmentReady(true);
       });
     return () => { current = false; };
@@ -456,6 +480,16 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     setTab("today");
   }
 
+  async function saveLearningPreferences(patch: PrivateTutorLearningPreferencesPatch) {
+    try {
+      const updated = await updatePrivateTutorLearningPreferences(patch);
+      setLearningPreferences(updated);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "学习偏好暂时没有保存，请重试。";
+    }
+  }
+
   const allKnowledgeUnknown = learnerState.knowledge.every((item) => item.level === "unknown");
   const needsInitialLearningRoute = !assessment && allKnowledgeUnknown && !learningPlan;
   if (!assessmentReady) {
@@ -488,10 +522,8 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
         <Button className="mb-5" variant="secondary" onClick={() => setInitialLearningRoute("choose")}>返回开始方式</Button>
         <TutorSettings
           state={learnerState}
-          captions={captions}
-          onCaptionsChange={setCaptions}
-          reducedMotion={reducedMotion}
-          onReducedMotionChange={setReducedMotion}
+          preferences={learningPreferences}
+          onPreferencesChange={saveLearningPreferences}
           onPackageActivated={applyPackageActivation}
           onProfileDeleted={() => window.location.reload()}
           initialSpace="content"
@@ -559,17 +591,15 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
       </nav>
 
       <div className="p-4 sm:p-7">
-        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} strategyDecision={strategyDecision} session={tutoringSession} captions={captions} reducedMotion={reducedMotion} onReschedule={rescheduleToday} onStart={startLesson} onPause={pauseLesson} onResume={resumeLesson} onAction={actOnLesson} /> : null}
+        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} strategyDecision={strategyDecision} session={tutoringSession} preferences={learningPreferences} onReschedule={rescheduleToday} onStart={startLesson} onPause={pauseLesson} onResume={resumeLesson} onAction={actOnLesson} /> : null}
         {tab === "map" ? <KnowledgeMap state={learnerState} learnerModel={learnerModel} /> : null}
         {tab === "errors" ? <ErrorBook state={learnerState} reviewBook={reviewBook} onReviewBookChange={setReviewBook} onSnapshot={(snapshot) => setLearnerState((current) => applyServerSnapshot(current, snapshot))} /> : null}
         {tab === "growth" ? <Growth state={learnerState} /> : null}
         {tab === "settings" ? (
           <TutorSettings
             state={learnerState}
-            captions={captions}
-            onCaptionsChange={setCaptions}
-            reducedMotion={reducedMotion}
-            onReducedMotionChange={setReducedMotion}
+            preferences={learningPreferences}
+            onPreferencesChange={saveLearningPreferences}
             onPackageActivated={applyPackageActivation}
             onProfileDeleted={() => window.location.reload()}
           />
@@ -872,8 +902,7 @@ function TodayLearning({
   learningPlan,
   strategyDecision,
   session,
-  captions,
-  reducedMotion,
+  preferences,
   onReschedule,
   onStart,
   onPause,
@@ -884,8 +913,7 @@ function TodayLearning({
   learningPlan: PrivateTutorLearningPlan | null;
   strategyDecision: PrivateTutorStrategyDecision | null;
   session: PrivateTutorSession | null;
-  captions: boolean;
-  reducedMotion: boolean;
+  preferences: PrivateTutorLearningPreferences;
   onReschedule: () => Promise<string | null>;
   onStart: (pace: PrivateTutorSessionPace) => Promise<string | null>;
   onPause: () => Promise<string | null>;
@@ -911,12 +939,25 @@ function TodayLearning({
   const [message, setMessage] = useState("");
   const recognitionRef = useRef<PrivateTutorRecognitionController | null>(null);
   const attemptKeyRef = useRef(newClientKey("tutoring"));
-  const dailyProgress = Math.round((state.dailyMinutes / 20) * 100);
+  const dailyTargetMinutes = Math.max(5, preferences.dailyMinutes);
+  const dailyProgress = Math.min(100, Math.round((state.dailyMinutes / dailyTargetMinutes) * 100));
+  const captions = preferences.captions;
+  const reducedMotion = preferences.reducedMotion;
+  const voiceEnabled = preferences.voicePreference !== "text_only";
 
   useEffect(() => () => {
     recognitionRef.current?.abort();
     interruptPrivateTutorSpeech();
   }, []);
+  useEffect(() => {
+    if (preferences.voicePreference === "text_only") {
+      recognitionRef.current?.abort();
+      recognitionRef.current = null;
+      setListening(false);
+      return;
+    }
+    setVoiceMode(preferences.voicePreference);
+  }, [preferences.voicePreference]);
   useEffect(() => {
     setAnswer("");
     setMessage("");
@@ -1169,7 +1210,7 @@ function TodayLearning({
                 onClick={() => setPace(value)}
                 className={cn("rounded-full px-3 py-1.5 text-xs font-medium transition", pace === value ? "bg-white text-emerald-800" : "bg-emerald-700/70 text-emerald-50 hover:bg-emerald-700")}
               >
-                {{ easy: "轻松学 5 分钟", standard: "标准 20 分钟", review: "今天只复习 10 分钟" }[value]}
+                {{ easy: "轻松学 5 分钟", standard: `按我的设置 ${dailyTargetMinutes} 分钟`, review: "今天只复习 10 分钟" }[value]}
               </button>
             ))}
           </div>
@@ -1182,7 +1223,7 @@ function TodayLearning({
           <Card className="p-5">
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2 text-sm font-medium"><Clock3 className="size-4 text-emerald-600" />今日进度</span>
-              <span className="text-sm font-bold text-emerald-700">{state.dailyMinutes} / 20 分钟</span>
+              <span className="text-sm font-bold text-emerald-700">{state.dailyMinutes} / {dailyTargetMinutes} 分钟</span>
             </div>
             <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${dailyProgress}%` }} /></div>
             <p className="mt-3 text-xs leading-5 text-muted-foreground">随时可以暂停，明天会从这里继续，不会显示“失败”。</p>
@@ -1305,10 +1346,12 @@ function TodayLearning({
       <aside className="grid content-start gap-4">
         <Card className="p-5">
           <p className="text-sm font-semibold">可以说，也可以点</p>
-          <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-muted/60 p-1" aria-label="语音交互模式">
-            {(["push_to_talk", "hands_free"] as const).map((mode) => <button key={mode} type="button" disabled={listening} onClick={() => { setVoiceMode(mode); recordVoiceEvent("mode_changed", mode); }} className={cn("rounded-lg px-2 py-2 text-xs font-medium", voiceMode === mode ? "bg-card text-foreground shadow-sm" : "text-muted-foreground")}>{mode === "push_to_talk" ? "点按说话" : "自由对话"}</button>)}
-          </div>
-          <button type="button" onClick={() => void toggleVoice()} className={cn("mt-4 flex min-h-24 w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed transition", listening ? "border-rose-400 bg-rose-50 text-rose-700 dark:bg-rose-950" : "border-emerald-300 bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950")}>{listening ? <MicOff className="size-7" /> : <Mic className="size-7" />}<span className="text-sm font-medium">{listening ? "停止聆听" : "开始说话"}</span></button>
+          {voiceEnabled ? <>
+            <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-muted/60 p-1" aria-label="语音交互模式">
+              {(["push_to_talk", "hands_free"] as const).map((mode) => <button key={mode} type="button" disabled={listening} onClick={() => { setVoiceMode(mode); recordVoiceEvent("mode_changed", mode); }} className={cn("rounded-lg px-2 py-2 text-xs font-medium", voiceMode === mode ? "bg-card text-foreground shadow-sm" : "text-muted-foreground")}>{mode === "push_to_talk" ? "点按说话" : "自由对话"}</button>)}
+            </div>
+            <button type="button" onClick={() => void toggleVoice()} className={cn("mt-4 flex min-h-24 w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed transition", listening ? "border-rose-400 bg-rose-50 text-rose-700 dark:bg-rose-950" : "border-emerald-300 bg-emerald-50/70 text-emerald-800 dark:bg-emerald-950")}>{listening ? <MicOff className="size-7" /> : <Mic className="size-7" />}<span className="text-sm font-medium">{listening ? "停止聆听" : "开始说话"}</span></button>
+          </> : <p className="mt-3 rounded-xl bg-muted p-4 text-sm text-muted-foreground">你已在“我的设置”中选择纯文字学习，语音输入已关闭。</p>}
           {interimTranscript ? <p className="mt-3 rounded-lg bg-sky-50 p-3 text-sm text-sky-900 dark:bg-sky-950 dark:text-sky-100">正在识别：{interimTranscript}</p> : null}
           <p role="status" className="mt-3 text-xs leading-5 text-muted-foreground">{voiceMessage}</p>
           {pendingVoiceTurn ? (
@@ -1638,10 +1681,13 @@ function privateTutorOcrReasonLabel(reason: string | null | undefined) {
   return "本地 OCR 未能完成识别";
 }
 
-function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onReducedMotionChange, onPackageActivated, onProfileDeleted, initialSpace = "preferences" }: { state: LearnerTutorState; captions: boolean; onCaptionsChange: (value: boolean) => void; reducedMotion: boolean; onReducedMotionChange: (value: boolean) => void; onPackageActivated: (result: PrivateTutorPackageActivationResult) => void; onProfileDeleted: () => void; initialSpace?: TutorSettingsSpace }) {
+function TutorSettings({ state, preferences, onPreferencesChange, onPackageActivated, onProfileDeleted, initialSpace = "preferences" }: { state: LearnerTutorState; preferences: PrivateTutorLearningPreferences; onPreferencesChange: (patch: PrivateTutorLearningPreferencesPatch) => Promise<string | null>; onPackageActivated: (result: PrivateTutorPackageActivationResult) => void; onProfileDeleted: () => void; initialSpace?: TutorSettingsSpace }) {
   const [space, setSpace] = useState<TutorSettingsSpace>(initialSpace);
-  const [teacherStyle, setTeacherStyle] = useState("启发式引导");
-  const [explanationDepth, setExplanationDepth] = useState("先简洁，再展开");
+  const [preferenceBusy, setPreferenceBusy] = useState(false);
+  const [preferenceMessage, setPreferenceMessage] = useState("");
+  const [goalDescription, setGoalDescription] = useState(preferences.learningGoal?.note ?? "");
+  const [goalWeeklyMinutes, setGoalWeeklyMinutes] = useState(preferences.learningGoal?.weeklyMinutes?.toString() ?? "");
+  const [goalTargetDate, setGoalTargetDate] = useState(preferences.learningGoal?.targetDate ?? "");
   const [packages, setPackages] = useState<LearningContentPackage[]>([]);
   const [activePackage, setActivePackage] = useState<LearningContentPackage | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1653,6 +1699,30 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
   const [entryMode, setEntryMode] = useState<"diagnostic" | "chapter">("diagnostic");
   const [startModuleId, setStartModuleId] = useState("");
   const selected = SETTINGS_SPACES.find((item) => item.key === space) ?? SETTINGS_SPACES[0];
+
+  useEffect(() => {
+    setGoalDescription(preferences.learningGoal?.note ?? "");
+    setGoalWeeklyMinutes(preferences.learningGoal?.weeklyMinutes?.toString() ?? "");
+    setGoalTargetDate(preferences.learningGoal?.targetDate ?? "");
+  }, [preferences.revision, preferences.learningGoal]);
+
+  async function savePreference(patch: PrivateTutorLearningPreferencesPatch, success = "学习偏好已保存。") {
+    setPreferenceBusy(true);
+    setPreferenceMessage("");
+    const failure = await onPreferencesChange(patch);
+    setPreferenceMessage(failure ?? success);
+    setPreferenceBusy(false);
+  }
+
+  async function saveLearningGoal() {
+    const description = goalDescription.trim();
+    const weeklyMinutes = goalWeeklyMinutes ? Number(goalWeeklyMinutes) : null;
+    await savePreference({
+      learningGoal: description || weeklyMinutes || goalTargetDate
+        ? { targetTopicIds: preferences.learningGoal?.targetTopicIds ?? [], note: description, weeklyMinutes, targetDate: goalTargetDate || null }
+        : null,
+    }, "学习目标已保存。后续计划会保留这个目标。" );
+  }
 
   useEffect(() => {
     let current = true;
@@ -1767,9 +1837,27 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
           <div className="flex items-start justify-between gap-3"><div><p className="text-xs text-muted-foreground">只影响我的私教体验</p><h2 className="mt-1 text-lg font-bold">{selected.title}</h2></div><UserRound className="size-6 text-emerald-600" /></div>
           {space === "preferences" ? (
             <div className="mt-6 grid gap-4">
-              <PreferenceToggle label="显示实时字幕" hint="语音教学时同步显示文字" checked={captions} onChange={onCaptionsChange} />
-              <PreferenceToggle label="减少动画" hint="使用静态图和单步切换，学习内容保持完整" checked={reducedMotion} onChange={onReducedMotionChange} />
+              <PreferenceToggle label="显示实时字幕" hint="语音教学时同步显示文字" checked={preferences.captions} disabled={preferenceBusy} onChange={(value) => void savePreference({ captions: value })} />
+              <PreferenceToggle label="减少动画" hint="使用静态图和单步切换，学习内容保持完整" checked={preferences.reducedMotion} disabled={preferenceBusy} onChange={(value) => void savePreference({ reducedMotion: value })} />
+              <div className="grid gap-4 rounded-xl border p-4 sm:grid-cols-2">
+                <label className="text-sm font-medium">每天可用时间
+                  <input aria-label="每天可用时间" type="number" min={5} max={180} value={preferences.dailyMinutes} disabled={preferenceBusy} onChange={(event) => void savePreference({ dailyMinutes: Number(event.target.value) }, "每日学习时长已保存，并会用于新计划和标准学习会话。") } className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal" />
+                </label>
+                <label className="text-sm font-medium">计划强度
+                  <select aria-label="计划强度" value={preferences.planIntensity} disabled={preferenceBusy} onChange={(event) => void savePreference({ planIntensity: event.target.value as PrivateTutorLearningPreferences["planIntensity"] }, "计划强度已保存，将用于下一次生成或重排计划。") } className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option value="relaxed">轻松</option><option value="standard">标准</option><option value="intensive">强化</option></select>
+                </label>
+              </div>
+              <div className="grid gap-3 rounded-xl border p-4">
+                <p className="text-sm font-medium">我的学习目标</p>
+                <textarea aria-label="学习目标" value={goalDescription} disabled={preferenceBusy} onChange={(event) => setGoalDescription(event.target.value.slice(0, 200))} rows={3} placeholder="例如：六周内读完前三章，并能独立解释核心概念" className="w-full rounded-lg border bg-card p-3 text-sm" />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-xs font-medium">每周投入分钟<input aria-label="每周投入分钟" type="number" min={5} max={180} value={goalWeeklyMinutes} disabled={preferenceBusy} onChange={(event) => setGoalWeeklyMinutes(event.target.value)} className="mt-1 h-9 w-full rounded-md border bg-card px-2 text-sm font-normal" /></label>
+                  <label className="text-xs font-medium">目标日期<input aria-label="目标日期" type="date" value={goalTargetDate} disabled={preferenceBusy} onChange={(event) => setGoalTargetDate(event.target.value)} className="mt-1 h-9 w-full rounded-md border bg-card px-2 text-sm font-normal" /></label>
+                </div>
+                <Button size="sm" variant="secondary" disabled={preferenceBusy} onClick={() => void saveLearningGoal()}>保存学习目标</Button>
+              </div>
               <div className="rounded-xl bg-muted/60 p-4"><p className="text-sm font-medium">当前学习档案</p><p className="mt-1 text-sm text-muted-foreground">{state.learner.displayName} · {state.learner.grade} · {state.learner.curriculum}</p></div>
+              {preferenceMessage ? <p role="status" className="rounded-lg bg-muted p-3 text-sm">{preferenceMessage}</p> : null}
             </div>
           ) : null}
           {space === "content" ? (
@@ -1876,7 +1964,14 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
               <PrivateTutorContentMigration />
             </div>
           ) : null}
-          {space === "teacher" ? <div className="mt-6 grid gap-4"><label className="text-sm font-medium">老师的讲解方式<select value={teacherStyle} onChange={(event) => setTeacherStyle(event.target.value)} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option>启发式引导</option><option>直接讲清概念</option><option>案例驱动</option><option>苏格拉底式追问</option></select></label><label className="text-sm font-medium">讲解深度<select value={explanationDepth} onChange={(event) => setExplanationDepth(event.target.value)} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option>先简洁，再展开</option><option>从基础完整讲起</option><option>只讲关键难点</option><option>按专业标准深入</option></select></label><div className="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">AI 私教会参考这些偏好组织讲解和追问，但掌握度仍由练习证据决定，不由 AI 主观判断。</div></div> : null}
+          {space === "teacher" ? <div className="mt-6 grid gap-4">
+            <label className="text-sm font-medium">老师的讲解方式<select aria-label="老师的讲解方式" value={preferences.teacherStyle} disabled={preferenceBusy} onChange={(event) => void savePreference({ teacherStyle: event.target.value as PrivateTutorLearningPreferences["teacherStyle"] })} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option value="heuristic_guidance">启发式引导</option><option value="direct_concept">直接讲清概念</option><option value="case_driven">案例驱动</option><option value="socratic_questioning">苏格拉底式追问</option></select></label>
+            <label className="text-sm font-medium">讲解深度<select aria-label="讲解深度" value={preferences.explanationDepth} disabled={preferenceBusy} onChange={(event) => void savePreference({ explanationDepth: event.target.value as PrivateTutorLearningPreferences["explanationDepth"] })} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option value="concise_then_expand">先简洁，再展开</option><option value="from_foundations">从基础完整讲起</option><option value="key_difficulties_only">只讲关键难点</option><option value="professional_depth">按专业标准深入</option></select></label>
+            <label className="text-sm font-medium">追问方式<select aria-label="追问方式" value={preferences.followUpStyle} disabled={preferenceBusy} onChange={(event) => void savePreference({ followUpStyle: event.target.value as PrivateTutorLearningPreferences["followUpStyle"] })} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option value="gentle_probe">温和追问理由</option><option value="direct_check">直接检查理解</option><option value="none">不主动追问</option></select></label>
+            <label className="text-sm font-medium">语音偏好<select aria-label="语音偏好" value={preferences.voicePreference} disabled={preferenceBusy} onChange={(event) => void savePreference({ voicePreference: event.target.value as PrivateTutorLearningPreferences["voicePreference"] })} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option value="push_to_talk">点按说话</option><option value="hands_free">自由对话</option><option value="text_only">只用文字</option></select></label>
+            <div className="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">这些偏好会保存到账户，并影响新学习会话的讲解、追问和语音入口；判题与掌握证据仍保持不变。</div>
+            {preferenceMessage ? <p role="status" className="rounded-lg bg-muted p-3 text-sm">{preferenceMessage}</p> : null}
+          </div> : null}
           {space === "data" ? <MyDataControls learnerName={state.learner.displayName} onProfileDeleted={onProfileDeleted} /> : null}
         </Card>
       </div>
@@ -1884,11 +1979,11 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
   );
 }
 
-function PreferenceToggle({ label, hint, checked, onChange }: { label: string; hint: string; checked: boolean; onChange: (checked: boolean) => void }) {
+function PreferenceToggle({ label, hint, checked, disabled = false, onChange }: { label: string; hint: string; checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void }) {
   return (
     <label className="flex cursor-pointer items-center justify-between gap-4 rounded-xl border p-4">
       <span><span className="block text-sm font-medium">{label}</span><span className="mt-1 block text-xs text-muted-foreground">{hint}</span></span>
-      <input type="checkbox" className="size-5 accent-emerald-600" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <input type="checkbox" className="size-5 accent-emerald-600" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
     </label>
   );
 }

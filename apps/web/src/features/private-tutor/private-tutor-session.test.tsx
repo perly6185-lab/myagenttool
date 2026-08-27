@@ -62,6 +62,8 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorAssessment: () => Promise.resolve(completedAssessment),
   getCurrentPrivateTutorSession: apiMocks.currentSession,
   getPrivateTutorReviewBook: () => Promise.resolve({ learnerId: learner.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] }),
+  getPrivateTutorLearningPreferences: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorLearningPreferences: () => Promise.reject(new Error("not used")),
   startPrivateTutorSession: apiMocks.startSession,
   pausePrivateTutorSession: apiMocks.pauseSession,
   resumePrivateTutorSession: apiMocks.resumeSession,
