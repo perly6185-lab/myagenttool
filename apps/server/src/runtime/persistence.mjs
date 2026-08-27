@@ -72,6 +72,8 @@ export const persistedArrayKeys = [
   "privateTutorStrategyDecisions",
   "privateTutorLearningPlans",
   "privateTutorPackageActivations",
+  "privateTutorContentMigrationPreviews",
+  "privateTutorContentMigrationApplications",
   "privateTutorRuntimeValidations",
   "privateTutorSessions",
   "privateTutorSessionEvents",

@@ -148,6 +148,14 @@ import {
   listPrivateTutorGoldenCandidates,
   reviewPrivateTutorGoldenCandidate,
 } from "../services/private-tutor-golden-candidates.mjs";
+import {
+  applyPrivateTutorContentMigration,
+  confirmPrivateTutorContentMigration,
+  createPrivateTutorContentMigrationPreview,
+  listPrivateTutorContentMigrationCandidates,
+  rollbackPrivateTutorContentMigration,
+  updatePrivateTutorContentMigrationMapping,
+} from "../services/private-tutor-content-migration.mjs";
 
 const LOCAL_TEAM_ID = "team_local";
 const LOCAL_USER_ID = "usr_local";
@@ -1156,6 +1164,112 @@ export async function handlePrivateTutorRoutes({
       return true;
     }
     sendJson(res, 405, { error: "method_not_allowed" });
+    return true;
+  }
+
+  if (url.pathname === "/api/private-tutor/profile/content-migrations/candidates") {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    sendJson(res, 200, {
+      candidates: listPrivateTutorContentMigrationCandidates(state, resolved.learner, actor?.userId ?? LOCAL_USER_ID),
+    });
+    return true;
+  }
+
+  if (url.pathname === "/api/private-tutor/profile/content-migrations/preview") {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    const result = createPrivateTutorContentMigrationPreview(
+      state, resolved.learner, actor?.userId ?? LOCAL_USER_ID, body, { now, nextId },
+    );
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    recordAudit(state, { learner: resolved.learner, actor, action: "content_migration_previewed", details: { previewId: result.preview.id, fingerprint: result.preview.previewFingerprint }, now, nextId });
+    persistStateSoon();
+    sendJson(res, result.status, { preview: result.preview, replayed: result.replayed });
+    return true;
+  }
+
+  const contentMigrationMatch = url.pathname.match(/^\/api\/private-tutor\/profile\/content-migrations\/([^/]+)\/(mapping|confirm|apply)$/);
+  if (contentMigrationMatch) {
+    const [, previewId, operation] = contentMigrationMatch;
+    const expectedMethod = operation === "mapping" ? "PUT" : "POST";
+    if (req.method !== expectedMethod) {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    const actorId = actor?.userId ?? LOCAL_USER_ID;
+    const body = await readJson(req).catch(() => ({}));
+    const result = operation === "mapping"
+      ? updatePrivateTutorContentMigrationMapping(state, resolved.learner, actorId, previewId, body, { now })
+      : operation === "confirm"
+        ? confirmPrivateTutorContentMigration(state, resolved.learner, actorId, previewId, body, { now })
+        : applyPrivateTutorContentMigration(state, resolved.learner, actorId, previewId, body, { now, nextId });
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    recordAudit(state, {
+      learner: resolved.learner,
+      actor,
+      action: `content_migration_${operation === "mapping" ? "mapping_updated" : operation === "confirm" ? "confirmed" : "applied"}`,
+      details: operation === "apply"
+        ? { previewId, applicationId: result.application.id, fingerprint: result.application.previewFingerprint }
+        : { previewId, revision: result.preview.revision, fingerprint: result.preview.previewFingerprint },
+      now,
+      nextId,
+    });
+    (persistStateNow ?? persistStateSoon)();
+    sendJson(res, result.status, operation === "apply"
+      ? { application: result.application, replayed: result.replayed }
+      : { preview: result.preview });
+    return true;
+  }
+
+  const contentMigrationRollbackMatch = url.pathname.match(/^\/api\/private-tutor\/profile\/content-migration-applications\/([^/]+)\/rollback$/);
+  if (contentMigrationRollbackMatch) {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    const result = rollbackPrivateTutorContentMigration(
+      state, resolved.learner, actor?.userId ?? LOCAL_USER_ID, contentMigrationRollbackMatch[1], body, { now },
+    );
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    recordAudit(state, { learner: resolved.learner, actor, action: "content_migration_rolled_back", details: { applicationId: result.application.id, previewId: result.application.previewId }, now, nextId });
+    (persistStateNow ?? persistStateSoon)();
+    sendJson(res, result.status, { application: result.application, replayed: result.replayed });
     return true;
   }
 
