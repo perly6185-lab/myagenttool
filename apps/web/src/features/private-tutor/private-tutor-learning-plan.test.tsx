@@ -50,6 +50,8 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorAssessment: () => Promise.resolve({ id: "pas_done", learnerId: learner.id, status: "completed", revision: 13, startedAt: "2026-08-20T00:00:00.000Z", pausedAt: null, completedAt: "2026-08-20T00:10:00.000Z", activeSeconds: 600, targetSeconds: 600, minQuestions: 12, maxQuestions: 18, answeredCount: 12, currentQuestion: null, result: { knowledge: [], strengths: [], focus: ["balance"], answeredCount: 12 }, updatedAt: "2026-08-20T00:10:00.000Z" }),
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
   getPrivateTutorReviewBook: () => Promise.resolve({ learnerId: learner.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] }),
+  getPrivateTutorLearningPreferences: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorLearningPreferences: () => Promise.reject(new Error("not used")),
   rebalancePrivateTutorLearningPlan: apiMocks.rebalance,
   startPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),

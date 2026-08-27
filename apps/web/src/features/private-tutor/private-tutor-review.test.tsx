@@ -39,6 +39,8 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorAssessment: () => Promise.resolve(completedAssessment),
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
   getPrivateTutorReviewBook: () => Promise.resolve(reviewBook),
+  getPrivateTutorLearningPreferences: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorLearningPreferences: () => Promise.reject(new Error("not used")),
   answerPrivateTutorReview: apiMocks.answer,
   correctPrivateTutorReviewDiagnosis: apiMocks.correctDiagnosis,
   rebalancePrivateTutorLearningPlan: () => Promise.reject(new Error("not used")),

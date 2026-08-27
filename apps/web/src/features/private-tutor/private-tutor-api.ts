@@ -21,6 +21,46 @@ export interface PrivateTutorLearner {
   updatedAt: string;
 }
 
+export type PrivateTutorTeacherStyle = "heuristic_guidance" | "direct_concept" | "case_driven" | "socratic_questioning";
+export type PrivateTutorExplanationDepth = "concise_then_expand" | "from_foundations" | "key_difficulties_only" | "professional_depth";
+export type PrivateTutorFollowUpStyle = "gentle_probe" | "direct_check" | "none";
+export type PrivateTutorVoicePreference = "push_to_talk" | "hands_free" | "text_only";
+export type PrivateTutorPlanIntensity = "relaxed" | "standard" | "intensive";
+
+export interface PrivateTutorLearningPreferences {
+  learnerId: string;
+  captions: boolean;
+  reducedMotion: boolean;
+  dailyMinutes: number;
+  planIntensity: PrivateTutorPlanIntensity;
+  teacherStyle: PrivateTutorTeacherStyle;
+  explanationDepth: PrivateTutorExplanationDepth;
+  followUpStyle: PrivateTutorFollowUpStyle;
+  voicePreference: PrivateTutorVoicePreference;
+  learningGoal: {
+    targetTopicIds: string[];
+    weeklyMinutes: number | null;
+    targetDate: string | null;
+    note: string;
+  } | null;
+  deactivatedPackageIds: string[];
+  revision: number;
+  schemaVersion: number;
+  updatedAt: string | null;
+}
+
+export type PrivateTutorLearningPreferencesPatch = Partial<Pick<PrivateTutorLearningPreferences,
+  | "captions"
+  | "reducedMotion"
+  | "dailyMinutes"
+  | "planIntensity"
+  | "teacherStyle"
+  | "explanationDepth"
+  | "followUpStyle"
+  | "voicePreference"
+  | "learningGoal"
+>>;
+
 export interface PrivateTutorDeletionJobStatus {
   reportId: string;
   status: "pending_erasure" | "erasing" | "erasure_failed";
@@ -341,6 +381,8 @@ export interface PrivateTutorLearningPlan {
   startKnowledgeId?: string | null;
   reason: string;
   studentReason: string;
+  planIntensity?: PrivateTutorPlanIntensity;
+  dailyMinutes?: number;
   generatedAt: string;
   days: Array<{
     dayIndex: number;
@@ -419,6 +461,7 @@ export interface PrivateTutorSession {
     kind: PrivateTutorSessionActivityKind;
     budgetMinutes: number;
     hintLevel: number;
+    followUpCount?: number;
     attemptCount: number;
     instruction: string;
     question: PrivateTutorAssessmentQuestion | null;
@@ -439,6 +482,7 @@ export interface PrivateTutorSession {
   } | null;
   methodSwitchCount: number;
   intervention: { type: "gentle_hint" | "method_switch" | "prerequisite_reset"; message: string } | null;
+  followUps?: PrivateTutorFollowUp[];
   pausedAt: string | null;
   startedAt: string;
   completedAt: string | null;
@@ -453,6 +497,20 @@ export interface PrivateTutorSession {
     reviewAt: string;
     nextStep: string;
   } | null;
+}
+
+export type PrivateTutorFollowUpMode = "question" | "explain_again" | "source_example";
+
+export interface PrivateTutorFollowUp {
+  id: string;
+  activityKind: PrivateTutorSessionActivityKind;
+  mode: PrivateTutorFollowUpMode;
+  question: string;
+  response: string;
+  grounding: "source_excerpt" | "reviewed_curriculum";
+  sourceRefs: Array<{ sectionId: string; pageNumber: number | null; excerpt: string }>;
+  evidenceEligible: false;
+  createdAt: string;
 }
 
 export interface PrivateTutorVoiceTurn {
@@ -747,6 +805,16 @@ export async function createPrivateTutorProfile(input: { displayName: string; gr
     created: boolean;
     migrationRequired: false;
   }>("POST", "/api/private-tutor/profile", input);
+}
+
+export async function getPrivateTutorLearningPreferences() {
+  const result = await request<{ preferences: PrivateTutorLearningPreferences }>("GET", "/api/private-tutor/profile/preferences");
+  return result.preferences;
+}
+
+export async function updatePrivateTutorLearningPreferences(preferences: PrivateTutorLearningPreferencesPatch) {
+  const result = await request<{ preferences: PrivateTutorLearningPreferences }>("PUT", "/api/private-tutor/profile/preferences", { preferences });
+  return result.preferences;
 }
 
 export interface PrivateTutorProfileMigrationCandidate {
@@ -1337,6 +1405,7 @@ export async function resumePrivateTutorSession(sessionId: string) {
 
 export async function actOnPrivateTutorSession(sessionId: string, input:
   | { action: "continue" | "hint" }
+  | { action: "follow_up"; mode: PrivateTutorFollowUpMode; question?: string }
   | {
     action: "answer";
     idempotencyKey: string;
@@ -1351,6 +1420,7 @@ export async function actOnPrivateTutorSession(sessionId: string, input:
     session: PrivateTutorSession;
     snapshot?: PrivateTutorSnapshot;
     answer?: PrivateTutorAttemptEvaluation;
+    followUp?: PrivateTutorFollowUp;
     voiceTurn?: PrivateTutorVoiceTurn | null;
     replayed?: boolean;
   } & Partial<PrivateTutorIntelligence>>(

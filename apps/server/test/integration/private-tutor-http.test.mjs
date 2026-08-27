@@ -736,6 +736,28 @@ test("the adaptive diagnostic is resumable, server-graded, idempotent, and produ
   tutoringSession = recalled.body.session;
   assert.equal(tutoringSession.currentActivity.kind, "explain");
 
+  const attemptsBeforeFollowUp = runtimeState.privateTutorAttempts.length;
+  const snapshotBeforeFollowUp = JSON.stringify(runtimeState.privateTutorSnapshots.find((row) => row.learnerId === learnerId));
+  const groundedFollowUp = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, {
+    method: "POST",
+    body: { action: "follow_up", mode: "question", question: "为什么两边要做相同操作？" },
+  });
+  assert.equal(groundedFollowUp.status, 200);
+  assert.equal(groundedFollowUp.body.followUp.evidenceEligible, false);
+  assert.equal(groundedFollowUp.body.followUp.grounding, "reviewed_curriculum");
+  assert.match(groundedFollowUp.body.followUp.response, /不会读取题目答案/);
+  assert.equal(groundedFollowUp.body.session.currentActivity.kind, "explain");
+  assert.equal(runtimeState.privateTutorAttempts.length, attemptsBeforeFollowUp);
+  assert.equal(JSON.stringify(runtimeState.privateTutorSnapshots.find((row) => row.learnerId === learnerId)), snapshotBeforeFollowUp);
+  tutoringSession = groundedFollowUp.body.session;
+
+  const rejectedFollowUp = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/actions`, {
+    method: "POST",
+    body: { action: "follow_up", mode: "question", question: "x".repeat(501) },
+  });
+  assert.equal(rejectedFollowUp.status, 400);
+  assert.equal(rejectedFollowUp.body.error, "invalid_private_tutor_follow_up_question");
+
   const pausedSession = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/${tutoringSession.id}/pause`, { method: "POST", body: {} });
   assert.equal(pausedSession.status, 200);
   const restoredSession = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/current`);

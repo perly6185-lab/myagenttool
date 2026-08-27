@@ -36,6 +36,7 @@ import {
 } from "../services/private-tutor-learning-model.mjs";
 import { buildPrivateTutorLearningHistory } from "../services/private-tutor-learning-history.mjs";
 import {
+  answerPrivateTutorFollowUp,
   completePrivateTutorActivity,
   completePrivateTutorPlanDay,
   createPrivateTutorSession,
@@ -2891,6 +2892,7 @@ async function handleTutoringSessionRoute({
       sendJson(res, 400, { error: "invalid_private_tutor_session_pace" });
       return true;
     }
+    const preferences = privateTutorLearningPreferences(state, learner.id);
     const session = createPrivateTutorSession({
       id: nextId("ptsess"),
       ownerTeamId: learner.ownerTeamId,
@@ -2902,6 +2904,7 @@ async function handleTutoringSessionRoute({
       state,
       contentPackageId,
       activationId: activation?.id ?? null,
+      targetMinutes: preferences.dailyMinutes,
     });
     if (!session) {
       sendJson(res, 409, { error: "private_tutor_session_content_unavailable" });
@@ -2975,7 +2978,8 @@ async function handleTutoringSessionRoute({
       const snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
       if (snapshot) {
         snapshot.completedSessions += 1;
-        snapshot.dailyMinutes = Math.min(20, Math.max(snapshot.dailyMinutes, session.plannedMinutes));
+        const preferences = privateTutorLearningPreferences(state, learner.id);
+        snapshot.dailyMinutes = Math.min(preferences.dailyMinutes, Math.max(snapshot.dailyMinutes, session.plannedMinutes));
         snapshot.revision += 1;
         snapshot.updatedAt = session.completedAt;
       }
@@ -3008,6 +3012,38 @@ async function handleTutoringSessionRoute({
     recordTutoringSessionEvent(state, { learner, actor, session, type: "hint_revealed", details: { activity: activity.kind, level: activity.hintLevel }, now, nextId });
     persistStateSoon();
     sendJson(res, 200, { session: privateTutorSessionView(session, state) });
+    return true;
+  }
+
+  if (actionType === "follow_up") {
+    const result = answerPrivateTutorFollowUp(session, {
+      mode: String(body?.mode ?? "question"),
+      question: body?.question,
+      state,
+      now,
+      nextId,
+    });
+    if (!result.ok) {
+      sendJson(res, 400, { error: result.error });
+      return true;
+    }
+    recordTutoringSessionEvent(state, {
+      learner,
+      actor,
+      session,
+      type: "grounded_follow_up_answered",
+      details: {
+        activity: activity?.kind ?? null,
+        mode: result.followUp.mode,
+        grounding: result.followUp.grounding,
+        sourceCount: result.followUp.sourceRefs.length,
+        evidenceEligible: false,
+      },
+      now,
+      nextId,
+    });
+    persistStateSoon();
+    sendJson(res, 200, { session: privateTutorSessionView(session, state), followUp: result.followUp });
     return true;
   }
 
@@ -3101,8 +3137,9 @@ async function handleTutoringSessionRoute({
     knowledgeId: session.targetKnowledgeId,
     questionRevisionId,
     correct: judgement.correct,
-    independent: activity.kind === "independent_check" && activity.hintLevel === 0,
+    independent: activity.kind === "independent_check" && activity.hintLevel === 0 && (activity.followUpCount ?? 0) === 0,
     usedHint: activity.hintLevel > 0,
+    usedFollowUp: (activity.followUpCount ?? 0) > 0,
     source,
     recognitionConfidence: Number.isFinite(recognitionConfidence) ? recognitionConfidence : null,
     responseKind: judgement.responseKind,
@@ -3162,7 +3199,7 @@ async function handleTutoringSessionRoute({
     actor,
     session,
     type: attempt.correct ? "answer_correct" : answerResult.advanced ? "activity_completed" : "answer_incorrect",
-    details: { activity: attempt.activityKind, attemptId: attempt.id, voiceTurnId, usedHint: attempt.usedHint, independent: attempt.independent },
+    details: { activity: attempt.activityKind, attemptId: attempt.id, voiceTurnId, usedHint: attempt.usedHint, usedFollowUp: attempt.usedFollowUp, independent: attempt.independent },
     now,
     nextId,
   });
@@ -3302,12 +3339,15 @@ function refreshPrivateTutorIntelligence(state, learner, {
     };
   }
 
+  const preferences = privateTutorLearningPreferences(state, learner.id);
   const planValue = buildPrivateTutorSevenDayPlan({
     model: learnerModel,
     decision: strategyDecision,
     now,
     reason,
     carryForwardKnowledgeId,
+    dailyMinutes: preferences.dailyMinutes,
+    planIntensity: preferences.planIntensity,
   });
   const previousPlan = state.privateTutorLearningPlans.find((row) =>
     row.learnerId === learner.id && sameContentPackage(row.contentPackageId, contentPackageId)) ?? null;

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { buildPrivateTutorSevenDayPlan } from "./private-tutor-learning-model.mjs";
+import { privateTutorLearningPreferences } from "./private-tutor-learning-preferences.mjs";
 import { privateTutorPackageRegistryFromState } from "./private-tutor-package-registry.mjs";
 
 export const PRIVATE_TUTOR_RUNTIME_VALIDATION_SCHEMA_VERSION = 1;
@@ -383,12 +384,15 @@ function createChapterEntryIntelligence(state, { learner, pkg, selection, activa
     createdAt: now(),
   };
   state.privateTutorStrategyDecisions.unshift(strategyDecision);
+  const preferences = privateTutorLearningPreferences(state, learner.id);
   const value = buildPrivateTutorSevenDayPlan({
     model: learnerModel,
     decision: strategyDecision,
     now,
     reason: "user_selected_chapter",
     scopeKnowledgeIds: selection.scopeKnowledgeIds,
+    dailyMinutes: preferences.dailyMinutes,
+    planIntensity: preferences.planIntensity,
   });
   const previousPlan = state.privateTutorLearningPlans.find((row) => row.learnerId === learner.id && row.contentPackageId === pkg.id);
   const learningPlan = {

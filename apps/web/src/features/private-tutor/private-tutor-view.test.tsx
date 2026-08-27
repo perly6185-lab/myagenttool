@@ -14,6 +14,8 @@ const apiMocks = vi.hoisted(() => ({
   getPackage: vi.fn(),
   activatePackage: vi.fn(),
   learningHistory: vi.fn(),
+  learningPreferences: vi.fn(),
+  updateLearningPreferences: vi.fn(),
 }));
 
 const sessionUser = { role: "viewer" } as const;
@@ -61,6 +63,11 @@ const completedAssessment = {
 } as const;
 
 const emptyReviewBook = { learnerId: activeProfile.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] } as const;
+const learningPreferences = {
+  learnerId: activeProfile.id, captions: true, reducedMotion: false, dailyMinutes: 20, planIntensity: "standard",
+  teacherStyle: "heuristic_guidance", explanationDepth: "concise_then_expand", followUpStyle: "gentle_probe", voicePreference: "push_to_talk",
+  learningGoal: null, deactivatedPackageIds: [], revision: 1, schemaVersion: 1, updatedAt: "2026-08-24T00:00:00.000Z",
+} as const;
 
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getPrivateTutorProfile: apiMocks.getProfile,
@@ -72,6 +79,8 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
   getPrivateTutorReviewBook: () => Promise.resolve(emptyReviewBook),
   getPrivateTutorLearningHistory: apiMocks.learningHistory,
+  getPrivateTutorLearningPreferences: apiMocks.learningPreferences,
+  updatePrivateTutorLearningPreferences: apiMocks.updateLearningPreferences,
   getPrivateTutorWeeklyReport: () => Promise.reject(new Error("not used")),
   getPrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
   updatePrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
@@ -194,6 +203,8 @@ describe("My private tutor personal learning information architecture", () => {
         recentSessions: [{ id: "session-1", status: "completed", moduleId: "mod-equations", moduleName: "一元一次方程与等式性质", knowledgeId: "integer", knowledgeTitle: "有理数运算", planId: "plan-1", planDayIndex: 1, practiceCount: 3, evidenceCount: 2, startedAt: "2026-08-25T08:00:00.000Z", completedAt: "2026-08-25T08:20:00.000Z", reviewAt: "2026-08-26T08:20:00.000Z" }],
       }],
     });
+    apiMocks.learningPreferences.mockReset().mockResolvedValue(learningPreferences);
+    apiMocks.updateLearningPreferences.mockReset().mockImplementation(async (patch) => ({ ...learningPreferences, ...patch, revision: 2 }));
   });
   afterEach(() => cleanup());
 
@@ -208,6 +219,7 @@ describe("My private tutor personal learning information architecture", () => {
 
   it("creates the current account profile through the single-profile contract", async () => {
     apiMocks.createProfile.mockResolvedValue({ profile: activeProfile, created: true, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(null);
     render(<PrivateTutorView />);
 
     fireEvent.change(await screen.findByLabelText("私教怎么称呼你"), { target: { value: "小林" } });
@@ -219,7 +231,24 @@ describe("My private tutor personal learning information architecture", () => {
       grade: "大学课程",
       curriculumEditionId: "demo-math-foundations-v1",
     });
-    expect(await screen.findByRole("button", { name: "今日学习" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "先选择这次想学什么" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /用当前内容开始摸底/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /选择课程或导入我的教材/ })).toBeTruthy();
+  });
+
+  it("lets a new learner manage content before starting a diagnostic", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(null);
+    render(<PrivateTutorView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /选择课程或导入我的教材/ }));
+
+    expect(await screen.findByRole("heading", { name: "我的设置" })).toBeTruthy();
+    expect(screen.getByText("选择学习内容")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "导入我的资料" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "返回开始方式" }));
+    fireEvent.click(screen.getByRole("button", { name: /用当前内容开始摸底/ }));
+    expect(await screen.findByRole("heading", { name: "先让我认识一下你会什么" })).toBeTruthy();
   });
 
   it("keeps the five personal learning capabilities at level one", async () => {
@@ -242,6 +271,19 @@ describe("My private tutor personal learning information architecture", () => {
     expect(screen.getByRole("button", { name: /学习数据/ })).toBeTruthy();
     expect(screen.queryByText("家庭与监护")).toBeNull();
     expect(screen.queryByText("家长入口")).toBeNull();
+  });
+
+  it("persists AI teacher and daily-plan preferences through the profile contract", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的设置" }));
+
+    fireEvent.change(screen.getByLabelText("每天可用时间"), { target: { value: "35" } });
+    await waitFor(() => expect(apiMocks.updateLearningPreferences).toHaveBeenCalledWith({ dailyMinutes: 35 }));
+
+    fireEvent.click(screen.getByRole("button", { name: /AI 私教/ }));
+    fireEvent.change(screen.getByLabelText("老师的讲解方式"), { target: { value: "socratic_questioning" } });
+    await waitFor(() => expect(apiMocks.updateLearningPreferences).toHaveBeenCalledWith({ teacherStyle: "socratic_questioning" }));
   });
 
   it("shows versioned chapter history and real long-term quality metrics", async () => {
