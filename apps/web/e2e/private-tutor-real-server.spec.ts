@@ -83,7 +83,7 @@ test("a signed-in learner keeps one personal profile and never sees family hando
   await assertVisibleControlsHaveNames(page);
   await page.getByRole("button", { name: "开始我的学习" }).click();
 
-  await expect(page.getByRole("heading", { name: "先让我认识一下你会什么" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "先选择这次想学什么" })).toBeVisible();
   await expect(page.getByRole("button", { name: "家长入口" })).toHaveCount(0);
   await testInfo.attach("private-tutor-learner-profile", {
     body: await page.screenshot({ fullPage: true }),
@@ -97,7 +97,7 @@ test("a signed-in learner keeps one personal profile and never sees family hando
   expect(profileBody.migrationRequired).toBe(false);
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: "先让我认识一下你会什么" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "先选择这次想学什么" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "为我建立一份长期学习档案" })).toHaveCount(0);
 
   const snapshot = await page.context().request.get(`${apiBase}/api/private-tutor/profile/snapshot`);
@@ -118,5 +118,12 @@ test("a signed-in learner keeps one personal profile and never sees family hando
   await expect(page.getByRole("button", { name: "今日学习" })).toHaveCount(0);
   await page.unroute(`**/api/private-tutor/profile/snapshot`);
   await page.getByRole("button", { name: "重新读取" }).click();
+  await expect(page.getByRole("heading", { name: "先选择这次想学什么" })).toBeVisible();
+
+  await page.getByRole("button", { name: /选择课程或导入我的教材/ }).click();
+  await expect(page.getByRole("heading", { name: "我的设置" })).toBeVisible();
+  await expect(page.getByText("选择学习内容")).toBeVisible();
+  await page.getByRole("button", { name: "返回开始方式" }).click();
+  await page.getByRole("button", { name: /用当前内容开始摸底/ }).click();
   await expect(page.getByRole("heading", { name: "先让我认识一下你会什么" })).toBeVisible();
 });
