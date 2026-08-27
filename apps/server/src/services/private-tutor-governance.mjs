@@ -14,6 +14,8 @@ export const PRIVATE_TUTOR_LEARNER_COLLECTION_KEYS = [
   "privateTutorStrategyDecisions",
   "privateTutorLearningPlans",
   "privateTutorPackageActivations",
+  "privateTutorContentMigrationPreviews",
+  "privateTutorContentMigrationApplications",
   "privateTutorRuntimeValidations",
   "privateTutorSessions",
   "privateTutorSessionEvents",
