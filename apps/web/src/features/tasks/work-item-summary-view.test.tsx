@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveWorkItemUserStatus, WorkItemSummaryView } from "./work-item-summary-view";
-import type { LocalWorkItem } from "./task-view-types";
+import type { LocalWorkItem, WorkItemExecutionReview } from "./task-view-types";
 import { i18n } from "@/lib/i18n";
 import { ApiError } from "@/lib/api-client";
 import { useUiStore } from "@/store/ui-store";
@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   recordWorkItemProgress: vi.fn(),
   retryAutoRun: vi.fn(),
   reverifyAutoRun: vi.fn(),
+  reconcileAutoRunExecutionAction: vi.fn(),
   startWorkItemAutoRun: vi.fn(),
   answerClarify: vi.fn(),
   cancelAutoRun: vi.fn(),
@@ -83,6 +84,7 @@ vi.mock("@/data/use-console-actions", () => ({
     recordWorkItemProgress: mocks.recordWorkItemProgress,
     retryAutoRun: mocks.retryAutoRun,
     reverifyAutoRun: mocks.reverifyAutoRun,
+    reconcileAutoRunExecutionAction: mocks.reconcileAutoRunExecutionAction,
     startWorkItemAutoRun: mocks.startWorkItemAutoRun,
     answerClarify: mocks.answerClarify,
     cancelAutoRun: mocks.cancelAutoRun,
@@ -178,6 +180,37 @@ function startReceipt(overrides: Partial<NonNullable<LocalWorkItem["executionSta
     cancelledBy: null,
     canCancel: true,
     ...overrides,
+  };
+}
+
+function failedExecutionReview(actionReceipt: WorkItemExecutionReview["actionReceipt"] = null): WorkItemExecutionReview {
+  return {
+    schemaVersion: 1,
+    state: "failed",
+    stage: "verifying",
+    stages: [
+      { key: "accepted", status: "complete", at: "2026-08-05T00:01:00.000Z" },
+      { key: "preparing", status: "complete", at: "2026-08-05T00:02:00.000Z" },
+      { key: "working", status: "complete", at: "2026-08-05T00:02:10.000Z" },
+      { key: "verifying", status: "attention", at: "2026-08-05T00:03:00.000Z" },
+      { key: "review", status: "pending", at: null },
+    ],
+    executionKind: "auto_run",
+    targetId: "aur_failed",
+    targetStatus: "failed",
+    agentId: "agt_1",
+    agentName: "Coding assistant",
+    acceptedAt: "2026-08-05T00:01:00.000Z",
+    startedAt: "2026-08-05T00:02:00.000Z",
+    updatedAt: "2026-08-05T00:03:00.000Z",
+    completedAt: null,
+    needsAttention: true,
+    attentionCode: "verification_failed",
+    verification: { status: "failed", verified: true, passed: false, commands: ["pnpm test"], command: "pnpm test", exitCode: 1, summary: "One test failed.", checkedAt: "2026-08-05T00:03:00.000Z", durationMs: 1_000, evidenceCount: 1, checks: [] },
+    impact: { status: "unknown", reasonCode: "external_impact_not_recorded" },
+    riskReasons: [{ code: "execution_failed", severity: "high", scope: "execution" }],
+    recommendedAction: { kind: "retry_execution", reasonCode: "execution_failed", requiresConfirmation: true, nextOwner: "me" },
+    actionReceipt,
   };
 }
 
@@ -945,10 +978,35 @@ describe("work item summary presentation", () => {
     expect(screen.getByText(/additional run time and cost/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-    await waitFor(() => expect(mocks.retryAutoRun).toHaveBeenCalledWith("aur_failed"));
+    await waitFor(() => expect(mocks.retryAutoRun).toHaveBeenCalledWith(
+      "aur_failed",
+      undefined,
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining(":retry_execution:"),
+        expectedWorkItemRevision: 2,
+        expectedTargetStatus: "failed",
+      }),
+    ));
     expect(await screen.findByText(/AI work restarted/)).toBeTruthy();
     expect(changed).toHaveBeenCalledTimes(1);
     window.removeEventListener("myagenttool:state-change", changed);
+  });
+
+  it("does not invite a duplicate retry when the connection ends before confirmation", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ executionState: "failed" }),
+      observability: { latestRun: { id: "aur_uncertain", status: "failed" } },
+    });
+    mocks.retryAutoRun.mockRejectedValue(new TypeError("Failed to fetch"));
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retry AI work" }));
+    const dialog = screen.getByRole("dialog", { name: "Retry AI work?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+
+    expect(await within(dialog).findByText(/connection ended before confirmation/i)).toBeTruthy();
+    expect((within(dialog).getByRole("button", { name: "Retry" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(mocks.retryAutoRun).toHaveBeenCalledTimes(1);
   });
 
   it("enables automatic AI work from a tracked task without opening expert details", async () => {
@@ -1012,6 +1070,177 @@ describe("work item summary presentation", () => {
     await waitFor(() => expect(mocks.cancelWorkItemExecutionStart).toHaveBeenCalledWith("lwi_1", 2));
     expect(await screen.findByText("This start was cancelled")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Review and start AI" })).toBeTruthy();
+  });
+
+  it("replaces the start receipt with unified progress and verification evidence after execution begins", async () => {
+    const onOpenExpert = vi.fn();
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        status: "in_progress",
+        executionState: "verifying",
+        executionBindings: [{ kind: "auto_run", targetId: "aur_review", createdAt: "2026-08-05T00:02:00.000Z" }],
+        executionStartReceipt: startReceipt({
+          status: "started", startedAt: "2026-08-05T00:02:00.000Z", executionKind: "auto_run",
+          targetId: "aur_review", agentId: "agt_1", reasonCode: null, canCancel: false,
+        }),
+      }),
+      observability: {
+        latestRun: { id: "aur_review", status: "verifying", phase: "verifying", updatedAt: "2026-08-05T00:03:00.000Z" },
+        executionReview: {
+          schemaVersion: 1,
+          state: "verifying",
+          stage: "verifying",
+          stages: [
+            { key: "accepted", status: "complete", at: "2026-08-05T00:01:00.000Z" },
+            { key: "preparing", status: "complete", at: "2026-08-05T00:02:00.000Z" },
+            { key: "working", status: "complete", at: "2026-08-05T00:02:10.000Z" },
+            { key: "verifying", status: "current", at: "2026-08-05T00:03:00.000Z" },
+            { key: "review", status: "pending", at: null },
+          ],
+          executionKind: "auto_run",
+          targetId: "aur_review",
+          targetStatus: "verifying",
+          agentId: "agt_1",
+          agentName: "Coding assistant",
+          acceptedAt: "2026-08-05T00:01:00.000Z",
+          startedAt: "2026-08-05T00:02:00.000Z",
+          updatedAt: "2026-08-05T00:03:00.000Z",
+          completedAt: null,
+          needsAttention: false,
+          attentionCode: null,
+          verification: {
+            status: "running", verified: false, passed: null, commands: ["pnpm test"], command: "pnpm test",
+            exitCode: null, summary: "Running project checks.", checkedAt: null, durationMs: null, evidenceCount: 0, checks: [],
+          },
+          impact: { status: "none", reasonCode: "changes_isolated_until_confirmation" },
+          riskReasons: [],
+          recommendedAction: { kind: "open_details", reasonCode: "execution_in_progress", requiresConfirmation: false, nextOwner: "ai" },
+        },
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={onOpenExpert} />);
+
+    const review = await screen.findByTestId("execution-review-card");
+    expect(review.textContent).toContain("AI is verifying the result");
+    expect(review.textContent).toContain("Checks are running");
+    expect(review.textContent).toContain("pnpm test");
+    expect(review.textContent).toContain("Nothing has been applied");
+    expect(screen.queryByTestId("execution-start-status")).toBeNull();
+    expect(screen.queryByText("Current progress")).toBeNull();
+    fireEvent.click(within(review).getByRole("button", { name: "Full execution details" }));
+    expect(onOpenExpert).toHaveBeenCalledWith("process");
+  });
+
+  it("uses the review card recommendation to retry safely and returns an impact receipt", async () => {
+    mocks.retryAutoRun.mockResolvedValue({ autoRun: { id: "aur_failed", status: "running" } });
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        status: "blocked",
+        executionState: "failed",
+        executionBindings: [{ kind: "auto_run", targetId: "aur_failed", createdAt: "2026-08-05T00:02:00.000Z" }],
+      }),
+      observability: {
+        latestRun: { id: "aur_failed", status: "failed", phase: "verifying", updatedAt: "2026-08-05T00:03:00.000Z" },
+        executionReview: {
+          schemaVersion: 1,
+          state: "failed",
+          stage: "verifying",
+          stages: [
+            { key: "accepted", status: "complete", at: "2026-08-05T00:01:00.000Z" },
+            { key: "preparing", status: "complete", at: "2026-08-05T00:02:00.000Z" },
+            { key: "working", status: "complete", at: "2026-08-05T00:02:10.000Z" },
+            { key: "verifying", status: "attention", at: "2026-08-05T00:03:00.000Z" },
+            { key: "review", status: "pending", at: null },
+          ],
+          executionKind: "auto_run",
+          targetId: "aur_failed",
+          targetStatus: "failed",
+          agentId: "agt_1",
+          agentName: "Coding assistant",
+          acceptedAt: "2026-08-05T00:01:00.000Z",
+          startedAt: "2026-08-05T00:02:00.000Z",
+          updatedAt: "2026-08-05T00:03:00.000Z",
+          completedAt: null,
+          needsAttention: true,
+          attentionCode: "verification_failed",
+          verification: { status: "failed", verified: true, passed: false, commands: ["pnpm test"], command: "pnpm test", exitCode: 1, summary: "One test failed.", checkedAt: "2026-08-05T00:03:00.000Z", durationMs: 1_000, evidenceCount: 1, checks: [] },
+          impact: { status: "unknown", reasonCode: "external_impact_not_recorded" },
+          riskReasons: [
+            { code: "execution_failed", severity: "high", scope: "execution" },
+            { code: "verification_failed", severity: "high", scope: "verification" },
+          ],
+          recommendedAction: { kind: "retry_execution", reasonCode: "execution_failed", requiresConfirmation: true, nextOwner: "me" },
+        },
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const review = await screen.findByTestId("execution-review-card");
+    expect(screen.queryByText("Current progress")).toBeNull();
+    fireEvent.click(within(review).getByRole("button", { name: "Retry AI work" }));
+    const confirmation = screen.getByRole("dialog", { name: "Retry AI work?" });
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(mocks.retryAutoRun).toHaveBeenCalledWith(
+      "aur_failed",
+      undefined,
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining(":retry_execution:"),
+        expectedWorkItemRevision: 2,
+        expectedTargetStatus: "failed",
+      }),
+    ));
+    const receipt = await within(review).findByTestId("execution-action-receipt");
+    expect(receipt.textContent).toContain("AI work restarted");
+    expect(receipt.textContent).toContain("has not changed the base branch");
+    expect(within(review).getByText("Next: AI")).toBeTruthy();
+  });
+
+  it("rechecks an unknown action and unlocks retry only after the server proves it is safe", async () => {
+    const unknownReceipt: NonNullable<WorkItemExecutionReview["actionReceipt"]> = {
+      schemaVersion: 1, id: "ear_unknown", kind: "retry_execution", status: "unknown",
+      messageCode: "action_result_unknown", impact: "unknown", nextOwner: "me",
+      requestedAt: "2026-08-05T00:00:00.000Z", updatedAt: "2026-08-05T00:11:00.000Z",
+      completedAt: null, targetId: null, errorCode: null, errorMessage: null, replayed: false,
+    };
+    const safeReceipt: NonNullable<WorkItemExecutionReview["actionReceipt"]> = {
+      ...unknownReceipt,
+      status: "safe_to_retry",
+      messageCode: "safe_to_retry",
+      impact: "none",
+      updatedAt: "2026-08-05T00:12:00.000Z",
+      completedAt: "2026-08-05T00:12:00.000Z",
+    };
+    const failedItem = item({
+      status: "blocked",
+      executionState: "failed",
+      executionBindings: [{ kind: "auto_run", targetId: "aur_failed", createdAt: "2026-08-05T00:02:00.000Z" }],
+    });
+    mocks.getWorkItem
+      .mockResolvedValueOnce({
+        workItem: failedItem,
+        observability: {
+          latestRun: { id: "aur_failed", status: "failed", phase: "verifying", updatedAt: "2026-08-05T00:03:00.000Z" },
+          executionReview: failedExecutionReview(unknownReceipt),
+        },
+      })
+      .mockResolvedValue({
+        workItem: failedItem,
+        observability: {
+          latestRun: { id: "aur_failed", status: "failed", phase: "verifying", updatedAt: "2026-08-05T00:03:00.000Z" },
+          executionReview: failedExecutionReview(safeReceipt),
+        },
+      });
+    mocks.reconcileAutoRunExecutionAction.mockResolvedValue({ actionReceipt: safeReceipt, safeToRetry: true });
+
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+    const review = await screen.findByTestId("execution-review-card");
+    fireEvent.click(within(review).getByRole("button", { name: "Recheck action status" }));
+
+    await waitFor(() => expect(mocks.reconcileAutoRunExecutionAction).toHaveBeenCalledWith("aur_failed"));
+    await waitFor(() => expect(within(review).getByText("Safe to retry")).toBeTruthy());
+    fireEvent.click(within(review).getByRole("button", { name: "Retry AI work" }));
+    expect(screen.getByRole("dialog", { name: "Retry AI work?" })).toBeTruthy();
   });
 
   it("requeues a blocked start through the dedicated scheduler recheck", async () => {
@@ -1127,7 +1356,11 @@ describe("work item summary presentation", () => {
       workItem: item({ executionState: "failed" }),
       observability: { latestRun: { id: "aur_failed", status: "blocked" } },
     });
-    mocks.retryAutoRun.mockRejectedValue(new Error("terminal_capability_grant_missing"));
+    mocks.retryAutoRun.mockRejectedValue(new ApiError(
+      "terminal_capability_grant_missing",
+      "terminal_capability_grant_missing",
+      400,
+    ));
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Retry AI work" }));
@@ -1219,7 +1452,14 @@ describe("work item summary presentation", () => {
     fireEvent.click(within(actions).getByRole("button", { name: "View changes" }));
     expect(onOpenDeliveryChanges).toHaveBeenCalledWith("prj_1", "wtr_dev");
     fireEvent.click(within(actions).getByRole("button", { name: "Rerun verification" }));
-    await waitFor(() => expect(mocks.reverifyAutoRun).toHaveBeenCalledWith("aur_dev"));
+    await waitFor(() => expect(mocks.reverifyAutoRun).toHaveBeenCalledWith(
+      "aur_dev",
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining(":rerun_verification:"),
+        expectedWorkItemRevision: 2,
+        expectedTargetStatus: "done",
+      }),
+    ));
     fireEvent.click(within(actions).getByRole("button", { name: "Update Pull Request" }));
     expect(await screen.findByRole("dialog", { name: "Approve and update the existing pull request?" })).toBeTruthy();
   });
@@ -1331,7 +1571,15 @@ describe("work item summary presentation", () => {
     fireEvent.click(within(report).getByRole("button", { name: "Ask follow-up" }));
     fireEvent.change(within(report).getByPlaceholderText(/What supports the second conclusion/), { target: { value: "Show the source for the second conclusion." } });
     fireEvent.click(within(report).getByRole("button", { name: "Send follow-up" }));
-    await waitFor(() => expect(mocks.retryAutoRun).toHaveBeenCalledWith("aur_report", "Show the source for the second conclusion."));
+    await waitFor(() => expect(mocks.retryAutoRun).toHaveBeenCalledWith(
+      "aur_report",
+      "Show the source for the second conclusion.",
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining(":fix_with_ai:"),
+        expectedWorkItemRevision: 2,
+        expectedTargetStatus: "report_posted",
+      }),
+    ));
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
   });
 
@@ -1718,9 +1966,12 @@ describe("work item summary presentation", () => {
     fireEvent.change(screen.getByPlaceholderText(/Answer the questions above/), { target: { value: "Fall back to UTC and record a warning." } });
     fireEvent.click(screen.getByRole("button", { name: "Submit and continue" }));
 
-    await waitFor(() => expect(mocks.answerClarify).toHaveBeenCalledWith("aur_clarify", {
+    await waitFor(() => expect(mocks.answerClarify).toHaveBeenCalledWith("aur_clarify", expect.objectContaining({
       answers: "Fall back to UTC and record a warning.",
-    }));
+      idempotencyKey: expect.stringContaining(":answer_ai:"),
+      expectedWorkItemRevision: 2,
+      expectedTargetStatus: "needs_input",
+    })));
     expect(await screen.findByText(/continue in the same task run/i)).toBeTruthy();
   });
 
@@ -1928,6 +2179,11 @@ describe("work item summary presentation", () => {
     await waitFor(() => expect(mocks.retryAutoRun).toHaveBeenCalledWith(
       "aur_60",
       expect.stringContaining("updates memory but does not schedule persistence"),
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining(":fix_with_ai:"),
+        expectedWorkItemRevision: 2,
+        expectedTargetStatus: "done",
+      }),
     ));
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
   });

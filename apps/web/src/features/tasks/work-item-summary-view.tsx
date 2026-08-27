@@ -39,6 +39,7 @@ import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item
 import { ExecutionStartConfirmation } from "./execution-start-confirmation";
 import { deriveExecutionStartSummary } from "./execution-start-summary";
 import { ExecutionStartStatusCard } from "./execution-start-status-card";
+import { ExecutionReviewCard, type ExecutionActionReceipt } from "./execution-review-card";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
 import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
@@ -451,6 +452,7 @@ export function WorkItemSummaryView({
   const [progressOpen, setProgressOpen] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [executionActionReceipt, setExecutionActionReceipt] = useState<ExecutionActionReceipt | null>(null);
   const [retryOpen, setRetryOpen] = useState(false);
   const [retryPending, setRetryPending] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -458,7 +460,7 @@ export function WorkItemSummaryView({
   const [repairError, setRepairError] = useState<string | null>(null);
   const [resultExpanded, setResultExpanded] = useState(false);
   const [discussionOpen, setDiscussionOpen] = useState(false);
-  const [actionPending, setActionPending] = useState<"start" | "cancel-start" | "recheck-start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | "reverify" | null>(null);
+  const [actionPending, setActionPending] = useState<"start" | "cancel-start" | "recheck-start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | "reverify" | "reconcile" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [startConfirmationOpen, setStartConfirmationOpen] = useState(false);
   const [pendingTemplateClarification, setPendingTemplateClarification] = useState<PendingTemplateClarification | null>(null);
@@ -522,6 +524,7 @@ export function WorkItemSummaryView({
     setMaterialPreviewError(null);
     setLoadError(null);
     setSyncNotice(null);
+    setExecutionActionReceipt(null);
     setRetryOpen(false);
     setRetryPending(false);
     setRetryError(null);
@@ -624,6 +627,20 @@ export function WorkItemSummaryView({
   }, [item?.executionStartReceipt?.status, item?.executionStartReceipt?.updatedAt]);
 
   useEffect(() => {
+    const reviewState = observability?.executionReview?.state;
+    if (!reviewState || !["preparing", "working", "waiting", "verifying"].includes(reviewState)) return undefined;
+    const timer = window.setTimeout(() => setRefreshVersion((version) => version + 1), reviewState === "waiting" ? 5_000 : 2_000);
+    return () => window.clearTimeout(timer);
+  }, [observability?.executionReview?.state, observability?.executionReview?.updatedAt]);
+
+  useEffect(() => {
+    const receipt = observability?.executionReview?.actionReceipt ?? executionActionReceipt;
+    if (!receipt || !["accepted", "running"].includes(receipt.status ?? "")) return undefined;
+    const timer = window.setTimeout(() => setRefreshVersion((version) => version + 1), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [executionActionReceipt, observability?.executionReview?.actionReceipt]);
+
+  useEffect(() => {
     if (!materialUndo) return undefined;
     const timer = window.setTimeout(() => setMaterialUndo(null), 8_000);
     return () => window.clearTimeout(timer);
@@ -668,6 +685,29 @@ export function WorkItemSummaryView({
   const hasBoundAutoRun = item.executionBindings?.some((binding) => binding.kind === "auto_run") ?? false;
   const hasManagedExecution = Boolean(executionKind) || Boolean(item.executionState && item.executionState !== "unclaimed");
   const startReceipt = item.executionStartReceipt ?? null;
+  const executionReview = observability?.executionReview ?? null;
+  const effectiveExecutionActionReceipt = executionReview?.actionReceipt ?? executionActionReceipt;
+  const showExecutionReview = Boolean(executionReview?.targetId && executionReview.state !== "queued");
+  const executionReviewOwnsProgress = showExecutionReview;
+  const executionActionRequest = (kind: "retry_execution" | "fix_with_ai" | "rerun_verification" | "answer_ai") => ({
+    idempotencyKey: `work-item:${item.id}:${kind}:${item.revision}:${effectiveExecutionActionReceipt?.id ?? "none"}:${effectiveExecutionActionReceipt?.status ?? "none"}:${effectiveExecutionActionReceipt?.updatedAt ?? "none"}:${executionReview?.targetId ?? observability?.latestRun?.id ?? "none"}:${executionReview?.targetStatus ?? observability?.latestRun?.status ?? "none"}`.slice(0, 200),
+    expectedWorkItemRevision: item.revision,
+    expectedTargetStatus: executionReview?.targetStatus ?? observability?.latestRun?.status ?? undefined,
+  });
+  const uncertainActionReceipt = (message: string): ExecutionActionReceipt => ({
+    status: "unknown",
+    message,
+    impact: "none",
+    nextOwner: "me",
+  });
+  const actionReceiptFromError = (error: unknown): ExecutionActionReceipt | null => {
+    if (!(error instanceof ApiError) || !error.details?.actionReceipt || typeof error.details.actionReceipt !== "object") return null;
+    return error.details.actionReceipt as ExecutionActionReceipt;
+  };
+  const executionActionStatus = effectiveExecutionActionReceipt?.status ?? null;
+  const executionActionLocked = executionActionStatus === "accepted"
+    || executionActionStatus === "running"
+    || executionActionStatus === "unknown";
   const startRequestActive = Boolean(startReceipt && startReceipt.status !== "cancelled");
   const startHandoffPending = Boolean(startReceipt && ["queued", "starting", "blocked", "paused"].includes(startReceipt.status));
   const executionContractReady = item.executionContractGate?.ready === true;
@@ -1517,15 +1557,17 @@ export function WorkItemSummaryView({
   const sendChangeRequest = async (bodyOverride?: string, modeOverride?: "revision" | "follow_up") => {
     const body = (bodyOverride ?? changeRequest).trim();
     const mode = modeOverride ?? feedbackMode;
-    if (!body || actionPending) return;
+    if (!body || actionPending || executionActionLocked) return;
     setActionPending("changes");
     setActionError(null);
+    setExecutionActionReceipt(null);
     let commentSaved = false;
     try {
       await api.createWorkItemComment(item.id, body);
       commentSaved = true;
       if (observability?.latestRun?.id) {
-        await api.retryAutoRun(observability.latestRun.id, body);
+        const response = await api.retryAutoRun(observability.latestRun.id, body, executionActionRequest("fix_with_ai")) as { actionReceipt?: ExecutionActionReceipt };
+        if (response.actionReceipt) setExecutionActionReceipt(response.actionReceipt);
       } else {
         await api.startWorkItemAutoRun(item.id);
       }
@@ -1533,15 +1575,28 @@ export function WorkItemSummaryView({
       setChangeRequestOpen(false);
       setResultExpanded(false);
       setReportOpen(false);
-      setSyncNotice(mode === "follow_up"
+      const notice = mode === "follow_up"
         ? language === "zh" ? "问题已交给 AI。AI 会沿用当前任务和材料继续处理，并生成新版结果。" : "Your question was sent to AI. It will continue with the same task and materials and produce a new result."
-        : copy.changesSent);
+        : copy.changesSent;
+      setSyncNotice(notice);
+      setExecutionActionReceipt((current) => current ?? { message: notice, impact: "none", nextOwner: "ai" });
       if (bodyOverride) setMaterialNotice(copy.materialReprocessStarted);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-request-changes", workItemId: item.id } }));
       setRefreshVersion((version) => version + 1);
-    } catch {
-      setActionError(commentSaved ? copy.changesFailed : copy.commentFailed);
+    } catch (error) {
+      const errorReceipt = actionReceiptFromError(error);
+      setActionError(error instanceof ApiError && error.code === "execution_action_stale"
+        ? language === "zh"
+          ? "任务刚刚发生变化，修改要求已保留，但没有重复启动 AI。请核对刷新后的状态。"
+          : "The task just changed. Your feedback was kept, but AI was not started again. Review the refreshed status."
+        : commentSaved ? copy.changesFailed : copy.commentFailed);
+      if (errorReceipt) setExecutionActionReceipt(errorReceipt);
       if (commentSaved) {
+        if (!(error instanceof ApiError)) {
+          setExecutionActionReceipt(uncertainActionReceipt(language === "zh"
+            ? "修改请求已发送，但暂时无法确认 AI 是否开始处理。"
+            : "The fix request was sent, but it is not yet clear whether AI started."));
+        }
         window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-change-comment", workItemId: item.id } }));
         setRefreshVersion((version) => version + 1);
       }
@@ -1551,22 +1606,35 @@ export function WorkItemSummaryView({
   };
   const rerunDeliveryVerification = async () => {
     const run = observability?.latestRun;
-    if (!run || actionPending || !canRerunVerification) return;
+    if (!run || actionPending || executionActionLocked || !canRerunVerification) return;
     setActionPending("reverify");
     setActionError(null);
+    setExecutionActionReceipt(null);
     try {
-      await api.reverifyAutoRun(run.id);
-      setSyncNotice(language === "zh" ? "验证已重新开始，完成后会刷新本次交付证据。" : "Verification has restarted. The delivery evidence will refresh when it finishes.");
+      const response = await api.reverifyAutoRun(run.id, executionActionRequest("rerun_verification")) as { actionReceipt?: ExecutionActionReceipt };
+      const notice = language === "zh" ? "验证已重新开始，完成后会刷新本次交付证据。" : "Verification has restarted. The delivery evidence will refresh when it finishes.";
+      setSyncNotice(notice);
+      setExecutionActionReceipt(response.actionReceipt ?? { message: notice, impact: "none", nextOwner: "system" });
       setRefreshVersion((version) => version + 1);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-reverification-started", workItemId: item.id, autoRunId: run.id } }));
     } catch (error) {
+      const errorReceipt = actionReceiptFromError(error);
       setActionError(error instanceof Error ? error.message : (language === "zh" ? "验证暂时无法重新执行，请稍后重试。" : "Verification could not be rerun. Try again later."));
+      if (errorReceipt) {
+        setExecutionActionReceipt(errorReceipt);
+        setRefreshVersion((version) => version + 1);
+      } else if (!(error instanceof ApiError)) {
+        setExecutionActionReceipt(uncertainActionReceipt(language === "zh"
+          ? "验证请求已发送，但暂时无法确认是否已经开始。"
+          : "The verification request was sent, but its start is not yet confirmed."));
+        setRefreshVersion((version) => version + 1);
+      }
     } finally {
       setActionPending(null);
     }
   };
   const askAiToFix = () => {
-    if (!canAskAiToFix || actionPending) return;
+    if (!canAskAiToFix || actionPending || executionActionLocked) return;
     void sendChangeRequest(askAiFixFeedback, "revision");
   };
   const openPullRequestConfirmation = () => {
@@ -1581,31 +1649,45 @@ export function WorkItemSummaryView({
   const answerAiClarification = async () => {
     const run = observability?.latestRun;
     const answer = clarifyAnswer.trim();
-    if (!run || run.status !== "needs_input" || !answer || clarifyPending) return;
+    if (!run || run.status !== "needs_input" || !answer || clarifyPending || executionActionLocked) return;
     setClarifyPending(true);
     setClarifyError(null);
+    setExecutionActionReceipt(null);
     try {
-      const response = await api.answerClarify(run.id, { answers: answer }) as {
+      const response = await api.answerClarify(run.id, { answers: answer, ...executionActionRequest("answer_ai") }) as {
         resumed?: boolean;
         waitingForInput?: boolean;
         alreadyDecided?: unknown;
         reason?: string;
+        actionReceipt?: ExecutionActionReceipt;
       };
       if (response.resumed !== true && !response.alreadyDecided) {
         throw new Error(response.reason ?? "clarification_resume_failed");
       }
       setClarifyAnswer("");
-      setSyncNotice(response.waitingForInput
+      const notice = response.waitingForInput
         ? language === "zh"
           ? "AI 已重新理解你的回答，但仍需要你确认一个问题。"
           : "AI reconsidered your answer and still needs one more decision."
         : language === "zh"
           ? "你的回答已交给 AI，AI 将在同一次任务运行中继续处理。"
-          : "Your answer was sent to AI. It will continue in the same task run.");
+          : "Your answer was sent to AI. It will continue in the same task run.";
+      setSyncNotice(notice);
+      setExecutionActionReceipt(response.actionReceipt ?? { message: notice, impact: "none", nextOwner: response.waitingForInput ? "me" : "ai" });
       setRefreshVersion((version) => version + 1);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-clarification-answered", workItemId: item.id, autoRunId: run.id } }));
-    } catch {
+    } catch (error) {
+      const errorReceipt = actionReceiptFromError(error);
       setClarifyError(language === "zh" ? "回答暂时无法提交，请稍后重试。" : "The answer could not be submitted. Try again later.");
+      if (errorReceipt) {
+        setExecutionActionReceipt(errorReceipt);
+        setRefreshVersion((version) => version + 1);
+      } else if (!(error instanceof ApiError)) {
+        setExecutionActionReceipt(uncertainActionReceipt(language === "zh"
+          ? "回答已发送，但暂时无法确认 AI 是否收到。"
+          : "The answer was sent, but it is not yet clear whether AI received it."));
+        setRefreshVersion((version) => version + 1);
+      }
     } finally {
       setClarifyPending(false);
     }
@@ -1840,6 +1922,7 @@ export function WorkItemSummaryView({
     setRefreshVersion((version) => version + 1);
   };
   const runPrimaryAction = () => {
+    if (retryableRun && executionActionLocked) return;
     if (pendingTemplateClarification) {
       document.getElementById("task-template-result-question")?.scrollIntoView?.({ behavior: "smooth", block: "center" });
       return;
@@ -1892,9 +1975,10 @@ export function WorkItemSummaryView({
     onOpenExpert(expertSectionFor(item, status));
   };
   const retryAiWork = async () => {
-    if (!retryableRun || retryPending) return;
+    if (!retryableRun || retryPending || executionActionLocked) return;
     setRetryPending(true);
     setRetryError(null);
+    setExecutionActionReceipt(null);
     try {
       if (!executionContractDefined) {
         const assisted = await api.suggestWorkItemDraft({ projectId: item.projectId, title: item.title, body: item.body }) as {
@@ -1912,17 +1996,97 @@ export function WorkItemSummaryView({
           : "The execution plan is ready, but the retry has not started. Review the criteria and SOP, then retry again.");
         return;
       }
-      await api.retryAutoRun(retryableRun.id);
+      const response = await api.retryAutoRun(retryableRun.id, undefined, executionActionRequest("retry_execution")) as { actionReceipt?: ExecutionActionReceipt };
       setRetryOpen(false);
       setSyncNotice(copy.retrySucceeded);
+      setExecutionActionReceipt(response.actionReceipt ?? { message: copy.retrySucceeded, impact: "none", nextOwner: "ai" });
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-retry", workItemId: item.id } }));
       setRefreshVersion((version) => version + 1);
-    } catch {
+    } catch (error) {
+      const errorReceipt = actionReceiptFromError(error);
+      if (errorReceipt) setExecutionActionReceipt(errorReceipt);
       setRetryError(copy.retryFailed);
+      if (error instanceof ApiError && error.code === "execution_action_stale") {
+        setRetryError(language === "zh"
+          ? "任务刚刚发生变化，本次没有重复执行。请核对刷新后的状态。"
+          : "The task just changed, so this action was not repeated. Review the refreshed status.");
+        setRefreshVersion((version) => version + 1);
+      } else if (!(error instanceof ApiError)) {
+        setRetryError(language === "zh"
+          ? "请求已发出，但连接中断，暂时无法确认是否已重新开始。请先检查任务状态，不要重复重试。"
+          : "The request was sent, but the connection ended before confirmation. Check the task status before retrying.");
+        setExecutionActionReceipt(uncertainActionReceipt(language === "zh"
+          ? "重试请求已发送，但暂时无法确认 AI 是否重新开始。"
+          : "The retry request was sent, but it is not yet clear whether AI restarted."));
+        setRefreshVersion((version) => version + 1);
+      }
     } finally {
       setRetryPending(false);
     }
   };
+  const runExecutionReviewAction = () => {
+    if (!executionReview) return;
+    switch (executionReview.recommendedAction.kind) {
+      case "answer_ai":
+      case "retry_execution":
+      case "review_result":
+      case "view_result":
+        runPrimaryAction();
+        return;
+      case "review_approval":
+      case "open_details":
+        onOpenExpert("process");
+        return;
+      case "fix_with_ai":
+        askAiToFix();
+        return;
+      case "rerun_verification":
+        void rerunDeliveryVerification();
+        return;
+    }
+  };
+  const reconcileExecutionReviewAction = async () => {
+    const run = observability?.latestRun;
+    if (!run || actionPending) return;
+    setActionPending("reconcile");
+    setActionError(null);
+    try {
+      const response = await api.reconcileAutoRunExecutionAction(run.id) as {
+        actionReceipt?: ExecutionActionReceipt | null;
+        safeToRetry?: boolean;
+      };
+      const receipt = response.actionReceipt ?? (response.safeToRetry ? {
+        status: "safe_to_retry" as const,
+        messageCode: "safe_to_retry",
+        impact: "none" as const,
+        nextOwner: "me" as const,
+      } : null);
+      setExecutionActionReceipt(receipt);
+      setSyncNotice(receipt?.status === "safe_to_retry"
+        ? language === "zh"
+          ? "检查完成：没有发现新的执行，可以安全重试。"
+          : "Check complete: no new execution was found, so it is safe to retry."
+        : language === "zh"
+          ? "操作状态已重新检查，页面会继续同步最新结果。"
+          : "The action status was rechecked. This page will continue syncing the latest result.");
+      setRefreshVersion((version) => version + 1);
+    } catch {
+      setActionError(language === "zh"
+        ? "暂时无法重新检查操作状态，请稍后再试；在确认前不要重复执行。"
+        : "The action status could not be rechecked. Try again later and do not repeat the action yet.");
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const executionReviewActionPending = executionReview?.recommendedAction.kind === "retry_execution"
+    ? retryPending
+    : executionReview?.recommendedAction.kind === "fix_with_ai"
+      ? actionPending === "changes"
+      : executionReview?.recommendedAction.kind === "rerun_verification"
+        ? actionPending === "reverify"
+        : executionReview?.recommendedAction.kind === "answer_ai"
+          ? clarifyPending
+          : false;
 
   return (
     <div className="space-y-4" data-testid="work-item-summary-view">
@@ -1957,7 +2121,7 @@ export function WorkItemSummaryView({
         onEdit={canOperate && status !== "completed" ? () => onOpenExpert("overview") : undefined}
       />
 
-      {startReceipt ? (
+      {startReceipt && !showExecutionReview ? (
         <ExecutionStartStatusCard
           receipt={startReceipt}
           language={language}
@@ -1969,7 +2133,22 @@ export function WorkItemSummaryView({
         />
       ) : null}
 
-      {status !== "completed" ? <section className="rounded-xl border border-primary/30 bg-primary/[0.055] p-4" aria-labelledby={`work-item-next-${item.id}`}>
+      {executionReview && showExecutionReview ? (
+        <ExecutionReviewCard
+          review={executionReview}
+          language={language}
+          agentName={executionReview.agentId ? consoleState?.agents?.find((agent) => agent.id === executionReview.agentId)?.name ?? executionReview.agentName ?? executionReview.agentId : executionReview.agentName}
+          onOpenDetails={() => onOpenExpert("process")}
+          onRecommendedAction={runExecutionReviewAction}
+          onReconcileAction={() => void reconcileExecutionReviewAction()}
+          recommendedActionPending={executionReviewActionPending}
+          reconcileActionPending={actionPending === "reconcile"}
+          actionReceipt={executionReview.actionReceipt ?? executionActionReceipt}
+          attemptHistory={observability?.runHistory ?? []}
+        />
+      ) : null}
+
+      {status !== "completed" && !executionReviewOwnsProgress ? <section className="rounded-xl border border-primary/30 bg-primary/[0.055] p-4" aria-labelledby={`work-item-next-${item.id}`}>
         <div className="flex gap-3">
           <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground"><CircleDot className="size-4" aria-hidden /></span>
           <div className="min-w-0 flex-1">
@@ -1978,7 +2157,8 @@ export function WorkItemSummaryView({
             {item.lastProgressSummary ? <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{copy.lastProgress}: {item.lastProgressSummary}</p> : null}
             <Button
               className="mt-3 w-full sm:w-auto"
-              disabled={Boolean(actionPending) || readinessChecking}
+              data-testid={startEligible ? "review-and-start-ai" : undefined}
+              disabled={Boolean(actionPending) || readinessChecking || (Boolean(retryableRun) && executionActionLocked)}
               aria-expanded={status === "ready_for_review" ? resultExpanded : undefined}
               aria-controls={status === "ready_for_review" ? resultSectionId : undefined}
               onClick={runPrimaryAction}
@@ -2094,7 +2274,7 @@ export function WorkItemSummaryView({
                         {clarifyStopPending ? <RefreshCw className="animate-spin" aria-hidden /> : <X aria-hidden />}
                         {clarifyStopPending ? language === "zh" ? "正在停止" : "Stopping" : language === "zh" ? "停止 AI" : "Stop AI"}
                       </Button>
-                      <Button disabled={!clarifyAnswer.trim() || clarifyPending || clarifyStopPending} onClick={() => void answerAiClarification()}>
+                      <Button disabled={!clarifyAnswer.trim() || clarifyPending || clarifyStopPending || executionActionLocked} onClick={() => void answerAiClarification()}>
                         {clarifyPending ? <RefreshCw className="animate-spin" aria-hidden /> : <ArrowRight aria-hidden />}
                         {clarifyPending ? language === "zh" ? "正在提交" : "Submitting" : language === "zh" ? "提交并让 AI 继续" : "Submit and continue"}
                       </Button>
@@ -2141,7 +2321,7 @@ export function WorkItemSummaryView({
         </div>
       ) : null}
 
-      {syncNotice ? (
+      {syncNotice && !(executionActionReceipt && showExecutionReview) ? (
         <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/[0.06] px-3 py-2 text-sm" role="status">
           <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
           <span className="min-w-0 flex-1">{syncNotice}</span>
@@ -2540,7 +2720,7 @@ export function WorkItemSummaryView({
               onRerunVerification={canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
               onAskAiToFix={canAskAiToFix ? askAiToFix : undefined}
               onCreatePullRequest={deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
-              actionDisabled={Boolean(actionPending)}
+              actionDisabled={Boolean(actionPending) || executionActionLocked}
               verificationPending={actionPending === "reverify"}
             />
           </div>
@@ -2561,7 +2741,7 @@ export function WorkItemSummaryView({
                   </Badge>
                 </div>
                 {deliveryReview?.verdict === "changes_requested" && reviewFeedback ? (
-                  <Button size="sm" disabled={Boolean(actionPending)} onClick={() => void sendChangeRequest(reviewFeedback)}>
+                  <Button size="sm" disabled={Boolean(actionPending) || executionActionLocked} onClick={() => void sendChangeRequest(reviewFeedback)}>
                     <RefreshCw aria-hidden />{copy.sendAiReviewBack}
                   </Button>
                 ) : null}
@@ -2714,7 +2894,7 @@ export function WorkItemSummaryView({
               <Textarea rows={3} autoFocus value={changeRequest} placeholder={feedbackMode === "follow_up" ? language === "zh" ? "例如：第二个结论依据是什么？请补充原文证据。" : "For example: What supports the second conclusion? Add source evidence." : copy.changePlaceholder} onChange={(event) => setChangeRequest(event.target.value)} />
               <div className="mt-2 flex flex-wrap justify-end gap-2">
                 <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => { setChangeRequestOpen(false); setChangeRequest(""); }}>{language === "zh" ? "取消" : "Cancel"}</Button>
-                <Button disabled={!changeRequest.trim() || Boolean(actionPending)} onClick={() => void sendChangeRequest()}>{actionPending === "changes" ? copy.sendingChanges : feedbackMode === "follow_up" ? language === "zh" ? "提交追问" : "Send follow-up" : copy.sendChanges}</Button>
+                <Button disabled={!changeRequest.trim() || Boolean(actionPending) || executionActionLocked} onClick={() => void sendChangeRequest()}>{actionPending === "changes" ? copy.sendingChanges : feedbackMode === "follow_up" ? language === "zh" ? "提交追问" : "Send follow-up" : copy.sendChanges}</Button>
               </div>
             </div>
           ) : (
@@ -2911,12 +3091,12 @@ export function WorkItemSummaryView({
         ) : null}
         {item.inputAssets?.length && item.materialChangesPending && status === "ready_for_review" && !materialChangesApplyOnRerun ? (
           <div className="mt-3 flex justify-end">
-            <Button size="sm" disabled={Boolean(actionPending)} onClick={() => void sendChangeRequest(copy.materialReprocessComment)}><RefreshCw aria-hidden />{copy.useUpdatedMaterials}</Button>
+            <Button size="sm" disabled={Boolean(actionPending) || executionActionLocked} onClick={() => void sendChangeRequest(copy.materialReprocessComment)}><RefreshCw aria-hidden />{copy.useUpdatedMaterials}</Button>
           </div>
         ) : null}
         {item.inputAssets?.length && status === "needs_action" && failed ? (
           <div className="mt-3 flex justify-end">
-            <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => setRetryOpen(true)}><RefreshCw aria-hidden />{copy.retryWithMaterials}</Button>
+            <Button size="sm" variant="secondary" disabled={Boolean(actionPending) || executionActionLocked} onClick={() => setRetryOpen(true)}><RefreshCw aria-hidden />{copy.retryWithMaterials}</Button>
           </div>
         ) : null}
         {materialError ? <p className="mt-2 text-sm text-destructive" role="alert">{materialError}</p> : null}
@@ -3171,7 +3351,7 @@ export function WorkItemSummaryView({
                 />
                 <div className="mt-2 flex flex-wrap justify-end gap-2">
                   <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => { setChangeRequestOpen(false); setChangeRequest(""); }}>{language === "zh" ? "取消修改" : "Cancel revision"}</Button>
-                  <Button disabled={!changeRequest.trim() || Boolean(actionPending)} onClick={() => void sendChangeRequest()}>
+                  <Button disabled={!changeRequest.trim() || Boolean(actionPending) || executionActionLocked} onClick={() => void sendChangeRequest()}>
                     <RefreshCw className={actionPending === "changes" ? "animate-spin" : ""} aria-hidden />
                     {actionPending === "changes" ? copy.sendingChanges : feedbackMode === "follow_up" ? language === "zh" ? "提交追问" : "Send follow-up" : copy.sendChanges}
                   </Button>
@@ -3211,7 +3391,7 @@ export function WorkItemSummaryView({
             onRerunVerification={canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
             onAskAiToFix={canAskAiToFix ? askAiToFix : undefined}
             onCreatePullRequest={deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
-            actionDisabled={Boolean(actionPending)}
+            actionDisabled={Boolean(actionPending) || executionActionLocked}
             verificationPending={actionPending === "reverify"}
           />
 
@@ -3291,7 +3471,7 @@ export function WorkItemSummaryView({
           {retryError ? <p className="text-sm text-destructive" role="alert">{retryError}</p> : null}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" disabled={retryPending} onClick={() => setRetryOpen(false)}>{language === "zh" ? "取消" : "Cancel"}</Button>
-            <Button disabled={retryPending} onClick={() => void retryAiWork()}>
+            <Button disabled={retryPending || executionActionLocked} onClick={() => void retryAiWork()}>
               <RefreshCw className={retryPending ? "animate-spin" : ""} aria-hidden />
               {retryPending ? copy.retrying : executionContractDefined ? copy.retryConfirm : language === "zh" ? "先生成执行方案" : "Prepare execution plan"}
             </Button>

@@ -239,7 +239,13 @@ async function captureScreenshots(driver) {
                         const retryable = homeItem?.executionState === "failed" && homeItem.nextAction.kind === "retry";
                         return {
                           workItem: retryable ? { ...workItem, executionState: "failed" } : workItem,
-                          observability: retryable
+                          observability: scenario.executionReview && decodedId === scenario.workItemId
+                            ? {
+                                latestRun: { id: scenario.executionReview.targetId, status: scenario.executionReview.targetStatus, phase: scenario.executionReview.stage, updatedAt: scenario.executionReview.updatedAt },
+                                executionReview: scenario.executionReview,
+                                ...(scenario.runHistory ? { runHistory: scenario.runHistory } : {}),
+                              }
+                            : retryable
                             ? { latestRun: { id: homeItem.nextAction.targetId, status: "failed" } }
                             : null,
                         };
@@ -289,6 +295,9 @@ async function captureScreenshots(driver) {
           await assertVisualState(page, scenario);
           if (scenario.name === "execution-start-queued") {
             await page.locator('[data-testid="execution-start-status"]:visible').scrollIntoViewIfNeeded();
+          }
+          if (["execution-review-running", "execution-review-failed", "execution-review-unknown"].includes(scenario.name)) {
+            await page.locator('[data-testid="execution-review-card"]:visible').scrollIntoViewIfNeeded();
           }
           const filePath = resolve(screenshotDir, `${scenario.name}-${viewport.name}.png`);
           await page.screenshot({ path: filePath, fullPage: true });
@@ -430,6 +439,25 @@ function visualScenarios(baseline) {
     { name: "work-item-summary-failed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_failed" },
     { name: "execution-start-confirmation", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_start", startConfirmation: true },
     { name: "execution-start-queued", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_start_queued" },
+    { name: "execution-review-running", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_execution_review", executionReview: executionReviewVisualFixture(homeFixture.workbench.generatedAt) },
+    {
+      name: "execution-review-failed",
+      state: structuredClone(homeState),
+      invocationId: null,
+      homeFixture,
+      workItemId: "lwi_visual_failed",
+      executionReview: failedExecutionReviewVisualFixture(homeFixture.workbench.generatedAt),
+      runHistory: failedExecutionReviewHistory(homeFixture.workbench.generatedAt),
+    },
+    {
+      name: "execution-review-unknown",
+      state: structuredClone(homeState),
+      invocationId: null,
+      homeFixture,
+      workItemId: "lwi_visual_failed",
+      executionReview: unknownExecutionReviewVisualFixture(homeFixture.workbench.generatedAt),
+      runHistory: failedExecutionReviewHistory(homeFixture.workbench.generatedAt),
+    },
     { name: "running", state: withRun("running"), invocationId: "inv_visual_running" },
     { name: "succeeded", state: withRun("succeeded", { summary: "Authentication boundaries reviewed; no unsafe write was performed." }), invocationId: "inv_visual_succeeded" },
     {
@@ -690,6 +718,56 @@ async function assertVisualState(page, scenario) {
     await detail.getByRole("button", { name: "Cancel this start" }).waitFor();
     if (await detail.getByRole("button", { name: "Review and start AI" }).count()) {
       throw new Error("queued start repeats the AI start action");
+    }
+    return;
+  }
+  if (scenario.name === "execution-review-running") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    const review = detail.locator('[data-testid="execution-review-card"]');
+    await review.waitFor({ timeout: 15_000 });
+    await review.getByText("AI is verifying the result", { exact: true }).waitFor();
+    await review.getByText("Checks are running", { exact: true }).waitFor();
+    await review.getByText("pnpm test", { exact: true }).waitFor();
+    await review.getByText(/Nothing has been applied/).waitFor();
+    if (await detail.locator('[data-testid="execution-start-status"]').count()) {
+      throw new Error("running execution repeats the start receipt card");
+    }
+    if (await detail.getByText("Current progress", { exact: true }).count()) {
+      throw new Error("running execution repeats the legacy progress card");
+    }
+    return;
+  }
+  if (scenario.name === "execution-review-failed") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    const review = detail.locator('[data-testid="execution-review-card"]');
+    await review.waitFor({ timeout: 15_000 });
+    await review.getByText("This execution encountered a problem", { exact: true }).waitFor();
+    await review.getByText("This run did not complete normally.", { exact: true }).waitFor();
+    await review.getByText("The checks found an issue that needs attention.", { exact: true }).waitFor();
+    await review.getByText(/cannot confirm whether external data was affected/).waitFor();
+    await review.getByRole("button", { name: "Retry AI work", exact: true }).waitFor();
+    await review.getByText("Next: You", { exact: true }).waitFor();
+    await review.getByText("View 2 recent attempt(s)", { exact: true }).click();
+    const attemptHistory = review.locator('[data-testid="execution-attempt-history"]');
+    await attemptHistory.getByText("Checks failed", { exact: true }).first().waitFor();
+    await review.getByText("View 2 recent attempt(s)", { exact: true }).click();
+    if (await review.getByRole("button", { name: "Ask AI to fix", exact: true }).count()) {
+      throw new Error("failed execution exposes competing primary recovery actions");
+    }
+    if (await detail.getByText("Current progress", { exact: true }).count()) {
+      throw new Error("failed execution repeats the legacy progress card");
+    }
+    return;
+  }
+  if (scenario.name === "execution-review-unknown") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    const review = detail.locator('[data-testid="execution-review-card"]');
+    await review.waitFor({ timeout: 15_000 });
+    await review.getByText("Action result is not confirmed", { exact: true }).waitFor();
+    await review.getByText("Recheck the status before trying this action again.", { exact: true }).waitFor();
+    await review.getByRole("button", { name: "Recheck action status", exact: true }).waitFor();
+    if (await review.getByRole("button", { name: "Retry AI work", exact: true }).count()) {
+      throw new Error("unknown execution action still invites a duplicate retry");
     }
     return;
   }
@@ -1007,6 +1085,22 @@ function homeWorkbenchFixture(projectId) {
         reasonCode: "waiting_for_turn", reasonDetail: null, cancelledAt: null, cancelledBy: null, canCancel: true,
       },
     }),
+    baseItem("lwi_visual_execution_review", "LOCAL-109", "Verify the customer launch implementation", {
+      status: "in_progress", executionState: "verifying", plannedDate: null, waitingOn: "ai", executionPolicy: "auto",
+      body: "Implement the launch update and verify it before review.",
+      intentStatement: "Implement and verify the customer launch update",
+      acceptanceCriteria: ["The launch update is implemented", "Automated checks pass"],
+      verificationSop: ["Run pnpm test", "Review the changed files"],
+      executionContractSource: "manual", executionContractConfirmedAt: generatedAt,
+      executionContractGate: { ready: true, missing: [], source: "manual", confirmedAt: generatedAt },
+      executionBindings: [{ kind: "auto_run", targetId: "aur_visual_execution_review", createdAt: generatedAt }],
+      executionStartReceipt: {
+        schemaVersion: 1, id: "wsr_visual_execution_review", status: "started", requestedAt: generatedAt, requestedBy: "usr_local",
+        confirmedRevision: 3, contractDigest: "visual-execution-review-digest", updatedAt: generatedAt, startedAt: generatedAt,
+        executionKind: "auto_run", targetId: "aur_visual_execution_review", agentId: "agt_visual_codex", phase: "verifying",
+        reasonCode: null, reasonDetail: null, cancelledAt: null, cancelledBy: null, canCancel: false,
+      },
+    }),
   ];
   const home = ({ id, executionState, attentionReason, waitingOn, nextAction, ai, secondaryReasons = [] }) => {
     const item = rows.find((candidate) => candidate.id === id);
@@ -1040,6 +1134,114 @@ function homeWorkbenchFixture(projectId) {
       items,
     },
   };
+}
+
+function executionReviewVisualFixture(generatedAt) {
+  return {
+    schemaVersion: 1,
+    state: "verifying",
+    stage: "verifying",
+    stages: [
+      { key: "accepted", status: "complete", at: generatedAt },
+      { key: "preparing", status: "complete", at: generatedAt },
+      { key: "working", status: "complete", at: generatedAt },
+      { key: "verifying", status: "current", at: generatedAt },
+      { key: "review", status: "pending", at: null },
+    ],
+    executionKind: "auto_run",
+    targetId: "aur_visual_execution_review",
+    targetStatus: "verifying",
+    agentId: "agt_visual_codex",
+    agentName: "Codex CLI",
+    acceptedAt: generatedAt,
+    startedAt: generatedAt,
+    updatedAt: generatedAt,
+    completedAt: null,
+    needsAttention: false,
+    attentionCode: null,
+    verification: {
+      status: "running", verified: false, passed: null, commands: ["pnpm test"], command: "pnpm test", exitCode: null,
+      summary: "Running the project test suite.", checkedAt: null, durationMs: null, evidenceCount: 0, checks: [],
+    },
+    impact: { status: "none", reasonCode: "changes_isolated_until_confirmation" },
+    riskReasons: [],
+    recommendedAction: { kind: "open_details", reasonCode: "execution_in_progress", requiresConfirmation: false, nextOwner: "ai" },
+  };
+}
+
+function failedExecutionReviewVisualFixture(generatedAt) {
+  return {
+    schemaVersion: 1,
+    state: "failed",
+    stage: "verifying",
+    stages: [
+      { key: "accepted", status: "complete", at: generatedAt },
+      { key: "preparing", status: "complete", at: generatedAt },
+      { key: "working", status: "complete", at: generatedAt },
+      { key: "verifying", status: "attention", at: generatedAt },
+      { key: "review", status: "pending", at: null },
+    ],
+    executionKind: "auto_run",
+    targetId: "aur_failed",
+    targetStatus: "failed",
+    agentId: "agt_visual_codex",
+    agentName: "Codex CLI",
+    acceptedAt: generatedAt,
+    startedAt: generatedAt,
+    updatedAt: generatedAt,
+    completedAt: null,
+    needsAttention: true,
+    attentionCode: "verification_failed",
+    verification: {
+      status: "failed", verified: true, passed: false, commands: ["pnpm test"], command: "pnpm test", exitCode: 1,
+      summary: "One automated check failed; no result was applied.", checkedAt: generatedAt, durationMs: 8_400, evidenceCount: 1,
+      checks: [{ id: "check_visual_failed", kind: "test", status: "failed", summary: "One task summary test failed." }],
+    },
+    impact: { status: "unknown", reasonCode: "external_impact_not_recorded" },
+    riskReasons: [
+      { code: "execution_failed", severity: "high", scope: "execution" },
+      { code: "verification_failed", severity: "high", scope: "verification" },
+      { code: "external_impact_unknown", severity: "high", scope: "external_impact" },
+    ],
+    recommendedAction: { kind: "retry_execution", reasonCode: "execution_failed", requiresConfirmation: true, nextOwner: "me" },
+  };
+}
+
+function unknownExecutionReviewVisualFixture(generatedAt) {
+  return {
+    ...failedExecutionReviewVisualFixture(generatedAt),
+    actionReceipt: {
+      schemaVersion: 1,
+      id: "ear_visual_unknown",
+      kind: "retry_execution",
+      status: "unknown",
+      messageCode: "request_accepted",
+      impact: "unknown",
+      nextOwner: "me",
+      requestedAt: generatedAt,
+      updatedAt: generatedAt,
+      completedAt: null,
+      targetId: null,
+      errorCode: null,
+      errorMessage: null,
+      replayed: false,
+    },
+  };
+}
+
+function failedExecutionReviewHistory(generatedAt) {
+  return [
+    {
+      attempt: 1, invocationId: "inv_visual_failed_1", status: "failed", current: false, updatedAt: generatedAt,
+      summary: "The first attempt stopped during verification.",
+      verification: { status: "failed", command: "pnpm test", summary: "One task summary test failed." },
+    },
+    {
+      attempt: 2, invocationId: "inv_visual_failed_2", status: "failed", current: true, updatedAt: generatedAt,
+      summary: "The retry reached verification but did not pass.",
+      verification: { status: "failed", command: "pnpm test", summary: "The same task summary test still fails." },
+    },
+  ];
 }
 
 function reportVisualFixture(status, projectId) {

@@ -56,6 +56,7 @@ import { taskPlanCapabilityReadiness } from "./task-capability-readiness.mjs";
 import { applyResultRepairSpec, buildResultRepairTaskSpec } from "./result-repair-task.mjs";
 import { buildDeliveryEvidence } from "./work-item-delivery-evidence.mjs";
 import { normalizeExecutionStartFailure, projectExecutionStartReceipt } from "./work-item-execution-start.mjs";
+import { projectWorkItemExecutionReview } from "./work-item-execution-review.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -2570,15 +2571,21 @@ export function createWorkItemService({
           },
         }
       : item;
-    const deliveryEvidence = pendingLocalDelivery
+    const hasOfficeActionEvidence = Boolean(
+      evidenceItem.channelTaskContract?.ledgerMutationPreview
+      ?? evidenceItem.ledgerMutationPreview
+      ?? evidenceItem.channelTaskContract?.dataMutationPreview
+      ?? evidenceItem.dataMutationPreview,
+    );
+    const deliveryEvidence = pendingLocalDelivery || hasOfficeActionEvidence
       ? buildDeliveryEvidence({
         item: evidenceItem,
         autoRun: latestRun,
         deliveryReport: projectedDeliveryReport,
         deliveryReview: deliveryReview ?? projectedDeliveryReview,
-        deliveryMode,
-        worktreeId: latestRun.localDelivery.worktreeId,
-        branchName: latestRun.localDelivery.branchName ?? deliveryWorktree?.branchName ?? null,
+        deliveryMode: hasOfficeActionEvidence ? "local_merge" : deliveryMode,
+        worktreeId: latestRun?.localDelivery?.worktreeId ?? outcomeWorktreeId,
+        branchName: latestRun?.localDelivery?.branchName ?? deliveryWorktree?.branchName ?? null,
         remoteUrl: deliveryRemoteUrl,
       })
       : null;
@@ -2613,22 +2620,46 @@ export function createWorkItemService({
     const showRunHistory = runInvocations.length > 1
       || runInvocations.some((invocation) => failureStatuses.has(invocation.status));
     const runHistory = showRunHistory
-      ? runInvocations.map((invocation, index) => ({
-        invocationId: invocation.id,
-        autoRunId: invocation.options?.metadata?.autoRunId
+      ? runInvocations.map((invocation, index) => {
+        const autoRunId = invocation.options?.metadata?.autoRunId
           ?? boundRuns.find((run) => run.invocationId === invocation.id)?.id
-          ?? null,
-        attempt: index + 1,
-        status: invocation.status,
-        createdAt: invocation.createdAt ?? null,
-        startedAt: invocation.startedAt ?? null,
-        completedAt: invocation.completedAt ?? null,
-        errorCode: invocation.result?.errorCode ?? null,
-        summary: invocation.result?.summary
-          ? String(invocation.result.summary).slice(0, 500)
-          : null,
-        current: invocation.id === latestRun?.invocationId,
-      }))
+          ?? null;
+        const run = autoRunId ? boundRuns.find((candidate) => candidate.id === autoRunId) ?? null : null;
+        const historicalOutcome = run?.outcomeHistory?.find((entry) => entry.invocationId === invocation.id) ?? null;
+        const invocationSettled = failureStatuses.has(invocation.status) || invocation.status === "succeeded";
+        const verification = historicalOutcome?.verification
+          ?? historicalOutcome?.deliveryReport?.verification
+          ?? (invocation.id === latestRun?.invocationId && invocationSettled
+            ? latestRun?.deliveryReport?.verification ?? latestRun?.verification
+            : null)
+          ?? invocation.result?.output?.verification
+          ?? invocation.result?.verification
+          ?? null;
+        const verified = verification?.verified === true
+          || verification?.passed === true
+          || verification?.passed === false
+          || Number.isInteger(verification?.exitCode);
+        const passed = verification?.passed === true || verification?.exitCode === 0;
+        return {
+          invocationId: invocation.id,
+          autoRunId,
+          attempt: index + 1,
+          status: invocation.status,
+          createdAt: invocation.createdAt ?? null,
+          startedAt: invocation.startedAt ?? null,
+          completedAt: invocation.completedAt ?? null,
+          errorCode: invocation.result?.errorCode ?? null,
+          summary: invocation.result?.summary
+            ? String(invocation.result.summary).slice(0, 500)
+            : historicalOutcome?.report ? String(historicalOutcome.report).slice(0, 500) : null,
+          verification: verification ? {
+            status: verified ? (passed ? "passed" : "failed") : "not_run",
+            command: String(verification.command ?? verification.commands?.at?.(-1) ?? "").slice(0, 500) || null,
+            summary: String(verification.summary ?? "").slice(0, 500) || null,
+          } : null,
+          current: invocation.id === latestRun?.invocationId,
+        };
+      })
       : [];
     const activeClaim = item.claim?.status === "active" && Date.parse(item.claim.leaseExpiresAt) > Date.parse(now())
       ? item.claim
@@ -2774,6 +2805,14 @@ export function createWorkItemService({
             : latestRun
               ? "monitor_execution"
               : "start_execution";
+    const startReceipt = projectExecutionStartReceipt(item, state, { now: now() });
+    const executionReview = projectWorkItemExecutionReview({
+      item,
+      state,
+      startReceipt,
+      deliveryEvidence,
+      now: now(),
+    });
     return {
       ok: true,
       status: 200,
@@ -2782,6 +2821,7 @@ export function createWorkItemService({
         observability: {
           executionChainId: item.id,
           nextAction,
+          executionReview,
           attention,
           latestRun: latestRun ? {
             id: latestRun.id,

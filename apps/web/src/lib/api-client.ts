@@ -2924,13 +2924,17 @@ export const api = {
   // U1: can this project run an auto-run, and what's missing?
   autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
   // Retry a failed/blocked run, or revise a completed local delivery, in its existing worktree.
-  retryAutoRun: (id: string, feedback?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`, {
+  retryAutoRun: (id: string, feedback?: string, action?: { idempotencyKey?: string; expectedWorkItemRevision?: number; expectedTargetStatus?: string }) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`, {
     timezoneOffset: new Date().getTimezoneOffset(),
     ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
+    ...action,
   }),
-  reverifyAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/reverify`, {
+  reverifyAutoRun: (id: string, action?: { idempotencyKey?: string; expectedWorkItemRevision?: number; expectedTargetStatus?: string }) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/reverify`, {
     timezoneOffset: new Date().getTimezoneOffset(),
+    ...action,
   }),
+  reconcileAutoRunExecutionAction: (id: string) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/execution-actions/reconcile`, {}),
   cancelAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/cancel`),
   stopAutoRunDelivery: (id: string, reason?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/stop-delivery`, { reason }),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person
@@ -2943,8 +2947,8 @@ export const api = {
   designApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/design-approval`, { action, feedback }),
   // E3: answer a clarify run's questions (posted back to the issue).
-  answerClarify: (id: string, { answers, selectedAction, repoUrl, repoName }: { answers?: string; selectedAction?: string; repoUrl?: string; repoName?: string }) =>
-    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers, selectedAction, repoUrl, repoName }),
+  answerClarify: (id: string, { answers, selectedAction, repoUrl, repoName, idempotencyKey, expectedWorkItemRevision, expectedTargetStatus }: { answers?: string; selectedAction?: string; repoUrl?: string; repoName?: string; idempotencyKey?: string; expectedWorkItemRevision?: number; expectedTargetStatus?: string }) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers, selectedAction, repoUrl, repoName, idempotencyKey, expectedWorkItemRevision, expectedTargetStatus }),
   // Epic S3: the human decomposition gate — approve spawns the N governed child issues.
   decompositionApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/decomposition-approval`, { action, feedback }),

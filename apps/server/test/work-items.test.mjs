@@ -2062,6 +2062,36 @@ test("AI execution input is exposed as input work instead of an approval for any
   assert.equal(detail.workItem.executionState, "claimed");
 });
 
+test("detail exposes one unified execution review for a running direct task", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Prepare a workbook summary" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((candidate) => candidate.id === item.id);
+  stored.executionBindings = [{
+    kind: "application_invocation",
+    targetId: "inv_execution_review",
+    createdAt: "2026-07-24T00:30:00.000Z",
+  }];
+  state.invocations = [{
+    id: "inv_execution_review",
+    status: "running",
+    agentId: "agt_office",
+    startedAt: "2026-07-24T00:30:01.000Z",
+    updatedAt: "2026-07-24T00:30:02.000Z",
+  }];
+  state.agents = [{ id: "agt_office", name: "Office assistant" }];
+
+  const detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body;
+  assert.equal(detail.observability.executionReview.state, "working");
+  assert.equal(detail.observability.executionReview.stage, "working");
+  assert.equal(detail.observability.executionReview.targetId, "inv_execution_review");
+  assert.equal(detail.observability.executionReview.agentName, "Office assistant");
+  assert.equal(detail.observability.executionReview.verification.status, "pending");
+  assert.equal(detail.observability.executionReview.impact.status, "none");
+  assert.equal(detail.observability.executionReview.recommendedAction.kind, "open_details");
+  assert.equal(detail.observability.executionReview.recommendedAction.nextOwner, "ai");
+  assert.deepEqual(detail.observability.executionReview.riskReasons, []);
+});
+
 test("attention leases expire and batch claims fail atomically on contention", () => {
   let currentTime = "2026-07-24T00:00:00.000Z";
   const { service, state } = harness({ clock: () => currentTime });
@@ -3309,6 +3339,7 @@ test("detail only exposes run history after a failure or rerun", () => {
     completedAt: "2026-07-24T00:02:00.000Z",
     errorCode: "transport_closed",
     summary: "The first attempt failed",
+    verification: null,
     current: true,
   });
 
@@ -3445,6 +3476,22 @@ test("detail projects the current Ledger batch instead of a stale channel snapsh
   assert.equal(evidence.actionPreview.officeDetails.batch.unknownCount, 1);
   assert.equal(evidence.actionPreview.officeDetails.batch.details[1].businessKey, "CUS-002");
   assert.equal(evidence.actionPreview.officeDetails.batch.details[2].state, "unknown");
+
+  state.autoRuns[0].localDelivery.deliveredAt = "2026-07-24T00:04:00.000Z";
+  state.ledgerBatchUpsertPreviews[0] = {
+    ...state.ledgerBatchUpsertPreviews[0],
+    state: "rolled_back",
+    childPreviewIds: ["lup_1", "lup_2"],
+    targetCount: 2,
+    operationCount: 2,
+  };
+  state.ledgerUpsertPreviews = state.ledgerUpsertPreviews.map((preview) => ({ ...preview, state: "rolled_back" }));
+  state.ledgerBatchMutationJournals[0].rollback = { restoredTargets: 2, blockedTargets: 0 };
+  const rolledBack = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability;
+  assert.equal(rolledBack.delivery, null, "an applied office batch is no longer waiting for delivery review");
+  assert.equal(rolledBack.deliveryEvidence.status, "office_batch_rolled_back");
+  assert.equal(rolledBack.executionReview.impact.status, "rolled_back");
+  assert.ok(rolledBack.executionReview.riskReasons.some((reason) => reason.code === "office_batch_rolled_back"));
 });
 
 test("AI issue assistance returns an editable draft without creating work", () => {

@@ -47,6 +47,21 @@ function continuationRunView(run) {
   return { id: run.autoRun?.id ?? run.id, status: run.autoRun?.status ?? run.status };
 }
 
+function withoutExecutionActionInternals(autoRun) {
+  if (!autoRun) return autoRun;
+  const {
+    executionActionReceipts: _executionActionReceipts,
+    executionActionIdempotencyLedger: _executionActionIdempotencyLedger,
+    ...visible
+  } = autoRun;
+  return visible;
+}
+
+function executionActionResultView(result) {
+  if (!result?.autoRun) return result;
+  return { ...result, autoRun: withoutExecutionActionInternals(result.autoRun) };
+}
+
 /**
  * Continue a structured clarification in a repository selected by the user.
  *
@@ -258,6 +273,7 @@ export async function handleProjectRoutes({
   startAutoRun,
   retryAutoRun,
   reverifyAutoRun,
+  reconcileExecutionAction,
   cancelAutoRun,
   stopAutoRunDelivery,
   mergeAutoRunPr,
@@ -467,10 +483,19 @@ export async function handleProjectRoutes({
         terminalId: body?.terminalId,
         timezoneOffset: body?.timezoneOffset,
         feedback: body?.feedback,
+        idempotencyKey: body?.idempotencyKey,
+        expectedWorkItemRevision: body?.expectedWorkItemRevision,
+        expectedTargetStatus: body?.expectedTargetStatus,
       });
-      sendJson(res, 200, result);
+      sendJson(res, 200, executionActionResultView(result));
     } catch (error) {
-      sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "auto_run_retry_failed",
+        message: errorMessage(error),
+        ...(error?.actionReceipt ? { actionReceipt: error.actionReceipt } : {}),
+        ...(error?.currentWorkItemRevision == null ? {} : { currentWorkItemRevision: error.currentWorkItemRevision }),
+        ...(error?.currentTargetStatus == null ? {} : { currentTargetStatus: error.currentTargetStatus }),
+      });
     }
     return true;
   }
@@ -481,7 +506,7 @@ export async function handleProjectRoutes({
     try {
       const body = await readJson(req);
       const result = cancelAutoRun(decodeURIComponent(autoRunCancelMatch[1]), { actor, terminalId: body?.terminalId });
-      sendJson(res, 200, result);
+      sendJson(res, 200, executionActionResultView(result));
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_cancel_failed", message: errorMessage(error) });
     }
@@ -494,7 +519,7 @@ export async function handleProjectRoutes({
     try {
       const body = await readJson(req);
       const result = stopAutoRunDelivery(decodeURIComponent(autoRunStopDeliveryMatch[1]), { actor, reason: body?.reason });
-      sendJson(res, 200, result);
+      sendJson(res, 200, executionActionResultView(result));
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_stop_delivery_failed", message: errorMessage(error) });
     }
@@ -509,10 +534,34 @@ export async function handleProjectRoutes({
       const result = await reverifyAutoRun(decodeURIComponent(autoRunReverifyMatch[1]), {
         actor,
         terminalId: body?.terminalId,
+        idempotencyKey: body?.idempotencyKey,
+        expectedWorkItemRevision: body?.expectedWorkItemRevision,
+        expectedTargetStatus: body?.expectedTargetStatus,
       });
-      sendJson(res, 200, result);
+      sendJson(res, 200, executionActionResultView(result));
     } catch (error) {
-      sendJson(res, 400, { error: "auto_run_reverify_failed", message: errorMessage(error) });
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "auto_run_reverify_failed",
+        message: errorMessage(error),
+        ...(error?.actionReceipt ? { actionReceipt: error.actionReceipt } : {}),
+        ...(error?.currentWorkItemRevision == null ? {} : { currentWorkItemRevision: error.currentWorkItemRevision }),
+        ...(error?.currentTargetStatus == null ? {} : { currentTargetStatus: error.currentTargetStatus }),
+      });
+    }
+    return true;
+  }
+
+  const autoRunExecutionActionReconcileMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/execution-actions\/reconcile$/);
+  if (autoRunExecutionActionReconcileMatch && req.method === "POST") {
+    const autoRunId = decodeURIComponent(autoRunExecutionActionReconcileMatch[1]);
+    if (denyForeignAutoRun(autoRunId)) return true;
+    try {
+      sendJson(res, 200, executionActionResultView(reconcileExecutionAction(autoRunId)));
+    } catch (error) {
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "execution_action_reconcile_failed",
+        message: errorMessage(error),
+      });
     }
     return true;
   }
@@ -587,6 +636,9 @@ export async function handleProjectRoutes({
         answers: ranBody?.answers,
         selectedAction: ranBody?.selectedAction,
         repoUrl: ranBody?.repoUrl,
+        idempotencyKey: ranBody?.idempotencyKey,
+        expectedWorkItemRevision: ranBody?.expectedWorkItemRevision,
+        expectedTargetStatus: ranBody?.expectedTargetStatus,
       });
       const continuation = await continueStructuredClarification({
         state,
@@ -599,9 +651,15 @@ export async function handleProjectRoutes({
         startAutoRun,
         persistStateSoon,
       });
-      sendJson(res, 200, { ...result, ...continuation });
+      sendJson(res, 200, executionActionResultView({ ...result, ...continuation }));
     } catch (error) {
-      sendJson(res, 400, { error: "clarify_answer_failed", message: errorMessage(error) });
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "clarify_answer_failed",
+        message: errorMessage(error),
+        ...(error?.actionReceipt ? { actionReceipt: error.actionReceipt } : {}),
+        ...(error?.currentWorkItemRevision == null ? {} : { currentWorkItemRevision: error.currentWorkItemRevision }),
+        ...(error?.currentTargetStatus == null ? {} : { currentTargetStatus: error.currentTargetStatus }),
+      });
     }
     return true;
   }
@@ -649,6 +707,7 @@ export async function handleProjectRoutes({
     const enriched = autoRuns.map((run) => {
       const { idempotencyKey: _routingIdempotencyKey, ...routingOverride } = run.routingOverride ?? {};
       let out = run.routingOverride ? { ...run, routingOverride } : run;
+      out = withoutExecutionActionInternals(out);
       // Derived terminal grade (clean / degraded / unverified success, or failed)
       // for a per-run quality badge; null while the run is still in flight.
       const finalStatus = deriveFinalStatus(run);

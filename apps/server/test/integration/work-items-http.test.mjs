@@ -554,6 +554,18 @@ test("Auto-run list, summary, and routing slices are team scoped", async () => {
     status: "failed",
     decision: { path: "clarify", via: "agent", confidence: 0.4 },
     routingOverride: { actualPath: "develop", idempotencyKey: "must-not-leak", revision: 1 },
+    executionActionReceipts: [{
+      id: "ear_private_b",
+      kind: "retry_execution",
+      status: "accepted",
+      idempotencyKey: "must-not-leak-either",
+      requestDigest: "private-request-digest",
+    }],
+    executionActionIdempotencyLedger: [{
+      idempotencyKey: "must-not-leak-ledger",
+      requestDigest: "private-ledger-digest",
+      receipt: { id: "ear_private_b" },
+    }],
   });
   runtimeState.deployments.push(
     { id: "dep_a", projectId: "prj_a", autoRunId: "aur_feedback_http", status: "deployed", at: "2026-07-24T00:00:00.000Z" },
@@ -574,6 +586,56 @@ test("Auto-run list, summary, and routing slices are team scoped", async () => {
   assert.equal(teamB.body.deployments.total, 1);
   assert.equal(teamB.body.deployments.failed, 1);
   assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").routingOverride.idempotencyKey, undefined);
+  assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").executionActionReceipts, undefined);
+  assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").executionActionIdempotencyLedger, undefined);
+});
+
+test("execution action reconciliation is tenant scoped and unlocks a proven no-op retry", async () => {
+  runtimeState.autoRuns.push({
+    id: "aur_reconcile_http",
+    projectId: "prj_a",
+    teamId: "team_a",
+    status: "failed",
+    invocationId: "inv_reconcile_source",
+    executionActionReceipts: [{
+      schemaVersion: 1,
+      id: "ear_reconcile_http",
+      kind: "retry_execution",
+      status: "accepted",
+      messageCode: "request_accepted",
+      impact: "none",
+      nextOwner: "ai",
+      requestedAt: "2026-08-27T00:00:00.000Z",
+      updatedAt: "2026-08-27T00:00:00.000Z",
+      completedAt: null,
+      sourceTargetId: "inv_reconcile_source",
+      targetId: null,
+      idempotencyKey: "private-reconcile-key",
+      requestDigest: "private-reconcile-digest",
+    }],
+    executionActionIdempotencyLedger: [{
+      idempotencyKey: "private-reconcile-key",
+      requestDigest: "private-reconcile-digest",
+      receipt: { id: "ear_reconcile_http", status: "accepted" },
+    }],
+  });
+
+  const foreign = await call("/api/auto-runs/aur_reconcile_http/execution-actions/reconcile", {
+    token: "tok_b",
+    method: "POST",
+  });
+  assert.equal(foreign.status, 404);
+
+  const reconciled = await call("/api/auto-runs/aur_reconcile_http/execution-actions/reconcile", { method: "POST" });
+  assert.equal(reconciled.status, 200);
+  assert.equal(reconciled.body.safeToRetry, true);
+  assert.equal(reconciled.body.actionReceipt.status, "safe_to_retry");
+  assert.equal(reconciled.body.actionReceipt.impact, "none");
+  assert.equal(reconciled.body.autoRun.executionActionReceipts, undefined);
+  assert.equal(reconciled.body.autoRun.executionActionIdempotencyLedger, undefined);
+  assert.equal(reconciled.body.actionReceipt.idempotencyKey, undefined);
+  assert.equal(runtimeState.autoRuns.find((run) => run.id === "aur_reconcile_http")
+    .executionActionReceipts[0].status, "safe_to_retry");
 });
 
 test("GitHub issue binding and sync are wired through HTTP", async () => {
@@ -1184,6 +1246,18 @@ test("the real HTTP confirmation returns one durable start receipt, supports pre
   const finalDetail = await call(`/api/work-items/${runnable.id}`);
   assert.equal(finalDetail.body.workItem.executionBindings.filter((binding) =>
     ["auto_run", "application_invocation"].includes(binding.kind)).length, 1);
+  assert.equal(finalDetail.body.observability.executionReview.targetId, started.executionStartReceipt.targetId);
+  assert.ok(["preparing", "working", "waiting", "verifying", "review_ready"].includes(
+    finalDetail.body.observability.executionReview.state,
+  ));
+  assert.equal(finalDetail.body.observability.executionReview.impact.status, "none");
+  assert.ok(["pending", "running", "passed", "failed", "not_configured", "unavailable"].includes(
+    finalDetail.body.observability.executionReview.verification.status,
+  ));
+  assert.ok(["open_details", "answer_ai", "review_approval", "retry_execution", "fix_with_ai", "rerun_verification", "review_result", "view_result"].includes(
+    finalDetail.body.observability.executionReview.recommendedAction.kind,
+  ));
+  assert.ok(Array.isArray(finalDetail.body.observability.executionReview.riskReasons));
 });
 
 test("local issues can be queued as a durable concurrency-limited Auto-run batch", async () => {

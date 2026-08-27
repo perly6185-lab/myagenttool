@@ -2037,7 +2037,8 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   );
   assert.equal(autoRun.status, "failed", "a cross-terminal retry cannot mutate the run");
 
-  const { invocation: second } = await svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" } });
+  const retry = await svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" }, idempotencyKey: "retry-97" });
+  const { invocation: second } = retry;
 
   assert.equal(autoRun.status, "running", "retried run is live again");
   assert.equal(autoRun.invocationId, second.id, "record points at the fresh invocation");
@@ -2046,6 +2047,16 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   assert.equal(calls.createInvocation.length, 2);
   assert.match(calls.createInvocation[1].task, /implement the change/, "role prompt rebuilt from the decision");
   assert.equal(calls.createInvocation[1].options.timeoutSeconds, 900, "stored retry budget matches the configured turn budget");
+  assert.equal(retry.actionReceipt.status, "succeeded");
+  assert.equal(retry.actionReceipt.messageCode, "retry_started");
+  const originalReceiptId = retry.actionReceipt.id;
+  autoRun.executionActionReceipts = [];
+  const replay = await svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" }, idempotencyKey: "retry-97" });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.invocation.id, second.id);
+  assert.equal(replay.actionReceipt.id, originalReceiptId);
+  assert.equal(replay.actionReceipt.replayed, true);
+  assert.equal(calls.createInvocation.length, 2, "the same action key cannot start a duplicate invocation");
 });
 
 test("retryAutoRun migrates a legacy Demo Agent failure to the project's Codex agent", async () => {
@@ -2184,7 +2195,7 @@ test("reverifyAutoRun runs the platform gate and upgrades an unverified complete
   autoRun.status = "done";
   autoRun.verification = { passed: true, verified: false, summary: "No verification command configured." };
 
-  const result = await svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" } });
+  const result = await svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" }, idempotencyKey: "reverify-198" });
 
   assert.equal(result.autoRun.status, "done");
   assert.equal(result.autoRun.verification.verified, true);
@@ -2192,6 +2203,10 @@ test("reverifyAutoRun runs the platform gate and upgrades an unverified complete
   assert.deepEqual(result.autoRun.verification.commands, ["node --test apps/server/test/example.test.mjs"]);
   assert.equal(calls.verify.length, 1);
   assert.ok(calls.events.some((event) => event.type === "auto_run_reverified"));
+  assert.equal(result.actionReceipt.messageCode, "verification_passed");
+  const replay = await svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" }, idempotencyKey: "reverify-198" });
+  assert.equal(replay.replayed, true);
+  assert.equal(calls.verify.length, 1, "replaying the same action does not rerun verification");
 });
 
 test("reverifyAutoRun blocks a completed run when the reproduced platform check fails", async () => {
@@ -3133,7 +3148,7 @@ test("E3: answerClarify posts the answer and resumes the same run in develop", a
   assert.equal(autoRun.status, "needs_input");
   const before = calls.report.length;
 
-  const result = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use Redis, TTL 5 min." });
+  const result = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use Redis, TTL 5 min.", idempotencyKey: "answer-110" });
   assert.equal(result.ok, true);
   assert.equal(result.resumed, true);
   assert.equal(autoRun.clarifyAnswer.by, "usr_pm");
@@ -3144,6 +3159,11 @@ test("E3: answerClarify posts the answer and resumes the same run in develop", a
   assert.equal(autoRun.status, "running");
   assert.equal(calls.createInvocation.length, 2, "a continuation is created on the existing Auto-run");
   assert.match(calls.createInvocation[1].task, /Use Redis, TTL 5 min/);
+  assert.equal(result.actionReceipt.messageCode, "answer_resumed");
+  const replay = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use Redis, TTL 5 min.", idempotencyKey: "answer-110" });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.resumed, true);
+  assert.equal(calls.createInvocation.length, 2, "the same answer cannot dispatch twice");
 });
 
 test("E3: a reserved clarify Run waits without a worktree and materializes only after the answer", async () => {

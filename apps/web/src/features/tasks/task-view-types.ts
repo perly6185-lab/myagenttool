@@ -871,6 +871,7 @@ export type LocalWorkItemAutoRun = {
 export type LocalWorkItemObservability = {
   executionChainId?: string;
   nextAction: "answer_ai" | "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
+  executionReview?: WorkItemExecutionReview | null;
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
   outcome?: {
@@ -909,6 +910,11 @@ export type LocalWorkItemObservability = {
     completedAt: string | null;
     errorCode: string | null;
     summary: string | null;
+    verification: {
+      status: "passed" | "failed" | "not_run";
+      command: string | null;
+      summary: string | null;
+    } | null;
     current: boolean;
   }[];
   delivery?: {
@@ -961,6 +967,80 @@ export type LocalWorkItemObservability = {
     humanCorrection?: { actualPath: string; reason: string; actorId: string; recordedAt: string } | null;
     candidates: { path: string; selected: boolean; score?: number | null; reason: string }[];
   } | null;
+};
+
+export type WorkItemExecutionReview = {
+  schemaVersion: 1;
+  state: "queued" | "preparing" | "working" | "waiting" | "verifying" | "review_ready" | "completed" | "failed" | "cancelled";
+  stage: "accepted" | "preparing" | "working" | "verifying" | "review";
+  stages: Array<{
+    key: "accepted" | "preparing" | "working" | "verifying" | "review";
+    status: "complete" | "current" | "pending" | "attention";
+    at: string | null;
+  }>;
+  executionKind: WorkItemExecutionKind | null;
+  targetId: string | null;
+  targetStatus: string | null;
+  agentId: string | null;
+  agentName: string | null;
+  acceptedAt: string | null;
+  startedAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+  needsAttention: boolean;
+  attentionCode: string | null;
+  verification: {
+    status: "pending" | "running" | "passed" | "failed" | "not_configured" | "unavailable";
+    verified: boolean;
+    passed: boolean | null;
+    commands: string[];
+    command: string | null;
+    exitCode: number | null;
+    summary: string | null;
+    checkedAt: string | null;
+    durationMs: number | null;
+    evidenceCount: number;
+    checks: Array<{
+      id: string;
+      kind: string;
+      status: "passed" | "failed";
+      command: string | null;
+      summary: string | null;
+      recordedAt: string | null;
+      evidenceCount: number;
+    }>;
+  };
+  impact: {
+    status: "none" | "prepared" | "proposed" | "applied" | "partial" | "rolled_back" | "unknown";
+    reasonCode: string;
+  };
+  riskReasons: Array<{
+    code: "execution_failed" | "user_input_required" | "approval_required" | "verification_failed" | "verification_not_configured" | "verification_unavailable" | "external_impact_unknown" | "office_batch_partial" | "office_batch_rolled_back" | "pull_request_not_applied";
+    severity: "medium" | "high";
+    scope: "execution" | "approval" | "verification" | "external_impact";
+  }>;
+  recommendedAction: {
+    kind: "open_details" | "answer_ai" | "review_approval" | "retry_execution" | "fix_with_ai" | "rerun_verification" | "review_result" | "view_result";
+    reasonCode: string;
+    requiresConfirmation: boolean;
+    nextOwner: "ai" | "me" | "system" | "none";
+  };
+  actionReceipt?: null | {
+    schemaVersion: 1;
+    id: string;
+    kind: "retry_execution" | "fix_with_ai" | "rerun_verification" | "answer_ai";
+    status: "accepted" | "running" | "succeeded" | "failed" | "safe_to_retry" | "unknown";
+    messageCode: string | null;
+    impact: "none" | "proposed" | "applied" | "unknown";
+    nextOwner: "ai" | "me" | "system" | "none";
+    requestedAt: string | null;
+    updatedAt: string | null;
+    completedAt: string | null;
+    targetId: string | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+    replayed: boolean;
+  };
 };
 
 export type WorkItemOutcomeFile = {
