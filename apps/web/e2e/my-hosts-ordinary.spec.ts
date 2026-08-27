@@ -76,3 +76,30 @@ test("ordinary owners use My Hosts directly on desktop and mobile without profes
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("my-hosts-ordinary-mobile.png"), fullPage: true });
 });
+
+test("ordinary setup explains local-network permission before connecting", async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({
+      state: { locale: "zh-CN", section: "myHosts", experienceMode: "ordinary" },
+      version: 1,
+    }));
+  });
+  await mockOrdinaryHostApi(page);
+  await page.goto("/?section=myHosts");
+
+  await page.getByRole("button", { name: "连接设备" }).first().click();
+  await expect(page.getByRole("heading", { name: "连接我的设备" })).toBeVisible();
+  await page.getByLabel("设备地址").fill("10.10.10.222");
+  const consent = page.getByLabel(/允许连接我的局域网设备/);
+  await expect(consent).toBeVisible();
+  await expect(consent).not.toBeChecked();
+  await page.getByRole("button", { name: "连接这台设备" }).click();
+  await expect(page.getByRole("alert")).toContainText("请先确认允许连接这台局域网设备");
+  await expect(page.getByText("1. 连接设备")).toBeVisible();
+  await expect(page.getByText("2. 确认是我的")).toBeVisible();
+  await expect(page.getByText("3. 允许文件夹")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("my-hosts-local-permission.png"), fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
