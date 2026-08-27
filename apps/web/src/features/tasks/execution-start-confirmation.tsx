@@ -96,14 +96,16 @@ export function ExecutionStartConfirmation({
           </div>
           <dl className="mt-3 space-y-3 text-sm">
             <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)]">
+              <dt className="text-muted-foreground">{zh ? "需求来源" : "Request source"}</dt>
+              <dd className="min-w-0 font-medium">{summary.origin.label}</dd>
+            </div>
+            <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)]">
               <dt className="text-muted-foreground">{zh ? "处理方式" : "Method"}</dt>
               <dd className="min-w-0">
-                {summary.template ? (
-                  <>
-                    <span className="font-medium">{summary.template.name}</span>
-                    <span className="block text-xs text-muted-foreground">{zh ? "预计得到：" : "Expected result: "}{summary.template.expectedOutput}</span>
-                  </>
-                ) : (zh ? "按本任务方案处理，不套用已保存模板" : "Use this task plan without a saved template")}
+                <span className="font-medium">{summary.method.name}</span>
+                <span className="block text-xs text-muted-foreground">{summary.method.expectedOutput
+                  ? `${zh ? "预计得到：" : "Expected result: "}${summary.method.expectedOutput}`
+                  : summary.method.kind === "template" ? (zh ? "使用已保存模板" : "Uses a saved template") : (zh ? "按本任务方案处理，不套用已保存模板" : "Use this task plan without a saved template")}</span>
               </dd>
             </div>
             <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)]">
@@ -115,6 +117,7 @@ export function ExecutionStartConfirmation({
                       <li key={`${material.source}:${material.id}`} className="flex min-w-0 flex-wrap items-center gap-1.5">
                         <span className="break-words">{material.title}</span>
                         <Badge tone="neutral">{material.source}</Badge>
+                        <Badge tone={material.role === (zh ? "允许修改" : "Change target") ? "warning" : "neutral"}>{material.role}</Badge>
                       </li>
                     ))}
                   </ul>
@@ -127,6 +130,12 @@ export function ExecutionStartConfirmation({
                 <span className="font-medium">{summary.repository.name}</span>
                 {summary.repository.path ? <code className="mt-0.5 block break-all text-xs text-muted-foreground">{summary.repository.path}</code> : null}
               </dd>
+            </div>
+            <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)]">
+              <dt className="text-muted-foreground">{zh ? "结果去向" : "Result destination"}</dt>
+              <dd className="min-w-0 font-medium">{summary.delivery.destination === "channel"
+                ? (zh ? `先在任务中确认，再回传到 ${summary.delivery.label}` : `Review in the task, then return it to ${summary.delivery.label}`)
+                : (zh ? "保留在当前任务中，等待你确认" : "Keep it in this task for your review")}</dd>
             </div>
           </dl>
         </section>

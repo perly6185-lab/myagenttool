@@ -48,6 +48,7 @@ import { ApiError, type BusinessRoutineDefinition } from "@/lib/api-client";
 import type { LocalWorkItem, LocalWorkItemDeliveryEvidence, LocalWorkItemObservability, WorkItemComment, WorkItemOutcomeFile } from "./task-view-types";
 import { deriveWorkItemUserStatus } from "./work-item-user-status";
 import { WorkItemJobOverview } from "./work-item-job-overview";
+import { WorkItemContextCard } from "./work-item-context-card";
 import { isLocalWorkItem } from "./work-item-response";
 import { COPY, type SummaryCopy } from "./work-item-summary-copy";
 import {
@@ -2119,6 +2120,12 @@ export function WorkItemSummaryView({
         summary={intentSummary}
         language={language}
         onEdit={canOperate && status !== "completed" ? () => onOpenExpert("overview") : undefined}
+      />
+
+      <WorkItemContextCard
+        summary={item.taskContextSummary}
+        language={language}
+        onOpenChannel={item.taskContextSummary?.origin.kind === "channel" && onOpenSetup ? () => onOpenSetup("channels") : undefined}
       />
 
       {startReceipt && !showExecutionReview ? (

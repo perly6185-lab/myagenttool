@@ -9,7 +9,7 @@ import type { LocalWorkItem } from "./task-view-types";
 
 const COPY = {
   zh: {
-    title: "资料库引用",
+    title: "来自我的资料",
     hint: "AI 执行前会再次检查本地原件、连接状态和固定版本；远程数据仅生成受控工作快照。",
     pinned: "已固定版本",
     live: "执行时读取当前原件",
@@ -50,7 +50,7 @@ const COPY = {
     kinds: { article: "文章", material: "资料", mail: "邮件", task: "任务", task_input: "任务输入", task_output: "任务输出" },
   },
   en: {
-    title: "Library references",
+    title: "From My materials",
     hint: "Before running, AI checks local originals, connection health, and pinned versions again. Remote data is used only in a controlled working snapshot.",
     pinned: "Version pinned",
     live: "Read current original at run time",

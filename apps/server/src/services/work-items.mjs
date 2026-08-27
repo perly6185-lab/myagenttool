@@ -57,6 +57,7 @@ import { applyResultRepairSpec, buildResultRepairTaskSpec } from "./result-repai
 import { buildDeliveryEvidence } from "./work-item-delivery-evidence.mjs";
 import { normalizeExecutionStartFailure, projectExecutionStartReceipt } from "./work-item-execution-start.mjs";
 import { projectWorkItemExecutionReview } from "./work-item-execution-review.mjs";
+import { projectWorkItemContextSummary } from "./work-item-context-summary.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -1696,6 +1697,11 @@ export function createWorkItemService({
       feedback.ownerTeamId === actorTeam(actor) && feedback.workItemId === item.id) ?? null;
     return {
       ...publicItem,
+      taskContextSummary: projectWorkItemContextSummary({
+        item,
+        state,
+        ownerTeamId: actorTeam(actor),
+      }),
       dataContext: dataContextView(item),
       localContentRefs: (item.localContentRefs ?? []).map(contentReferenceView),
       taskResourceRefs: (item.taskResourceRefs ?? []).map(taskResourceReferenceView),

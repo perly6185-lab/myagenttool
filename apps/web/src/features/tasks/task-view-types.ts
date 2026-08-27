@@ -183,6 +183,44 @@ export type LocalWorkItem = {
   }) | null;
   localContentRefs?: WorkItemContentReference[];
   taskResourceRefs?: WorkItemResourceReference[];
+  taskContextSummary?: {
+    schemaVersion: 1;
+    origin: {
+      kind: "channel" | "issue" | "manual" | "meeting" | "email" | "chat" | "phone" | "import" | "other" | string;
+      label: string;
+      provider: string | null;
+      channelId: string | null;
+      conversationId: string | null;
+      threadId: string | null;
+      sourceMessageCount: number;
+    };
+    method: {
+      kind: "template" | "custom";
+      name: string;
+      definitionId: string | null;
+      familyId: string | null;
+      version: number | null;
+      expectedOutput: string | null;
+      snapshotHash: string | null;
+    };
+    materials: Array<{
+      id: string;
+      title: string;
+      role: "required_input" | "reference" | "query_source" | "change_target" | "output";
+      source: "channel_attachment" | "task_file" | "my_materials" | "local_resource" | "remote_resource" | "business_record";
+      sources?: string[];
+      locality: "local" | "remote" | "managed";
+      availability: "ready" | "selected" | "pending" | "stale";
+      versionPolicy: "pinned" | "latest_at_start";
+    }>;
+    delivery: {
+      destination: "channel" | "task";
+      label: string;
+      channelId: string | null;
+      conversationId: string | null;
+      status: string | null;
+    };
+  };
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
   executionArtifacts?: {

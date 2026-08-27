@@ -91,6 +91,34 @@ function harness({
   return { state, events, alerts, service };
 }
 
+test("work item detail exposes one task context summary over existing Channel and material records", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "整理供应商报价" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((item) => item.id === created.id);
+  stored.channelOrigin = { channelId: "chn_quote", conversationId: "conv_quote", threadId: "cth_quote", messageId: "evt_quote" };
+  stored.inputAssets = [{
+    id: "asset_quote",
+    originalName: "报价单.xlsx",
+    hash: "sha256:quote",
+    readiness: { state: "ready", reason: "channel_attachment_ingested" },
+  }];
+  stored.channelTaskContract = { dataSources: [{ kind: "channel_attachment", id: "asset_quote" }] };
+  state.channels = [{ id: "chn_quote", ownerTeamId: "team_a", provider: "wechat_ilink", name: "采购协作" }];
+  state.channelTaskThreads = [{
+    id: "cth_quote", workItemId: created.id, channelId: "chn_quote", conversationId: "conv_quote", sourceEventIds: ["evt_quote"],
+  }];
+
+  const detail = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+
+  assert.equal(detail.taskContextSummary.origin.kind, "channel");
+  assert.equal(detail.taskContextSummary.origin.label, "采购协作");
+  assert.equal(detail.taskContextSummary.method.kind, "custom");
+  assert.deepEqual(detail.taskContextSummary.materials.map((material) => [material.title, material.source, material.role]), [
+    ["报价单.xlsx", "channel_attachment", "required_input"],
+  ]);
+  assert.equal(detail.taskContextSummary.delivery.destination, "channel");
+});
+
 test("desktop intent planning creates discrete typed tasks instead of one giant task", () => {
   const { service, state } = harness();
   const input = {
