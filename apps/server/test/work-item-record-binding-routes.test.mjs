@@ -52,6 +52,32 @@ test("managed record refresh route forwards the revision and decoded binding ide
   assert.deepEqual(sent, { status: 200, body: { workItem: { id: "lwi 1", revision: 5 } } });
 });
 
+test("task context route forwards bounded user corrections to the managed service", async () => {
+  const body = {
+    expectedRevision: 4,
+    deliveryDestination: "task",
+    materialRoles: [{ id: "wrr 1", role: "change_target" }],
+  };
+  let received;
+  let sent;
+  const handled = await handleWorkItemRoutes({
+    req: { method: "PATCH" },
+    res: {},
+    url: new URL("http://localhost/api/work-items/lwi%201/task-context"),
+    readJson: async () => body,
+    sendJson: (_res, status, responseBody) => { sent = { status, body: responseBody }; },
+    actor,
+    updateTaskContext: (input, requestActor) => {
+      received = { input, requestActor };
+      return { status: 200, body: { workItem: { id: input.workItemId, revision: 5 } } };
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(received, { input: { workItemId: "lwi 1", ...body }, requestActor: actor });
+  assert.deepEqual(sent, { status: 200, body: { workItem: { id: "lwi 1", revision: 5 } } });
+});
+
 test("attention reads reconcile visible record bindings before listing the queue", async () => {
   const calls = [];
   let sent;

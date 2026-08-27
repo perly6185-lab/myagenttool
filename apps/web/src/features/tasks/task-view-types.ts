@@ -221,6 +221,12 @@ export type LocalWorkItem = {
       status: string | null;
     };
   };
+  taskContextControl?: {
+    schemaVersion: 1;
+    deliveryDestination: "channel" | "task";
+    updatedAt: string;
+    updatedBy: string;
+  } | null;
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
   executionArtifacts?: {

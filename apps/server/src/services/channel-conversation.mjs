@@ -8055,7 +8055,7 @@ function sharedContentContinuation(text, conversation) {
     const invocation = autoRun.invocationId
       ? (state.invocations ?? []).find((candidate) => candidate.id === autoRun.invocationId) ?? null
       : null;
-    const { thread, channelContext } = executionContext({ invocation, autoRun });
+    const { thread, channelContext, workItem } = executionContext({ invocation, autoRun });
     if (!thread || !channelContext?.conversationId) return null;
     if (thread.status === "human_takeover") return { thread, status: thread.status, label: taskThreadStatus(thread) };
     const previousStatus = thread.status;
@@ -8102,6 +8102,7 @@ function sharedContentContinuation(text, conversation) {
         else if (nextStatus === "needs_attention") event = "needs_attention";
         else if (nextStatus === "succeeded") event = "succeeded";
         else if (autoRun.status === "waiting_capacity") event = "progress";
+        if (event === "succeeded" && workItem?.taskContextControl?.deliveryDestination === "task") event = null;
         if (event) {
           notificationTransitionKey = transitionKey;
           thread.lastAutoRunNotificationKey = transitionKey;

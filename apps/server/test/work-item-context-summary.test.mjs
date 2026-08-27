@@ -97,6 +97,31 @@ test("projects a manual task with a custom method and task-only delivery", () =>
   assert.equal(summary.delivery.destination, "task");
 });
 
+test("honors an explicit task-only result destination for a Channel task", () => {
+  const summary = projectWorkItemContextSummary({
+    item: {
+      id: "wi_channel_local_result",
+      ownerTeamId: "team_1",
+      channelOrigin: { channelId: "chn_1", conversationId: "conv_1", threadId: "cth_1" },
+      taskContextControl: { schemaVersion: 1, deliveryDestination: "task" },
+    },
+    state: {
+      channels: [{ id: "chn_1", ownerTeamId: "team_1", name: "采购协作" }],
+      channelTaskThreads: [{ id: "cth_1", workItemId: "wi_channel_local_result", channelId: "chn_1", conversationId: "conv_1" }],
+    },
+    ownerTeamId: "team_1",
+  });
+
+  assert.equal(summary.origin.kind, "channel");
+  assert.deepEqual(summary.delivery, {
+    destination: "task",
+    label: "task",
+    channelId: null,
+    conversationId: null,
+    status: null,
+  });
+});
+
 test("does not use a cross-team channel label in the public projection", () => {
   const summary = projectWorkItemContextSummary({
     item: { id: "wi_1", ownerTeamId: "team_1", channelOrigin: { channelId: "chn_1" } },

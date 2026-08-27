@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkItemContextCard } from "./work-item-context-card";
 import type { LocalWorkItem } from "./task-view-types";
@@ -43,5 +43,27 @@ describe("WorkItemContextCard", () => {
     render(<WorkItemContextCard summary={summary} language="zh" />);
     expect(screen.getByTestId("work-item-context-card").textContent).toContain("手工创建");
     expect(screen.getByText("未指定额外资料，只使用任务说明和项目内容。")).toBeTruthy();
+  });
+
+  it("lets the user correct editable material roles and the Channel result destination", async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const summary = {
+      schemaVersion: 1,
+      origin: { kind: "channel", label: "采购协作", provider: "wechat_ilink", channelId: "chn_1", conversationId: "conv_1", threadId: "cth_1", sourceMessageCount: 1 },
+      method: { kind: "custom", name: "本任务方案", definitionId: null, familyId: null, version: null, expectedOutput: null, snapshotHash: null },
+      materials: [{ id: "resource_1", title: "供应商台账", role: "query_source", source: "remote_resource", locality: "remote", availability: "selected", versionPolicy: "pinned" }],
+      delivery: { destination: "channel", label: "采购协作", channelId: "chn_1", conversationId: "conv_1", status: null },
+    } as NonNullable<LocalWorkItem["taskContextSummary"]>;
+
+    render(<WorkItemContextCard summary={summary} language="zh" onUpdate={onUpdate} />);
+    fireEvent.click(screen.getByRole("button", { name: "调整范围" }));
+    fireEvent.change(screen.getByLabelText("供应商台账 资料作用"), { target: { value: "change_target" } });
+    fireEvent.change(screen.getByDisplayValue("确认后回传到 采购协作"), { target: { value: "task" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存任务范围" }));
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith({
+      deliveryDestination: "task",
+      materialRoles: [{ id: "resource_1", role: "change_target" }],
+    }));
   });
 });

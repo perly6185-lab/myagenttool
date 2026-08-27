@@ -58,6 +58,7 @@ describe("execution start summary", () => {
     expect(summary.method).toEqual({ name: "报价整理", expectedOutput: "比价表.xlsx", kind: "template" });
     expect(summary.materials).toEqual([{ id: "asset_1", title: "报价单.xlsx", source: "Channel 附件", role: "必须使用" }]);
     expect(summary.delivery).toEqual({ label: "采购协作", destination: "channel" });
+    expect(summary.issues).toContainEqual(expect.objectContaining({ code: "delivery:channel", severity: "notice" }));
   });
 
   it("surfaces readiness warnings and changed records as risks", () => {
@@ -84,6 +85,28 @@ describe("execution start summary", () => {
 
     expect(summary.risks).toContain("No verify command is configured.");
     expect(summary.risks).toContain("1 business material(s) are not ready and must be refreshed or selected again.");
+    expect(summary.issues).toContainEqual(expect.objectContaining({ code: "readiness:verify", severity: "warning" }));
+    expect(summary.issues).toContainEqual(expect.objectContaining({ code: "materials:not_ready", severity: "blocking" }));
     expect(summary.boundary).toContain("only starts AI");
+  });
+
+  it("blocks an unconfirmed method and highlights writable materials separately", () => {
+    const item = {
+      title: "更新供应商台账",
+      acceptanceCriteria: ["状态已更新"],
+      verificationSop: ["核对变更记录"],
+      taskContextSummary: {
+        schemaVersion: 1,
+        origin: { kind: "manual", label: "manual", provider: null, channelId: null, conversationId: null, threadId: null, sourceMessageCount: 0 },
+        method: { kind: "custom", name: "处理方式待确认", definitionId: null, familyId: null, version: null, expectedOutput: null, snapshotHash: null },
+        materials: [{ id: "resource_1", title: "供应商台账", role: "change_target", source: "remote_resource", locality: "remote", availability: "selected", versionPolicy: "pinned" }],
+        delivery: { destination: "task", label: "task", channelId: null, conversationId: null, status: null },
+      },
+    } as unknown as LocalWorkItem;
+
+    const summary = deriveExecutionStartSummary({ item, project: null, readiness: { ready: true, checks: [] }, language: "zh" });
+
+    expect(summary.issues).toContainEqual(expect.objectContaining({ code: "method:needs_confirmation", severity: "blocking" }));
+    expect(summary.issues).toContainEqual(expect.objectContaining({ code: "materials:change_targets", severity: "warning" }));
   });
 });

@@ -182,6 +182,7 @@ export function createHttpServer({
   refreshWorkItemResourceReference,
   inspectWorkItemResourceReferences,
   removeWorkItemResourceReference,
+  updateWorkItemTaskContext,
   listWorkflowSources,
   listChannelObjects,
   upsertChannelObject,
@@ -1244,7 +1245,7 @@ export function createHttpServer({
 
       if (await handleWorkItemRoutes({
         req, res, url, sendJson, readJson, actor, state,
-        listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+        listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, updateTaskContext: updateWorkItemTaskContext, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
         reconcileWorkItemRecordBindings, reconcileVisibleWorkItemRecordBindings,
         refreshWorkItemRecordBinding, refreshWorkItemRecordBindingsBatch,
         listReportDrafts: listWorkItemReportDrafts,

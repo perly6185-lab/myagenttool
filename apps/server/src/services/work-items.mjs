@@ -7572,6 +7572,104 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
   }
 
+  function updateTaskContext({
+    workItemId,
+    expectedRevision,
+    deliveryDestination,
+    materialRoles = [],
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done" || item.archivedAt) {
+      return { ok: false, status: 409, body: { error: "work_item_context_reopen_required" } };
+    }
+    if ((item.executionBindings ?? []).length
+      || (item.executionStartRequest && item.executionStartRequest.status !== "cancelled")) {
+      return { ok: false, status: 409, body: { error: "work_item_context_locked_after_start" } };
+    }
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!Array.isArray(materialRoles) || materialRoles.length > 50) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_context_material_roles" } };
+    }
+    const normalizedDestination = deliveryDestination == null ? null : String(deliveryDestination);
+    if (normalizedDestination && !["task", "channel"].includes(normalizedDestination)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_context_delivery_destination" } };
+    }
+    if (normalizedDestination === "channel" && !item.channelOrigin?.channelId) {
+      return { ok: false, status: 409, body: { error: "work_item_context_channel_unavailable" } };
+    }
+
+    const updates = [];
+    const seen = new Set();
+    for (const candidate of materialRoles) {
+      const referenceId = String(candidate?.id ?? "").trim();
+      const role = String(candidate?.role ?? "").trim();
+      if (!referenceId || referenceId.length > 200 || seen.has(referenceId)) {
+        return { ok: false, status: 400, body: { error: "invalid_work_item_context_material_roles" } };
+      }
+      seen.add(referenceId);
+      const local = (item.localContentRefs ?? []).find((reference) => reference.id === referenceId);
+      const resource = (item.taskResourceRefs ?? []).find((reference) => reference.id === referenceId);
+      if (!local && !resource) {
+        return { ok: false, status: 404, body: { error: "work_item_context_material_not_found", referenceId } };
+      }
+      const allowed = local
+        ? ["reference", "required_input"]
+        : ["reference", "query_source", "change_target"];
+      if (!allowed.includes(role)) {
+        return { ok: false, status: 400, body: { error: "work_item_context_material_role_not_allowed", referenceId, allowed } };
+      }
+      updates.push({ reference: local ?? resource, role });
+    }
+
+    const currentDestination = item.taskContextControl?.deliveryDestination
+      ?? (item.channelOrigin?.channelId ? "channel" : "task");
+    const nextDestination = normalizedDestination ?? currentDestination;
+    const materialChanges = updates
+      .filter(({ reference, role }) => reference.purpose !== role)
+      .map(({ reference, role }) => ({ reference, from: reference.purpose, role }));
+    if (!materialChanges.length && nextDestination === currentDestination) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+
+    const timestamp = now();
+    runTx(() => {
+      for (const { reference, role } of materialChanges) reference.purpose = role;
+      item.taskContextControl = {
+        schemaVersion: 1,
+        deliveryDestination: nextDestination,
+        updatedAt: timestamp,
+        updatedBy: actorUser(actor),
+      };
+      item.materialChangesPending = materialChanges.length > 0 || item.materialChangesPending === true;
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "task_context_corrected", {
+        delivery: { from: currentDestination, to: nextDestination },
+        materials: materialChanges.map(({ reference, from, role }) => ({
+          referenceId: reference.id,
+          from,
+          to: role,
+        })),
+      });
+      appendEvent({
+        invocationId: null,
+        type: "work_item_context_corrected",
+        level: "info",
+        message: `${item.localRef} execution context corrected.`,
+        data: { workItemId: item.id, revision: item.revision, actorTeamId: actorTeam(actor) },
+      });
+    });
+    notifyWorkItemChanged(item, actor, "context_corrected");
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
+  }
+
   return {
     listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
     listReportDrafts: reportDraftService.list,
@@ -7608,5 +7706,6 @@ export function createWorkItemService({
     refreshResourceReference,
     inspectResourceReferences,
     removeResourceReference,
+    updateTaskContext,
   };
 }

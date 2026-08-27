@@ -202,6 +202,15 @@ function projectMaterials(item, origin) {
 }
 
 function projectDelivery(item, state, origin, ownerTeamId) {
+  if (item.taskContextControl?.deliveryDestination === "task") {
+    return {
+      destination: "task",
+      label: "task",
+      channelId: null,
+      conversationId: null,
+      status: null,
+    };
+  }
   if (origin.kind === "channel") {
     const delivery = latest((state.channelDeliveries ?? []).filter((candidate) =>
       candidate.channelId === origin.channelId

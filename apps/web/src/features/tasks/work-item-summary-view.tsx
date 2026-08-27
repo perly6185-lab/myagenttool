@@ -48,7 +48,7 @@ import { ApiError, type BusinessRoutineDefinition } from "@/lib/api-client";
 import type { LocalWorkItem, LocalWorkItemDeliveryEvidence, LocalWorkItemObservability, WorkItemComment, WorkItemOutcomeFile } from "./task-view-types";
 import { deriveWorkItemUserStatus } from "./work-item-user-status";
 import { WorkItemJobOverview } from "./work-item-job-overview";
-import { WorkItemContextCard } from "./work-item-context-card";
+import { WorkItemContextCard, type TaskContextUpdate } from "./work-item-context-card";
 import { isLocalWorkItem } from "./work-item-response";
 import { COPY, type SummaryCopy } from "./work-item-summary-copy";
 import {
@@ -461,7 +461,7 @@ export function WorkItemSummaryView({
   const [repairError, setRepairError] = useState<string | null>(null);
   const [resultExpanded, setResultExpanded] = useState(false);
   const [discussionOpen, setDiscussionOpen] = useState(false);
-  const [actionPending, setActionPending] = useState<"start" | "cancel-start" | "recheck-start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | "reverify" | "reconcile" | null>(null);
+  const [actionPending, setActionPending] = useState<"start" | "cancel-start" | "recheck-start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | "reverify" | "reconcile" | "context" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [startConfirmationOpen, setStartConfirmationOpen] = useState(false);
   const [pendingTemplateClarification, setPendingTemplateClarification] = useState<PendingTemplateClarification | null>(null);
@@ -735,6 +735,11 @@ export function WorkItemSummaryView({
   const materialExecutionBlocked = (item.recordBindings ?? []).some((binding) =>
     ["stale", "needs_confirmation", "unavailable"].includes(binding.resolution.state));
   const canStartAi = startEligible && readiness?.ready === true && !materialExecutionBlocked;
+  const canCorrectTaskContext = canOperate
+    && item.state !== "closed"
+    && status !== "completed"
+    && !hasManagedExecution
+    && !startRequestActive;
   const readinessBlocked = startEligible && readiness?.ready === false;
   const readinessChecking = startEligible && readiness == null;
   const readinessWarnings = readiness?.checks.filter((check) => check.status === "warn") ?? [];
@@ -748,6 +753,7 @@ export function WorkItemSummaryView({
     readiness: readableReadiness,
     language,
   });
+  const contextHasBlockingIssues = startSummary.issues.some((issue) => issue.severity === "blocking");
   const primaryUsesProgress = (["not_started", "scheduled", "ai_working", "waiting"].includes(status)
     || (status === "needs_action" && item.waitingOn === "me" && !["failed", "awaiting_approval"].includes(item.executionState ?? ""))
     || (status === "blocked" && !observability?.latestRun)) && !startEligible;
@@ -1780,6 +1786,27 @@ export function WorkItemSummaryView({
       setActionPending(null);
     }
   };
+  const updateTaskContext = async (update: TaskContextUpdate) => {
+    if (actionPending || !canCorrectTaskContext) throw new Error("work_item_context_locked");
+    setActionPending("context");
+    setActionError(null);
+    try {
+      const response = await api.updateWorkItemTaskContext(item.id, {
+        expectedRevision: item.revision,
+        ...update,
+      }) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setSyncNotice(language === "zh" ? "任务范围已更新，启动确认会使用最新设置。" : "Task scope updated. Start confirmation will use the latest settings.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-task-context", workItemId: item.id } }));
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.code === "work_item_revision_conflict") {
+        setRefreshVersion((version) => version + 1);
+      }
+      throw caught;
+    } finally {
+      setActionPending(null);
+    }
+  };
   const stopAiClarification = async () => {
     const run = observability?.latestRun;
     if (!run || run.status !== "needs_input" || clarifyStopPending || clarifyPending) return;
@@ -2126,6 +2153,10 @@ export function WorkItemSummaryView({
         summary={item.taskContextSummary}
         language={language}
         onOpenChannel={item.taskContextSummary?.origin.kind === "channel" && onOpenSetup ? () => onOpenSetup("channels") : undefined}
+        onUpdate={canCorrectTaskContext ? updateTaskContext : undefined}
+        lockedReason={!canCorrectTaskContext && hasManagedExecution
+          ? (language === "zh" ? "任务已经开始，当前范围已锁定；需要更换资料或去向时请新建任务。" : "This scope is locked after execution starts. Create a new task to change materials or destination.")
+          : null}
       />
 
       {startReceipt && !showExecutionReview ? (
@@ -3238,7 +3269,7 @@ export function WorkItemSummaryView({
         summary={startSummary}
         language={language}
         pending={actionPending === "start"}
-        canConfirm={canStartAi && executionPlanPrepared}
+        canConfirm={canStartAi && executionPlanPrepared && !contextHasBlockingIssues}
         error={startConfirmationOpen ? actionError : null}
         blockedActionLabel={materialExecutionBlocked
           ? (language === "zh" ? "检查相关资料" : "Review materials")

@@ -3905,6 +3905,35 @@ test("没有 Invocation 的澄清和失败会立即投影到微信线程", () =>
   assert.equal(notifications.at(-1).event, "failed");
 });
 
+test("任务结果设为仅保留在任务中时不会自动回传成功消息", () => {
+  const notifications = [];
+  const harness = makeHarness({ notifyTaskEvent: (notification) => { notifications.push(notification); return { ok: true }; } });
+  harness.receive("/help");
+  const conversation = harness.state.channelConversations[0];
+  const thread = {
+    id: "cth_task_only_result", channelId: harness.channelId, conversationId: conversation.id,
+    workItemId: "wi_task_only_result", status: "running", summary: "整理采购资料", createdAt: NOW,
+  };
+  const workItem = {
+    id: thread.workItemId,
+    channelOrigin: { channelId: harness.channelId, conversationId: conversation.id, threadId: thread.id },
+    taskContextControl: { schemaVersion: 1, deliveryDestination: "task" },
+  };
+  const autoRun = {
+    id: "aur_task_only_result", localIssueId: workItem.id, status: "done", phase: "review_ready",
+    deliveryReport: { summary: "采购资料已整理" }, updatedAt: NOW,
+  };
+  harness.state.channelTaskThreads.push(thread);
+  harness.state.workItems.push(workItem);
+  harness.state.autoRuns.push(autoRun);
+
+  harness.conversationService.syncTaskThreadFromAutoRun(autoRun);
+
+  assert.equal(thread.status, "succeeded");
+  assert.match(thread.resultSummary, /采购资料已整理/);
+  assert.equal(notifications.length, 0);
+});
+
 test("an upstream runtime failure blocks only real descendants", () => {
   const notifications = [];
   const harness = makeHarness({ notifyTaskEvent: (notification) => { notifications.push(notification); return { ok: true }; } });

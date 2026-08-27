@@ -119,6 +119,64 @@ test("work item detail exposes one task context summary over existing Channel an
   assert.equal(detail.taskContextSummary.delivery.destination, "channel");
 });
 
+test("task context correction updates canonical material roles and result destination before execution", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "整理供应商报价" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((item) => item.id === created.id);
+  stored.channelOrigin = { channelId: "chn_quote", conversationId: "conv_quote", threadId: "cth_quote" };
+  stored.localContentRefs = [{ id: "wcr_rules", contentId: "lc_rules", title: "采购规则", purpose: "reference" }];
+  stored.taskResourceRefs = [{ id: "wrr_ledger", resourceId: "res_ledger", title: "供应商台账", purpose: "query_source", locality: "remote" }];
+  state.channels = [{ id: "chn_quote", ownerTeamId: "team_a", name: "采购协作" }];
+
+  const corrected = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: stored.revision,
+    deliveryDestination: "task",
+    materialRoles: [
+      { id: "wcr_rules", role: "required_input" },
+      { id: "wrr_ledger", role: "change_target" },
+    ],
+  }, ACTOR_A);
+
+  assert.equal(corrected.status, 200);
+  assert.equal(stored.localContentRefs[0].purpose, "required_input");
+  assert.equal(stored.taskResourceRefs[0].purpose, "change_target");
+  assert.equal(corrected.body.workItem.taskContextSummary.delivery.destination, "task");
+  assert.deepEqual(corrected.body.workItem.taskContextSummary.materials.map((material) => [material.id, material.role]), [
+    ["wcr_rules", "required_input"],
+    ["wrr_ledger", "change_target"],
+  ]);
+  assert.equal(state.workItemActivities[0].action, "task_context_corrected");
+  assert.deepEqual(state.workItemActivities[0].details.materials, [
+    { referenceId: "wcr_rules", from: "reference", to: "required_input" },
+    { referenceId: "wrr_ledger", from: "query_source", to: "change_target" },
+  ]);
+});
+
+test("task context correction rejects unsupported roles and locks after execution starts", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "整理规则" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((item) => item.id === created.id);
+  stored.localContentRefs = [{ id: "wcr_rules", contentId: "lc_rules", title: "规则", purpose: "reference" }];
+
+  const invalid = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: stored.revision,
+    materialRoles: [{ id: "wcr_rules", role: "change_target" }],
+  }, ACTOR_A);
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.body.error, "work_item_context_material_role_not_allowed");
+
+  stored.executionBindings = [{ kind: "auto_run", targetId: "run_1" }];
+  const locked = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: stored.revision,
+    materialRoles: [{ id: "wcr_rules", role: "required_input" }],
+  }, ACTOR_A);
+  assert.equal(locked.status, 409);
+  assert.equal(locked.body.error, "work_item_context_locked_after_start");
+});
+
 test("desktop intent planning creates discrete typed tasks instead of one giant task", () => {
   const { service, state } = harness();
   const input = {

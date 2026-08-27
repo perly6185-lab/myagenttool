@@ -29,6 +29,9 @@ export function ExecutionStartConfirmation({
   onClose: () => void;
 }) {
   const zh = language === "zh";
+  const blockingIssues = summary.issues.filter((issue) => issue.severity === "blocking");
+  const warningIssues = summary.issues.filter((issue) => issue.severity === "warning");
+  const noticeIssues = summary.issues.filter((issue) => issue.severity === "notice");
   return (
     <Modal
       open={open}
@@ -55,16 +58,18 @@ export function ExecutionStartConfirmation({
           <h3 id="execution-start-goal" className="mt-1 text-base font-semibold leading-relaxed">{summary.goal}</h3>
         </section>
 
-        <section className={`rounded-xl border p-4 ${summary.risks.length ? "border-warning/40 bg-warning/[0.06]" : "border-success/35 bg-success/[0.05]"}`} aria-labelledby="execution-start-risk">
+        <section className={`rounded-xl border p-4 ${blockingIssues.length ? "border-destructive/40 bg-destructive/[0.045]" : warningIssues.length ? "border-warning/40 bg-warning/[0.06]" : "border-success/35 bg-success/[0.05]"}`} aria-labelledby="execution-start-risk">
           <div className="flex items-center gap-2">
-            {summary.risks.length ? <AlertTriangle className="size-4 text-warning-foreground" aria-hidden /> : <CheckCircle2 className="size-4 text-success" aria-hidden />}
+            {blockingIssues.length || warningIssues.length ? <AlertTriangle className="size-4 text-warning-foreground" aria-hidden /> : <CheckCircle2 className="size-4 text-success" aria-hidden />}
             <h3 id="execution-start-risk" className="text-sm font-semibold">{zh ? "开始前提醒" : "Before starting"}</h3>
           </div>
-          {summary.risks.length ? (
+          {summary.issues.length ? (
             <>
-              <ul className="mt-2 space-y-1 text-sm leading-relaxed">
-                {summary.risks.map((risk) => <li key={risk}>• {risk}</li>)}
-              </ul>
+              <div className="mt-3 space-y-3 text-sm leading-relaxed">
+                {blockingIssues.length ? <IssueGroup title={zh ? "必须先处理" : "Must resolve"} tone="danger" issues={blockingIssues.map((issue) => issue.message)} /> : null}
+                {warningIssues.length ? <IssueGroup title={zh ? "可以继续，但请确认" : "Review before continuing"} tone="warning" issues={warningIssues.map((issue) => issue.message)} /> : null}
+                {noticeIssues.length ? <IssueGroup title={zh ? "执行后会发生" : "What happens next"} tone="neutral" issues={noticeIssues.map((issue) => issue.message)} /> : null}
+              </div>
               {!canConfirm && onResolveBlocked && blockedActionLabel ? (
                 <Button className="mt-3" type="button" size="sm" variant="secondary" disabled={pending} onClick={onResolveBlocked}>
                   {blockedActionLabel}
@@ -147,6 +152,25 @@ export function ExecutionStartConfirmation({
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
       </div>
     </Modal>
+  );
+}
+
+function IssueGroup({
+  title,
+  tone,
+  issues,
+}: {
+  title: string;
+  tone: "danger" | "warning" | "neutral";
+  issues: string[];
+}) {
+  return (
+    <div>
+      <Badge tone={tone}>{title}</Badge>
+      <ul className="mt-1.5 space-y-1">
+        {issues.map((issue) => <li key={issue}>• {issue}</li>)}
+      </ul>
+    </div>
   );
 }
 

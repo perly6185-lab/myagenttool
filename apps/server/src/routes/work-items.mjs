@@ -29,7 +29,7 @@ function externalBindingEmergencyStopped(state, provider, repository, issueNumbe
 
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor, state,
-  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, updateTaskContext, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
   reconcileWorkItemRecordBindings, reconcileVisibleWorkItemRecordBindings,
   refreshWorkItemRecordBinding, refreshWorkItemRecordBindingsBatch,
   listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
@@ -1319,6 +1319,16 @@ export async function handleWorkItemRoutes({
     const result = await refreshWorkItemRecordBinding({
       workItemId: decodeURIComponent(recordBindingRefreshMatch[1]),
       bindingId: decodeURIComponent(recordBindingRefreshMatch[2]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const taskContextMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/task-context$/);
+  if (taskContextMatch && req.method === "PATCH") {
+    const result = updateTaskContext({
+      workItemId: decodeURIComponent(taskContextMatch[1]),
       ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);

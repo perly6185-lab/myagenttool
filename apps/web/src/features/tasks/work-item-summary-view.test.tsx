@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   commitWorkItemLedgerPostingPlan: vi.fn(),
   createWorkItemResultRepair: vi.fn(),
   updateWorkItem: vi.fn(),
+  updateWorkItemTaskContext: vi.fn(),
   suggestWorkItemDraft: vi.fn(),
   prepareWorkItemExecutionContract: vi.fn(),
   confirmWorkItemExecutionContract: vi.fn(),
@@ -70,6 +71,7 @@ vi.mock("@/data/use-console-actions", () => ({
     commitWorkItemLedgerPostingPlan: mocks.commitWorkItemLedgerPostingPlan,
     createWorkItemResultRepair: mocks.createWorkItemResultRepair,
     updateWorkItem: mocks.updateWorkItem,
+    updateWorkItemTaskContext: mocks.updateWorkItemTaskContext,
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
     prepareWorkItemExecutionContract: mocks.prepareWorkItemExecutionContract,
     confirmWorkItemExecutionContract: mocks.confirmWorkItemExecutionContract,
@@ -508,6 +510,51 @@ describe("work item summary presentation", () => {
     expect(intent.textContent).not.toContain("execution");
     fireEvent.click(within(intent).getByRole("button", { name: "Correct this" }));
     expect(onOpenExpert).toHaveBeenCalledWith("overview");
+  });
+
+  it("persists an ordinary-user correction to material role and result destination", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const initial = item({
+      status: "backlog",
+      waitingOn: "none",
+      executionState: "unclaimed",
+      executionBindings: [],
+      revision: 3,
+      taskContextSummary: {
+        schemaVersion: 1,
+        origin: { kind: "channel", label: "采购协作", provider: "wechat_ilink", channelId: "chn_1", conversationId: "conv_1", threadId: "cth_1", sourceMessageCount: 1 },
+        method: { kind: "custom", name: "本任务方案", definitionId: null, familyId: null, version: null, expectedOutput: "更新后的供应商台账", snapshotHash: null },
+        materials: [{ id: "wrr_1", title: "供应商台账", role: "query_source", source: "remote_resource", locality: "remote", availability: "selected", versionPolicy: "pinned" }],
+        delivery: { destination: "channel", label: "采购协作", channelId: "chn_1", conversationId: "conv_1", status: null },
+      },
+    });
+    const corrected = {
+      ...initial,
+      revision: 4,
+      taskContextSummary: {
+        ...initial.taskContextSummary!,
+        materials: [{ ...initial.taskContextSummary!.materials[0], role: "change_target" as const }],
+        delivery: { destination: "task" as const, label: "task", channelId: null, conversationId: null, status: null },
+      },
+    };
+    mocks.getWorkItem.mockResolvedValue({ workItem: initial });
+    mocks.updateWorkItemTaskContext.mockResolvedValue({ workItem: corrected });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const context = await screen.findByTestId("work-item-context-card");
+    fireEvent.click(within(context).getByRole("button", { name: "调整范围" }));
+    fireEvent.change(screen.getByLabelText("供应商台账 资料作用"), { target: { value: "change_target" } });
+    fireEvent.change(screen.getByDisplayValue("确认后回传到 采购协作"), { target: { value: "task" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存任务范围" }));
+
+    await waitFor(() => expect(mocks.updateWorkItemTaskContext).toHaveBeenCalledWith("lwi_1", {
+      expectedRevision: 3,
+      deliveryDestination: "task",
+      materialRoles: [{ id: "wrr_1", role: "change_target" }],
+    }));
+    expect(await screen.findByText("任务范围已更新，启动确认会使用最新设置。")).toBeTruthy();
+    expect(context.textContent).toContain("允许修改");
+    expect(context.textContent).toContain("保留在当前任务中");
   });
 
   it("uses plain Chinese labels for the intent summary", async () => {

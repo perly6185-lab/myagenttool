@@ -1,9 +1,18 @@
-import { ArrowRight, Bot, Database, MessageSquareText, Route } from "lucide-react";
+import { ArrowRight, Bot, Database, MessageSquareText, Pencil, Route } from "lucide-react";
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
 import type { LocalWorkItem } from "./task-view-types";
 
 type TaskContextSummary = NonNullable<LocalWorkItem["taskContextSummary"]>;
+type EditableMaterialRole = "required_input" | "reference" | "query_source" | "change_target";
+
+export type TaskContextUpdate = {
+  deliveryDestination: "channel" | "task";
+  materialRoles: Array<{ id: string; role: EditableMaterialRole }>;
+};
 
 const PROVIDER_LABELS: Record<string, [string, string]> = {
   wechat_ilink: ["微信", "WeChat"],
@@ -61,18 +70,67 @@ function methodLabel(method: TaskContextSummary["method"], zh: boolean) {
   return method.name;
 }
 
-export function WorkItemContextCard({
-  summary,
-  language,
-  onOpenChannel,
-}: {
+function editableRoles(material: TaskContextSummary["materials"][number]): EditableMaterialRole[] {
+  if (material.source === "my_materials") return ["required_input", "reference"];
+  if (["local_resource", "remote_resource"].includes(material.source)) {
+    return ["reference", "query_source", "change_target"];
+  }
+  return [];
+}
+
+type WorkItemContextCardProps = {
   summary: TaskContextSummary | null | undefined;
   language: "zh" | "en";
   onOpenChannel?: () => void;
-}) {
-  if (!summary) return null;
+  onUpdate?: (update: TaskContextUpdate) => Promise<void>;
+  lockedReason?: string | null;
+};
+
+export function WorkItemContextCard(props: WorkItemContextCardProps) {
+  if (!props.summary) return null;
+  return <WorkItemContextCardContent {...props} summary={props.summary} />;
+}
+
+function WorkItemContextCardContent({
+  summary,
+  language,
+  onOpenChannel,
+  onUpdate,
+  lockedReason,
+}: Omit<WorkItemContextCardProps, "summary"> & { summary: TaskContextSummary }) {
   const zh = language === "zh";
   const visibleMaterials = summary.materials.slice(0, 5);
+  const editableMaterials = summary.materials.filter((material) => editableRoles(material).length);
+  const [editing, setEditing] = useState(false);
+  const [deliveryDestination, setDeliveryDestination] = useState<"channel" | "task">(summary.delivery.destination);
+  const [materialRoles, setMaterialRoles] = useState<Record<string, EditableMaterialRole>>({});
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const openEditor = () => {
+    setDeliveryDestination(summary.delivery.destination);
+    setMaterialRoles(Object.fromEntries(editableMaterials.map((material) => [material.id, material.role as EditableMaterialRole])));
+    setError(null);
+    setEditing(true);
+  };
+  const save = async () => {
+    if (!onUpdate || pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      await onUpdate({
+        deliveryDestination,
+        materialRoles: editableMaterials.map((material) => ({
+          id: material.id,
+          role: materialRoles[material.id] ?? material.role as EditableMaterialRole,
+        })),
+      });
+      setEditing(false);
+    } catch {
+      setError(zh ? "任务范围刚刚发生变化，已保留你的选择，请刷新后重试。" : "The task scope changed. Your choices are kept; refresh and try again.");
+    } finally {
+      setPending(false);
+    }
+  };
   return (
     <section className="rounded-xl border border-primary/25 bg-primary/[0.025] p-4" aria-labelledby="task-context-summary-title" data-testid="work-item-context-card">
       <div className="flex items-start gap-3">
@@ -83,6 +141,7 @@ export function WorkItemContextCard({
             {zh ? "来源、处理方式、资料范围和结果去向属于同一项任务。" : "The source, method, material scope, and destination belong to the same task."}
           </p>
         </div>
+        {onUpdate ? <Button size="sm" variant="secondary" onClick={openEditor}><Pencil aria-hidden />{zh ? "调整范围" : "Adjust scope"}</Button> : null}
       </div>
 
       <dl className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -135,6 +194,53 @@ export function WorkItemContextCard({
           </dd>
         </div>
       </dl>
+
+      {lockedReason ? <p className="mt-3 text-xs text-muted-foreground">{lockedReason}</p> : null}
+
+      <Modal
+        open={editing}
+        onClose={() => { if (!pending) setEditing(false); }}
+        closeDisabled={pending}
+        title={zh ? "调整 AI 的任务范围" : "Adjust AI task scope"}
+        description={zh ? "这里只改变本任务怎样使用资料、结果放在哪里，不会修改原始资料或 Channel 消息。" : "This only changes how this task uses materials and where its result goes. It does not edit the source materials or Channel messages."}
+        footer={<div className="flex justify-end gap-2"><Button variant="secondary" disabled={pending} onClick={() => setEditing(false)}>{zh ? "取消" : "Cancel"}</Button><Button disabled={pending} onClick={() => void save()}>{pending ? (zh ? "保存中…" : "Saving…") : (zh ? "保存任务范围" : "Save scope")}</Button></div>}
+      >
+        <div className="space-y-4">
+          {editableMaterials.length ? <section>
+            <h4 className="text-sm font-semibold">{zh ? "资料在本任务中的作用" : "How this task may use materials"}</h4>
+            <div className="mt-2 space-y-2">
+              {editableMaterials.map((material) => (
+                <label key={material.id} className="grid gap-2 rounded-lg border border-border p-3 sm:grid-cols-[minmax(0,1fr)_11rem] sm:items-center">
+                  <span className="min-w-0"><span className="block truncate text-sm font-medium">{material.title}</span><span className="text-xs text-muted-foreground">{sourceLabel(material.source, zh)}</span></span>
+                  <Select
+                    aria-label={`${material.title} ${zh ? "资料作用" : "material role"}`}
+                    value={materialRoles[material.id] ?? material.role}
+                    disabled={pending}
+                    onChange={(event) => setMaterialRoles((current) => ({ ...current, [material.id]: event.target.value as EditableMaterialRole }))}
+                  >
+                    {editableRoles(material).map((role) => <option key={role} value={role}>{roleLabel(role, zh)}</option>)}
+                  </Select>
+                </label>
+              ))}
+            </div>
+          </section> : null}
+
+          {summary.origin.kind === "channel" ? <label className="block">
+            <span className="text-sm font-semibold">{zh ? "结果去向" : "Result destination"}</span>
+            <Select className="mt-2" value={deliveryDestination} disabled={pending} onChange={(event) => setDeliveryDestination(event.target.value as "channel" | "task")}>
+              <option value="channel">{zh ? `确认后回传到 ${summary.origin.label}` : `Return to ${summary.origin.label} after review`}</option>
+              <option value="task">{zh ? "只保留在当前任务中" : "Keep only in this task"}</option>
+            </Select>
+          </label> : null}
+
+          <div className="rounded-lg bg-muted/50 p-3 text-sm leading-relaxed text-muted-foreground">
+            {Object.values(materialRoles).filter((role) => role === "change_target").length
+              ? (zh ? "包含“允许修改”的资料。启动前会再次突出提醒，AI 只能修改明确标记的目标。" : "This scope includes change targets. They will be highlighted again before starting, and AI may only change explicitly marked targets.")
+              : (zh ? "当前没有资料被标记为“允许修改”。" : "No material is currently marked as a change target.")}
+          </div>
+          {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+        </div>
+      </Modal>
     </section>
   );
 }

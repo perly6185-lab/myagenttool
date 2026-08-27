@@ -7572,6 +7572,7 @@ export function createServerRuntimeServices({
     refreshWorkItemResourceReference: workItemService.refreshResourceReference,
     inspectWorkItemResourceReferences: workItemService.inspectResourceReferences,
     removeWorkItemResourceReference: workItemService.removeResourceReference,
+    updateWorkItemTaskContext: workItemService.updateTaskContext,
     updateWorkItem: workItemService.updateWorkItem,
     recordWorkItemProgress: workItemService.recordWorkItemProgress,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,

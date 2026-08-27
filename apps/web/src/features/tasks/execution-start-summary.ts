@@ -11,6 +11,12 @@ export type ExecutionStartMaterial = {
   role: string;
 };
 
+export type ExecutionStartIssue = {
+  code: string;
+  severity: "blocking" | "warning" | "notice";
+  message: string;
+};
+
 export type ExecutionStartSummary = {
   goal: string;
   acceptanceCriteria: string[];
@@ -20,6 +26,7 @@ export type ExecutionStartSummary = {
   materials: ExecutionStartMaterial[];
   method: { name: string; expectedOutput: string | null; kind: "template" | "custom" };
   delivery: { label: string; destination: "channel" | "task" };
+  issues: ExecutionStartIssue[];
   risks: string[];
   boundary: string;
 };
@@ -113,19 +120,73 @@ export function deriveExecutionStartSummary({
     }
   }
 
-  const riskSet = new Set<string>();
+  const issueMap = new Map<string, ExecutionStartIssue>();
+  const addIssue = (issue: ExecutionStartIssue) => {
+    if (!issueMap.has(issue.code)) issueMap.set(issue.code, issue);
+  };
   for (const check of readiness?.checks ?? []) {
-    if (check.status !== "ok") riskSet.add(check.detail);
+    if (check.status !== "ok") addIssue({
+      code: `readiness:${check.key}`,
+      severity: check.status === "blocked" ? "blocking" : "warning",
+      message: check.detail,
+    });
   }
   const staleRecords = (item.recordBindings ?? []).filter((binding) =>
     ["stale", "needs_confirmation", "unavailable"].includes(binding.resolution.state));
   if (staleRecords.length) {
-    riskSet.add(zh
-      ? `${staleRecords.length} 项业务资料尚未就绪，确认前需要刷新或重新选择。`
-      : `${staleRecords.length} business material(s) are not ready and must be refreshed or selected again.`);
+    addIssue({
+      code: "materials:not_ready",
+      severity: "blocking",
+      message: zh
+        ? `${staleRecords.length} 项业务资料尚未就绪，确认前需要刷新或重新选择。`
+        : `${staleRecords.length} business material(s) are not ready and must be refreshed or selected again.`,
+    });
+  }
+
+  const projectedMethod = item.taskContextSummary?.method;
+  if (projectedMethod?.kind === "custom" && projectedMethod.name === "处理方式待确认") {
+    addIssue({
+      code: "method:needs_confirmation",
+      severity: "blocking",
+      message: zh ? "处理方式尚未确认，请先选择合适的模板或任务方案。" : "The method is not confirmed. Choose a template or task plan first.",
+    });
+  }
+  if (!(item.acceptanceCriteria ?? []).length) {
+    addIssue({
+      code: "intent:acceptance_missing",
+      severity: "blocking",
+      message: zh ? "还没有明确怎样算完成。" : "Completion criteria are not defined yet.",
+    });
+  }
+  if (!(item.verificationSop ?? []).length) {
+    addIssue({
+      code: "intent:verification_missing",
+      severity: "blocking",
+      message: zh ? "还没有明确完成后怎样检查。" : "Verification steps are not defined yet.",
+    });
+  }
+  const changeTargetCount = materials.filter((material) => material.role === (zh ? "允许修改" : "Change target")).length;
+  if (changeTargetCount) {
+    addIssue({
+      code: "materials:change_targets",
+      severity: "warning",
+      message: zh
+        ? `AI 被允许修改 ${changeTargetCount} 项资料；开始前请确认这些确实是修改目标。`
+        : `AI may modify ${changeTargetCount} material(s). Confirm these are the intended change targets.`,
+    });
+  }
+  if (item.taskContextSummary?.delivery.destination === "channel") {
+    addIssue({
+      code: "delivery:channel",
+      severity: "notice",
+      message: zh
+        ? `结果确认后将回传到 ${item.taskContextSummary.delivery.label}。`
+        : `After review, the result will be returned to ${item.taskContextSummary.delivery.label}.`,
+    });
   }
 
   const repositoryPath = project?.path ?? project?.git?.repoPath ?? null;
+  const issues = [...issueMap.values()];
   return {
     goal: item.channelTaskContract?.goal?.trim()
       || item.intentStatement?.trim()
@@ -164,7 +225,8 @@ export function deriveExecutionStartSummary({
       label: zh ? "当前任务" : "This task",
       destination: "task",
     },
-    risks: [...riskSet],
+    issues,
+    risks: issues.filter((issue) => issue.severity !== "notice").map((issue) => issue.message),
     boundary: zh
       ? "本次确认只会让 AI 按以上任务、资料和检查标准开始处理；后续交付、合并或对外写入仍按各自规则处理。"
       : "This confirmation only starts AI with the task, materials, and checks above. Delivery, merge, or external writes still follow their own controls.",

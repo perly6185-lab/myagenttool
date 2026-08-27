@@ -2753,6 +2753,11 @@ export const api = {
     request("POST", `/api/work-items/my-template-governance/${encodeURIComponent(familyId)}/resume-observation`, payload),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
+  updateWorkItemTaskContext: (id: string, payload: {
+    expectedRevision: number;
+    deliveryDestination?: "channel" | "task";
+    materialRoles?: Array<{ id: string; role: "required_input" | "reference" | "query_source" | "change_target" }>;
+  }) => request("PATCH", `/api/work-items/${encodeURIComponent(id)}/task-context`, payload),
   refreshWorkItemRecordBinding: (workItemId: string, bindingId: string, expectedRevision: number) =>
     request(
       "POST",
