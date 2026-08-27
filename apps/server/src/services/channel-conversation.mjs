@@ -83,7 +83,7 @@ import {
 // single-user setup. Do not reveal whether the sender was unmapped, disabled,
 // or blocked by an allowlist.
 const GENERIC_DENIED_REPLY = "当前消息暂时无法处理。请在桌面端打开“频道”，确认微信已绑定且处于在线状态；首次使用请复制绑定口令，在微信 ClawBot 对话中发送。";
-const USAGE_REPLY = `直接发送文字、图片、语音或文件即可。\n\n我会先理解你的需求：\n• 想了解：我先回答问题\n• 只读查看：范围明确时直接处理，不会修改文件\n• 一句话包含多项工作：我会先列出任务篮，回复“确认执行”后才创建\n• 一件事进行中：可以说“文章改成 1500 字，图片不动”或“小红书改发视频”，我会先预览变化\n• 修改、发送或其他有风险操作：先说明影响并请你确认\n• 任务处理中：可以问“进度”\n• 想知道依据：回复“查看依据”或“为什么这样做”\n• 需要普通授权：按提示回复“确认授权”或“拒绝授权”\n• 收到任务结果：回复“收到结果”，桌面端会关闭送达提醒\n• 结果不满意：直接说哪里需要修改\n• 想让我记住习惯：回复“记住：文章控制在 2000 字左右”；回复“我的偏好”查看\n\n常用操作：确认、取消、进度、查看依据、确认授权、拒绝授权、重试、重发结果、收到结果、转人工。`;
+const USAGE_REPLY = `直接发送文字、图片、语音或文件即可。\n\n我会先理解你的需求：\n• 分享链接：保存到“我的资料”，不会自动创建任务；说“只看看，不保存”可临时预览\n• 想用资料：可以说“总结一下”“加入当前任务”或“创建新任务”\n• 想了解：我先回答问题\n• 只读查看：范围明确时直接处理，不会修改文件\n• 一句话包含多项工作：我会先列出任务篮，回复“确认执行”后才创建\n• 一件事进行中：可以说“文章改成 1500 字，图片不动”或“小红书改发视频”，我会先预览变化\n• 修改、发送或其他有风险操作：先说明影响并请你确认\n• 任务处理中：可以问“进度”\n• 想知道依据：回复“查看依据”或“为什么这样做”\n• 需要普通授权：按提示回复“确认授权”或“拒绝授权”\n• 收到任务结果：回复“收到结果”，桌面端会关闭送达提醒\n• 结果不满意：直接说哪里需要修改\n• 想让我记住习惯：回复“记住：文章控制在 2000 字左右”；回复“我的偏好”查看\n\n常用操作：确认、取消、进度、查看依据、确认授权、拒绝授权、重试、重发结果、收到结果、转人工。`;
 
 // A staged confirmation goes stale after this long — a fresh /run is required
 // (mirrors the approval-grant TTL: a confirm-click artifact, not a work queue).
@@ -166,6 +166,8 @@ const CHANNEL_CONSULTATION_MAX_ATTEMPTS = 2;
 const SHARED_CONTENT_MAX_ITEMS = 12;
 const SHARED_CONTENT_ACTIVE_MAX = 5;
 const SHARED_CONTENT_EXCERPT_CHARS = 4_000;
+const CHANNEL_ATTACHMENT_CONTEXT_TTL_MS = 30 * 60 * 1000;
+const CHANNEL_ATTACHMENT_CONTEXT_MAX = 12;
 const SHARED_CONTENT_URL_RE = /https?:\/\/[^\s<>\]\[()]+/giu;
 const SHARED_CONTENT_CONTINUE_RE = /^(?:继续(?:看看|看|分析|读|阅读)?|开始(?:分析|看看|阅读)|看看|看一下|分析一下|只总结|总结(?:一下|这篇|文章)?|提炼(?:一下|重点)?|对比一下|比较一下|和上一篇(?:对比|比较|一起看)(?:一下)?|把这几篇(?:一起|放一起)?(?:分析|总结|对比)(?:一下)?)?[。.!！?？]*$/i;
 const SHARED_CONTENT_LOCATION_RE = /(?:本地(?:存放|保存|访问)?(?:路径|位置)|保存到(?:哪里|哪儿|什么位置)|存放在(?:哪里|哪儿|什么位置)|(?:这篇|刚才|上篇|文章|资料|文件).*(?:路径|位置|在哪|哪里|哪儿|怎么打开)|(?:路径|位置|在哪|哪里|哪儿|怎么打开).*(?:这篇|刚才|上篇|文章|资料|文件))/i;
@@ -216,7 +218,7 @@ export function createChannelConversationService({
   classifyIntent = null,
   createConsultation = null,
   inspectSharedLink = null,
-  trackKnowledgeCaptureTask = null,
+  captureAttachmentKnowledge = null,
   attachKnowledgeToWorkItem = null,
   resolveKnowledgeLocation = null,
   replySender = null,
@@ -649,52 +651,6 @@ function sharedContentContinuation(text, conversation) {
       && SHARED_CONTENT_LOCATION_RE.test(normalizedText(text));
   }
 
-  function sharedContentItemsForThread(thread, conversation) {
-    const ids = new Set(thread?.sharedContentIds ?? []);
-    const items = Array.isArray(conversation?.sharedContentContext?.items)
-      ? conversation.sharedContentContext.items
-      : [];
-    return ids.size ? items.filter((item) => ids.has(item.id)) : [];
-  }
-
-  function syncKnowledgeCaptureTaskRecord(thread) {
-    if (!thread || thread.workKind !== "knowledge_capture" || typeof trackKnowledgeCaptureTask !== "function") return null;
-    const channel = findChannel(thread.channelId);
-    const conversation = findConversation(thread.conversationId);
-    if (!channel || !conversation) return null;
-    const event = (thread.sourceEventIds ?? [])
-      .map((eventId) => (state.channelEvents ?? []).find((candidate) => candidate.id === eventId))
-      .find(Boolean) ?? null;
-    const items = sharedContentItemsForThread(thread, conversation);
-    let tracked;
-    try {
-      tracked = trackKnowledgeCaptureTask({
-        thread,
-        channel,
-        conversation,
-        event,
-        urls: [...(thread.sourceUrls ?? []), ...items.map((item) => item.sourceUrl ?? item.canonicalUrl)].filter(Boolean),
-        items,
-      });
-    } catch (error) {
-      tracked = { ok: false, reason: String(error?.code ?? error?.message ?? error).slice(0, 120) };
-    }
-    if (tracked?.workItemId) {
-      runTx(() => {
-        thread.workItemId = tracked.workItemId;
-        thread.workItemLocalRef = tracked.localRef ?? thread.workItemLocalRef ?? null;
-        thread.taskTrackingError = null;
-        thread.updatedAt = now();
-      });
-    } else if (tracked?.ok === false) {
-      runTx(() => {
-        thread.taskTrackingError = tracked.reason ?? "knowledge_capture_task_unavailable";
-        thread.updatedAt = now();
-      });
-    }
-    return tracked;
-  }
-
   function sharedContentLocationReply(text, conversation, channel) {
     const allItems = Array.isArray(conversation?.sharedContentContext?.items)
       ? conversation.sharedContentContext.items.filter((item) => item.status === "ready" && item.archiveStatus === "saved")
@@ -722,14 +678,7 @@ function sharedContentContinuation(text, conversation) {
       `${locations.length > 1 ? `${index + 1}. ` : ""}《${item.title || location.title}》`,
       `本地文件：${location.absolutePath}`,
     ]);
-    const thread = [...(state.channelTaskThreads ?? [])].reverse().find((candidate) =>
-      candidate.conversationId === conversation.id
-      && candidate.workKind === "knowledge_capture"
-      && selected.some((item) => (candidate.sharedContentIds ?? []).includes(item.id)));
-    const taskLine = thread?.workItemId
-      ? `这次收纳也已记录到“我的任务”${thread.workItemLocalRef ? `（${thread.workItemLocalRef}）` : ""}，可以从任务详情继续查看来源和处理结果。`
-      : "这是一条较早的收纳记录；系统会在恢复时补入“我的任务”。";
-    return `${lines.join("\n")}\n\n${taskLine}`;
+    return `${lines.join("\n")}\n\n资料已保存在“我的资料”。保存资料不会创建任务；需要继续推进时，可以回复“创建新任务”或“加入当前任务”。`;
   }
 
   function sharedContentTopic(item) {
@@ -855,7 +804,6 @@ function sharedContentContinuation(text, conversation) {
       setThreadStatus(thread, status, reason);
       thread.updatedAt = now();
     });
-    syncKnowledgeCaptureTaskRecord(thread);
   }
 
   function normalizeSharedInspection(inspection, sourceUrl, eventId) {
@@ -1137,9 +1085,13 @@ function sharedContentContinuation(text, conversation) {
     return /执行|运行|排队|正在|跑/.test(value) ? "active" : "all";
   }
 
+  function isUserTaskThread(thread) {
+    return thread?.workKind !== "knowledge_capture";
+  }
+
   function recentTaskThreads(conversation) {
     return (state.channelTaskThreads ?? [])
-      .filter((thread) => thread.conversationId === conversation?.id)
+      .filter((thread) => thread.conversationId === conversation?.id && isUserTaskThread(thread))
       .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? "")));
   }
 
@@ -1741,7 +1693,9 @@ function sharedContentContinuation(text, conversation) {
 
   function activeTaskThreads(conversation) {
     return (state.channelTaskThreads ?? [])
-      .filter((thread) => thread.conversationId === conversation.id && TASK_THREAD_ACTIVE_STATUSES.has(thread.status))
+      .filter((thread) => thread.conversationId === conversation.id
+        && isUserTaskThread(thread)
+        && TASK_THREAD_ACTIVE_STATUSES.has(thread.status))
       .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? "")));
   }
 
@@ -1763,7 +1717,9 @@ function sharedContentContinuation(text, conversation) {
 
   function queueAheadCount(channelId, createdAt, excludeThreadId = null) {
     const queued = (state.channelTaskThreads ?? [])
-      .filter((candidate) => candidate.channelId === channelId && ["queued", "running"].includes(candidate.status))
+      .filter((candidate) => candidate.channelId === channelId
+        && isUserTaskThread(candidate)
+        && ["queued", "running"].includes(candidate.status))
       .sort(compareQueueThreads);
     const index = queued.findIndex((candidate) => candidate.id === excludeThreadId);
     if (index >= 0) return index;
@@ -1975,7 +1931,9 @@ function sharedContentContinuation(text, conversation) {
 
   function refreshQueuePositions(channelId, { notify = false } = {}) {
     const queued = (state.channelTaskThreads ?? [])
-      .filter((thread) => thread.channelId === channelId && ["queued", "running"].includes(thread.status))
+      .filter((thread) => thread.channelId === channelId
+        && isUserTaskThread(thread)
+        && ["queued", "running"].includes(thread.status))
       .sort(compareQueueThreads);
     let ahead = 0;
     const notifications = [];
@@ -2166,7 +2124,8 @@ function sharedContentContinuation(text, conversation) {
       .filter(Boolean)
       .join(" ");
     const attachments = thread?.attachmentAssets ?? [];
-    if (!text && attachments.length) {
+    const knowledgeItemIds = thread?.knowledgeItemIds ?? [];
+    if (!text && (attachments.length || knowledgeItemIds.length)) {
       return {
         ready: false,
         workKind: "unknown",
@@ -2182,7 +2141,11 @@ function sharedContentContinuation(text, conversation) {
         // The original attachments remain on real threads; this marker also
         // keeps legacy recovered revisions from being mistaken for brand-new
         // source-less work.
-        inputAssets: attachments.length || !thread?.revisionId ? attachments : [{ id: "prior_revision_material" }],
+        inputAssets: attachments.length
+          ? attachments
+          : knowledgeItemIds.length
+            ? knowledgeItemIds.map((id) => ({ id, family: "material", readiness: { state: "ready" } }))
+            : !thread?.revisionId ? [] : [{ id: "prior_revision_material" }],
       },
     );
     if (work.kind === "office" && work.needsSource) {
@@ -2313,6 +2276,90 @@ function sharedContentContinuation(text, conversation) {
     return `已收到${labels.join("、")}${assets.length > labels.length ? `等 ${assets.length} 个附件` : ""}`;
   }
 
+  function attachmentOnlyText(text) {
+    const value = normalizedText(text)
+      .replace(/\[(?:图片|语音|文件)附件：[^\]]+\](?:下载失败)?/g, "")
+      .replace(/[，,。.!！?？\s]+/g, "");
+    return !value;
+  }
+
+  function explicitAttachmentSaveRequest(text) {
+    return /^(?:帮我)?(?:保存|收下|存下|存起来|放到|加入)(?:这个|这些|这份|这几份|刚才的)?(?:文件|图片|附件|资料)?(?:到|进)?(?:我的资料|资料库)?[。.!！?？]*$/i.test(normalizedText(text));
+  }
+
+  function recentAttachmentKnowledgeRefs(conversation, event = null, text = "") {
+    const at = Date.parse(now());
+    const active = (conversation.activeKnowledgeRefs ?? [])
+      .filter((reference) => reference.sourceKind === "channel_attachment"
+        && Number.isFinite(Date.parse(reference.usedAt ?? reference.createdAt ?? ""))
+        && at - Date.parse(reference.usedAt ?? reference.createdAt) <= CHANNEL_ATTACHMENT_CONTEXT_TTL_MS);
+    if (!active.length) return [];
+    const contextual = /(?:这个|这些|这份|这几份|刚才|上面|文件|图片|附件|资料|材料|表格)/i.test(text);
+    const newestSequence = Math.max(...active.map((reference) => Number(reference.sourceSequence) || 0));
+    const immediateFollowUp = event && Number(event.conversationSequence) === newestSequence + 1;
+    if (!contextual && !immediateFollowUp) return [];
+    const batchId = active.find((reference) => Number(reference.sourceSequence) === newestSequence)?.batchId ?? null;
+    return active.filter((reference) => contextual || reference.batchId === batchId).slice(-CHANNEL_ATTACHMENT_CONTEXT_MAX);
+  }
+
+  async function saveAttachmentMaterials(event, channel, conversation) {
+    const assets = [...(event.attachmentAssets ?? [])].slice(0, 20);
+    let captured;
+    try {
+      captured = typeof captureAttachmentKnowledge === "function"
+        ? await captureAttachmentKnowledge({ channel, conversation, event, assets })
+        : { ok: false, reason: "channel_attachment_knowledge_unavailable", items: [], failures: [] };
+    } catch (error) {
+      captured = { ok: false, reason: String(error?.code ?? error?.message ?? error), items: [], failures: [] };
+    }
+    const items = Array.isArray(captured?.items) ? captured.items : [];
+    const failures = Array.isArray(captured?.failures) ? captured.failures : [];
+    runTx(() => {
+      event.attachmentKnowledgeItemIds = items.map((item) => item.itemId).filter(Boolean);
+      event.attachmentKnowledgeStatus = items.length
+        ? failures.length ? "partially_saved" : "saved"
+        : "not_saved";
+      event.attachmentKnowledgeFailureReason = items.length
+        ? null
+        : String(captured?.reason ?? failures[0]?.reason ?? "save_failed").slice(0, 120);
+      const additions = items.map((item) => ({
+        itemId: item.itemId,
+        contentId: item.contentId ?? null,
+        title: item.title ?? "Channel 资料",
+        sourceKind: "channel_attachment",
+        sourceEventId: event.id,
+        sourceSequence: event.conversationSequence,
+        batchId: event.id,
+        createdAt: now(),
+        usedAt: now(),
+      }));
+      const merged = new Map((conversation.activeKnowledgeRefs ?? []).map((reference) => [reference.itemId, reference]));
+      for (const addition of additions) merged.set(addition.itemId, { ...merged.get(addition.itemId), ...addition });
+      conversation.activeKnowledgeRefs = [...merged.values()].slice(-CHANNEL_ATTACHMENT_CONTEXT_MAX);
+      conversation.updatedAt = now();
+    });
+    const names = items.slice(0, 4).map((item) => `“${String(item.title ?? "资料").slice(0, 80)}”`);
+    if (!items.length) {
+      return settle(event, {
+        status: "dispatched",
+        reply: "附件已收到，但这次未能保存到“我的资料”。没有创建任务，也没有开始处理；请稍后重新发送。",
+        data: { attachmentKnowledge: true, saved: 0, failed: failures.length || assets.length, reason: captured?.reason ?? failures[0]?.reason ?? "save_failed" },
+      });
+    }
+    const failureLine = failures.length ? `其中 ${failures.length} 个附件暂未保存，可稍后重试。` : "";
+    return settle(event, {
+      status: "dispatched",
+      reply: `已将${names.join("、")}${items.length > names.length ? `等 ${items.length} 份资料` : ""}保存到“我的资料”。${failureLine}\n保存资料不会创建任务。需要继续处理时，可以直接说“整理刚才的文件”或“创建新任务”。`,
+      data: {
+        attachmentKnowledge: true,
+        saved: items.length,
+        failed: failures.length,
+        knowledgeItemIds: items.map((item) => item.itemId),
+        contentIds: items.map((item) => item.contentId).filter(Boolean),
+      },
+    });
+  }
+
   function targetedClarificationReply(text, conversation) {
     const value = normalizedText(text);
     const active = activeTaskThreads(conversation);
@@ -2343,6 +2390,8 @@ function sharedContentContinuation(text, conversation) {
     summary,
     status = "queued",
     reason = "explicit_command",
+    workKind = "task",
+    rememberAsFocus = true,
     taskTitle = null,
     taskKind = "general",
     workGoalId = null,
@@ -2363,9 +2412,11 @@ function sharedContentContinuation(text, conversation) {
       messages: [{ eventId: event.id, content: normalizedText(event.content), receivedAt: timestamp }],
       attachmentAssets: [...(event.attachmentAssets ?? [])].slice(0, 20),
       fileDiscoveries: [...(event.attachmentDiscoveries ?? [])].slice(0, 10),
+      knowledgeItemIds: [...new Set(event.knowledgeItemIds ?? [])].slice(0, 20),
       sharedContentIds: [...(event.sharedContentIds ?? [])].slice(0, SHARED_CONTENT_ACTIVE_MAX),
       injectionSuspicious: Boolean(event.injectionSuspicious),
       status,
+      workKind,
       statusHistory: [{ status, reason, at: timestamp }],
       waitingFor: status === "waiting_approval" ? "approval" : null,
       summary: normalizedSummary,
@@ -2400,9 +2451,9 @@ function sharedContentContinuation(text, conversation) {
     thread.shortRef = threadRef(thread);
     runTx(() => {
       state.channelTaskThreads = [...(state.channelTaskThreads ?? []), thread].slice(-500);
-      rememberFocus(conversation, { goalId: workGoalId, taskThreadId: thread.id, reason: "task_created" });
+      if (rememberAsFocus) rememberFocus(conversation, { goalId: workGoalId, taskThreadId: thread.id, reason: "task_created" });
       conversation.updatedAt = timestamp;
-      event.taskThreadId = thread.id;
+      if (rememberAsFocus) event.taskThreadId = thread.id;
     });
     return thread;
   }
@@ -2473,6 +2524,7 @@ function sharedContentContinuation(text, conversation) {
       messages: [...group.messages],
       attachmentAssets: [...(group.attachmentAssets ?? [])].slice(0, 20),
       fileDiscoveries: [...(group.fileDiscoveries ?? [])].slice(0, 10),
+      knowledgeItemIds: [...new Set(group.knowledgeItemIds ?? [])].slice(0, 20),
       sharedContentIds: [...(group.sharedContentIds ?? [])].slice(0, SHARED_CONTENT_ACTIVE_MAX),
       injectionSuspicious: Boolean(group.injectionSuspicious),
       status: "awaiting_confirmation",
@@ -2552,6 +2604,7 @@ function sharedContentContinuation(text, conversation) {
         messages: [],
         attachmentAssets: [],
         fileDiscoveries: [],
+        knowledgeItemIds: [],
         sharedContentIds: [],
         injectionSuspicious: false,
         status: "collecting",
@@ -2568,6 +2621,7 @@ function sharedContentContinuation(text, conversation) {
       group.messages = [...group.messages, { eventId: event.id, content: text, receivedAt: timestamp }].slice(-CHANNEL_INTAKE_MAX_EVENTS);
       group.attachmentAssets = [...(group.attachmentAssets ?? []), ...(event.attachmentAssets ?? [])].slice(-20);
       group.fileDiscoveries = [...(group.fileDiscoveries ?? []), ...(event.attachmentDiscoveries ?? [])].slice(-10);
+      group.knowledgeItemIds = [...new Set([...(group.knowledgeItemIds ?? []), ...(event.knowledgeItemIds ?? [])])].slice(-20);
       group.sharedContentIds = [...new Set([...(group.sharedContentIds ?? []), ...(event.sharedContentIds ?? [])])].slice(-SHARED_CONTENT_ACTIVE_MAX);
       group.injectionSuspicious = Boolean(group.injectionSuspicious || event.injectionSuspicious);
       group.updatedAt = timestamp;
@@ -2625,6 +2679,7 @@ function sharedContentContinuation(text, conversation) {
         threadId: thread.id,
         attachmentAssets: thread.attachmentAssets ?? [],
         fileDiscoveries: thread.fileDiscoveries ?? [],
+        knowledgeItemIds: thread.knowledgeItemIds ?? [],
       });
       runTx(() => {
         const autoRoute = Boolean(result.data?.autoRoute);
@@ -3813,8 +3868,8 @@ function sharedContentContinuation(text, conversation) {
       conversationId: conversation.id,
       content: archive
         ? urls.length > 1
-          ? `收到 ${urls.length} 个链接，正在读取并收纳到本地资料库……${activeTaskHint ? `\n${activeTaskHint}` : ""}`
-          : `收到链接，正在读取并收纳到本地资料库……${activeTaskHint ? `\n${activeTaskHint}` : ""}`
+          ? `收到 ${urls.length} 个链接，正在读取并保存到“我的资料”……${activeTaskHint ? `\n${activeTaskHint}` : ""}`
+          : `收到链接，正在读取并保存到“我的资料”……${activeTaskHint ? `\n${activeTaskHint}` : ""}`
         : `收到链接，正在只读预览，不会保存……${activeTaskHint ? `\n${activeTaskHint}` : ""}`,
       dedupeKey: `channel-shared-content:${event.id}:reading`,
     });
@@ -3831,16 +3886,16 @@ function sharedContentContinuation(text, conversation) {
         summary: `收纳链接资料：${urls.map(pluginProposalTarget).join("、")}`,
         status: "running",
         reason: "knowledge_capture_started",
+        workKind: "knowledge_capture",
+        rememberAsFocus: false,
       })
       : null;
     if (captureThread) {
       runTx(() => {
-        captureThread.workKind = "knowledge_capture";
         captureThread.sourceUrls = [...urls];
         captureThread.lastProgressSummary = "正在下载并识别链接正文";
         captureThread.updatedAt = now();
       });
-      syncKnowledgeCaptureTaskRecord(captureThread);
     }
     if (typeof inspectSharedLink !== "function") {
       const failures = urls.map((url) => ({ url, reason: "article_text_unavailable" }));
@@ -4029,26 +4084,23 @@ function sharedContentContinuation(text, conversation) {
     const failureLine = failures.length ? `\n另有 ${failures.length} 个链接暂时无法读取。` : "";
     const pluginLine = "";
     const archiveLine = newest.archiveStatus === "saved"
-      ? `已收纳到本地资料库${newest.archiveReplayed ? "（此前已保存，本次直接复用）" : ""}。`
+      ? `已保存到“我的资料”${newest.archiveReplayed ? "（此前已保存，本次直接复用）" : ""}。`
       : newest.archiveStatus === "not_saved"
-        ? "已读取正文，但这次未能保存到本地资料库；仍可继续分析。"
+        ? "已读取正文，但这次未能保存到“我的资料”；仍可继续分析。"
         : "已读取内容。";
-    const taskLine = captureThread?.workItemId
-      ? `\n这次处理已记录到“我的任务”${captureThread.workItemLocalRef ? `（${captureThread.workItemLocalRef}）` : ""}，可以在那里查看来源、保存位置和处理记录。`
-      : "";
     const routeLine = activeTaskCount > 0
       ? "\n当前任务没有被修改。你可以明确说“把资料加入当前任务”，这只会添加资料，不会创建后续任务。"
       : "";
     return settle(event, {
       status: "dispatched",
-      reply: `${archiveLine}\n《${newest.title}》${newest.author ? `（${newest.author}）` : ""}${topic ? `\n主要内容：${topic}${topic.length >= 180 ? "…" : ""}` : ""}${groupLine}${failureLine}${pluginLine}${taskLine}${routeLine}\n\n本次资料收纳任务已经结束，没有自动开始二创。你可以另行说“深度分析”“写深度文章”“做漫画”“做口播”或“做视频”；每一种都会创建独立任务。问“本地存放路径”可查看文件位置。`,
+      reply: `${archiveLine}\n《${newest.title}》${newest.author ? `（${newest.author}）` : ""}${topic ? `\n主要内容：${topic}${topic.length >= 180 ? "…" : ""}` : ""}${groupLine}${failureLine}${pluginLine}${routeLine}\n\n保存资料不会创建任务，也没有自动开始二创。你可以继续说“深度分析”，或明确说“创建新任务”；问“本地存放路径”可查看文件位置。`,
       data: {
         sharedContent: true,
         status: "ready",
         itemIds: event.sharedContentIds,
         activeCount: activeItems.length,
         failedCount: failures.length,
-        taskThreadId: captureThread?.id ?? null,
+        captureOperationId: captureThread?.id ?? null,
         nextTaskProposals: conversation.sharedContentContext?.nextTaskProposals ?? [],
         linkPluginProposalId: proposal?.id ?? null,
       },
@@ -5676,14 +5728,27 @@ function sharedContentContinuation(text, conversation) {
         : null;
     const control = parsedControl ?? inferredControl;
     const collectingGroup = collectingIntakeGroup(conversation);
-    // An attachment cannot be answered by the text-only consultation adapter.
-    // Treat a media-backed question as work intake so the normal task path can
-    // carry the governed attachment assets instead of pretending the Bridge saw
-    // the file/image/voice.
-    const mediaBackedConsultation = intent.intent === "consultation" && (event.attachmentAssets ?? []).length > 0;
     const hasAttachments = (event.attachmentAssets ?? []).length > 0;
     const explicitNewTask = isNewTask(text);
-    const newTaskIntent = explicitNewTask || mediaBackedConsultation || (!parsedControl && intent.intent === "new_task");
+    const newTaskIntent = explicitNewTask || (!parsedControl && intent.intent === "new_task");
+    const explicitAttachmentWork = explicitNewTask
+      || isExplicitTaskRequest(text)
+      || (intent.intent === "new_task" && !attachmentOnlyText(text) && !explicitAttachmentSaveRequest(text));
+    // A bare file/image/voice is material, not an implicit task. Preserve it in
+    // My files before generic clarification or active-task follow-up logic can
+    // turn it into work. Attachments supplied to a waiting task remain answers.
+    if (!control && !thread && !collectingGroup && hasAttachments && !explicitAttachmentWork) {
+      return saveAttachmentMaterials(event, channel, conversation);
+    }
+    if (!thread && newTaskIntent && !(event.knowledgeItemIds ?? []).length) {
+      const references = recentAttachmentKnowledgeRefs(conversation, event, text);
+      if (references.length) {
+        runTx(() => {
+          event.knowledgeItemIds = references.map((reference) => reference.itemId).filter(Boolean);
+          event.knowledgeContextInferred = true;
+        });
+      }
+    }
     // Attachments and answers supplied to an already waiting thread are
     // continuations unless the user explicitly says “另外/新任务”. Intent
     // classification alone must not detach concrete material from its task.
@@ -5766,11 +5831,11 @@ function sharedContentContinuation(text, conversation) {
     if (!control && intent.intent === "greeting") {
       return settle(event, {
         status: "dispatched",
-        reply: "你好！我可以帮你咨询问题、整理任务，也支持处理图片、语音和文件。直接告诉我想做什么即可；明确的只读需求会直接处理，修改、发送等有风险操作会先请你确认。",
+        reply: "你好！我可以帮你保存和分析资料、回答问题，也可以在确认后创建任务继续处理。单独发送文件、图片或链接会保存到“我的资料”，不会自动创建任务；修改、发送等有风险操作会先请你确认。",
         data: { greeting: true, intent: intent.intent, confidence: intent.confidence },
       });
     }
-    if (!control && intent.intent === "consultation" && !mediaBackedConsultation) {
+    if (!control && intent.intent === "consultation") {
       const consultation = startConsultation(event, conversation);
       if (consultation && typeof consultation.then === "function") {
         return consultation.then((result) => ({
@@ -6641,10 +6706,14 @@ function sharedContentContinuation(text, conversation) {
   }
 
   async function dispatchExplicitTask(event, channel, conversation, description, options = {}) {
+    const taskOptions = {
+      knowledgeItemIds: event.knowledgeItemIds ?? [],
+      ...options,
+    };
     // Keep configuration errors as command refusals instead of leaving a failed
     // task thread behind when the channel was never bound to an execution project.
     if (!channel.taskProjectId || typeof createChannelTaskIssue !== "function") {
-      return dispatchTask(event, channel, conversation, description);
+      return dispatchTask(event, channel, conversation, description, taskOptions);
     }
     const duplicate = duplicateActiveThread(conversation, description);
     // A queued/running task, or one genuinely waiting for a user decision, is
@@ -6661,15 +6730,15 @@ function sharedContentContinuation(text, conversation) {
       summary: description,
       status: "queued",
       reason: "explicit_task",
-      taskTitle: options.taskTitle,
-      taskKind: options.taskKind,
-      workGoalId: options.workGoalId,
-      artifactContract: options.artifactContract,
-      platformTarget: options.platformTarget,
-      dependencyTaskTitles: options.dependencyTaskTitles,
-      requiredArtifactKinds: options.requiredArtifactKinds,
+      taskTitle: taskOptions.taskTitle,
+      taskKind: taskOptions.taskKind,
+      workGoalId: taskOptions.workGoalId,
+      artifactContract: taskOptions.artifactContract,
+      platformTarget: taskOptions.platformTarget,
+      dependencyTaskTitles: taskOptions.dependencyTaskTitles,
+      requiredArtifactKinds: taskOptions.requiredArtifactKinds,
     });
-    const result = await dispatchTask(event, channel, conversation, description, { ...options, threadId: thread.id });
+    const result = await dispatchTask(event, channel, conversation, description, { ...taskOptions, threadId: thread.id });
     if (result.status !== "dispatched") {
       discardImmediateTaskThread(thread, event, conversation);
       return result;
@@ -8196,6 +8265,14 @@ function sharedContentContinuation(text, conversation) {
         });
       }
       for (const thread of state.channelTaskThreads ?? []) {
+        if (thread.workKind === "knowledge_capture" && activeStatuses.has(thread.status)) {
+          setThreadStatus(thread, "failed", "knowledge_capture_interrupted");
+          thread.waitingFor = null;
+          thread.resultSummary = "资料保存因服务重启而中断，可以重新发送原链接。";
+          thread.updatedAt = now();
+          reconciled += 1;
+          continue;
+        }
         if (!thread.nextAction) thread.nextAction = threadNextAction(thread.status, thread);
         if (!thread.lastProgressAt) thread.lastProgressAt = thread.lastActivityAt ?? thread.updatedAt ?? now();
         if (!thread.lastProgressSummary) thread.lastProgressSummary = `状态更新：${taskThreadStatus(thread)}`;
@@ -8232,12 +8309,6 @@ function sharedContentContinuation(text, conversation) {
         }
       }
     });
-    for (const thread of state.channelTaskThreads ?? []) {
-      if (thread.workKind !== "knowledge_capture") continue;
-      const before = thread.workItemId;
-      const tracked = syncKnowledgeCaptureTaskRecord(thread);
-      if (!before && tracked?.workItemId) reconciled += 1;
-    }
     for (const thread of state.channelTaskThreads ?? []) {
       if (!activeStatuses.has(thread.status)) continue;
       const invocation = thread.invocationId
@@ -8344,6 +8415,7 @@ function sharedContentContinuation(text, conversation) {
     // as a second line of defence so a callback race or restart cannot leave a
     // WeChat thread permanently queued while its Run is active.
     for (const thread of state.channelTaskThreads ?? []) {
+      if (!isUserTaskThread(thread)) continue;
       if (!["queued", "running", "waiting_approval", "waiting_user"].includes(thread.status)) continue;
       const autoRun = thread.autoRunId
         ? (state.autoRuns ?? []).find((run) => run.id === thread.autoRunId)
@@ -8538,7 +8610,7 @@ function sharedContentContinuation(text, conversation) {
 
   function listTaskThreads(conversation) {
     return (state.channelTaskThreads ?? [])
-      .filter((thread) => thread.conversationId === conversation.id)
+      .filter((thread) => thread.conversationId === conversation.id && isUserTaskThread(thread))
       .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "").localeCompare(String(left.updatedAt ?? left.createdAt ?? "")))
       .slice(0, 10);
   }

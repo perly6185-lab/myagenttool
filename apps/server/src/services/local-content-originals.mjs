@@ -80,9 +80,13 @@ export function resolveCatalogOriginal({ row, state, stateStorePath, mailArchive
 
 export function catalogFileLocator({ row, state, stateStorePath, mailArchiveRoot }) {
   if (!row || row.storage_mode === "state_record") return null;
-  if (row.root_kind === "application_data" && ["task-materials", "channel-knowledge"].includes(row.root_id)) {
+  if (row.root_kind === "application_data" && ["task-materials", "channel-knowledge", "channel-attachments"].includes(row.root_id)) {
     const relativePath = String(row.relative_path ?? "").replaceAll("\\", "/");
-    const expectedPrefix = row.root_id === "task-materials" ? "task-materials/" : "knowledge/channel-articles/";
+    const expectedPrefix = row.root_id === "task-materials"
+      ? "task-materials/"
+      : row.root_id === "channel-attachments"
+        ? "knowledge/channel-attachments/"
+        : "knowledge/channel-articles/";
     if (!relativePath.startsWith(expectedPrefix)) return null;
     return { rootPath: resolve(dirname(stateStorePath)), relativePath };
   }

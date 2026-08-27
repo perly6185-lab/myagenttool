@@ -49,6 +49,7 @@ test("channelOperations rolls up readiness, health, counts, and last activity", 
       { channelId: "chn_1", status: "queued", createdAt: "2026-07-15T04:00:00.000Z" },
       { channelId: "chn_1", status: "waiting_user", updatedAt: "2026-07-15T05:00:00.000Z", lastActivityAt: "2026-07-15T05:00:00.000Z" },
       { channelId: "chn_1", status: "failed", updatedAt: "2026-07-15T06:00:00.000Z" },
+      { channelId: "chn_1", workKind: "knowledge_capture", status: "running", updatedAt: "2026-07-15T07:00:00.000Z" },
     ],
   });
 

@@ -16,7 +16,7 @@ import { createChannelService } from "../src/services/channels.mjs";
 const NOW = "2026-07-15T00:00:00.000Z";
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, routeChannelTask, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, retryDirectTask, reconcileWechatDraftTask, cancelAutoRun, classifyIntent, createConsultation, inspectSharedLink, trackKnowledgeCaptureTask, attachKnowledgeToWorkItem, resolveKnowledgeLocation, notifyHumanTakeover, notifyTaskEvent, resendDelivery, acknowledgeDelivery, setNotificationPolicy, updateWorkItem, operationMode = "team" } = {}) {
+function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapability = null, createChannelTaskIssue, routeChannelTask, intakeQuietMs = 5 * 1000, intentTimeoutMs, answerClarify, retryAutoRun, retryDirectTask, reconcileWechatDraftTask, cancelAutoRun, classifyIntent, createConsultation, inspectSharedLink, captureAttachmentKnowledge, attachKnowledgeToWorkItem, resolveKnowledgeLocation, notifyHumanTakeover, notifyTaskEvent, resendDelivery, acknowledgeDelivery, setNotificationPolicy, updateWorkItem, operationMode = "team" } = {}) {
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
   const events = [];
   const refusals = [];
@@ -72,7 +72,16 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
       }
       : null,
     inspectSharedLink,
-    trackKnowledgeCaptureTask,
+    captureAttachmentKnowledge: captureAttachmentKnowledge ?? (({ assets }) => ({
+      ok: true,
+      items: assets.map((asset) => ({
+        itemId: `knowledge_${asset.id}`,
+        contentId: `content_${asset.id}`,
+        title: asset.originalName ?? "Channel 资料",
+        replayed: false,
+      })),
+      failures: [],
+    })),
     attachKnowledgeToWorkItem,
     resolveKnowledgeLocation,
     resendDelivery,
@@ -261,7 +270,7 @@ test("multiple natural messages tell the user that they were merged", async () =
   assert.equal(harness.state.channelTaskThreads[0].sourceEventIds.length, 2);
 });
 
-test("an attachment followed by its instruction stays in one intake task", async () => {
+test("a bare attachment is saved as material and the immediate instruction references it in one task", async () => {
   const harness = makeHarness({ intakeQuietMs: 50 });
   harness.bindTaskProject("proj_a");
   const attachment = {
@@ -286,21 +295,25 @@ test("an attachment followed by its instruction stays in one intake task", async
     keyCandidates: [],
   };
 
-  const received = harness.receive("", { attachmentAssets: [attachment], attachmentDiscoveries: [discovery] }).dispatched;
-  assert.match(received.reply, /已收到文件/);
+  const received = await harness.receive("", { attachmentAssets: [attachment], attachmentDiscoveries: [discovery] }).dispatched;
+  assert.match(received.reply, /保存到“我的资料”/);
+  assert.match(received.reply, /不会创建任务/);
+  assert.equal(harness.state.channelTaskThreads.length, 0);
+  assert.equal(harness.state.channelIntakeGroups.length, 0);
   const supplemented = harness.receive("整理为台账").dispatched;
-  assert.equal(supplemented.reply, null);
+  assert.match(supplemented.reply, /正在整理你的需求/);
   await new Promise((resolve) => setTimeout(resolve, 70));
 
   assert.equal(harness.state.channelTaskThreads.length, 1);
   const thread = harness.state.channelTaskThreads[0];
-  assert.equal(thread.sourceEventIds.length, 2);
-  assert.deepEqual(thread.attachmentAssets.map((asset) => asset.id), [attachment.id]);
+  assert.equal(thread.sourceEventIds.length, 1);
+  assert.deepEqual(thread.attachmentAssets, []);
+  assert.deepEqual(thread.knowledgeItemIds, [`knowledge_${attachment.id}`]);
   assert.match(thread.summary, /整理为台账/);
-  assert.match(harness.replies.at(-1)?.content ?? "", /已合并你刚才的 2 条消息/);
+  assert.match(harness.replies.at(-1)?.content ?? "", /回复“确认”开始/);
 });
 
-test("an instruction sent after the attachment quiet window completes the same draft", async () => {
+test("an instruction sent after saving an attachment creates a draft backed by that material", async () => {
   const calls = [];
   const harness = makeHarness({
     intakeQuietMs: 1,
@@ -316,20 +329,22 @@ test("an instruction sent after the attachment quiet window completes the same d
     family: "file", hash: "sha256:late", version: "v1", terminalId: "dev_local", projectId: "proj_a",
     readiness: { state: "ready" },
   };
-  harness.receive("", { attachmentAssets: [attachment] });
+  await harness.receive("", { attachmentAssets: [attachment] }).dispatched;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(harness.state.channelTaskThreads.length, 0);
+
+  const supplemented = harness.receive("整理为客户台账").dispatched;
+  assert.match(supplemented.reply, /正在整理你的需求/);
   await new Promise((resolve) => setTimeout(resolve, 10));
   const thread = harness.state.channelTaskThreads[0];
-  assert.equal(thread.waitingFor, "draft_input");
-  assert.match(harness.replies.at(-1).content, /希望如何处理/);
-
-  const supplemented = await harness.receive("整理为客户台账").dispatched;
-  assert.match(supplemented.reply, /已补充到当前任务/);
   assert.equal(thread.waitingFor, "confirmation");
   assert.equal(harness.state.channelTaskThreads.length, 1);
+  assert.deepEqual(thread.knowledgeItemIds, [`knowledge_${attachment.id}`]);
 
   await harness.receive("确认").dispatched;
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].inputAssets.map((asset) => asset.id), [attachment.id]);
+  assert.deepEqual(calls[0].inputAssets, []);
+  assert.deepEqual(calls[0].knowledgeItemIds, [`knowledge_${attachment.id}`]);
 });
 
 test("a source file supplied to a blocked preview revises the same task instead of opening another", async () => {
@@ -619,7 +634,7 @@ test("capability questions are answered without creating a task", () => {
   assert.equal(harness.state.channelTaskThreads.length, 0);
 });
 
-test("a bare WeChat article link creates and completes a tracked knowledge-capture task", async () => {
+test("a bare WeChat article link creates a material-only capture operation", async () => {
   const inspected = [];
   const harness = makeHarness({
     inspectSharedLink: async ({ url }) => {
@@ -641,17 +656,26 @@ test("a bare WeChat article link creates and completes a tracked knowledge-captu
   const result = await harness.receive("https://mp.weixin.qq.com/s/article-one?scene=1").dispatched;
 
   assert.equal(inspected.length, 1);
-  assert.match(result.reply, /已收纳到本地资料库/);
+  assert.match(result.reply, /已保存到“我的资料”/);
+  assert.match(result.reply, /保存资料不会创建任务/);
   assert.match(result.reply, /《移动端知识助手》/);
   assert.match(result.reply, /没有自动开始二创/);
-  assert.match(result.reply, /每一种都会创建独立任务/);
+  assert.match(result.reply, /明确说“创建新任务”/);
   assert.equal(harness.state.channelTaskThreads.length, 1);
   assert.equal(harness.state.channelTaskThreads[0].workKind, "knowledge_capture");
   assert.equal(harness.state.channelTaskThreads[0].status, "succeeded");
+  assert.equal(harness.state.channelTaskThreads[0].workItemId, null);
+  assert.equal(harness.state.channelConversations[0].activeTaskThreadId ?? null, null);
+  assert.equal(harness.state.channelEvents.at(-1).taskThreadId, undefined);
+  assert.equal(result.data.taskThreadId, undefined);
+  assert.equal(result.data.captureOperationId, harness.state.channelTaskThreads[0].id);
   assert.equal(harness.state.channelIntakeGroups.length, 0);
   assert.equal(harness.state.channelConversations[0].sharedContentContext.items.length, 1);
   assert.equal(harness.state.channelConversations[0].sharedContentContext.items[0].archiveStatus, "saved");
-  assert.match(harness.replies[0].content, /正在读取并收纳/);
+  assert.match(harness.replies[0].content, /正在读取并保存到“我的资料”/);
+
+  const listed = harness.receive("我的任务");
+  assert.match(listed.dispatched.reply, /还没有正在处理的事情/);
 });
 
 test("a Channel link is acknowledged and inspected even while another task is active", async () => {
@@ -676,7 +700,7 @@ test("a Channel link is acknowledged and inspected even while another task is ac
 
   const pending = harness.receive("https://example.com/active-task-link").dispatched;
   assert.equal(harness.replies.length, 1);
-  assert.match(harness.replies[0].content, /收到链接，正在读取并收纳/);
+  assert.match(harness.replies[0].content, /收到链接，正在读取并保存到“我的资料”/);
   assert.match(harness.replies[0].content, /不会自动修改当前任务/);
   assert.equal(harness.state.channelEvents.at(-1).sharedContentStatus, "inspecting");
   assert.equal(harness.state.channelEvents.at(-1).sharedContentActiveTaskCount, 1);
@@ -691,7 +715,7 @@ test("a Channel link is acknowledged and inspected even while another task is ac
     knowledge: { status: "saved", itemId: "knowledge_active_task_link" },
   });
   const result = await pending;
-  assert.match(result.reply, /已收纳到本地资料库/);
+  assert.match(result.reply, /已保存到“我的资料”/);
   assert.equal(harness.state.channelEvents.at(-1).sharedContentStatus, "ready");
   assert.equal(harness.state.channelEvents.at(-1).sharedContentCompletedAt, NOW);
   assert.equal(harness.state.channelConversations[0].sharedContentContext.items.length, 1);
@@ -1313,8 +1337,7 @@ test("explicitly adding link material attaches the asset without creating a foll
   assert.equal(routeEvent.sharedContentRoute.taskThreadId, running.id);
 });
 
-test("saved article capture is visible in My Tasks and a natural follow-up returns its local path", async () => {
-  const tracked = [];
+test("saved article capture stays in My files and a natural follow-up returns its local path", async () => {
   const harness = makeHarness({
     inspectSharedLink: async ({ url }) => ({
       provider: "wechat",
@@ -1324,10 +1347,6 @@ test("saved article capture is visible in My Tasks and a natural follow-up retur
       _document: { markdown: "这是一篇已经保存的文章。" },
       knowledge: { status: "saved", itemId: "knowledge_local_path", replayed: false, warningCount: 0 },
     }),
-    trackKnowledgeCaptureTask: ({ thread, items }) => {
-      tracked.push({ status: thread.status, itemIds: items.map((item) => item.knowledgeItemId) });
-      return { ok: true, workItemId: "lwi_knowledge_1", localRef: "LOCAL-8" };
-    },
     resolveKnowledgeLocation: ({ itemId, ownerTeamId }) => {
       assert.equal(itemId, "knowledge_local_path");
       assert.equal(ownerTeamId, "team_local");
@@ -1339,24 +1358,23 @@ test("saved article capture is visible in My Tasks and a natural follow-up retur
   });
 
   const saved = await harness.receive("https://mp.weixin.qq.com/s/local-path").dispatched;
-  assert.match(saved.reply, /已记录到“我的任务”（LOCAL-8）/);
+  assert.match(saved.reply, /已保存到“我的资料”/);
+  assert.match(saved.reply, /保存资料不会创建任务/);
   assert.match(saved.reply, /本地存放路径/);
-  assert.equal(harness.state.channelTaskThreads[0].workItemId, "lwi_knowledge_1");
-  assert.deepEqual(tracked.map((entry) => entry.status), ["running", "succeeded"]);
-  assert.deepEqual(tracked.at(-1).itemIds, ["knowledge_local_path"]);
+  assert.equal(harness.state.channelTaskThreads[0].workItemId, null);
+  assert.equal(harness.state.channelConversations[0].activeTaskThreadId ?? null, null);
 
   const location = harness.receive("本地存放路径").dispatched;
   assert.match(location.reply, /《本地知识文章》/);
   assert.match(location.reply, /\/Users\/test\/Library\/Application Support\/MyAgentTool\/state\/knowledge\/article\.md/);
-  assert.match(location.reply, /“我的任务”（LOCAL-8）/);
+  assert.match(location.reply, /已保存在“我的资料”/);
+  assert.match(location.reply, /保存资料不会创建任务/);
   assert.equal(location.data.action, "local_location");
   assert.equal(harness.state.channelTaskThreads.length, 1);
 
-  harness.state.channelTaskThreads[0].workItemId = null;
-  harness.state.channelTaskThreads[0].workItemLocalRef = null;
   const recovered = harness.conversationService.recoverTaskThreads();
-  assert.equal(recovered.reconciled, 1);
-  assert.equal(harness.state.channelTaskThreads[0].workItemId, "lwi_knowledge_1");
+  assert.equal(recovered.reconciled, 0);
+  assert.equal(harness.state.channelTaskThreads[0].workItemId, null);
 });
 
 test("a readable link degrades to preview when local knowledge saving fails", async () => {
@@ -1370,7 +1388,7 @@ test("a readable link degrades to preview when local knowledge saving fails", as
 
   const result = await harness.receive("https://mp.weixin.qq.com/s/preview-only").dispatched;
 
-  assert.match(result.reply, /未能保存到本地资料库/);
+  assert.match(result.reply, /未能保存到“我的资料”/);
   assert.match(result.reply, /仍可继续分析/);
   assert.equal(harness.state.channelConversations[0].sharedContentContext.items[0].archiveStatus, "not_saved");
   assert.equal(harness.state.channelTaskThreads.length, 1);
@@ -1400,7 +1418,7 @@ test("a user can naturally opt out of saving a shared link", async () => {
   assert.equal(harness.state.channelTaskThreads.length, 0);
 });
 
-test("a restricted article link fails its capture task with a simple recovery message", async () => {
+test("a restricted article link fails its capture operation with a simple recovery message", async () => {
   const harness = makeHarness({
     inspectSharedLink: async () => { throw Object.assign(new Error("article_download_challenge"), { code: "article_download_challenge" }); },
   });
@@ -1437,7 +1455,7 @@ test("a failed article link can be retried with a natural retry message", async 
   const retried = await harness.receive("重试").dispatched;
 
   assert.equal(attempts, 2);
-  assert.match(retried.reply, /已收纳到本地资料库/);
+  assert.match(retried.reply, /已保存到“我的资料”/);
   assert.equal(harness.state.channelConversations[0].sharedContentContext.retryUrls.length, 0);
   assert.equal(harness.state.channelConversations[0].pendingLinkPluginProposal, null);
 });
