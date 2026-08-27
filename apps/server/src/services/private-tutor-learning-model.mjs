@@ -118,15 +118,21 @@ export function decidePrivateTutorStrategy({ model, attempts, previousDecision =
   };
 }
 
-export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "diagnostic_completed", carryForwardKnowledgeId = null }) {
+export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "diagnostic_completed", carryForwardKnowledgeId = null, scopeKnowledgeIds = null }) {
   if (!decision) return null;
-  const measured = model.knowledge
+  const scope = new Set(Array.isArray(scopeKnowledgeIds) && scopeKnowledgeIds.length
+    ? scopeKnowledgeIds
+    : model.knowledge.map((item) => item.id));
+  const scoped = model.knowledge.filter((item) => scope.has(item.id));
+  const measured = scoped
     .filter((item) => item.mastery != null)
     .sort((left, right) => priorityScore(right) - priorityScore(left));
-  const primary = model.knowledge.find((item) => item.id === carryForwardKnowledgeId)
-    ?? model.knowledge.find((item) => item.id === decision.targetKnowledgeId)
-    ?? measured[0];
-  const alternatives = measured.filter((item) => item.id !== primary.id);
+  const candidates = measured.length ? measured : scoped;
+  const primary = candidates.find((item) => item.id === carryForwardKnowledgeId)
+    ?? candidates.find((item) => item.id === decision.targetKnowledgeId)
+    ?? candidates[0];
+  if (!primary) return null;
+  const alternatives = candidates.filter((item) => item.id !== primary.id);
   const secondary = alternatives[0] ?? primary;
   const tertiary = alternatives[1] ?? secondary;
   const pattern = [

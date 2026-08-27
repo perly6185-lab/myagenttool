@@ -1,6 +1,7 @@
 import { getCurrentSession } from "@/lib/api-client";
 import { request } from "@/lib/api/request";
 import type {
+  AuthoredContentVersion,
   ContentSourceType,
   KnowledgeGraphData,
   KnowledgeMapDraft,
@@ -8,7 +9,7 @@ import type {
   MaterialDocument,
 } from "./private-tutor-model";
 
-export type { ContentSourceType, KnowledgeGraphData, KnowledgeMapDraft, LearningContentPackage, MaterialDocument };
+export type { AuthoredContentVersion, ContentSourceType, KnowledgeGraphData, KnowledgeMapDraft, LearningContentPackage, MaterialDocument };
 
 export interface PrivateTutorLearner {
   id: string;
@@ -61,6 +62,8 @@ export interface PrivateTutorAssessmentQuestion {
   kind: "numeric" | "choice" | "math_steps" | "semantic_response" | "code" | "rubric_response";
   prompt: string;
   options: Array<{ id: string; label: string }> | null;
+  requiredSourceRefs?: string[];
+  sourceRefs?: Array<{ sectionId: string; pageNumber: number | null; origin: string | null }>;
 }
 
 export interface PrivateTutorAssessmentResult {
@@ -83,6 +86,7 @@ export interface PrivateTutorAssessment {
   contentPackageId: string | null;
   contentPackageVersion: string | null;
   subjectId: string;
+  activationId?: string | null;
   status: "active" | "paused" | "completed";
   revision: number;
   startedAt: string;
@@ -92,7 +96,9 @@ export interface PrivateTutorAssessment {
   targetSeconds: number;
   minQuestions: number;
   maxQuestions: number;
+  runtimeValidationId?: string | null;
   answeredCount: number;
+  evidenceAnswerCount?: number;
   currentQuestion: PrivateTutorAssessmentQuestion | null;
   result: PrivateTutorAssessmentResult | null;
   updatedAt: string;
@@ -101,15 +107,56 @@ export interface PrivateTutorAssessment {
 export type PrivateTutorTeachingStrategy = "prerequisite_repair" | "concept_rebuild" | "fluency_practice" | "transfer_challenge";
 
 export interface PrivateTutorEvaluation {
+  schemaVersion?: number;
+  evaluatorId?: string;
+  evaluatorVersion?: string;
+  subjectId?: string;
+  contentRevisionId?: string | null;
+  contentPackageId?: string | null;
+  contentPackageVersion?: string | null;
+  rubricVersion?: string | null;
+  confidence?: number | null;
+  reviewStatus?: "not_required" | "required" | "completed";
+  decisionFingerprint?: string;
+  profile?: string;
+  semanticStatus?: string;
+  semanticConfidence?: number;
+  speechConfidence?: number | null;
+  missingCriteria?: string[];
+  contradictedCriteria?: string[];
+  thresholds?: { evidence?: number; review?: number; voiceEvidence?: number };
   score?: number;
+  scoreBand?: string;
+  anchorId?: string | null;
+  anchorDescription?: string | null;
+  contentScore?: number;
+  contentMaximum?: number;
+  sourceScore?: number;
   passedCount?: number;
   totalCount?: number;
   firstIncorrectStep?: number | null;
   requiresReview?: boolean;
   missingSourceRefs?: string[];
+  unknownSourceRefs?: string[];
+  reviewReason?: string | null;
+  humanReviewId?: string;
+  humanReviewDecision?: PrivateTutorEvaluationReviewDecision;
+  humanReviewReasonCode?: PrivateTutorEvaluationReviewReasonCode;
+  reviewedAt?: string;
+  finalCorrect?: boolean;
+  finalEvidenceEligible?: boolean;
   explanation?: string;
   criteria?: Array<Record<string, unknown>>;
-  steps?: Array<Record<string, unknown>>;
+  steps?: Array<{
+    index?: number;
+    displayIndex?: number;
+    correct?: boolean;
+    actual?: string | null;
+    normalizedEquation?: string | null;
+    classification?: string;
+    feedback?: string;
+    [key: string]: unknown;
+  }>;
   tests?: Array<Record<string, unknown>>;
   [key: string]: unknown;
 }
@@ -121,6 +168,116 @@ export interface PrivateTutorAttemptEvaluation {
   evidenceEligible: boolean;
   evidenceTier: string;
   evaluation: PrivateTutorEvaluation | null;
+}
+
+export type PrivateTutorEvaluationReviewDecision = "confirmed_correct" | "confirmed_incorrect";
+export type PrivateTutorEvaluationReviewReasonCode =
+  | "transcription_verified"
+  | "semantic_interpretation"
+  | "rubric_interpretation"
+  | "source_verified"
+  | "automated_false_positive"
+  | "automated_false_negative"
+  | "other";
+
+export interface PrivateTutorEvaluationReview {
+  id: string;
+  learnerId: string;
+  attemptId: string;
+  reviewerId: string;
+  automated: {
+    correct: boolean;
+    evidenceEligible: boolean;
+    judgementReason: string;
+    evidenceTier: string;
+    decisionFingerprint: string;
+  };
+  decision: PrivateTutorEvaluationReviewDecision;
+  reasonCode: PrivateTutorEvaluationReviewReasonCode;
+  note: string;
+  finalCorrect: boolean;
+  finalEvidenceEligible: boolean;
+  createdAt: string;
+}
+
+export interface PrivateTutorEvaluationReviewQueueItem {
+  attemptId: string;
+  learnerId: string;
+  learnerDisplayName: string | null;
+  contentPackageId: string | null;
+  contentPackageVersion: string | null;
+  subjectId: string | null;
+  knowledgeId: string;
+  questionRevisionId: string;
+  responseKind: string;
+  normalizedAnswer: string | null;
+  source: string;
+  recognitionConfidence: number | null;
+  independent: boolean;
+  usedHint: boolean;
+  automatedCorrect: boolean;
+  automatedEvidenceEligible: boolean;
+  evaluation: PrivateTutorEvaluation;
+  review: PrivateTutorEvaluationReview | null;
+  createdAt: string;
+}
+
+export type PrivateTutorGoldenCandidateClassification =
+  | "evaluator_defect"
+  | "rubric_defect"
+  | "content_defect"
+  | "transcription_issue"
+  | "one_off_exception";
+export type PrivateTutorGoldenCandidateStatus = "migration_required" | "in_review" | "approved" | "rejected" | "exception_only";
+
+export interface PrivateTutorGoldenExpected {
+  correct: boolean;
+  evidenceEligible: boolean;
+  requiresReview: boolean;
+  score: number | null;
+  scoreBand: "insufficient" | "developing" | "proficient" | null;
+}
+
+export interface PrivateTutorGoldenCandidate {
+  id: string;
+  schemaVersion: 1;
+  sourceEvaluationReviewId: string;
+  classification: PrivateTutorGoldenCandidateClassification;
+  targetChange: "evaluator" | "rubric" | "content" | "none";
+  promotionEligible: boolean;
+  migrationRequired: boolean;
+  migration: {
+    migrationId: string;
+    to: { evaluatorVersion: string | null; contentPackageVersion: string | null; rubricVersion: string | null; profile: string | null };
+    compatibility: string;
+  } | null;
+  suite: "math-step" | "language-semantic" | "conceptual-rubric";
+  rationale: string;
+  proposedExpected: PrivateTutorGoldenExpected;
+  goldenArtifact: {
+    schemaVersion: 1;
+    suite: string;
+    subjectId: string;
+    questionRevisionId: string;
+    versions: { evaluatorVersion: string | null; contentPackageVersion: string | null; rubricVersion: string | null; profile: string | null };
+    input: { rawAnswer: string; responseKind: string; source: string; recognitionConfidence: number | null };
+    expected: PrivateTutorGoldenExpected;
+  };
+  candidateFingerprint: string;
+  deidentification: { passed: boolean; policyVersion: 1; detected: string[] };
+  createdBy: string;
+  createdAt: string;
+  status: PrivateTutorGoldenCandidateStatus;
+  approvals: number;
+  requiredApprovals: 2;
+  reviews: Array<{
+    id: string;
+    candidateId: string;
+    reviewerId: string;
+    decision: "approved" | "rejected";
+    evidence: string;
+    reviewedAt: string;
+  }>;
 }
 
 export interface PrivateTutorLearnerModel {
@@ -175,15 +332,22 @@ export interface PrivateTutorLearningPlan {
   contentPackageId: string | null;
   contentPackageVersion: string | null;
   subjectId: string;
+  activationId?: string | null;
   revision: number;
-  status: "active";
+  status: "active" | "completed" | "source_unavailable";
+  entryMode?: "diagnostic" | "chapter";
+  startModuleId?: string | null;
+  startTopicId?: string | null;
+  startKnowledgeId?: string | null;
   reason: string;
   studentReason: string;
   generatedAt: string;
   days: Array<{
     dayIndex: number;
     date: string;
-    status: "planned";
+    status: "planned" | "in_progress" | "completed";
+    startedAt?: string;
+    completedAt?: string;
     knowledgeId: string;
     knowledgeTitle: string;
     activity: string;
@@ -238,14 +402,16 @@ export interface PrivateTutorSession {
   contentPackageId: string | null;
   contentPackageVersion: string | null;
   subjectId: string;
+  activationId?: string | null;
   planId: string | null;
   decisionId: string | null;
+  planDayIndex?: number | null;
   targetKnowledgeId: string;
   targetTitle: string;
   strategy: PrivateTutorTeachingStrategy;
   pace: PrivateTutorSessionPace;
   plannedMinutes: number;
-  status: "active" | "paused" | "completed";
+  status: "active" | "paused" | "completed" | "source_unavailable";
   revision: number;
   currentActivityIndex: number;
   progress: Array<{ kind: PrivateTutorSessionActivityKind; budgetMinutes: number; status: "pending" | "active" | "completed" }>;
@@ -283,6 +449,7 @@ export interface PrivateTutorSession {
     hintedActivities: PrivateTutorSessionActivityKind[];
     methodSwitchCount: number;
     evidenceCount: number;
+    practiceCount?: number;
     reviewAt: string;
     nextStep: string;
   } | null;
@@ -679,6 +846,41 @@ export interface PrivateTutorContentPackageUpdateResult {
   snapshot: PrivateTutorSnapshot | null;
 }
 
+export interface PrivateTutorRuntimeValidation {
+  id: string;
+  packageId: string;
+  packageVersion: string;
+  status: "passed" | "blocked" | "superseded" | "revoked";
+  failureCodes: string[];
+  validatedAt: string;
+  questions: Array<{
+    questionRevisionId: string;
+    context: string;
+    status: "passed" | "blocked";
+    failureCodes: string[];
+  }>;
+}
+
+export interface PrivateTutorPackageActivation {
+  id: string;
+  learnerId: string;
+  packageId: string;
+  packageVersion: string;
+  entryMode: "diagnostic" | "chapter";
+  startModuleId: string | null;
+  startTopicId: string | null;
+  startKnowledgeId: string | null;
+  scopeKnowledgeIds: string[];
+  runtimeValidationId: string | null;
+  status: "active" | "inactive" | "source_unavailable";
+  activatedAt: string;
+}
+
+export interface PrivateTutorPackageActivationResult extends PrivateTutorContentPackageUpdateResult, PrivateTutorIntelligence {
+  activation: PrivateTutorPackageActivation;
+  runtimeValidation: PrivateTutorRuntimeValidation | null;
+}
+
 export async function listPrivateTutorContentPackages(filters: { sourceType?: ContentSourceType; domain?: string } = {}) {
   const params = new URLSearchParams();
   if (filters.sourceType) params.set("sourceType", filters.sourceType);
@@ -736,6 +938,24 @@ export interface PrivateTutorKnowledgeMapDraftResult {
   draft: KnowledgeMapDraft;
 }
 
+export async function activatePrivateTutorContentPackage(input: {
+  packageId: string;
+  entryMode: "diagnostic" | "chapter";
+  startModuleId?: string;
+  startTopicId?: string;
+  startKnowledgeId?: string;
+}) {
+  return request<PrivateTutorPackageActivationResult>(
+    "POST",
+    "/api/private-tutor/profile/content-package/activate",
+    input,
+  );
+}
+
+export interface PrivateTutorAuthoredContentResult extends PrivateTutorKnowledgeMapDraftResult {
+  authoredContent: AuthoredContentVersion;
+}
+
 export async function listPrivateTutorMaterials() {
   const result = await request<PrivateTutorMaterialListResult>("GET", "/api/private-tutor/materials");
   return result.materials;
@@ -745,6 +965,7 @@ export async function uploadPrivateTutorMaterial(input: {
   fileName: string;
   fileType: string;
   fileContent: string;
+  fileEncoding?: "utf8" | "base64";
   fileSize?: number;
 }) {
   const result = await request<PrivateTutorMaterialResult>("POST", "/api/private-tutor/materials", input);
@@ -803,6 +1024,47 @@ export async function updatePrivateTutorKnowledgeMapDraft(draftId: string, input
   return result.draft;
 }
 
+export async function confirmPrivateTutorKnowledgeMapDraft(draftId: string, input: {
+  expectedRevision: number;
+  acknowledgeSourceReview: true;
+}) {
+  const result = await request<PrivateTutorKnowledgeMapDraftResult>(
+    "POST",
+    `/api/private-tutor/knowledge-map-drafts/${encodeURIComponent(draftId)}/confirm`,
+    input,
+  );
+  return result.draft;
+}
+
+export async function generatePrivateTutorAuthoredContent(draftId: string, input: { forceRegenerate?: boolean } = {}) {
+  return request<PrivateTutorAuthoredContentResult>(
+    "POST",
+    `/api/private-tutor/knowledge-map-drafts/${encodeURIComponent(draftId)}/author-content`,
+    input,
+  );
+}
+
+export async function updatePrivateTutorAuthoredContent(draftId: string, input: {
+  knowledgeContents: AuthoredContentVersion["knowledgeContents"];
+}) {
+  return request<PrivateTutorAuthoredContentResult>(
+    "PUT",
+    `/api/private-tutor/knowledge-map-drafts/${encodeURIComponent(draftId)}/authored-content`,
+    input,
+  );
+}
+
+export async function confirmPrivateTutorAuthoredContent(draftId: string, input: {
+  expectedRevision: number;
+  acknowledgeContentReview: true;
+}) {
+  return request<PrivateTutorAuthoredContentResult>(
+    "POST",
+    `/api/private-tutor/knowledge-map-drafts/${encodeURIComponent(draftId)}/authored-content/confirm`,
+    input,
+  );
+}
+
 export async function publishPrivateTutorKnowledgeMapDraft(draftId: string) {
   return request<{ success: boolean; packageId: string }>(
     "POST",
@@ -819,6 +1081,104 @@ export interface PrivateTutorSnapshotResponse {
   learningPlan?: PrivateTutorLearningPlan | null;
 }
 
+export interface PrivateTutorLearningHistoryMetrics {
+  sessionCount: number;
+  completedSessionCount: number;
+  startedPlanDayCount: number;
+  completedPlanDayCount: number;
+  planDayCompletionRate: number | null;
+  currentPlan: {
+    planId: string | null;
+    status: string | null;
+    scheduledDays: number;
+    completedDays: number;
+    inProgressDays: number;
+  };
+  practiceAttemptCount: number;
+  eligibleEvidenceCount: number;
+  evidenceEligibilityRate: number | null;
+  independentAttemptCount: number;
+  independentCorrectCount: number;
+  independentCorrectRate: number | null;
+  review: { scheduledCount: number; completedCount: number; dueCount: number; upcomingCount: number };
+  sourceRubric: {
+    attemptCount: number;
+    requiredReviewCount: number;
+    completedReviewCount: number;
+    pendingReviewCount: number;
+    reviewCompletionRate: number | null;
+  };
+}
+
+export interface PrivateTutorLearningHistory {
+  schemaVersion: number;
+  learnerId: string;
+  generatedAt: string;
+  definitions: Record<string, string>;
+  summary: {
+    packageCount: number;
+    chapterCount: number;
+    sessionCount: number;
+    completedSessionCount: number;
+    startedPlanDayCount: number;
+    completedPlanDayCount: number;
+    planDayCompletionRate: number | null;
+    practiceAttemptCount: number;
+    eligibleEvidenceCount: number;
+    evidenceEligibilityRate: number | null;
+    independentAttemptCount: number;
+    independentCorrectCount: number;
+    independentCorrectRate: number | null;
+    scheduledReviewCount: number;
+    completedReviewCount: number;
+    dueReviewCount: number;
+    upcomingReviewCount: number;
+    sourceRubricAttemptCount: number;
+    sourceRubricRequiredReviewCount: number;
+    sourceRubricCompletedReviewCount: number;
+    sourceRubricReviewCompletionRate: number | null;
+  };
+  packages: Array<{
+    packageId: string;
+    packageVersion: string;
+    packageName: string;
+    sourceType: ContentSourceType | null;
+    packageStatus: string;
+    contentDefinitionAvailable: boolean;
+    firstActivityAt: string | null;
+    lastActivityAt: string | null;
+    activationCount: number;
+    assessmentCount: number;
+    completedAssessmentCount: number;
+    summary: PrivateTutorLearningHistoryMetrics;
+    chapters: Array<{
+      moduleId: string;
+      moduleName: string;
+      orderIndex: number;
+      knowledgeCount: number;
+      firstActivityAt: string | null;
+      lastActivityAt: string | null;
+      summary: PrivateTutorLearningHistoryMetrics;
+      topics: Array<{ topicId: string; topicName: string; knowledgeIds: string[] }>;
+    }>;
+    recentSessions: Array<{
+      id: string;
+      status: string;
+      moduleId: string;
+      moduleName: string;
+      knowledgeId: string;
+      knowledgeTitle: string;
+      planId: string | null;
+      planDayIndex: number | null;
+      practiceCount: number;
+      evidenceCount: number;
+      startedAt: string | null;
+      completedAt: string | null;
+      reviewAt: string | null;
+    }>;
+  }>;
+}
+
 export async function getPrivateTutorSnapshot() {
   return request<PrivateTutorSnapshotResponse>(
     "GET",
@@ -828,6 +1188,14 @@ export async function getPrivateTutorSnapshot() {
 
 export async function getPrivateTutorLearningPlan() {
   return request<PrivateTutorIntelligence>("GET", "/api/private-tutor/profile/learning-plan");
+}
+
+export async function getPrivateTutorLearningHistory() {
+  const result = await request<{ history: PrivateTutorLearningHistory }>(
+    "GET",
+    "/api/private-tutor/profile/learning-history",
+  );
+  return result.history;
 }
 
 export async function rebalancePrivateTutorLearningPlan(missedDayIndex: number) {
@@ -1048,6 +1416,76 @@ export async function updatePrivateTutorGuardianPreferences(input: Pick<PrivateT
 export async function getPrivateTutorReleaseReadiness() {
   const result = await request<{ readiness: PrivateTutorReleaseReadiness }>("GET", "/api/private-tutor/release-readiness");
   return result.readiness;
+}
+
+export async function listPrivateTutorEvaluationReviews(status: "required" | "completed" = "required") {
+  const result = await request<{ queue: PrivateTutorEvaluationReviewQueueItem[] }>(
+    "GET",
+    `/api/private-tutor/evaluation-reviews?status=${encodeURIComponent(status)}`,
+  );
+  return result.queue;
+}
+
+export async function resolvePrivateTutorEvaluationReview(attemptId: string, input: {
+  idempotencyKey: string;
+  decisionFingerprint: string;
+  decision: PrivateTutorEvaluationReviewDecision;
+  reasonCode: PrivateTutorEvaluationReviewReasonCode;
+  note?: string;
+}) {
+  return request<{
+    review: PrivateTutorEvaluationReview;
+    item: PrivateTutorEvaluationReviewQueueItem;
+    snapshot: PrivateTutorSnapshot | null;
+    masteryRecomputed: boolean;
+    replayed: boolean;
+  } & PrivateTutorIntelligence>(
+    "POST",
+    `/api/private-tutor/evaluation-reviews/${encodeURIComponent(attemptId)}`,
+    input,
+  );
+}
+
+export async function listPrivateTutorGoldenCandidates(status?: PrivateTutorGoldenCandidateStatus) {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+  const result = await request<{ candidates: PrivateTutorGoldenCandidate[] }>(
+    "GET",
+    `/api/private-tutor/golden-candidates${suffix}`,
+  );
+  return result.candidates;
+}
+
+export async function createPrivateTutorGoldenCandidate(input: {
+  evaluationReviewId: string;
+  classification: PrivateTutorGoldenCandidateClassification;
+  deidentifiedAnswer: string;
+  rationale: string;
+  expectedRequiresReview?: boolean;
+  expectedScore?: number;
+  expectedScoreBand?: "insufficient" | "developing" | "proficient";
+}) {
+  const result = await request<{ candidate: PrivateTutorGoldenCandidate }>("POST", "/api/private-tutor/golden-candidates", input);
+  return result.candidate;
+}
+
+export async function linkPrivateTutorGoldenCandidateMigration(candidateId: string, migrationId: string) {
+  const result = await request<{ candidate: PrivateTutorGoldenCandidate }>(
+    "POST",
+    `/api/private-tutor/golden-candidates/${encodeURIComponent(candidateId)}/migration`,
+    { migrationId },
+  );
+  return result.candidate;
+}
+
+export async function reviewPrivateTutorGoldenCandidate(candidateId: string, decision: "approved" | "rejected", evidence: string) {
+  return request<{
+    candidate: PrivateTutorGoldenCandidate;
+    review: PrivateTutorGoldenCandidate["reviews"][number];
+  }>(
+    "POST",
+    `/api/private-tutor/golden-candidates/${encodeURIComponent(candidateId)}/reviews`,
+    { decision, evidence },
+  );
 }
 
 export async function evaluatePrivateTutorReleaseGate(input: {

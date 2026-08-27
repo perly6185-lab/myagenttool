@@ -1,17 +1,18 @@
 import { evaluateAuthoredRubric } from "./authored-rubric.mjs";
+import { CONCEPTUAL_RUBRIC_EVALUATOR_VERSION, evaluateAnchoredConceptRubric } from "./conceptual-rubric-evaluator.mjs";
 
 export const CONCEPTUAL_SUBJECT_ID = "conceptual_studies";
 
 export const conceptualSubjectPlugin = Object.freeze({
   subjectId: CONCEPTUAL_SUBJECT_ID,
-  version: "1.0.0",
+  version: "2.0.0",
   visualTemplates: [],
   getCapabilities() {
     return {
       deterministicGrading: true,
       stepEvaluation: false,
       speechEvaluation: false,
-      semanticEvaluation: "source_grounded_rubric",
+      semanticEvaluation: CONCEPTUAL_RUBRIC_EVALUATOR_VERSION,
       sourceGrounding: true,
       visualInteractions: false,
       supportedQuestionKinds: ["choice", "rubric_response"],
@@ -24,6 +25,9 @@ export const conceptualSubjectPlugin = Object.freeze({
     if (input.responseKind !== "answer") return { accepted: false, error: "invalid_private_tutor_response_kind" };
     if (question.kind === "choice") return evaluateChoice(input, question);
     if (question.kind !== "rubric_response") return { accepted: false, error: "private_tutor_question_kind_unsupported" };
+    if (question.rubric?.profile === CONCEPTUAL_RUBRIC_EVALUATOR_VERSION) {
+      return evaluateAnchoredConceptRubric(input.rawAnswer, question);
+    }
     return evaluateAuthoredRubric(input.rawAnswer, question.rubric, { requiredSourceRefs: question.requiredSourceRefs ?? [] });
   },
 });

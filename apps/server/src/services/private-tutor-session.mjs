@@ -34,10 +34,12 @@ const KNOWLEDGE_CONTENT = {
   ]),
 };
 
-export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, decision, pace, now, state, contentPackageId = null }) {
+export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, decision, pace, now, state, contentPackageId = null, activationId = null }) {
   const paceDefinition = PRIVATE_TUTOR_SESSION_PACES[pace];
   if (!paceDefinition) return null;
-  const targetKnowledgeId = plan?.days?.[0]?.knowledgeId ?? decision?.targetKnowledgeId;
+  const planDayIndex = selectPlanDayIndex(plan);
+  const planDay = plan?.days?.[planDayIndex] ?? null;
+  const targetKnowledgeId = planDay?.knowledgeId ?? decision?.targetKnowledgeId;
   const runtime = contentPackageId ? sessionRuntime(state, contentPackageId, targetKnowledgeId) : null;
   const target = runtime?.content ?? KNOWLEDGE_CONTENT[targetKnowledgeId];
   if (!target) return null;
@@ -57,7 +59,7 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
     completedAt: null,
   }));
   if (activities.some((activity) => ["recall", "guided_practice", "independent_check"].includes(activity.kind) && !activity.questionRevisionId)) return null;
-  return {
+  const session = {
     id,
     ownerTeamId,
     learnerId,
@@ -66,9 +68,11 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
     subjectId: runtime?.package.subjectId ?? "math",
     planId: plan?.id ?? null,
     decisionId: decision?.id ?? null,
+    activationId,
+    activationStatus: "active",
     targetKnowledgeId,
     targetTitle: target.title,
-    strategy: decision?.strategy ?? plan.days[0].strategy,
+    strategy: planDay?.strategy ?? decision?.strategy,
     pace,
     plannedMinutes: paceDefinition.totalMinutes,
     status: "active",
@@ -80,12 +84,20 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
     teachingMethod: initialMethod(decision?.strategy),
     intervention: null,
     evidenceAttemptIds: [],
+    practiceAttemptIds: [],
+    planDayIndex: planDay ? planDay.dayIndex : null,
     startedAt,
     pausedAt: null,
     completedAt: null,
     updatedAt: startedAt,
     summary: null,
   };
+  if (planDay) {
+    planDay.status = "in_progress";
+    planDay.startedAt ??= startedAt;
+    plan.updatedAt = startedAt;
+  }
+  return session;
 }
 
 export function privateTutorSessionView(session, state) {
@@ -110,6 +122,8 @@ export function privateTutorSessionView(session, state) {
     subjectId: session.subjectId ?? "math",
     planId: session.planId,
     decisionId: session.decisionId,
+    activationId: session.activationId ?? null,
+    planDayIndex: session.planDayIndex ?? null,
     targetKnowledgeId: session.targetKnowledgeId,
     targetTitle: session.targetTitle,
     strategy: session.strategy,
@@ -182,11 +196,13 @@ export function completePrivateTutorActivity(session, now) {
   return { completed: session.status === "completed" };
 }
 
-export function recordPrivateTutorSessionAnswer(session, { correct, attemptId, now }) {
+export function recordPrivateTutorSessionAnswer(session, { correct, attemptId, evidenceEligible = true, now }) {
   const activity = currentActivity(session);
   if (!activity?.questionRevisionId) return { ok: false, error: "private_tutor_answer_not_available" };
   activity.attemptCount += 1;
-  session.evidenceAttemptIds.push(attemptId);
+  session.practiceAttemptIds ??= [];
+  session.practiceAttemptIds.push(attemptId);
+  if (evidenceEligible) session.evidenceAttemptIds.push(attemptId);
   if (correct) {
     session.consecutiveIncorrect = 0;
     session.intervention = null;
@@ -240,6 +256,17 @@ export function currentPrivateTutorActivity(session) {
   return currentActivity(session);
 }
 
+export function completePrivateTutorPlanDay(plan, session, at) {
+  if (!plan || !session || session.status !== "completed" || !session.planDayIndex) return false;
+  const day = plan.days?.find((item) => item.dayIndex === session.planDayIndex);
+  if (!day) return false;
+  day.status = "completed";
+  day.completedAt = at;
+  plan.status = plan.days.every((item) => item.status === "completed") ? "completed" : "active";
+  plan.updatedAt = at;
+  return true;
+}
+
 function content(title, questionPrefix, explanation, hints) {
   return { title, questionPrefix, explanation, hints };
 }
@@ -264,12 +291,12 @@ function sessionRuntime(state, contentPackageId, knowledgeId) {
   const registry = privateTutorPackageRegistryFromState(state);
   const pkg = registry.getPackage(contentPackageId);
   const knowledge = pkg?.knowledgeComponents?.find((item) => item.id === knowledgeId);
-  if (!pkg || !knowledge) return null;
+  if (!pkg || (pkg.status != null && pkg.status !== "published") || !knowledge) return null;
   const teaching = knowledge.teachingContent ?? {};
   return {
     package: pkg,
     knowledge,
-    capabilities: registry.getSubjectPlugin(pkg.subjectId)?.getCapabilities?.() ?? {
+    capabilities: registry.getSubjectPlugin(pkg.evaluationSubjectId ?? pkg.subjectId)?.getCapabilities?.() ?? {
       deterministicGrading: false,
       stepEvaluation: false,
       speechEvaluation: false,
@@ -277,7 +304,7 @@ function sessionRuntime(state, contentPackageId, knowledgeId) {
     },
     content: {
       title: knowledge.name ?? knowledge.id,
-      explanation: teaching.coreConcept ?? knowledge.shortDescription ?? "先理解核心概念，再用练习确认。",
+      explanation: teaching.explanation ?? teaching.guidance ?? teaching.coreConcept ?? knowledge.shortDescription ?? "先理解核心概念，再用练习确认。",
       hints: teaching.keyPoints?.length ? teaching.keyPoints : ["回到定义，逐项检查条件。"],
     },
   };
@@ -368,6 +395,7 @@ function buildSummary(session, completedAt) {
     hintedActivities,
     methodSwitchCount: session.methodSwitchCount,
     evidenceCount: session.evidenceAttemptIds.length,
+    practiceCount: session.practiceAttemptIds?.length ?? session.evidenceAttemptIds.length,
     reviewAt: reviewAt.toISOString(),
     nextStep: independent?.completedAt && independent.hintLevel === 0
       ? "明天用另一道题快速回想，确认还能独立做到。"
@@ -382,4 +410,10 @@ function currentActivity(session) {
 function touch(session, now) {
   session.revision += 1;
   session.updatedAt = now();
+}
+
+function selectPlanDayIndex(plan) {
+  const days = Array.isArray(plan?.days) ? plan.days : [];
+  const index = days.findIndex((item) => item.status === "in_progress" || item.status === "planned");
+  return index >= 0 ? index : 0;
 }
