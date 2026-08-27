@@ -208,6 +208,7 @@ describe("My private tutor personal learning information architecture", () => {
 
   it("creates the current account profile through the single-profile contract", async () => {
     apiMocks.createProfile.mockResolvedValue({ profile: activeProfile, created: true, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(null);
     render(<PrivateTutorView />);
 
     fireEvent.change(await screen.findByLabelText("私教怎么称呼你"), { target: { value: "小林" } });
@@ -219,7 +220,24 @@ describe("My private tutor personal learning information architecture", () => {
       grade: "大学课程",
       curriculumEditionId: "demo-math-foundations-v1",
     });
-    expect(await screen.findByRole("button", { name: "今日学习" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "先选择这次想学什么" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /用当前内容开始摸底/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /选择课程或导入我的教材/ })).toBeTruthy();
+  });
+
+  it("lets a new learner manage content before starting a diagnostic", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(null);
+    render(<PrivateTutorView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /选择课程或导入我的教材/ }));
+
+    expect(await screen.findByRole("heading", { name: "我的设置" })).toBeTruthy();
+    expect(screen.getByText("选择学习内容")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "导入我的资料" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "返回开始方式" }));
+    fireEvent.click(screen.getByRole("button", { name: /用当前内容开始摸底/ }));
+    expect(await screen.findByRole("heading", { name: "先让我认识一下你会什么" })).toBeTruthy();
   });
 
   it("keeps the five personal learning capabilities at level one", async () => {

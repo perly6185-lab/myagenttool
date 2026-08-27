@@ -326,6 +326,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [diagnosticDismissed, setDiagnosticDismissed] = useState(false);
+  const [initialLearningRoute, setInitialLearningRoute] = useState<"choose" | "diagnostic" | "content">("choose");
   const [captions, setCaptions] = useState(true);
   const [reducedMotion, setReducedMotion] = useState(() => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true);
 
@@ -335,6 +336,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     setAssessmentReady(false);
     setLoadError("");
     setDiagnosticDismissed(false);
+    setInitialLearningRoute("choose");
     void Promise.allSettled([getPrivateTutorSnapshot(), getCurrentPrivateTutorAssessment(), getCurrentPrivateTutorSession(), getPrivateTutorReviewBook()])
       .then(([snapshotResult, assessmentResult, sessionResult, reviewResult]) => {
         if (!current) return;
@@ -450,10 +452,12 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     setAssessment(null);
     setTutoringSession(null);
     setDiagnosticDismissed(result.activation.entryMode === "chapter");
+    setInitialLearningRoute(result.activation.entryMode === "diagnostic" ? "diagnostic" : "choose");
     setTab("today");
   }
 
   const allKnowledgeUnknown = learnerState.knowledge.every((item) => item.level === "unknown");
+  const needsInitialLearningRoute = !assessment && allKnowledgeUnknown && !learningPlan;
   if (!assessmentReady) {
     return <div className="grid min-h-[65vh] place-items-center text-sm text-muted-foreground">正在准备专属于你的学习空间…</div>;
   }
@@ -469,7 +473,33 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
       </div>
     );
   }
-  if ((!assessment && allKnowledgeUnknown && !learningPlan)
+  if (needsInitialLearningRoute && initialLearningRoute === "choose") {
+    return (
+      <InitialLearningRoute
+        learnerName={learnerState.learner.displayName}
+        onDiagnostic={() => setInitialLearningRoute("diagnostic")}
+        onContent={() => setInitialLearningRoute("content")}
+      />
+    );
+  }
+  if (needsInitialLearningRoute && initialLearningRoute === "content") {
+    return (
+      <div className="mx-auto max-w-6xl p-4 sm:p-7">
+        <Button className="mb-5" variant="secondary" onClick={() => setInitialLearningRoute("choose")}>返回开始方式</Button>
+        <TutorSettings
+          state={learnerState}
+          captions={captions}
+          onCaptionsChange={setCaptions}
+          reducedMotion={reducedMotion}
+          onReducedMotionChange={setReducedMotion}
+          onPackageActivated={applyPackageActivation}
+          onProfileDeleted={() => window.location.reload()}
+          initialSpace="content"
+        />
+      </div>
+    );
+  }
+  if ((needsInitialLearningRoute && initialLearningRoute === "diagnostic")
     || (assessment != null && assessment.status !== "completed")
     || (assessment?.status === "completed" && !diagnosticDismissed)) {
     return (
@@ -545,6 +575,32 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
           />
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function InitialLearningRoute({ learnerName, onDiagnostic, onContent }: { learnerName: string; onDiagnostic: () => void; onContent: () => void }) {
+  return (
+    <div className="mx-auto flex min-h-[70vh] max-w-4xl items-center justify-center p-4">
+      <Card className="w-full overflow-hidden">
+        <div className="bg-[linear-gradient(135deg,#059669,#0f766e)] p-7 text-white sm:p-9">
+          <p className="text-sm text-emerald-100">你好，{learnerName}</p>
+          <h1 className="mt-2 text-3xl font-bold">先选择这次想学什么</h1>
+          <p className="mt-3 max-w-2xl leading-7 text-emerald-50">可以用当前课程先做摸底，也可以先导入自己的教材。选择教材不会被当成已经掌握，历史学习记录也不会被覆盖。</p>
+        </div>
+        <div className="grid gap-4 p-6 sm:grid-cols-2 sm:p-8">
+          <button type="button" onClick={onDiagnostic} className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/60 p-5 text-left transition hover:border-emerald-500 dark:border-emerald-900 dark:bg-emerald-950/30">
+            <BrainCircuit className="size-8 text-emerald-600" />
+            <span className="mt-4 block text-lg font-bold">用当前内容开始摸底</span>
+            <span className="mt-2 block text-sm leading-6 text-muted-foreground">先了解已经会什么，再生成七日计划。</span>
+          </button>
+          <button type="button" onClick={onContent} className="rounded-2xl border-2 border-sky-200 bg-sky-50/60 p-5 text-left transition hover:border-sky-500 dark:border-sky-900 dark:bg-sky-950/30">
+            <BookHeart className="size-8 text-sky-600" />
+            <span className="mt-4 block text-lg font-bold">选择课程或导入我的教材</span>
+            <span className="mt-2 block text-sm leading-6 text-muted-foreground">支持已有内容包、PDF、Markdown 和文本资料。</span>
+          </button>
+        </div>
+      </Card>
     </div>
   );
 }
@@ -1582,8 +1638,8 @@ function privateTutorOcrReasonLabel(reason: string | null | undefined) {
   return "本地 OCR 未能完成识别";
 }
 
-function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onReducedMotionChange, onPackageActivated, onProfileDeleted }: { state: LearnerTutorState; captions: boolean; onCaptionsChange: (value: boolean) => void; reducedMotion: boolean; onReducedMotionChange: (value: boolean) => void; onPackageActivated: (result: PrivateTutorPackageActivationResult) => void; onProfileDeleted: () => void }) {
-  const [space, setSpace] = useState<TutorSettingsSpace>("preferences");
+function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onReducedMotionChange, onPackageActivated, onProfileDeleted, initialSpace = "preferences" }: { state: LearnerTutorState; captions: boolean; onCaptionsChange: (value: boolean) => void; reducedMotion: boolean; onReducedMotionChange: (value: boolean) => void; onPackageActivated: (result: PrivateTutorPackageActivationResult) => void; onProfileDeleted: () => void; initialSpace?: TutorSettingsSpace }) {
+  const [space, setSpace] = useState<TutorSettingsSpace>(initialSpace);
   const [teacherStyle, setTeacherStyle] = useState("启发式引导");
   const [explanationDepth, setExplanationDepth] = useState("先简洁，再展开");
   const [packages, setPackages] = useState<LearningContentPackage[]>([]);
