@@ -30,6 +30,7 @@ before(async () => {
     { id: "team_family_a" },
     { id: "team_family_b" },
     { id: "team_personal" },
+    { id: "team_quick_tutor" },
     { id: "team_migrate" },
   );
   state.users.push(
@@ -43,6 +44,7 @@ before(async () => {
     { id: "usr_parent_c", teamId: "team_family_c", role: "viewer" },
     { id: "usr_personal", teamId: "team_personal", role: "viewer" },
     { id: "usr_personal_race", teamId: "team_personal", role: "viewer" },
+    { id: "usr_quick_tutor", teamId: "team_quick_tutor", role: "viewer" },
     { id: "usr_migrate", teamId: "team_migrate", role: "viewer" },
   );
   const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
@@ -57,6 +59,7 @@ before(async () => {
     { token: "tok_parent_c", userId: "usr_parent_c", expiresAt },
     { token: "tok_personal", userId: "usr_personal", expiresAt },
     { token: "tok_personal_race", userId: "usr_personal_race", expiresAt },
+    { token: "tok_quick_tutor", userId: "usr_quick_tutor", expiresAt },
     { token: "tok_migrate", userId: "usr_migrate", expiresAt },
   );
 
@@ -181,6 +184,81 @@ test("the personal tutor contract creates at most one profile for the current ac
   const loaded = await call("/api/private-tutor/profile", { token: "tok_personal" });
   assert.equal(loaded.status, 200);
   assert.equal(loaded.body.profile.id, created.body.profile.id);
+});
+
+test("a learner can target one knowledge point with exactly three quick diagnostic questions", async () => {
+  const token = "tok_quick_tutor";
+  const profile = await call("/api/private-tutor/profile", {
+    token,
+    method: "POST",
+    body: { displayName: "快速试学", grade: "中学课程" },
+  });
+  assert.equal(profile.status, 201);
+
+  const unavailable = await call("/api/private-tutor/profile/assessments/start", {
+    token,
+    method: "POST",
+    body: { mode: "quick", targetKnowledgeId: "missing" },
+  });
+  assert.equal(unavailable.status, 409);
+  assert.equal(unavailable.body.error, "private_tutor_quick_diagnostic_content_required");
+
+  const started = await call("/api/private-tutor/profile/assessments/start", {
+    token,
+    method: "POST",
+    body: { mode: "quick", targetKnowledgeId: "balance" },
+  });
+  assert.equal(started.status, 201);
+  let assessment = started.body.assessment;
+  assert.equal(assessment.mode, "quick");
+  assert.equal(assessment.targetKnowledgeId, "balance");
+  assert.equal(assessment.minQuestions, 3);
+  assert.equal(assessment.maxQuestions, 3);
+  assert.equal(assessment.currentQuestion.knowledgeId, "balance");
+  assert.equal(JSON.stringify(assessment.currentQuestion).includes("expected"), false);
+
+  const answers = {
+    "diag-bal-01-v1": "b",
+    "diag-bal-02-v1": "5",
+    "diag-bal-03-v1": "3",
+  };
+  let index = 0;
+  while (assessment.status === "active") {
+    const questionRevisionId = assessment.currentQuestion.revisionId;
+    const answered = await call(`/api/private-tutor/profile/assessments/${assessment.id}/answers`, {
+      token,
+      method: "POST",
+      body: {
+        idempotencyKey: `quick-diagnostic-${index}`,
+        questionRevisionId,
+        rawAnswer: answers[questionRevisionId],
+        responseKind: "answer",
+        source: "screen",
+        durationSeconds: 20,
+      },
+    });
+    assert.equal(answered.status, 201, questionRevisionId);
+    assessment = answered.body.assessment;
+    index += 1;
+  }
+  assert.equal(index, 3);
+  assert.equal(assessment.answeredCount, 3);
+  assert.deepEqual(assessment.result.knowledge.filter((item) => item.evidenceCount > 0).map((item) => item.knowledgeId), ["balance"]);
+
+  const snapshot = await call("/api/private-tutor/profile/snapshot", { token });
+  assert.equal(snapshot.body.snapshot.knowledge.find((item) => item.id === "balance").mastery, 0.85);
+  assert.equal(snapshot.body.snapshot.knowledge.filter((item) => item.id !== "balance").every((item) => item.level === "unknown"), true);
+  assert.equal(snapshot.body.strategyDecision.targetKnowledgeId, "balance");
+  assert.equal(snapshot.body.learningPlan.days[0].knowledgeId, "balance");
+
+  const lesson = await call("/api/private-tutor/profile/tutoring-sessions/start", {
+    token,
+    method: "POST",
+    body: { pace: "easy" },
+  });
+  assert.equal(lesson.status, 201);
+  assert.equal(lesson.body.session.targetKnowledgeId, "balance");
+  assert.equal(lesson.body.session.plannedMinutes, 5);
 });
 
 test("multiple legacy profiles require an explicit migration instead of implicit selection", async () => {

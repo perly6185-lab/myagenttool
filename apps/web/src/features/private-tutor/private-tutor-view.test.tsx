@@ -10,6 +10,10 @@ const apiMocks = vi.hoisted(() => ({
   confirmMigration: vi.fn(),
   snapshot: vi.fn(),
   currentAssessment: vi.fn(),
+  startAssessment: vi.fn(),
+  answerAssessment: vi.fn(),
+  startSession: vi.fn(),
+  activePackage: vi.fn(),
   listPackages: vi.fn(),
   getPackage: vi.fn(),
   activatePackage: vi.fn(),
@@ -89,11 +93,11 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   deletePrivateTutorProfile: () => Promise.reject(new Error("not used")),
   listPrivateTutorDeletionJobs: () => Promise.resolve([]),
   retryPrivateTutorLearnerDeletion: () => Promise.reject(new Error("not used")),
-  startPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
-  answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
+  startPrivateTutorAssessment: apiMocks.startAssessment,
+  answerPrivateTutorAssessment: apiMocks.answerAssessment,
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   resumePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
-  startPrivateTutorSession: () => Promise.reject(new Error("not used")),
+  startPrivateTutorSession: apiMocks.startSession,
   pausePrivateTutorSession: () => Promise.reject(new Error("not used")),
   resumePrivateTutorSession: () => Promise.reject(new Error("not used")),
   actOnPrivateTutorSession: () => Promise.reject(new Error("not used")),
@@ -105,16 +109,7 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   listPrivateTutorContentPackages: apiMocks.listPackages,
   getPrivateTutorContentPackage: apiMocks.getPackage,
   activatePrivateTutorContentPackage: apiMocks.activatePackage,
-  getPrivateTutorActiveContentPackage: () => Promise.resolve({
-    id: "demo-math-foundations-v1",
-    name: "初中数学基础：一元一次方程",
-    subjectId: "math",
-    domain: "math",
-    sourceType: "textbook",
-    version: "1.0.0",
-    targetAudience: { stage: "初中/通用基础" },
-    evaluationCapabilities: { deterministicGrading: true },
-  }),
+  getPrivateTutorActiveContentPackage: apiMocks.activePackage,
   listPrivateTutorMaterials: () => Promise.resolve([]),
   uploadPrivateTutorMaterial: () => Promise.reject(new Error("not used")),
   generatePrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
@@ -148,6 +143,23 @@ describe("My private tutor personal learning information architecture", () => {
     apiMocks.confirmMigration.mockReset().mockRejectedValue(new Error("not used"));
     apiMocks.snapshot.mockReset().mockResolvedValue({ learner: activeProfile, profile: activeProfile, snapshot: freshSnapshot, learnerModel: null, strategyDecision: null, learningPlan: null });
     apiMocks.currentAssessment.mockReset().mockResolvedValue(completedAssessment);
+    apiMocks.startAssessment.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.answerAssessment.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.startSession.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.activePackage.mockReset().mockResolvedValue({
+      id: "demo-math-foundations-v1",
+      name: "初中数学基础：一元一次方程",
+      subjectId: "math",
+      domain: "math",
+      sourceType: "textbook",
+      version: "1.0.0",
+      targetAudience: { stage: "初中/通用基础" },
+      evaluationCapabilities: { deterministicGrading: true },
+      knowledgeComponents: [
+        { id: "integer", name: "有理数运算", shortDescription: "正负数加减" },
+        { id: "balance", name: "等式两边同乘同除", shortDescription: "保持等式平衡" },
+      ],
+    });
     apiMocks.listPackages.mockReset().mockResolvedValue([{
       id: "demo-math-foundations-v1",
       name: "初中数学基础：一元一次方程",
@@ -232,8 +244,85 @@ describe("My private tutor personal learning information architecture", () => {
       curriculumEditionId: "demo-math-foundations-v1",
     });
     expect(await screen.findByRole("heading", { name: "先选择这次想学什么" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /快速学一个知识点/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /用当前内容开始摸底/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /选择课程或导入我的教材/ })).toBeTruthy();
+  });
+
+  it("starts a three-question diagnostic for one learner-selected knowledge point", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(null);
+    apiMocks.startAssessment.mockResolvedValue({
+      id: "pas_quick",
+      learnerId: activeProfile.id,
+      mode: "quick",
+      targetKnowledgeId: "balance",
+      status: "active",
+      revision: 1,
+      startedAt: "2026-08-27T00:00:00.000Z",
+      pausedAt: null,
+      completedAt: null,
+      activeSeconds: 0,
+      targetSeconds: 135,
+      minQuestions: 3,
+      maxQuestions: 3,
+      answeredCount: 0,
+      currentQuestion: { revisionId: "diag-bal-01-v1", knowledgeId: "balance", difficulty: 1, kind: "choice", prompt: "为了保持等式平衡，下一步应该怎么做？", options: [{ id: "a", label: "只改左边" }, { id: "b", label: "两边相同操作" }] },
+      result: null,
+      updatedAt: "2026-08-27T00:00:00.000Z",
+    });
+    render(<PrivateTutorView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /快速学一个知识点/ }));
+    expect(await screen.findByRole("heading", { name: "选择一个知识点，3 题后开始学" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /等式两边同乘同除/ }));
+    fireEvent.click(screen.getByRole("button", { name: "开始 3 题快速摸底" }));
+
+    await waitFor(() => expect(apiMocks.startAssessment).toHaveBeenCalledWith({ mode: "quick", targetKnowledgeId: "balance" }));
+    expect(await screen.findByText("为了保持等式平衡，下一步应该怎么做？")).toBeTruthy();
+    expect(screen.getByText("第 1 题 · 共 3 题")).toBeTruthy();
+  });
+
+  it("moves a completed quick diagnostic directly into a five-minute lesson", async () => {
+    const activeQuickAssessment = {
+      id: "pas_quick",
+      learnerId: activeProfile.id,
+      mode: "quick",
+      targetKnowledgeId: "balance",
+      status: "active",
+      revision: 3,
+      startedAt: "2026-08-27T00:00:00.000Z",
+      pausedAt: null,
+      completedAt: null,
+      activeSeconds: 80,
+      targetSeconds: 135,
+      minQuestions: 3,
+      maxQuestions: 3,
+      answeredCount: 2,
+      currentQuestion: { revisionId: "diag-bal-03-v1", knowledgeId: "balance", difficulty: 3, kind: "numeric", prompt: "2(x + 1) = 8，x 是多少？", options: null },
+      result: null,
+      updatedAt: "2026-08-27T00:01:20.000Z",
+    } as const;
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(activeQuickAssessment);
+    apiMocks.answerAssessment.mockResolvedValue({
+      ...activeQuickAssessment,
+      status: "completed",
+      revision: 4,
+      completedAt: "2026-08-27T00:02:00.000Z",
+      answeredCount: 3,
+      currentQuestion: null,
+      result: { knowledge: [{ knowledgeId: "balance", mastery: 0.85, level: "mastered", evidenceCount: 3, correctCount: 3, dontKnowCount: 0 }], strengths: ["balance"], focus: [], answeredCount: 3 },
+    });
+    apiMocks.startSession.mockResolvedValue({ session: null, resumedExisting: false });
+    render(<PrivateTutorView />);
+
+    fireEvent.change(await screen.findByLabelText("写下答案"), { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交并看下一题" }));
+    expect(await screen.findByRole("heading", { name: "3 题快速摸底完成" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "开始 5 分钟私教" }));
+
+    await waitFor(() => expect(apiMocks.startSession).toHaveBeenCalledWith("easy"));
   });
 
   it("lets a new learner manage content before starting a diagnostic", async () => {

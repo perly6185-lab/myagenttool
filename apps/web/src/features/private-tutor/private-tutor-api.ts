@@ -127,6 +127,8 @@ export interface PrivateTutorAssessment {
   contentPackageVersion: string | null;
   subjectId: string;
   activationId?: string | null;
+  mode?: "full" | "quick";
+  targetKnowledgeId?: string | null;
   status: "active" | "paused" | "completed";
   revision: number;
   startedAt: string;
@@ -1464,11 +1466,15 @@ export async function getCurrentPrivateTutorAssessment() {
   return result.assessment;
 }
 
-export async function startPrivateTutorAssessment() {
+export async function startPrivateTutorAssessment(input: {
+  mode?: "full" | "quick";
+  targetKnowledgeId?: string;
+  restart?: boolean;
+} = {}) {
   const result = await request<{ assessment: PrivateTutorAssessment }>(
     "POST",
     "/api/private-tutor/profile/assessments/start",
-    {},
+    input,
   );
   return result.assessment;
 }

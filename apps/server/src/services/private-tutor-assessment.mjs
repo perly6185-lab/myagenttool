@@ -15,6 +15,7 @@ const PREREQUISITE = {
 export const DIAGNOSTIC_MIN_QUESTIONS = 12;
 export const DIAGNOSTIC_MAX_QUESTIONS = 18;
 export const DIAGNOSTIC_TARGET_SECONDS = 10 * 60;
+export const QUICK_DIAGNOSTIC_QUESTIONS = 3;
 
 const DIAGNOSTIC_QUESTIONS = [
   numericQuestion("diag-int-01-v1", "integer", 1, "6 - 9 = ?", "-3"),
@@ -122,6 +123,24 @@ export function initialDiagnosticQuestion(state, packageId = null) {
     return publicQuestion(candidates[0] ?? null);
   }
   return publicQuestion(resolveCatalogQuestion(QUESTION_BY_ID.get("diag-eqm-02-v1"), state));
+}
+
+export function initialQuickDiagnosticQuestion(state, packageId, knowledgeId) {
+  const runtime = packageRuntime(state, packageId);
+  if (!runtime || !runtime.knowledge.some((item) => item.id === knowledgeId)) return null;
+  const candidates = runtimeDiagnosticCandidates(runtime, knowledgeId, new Set(), state)
+    .sort((left, right) => left.difficulty - right.difficulty || left.id.localeCompare(right.id));
+  return publicQuestion(candidates[0] ?? null);
+}
+
+export function selectNextQuickDiagnosticQuestion(answerSummaries, state, packageId, knowledgeId) {
+  if (answerSummaries.length >= QUICK_DIAGNOSTIC_QUESTIONS) return null;
+  const runtime = packageRuntime(state, packageId);
+  if (!runtime || !runtime.knowledge.some((item) => item.id === knowledgeId)) return null;
+  const answeredIds = new Set(answerSummaries.map((answer) => answer.questionRevisionId));
+  const candidates = runtimeDiagnosticCandidates(runtime, knowledgeId, answeredIds, state)
+    .sort((left, right) => left.difficulty - right.difficulty || left.id.localeCompare(right.id));
+  return publicQuestion(candidates[0] ?? null);
 }
 
 export function publicQuestion(question) {
@@ -260,6 +279,24 @@ export function privateTutorDiagnosticConfig(state, packageId) {
     minQuestions: questionCount,
     maxQuestions: questionCount,
     targetSeconds: Math.max(120, Math.min(DIAGNOSTIC_TARGET_SECONDS, questionCount * 45)),
+  };
+}
+
+export function privateTutorQuickDiagnosticConfig(state, packageId, knowledgeId) {
+  const runtime = packageRuntime(state, packageId);
+  const knowledge = runtime?.knowledge.find((item) => item.id === knowledgeId);
+  const usableQuestions = (knowledge?.diagnosticQuestions ?? [])
+    .map((question) => resolveRuntimeCatalogQuestion({ ...question, context: "diagnostic" }, state, runtime))
+    .filter(Boolean);
+  if (!runtime || !knowledge || usableQuestions.length < QUICK_DIAGNOSTIC_QUESTIONS) return null;
+  const runtimeValidated = runtime.package.sourceType === "user_material"
+    && Boolean(privateTutorRuntimeValidation(state, runtime.package.id, runtime.package.version));
+  if ((!runtimeValidated && runtime.package.evaluationCapabilities?.deterministicGrading !== true)
+    || !runtime.plugin) return null;
+  return {
+    minQuestions: QUICK_DIAGNOSTIC_QUESTIONS,
+    maxQuestions: QUICK_DIAGNOSTIC_QUESTIONS,
+    targetSeconds: QUICK_DIAGNOSTIC_QUESTIONS * 45,
   };
 }
 
