@@ -39,6 +39,13 @@ import {
 } from "../services/private-tutor-learning-model.mjs";
 import { buildPrivateTutorLearningHistory } from "../services/private-tutor-learning-history.mjs";
 import {
+  completeExpiredPrivateTutorLearningTrials,
+  latestPrivateTutorLearningTrialView,
+  recordPrivateTutorFollowUpResolution,
+  startPrivateTutorLearningTrial,
+  stopPrivateTutorLearningTrial,
+} from "../services/private-tutor-learning-trial.mjs";
+import {
   answerPrivateTutorFollowUp,
   completePrivateTutorActivity,
   completePrivateTutorPlanDay,
@@ -1444,6 +1451,55 @@ export async function handlePrivateTutorRoutes({
         learningProfileId: actor?.userId ?? LOCAL_USER_ID,
       }),
     });
+    return true;
+  }
+
+  const profileLearningTrialMatch = url.pathname.match(/^\/api\/private-tutor\/profile\/learning-trial(?:\/(start|stop))?$/);
+  if (profileLearningTrialMatch) {
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    const learner = resolved.learner;
+    const action = profileLearningTrialMatch[1] ?? null;
+    if (!action && req.method === "GET") {
+      const at = now();
+      const changed = completeExpiredPrivateTutorLearningTrials(state, at);
+      if (changed) persistStateSoon();
+      sendJson(res, 200, { trial: latestPrivateTutorLearningTrialView(state, learner.id, at) });
+      return true;
+    }
+    if (action === "start" && req.method === "POST") {
+      const body = await readJson(req).catch(() => ({}));
+      const contentPackage = privateTutorPackageRegistryFromState(state).getPackage(activeContentPackageId(learner));
+      const result = startPrivateTutorLearningTrial(state, learner, body, {
+        actorId: actor?.userId ?? LOCAL_USER_ID,
+        contentPackage,
+        now,
+        nextId,
+      });
+      if (!result.ok) {
+        sendJson(res, result.status, { error: result.error });
+        return true;
+      }
+      recordAudit(state, { learner, actor, action: "learning_trial_started", details: { trialId: result.trial.id, durationDays: result.trial.durationDays }, now, nextId });
+      persistStateSoon();
+      sendJson(res, 201, { trial: result.trial });
+      return true;
+    }
+    if (action === "stop" && req.method === "POST") {
+      const result = stopPrivateTutorLearningTrial(state, learner.id, { now });
+      if (!result.ok) {
+        sendJson(res, result.status, { error: result.error });
+        return true;
+      }
+      recordAudit(state, { learner, actor, action: "learning_trial_stopped", details: { trialId: result.trial.id }, now, nextId });
+      persistStateSoon();
+      sendJson(res, 200, { trial: result.trial });
+      return true;
+    }
+    sendJson(res, 405, { error: "method_not_allowed" });
     return true;
   }
 
@@ -3067,6 +3123,26 @@ async function handleTutoringSessionRoute({
     });
     persistStateSoon();
     sendJson(res, 200, { session: privateTutorSessionView(session, state), followUp: result.followUp });
+    return true;
+  }
+
+  if (actionType === "follow_up_feedback") {
+    const result = recordPrivateTutorFollowUpResolution(session, body, { now });
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    recordTutoringSessionEvent(state, {
+      learner,
+      actor,
+      session,
+      type: "follow_up_resolution_recorded",
+      details: { followUpId: result.followUp.id, resolution: result.followUp.resolution, evidenceEligible: false },
+      now,
+      nextId,
+    });
+    persistStateSoon();
+    sendJson(res, 200, { session: privateTutorSessionView(session, state) });
     return true;
   }
 

@@ -34,6 +34,7 @@ export const PRIVATE_TUTOR_LEARNER_COLLECTION_KEYS = [
   "privateTutorPilotIncidents",
   "privateTutorPilotCheckIns",
   "privateTutorPilotDeletionRequests",
+  "privateTutorLearningTrials",
 ];
 
 const TRANSCRIPT_RETENTION_DAYS = new Set([0, 7, 30, 90, 365]);
