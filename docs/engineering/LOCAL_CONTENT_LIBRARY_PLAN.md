@@ -8,6 +8,8 @@ AI integration: [Local Content and Local AI Integration Design](LOCAL_CONTENT_AI
 
 Next product requirements: [Task Resource Bundle and Hidden Data Capabilities](../design/TASK_RESOURCE_BUNDLE_REQUIREMENTS.md)
 
+Ordinary-user intent-to-action loop: [“我的资料”意图驱动的 AI 工作入口需求与开发规划](../design/LOCAL_PERSONAL_BRAIN_REQUIREMENTS.md)
+
 ## Product outcome
 
 An ordinary local user can search previously downloaded articles, cached mail, local tasks, task inputs, and task outputs without remembering which project, mailbox folder, or worktree contains the original. Every result explains its source, related task, availability, and safe next action. Search remains useful offline and never treats external content as instructions.
@@ -15,10 +17,10 @@ An ordinary local user can search previously downloaded articles, cached mail, l
 ## Delivery rules
 
 1. Index in place before migrating any original.
-2. Original bytes and mutable task state remain authoritative.
+2. Original bytes and mutable task state remain authoritative. Provider-delivered attachments whose remote message may expire are retained once in managed application data and become their authoritative local original.
 3. Index databases are disposable and rebuildable.
 4. A content identity is separate from a physical path.
-5. Relationships create logical directory views without duplicating bytes.
+5. Relationships create logical directory views without duplicating bytes; content-hash deduplication prevents repeated Channel sends from creating repeated managed originals.
 6. Metadata/full-text search is mandatory; embeddings are optional reranking.
 7. No result exposes an unrestricted absolute host path.
 8. One authoritative original may produce disposable execution, preview, and extraction copies.
@@ -177,6 +179,19 @@ Vector rollout gate:
 - model/provider changes produce a new index version;
 - disabling the embedding provider does not disable search.
 
+## Next program — Actionable personal brain
+
+The catalog, task-reference flow, and guarded retrieval contract are the foundation, not the final ordinary-user product. The next program is defined in [“我的资料”意图驱动的 AI 工作入口需求与开发规划](../design/LOCAL_PERSONAL_BRAIN_REQUIREMENTS.md) and adds the user-facing loop in independently releasable milestones:
+
+1. state a goal, use existing material, verify direct citations, and create a scoped task;
+2. summarize, extract, compare, create, and retain versioned results;
+3. continue a confirmed result into task, site-draft, or host-operation proposal flows;
+4. explicitly add files, folders, text, images, and links, then organize them into user-facing topics;
+5. add evaluated OCR and optional semantic reranking without removing lexical fallback; and
+6. add explainable review and external read-only AI only after the in-product loop is proven.
+
+This program must reuse `content record`, task references, original resolution, and invocation materialization. It must not introduce a second content identity, silently ingest arbitrary disk locations, or authorize a task to read the whole library.
+
 ## Catalog API introduced in Phase 0
 
 ```text
@@ -214,5 +229,11 @@ The catalog API returns content identity, kind, summary, provenance, confined lo
 6. Codex/Claude context manifest and verified execution materialization.
 7. Snapshot, retention, backup, and repair controls.
 8. Evidence-gated dynamic retrieval adapter, semantic reranking, and deduplication.
+9. Intent-first M0 prototype, terminology, and retrieval/citation evaluation baseline.
+10. Material-work session, goal-first UI, citations, and answer-to-task flow.
+11. Guided summaries, extraction, comparison, retained outcomes, and action proposals.
+12. Explicit local capture and user-facing topics.
+13. OCR and evidence-gated hybrid retrieval.
+14. Explainable review and external read-only AI adapters.
 
 Each issue must carry its own Project Fields, product-flow binding, risk assessment, rollback plan, and verification evidence. Phase 1 changes the mail data boundary and requires explicit architecture/security review before implementation.
