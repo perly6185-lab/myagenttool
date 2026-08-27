@@ -20,6 +20,19 @@ const DISCOVERY_PARENTS = ["/srv/myagenttool-sites", "/srv/www", "/var/www", "/o
 const MAX_SCOPE_SUGGESTIONS = 12;
 const BLOCKED_DOWNLOAD_NAMES = new Set([".env", ".npmrc", ".pypirc", "authorized_keys", "known_hosts"]);
 const BLOCKED_DOWNLOAD_EXTENSIONS = new Set([".key", ".pem", ".p12", ".pfx", ".kdbx"]);
+const MAX_SEARCH_DEPTH = 5;
+const MAX_SEARCH_ENTRIES = 500;
+const MAX_SEARCH_RESULTS = 50;
+const MAX_SEARCH_TEXT_FILES = 40;
+const MAX_SEARCH_FILE_BYTES = 128 * 1024;
+const MAX_SEARCH_TOTAL_BYTES = 2 * 1024 * 1024;
+const MAX_TEXT_PREVIEW_BYTES = 512 * 1024;
+const MAX_BINARY_PREVIEW_BYTES = 8 * 1024 * 1024;
+const SEARCHABLE_TEXT_EXTENSIONS = new Set([".txt", ".md", ".json", ".yaml", ".yml", ".log", ".conf", ".ini", ".csv", ".xml", ".html", ".css", ".js", ".ts", ".sh"]);
+const IMAGE_PREVIEW_TYPES = new Map([
+  [".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"], [".gif", "image/gif"],
+  [".webp", "image/webp"], [".bmp", "image/bmp"], [".avif", "image/avif"],
+]);
 
 export class HostFileScopeError extends SshHostConnectorError {
   constructor(code, message, status = 400) {
@@ -180,7 +193,97 @@ function ensureRegularRemoteFile(attrs) {
 
 function isBlockedDownloadName(name) {
   const lower = name.toLowerCase();
-  return BLOCKED_DOWNLOAD_NAMES.has(lower) || BLOCKED_DOWNLOAD_EXTENSIONS.has(posix.extname(lower)) || lower.startsWith(".env.");
+  return BLOCKED_DOWNLOAD_NAMES.has(lower)
+    || BLOCKED_DOWNLOAD_EXTENSIONS.has(posix.extname(lower))
+    || lower.startsWith(".env.")
+    || /^(?:id_(?:rsa|dsa|ecdsa|ed25519)|credentials?|secrets?)(?:\..+)?$/.test(lower);
+}
+
+function isSensitiveRelativePath(relativePath) {
+  const parts = String(relativePath ?? "").split("/").filter(Boolean);
+  return parts.slice(0, -1).some((part) => part.startsWith(".")) || isBlockedDownloadName(parts.at(-1) ?? "");
+}
+
+export function normalizeHostFileSearchQuery(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw || raw.length > 200 || raw.includes("\0") || /[\x00-\x1f\x7f]/.test(raw)) {
+    throw new HostFileScopeError("host_file_search_query_invalid", "Enter a short file name or content keyword.");
+  }
+  const quoted = [...raw.matchAll(/["“”'‘’]([^"“”'‘’]{2,80})["“”'‘’]/g)].map((match) => match[1]);
+  const cleaned = raw
+    .toLocaleLowerCase()
+    .replace(/["“”'‘’]/g, " ")
+    .replace(/帮我|请|查找|搜索|寻找|找一下|找出|找到|找|看看|看下|哪个文件|哪些文件|文件名|文件|内容|里面|其中|提到|包含|关于|有关|名为|叫做|是否|的/g, " ")
+    .replace(/\b(?:please|find|search|look|show|file|files|named|called|containing|contains|content|about|for|the|a|an|me)\b/gi, " ");
+  const terms = [...quoted, ...cleaned.split(/[\s,，。；;:：!?！？()[\]{}]+/)]
+    .map((term) => term.trim().toLocaleLowerCase())
+    .filter((term) => term.length >= 2)
+    .filter((term, index, items) => items.indexOf(term) === index)
+    .slice(0, 6);
+  if (!terms.length) throw new HostFileScopeError("host_file_search_query_invalid", "Enter a file name or content keyword.");
+  return { terms };
+}
+
+function previewDescriptor(name) {
+  const extension = posix.extname(String(name ?? "").toLocaleLowerCase());
+  if (SEARCHABLE_TEXT_EXTENSIONS.has(extension) || extension === ".svg") return { kind: "text", contentType: "text/plain; charset=utf-8", maxBytes: MAX_TEXT_PREVIEW_BYTES };
+  if (IMAGE_PREVIEW_TYPES.has(extension)) return { kind: "image", contentType: IMAGE_PREVIEW_TYPES.get(extension), maxBytes: MAX_BINARY_PREVIEW_BYTES };
+  if (extension === ".pdf") return { kind: "pdf", contentType: "application/pdf", maxBytes: MAX_BINARY_PREVIEW_BYTES };
+  return null;
+}
+
+function looksLikeText(bytes) {
+  if (bytes.includes(0)) return false;
+  const decoded = bytes.toString("utf8");
+  const replacements = [...decoded].filter((character) => character === "�").length;
+  return replacements <= Math.max(1, Math.floor(decoded.length * 0.01));
+}
+
+function previewSignatureValid(kind, contentType, bytes) {
+  if (kind === "text") return looksLikeText(bytes);
+  if (kind === "pdf") return bytes.subarray(0, 5).toString("ascii") === "%PDF-";
+  if (contentType === "image/png") return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (contentType === "image/jpeg") return bytes[0] === 0xff && bytes[1] === 0xd8;
+  if (contentType === "image/gif") return ["GIF87a", "GIF89a"].includes(bytes.subarray(0, 6).toString("ascii"));
+  if (contentType === "image/webp") return bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
+  if (contentType === "image/bmp") return bytes.subarray(0, 2).toString("ascii") === "BM";
+  if (contentType === "image/avif") return bytes.subarray(4, 8).toString("ascii") === "ftyp" && bytes.subarray(8, 16).toString("ascii").includes("avif");
+  return false;
+}
+
+async function readBoundedRemoteFile(sftp, root, relativePath, maxBytes) {
+  const normalizedPath = normalizeHostRelativePath(relativePath);
+  if (!normalizedPath) throw new HostFileScopeError("host_file_path_invalid", "Choose a remote file.");
+  const fileName = normalizeTransferFilename(posix.basename(normalizedPath));
+  const remoteDirectory = normalizedPath.includes("/") ? normalizedPath.slice(0, normalizedPath.lastIndexOf("/")) : "";
+  const directory = await inspectBrowseDirectory(sftp, root, remoteDirectory);
+  const absolutePath = posix.join(directory, fileName);
+  const attrs = await sftpCall(sftp, "lstat", absolutePath);
+  ensureRegularRemoteFile(attrs);
+  const size = Number(attrs?.size ?? -1);
+  if (!Number.isSafeInteger(size) || size < 0 || size > maxBytes) throw new HostFileScopeError("host_file_preview_size_invalid", "The remote file exceeds the safe preview limit.", 413);
+  const resolved = posix.normalize(String(await sftpCall(sftp, "realpath", absolutePath)));
+  if (resolved !== absolutePath || !pathWithinRoot(root, resolved)) throw new HostFileScopeError("host_file_scope_escape_blocked", "The remote file moved outside its approved range.", 409);
+  const bytes = Buffer.alloc(size);
+  const handle = await sftpCall(sftp, "open", absolutePath, "r");
+  try {
+    let offset = 0;
+    while (offset < size) {
+      const length = Math.min(TRANSFER_CHUNK_BYTES, size - offset);
+      const bytesRead = await sftpRead(sftp, handle, bytes, offset, length, offset);
+      if (!bytesRead) throw new HostFileScopeError("host_file_preview_incomplete", "The remote file changed before preview completed.", 502);
+      offset += bytesRead;
+    }
+  } finally {
+    await sftpCall(sftp, "close", handle).catch(() => {});
+  }
+  const after = posix.normalize(String(await sftpCall(sftp, "realpath", absolutePath)));
+  const afterAttrs = await sftpCall(sftp, "lstat", absolutePath);
+  ensureRegularRemoteFile(afterAttrs);
+  if (after !== absolutePath || !pathWithinRoot(root, after) || Number(afterAttrs?.size ?? -1) !== size) {
+    throw new HostFileScopeError("host_file_preview_changed", "The remote file changed while it was being read.", 409);
+  }
+  return { bytes, size };
 }
 
 async function availableRenamePath(sftp, directory, filename) {
@@ -293,6 +396,103 @@ function publicEntry(item, relativePath) {
     accessible: type === "directory" || type === "file",
     size: type === "file" && Number.isFinite(item.attrs?.size) && Number(item.attrs.size) >= 0 ? Number(item.attrs.size) : null,
     modifiedAt: Number.isFinite(item.attrs?.mtime) ? new Date(Number(item.attrs.mtime) * 1000).toISOString() : null,
+  };
+}
+
+async function searchApprovedFiles(sftp, scope, search, { allowContent }) {
+  const queue = [{ path: "", depth: 0 }];
+  const results = [];
+  let scannedEntries = 0;
+  let scannedTextFiles = 0;
+  let readBytes = 0;
+  let skippedEntries = 0;
+  let truncated = false;
+  while (queue.length && scannedEntries < MAX_SEARCH_ENTRIES && results.length < MAX_SEARCH_RESULTS) {
+    const current = queue.shift();
+    let directory;
+    try {
+      directory = await inspectBrowseDirectory(sftp, scope.resolvedRootPath, current.path);
+    } catch (error) {
+      if (!current.path) throw error;
+      skippedEntries += 1;
+      truncated = true;
+      continue;
+    }
+    let rows;
+    try {
+      rows = await sftpCall(sftp, "readdir", directory);
+    } catch {
+      skippedEntries += 1;
+      truncated = true;
+      continue;
+    }
+    if (!Array.isArray(rows)) throw new HostFileScopeError("host_file_listing_invalid", "The remote directory listing is invalid.", 502);
+    const remaining = MAX_SEARCH_ENTRIES - scannedEntries;
+    if (rows.length > remaining) truncated = true;
+    const entries = rows.slice(0, remaining).map((row) => publicEntry(row, current.path)).filter(Boolean).sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      scannedEntries += 1;
+      if (entry.type === "directory") {
+        if (!entry.name.startsWith(".") && current.depth < MAX_SEARCH_DEPTH) queue.push({ path: entry.path, depth: current.depth + 1 });
+        else if (current.depth >= MAX_SEARCH_DEPTH) truncated = true;
+        continue;
+      }
+      if (entry.type !== "file") {
+        skippedEntries += 1;
+        continue;
+      }
+      const searchableName = entry.path.toLocaleLowerCase();
+      const nameMatch = search.terms.every((term) => searchableName.includes(term));
+      const restricted = isSensitiveRelativePath(entry.path);
+      if (nameMatch) {
+        results.push({ ...entry, matchKind: "name", previewKind: restricted ? null : previewDescriptor(entry.name)?.kind ?? null, restricted });
+        if (results.length >= MAX_SEARCH_RESULTS) { truncated = true; break; }
+        continue;
+      }
+      const extension = posix.extname(entry.name.toLocaleLowerCase());
+      const canReadText = allowContent
+        && !restricted
+        && !entry.name.startsWith(".")
+        && SEARCHABLE_TEXT_EXTENSIONS.has(extension)
+        && Number.isSafeInteger(entry.size)
+        && entry.size >= 0
+        && entry.size <= MAX_SEARCH_FILE_BYTES;
+      if (!canReadText) continue;
+      if (scannedTextFiles >= MAX_SEARCH_TEXT_FILES || readBytes + entry.size > MAX_SEARCH_TOTAL_BYTES) {
+        truncated = true;
+        continue;
+      }
+      try {
+        const file = await readBoundedRemoteFile(sftp, scope.resolvedRootPath, entry.path, MAX_SEARCH_FILE_BYTES);
+        scannedTextFiles += 1;
+        readBytes += file.size;
+        if (!looksLikeText(file.bytes)) { skippedEntries += 1; continue; }
+        const content = file.bytes.toString("utf8").toLocaleLowerCase();
+        if (search.terms.every((term) => content.includes(term))) {
+          results.push({ ...entry, matchKind: "content", previewKind: "text", restricted: false });
+          if (results.length >= MAX_SEARCH_RESULTS) { truncated = true; break; }
+        }
+      } catch {
+        skippedEntries += 1;
+        truncated = true;
+      }
+    }
+  }
+  if (queue.length || scannedEntries >= MAX_SEARCH_ENTRIES || results.length >= MAX_SEARCH_RESULTS) truncated = true;
+  return {
+    results,
+    count: results.length,
+    contentSearchEnabled: allowContent,
+    boundaries: {
+      scannedEntries,
+      scannedTextFiles,
+      readBytes,
+      skippedEntries,
+      truncated,
+      maxDepth: MAX_SEARCH_DEPTH,
+      maxEntries: MAX_SEARCH_ENTRIES,
+      maxResults: MAX_SEARCH_RESULTS,
+    },
   };
 }
 
@@ -439,6 +639,74 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
     }
   }
 
+  async function searchFiles(target, scope, input = {}, actor = null) {
+    try {
+      if (scope.purpose === "tls_certificate") throw new HostFileScopeError("host_tls_scope_browsing_forbidden", "Certificate files cannot be searched through the file API.", 403);
+      if (!scopeAllows(scope, "list")) throw new HostFileScopeError("host_file_search_not_allowed", "Search is not enabled for this file range.", 403);
+      if (scope.status !== "ready" || target.connectionStatus !== "ready") throw new HostFileScopeError("host_file_scope_not_ready", "Verify the host and file range before searching.", 409);
+      if (!Number.isInteger(input.expectedRevision)) throw new HostFileScopeError("expected_revision_required", "The current file range revision is required.");
+      if (input.expectedRevision !== scope.revision) return { ok: false, status: 409, error: "host_file_scope_revision_conflict", currentRevision: scope.revision };
+      const search = normalizeHostFileSearchQuery(input.query);
+      const credential = await resolveCredential(target.credentialRef);
+      if (!credential?.ok) throw new HostFileScopeError(credential?.error ?? "ssh_credential_unavailable", "The SSH credential is unavailable.", 409);
+      const allowContent = scopeAllows(scope, "download");
+      const operation = await sshHostConnector.runSftp(target, credential.credential, (sftp) => searchApprovedFiles(sftp, scope, search, { allowContent }), { operationTimeoutMs: 20_000 });
+      const response = operation.value;
+      runTx(() => appendEvent({
+        invocationId: null,
+        type: "ssh.host_file_search.completed",
+        level: "info",
+        message: "A bounded approved-folder file search completed.",
+        data: {
+          targetId: target.id,
+          scopeId: scope.id,
+          queryKind: allowContent ? "name_and_text" : "name_only",
+          termCount: search.terms.length,
+          resultCount: response.count,
+          scannedEntries: response.boundaries.scannedEntries,
+          scannedTextFiles: response.boundaries.scannedTextFiles,
+          readBytes: response.boundaries.readBytes,
+          skippedEntries: response.boundaries.skippedEntries,
+          truncated: response.boundaries.truncated,
+          requestedBy: actor?.userId ?? "usr_local",
+        },
+      }));
+      return { ok: true, scopeId: scope.id, scopeRevision: scope.revision, ...response };
+    } catch (error) {
+      return scopeFailure(error);
+    }
+  }
+
+  async function previewFile(target, scope, input = {}, actor = null) {
+    try {
+      if (scope.purpose === "tls_certificate") throw new HostFileScopeError("host_tls_scope_browsing_forbidden", "Certificate files cannot be previewed through the file API.", 403);
+      if (!scopeAllows(scope, "download")) throw new HostFileScopeError("host_file_preview_not_allowed", "Preview is not enabled for this file range.", 403);
+      if (scope.status !== "ready" || target.connectionStatus !== "ready") throw new HostFileScopeError("host_file_scope_not_ready", "Verify the host and file range before previewing.", 409);
+      if (!Number.isInteger(input.expectedRevision)) throw new HostFileScopeError("expected_revision_required", "The current file range revision is required.");
+      if (input.expectedRevision !== scope.revision) return { ok: false, status: 409, error: "host_file_scope_revision_conflict", currentRevision: scope.revision };
+      const relativePath = normalizeHostRelativePath(input.path);
+      if (!relativePath) throw new HostFileScopeError("host_file_path_invalid", "Choose a remote file to preview.");
+      const fileName = normalizeTransferFilename(posix.basename(relativePath));
+      if (isSensitiveRelativePath(relativePath)) throw new HostFileScopeError("host_file_preview_sensitive_blocked", "This sensitive file cannot be previewed.", 403);
+      const descriptor = previewDescriptor(fileName);
+      if (!descriptor) throw new HostFileScopeError("host_file_preview_type_unsupported", "This file type is not available for safe preview.", 415);
+      const credential = await resolveCredential(target.credentialRef);
+      if (!credential?.ok) throw new HostFileScopeError(credential?.error ?? "ssh_credential_unavailable", "The SSH credential is unavailable.", 409);
+      const operation = await sshHostConnector.runSftp(target, credential.credential, (sftp) => readBoundedRemoteFile(sftp, scope.resolvedRootPath, relativePath, descriptor.maxBytes), { operationTimeoutMs: 30_000 });
+      if (!previewSignatureValid(descriptor.kind, descriptor.contentType, operation.value.bytes)) throw new HostFileScopeError("host_file_preview_content_invalid", "The file content does not match a safe preview format.", 415);
+      runTx(() => appendEvent({
+        invocationId: null,
+        type: "ssh.host_file_preview.completed",
+        level: "info",
+        message: "A bounded approved-folder file preview completed.",
+        data: { targetId: target.id, scopeId: scope.id, kind: descriptor.kind, bytes: operation.value.size, requestedBy: actor?.userId ?? "usr_local" },
+      }));
+      return { ok: true, bytes: operation.value.bytes, kind: descriptor.kind, contentType: descriptor.contentType };
+    } catch (error) {
+      return scopeFailure(error);
+    }
+  }
+
   function listTransfers(target) {
     reconcileInterruptedTransfers(target);
     return state.hostFileTransfers
@@ -576,7 +844,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
       const fileName = normalizeTransferFilename(posix.basename(remotePath));
       const remoteDirectory = remotePath.includes("/") ? remotePath.slice(0, remotePath.lastIndexOf("/")) : "";
       task = startTransfer(target, scope, { direction: "download", remotePath, remoteDirectory, fileName, bytesTotal: 0, confirmed: true, retryOf: options.retryOf }, actor);
-      if (isBlockedDownloadName(fileName)) throw new HostFileScopeError("host_file_download_sensitive_blocked", "This sensitive file type cannot be downloaded through the browser.", 403);
+      if (isSensitiveRelativePath(remotePath)) throw new HostFileScopeError("host_file_download_sensitive_blocked", "This sensitive file type cannot be downloaded through the browser.", 403);
       const credential = await resolveCredential(target.credentialRef);
       if (!credential?.ok) throw new HostFileScopeError(credential?.error ?? "ssh_credential_unavailable", "The SSH credential is unavailable.", 409);
       let knownSize = 0;
@@ -616,7 +884,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
     }
   }
 
-  return { listScopes, suggestScopes, createScope, updateScope, listEntries, listTransfers, uploadFile, downloadFile };
+  return { listScopes, suggestScopes, createScope, updateScope, listEntries, searchFiles, previewFile, listTransfers, uploadFile, downloadFile };
 }
 
 function scopeFailure(error) {

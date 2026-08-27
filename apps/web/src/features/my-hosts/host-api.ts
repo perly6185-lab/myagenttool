@@ -1,5 +1,5 @@
 import { ApiError, apiBase, csrfHeaders, ensureSession, request } from "@/lib/api/request";
-import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileTransfer, HostPurpose, HostTlsActivationProfile, SshHost } from "./host-types";
+import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticParameters, HostDiagnosticPlan, HostDiagnosticResult, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopeOption, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResponse, HostFileTransfer, HostPurpose, HostTlsActivationProfile, SshHost } from "./host-types";
 
 export const MAX_HOST_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_HOST_DOWNLOAD_BYTES = 25 * 1024 * 1024;
@@ -39,11 +39,29 @@ export const hostApi = {
     request<{ profile: HostTlsActivationProfile }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/tls-activation-profiles`, { ...input, type: "docker_nginx" }, true, 30_000),
   entries: (scopeId: string, path = "") =>
     request<{ scope: HostFileScope; path: string; entries: HostFileEntry[]; count: number }>("GET", `/api/host-file-scopes/${encodeURIComponent(scopeId)}/entries?path=${encodeURIComponent(path)}`, undefined, true, 30_000),
+  search: (scopeId: string, query: string, expectedRevision: number) =>
+    request<HostFileSearchResponse>("POST", `/api/host-file-scopes/${encodeURIComponent(scopeId)}/search`, { query, expectedRevision }, true, 30_000),
+  preview: previewHostFile,
   transfers: (hostId: string) =>
     request<{ transfers: HostFileTransfer[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/file-transfers`),
   upload: uploadHostFile,
   download: downloadHostFile,
 };
+
+async function previewHostFile(scopeId: string, options: { path: string; expectedRevision: number }): Promise<{ blob: Blob; kind: "text" | "image" | "pdf"; contentType: string }> {
+  await ensureSession();
+  const response = await fetch(`${apiBase}/api/host-file-scopes/${encodeURIComponent(scopeId)}/preview`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...csrfHeaders("POST") },
+    body: JSON.stringify(options),
+  });
+  if (!response.ok) throw apiError(await response.json().catch(() => ({})), response.status);
+  const kind = response.headers.get("X-Host-Preview-Kind");
+  if (!kind || !["text", "image", "pdf"].includes(kind)) throw new ApiError("host_file_preview_invalid", "The preview response was invalid.", 502);
+  const contentType = response.headers.get("Content-Type") || "application/octet-stream";
+  return { blob: await response.blob(), kind: kind as "text" | "image" | "pdf", contentType };
+}
 
 async function uploadHostFile(scopeId: string, file: File, options: { directory: string; conflictPolicy: HostFileConflictPolicy; overwriteConfirmed: boolean; retryOf?: string | null; onProgress?: (progress: number) => void }): Promise<{ task: HostFileTransfer }> {
   await ensureSession();

@@ -48,6 +48,22 @@ async function mockOrdinaryHostApi(page: Page, fixture: { host?: HostFixture; sc
     } });
     if (path === "/api/hosts") return route.fulfill({ json: { hosts: [currentHost], count: 1 } });
     if (path === `/api/hosts/${currentHost.id}/file-scopes`) return route.fulfill({ json: { scopes: currentScope ? [currentScope] : [], count: currentScope ? 1 : 0 } });
+    if (currentScope && path === `/api/host-file-scopes/${currentScope.id}/entries`) return route.fulfill({ json: { scope: currentScope, path: "", count: 2, entries: [
+      { name: "docs", path: "docs", type: "directory", accessible: true, size: null, modifiedAt: null },
+      { name: "index.html", path: "index.html", type: "file", accessible: true, size: 1200, modifiedAt: null },
+    ] } });
+    if (currentScope && path === `/api/host-file-scopes/${currentScope.id}/search`) return route.fulfill({ json: {
+      scopeId: currentScope.id, scopeRevision: currentScope.revision, count: 2, contentSearchEnabled: true,
+      results: [
+        { name: "部署说明.md", path: "docs/部署说明.md", type: "file", accessible: true, size: 1600, modifiedAt: null, matchKind: "content", previewKind: "text", restricted: false },
+        { name: ".env", path: ".env", type: "file", accessible: true, size: 24, modifiedAt: null, matchKind: "name", previewKind: null, restricted: true },
+      ],
+      boundaries: { scannedEntries: 32, scannedTextFiles: 4, readBytes: 2048, skippedEntries: 1, truncated: false, maxDepth: 5, maxEntries: 500, maxResults: 50 },
+    } });
+    if (currentScope && path === `/api/host-file-scopes/${currentScope.id}/preview`) return route.fulfill({
+      body: "这是限量读取的安全文本预览。",
+      headers: { "Content-Type": "text/plain; charset=utf-8", "X-Host-Preview-Kind": "text", "Access-Control-Expose-Headers": "X-Host-Preview-Kind", "Cache-Control": "no-store" },
+    });
     if (path === `/api/hosts/${currentHost.id}/file-transfers`) return route.fulfill({ json: { transfers: fixture.transfers ?? [], count: fixture.transfers?.length ?? 0 } });
     if (path === `/api/hosts/${currentHost.id}/assistant/plan`) return route.fulfill({ json: { plan: { action: "disk_usage", command: "df -h", risk: "read_only" } } });
     if (path === `/api/hosts/${currentHost.id}/diagnostics`) return route.fulfill({ json: { result: {
@@ -213,4 +229,32 @@ test("ordinary host diagnosis leads with a conclusion and keeps technical eviden
   await page.setViewportSize({ width: 320, height: 900 });
   await page.getByText("设备空间严重不足").scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath("my-hosts-ai-diagnosis-320.png") });
+});
+
+test("ordinary approved-folder search and safe preview stay usable at 320 px", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.addInitScript(() => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({
+      state: { locale: "zh-CN", section: "myHosts", experienceMode: "ordinary" },
+      version: 1,
+    }));
+  });
+  await mockOrdinaryHostApi(page);
+  await page.goto("/?section=myHosts");
+  await page.getByRole("button", { name: "远程文件" }).click();
+
+  await expect(page.getByText("AI 文件助手")).toBeVisible();
+  await page.getByPlaceholder("例如：部署说明，或 mytoolagent.com").fill("mytoolagent.com");
+  await page.getByRole("button", { name: "查找文件" }).click();
+  await expect(page.getByText("找到 2 个文件")).toBeVisible();
+  await expect(page.getByText("部署说明.md")).toBeVisible();
+  await expect(page.getByText("敏感文件，已限制")).toBeVisible();
+  await expect(page.getByText(/SECRET=/)).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  await page.getByRole("button", { name: "安全预览" }).click();
+  await expect(page.getByText("预览：部署说明.md")).toBeVisible();
+  await expect(page.getByText("这是限量读取的安全文本预览。")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("my-hosts-file-search-preview-320.png"), fullPage: true });
 });
