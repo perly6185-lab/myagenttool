@@ -112,6 +112,19 @@ test("real HTTP creates, restores, revises, and cancels a selected material sess
   assert.equal(state.materialWorkMessages.length, 1);
 
   const sessionId = created.body.session.id;
+  const read = await runtime.materialWorkRetrieval.read({
+    sessionId,
+    messageId: created.body.messages[0].id,
+    contentId: content.id,
+    expectedRevision: 1,
+    offset: 0,
+    limit: 8_192,
+  }, { userId: "usr_a", teamId: "team_a", role: "member" });
+  assert.equal(read.status, 200);
+  assert.match(read.body.chunk.text, /客户希望缩短交付时间/);
+  assert.equal(read.body.receipt.status, "completed");
+  assert.equal(state.materialWorkReadReceipts.length, 1);
+
   const restored = await call(`/api/material-work-sessions/${sessionId}`);
   assert.equal(restored.status, 200);
   assert.equal(restored.body.messages[0].content, "总结客户反馈");

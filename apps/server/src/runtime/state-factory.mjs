@@ -166,6 +166,7 @@ export function createServerState({ defaultProjectPath, now }) {
     materialWorkSessions: [],
     materialWorkMessages: [],
     materialWorkCitations: [],
+    materialWorkReadReceipts: [],
     // Login-managed site sessions (session-manager.mjs): one durable row per
     // registered site — last probe / reseed observations only, never cookie
     // material. Empty until the first probe/reseed records a row.
