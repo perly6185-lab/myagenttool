@@ -51,22 +51,89 @@ beforeEach(async () => {
 });
 afterEach(() => cleanup());
 
-it("keeps host metadata out of Ordinary mode while offering a direct connection entry", async () => {
+it("loads owned hosts directly in Ordinary mode while hiding professional metadata", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   renderView();
-  expect(await screen.findByText("Connect your computer or server")).toBeTruthy();
-  expect(screen.queryByText("Production website host")).toBeNull();
-  expect(hostApi.list).not.toHaveBeenCalled();
+  expect(await screen.findByRole("heading", { name: "Connect and use my devices" })).toBeTruthy();
+  expect((await screen.findAllByText("Production website host")).length).toBe(2);
+  expect(screen.getByRole("button", { name: "Overview" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Remote files" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Transfers" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
+  expect(screen.queryByText("deploy@host.example:22")).toBeNull();
+  expect(screen.queryByText("host.example")).toBeNull();
+  expect(screen.getByText("Approved folders")).toBeTruthy();
+  expect(screen.getByText("Approved folders only")).toBeTruthy();
+  expect(hostApi.list).toHaveBeenCalledTimes(1);
+  expect(useUiStore.getState().experienceMode).toBe("ordinary");
+
+  fireEvent.click(screen.getByRole("button", { name: "Connect device" }));
+  expect(await screen.findByRole("heading", { name: "Connect my device" })).toBeTruthy();
+  expect((screen.getByLabelText("Device address") as HTMLInputElement).value).toBe("");
 });
 
-it("opens host setup directly from Ordinary mode", async () => {
+it("keeps complete connection metadata and settings available in Professional mode", async () => {
+  renderView();
+  expect(await screen.findByText("deploy@host.example:22")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
+  expect(screen.getByText("File ranges")).toBeTruthy();
+  expect(screen.getByText("Governed transfers")).toBeTruthy();
+});
+
+it("opens host setup from Ordinary mode without changing the experience mode", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Start connecting" }));
-  expect(await screen.findByRole("heading", { name: "Connect a host" })).toBeTruthy();
+  fireEvent.click((await screen.findAllByRole("button", { name: "Connect device" }))[0]);
+  expect(await screen.findByRole("heading", { name: "Connect my device" })).toBeTruthy();
+  expect(screen.getByLabelText("Device address")).toBeTruthy();
+  expect(screen.getByText("1. Connect device")).toBeTruthy();
   expect(hostApi.list).toHaveBeenCalled();
+  expect(useUiStore.getState().experienceMode).toBe("ordinary");
+});
+
+it("guides an ordinary user through local permission, device identity, and the recommended folder", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
+  const createdHost = { ...host, host: "10.10.10.222", authMethod: "password_ref" as const, networkPolicy: "allow_private_network" as const, connectionStatus: "untested" as const, knownHostFingerprint: null, observedFingerprint: null, capabilities: null, verifiedAt: null, revision: 1 };
+  const observedHost = { ...createdHost, connectionStatus: "fingerprint_pending" as const, observedFingerprint: host.observedFingerprint, revision: 2 };
+  const confirmedHost = { ...observedHost, connectionStatus: "untested" as const, knownHostFingerprint: host.observedFingerprint, revision: 3 };
+  const readyHost = { ...host, host: "10.10.10.222", authMethod: "password_ref" as const, networkPolicy: "allow_private_network" as const };
+  vi.mocked(hostApi.create).mockResolvedValue({ target: createdHost });
+  vi.mocked(hostApi.observeFingerprint).mockResolvedValue({ host: observedHost, observation: { fingerprint: host.observedFingerprint!, resolvedAddress: "10.10.10.222" } });
+  vi.mocked(hostApi.confirmFingerprint).mockResolvedValue({ host: confirmedHost });
+  vi.mocked(hostApi.verify).mockResolvedValue({ host: readyHost, verification: { capabilities: readyHost.capabilities } });
+  window.myagenttoolDesktop = { saveSshHostCredential: vi.fn().mockResolvedValue({ ok: true, reference: host.credentialRef, authMethod: "password_ref" }) };
+  renderView();
+
+  fireEvent.click((await screen.findAllByRole("button", { name: "Connect device" }))[0]);
+  fireEvent.change(screen.getByLabelText("Device address"), { target: { value: "10.10.10.222" } });
+  fireEvent.change(screen.getByLabelText("Login password"), { target: { value: "test-password" } });
+  const localConsent = screen.getByLabelText(/Allow access to my local device/);
+  expect((localConsent as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Connect this device" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Confirm that MyAgentTool may connect to this local-network device");
+  expect(hostApi.create).not.toHaveBeenCalled();
+
+  fireEvent.click(localConsent);
+  fireEvent.click(screen.getByRole("button", { name: "Connect this device" }));
+  await waitFor(() => expect(hostApi.create).toHaveBeenCalledWith(expect.objectContaining({ host: "10.10.10.222", networkPolicy: "allow_private_network" })));
+  expect(await screen.findByRole("heading", { name: "Confirm this is my device" })).toBeTruthy();
+  const fingerprintDetails = screen.getByText("View technical fingerprint").closest("details");
+  expect(fingerprintDetails?.open).toBe(false);
+  const identityConfirmation = screen.getByLabelText("I confirm this is the device I intend to connect to.");
+  const confirmButton = screen.getByRole("button", { name: "Confirm device and continue" }) as HTMLButtonElement;
+  expect(confirmButton.disabled).toBe(true);
+  fireEvent.click(identityConfirmation);
+  fireEvent.click(confirmButton);
+
+  expect(await screen.findByRole("heading", { name: "Choose a folder MyAgentTool may use" })).toBeTruthy();
+  const recommended = await screen.findByRole("radio", { name: /server001 lan e2e/ });
+  expect((recommended as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByText("Folder permissions").closest("details")?.open).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Use this folder and finish" }));
+  await waitFor(() => expect(hostApi.createScope).toHaveBeenCalledWith(host.id, expect.objectContaining({ rootPath: "/srv/myagenttool-sites/server001-lan-e2e" })));
 });
 
 it("keeps a list-only range read-only and links inaccessible", async () => {
@@ -244,7 +311,7 @@ it("repairs an existing private-network host in place and reuses its saved crede
   renderView();
 
   fireEvent.click(await screen.findByRole("button", { name: "Allow local network and retry" }));
-  const privateConsent = await screen.findByLabelText("This is a local-network address. Allow MyAgentTool to connect to this local device.");
+  const privateConsent = await screen.findByLabelText(/Local-network permission/);
   expect((privateConsent as HTMLInputElement).checked).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Connect and verify" }));
 
