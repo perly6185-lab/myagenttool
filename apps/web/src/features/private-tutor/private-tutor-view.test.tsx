@@ -112,6 +112,12 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getPrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
   updatePrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
   publishPrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
+  listPrivateTutorContentMigrationCandidates: () => Promise.resolve([]),
+  createPrivateTutorContentMigrationPreview: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorContentMigrationMapping: () => Promise.reject(new Error("not used")),
+  confirmPrivateTutorContentMigration: () => Promise.reject(new Error("not used")),
+  applyPrivateTutorContentMigration: () => Promise.reject(new Error("not used")),
+  rollbackPrivateTutorContentMigration: () => Promise.reject(new Error("not used")),
 }));
 
 const migrationReportFixture = {

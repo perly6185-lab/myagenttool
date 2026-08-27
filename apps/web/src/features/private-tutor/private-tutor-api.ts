@@ -881,6 +881,103 @@ export interface PrivateTutorPackageActivationResult extends PrivateTutorContent
   runtimeValidation: PrivateTutorRuntimeValidation | null;
 }
 
+export interface PrivateTutorContentMigrationCandidate {
+  packageId: string;
+  packageVersion: string;
+  packageName: string;
+  sourceType: ContentSourceType;
+  status: string;
+  contentChecksum: string | null;
+  knowledgeCount: number;
+  hasLearningState: boolean;
+  evidenceCount: number;
+}
+
+export interface PrivateTutorContentMigrationMapping {
+  sourceKnowledgeId: string;
+  sourceName: string;
+  targetKnowledgeIds: string[];
+  targetNames: string[];
+  sourceEvidenceCount: number;
+  relation: "unchanged" | "renamed" | "changed" | "split" | "merged" | "removed";
+  compatibility: "safe" | "review_required" | "archive_only";
+  decision: "transfer" | "provisional" | "archive";
+  changes: string[];
+}
+
+export interface PrivateTutorContentMigrationPreview {
+  id: string;
+  revision: number;
+  status: "draft" | "confirmed" | "applied" | "rolled_back";
+  source: { packageId: string; packageVersion: string; packageName: string; contentChecksum: string };
+  target: { packageId: string; packageVersion: string; packageName: string; contentChecksum: string };
+  mappings: PrivateTutorContentMigrationMapping[];
+  targetAdditions: Array<{ knowledgeId: string; name: string; status: "added" }>;
+  impact: {
+    transferableKnowledgeCount: number;
+    provisionalKnowledgeCount: number;
+    archivedKnowledgeCount: number;
+    addedKnowledgeCount: number;
+    transferableEvidenceCount: number;
+    provisionalEvidenceCount: number;
+    archivedEvidenceCount: number;
+    affectedActivePlanCount: number;
+    affectedOpenSessionCount: number;
+    activeRuntimeWillChange: false;
+    targetActivationRequired: true;
+    targetStateExists: boolean;
+    requiresExplicitConfirmation: boolean;
+  };
+  previewFingerprint: string;
+  applicationId: string | null;
+}
+
+export interface PrivateTutorContentMigrationApplication {
+  id: string;
+  previewId: string;
+  previewFingerprint: string;
+  status: "applied" | "rolled_back";
+  source: PrivateTutorContentMigrationPreview["source"];
+  target: PrivateTutorContentMigrationPreview["target"];
+  transferredKnowledgeCount: number;
+  provisionalKnowledgeCount: number;
+  archivedKnowledgeCount: number;
+  appliedAt: string;
+  rolledBackAt: string | null;
+  rollbackReceipt: { sourceFactCountBefore: number; sourceFactCountAfter: number; sourceFactsRewritten: 0; targetStateFingerprint: string; targetPackageWasActivated: false };
+  rollbackVerification: { targetStatePresent: boolean; sourceFactsRewritten: 0 } | null;
+}
+
+export async function listPrivateTutorContentMigrationCandidates() {
+  const result = await request<{ candidates: PrivateTutorContentMigrationCandidate[] }>("GET", "/api/private-tutor/profile/content-migrations/candidates");
+  return result.candidates;
+}
+
+export async function createPrivateTutorContentMigrationPreview(input: { sourcePackageId: string; sourcePackageVersion: string; targetPackageId: string; targetPackageVersion: string; idempotencyKey: string }) {
+  const result = await request<{ preview: PrivateTutorContentMigrationPreview }>("POST", "/api/private-tutor/profile/content-migrations/preview", input);
+  return result.preview;
+}
+
+export async function updatePrivateTutorContentMigrationMapping(previewId: string, input: { expectedRevision: number; mappings: Array<Pick<PrivateTutorContentMigrationMapping, "sourceKnowledgeId" | "targetKnowledgeIds" | "decision">> }) {
+  const result = await request<{ preview: PrivateTutorContentMigrationPreview }>("PUT", `/api/private-tutor/profile/content-migrations/${encodeURIComponent(previewId)}/mapping`, input);
+  return result.preview;
+}
+
+export async function confirmPrivateTutorContentMigration(previewId: string, input: { expectedRevision: number; previewFingerprint: string; acknowledgeHistoricalPreservation: boolean; acknowledgeRiskyMappings: boolean }) {
+  const result = await request<{ preview: PrivateTutorContentMigrationPreview }>("POST", `/api/private-tutor/profile/content-migrations/${encodeURIComponent(previewId)}/confirm`, input);
+  return result.preview;
+}
+
+export async function applyPrivateTutorContentMigration(previewId: string, previewFingerprint: string, idempotencyKey: string) {
+  const result = await request<{ application: PrivateTutorContentMigrationApplication }>("POST", `/api/private-tutor/profile/content-migrations/${encodeURIComponent(previewId)}/apply`, { previewFingerprint, idempotencyKey });
+  return result.application;
+}
+
+export async function rollbackPrivateTutorContentMigration(applicationId: string) {
+  const result = await request<{ application: PrivateTutorContentMigrationApplication }>("POST", `/api/private-tutor/profile/content-migration-applications/${encodeURIComponent(applicationId)}/rollback`, { confirmRollback: true });
+  return result.application;
+}
+
 export async function listPrivateTutorContentPackages(filters: { sourceType?: ContentSourceType; domain?: string } = {}) {
   const params = new URLSearchParams();
   if (filters.sourceType) params.set("sourceType", filters.sourceType);

@@ -95,6 +95,7 @@ import {
 } from "@/features/private-tutor/private-tutor-api";
 import { PrivateTutorMaterialImport } from "@/features/private-tutor/components/private-tutor-material-import";
 import { PrivateTutorDraftEditor } from "@/features/private-tutor/components/private-tutor-draft-editor";
+import { PrivateTutorContentMigration } from "@/features/private-tutor/components/private-tutor-content-migration";
 import {
   browserSpeechRecognitionAvailable,
   interruptPrivateTutorSpeech,
@@ -1815,6 +1816,8 @@ function TutorSettings({ state, captions, onCaptionsChange, reducedMotion, onRed
                   onPublished={(packageId) => void handleDraftPublished(packageId)}
                 />
               ) : null}
+
+              <PrivateTutorContentMigration />
             </div>
           ) : null}
           {space === "teacher" ? <div className="mt-6 grid gap-4"><label className="text-sm font-medium">老师的讲解方式<select value={teacherStyle} onChange={(event) => setTeacherStyle(event.target.value)} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option>启发式引导</option><option>直接讲清概念</option><option>案例驱动</option><option>苏格拉底式追问</option></select></label><label className="text-sm font-medium">讲解深度<select value={explanationDepth} onChange={(event) => setExplanationDepth(event.target.value)} className="mt-2 h-10 w-full rounded-lg border bg-card px-3 font-normal"><option>先简洁，再展开</option><option>从基础完整讲起</option><option>只讲关键难点</option><option>按专业标准深入</option></select></label><div className="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100">AI 私教会参考这些偏好组织讲解和追问，但掌握度仍由练习证据决定，不由 AI 主观判断。</div></div> : null}
