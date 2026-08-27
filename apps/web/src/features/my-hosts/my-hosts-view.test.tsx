@@ -91,7 +91,7 @@ it("gives an ordinary user one plain recovery action for invalid sign-in details
   renderView();
 
   expect(await screen.findByText("Sign-in details need updating")).toBeTruthy();
-  expect(screen.getByText("The host did not accept the credential. Save the correct private key or password and retry.")).toBeTruthy();
+  expect(screen.getByText(/The host did not accept the credential.*no files were accessed/)).toBeTruthy();
   expect(screen.getAllByRole("button", { name: "Update sign-in details" })).toHaveLength(1);
   expect(screen.queryByText("ssh_authentication_failed")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Update sign-in details" }));
@@ -100,6 +100,37 @@ it("gives an ordinary user one plain recovery action for invalid sign-in details
   fireEvent.click(screen.getByRole("button", { name: "Connect this device" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Enter the login password");
   expect(hostApi.update).not.toHaveBeenCalled();
+});
+
+it("distinguishes an offline device from an unavailable SSH service for ordinary users", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [{
+    ...host,
+    connectionStatus: "error",
+    lastConnectionError: { code: "ssh_connection_refused", at: "2026-08-27T00:00:00.000Z" },
+  }], count: 1 });
+  renderView();
+
+  expect((await screen.findAllByText("Connection service is off")).length).toBeGreaterThan(0);
+  expect(screen.getByText("The device is online, but its connection service is off")).toBeTruthy();
+  expect(screen.getByText(/No files were accessed.*Remote Login or SSH/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Check connection settings" })).toBeTruthy();
+  expect(screen.queryByText("ssh_connection_refused")).toBeNull();
+});
+
+it("tells an ordinary user when a device is offline without implying file changes", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [{
+    ...host,
+    connectionStatus: "error",
+    lastConnectionError: { code: "ssh_connection_timeout", at: "2026-08-27T00:00:00.000Z" },
+  }], count: 1 });
+  renderView();
+
+  expect((await screen.findAllByText("Device offline")).length).toBeGreaterThan(0);
+  expect(screen.getByText("The device is temporarily offline")).toBeTruthy();
+  expect(screen.getByText(/No device files were accessed/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Retry when online" })).toBeTruthy();
 });
 
 it("asks ordinary users to confirm the device without fingerprint jargon", async () => {
@@ -150,6 +181,53 @@ it("replaces raw transfer errors with an ordinary recovery message", async () =>
   expect(screen.queryByText("ssh_connection_timeout")).toBeNull();
   expect(screen.queryByText("/reports/summary.pdf")).toBeNull();
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+});
+
+it("never falls back to an unknown API error code in ordinary mode", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.scopes).mockResolvedValue({ scopes: [{ ...scope, permissions: ["list", "download"] }], count: 1 });
+  vi.mocked(hostApi.transfers).mockResolvedValue({ count: 1, transfers: [{
+    id: "hft_unknown", sshTargetId: host.id, scopeId: scope.id, direction: "download", status: "failed", remotePath: "reports/summary.pdf", remoteDirectory: "reports", fileName: "summary.pdf",
+    bytesTotal: 1200, bytesTransferred: 0, progress: 0, conflictPolicy: null, attempt: 1, maxAttempts: 3, retryOf: null, errorCode: "remote_private_detail_123", createdAt: "2026-08-27T00:00:00.000Z", completedAt: "2026-08-27T00:00:01.000Z",
+  }] });
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Transfers" }));
+  expect(await screen.findByText(/operation could not be completed/i)).toBeTruthy();
+  expect(screen.queryByText("remote_private_detail_123")).toBeNull();
+});
+
+it("requires inspection before retrying permission, capacity, or interrupted transfer failures", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.scopes).mockResolvedValue({ scopes: [{ ...scope, permissions: ["list", "upload"] }], count: 1 });
+  const base = {
+    sshTargetId: host.id, scopeId: scope.id, direction: "upload" as const, status: "failed" as const, remoteDirectory: "reports",
+    bytesTotal: 1200, bytesTransferred: 400, progress: 33, conflictPolicy: "rename" as const, attempt: 1, maxAttempts: 3, retryOf: null,
+    createdAt: "2026-08-27T00:00:00.000Z", completedAt: "2026-08-27T00:00:01.000Z",
+  };
+  vi.mocked(hostApi.transfers).mockResolvedValue({ count: 4, transfers: [
+    { ...base, id: "hft_permission", remotePath: "reports/permission.txt", fileName: "permission.txt", errorCode: "ssh_sftp_permission_denied" },
+    { ...base, id: "hft_space", remotePath: "reports/space.txt", fileName: "space.txt", errorCode: "ssh_sftp_no_space" },
+    { ...base, id: "hft_interrupted", remotePath: "reports/interrupted.txt", fileName: "interrupted.txt", errorCode: "host_file_transfer_interrupted" },
+    { ...base, id: "hft_long", status: "running", remotePath: "reports/long.txt", fileName: "long.txt", errorCode: null, startedAt: new Date(Date.now() - 60_000).toISOString(), completedAt: null },
+  ] });
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Transfers" }));
+  expect(await screen.findByText(/no longer allows access.*file result may be incomplete/i)).toBeTruthy();
+  expect(screen.getByText(/ran out of space.*file result may be incomplete/i)).toBeTruthy();
+  expect(screen.getByText(/stopped before confirming.*completion is unknown/i)).toBeTruthy();
+  expect(screen.getByText("Taking longer")).toBeTruthy();
+  expect(screen.getByText(/taking longer than usual.*file state on the device is unknown/i)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Check folder" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Check device space" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Check file" })).toBeTruthy();
+  expect(screen.queryByText("ssh_sftp_permission_denied")).toBeNull();
+  expect(screen.queryByText("host_file_transfer_interrupted")).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "Check device space" }));
+  expect(await screen.findByTestId("host-assistant")).toBeTruthy();
 });
 
 it("opens host setup from Ordinary mode without changing the experience mode", async () => {
