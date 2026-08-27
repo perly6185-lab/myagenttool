@@ -96,6 +96,8 @@ test("execution, approval, recovery, and retry writes admit operators", () => {
 
 test("reads and ordinary-user workflow writes are unaffected", () => {
   assert.equal(requiredProfessionalCapability("GET", "/api/agents"), null);
+  assert.equal(requiredProfessionalCapability("POST", "/api/host-file-scopes/hfs_1/search"), null);
+  assert.equal(requiredProfessionalCapability("POST", "/api/host-file-scopes/hfs_1/preview"), null);
   assert.equal(requiredProfessionalCapability("POST", "/api/work-items"), null);
   assert.equal(requiredProfessionalCapability("PATCH", "/api/work-profile"), null);
   assert.equal(requiredProfessionalCapability("POST", "/api/session"), null);

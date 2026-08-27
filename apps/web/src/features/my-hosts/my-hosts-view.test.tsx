@@ -11,7 +11,7 @@ import { MyHostsView } from "./my-hosts-view";
 
 vi.mock("./host-api", () => ({ MAX_HOST_UPLOAD_BYTES: 10 * 1024 * 1024, MAX_HOST_DOWNLOAD_BYTES: 25 * 1024 * 1024, hostApi: {
   list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
-  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
+  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
 } }));
 
 const host: SshHost = {
@@ -298,6 +298,38 @@ it("keeps a list-only range read-only and links inaccessible", async () => {
   expect(screen.queryByRole("button", { name: /upload/i })).toBeNull();
   expect(screen.queryByRole("button", { name: /download/i })).toBeNull();
   expect(hostApi.entries).toHaveBeenCalledWith("hfs_1", "");
+  expect(screen.getByText(/allows name search only/i)).toBeTruthy();
+});
+
+it("finds approved files for an ordinary user without showing matched text or technical scan details", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const readableScope = { ...scope, permissions: ["list", "download"] as HostFileScope["permissions"] };
+  vi.mocked(hostApi.scopes).mockResolvedValue({ scopes: [readableScope], count: 1 });
+  vi.mocked(hostApi.search).mockResolvedValue({
+    scopeId: scope.id,
+    scopeRevision: scope.revision,
+    count: 2,
+    contentSearchEnabled: true,
+    results: [
+      { name: "deployment.md", path: "docs/deployment.md", type: "file", accessible: true, size: 1200, modifiedAt: null, matchKind: "content", previewKind: "text", restricted: false },
+      { name: ".env", path: ".env", type: "file", accessible: true, size: 20, modifiedAt: null, matchKind: "name", previewKind: null, restricted: true },
+    ],
+    boundaries: { scannedEntries: 32, scannedTextFiles: 4, readBytes: 2048, skippedEntries: 1, truncated: false, maxDepth: 5, maxEntries: 500, maxResults: 50 },
+  });
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Remote files" }));
+  fireEvent.change(await screen.findByPlaceholderText("For example: deployment guide or mytoolagent.com"), { target: { value: "mytoolagent.com" } });
+  fireEvent.click(screen.getByRole("button", { name: "Find files" }));
+
+  expect(await screen.findByText("2 files found")).toBeTruthy();
+  expect(screen.getByText("deployment.md")).toBeTruthy();
+  expect(screen.getByText(/Text match/)).toBeTruthy();
+  expect(screen.getByText("Sensitive, restricted")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Safe preview" })).toBeTruthy();
+  expect(screen.queryByText(/Scanned 32 entries/)).toBeNull();
+  expect(screen.queryByText(/SECRET=/)).toBeNull();
+  expect(hostApi.search).toHaveBeenCalledWith(scope.id, "mytoolagent.com", scope.revision);
 });
 
 it("keeps manual folder entry open while an ordinary user types an alternative", async () => {
@@ -372,13 +404,14 @@ it("explains a timed-out read-only check without leaking the error code or imply
 it("previews approved text files without executing their contents", async () => {
   const readableScope = { ...scope, permissions: ["list", "download"] as HostFileScope["permissions"] };
   vi.mocked(hostApi.scopes).mockResolvedValue({ scopes: [readableScope], count: 1 });
-  vi.mocked(hostApi.download).mockResolvedValue({ blob: new Blob(["<h1>safe preview</h1>"], { type: "text/html" }), fileName: "index.html", transferId: "hft_preview" });
+  vi.mocked(hostApi.preview).mockResolvedValue({ blob: new Blob(["<h1>safe preview</h1>"], { type: "text/plain" }), kind: "text", contentType: "text/plain; charset=utf-8" });
   renderView();
   fireEvent.click(await screen.findByRole("button", { name: "Remote files" }));
   fireEvent.click(await screen.findByRole("button", { name: "Preview" }));
   expect(await screen.findByText("Preview: index.html")).toBeTruthy();
   await waitFor(() => expect(screen.getByRole("dialog").textContent).toContain("safe preview"));
-  expect(hostApi.download).toHaveBeenCalledWith("hfs_1", { path: "index.html" });
+  expect(hostApi.preview).toHaveBeenCalledWith("hfs_1", { path: "index.html", expectedRevision: 1 });
+  expect(hostApi.download).not.toHaveBeenCalled();
 });
 
 it("requires a clear confirmation before an enabled upload starts", async () => {

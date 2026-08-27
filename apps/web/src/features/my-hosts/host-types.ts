@@ -69,6 +69,32 @@ export interface HostFileEntry {
   modifiedAt: string | null;
 }
 
+export interface HostFileSearchResult extends HostFileEntry {
+  matchKind: "name" | "content";
+  previewKind: "text" | "image" | "pdf" | null;
+  restricted: boolean;
+}
+
+export interface HostFileSearchBoundaries {
+  scannedEntries: number;
+  scannedTextFiles: number;
+  readBytes: number;
+  skippedEntries: number;
+  truncated: boolean;
+  maxDepth: number;
+  maxEntries: number;
+  maxResults: number;
+}
+
+export interface HostFileSearchResponse {
+  scopeId: string;
+  scopeRevision: number;
+  results: HostFileSearchResult[];
+  count: number;
+  contentSearchEnabled: boolean;
+  boundaries: HostFileSearchBoundaries;
+}
+
 export type HostDiagnosticAction = "disk_usage" | "memory_usage" | "system_info" | "uptime" | "failed_services" | "processes" | "listening_ports" | "docker_status" | "service_status" | "recent_logs" | "network_info";
 
 export interface HostDiagnosticParameters {

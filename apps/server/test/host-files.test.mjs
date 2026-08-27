@@ -87,6 +87,53 @@ function writableSftp(initialFiles = {}) {
   };
 }
 
+function searchableSftp() {
+  const files = new Map([
+    ["/srv/www/site/部署说明.md", Buffer.from("生产域名是 mytoolagent.com，请先完成检查。")],
+    ["/srv/www/site/docs/release-notes.txt", Buffer.from("production deployment completed")],
+    ["/srv/www/site/.env", Buffer.from("SECRET=never-return-this")],
+    ["/srv/www/site/fake.png", Buffer.from("not-a-real-image")],
+    ["/srv/www/site/large.txt", Buffer.alloc(512 * 1024 + 1, "a")],
+  ]);
+  const directories = new Set(["/srv", "/srv/www", "/srv/www/site", "/srv/www/site/docs"]);
+  const links = new Set(["/srv/www/site/current"]);
+  const opened = [];
+  const missing = () => Object.assign(new Error("missing"), { code: 2 });
+  return {
+    files,
+    opened,
+    lstat(path, callback) {
+      if (files.has(path)) callback(null, { mode: FILE, size: files.get(path).length, mtime: 1_700_000_000 });
+      else if (directories.has(path)) callback(null, { mode: DIR, size: 0, mtime: 1_700_000_000 });
+      else if (links.has(path)) callback(null, { mode: LINK, size: 0, mtime: 1_700_000_000 });
+      else callback(missing());
+    },
+    realpath(path, callback) { callback(null, path); },
+    readdir(path, callback) {
+      if (path === "/srv/www/site") callback(null, [
+        { filename: "docs", attrs: { mode: DIR, size: 0, mtime: 1_700_000_000 } },
+        { filename: "部署说明.md", attrs: { mode: FILE, size: files.get("/srv/www/site/部署说明.md").length, mtime: 1_700_000_000 } },
+        { filename: ".env", attrs: { mode: FILE, size: files.get("/srv/www/site/.env").length, mtime: 1_700_000_000 } },
+        { filename: "fake.png", attrs: { mode: FILE, size: files.get("/srv/www/site/fake.png").length, mtime: 1_700_000_000 } },
+        { filename: "large.txt", attrs: { mode: FILE, size: files.get("/srv/www/site/large.txt").length, mtime: 1_700_000_000 } },
+        { filename: "current", attrs: { mode: LINK, size: 0, mtime: 1_700_000_000 } },
+      ]);
+      else if (path === "/srv/www/site/docs") callback(null, [
+        { filename: "release-notes.txt", attrs: { mode: FILE, size: files.get("/srv/www/site/docs/release-notes.txt").length, mtime: 1_700_000_000 } },
+      ]);
+      else callback(missing());
+    },
+    open(path, _flags, callback) { opened.push(path); callback(null, path); },
+    read(handle, buffer, offset, length, position, callback) {
+      const source = files.get(handle) ?? Buffer.alloc(0);
+      const bytes = Math.min(length, Math.max(0, source.length - position));
+      source.copy(buffer, offset, position, position + bytes);
+      callback(null, bytes, buffer);
+    },
+    close(_handle, callback) { callback(null); },
+  };
+}
+
 function discoverySftp() {
   const missing = () => Object.assign(new Error("missing"), { code: 2 });
   const directories = new Set(["/srv", "/srv/myagenttool-sites", "/srv/myagenttool-sites/server001-e2e", "/srv/myagenttool-sites/server001-lan-e2e"]);
@@ -199,6 +246,75 @@ test("blocks symbolic-link traversal and realpath escape on every browse", async
   assert.equal(escapedResult.error, "host_file_scope_escape_blocked");
 });
 
+test("searches approved folders by name and bounded text without auditing query or matches", async () => {
+  const sftp = searchableSftp();
+  const { events, service, target } = harness(sftp);
+  const scope = (await service.createScope(target, { rootPath: "/srv/www/site", permissions: ["list", "download"] })).scope;
+
+  const result = await service.searchFiles(target, scope, { query: "哪个文件提到了 ‘mytoolagent.com’", expectedRevision: scope.revision }, { userId: "usr_a" });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.results.map((entry) => [entry.path, entry.matchKind, entry.previewKind, entry.restricted]), [
+    ["部署说明.md", "content", "text", false],
+  ]);
+  assert.equal(result.boundaries.scannedEntries, 7);
+  assert.equal(result.boundaries.scannedTextFiles > 0, true);
+  assert.equal(result.boundaries.readBytes <= 2 * 1024 * 1024, true);
+  const audit = events.find((event) => event.type === "ssh.host_file_search.completed");
+  assert.equal(Boolean(audit), true);
+  assert.equal(JSON.stringify(audit).includes("mytoolagent.com"), false);
+  assert.equal(JSON.stringify(audit).includes("部署说明"), false);
+  assert.equal(JSON.stringify(audit).includes("production deployment"), false);
+});
+
+test("marks sensitive name matches restricted and never opens the sensitive file", async () => {
+  const sftp = searchableSftp();
+  const { service, target } = harness(sftp);
+  const scope = (await service.createScope(target, { rootPath: "/srv/www/site", permissions: ["list", "download"] })).scope;
+
+  const result = await service.searchFiles(target, scope, { query: ".env", expectedRevision: scope.revision });
+  assert.equal(result.ok, true);
+  assert.equal(result.results.some((entry) => entry.path === ".env" && entry.restricted && entry.previewKind === null), true);
+  assert.equal(sftp.opened.includes("/srv/www/site/.env"), false);
+  assert.equal(result.results.some((entry) => entry.path.includes("current/")), false);
+});
+
+test("keeps list-only scope searches name-only without reading file content", async () => {
+  const sftp = searchableSftp();
+  const { events, service, target } = harness(sftp);
+  const scope = (await service.createScope(target, { rootPath: "/srv/www/site", permissions: ["list"] })).scope;
+
+  const result = await service.searchFiles(target, scope, { query: "mytoolagent.com", expectedRevision: scope.revision });
+  assert.equal(result.ok, true);
+  assert.equal(result.contentSearchEnabled, false);
+  assert.equal(result.count, 0);
+  assert.equal(result.boundaries.scannedTextFiles, 0);
+  assert.equal(result.boundaries.readBytes, 0);
+  assert.deepEqual(sftp.opened, []);
+  assert.equal(events.find((event) => event.type === "ssh.host_file_search.completed").data.queryKind, "name_only");
+});
+
+test("previews only bounded verified content with current scope revision", async () => {
+  const sftp = searchableSftp();
+  const { events, service, target } = harness(sftp);
+  const scope = (await service.createScope(target, { rootPath: "/srv/www/site", permissions: ["list", "download"] })).scope;
+
+  const preview = await service.previewFile(target, scope, { path: "部署说明.md", expectedRevision: scope.revision }, { userId: "usr_a" });
+  assert.equal(preview.ok, true, JSON.stringify(preview));
+  assert.equal(preview.kind, "text");
+  assert.match(preview.bytes.toString("utf8"), /mytoolagent\.com/);
+  const audit = events.find((event) => event.type === "ssh.host_file_preview.completed");
+  assert.equal(JSON.stringify(audit).includes("部署说明"), false);
+  assert.equal(JSON.stringify(audit).includes("mytoolagent.com"), false);
+
+  assert.equal((await service.previewFile(target, scope, { path: ".env", expectedRevision: scope.revision })).error, "host_file_preview_sensitive_blocked");
+  assert.equal((await service.previewFile(target, scope, { path: ".git/config", expectedRevision: scope.revision })).error, "host_file_preview_sensitive_blocked");
+  assert.equal((await service.previewFile(target, scope, { path: "credentials.json", expectedRevision: scope.revision })).error, "host_file_preview_sensitive_blocked");
+  assert.equal((await service.previewFile(target, scope, { path: "large.txt", expectedRevision: scope.revision })).error, "host_file_preview_size_invalid");
+  assert.equal((await service.previewFile(target, scope, { path: "fake.png", expectedRevision: scope.revision })).error, "host_file_preview_content_invalid");
+  assert.deepEqual(await service.previewFile(target, scope, { path: "部署说明.md", expectedRevision: 0 }), { ok: false, status: 409, error: "host_file_scope_revision_conflict", currentRevision: 1 });
+});
+
 test("updates scopes with optimistic revision and re-verifies changed roots", async () => {
   const { service, target } = harness();
   const scope = (await service.createScope(target, { rootPath: "/srv/www/example" })).scope;
@@ -277,7 +393,7 @@ test("stops an upload before writing when OpenSSH reports insufficient capacity"
 });
 
 test("applies upload conflict policy and blocks sensitive browser downloads", async () => {
-  const sftp = writableSftp({ "/srv/www/site/report.txt": "old", "/srv/www/site/.env": "SECRET=value" });
+  const sftp = writableSftp({ "/srv/www/site/report.txt": "old", "/srv/www/site/.env": "SECRET=value", "/srv/www/site/.git/config": "private-repository-config" });
   const { state, service, target } = harness(sftp);
   const scope = (await service.createScope(target, { rootPath: "/srv/www/site", permissions: ["list", "upload", "download"] })).scope;
   const denied = await service.uploadFile(target, scope, Buffer.from("new"), { filename: "report.txt", conflictPolicy: "deny", confirmed: true });
@@ -290,7 +406,9 @@ test("applies upload conflict policy and blocks sensitive browser downloads", as
   const blocked = await service.downloadFile(target, scope, { path: ".env", confirmed: true });
   assert.equal(blocked.error, "host_file_download_sensitive_blocked");
   assert.equal(blocked.task.status, "failed");
-  assert.equal(state.hostFileTransfers.length, 3);
+  const hiddenDirectory = await service.downloadFile(target, scope, { path: ".git/config", confirmed: true });
+  assert.equal(hiddenDirectory.error, "host_file_download_sensitive_blocked");
+  assert.equal(state.hostFileTransfers.length, 4);
 });
 
 test("creates and browses a scope through an isolated real SSH/SFTP server", async (t) => {
@@ -313,7 +431,6 @@ test("creates and browses a scope through an isolated real SSH/SFTP server", asy
       const session = acceptSession();
       session.on("sftp", (acceptSftp) => {
         const sftp = acceptSftp();
-        let directoryRead = false;
         let handleCounter = 1;
         const handles = new Map();
         const attrs = { mode: DIR, uid: 1000, gid: 1000, size: 0, atime: 1_700_000_000, mtime: 1_700_000_000 };
@@ -324,11 +441,12 @@ test("creates and browses a scope through an isolated real SSH/SFTP server", asy
           else sftp.status(reqid, 2);
         });
         sftp.on("REALPATH", (reqid, path) => sftp.name(reqid, [{ filename: path, longname: path, attrs }]));
-        sftp.on("OPENDIR", (reqid) => { const handle = Buffer.from([0, 0, 0, handleCounter++]); handles.set(handle.toString("hex"), { directory: true }); sftp.handle(reqid, handle); });
-        sftp.on("READDIR", (reqid) => {
-          if (directoryRead) sftp.status(reqid, 1);
+        sftp.on("OPENDIR", (reqid, path) => { const handle = Buffer.from([0, 0, 0, handleCounter++]); handles.set(handle.toString("hex"), { directory: true, path, read: false }); sftp.handle(reqid, handle); });
+        sftp.on("READDIR", (reqid, handle) => {
+          const directory = handles.get(handle.toString("hex"));
+          if (!directory || directory.read) sftp.status(reqid, 1);
           else {
-            directoryRead = true;
+            directory.read = true;
             sftp.name(reqid, [
               { filename: "assets", longname: "drwxr-xr-x assets", attrs },
               { filename: "index.html", longname: "-rw-r--r-- index.html", attrs: { ...attrs, mode: FILE, size: remoteFiles.get("/srv/www/site/index.html").length } },
@@ -398,6 +516,13 @@ test("creates and browses a scope through an isolated real SSH/SFTP server", asy
     ["assets", "directory", null],
     ["index.html", "file", 17],
   ]);
+  const searched = await service.searchFiles(target, created.scope, { query: "index", expectedRevision: created.scope.revision });
+  assert.equal(searched.ok, true, JSON.stringify(searched));
+  assert.equal(searched.results.some((entry) => entry.path === "index.html" && entry.matchKind === "name"), true);
+  const previewed = await service.previewFile(target, created.scope, { path: "index.html", expectedRevision: created.scope.revision });
+  assert.equal(previewed.ok, true, JSON.stringify(previewed));
+  assert.equal(previewed.kind, "text");
+  assert.equal(previewed.bytes.toString(), "<h1>isolated</h1>");
   const uploaded = await service.uploadFile(target, created.scope, Buffer.from("real-sftp-upload"), { filename: "notes.txt", conflictPolicy: "deny", confirmed: true });
   assert.equal(uploaded.ok, true, JSON.stringify(uploaded));
   assert.equal(remoteFiles.get("/srv/www/site/notes.txt").toString(), "real-sftp-upload");

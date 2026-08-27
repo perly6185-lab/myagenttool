@@ -392,6 +392,8 @@ export function createHttpServer({
   createHostFileScope,
   updateHostFileScope,
   listHostFileEntries,
+  searchHostFiles,
+  previewHostFile,
   listHostFileTransfers,
   uploadHostFile,
   downloadHostFile,
@@ -1599,6 +1601,8 @@ export function createHttpServer({
         createHostFileScope,
         updateHostFileScope,
         listHostFileEntries,
+        searchHostFiles,
+        previewHostFile,
         listHostFileTransfers,
         uploadHostFile,
         downloadHostFile,
@@ -1894,7 +1898,7 @@ function setCors(req, res) {
   }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token,X-Loopback-Token,X-Transfer-Confirmed,X-Overwrite-Confirmed");
-  res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range,X-Host-Transfer-Id");
+  res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range,X-Host-Transfer-Id,X-Host-Preview-Kind");
 }
 
 async function readJson(req) {

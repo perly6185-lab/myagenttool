@@ -8044,6 +8044,8 @@ export function createServerRuntimeServices({
     createHostFileScope: hostFileService.createScope,
     updateHostFileScope: hostFileService.updateScope,
     listHostFileEntries: hostFileService.listEntries,
+    searchHostFiles: hostFileService.searchFiles,
+    previewHostFile: hostFileService.previewFile,
     listHostFileTransfers: hostFileService.listTransfers,
     uploadHostFile: hostFileService.uploadFile,
     downloadHostFile: hostFileService.downloadFile,
