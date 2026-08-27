@@ -55,6 +55,13 @@ function errorText(error: unknown, zh: boolean) {
     ssh_host_unreachable: ["找不到这台设备，请检查地址、网络连接和防火墙。", "This device could not be reached. Check its address, network connection, and firewall."],
     ssh_host_unresolvable: ["找不到这个主机地址，请检查输入是否正确。", "This host address could not be found. Check that it was entered correctly."],
     ssh_host_address_forbidden: ["出于安全原因，不能连接这个地址。请填写这台设备明确可识别的地址。", "This address cannot be connected for safety reasons. Enter an address that clearly identifies this device."],
+    ssh_sftp_permission_denied: ["设备不再允许操作这个文件夹。请检查文件夹权限后再继续。", "The device no longer allows access to this folder. Check the folder permission before continuing."],
+    ssh_sftp_no_space: ["设备可用空间不足。请先清理空间，再核对文件并重新开始。", "The device does not have enough available space. Free some space, check the file, and start again."],
+    ssh_sftp_unavailable: ["设备当前未提供文件连接。请检查设备连接和 SFTP 设置。", "The device is not currently providing file access. Check the device connection and SFTP settings."],
+    ssh_sftp_operation_timeout: ["文件操作超时，无法确认最终结果。请先核对设备上的文件。", "The file operation timed out, so its final result is unknown. Check the file on the device first."],
+    ssh_sftp_operation_failed: ["文件操作没有完成，最终结果无法确认。请先核对设备上的文件。", "The file operation did not finish, so its final result is unknown. Check the file on the device first."],
+    host_file_transfer_failed: ["文件传输没有完成，最终结果无法确认。请先核对设备上的文件。", "The file transfer did not finish, so its final result is unknown. Check the file on the device first."],
+    host_file_transfer_interrupted: ["应用在确认结果前中断。请先核对设备上的文件，避免重复传输。", "The app stopped before confirming the result. Check the file on the device first to avoid a duplicate transfer."],
     host_file_scope_symlink_forbidden: ["这个目录是快捷入口。为避免跳出允许范围，请选择它指向的真实目录。", "This directory is a shortcut. Choose its real target so access cannot leave the approved range."],
     host_file_scope_escape_blocked: ["远程目录已偏离批准范围，浏览已停止。", "The remote directory moved outside its approved range, so browsing stopped."],
     host_file_listing_too_large: ["该目录项目过多，请先在主机上整理为更小的子目录。", "This directory has too many items. Organize it into smaller subdirectories first."],
@@ -71,13 +78,18 @@ function errorText(error: unknown, zh: boolean) {
     ssh_fixed_command_timeout: ["主机诊断超时，请稍后重试。", "The host diagnostic timed out. Try again later."],
   };
   if (messages[code]) return messages[code][zh ? 0 : 1];
+  if (error instanceof ApiError) return zh ? "操作未能完成，请稍后重试或检查设备状态。" : "The operation could not be completed. Try again later or check the device status.";
   return error instanceof Error ? error.message : (zh ? "操作未能完成。" : "The operation could not be completed.");
 }
 
 function hostStatus(host: SshHost, zh: boolean, professional: boolean) {
   if (host.connectionStatus === "ready") return { tone: "success" as const, label: professional ? (zh ? "连接正常" : "Ready") : (zh ? "可以使用" : "Ready to use") };
   if (host.connectionStatus === "fingerprint_pending") return { tone: "warning" as const, label: professional ? (zh ? "等待确认指纹" : "Confirm fingerprint") : (zh ? "请确认设备" : "Confirm device") };
-  if (host.connectionStatus === "error") return { tone: "danger" as const, label: professional ? (zh ? "需要检查" : "Needs attention") : (zh ? "需要处理" : "Action needed") };
+  if (host.connectionStatus === "error") {
+    if (!professional && host.lastConnectionError?.code === "ssh_connection_refused") return { tone: "danger" as const, label: zh ? "连接服务未开启" : "Connection service is off" };
+    if (!professional && ["ssh_connection_timeout", "ssh_connection_failed", "ssh_host_unreachable"].includes(host.lastConnectionError?.code ?? "")) return { tone: "danger" as const, label: zh ? "设备离线" : "Device offline" };
+    return { tone: "danger" as const, label: professional ? (zh ? "需要检查" : "Needs attention") : (zh ? "需要处理" : "Action needed") };
+  }
   return { tone: "neutral" as const, label: professional ? (zh ? "尚未完成设置" : "Setup incomplete") : (zh ? "继续设置" : "Continue setup") };
 }
 
@@ -152,7 +164,7 @@ function HostDetail({ host, tab, setTab, zh, professional, onContinue }: { host:
     <CardContent>
       {visibleTab === "overview" ? <HostOverview host={host} scopeCount={scopes.data?.count ?? 0} zh={zh} professional={professional} onContinue={onContinue} /> : null}
       {visibleTab === "files" ? <RemoteFiles host={host} scopes={scopes.data?.scopes ?? []} loading={scopes.isLoading} error={scopes.error} zh={zh} professional={professional} onAdd={onContinue} /> : null}
-      {visibleTab === "transfers" ? <TransferHistory host={host} scopes={scopes.data?.scopes ?? []} zh={zh} professional={professional} /> : null}
+      {visibleTab === "transfers" ? <TransferHistory host={host} scopes={scopes.data?.scopes ?? []} zh={zh} professional={professional} onInspectFiles={() => setTab("files")} onInspectHost={() => setTab("overview")} /> : null}
       {professional && visibleTab === "settings" ? <HostTechnicalSettings host={host} zh={zh} /> : null}
     </CardContent>
   </Card>;
@@ -180,10 +192,12 @@ function hostRecovery(host: SshHost, zh: boolean, professional: boolean) {
   const code = host.lastConnectionError?.code ?? "";
   if (code === "ssh_host_private_network_blocked") return professional
     ? { title: zh ? "需要允许访问内网设备" : "Local-network access needs approval", detail: zh ? "这是局域网地址。允许后会重新检查设备连接。" : "This is a local-network address. Approve it to check the device again.", action: zh ? "允许内网并重试" : "Allow local network and retry", allowPrivate: true }
-    : { title: zh ? "需要允许连接局域网设备" : "Local-device permission needed", detail: zh ? "确认后才会重新连接这台局域网设备。" : "MyAgentTool will reconnect only after you approve this local device.", action: zh ? "允许并重试" : "Allow and retry", allowPrivate: true };
-  if (!professional && ["ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid"].includes(code)) return { title: zh ? "登录信息需要更新" : "Sign-in details need updating", detail: errorText(new ApiError(code, code, 0), zh), action: zh ? "重新输入登录信息" : "Update sign-in details", allowPrivate: false };
-  if (!professional && code === "ssh_host_fingerprint_changed") return { title: zh ? "设备身份发生变化" : "Device identity changed", detail: zh ? "为保护文件，连接已经停止。请确认你仍在连接同一台设备。" : "The connection stopped to protect your files. Confirm that this is still the same device.", action: zh ? "检查设备身份" : "Check device identity", allowPrivate: false };
-  if (!professional && ["ssh_connection_refused", "ssh_connection_timeout", "ssh_connection_failed", "ssh_host_unreachable", "ssh_host_unresolvable"].includes(code)) return { title: zh ? "暂时联系不上这台设备" : "This device cannot be reached", detail: errorText(new ApiError(code, code, 0), zh), action: zh ? "重新检查连接" : "Check connection again", allowPrivate: false };
+    : { title: zh ? "需要允许连接局域网设备" : "Local-device permission needed", detail: zh ? "尚未连接或访问文件。确认许可后才会重试。" : "No connection or file access has occurred. MyAgentTool will retry only after you approve it.", action: zh ? "允许并重试" : "Allow and retry", allowPrivate: true };
+  if (!professional && ["ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid"].includes(code)) return { title: zh ? "登录信息需要更新" : "Sign-in details need updating", detail: zh ? `${errorText(new ApiError(code, code, 0), zh)} 连接尚未建立，文件没有被访问。` : `${errorText(new ApiError(code, code, 0), zh)} The connection was not established and no files were accessed.`, action: zh ? "重新输入登录信息" : "Update sign-in details", allowPrivate: false };
+  if (!professional && code === "ssh_host_fingerprint_changed") return { title: zh ? "设备身份发生变化" : "Device identity changed", detail: zh ? "为保护文件，连接已在访问文件前停止。请确认你仍在连接同一台设备。" : "The connection stopped before file access. Confirm that this is still the same device.", action: zh ? "检查设备身份" : "Check device identity", allowPrivate: false };
+  if (!professional && code === "ssh_connection_refused") return { title: zh ? "设备在线，但连接服务未开启" : "The device is online, but its connection service is off", detail: zh ? "文件没有被访问。请在设备上开启远程登录或 SSH，并确认端口设置。" : "No files were accessed. Turn on Remote Login or SSH on the device and check the port.", action: zh ? "检查连接设置" : "Check connection settings", allowPrivate: false };
+  if (!professional && ["ssh_connection_timeout", "ssh_connection_failed", "ssh_host_unreachable"].includes(code)) return { title: zh ? "设备暂时离线" : "The device is temporarily offline", detail: zh ? "当前没有访问设备文件。请确认设备已开机、网络正常，再重新连接。" : "No device files were accessed. Make sure the device is on and connected to the network, then reconnect.", action: zh ? "设备上线后重试" : "Retry when online", allowPrivate: false };
+  if (!professional && code === "ssh_host_unresolvable") return { title: zh ? "找不到这个设备地址" : "This device address cannot be found", detail: zh ? "文件没有被访问。请检查设备名称或地址是否正确。" : "No files were accessed. Check the device name or address.", action: zh ? "修改设备地址" : "Change device address", allowPrivate: false };
   if (!professional && code === "ssh_host_address_forbidden") return { title: zh ? "这个设备地址不能使用" : "This device address cannot be used", detail: errorText(new ApiError(code, code, 0), zh), action: zh ? "修改设备地址" : "Change device address", allowPrivate: false };
   if (!professional && host.connectionStatus === "fingerprint_pending") return { title: zh ? "确认这是你的设备" : "Confirm this is your device", detail: zh ? "首次连接需要你确认设备身份，然后才能查看文件。" : "Confirm the device on the first connection before viewing files.", action: zh ? "确认设备" : "Confirm device", allowPrivate: false };
   return { title: professional ? (zh ? "继续完成安全连接" : "Complete secure connection") : (zh ? "继续连接这台设备" : "Continue connecting this device"), detail: professional ? (zh ? "输入登录信息后，系统会验证设备并保护远程文件。" : "After sign-in, we will verify the device and protect remote files.") : (zh ? "检查地址和登录信息后即可继续。" : "Check the address and sign-in details to continue."), action: professional ? host.connectionStatus === "error" ? (zh ? "检查并重试" : "Check and retry") : (zh ? "继续设置" : "Continue setup") : (zh ? "继续设置" : "Continue setup"), allowPrivate: false };
@@ -410,7 +424,58 @@ function saveDownload(blob: Blob, fileName: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function TransferHistory({ host, scopes, zh, professional }: { host: SshHost; scopes: HostFileScope[]; zh: boolean; professional: boolean }) {
+const TRANSFER_ALWAYS_CHECK_ERRORS = new Set(["ssh_sftp_permission_denied", "ssh_sftp_no_space", "host_file_transfer_interrupted", "ssh_host_fingerprint_changed", "ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid", "ssh_sftp_unavailable"]);
+const AMBIGUOUS_UPLOAD_ERRORS = new Set(["ssh_connection_failed", "ssh_sftp_operation_timeout", "ssh_sftp_operation_failed", "host_file_transfer_failed"]);
+
+function transferNeedsInspection(task: HostFileTransfer) {
+  const code = task.errorCode ?? "";
+  return TRANSFER_ALWAYS_CHECK_ERRORS.has(code) || (task.direction === "upload" && AMBIGUOUS_UPLOAD_ERRORS.has(code));
+}
+
+function ordinaryTransferRecovery(task: HostFileTransfer, zh: boolean) {
+  if (task.errorCode === "ssh_sftp_permission_denied") return {
+    detail: zh ? "设备不再允许操作这个文件夹，传输已停止。文件结果可能不完整；请先检查文件夹权限和内容。" : "The device no longer allows access to this folder, so the transfer stopped. The file result may be incomplete; check the folder permission and contents first.",
+    action: "files" as const,
+    label: zh ? "检查文件夹" : "Check folder",
+  };
+  if (task.errorCode === "ssh_sftp_no_space") return {
+    detail: zh ? "设备空间不足，传输已停止。文件结果可能不完整；请先清理空间并核对文件。" : "The device ran out of space, so the transfer stopped. The file result may be incomplete; free space and check the file first.",
+    action: "host" as const,
+    label: zh ? "检查设备空间" : "Check device space",
+  };
+  if (task.errorCode === "ssh_sftp_operation_timeout") return {
+    detail: zh ? "文件操作超时，最终结果无法确认。请先核对设备上的文件，避免重复传输。" : "The file operation timed out and its final result is unknown. Check the file on the device first to avoid a duplicate transfer.",
+    action: "files" as const,
+    label: zh ? "核对文件" : "Check file",
+  };
+  if (task.errorCode === "host_file_transfer_interrupted") return {
+    detail: zh ? "应用在确认结果前中断，无法判断传输是否完成。请先核对设备上的文件，避免重复传输。" : "The app stopped before confirming the result, so completion is unknown. Check the file on the device first to avoid a duplicate transfer.",
+    action: "files" as const,
+    label: zh ? "核对文件" : "Check file",
+  };
+  if (["ssh_host_fingerprint_changed", "ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid", "ssh_sftp_unavailable"].includes(task.errorCode ?? "")) return {
+    detail: zh ? `${errorText(new ApiError(task.errorCode ?? "", task.errorCode ?? "", 0), zh)} 文件传输没有确认完成，请先检查设备连接。` : `${errorText(new ApiError(task.errorCode ?? "", task.errorCode ?? "", 0), zh)} The transfer was not confirmed complete; check the device connection first.`,
+    action: "host" as const,
+    label: zh ? "检查设备连接" : "Check device connection",
+  };
+  if (task.direction === "upload" && AMBIGUOUS_UPLOAD_ERRORS.has(task.errorCode ?? "")) return {
+    detail: zh ? "上传过程中连接中断，最终文件状态无法确认。请先核对设备上的文件，避免重复上传。" : "The connection stopped during upload, so the final file state is unknown. Check the file on the device first to avoid a duplicate upload.",
+    action: "files" as const,
+    label: zh ? "核对文件" : "Check file",
+  };
+  return {
+    detail: task.errorCode ? errorText(new ApiError(task.errorCode, task.errorCode, 0), zh) : (zh ? "这次传输没有完成。" : "This transfer did not finish."),
+    action: "retry" as const,
+    label: zh ? "重试" : "Retry",
+  };
+}
+
+function transferIsLongRunning(task: HostFileTransfer) {
+  const startedAt = Date.parse(task.startedAt ?? task.createdAt);
+  return task.status === "running" && Number.isFinite(startedAt) && Date.now() - startedAt >= 30_000;
+}
+
+function TransferHistory({ host, scopes, zh, professional, onInspectFiles, onInspectHost }: { host: SshHost; scopes: HostFileScope[]; zh: boolean; professional: boolean; onInspectFiles: () => void; onInspectHost: () => void }) {
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ["host-file-transfers", host.id], queryFn: () => hostApi.transfers(host.id), refetchInterval: (current) => current.state.data?.transfers.some((item) => item.status === "running") ? 1_000 : false });
   const retryInput = useRef<HTMLInputElement>(null);
@@ -427,10 +492,14 @@ function TransferHistory({ host, scopes, zh, professional }: { host: SshHost; sc
   const tasks = query.data?.transfers ?? [];
   return <div className="space-y-3"><input ref={retryInput} className="hidden" type="file" onChange={(event) => { setRetryFile(event.target.files?.[0] ?? null); event.target.value = ""; }} />{!tasks.length ? <Notice title={zh ? "尚无传输任务" : "No transfer jobs yet"} detail={zh ? "请在“远程文件”中选择上传，或在文件右侧选择下载。每次操作都会先显示确认信息。" : "Use Upload or Download in Remote files. Every operation shows a confirmation first."} /> : <div className="divide-y rounded-lg border">{tasks.map((task) => {
     const tone = task.status === "completed" ? "success" : task.status === "failed" ? "danger" : "warning";
-    const status = task.status === "completed" ? (zh ? "已完成" : "Completed") : task.status === "failed" ? (zh ? "失败" : "Failed") : (zh ? "进行中" : "In progress");
-    const canRetry = task.status === "failed" && task.attempt < task.maxAttempts && scopes.some((item) => item.id === task.scopeId && item.status === "ready" && item.permissions.includes(task.direction));
-    const failure = task.errorCode ? errorText(new ApiError(task.errorCode, task.errorCode, 0), zh) : (zh ? "这次传输没有完成。" : "This transfer did not finish.");
-    return <div key={task.id} className="space-y-2 p-3"><div className="flex flex-wrap items-center gap-2"><span className="grid size-8 place-items-center rounded-md bg-muted">{task.direction === "upload" ? <ArrowUpFromLine className="size-4" /> : <ArrowDownToLine className="size-4" />}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{task.fileName}</strong>{professional ? <code className="block truncate text-xs text-muted-foreground">/{task.remotePath}</code> : <span className="block text-xs text-muted-foreground">{task.direction === "upload" ? (zh ? "上传到设备" : "Upload to device") : (zh ? "从设备下载" : "Download from device")}</span>}</span><StatusBadge tone={tone}>{status}</StatusBadge>{canRetry ? <Button size="sm" variant="secondary" onClick={() => beginRetry(task)}><RotateCcw />{zh ? "重试" : "Retry"}</Button> : null}</div>{task.status === "running" ? <TransferProgress value={task.progress} label={zh ? "正在处理" : "Processing"} /> : <div className="space-y-1 text-xs text-muted-foreground"><div className="flex flex-wrap justify-between gap-2"><span>{formatBytes(task.bytesTransferred)} / {formatBytes(task.bytesTotal)}</span>{professional ? <span>{zh ? `第 ${task.attempt}/${task.maxAttempts} 次` : `Attempt ${task.attempt}/${task.maxAttempts}`}{task.errorCode ? ` · ${task.errorCode}` : ""}</span> : task.status === "completed" ? <span>{zh ? "文件传输已完成" : "File transfer completed"}</span> : null}</div>{!professional && task.status === "failed" ? <p role="alert" className="text-destructive">{failure}{canRetry ? (zh ? " 可以安全重试。" : " You can safely retry.") : ""}</p> : null}</div>}</div>;
+    const longRunning = transferIsLongRunning(task);
+    const status = task.status === "completed" ? (zh ? "已完成" : "Completed") : task.status === "failed" ? (zh ? "失败" : "Failed") : longRunning ? (zh ? "耗时较长" : "Taking longer") : (zh ? "进行中" : "In progress");
+    const retryEligible = task.status === "failed" && task.attempt < task.maxAttempts && scopes.some((item) => item.id === task.scopeId && item.status === "ready" && item.permissions.includes(task.direction));
+    const canRetry = retryEligible && !transferNeedsInspection(task);
+    const recovery = ordinaryTransferRecovery(task, zh);
+    const inspectAction = !professional && task.status === "failed" && !canRetry && recovery.action !== "retry" ? <Button size="sm" variant="secondary" onClick={recovery.action === "files" ? onInspectFiles : onInspectHost}>{recovery.action === "files" ? <Folder className="size-4" /> : <Server className="size-4" />}{recovery.label}</Button> : null;
+    const primaryAction = canRetry ? <Button size="sm" variant="secondary" onClick={() => beginRetry(task)}><RotateCcw />{zh ? "重试" : "Retry"}</Button> : inspectAction;
+    return <div key={task.id} className="space-y-2 p-3"><div className={primaryAction ? "grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center" : ""}><div className="flex min-w-0 items-center gap-2"><span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted">{task.direction === "upload" ? <ArrowUpFromLine className="size-4" /> : <ArrowDownToLine className="size-4" />}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{task.fileName}</strong>{professional ? <code className="block truncate text-xs text-muted-foreground">/{task.remotePath}</code> : <span className="block text-xs text-muted-foreground">{task.direction === "upload" ? (zh ? "上传到设备" : "Upload to device") : (zh ? "从设备下载" : "Download from device")}</span>}</span><StatusBadge tone={tone}>{status}</StatusBadge></div>{primaryAction ? <div className="flex justify-start sm:justify-end">{primaryAction}</div> : null}</div>{task.status === "running" ? <><TransferProgress value={task.progress} label={longRunning ? (zh ? "仍在传输，请勿重复发起" : "Still transferring — do not start a duplicate") : (zh ? "正在处理" : "Processing")} />{longRunning && !professional ? <p className="text-xs text-muted-foreground">{zh ? "这次传输比平时久。请等待最终结果；完成前无法确认设备上的文件状态。" : "This transfer is taking longer than usual. Wait for the final result; the file state on the device is unknown until it finishes."}</p> : null}</> : <div className="space-y-1 text-xs text-muted-foreground"><div className="flex flex-wrap justify-between gap-2"><span>{formatBytes(task.bytesTransferred)} / {formatBytes(task.bytesTotal)}</span>{professional ? <span>{zh ? `第 ${task.attempt}/${task.maxAttempts} 次` : `Attempt ${task.attempt}/${task.maxAttempts}`}{task.errorCode ? ` · ${task.errorCode}` : ""}</span> : task.status === "completed" ? <span>{zh ? "文件传输已完成" : "File transfer completed"}</span> : null}</div>{!professional && task.status === "failed" ? <p role="alert" className="text-destructive">{recovery.detail}{canRetry ? (zh ? " 可以安全重试。" : " You can safely retry.") : ""}</p> : null}</div>}</div>;
   })}</div>}{retryTask && !scope ? <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{zh ? "原文件范围已不存在，不能重试。" : "The original file range no longer exists, so this transfer cannot be retried."}</p> : null}{retryTask?.direction === "upload" && !retryFile ? <Modal open onClose={closeRetry} title={zh ? "重新选择本地文件" : "Select the local file again"} description={zh ? "为避免保存本地文件内容，失败后需要重新选择文件。" : "Local file contents are not retained, so select the file again after a failure."} footer={<Button variant="secondary" onClick={closeRetry}>{zh ? "取消" : "Cancel"}</Button>}><Button onClick={() => retryInput.current?.click()}><ArrowUpFromLine />{zh ? "选择文件" : "Choose file"}</Button></Modal> : null}{retryTask && scope && (retryTask.direction === "download" || retryFile) ? <TransferConfirmDialog scope={scope} directory={retryTask.remoteDirectory} uploadFile={retryTask.direction === "upload" ? retryFile : null} downloadEntry={retryTask.direction === "download" ? { name: retryTask.fileName, path: retryTask.remotePath, type: "file", accessible: true, size: retryTask.bytesTotal, modifiedAt: null } : null} retryOf={retryTask.id} zh={zh} onClose={closeRetry} onCompleted={async () => queryClient.invalidateQueries({ queryKey: ["host-file-transfers", host.id] })} /> : null}</div>;
 }
 

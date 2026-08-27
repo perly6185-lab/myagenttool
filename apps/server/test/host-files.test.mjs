@@ -235,6 +235,47 @@ test("uploads and downloads only after confirmation and records content-free tra
   assert.equal(JSON.stringify(events).includes("remote-content"), false);
 });
 
+test("converges a transfer left running after restart to an unconfirmed result", () => {
+  const { state, events, service, target } = harness();
+  state.hostFileTransfers.push({
+    id: "hft_interrupted", ownerTeamId: "team_a", sshTargetId: target.id, scopeId: "hfs_1", direction: "upload", status: "running",
+    remotePath: "report.txt", remoteDirectory: "", fileName: "report.txt", bytesTotal: 100, bytesTransferred: 50, progress: 50,
+    conflictPolicy: "rename", attempt: 1, maxAttempts: 3, retryOf: null, errorCode: null,
+    createdAt: "2026-08-24T23:50:00.000Z", startedAt: "2026-08-24T23:50:00.000Z", updatedAt: "2026-08-24T23:54:59.000Z", completedAt: null,
+  });
+  state.hostFileTransfers.push({
+    id: "hft_active", ownerTeamId: "team_a", sshTargetId: target.id, scopeId: "hfs_1", direction: "download", status: "running",
+    remotePath: "active.txt", remoteDirectory: "", fileName: "active.txt", bytesTotal: 100, bytesTransferred: 75, progress: 75,
+    conflictPolicy: null, attempt: 1, maxAttempts: 3, retryOf: null, errorCode: null,
+    createdAt: "2026-08-24T23:50:00.000Z", startedAt: "2026-08-24T23:50:00.000Z", updatedAt: "2026-08-24T23:55:01.000Z", completedAt: null,
+  });
+
+  const transfers = service.listTransfers(target);
+  const transfer = transfers.find((item) => item.id === "hft_interrupted");
+  const active = transfers.find((item) => item.id === "hft_active");
+  assert.equal(transfer.status, "failed");
+  assert.equal(transfer.errorCode, "host_file_transfer_interrupted");
+  assert.equal(transfer.completedAt, "2026-08-25T00:00:00.000Z");
+  assert.equal(active.status, "running");
+  assert.equal(active.errorCode, null);
+  assert.equal(events.at(-1).type, "ssh.host_file_transfer.interrupted");
+  assert.equal(JSON.stringify(events).includes("report.txt"), false);
+});
+
+test("stops an upload before writing when OpenSSH reports insufficient capacity", async () => {
+  const sftp = writableSftp();
+  sftp.ext_openssh_statvfs = (_path, callback) => callback(null, { f_frsize: 4096, f_bavail: 0 });
+  const { service, target } = harness(sftp);
+  const scope = (await service.createScope(target, { rootPath: "/srv/www/site", permissions: ["list", "upload"] })).scope;
+
+  const result = await service.uploadFile(target, scope, Buffer.from("content"), { filename: "report.txt", conflictPolicy: "rename", confirmed: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "ssh_sftp_no_space");
+  assert.equal(result.status, 507);
+  assert.equal(result.task.status, "failed");
+  assert.equal(sftp.files.has("/srv/www/site/report.txt"), false);
+});
+
 test("applies upload conflict policy and blocks sensitive browser downloads", async () => {
   const sftp = writableSftp({ "/srv/www/site/report.txt": "old", "/srv/www/site/.env": "SECRET=value" });
   const { state, service, target } = harness(sftp);
