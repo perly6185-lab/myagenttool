@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   createWorkItemComment: vi.fn(),
   recordWorkItemProgress: vi.fn(),
   retryAutoRun: vi.fn(),
+  reverifyAutoRun: vi.fn(),
   startWorkItemAutoRun: vi.fn(),
   answerClarify: vi.fn(),
   cancelAutoRun: vi.fn(),
@@ -73,6 +74,7 @@ vi.mock("@/data/use-console-actions", () => ({
     createWorkItemComment: mocks.createWorkItemComment,
     recordWorkItemProgress: mocks.recordWorkItemProgress,
     retryAutoRun: mocks.retryAutoRun,
+    reverifyAutoRun: mocks.reverifyAutoRun,
     startWorkItemAutoRun: mocks.startWorkItemAutoRun,
     answerClarify: mocks.answerClarify,
     cancelAutoRun: mocks.cancelAutoRun,
@@ -399,7 +401,7 @@ describe("work item summary presentation", () => {
     expect(template.textContent).toContain("Generate quotation");
   });
 
-  it("shows the ordinary-user work mode and keeps professional trace collapsed", async () => {
+  it("restates the ordinary-user intent without exposing professional trace", async () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({
         channelTaskContract: {
@@ -429,13 +431,58 @@ describe("work item summary presentation", () => {
         },
       }),
     });
+    const onOpenExpert = vi.fn();
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={onOpenExpert} />);
+
+    const intent = await screen.findByTestId("work-item-intent-summary");
+    expect(intent.textContent).toContain("Here’s what I understand");
+    expect(intent.textContent).toContain("整理订单");
+    expect(intent.textContent).toContain("订单跟进结果");
+    expect(intent.textContent).toContain("订单.xlsx");
+    expect(intent.textContent).not.toContain("snapshot");
+    expect(intent.textContent).not.toContain("execution");
+    fireEvent.click(within(intent).getByRole("button", { name: "Correct this" }));
+    expect(onOpenExpert).toHaveBeenCalledWith("overview");
+  });
+
+  it("uses plain Chinese labels for the intent summary", async () => {
+    await i18n.changeLanguage("zh-CN");
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        title: "整理客户回访记录",
+        channelTaskContract: {
+          schemaVersion: 1,
+          source: "channel",
+          domain: "office",
+          riskLevel: "medium",
+          goal: "整理客户回访记录",
+          outputExpectation: "生成可复核的回访结果",
+          dataMutationPreview: {
+            status: "ready",
+            operation: "update",
+            targetSourceIds: ["customers"],
+            targetSources: [{ sourceId: "customers", fileName: "客户台账.xlsx", revision: 1, contentHash: "hash", rowCount: 3 }],
+            targetStatus: "explicit",
+            dataMutationScope: null,
+            rowSelector: null,
+            fieldChanges: [{ field: "回访状态", operation: "set", valueDigest: "contacted", valueProvided: true }],
+            estimatedAffectedRows: 3,
+            requiredFields: ["回访状态"],
+            maxAffectedRows: 3,
+            writeMode: "batch",
+            digest: "preview",
+          },
+        },
+      }),
+    });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    const mode = await screen.findByTestId("work-mode-summary");
-    expect(mode.textContent).toContain("How I’ll handle this");
-    expect(mode.textContent).toContain("订单跟进");
-    expect(mode.textContent).toContain("订单.xlsx");
-    expect(within(mode).getByText("View supporting details").closest("details")?.open).toBe(false);
+    const intent = await screen.findByTestId("work-item-intent-summary");
+    expect(intent.textContent).toContain("我理解你要做的是");
+    expect(intent.textContent).toContain("预期结果");
+    expect(intent.textContent).toContain("本次范围");
+    expect(intent.textContent).toContain("不会直接做");
+    expect(intent.textContent).toContain("客户台账.xlsx");
   });
 
   it("lets an ordinary user correct an unstarted task by choosing the desired result", async () => {
@@ -761,7 +808,7 @@ describe("work item summary presentation", () => {
     mocks.restoreWorkItemMaterial.mockResolvedValue({ workItem: { ...withMaterial, revision: 4 }, appliesTo: "future_execution" });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    await screen.findByText("Prepare customer update");
+    await screen.findByRole("heading", { name: "Prepare customer update" });
     expect(screen.getByText("brief.txt")).toBeTruthy();
     expect(screen.getByText(/Materials used by this AI run will not change/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Preview: brief.txt" })).toBeTruthy();
@@ -791,7 +838,7 @@ describe("work item summary presentation", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("could not be loaded");
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
-    expect(await screen.findByText("Prepare customer update")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Prepare customer update" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Update progress" })).toBeTruthy();
   });
 
@@ -1020,6 +1067,96 @@ describe("work item summary presentation", () => {
     expect(onOpenExpert).not.toHaveBeenCalled();
     fireEvent.click(within(report).getByRole("button", { name: "Open expert details" }));
     expect(onOpenExpert).toHaveBeenCalledWith("report");
+  });
+
+  it("exposes development delivery actions and routes them through governed APIs", async () => {
+    const onOpenDeliveryChanges = vi.fn();
+    mocks.reverifyAutoRun.mockResolvedValue({ autoRun: { id: "aur_dev", status: "pr_open" } });
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "completed", waitingOn: "me" }),
+      observability: {
+        latestRun: {
+          id: "aur_dev", status: "done", updatedAt: "2026-08-26T10:00:00.000Z",
+          localDelivery: { worktreeId: "wtr_dev", branchName: "feature/risk-gate", mode: "pull_request" },
+          deliveryReport: { summary: "The code change is ready.", changedFiles: ["apps/server/src/routes/work-items.mjs"], completedAt: "2026-08-26T10:00:00.000Z", verification: { passed: true, verified: true, summary: "pnpm test passed" } },
+        },
+        outcome: { status: "available", summary: "The code change is ready.", fullReport: "The code change is ready.", highlights: [], warnings: [], files: [], verification: { passed: true, verified: true, summary: "pnpm test passed" }, deliveredAt: "2026-08-26T10:00:00.000Z" },
+        delivery: {
+          state: "awaiting_review", mode: "pull_request", worktreeId: "wtr_dev", branchName: "feature/risk-gate", remoteUrl: "https://github.com/example/repo",
+          report: { summary: "The code change is ready.", changedFiles: ["apps/server/src/routes/work-items.mjs"], completedAt: "2026-08-26T10:00:00.000Z", verification: { passed: true, verified: true, summary: "pnpm test passed" } },
+          aiReview: { status: "completed", invocationId: "inv_review", reviewer: "Codex", startedAt: null, completedAt: "2026-08-26T10:01:00.000Z", verdict: "approved", summary: "No issues found.", findings: [], reviewedCommit: "commit-1", errorCode: null },
+          review: { verdict: "approved", summary: "No issues found.", comments: [], reviewedCommit: "commit-1", reviewedBy: "ai", source: "ai", reviewerName: "Codex", reviewInvocationId: "inv_review", createdAt: "2026-08-26T10:01:00.000Z" },
+        },
+        deliveryEvidence: {
+          schemaVersion: 1, status: "ready", risk: "low", domain: "development", blockingReasonCodes: [],
+          review: { status: "completed", source: "ai", verdict: "approved", summary: "No issues found.", structured: true, findings: [], findingCounts: { low: 0, medium: 0, high: 0, total: 0 }, blockingCount: 0, consistency: "consistent", reviewedCommit: "commit-1", reviewer: "Codex", invocationId: "inv_review", completedAt: "2026-08-26T10:01:00.000Z" },
+          verification: { status: "passed", passed: true, verified: true, command: "pnpm test", commands: ["pnpm test"], exitCode: 0, summary: "pnpm test passed" },
+          actionPreview: { mode: "pull_request", operation: "update_pull_request", targetType: "pull_request", worktreeId: "wtr_dev", branchName: "feature/risk-gate", remoteUrl: "https://github.com/example/repo", changedFileCount: 1, changedFiles: ["apps/server/src/routes/work-items.mjs"], officeDetails: null, reviewedCommit: "commit-1", requiresConfirmation: true, canProceed: true, blockedReasonCodes: [] },
+        },
+        outcomeHistory: [],
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onOpenDeliveryChanges={onOpenDeliveryChanges} />);
+
+    const actions = await screen.findByTestId("development-actions");
+    expect(within(actions).queryByRole("button", { name: "Ask AI to fix" })).toBeNull();
+    fireEvent.click(within(actions).getByRole("button", { name: "View changes" }));
+    expect(onOpenDeliveryChanges).toHaveBeenCalledWith("prj_1", "wtr_dev");
+    fireEvent.click(within(actions).getByRole("button", { name: "Rerun verification" }));
+    await waitFor(() => expect(mocks.reverifyAutoRun).toHaveBeenCalledWith("aur_dev"));
+    fireEvent.click(within(actions).getByRole("button", { name: "Update Pull Request" }));
+    expect(await screen.findByRole("dialog", { name: "Approve and update the existing pull request?" })).toBeTruthy();
+  });
+
+  it("blocks a partial office batch and exposes success, failure, rollback, and item details", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "completed", waitingOn: "me", taskKind: "business_spreadsheet", title: "Update customer ledger" }),
+      observability: {
+        latestRun: { id: "aur_office", status: "done", updatedAt: "2026-08-26T10:00:00.000Z", localDelivery: { worktreeId: "wtr_office", branchName: "office/customer-ledger" } },
+        outcome: { status: "available", summary: "Customer ledger batch prepared.", fullReport: "Customer ledger batch prepared.", highlights: [], warnings: [], files: ["客户台账.xlsx"], verification: { passed: true, verified: true, summary: "Workbook validated" }, deliveredAt: "2026-08-26T10:00:00.000Z" },
+        outcomeHistory: [],
+        delivery: {
+          state: "awaiting_review", mode: "local_merge", worktreeId: "wtr_office", branchName: "office/customer-ledger", remoteUrl: null,
+          report: { summary: "Customer ledger batch prepared.", changedFiles: ["客户台账.xlsx"], completedAt: "2026-08-26T10:00:00.000Z", verification: { passed: true, verified: true, summary: "Workbook validated" } },
+          aiReview: { status: "completed", invocationId: "inv_office_review", reviewer: "Codex", startedAt: null, completedAt: "2026-08-26T10:01:00.000Z", verdict: "approved", summary: "Workbook structure is valid.", findings: [], reviewedCommit: "office-commit", errorCode: null },
+          review: { verdict: "approved", summary: "Workbook structure is valid.", comments: [], reviewedCommit: "office-commit", reviewedBy: "ai", source: "ai", reviewerName: "Codex", reviewInvocationId: "inv_office_review", createdAt: "2026-08-26T10:01:00.000Z" },
+        },
+        deliveryEvidence: {
+          schemaVersion: 1, status: "office_batch_attention", risk: "high", domain: "office", blockingReasonCodes: ["office_batch_attention"],
+          review: { status: "completed", source: "ai", verdict: "approved", summary: "Workbook structure is valid.", structured: true, findings: [], findingCounts: { low: 0, medium: 0, high: 0, total: 0 }, blockingCount: 0, consistency: "consistent", reviewedCommit: "office-commit", reviewer: "Codex", invocationId: "inv_office_review", completedAt: "2026-08-26T10:01:00.000Z" },
+          verification: { status: "passed", passed: true, verified: true, command: "officecli verify", commands: ["officecli verify"], exitCode: 0, summary: "Workbook validated" },
+          actionPreview: {
+            mode: "local_merge", operation: "apply_office_result", targetType: "office_artifact", worktreeId: "wtr_office", branchName: "office/customer-ledger", remoteUrl: null,
+            changedFileCount: 1, changedFiles: ["客户台账.xlsx"], reviewedCommit: "office-commit", requiresConfirmation: true, canProceed: false, blockedReasonCodes: ["office_batch_attention"],
+            officeDetails: {
+              targetFiles: ["客户台账.xlsx"], estimatedAffectedRows: 3, fields: ["status"], operation: "update", writeMode: "batch", reversible: true,
+              batch: { state: "partial", targetCount: 3, operationCount: 3, successCount: 2, failedCount: 1, rollback: { status: "partial", restoredTargets: 1, blockedTargets: 1 }, details: [
+                { id: "op_1", businessKey: "CUS-001", action: "update", rowNumber: 2, state: "committed", changedFields: ["status"] },
+                { id: "op_2", businessKey: "CUS-002", action: "update", rowNumber: 3, state: "invalidated", changedFields: ["status"] },
+              ] },
+            },
+          },
+        },
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const reviewResult = await screen.findByRole("button", { name: /Review result|Hide result/ });
+    if (reviewResult.getAttribute("aria-expanded") !== "true") fireEvent.click(reviewResult);
+    const decision = await screen.findByLabelText("Review conclusion");
+    expect(decision.textContent).toContain("Batch needs attention");
+    const batch = screen.getByTestId("office-batch-result");
+    expect(batch.textContent).toContain("Applied: 2");
+    expect(batch.textContent).toContain("Failed: 1");
+    expect(batch.textContent).toContain("Rollback: Partial");
+    expect(batch.textContent).toContain("1 restored, 1 blocked");
+    expect(screen.getByTestId("delivery-action-preview").textContent).toContain("Failure protection: Recovery evidence recorded");
+    fireEvent.click(within(batch).getByText("Batch details (3)"));
+    expect(within(batch).getByText("CUS-001")).toBeTruthy();
+    expect(within(batch).getByText("Committed")).toBeTruthy();
+    expect(within(batch).getByText("Invalidated")).toBeTruthy();
+    expect(screen.queryByTestId("development-actions")).toBeNull();
+    expect((screen.getByRole("button", { name: "Approve and apply office result" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("shows a report-only AI outcome with the same review experience", async () => {
@@ -1591,6 +1728,29 @@ describe("work item summary presentation", () => {
             createdAt: "2026-08-07T08:01:00.000Z",
           },
         },
+        deliveryEvidence: {
+          schemaVersion: 1,
+          status: "changes_requested",
+          risk: "high",
+          domain: "development",
+          blockingReasonCodes: ["review_changes_requested"],
+          review: {
+            status: "completed", source: "ai", verdict: "changes_requested",
+            summary: "The new timezone is not persisted after registration.", structured: true,
+            findings: [{ severity: "high", file: "apps/server/src/routes/agents.mjs", line: 170, message: "The registration path updates memory but does not schedule persistence.", suggestion: "Call persistStateSoon after the timezone changes.", confidence: "high" }],
+            findingCounts: { low: 0, medium: 0, high: 1, total: 1 }, blockingCount: 1,
+            consistency: "consistent", reviewedCommit: "abc123", reviewer: "Codex",
+            invocationId: "inv_review_60", completedAt: "2026-08-07T08:01:00.000Z",
+          },
+          verification: { status: "passed", passed: true, verified: true, command: "pnpm test", commands: ["pnpm test"], exitCode: 0, summary: "Server regression tests passed." },
+          actionPreview: {
+            mode: "local_merge", operation: "apply_local_changes", targetType: "local_project",
+            worktreeId: "wtr_60", branchName: "local-60-timezone", remoteUrl: null,
+            changedFileCount: 1, changedFiles: ["apps/server/src/routes/agents.mjs"], officeDetails: null,
+            reviewedCommit: "abc123", requiresConfirmation: true, canProceed: false,
+            blockedReasonCodes: ["review_changes_requested"],
+          },
+        },
       },
     });
     mocks.createWorkItemComment.mockResolvedValue({ comment: { id: "comment_review_60" } });
@@ -1609,7 +1769,10 @@ describe("work item summary presentation", () => {
     expect(screen.getAllByText(/another AI run may take time and incur cost/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Apply this 1-file delivery to the local base branch/).length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Send back to AI" }));
+    const actions = screen.getByTestId("development-actions");
+    expect((within(actions).getByRole("button", { name: "Ask AI to fix" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(within(actions).queryByRole("button", { name: "Create Pull Request" })).toBeNull();
+    fireEvent.click(within(actions).getByRole("button", { name: "Ask AI to fix" }));
     await waitFor(() => expect(mocks.retryAutoRun).toHaveBeenCalledWith(
       "aur_60",
       expect.stringContaining("updates memory but does not schedule persistence"),
@@ -1662,7 +1825,7 @@ describe("work item summary presentation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "View full report" }));
     const report = screen.getByRole("dialog", { name: "What AI delivered" });
-    expect(within(report).getByText("Available actions and impact")).toBeTruthy();
+    expect(within(report).getByText("Available actions and impact").closest("details")?.open).toBe(false);
     expect(within(report).getByText("AI's original delivery note (may contain technical terms)")).toBeTruthy();
     expect(within(report).getByRole("button", { name: "Open expert details" })).toBeTruthy();
     fireEvent.click(within(report).getByRole("button", { name: "Approve and create pull request" }));

@@ -29,7 +29,8 @@ function publicPreview(preview) {
   return {
     id: preview.id, projectId: preview.projectId, connectorId: preview.connectorId,
     configId: preview.configId, kind: preview.kind, status: preview.status,
-    creates: preview.creates, updates: preview.updates, unchanged: preview.unchanged,
+    creates: preview.creates, updates: preview.updates, deletes: 0, unchanged: preview.unchanged,
+    effects: { readsExternal: true, writesExternal: false, upsertsLocal: true, deletesLocal: false },
     totalRows: preview.rows.length, sampleRows: preview.rows.slice(0, 20).map((row) => ({
       label: row.label, businessKey: row.businessKey, change: row.change,
     })), expiresAt: preview.expiresAt, createdAt: preview.createdAt,

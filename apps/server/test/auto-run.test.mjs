@@ -890,6 +890,64 @@ test("review feedback revises the same completed local delivery and preserves it
   assert.match(calls.createInvocation.at(-1).task, /Call persistStateSoon after the timezone changes/);
 });
 
+test("review feedback repairs an open PR on the same worktree and returns it to governed delivery", async () => {
+  const { svc, calls } = makeAutoRun({
+    listWorktreeChangedFiles: async () => ["apps/server/src/routes/agents.mjs"],
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 62, title: "Repair the open PR", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-62-repair-pr",
+  });
+  await svc.advanceAutoRunForInvocation({
+    ...invocation,
+    status: "succeeded",
+    result: { output: { latestMessage: "First reviewed delivery." } },
+  });
+  autoRun.status = "pr_open";
+  autoRun.prNumber = 77;
+  autoRun.prUrl = "https://github.com/o/r/pull/77";
+  autoRun.localDelivery = {
+    ...autoRun.localDelivery,
+    mode: "pull_request",
+    prNumber: 77,
+    prUrl: "https://github.com/o/r/pull/77",
+    promotedAt: "2026-08-26T08:00:00.000Z",
+  };
+
+  const retry = await svc.retryAutoRun(autoRun.id, {
+    actor: { userId: "usr_x", teamId: "team_a" },
+    feedback: "Fix the requested review issue and rerun verification.",
+  });
+
+  assert.equal(autoRun.status, "running");
+  assert.equal(autoRun.prNumber, null);
+  assert.equal(autoRun.prUrl, null);
+  assert.equal(autoRun.localDelivery.worktreeId, retry.autoRun.worktreeId);
+  assert.equal(autoRun.localDelivery.promotedAt, undefined);
+  assert.deepEqual(autoRun.localDelivery.existingPullRequest, {
+    number: 77,
+    url: "https://github.com/o/r/pull/77",
+    state: "OPEN",
+  });
+  assert.equal(autoRun.deliveryHistory.length, 1);
+  assert.equal(autoRun.deliveryHistory[0].localDelivery.prNumber, 77);
+  assert.match(calls.createInvocation.at(-1).task, /Fix the requested review issue/);
+
+  await svc.advanceAutoRunForInvocation({
+    ...retry.invocation,
+    status: "succeeded",
+    result: { output: { latestMessage: "PR repair is ready for review." } },
+  });
+  assert.equal(autoRun.status, "done");
+  assert.equal(autoRun.localDelivery.worktreeId, retry.autoRun.worktreeId);
+  assert.equal(autoRun.localDelivery.promotedAt, undefined);
+  assert.equal(autoRun.localDelivery.mode, "pull_request");
+  assert.equal(autoRun.localDelivery.existingPullRequest.number, 77);
+  assert.equal(autoRun.deliveryReport.summary, "PR repair is ready for review.");
+});
+
 test("review feedback revises a posted local report and preserves its prior result", async () => {
   const { svc, calls } = makeAutoRun();
   const { autoRun } = await svc.startAutoRun({
@@ -1592,6 +1650,45 @@ test("auto-run binds the local content manifest and materialization receipts to 
   assert.match(calls.createInvocation[0].task, /untrusted data/);
 });
 
+test("a changed required work resource pauses a reserved run for user input", async () => {
+  const { svc, calls } = makeAutoRun({
+    materializeTaskMaterials: async () => ({ ok: false, error: "work_resource_version_changed" }),
+  });
+  const link = { type: "local_issue", number: 141, title: "Use current customer ledger", url: null, state: "open" };
+  const reserved = await svc.reserveAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "wi_resource_drift",
+    agentId: "agt_1",
+    name: "local-resource-drift",
+    issueBody: "Use the attached customer ledger.",
+  });
+  await svc.decideReservedAutoRun(reserved.autoRun.id);
+  const frozen = svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
+    acceptanceCriteria: ["The current ledger version is used."],
+    verificationSop: ["Verify the resource receipt version."],
+    confirmedBy: "ai_policy",
+    confirmedAt: "2026-08-07T00:00:00.000Z",
+  });
+
+  await assert.rejects(() => svc.startAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "wi_resource_drift",
+    agentId: "agt_1",
+    name: "local-resource-drift",
+    existingAutoRunId: reserved.autoRun.id,
+    executionPlan: frozen.executionPlan,
+    taskMaterialWorkItemId: "wi_resource_drift",
+  }), (error) => error?.code === "work_resource_version_changed");
+
+  assert.equal(reserved.autoRun.status, "needs_input");
+  assert.equal(reserved.autoRun.phase, "waiting_for_input");
+  assert.equal(reserved.autoRun.errorCode, "work_resource_version_changed");
+  assert.match(reserved.autoRun.error, /accept the current version/i);
+  assert.equal(calls.createInvocation.length, 0);
+});
+
 test("self-repair does not spend attempts when verifier infrastructure is unavailable", async () => {
   const { svc, calls } = makeAutoRun({ verify: {
     passed: false,
@@ -2147,6 +2244,32 @@ test("reverifyAutoRun keeps the terminal status stable and refuses duplicate ver
   await pending;
   assert.equal(autoRun.status, "done");
   assert.equal(autoRun.verificationAttempt.status, "passed");
+});
+
+test("reverifyAutoRun keeps verifier infrastructure errors distinct from reproduced test failures", async () => {
+  const { svc } = makeAutoRun({
+    verify: () => { throw new Error("runner unavailable"); },
+  });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 201, title: "Reverify with unavailable runner", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-201-reverify-unavailable",
+  });
+  autoRun.status = "done";
+  autoRun.verification = { passed: true, verified: false, summary: "No verification command configured." };
+
+  await assert.rejects(
+    () => svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" } }),
+    /runner unavailable/,
+  );
+
+  assert.equal(autoRun.status, "done");
+  assert.equal(autoRun.verification.verified, false);
+  assert.equal(autoRun.verification.passed, false);
+  assert.equal(autoRun.verificationAttempt.status, "unavailable");
+  assert.equal(autoRun.error, null);
+  assert.match(autoRun.verification.summary, /runner unavailable/);
 });
 
 test("cancelAutoRun stops an in-flight run: cancels its invocation and settles it as cancelled", async () => {

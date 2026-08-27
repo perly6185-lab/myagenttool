@@ -173,6 +173,10 @@ export function createHttpServer({
   restoreWorkItemMaterial,
   addWorkItemContentReference,
   removeWorkItemContentReference,
+  addWorkItemResourceReference,
+  refreshWorkItemResourceReference,
+  inspectWorkItemResourceReferences,
+  removeWorkItemResourceReference,
   listWorkflowSources,
   listChannelObjects,
   upsertChannelObject,
@@ -561,6 +565,10 @@ export function createHttpServer({
   getLocalContentHealth,
   resolveLocalContentOriginal,
   resolveLocalContentContainer,
+  listWorkResources,
+  getWorkResource,
+  previewWorkResource,
+  refreshWorkResource,
   listCanvasScenes,
   getCanvasScene,
   createCanvasScene,
@@ -993,6 +1001,7 @@ export function createHttpServer({
         retrieveLocalContentDirectories, retrieveLocalContentSummaries, readRetrievedLocalContent,
         getLocalContentCatalogStats, previewLocalContent, previewLocalContentAsset,
         refreshLocalContent, archiveLocalContent, getLocalContentHealth, resolveLocalContentOriginal, resolveLocalContentContainer,
+        listWorkResources, getWorkResource, previewWorkResource, refreshWorkResource,
       })) {
         return;
       }
@@ -1314,6 +1323,10 @@ export function createHttpServer({
         restoreMaterial: restoreWorkItemMaterial,
         addContentReference: addWorkItemContentReference,
         removeContentReference: removeWorkItemContentReference,
+        addResourceReference: addWorkItemResourceReference,
+        refreshResourceReference: refreshWorkItemResourceReference,
+        inspectResourceReferences: inspectWorkItemResourceReferences,
+        removeResourceReference: removeWorkItemResourceReference,
       })) {
         return;
       }

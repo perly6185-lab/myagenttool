@@ -174,10 +174,24 @@ test("createWorktreePr is idempotent — an 'already exists' PR is treated as su
   const saved = process.env.MYAGENTTOOL_GH_COMMAND_JSON;
   process.env.MYAGENTTOOL_GH_COMMAND_JSON = JSON.stringify(["node", conflictGh]);
   try {
+    const firstHead = git(worktree.worktreePath, "rev-parse", "HEAD");
     const result = await svc.createWorktreePr(worktree.id, {});
     assert.equal(result.ok, true, "an already-existing PR is not a failure");
     assert.equal(result.number, 77, "the existing PR number is parsed from the error");
     assert.equal(result.url, "https://github.com/o/r/pull/77");
+    assert.equal(git(repoDir, "rev-parse", "refs/remotes/origin/issue-3-feature-dup"), firstHead);
+
+    writeFileSync(join(worktree.worktreePath, "d.txt"), "repaired\n");
+    git(worktree.worktreePath, "add", ".");
+    git(worktree.worktreePath, "commit", "-m", "repair existing PR");
+    const repairedHead = git(worktree.worktreePath, "rev-parse", "HEAD");
+    await svc.createWorktreePr(worktree.id, {});
+    git(repoDir, "fetch", "origin", "issue-3-feature-dup");
+    assert.equal(
+      git(repoDir, "rev-parse", "refs/remotes/origin/issue-3-feature-dup"),
+      repairedHead,
+      "a retry pushes commits even when the branch already has an upstream and PR",
+    );
   } finally {
     process.env.MYAGENTTOOL_GH_COMMAND_JSON = saved;
   }

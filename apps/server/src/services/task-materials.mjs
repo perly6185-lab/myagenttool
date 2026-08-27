@@ -149,6 +149,7 @@ export function createTaskMaterialService({
   persistStateSoon = () => {},
   appendEvent = () => {},
   resolveLocalContentReference = null,
+  resolveWorkResourceReference = null,
   store,
 }) {
   const root = materialRoot(stateStorePath);
@@ -357,7 +358,8 @@ export function createTaskMaterialService({
     const drafts = (state.taskMaterialDrafts ?? []).filter((candidate) => candidate.workItemId === String(workItemId) && candidate.status === "claimed");
     const workItem = (state.workItems ?? []).find((candidate) => candidate.id === String(workItemId));
     const contentReferences = workItem?.localContentRefs ?? [];
-    if (!drafts.length && !contentReferences.length) return { ok: true, assets: [], receipts: [], manifest: null };
+    const resourceReferences = workItem?.taskResourceRefs ?? [];
+    if (!drafts.length && !contentReferences.length && !resourceReferences.length) return { ok: true, assets: [], receipts: [], manifest: null };
     if (actor && workItem?.ownerTeamId !== actorTeam(actor)) return { ok: false, error: "work_item_not_found" };
     if (!worktree?.path) return { ok: false, error: "task_material_worktree_missing" };
     const activeAssetIds = new Set(workItem
@@ -516,6 +518,82 @@ export function createTaskMaterialService({
           workItemId: resolved.record?.workItemId ?? null,
           storageMode: resolved.record?.storageMode ?? null,
         },
+        trust: "untrusted_reference",
+      });
+    }
+    for (const reference of resourceReferences) {
+      if (typeof resolveWorkResourceReference !== "function") {
+        return { ok: false, error: "work_resource_resolver_unavailable", referenceId: reference.id };
+      }
+      const resolved = await resolveWorkResourceReference({
+        resourceId: reference.resourceId,
+        projectId: workItem?.projectId,
+        expectedVersion: reference.selectedVersion,
+      }, actor);
+      if (!resolved?.ok) {
+        if (reference.purpose === "reference") {
+          skippedReferences.push({ referenceId: reference.id, resourceId: reference.resourceId, title: reference.title, reason: resolved?.error ?? "work_resource_unavailable" });
+          continue;
+        }
+        return { ok: false, error: resolved?.error ?? "work_resource_unavailable", referenceId: reference.id, currentVersion: resolved?.currentVersion ?? null };
+      }
+      if (resolved.kind !== "structured_snapshot" || !resolved.snapshot) {
+        return { ok: false, error: "work_resource_snapshot_unavailable", referenceId: reference.id };
+      }
+      const storedName = `${safeKey(reference.id)}--resource.json`;
+      const executionRelativePath = `.myagenttool/inputs/${String(workItemId).replace(/[^a-zA-Z0-9_-]/g, "_")}/${storedName}`;
+      const bytes = Buffer.from(`${JSON.stringify(resolved.snapshot, null, 2)}\n`, "utf8");
+      if (preparedBytes + bytes.length > MAX_TASK_MATERIAL_TOTAL_BYTES) {
+        if (reference.purpose === "reference") {
+          skippedReferences.push({ referenceId: reference.id, resourceId: reference.resourceId, title: reference.title, reason: "task_material_total_limit_exceeded" });
+          continue;
+        }
+        return { ok: false, error: "task_material_total_limit_exceeded", referenceId: reference.id };
+      }
+      const destination = resolve(inputRoot, storedName);
+      const temporary = `${destination}.copying`;
+      writeFileSync(temporary, bytes, { flag: "w", mode: 0o600 });
+      renameSync(temporary, destination);
+      const materializedHash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+      preparedBytes += bytes.length;
+      materialized.push({
+        id: reference.id,
+        resourceId: reference.resourceId,
+        path: executionRelativePath,
+        family: "data",
+        mimeType: "application/json",
+        terminalId: workItem?.terminalId ?? actor?.deviceId ?? "local",
+        size: bytes.length,
+        resourceClass: resourceClassFor(bytes.length),
+        hash: materializedHash.replace(/^sha256:/, ""),
+        version: resolved.resource.currentVersion,
+        worktreeId: worktree.id ?? null,
+        capabilities: [],
+        readiness: { state: "ready", reason: "work_resource_snapshot_materialized" },
+        originalName: `${reference.title ?? resolved.resource.displayName}.json`,
+      });
+      const receipt = {
+        referenceId: reference.id,
+        resourceId: reference.resourceId,
+        sourceVersion: resolved.resource.currentVersion,
+        executionRelativePath,
+        materializedHash,
+        byteSize: bytes.length,
+        rowCount: resolved.snapshot.rowCount,
+        status: "ready",
+        preparedAt: now(),
+      };
+      receipts.push(receipt);
+      manifestEntries.push({
+        ...receipt,
+        kind: "work_resource",
+        displayName: resolved.resource.displayName,
+        resourceKind: resolved.resource.resourceKind,
+        businessRole: resolved.resource.businessRole,
+        locality: resolved.resource.locality,
+        sourceLabel: resolved.resource.source.label,
+        summary: resolved.resource.summary,
+        directory: { kind: "work_resource", projectId: resolved.resource.projectId, storageMode: "execution_snapshot" },
         trust: "untrusted_reference",
       });
     }

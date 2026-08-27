@@ -11,7 +11,7 @@ import {
   createTaskMaterialService,
 } from "../src/services/task-materials.mjs";
 
-function fixture({ resolveLocalContentReference = null } = {}) {
+function fixture({ resolveLocalContentReference = null, resolveWorkResourceReference = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), "myagenttool-task-materials-"));
   const stateStorePath = join(root, "state", "snapshot.json");
   const state = { taskMaterialDrafts: [] };
@@ -25,6 +25,7 @@ function fixture({ resolveLocalContentReference = null } = {}) {
     persistStateSoon: () => {},
     appendEvent: (event) => events.push(event),
     resolveLocalContentReference,
+    resolveWorkResourceReference,
   });
   return { root, stateStorePath, state, service, events, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
@@ -84,6 +85,72 @@ test("task materials survive draft creation, claim, and verified worktree materi
     assert.equal(preparedAfterRemoval.ok, true);
     assert.deepEqual(preparedAfterRemoval.assets, []);
     assert.equal(existsSync(join(nextWorktreePath, claimed.assets[0].path)), false);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("structured work resources materialize as bounded execution-only snapshots and detect version drift", async () => {
+  const resourceId = `wres_${"c".repeat(32)}`;
+  let currentVersion = "sha256:version-1";
+  const fx = fixture({
+    resolveWorkResourceReference: async ({ expectedVersion }) => expectedVersion !== currentVersion
+      ? { ok: false, error: "work_resource_version_changed", currentVersion }
+      : {
+          ok: true,
+          kind: "structured_snapshot",
+          resource: {
+            id: resourceId,
+            displayName: "客户台账",
+            resourceKind: "table",
+            businessRole: "contact",
+            locality: "remote",
+            projectId: "project_1",
+            source: { label: "公司 CRM" },
+            currentVersion,
+            summary: "客户资料",
+          },
+          snapshot: {
+            schemaVersion: 1,
+            resourceId,
+            displayName: "客户台账",
+            version: currentVersion,
+            columns: ["email"],
+            rows: [{ id: "row_safe", label: "Alice", fields: { email: "alice@example.com" } }],
+            rowCount: 1,
+            truncated: false,
+            trust: "untrusted_reference",
+          },
+        },
+  });
+  try {
+    fx.state.workItems = [{
+      id: "work_resource",
+      ownerTeamId: "team_1",
+      projectId: "project_1",
+      terminalId: "device_1",
+      inputAssets: [],
+      taskResourceRefs: [{ id: "wrr_1", resourceId, purpose: "query_source", title: "客户台账", selectedVersion: currentVersion }],
+    }];
+    const worktreePath = join(fx.root, "resource-worktree");
+    mkdirSync(worktreePath, { recursive: true });
+    const prepared = await fx.service.materialize({ workItemId: "work_resource", worktree: { id: "wt_resource", path: worktreePath }, actor });
+
+    assert.equal(prepared.ok, true);
+    assert.equal(prepared.assets[0].readiness.reason, "work_resource_snapshot_materialized");
+    const snapshot = JSON.parse(readFileSync(join(worktreePath, prepared.assets[0].path), "utf8"));
+    assert.equal(snapshot.rows[0].fields.email, "alice@example.com");
+    assert.equal(JSON.stringify(snapshot).includes("connectorId"), false);
+    const manifest = JSON.parse(readFileSync(join(worktreePath, prepared.manifest.path), "utf8"));
+    assert.equal(manifest.entries[0].resourceId, resourceId);
+    assert.equal(manifest.entries[0].locality, "remote");
+    assert.equal(manifest.entries[0].rowCount, 1);
+
+    currentVersion = "sha256:version-2";
+    const drifted = await fx.service.materialize({ workItemId: "work_resource", worktree: { id: "wt_resource", path: worktreePath }, actor });
+    assert.equal(drifted.ok, false);
+    assert.equal(drifted.error, "work_resource_version_changed");
+    assert.equal(drifted.currentVersion, currentVersion);
   } finally {
     fx.cleanup();
   }

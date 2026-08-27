@@ -739,11 +739,10 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     const remoteUrl = await originRemoteUrl(cwd, { signal });
     if (!remoteUrl) throw new Error("No 'origin' remote for a pull request. Add a GitHub remote first.");
 
-    // gh needs the head branch on the remote; publish if there's no upstream yet.
-    const upstreamProbe = await runGitCapture(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { timeout: 5_000, signal });
-    if (!upstreamProbe.ok) {
-      await publishWorktreeBranch(worktreeId, { signal });
-    }
+    // An upstream only proves the branch was published once. A repaired run can
+    // add commits after the PR opened, so always push the current HEAD before
+    // creating or resolving the PR. A non-fast-forward still fails safely.
+    await publishWorktreeBranch(worktreeId, { signal });
 
     signal?.throwIfAborted?.();
     const baseBranch = normalizeWorktreeBase(base) ?? (await resolvePrBaseBranch(cwd, worktree, { signal }));

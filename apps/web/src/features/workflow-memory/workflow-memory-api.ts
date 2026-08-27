@@ -136,7 +136,9 @@ export interface ChannelObjectSyncPreview {
   status: "preview" | "confirmed" | string;
   creates: number;
   updates: number;
+  deletes: number;
   unchanged: number;
+  effects: { readsExternal: true; writesExternal: false; upsertsLocal: true; deletesLocal: false };
   totalRows: number;
   sampleRows: Array<{ label: string; businessKey: string; change: "create" | "update" | "unchanged" | string }>;
   expiresAt: string;

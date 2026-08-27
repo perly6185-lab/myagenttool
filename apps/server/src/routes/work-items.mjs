@@ -90,6 +90,10 @@ export async function handleWorkItemRoutes({
   restoreMaterial,
   addContentReference,
   removeContentReference,
+  addResourceReference,
+  refreshResourceReference,
+  inspectResourceReferences,
+  removeResourceReference,
   captureDataContextSnapshot,
 }) {
   async function reconcileRecordBindings(workItemId, { blockExecution = false } = {}) {
@@ -701,6 +705,37 @@ export async function handleWorkItemRoutes({
     sendJson(res, result.status, result.body);
     return true;
   }
+  const resourcePreflightMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/resource-preflight$/);
+  if (resourcePreflightMatch && req.method === "GET") {
+    const result = typeof inspectResourceReferences === "function"
+      ? await inspectResourceReferences({ workItemId: decodeURIComponent(resourcePreflightMatch[1]) }, actor)
+      : { status: 503, body: { error: "work_resource_preflight_unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  const resourceReferenceRefreshMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/resources\/([^/]+)\/refresh$/);
+  if (resourceReferenceRefreshMatch && req.method === "POST") {
+    const result = typeof refreshResourceReference === "function"
+      ? await refreshResourceReference({ workItemId: decodeURIComponent(resourceReferenceRefreshMatch[1]), referenceId: decodeURIComponent(resourceReferenceRefreshMatch[2]), ...(await readJson(req)) }, actor)
+      : { status: 503, body: { error: "work_resource_binding_unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  const resourceReferenceMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/resources(?:\/([^/]+))?$/);
+  if (resourceReferenceMatch && req.method === "POST" && !resourceReferenceMatch[2]) {
+    const result = typeof addResourceReference === "function"
+      ? await addResourceReference({ workItemId: decodeURIComponent(resourceReferenceMatch[1]), ...(await readJson(req)) }, actor)
+      : { status: 503, body: { error: "work_resource_binding_unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (resourceReferenceMatch && req.method === "DELETE" && resourceReferenceMatch[2]) {
+    const result = typeof removeResourceReference === "function"
+      ? removeResourceReference({ workItemId: decodeURIComponent(resourceReferenceMatch[1]), referenceId: decodeURIComponent(resourceReferenceMatch[2]), ...(await readJson(req)) }, actor)
+      : { status: 503, body: { error: "work_resource_binding_unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
   if (materialsMatch && req.method === "DELETE" && materialsMatch[2]) {
     const result = removeMaterial({
       workItemId: decodeURIComponent(materialsMatch[1]),
@@ -995,6 +1030,17 @@ export async function handleWorkItemRoutes({
     const worktreeId = autoRun?.localDelivery?.worktreeId ?? null;
     if (!worktreeId || autoRun?.status !== "done" || autoRun.localDelivery?.deliveredAt) {
       sendJson(res, 409, { error: "work_item_delivery_not_ready" });
+      return true;
+    }
+    const deliveryEvidence = detail.body.observability?.deliveryEvidence ?? null;
+    if (!deliveryEvidence || deliveryEvidence.actionPreview?.canProceed !== true) {
+      sendJson(res, 409, {
+        error: "work_item_delivery_evidence_not_ready",
+        status: deliveryEvidence?.status ?? "evidence_missing",
+        risk: deliveryEvidence?.risk ?? "unknown",
+        blockingReasonCodes: deliveryEvidence?.blockingReasonCodes ?? ["delivery_evidence_required"],
+        deliveryEvidence,
+      });
       return true;
     }
     const mode = deliveryMatch[2] === "local" ? "local_merge" : "pull_request";

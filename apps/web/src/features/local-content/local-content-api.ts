@@ -6,6 +6,9 @@ import type {
   LocalContentPreview,
   LocalContentRecord,
   WorkItemContentReference,
+  WorkResource,
+  WorkResourcePreview,
+  WorkItemResourcePreflight,
 } from "./local-content-types";
 
 export type LocalContentSearchQuery = {
@@ -114,4 +117,55 @@ export const localContentApi = {
       `/api/work-items/${encodeURIComponent(workItemId)}/content-references/${encodeURIComponent(referenceId)}`,
       { expectedRevision },
     ),
+};
+
+export const workResourceApi = {
+  list: (query: { q?: string; projectId?: string; locality?: "local" | "remote"; resourceKind?: WorkResource["resourceKind"]; limit?: number; offset?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (query.q) params.set("q", query.q);
+    if (query.projectId) params.set("projectId", query.projectId);
+    if (query.locality) params.set("locality", query.locality);
+    if (query.resourceKind) params.set("resourceKind", query.resourceKind);
+    if (query.limit != null) params.set("limit", String(query.limit));
+    if (query.offset != null) params.set("offset", String(query.offset));
+    return request<{ resources: WorkResource[]; count: number; limit: number; offset: number; hasMore: boolean; views: { tablesAndLedgers: number } }>(
+      "GET",
+      `/api/resources${params.size ? `?${params}` : ""}`,
+    );
+  },
+  preview: (resourceId: string) => request<{ resource: WorkResource; preview: WorkResourcePreview }>(
+    "GET",
+    `/api/resources/${encodeURIComponent(resourceId)}/preview`,
+  ),
+  get: (resourceId: string) => request<{ resource: WorkResource }>(
+    "GET",
+    `/api/resources/${encodeURIComponent(resourceId)}`,
+  ),
+  refresh: (resourceId: string) => request<{ resource: WorkResource; refreshed: true; mode: string }>(
+    "POST",
+    `/api/resources/${encodeURIComponent(resourceId)}/refresh`,
+    {},
+  ),
+  addToWorkItem: (workItemId: string, payload: { resourceId: string; expectedRevision: number; purpose: "query_source" | "change_target" | "reference" }) =>
+    request<{ reference: unknown; workItem: unknown; appliesTo?: string; replayed?: boolean }>(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/resources`,
+      payload,
+    ),
+  removeFromWorkItem: (workItemId: string, referenceId: string, expectedRevision: number) =>
+    request<{ workItem: unknown; appliesTo: string }>(
+      "DELETE",
+      `/api/work-items/${encodeURIComponent(workItemId)}/resources/${encodeURIComponent(referenceId)}`,
+      { expectedRevision },
+    ),
+  refreshWorkItemReference: (workItemId: string, referenceId: string, expectedRevision: number) =>
+    request<{ workItem: unknown; reference: unknown; appliesTo: string }>(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/resources/${encodeURIComponent(referenceId)}/refresh`,
+      { expectedRevision },
+    ),
+  preflightWorkItem: (workItemId: string) => request<{ preflight: WorkItemResourcePreflight }>(
+    "GET",
+    `/api/work-items/${encodeURIComponent(workItemId)}/resource-preflight`,
+  ),
 };

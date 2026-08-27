@@ -1,11 +1,9 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Library, ListFilter, RefreshCw, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Library, RefreshCw, Table2, X } from "lucide-react";
 import { EmptyState } from "@/components/common/empty-state";
-import { Field } from "@/components/common/field";
 import { SectionHeading } from "@/components/common/section-heading";
 import { Button } from "@/components/ui/button";
-import { Input, Select } from "@/components/ui/input";
 import { useConsoleState } from "@/data/use-console-state";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { ApiError } from "@/lib/api/request";
@@ -13,8 +11,8 @@ import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useUiStore } from "@/store/ui-store";
 import type { LocalWorkItem, LocalWorkItemResult } from "@/features/tasks/task-view-types";
-import { localContentApi } from "./local-content-api";
-import type { LocalContentKind, LocalContentRecord } from "./local-content-types";
+import { localContentApi, workResourceApi } from "./local-content-api";
+import type { LocalContentRecord, WorkResource } from "./local-content-types";
 import { COPY } from "./local-library-copy";
 import { useLocalContentFilters } from "./use-local-content-filters";
 
@@ -23,8 +21,9 @@ const PreviewModal = lazy(() => import("./local-library-modals").then((module) =
 const LocalContentDetailModal = lazy(() => import("./local-library-modals").then((module) => ({ default: module.LocalContentDetailModal })));
 const LocalContentDirectory = lazy(() => import("./local-content-directory").then((module) => ({ default: module.LocalContentDirectory })));
 const LocalContentCard = lazy(() => import("./local-content-card").then((module) => ({ default: module.LocalContentCard })));
+const WorkResourceDirectorySection = lazy(() => import("./work-resource-directory-section").then((module) => ({ default: module.WorkResourceDirectorySection })));
+const LocalLibraryFilterPanel = lazy(() => import("./local-library-filter-panel").then((module) => ({ default: module.LocalLibraryFilterPanel })));
 
-const KINDS: LocalContentKind[] = ["article", "material", "mail", "task", "task_input", "task_output"];
 const TASK_PAGE_SIZE = 200;
 const MAX_TASK_CANDIDATES = 1_000;
 
@@ -55,21 +54,21 @@ export function LocalLibraryView() {
   const { i18n } = useAppTranslation();
   const language = i18n.language.startsWith("zh") ? "zh" : "en";
   const copy = COPY[language];
-  const sourceLabels: Record<string, string> = language === "zh"
-    ? { article_import: "导入文章", channel_article_import: "Channel 文章", channel_attachment_import: "Channel 附件", mail_archive: "归档邮件", mail_cache: "邮件缓存", local_task: "任务", work_item: "任务", task_input: "任务输入", task_material: "任务资料", task_output: "任务结果" }
-    : { article_import: "Imported article", channel_article_import: "Channel article", channel_attachment_import: "Channel attachment", mail_archive: "Archived mail", mail_cache: "Mail cache", local_task: "Task", work_item: "Task", task_input: "Task input", task_material: "Task material", task_output: "Task result" };
   const { data: consoleState } = useConsoleState();
   const navigate = usePageNavigation();
   const selectedWorkItemId = useUiStore((state) => state.selectedWorkItemId);
   const openWorkItem = useUiStore((state) => state.openWorkItem);
+  const filters = useLocalContentFilters();
   const {
-    query, setQuery, kind, setKind, projectId, setProjectId, workItemId, setWorkItemId,
-    sourceType, setSourceType, yearMonth, setYearMonth, availability, setAvailability,
-    indexStatus, setIndexStatus, mailAccountId, setMailAccountId, mailFolderId, setMailFolderId,
+    query, setQuery, kind, setKind, projectId, setProjectId, setWorkItemId,
+    sourceType, setSourceType, yearMonth, setYearMonth,
+    mailAccountId, setMailAccountId, mailFolderId, setMailFolderId,
     page, resetPage, previousPage, nextPage, resetFilters,
     advancedFilterCount, activeFilterCount, searchQuery,
-  } = useLocalContentFilters();
+  } = filters;
   const [selected, setSelected] = useState<LocalContentRecord | null>(null);
+  const [selectedResource, setSelectedResource] = useState<WorkResource | null>(null);
+  const [libraryView, setLibraryView] = useState<"all" | "tables">("all");
   const [targetTaskId, setTargetTaskId] = useState("");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
@@ -103,16 +102,17 @@ export function LocalLibraryView() {
     enabled: Boolean(previewTarget),
     retry: false,
   });
+  const selectedTarget = selectedResource ?? selected;
   const candidates = useMemo(
-    () => selected ? openTasksFor(selected, workItems.data?.workItems ?? []) : [],
-    [selected, workItems.data?.workItems],
+    () => selectedTarget ? (workItems.data?.workItems ?? []).filter((item) => item.state === "open" && item.status !== "done" && (!selectedTarget.projectId || item.projectId === selectedTarget.projectId)) : [],
+    [selectedTarget, workItems.data?.workItems],
   );
 
   useEffect(() => {
-    if (!selected || !candidates.length) return;
+    if (!selectedTarget || !candidates.length) return;
     if (candidates.some((item) => item.id === targetTaskId)) return;
     setTargetTaskId(candidates.some((item) => item.id === selectedWorkItemId) ? selectedWorkItemId! : candidates[0].id);
-  }, [candidates, selected, selectedWorkItemId, targetTaskId]);
+  }, [candidates, selectedTarget, selectedWorkItemId, targetTaskId]);
 
   useEffect(() => {
     if (advancedFilterCount) setAdvancedOpen(true);
@@ -120,6 +120,7 @@ export function LocalLibraryView() {
 
   function choose(record: LocalContentRecord) {
     setSelected(record);
+    setSelectedResource(null);
     setTargetTaskId("");
     setAddError(null);
     setAddedTask(null);
@@ -128,9 +129,21 @@ export function LocalLibraryView() {
     setCreateTaskTitle(copy.createTaskDefault.replace("{{title}}", record.title));
   }
 
+  function chooseResource(resource: WorkResource) {
+    setSelected(null);
+    setSelectedResource(resource);
+    setTargetTaskId("");
+    setAddError(null);
+    setAddedTask(null);
+    setPurpose("required_input");
+    setCreateProjectId(resource.projectId ?? consoleState?.projects?.[0]?.id ?? "");
+    setCreateTaskTitle(copy.createTaskDefault.replace("{{title}}", resource.displayName));
+  }
+
   function closePicker() {
     if (adding || creatingTask) return;
     setSelected(null);
+    setSelectedResource(null);
     setTargetTaskId("");
     setAddError(null);
     setAddedTask(null);
@@ -153,15 +166,21 @@ export function LocalLibraryView() {
 
   async function addReference() {
     const task = candidates.find((item) => item.id === targetTaskId);
-    if (!selected || !task || adding) return;
+    if (!selectedTarget || !task || adding) return;
     setAdding(true);
     setAddError(null);
     try {
-      const response = await localContentApi.addToWorkItem(task.id, {
-        contentId: selected.id,
-        expectedRevision: task.revision,
-        purpose,
-      });
+      const response = selectedResource
+        ? await workResourceApi.addToWorkItem(task.id, {
+          resourceId: selectedResource.id,
+          expectedRevision: task.revision,
+          purpose: purpose === "reference" ? "reference" : "query_source",
+        })
+        : await localContentApi.addToWorkItem(task.id, {
+          contentId: selected!.id,
+          expectedRevision: task.revision,
+          purpose,
+        });
       const next = response.workItem as LocalWorkItem;
       setAddedTask(next);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "local-content-reference-add", workItemId: next.id } }));
@@ -178,7 +197,7 @@ export function LocalLibraryView() {
   }
 
   async function createTaskAndAddReference() {
-    if (!selected || !createProjectId || !createTaskTitle.trim() || creatingTask) return;
+    if (!selectedTarget || !createProjectId || !createTaskTitle.trim() || creatingTask) return;
     setCreatingTask(true);
     setAddError(null);
     let created: LocalWorkItem | null = null;
@@ -186,15 +205,21 @@ export function LocalLibraryView() {
       const response = await localContentApi.createTask({
         projectId: createProjectId,
         title: createTaskTitle.trim(),
-        body: selected.summary || selected.title,
-        idempotencyKey: `local-content:${selected.id}:${createProjectId}:${createTaskTitle.trim().toLocaleLowerCase()}`.slice(0, 200),
+        body: selectedTarget.summary || ("title" in selectedTarget ? selectedTarget.title : selectedTarget.displayName),
+        idempotencyKey: `work-resource:${selectedTarget.id}:${createProjectId}:${createTaskTitle.trim().toLocaleLowerCase()}`.slice(0, 200),
       });
       created = response.workItem as LocalWorkItem;
-      const attached = await localContentApi.addToWorkItem(created.id, {
-        contentId: selected.id,
-        expectedRevision: created.revision,
-        purpose,
-      });
+      const attached = selectedResource
+        ? await workResourceApi.addToWorkItem(created.id, {
+          resourceId: selectedResource.id,
+          expectedRevision: created.revision,
+          purpose: purpose === "reference" ? "reference" : "query_source",
+        })
+        : await localContentApi.addToWorkItem(created.id, {
+          contentId: selected!.id,
+          expectedRevision: created.revision,
+          purpose,
+        });
       setAddedTask(attached.workItem as LocalWorkItem);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "local-content-task-create", workItemId: created.id } }));
       await workItems.refetch();
@@ -242,8 +267,8 @@ export function LocalLibraryView() {
   const catalog = stats.data?.catalog;
   const hasIndexedContent = (catalog?.total ?? 0) > 0;
   const projects = consoleState?.projects ?? [];
-  const taskProjects = selected?.projectId
-    ? projects.filter((project) => project.id === selected.projectId)
+  const taskProjects = selectedTarget?.projectId
+    ? projects.filter((project) => project.id === selectedTarget.projectId)
     : projects;
   const truncatedFacetGroups = Object.values(catalog?.facets?.coverage ?? {}).filter((coverage) => coverage.truncated).length;
   const records = content.data?.results ?? [];
@@ -265,11 +290,35 @@ export function LocalLibraryView() {
         eyebrow={copy.eyebrow}
         title={copy.title}
         description={copy.description}
-        actions={<Button size="sm" variant="secondary" disabled={rebuilding} onClick={() => void rebuild()}>
+        actions={libraryView === "all" ? <Button size="sm" variant="secondary" disabled={rebuilding} onClick={() => void rebuild()}>
           <RefreshCw className={cn("size-4", rebuilding && "animate-spin")} aria-hidden />
           {rebuilding ? copy.rebuilding : hasIndexedContent ? copy.refresh : copy.build}
-        </Button>}
+        </Button> : undefined}
       />
+
+      <div className="flex flex-wrap gap-2 border-b border-border pb-3" role="tablist" aria-label={copy.title}>
+        <Button size="sm" variant={libraryView === "all" ? "primary" : "ghost"} role="tab" aria-selected={libraryView === "all"} onClick={() => setLibraryView("all")}><Library aria-hidden />{copy.allContentView}</Button>
+        <Button size="sm" variant={libraryView === "tables" ? "primary" : "ghost"} role="tab" aria-selected={libraryView === "tables"} onClick={() => setLibraryView("tables")}><Table2 aria-hidden />{copy.tablesView}</Button>
+      </div>
+
+      <Suspense fallback={<div className="h-40 animate-pulse rounded-xl border border-border bg-muted/40" aria-busy="true" />}>
+        <WorkResourceDirectorySection
+          mode={libraryView}
+          query={query}
+          projectId={projectId}
+          projects={projects}
+          locale={i18n.language}
+          copy={copy}
+          onQueryChange={setQuery}
+          onProjectChange={setProjectId}
+          onChoose={chooseResource}
+          onManage={(resource) => {
+            if (resource.actions.managementSection === "workflowMemory") navigate("workflowMemory");
+          }}
+        />
+      </Suspense>
+
+      {libraryView === "all" ? <div className="space-y-5">
 
       {catalog ? (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground" role="status">
@@ -284,89 +333,25 @@ export function LocalLibraryView() {
       {locateFeedback ? <p className="rounded-lg border border-success/30 bg-success/[0.06] px-3 py-2 text-sm" role="status">{locateFeedback}</p> : null}
       {locateError ? <p className="rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-sm text-destructive" role="alert">{locateError}</p> : null}
 
-      <div className="grid gap-3 rounded-xl border border-border bg-card p-4 sm:grid-cols-[minmax(16rem,1fr)_11rem_14rem]">
-        <Field label={copy.search}>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" aria-hidden />
-            <Input value={query} onChange={(event) => { setQuery(event.target.value); resetPage(); }} placeholder={copy.searchPlaceholder} className="pl-9" />
-          </div>
-        </Field>
-        <Field label={copy.kind}>
-          <Select value={kind} onChange={(event) => {
-            const value = event.target.value as typeof kind;
-            setKind(value);
-            if (value !== "mail") {
-              setMailAccountId("all");
-              setMailFolderId("all");
-            }
-            resetPage();
-          }}>
-            <option value="all">{copy.allKinds}</option>
-            {KINDS.map((value) => <option key={value} value={value}>{copy.kinds[value]}</option>)}
-          </Select>
-        </Field>
-        <Field label={copy.project}>
-          <Select value={projectId} onChange={(event) => { setProjectId(event.target.value); resetPage(); }}>
-            <option value="all">{copy.allProjects}</option>
-            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-          </Select>
-        </Field>
-        <div className="flex flex-wrap items-center justify-end gap-2 sm:col-span-3">
-          <Button size="sm" variant="ghost" onClick={() => setAdvancedOpen((value) => !value)} aria-expanded={advancedOpen}>
-            <ListFilter aria-hidden />
-            {advancedOpen ? copy.hideFilters : copy.moreFilters}
-            {advancedFilterCount ? <span className="rounded-full bg-primary/10 px-1.5 text-xs text-primary">{advancedFilterCount}</span> : null}
-          </Button>
-          {activeFilterCount ? <Button size="sm" variant="ghost" onClick={resetFilters}><X aria-hidden />{copy.clearFilters}</Button> : null}
-        </div>
-      </div>
-
-      {advancedOpen ? <div className="grid gap-3 rounded-xl border border-border/80 bg-card/70 p-4 sm:grid-cols-2 xl:grid-cols-5">
-        <Field label={copy.relatedTask}>
-          <Select value={workItemId} onChange={(event) => { setWorkItemId(event.target.value); resetPage(); }}>
-            <option value="all">{copy.allTasks}</option>
-            {(catalog?.facets?.workItems ?? []).map((facet) => {
-              const task = workItems.data?.workItems.find((item) => item.id === facet.value);
-              return <option key={facet.value} value={facet.value}>{task?.title ?? facet.value} ({facet.count})</option>;
-            })}
-          </Select>
-        </Field>
-        <Field label={copy.sourceType}>
-          <Select value={sourceType} onChange={(event) => { setSourceType(event.target.value); resetPage(); }}>
-            <option value="all">{copy.allSources}</option>
-            {(catalog?.facets?.sources ?? []).map((facet) => <option key={facet.value} value={facet.value}>{sourceLabels[facet.value] ?? facet.value.replaceAll("_", " ")} ({facet.count})</option>)}
-          </Select>
-        </Field>
-        <Field label={copy.month}>
-          <Select value={yearMonth} onChange={(event) => { setYearMonth(event.target.value); resetPage(); }}>
-            <option value="all">{copy.allMonths}</option>
-            {(catalog?.facets?.months ?? []).map((facet) => <option key={facet.value} value={facet.value}>{facet.value} ({facet.count})</option>)}
-          </Select>
-        </Field>
-        <Field label={copy.availability}>
-          <Select value={availability} onChange={(event) => { setAvailability(event.target.value as typeof availability); resetPage(); }}>
-            <option value="all">{copy.allAvailability}</option>
-            <option value="available">{copy.available}</option>
-            <option value="unavailable">{copy.unavailable}</option>
-          </Select>
-        </Field>
-        <Field label={copy.indexState}>
-          <Select value={indexStatus} onChange={(event) => { setIndexStatus(event.target.value as typeof indexStatus); resetPage(); }}>
-            <option value="all">{copy.allIndexStates}</option>
-            <option value="ready">{copy.ready}</option>
-            <option value="partial">{copy.partial}</option>
-            <option value="metadata_only">{copy.metadataOnly}</option>
-            <option value="missing">{copy.missing}</option>
-          </Select>
-        </Field>
-      </div> : null}
+      <Suspense fallback={<div className="h-28 animate-pulse rounded-xl border border-border bg-muted/40" aria-busy="true" />}>
+        <LocalLibraryFilterPanel
+          copy={copy}
+          filters={filters}
+          projects={projects}
+          catalog={catalog}
+          workItems={workItems.data?.workItems ?? []}
+          language={language}
+          advancedOpen={advancedOpen}
+          onAdvancedOpenChange={setAdvancedOpen}
+        />
+      </Suspense>
 
       <div className={cn(hasIndexedContent && "grid items-start gap-4 xl:grid-cols-[17rem_minmax(0,1fr)]")}>
         {hasIndexedContent && catalog ? <Suspense fallback={<div className="h-64 animate-pulse rounded-xl border border-border bg-muted/40" />}><LocalContentDirectory
           copy={copy}
           catalog={catalog}
           projects={projects}
-          sourceLabels={sourceLabels}
+          language={language}
           kind={kind}
           projectId={projectId}
           sourceType={sourceType}
@@ -440,9 +425,10 @@ export function LocalLibraryView() {
           ) : null}
         </div>
       </div>
+      </div> : null}
 
-      {selected ? <Suspense fallback={null}><AddToTaskModal
-        open={Boolean(selected)}
+      {selectedTarget ? <Suspense fallback={null}><AddToTaskModal
+        open={Boolean(selectedTarget)}
         copy={copy}
         adding={adding}
         addedTask={addedTask}

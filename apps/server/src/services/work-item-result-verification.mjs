@@ -71,6 +71,7 @@ export function verifyWorkItemResult(workItem) {
     };
   }
   const outputs = Array.isArray(workItem?.outputAssets) ? workItem.outputAssets : [];
+  const executionArtifacts = Array.isArray(workItem?.executionArtifacts) ? workItem.executionArtifacts : [];
   const checks = contract.checks.map((check) => {
     const matching = outputs.filter((asset) => {
       const extensionMatched = !check.extensions.length || check.extensions.includes(extensionOf(asset));
@@ -80,7 +81,19 @@ export function verifyWorkItemResult(workItem) {
     const usable = matching.filter((asset) => Boolean(asset?.path ?? asset?.originalName)
       && (asset?.size == null || Number(asset.size) > 0));
     const qualified = usable.filter((asset) => qualityMatches(asset, check.quality));
-    const passed = qualified.length >= check.minCount;
+    // A governed Git Worktree diff is the authoritative software-change
+    // artifact. It is not a user-created .diff file, so keep it separate from
+    // file assets while allowing the task's software_change contract to consume
+    // the real changed-file receipt.
+    const qualifiedExecutionArtifacts = executionArtifacts.filter((artifact) =>
+      artifact?.kind === check.kind
+      && artifact.source === "auto_run"
+      && artifact.worktreeId
+      && Number(artifact.changedFileCount) > 0
+      && Array.isArray(artifact.changedFiles)
+      && artifact.changedFiles.length > 0);
+    const qualifiedCount = qualified.length + qualifiedExecutionArtifacts.length;
+    const passed = qualifiedCount >= check.minCount;
     return {
       kind: check.kind,
       status: passed ? "passed" : "failed",
@@ -90,11 +103,16 @@ export function verifyWorkItemResult(workItem) {
         families: check.families,
         ...(check.quality ? { quality: check.quality } : {}),
       },
-      actual: { matchedCount: matching.length, usableCount: usable.length, qualifiedCount: qualified.length },
+      actual: {
+        matchedCount: matching.length + qualifiedExecutionArtifacts.length,
+        usableCount: usable.length + qualifiedExecutionArtifacts.length,
+        qualifiedCount,
+      },
       outputAssetIds: qualified.slice(0, 100).map((asset) => asset.id).filter(Boolean),
+      executionArtifactIds: qualifiedExecutionArtifacts.slice(0, 100).map((artifact) => artifact.id).filter(Boolean),
       summary: passed
-        ? `${check.kind} 已有 ${qualified.length} 个符合格式且内容属性达标的结果。`
-        : `${check.kind} 需要至少 ${check.minCount} 个符合格式且内容属性达标的结果，当前只有 ${qualified.length} 个。`,
+        ? `${check.kind} 已有 ${qualifiedCount} 个符合格式且内容属性达标的结果。`
+        : `${check.kind} 需要至少 ${check.minCount} 个符合格式且内容属性达标的结果，当前只有 ${qualifiedCount} 个。`,
     };
   });
   const verificationChecks = contract.verificationChecks.map((check) => {
@@ -135,6 +153,7 @@ export function verifyWorkItemResult(workItem) {
 
 export function resultVerificationEvidence(workItem, verification = verifyWorkItemResult(workItem)) {
   const assets = new Map((workItem?.outputAssets ?? []).map((asset) => [asset.id, asset]));
+  const executionArtifacts = new Map((workItem?.executionArtifacts ?? []).map((artifact) => [artifact.id, artifact]));
   const assetEvidence = verification.checks.flatMap((check) => (check.outputAssetIds ?? []).map((assetId) => {
     const asset = assets.get(assetId);
     return asset ? {
@@ -147,11 +166,20 @@ export function resultVerificationEvidence(workItem, verification = verifyWorkIt
       terminalId: asset.terminalId ?? null,
     } : null;
   }).filter(Boolean));
+  const executionEvidence = verification.checks.flatMap((check) => (check.executionArtifactIds ?? []).map((artifactId) => {
+    const artifact = executionArtifacts.get(artifactId);
+    return artifact ? {
+      kind: "artifact",
+      ref: artifact.worktreeId,
+      summary: `${check.kind} Git Worktree change (${artifact.changedFileCount} files)`,
+      artifactId: artifact.id,
+    } : null;
+  }).filter(Boolean));
   const verificationEvidence = (verification.verificationChecks ?? []).flatMap((check) => (check.verificationIds ?? []).map((verificationId) => {
     const record = (workItem?.verificationRecords ?? []).find((candidate) => candidate.id === verificationId);
     return record ? { kind: "run", ref: record.id, summary: `${check.kind}验证结果` } : null;
   }).filter(Boolean));
-  return [...assetEvidence, ...verificationEvidence];
+  return [...assetEvidence, ...executionEvidence, ...verificationEvidence];
 }
 
 function metricOf(asset, field) {
