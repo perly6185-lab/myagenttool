@@ -51,22 +51,40 @@ beforeEach(async () => {
 });
 afterEach(() => cleanup());
 
-it("keeps host metadata out of Ordinary mode while offering a direct connection entry", async () => {
+it("loads owned hosts directly in Ordinary mode while hiding professional metadata", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   renderView();
-  expect(await screen.findByText("Connect your computer or server")).toBeTruthy();
-  expect(screen.queryByText("Production website host")).toBeNull();
-  expect(hostApi.list).not.toHaveBeenCalled();
+  expect(await screen.findByRole("heading", { name: "Connect and use my devices" })).toBeTruthy();
+  expect((await screen.findAllByText("Production website host")).length).toBe(2);
+  expect(screen.getByRole("button", { name: "Overview" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Remote files" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Transfers" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
+  expect(screen.queryByText("deploy@host.example:22")).toBeNull();
+  expect(screen.queryByText("host.example")).toBeNull();
+  expect(screen.getByText("Approved folders")).toBeTruthy();
+  expect(screen.getByText("Approved folders only")).toBeTruthy();
+  expect(hostApi.list).toHaveBeenCalledTimes(1);
+  expect(useUiStore.getState().experienceMode).toBe("ordinary");
 });
 
-it("opens host setup directly from Ordinary mode", async () => {
+it("keeps complete connection metadata and settings available in Professional mode", async () => {
+  renderView();
+  expect(await screen.findByText("deploy@host.example:22")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
+  expect(screen.getByText("File ranges")).toBeTruthy();
+  expect(screen.getByText("Governed transfers")).toBeTruthy();
+});
+
+it("opens host setup from Ordinary mode without changing the experience mode", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Start connecting" }));
+  fireEvent.click((await screen.findAllByRole("button", { name: "Connect device" }))[0]);
   expect(await screen.findByRole("heading", { name: "Connect a host" })).toBeTruthy();
   expect(hostApi.list).toHaveBeenCalled();
+  expect(useUiStore.getState().experienceMode).toBe("ordinary");
 });
 
 it("keeps a list-only range read-only and links inaccessible", async () => {
