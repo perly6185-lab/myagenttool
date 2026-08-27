@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createServerState } from "../src/runtime/state-factory.mjs";
+
 import {
   buildDiagnosticResult,
   initialDiagnosticQuestion,
+  initialQuickDiagnosticQuestion,
   judgePrivateTutorAnswer,
+  privateTutorQuickDiagnosticConfig,
   privateTutorQuestion,
   publicQuestion,
   selectNextDiagnosticQuestion,
+  selectNextQuickDiagnosticQuestion,
 } from "../src/services/private-tutor-assessment.mjs";
 
 test("deterministic judging accepts equivalent rational forms without evaluating code", () => {
@@ -77,4 +82,31 @@ test("unmeasured knowledge remains unknown and explicit dont-know is evidence, n
   const measured = result.knowledge.find((item) => item.knowledgeId === "equation-meaning");
   assert.equal(measured.level, "needs_support");
   assert.equal(measured.dontKnowCount, 1);
+});
+
+test("quick diagnostic stays on one selected knowledge point and stops after three questions", () => {
+  const { state } = createServerState({
+    defaultProjectPath: process.cwd(),
+    now: () => "2026-08-27T00:00:00.000Z",
+  });
+  const packageId = "demo-math-foundations-v1";
+  const config = privateTutorQuickDiagnosticConfig(state, packageId, "balance");
+  assert.deepEqual(config, { minQuestions: 3, maxQuestions: 3, targetSeconds: 135 });
+
+  const answers = [];
+  let question = initialQuickDiagnosticQuestion(state, packageId, "balance");
+  while (question) {
+    answers.push({
+      questionRevisionId: question.revisionId,
+      knowledgeId: question.knowledgeId,
+      difficulty: question.difficulty,
+      correct: true,
+      responseKind: "answer",
+    });
+    question = selectNextQuickDiagnosticQuestion(answers, state, packageId, "balance");
+  }
+  assert.equal(answers.length, 3);
+  assert.deepEqual(answers.map((answer) => answer.knowledgeId), ["balance", "balance", "balance"]);
+  assert.deepEqual(answers.map((answer) => answer.difficulty), [1, 2, 3]);
+  assert.equal(privateTutorQuickDiagnosticConfig(state, packageId, "missing"), null);
 });

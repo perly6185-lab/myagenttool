@@ -350,7 +350,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [diagnosticDismissed, setDiagnosticDismissed] = useState(false);
-  const [initialLearningRoute, setInitialLearningRoute] = useState<"choose" | "diagnostic" | "content">("choose");
+  const [initialLearningRoute, setInitialLearningRoute] = useState<"choose" | "quick" | "diagnostic" | "content">("choose");
   const [learningPreferences, setLearningPreferences] = useState<PrivateTutorLearningPreferences>(() => defaultPrivateTutorLearningPreferences(learnerId));
 
   useEffect(() => {
@@ -391,13 +391,16 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
 
   async function finishDiagnostic() {
     try {
+      const quickStart = assessment?.mode === "quick";
       const result = await getPrivateTutorSnapshot();
+      const lesson = quickStart ? await startPrivateTutorSession("easy") : null;
       setLearnerState(serverLearnerState(result.learner, result.snapshot));
       setLearnerModel(result.learnerModel ?? null);
       setStrategyDecision(result.strategyDecision ?? null);
       setLearningPlan(result.learningPlan ?? null);
       setDiagnosticDismissed(true);
-      setTab("map");
+      setTab(quickStart ? "today" : "map");
+      if (lesson) setTutoringSession(lesson.session);
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : "知识地图暂时无法读取，请稍后再试。";
@@ -512,8 +515,21 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     return (
       <InitialLearningRoute
         learnerName={learnerState.learner.displayName}
+        onQuick={() => setInitialLearningRoute("quick")}
         onDiagnostic={() => setInitialLearningRoute("diagnostic")}
         onContent={() => setInitialLearningRoute("content")}
+      />
+    );
+  }
+  if (needsInitialLearningRoute && initialLearningRoute === "quick") {
+    return (
+      <QuickStartExperience
+        learnerName={learnerState.learner.displayName}
+        onBack={() => setInitialLearningRoute("choose")}
+        onStarted={(startedAssessment) => {
+          setAssessment(startedAssessment);
+          setInitialLearningRoute("diagnostic");
+        }}
       />
     );
   }
@@ -610,16 +626,21 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
   );
 }
 
-function InitialLearningRoute({ learnerName, onDiagnostic, onContent }: { learnerName: string; onDiagnostic: () => void; onContent: () => void }) {
+function InitialLearningRoute({ learnerName, onQuick, onDiagnostic, onContent }: { learnerName: string; onQuick: () => void; onDiagnostic: () => void; onContent: () => void }) {
   return (
     <div className="mx-auto flex min-h-[70vh] max-w-4xl items-center justify-center p-4">
       <Card className="w-full overflow-hidden">
         <div className="bg-[linear-gradient(135deg,#059669,#0f766e)] p-7 text-white sm:p-9">
           <p className="text-sm text-emerald-100">你好，{learnerName}</p>
           <h1 className="mt-2 text-3xl font-bold">先选择这次想学什么</h1>
-          <p className="mt-3 max-w-2xl leading-7 text-emerald-50">可以用当前课程先做摸底，也可以先导入自己的教材。选择教材不会被当成已经掌握，历史学习记录也不会被覆盖。</p>
+          <p className="mt-3 max-w-2xl leading-7 text-emerald-50">可以选一个知识点快速开始，也可以做完整摸底或先导入自己的教材。没有测到的内容不会被当成薄弱，历史学习记录也不会被覆盖。</p>
         </div>
-        <div className="grid gap-4 p-6 sm:grid-cols-2 sm:p-8">
+        <div className="grid gap-4 p-6 sm:grid-cols-3 sm:p-8">
+          <button type="button" onClick={onQuick} className="rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-5 text-left transition hover:border-amber-500 dark:border-amber-900 dark:bg-amber-950/30">
+            <Sparkles className="size-8 text-amber-600" />
+            <span className="mt-4 block text-lg font-bold">快速学一个知识点</span>
+            <span className="mt-2 block text-sm leading-6 text-muted-foreground">自己选知识点，完成 3 题后直接进入 5 分钟私教。</span>
+          </button>
           <button type="button" onClick={onDiagnostic} className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/60 p-5 text-left transition hover:border-emerald-500 dark:border-emerald-900 dark:bg-emerald-950/30">
             <BrainCircuit className="size-8 text-emerald-600" />
             <span className="mt-4 block text-lg font-bold">用当前内容开始摸底</span>
@@ -630,6 +651,84 @@ function InitialLearningRoute({ learnerName, onDiagnostic, onContent }: { learne
             <span className="mt-4 block text-lg font-bold">选择课程或导入我的教材</span>
             <span className="mt-2 block text-sm leading-6 text-muted-foreground">支持已有内容包、PDF、Markdown 和文本资料。</span>
           </button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function QuickStartExperience({ learnerName, onBack, onStarted }: { learnerName: string; onBack: () => void; onStarted: (assessment: PrivateTutorAssessment) => void }) {
+  const [activePackage, setActivePackage] = useState<LearningContentPackage | null>(null);
+  const [targetKnowledgeId, setTargetKnowledgeId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    let current = true;
+    void getPrivateTutorActiveContentPackage()
+      .then((pkg) => {
+        if (!current) return;
+        setActivePackage(pkg);
+        setTargetKnowledgeId(pkg?.knowledgeComponents?.[0]?.id ?? "");
+      })
+      .catch(() => {
+        if (current) setMessage("当前学习内容暂时无法读取，请返回后选择课程或教材。");
+      })
+      .finally(() => {
+        if (current) setLoading(false);
+      });
+    return () => { current = false; };
+  }, []);
+
+  async function startQuickDiagnostic() {
+    if (!targetKnowledgeId) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      onStarted(await startPrivateTutorAssessment({ mode: "quick", targetKnowledgeId }));
+    } catch {
+      setMessage("这个知识点暂时没有 3 道可验证的摸底题，请选择其他知识点或使用完整摸底。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const knowledge = activePackage?.knowledgeComponents ?? [];
+  return (
+    <div className="mx-auto min-h-[70vh] max-w-5xl p-4 sm:p-7">
+      <Button variant="secondary" onClick={onBack}>返回开始方式</Button>
+      <Card className="mt-5 overflow-hidden">
+        <div className="bg-[linear-gradient(135deg,#d97706,#b45309)] p-7 text-white sm:p-9">
+          <p className="text-sm text-amber-100">{learnerName}，先从眼前最想解决的一点开始</p>
+          <h1 className="mt-2 text-3xl font-bold">选择一个知识点，3 题后开始学</h1>
+          <p className="mt-3 max-w-2xl leading-7 text-amber-50">约 3 分钟快速摸底，只判断这个知识点；完成后直接进入 5 分钟私教。其他知识不会因为没测到而被判为薄弱。</p>
+        </div>
+        <div className="p-6 sm:p-8">
+          {loading ? <p className="text-sm text-muted-foreground">正在读取当前课程…</p> : null}
+          {!loading && activePackage ? <p className="text-sm font-medium">当前课程：{activePackage.name}</p> : null}
+          {!loading && knowledge.length ? (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {knowledge.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-pressed={targetKnowledgeId === item.id}
+                  onClick={() => setTargetKnowledgeId(item.id)}
+                  className={cn("rounded-xl border-2 p-4 text-left transition", targetKnowledgeId === item.id ? "border-amber-500 bg-amber-50 dark:bg-amber-950/30" : "bg-card hover:border-amber-300")}
+                >
+                  <span className="font-semibold">{item.name}</span>
+                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">{item.shortDescription ?? "先快速确认当前理解，再决定怎样讲。"}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {!loading && !knowledge.length && !message ? <p className="mt-4 text-sm text-muted-foreground">当前课程还没有可选择的知识点。</p> : null}
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <Button size="lg" disabled={busy || loading || !targetKnowledgeId} onClick={() => void startQuickDiagnostic()}>{busy ? "正在准备…" : "开始 3 题快速摸底"}</Button>
+            <span className="text-xs text-muted-foreground">答错不扣分，也不会展示排名。</span>
+          </div>
+          {message ? <p role="alert" className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-200">{message}</p> : null}
         </div>
       </Card>
     </div>
@@ -659,6 +758,7 @@ function DiagnosticExperience({
   const [message, setMessage] = useState("");
   const questionStartedAt = useRef(Date.now());
   const answerKey = useRef(newClientKey("diagnostic"));
+  const quick = assessment?.mode === "quick";
 
   useEffect(() => {
     setAnswer("");
@@ -784,8 +884,8 @@ function DiagnosticExperience({
         <Card className="overflow-hidden">
           <div className="bg-emerald-600 p-7 text-white sm:p-9">
             <Star className="size-11 fill-amber-300 text-amber-300" />
-            <h1 className="mt-4 text-3xl font-bold">我已经更了解你了</h1>
-            <p className="mt-2 text-emerald-50">完成了 {assessment.result.answeredCount} 道自适应题。先看看你已经站稳的地方。</p>
+            <h1 className="mt-4 text-3xl font-bold">{quick ? "3 题快速摸底完成" : "我已经更了解你了"}</h1>
+            <p className="mt-2 text-emerald-50">完成了 {assessment.result.answeredCount} 道{quick ? "定向" : "自适应"}题。{quick ? "现在直接用 5 分钟把这个知识点向前推进。" : "先看看你已经站稳的地方。"}</p>
             {assessment.runtimeValidationId ? <p className="mt-2 text-xs text-emerald-100">其中 {assessment.evidenceAnswerCount ?? 0} 道通过来源量表运行校准并形成受限置信度证据。</p> : null}
           </div>
           <div className="grid gap-5 p-6 sm:grid-cols-2 sm:p-8">
@@ -798,7 +898,7 @@ function DiagnosticExperience({
               <p className="mt-2 text-sm leading-6 text-amber-900 dark:text-amber-100">{focus.length ? focus.join("、") : "继续用新题巩固正在学习的知识点。"}</p>
             </div>
             <div className="sm:col-span-2 text-center">
-              <Button size="lg" disabled={busy} onClick={() => void finish()}>{busy ? "正在生成…" : "看看我的知识地图"}</Button>
+              <Button size="lg" disabled={busy} onClick={() => void finish()}>{busy ? "正在生成…" : quick ? "开始 5 分钟私教" : "看看我的知识地图"}</Button>
               {message ? <p role="alert" className="mt-3 text-sm text-rose-600">{message}</p> : null}
             </div>
           </div>
@@ -813,7 +913,7 @@ function DiagnosticExperience({
   return (
     <div className="mx-auto max-w-4xl p-4 sm:p-7">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div><p className="text-sm font-semibold text-emerald-700">AI 摸底</p><p className="text-xs text-muted-foreground">第 {assessment.answeredCount + 1} 题 · 约 {assessment.minQuestions} 至 {assessment.maxQuestions} 题</p></div>
+        <div><p className="text-sm font-semibold text-emerald-700">{quick ? "3 题快速摸底" : "AI 摸底"}</p><p className="text-xs text-muted-foreground">第 {assessment.answeredCount + 1} 题 · {quick ? `共 ${assessment.maxQuestions} 题` : `约 ${assessment.minQuestions} 至 ${assessment.maxQuestions} 题`}</p></div>
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => void pause()}><CirclePause />暂停</Button>
       </div>
       <div className="mb-6 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} /></div>

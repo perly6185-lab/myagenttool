@@ -23,11 +23,14 @@ import {
   DIAGNOSTIC_MIN_QUESTIONS,
   DIAGNOSTIC_TARGET_SECONDS,
   initialDiagnosticQuestion,
+  initialQuickDiagnosticQuestion,
   judgePrivateTutorAnswer,
   privateTutorDiagnosticConfig,
+  privateTutorQuickDiagnosticConfig,
   privateTutorQuestion,
   publicQuestion,
   selectNextDiagnosticQuestion,
+  selectNextQuickDiagnosticQuestion,
 } from "../services/private-tutor-assessment.mjs";
 import {
   buildPrivateTutorSevenDayPlan,
@@ -2441,23 +2444,39 @@ async function handleAssessmentRoute({
       return true;
     }
     const body = await readJson(req).catch(() => ({}));
+    const mode = body?.mode == null || body?.mode === "full" ? "full" : body?.mode === "quick" ? "quick" : null;
+    const targetKnowledgeId = mode === "quick" ? String(body?.targetKnowledgeId ?? "").trim() : null;
+    if (!mode || (mode === "quick" && !targetKnowledgeId)) {
+      sendJson(res, 400, { error: "invalid_private_tutor_assessment_mode" });
+      return true;
+    }
     if (latest && ["active", "paused"].includes(latest.status)) {
       sendJson(res, 200, { assessment: assessmentView(latest, state), resumed: true });
       return true;
     }
-    if (latest?.status === "completed" && body?.restart !== true) {
+    const latestMode = latest?.mode ?? "full";
+    const sameCompletedAssessment = latest?.status === "completed"
+      && latestMode === mode
+      && (mode !== "quick" || latest.targetKnowledgeId === targetKnowledgeId);
+    if (sameCompletedAssessment && body?.restart !== true) {
       sendJson(res, 200, { assessment: assessmentView(latest, state), resumed: true });
       return true;
     }
-    if (latest?.status === "completed" && body?.restart === true && actor?.privateTutorLearnerId) {
+    if (sameCompletedAssessment && body?.restart === true && actor?.privateTutorLearnerId) {
       sendJson(res, 403, { error: "private_tutor_parent_reverification_required" });
       return true;
     }
     const startedAt = now();
-    const diagnosticConfig = privateTutorDiagnosticConfig(state, contentPackageId);
-    const firstQuestion = initialDiagnosticQuestion(state, contentPackageId);
+    const diagnosticConfig = mode === "quick"
+      ? privateTutorQuickDiagnosticConfig(state, contentPackageId, targetKnowledgeId)
+      : privateTutorDiagnosticConfig(state, contentPackageId);
+    const firstQuestion = mode === "quick"
+      ? initialQuickDiagnosticQuestion(state, contentPackageId, targetKnowledgeId)
+      : initialDiagnosticQuestion(state, contentPackageId);
     if (!firstQuestion || !diagnosticConfig || !contentPackage) {
-      sendJson(res, 409, { error: "private_tutor_published_diagnostic_content_required" });
+      sendJson(res, 409, { error: mode === "quick"
+        ? "private_tutor_quick_diagnostic_content_required"
+        : "private_tutor_published_diagnostic_content_required" });
       return true;
     }
     const assessment = {
@@ -2469,6 +2488,8 @@ async function handleAssessmentRoute({
       subjectId: contentPackage.subjectId,
       activationId: activation?.id ?? null,
       activationStatus: "active",
+      mode,
+      targetKnowledgeId,
       status: "active",
       revision: 1,
       startedAt,
@@ -2487,7 +2508,7 @@ async function handleAssessmentRoute({
       updatedAt: startedAt,
     };
     state.privateTutorAssessments.unshift(assessment);
-    recordAudit(state, { learner, actor, action: "diagnostic_started", details: { assessmentId: assessment.id }, now, nextId });
+    recordAudit(state, { learner, actor, action: "diagnostic_started", details: { assessmentId: assessment.id, mode, targetKnowledgeId }, now, nextId });
     persistStateSoon();
     sendJson(res, 201, { assessment: assessmentView(assessment, state), resumed: false });
     return true;
@@ -2649,7 +2670,9 @@ async function handleAssessmentRoute({
   assessment.questionPresentedAt = createdAt;
   assessment.revision += 1;
   assessment.updatedAt = createdAt;
-  const nextQuestion = selectNextDiagnosticQuestion(assessment.answerSummaries, state, assessment.contentPackageId);
+  const nextQuestion = assessment.mode === "quick"
+    ? selectNextQuickDiagnosticQuestion(assessment.answerSummaries, state, assessment.contentPackageId, assessment.targetKnowledgeId)
+    : selectNextDiagnosticQuestion(assessment.answerSummaries, state, assessment.contentPackageId);
   assessment.currentQuestionRevisionId = nextQuestion?.revisionId ?? null;
   if (!nextQuestion) {
     assessment.status = "completed";
@@ -2671,7 +2694,7 @@ async function handleAssessmentRoute({
       learner,
       actor,
       action: "diagnostic_completed",
-      details: { assessmentId, answeredCount: assessment.answerSummaries.length },
+      details: { assessmentId, answeredCount: assessment.answerSummaries.length, mode: assessment.mode ?? "full", targetKnowledgeId: assessment.targetKnowledgeId ?? null },
       now,
       nextId,
     });
@@ -3217,6 +3240,8 @@ function assessmentView(assessment, state) {
     contentPackageVersion: assessment.contentPackageVersion ?? null,
     subjectId: assessment.subjectId ?? "math",
     activationId: assessment.activationId ?? null,
+    mode: assessment.mode ?? "full",
+    targetKnowledgeId: assessment.targetKnowledgeId ?? null,
     status: assessment.status,
     revision: assessment.revision,
     startedAt: assessment.startedAt,
