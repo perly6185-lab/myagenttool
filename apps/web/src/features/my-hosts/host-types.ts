@@ -75,10 +75,28 @@ export interface HostDiagnosticParameters {
   serviceName?: string;
 }
 
+export type HostDiagnosticSeverity = "healthy" | "info" | "warning" | "critical" | "unknown";
+
+export interface HostDiagnosticFact {
+  key: string;
+  value: string;
+  severity: HostDiagnosticSeverity;
+}
+
+export interface HostDiagnosticSummary {
+  version: 1;
+  severity: HostDiagnosticSeverity;
+  finding: string;
+  impact: string;
+  nextAction: string;
+  facts: HostDiagnosticFact[];
+}
+
 export interface HostDiagnosticResult {
   action: HostDiagnosticAction;
   command: string;
   output: string;
+  summary: HostDiagnosticSummary;
   parameters?: HostDiagnosticParameters;
   resolvedAddress?: string;
 }

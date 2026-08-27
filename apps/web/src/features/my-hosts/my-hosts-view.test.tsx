@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { i18n } from "@/lib/i18n";
+import { ApiError } from "@/lib/api/request";
 import { useUiStore } from "@/store/ui-store";
 import { hostApi } from "./host-api";
 import type { HostFileScope, SshHost } from "./host-types";
@@ -46,7 +47,7 @@ beforeEach(async () => {
   ] });
   vi.mocked(hostApi.transfers).mockResolvedValue({ transfers: [], count: 0 });
   vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
-  vi.mocked(hostApi.diagnose).mockResolvedValue({ result: { action: "disk_usage", command: "df -h", output: "Filesystem\n/dev/sda1 20G 8G 12G 40% /" } });
+  vi.mocked(hostApi.diagnose).mockResolvedValue({ result: { action: "disk_usage", command: "df -h", output: "Filesystem\n/dev/sda1 20G 8G 12G 40% /", summary: { version: 1, severity: "healthy", finding: "disk_capacity_healthy", impact: "no_issue_detected", nextAction: "no_action_needed", facts: [{ key: "disk_used_percent", value: "40%", severity: "healthy" }] } } });
   vi.mocked(hostApi.planDiagnostic).mockResolvedValue({ plan: { action: "disk_usage", command: "df -h", risk: "read_only" } });
 });
 afterEach(() => cleanup());
@@ -321,8 +322,51 @@ it("turns a plain-language host request into a reviewed read-only diagnostic", a
   fireEvent.click(screen.getByRole("button", { name: "Confirm and run" }));
   await waitFor(() => expect(hostApi.diagnose).toHaveBeenCalledWith(host.id, "disk_usage"));
   expect(await screen.findByText(/Filesystem/)).toBeTruthy();
-  expect(await screen.findByTestId("diagnostic-insights")).toBeTruthy();
+  expect(await screen.findByTestId("diagnostic-summary")).toBeTruthy();
   expect(assistant).toBeTruthy();
+});
+
+it("gives ordinary users a conclusion, impact, and next step before technical evidence", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.diagnose).mockResolvedValue({ result: {
+    action: "disk_usage",
+    command: "df -h",
+    output: "Filesystem\n/dev/private-volume 20G 19G 1G 95% /private/path",
+    resolvedAddress: "10.10.10.222",
+    summary: { version: 1, severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space", facts: [{ key: "disk_used_percent", value: "95%", severity: "critical" }] },
+  } });
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Check device space" }));
+  expect(screen.getByText("remaining space and the highest usage level")).toBeTruthy();
+  expect(screen.queryByText("df -h")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Confirm check" }));
+
+  expect(await screen.findByText("Device space is critically low")).toBeTruthy();
+  expect(screen.getByText(/Uploading, saving, or publishing files may fail/)).toBeTruthy();
+  expect(screen.getByText(/Free device space, then check the target file/)).toBeTruthy();
+  expect(screen.getByText("95%")).toBeTruthy();
+  const evidence = screen.getByText("Technical evidence").closest("details") as HTMLDetailsElement;
+  expect(evidence.open).toBe(false);
+  fireEvent.click(screen.getByText("Technical evidence"));
+  expect(evidence.open).toBe(true);
+  expect(screen.getByText("df -h")).toBeTruthy();
+  expect(screen.getByText(/private-volume/)).toBeTruthy();
+  expect(screen.getByText(/10\.10\.10\.222/)).toBeTruthy();
+});
+
+it("explains a timed-out read-only check without leaking the error code or implying a device change", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.diagnose).mockRejectedValue(new ApiError("ssh_fixed_command_timeout", "private socket detail", 502));
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Check memory use" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm check" }));
+
+  expect(await screen.findByText(/The check timed out.*No device settings or files were changed/)).toBeTruthy();
+  expect(screen.queryByText("ssh_fixed_command_timeout")).toBeNull();
+  expect(screen.queryByText("private socket detail")).toBeNull();
+  expect(screen.getByRole("button", { name: "Confirm check" })).toBeTruthy();
 });
 
 it("previews approved text files without executing their contents", async () => {

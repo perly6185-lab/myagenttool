@@ -194,8 +194,11 @@ export function sshDiagnosticCommand(action, parameters = {}) {
 export function sshDiagnosticActionForInput(input) {
   const value = String(input ?? "").trim().toLocaleLowerCase();
   if (!value) return null;
+  if (/(?:&&|\|\||[;`$<>])/.test(value)) return null;
   if (/磁盘|硬盘|空间|容量|disk|storage/.test(value)) return "disk_usage";
   if (/内存|memory|ram|交换/.test(value)) return "memory_usage";
+  if (/日志|事件|log|journal/.test(value)) return "recent_logs";
+  if (/网络|网卡|地址|network|interface/.test(value)) return "network_info";
   if (/系统|内核|版本|system|kernel|os/.test(value)) return "system_info";
   if (/服务状态|服务运行|service status|service health/.test(value)) return "service_status";
   if (/运行|在线|uptime|负载|load/.test(value)) return "uptime";
