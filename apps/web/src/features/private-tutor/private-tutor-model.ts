@@ -78,6 +78,7 @@ export interface MaterialExtraction {
     attempted: boolean;
     state: "not_required" | "unavailable" | "completed" | "failed";
     providerId: string | null;
+    providerVersion?: string | null;
     reason: string | null;
   };
   warnings: MaterialExtractionWarning[];
@@ -90,6 +91,13 @@ export interface MaterialDocument {
   fileType: "markdown" | "pdf" | "plain_text";
   fileSize: number;
   sourceHash: string;
+  managedSource?: {
+    storage: "managed_local";
+    relativePath: string;
+    originalName: string;
+    sourceHash: string;
+    byteSize: number;
+  };
   status: "uploaded" | "parsing" | "parsed" | "needs_ocr" | "draft_ready" | "published" | "failed" | "empty";
   rawText?: string;
   pages?: MaterialPage[];
@@ -97,6 +105,26 @@ export interface MaterialDocument {
   extraction?: MaterialExtraction;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PrivateTutorOcrJob {
+  id: string;
+  materialId: string;
+  learningProfileId: string;
+  sourceHash: string;
+  status: "queued" | "running" | "completed" | "needs_review" | "failed" | "cancelled";
+  cloudAllowed: boolean;
+  providerId: string | null;
+  totalPages: number | null;
+  completedPages: number;
+  resumedPages: number;
+  attempts: number;
+  failureCode: string | null;
+  failureMessage: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
 }
 
 export interface DraftSourceRef {

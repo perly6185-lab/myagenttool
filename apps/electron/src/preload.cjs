@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("myagenttoolDesktop", {
   pickLocalOfficeDocument: () => ipcRenderer.invoke("documents:pick-local-office"),
   pickWorkflowSourceFolder: () => ipcRenderer.invoke("workflow-memory:pick-source-folder"),
   pickWorkflowCaseFiles: () => ipcRenderer.invoke("workflow-memory:pick-case-files"),
+  importPrivateTutorLocalMaterial: (input) => ipcRenderer.invoke("private-tutor:import-local-material", input),
   stageWorkflowCase: (input) => ipcRenderer.invoke("workflow-memory:stage-case", input),
   copySelectedOfficeDocument: (input) => ipcRenderer.invoke("documents:copy-selected-office", input),
   openContainedOfficeDocument: (input) => ipcRenderer.invoke("documents:open-contained-office", input),

@@ -105,6 +105,7 @@ export const persistedArrayKeys = [
   "privateTutorKnowledgeComponents",
   "privateTutorSubjectPlugins",
   "privateTutorMaterialDocuments",
+  "privateTutorOcrJobs",
   "privateTutorKnowledgeMapDrafts",
   "privateTutorLearningPreferences",
   "privateTutorLearningTrials",

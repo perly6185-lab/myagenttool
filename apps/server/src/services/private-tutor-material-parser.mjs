@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createLocalWorkflowOcrAdapter } from "./workflow-ocr-adapter.mjs";
 
 export const PRIVATE_TUTOR_MATERIAL_PARSER_VERSION = 2;
-export const PRIVATE_TUTOR_MATERIAL_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const PRIVATE_TUTOR_MATERIAL_MAX_FILE_BYTES = 100 * 1024 * 1024;
+export const PRIVATE_TUTOR_MATERIAL_MAX_LOCAL_FILE_BYTES = 512 * 1024 * 1024;
 export const PRIVATE_TUTOR_MATERIAL_MAX_PDF_PAGES = 300;
 
 const MAX_RAW_TEXT_CHARS = 500_000;
@@ -28,18 +29,58 @@ export class PrivateTutorMaterialParseError extends Error {
 export async function parseUploadedMaterialDocument(input, {
   ocrAdapter = createLocalWorkflowOcrAdapter(),
   extractPdf = extractPrivateTutorPdfPages,
+  sourceStore = null,
 } = {}) {
   const normalizedType = normalizeFileType(input?.fileType, input?.fileName ?? "");
   if (normalizedType !== "pdf") return parseMaterialDocument(input);
   validateMaterialIdentity(input, normalizedType);
   const bytes = decodePdfBytes(input.fileContent, input.fileEncoding);
   validateFileSize(bytes.length, input.fileSize);
+  return parsePrivateTutorPdfBytes(input, bytes, { ocrAdapter, extractPdf, sourceStore });
+}
+
+export async function parsePrivateTutorMaterialPath(input, {
+  ocrAdapter = createLocalWorkflowOcrAdapter(),
+  extractPdf = extractPrivateTutorPdfPages,
+  sourceStore = null,
+  maxFileBytes = PRIVATE_TUTOR_MATERIAL_MAX_LOCAL_FILE_BYTES,
+} = {}) {
+  const normalizedType = normalizeFileType(input?.fileType, input?.fileName ?? input?.path ?? "");
+  if (normalizedType !== "pdf") throw new PrivateTutorMaterialParseError("unsupported_file_type");
+  validateMaterialIdentity(input, normalizedType);
+  let path;
+  let info;
+  try {
+    path = realpathSync(input.path);
+    info = statSync(path);
+  } catch {
+    throw new PrivateTutorMaterialParseError("private_tutor_material_source_unavailable", "The selected local file is unavailable.");
+  }
+  if (!info.isFile()) throw new PrivateTutorMaterialParseError("private_tutor_material_source_invalid", "The selected local path is not a file.");
+  validateFileSize(info.size, input.fileSize ?? info.size, maxFileBytes);
+  const bytes = readFileSync(path);
+  return parsePrivateTutorPdfBytes({ ...input, fileType: normalizedType, fileSize: info.size }, bytes, {
+    ocrAdapter,
+    extractPdf,
+    sourceStore,
+  });
+}
+
+async function parsePrivateTutorPdfBytes(input, bytes, { ocrAdapter, extractPdf, sourceStore }) {
   if (bytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
     throw new PrivateTutorMaterialParseError("invalid_pdf_signature", "The uploaded file is not a valid PDF.");
   }
 
   const now = input.now ?? new Date().toISOString();
   const sourceHash = createHash("sha256").update(bytes).digest("hex");
+  const managedSource = typeof sourceStore === "function"
+    ? await sourceStore({
+        bytes,
+        sourceHash,
+        fileName: input.fileName,
+        fileType: "pdf",
+      })
+    : null;
   const extraction = await extractPdf(bytes);
   let pages = extraction.pages;
   const warnings = [...extraction.warnings];
@@ -100,6 +141,7 @@ export async function parseUploadedMaterialDocument(input, {
     fileType: "pdf",
     fileSize: bytes.length,
     sourceHash,
+    ...(managedSource ? { managedSource } : {}),
     status,
     pages,
     sections,
@@ -119,6 +161,57 @@ export async function parseUploadedMaterialDocument(input, {
       warnings: dedupeWarnings(warnings),
     },
     createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function applyPrivateTutorOcrResult(materialDocument, recognized, now = new Date().toISOString()) {
+  if (!materialDocument || materialDocument.fileType !== "pdf") {
+    throw new PrivateTutorMaterialParseError("private_tutor_ocr_material_invalid", "OCR requires a PDF material document.");
+  }
+  const pageCount = Number(materialDocument.extraction?.pageCount) || materialDocument.pages?.length || 0;
+  if (!pageCount || !Array.isArray(materialDocument.pages) || materialDocument.pages.length !== pageCount) {
+    throw new PrivateTutorMaterialParseError("private_tutor_ocr_material_invalid", "OCR requires the original PDF page index.");
+  }
+  const pages = mergeOcrPages(materialDocument.pages, recognized?.pages, pageCount);
+  const quality = pdfTextQuality(pages, pageCount);
+  const needsOcr = quality.needsOcr;
+  let sections = needsOcr ? [] : parsePdfTextSections(pages.map(
+    (page) => `--- Page ${page.pageNumber} ---\n${page.text}`,
+  ).join("\n"));
+  if (!needsOcr && sections.length === 0) sections = pdfPageSections(pages, materialDocument.fileName);
+  const retainedWarnings = (materialDocument.extraction?.warnings ?? []).filter((warning) => ![
+    "local_ocr_unavailable",
+    "local_ocr_failed",
+    "pages_with_little_or_no_text",
+  ].includes(warning.code));
+  if (quality.lowTextPageNumbers.length > 0) {
+    retainedWarnings.push({ code: "pages_with_little_or_no_text", pageNumbers: quality.lowTextPageNumbers });
+  }
+  return {
+    ...materialDocument,
+    status: needsOcr ? "needs_ocr" : "parsed",
+    pages,
+    sections,
+    extraction: {
+      ...materialDocument.extraction,
+      state: needsOcr ? "needs_ocr" : "ready",
+      method: "pdf_text_with_local_ocr",
+      processedPageCount: pages.length,
+      characterCount: quality.characterCount,
+      textPageCount: quality.textPageCount,
+      lowTextPageNumbers: quality.lowTextPageNumbers,
+      needsOcr,
+      ocr: {
+        required: true,
+        attempted: true,
+        state: "completed",
+        providerId: recognized?.providerId ?? null,
+        providerVersion: recognized?.providerVersion ?? null,
+        reason: needsOcr ? "private_tutor_ocr_text_quality_insufficient" : null,
+      },
+      warnings: dedupeWarnings(retainedWarnings),
+    },
     updatedAt: now,
   };
 }
@@ -219,11 +312,11 @@ function materialId(learningProfileId, sourceHash) {
   return `mat_${fingerprint.slice(0, 16)}`;
 }
 
-function validateFileSize(actualSize, declaredSize) {
+function validateFileSize(actualSize, declaredSize, maxBytes = PRIVATE_TUTOR_MATERIAL_MAX_FILE_BYTES) {
   if (actualSize < 1) throw new PrivateTutorMaterialParseError("material_file_empty", "The uploaded file is empty.");
-  if (actualSize > PRIVATE_TUTOR_MATERIAL_MAX_FILE_BYTES
-    || (declaredSize != null && Number(declaredSize) > PRIVATE_TUTOR_MATERIAL_MAX_FILE_BYTES)) {
-    throw new PrivateTutorMaterialParseError("file_size_exceeds_limit", "The uploaded file exceeds the 10 MB limit.");
+  if (actualSize > maxBytes
+    || (declaredSize != null && Number(declaredSize) > maxBytes)) {
+    throw new PrivateTutorMaterialParseError("file_size_exceeds_limit", `The uploaded file exceeds the ${Math.floor(maxBytes / 1024 / 1024)} MB limit.`);
   }
   if (declaredSize != null && (!Number.isSafeInteger(Number(declaredSize)) || Number(declaredSize) !== actualSize)) {
     throw new PrivateTutorMaterialParseError("material_file_size_mismatch", "The uploaded byte count does not match the declared file size.");

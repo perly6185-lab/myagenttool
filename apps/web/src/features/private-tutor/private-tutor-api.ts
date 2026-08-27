@@ -7,9 +7,10 @@ import type {
   KnowledgeMapDraft,
   LearningContentPackage,
   MaterialDocument,
+  PrivateTutorOcrJob,
 } from "./private-tutor-model";
 
-export type { AuthoredContentVersion, ContentSourceType, KnowledgeGraphData, KnowledgeMapDraft, LearningContentPackage, MaterialDocument };
+export type { AuthoredContentVersion, ContentSourceType, KnowledgeGraphData, KnowledgeMapDraft, LearningContentPackage, MaterialDocument, PrivateTutorOcrJob };
 
 export interface PrivateTutorLearner {
   id: string;
@@ -1183,6 +1184,45 @@ export async function getPrivateTutorMaterial(materialId: string) {
     `/api/private-tutor/materials/${encodeURIComponent(materialId)}`,
   );
   return result.material;
+}
+
+export async function startPrivateTutorMaterialOcr(materialId: string, input: { cloudAllowed: boolean }) {
+  return request<{ job: PrivateTutorOcrJob; replayed: boolean }>(
+    "POST",
+    `/api/private-tutor/materials/${encodeURIComponent(materialId)}/ocr-jobs`,
+    input,
+  );
+}
+
+export async function listPrivateTutorMaterialOcrJobs(materialId: string) {
+  const result = await request<{ jobs: PrivateTutorOcrJob[] }>(
+    "GET",
+    `/api/private-tutor/materials/${encodeURIComponent(materialId)}/ocr-jobs`,
+  );
+  return result.jobs;
+}
+
+export async function getPrivateTutorOcrJob(jobId: string) {
+  return request<{ job: PrivateTutorOcrJob; material: MaterialDocument | null }>(
+    "GET",
+    `/api/private-tutor/ocr-jobs/${encodeURIComponent(jobId)}`,
+  );
+}
+
+export async function retryPrivateTutorOcrJob(jobId: string, input: { cloudAllowed: boolean }) {
+  return request<{ job: PrivateTutorOcrJob }>(
+    "POST",
+    `/api/private-tutor/ocr-jobs/${encodeURIComponent(jobId)}/retry`,
+    input,
+  );
+}
+
+export async function cancelPrivateTutorOcrJob(jobId: string) {
+  return request<{ job: PrivateTutorOcrJob }>(
+    "POST",
+    `/api/private-tutor/ocr-jobs/${encodeURIComponent(jobId)}/cancel`,
+    {},
+  );
 }
 
 export async function deletePrivateTutorMaterial(materialId: string) {

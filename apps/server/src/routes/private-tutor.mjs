@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { hashPassword, verifyPassword } from "../runtime/auth.mjs";
 import {
   applyPrivateTutorAttemptToSnapshot as applyAttemptToSnapshot,
@@ -203,9 +204,42 @@ export async function handlePrivateTutorRoutes({
   persistStateNow,
   finalizePrivateTutorLearnerDeletion,
   privateTutorReleaseBuildId = "development-unversioned",
+  privateTutorMaterialOcrService = null,
+  desktopToken = "",
 }) {
   if (!url.pathname.startsWith("/api/private-tutor/")) return false;
   ensureCollections(state);
+  if (url.pathname === "/api/private-tutor/internal/local-materials") {
+    const actualToken = Buffer.from(String(req.headers["x-desktop-credential-token"] ?? ""));
+    const expectedToken = Buffer.from(String(desktopToken ?? ""));
+    if (!expectedToken.length || actualToken.length !== expectedToken.length || !timingSafeEqual(actualToken, expectedToken)) {
+      sendJson(res, 404, { error: "not_found" });
+      return true;
+    }
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const learnerId = actor?.privateTutorLearnerId || actor?.userId;
+    if (!learnerId || !privateTutorMaterialOcrService) {
+      sendJson(res, 503, { error: "private_tutor_local_import_unavailable" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    try {
+      const result = await privateTutorMaterialOcrService.importLocalPath(body.path, learnerId, {
+        startOcr: body.startOcr === true,
+        cloudAllowed: body.cloudAllowed === true,
+      });
+      sendJson(res, result.replayed ? 200 : 201, result);
+    } catch (error) {
+      sendJson(res, Number(error?.status) || 400, {
+        error: String(error?.code ?? error?.message ?? "private_tutor_local_import_failed"),
+        message: String(error?.message ?? "Local import failed.").slice(0, 500),
+      });
+    }
+    return true;
+  }
   const pilotLifecycle = applyPrivateTutorPilotLifecycle(state, now());
   if (pilotLifecycle.completed > 0) (persistStateNow ?? persistStateSoon)();
   const initialReadiness = privateTutorReleaseReadiness(state, privateTutorReleaseBuildId, now());
@@ -393,6 +427,8 @@ export async function handlePrivateTutorRoutes({
           fileContent: body.fileContent,
           fileEncoding: body.fileEncoding,
           fileSize: body.fileSize,
+        }, {
+          sourceStore: privateTutorMaterialOcrService?.storeSource ?? null,
         });
         const existingIndex = state.privateTutorMaterialDocuments.findIndex((item) =>
           item.learningProfileId === learnerId && item.sourceHash === doc.sourceHash);
@@ -406,6 +442,81 @@ export async function handlePrivateTutorRoutes({
           error,
           message: String(err?.message ?? error).slice(0, 500),
         });
+      }
+      return true;
+    }
+    sendJson(res, 405, { error: "method_not_allowed" });
+    return true;
+  }
+
+  const materialOcrJobsMatch = url.pathname.match(/^\/api\/private-tutor\/materials\/([^/]+)\/ocr-jobs$/);
+  if (materialOcrJobsMatch) {
+    const learnerId = actor?.privateTutorLearnerId || actor?.userId;
+    if (!learnerId) {
+      sendJson(res, 403, { error: "private_tutor_learner_required" });
+      return true;
+    }
+    if (!privateTutorMaterialOcrService) {
+      sendJson(res, 503, { error: "private_tutor_ocr_service_unavailable" });
+      return true;
+    }
+    const materialId = decodeURIComponent(materialOcrJobsMatch[1]);
+    const material = state.privateTutorMaterialDocuments.find((item) => item.id === materialId && item.learningProfileId === learnerId);
+    if (!material) {
+      sendJson(res, 404, { error: "material_not_found" });
+      return true;
+    }
+    if (req.method === "GET") {
+      sendJson(res, 200, { jobs: privateTutorMaterialOcrService.listJobs(learnerId, material.id) });
+      return true;
+    }
+    if (req.method === "POST") {
+      const body = await readJson(req).catch(() => ({}));
+      try {
+        const result = privateTutorMaterialOcrService.start(material, learnerId, {
+          cloudAllowed: body.cloudAllowed === true,
+        });
+        sendJson(res, result.replayed ? 200 : 202, result);
+      } catch (error) {
+        sendJson(res, Number(error?.status) || 400, { error: String(error?.code ?? error?.message ?? "private_tutor_ocr_start_failed") });
+      }
+      return true;
+    }
+    sendJson(res, 405, { error: "method_not_allowed" });
+    return true;
+  }
+
+  const ocrJobMatch = url.pathname.match(/^\/api\/private-tutor\/ocr-jobs\/([^/]+)(?:\/(retry|cancel))?$/);
+  if (ocrJobMatch) {
+    const learnerId = actor?.privateTutorLearnerId || actor?.userId;
+    if (!learnerId) {
+      sendJson(res, 403, { error: "private_tutor_learner_required" });
+      return true;
+    }
+    if (!privateTutorMaterialOcrService) {
+      sendJson(res, 503, { error: "private_tutor_ocr_service_unavailable" });
+      return true;
+    }
+    const job = privateTutorMaterialOcrService.getJob(decodeURIComponent(ocrJobMatch[1]), learnerId);
+    if (!job) {
+      sendJson(res, 404, { error: "private_tutor_ocr_job_not_found" });
+      return true;
+    }
+    const action = ocrJobMatch[2] ?? null;
+    if (!action && req.method === "GET") {
+      const material = state.privateTutorMaterialDocuments.find((item) => item.id === job.materialId && item.learningProfileId === learnerId) ?? null;
+      sendJson(res, 200, { job, material });
+      return true;
+    }
+    if (req.method === "POST" && action) {
+      const body = await readJson(req).catch(() => ({}));
+      try {
+        const updated = action === "retry"
+          ? privateTutorMaterialOcrService.retry(job, learnerId, { cloudAllowed: body.cloudAllowed })
+          : privateTutorMaterialOcrService.cancel(job, learnerId);
+        sendJson(res, 200, { job: updated });
+      } catch (error) {
+        sendJson(res, Number(error?.status) || 400, { error: String(error?.code ?? error?.message ?? "private_tutor_ocr_job_operation_failed") });
       }
       return true;
     }
@@ -433,7 +544,9 @@ export async function handlePrivateTutorRoutes({
     }
     if (req.method === "DELETE") {
       const deactivation = deactivateMaterialDerivedLearning(state, doc, now());
+      privateTutorMaterialOcrService?.removeMaterialArtifacts(doc);
       state.privateTutorMaterialDocuments = state.privateTutorMaterialDocuments.filter((d) => d.id !== materialId);
+      state.privateTutorOcrJobs = state.privateTutorOcrJobs.filter((job) => job.materialId !== materialId);
       state.privateTutorKnowledgeMapDrafts = state.privateTutorKnowledgeMapDrafts.filter((d) => d.materialDocumentId !== materialId);
       persistStateSoon();
       sendJson(res, 200, { deleted: true, deactivation });

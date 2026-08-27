@@ -56,6 +56,7 @@ export function ensurePrivateTutorCollections(state) {
     "privateTutorKnowledgeComponents",
     "privateTutorSubjectPlugins",
     "privateTutorMaterialDocuments",
+    "privateTutorOcrJobs",
     "privateTutorKnowledgeMapDrafts",
     "privateTutorRuntimeValidations",
     "privateTutorPackageActivations",

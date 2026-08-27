@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { bundledAgentEnv } from "./bundled-agent-runtime.mjs";
 import { overlayFromChrome, readSkinSettings, registerSkinChrome } from "./skin-chrome.mjs";
 import { registerContainedAssetOpen, registerContainedAssetReveal, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, registerWorkflowSourceFolderPicker, resolveContainedFile } from "./local-office-document-picker.mjs";
+import { registerPrivateTutorMaterialPicker } from "./private-tutor-material-picker.mjs";
 import { registerWorkflowCaseIntake } from "./workflow-case-intake.mjs";
 import { registerMailAccountConnector } from "./mail-account-connector.mjs";
 import { registerMailAttachmentHandler } from "./mail-attachment-handler.mjs";
@@ -229,6 +230,21 @@ function createMainWindow(url, serverUrl) {
   registerLocalOfficeDocumentPicker({ ipcMain, dialog, getWindow: () => mainWindow, getWorktrees: async () => (await getState()).worktrees ?? [] });
   registerWorkflowSourceFolderPicker({ ipcMain, dialog, getWindow: () => mainWindow });
   registerWorkflowCaseIntake({ ipcMain, dialog, getWindow: () => mainWindow, getState });
+  registerPrivateTutorMaterialPicker({
+    ipcMain,
+    dialog,
+    getWindow: () => mainWindow,
+    requestServer: async (body) => {
+      const response = await fetch(`${serverUrl}/api/private-tutor/internal/local-materials`, {
+        method: "POST",
+        headers: { ...loopbackHeaders, "X-Desktop-Credential-Token": desktopCredentialToken, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.message ?? payload?.error ?? "本地教材导入失败。");
+      return payload;
+    },
+  });
   registerContainedOfficeDocumentOpen({ ipcMain, getState, openPath: (path) => shell.openPath(path) });
   registerContainedAssetOpen({ ipcMain, getState, openPath: (path) => shell.openPath(path) });
   registerContainedAssetReveal({ ipcMain, getState, revealPath: (path) => shell.showItemInFolder(path) });
