@@ -43,7 +43,7 @@ export const zhCNResources = {
         settings: { label: "我的设置", blurb: "高级能力、治理、资源与运行记录" },
         privateTutor: { label: "我的私教", blurb: "围绕我正在学的内容，找到真正不会的地方并把它学会" },
         planning: { label: "规划", blurb: "本地项目列表与状态看板" },
-        dashboard: { label: "我的首页", blurb: "发起任务并查看真正需要你处理的事项" }, mail: { label: "我的邮箱", blurb: "收发邮件并继续整理成工作" }, localLibrary: { label: "我的资料", blurb: "查找本地原件并引用到任务" }, mySite: { label: "我的站点", blurb: "发布和维护你的官网内容" }, me: { label: "我的设置", blurb: "本地账号、语言、外观及更多设置" }, workBoard: { label: "任务状态", blurb: "需要时查看任务的生命周期状态" },
+        dashboard: { label: "我的首页", blurb: "发起任务并查看真正需要你处理的事项" }, mail: { label: "我的邮箱", blurb: "收发邮件并继续整理成工作" }, localLibrary: { label: "我的资料", blurb: "跨任务查找可复用原件和已连接业务数据" }, mySite: { label: "我的站点", blurb: "发布和维护你的官网内容" }, me: { label: "我的设置", blurb: "本地账号、语言、外观及更多设置" }, workBoard: { label: "任务状态", blurb: "需要时查看任务的生命周期状态" },
         workspace: { label: "工作区", blurb: "集中查看项目文件、记录与历史" }, documents: { label: "资产", blurb: "预览和管理项目文档、图纸、图片与视频" }, workflowMemory: { label: "我的模板", blurb: "从本地历史工作中学习可复用的处理方法" }, canvas: { label: "画布", blurb: "绘制和编辑图表及 Excalidraw 场景" },
         autoRuns: { label: "自动运行", blurb: "任务的自主执行与交付" }, task: { label: "任务", blurb: "由你或 AI 处理的本地任务" }, externalWork: { label: "外部协作", blurb: "来自代码托管平台的 Issue 与合并请求" }, compare: { label: "对比", blurb: "让多个 Agent 并行执行同一任务" }, automation: { label: "自动化", blurb: "由触发器运行 Agent 的规则" }, routines: { label: "例行任务", blurb: "定时自主检查及其发现" },
         approvals: { label: "审批", blurb: "集中处理所有待人工决策" }, evidence: { label: "证据", blurb: "每次运行的评审、审计与排障" }, review: { label: "代码审查", blurb: "Codex 和 Claude 的技术差异审查发现" }, evalTrend: { label: "能力", blurb: "真实 Agent 的评测趋势与回归" }, audit: { label: "审计", blurb: "记录了什么以及为什么" },

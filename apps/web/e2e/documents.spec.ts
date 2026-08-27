@@ -71,6 +71,13 @@ test("opens a project-local document without uploading or copying it", async ({ 
   expect(requests.some((url) => url.includes("office-document-import"))).toBe(false);
 });
 
+test("keeps technical source scope advanced while linking reusable resources", async ({ page }) => {
+  await expect(page.getByLabel("Document source")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Reusable resources" })).toBeVisible();
+  await page.getByRole("button", { name: "Source and version" }).click();
+  await expect(page.getByLabel("Document source")).toBeVisible();
+});
+
 test("discovers and previews a document through the real route", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "report.docx" }).click();
   await expect(page.locator('iframe[title="docs/report.docx"]')).toBeVisible();

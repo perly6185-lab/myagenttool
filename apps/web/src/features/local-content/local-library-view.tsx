@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Library, RefreshCw, Table2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, FolderOpen, Library, RefreshCw, Table2, X } from "lucide-react";
 import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
 import { Button } from "@/components/ui/button";
@@ -290,10 +290,16 @@ export function LocalLibraryView() {
         eyebrow={copy.eyebrow}
         title={copy.title}
         description={copy.description}
-        actions={libraryView === "all" ? <Button size="sm" variant="secondary" disabled={rebuilding} onClick={() => void rebuild()}>
-          <RefreshCw className={cn("size-4", rebuilding && "animate-spin")} aria-hidden />
-          {rebuilding ? copy.rebuilding : hasIndexedContent ? copy.refresh : copy.build}
-        </Button> : undefined}
+        actions={<div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" onClick={() => navigate("documents")}>
+            <FolderOpen className="size-4" aria-hidden />
+            {copy.openProjectFiles}
+          </Button>
+          {libraryView === "all" ? <Button size="sm" variant="secondary" disabled={rebuilding} onClick={() => void rebuild()}>
+            <RefreshCw className={cn("size-4", rebuilding && "animate-spin")} aria-hidden />
+            {rebuilding ? copy.rebuilding : hasIndexedContent ? copy.refresh : copy.build}
+          </Button> : null}
+        </div>}
       />
 
       <div className="flex flex-wrap gap-2 border-b border-border pb-3" role="tablist" aria-label={copy.title}>
