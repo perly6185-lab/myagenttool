@@ -14,6 +14,7 @@ const srcRoot = resolve(webRoot, "src");
 const artifactDir = resolve(repoRoot, ".myagenttool/visual-qa");
 const distIndex = resolve(webRoot, "dist/index.html");
 const requireBrowser = process.argv.includes("--require-browser");
+const scenarioFilter = process.argv.find((argument) => argument.startsWith("--scenario="))?.slice("--scenario=".length) ?? null;
 
 const indexHtml = readIfExists(resolve(webRoot, "index.html"));
 const sections = readIfExists(resolve(srcRoot, "app/sections.ts"));
@@ -203,7 +204,14 @@ async function captureScreenshots(driver) {
     const browser = await driver.module.chromium.launch();
     try {
       for (const viewport of viewports) {
-        for (const scenario of visualScenarios(baseline)) {
+        const scenarios = visualScenarios(baseline);
+        const selectedScenarios = scenarioFilter
+          ? scenarios.filter((scenario) => scenario.name === scenarioFilter)
+          : scenarios;
+        if (scenarioFilter && selectedScenarios.length === 0) {
+          throw new Error(`Unknown visual QA scenario: ${scenarioFilter}`);
+        }
+        for (const scenario of selectedScenarios) {
           const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
           await page.route("**/api/state", (route) => {
             if (scenario.disconnected) {
@@ -217,6 +225,10 @@ async function captureScreenshots(driver) {
               const workItemId = path.match(/^\/api\/work-items\/([^/]+)$/)?.[1];
               const body = path.endsWith("/home-workbench")
                 ? scenario.homeFixture.workbench
+                : path.endsWith("/attention")
+                  ? { items: [], metrics: null, nextCursor: null }
+                  : path.endsWith("/external-funnel")
+                    ? { metrics: { total: 0, notStarted: 0, running: 0, review: 0, completed: 0, stalled: 0 }, stalls: [] }
                 : path.endsWith("/comments")
                   ? { comments: [] }
                   : workItemId
@@ -516,7 +528,10 @@ async function assertVisualState(page, scenario) {
   }
   if (scenario.name === "channel-task-failed") {
     await page.locator('[data-testid="channel-task-operations"]:visible').waitFor({ timeout: 15_000 });
-    for (const label of ["Issue #42", "Retry", "Reroute", "Take over"]) await page.getByText(label, { exact: true }).waitFor();
+    for (const label of ["Retry", "Take over"]) await page.getByRole("button", { name: label, exact: true }).waitFor();
+    await page.getByRole("button", { name: /^(Advanced info|高级信息)$/ }).click();
+    await page.getByRole("link", { name: "Issue #42", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Reroute", exact: true }).waitFor();
     return;
   }
   if (scenario.name === "follow-up-reminder") {
@@ -529,8 +544,11 @@ async function assertVisualState(page, scenario) {
 
   if (scenario.name === "local-task-center") {
     await page.getByRole("heading", { name: "Tasks", exact: true }).waitFor({ timeout: 15_000 });
-    const title = page.getByText("Confirm the overdue customer launch commitment and publish the recovery timeline", { exact: true });
-    await (page.viewportSize().width < 640 ? title.first() : title.last()).waitFor();
+    await page
+      .getByText("Confirm the overdue customer launch commitment and publish the recovery timeline", { exact: true })
+      .filter({ visible: true })
+      .first()
+      .waitFor();
     if (await page.getByRole("tab", { name: /Issue inbox/ }).count()) {
       throw new Error("local task center exposes the external Issue inbox");
     }
@@ -539,8 +557,11 @@ async function assertVisualState(page, scenario) {
   if (scenario.name === "external-work") {
     await page.getByRole("heading", { name: "External work", exact: true }).waitFor({ timeout: 15_000 });
     await page.getByRole("tab", { name: /Issue inbox/ }).waitFor();
-    const title = page.getByText("Investigate the authentication regression", { exact: true });
-    await (page.viewportSize().width < 640 ? title.first() : title.last()).waitFor();
+    await page
+      .getByText("Investigate the authentication regression", { exact: true })
+      .filter({ visible: true })
+      .first()
+      .waitFor();
     return;
   }
   if (scenario.reportFixture) {
