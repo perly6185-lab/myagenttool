@@ -2749,6 +2749,11 @@ export const api = {
     outcome: "met_expectations" | "wrong_result" | "needs_quality_adjustment";
     note?: string;
   }) => request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-outcome-feedback`, payload),
+  recordWorkItemPlanActualFeedback: (workItemId: string, payload: {
+    expectedPlanActualDigest: string;
+    decisions: Array<{ code: string; resolution: "keep_plan" | "prefer_actual" }>;
+    note?: string;
+  }) => request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/plan-actual-feedback`, payload),
   resumeMyTemplateGovernanceObservation: (familyId: string, payload: { projectId: string; confirm: true }) =>
     request("POST", `/api/work-items/my-template-governance/${encodeURIComponent(familyId)}/resume-observation`, payload),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>

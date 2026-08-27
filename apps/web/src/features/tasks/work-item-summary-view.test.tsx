@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveWorkItemUserStatus, WorkItemSummaryView } from "./work-item-summary-view";
-import type { LocalWorkItem, WorkItemExecutionReview } from "./task-view-types";
+import type { LocalWorkItem, WorkItemExecutionReview, WorkItemPlanActual } from "./task-view-types";
 import { i18n } from "@/lib/i18n";
 import { ApiError } from "@/lib/api-client";
 import { useUiStore } from "@/store/ui-store";
@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   recheckWorkItemExecutionStart: vi.fn(),
   listMyTemplateDefinitions: vi.fn(),
   recordMyTemplateOutcomeFeedback: vi.fn(),
+  recordWorkItemPlanActualFeedback: vi.fn(),
   previewMyTemplateDraft: vi.fn(),
   createMyTemplateDraft: vi.fn(),
   listWorkItemComments: vi.fn(),
@@ -79,6 +80,7 @@ vi.mock("@/data/use-console-actions", () => ({
     recheckWorkItemExecutionStart: mocks.recheckWorkItemExecutionStart,
     listMyTemplateDefinitions: mocks.listMyTemplateDefinitions,
     recordMyTemplateOutcomeFeedback: mocks.recordMyTemplateOutcomeFeedback,
+    recordWorkItemPlanActualFeedback: mocks.recordWorkItemPlanActualFeedback,
     previewMyTemplateDraft: mocks.previewMyTemplateDraft,
     createMyTemplateDraft: mocks.createMyTemplateDraft,
     listWorkItemComments: mocks.listWorkItemComments,
@@ -213,6 +215,35 @@ function failedExecutionReview(actionReceipt: WorkItemExecutionReview["actionRec
     riskReasons: [{ code: "execution_failed", severity: "high", scope: "execution" }],
     recommendedAction: { kind: "retry_execution", reasonCode: "execution_failed", requiresConfirmation: true, nextOwner: "me" },
     actionReceipt,
+  };
+}
+
+function attentionPlanActual(feedback: WorkItemPlanActual["feedback"] = null): WorkItemPlanActual {
+  return {
+    schemaVersion: 1,
+    runId: "aur_plan_actual",
+    status: "attention",
+    summaryCode: "plan_actual_deviations_found",
+    planned: {
+      goal: "Prepare quotation", expectedOutput: "quotation.xlsx",
+      method: { kind: "template", name: "Quotation", definitionId: "rtd_quote", familyId: "family_quote", version: 2 },
+      materialCount: 0, materialNames: [], deliveryDestination: "task", actionAccessMode: "read_only", verificationStepCount: 1,
+    },
+    actual: {
+      resultStatus: "available", resultFiles: ["quotation.csv"], materializedCount: 0, skippedMaterialCount: 0,
+      deliveryStatus: null, verificationStatus: "passed", impactStatus: "none",
+    },
+    checks: [
+      { key: "method", status: "matched", reasonCode: "execution_method_frozen", expected: {}, actual: {} },
+      { key: "materials", status: "matched", reasonCode: "no_materials_planned", expected: {}, actual: {} },
+      { key: "output", status: "mismatch", reasonCode: "output_format_mismatch", expected: {}, actual: {} },
+      { key: "action", status: "matched", reasonCode: "read_only_boundary_preserved", expected: {}, actual: {} },
+      { key: "delivery", status: "matched", reasonCode: "result_available_in_task", expected: {}, actual: {} },
+      { key: "verification", status: "matched", reasonCode: "verification_passed", expected: {}, actual: {} },
+    ],
+    deviations: [{ code: "output_format_mismatch", severity: "high", scope: "output", correctionTarget: "template" }],
+    feedback,
+    digest: "b".repeat(64),
   };
 }
 
@@ -1176,6 +1207,40 @@ describe("work item summary presentation", () => {
     expect(screen.queryByText("Current progress")).toBeNull();
     fireEvent.click(within(review).getByRole("button", { name: "Full execution details" }));
     expect(onOpenExpert).toHaveBeenCalledWith("process");
+  });
+
+  it("saves a plan/actual correction as a future preference without mutating the run", async () => {
+    const initialPlan = attentionPlanActual();
+    const feedback = {
+      id: "wpaf_1", runId: initialPlan.runId, planActualDigest: initialPlan.digest,
+      decisions: [{
+        code: "output_format_mismatch", scope: "output", correctionTarget: "template",
+        resolution: "keep_plan" as const, preferredValue: "quotation.xlsx", requiresConfirmation: false,
+      }],
+      note: "Keep Excel", revision: 1,
+      createdAt: "2026-08-27T08:00:00.000Z", updatedAt: "2026-08-27T08:00:00.000Z",
+    };
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "completed", executionBindings: [{ kind: "auto_run", targetId: initialPlan.runId, createdAt: "2026-08-27T07:59:00.000Z" }] }),
+      observability: {
+        latestRun: { id: initialPlan.runId, status: "done", updatedAt: "2026-08-27T08:00:00.000Z" },
+        planActual: initialPlan,
+      },
+    });
+    mocks.recordWorkItemPlanActualFeedback.mockResolvedValue({ planActual: attentionPlanActual(feedback) });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Correct future tasks" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Keep Excel" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+
+    await waitFor(() => expect(mocks.recordWorkItemPlanActualFeedback).toHaveBeenCalledWith("lwi_1", {
+      expectedPlanActualDigest: initialPlan.digest,
+      decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+      note: "Keep Excel",
+    }));
+    expect(await screen.findByTestId("plan-actual-feedback-receipt")).toBeTruthy();
+    expect(screen.getByText(/does not rewrite this run/i)).toBeTruthy();
   });
 
   it("uses the review card recommendation to retry safely and returns an impact receipt", async () => {

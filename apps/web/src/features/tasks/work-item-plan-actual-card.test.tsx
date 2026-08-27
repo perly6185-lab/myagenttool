@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkItemPlanActual } from "./task-view-types";
 import { WorkItemPlanActualCard } from "./work-item-plan-actual-card";
@@ -78,5 +78,29 @@ describe("plan and actual card", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "View full evidence" }));
     expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("records an explicit future preference without changing the displayed run", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const attention = plan({
+      status: "attention",
+      actual: { ...plan().actual, resultFiles: ["客户台账.csv"] },
+      checks: plan().checks.map((check) => check.key === "output"
+        ? { ...check, status: "mismatch" as const, reasonCode: "output_format_mismatch" }
+        : check),
+      deviations: [{ code: "output_format_mismatch", severity: "high", scope: "output", correctionTarget: "template" }],
+    });
+    render(<WorkItemPlanActualCard plan={attention} language="zh" onSaveFeedback={save} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "纠正类似任务" }));
+    fireEvent.change(screen.getByLabelText("实际结果 纠正选择"), { target: { value: "prefer_actual" } });
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "以后接受 CSV" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存纠正" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith({
+      decisions: [{ code: "output_format_mismatch", resolution: "prefer_actual" }],
+      note: "以后接受 CSV",
+    }));
+    expect(screen.getByText("发现明确偏差")).toBeTruthy();
   });
 });

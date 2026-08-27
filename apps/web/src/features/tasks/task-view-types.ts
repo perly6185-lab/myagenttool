@@ -978,6 +978,23 @@ export type WorkItemPlanActual = {
     scope: string;
     correctionTarget: string | null;
   }>;
+  feedback?: {
+    id: string;
+    runId: string;
+    planActualDigest: string;
+    decisions: Array<{
+      code: string;
+      scope: string;
+      correctionTarget: string | null;
+      resolution: "keep_plan" | "prefer_actual";
+      preferredValue: string;
+      requiresConfirmation: boolean;
+    }>;
+    note: string;
+    revision: number;
+    createdAt: string;
+    updatedAt: string;
+  } | null;
   digest: string;
 };
 export type LocalWorkItemObservability = {

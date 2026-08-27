@@ -1722,6 +1722,81 @@ test("local content search and task references are tenant-scoped through the rea
   assert.equal(resourceAttached.body.workItem.localContentRefs[0].resourceId, resource.id);
 });
 
+test("plan/actual correction is wired through HTTP without rewriting the completed task", async () => {
+  const workItem = {
+    id: "lwi_plan_actual_http", localRef: "LOCAL-PLAN-ACTUAL", localNumber: 9101,
+    ownerTeamId: "team_a", projectId: "prj_a", title: "整理报价单", body: "生成 Excel 报价单。",
+    type: "task", priority: "p2", status: "done", state: "closed", revision: 3,
+    labels: [], assigneeIds: ["usr_a"], acceptanceCriteria: [], verificationSop: [], acceptanceResults: [],
+    verificationRecords: [], inputAssets: [], outputAssets: [], requiredCapabilities: [], externalBindings: [],
+    executionBindings: [{ kind: "auto_run", targetId: "aur_plan_actual_http", createdAt: "2026-08-11T00:01:00.000Z" }],
+    terminalId: runtimeState.device.id, createdBy: "usr_a", lastModifiedBy: "usr_a",
+    createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:02:00.000Z",
+    myTemplateBinding: { definitionId: "rtd_quote_http", familyId: "family_quote_http", version: 1 },
+    executionIntentContractSnapshot: {
+      goal: "整理报价单", expectedOutput: "报价单.xlsx",
+      method: {
+        kind: "template", definitionId: "rtd_quote_http", familyId: "family_quote_http", version: 1, name: "报价单",
+      },
+      action: { accessMode: "read_only", operation: "read" },
+      delivery: { destination: "task" }, verificationSop: ["检查报价单"],
+    },
+    taskContextControl: { deliveryDestination: "task" },
+  };
+  const autoRun = {
+    id: "aur_plan_actual_http", projectId: "prj_a", status: "done", invocationId: "inv_plan_actual_http",
+    executionContract: {
+      intentContract: workItem.executionIntentContractSnapshot,
+      dataContextSnapshot: { sourceCount: 0, sources: [] },
+    },
+    deliveryReport: {
+      summary: "已生成报价结果。",
+      verification: { passed: true, verified: true, command: "check quote", exitCode: 0 },
+      changedFiles: ["报价单.csv"], completedAt: "2026-08-11T00:02:00.000Z",
+    },
+    updatedAt: "2026-08-11T00:02:00.000Z",
+  };
+  const invocation = {
+    id: "inv_plan_actual_http", status: "succeeded",
+    options: { metadata: { autoRunId: "aur_plan_actual_http" } },
+  };
+  runtimeState.workItems.push(workItem);
+  runtimeState.autoRuns.push(autoRun);
+  runtimeState.invocations.push(invocation);
+
+  const detail = await call(`/api/work-items/${workItem.id}`);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.observability.planActual.status, "attention");
+  const planActualDigest = detail.body.observability.planActual.digest;
+
+  const recorded = await call(`/api/work-items/${workItem.id}/plan-actual-feedback`, {
+    method: "POST",
+    body: {
+      expectedPlanActualDigest: planActualDigest,
+      decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+      note: "以后仍需 Excel 报价单",
+    },
+  });
+  assert.equal(recorded.status, 201);
+  assert.equal(recorded.body.feedback.decisions[0].preferredValue, "报价单.xlsx");
+  const correctedDetail = await call(`/api/work-items/${workItem.id}`);
+  assert.equal(correctedDetail.body.workItem.revision, 3);
+  assert.equal(correctedDetail.body.observability.planActual.feedback.id, recorded.body.feedback.id);
+  assert.equal((await call(`/api/work-items/${workItem.id}/plan-actual-feedback`, {
+    token: "tok_b", method: "POST",
+    body: {
+      expectedPlanActualDigest: planActualDigest,
+      decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+    },
+  })).status, 404);
+
+  runtimeState.workItems = runtimeState.workItems.filter((entry) => entry.id !== workItem.id);
+  runtimeState.autoRuns = runtimeState.autoRuns.filter((entry) => entry.id !== autoRun.id);
+  runtimeState.invocations = runtimeState.invocations.filter((entry) => entry.id !== invocation.id);
+  runtimeState.workItemPlanActualFeedback = runtimeState.workItemPlanActualFeedback
+    .filter((entry) => entry.workItemId !== workItem.id);
+});
+
 test("completed My template result feedback is recorded and summarized through HTTP", async () => {
   const workItem = {
     id: "lwi_template_outcome_http", localRef: "LOCAL-OUTCOME", ownerTeamId: "team_a", projectId: "prj_a",

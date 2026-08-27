@@ -3725,6 +3725,83 @@ test("detail reconciles the frozen plan with material, result, delivery, and ver
   assert.equal(planActual.checks.every((check) => check.status === "matched"), true);
 });
 
+test("plan/actual corrections are digest-bound, replay-safe, and do not rewrite task history", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "整理报价单" }, ACTOR_A).body.workItem;
+  const stored = state.workItems[0];
+  const intentContract = {
+    goal: "整理报价单",
+    expectedOutput: "报价单.xlsx",
+    method: { kind: "template", definitionId: "rtd_quote", familyId: "family_quote", version: 2, name: "报价单" },
+    action: { accessMode: "read_only", operation: "read" },
+    delivery: { destination: "task" },
+    verificationSop: ["检查报价单"],
+  };
+  stored.myTemplateBinding = { definitionId: "rtd_quote", familyId: "family_quote", version: 2 };
+  stored.executionIntentContractSnapshot = intentContract;
+  stored.taskContextControl = { deliveryDestination: "task" };
+  stored.executionBindings = [{ kind: "auto_run", targetId: "aur_quote", createdAt: "2026-07-24T00:01:00.000Z" }];
+  state.autoRuns = [{
+    id: "aur_quote", projectId: "prj_a", status: "done", invocationId: "inv_quote",
+    executionContract: { intentContract, dataContextSnapshot: { sourceCount: 0, sources: [] } },
+    deliveryReport: {
+      summary: "已生成报价结果。",
+      verification: { passed: true, verified: true, command: "check quote", exitCode: 0 },
+      changedFiles: ["报价单.csv"],
+      completedAt: "2026-07-24T00:02:00.000Z",
+    },
+    updatedAt: "2026-07-24T00:02:00.000Z",
+  }];
+  state.invocations = [{ id: "inv_quote", status: "succeeded", options: { metadata: { autoRunId: "aur_quote" } } }];
+  const beforeRevision = stored.revision;
+  const planActual = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability.planActual;
+  assert.equal(planActual.status, "attention");
+
+  const recorded = service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: planActual.digest,
+    decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+    note: "以后仍需 Excel 报价单",
+  }, ACTOR_A);
+
+  assert.equal(recorded.status, 201);
+  assert.equal(recorded.body.feedback.decisions[0].preferredValue, "报价单.xlsx");
+  assert.equal(state.workItemPlanActualFeedback[0].template.familyId, "family_quote");
+  assert.equal(stored.revision, beforeRevision, "feedback does not rewrite or revise the completed task");
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability.planActual.feedback.id, recorded.body.feedback.id);
+  const futureDraft = service.suggestWorkItemDraft({
+    projectId: "prj_a", title: "再次整理报价单", body: "沿用之前的报价要求。",
+  }, ACTOR_A).body.draft;
+  assert.deepEqual(futureDraft.preferenceHints, [{
+    kind: "template", preference: "报价单.xlsx", resolution: "keep_plan",
+    requiresConfirmation: false, learnedFrom: "plan_actual_correction",
+  }]);
+  assert.match(futureDraft.risks.join(" "), /结果类型/);
+
+  const replay = service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: planActual.digest,
+    decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+    note: "以后仍需 Excel 报价单",
+  }, ACTOR_A);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(state.workItemPlanActualFeedback.length, 1);
+
+  const stale = service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: "a".repeat(64),
+    decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+  }, ACTOR_A);
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.error, "plan_actual_changed");
+  assert.equal(service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: planActual.digest,
+    decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+  }, ACTOR_B).status, 404);
+});
+
 test("detail projects the current Ledger batch instead of a stale channel snapshot", () => {
   const { service, state } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "更新客户台账", taskKind: "business_spreadsheet" }, ACTOR_A).body.workItem;
@@ -4027,6 +4104,34 @@ test("learned template routing prioritizes the requested result and refuses weak
   assert.deepEqual(matched.decision, { kind: "auto_apply", confidence: "high", reason: "explicit_result_match" });
   assert.equal(matched.selected.definitionId, "rtd_quote");
   assert.match(matched.selected.reasons.join(" "), /期望结果/);
+
+  const correctedPlanMatch = matchPublishedMyTemplate({
+    definitions: [quotation, summary],
+    projectId: "prj_a",
+    intent: "处理客户询价",
+    planActualFeedback: [{
+      intentTerms: ["询价"],
+      template: { familyId: "family_quote" },
+      decisions: [{ correctionTarget: "template", resolution: "keep_plan" }],
+    }],
+  });
+  assert.equal(correctedPlanMatch.state, "matched");
+  assert.equal(correctedPlanMatch.selected.definitionId, "rtd_quote");
+  assert.match(correctedPlanMatch.selected.reasons.join(" "), /参考了你之前对相似任务的纠正/);
+
+  const changedResultRequiresConfirmation = matchPublishedMyTemplate({
+    definitions: [quotation, summary],
+    projectId: "prj_a",
+    intent: "处理客户询价",
+    planActualFeedback: [{
+      intentTerms: ["询价"],
+      template: { familyId: "family_quote" },
+      decisions: [{ correctionTarget: "template", resolution: "prefer_actual" }],
+    }],
+  });
+  assert.equal(changedResultRequiresConfirmation.state, "ambiguous");
+  assert.equal(changedResultRequiresConfirmation.selected, null);
+  assert.equal(changedResultRequiresConfirmation.decision.reason, "learned_preference_conflict");
 
   const deviceChecklist = {
     id: "rtd_device_checklist", familyId: "family_device_checklist", projectId: "prj_a",

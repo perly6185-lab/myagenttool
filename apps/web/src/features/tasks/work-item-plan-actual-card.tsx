@@ -1,6 +1,8 @@
 import { AlertTriangle, CheckCircle2, CircleHelp, Clock3, FileCheck2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Select, Textarea } from "@/components/ui/input";
 import type { WorkItemPlanActual } from "./task-view-types";
 
 const CHECK_LABELS: Record<WorkItemPlanActual["checks"][number]["key"], [string, string]> = {
@@ -95,11 +97,21 @@ export function WorkItemPlanActualCard({
   plan,
   language,
   onOpenDetails,
+  onSaveFeedback,
 }: {
   plan: WorkItemPlanActual;
   language: "zh" | "en";
   onOpenDetails?: () => void;
+  onSaveFeedback?: (input: {
+    decisions: Array<{ code: string; resolution: "keep_plan" | "prefer_actual" }>;
+    note: string;
+  }) => Promise<void>;
 }) {
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackPending, setFeedbackPending] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [feedbackNote, setFeedbackNote] = useState("");
+  const [resolutions, setResolutions] = useState<Record<string, "keep_plan" | "prefer_actual">>({});
   const index = language === "zh" ? 0 : 1;
   const unknownCount = plan.checks.filter((check) => check.status === "unknown").length;
   const statusCopy = plan.status === "matched"
@@ -118,6 +130,49 @@ export function WorkItemPlanActualCard({
         : ["执行尚未结束，系统会持续收集资料、结果、交付和检查回执。", "The run is still active; material, result, delivery, and verification receipts are still being collected."];
   const tone = plan.status === "matched" ? "success" : plan.status === "attention" ? "danger" : plan.status === "unverified" ? "warning" : "neutral";
   const HeaderIcon = plan.status === "matched" ? FileCheck2 : plan.status === "attention" ? AlertTriangle : plan.status === "unverified" ? CircleHelp : Clock3;
+  useEffect(() => {
+    setFeedbackNote(plan.feedback?.note ?? "");
+    setResolutions(Object.fromEntries((plan.feedback?.decisions ?? plan.deviations).map((entry) => [
+      entry.code,
+      "resolution" in entry ? entry.resolution : "keep_plan",
+    ])));
+  }, [plan.digest, plan.feedback]);
+  const canPreferActual = (deviation: WorkItemPlanActual["deviations"][number]) => {
+    if (deviation.correctionTarget === "verification") return false;
+    if (["template", "result"].includes(deviation.correctionTarget ?? "")) return plan.actual.resultFiles.length > 0;
+    if (deviation.correctionTarget === "delivery") {
+      return plan.planned.deliveryDestination === "channel" && plan.actual.resultStatus === "available";
+    }
+    if (deviation.correctionTarget === "scope") {
+      return ["prepared", "proposed", "applied", "partial", "rolled_back"].includes(plan.actual.impactStatus);
+    }
+    return deviation.correctionTarget === "materials";
+  };
+  const preferActualLabel = (deviation: WorkItemPlanActual["deviations"][number]) => {
+    if (deviation.correctionTarget === "materials") return language === "zh" ? "以后使用执行时的最新版" : "Use the latest version at execution";
+    if (deviation.correctionTarget === "delivery") return language === "zh" ? "以后结果留在任务中" : "Keep future results in the task";
+    if (deviation.correctionTarget === "scope") return language === "zh" ? "以后允许这类修改（仍需确认）" : "Allow this kind of change (still confirm)";
+    return language === "zh" ? "以后接受本次实际结果" : "Prefer this actual result next time";
+  };
+  const saveFeedback = async () => {
+    if (!onSaveFeedback || feedbackPending) return;
+    setFeedbackPending(true);
+    setFeedbackError(null);
+    try {
+      await onSaveFeedback({
+        decisions: plan.deviations.map((deviation) => ({
+          code: deviation.code,
+          resolution: resolutions[deviation.code] ?? "keep_plan",
+        })),
+        note: feedbackNote,
+      });
+      setFeedbackOpen(false);
+    } catch {
+      setFeedbackError(language === "zh" ? "暂时无法保存纠正，请重新检查后再试。" : "The correction could not be saved. Recheck and try again.");
+    } finally {
+      setFeedbackPending(false);
+    }
+  };
 
   return (
     <section className={`rounded-xl border p-4 ${plan.status === "attention" ? "border-destructive/35 bg-destructive/[0.035]" : plan.status === "matched" ? "border-success/30 bg-success/[0.035]" : "border-border bg-background/70"}`} data-testid="work-item-plan-actual" aria-label={language === "zh" ? "计划与实际对账" : "Plan and actual reconciliation"}>
@@ -143,11 +198,58 @@ export function WorkItemPlanActualCard({
           </div>
         ))}
       </dl>
-      {onOpenDetails ? (
-        <div className="mt-3 flex justify-end">
-          <Button size="sm" variant="ghost" onClick={onOpenDetails}>{language === "zh" ? "查看完整证据" : "View full evidence"}</Button>
+      {plan.feedback && !feedbackOpen ? (
+        <div className="mt-3 rounded-lg border border-success/30 bg-success/[0.05] px-3 py-2.5" role="status" data-testid="plan-actual-feedback-receipt">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-medium">{language === "zh" ? "已记录你的纠正" : "Your correction was recorded"}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{language === "zh" ? "只影响以后相似任务，不会改写本次执行记录。" : "It affects future similar tasks only and does not rewrite this run."}</p>
+            </div>
+            {onSaveFeedback ? <Button size="sm" variant="ghost" onClick={() => setFeedbackOpen(true)}>{language === "zh" ? "修改" : "Change"}</Button> : null}
+          </div>
         </div>
       ) : null}
+      {feedbackOpen ? (
+        <section className="mt-3 rounded-lg border border-primary/25 bg-background/80 p-3" aria-label={language === "zh" ? "纠正类似任务" : "Correct future similar tasks"}>
+          <h4 className="text-sm font-semibold">{language === "zh" ? "以后遇到类似任务，应该怎么做？" : "What should happen for similar tasks?"}</h4>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{language === "zh" ? "选择会保存为偏好信号；涉及资料版本或写入权限时，下次仍会要求你确认。" : "Your choices become preference signals. Material-version and write-scope changes still require confirmation next time."}</p>
+          <div className="mt-3 grid gap-3">
+            {plan.deviations.map((deviation) => {
+              const check = plan.checks.find((candidate) => candidate.reasonCode === deviation.code);
+              return (
+                <label key={deviation.code} className="grid gap-1.5 text-xs">
+                  <span className="font-medium">{check ? CHECK_LABELS[check.key][index] : deviation.scope}</span>
+                  <Select
+                    aria-label={`${check ? CHECK_LABELS[check.key][index] : deviation.scope} ${language === "zh" ? "纠正选择" : "correction choice"}`}
+                    value={resolutions[deviation.code] ?? "keep_plan"}
+                    onChange={(event) => setResolutions((current) => ({ ...current, [deviation.code]: event.target.value as "keep_plan" | "prefer_actual" }))}
+                  >
+                    <option value="keep_plan">{language === "zh" ? "以后仍按原计划" : "Keep the original plan"}</option>
+                    {canPreferActual(deviation) ? <option value="prefer_actual">{preferActualLabel(deviation)}</option> : null}
+                  </Select>
+                </label>
+              );
+            })}
+            <label className="grid gap-1.5 text-xs">
+              <span className="font-medium">{language === "zh" ? "补充说明（可选）" : "Note (optional)"}</span>
+              <Textarea value={feedbackNote} maxLength={1000} onChange={(event) => setFeedbackNote(event.target.value)} />
+            </label>
+          </div>
+          {feedbackError ? <p className="mt-2 text-xs text-destructive" role="alert">{feedbackError}</p> : null}
+          <div className="mt-3 flex flex-wrap justify-end gap-2">
+            <Button size="sm" variant="ghost" disabled={feedbackPending} onClick={() => setFeedbackOpen(false)}>{language === "zh" ? "取消" : "Cancel"}</Button>
+            <Button size="sm" disabled={feedbackPending} onClick={() => void saveFeedback()}>{feedbackPending ? (language === "zh" ? "正在保存…" : "Saving…") : (language === "zh" ? "保存纠正" : "Save correction")}</Button>
+          </div>
+        </section>
+      ) : null}
+      <div className="mt-3 flex flex-wrap justify-end gap-2">
+        {plan.status === "attention" && onSaveFeedback && !feedbackOpen && !plan.feedback ? (
+          <Button size="sm" variant="secondary" onClick={() => setFeedbackOpen(true)}>{language === "zh" ? "纠正类似任务" : "Correct future tasks"}</Button>
+        ) : null}
+        {onOpenDetails ? (
+          <Button size="sm" variant="ghost" onClick={onOpenDetails}>{language === "zh" ? "查看完整证据" : "View full evidence"}</Button>
+        ) : null}
+      </div>
     </section>
   );
 }

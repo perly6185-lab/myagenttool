@@ -73,6 +73,7 @@ export async function handleWorkItemRoutes({
   activateMyTemplateDraft,
   listMyTemplateOutcomeFeedback,
   recordMyTemplateOutcomeFeedback,
+  recordPlanActualFeedback,
   resumeMyTemplateGovernanceObservation,
   prepareExecutionContract,
   confirmExecutionContractAndSchedule,
@@ -445,6 +446,16 @@ export async function handleWorkItemRoutes({
   if (myTemplateOutcomeMatch && req.method === "POST") {
     const result = recordMyTemplateOutcomeFeedback({
       workItemId: decodeURIComponent(myTemplateOutcomeMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const planActualFeedbackMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/plan-actual-feedback$/);
+  if (planActualFeedbackMatch && req.method === "POST") {
+    const result = recordPlanActualFeedback({
+      workItemId: decodeURIComponent(planActualFeedbackMatch[1]),
       ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);

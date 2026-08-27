@@ -1041,6 +1041,20 @@ function taskResourceReferenceView(reference) {
   return { ...visible, versionPinned: Boolean(reference?.selectedVersion) };
 }
 
+function planActualFeedbackView(feedback) {
+  if (!feedback) return null;
+  return {
+    id: feedback.id,
+    runId: feedback.runId,
+    planActualDigest: feedback.planActualDigest,
+    decisions: (feedback.decisions ?? []).map((decision) => ({ ...decision })),
+    note: feedback.note ?? "",
+    revision: feedback.revision,
+    createdAt: feedback.createdAt,
+    updatedAt: feedback.updatedAt,
+  };
+}
+
 export function createWorkItemService({
   state,
   now,
@@ -1067,6 +1081,7 @@ export function createWorkItemService({
 }) {
   state.myTemplateRoutingFeedback ??= [];
   state.myTemplateOutcomeFeedback ??= [];
+  state.workItemPlanActualFeedback ??= [];
   state.myTemplateGovernanceInterventions ??= [];
   state.myTemplateDrafts ??= [];
   state.myTemplateLearningCases ??= [];
@@ -2895,7 +2910,7 @@ export function createWorkItemService({
       state,
       ownerTeamId: actorTeam(actor),
     });
-    const planActual = projectWorkItemPlanActual({
+    const projectedPlanActual = projectWorkItemPlanActual({
       item,
       latestRun,
       outcome: taskOutcome,
@@ -2903,6 +2918,17 @@ export function createWorkItemService({
       executionReview,
       contextSummary: taskContextSummary,
     });
+    const planActualFeedback = projectedPlanActual
+      ? state.workItemPlanActualFeedback.find((feedback) =>
+        feedback.ownerTeamId === actorTeam(actor)
+        && feedback.workItemId === item.id
+        && feedback.runId === projectedPlanActual.runId
+        && feedback.planActualDigest === projectedPlanActual.digest) ?? null
+      : null;
+    const planActual = projectedPlanActual ? {
+      ...projectedPlanActual,
+      feedback: planActualFeedbackView(planActualFeedback),
+    } : null;
     return {
       ok: true,
       status: 200,
@@ -3052,12 +3078,15 @@ export function createWorkItemService({
         feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
       outcomeFeedback: state.myTemplateOutcomeFeedback.filter((feedback) =>
         feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+      planActualFeedback: state.workItemPlanActualFeedback.filter((feedback) =>
+        feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
       governanceInterventions: state.myTemplateGovernanceInterventions.filter((entry) =>
         entry.ownerTeamId === actorTeam(actor) && entry.projectId === projectId),
       projectId,
       intent: `${title}\n${body}`,
       attachments,
     });
+    const preferenceHints = planActualPreferenceHints({ projectId, intent: `${title}\n${body}`, actor });
     const selectedDefinition = templateMatch.selected
       ? (state.routineDefinitions ?? []).find((definition) => definition.id === templateMatch.selected.definitionId)
       : null;
@@ -3105,6 +3134,15 @@ export function createWorkItemService({
           suggestedRoute: type === "initiative" ? "decompose" : body.length < 40 ? "clarify" : "develop",
           templateMatch,
           risks: [
+            ...preferenceHints.map((hint) => hint.kind === "materials"
+              ? "相似任务曾纠正过资料版本；启动前请重新确认资料范围。"
+              : hint.kind === "delivery"
+                ? "相似任务曾纠正过交付位置；启动前请确认结果留在任务还是发送到 Channel。"
+                : hint.kind === "scope"
+                  ? "相似任务曾纠正过读写范围；本次仍需单独确认，不会自动扩大写入权限。"
+                  : hint.kind === "template" || hint.kind === "result"
+                    ? "相似任务曾纠正过结果类型；系统已将它作为本次模板匹配信号。"
+                    : "相似任务曾纠正过检查要求；本次仍保留独立验证。"),
             ...(businessLike && chinese
               ? ["系统只处理任务中的安全副本，不会修改原始文件。"]
               : [...(!body ? ["The problem statement needs more context."] : []), "Confirm affected users and rollback expectations before execution."]),
@@ -3118,6 +3156,7 @@ export function createWorkItemService({
             })).digest("hex"),
             confidence: body.length >= 120 ? 0.78 : body.length >= 40 ? 0.65 : 0.45,
           },
+          preferenceHints,
         },
       },
     };
@@ -4387,6 +4426,165 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { feedback: view.myTemplateOutcomeFeedback, workItem: view, replayed: false } };
   }
 
+  function planActualPreferenceValue(planActual, deviation, resolution) {
+    const target = deviation.correctionTarget;
+    if (target === "template" || target === "result") {
+      const actualResult = planActual.actual.resultFiles?.[0] ?? null;
+      return resolution === "prefer_actual" ? actualResult : planActual.planned.expectedOutput;
+    }
+    if (target === "materials") return resolution === "prefer_actual" ? "latest_at_start" : "confirmed_snapshot";
+    if (target === "delivery") {
+      if (resolution === "prefer_actual" && planActual.planned.deliveryDestination === "channel"
+        && planActual.actual.resultStatus === "available") return "task";
+      return planActual.planned.deliveryDestination;
+    }
+    if (target === "scope") {
+      if (resolution === "prefer_actual" && ["prepared", "proposed", "applied", "partial", "rolled_back"].includes(planActual.actual.impactStatus)) return "write";
+      return planActual.planned.actionAccessMode;
+    }
+    if (target === "verification") return "required";
+    return null;
+  }
+
+  function planActualPreferenceHints({ projectId, intent, actor }) {
+    const terms = templateRoutingTerms(intent);
+    if (!terms.length) return [];
+    const relevant = state.workItemPlanActualFeedback
+      .filter((feedback) => feedback.ownerTeamId === actorTeam(actor)
+        && feedback.projectId === projectId
+        && (feedback.intentTerms ?? []).some((term) => terms.includes(term)))
+      .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+    const grouped = new Map();
+    for (const feedback of relevant) {
+      for (const decision of feedback.decisions ?? []) {
+        if (!decision.correctionTarget || grouped.has(decision.correctionTarget)) continue;
+        grouped.set(decision.correctionTarget, {
+          kind: decision.correctionTarget,
+          preference: decision.preferredValue,
+          resolution: decision.resolution,
+          requiresConfirmation: decision.requiresConfirmation === true,
+          learnedFrom: "plan_actual_correction",
+        });
+      }
+      if (grouped.size >= 5) break;
+    }
+    return [...grouped.values()];
+  }
+
+  function recordPlanActualFeedback({ workItemId, expectedPlanActualDigest, decisions, note = "" } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const expectedDigest = String(expectedPlanActualDigest ?? "").trim();
+    if (!/^[a-f0-9]{64}$/.test(expectedDigest)) {
+      return { ok: false, status: 400, body: { error: "invalid_plan_actual_digest" } };
+    }
+    if (!Array.isArray(decisions) || !decisions.length || decisions.length > 20) {
+      return { ok: false, status: 400, body: { error: "invalid_plan_actual_feedback" } };
+    }
+    const detail = getWorkItem({ workItemId }, actor);
+    const planActual = detail.body?.observability?.planActual ?? null;
+    if (!planActual) return { ok: false, status: 409, body: { error: "plan_actual_not_available" } };
+    if (planActual.digest !== expectedDigest) {
+      return {
+        ok: false, status: 409,
+        body: { error: "plan_actual_changed", currentDigest: planActual.digest, planActual },
+      };
+    }
+    if (planActual.status !== "attention" || !(planActual.deviations ?? []).length) {
+      return { ok: false, status: 409, body: { error: "plan_actual_has_no_confirmed_deviation", planActual } };
+    }
+    const deviations = new Map(planActual.deviations.map((deviation) => [deviation.code, deviation]));
+    const normalized = [];
+    const seen = new Set();
+    for (const decision of decisions) {
+      const code = String(decision?.code ?? "").trim().slice(0, 120);
+      const resolution = String(decision?.resolution ?? "");
+      const deviation = deviations.get(code);
+      if (!deviation || seen.has(code) || !["keep_plan", "prefer_actual"].includes(resolution)) {
+        return { ok: false, status: 400, body: { error: "invalid_plan_actual_feedback_decision", code } };
+      }
+      const preferredValue = planActualPreferenceValue(planActual, deviation, resolution);
+      if (!preferredValue || (resolution === "prefer_actual" && deviation.correctionTarget === "verification")) {
+        return { ok: false, status: 400, body: { error: "plan_actual_preference_not_available", code } };
+      }
+      seen.add(code);
+      normalized.push({
+        code,
+        scope: deviation.scope,
+        correctionTarget: deviation.correctionTarget,
+        resolution,
+        preferredValue: String(preferredValue).replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 500),
+        requiresConfirmation: resolution === "prefer_actual" && ["materials", "scope"].includes(deviation.correctionTarget),
+      });
+    }
+    const normalizedNote = String(note ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1_000);
+    const timestamp = now();
+    let feedback = state.workItemPlanActualFeedback.find((candidate) =>
+      candidate.ownerTeamId === actorTeam(actor)
+      && candidate.workItemId === item.id
+      && candidate.runId === planActual.runId
+      && candidate.planActualDigest === planActual.digest) ?? null;
+    const unchanged = feedback
+      && JSON.stringify(feedback.decisions) === JSON.stringify(normalized)
+      && feedback.note === normalizedNote;
+    if (unchanged) {
+      return { ok: true, status: 200, body: { feedback: planActualFeedbackView(feedback), planActual, replayed: true } };
+    }
+    runTx(() => {
+      if (feedback) {
+        feedback.decisions = normalized;
+        feedback.note = normalizedNote;
+        feedback.revision += 1;
+        feedback.updatedAt = timestamp;
+        feedback.updatedBy = actorUser(actor);
+      } else {
+        feedback = {
+          id: nextId("wpaf"),
+          ownerTeamId: actorTeam(actor),
+          projectId: item.projectId,
+          workItemId: item.id,
+          runId: planActual.runId,
+          planActualDigest: planActual.digest,
+          intentTerms: templateRoutingTerms(`${item.title}\n${item.body ?? ""}`),
+          template: item.myTemplateBinding ? {
+            definitionId: item.myTemplateBinding.definitionId,
+            familyId: item.myTemplateBinding.familyId,
+            version: item.myTemplateBinding.version,
+          } : null,
+          decisions: normalized,
+          note: normalizedNote,
+          source: "user",
+          revision: 1,
+          createdBy: actorUser(actor),
+          updatedBy: actorUser(actor),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        state.workItemPlanActualFeedback.unshift(feedback);
+        state.workItemPlanActualFeedback = state.workItemPlanActualFeedback.slice(0, 2_000);
+      }
+      recordActivity(item, actor, "plan_actual_feedback_recorded", {
+        feedbackId: feedback.id,
+        runId: planActual.runId,
+        planActualDigest: planActual.digest,
+        decisions: normalized.map(({ code, correctionTarget, resolution }) => ({ code, correctionTarget, resolution })),
+      });
+      appendEvent({
+        invocationId: null,
+        type: "work_item_plan_actual_feedback_recorded",
+        level: "info",
+        message: `${item.localRef} recorded a plan/actual correction for future similar tasks.`,
+        data: { workItemId: item.id, runId: planActual.runId, feedbackId: feedback.id, actorTeamId: actorTeam(actor) },
+      });
+    });
+    notifyWorkItemChanged(item, actor, "plan_actual_feedback_recorded");
+    return {
+      ok: true,
+      status: feedback.revision === 1 ? 201 : 200,
+      body: { feedback: planActualFeedbackView(feedback), planActual: { ...planActual, feedback: planActualFeedbackView(feedback) }, replayed: false },
+    };
+  }
+
   function prepareExecutionContract({ workItemId, expectedRevision, confirm = true, draftOverride = null } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
@@ -5065,6 +5263,8 @@ export function createWorkItemService({
         routingFeedback: state.myTemplateRoutingFeedback.filter((feedback) =>
           feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
         outcomeFeedback: state.myTemplateOutcomeFeedback.filter((feedback) =>
+          feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+        planActualFeedback: state.workItemPlanActualFeedback.filter((feedback) =>
           feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
         governanceInterventions: state.myTemplateGovernanceInterventions.filter((entry) =>
           entry.ownerTeamId === actorTeam(actor) && entry.projectId === projectId),
@@ -7883,7 +8083,7 @@ export function createWorkItemService({
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
-    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, confirmExecutionContractAndSchedule, cancelExecutionStart, recheckExecutionStart, recordExecutionStartOutcome, retryWorkItemAlert,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, recordPlanActualFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, confirmExecutionContractAndSchedule, cancelExecutionStart, recheckExecutionStart, recordExecutionStartOutcome, retryWorkItemAlert,
     startApplicationExecution, requestApplicationExecutionApproval,
     applyLocalSchedulePlan,
     applyLocalScheduleRollover,

@@ -2108,6 +2108,22 @@ export function WorkItemSummaryView({
       setActionPending(null);
     }
   };
+  const savePlanActualFeedback = async (input: {
+    decisions: Array<{ code: string; resolution: "keep_plan" | "prefer_actual" }>;
+    note: string;
+  }) => {
+    const planActual = observability?.planActual;
+    if (!planActual) throw new Error("plan_actual_not_available");
+    const response = await api.recordWorkItemPlanActualFeedback(item.id, {
+      expectedPlanActualDigest: planActual.digest,
+      decisions: input.decisions,
+      note: input.note,
+    }) as { planActual: NonNullable<LocalWorkItemObservability["planActual"]> };
+    setObservability((current) => current ? { ...current, planActual: response.planActual } : current);
+    setSyncNotice(language === "zh"
+      ? "已记住这次纠正，只用于以后相似任务；本次执行记录保持不变。"
+      : "This correction was saved for future similar tasks. The current execution record remains unchanged.");
+  };
   const executionReviewActionPending = executionReview?.recommendedAction.kind === "retry_execution"
     ? retryPending
     : executionReview?.recommendedAction.kind === "fix_with_ai"
@@ -2193,6 +2209,7 @@ export function WorkItemSummaryView({
           plan={observability.planActual}
           language={language}
           onOpenDetails={() => onOpenExpert("process")}
+          onSaveFeedback={canOperate ? savePlanActualFeedback : undefined}
         />
       ) : null}
 
