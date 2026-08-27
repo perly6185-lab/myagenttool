@@ -1789,6 +1789,30 @@ test("plan/actual correction is wired through HTTP without rewriting the complet
       decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
     },
   })).status, 404);
+  const preferences = await call("/api/work-items/plan-actual-preferences?projectId=prj_a");
+  assert.equal(preferences.status, 200);
+  assert.equal(preferences.body.count, 1);
+  assert.equal(preferences.body.feedback[0].editable, true);
+  assert.equal(preferences.body.feedback[0].decisions[0].options.length, 2);
+  assert.equal((await call("/api/work-items/plan-actual-preferences?projectId=prj_a", { token: "tok_b" })).status, 404);
+  const updated = await call(`/api/work-items/${workItem.id}/plan-actual-feedback`, {
+    method: "POST",
+    body: {
+      expectedPlanActualDigest: planActualDigest,
+      expectedFeedbackRevision: recorded.body.feedback.revision,
+      decisions: [{ code: "output_format_mismatch", resolution: "prefer_actual" }],
+      note: "以后接受 CSV",
+    },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.feedback.revision, 2);
+  assert.equal((await call(`/api/work-items/plan-actual-preferences/${recorded.body.feedback.id}`, {
+    token: "tok_b", method: "DELETE",
+  })).status, 404);
+  const removed = await call(`/api/work-items/plan-actual-preferences/${recorded.body.feedback.id}`, { method: "DELETE" });
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.affectsFutureMatchesOnly, true);
+  assert.equal((await call("/api/work-items/plan-actual-preferences?projectId=prj_a")).body.count, 0);
 
   runtimeState.workItems = runtimeState.workItems.filter((entry) => entry.id !== workItem.id);
   runtimeState.autoRuns = runtimeState.autoRuns.filter((entry) => entry.id !== autoRun.id);

@@ -2714,6 +2714,10 @@ export const api = {
     request("GET", `/api/work-items/my-template-learning${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   removeMyTemplateLearning: (feedbackId: string) =>
     request("DELETE", `/api/work-items/my-template-learning/${encodeURIComponent(feedbackId)}`),
+  listWorkItemPlanActualPreferences: (projectId?: string) =>
+    request("GET", `/api/work-items/plan-actual-preferences${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  removeWorkItemPlanActualPreference: (feedbackId: string) =>
+    request("DELETE", `/api/work-items/plan-actual-preferences/${encodeURIComponent(feedbackId)}`),
   previewMyTemplateDraft: (workItemId: string) =>
     request("GET", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-draft`),
   listMyTemplateDrafts: (projectId?: string) =>
@@ -2751,6 +2755,7 @@ export const api = {
   }) => request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-outcome-feedback`, payload),
   recordWorkItemPlanActualFeedback: (workItemId: string, payload: {
     expectedPlanActualDigest: string;
+    expectedFeedbackRevision?: number;
     decisions: Array<{ code: string; resolution: "keep_plan" | "prefer_actual" }>;
     note?: string;
   }) => request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/plan-actual-feedback`, payload),

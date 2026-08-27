@@ -4434,12 +4434,19 @@ export function createWorkItemService({
     }
     if (target === "materials") return resolution === "prefer_actual" ? "latest_at_start" : "confirmed_snapshot";
     if (target === "delivery") {
-      if (resolution === "prefer_actual" && planActual.planned.deliveryDestination === "channel"
-        && planActual.actual.resultStatus === "available") return "task";
+      if (resolution === "prefer_actual") {
+        return planActual.planned.deliveryDestination === "channel" && planActual.actual.resultStatus === "available"
+          ? "task"
+          : null;
+      }
       return planActual.planned.deliveryDestination;
     }
     if (target === "scope") {
-      if (resolution === "prefer_actual" && ["prepared", "proposed", "applied", "partial", "rolled_back"].includes(planActual.actual.impactStatus)) return "write";
+      if (resolution === "prefer_actual") {
+        return ["prepared", "proposed", "applied", "partial", "rolled_back"].includes(planActual.actual.impactStatus)
+          ? "write"
+          : null;
+      }
       return planActual.planned.actionAccessMode;
     }
     if (target === "verification") return "required";
@@ -4471,7 +4478,91 @@ export function createWorkItemService({
     return [...grouped.values()];
   }
 
-  function recordPlanActualFeedback({ workItemId, expectedPlanActualDigest, decisions, note = "" } = {}, actor = null) {
+  function listPlanActualFeedback({ projectId = null, limit = 2_000 } = {}, actor = null) {
+    const selectedProjectId = projectId ? String(projectId) : null;
+    if (selectedProjectId && !actorCanAccessProject(state, actor, selectedProjectId)) return notFound();
+    const boundedLimit = Math.max(1, Math.min(2_000, Number(limit) || 2_000));
+    const feedback = state.workItemPlanActualFeedback
+      .filter((entry) => entry.ownerTeamId === actorTeam(actor)
+        && actorCanAccessProject(state, actor, entry.projectId)
+        && (!selectedProjectId || entry.projectId === selectedProjectId))
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
+      .slice(0, boundedLimit)
+      .map((entry) => {
+        const workItem = (state.workItems ?? []).find((item) => item.id === entry.workItemId
+          && item.ownerTeamId === actorTeam(actor));
+        const detail = workItem ? getWorkItem({ workItemId: workItem.id }, actor) : null;
+        const planActual = detail?.body?.observability?.planActual ?? null;
+        const deviationCodes = new Set((planActual?.deviations ?? []).map((deviation) => deviation.code));
+        const editable = planActual?.digest === entry.planActualDigest
+          && planActual.status === "attention"
+          && (entry.decisions ?? []).every((decision) => deviationCodes.has(decision.code));
+        const visible = planActualFeedbackView(entry);
+        return {
+          ...visible,
+          decisions: visible.decisions.map((decision) => {
+            const deviation = (planActual?.deviations ?? []).find((candidate) => candidate.code === decision.code);
+            if (!editable || !deviation) return { ...decision, options: [] };
+            const keepPlanValue = planActualPreferenceValue(planActual, deviation, "keep_plan");
+            const preferActualValue = deviation.correctionTarget === "verification"
+              ? null
+              : planActualPreferenceValue(planActual, deviation, "prefer_actual");
+            return {
+              ...decision,
+              options: [
+                ...(keepPlanValue ? [{ resolution: "keep_plan", preferredValue: keepPlanValue }] : []),
+                ...(preferActualValue ? [{ resolution: "prefer_actual", preferredValue: preferActualValue }] : []),
+              ],
+            };
+          }),
+          projectId: entry.projectId,
+          workItemId: entry.workItemId,
+          workItem: workItem ? { id: workItem.id, localRef: workItem.localRef, title: workItem.title } : null,
+          intentTerms: [...(entry.intentTerms ?? [])],
+          template: entry.template ? { ...entry.template } : null,
+          editable,
+          editUnavailableReason: editable ? null : "execution_evidence_unavailable",
+        };
+      });
+    return { ok: true, status: 200, body: { feedback, count: feedback.length } };
+  }
+
+  function removePlanActualFeedback({ feedbackId } = {}, actor = null) {
+    const ownerTeamId = actorTeam(actor);
+    const index = state.workItemPlanActualFeedback.findIndex((entry) =>
+      entry.id === String(feedbackId ?? "")
+      && entry.ownerTeamId === ownerTeamId
+      && actorCanAccessProject(state, actor, entry.projectId));
+    if (index < 0) return notFound();
+    const feedback = state.workItemPlanActualFeedback[index];
+    runTx(() => {
+      state.workItemPlanActualFeedback.splice(index, 1);
+      const workItem = (state.workItems ?? []).find((item) => item.id === feedback.workItemId
+        && item.ownerTeamId === ownerTeamId);
+      if (workItem) {
+        recordActivity(workItem, actor, "plan_actual_feedback_removed", {
+          feedbackId: feedback.id,
+          affectsFutureMatchesOnly: true,
+        });
+      }
+      appendEvent({
+        invocationId: null,
+        type: "work_item_plan_actual_feedback_removed",
+        level: "info",
+        message: "A learned plan/actual preference was removed.",
+        data: { feedbackId: feedback.id, projectId: feedback.projectId, actorTeamId: ownerTeamId },
+      });
+    });
+    return {
+      ok: true,
+      status: 200,
+      body: { removed: planActualFeedbackView(feedback), affectsFutureMatchesOnly: true },
+    };
+  }
+
+  function recordPlanActualFeedback({
+    workItemId, expectedPlanActualDigest, expectedFeedbackRevision = null, decisions, note = "",
+  } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
     const expectedDigest = String(expectedPlanActualDigest ?? "").trim();
@@ -4524,6 +4615,21 @@ export function createWorkItemService({
       && candidate.workItemId === item.id
       && candidate.runId === planActual.runId
       && candidate.planActualDigest === planActual.digest) ?? null;
+    if (expectedFeedbackRevision !== null && expectedFeedbackRevision !== undefined) {
+      const expectedRevision = Number(expectedFeedbackRevision);
+      if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+        return { ok: false, status: 400, body: { error: "invalid_plan_actual_feedback_revision" } };
+      }
+      if (!feedback || feedback.revision !== expectedRevision) {
+        return {
+          ok: false, status: 409,
+          body: {
+            error: "plan_actual_feedback_changed",
+            currentFeedback: planActualFeedbackView(feedback),
+          },
+        };
+      }
+    }
     const unchanged = feedback
       && JSON.stringify(feedback.decisions) === JSON.stringify(normalized)
       && feedback.note === normalizedNote;
@@ -8083,7 +8189,7 @@ export function createWorkItemService({
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
-    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, recordPlanActualFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, confirmExecutionContractAndSchedule, cancelExecutionStart, recheckExecutionStart, recordExecutionStartOutcome, retryWorkItemAlert,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, listPlanActualFeedback, removePlanActualFeedback, recordPlanActualFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, confirmExecutionContractAndSchedule, cancelExecutionStart, recheckExecutionStart, recordExecutionStartOutcome, retryWorkItemAlert,
     startApplicationExecution, requestApplicationExecutionApproval,
     applyLocalSchedulePlan,
     applyLocalScheduleRollover,

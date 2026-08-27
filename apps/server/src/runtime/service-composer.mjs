@@ -7627,6 +7627,8 @@ export function createServerRuntimeServices({
     activateMyTemplateDraft: workItemService.activateMyTemplateDraft,
     listMyTemplateOutcomeFeedback: workItemService.listMyTemplateOutcomeFeedback,
     recordMyTemplateOutcomeFeedback: workItemService.recordMyTemplateOutcomeFeedback,
+    listPlanActualFeedback: workItemService.listPlanActualFeedback,
+    removePlanActualFeedback: workItemService.removePlanActualFeedback,
     recordPlanActualFeedback: workItemService.recordPlanActualFeedback,
     resumeMyTemplateGovernanceObservation: workItemService.resumeMyTemplateGovernanceObservation,
     prepareWorkItemExecutionContract: workItemService.prepareExecutionContract,

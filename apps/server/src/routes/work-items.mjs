@@ -73,6 +73,8 @@ export async function handleWorkItemRoutes({
   activateMyTemplateDraft,
   listMyTemplateOutcomeFeedback,
   recordMyTemplateOutcomeFeedback,
+  listPlanActualFeedback,
+  removePlanActualFeedback,
   recordPlanActualFeedback,
   resumeMyTemplateGovernanceObservation,
   prepareExecutionContract,
@@ -358,6 +360,24 @@ export async function handleWorkItemRoutes({
   if (url.pathname === "/api/work-items/my-template-outcomes" && req.method === "GET") {
     const result = listMyTemplateOutcomeFeedback({
       projectId: url.searchParams.get("projectId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/plan-actual-preferences" && req.method === "GET") {
+    const result = listPlanActualFeedback({
+      projectId: url.searchParams.get("projectId"),
+      limit: url.searchParams.get("limit"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const planActualPreferenceMatch = url.pathname.match(/^\/api\/work-items\/plan-actual-preferences\/([^/]+)$/);
+  if (planActualPreferenceMatch && req.method === "DELETE") {
+    const result = removePlanActualFeedback({
+      feedbackId: decodeURIComponent(planActualPreferenceMatch[1]),
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

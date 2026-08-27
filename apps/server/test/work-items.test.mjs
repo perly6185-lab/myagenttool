@@ -3788,6 +3788,34 @@ test("plan/actual corrections are digest-bound, replay-safe, and do not rewrite 
   assert.equal(replay.body.replayed, true);
   assert.equal(state.workItemPlanActualFeedback.length, 1);
 
+  const listed = service.listPlanActualFeedback({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.count, 1);
+  assert.equal(listed.body.feedback[0].editable, true);
+  assert.equal(listed.body.feedback[0].workItem.localRef, item.localRef);
+  assert.deepEqual(listed.body.feedback[0].decisions[0].options, [
+    { resolution: "keep_plan", preferredValue: "报价单.xlsx" },
+    { resolution: "prefer_actual", preferredValue: "报价单.csv" },
+  ]);
+  assert.equal(service.listPlanActualFeedback({ projectId: "prj_a" }, ACTOR_B).status, 404);
+
+  const updated = service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: planActual.digest,
+    expectedFeedbackRevision: recorded.body.feedback.revision,
+    decisions: [{ code: "output_format_mismatch", resolution: "prefer_actual" }],
+    note: "以后接受 CSV 报价结果",
+  }, ACTOR_A);
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.feedback.revision, 2);
+  assert.equal(updated.body.feedback.decisions[0].preferredValue, "报价单.csv");
+  assert.equal(service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: planActual.digest,
+    expectedFeedbackRevision: 1,
+    decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+  }, ACTOR_A).body.error, "plan_actual_feedback_changed");
+
   const stale = service.recordPlanActualFeedback({
     workItemId: item.id,
     expectedPlanActualDigest: "a".repeat(64),
@@ -3800,6 +3828,12 @@ test("plan/actual corrections are digest-bound, replay-safe, and do not rewrite 
     expectedPlanActualDigest: planActual.digest,
     decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
   }, ACTOR_B).status, 404);
+  assert.equal(service.removePlanActualFeedback({ feedbackId: recorded.body.feedback.id }, ACTOR_B).status, 404);
+  const removed = service.removePlanActualFeedback({ feedbackId: recorded.body.feedback.id }, ACTOR_A);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.affectsFutureMatchesOnly, true);
+  assert.equal(service.listPlanActualFeedback({}, ACTOR_A).body.count, 0);
+  assert.equal(stored.revision, beforeRevision, "managing the preference still does not revise task history");
 });
 
 test("detail projects the current Ledger batch instead of a stale channel snapshot", () => {

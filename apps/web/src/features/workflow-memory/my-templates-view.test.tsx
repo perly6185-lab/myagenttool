@@ -31,6 +31,9 @@ const mocks = vi.hoisted(() => ({
   bindProject: vi.fn(),
   listLearning: vi.fn(),
   removeLearning: vi.fn(),
+  listPlanActualPreferences: vi.fn(),
+  recordPlanActualFeedback: vi.fn(),
+  removePlanActualPreference: vi.fn(),
   listOutcomes: vi.fn(),
   recordOutcome: vi.fn(),
   resumeGovernance: vi.fn(),
@@ -44,6 +47,9 @@ vi.mock("@/data/use-console-actions", () => ({ api: {
   bindProject: mocks.bindProject,
   listMyTemplateLearning: mocks.listLearning,
   removeMyTemplateLearning: mocks.removeLearning,
+  listWorkItemPlanActualPreferences: mocks.listPlanActualPreferences,
+  recordWorkItemPlanActualFeedback: mocks.recordPlanActualFeedback,
+  removeWorkItemPlanActualPreference: mocks.removePlanActualPreference,
   listMyTemplateOutcomes: mocks.listOutcomes,
   recordMyTemplateOutcomeFeedback: mocks.recordOutcome,
   resumeMyTemplateGovernanceObservation: mocks.resumeGovernance,
@@ -132,6 +138,9 @@ beforeEach(() => {
   mocks.listChannelObjectFileSources.mockResolvedValue({ sources: [], count: 0 });
   mocks.listLearning.mockResolvedValue({ feedback: [], count: 0 });
   mocks.removeLearning.mockResolvedValue({ removed: { id: "feedback-1" }, affectsFutureMatchesOnly: true });
+  mocks.listPlanActualPreferences.mockResolvedValue({ feedback: [], count: 0 });
+  mocks.recordPlanActualFeedback.mockResolvedValue({ feedback: { revision: 2 } });
+  mocks.removePlanActualPreference.mockResolvedValue({ removed: { id: "plan-feedback-1" }, affectsFutureMatchesOnly: true });
   mocks.listOutcomes.mockResolvedValue({ feedback: [], summaries: [], count: 0 });
   mocks.recordOutcome.mockResolvedValue({ feedback: {}, workItem: {} });
   mocks.resumeGovernance.mockResolvedValue({ governance: { state: "watch", manualObservation: true } });
@@ -561,16 +570,89 @@ describe("MyTemplatesView", () => {
 
     expect(await screen.findByText(/任务提到“询价”时/)).toBeTruthy();
     expect(screen.getByText(/优先得到“询价汇总表”，而不是“报价单 Excel”/)).toBeTruthy();
-    expect(screen.getByText("存在冲突")).toBeTruthy();
-    expect(screen.getByText(/创建任务时系统会先请你确认/)).toBeTruthy();
+    expect(screen.getByText("下次先确认")).toBeTruthy();
     expect(screen.getByText(/来自 LOC-12 处理客户询价/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "忘记这条" }));
-    expect(screen.getByRole("heading", { name: "让系统忘记这条选择？" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(screen.getByRole("heading", { name: "撤销这条任务偏好？" })).toBeTruthy();
     expect(screen.getByText(/已经创建或执行的任务不会改变/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "确认忘记" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认撤销" }));
 
     await waitFor(() => expect(mocks.removeLearning).toHaveBeenCalledWith("feedback-1"));
-    expect(await screen.findByText(/还没有记住任何纠正/)).toBeTruthy();
+    expect(await screen.findByText(/还没有任务偏好/)).toBeTruthy();
+  });
+
+  it("shows, modifies, and revokes an execution preference without changing task history", async () => {
+    const preference = {
+      id: "plan-feedback-1", projectId: "project-1", workItemId: "wi-plan-1",
+      workItem: { id: "wi-plan-1", localRef: "LOC-21", title: "整理报价单" },
+      planActualDigest: "a".repeat(64), intentTerms: ["报价单"],
+      decisions: [{
+        code: "output_format_mismatch", scope: "output", correctionTarget: "template",
+        resolution: "keep_plan", preferredValue: "报价单.xlsx", requiresConfirmation: false,
+        options: [
+          { resolution: "keep_plan", preferredValue: "报价单.xlsx" },
+          { resolution: "prefer_actual", preferredValue: "报价单.csv" },
+        ],
+      }],
+      note: "Excel 方便复核", revision: 1, editable: true, editUnavailableReason: null,
+      updatedAt: "2026-08-11T00:00:00.000Z",
+    };
+    mocks.listPlanActualPreferences
+      .mockResolvedValueOnce({ feedback: [preference], count: 1 })
+      .mockResolvedValueOnce({
+        feedback: [{
+          ...preference, revision: 2, note: "CSV 可以直接导入",
+          decisions: [{ ...preference.decisions[0], resolution: "prefer_actual", preferredValue: "报价单.csv" }],
+        }],
+        count: 1,
+      })
+      .mockResolvedValueOnce({ feedback: [], count: 0 });
+    renderView();
+
+    expect(await screen.findByRole("heading", { name: "我的任务偏好" })).toBeTruthy();
+    expect(await screen.findByText(/结果类型：仍按原计划“报价单.xlsx”/)).toBeTruthy();
+    expect(screen.getByText(/来自 LOC-21 整理报价单/)).toBeTruthy();
+    expect(screen.getByText(/只影响以后相似任务，不改变历史记录/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "修改" }));
+    fireEvent.change(screen.getByLabelText("结果类型"), { target: { value: "prefer_actual" } });
+    fireEvent.change(screen.getByLabelText("补充说明（可选）"), { target: { value: "CSV 可以直接导入" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(mocks.recordPlanActualFeedback).toHaveBeenCalledWith("wi-plan-1", {
+      expectedPlanActualDigest: "a".repeat(64),
+      expectedFeedbackRevision: 1,
+      decisions: [{ code: "output_format_mismatch", resolution: "prefer_actual" }],
+      note: "CSV 可以直接导入",
+    }));
+    expect(await screen.findByText(/结果类型：接受本次实际做法“报价单.csv”/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(screen.getByText(/已经创建或执行的任务不会改变/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "确认撤销" }));
+    await waitFor(() => expect(mocks.removePlanActualPreference).toHaveBeenCalledWith("plan-feedback-1"));
+    expect(await screen.findByText(/还没有任务偏好/)).toBeTruthy();
+  });
+
+  it("keeps an old preference revocable when its execution evidence can no longer support editing", async () => {
+    mocks.listPlanActualPreferences.mockResolvedValue({
+      feedback: [{
+        id: "plan-feedback-old", projectId: "project-1", workItemId: "wi-old",
+        workItem: { id: "wi-old", localRef: "LOC-OLD", title: "旧报价任务" },
+        planActualDigest: "b".repeat(64), intentTerms: ["报价单"],
+        decisions: [{
+          code: "output_format_mismatch", scope: "output", correctionTarget: "template",
+          resolution: "keep_plan", preferredValue: "报价单.xlsx", requiresConfirmation: false, options: [],
+        }],
+        note: "", revision: 1, editable: false, editUnavailableReason: "execution_evidence_unavailable",
+        updatedAt: "2026-08-01T00:00:00.000Z",
+      }],
+      count: 1,
+    });
+    renderView();
+
+    expect(await screen.findByText("仅可撤销")).toBeTruthy();
+    expect(screen.getByText(/原执行依据已不可用.*仍可撤销/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "修改" })).toBeNull();
+    expect(screen.getByRole("button", { name: "撤销" })).toBeTruthy();
   });
 
   it("creates a tracked template-learning task from explicit input and output files", async () => {
