@@ -48,6 +48,8 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorAssessment: () => Promise.resolve(null),
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
   getPrivateTutorReviewBook: () => Promise.resolve({ learnerId: profile.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] }),
+  getPrivateTutorLearningPreferences: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorLearningPreferences: () => Promise.reject(new Error("not used")),
   startPrivateTutorAssessment: apiMocks.start,
   answerPrivateTutorAssessment: apiMocks.answer,
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
@@ -85,6 +87,7 @@ describe("My private tutor adaptive diagnostic", () => {
     apiMocks.answer.mockResolvedValue({ ...activeAssessment, revision: 2, answeredCount: 1 });
     render(<PrivateTutorView />);
 
+    fireEvent.click(await screen.findByRole("button", { name: /^用当前内容开始摸底/ }));
     expect(await screen.findByText("先让我认识一下你会什么")).toBeTruthy();
     expect(screen.getByText(/没有排名/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "开始摸底" }));

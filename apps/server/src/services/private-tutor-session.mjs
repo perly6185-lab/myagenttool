@@ -34,8 +34,8 @@ const KNOWLEDGE_CONTENT = {
   ]),
 };
 
-export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, decision, pace, now, state, contentPackageId = null, activationId = null }) {
-  const paceDefinition = PRIVATE_TUTOR_SESSION_PACES[pace];
+export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, decision, pace, now, state, contentPackageId = null, activationId = null, targetMinutes = null }) {
+  const paceDefinition = sessionPaceDefinition(pace, targetMinutes);
   if (!paceDefinition) return null;
   const planDayIndex = selectPlanDayIndex(plan);
   const planDay = plan?.days?.[planDayIndex] ?? null;
@@ -98,6 +98,23 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
     plan.updatedAt = startedAt;
   }
   return session;
+}
+
+function sessionPaceDefinition(pace, targetMinutes) {
+  const base = PRIVATE_TUTOR_SESSION_PACES[pace];
+  if (!base || pace !== "standard" || targetMinutes == null) return base;
+  const totalMinutes = Math.max(5, Math.min(180, Math.round(Number(targetMinutes) || base.totalMinutes)));
+  if (totalMinutes === base.totalMinutes) return base;
+  const minimum = Array(base.budgets.length).fill(1);
+  let remaining = totalMinutes - minimum.length;
+  const weightTotal = base.budgets.reduce((sum, value) => sum + value, 0);
+  const additions = base.budgets.map((weight) => Math.floor((remaining * weight) / weightTotal));
+  let assigned = additions.reduce((sum, value) => sum + value, 0);
+  for (let index = 0; assigned < remaining; index = (index + 1) % additions.length) {
+    additions[index] += 1;
+    assigned += 1;
+  }
+  return { totalMinutes, budgets: minimum.map((value, index) => value + additions[index]) };
 }
 
 export function privateTutorSessionView(session, state) {
@@ -322,14 +339,15 @@ function runtimeQuestionId(knowledge, kind) {
 function instructionFor(kind, contentDefinition, teachingMethod, preferences = null) {
   const styleFrame = preferences ? styleFraming(preferences) : null;
   const depthFrame = preferences ? depthFraming(preferences.explanationDepth) : null;
+  const followUpFrame = preferences ? followUpFraming(preferences.followUpStyle) : null;
   if (kind === "recall") return `先回想一下“${contentDefinition.title}”，看看昨天的理解还在不在。`;
   if (kind === "explain") {
     const base = `${contentDefinition.explanation} 当前讲法：${methodLabel(teachingMethod)}。`;
-    return `${base}${styleFrame ?? ""}${depthFrame ?? ""}`;
+    return `${base}${styleFrame ?? ""}${depthFrame ?? ""}${followUpFrame ?? ""}`;
   }
   if (kind === "guided_practice") {
     const base = "我会陪你做这一步；需要时可以逐级看提示。";
-    return `${base}${styleFrame ?? ""}`;
+    return `${base}${styleFrame ?? ""}${followUpFrame ?? ""}`;
   }
   if (kind === "independent_check") return "这是一道没见过的新题。先不看提示，自己验证能不能迁移。";
   return "看看今天学会了什么，以及下一次什么时候回来复习。";
@@ -355,6 +373,15 @@ function depthFraming(depth) {
     professional_depth: " 深度：按专业标准深入，包含严格的定义和边界条件。",
   };
   return frames[depth] ?? null;
+}
+
+function followUpFraming(style) {
+  const frames = {
+    gentle_probe: " 追问：先请你说出最确定的一点，再温和补问理由。",
+    direct_check: " 追问：直接用一个检查问题确认是否理解。",
+    none: " 追问：不额外追问，由你主动继续。",
+  };
+  return frames[style] ?? null;
 }
 
 function initialMethod(strategy) {
