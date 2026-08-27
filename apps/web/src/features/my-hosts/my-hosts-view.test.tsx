@@ -80,6 +80,78 @@ it("keeps complete connection metadata and settings available in Professional mo
   expect(screen.getByText("Governed transfers")).toBeTruthy();
 });
 
+it("gives an ordinary user one plain recovery action for invalid sign-in details", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [{
+    ...host,
+    authMethod: "password_ref",
+    connectionStatus: "error",
+    lastConnectionError: { code: "ssh_authentication_failed", at: "2026-08-27T00:00:00.000Z" },
+  }], count: 1 });
+  renderView();
+
+  expect(await screen.findByText("Sign-in details need updating")).toBeTruthy();
+  expect(screen.getByText("The host did not accept the credential. Save the correct private key or password and retry.")).toBeTruthy();
+  expect(screen.getAllByRole("button", { name: "Update sign-in details" })).toHaveLength(1);
+  expect(screen.queryByText("ssh_authentication_failed")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Update sign-in details" }));
+  expect(await screen.findByRole("heading", { name: "Connect my device" })).toBeTruthy();
+  expect(screen.queryByPlaceholderText("Leave blank to reuse the securely stored password")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Connect this device" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Enter the login password");
+  expect(hostApi.update).not.toHaveBeenCalled();
+});
+
+it("asks ordinary users to confirm the device without fingerprint jargon", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [{
+    ...host,
+    connectionStatus: "fingerprint_pending",
+    knownHostFingerprint: null,
+    lastConnectionError: null,
+  }], count: 1 });
+  renderView();
+
+  expect((await screen.findAllByText("Confirm device")).length).toBeGreaterThan(0);
+  expect(screen.getByText("Confirm this is your device")).toBeTruthy();
+  expect(screen.queryByText("Confirm fingerprint")).toBeNull();
+  expect(screen.queryByText("Waiting for fingerprint confirmation")).toBeNull();
+});
+
+it("keeps certificate infrastructure out of the ordinary file view", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.scopes).mockResolvedValue({ scopes: [{
+    ...scope,
+    label: "Website HTTPS",
+    purpose: "tls_certificate",
+    permissions: ["certificate_write"],
+  }], count: 1 });
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Remote files" }));
+  expect(await screen.findByText("Managed by My Site")).toBeTruthy();
+  expect(screen.getByText("This folder is safely managed by My Site")).toBeTruthy();
+  expect(screen.queryByText(/Docker Nginx/i)).toBeNull();
+  expect(screen.queryByLabelText("Docker Nginx container name")).toBeNull();
+  expect(hostApi.tlsProfiles).not.toHaveBeenCalled();
+});
+
+it("replaces raw transfer errors with an ordinary recovery message", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.scopes).mockResolvedValue({ scopes: [{ ...scope, permissions: ["list", "download"] }], count: 1 });
+  vi.mocked(hostApi.transfers).mockResolvedValue({ count: 1, transfers: [{
+    id: "hft_timeout", sshTargetId: host.id, scopeId: scope.id, direction: "download", status: "failed", remotePath: "reports/summary.pdf", remoteDirectory: "reports", fileName: "summary.pdf",
+    bytesTotal: 1200, bytesTransferred: 400, progress: 33, conflictPolicy: null, attempt: 1, maxAttempts: 3, retryOf: null, errorCode: "ssh_connection_timeout", createdAt: "2026-08-27T00:00:00.000Z", completedAt: "2026-08-27T00:00:01.000Z",
+  }] });
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Transfers" }));
+  expect(await screen.findByText(/The connection timed out.*You can safely retry/)).toBeTruthy();
+  expect(screen.queryByText("ssh_connection_timeout")).toBeNull();
+  expect(screen.queryByText("/reports/summary.pdf")).toBeNull();
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+});
+
 it("opens host setup from Ordinary mode without changing the experience mode", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
@@ -214,6 +286,7 @@ it("offers a bounded retry from a failed transfer without retaining file bytes",
   renderView();
   fireEvent.click(await screen.findByRole("button", { name: "Transfers" }));
   expect(await screen.findByText("Failed")).toBeTruthy();
+  expect(screen.getByText(/ssh_connection_timeout/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("Confirm download")).toBeTruthy();
   expect(hostApi.download).not.toHaveBeenCalled();

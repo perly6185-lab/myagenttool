@@ -32,15 +32,22 @@ const scope = {
   lastVerifiedAt: "2026-08-27T00:00:00.000Z",
 };
 
-async function mockOrdinaryHostApi(page: Page) {
+type HostFixture = Omit<typeof host, "connectionStatus" | "lastConnectionError"> & {
+  connectionStatus: string;
+  lastConnectionError: null | { code: string; at: string };
+};
+
+async function mockOrdinaryHostApi(page: Page, fixture: { host?: HostFixture; scope?: typeof scope | null } = {}) {
+  const currentHost = fixture.host ?? host;
+  const currentScope = fixture.scope === undefined ? scope : fixture.scope;
   await page.route("http://127.0.0.1:5001/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/session") return route.fulfill({ json: { user: { id: "usr_owner", name: "Owner", teamId: "team_local", role: "owner" } } });
     if (path === "/api/state") return route.fulfill({ json: {
       projects: [], worktrees: [], projectTargets: [], pendingDecisions: [], evidenceLedger: [], invocations: [], events: [],
     } });
-    if (path === "/api/hosts") return route.fulfill({ json: { hosts: [host], count: 1 } });
-    if (path === `/api/hosts/${host.id}/file-scopes`) return route.fulfill({ json: { scopes: [scope], count: 1 } });
+    if (path === "/api/hosts") return route.fulfill({ json: { hosts: [currentHost], count: 1 } });
+    if (path === `/api/hosts/${currentHost.id}/file-scopes`) return route.fulfill({ json: { scopes: currentScope ? [currentScope] : [], count: currentScope ? 1 : 0 } });
     if (path === "/api/work-items") return route.fulfill({ json: { workItems: [], count: 0, hasMore: false, nextCursor: null } });
     if (path === "/api/work-items/attention") return route.fulfill({ json: { items: [], metrics: null, nextCursor: null } });
     if (path === "/api/planning-projects") return route.fulfill({ json: { projects: [] } });
@@ -102,4 +109,35 @@ test("ordinary setup explains local-network permission before connecting", async
 
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test("ordinary recovery stays actionable at a 320 px viewport without exposing the error code", async ({ page }, testInfo) => {
+  const failedHost = {
+    ...host,
+    name: "家庭资料服务器——需要重新登录的超长设备名称",
+    connectionStatus: "error",
+    lastConnectionError: { code: "ssh_authentication_failed", at: "2026-08-27T00:00:00.000Z" },
+  };
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.addInitScript(() => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({
+      state: { locale: "zh-CN", section: "myHosts", experienceMode: "ordinary" },
+      version: 1,
+    }));
+  });
+  await mockOrdinaryHostApi(page, { host: failedHost, scope: null });
+  await page.goto("/?section=myHosts");
+
+  await expect(page.getByText("需要处理").first()).toBeVisible();
+  await expect(page.getByText("登录信息需要更新")).toBeVisible();
+  const recovery = page.getByRole("button", { name: "重新输入登录信息" });
+  await expect(recovery).toBeVisible();
+  await expect(page.getByText("ssh_authentication_failed")).toHaveCount(0);
+  await recovery.click();
+  await expect(page.getByRole("heading", { name: "连接我的设备" })).toBeVisible();
+  await expect(page.getByPlaceholder("留空则使用已安全保存的密码")).toHaveCount(0);
+  await page.getByRole("button", { name: "连接这台设备" }).click();
+  await expect(page.getByRole("alert")).toContainText("请输入登录密码");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("my-hosts-ordinary-recovery-320.png"), fullPage: true });
 });
