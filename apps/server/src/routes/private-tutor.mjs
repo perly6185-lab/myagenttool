@@ -36,6 +36,7 @@ import {
 } from "../services/private-tutor-learning-model.mjs";
 import { buildPrivateTutorLearningHistory } from "../services/private-tutor-learning-history.mjs";
 import {
+  answerPrivateTutorFollowUp,
   completePrivateTutorActivity,
   completePrivateTutorPlanDay,
   createPrivateTutorSession,
@@ -3014,6 +3015,38 @@ async function handleTutoringSessionRoute({
     return true;
   }
 
+  if (actionType === "follow_up") {
+    const result = answerPrivateTutorFollowUp(session, {
+      mode: String(body?.mode ?? "question"),
+      question: body?.question,
+      state,
+      now,
+      nextId,
+    });
+    if (!result.ok) {
+      sendJson(res, 400, { error: result.error });
+      return true;
+    }
+    recordTutoringSessionEvent(state, {
+      learner,
+      actor,
+      session,
+      type: "grounded_follow_up_answered",
+      details: {
+        activity: activity?.kind ?? null,
+        mode: result.followUp.mode,
+        grounding: result.followUp.grounding,
+        sourceCount: result.followUp.sourceRefs.length,
+        evidenceEligible: false,
+      },
+      now,
+      nextId,
+    });
+    persistStateSoon();
+    sendJson(res, 200, { session: privateTutorSessionView(session, state), followUp: result.followUp });
+    return true;
+  }
+
   if (actionType !== "answer") {
     sendJson(res, 400, { error: "invalid_private_tutor_session_action" });
     return true;
@@ -3104,8 +3137,9 @@ async function handleTutoringSessionRoute({
     knowledgeId: session.targetKnowledgeId,
     questionRevisionId,
     correct: judgement.correct,
-    independent: activity.kind === "independent_check" && activity.hintLevel === 0,
+    independent: activity.kind === "independent_check" && activity.hintLevel === 0 && (activity.followUpCount ?? 0) === 0,
     usedHint: activity.hintLevel > 0,
+    usedFollowUp: (activity.followUpCount ?? 0) > 0,
     source,
     recognitionConfidence: Number.isFinite(recognitionConfidence) ? recognitionConfidence : null,
     responseKind: judgement.responseKind,
@@ -3165,7 +3199,7 @@ async function handleTutoringSessionRoute({
     actor,
     session,
     type: attempt.correct ? "answer_correct" : answerResult.advanced ? "activity_completed" : "answer_incorrect",
-    details: { activity: attempt.activityKind, attemptId: attempt.id, voiceTurnId, usedHint: attempt.usedHint, independent: attempt.independent },
+    details: { activity: attempt.activityKind, attemptId: attempt.id, voiceTurnId, usedHint: attempt.usedHint, usedFollowUp: attempt.usedFollowUp, independent: attempt.independent },
     now,
     nextId,
   });

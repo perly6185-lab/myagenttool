@@ -461,6 +461,7 @@ export interface PrivateTutorSession {
     kind: PrivateTutorSessionActivityKind;
     budgetMinutes: number;
     hintLevel: number;
+    followUpCount?: number;
     attemptCount: number;
     instruction: string;
     question: PrivateTutorAssessmentQuestion | null;
@@ -481,6 +482,7 @@ export interface PrivateTutorSession {
   } | null;
   methodSwitchCount: number;
   intervention: { type: "gentle_hint" | "method_switch" | "prerequisite_reset"; message: string } | null;
+  followUps?: PrivateTutorFollowUp[];
   pausedAt: string | null;
   startedAt: string;
   completedAt: string | null;
@@ -495,6 +497,20 @@ export interface PrivateTutorSession {
     reviewAt: string;
     nextStep: string;
   } | null;
+}
+
+export type PrivateTutorFollowUpMode = "question" | "explain_again" | "source_example";
+
+export interface PrivateTutorFollowUp {
+  id: string;
+  activityKind: PrivateTutorSessionActivityKind;
+  mode: PrivateTutorFollowUpMode;
+  question: string;
+  response: string;
+  grounding: "source_excerpt" | "reviewed_curriculum";
+  sourceRefs: Array<{ sectionId: string; pageNumber: number | null; excerpt: string }>;
+  evidenceEligible: false;
+  createdAt: string;
 }
 
 export interface PrivateTutorVoiceTurn {
@@ -1389,6 +1405,7 @@ export async function resumePrivateTutorSession(sessionId: string) {
 
 export async function actOnPrivateTutorSession(sessionId: string, input:
   | { action: "continue" | "hint" }
+  | { action: "follow_up"; mode: PrivateTutorFollowUpMode; question?: string }
   | {
     action: "answer";
     idempotencyKey: string;
@@ -1403,6 +1420,7 @@ export async function actOnPrivateTutorSession(sessionId: string, input:
     session: PrivateTutorSession;
     snapshot?: PrivateTutorSnapshot;
     answer?: PrivateTutorAttemptEvaluation;
+    followUp?: PrivateTutorFollowUp;
     voiceTurn?: PrivateTutorVoiceTurn | null;
     replayed?: boolean;
   } & Partial<PrivateTutorIntelligence>>(
