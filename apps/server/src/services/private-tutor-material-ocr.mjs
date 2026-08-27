@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { applyPrivateTutorOcrResult, parsePrivateTutorMaterialPath } from "./private-tutor-material-parser.mjs";
 
 const JOB_TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
@@ -50,9 +51,11 @@ export function createPrivateTutorMaterialOcrService({
   now = () => new Date().toISOString(),
   nextId = (prefix) => `${prefix}_${Date.now()}`,
   persistStateSoon = () => {},
+  store,
 } = {}) {
   const root = privateTutorMaterialRoot(stateStorePath);
   const active = new Map();
+  const runTx = makeRunTx({ store, persistStateSoon });
   mkdirSync(root, { recursive: true });
 
   function storeSource({ bytes, sourceHash, fileName, fileType }) {
@@ -118,12 +121,13 @@ export function createPrivateTutorMaterialOcrService({
       if (readiness.requiresCloudConsent && job.cloudAllowed !== true) {
         throw codedError("Cloud OCR confirmation is required.", "workflow_ocr_cloud_confirmation_required", 409);
       }
-      job.status = "running";
-      job.startedAt ??= now();
-      job.updatedAt = now();
-      job.attempts += 1;
-      job.providerId = readiness.providerId ?? null;
-      persistStateSoon();
+      runTx(() => {
+        job.status = "running";
+        job.startedAt ??= now();
+        job.updatedAt = now();
+        job.attempts += 1;
+        job.providerId = readiness.providerId ?? null;
+      });
       const artifactRoot = join(
         root,
         material.sourceHash,
@@ -136,41 +140,44 @@ export function createPrivateTutorMaterialOcrService({
         artifactRoot,
         signal: controller.signal,
         onProgress: ({ completedPages, totalPages, resumed = false }) => {
-          job.completedPages = Number(completedPages) || 0;
-          job.totalPages = Number(totalPages) || job.totalPages;
-          job.resumedPages = resumed ? Math.max(job.resumedPages ?? 0, job.completedPages) : job.resumedPages ?? 0;
-          job.updatedAt = now();
-          persistStateSoon();
+          runTx(() => {
+            job.completedPages = Number(completedPages) || 0;
+            job.totalPages = Number(totalPages) || job.totalPages;
+            job.resumedPages = resumed ? Math.max(job.resumedPages ?? 0, job.completedPages) : job.resumedPages ?? 0;
+            job.updatedAt = now();
+          });
         },
       });
       const updated = applyPrivateTutorOcrResult(material, recognized, now());
-      Object.assign(material, updated);
-      job.status = updated.status === "parsed" ? "completed" : "needs_review";
-      job.completedPages = recognized.pages.length;
-      job.totalPages = recognized.pageCount ?? recognized.pages.length;
-      job.failureCode = null;
-      job.failureMessage = null;
-      job.completedAt = now();
-      job.updatedAt = job.completedAt;
-      persistStateSoon();
+      runTx(() => {
+        Object.assign(material, updated);
+        job.status = updated.status === "parsed" ? "completed" : "needs_review";
+        job.completedPages = recognized.pages.length;
+        job.totalPages = recognized.pageCount ?? recognized.pages.length;
+        job.failureCode = null;
+        job.failureMessage = null;
+        job.completedAt = now();
+        job.updatedAt = job.completedAt;
+      });
     } catch (error) {
-      job.status = error?.code === "workflow_ocr_cancelled" ? "cancelled" : "failed";
-      job.failureCode = String(error?.code ?? "private_tutor_ocr_failed").slice(0, 120);
-      job.failureMessage = String(error?.message ?? "OCR failed.").slice(0, 500);
-      job.updatedAt = now();
-      job.completedAt = job.updatedAt;
-      const material = state.privateTutorMaterialDocuments.find((item) => item.id === job.materialId);
-      if (material?.extraction?.ocr) {
-        material.extraction.ocr = {
-          ...material.extraction.ocr,
-          attempted: true,
-          state: "failed",
-          providerId: job.providerId,
-          reason: job.failureCode,
-        };
-        material.updatedAt = job.updatedAt;
-      }
-      persistStateSoon();
+      runTx(() => {
+        job.status = error?.code === "workflow_ocr_cancelled" ? "cancelled" : "failed";
+        job.failureCode = String(error?.code ?? "private_tutor_ocr_failed").slice(0, 120);
+        job.failureMessage = String(error?.message ?? "OCR failed.").slice(0, 500);
+        job.updatedAt = now();
+        job.completedAt = job.updatedAt;
+        const material = state.privateTutorMaterialDocuments.find((item) => item.id === job.materialId);
+        if (material?.extraction?.ocr) {
+          material.extraction.ocr = {
+            ...material.extraction.ocr,
+            attempted: true,
+            state: "failed",
+            providerId: job.providerId,
+            reason: job.failureCode,
+          };
+          material.updatedAt = job.updatedAt;
+        }
+      });
     } finally {
       active.delete(job.id);
     }
@@ -205,8 +212,7 @@ export function createPrivateTutorMaterialOcrService({
       updatedAt: at,
       completedAt: null,
     };
-    state.privateTutorOcrJobs.unshift(job);
-    persistStateSoon();
+    runTx(() => state.privateTutorOcrJobs.unshift(job));
     schedule(job);
     return { job, replayed: false };
   }
@@ -227,9 +233,10 @@ export function createPrivateTutorMaterialOcrService({
     });
     const existingIndex = state.privateTutorMaterialDocuments.findIndex((item) =>
       item.learningProfileId === learningProfileId && item.sourceHash === material.sourceHash);
-    if (existingIndex >= 0) state.privateTutorMaterialDocuments[existingIndex] = material;
-    else state.privateTutorMaterialDocuments.push(material);
-    persistStateSoon();
+    runTx(() => {
+      if (existingIndex >= 0) state.privateTutorMaterialDocuments[existingIndex] = material;
+      else state.privateTutorMaterialDocuments.push(material);
+    });
     const jobResult = startOcr && material.status === "needs_ocr"
       ? start(material, learningProfileId, { cloudAllowed })
       : null;
@@ -245,13 +252,14 @@ export function createPrivateTutorMaterialOcrService({
     if (!["failed", "cancelled", "needs_review"].includes(job.status)) {
       throw codedError("Only a stopped OCR job can be retried.", "private_tutor_ocr_job_not_retryable", 409);
     }
-    job.status = "queued";
-    job.cloudAllowed = cloudAllowed === true;
-    job.failureCode = null;
-    job.failureMessage = null;
-    job.completedAt = null;
-    job.updatedAt = now();
-    persistStateSoon();
+    runTx(() => {
+      job.status = "queued";
+      job.cloudAllowed = cloudAllowed === true;
+      job.failureCode = null;
+      job.failureMessage = null;
+      job.completedAt = null;
+      job.updatedAt = now();
+    });
     schedule(job);
     return job;
   }
@@ -261,10 +269,11 @@ export function createPrivateTutorMaterialOcrService({
     if (!["queued", "running"].includes(job.status)) throw codedError("OCR job is not active.", "private_tutor_ocr_job_not_active", 409);
     if (job.status === "queued") {
       active.get(job.id)?.abort();
-      job.status = "cancelled";
-      job.completedAt = now();
-      job.updatedAt = job.completedAt;
-      persistStateSoon();
+      runTx(() => {
+        job.status = "cancelled";
+        job.completedAt = now();
+        job.updatedAt = job.completedAt;
+      });
     } else {
       active.get(job.id)?.abort();
     }
@@ -278,11 +287,17 @@ export function createPrivateTutorMaterialOcrService({
   }
 
   function resumePendingJobs() {
-    for (const job of state.privateTutorOcrJobs) {
-      if (job.status === "running") {
-        job.status = "queued";
-        job.updatedAt = now();
+    const pending = state.privateTutorOcrJobs.filter((job) => ["queued", "running"].includes(job.status));
+    if (!pending.length) return;
+    runTx(() => {
+      for (const job of pending) {
+        if (job.status === "running") {
+          job.status = "queued";
+          job.updatedAt = now();
+        }
       }
+    });
+    for (const job of pending) {
       if (job.status === "queued") schedule(job);
     }
   }

@@ -795,6 +795,7 @@ export function createServerRuntimeServices({
     now,
     nextId,
     persistStateSoon,
+    store,
   });
   const workflowMemoryService = createWorkflowMemoryService({
     state,
