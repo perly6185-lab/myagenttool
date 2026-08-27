@@ -209,6 +209,8 @@ test("a personal learner starts one fourteen-day trial and reads evidence-only t
   });
   assert.equal(started.status, 201);
   assert.equal(started.body.trial.durationDays, 14);
+  assert.equal(started.body.trial.observationDays, 2);
+  assert.equal(Date.parse(started.body.trial.observationEndsAt) - Date.parse(started.body.trial.endsAt), 2 * 24 * 60 * 60 * 1000);
   assert.equal(started.body.trial.status, "active");
   assert.equal(started.body.trial.metrics.nextDayRecall.retentionRate, null);
   assert.equal(started.body.trial.readiness.nextDayRecallReady, false);

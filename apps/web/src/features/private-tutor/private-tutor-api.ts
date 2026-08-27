@@ -525,9 +525,11 @@ export interface PrivateTutorLearningTrial {
   contentPackageName: string;
   goal: string;
   durationDays: number;
-  status: "active" | "completed" | "stopped";
+  observationDays: number;
+  status: "active" | "observing" | "completed" | "stopped";
   startedAt: string;
   endsAt: string;
+  observationEndsAt: string;
   stoppedAt: string | null;
   completedAt: string | null;
   progress: {

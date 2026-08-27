@@ -92,11 +92,11 @@ test("a learner reaches a five-minute lesson and starts an evidence-only fourtee
   await page.getByLabel("试学目标").fill("验证我能否真正掌握方程平衡");
   await page.getByRole("button", { name: "开始 14 天试学" }).click();
   await expect(page.getByText("试学中 · 第 1/14 天")).toBeVisible();
-  await expect(page.getByText("自动化测试只验证记录是否正确；只有你真实学习产生的样本，才会进入这里的结果。")).toBeVisible();
+  await expect(page.getByText(/自动化测试只验证记录是否正确；只有你真实学习产生的样本/)).toBeVisible();
   const trial = await page.context().request.get(`${apiBase}/api/private-tutor/profile/learning-trial`);
   expect(trial.ok()).toBe(true);
-  const trialBody = await trial.json() as { trial: { durationDays: number; status: string; metrics: { nextDayRecall: { retentionRate: number | null } } } };
-  expect(trialBody.trial).toMatchObject({ durationDays: 14, status: "active" });
+  const trialBody = await trial.json() as { trial: { durationDays: number; observationDays: number; status: string; metrics: { nextDayRecall: { retentionRate: number | null } } } };
+  expect(trialBody.trial).toMatchObject({ durationDays: 14, observationDays: 2, status: "active" });
   expect(trialBody.trial.metrics.nextDayRecall.retentionRate).toBeNull();
   await testInfo.attach("private-tutor-fourteen-day-trial", {
     body: await page.screenshot({ fullPage: true }),
