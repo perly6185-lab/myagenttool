@@ -754,6 +754,7 @@ export function WorkItemSummaryView({
     language,
   });
   const contextHasBlockingIssues = startSummary.issues.some((issue) => issue.severity === "blocking");
+  const intentConflictResolution = startSummary.clarification?.resolution ?? null;
   const primaryUsesProgress = (["not_started", "scheduled", "ai_working", "waiting"].includes(status)
     || (status === "needs_action" && item.waitingOn === "me" && !["failed", "awaiting_approval"].includes(item.executionState ?? ""))
     || (status === "blocked" && !observability?.latestRun)) && !startEligible;
@@ -3273,10 +3274,20 @@ export function WorkItemSummaryView({
         error={startConfirmationOpen ? actionError : null}
         blockedActionLabel={materialExecutionBlocked
           ? (language === "zh" ? "检查相关资料" : "Review materials")
-          : readinessBlocked ? readinessFixLabel(readiness, language) : undefined}
+          : intentConflictResolution === "task_context"
+            ? (language === "zh" ? "调整资料权限" : "Adjust material access")
+            : intentConflictResolution
+              ? (language === "zh" ? "修正任务理解" : "Correct task intent")
+              : readinessBlocked ? readinessFixLabel(readiness, language) : undefined}
         onResolveBlocked={materialExecutionBlocked ? () => {
           setStartConfirmationOpen(false);
           window.requestAnimationFrame(() => document.getElementById(`work-item-records-${item.id}`)?.scrollIntoView?.({ behavior: "smooth", block: "center" }));
+        } : intentConflictResolution === "task_context" ? () => {
+          setStartConfirmationOpen(false);
+          window.requestAnimationFrame(() => document.querySelector('[data-testid="work-item-context-card"]')?.scrollIntoView?.({ behavior: "smooth", block: "center" }));
+        } : intentConflictResolution ? () => {
+          setStartConfirmationOpen(false);
+          onOpenExpert("overview");
         } : readinessBlocked ? () => {
           setStartConfirmationOpen(false);
           if (onOpenSetup) onOpenSetup(readinessSetupSection(readiness));

@@ -109,4 +109,53 @@ describe("execution start summary", () => {
     expect(summary.issues).toContainEqual(expect.objectContaining({ code: "method:needs_confirmation", severity: "blocking" }));
     expect(summary.issues).toContainEqual(expect.objectContaining({ code: "materials:change_targets", severity: "warning" }));
   });
+
+  it("projects one key intent clarification without hiding the conflict evidence", () => {
+    const item = {
+      title: "只读分析客户台账",
+      acceptanceCriteria: ["给出分析结论"],
+      verificationSop: ["核对分析范围"],
+      intentContract: {
+        clarification: {
+          code: "read_only_with_change_targets",
+          question: "这次只读取并分析，还是允许修改这些资料？",
+          resolution: "task_context",
+        },
+      },
+    } as unknown as LocalWorkItem;
+
+    const summary = deriveExecutionStartSummary({ item, project: null, readiness: { ready: true, checks: [] }, language: "zh" });
+
+    expect(summary.issues).toContainEqual(expect.objectContaining({
+      code: "intent:read_only_with_change_targets",
+      severity: "blocking",
+    }));
+    expect(summary.clarification).toEqual({
+      question: "这次只读取并分析，还是允许修改这些资料？",
+      resolution: "task_context",
+    });
+  });
+
+  it("allows a changed intent to be reconfirmed while explaining the stale confirmation", () => {
+    const item = {
+      title: "更新客户台账",
+      acceptanceCriteria: ["状态正确"],
+      verificationSop: ["核对变更"],
+      executionContractGate: {
+        ready: false,
+        missing: ["intent_changed"],
+        source: "manual",
+        confirmedAt: "2026-08-27T08:00:00.000Z",
+        intentChanged: true,
+      },
+    } as unknown as LocalWorkItem;
+
+    const summary = deriveExecutionStartSummary({ item, project: null, readiness: { ready: true, checks: [] }, language: "zh" });
+
+    expect(summary.issues).toContainEqual(expect.objectContaining({
+      code: "intent:confirmation_stale",
+      severity: "warning",
+    }));
+    expect(summary.clarification).toBeNull();
+  });
 });

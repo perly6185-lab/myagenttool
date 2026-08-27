@@ -27,6 +27,7 @@ export type ExecutionStartSummary = {
   method: { name: string; expectedOutput: string | null; kind: "template" | "custom" };
   delivery: { label: string; destination: "channel" | "task" };
   issues: ExecutionStartIssue[];
+  clarification: { question: string; resolution: "task_context" | "task_definition" | "template" } | null;
   risks: string[];
   boundary: string;
 };
@@ -165,6 +166,15 @@ export function deriveExecutionStartSummary({
       message: zh ? "还没有明确完成后怎样检查。" : "Verification steps are not defined yet.",
     });
   }
+  if (item.executionContractGate?.intentChanged) {
+    addIssue({
+      code: "intent:confirmation_stale",
+      severity: "warning",
+      message: zh
+        ? "任务范围在上次确认后发生了变化；本次确认将以当前内容建立新的执行契约。"
+        : "The task scope changed after the previous confirmation. This confirmation will create a new contract from the current details.",
+    });
+  }
   const changeTargetCount = materials.filter((material) => material.role === (zh ? "允许修改" : "Change target")).length;
   if (changeTargetCount) {
     addIssue({
@@ -183,6 +193,20 @@ export function deriveExecutionStartSummary({
         ? `结果确认后将回传到 ${item.taskContextSummary.delivery.label}。`
         : `After review, the result will be returned to ${item.taskContextSummary.delivery.label}.`,
     });
+  }
+  const intentClarification = item.intentContract?.clarification ?? null;
+  if (intentClarification) {
+    const messages: Record<string, [string, string]> = {
+      read_only_with_change_targets: ["只读要求与资料修改权限冲突。", "The read-only request conflicts with material write access."],
+      read_only_with_external_write: ["只读要求与外部写入动作冲突。", "The read-only request conflicts with an external write."],
+      platform_target_missing: ["任务缺少明确的目标平台。", "The task has no explicit target platform."],
+      template_selection_changed: ["Channel 中确认的模板与任务当前模板不一致。", "The Channel-confirmed template differs from the task's current template."],
+      output_format_changed: ["用户要求的结果格式与模板输出格式不一致。", "The requested result format differs from the template output."],
+      change_target_not_writable: ["修改目标当前不支持安全写回。", "A change target does not currently support governed write-back."],
+    };
+    const localized = messages[intentClarification.code]?.[zh ? 0 : 1]
+      ?? (zh ? "任务意图存在需要确认的冲突。" : "The task intent contains a conflict that needs confirmation.");
+    addIssue({ code: `intent:${intentClarification.code}`, severity: "blocking", message: localized });
   }
 
   const repositoryPath = project?.path ?? project?.git?.repoPath ?? null;
@@ -226,6 +250,17 @@ export function deriveExecutionStartSummary({
       destination: "task",
     },
     issues,
+    clarification: intentClarification ? {
+      question: zh ? intentClarification.question : ({
+        read_only_with_change_targets: "Should this run only read and analyze, or may it modify these materials?",
+        read_only_with_external_write: "Should this run only prepare a reviewable result, or write to the external platform?",
+        platform_target_missing: "Which platform is this result intended for?",
+        template_selection_changed: "Should this run use the Channel-confirmed template or the task's current template?",
+        output_format_changed: "Which output format should this run produce?",
+        change_target_not_writable: "Should AI prepare change suggestions only, or use a write-enabled material?",
+      } as Record<string, string>)[intentClarification.code] ?? "Which interpretation should AI use for this run?",
+      resolution: intentClarification.resolution,
+    } : null,
     risks: issues.filter((issue) => issue.severity !== "notice").map((issue) => issue.message),
     boundary: zh
       ? "本次确认只会让 AI 按以上任务、资料和检查标准开始处理；后续交付、合并或对外写入仍按各自规则处理。"

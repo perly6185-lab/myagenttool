@@ -16,6 +16,27 @@ export type WorkItemExecutionKind = "auto_run" | "application_invocation" | "art
 export type WorkItemRequesterRelation = "boss" | "manager" | "customer" | "child" | "colleague" | "self" | "unknown";
 export type WorkItemIntakeChannel = "manual" | "meeting" | "email" | "chat" | "phone" | "github" | "import" | "other" | "unknown";
 export type WorkItemWaitingOn = "me" | "requester" | "internal" | "ai" | "none";
+export type WorkItemIntentContract = {
+  schemaVersion: number;
+  workItemId: string | null;
+  goal: string;
+  taskKind: string;
+  action: { accessMode: string; operation: string };
+  expectedOutput: string | null;
+  method: { kind: "template" | "custom"; definitionId: string | null; familyId: string | null; version: number | null; name: string | null };
+  materials: { inputCount: number; changeTargets: Array<{ id: string; title: string; canCommit: boolean }> };
+  delivery: { destination: "channel" | "task"; platformId: string | null; platformLabel: string | null };
+  acceptanceCriteria: string[];
+  verificationSop: string[];
+  conflicts: Array<{ code: string; severity: "blocking" | "warning"; subject: string; message: string; question: string; resolution: "task_context" | "task_definition" | "template" }>;
+  missing: string[];
+  clarification: { code: string; question: string; resolution: "task_context" | "task_definition" | "template" } | null;
+  status: "ready" | "incomplete" | "needs_clarification";
+  digest: string;
+  confirmedAt?: string | null;
+  confirmedBy?: string | null;
+  readOnly?: true;
+};
 export type ExternalWorkItemBinding = {
   kind: "github_issue" | "gitlab_issue" | "gitea_issue";
   provider?: "github" | "gitlab" | "gitea";
@@ -132,11 +153,15 @@ export type LocalWorkItem = {
   } | null;
   executionContractGate?: {
     ready: boolean;
-    missing: ("acceptance_criteria" | "verification_sop" | "confirmation" | "confirmed_before_execution")[];
+    missing: ("acceptance_criteria" | "verification_sop" | "confirmation" | "confirmed_before_execution" | "intent_changed")[];
     source: string | null;
     confirmedAt: string | null;
     latestAttemptStartedAt?: string | null;
+    intentReady?: boolean;
+    clarification?: WorkItemIntentContract["clarification"];
+    intentChanged?: boolean;
   };
+  intentContract?: WorkItemIntentContract;
   reviewContract?: {
     schemaVersion: "legacy-v1" | "execution-contract-v2" | string;
     id: string;
@@ -145,6 +170,7 @@ export type LocalWorkItem = {
     autoRunId: string | null;
     acceptanceCriteria: string[];
     verificationSop: string[];
+    intentContract?: WorkItemIntentContract | null;
     confirmedBy: string | null;
     confirmedAt: string | null;
     digest: string | null;

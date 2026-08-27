@@ -2959,6 +2959,8 @@ test("execution admission creates the Run before its contract and rejects duplic
   assert.equal(admitted.body.claim.claimedBy, "usr_a");
   assert.equal(admitted.body.operation.contextSnapshot.schemaVersion, 2);
   assert.equal(admitted.body.operation.contextSnapshot.workItemRevision, item.revision);
+  assert.equal(admitted.body.operation.contextSnapshot.intentContract.status, "ready");
+  assert.equal(admitted.body.operation.contextSnapshot.intentContract.goal, "Run once");
   assert.equal(service.beginExecution({
     workItemId: item.id,
     kind: "auto_run",
@@ -2980,7 +2982,9 @@ test("execution admission creates the Run before its contract and rejects duplic
   assert.equal(recorded.body.workItem.executionOperation, null);
   assert.equal(recorded.body.binding.contextSnapshot.digest, admitted.body.operation.contextSnapshot.digest);
   admitted.body.operation.contextSnapshot.sources.push({ sourceId: "late_mutation" });
+  admitted.body.operation.contextSnapshot.intentContract.goal = "late mutation";
   assert.equal(recorded.body.binding.contextSnapshot.sources.length, 0);
+  assert.equal(recorded.body.binding.contextSnapshot.intentContract.goal, "Run once");
   assert.equal(service.beginExecution({
     workItemId: item.id,
     kind: "auto_run",
@@ -3233,6 +3237,9 @@ test("AI handoff confirms and schedules the reviewed contract atomically and ide
   assert.equal(confirmed.body.workItem.executionStartReceipt.status, "queued");
   assert.equal(confirmed.body.workItem.executionStartReceipt.reasonCode, "waiting_for_turn");
   assert.ok(confirmed.body.workItem.executionStartReceipt.id.startsWith("wsr_"));
+  assert.equal(confirmed.body.workItem.intentContract.status, "ready");
+  assert.equal(confirmed.body.workItem.intentContract.readOnly, true);
+  assert.match(confirmed.body.workItem.intentContract.digest, /^[a-f0-9]{64}$/);
 
   const replayed = service.confirmExecutionContractAndSchedule({
     workItemId: item.id,
@@ -3241,6 +3248,42 @@ test("AI handoff confirms and schedules the reviewed contract atomically and ide
   assert.equal(replayed.status, 200);
   assert.equal(replayed.body.replayed, true);
   assert.equal(replayed.body.workItem.revision, confirmed.body.workItem.revision);
+});
+
+test("AI handoff refuses an intent conflict and returns one key clarification", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "只读分析客户台账",
+    acceptanceCriteria: ["给出分析结论"],
+    verificationSop: ["核对分析范围"],
+    channelTaskContract: {
+      source: "channel",
+      operationIntent: {
+        schemaVersion: 1,
+        accessMode: "read_only",
+        action: "query_data",
+        resource: "tabular_files",
+        explicitReadOnly: true,
+      },
+    },
+  }, ACTOR_A).body.workItem;
+  state.workItems[0].taskResourceRefs = [{
+    id: "wrr_ledger", resourceId: "res_ledger", title: "客户台账",
+    purpose: "change_target", locality: "local",
+    capabilities: ["read", "query", "propose_change", "commit_change"],
+  }];
+
+  const conflict = service.confirmExecutionContractAndSchedule({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+  }, ACTOR_A);
+
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.error, "work_item_intent_conflict");
+  assert.equal(conflict.body.clarification.code, "read_only_with_change_targets");
+  assert.equal(conflict.body.intentContract.conflicts.length, 1);
+  assert.equal(state.workItems[0].executionStartRequest, undefined);
 });
 
 test("a queued AI start can be cancelled without discarding its reviewed plan", () => {
@@ -3279,6 +3322,48 @@ test("a queued AI start can be cancelled without discarding its reviewed plan", 
   assert.equal(replayed.status, 200);
   assert.equal(replayed.body.replayed, true);
   assert.equal(replayed.body.workItem.revision, cancelled.body.workItem.revision);
+});
+
+test("an intent-affecting context change after cancellation requires a fresh confirmation", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "更新客户台账",
+    acceptanceCriteria: ["状态正确"],
+    verificationSop: ["核对变更"],
+  }, ACTOR_A).body.workItem;
+  state.workItems[0].taskResourceRefs = [{
+    id: "wrr_ledger", resourceId: "res_ledger", title: "客户台账",
+    purpose: "query_source", locality: "local",
+    capabilities: ["read", "query", "propose_change", "commit_change"],
+    allowedPurposes: ["reference", "query_source", "change_target"],
+  }];
+  const confirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+  }, ACTOR_A).body.workItem;
+  const cancelled = service.cancelExecutionStart({
+    workItemId: item.id,
+    expectedRevision: confirmed.revision,
+  }, ACTOR_A).body.workItem;
+  const changed = service.updateTaskContext({
+    workItemId: item.id,
+    expectedRevision: cancelled.revision,
+    materialRoles: [{ id: "wrr_ledger", role: "change_target" }],
+  }, ACTOR_A).body.workItem;
+
+  assert.equal(changed.executionContractGate.ready, false);
+  assert.equal(changed.executionContractGate.intentChanged, true);
+  assert.ok(changed.executionContractGate.missing.includes("intent_changed"));
+  assert.equal(changed.intentContract.confirmationStale, true);
+
+  const reconfirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: changed.revision,
+  }, ACTOR_A).body.workItem;
+  assert.equal(reconfirmed.executionContractGate.ready, true);
+  assert.equal(reconfirmed.intentContract.materials.changeTargets.length, 1);
+  assert.notEqual(reconfirmed.intentContract.digest, confirmed.intentContract.digest);
 });
 
 test("AI start outcomes are durable, idempotent, and become started with the execution binding", () => {

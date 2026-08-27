@@ -1307,6 +1307,13 @@ export function createAutoRunService({
         })),
       }
       : null;
+    const intentContract = localWorkItem?.executionIntentContractSnapshot
+      ?? executionPlan.intentContract
+      ?? frozenContext?.intentContract
+      ?? null;
+    if (intentContract?.status === "needs_clarification") {
+      throw new Error("The work item intent contract requires clarification before implementation starts.");
+    }
     const frozenDataContextDigest = autoRun.executionContract
       ? autoRun.executionContract.dataContextSnapshot?.digest ?? null
       : dataContextSnapshot?.digest ?? null;
@@ -1316,6 +1323,7 @@ export function createAutoRunService({
       acceptanceCriteria: criteria,
       verificationSop: sop,
       dataContextDigest: frozenDataContextDigest,
+      intentContractDigest: intentContract?.digest ?? null,
       confirmedBy,
       confirmedAt: executionPlan.confirmedAt,
     })).digest("hex");
@@ -1347,6 +1355,10 @@ export function createAutoRunService({
         acceptanceCriteria: criteria,
         verificationSop: sop,
         dataContextSnapshot,
+        intentContract: intentContract ? {
+          ...intentContract,
+          conflicts: (intentContract.conflicts ?? []).map((conflict) => ({ ...conflict })),
+        } : null,
         confirmedBy,
         confirmedAt: executionPlan.confirmedAt,
         digest,

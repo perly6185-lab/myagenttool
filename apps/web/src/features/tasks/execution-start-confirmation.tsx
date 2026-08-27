@@ -79,6 +79,13 @@ export function ExecutionStartConfirmation({
           ) : <p className="mt-2 text-sm text-muted-foreground">{zh ? "当前没有发现会阻止启动的问题。" : "No issue currently blocks this start."}</p>}
         </section>
 
+        {summary.clarification ? (
+          <section className="rounded-xl border border-warning/50 bg-warning/[0.08] p-4" aria-labelledby="execution-start-clarification">
+            <p className="text-xs font-medium text-warning-foreground">{zh ? "只需要你确认这一点" : "One decision is needed"}</p>
+            <h3 id="execution-start-clarification" className="mt-1 text-sm font-semibold leading-relaxed">{summary.clarification.question}</h3>
+          </section>
+        ) : null}
+
         <div className="grid gap-3 sm:grid-cols-2">
           <SummaryList
             icon={<CheckCircle2 className="size-4 text-success" aria-hidden />}

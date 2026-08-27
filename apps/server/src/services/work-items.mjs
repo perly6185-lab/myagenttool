@@ -58,6 +58,7 @@ import { buildDeliveryEvidence } from "./work-item-delivery-evidence.mjs";
 import { normalizeExecutionStartFailure, projectExecutionStartReceipt } from "./work-item-execution-start.mjs";
 import { projectWorkItemExecutionReview } from "./work-item-execution-review.mjs";
 import { projectWorkItemContextSummary } from "./work-item-context-summary.mjs";
+import { buildWorkItemIntentContract, freezeWorkItemIntentContract } from "./work-item-intent-contract.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -1408,12 +1409,40 @@ export function createWorkItemService({
       && Date.parse(item.executionContractConfirmedAt) > Date.parse(latestAttemptStartedAt)) {
       missing.push("confirmed_before_execution");
     }
+    const intentContract = buildWorkItemIntentContract(item);
+    const intentChanged = Boolean(
+      item.executionContractConfirmedAt
+      && item.executionIntentContractSnapshot?.digest
+      && item.executionIntentContractSnapshot.digest !== intentContract.digest,
+    );
+    if (intentChanged) missing.push("intent_changed");
     return {
-      ready: missing.length === 0,
+      ready: missing.length === 0 && intentContract.status !== "needs_clarification",
       missing,
       source: item.executionContractSource ?? null,
       confirmedAt: item.executionContractConfirmedAt ?? null,
       latestAttemptStartedAt,
+      intentReady: intentContract.status === "ready" && !intentChanged,
+      clarification: intentContract.clarification,
+      intentChanged,
+    };
+  }
+
+  function intentContractView(item) {
+    const current = buildWorkItemIntentContract(item);
+    const frozen = item.executionIntentContractSnapshot ?? null;
+    const executionActive = Boolean(
+      item.executionOperation
+      || (item.executionBindings ?? []).length
+      || (item.executionStartRequest && item.executionStartRequest.status !== "cancelled"),
+    );
+    if (executionActive && frozen) return frozen;
+    return {
+      ...current,
+      ...(frozen?.digest && frozen.digest !== current.digest ? {
+        previousConfirmedDigest: frozen.digest,
+        confirmationStale: true,
+      } : {}),
     };
   }
 
@@ -1432,6 +1461,10 @@ export function createWorkItemService({
       autoRunId: contract.autoRunId ?? latestRun?.id ?? null,
       acceptanceCriteria: [...(contract.acceptanceCriteria ?? [])],
       verificationSop: [...(contract.verificationSop ?? [])],
+      intentContract: contract.intentContract ? {
+        ...contract.intentContract,
+        conflicts: (contract.intentContract.conflicts ?? []).map((conflict) => ({ ...conflict })),
+      } : null,
       dataContextSnapshot: contract.dataContextSnapshot
         ? {
           ...contract.dataContextSnapshot,
@@ -1767,6 +1800,7 @@ export function createWorkItemService({
       resultVerificationContract: item.resultVerificationContract ?? null,
       resultVerification,
       executionContractGate: executionContractGate(item),
+      intentContract: intentContractView(item),
       executionStartReceipt: projectExecutionStartReceipt(item, state, { now: now() }),
       reviewContract: frozenReviewContract,
       reviewEvidence: reviewEvidence(item, frozenReviewContract),
@@ -4438,7 +4472,7 @@ export function createWorkItemService({
   function confirmExecutionContractAndSchedule({ workItemId, expectedRevision } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
-    const alreadyScheduled = executionContractDefinitionGate(item).ready
+    const alreadyScheduled = executionContractGate(item).ready
       && item.executionPolicy === "auto"
       && item.waitingOn === "ai";
     if (alreadyScheduled) {
@@ -4453,6 +4487,18 @@ export function createWorkItemService({
     if (!(item.acceptanceCriteria ?? []).length || !(item.verificationSop ?? []).length) {
       return { ok: false, status: 409, body: { error: "work_item_execution_plan_required" } };
     }
+    const intentContract = buildWorkItemIntentContract(item);
+    if (intentContract.status === "needs_clarification") {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "work_item_intent_conflict",
+          intentContract,
+          clarification: intentContract.clarification,
+        },
+      };
+    }
     if (item.state !== "open" || item.status === "done" || (item.executionBindings ?? []).length) {
       return { ok: false, status: 409, body: { error: "work_item_execution_already_started" } };
     }
@@ -4460,6 +4506,10 @@ export function createWorkItemService({
     runTx(() => {
       item.executionContractSource ??= "manual";
       item.executionContractConfirmedAt = timestamp;
+      item.executionIntentContractSnapshot = freezeWorkItemIntentContract(item, {
+        confirmedAt: timestamp,
+        confirmedBy: actorUser(actor),
+      });
       item.executionPolicy = "auto";
       item.waitingOn = "ai";
       if (item.status === "backlog") item.status = "ready";
@@ -4474,6 +4524,7 @@ export function createWorkItemService({
           workItemId: item.id,
           acceptanceCriteria: item.acceptanceCriteria,
           verificationSop: item.verificationSop,
+          intentContractDigest: item.executionIntentContractSnapshot.digest,
           confirmedAt: timestamp,
         })).digest("hex"),
         updatedAt: timestamp,
@@ -4492,6 +4543,7 @@ export function createWorkItemService({
       recordActivity(item, actor, "execution_contract_confirmed", {
         executionPolicy: "auto",
         waitingOn: "ai",
+        intentContractDigest: item.executionIntentContractSnapshot.digest,
       });
       applyPlanningAutomation(item, actor);
       appendEvent({
@@ -6295,6 +6347,30 @@ export function createWorkItemService({
         };
       }
     }
+    const currentIntentContract = buildWorkItemIntentContract(item);
+    const startRequestActive = Boolean(item.executionStartRequest && item.executionStartRequest.status !== "cancelled");
+    if (startRequestActive && item.executionIntentContractSnapshot?.digest
+      && item.executionIntentContractSnapshot.digest !== currentIntentContract.digest) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_intent_contract_changed", intentContract: currentIntentContract },
+      };
+    }
+    const intentContract = startRequestActive && item.executionIntentContractSnapshot
+      ? item.executionIntentContractSnapshot
+      : currentIntentContract;
+    if (intentContract.status === "needs_clarification") {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "work_item_intent_conflict",
+          intentContract,
+          clarification: intentContract.clarification,
+        },
+      };
+    }
     const holderId = actorUser(actor);
     const claimActive = item.claim?.status === "active"
       && Date.parse(item.claim.leaseExpiresAt) > Date.parse(timestamp);
@@ -6323,6 +6399,10 @@ export function createWorkItemService({
         }),
         confirmedAt: timestamp,
         confirmedBy: holderId,
+        intentContract: {
+          ...intentContract,
+          conflicts: (intentContract.conflicts ?? []).map((conflict) => ({ ...conflict })),
+        },
       },
     };
     runTx(() => {

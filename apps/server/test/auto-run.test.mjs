@@ -351,6 +351,13 @@ test("a reserved Local Issue Run is durable before its writable workspace exists
   state.workItems = [{
     id: "wi_1301",
     revision: 4,
+    executionIntentContractSnapshot: {
+      schemaVersion: 1,
+      digest: "intent-contract-digest",
+      status: "ready",
+      goal: "Implement the requested behavior.",
+      conflicts: [],
+    },
     dataContextSnapshot: {
       schemaVersion: 1,
       id: "dcs:wi_1301:4",
@@ -376,6 +383,7 @@ test("a reserved Local Issue Run is durable before its writable workspace exists
   assert.equal(replay.replayed, true);
   assert.match(frozen.executionContract.digest, /^[0-9a-f]{64}$/);
   assert.equal(frozen.executionContract.dataContextSnapshot.digest, "context-source-digest");
+  assert.equal(frozen.executionContract.intentContract.digest, "intent-contract-digest");
   assert.throws(() => svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
     acceptanceCriteria: ["A changed criterion must not replace the frozen contract."],
     verificationSop: ["Run the focused automated test."],
@@ -425,6 +433,38 @@ test("a reserved Local Issue Run cannot materialize before its contract is froze
   );
   assert.equal(state.worktrees.length, 0);
   assert.equal(calls.createInvocation.length, 0);
+});
+
+test("a reserved Run cannot freeze a conflicting intent contract", async () => {
+  const { svc } = makeAutoRun();
+  const link = { type: "local_issue", number: 1303, title: "Resolve intent first", url: null, state: "open" };
+  const reserved = await svc.reserveAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "wi_1303",
+    agentId: "agt_1",
+    name: "local-1303-resolve-intent",
+    issueBody: "Do not guess across an intent conflict.",
+  });
+  await svc.decideReservedAutoRun(reserved.autoRun.id);
+  state.workItems = [{
+    id: "wi_1303",
+    revision: 1,
+    executionIntentContractSnapshot: {
+      schemaVersion: 1,
+      digest: "intent-conflict-digest",
+      status: "needs_clarification",
+      conflicts: [{ code: "read_only_with_change_targets" }],
+    },
+  }];
+
+  assert.throws(() => svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
+    acceptanceCriteria: ["The result is complete."],
+    verificationSop: ["Review the result."],
+    confirmedBy: "ai_policy",
+    confirmedAt: "2026-08-07T00:00:00.000Z",
+  }), /requires clarification/i);
+  assert.equal(reserved.autoRun.executionContract, undefined);
 });
 
 test("a recovered reserved Run reuses a materialized worktree when invocation startup was interrupted", async () => {
