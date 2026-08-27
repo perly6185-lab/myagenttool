@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { computeProjectAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 
 function externalIssuePolicyFor(state, projectId) {
   const policy = state?.projects?.find((project) => project.id === projectId)?.externalIssuePolicy ?? {};
@@ -74,6 +75,8 @@ export async function handleWorkItemRoutes({
   recordMyTemplateOutcomeFeedback,
   resumeMyTemplateGovernanceObservation,
   prepareExecutionContract,
+  confirmExecutionContractAndSchedule,
+  budgetStatusFor,
   retryWorkItemAlert,
   inspectArticleImport,
   startArticleImport,
@@ -1085,6 +1088,60 @@ export async function handleWorkItemRoutes({
         message: error instanceof Error ? error.message : String(error),
       });
     }
+    return true;
+  }
+
+  const executionContractMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/execution-contract\/(prepare|confirm)$/);
+  if (executionContractMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(executionContractMatch[1]);
+    const action = executionContractMatch[2];
+    const body = await readJson(req);
+    const freshnessFailure = await reconcileRecordBindings(workItemId, { blockExecution: action === "confirm" });
+    if (freshnessFailure) {
+      sendJson(res, freshnessFailure.status, freshnessFailure.body);
+      return true;
+    }
+    const detail = getWorkItem({ workItemId }, actor);
+    if (!detail.ok) {
+      sendJson(res, detail.status, detail.body);
+      return true;
+    }
+    const item = detail.body.workItem;
+    if (action === "prepare") {
+      const prepared = prepareExecutionContract({
+        workItemId,
+        expectedRevision: body?.expectedRevision,
+        confirm: false,
+        draftOverride: body?.draftOverride ?? null,
+      }, actor);
+      sendJson(res, prepared.status, prepared.body);
+      return true;
+    }
+
+    const alreadyScheduled = item.executionContractGate?.ready === true
+      && item.executionPolicy === "auto"
+      && item.waitingOn === "ai";
+    if (alreadyScheduled) {
+      sendJson(res, 200, { workItem: item, replayed: true });
+      return true;
+    }
+    if (!(item.acceptanceCriteria ?? []).length || !(item.verificationSop ?? []).length) {
+      sendJson(res, 409, { error: "work_item_execution_plan_required" });
+      return true;
+    }
+    const readiness = computeProjectAutoRunReadiness({ state, projectId: item.projectId, budgetStatusFor });
+    if (!readiness.ready) {
+      sendJson(res, 409, { error: "work_item_auto_run_not_ready", readiness });
+      return true;
+    }
+    const confirmed = confirmExecutionContractAndSchedule({
+      workItemId,
+      expectedRevision: body?.expectedRevision,
+    }, actor);
+    sendJson(res, confirmed.status, {
+      ...confirmed.body,
+      ...(confirmed.ok ? { readiness } : {}),
+    });
     return true;
   }
 

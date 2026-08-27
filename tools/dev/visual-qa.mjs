@@ -262,6 +262,21 @@ async function captureScreenshots(driver) {
               }),
             }));
           }
+          if (scenario.startConfirmation) {
+            await page.route(/\/api\/projects\/[^/]+\/auto-run-readiness$/, (route) => route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({
+                readiness: {
+                  ready: true,
+                  checks: [
+                    { key: "agent", label: "Coding agent", status: "ok", detail: "Task assistant is healthy." },
+                    { key: "verify", label: "Verification", status: "warn", detail: "No verify command is configured." },
+                  ],
+                },
+              }),
+            }));
+          }
           if (scenario.reportFixture) {
             await page.route(/\/api\/work-items(?:[/?].*)?$/, (route) => fulfillReportFixture(route, scenario.reportFixture));
           }
@@ -410,6 +425,7 @@ function visualScenarios(baseline) {
     { name: "work-item-summary-review", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_review" },
     { name: "work-item-summary-completed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_completed" },
     { name: "work-item-summary-failed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_failed" },
+    { name: "execution-start-confirmation", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_start", startConfirmation: true },
     { name: "running", state: withRun("running"), invocationId: "inv_visual_running" },
     { name: "succeeded", state: withRun("succeeded", { summary: "Authentication boundaries reviewed; no unsafe write was performed." }), invocationId: "inv_visual_succeeded" },
     {
@@ -648,6 +664,18 @@ async function assertVisualState(page, scenario) {
     await detail.getByRole("button", { name: "Retry AI work" }).click();
     await page.getByRole("dialog", { name: "Retry AI work?" }).waitFor();
     await page.getByText(/additional run time and cost/).waitFor();
+    return;
+  }
+  if (scenario.name === "execution-start-confirmation") {
+    const detail = page.getByRole("dialog", { name: "Task details" });
+    await detail.locator('[data-testid="work-item-summary-view"]').waitFor({ timeout: 15_000 });
+    await detail.getByRole("button", { name: "Review and start AI" }).click();
+    const confirmation = page.getByRole("dialog", { name: "Confirm AI start" });
+    await confirmation.waitFor();
+    await confirmation.getByText("Goal", { exact: true }).waitFor();
+    await confirmation.getByText("Done when", { exact: true }).waitFor();
+    await confirmation.getByText("What AI may use", { exact: true }).waitFor();
+    await confirmation.getByRole("button", { name: "Confirm and start AI" }).waitFor();
     return;
   }
   const homeComposer = page.locator('[data-testid="home-task-composer"] textarea[aria-label="Create a task"]:visible');
@@ -936,6 +964,19 @@ function homeWorkbenchFixture(projectId) {
       outputAssets: [{ id: "asset_visual_completed_report", path: "reports/approved-leadership-update.md", family: "markdown", terminalId: "local", hash: null, version: null, capabilities: ["asset.read"], readiness: { state: "ready", reason: "ready" } }],
     }),
     baseItem("lwi_visual_long", "LOCAL-105", "Coordinate an unusually long cross-organization delivery commitment without losing the meaningful end of this title on a narrow mobile screen", { dueDate: date(2), plannedDate: date(3), requesterName: "A requester with a very long organization-facing display name", requesterRelation: "manager" }),
+    baseItem("lwi_visual_start", "LOCAL-107", "Prepare the customer launch risk update", {
+      status: "backlog", executionState: "unclaimed", plannedDate: null, waitingOn: "none",
+      body: "Summarize the current launch risks for the customer and keep the result concise.",
+      intentStatement: "Prepare a customer-ready launch risk update",
+      acceptanceCriteria: ["The update covers every open launch risk", "The wording is suitable for the customer"],
+      verificationSop: ["Compare the update with the launch risk register", "Review the final wording before delivery"],
+      executionContractSource: "assisted", executionContractConfirmedAt: null,
+      executionContractGate: { ready: false, missing: ["confirmation"], source: "assisted", confirmedAt: null },
+      inputAssets: [{ id: "asset_visual_risks", originalName: "launch-risks.xlsx", path: "/workspace/launch-risks.xlsx", family: "spreadsheet", terminalId: "local", hash: null, version: "3", capabilities: ["asset.read"], readiness: { state: "ready", reason: "ready" } }],
+      localContentRefs: [{ id: "wcr_visual_notes", contentId: "lc_visual_notes", purpose: "reference", title: "Customer communication notes", kind: "material", addedBy: "usr_local", createdAt: generatedAt, fingerprintPinned: true }],
+      taskResourceRefs: [{ id: "wrr_visual_crm", resourceId: "wr_visual_crm", purpose: "query_source", title: "CRM launch accounts", resourceKind: "table", businessRole: "customer", locality: "remote", sourceLabel: "CRM", addedBy: "usr_local", createdAt: generatedAt, versionPinned: true }],
+      myTemplateBinding: { schemaVersion: 1, definitionId: "rtd_visual_update", familyId: "family_visual_update", version: 2, name: "Customer launch update", expectedOutput: "A concise customer-ready risk update", matchReasons: ["The expected result matches"], snapshot: { name: "Customer launch update", description: "Prepare a concise update", expectedOutput: "A concise customer-ready risk update", steps: [] }, snapshotHash: "visual-template-hash", matchedAt: generatedAt },
+    }),
   ];
   const home = ({ id, executionState, attentionReason, waitingOn, nextAction, ai, secondaryReasons = [] }) => {
     const item = rows.find((candidate) => candidate.id === id);

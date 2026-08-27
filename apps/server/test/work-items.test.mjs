@@ -3014,6 +3014,48 @@ test("AI handoff can prepare a clarification draft without confirming it", () =>
   assert.equal(prepared.body.workItem.executionContractConfirmedAt, null);
   assert.equal(prepared.body.workItem.executionContractGate.ready, false);
   assert.equal(prepared.body.draft.confirmedAt, null);
+
+  const replayed = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.workItem.revision, prepared.body.workItem.revision);
+});
+
+test("AI handoff confirms and schedules the reviewed contract atomically and idempotently", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Prepare a customer update",
+    body: "Summarize the current delivery status and open risks.",
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A).body.workItem;
+
+  const confirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A);
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.replayed, false);
+  assert.equal(confirmed.body.workItem.executionContractGate.ready, true);
+  assert.equal(confirmed.body.workItem.executionPolicy, "auto");
+  assert.equal(confirmed.body.workItem.waitingOn, "ai");
+  assert.equal(confirmed.body.workItem.status, "ready");
+  assert.equal(confirmed.body.workItem.revision, prepared.revision + 1);
+
+  const replayed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.workItem.revision, confirmed.body.workItem.revision);
 });
 
 test("AI handoff prefers a validated decision-agent execution-plan draft", () => {

@@ -4255,12 +4255,33 @@ export function createWorkItemService({
     if (!Number.isInteger(expectedRevision)) {
       return { ok: false, status: 400, body: { error: "expected_revision_required" } };
     }
-    if (expectedRevision !== item.revision) {
-      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
-    }
     const currentGate = executionContractDefinitionGate(item);
+    const contractPrepared = (item.acceptanceCriteria ?? []).length > 0
+      && (item.verificationSop ?? []).length > 0;
+    if (contractPrepared && !confirm) {
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          workItem: workItemView(item, actor),
+          draft: {
+            taskUnderstanding: item.body ?? "",
+            acceptanceCriteria: [...item.acceptanceCriteria],
+            verificationSop: [...item.verificationSop],
+            suggestedRoute: null,
+            risks: [],
+            evidence: null,
+            confirmedAt: item.executionContractConfirmedAt ?? null,
+          },
+          replayed: true,
+        },
+      };
+    }
     if (currentGate.ready && confirm) {
       return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
     }
     const assisted = suggestWorkItemDraft({ projectId: item.projectId, title: item.title, body: item.body }, actor);
     if (!assisted.ok) return assisted;
@@ -4323,6 +4344,54 @@ export function createWorkItemService({
         },
       },
     };
+  }
+
+  function confirmExecutionContractAndSchedule({ workItemId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const alreadyScheduled = executionContractDefinitionGate(item).ready
+      && item.executionPolicy === "auto"
+      && item.waitingOn === "ai";
+    if (alreadyScheduled) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!(item.acceptanceCriteria ?? []).length || !(item.verificationSop ?? []).length) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_plan_required" } };
+    }
+    if (item.state !== "open" || item.status === "done" || (item.executionBindings ?? []).length) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_already_started" } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      item.executionContractSource ??= "manual";
+      item.executionContractConfirmedAt = timestamp;
+      item.executionPolicy = "auto";
+      item.waitingOn = "ai";
+      if (item.status === "backlog") item.status = "ready";
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_contract_confirmed", {
+        executionPolicy: "auto",
+        waitingOn: "ai",
+      });
+      applyPlanningAutomation(item, actor);
+      appendEvent({
+        invocationId: null,
+        type: "work_item_updated",
+        level: "info",
+        message: `${item.localRef} execution confirmed.`,
+        data: { workItemId: item.id, revision: item.revision, actorTeamId: actorTeam(actor) },
+      });
+    });
+    notifyWorkItemChanged(item, actor, "execution_contract_confirmed");
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: false } };
   }
 
   function retryWorkItemAlert({ workItemId, alertId } = {}, actor = null) {
@@ -7315,7 +7384,7 @@ export function createWorkItemService({
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
-    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, retryWorkItemAlert,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, confirmExecutionContractAndSchedule, retryWorkItemAlert,
     startApplicationExecution, requestApplicationExecutionApproval,
     applyLocalSchedulePlan,
     applyLocalScheduleRollover,

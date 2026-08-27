@@ -36,6 +36,8 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useSessionUser } from "@/hooks/use-session-user";
 import { type SectionKey, type WorkItemSection } from "@/store/ui-store";
 import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item-progress-dialog";
+import { ExecutionStartConfirmation } from "./execution-start-confirmation";
+import { deriveExecutionStartSummary } from "./execution-start-summary";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
 import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
@@ -320,6 +322,8 @@ type TaskTemplateCandidate = {
 type PendingTemplateClarification = {
   acceptanceCriteria: string[];
   verificationSop: string[];
+  risks?: string[];
+  evidence?: Record<string, unknown>;
   candidates: TaskTemplateCandidate[];
   reason?: string;
 };
@@ -455,6 +459,7 @@ export function WorkItemSummaryView({
   const [discussionOpen, setDiscussionOpen] = useState(false);
   const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | "reverify" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [startConfirmationOpen, setStartConfirmationOpen] = useState(false);
   const [pendingTemplateClarification, setPendingTemplateClarification] = useState<PendingTemplateClarification | null>(null);
   const [templateCorrectionOpen, setTemplateCorrectionOpen] = useState(false);
   const [templateCorrectionOptions, setTemplateCorrectionOptions] = useState<BusinessRoutineDefinition[]>([]);
@@ -663,6 +668,7 @@ export function WorkItemSummaryView({
     && item.verificationSop?.length
     && item.executionContractConfirmedAt,
   );
+  const executionPlanPrepared = Boolean(item.acceptanceCriteria.length && item.verificationSop?.length);
   const scheduleConflict = hasManagedExecution && Boolean(item.dueDate && item.plannedDate && item.plannedDate > item.dueDate);
   const collaborationStage = status === "completed"
     ? 3
@@ -675,10 +681,22 @@ export function WorkItemSummaryView({
   const canCorrectMyTemplate = Boolean(item.myTemplateBinding && startEligible && canOperate);
   const learnedTemplateMatch = Boolean(item.myTemplateBinding?.matchReasons.some((reason) =>
     /纠正|corrected|correction/i.test(reason)));
-  const canStartAi = startEligible && readiness?.ready === true;
+  const materialExecutionBlocked = (item.recordBindings ?? []).some((binding) =>
+    ["stale", "needs_confirmation", "unavailable"].includes(binding.resolution.state));
+  const canStartAi = startEligible && readiness?.ready === true && !materialExecutionBlocked;
   const readinessBlocked = startEligible && readiness?.ready === false;
   const readinessChecking = startEligible && readiness == null;
   const readinessWarnings = readiness?.checks.filter((check) => check.status === "warn") ?? [];
+  const readableReadiness = readiness ? {
+    ...readiness,
+    checks: readiness.checks.map((check) => readableAutoRunReadinessCheck(check, language)),
+  } : null;
+  const startSummary = deriveExecutionStartSummary({
+    item,
+    project: consoleState?.projects?.find((project) => project.id === item.projectId) ?? null,
+    readiness: readableReadiness,
+    language,
+  });
   const primaryUsesProgress = (["not_started", "scheduled", "ai_working", "waiting"].includes(status)
     || (status === "needs_action" && item.waitingOn === "me" && !["failed", "awaiting_approval"].includes(item.executionState ?? ""))
     || (status === "blocked" && !observability?.latestRun)) && !startEligible;
@@ -1182,8 +1200,13 @@ export function WorkItemSummaryView({
       setSyncNotice(language === "zh"
         ? "重新执行所需的完成标准和检查步骤已建立。请先核对内容，再选择“让 AI 继续修改”启动新一轮执行；旧结果仍不能据此确认通过。"
         : "The criteria and verification steps for a new run are ready. Review them, then choose Ask AI to revise to start a new run. The old result still cannot be approved against these later requirements.");
-    } catch {
-      setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
+    } catch (caught) {
+      const changed = caught instanceof ApiError
+        && ["work_item_revision_conflict", "work_item_record_bindings_stale"].includes(caught.code);
+      setActionError(changed
+        ? (language === "zh" ? "任务或资料刚刚发生变化，已为你刷新，请按最新内容重新核对。" : "The task or its materials just changed. Review the refreshed content before continuing.")
+        : (language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later."));
+      if (changed) setRefreshVersion((version) => version + 1);
     } finally {
       setActionPending(null);
     }
@@ -1195,8 +1218,11 @@ export function WorkItemSummaryView({
     try {
       const assisted = await api.suggestWorkItemDraft({ projectId: item.projectId, title: item.title, body: item.body }) as {
         draft: {
+          taskUnderstanding?: string;
           acceptanceCriteria: string[];
           verificationSop: string[];
+          risks?: string[];
+          evidence?: Record<string, unknown>;
           templateMatch?: {
             state: "matched" | "ambiguous" | "missing";
             candidates: TaskTemplateCandidate[];
@@ -1212,6 +1238,8 @@ export function WorkItemSummaryView({
         setPendingTemplateClarification({
           acceptanceCriteria: assisted.draft.acceptanceCriteria,
           verificationSop: assisted.draft.verificationSop,
+          risks: assisted.draft.risks,
+          evidence: assisted.draft.evidence,
           candidates: assisted.draft.templateMatch.candidates,
           reason: assisted.draft.templateMatch.clarification?.reason,
         });
@@ -1240,25 +1268,41 @@ export function WorkItemSummaryView({
               : "Several results may fit. Confirm only the result you want; you do not need to choose a template."));
         return;
       }
-      const prepared = await api.updateWorkItem(item.id, {
-        expectedRevision: item.revision,
-        acceptanceCriteria: assisted.draft.acceptanceCriteria,
-        verificationSop: assisted.draft.verificationSop,
-        ...(assisted.draft.templateMatch?.state === "matched" && assisted.draft.templateMatch.selected ? {
+      let latestItem = item;
+      if (assisted.draft.templateMatch?.state === "matched" && assisted.draft.templateMatch.selected) {
+        const bound = await api.updateWorkItem(item.id, {
+          expectedRevision: item.revision,
           myTemplateBinding: {
             definitionId: assisted.draft.templateMatch.selected.definitionId,
             familyId: assisted.draft.templateMatch.selected.templateId,
             version: assisted.draft.templateMatch.selected.version,
             matchReasons: assisted.draft.templateMatch.selected.reasons,
           },
-        } : {}),
+        }) as { workItem: LocalWorkItem };
+        latestItem = bound.workItem;
+      }
+      const prepared = await api.prepareWorkItemExecutionContract(item.id, {
+        expectedRevision: latestItem.revision,
+        draftOverride: {
+          taskUnderstanding: assisted.draft.taskUnderstanding,
+          acceptanceCriteria: assisted.draft.acceptanceCriteria,
+          verificationSop: assisted.draft.verificationSop,
+          risks: assisted.draft.risks,
+          evidence: assisted.draft.evidence,
+        },
       }) as { workItem: LocalWorkItem };
       setItem(prepared.workItem);
+      setStartConfirmationOpen(true);
       setSyncNotice(language === "zh"
-        ? "执行方案已生成。请核对任务目标、完成标准和检查步骤；确认无误后，再次选择“让 AI 开始”。"
-        : "The execution plan is ready. Review the goal, completion criteria, and verification steps, then choose Let AI start again to confirm.");
-    } catch {
-      setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
+        ? "执行方案已生成，请在确认页核对后决定是否开始。"
+        : "The execution plan is ready. Review it in the confirmation before deciding whether to start.");
+    } catch (caught) {
+      const changed = caught instanceof ApiError
+        && ["work_item_revision_conflict", "work_item_record_bindings_stale"].includes(caught.code);
+      setActionError(changed
+        ? (language === "zh" ? "任务或资料刚刚发生变化，已为你刷新，请按最新内容重新核对。" : "The task or its materials just changed. Review the refreshed content before continuing.")
+        : (language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later."));
+      if (changed) setRefreshVersion((version) => version + 1);
     } finally {
       setActionPending(null);
     }
@@ -1271,10 +1315,8 @@ export function WorkItemSummaryView({
       const confirmation = language === "zh"
         ? `你确认这次需要“${candidate.expectedOutput}”`
         : `You confirmed the desired result is “${candidate.expectedOutput}”`;
-      const prepared = await api.updateWorkItem(item.id, {
+      const bound = await api.updateWorkItem(item.id, {
         expectedRevision: item.revision,
-        acceptanceCriteria: pendingTemplateClarification.acceptanceCriteria,
-        verificationSop: pendingTemplateClarification.verificationSop,
         myTemplateBinding: {
           definitionId: candidate.definitionId,
           familyId: candidate.templateId,
@@ -1283,13 +1325,28 @@ export function WorkItemSummaryView({
           userConfirmedResult: true,
         },
       }) as { workItem: LocalWorkItem };
+      const prepared = await api.prepareWorkItemExecutionContract(item.id, {
+        expectedRevision: bound.workItem.revision,
+        draftOverride: {
+          acceptanceCriteria: pendingTemplateClarification.acceptanceCriteria,
+          verificationSop: pendingTemplateClarification.verificationSop,
+          risks: pendingTemplateClarification.risks,
+          evidence: pendingTemplateClarification.evidence,
+        },
+      }) as { workItem: LocalWorkItem };
       setItem(prepared.workItem);
       setPendingTemplateClarification(null);
+      setStartConfirmationOpen(true);
       setSyncNotice(language === "zh"
-        ? `已确认最终得到“${candidate.expectedOutput}”。请核对执行方案，再选择“让 AI 开始”。`
-        : `The desired result is “${candidate.expectedOutput}”. Review the plan, then choose Let AI start.`);
-    } catch {
-      setActionError(language === "zh" ? "处理结果暂时无法确认，请重试。" : "The desired result could not be confirmed. Try again.");
+        ? `已确认最终得到“${candidate.expectedOutput}”。请在确认页核对执行方案。`
+        : `The desired result is “${candidate.expectedOutput}”. Review the execution plan in the confirmation.`);
+    } catch (caught) {
+      const changed = caught instanceof ApiError
+        && ["work_item_revision_conflict", "work_item_record_bindings_stale"].includes(caught.code);
+      setActionError(changed
+        ? (language === "zh" ? "任务或资料刚刚发生变化，已为你刷新，请重新选择结果。" : "The task or its materials just changed. Review the refresh and choose the result again.")
+        : (language === "zh" ? "处理结果暂时无法确认，请重试。" : "The desired result could not be confirmed. Try again."));
+      if (changed) setRefreshVersion((version) => version + 1);
     } finally {
       setActionPending(null);
     }
@@ -1418,20 +1475,27 @@ export function WorkItemSummaryView({
     setActionPending("start");
     setActionError(null);
     try {
-      const response = await api.updateWorkItem(item.id, {
-        expectedRevision: item.revision,
-        executionPolicy: "auto",
-        waitingOn: "ai",
-        ...(item.status === "backlog" ? { status: "ready" } : {}),
-      }) as { workItem: LocalWorkItem };
+      const response = await api.confirmWorkItemExecutionContract(item.id, item.revision) as { workItem: LocalWorkItem };
       setItem(response.workItem);
+      setStartConfirmationOpen(false);
       setSyncNotice(language === "zh"
         ? "任务已设为自动处理。AI 会按截止风险和优先级开始；需要你决定时会在当前任务中提问。"
         : "The task is set to automatic. AI will start based on deadline risk and priority, and ask here only when a decision is needed.");
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-start-ai", workItemId: item.id } }));
       setRefreshVersion((version) => version + 1);
-    } catch {
-      setActionError(copy.aiStartFailed);
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.details?.readiness) {
+        setReadiness(caught.details.readiness as AutoRunReadiness);
+        setActionError(language === "zh" ? "启动条件发生变化，请按提示处理后再确认。" : "Start requirements changed. Resolve the issue shown and confirm again.");
+      } else if (caught instanceof ApiError
+        && ["work_item_revision_conflict", "work_item_record_bindings_stale"].includes(caught.code)) {
+        setActionError(language === "zh"
+          ? "任务或资料刚刚发生变化，本次没有启动。请核对刷新后的内容再确认。"
+          : "The task or its materials just changed, so nothing started. Review the refreshed content and confirm again.");
+        setRefreshVersion((version) => version + 1);
+      } else {
+        setActionError(copy.aiStartFailed);
+      }
     } finally {
       setActionPending(null);
     }
@@ -1754,12 +1818,13 @@ export function WorkItemSummaryView({
       return;
     }
     if (startEligible) {
-      if (!canStartAi) return;
-      if (!executionContractDefined) {
+      if (readinessChecking) return;
+      if (!executionPlanPrepared) {
         void prepareStartExecutionPlan();
         return;
       }
-      void startAiWork();
+      setActionError(null);
+      setStartConfirmationOpen(true);
       return;
     }
     if (primaryUsesProgress) {
@@ -1843,7 +1908,7 @@ export function WorkItemSummaryView({
             {item.lastProgressSummary ? <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{copy.lastProgress}: {item.lastProgressSummary}</p> : null}
             <Button
               className="mt-3 w-full sm:w-auto"
-              disabled={Boolean(actionPending) || readinessChecking || readinessBlocked}
+              disabled={Boolean(actionPending) || readinessChecking}
               aria-expanded={status === "ready_for_review" ? resultExpanded : undefined}
               aria-controls={status === "ready_for_review" ? resultSectionId : undefined}
               onClick={runPrimaryAction}
@@ -1855,7 +1920,13 @@ export function WorkItemSummaryView({
                 : retryableRun
                 ? copy.retryAi
                 : startEligible
-                  ? actionPending === "start" ? copy.startingAi : readinessChecking ? copy.readinessChecking : copy.startAi
+                  ? actionPending === "start"
+                    ? copy.startingAi
+                    : readinessChecking
+                      ? copy.readinessChecking
+                      : executionPlanPrepared
+                        ? (language === "zh" ? "核对并让 AI 开始" : "Review and start AI")
+                        : copy.startAi
                   : resultExpanded ? copy.hideResult : copy.action[status]}
               {retryableRun || startEligible || status !== "ready_for_review"
                 ? <ArrowRight aria-hidden />
@@ -2903,6 +2974,27 @@ export function WorkItemSummaryView({
         <Button variant="secondary" onClick={() => onOpenExpert("overview")}><Wrench aria-hidden />{copy.expert}</Button>
       </footer>
 
+      <ExecutionStartConfirmation
+        open={startConfirmationOpen}
+        summary={startSummary}
+        language={language}
+        pending={actionPending === "start"}
+        canConfirm={canStartAi && executionPlanPrepared}
+        error={startConfirmationOpen ? actionError : null}
+        blockedActionLabel={materialExecutionBlocked
+          ? (language === "zh" ? "检查相关资料" : "Review materials")
+          : readinessBlocked ? readinessFixLabel(readiness, language) : undefined}
+        onResolveBlocked={materialExecutionBlocked ? () => {
+          setStartConfirmationOpen(false);
+          window.requestAnimationFrame(() => document.getElementById(`work-item-records-${item.id}`)?.scrollIntoView?.({ behavior: "smooth", block: "center" }));
+        } : readinessBlocked ? () => {
+          setStartConfirmationOpen(false);
+          if (onOpenSetup) onOpenSetup(readinessSetupSection(readiness));
+          else onOpenExpert("process");
+        } : undefined}
+        onClose={() => { if (actionPending !== "start") setStartConfirmationOpen(false); }}
+        onConfirm={() => { void startAiWork(); }}
+      />
       <WorkItemProgressDialog
         target={progressTarget}
         open={progressOpen}

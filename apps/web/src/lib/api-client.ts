@@ -2617,6 +2617,18 @@ export const api = {
     materialDraftRevision?: number;
   }) =>
     request("POST", "/api/work-items/assist/draft", payload),
+  prepareWorkItemExecutionContract: (id: string, payload: {
+    expectedRevision: number;
+    draftOverride?: {
+      taskUnderstanding?: string;
+      acceptanceCriteria: string[];
+      verificationSop: string[];
+      risks?: string[];
+      evidence?: Record<string, unknown>;
+    };
+  }) => request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-contract/prepare`, payload),
+  confirmWorkItemExecutionContract: (id: string, expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-contract/confirm`, { expectedRevision }),
   previewWorkItemIntentPlan: (payload: {
     projectId: string;
     title: string;

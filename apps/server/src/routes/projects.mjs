@@ -15,10 +15,9 @@ import { computeDeckOps } from "../services/officecli-deck-ops.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
-import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
+import { computeProjectAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
 import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
-import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
 import { CadPreviewError, cadRuntimeReadiness, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
 import { assetCapabilityMatrix, deriveAssetRuntimeReadiness, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
@@ -755,21 +754,7 @@ export async function handleProjectRoutes({
   if (readinessMatch && req.method === "GET") {
     // U1 preflight: can this project run an auto-run, and what's missing?
     const projectId = decodeURIComponent(readinessMatch[1]);
-    const project = (state.projects ?? []).find((p) => p.id === projectId) ?? null;
-    const agent = project?.defaultAgentId ? (state.agents ?? []).find((a) => a.id === project.defaultAgentId) ?? null : null;
-    // Capacity waits remain in-flight for the operator but deliberately release
-    // an execution slot until their durable retry becomes due.
-    const settledSet = new Set(["waiting_capacity", "pr_open", "report_posted", "needs_input", "plan_proposed", "decomposed", "blocked", "done", "failed", "cancelled"]);
-    const readiness = computeAutoRunReadiness({
-      project,
-      agent,
-      deviceLinked: state.device?.unlinkState === "linked" || (state.devices ?? []).length > 0,
-      budget: typeof budgetStatusFor === "function" && project ? budgetStatusFor(project.id) : null,
-      verifyCommand: resolveAutoRunVerifyCommandFor({ verifyCommandName: project?.verifyCommandName ?? null }),
-      settings: state.autoRunSettings ?? {},
-      breaker: state.autoRunBreaker ?? null,
-      activeCount: (state.autoRuns ?? []).filter((r) => !settledSet.has(r.status)).length,
-    });
+    const readiness = computeProjectAutoRunReadiness({ state, projectId, budgetStatusFor });
     sendJson(res, 200, { readiness });
     return true;
   }

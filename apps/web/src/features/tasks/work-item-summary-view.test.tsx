@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   createWorkItemResultRepair: vi.fn(),
   updateWorkItem: vi.fn(),
   suggestWorkItemDraft: vi.fn(),
+  prepareWorkItemExecutionContract: vi.fn(),
+  confirmWorkItemExecutionContract: vi.fn(),
   listMyTemplateDefinitions: vi.fn(),
   recordMyTemplateOutcomeFeedback: vi.fn(),
   previewMyTemplateDraft: vi.fn(),
@@ -66,6 +68,8 @@ vi.mock("@/data/use-console-actions", () => ({
     createWorkItemResultRepair: mocks.createWorkItemResultRepair,
     updateWorkItem: mocks.updateWorkItem,
     suggestWorkItemDraft: mocks.suggestWorkItemDraft,
+    prepareWorkItemExecutionContract: mocks.prepareWorkItemExecutionContract,
+    confirmWorkItemExecutionContract: mocks.confirmWorkItemExecutionContract,
     listMyTemplateDefinitions: mocks.listMyTemplateDefinitions,
     recordMyTemplateOutcomeFeedback: mocks.recordMyTemplateOutcomeFeedback,
     previewMyTemplateDraft: mocks.previewMyTemplateDraft,
@@ -929,16 +933,41 @@ describe("work item summary presentation", () => {
         executionBindings: [],
       }),
     });
-    mocks.updateWorkItem.mockResolvedValue({ workItem: item({ status: "ready", executionPolicy: "auto", waitingOn: "ai" }) });
+    mocks.confirmWorkItemExecutionContract.mockResolvedValue({ workItem: item({ status: "ready", executionPolicy: "auto", waitingOn: "ai" }) });
     const onOpenExpert = vi.fn();
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={onOpenExpert} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Let AI start" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review and start AI" }));
+    expect(screen.getByRole("dialog", { name: "Confirm AI start" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and start AI" }));
 
-    await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({ executionPolicy: "auto", waitingOn: "ai" })));
+    await waitFor(() => expect(mocks.confirmWorkItemExecutionContract).toHaveBeenCalledWith("lwi_1", 2));
+    expect(mocks.updateWorkItem).not.toHaveBeenCalled();
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
     expect(await screen.findByText(/set to automatic/i)).toBeTruthy();
     expect(onOpenExpert).not.toHaveBeenCalled();
+  });
+
+  it("recovers a prepared but unconfirmed plan after reopening the task", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        status: "backlog",
+        executionState: "unclaimed",
+        plannedDate: null,
+        waitingOn: "none",
+        executionContractConfirmedAt: null,
+        executionContractGate: { ready: false, missing: ["confirmation"], source: "assisted", confirmedAt: null },
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review and start AI" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Confirm AI start" });
+    expect(dialog).toBeTruthy();
+    expect(within(dialog).getByText("Customer-ready summary")).toBeTruthy();
+    expect(mocks.suggestWorkItemDraft).not.toHaveBeenCalled();
+    expect(mocks.prepareWorkItemExecutionContract).not.toHaveBeenCalled();
   });
 
   it("blocks AI start until project preflight is ready and opens the safe fix", async () => {
@@ -953,8 +982,9 @@ describe("work item summary presentation", () => {
 
     expect((await screen.findByRole("alert", { name: "Preflight" })).textContent).toContain("does not have an available task assistant");
     expect(screen.queryByText(/No default agent/)).toBeNull();
-    expect((screen.getByRole("button", { name: "Let AI start" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Choose task assistant" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review and start AI" }));
+    expect((screen.getByRole("button", { name: "Confirm and start AI" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Confirm AI start" })).getByRole("button", { name: "Choose task assistant" }));
     expect(onOpenSetup).toHaveBeenCalledWith("autoRuns");
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
   });
@@ -972,7 +1002,7 @@ describe("work item summary presentation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Recheck" }));
 
     await waitFor(() => expect(mocks.autoRunReadiness).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect((screen.getByRole("button", { name: "Let AI start" }) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Review and start AI" }) as HTMLButtonElement).disabled).toBe(false));
   });
 
   it("shows an external source and makes manual writeback explicit", async () => {
@@ -1436,22 +1466,26 @@ describe("work item summary presentation", () => {
         },
       },
     });
-    const prepared = item({
+    const bound = item({
       status: "backlog", executionState: "unclaimed", plannedDate: null,
-      executionContractSource: "assisted", executionContractConfirmedAt: "2026-08-05T00:01:00.000Z",
-      executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: "2026-08-05T00:01:00.000Z" },
+      acceptanceCriteria: [], verificationSop: [], executionContractConfirmedAt: null,
+      executionContractGate: { ready: false, missing: ["acceptance_criteria", "verification_sop", "confirmation"], source: null, confirmedAt: null },
       revision: 3,
     });
-    mocks.updateWorkItem
-      .mockResolvedValueOnce({ workItem: prepared })
-      .mockResolvedValueOnce({ workItem: item({ status: "ready", executionPolicy: "auto", waitingOn: "ai", revision: 4 }) });
+    const prepared = item({
+      status: "backlog", executionState: "unclaimed", plannedDate: null,
+      executionContractSource: "assisted", executionContractConfirmedAt: null,
+      executionContractGate: { ready: false, missing: ["confirmation"], source: "assisted", confirmedAt: null },
+      revision: 4,
+    });
+    mocks.updateWorkItem.mockResolvedValue({ workItem: bound });
+    mocks.prepareWorkItemExecutionContract.mockResolvedValue({ workItem: prepared });
+    mocks.confirmWorkItemExecutionContract.mockResolvedValue({ workItem: item({ status: "ready", executionPolicy: "auto", waitingOn: "ai", revision: 6 }) });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Let AI start" }));
     await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", {
       expectedRevision: unplanned.revision,
-      acceptanceCriteria: ["Customer-ready summary"],
-      verificationSop: ["Review the customer-facing result"],
       myTemplateBinding: {
         definitionId: "rtd_update",
         familyId: "family_update",
@@ -1459,16 +1493,18 @@ describe("work item summary presentation", () => {
         matchReasons: ["Expected result matches customer update"],
       },
     }));
-    expect(await screen.findByText(/execution plan is ready/i)).toBeTruthy();
+    expect(mocks.prepareWorkItemExecutionContract).toHaveBeenCalledWith("lwi_1", {
+      expectedRevision: bound.revision,
+      draftOverride: expect.objectContaining({
+        acceptanceCriteria: ["Customer-ready summary"],
+        verificationSop: ["Review the customer-facing result"],
+      }),
+    });
+    expect(await screen.findByRole("dialog", { name: "Confirm AI start" })).toBeTruthy();
     expect(mocks.updateWorkItem).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Let AI start" }));
-    await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
-      expectedRevision: prepared.revision,
-      executionPolicy: "auto",
-      waitingOn: "ai",
-      status: "ready",
-    })));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and start AI" }));
+    await waitFor(() => expect(mocks.confirmWorkItemExecutionContract).toHaveBeenCalledWith("lwi_1", prepared.revision));
     expect(mocks.suggestWorkItemDraft).toHaveBeenCalledTimes(1);
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
     expect(await screen.findByText(/set to automatic/i)).toBeTruthy();
@@ -1507,11 +1543,25 @@ describe("work item summary presentation", () => {
         },
       },
     });
-    mocks.updateWorkItem.mockResolvedValue({
+    const bound = item({
+      revision: 3,
+      acceptanceCriteria: [],
+      verificationSop: [],
+      executionContractConfirmedAt: null,
+      executionContractGate: { ready: false, missing: ["acceptance_criteria", "verification_sop", "confirmation"], source: null, confirmedAt: null },
+    });
+    mocks.updateWorkItem.mockResolvedValue({ workItem: bound });
+    mocks.prepareWorkItemExecutionContract.mockResolvedValue({
       workItem: item({
-        revision: 3,
+        revision: 4,
+        status: "backlog",
+        executionState: "unclaimed",
+        plannedDate: null,
+        waitingOn: "none",
         acceptanceCriteria: ["The selected result is complete"],
         verificationSop: ["Open and verify the selected result"],
+        executionContractConfirmedAt: null,
+        executionContractGate: { ready: false, missing: ["confirmation"], source: "assisted", confirmedAt: null },
       }),
     });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
@@ -1525,8 +1575,6 @@ describe("work item summary presentation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Quotation workbook" }));
     await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
-      acceptanceCriteria: ["The selected result is complete"],
-      verificationSop: ["Open and verify the selected result"],
       myTemplateBinding: expect.objectContaining({
         definitionId: "rtd_quote",
         familyId: "family_quote",
@@ -1534,6 +1582,18 @@ describe("work item summary presentation", () => {
         userConfirmedResult: true,
       }),
     })));
+    expect(mocks.prepareWorkItemExecutionContract).toHaveBeenCalledWith("lwi_1", {
+      expectedRevision: bound.revision,
+      draftOverride: expect.objectContaining({
+        acceptanceCriteria: ["The selected result is complete"],
+        verificationSop: ["Open and verify the selected result"],
+      }),
+    });
+    expect(await screen.findByRole("dialog", { name: "Confirm AI start" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    expect(mocks.confirmWorkItemExecutionContract).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Review and start AI" }));
+    expect(screen.getByRole("dialog", { name: "Confirm AI start" })).toBeTruthy();
   });
 
   it("answers an executor question from the task and resumes the same run", async () => {
