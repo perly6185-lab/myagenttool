@@ -19,6 +19,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Search,
   Server,
   ShieldCheck,
   Sparkles,
@@ -36,7 +37,7 @@ import { ApiError } from "@/lib/api/request";
 import { useUiStore } from "@/store/ui-store";
 import { MAX_HOST_DOWNLOAD_BYTES, MAX_HOST_UPLOAD_BYTES, hostApi } from "./host-api";
 import { HOST_DIAGNOSTIC_QUICK_ACTIONS, hostDiagnosticPlan, hostDiagnosticPlanCopy, hostDiagnosticSummaryCopy, suggestHostDiagnostic } from "./host-assistant";
-import type { HostAuthMethod, HostDiagnosticResult, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileTransfer, SshHost } from "./host-types";
+import type { HostAuthMethod, HostDiagnosticResult, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResult, HostFileTransfer, SshHost } from "./host-types";
 
 type DetailTab = "overview" | "files" | "transfers" | "settings";
 
@@ -69,6 +70,15 @@ function errorText(error: unknown, zh: boolean) {
     host_file_upload_size_invalid: ["文件为空或超过 10 MB 上传上限。", "The file is empty or exceeds the 10 MB upload limit."],
     host_file_download_size_invalid: ["该文件超过 25 MB 浏览器安全下载上限。", "The file exceeds the 25 MB safe browser download limit."],
     host_file_download_sensitive_blocked: ["该文件可能包含密钥或环境凭据，禁止通过浏览器下载。", "This file may contain keys or environment credentials and cannot be downloaded in the browser."],
+    host_file_search_query_invalid: ["请输入具体的文件名或正文关键词。", "Enter a specific file name or text keyword."],
+    host_file_scope_revision_conflict: ["允许访问的文件夹刚刚发生变化，请刷新后重新查找。", "The approved folder changed. Refresh it before searching again."],
+    host_file_preview_not_allowed: ["这个文件夹只允许查看名称，不能读取文件内容。", "This folder allows names to be viewed but does not allow file contents to be read."],
+    host_file_preview_sensitive_blocked: ["该文件可能包含密钥或环境凭据，已阻止预览。", "This file may contain keys or environment credentials, so preview was blocked."],
+    host_file_preview_size_invalid: ["文件超过安全预览上限，可以在确认后下载并在本地打开。", "The file exceeds the safe preview limit. You can confirm a download and open it locally."],
+    host_file_preview_type_unsupported: ["该类型暂不支持安全预览。", "This file type is not available for safe preview."],
+    host_file_preview_content_invalid: ["文件内容与类型不一致，已停止预览。", "The file content does not match its type, so preview was stopped."],
+    host_file_preview_changed: ["文件在读取过程中发生变化，已停止预览。请确认文件稳定后再打开。", "The file changed while it was being read. Preview stopped; open it again after the file is stable."],
+    host_file_preview_incomplete: ["文件读取未完成，无法确认内容是否完整。请稍后重新打开。", "The file could not be read completely. Open it again later."],
     host_file_atomic_replace_unavailable: ["此主机不支持安全的原子覆盖，请改为“保留两份”。", "This host cannot replace files atomically. Choose Keep both."],
     host_file_transfer_retry_limit: ["该任务已达到最多 3 次尝试，请检查主机后重新发起。", "This task reached the three-attempt limit. Check the host and start a new transfer."],
     ssh_diagnostic_confirmation_required: ["请先确认要执行这项只读诊断。", "Confirm the read-only diagnostic before it runs."],
@@ -264,7 +274,7 @@ function RemoteFiles({ host, scopes, loading, error, zh, professional, onAdd }: 
   const scope = scopes.find((item) => item.id === scopeId) ?? scopes[0];
   const transferEnabled = scope.permissions.includes("upload") || scope.permissions.includes("download");
   const certificateOnly = scope.purpose === "tls_certificate";
-  return <div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><Select aria-label={professional ? (zh ? "选择文件范围" : "Select file range") : (zh ? "选择允许的文件夹" : "Select approved folder")} value={scope.id} onChange={(event) => setScopeId(event.target.value)} className="max-w-xs">{scopes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select><StatusBadge tone={scope.status === "ready" ? "success" : "warning"}>{scope.status === "ready" ? (certificateOnly ? professional ? (zh ? "证书专用" : "Certificate only") : (zh ? "由我的站点管理" : "Managed by My Site") : transferEnabled ? professional ? (zh ? "受控传输" : "Governed transfer") : (zh ? "可上传和下载" : "Upload and download") : professional ? (zh ? "只读范围" : "Read-only range") : (zh ? "只可查看" : "View only")) : (zh ? "已停用" : "Disabled")}</StatusBadge>{professional || !certificateOnly ? <ScopeEditButton host={host} scope={scope} zh={zh} professional={professional} /> : null}<Button size="sm" variant="secondary" onClick={onAdd}><Plus />{professional ? (zh ? "添加范围" : "Add range") : (zh ? "添加文件夹" : "Add folder")}</Button></div>{scope.status === "ready" ? certificateOnly ? professional ? <TlsActivationProfiles host={host} scope={scope} zh={zh} /> : <ManagedCertificateFolderNotice zh={zh} /> : <FileBrowser key={scope.id} scope={scope} zh={zh} /> : <Notice title={professional ? (zh ? "此文件范围已停用" : "This file range is disabled") : (zh ? "此文件夹已停用" : "This folder is disabled")} detail={professional ? (zh ? "在“范围设置”中重新启用后才能浏览。" : "Enable it again in Range settings before browsing.") : (zh ? "在“文件夹设置”中重新启用后才能浏览。" : "Enable it again in Folder settings before browsing.")} />}</div>;
+  return <div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><Select aria-label={professional ? (zh ? "选择文件范围" : "Select file range") : (zh ? "选择允许的文件夹" : "Select approved folder")} value={scope.id} onChange={(event) => setScopeId(event.target.value)} className="max-w-xs">{scopes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select><StatusBadge tone={scope.status === "ready" ? "success" : "warning"}>{scope.status === "ready" ? (certificateOnly ? professional ? (zh ? "证书专用" : "Certificate only") : (zh ? "由我的站点管理" : "Managed by My Site") : transferEnabled ? professional ? (zh ? "受控传输" : "Governed transfer") : (zh ? "可上传和下载" : "Upload and download") : professional ? (zh ? "只读范围" : "Read-only range") : (zh ? "只可查看" : "View only")) : (zh ? "已停用" : "Disabled")}</StatusBadge>{professional || !certificateOnly ? <ScopeEditButton host={host} scope={scope} zh={zh} professional={professional} /> : null}<Button size="sm" variant="secondary" onClick={onAdd}><Plus />{professional ? (zh ? "添加范围" : "Add range") : (zh ? "添加文件夹" : "Add folder")}</Button></div>{scope.status === "ready" ? certificateOnly ? professional ? <TlsActivationProfiles host={host} scope={scope} zh={zh} /> : <ManagedCertificateFolderNotice zh={zh} /> : <FileBrowser key={`${scope.id}-${scope.revision}`} scope={scope} zh={zh} professional={professional} /> : <Notice title={professional ? (zh ? "此文件范围已停用" : "This file range is disabled") : (zh ? "此文件夹已停用" : "This folder is disabled")} detail={professional ? (zh ? "在“范围设置”中重新启用后才能浏览。" : "Enable it again in Range settings before browsing.") : (zh ? "在“文件夹设置”中重新启用后才能浏览。" : "Enable it again in Folder settings before browsing.")} />}</div>;
 }
 
 function ManagedCertificateFolderNotice({ zh }: { zh: boolean }) {
@@ -295,7 +305,7 @@ function ScopeEditButton({ host, scope, zh, professional }: { host: SshHost; sco
   return <><Button size="sm" variant="ghost" onClick={() => setOpen(true)}>{professional ? (zh ? "范围设置" : "Range settings") : (zh ? "文件夹设置" : "Folder settings")}</Button><Modal open={open} onClose={() => setOpen(false)} title={professional ? (zh ? "文件范围设置" : "File range settings") : (zh ? "允许访问的文件夹设置" : "Approved folder settings")} description={professional ? (zh ? "更改目录会重新连接主机，并再次验证完整路径边界。传输权限可随时单独关闭。" : "Changing the directory reconnects and verifies the path boundary again. Transfer permissions can be disabled independently.") : (zh ? "更改文件夹后会重新检查访问边界；上传和下载可以分别关闭。" : "Changing the folder rechecks its access boundary. Upload and download can be disabled separately.")} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={() => setOpen(false)}>{zh ? "取消" : "Cancel"}</Button><Button disabled={!form.label.trim() || !form.rootPath.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "验证并保存" : "Verify and save"}</Button></div>}><div className="space-y-3"><Field label={professional ? (zh ? "范围名称" : "Range name") : (zh ? "文件夹名称" : "Folder name")}><Input value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} /></Field><Field label={zh ? "远程目录" : "Remote directory"}><Input className="font-mono" value={form.rootPath} onChange={(event) => setForm({ ...form, rootPath: event.target.value })} /></Field><Field label={zh ? "用途" : "Purpose"}><Select value={form.purpose} onChange={(event) => setForm({ ...form, purpose: event.target.value as HostFileScopePurpose })}><option value="site_publish">{zh ? "站点发布" : "Site publishing"}</option><option value="tls_certificate">{zh ? "HTTPS 证书专用" : "HTTPS certificates only"}</option><option value="general_files">{zh ? "普通文件" : "General files"}</option><option value="backup">{zh ? "备份" : "Backup"}</option></Select></Field>{form.purpose === "tls_certificate" ? <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{zh ? "此范围不开放浏览、上传或下载，只供证书管理器写入。" : "This range does not allow browsing, uploads, or downloads. Only the certificate manager can write to it."}</p> : <div className="rounded-lg border p-3"><p className="mb-2 text-sm font-medium">{zh ? "允许的操作" : "Allowed operations"}</p><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.upload} onChange={(event) => setForm({ ...form, upload: event.target.checked })} />{zh ? "允许确认后上传（单文件最大 10 MB）" : "Allow confirmed uploads (10 MB per file)"}</label><label className="mt-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={form.download} onChange={(event) => setForm({ ...form, download: event.target.checked })} />{zh ? "允许确认后下载（单文件最大 25 MB）" : "Allow confirmed downloads (25 MB per file)"}</label></div>}<label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.disabled} onChange={(event) => setForm({ ...form, disabled: event.target.checked })} />{professional ? (zh ? "暂时停用此范围" : "Temporarily disable this range") : (zh ? "暂时停用此文件夹" : "Temporarily disable this folder")}</label>{mutation.error ? <p role="alert" className="text-sm text-destructive">{errorText(mutation.error, zh)}</p> : null}</div></Modal></>;
 }
 
-function FileBrowser({ scope, zh }: { scope: HostFileScope; zh: boolean }) {
+function FileBrowser({ scope, zh, professional }: { scope: HostFileScope; zh: boolean; professional: boolean }) {
   const [path, setPath] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [downloadEntry, setDownloadEntry] = useState<HostFileEntry | null>(null);
@@ -306,11 +316,25 @@ function FileBrowser({ scope, zh }: { scope: HostFileScope; zh: boolean }) {
   const refresh = () => query.refetch();
   const listedFiles = query.data?.entries.filter((entry) => entry.type === "file") ?? [];
   const listedBytes = listedFiles.reduce((total, entry) => total + (entry.size ?? 0), 0);
-  return <><div className="overflow-hidden rounded-lg border"><div className="flex flex-wrap items-center gap-2 border-b bg-muted/30 px-3 py-2"><FolderLock className="size-4 text-muted-foreground" /><span className="text-xs font-medium">{scope.label}</span><code className="min-w-0 flex-1 truncate text-xs text-muted-foreground">/{path}</code>{scope.permissions.includes("upload") ? <><input ref={uploadInput} className="hidden" type="file" onChange={(event) => { const file = event.target.files?.[0] ?? null; event.target.value = ""; setUploadFile(file); }} /><Button size="sm" variant="secondary" onClick={() => uploadInput.current?.click()}><ArrowUpFromLine />{zh ? "上传" : "Upload"}</Button></> : null}{path ? <Button size="sm" variant="ghost" onClick={() => setPath(parent)}><ArrowLeft />{zh ? "上一级" : "Up"}</Button> : null}</div>
+  const locate = (entry: HostFileSearchResult) => setPath(entry.path.includes("/") ? entry.path.slice(0, entry.path.lastIndexOf("/")) : "");
+  return <><FileSearchAssistant scope={scope} zh={zh} professional={professional} onPreview={setPreviewEntry} onLocate={locate} /><div className="overflow-hidden rounded-lg border"><div className="flex flex-wrap items-center gap-2 border-b bg-muted/30 px-3 py-2"><FolderLock className="size-4 text-muted-foreground" /><span className="text-xs font-medium">{scope.label}</span><code className="min-w-0 flex-1 truncate text-xs text-muted-foreground">/{path}</code>{scope.permissions.includes("upload") ? <><input ref={uploadInput} className="hidden" type="file" onChange={(event) => { const file = event.target.files?.[0] ?? null; event.target.value = ""; setUploadFile(file); }} /><Button size="sm" variant="secondary" onClick={() => uploadInput.current?.click()}><ArrowUpFromLine />{zh ? "上传" : "Upload"}</Button></> : null}{path ? <Button size="sm" variant="ghost" onClick={() => setPath(parent)}><ArrowLeft />{zh ? "上一级" : "Up"}</Button> : null}</div>
     {query.data?.entries?.length ? <div className="flex flex-wrap gap-3 border-b bg-muted/10 px-3 py-2 text-xs text-muted-foreground" data-testid="directory-summary"><span>{zh ? `当前目录 ${query.data.entries.length} 项` : `${query.data.entries.length} items in this folder`}</span><span>{zh ? `已列出文件 ${formatBytes(listedBytes)}` : `${formatBytes(listedBytes)} in listed files`}</span></div> : null}
     {query.isLoading ? <div className="p-6 text-center text-sm text-muted-foreground"><Loader2 className="mx-auto mb-2 size-5 animate-spin" />{zh ? "正在安全读取目录…" : "Reading directory safely…"}</div> : query.error ? <Notice title={zh ? "目录未能打开" : "Directory could not be opened"} detail={errorText(query.error, zh)} action={<Button size="sm" variant="secondary" onClick={() => void query.refetch()}><RefreshCw />{zh ? "重试" : "Retry"}</Button>} /> : !query.data?.entries.length ? <div className="p-6 text-center text-sm text-muted-foreground">{zh ? "此目录为空。" : "This directory is empty."}</div> : null}
     {query.data?.entries?.length ? <div className="divide-y">{query.data.entries.map((entry) => <FileRow key={entry.path} entry={entry} zh={zh} canDownload={scope.permissions.includes("download")} onDownload={() => setDownloadEntry(entry)} onPreview={() => setPreviewEntry(entry)} onOpen={() => entry.type === "directory" && entry.accessible ? setPath(entry.path) : undefined} />)}</div> : null}
   </div><TransferConfirmDialog scope={scope} directory={path} uploadFile={uploadFile} downloadEntry={downloadEntry} zh={zh} onClose={() => { setUploadFile(null); setDownloadEntry(null); }} onCompleted={refresh} /><FilePreviewDialog scope={scope} entry={previewEntry} zh={zh} onClose={() => setPreviewEntry(null)} /></>;
+}
+
+function FileSearchAssistant({ scope, zh, professional, onPreview, onLocate }: { scope: HostFileScope; zh: boolean; professional: boolean; onPreview: (entry: HostFileEntry) => void; onLocate: (entry: HostFileSearchResult) => void }) {
+  const [input, setInput] = useState("");
+  const searchMutation = useMutation({ mutationFn: () => hostApi.search(scope.id, input.trim(), scope.revision) });
+  const submit = () => { if (input.trim().length >= 2 && !searchMutation.isPending) searchMutation.mutate(); };
+  const canPreview = scope.permissions.includes("download");
+  return <div className="mb-3 rounded-lg border bg-card p-4" data-testid="host-file-search">
+    <div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><Search className="size-5" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{zh ? "AI 文件助手" : "AI file assistant"}</p><StatusBadge tone="neutral"><FolderLock className="size-3" />{zh ? `只查找“${scope.label}”` : `Only “${scope.label}”`}</StatusBadge></div><p className="mt-1 text-xs text-muted-foreground">{canPreview ? (zh ? "输入文件名或正文关键词。系统会限量查找，正文不会直接出现在结果中。" : "Enter a file name or text keyword. Search is bounded and file text is not shown in results.") : (zh ? "这个文件夹只允许按名称查找；需要读取正文时，请先在文件夹设置中允许下载。" : "This folder allows name search only. Enable downloads in folder settings before searching file text.")}</p></div></div>
+    <div className="mt-3 flex flex-col gap-2 sm:flex-row"><Input value={input} disabled={searchMutation.isPending} placeholder={zh ? "例如：部署说明，或 mytoolagent.com" : "For example: deployment guide or mytoolagent.com"} onChange={(event) => { setInput(event.target.value); if (searchMutation.data || searchMutation.error) searchMutation.reset(); }} onKeyDown={(event) => { if (event.key === "Enter") submit(); }} /><Button disabled={input.trim().length < 2 || searchMutation.isPending} onClick={submit}>{searchMutation.isPending ? <Loader2 className="animate-spin" /> : <Search />}{zh ? "查找文件" : "Find files"}</Button></div>
+    {searchMutation.error ? <p role="status" className="mt-3 rounded-lg bg-muted p-3 text-sm text-muted-foreground">{errorText(searchMutation.error, zh)}</p> : null}
+    {searchMutation.data ? <div className="mt-4 space-y-3" data-testid="host-file-search-results"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium">{searchMutation.data.count ? (zh ? `找到 ${searchMutation.data.count} 个文件` : `${searchMutation.data.count} files found`) : (zh ? "没有找到匹配文件" : "No matching files found")}</p>{searchMutation.data.boundaries.truncated ? <StatusBadge tone="warning">{zh ? "结果可能不完整" : "Partial results"}</StatusBadge> : <StatusBadge tone="success">{zh ? "查找完成" : "Search complete"}</StatusBadge>}</div>{!searchMutation.data.count ? <p className="rounded-md bg-muted p-3 text-sm text-muted-foreground">{zh ? "可以换一个更短、更具体的文件名或正文关键词。" : "Try a shorter, more specific file name or text keyword."}</p> : <div className="divide-y rounded-lg border">{searchMutation.data.results.map((entry) => <div key={entry.path} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center"><span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted">{entry.previewKind === "image" ? <FileImage className="size-4" /> : <FileText className="size-4" />}</span><span className="min-w-0 flex-1"><span className="block break-words text-sm font-medium">{entry.name}</span><span className="block break-all text-xs text-muted-foreground">{entry.path.includes("/") ? entry.path.slice(0, entry.path.lastIndexOf("/")) : (zh ? "文件夹根目录" : "Folder root")} · {entry.matchKind === "content" ? (zh ? "正文匹配" : "Text match") : (zh ? "名称匹配" : "Name match")}</span></span><div className="flex shrink-0 flex-wrap gap-1">{entry.restricted ? <StatusBadge tone="warning">{zh ? "敏感文件，已限制" : "Sensitive, restricted"}</StatusBadge> : <>{entry.previewKind && canPreview ? <Button size="sm" variant="secondary" onClick={() => onPreview(entry)}><Eye />{zh ? "安全预览" : "Safe preview"}</Button> : null}<Button size="sm" variant="ghost" onClick={() => onLocate(entry)}><Folder />{zh ? "打开位置" : "Open location"}</Button></>}</div></div>)}</div>}{professional ? <details className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground"><summary className="cursor-pointer font-medium">{zh ? "查找边界" : "Search boundaries"}</summary><p className="mt-2">{zh ? `扫描 ${searchMutation.data.boundaries.scannedEntries} 项，限量读取 ${searchMutation.data.boundaries.scannedTextFiles} 个文本文件（${formatBytes(searchMutation.data.boundaries.readBytes)}），跳过 ${searchMutation.data.boundaries.skippedEntries} 项。` : `Scanned ${searchMutation.data.boundaries.scannedEntries} entries, read ${searchMutation.data.boundaries.scannedTextFiles} bounded text files (${formatBytes(searchMutation.data.boundaries.readBytes)}), and skipped ${searchMutation.data.boundaries.skippedEntries}.`}</p></details> : null}</div> : null}
+  </div>;
 }
 
 function FileRow({ entry, zh, canDownload, onDownload, onPreview, onOpen }: { entry: HostFileEntry; zh: boolean; canDownload: boolean; onDownload: () => void; onPreview: () => void; onOpen: () => void }) {
@@ -337,43 +361,52 @@ async function readBlobText(blob: Blob): Promise<string> {
 
 function previewKind(name: string): PreviewKind | null {
   const extension = name.toLocaleLowerCase().split(".").pop() ?? "";
-  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"].includes(extension)) return "image";
+  if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif"].includes(extension)) return "image";
   if (extension === "pdf") return "pdf";
-  if (["txt", "md", "json", "yaml", "yml", "log", "conf", "ini", "csv", "xml", "html", "css", "js", "ts", "sh", "env"].includes(extension)) return "text";
+  if (["txt", "md", "json", "yaml", "yml", "log", "conf", "ini", "csv", "xml", "html", "css", "js", "ts", "sh", "svg"].includes(extension)) return "text";
   return null;
 }
 
 function FilePreviewDialog({ scope, entry, zh, onClose }: { scope: HostFileScope; entry: HostFileEntry | null; zh: boolean; onClose: () => void }) {
-  const kind = entry ? previewKind(entry.name) : null;
+  const expectedKind = entry ? previewKind(entry.name) : null;
+  const [kind, setKind] = useState<PreviewKind | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [text, setText] = useState("");
   const [url, setUrl] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<unknown>(null);
   useEffect(() => {
     let cancelled = false;
     setStatus(entry ? "loading" : "idle");
+    setKind(null);
     setText("");
     setUrl(null);
-    if (!entry || !kind) return undefined;
-    void hostApi.download(scope.id, { path: entry.path }).then(async (result) => {
+    setPreviewError(null);
+    if (!entry || !expectedKind) return undefined;
+    void hostApi.preview(scope.id, { path: entry.path, expectedRevision: scope.revision }).then(async (result) => {
       if (cancelled) return;
-      if (kind === "text") {
-        const previewText = await readBlobText(result.blob.slice(0, 512 * 1024 + 1));
-        if (previewText.length > 512 * 1024) { setStatus("error"); return; }
-        setText(previewText.slice(0, 200_000));
+      if (result.kind === "text") {
+        const nextText = await readBlobText(result.blob);
+        if (cancelled) return;
+        setText(nextText);
       }
-      else setUrl(URL.createObjectURL(new Blob([result.blob], { type: kind === "pdf" ? "application/pdf" : "image/*" })));
-      if (!cancelled) setStatus("ready");
-    }).catch(() => { if (!cancelled) setStatus("error"); });
+      else {
+        const nextUrl = URL.createObjectURL(new Blob([result.blob], { type: result.contentType }));
+        if (cancelled) { URL.revokeObjectURL(nextUrl); return; }
+        setUrl(nextUrl);
+      }
+      setKind(result.kind);
+      setStatus("ready");
+    }).catch((error) => { if (!cancelled) { setPreviewError(error); setStatus("error"); } });
     return () => { cancelled = true; };
-  }, [entry, kind, scope.id]);
+  }, [entry, expectedKind, scope.id, scope.revision]);
   useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
   const title = entry ? (zh ? `预览：${entry.name}` : `Preview: ${entry.name}`) : "";
   return <Modal open={Boolean(entry)} onClose={onClose} title={title} description={zh ? "只读取批准范围内的文件，不会执行文件内容。" : "Reads a file inside the approved range; file contents are never executed."} size="xl" footer={<Button variant="secondary" onClick={onClose}>{zh ? "关闭" : "Close"}</Button>}>
     {status === "loading" ? <div className="p-8 text-center text-sm text-muted-foreground"><Loader2 className="mx-auto mb-2 size-5 animate-spin" />{zh ? "正在读取文件…" : "Reading file…"}</div> : null}
-    {status === "error" ? <Notice title={zh ? "暂时无法预览" : "Preview unavailable"} detail={kind === "text" ? (zh ? "文本文件超过 512 KB 预览上限，请使用下载并在本地打开。" : "Text previews are limited to 512 KB. Download the file to open it locally.") : (zh ? "文件读取失败或不满足安全预览条件。" : "The file could not be read or did not meet safe preview requirements.")} /> : null}
+    {status === "error" ? <Notice title={zh ? "暂时无法预览" : "Preview unavailable"} detail={errorText(previewError, zh)} /> : null}
     {status === "ready" && kind === "text" ? <pre className="max-h-[65vh] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 text-xs leading-5">{text}</pre> : null}
     {status === "ready" && kind === "image" && url ? <div className="grid max-h-[65vh] place-items-center overflow-auto rounded-lg bg-muted p-3"><img src={url} alt={entry?.name ?? ""} className="max-h-[60vh] max-w-full object-contain" /></div> : null}
-    {status === "ready" && kind === "pdf" && url ? <iframe title={title} src={url} className="h-[65vh] w-full rounded-lg border" /> : null}
+    {status === "ready" && kind === "pdf" && url ? <iframe title={title} src={url} sandbox="" referrerPolicy="no-referrer" className="h-[65vh] w-full rounded-lg border" /> : null}
   </Modal>;
 }
 
