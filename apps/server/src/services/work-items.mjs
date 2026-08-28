@@ -54,7 +54,7 @@ import { planDiscreteTasks } from "./discrete-task-planner.mjs";
 import { validateTaskPlan } from "./task-plan-contract.mjs";
 import { taskPlanCapabilityReadiness } from "./task-capability-readiness.mjs";
 import { applyResultRepairSpec, buildResultRepairTaskSpec } from "./result-repair-task.mjs";
-import { buildDeliveryEvidence } from "./work-item-delivery-evidence.mjs";
+import { projectWorkItemReviewEvidence } from "./work-item-review-evidence.mjs";
 import { normalizeExecutionStartFailure, projectExecutionStartReceipt } from "./work-item-execution-start.mjs";
 import { projectWorkItemExecutionReview } from "./work-item-execution-review.mjs";
 import { projectWorkItemPlanActual } from "./work-item-plan-actual.mjs";
@@ -2569,7 +2569,6 @@ export function createWorkItemService({
     const deliveryReview = deliveryWorktree
       ? (state.worktreeReviews ?? []).find((review) => review.worktreeId === deliveryWorktree.id) ?? null
       : null;
-    const deliveryProject = (state.projects ?? []).find((project) => project.id === item.projectId) ?? null;
     const latestRunBinding = [...(item.executionBindings ?? [])].reverse().find(
       (binding) => binding.kind === "auto_run" && binding.targetId === latestRun?.id,
     ) ?? null;
@@ -2578,6 +2577,26 @@ export function createWorkItemService({
       .map((binding) => binding.worktreeId)
       .filter(Boolean));
     if (outcomeWorktreeId) boundWorktreeIds.add(outcomeWorktreeId);
+    const {
+      deliveryProject,
+      deliveryRemoteUrl,
+      deliveryMode,
+      relatedInvocations,
+      runInvocations,
+      latestExecutionInvocation,
+      projectedDeliveryReview,
+      projectedDeliveryReport,
+      deliveryEvidence,
+    } = projectWorkItemReviewEvidence({
+      item,
+      state,
+      boundRuns,
+      latestRun,
+      pendingLocalDelivery,
+      deliveryWorktree,
+      deliveryReview,
+      outcomeWorktreeId,
+    });
     const outcomeFileContext = {
       projectId: item.projectId,
       worktreeId: outcomeWorktreeId,
@@ -2588,99 +2607,6 @@ export function createWorkItemService({
           .map((worktree) => ({ root: worktree.path ?? worktree.worktreePath, worktreeId: worktree.id })),
       ].filter((scope) => scope.root),
     };
-    const deliveryRemoteUrl = deliveryProject?.git?.remoteUrl ?? null;
-    const deliveryMode = deliveryRemoteUrl && /github\.com[/:]/i.test(deliveryRemoteUrl)
-      ? "pull_request"
-      : "local_merge";
-    const currentInvocationIds = new Set(boundRuns
-      .filter((run) => run.invocationId)
-      .map((run) => run.invocationId));
-    const relatedInvocations = (state.invocations ?? [])
-      .filter((invocation) => {
-        const autoRunId = invocation.options?.metadata?.autoRunId;
-        return (autoRunId && runIds.has(autoRunId)) || currentInvocationIds.has(invocation.id);
-      })
-      .sort((left, right) =>
-        String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""))
-        || String(left.id).localeCompare(String(right.id)));
-    const runInvocations = relatedInvocations.filter(
-      (invocation) => invocation.options?.metadata?.role !== "delivery_review",
-    );
-    const latestExecutionInvocation = runInvocations.find((invocation) => invocation.id === latestRun?.invocationId) ?? null;
-    const reviewInvocation = latestRun?.deliveryReview?.invocationId
-      ? relatedInvocations.find((invocation) => invocation.id === latestRun.deliveryReview.invocationId) ?? null
-      : null;
-    const projectedDeliveryReview = latestRun?.deliveryReview
-      ? {
-        ...latestRun.deliveryReview,
-        status: latestRun.deliveryReview.status === "queued" && reviewInvocation?.status === "running"
-          ? "running"
-          : latestRun.deliveryReview.status,
-      }
-      : null;
-    const projectedDeliveryReport = latestRun?.deliveryReport ?? (pendingLocalDelivery ? {
-      summary: latestExecutionInvocation?.result?.output?.latestMessage
-        ?? latestExecutionInvocation?.result?.output?.summary
-        ?? latestExecutionInvocation?.result?.summary
-        ?? null,
-      verification: latestRun?.verification ? { ...latestRun.verification } : null,
-      changedFiles: [],
-      completedAt: latestExecutionInvocation?.completedAt ?? latestRun?.updatedAt ?? null,
-    } : null);
-    const storedLedgerPreview = item.channelTaskContract?.ledgerMutationPreview ?? item.ledgerMutationPreview ?? null;
-    const liveLedgerBatch = storedLedgerPreview?.kind === "batch" && storedLedgerPreview.id
-      ? (state.ledgerBatchUpsertPreviews ?? []).find((batch) =>
-        batch.id === storedLedgerPreview.id
-        && batch.ownerTeamId === item.ownerTeamId
-        && batch.projectId === item.projectId) ?? null
-      : null;
-    const liveLedgerJournal = liveLedgerBatch
-      ? (state.ledgerBatchMutationJournals ?? [])
-        .filter((journal) => journal.batchPreviewId === liveLedgerBatch.id && journal.ownerTeamId === item.ownerTeamId)
-        .sort((left, right) => String(left.updatedAt ?? "").localeCompare(String(right.updatedAt ?? "")))
-        .at(-1) ?? null
-      : null;
-    const liveLedgerChildren = liveLedgerBatch
-      ? (liveLedgerBatch.childPreviewIds ?? []).map((previewId) =>
-        (state.ledgerUpsertPreviews ?? []).find((preview) =>
-          preview.id === previewId && preview.ownerTeamId === item.ownerTeamId && preview.projectId === item.projectId)
-          ?? { id: previewId, state: "unknown", missing: true })
-      : [];
-    const staleLedgerBatch = storedLedgerPreview?.kind === "batch" && storedLedgerPreview.id && !liveLedgerBatch;
-    const evidenceItem = liveLedgerBatch || staleLedgerBatch
-      ? {
-          ...item,
-          channelTaskContract: {
-            ...(item.channelTaskContract ?? {}),
-            ledgerMutationPreview: {
-              ...(liveLedgerBatch ?? storedLedgerPreview),
-              kind: "batch",
-              state: staleLedgerBatch ? "needs_attention" : liveLedgerBatch.state,
-              children: staleLedgerBatch ? [] : liveLedgerChildren,
-              journal: staleLedgerBatch ? null : liveLedgerJournal,
-              evidenceStale: staleLedgerBatch,
-            },
-          },
-        }
-      : item;
-    const hasOfficeActionEvidence = Boolean(
-      evidenceItem.channelTaskContract?.ledgerMutationPreview
-      ?? evidenceItem.ledgerMutationPreview
-      ?? evidenceItem.channelTaskContract?.dataMutationPreview
-      ?? evidenceItem.dataMutationPreview,
-    );
-    const deliveryEvidence = pendingLocalDelivery || hasOfficeActionEvidence
-      ? buildDeliveryEvidence({
-        item: evidenceItem,
-        autoRun: latestRun,
-        deliveryReport: projectedDeliveryReport,
-        deliveryReview: deliveryReview ?? projectedDeliveryReview,
-        deliveryMode: hasOfficeActionEvidence ? "local_merge" : deliveryMode,
-        worktreeId: latestRun?.localDelivery?.worktreeId ?? outcomeWorktreeId,
-        branchName: latestRun?.localDelivery?.branchName ?? deliveryWorktree?.branchName ?? null,
-        remoteUrl: deliveryRemoteUrl,
-      })
-      : null;
     const taskOutcome = projectWorkItemOutcome({
       item,
       latestRun,

@@ -1,5 +1,4 @@
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { startAutomationScheduler } from "./runtime/automation-scheduler.mjs";
 import { startAutoTriggerScheduler } from "./runtime/auto-trigger-scheduler.mjs";
 import { createDingtalkClient } from "./gateway/dingtalk-client.mjs";
@@ -13,6 +12,7 @@ import { createTeamsGateway, teamsGatewayConfigFromEnv } from "./gateway/teams-g
 import { createWecomClient } from "./gateway/wecom-client.mjs";
 import { createWecomGateway, wecomGatewayConfigFromEnv } from "./gateway/wecom-gateway.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
+import { openDurableStoreLifecycle } from "./runtime/durable-store-lifecycle.mjs";
 import { runProtocolSelfCheck } from "./runtime/self-check.mjs";
 import { createServerRuntimeServices } from "./runtime/service-composer.mjs";
 import { createServerState } from "./runtime/state-factory.mjs";
@@ -48,30 +48,14 @@ if (persistenceEnabled && process.env.MYAGENTTOOL_STATE_LOCK !== "0") {
   releaseStateLock = lock.release;
 }
 
-// #1003 Phase C: SQLite is the DEFAULT durable backing (set MYAGENTTOOL_STORE=memory
-// to opt back into the legacy JSON-only snapshot). The in-memory `state` stays the
-// live view; its commit mirrors to SQLite and boot hydrates from it, and the JSON
-// snapshot is kept current too as a warm fallback (Phase C step 3 retires it).
-// Opened here (index has top-level await) since node:sqlite loads lazily; the
-// composer stays synchronous. Degrades LOUDLY to the JSON backing if the runtime
-// lacks node:sqlite — the server stays up rather than refusing to boot.
-let sqliteStore = null;
-let closeSqliteStore = () => {};
-if (persistenceEnabled && (process.env.MYAGENTTOOL_STORE ?? "sqlite").toLowerCase() === "sqlite") {
-  const sqlitePath = `${stateStorePath.replace(/\.json$/, "")}.sqlite`;
-  try {
-    // The persistence runtime creates the state dir on its first write, which is
-    // AFTER this open — so ensure it exists now, or node:sqlite can't create the file.
-    mkdirSync(dirname(sqlitePath), { recursive: true });
-    const { openSqliteStore } = await import("./runtime/store/sqlite-store.mjs");
-    sqliteStore = await openSqliteStore({ path: sqlitePath });
-    closeSqliteStore = () => sqliteStore.close();
-    console.log(`[store:sqlite] durable backing at ${sqlitePath}`);
-  } catch (error) {
-    console.warn(`[store:sqlite] requested but unavailable (${error?.message ?? error}); falling back to the JSON snapshot backing.`);
-    sqliteStore = null;
-  }
-}
+// SQLite is the default durable backing. The lifecycle component owns lazy
+// adapter loading, startup diagnostics, JSON fallback, and idempotent close.
+const durableStoreLifecycle = await openDurableStoreLifecycle({
+  persistenceEnabled,
+  requestedStore: process.env.MYAGENTTOOL_STORE ?? "sqlite",
+  stateStorePath,
+});
+const sqliteStore = durableStoreLifecycle.store;
 
 // M7: a separate, derived mailbox read index. It is never the source of truth;
 // failure only disables the large-mailbox fast path and leaves the mailbox on
@@ -510,7 +494,7 @@ async function shutdown() {
   savePersistentState();
   exportJsonSnapshot?.();
   await closeRuntimeServices?.();
-  closeSqliteStore();
+  durableStoreLifecycle.close();
   releaseStateLock();
   process.exit(0);
 }

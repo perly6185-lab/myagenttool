@@ -6,10 +6,8 @@ import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
 import { currentDeviceTimeZone, findDevice, listDevices } from "./device.mjs";
-import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
+import { createRuntimeStoreBoundary } from "./store-composition.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
-import { createInMemoryStore } from "./store/in-memory-store.mjs";
-import { createIncrementalMirror, isStoreEmpty, mirrorState, seedOrHydrate } from "./store/sqlite-backing.mjs";
 import {
   createAgentService,
   isAgentDisabled,
@@ -155,6 +153,7 @@ import { convergeAutoRunTerminalState, createAutoRunService } from "../services/
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
+import { createWorkItemReviewCommandService } from "../services/work-item-review-command.mjs";
 import { applyResultRepairSpec } from "../services/result-repair-task.mjs";
 import { createTaskMaterialService } from "../services/task-materials.mjs";
 import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
@@ -255,132 +254,40 @@ export function createServerRuntimeServices({
     updateClaudeSessionFromEvent: () => null,
   };
 
-  // #1041: every durable flush (persistStateNow AND the debounced persistStateSoon,
-  // from ANY of the ~40 write sites) mirrors the state into SQLite via this hook —
-  // not only store.transaction commits — so SQLite never lags the JSON snapshot and
-  // the last writes before shutdown are captured. A no-op until the mirror is primed
-  // (and always, when there is no SQLite backing).
-  let durableSync = () => {};
   const sshHostConnector = createSshHostConnector();
   const {
     persistStateSoon,
     persistStateNow,
-    restorePersistentState,
     savePersistentState,
     exportJsonSnapshot,
-  } = createPersistenceRuntime({
+    store,
+    restored,
+    backing: storeBacking,
+    queryDurableRecords,
+    getDurableMetadata,
+    setDurableMetadata,
+    compactDurableStoreForErasure,
+    historyAppend,
+    historyQuery,
+    historyDelete,
+    historyRedact,
+  } = createRuntimeStoreBoundary({
     state,
-    enabled: persistenceEnabled,
+    persistenceEnabled,
     stateStorePath,
-    schemaVersion: stateSchemaVersion,
+    stateSchemaVersion,
     now,
     defaultProject,
     sameProjectPath,
-    afterFlush: () => durableSync(),
-    // #1042: on the SQLite backing, JSON is retired AS the backing — per-commit
-    // flushes write SQLite only; JSON becomes an explicit export (exportJsonSnapshot).
-    // JSON stays the backing on the memory / Node<22.13-degrade paths (no sqliteStore).
-    jsonBacking: !sqliteStore,
+    sqliteStore,
   });
-  // #966 (#124): the Store seam over today's snapshot — reads scan `state`, a
-  // transaction stages writes and commits atomically through the synchronous
-  // barrier. #1002 Phase B: when a SQLite store is wired, the commit ALSO mirrors
-  // the whole `state` view into SQLite (the durable backing); the JSON snapshot is
-  // kept current too during the soak so flipping the flag off loses nothing (Phase
-  // C retires it). Default (no sqliteStore): today's JSON-only barrier, unchanged.
-  // `projects` and `devices` are id-keyed arrays that persist through their OWN JSON
-  // paths (not the persistedArrayKeys loop), so the SQLite backing mirrors them here
-  // too — otherwise the project registry / device fleet would be lost once the JSON
-  // snapshot is retired (Phase C). #1003 prep. (`currentProjectId` is a scalar the
-  // hydrate reconciles via normalizeLoadedState; a dedicated durable slot for it is
-  // a small follow-up before JSON is fully retired.)
-  const mirroredArrayKeys = [...persistedArrayKeys, "projects", "devices"];
-  // #1040: top-level scalars (the operator's selected project, the id counter) that
-  // are neither arrays nor object singletons — mirrored as one reserved meta row so
-  // they survive once the JSON snapshot is retired (else currentProjectId resets to
-  // default each boot and idCounter falls back to the #832-risky records scan).
-  const mirroredScalarKeys = ["currentProjectId", "idCounter"];
-  // #1003: the commit sink mirrors only the DELTA (changed/new/deleted rows) into
-  // SQLite rather than rewriting the whole record table each commit — see
-  // createIncrementalMirror. Primed to match the store right after seed/hydrate.
-  const incrementalMirror = sqliteStore
-    ? createIncrementalMirror({ store: sqliteStore, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys, scalarKeys: mirroredScalarKeys })
-    : null;
-  // The store's commit is just persistStateNow now — persistStateNow already mirrors
-  // to SQLite via the afterFlush hook (durableSync), so a store.transaction commit
-  // and any other durable flush stay on the same, unified path (#1041).
-  const store = createInMemoryStore({ state, commit: persistStateNow });
-  // #1003: capture the fresh seeded defaults BEFORE the restore overwrites them, so
-  // a SQLite hydrate can run the SAME normalization the JSON restore does.
-  const seededDefaults = sqliteStore ? captureSeededDefaults(state) : null;
-  // #1042: JSON is no longer the backing. Restore it ONLY as a one-time migration
-  // when SQLite is empty (a fresh deploy, or an existing deployment upgrading in
-  // place); a populated SQLite hydrates directly and the JSON restore is skipped.
-  // Without a SQLite backing (memory / degrade), JSON IS the backing — restore it.
-  let restored;
-  if (!sqliteStore) {
-    restored = restorePersistentState();
-  } else if (isStoreEmpty({ store: sqliteStore, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys })) {
-    restored = restorePersistentState();
-  }
-  // After the (conditional) restore, reconcile with the SQLite backing — SEED it from
-  // the restored/fresh state when empty (one-time JSON→SQLite migration), or HYDRATE
-  // `state` from SQLite when it already holds data (SQLite authoritative).
-  if (sqliteStore) {
-    const outcome = seedOrHydrate({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys, scalarKeys: mirroredScalarKeys });
-    if (outcome.mode === "seeded" && outcome.mirror?.skipped > 0) {
-      console.warn(`[store:sqlite] initial seed dropped ${outcome.mirror.skipped} id-less row(s) in ${outcome.mirror.skippedCollections.join(", ")}.`);
-    }
-    if (outcome.mode === "hydrated") {
-      // Raw hydration loads records verbatim; run the SHARED normalization so the
-      // SQLite backing fails closed EXACTLY like the JSON restore — path-missing
-      // project drop + default guarantee, new-default merge for agents/singletons/
-      // devices, dup-id repair, every device offline, ownership diagnostics.
-      normalizeLoadedState(state, { seededDefaults, defaultProject, sameProjectPath });
-    }
-    // A hydrate's normalization (dropped project, merged defaults, device offline)
-    // makes `state` diverge from the raw SQLite rows, so fully re-mirror ONCE here
-    // to reconcile SQLite (deletes propagate) before priming. On seed, SQLite
-    // already equals `state`. Then prime the incremental mirror's shadow so every
-    // subsequent commit writes only its delta.
-    if (outcome.mode === "hydrated") {
-      mirrorState({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys, scalarKeys: mirroredScalarKeys });
-    }
-    incrementalMirror.prime(state);
-    // From here every durable flush mirrors the delta into SQLite (#1041).
-    durableSync = () => {
-      const { skipped, skippedCollections } = incrementalMirror.sync(state);
-      if (skipped > 0) {
-        console.warn(`[store:sqlite] mirror dropped ${skipped} id-less row(s) in ${skippedCollections.join(", ")} — those records are not durable in the SQLite backing.`);
-      }
-    };
-    console.log(`[store:sqlite] durable backing ${outcome.mode} (${mirroredArrayKeys.length} collections).`);
-  }
-  // Event archive ids can be newer than either the JSON snapshot or the SQLite
-  // scalar mirror. Read their durable high-water before minting any new ids.
-  // ADR 0019 B-2: when a SQLite store is present, over-cap eviction dual-writes to
-  // its durable, indexed `history` table (alongside the JSONL). null on the memory
-  // / Node<22.13 backing — the JSONL stays the only durable archive there.
-  const historyAppend = sqliteStore && typeof sqliteStore.appendHistory === "function"
-    ? (collection, rows) => sqliteStore.appendHistory(collection, rows)
-    : null;
-  const historyQuery = sqliteStore && typeof sqliteStore.queryHistory === "function"
-    ? (collection, options) => sqliteStore.queryHistory(collection, options)
-    : null;
-  // ADR 0019 B-3: erasure of the durable history table (null on the memory backing).
-  const historyDelete = sqliteStore && typeof sqliteStore.deleteHistory === "function"
-    ? (collection, scopeId) => sqliteStore.deleteHistory(collection, scopeId)
-    : null;
-  const historyRedact = sqliteStore && typeof sqliteStore.redactHistory === "function"
-    ? (collection, scopeId, redactRow) => sqliteStore.redactHistory(collection, scopeId, redactRow)
-    : null;
   const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now, appendHistory: historyAppend });
   const { dispatcher: autoRunAlerts, outbox: alertOutbox } = createOwnedAlertRuntime({
     state,
     now,
     nextId,
-    persistStateSoon,
     store,
+    persistStateSoon,
   });
   const eventArchive = retentionArchive.prepareInvocationEventArchive();
   if (eventArchive.readError) {
@@ -2255,6 +2162,8 @@ export function createServerRuntimeServices({
     },
     appendEvent,
     persistStateSoon,
+    getDurableMetadata,
+    setDurableMetadata,
     createWorktree,
     // Destructive teardown for a denied/abandoned run's worktree+branch (so a
     // re-run on the same issue isn't blocked by a leftover branch).
@@ -2549,6 +2458,22 @@ export function createServerRuntimeServices({
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
     materializeTaskMaterials: taskMaterialService.materialize,
     store,
+  });
+  const workItemReviewCommandService = createWorkItemReviewCommandService({
+    state,
+    now,
+    nextId,
+    store,
+    persistStateSoon,
+    getWorkItem: workItemService.getWorkItem,
+    retryAutoRun,
+    reverifyAutoRun,
+    answerClarify,
+    promoteWorktreeToBase,
+    promoteWorktreeToPullRequest,
+    beginDelivery: workItemService.beginDelivery,
+    failDelivery: workItemService.failDelivery,
+    completeDelivery: workItemService.completeDelivery,
   });
   const workItemAutoRunUnderstandingService = createWorkItemAutoRunUnderstandingService({
     state,
@@ -7299,22 +7224,22 @@ export function createServerRuntimeServices({
       // First barrier propagates logical deletes to the authoritative backing.
       const logicalPersistence = persistStateNow();
       let durableResidualCount = 0;
-      if (sqliteStore) {
+      if (queryDurableRecords) {
         for (const key of collectionKeys) {
-          durableResidualCount += sqliteStore.query(key, (row) =>
+          durableResidualCount += queryDurableRecords(key, (row) =>
             row?.learnerId === learnerId || (key === "privateTutorLearners" && row?.id === learnerId)).length;
         }
-        durableResidualCount += sqliteStore.query("privateTutorPilotCohorts", (row) => row?.enrolledLearnerIds?.includes(learnerId)).length;
-        durableResidualCount += sqliteStore.query("identitySessions", (row) => row?.privateTutorChildMode?.learnerId === learnerId).length;
+        durableResidualCount += queryDurableRecords("privateTutorPilotCohorts", (row) => row?.enrolledLearnerIds?.includes(learnerId)).length;
+        durableResidualCount += queryDurableRecords("identitySessions", (row) => row?.privateTutorChildMode?.learnerId === learnerId).length;
       }
       let compaction = { secureDelete: false, walCheckpointed: false, checkpointBusy: null, remainingLogFrames: null };
       let compactionError = null;
       try {
-        if (sqliteStore?.compactForErasure) compaction = sqliteStore.compactForErasure();
+        if (compactDurableStoreForErasure) compaction = compactDurableStoreForErasure();
       } catch (error) {
         compactionError = error?.message ?? String(error);
       }
-      const sqliteErasureComplete = !sqliteStore || (
+      const sqliteErasureComplete = storeBacking !== "sqlite" || (
         compaction.secureDelete === true
         && compaction.walCheckpointed === true
         && Number(compaction.checkpointBusy ?? 0) === 0
@@ -7322,7 +7247,7 @@ export function createServerRuntimeServices({
         && !compactionError
       );
       const verification = {
-        backing: sqliteStore ? "sqlite" : persistenceEnabled ? "json" : "memory",
+        backing: storeBacking,
         durableResidualCount,
         secureDelete: compaction.secureDelete,
         walCheckpointed: compaction.walCheckpointed,
@@ -7450,6 +7375,7 @@ export function createServerRuntimeServices({
     startAutoRun,
     retryAutoRun,
     reverifyAutoRun,
+    executeWorkItemReviewCommand: workItemReviewCommandService.execute,
     reconcileExecutionAction,
     recoverTimedOutCodexApproval: codexApprovalRecovery.recoverTimedOutApproval,
     processPlanningRecommendedActions,

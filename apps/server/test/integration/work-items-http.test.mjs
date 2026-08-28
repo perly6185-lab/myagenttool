@@ -567,6 +567,14 @@ test("Auto-run list, summary, and routing slices are team scoped", async () => {
       receipt: { id: "ear_private_b" },
     }],
   });
+  runtimeState.executionActionIdempotencyRecords.push({
+    id: "eai_private_b",
+    autoRunId: "aur_private_b",
+    ownerTeamId: "team_b",
+    projectId: "prj_b",
+    idempotencyKey: "must-not-leak-global-ledger",
+    requestDigest: "private-global-ledger-digest",
+  });
   runtimeState.deployments.push(
     { id: "dep_a", projectId: "prj_a", autoRunId: "aur_feedback_http", status: "deployed", at: "2026-07-24T00:00:00.000Z" },
     { id: "dep_b", projectId: "prj_b", autoRunId: "aur_private_b", status: "failed", at: "2026-07-24T00:00:00.000Z" },
@@ -588,6 +596,8 @@ test("Auto-run list, summary, and routing slices are team scoped", async () => {
   assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").routingOverride.idempotencyKey, undefined);
   assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").executionActionReceipts, undefined);
   assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").executionActionIdempotencyLedger, undefined);
+  const publicState = await call("/api/state", { token: "tok_b" });
+  assert.equal(publicState.body.executionActionIdempotencyRecords, undefined);
 });
 
 test("execution action reconciliation is tenant scoped and unlocks a proven no-op retry", async () => {
@@ -1084,13 +1094,27 @@ test("approved local delivery fast-forwards the base and only then closes the is
     completedAt: new Date().toISOString(),
   };
   detail = await call(`/api/work-items/${item.id}`);
+  const deliveryRequest = {
+    expectedRevision: detail.body.workItem.revision,
+    expectedTargetStatus: "done",
+    idempotencyKey: `deliver-local-${item.id}`,
+  };
   const delivered = await call(`/api/work-items/${item.id}/delivery/local`, {
-    method: "POST", body: { expectedRevision: detail.body.workItem.revision },
+    method: "POST", body: deliveryRequest,
   });
   assert.equal(delivered.status, 200);
   assert.equal(delivered.body.workItem.status, "done");
   assert.equal(delivered.body.workItem.state, "closed");
+  assert.equal(delivered.body.actionReceipt.kind, "apply_local_changes");
+  assert.equal(delivered.body.actionReceipt.status, "succeeded");
+  assert.equal(delivered.body.actionReceipt.impact, "applied");
   assert.equal(execFileSync("git", ["-C", projectAPath, "show", `HEAD:DELIVERY-${item.localNumber}.txt`], { encoding: "utf8" }).trim(), "delivered");
+  const replayedDelivery = await call(`/api/work-items/${item.id}/delivery/local`, {
+    method: "POST", body: deliveryRequest,
+  });
+  assert.equal(replayedDelivery.status, 200);
+  assert.equal(replayedDelivery.body.replayed, true);
+  assert.equal(replayedDelivery.body.actionReceipt.id, delivered.body.actionReceipt.id);
 });
 
 test("a local issue starts an auto-run with its local body and acceptance criteria", async () => {
@@ -1258,6 +1282,12 @@ test("the real HTTP confirmation returns one durable start receipt, supports pre
     finalDetail.body.observability.executionReview.recommendedAction.kind,
   ));
   assert.ok(Array.isArray(finalDetail.body.observability.executionReview.riskReasons));
+  assert.equal(finalDetail.body.observability.executionReview.actionAvailability.schemaVersion, 1);
+  assert.equal(
+    finalDetail.body.observability.executionReview.actionAvailability.primaryActionKind,
+    finalDetail.body.observability.executionReview.recommendedAction.kind,
+  );
+  assert.ok(Array.isArray(finalDetail.body.observability.executionReview.actionAvailability.actions));
 });
 
 test("local issues can be queued as a durable concurrency-limited Auto-run batch", async () => {

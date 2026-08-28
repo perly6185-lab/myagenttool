@@ -12,6 +12,8 @@ const SAFE_DIAGNOSTIC_COMMANDS = Object.freeze({
   memory_usage: "free -h",
   system_info: "uname -a",
   uptime: "uptime",
+  login_sessions: "who",
+  ssh_login_audit: "journalctl --no-pager --quiet --since '-24 hours' -u ssh.service -u sshd.service -n 100 -o short-iso",
   failed_services: "systemctl --failed --no-pager",
   processes: "ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -n 15",
   listening_ports: "ss -lntup",
@@ -197,6 +199,8 @@ export function sshDiagnosticActionForInput(input) {
   if (/(?:&&|\|\||[;`$<>])/.test(value)) return null;
   if (/磁盘|硬盘|空间|容量|disk|storage/.test(value)) return "disk_usage";
   if (/内存|memory|ram|交换/.test(value)) return "memory_usage";
+  if (/(?:登录|登陆).*(?:审计|日志|记录|历史|最近|情况|信息|异常|失败|成功|尝试)|(?:审计|日志|记录|历史|最近).*(?:登录|登陆)|ssh\s+(?:login|authentication|auth)\s+(?:audit|log|logs|history)|(?:recent|failed|successful)\s+ssh\s+(?:login|authentication)\s+(?:attempts?|events?)/.test(value)) return "ssh_login_audit";
+  if (/谁在线|当前.*(?:登录|登陆)|(?:登录|登陆).*(?:会话|用户)|who\s+is\s+(?:logged[- ]?in|online)|(?:login|sign-in|signed-in|logged-in|ssh)\s+(?:session|sessions|user|users)|active\s+(?:login|ssh)\s+sessions?/.test(value)) return "login_sessions";
   if (/日志|事件|log|journal/.test(value)) return "recent_logs";
   if (/网络|网卡|地址|network|interface/.test(value)) return "network_info";
   if (/系统|内核|版本|system|kernel|os/.test(value)) return "system_info";

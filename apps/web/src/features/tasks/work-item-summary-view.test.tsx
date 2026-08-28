@@ -218,6 +218,37 @@ function failedExecutionReview(actionReceipt: WorkItemExecutionReview["actionRec
   };
 }
 
+function reviewReadyExecutionReview(actions: NonNullable<WorkItemExecutionReview["actionAvailability"]>["actions"]): WorkItemExecutionReview {
+  return {
+    schemaVersion: 1,
+    state: "review_ready",
+    stage: "review",
+    stages: [
+      { key: "accepted", status: "complete", at: "2026-08-26T09:58:00.000Z" },
+      { key: "preparing", status: "complete", at: "2026-08-26T09:59:00.000Z" },
+      { key: "working", status: "complete", at: "2026-08-26T10:00:00.000Z" },
+      { key: "verifying", status: "complete", at: "2026-08-26T10:00:30.000Z" },
+      { key: "review", status: "current", at: "2026-08-26T10:01:00.000Z" },
+    ],
+    executionKind: "auto_run",
+    targetId: "aur_dev",
+    targetStatus: "done",
+    agentId: "agt_1",
+    agentName: "Task assistant",
+    acceptedAt: "2026-08-26T09:58:00.000Z",
+    startedAt: "2026-08-26T09:59:00.000Z",
+    updatedAt: "2026-08-26T10:01:00.000Z",
+    completedAt: "2026-08-26T10:00:30.000Z",
+    needsAttention: false,
+    attentionCode: null,
+    verification: { status: "passed", verified: true, passed: true, commands: ["pnpm test"], command: "pnpm test", exitCode: 0, summary: "Checks passed.", checkedAt: "2026-08-26T10:00:30.000Z", durationMs: 30_000, evidenceCount: 1, checks: [] },
+    impact: { status: "prepared", reasonCode: "result_waiting_for_confirmation" },
+    riskReasons: [],
+    recommendedAction: { kind: "review_result", reasonCode: "result_ready_for_review", requiresConfirmation: false, nextOwner: "me" },
+    actionAvailability: { schemaVersion: 1, primaryActionKind: "review_result", locked: false, actions },
+  };
+}
+
 function attentionPlanActual(feedback: WorkItemPlanActual["feedback"] = null): WorkItemPlanActual {
   return {
     schemaVersion: 1,
@@ -1536,6 +1567,12 @@ describe("work item summary presentation", () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({ status: "review", executionState: "completed", waitingOn: "me" }),
       observability: {
+        executionReview: reviewReadyExecutionReview([
+          { kind: "view_changes", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
+          { kind: "rerun_verification", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "system", blockedReasonCodes: [] },
+          { kind: "update_pull_request", visible: true, enabled: true, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: [] },
+          { kind: "review_result", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
+        ]),
         latestRun: {
           id: "aur_dev", status: "done", updatedAt: "2026-08-26T10:00:00.000Z",
           localDelivery: { worktreeId: "wtr_dev", branchName: "feature/risk-gate", mode: "pull_request" },
@@ -1559,7 +1596,8 @@ describe("work item summary presentation", () => {
     });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onOpenDeliveryChanges={onOpenDeliveryChanges} />);
 
-    const actions = await screen.findByTestId("development-actions");
+    const actions = await screen.findByTestId("execution-available-actions");
+    expect(screen.queryByTestId("development-actions")).toBeNull();
     expect(within(actions).queryByRole("button", { name: "Ask AI to fix" })).toBeNull();
     fireEvent.click(within(actions).getByRole("button", { name: "View changes" }));
     expect(onOpenDeliveryChanges).toHaveBeenCalledWith("prj_1", "wtr_dev");
@@ -1580,6 +1618,11 @@ describe("work item summary presentation", () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({ status: "review", executionState: "completed", waitingOn: "me", taskKind: "business_spreadsheet", title: "Update customer ledger" }),
       observability: {
+        executionReview: reviewReadyExecutionReview([
+          { kind: "view_batch_details", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
+          { kind: "apply_office_result", visible: true, enabled: false, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: ["office_batch_attention", "office_rollback_incomplete"] },
+          { kind: "review_result", visible: true, enabled: false, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: ["office_batch_attention", "office_rollback_incomplete"] },
+        ]),
         latestRun: { id: "aur_office", status: "done", updatedAt: "2026-08-26T10:00:00.000Z", localDelivery: { worktreeId: "wtr_office", branchName: "office/customer-ledger" } },
         outcome: { status: "available", summary: "Customer ledger batch prepared.", fullReport: "Customer ledger batch prepared.", highlights: [], warnings: [], files: ["客户台账.xlsx"], verification: { passed: true, verified: true, summary: "Workbook validated" }, deliveredAt: "2026-08-26T10:00:00.000Z" },
         outcomeHistory: [],
@@ -1609,8 +1652,9 @@ describe("work item summary presentation", () => {
     });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    const reviewResult = await screen.findByRole("button", { name: /Review result|Hide result/ });
-    if (reviewResult.getAttribute("aria-expanded") !== "true") fireEvent.click(reviewResult);
+    await screen.findByTestId("execution-available-actions");
+    const projectedActions = screen.getByTestId("execution-available-actions");
+    fireEvent.click(within(projectedActions).getByRole("button", { name: "View batch details" }));
     const decision = await screen.findByLabelText("Review conclusion");
     expect(decision.textContent).toContain("Batch needs attention");
     const batch = screen.getByTestId("office-batch-result");
@@ -1624,6 +1668,9 @@ describe("work item summary presentation", () => {
     expect(within(batch).getByText("Committed")).toBeTruthy();
     expect(within(batch).getByText("Invalidated")).toBeTruthy();
     expect(screen.queryByTestId("development-actions")).toBeNull();
+    const applyAction = within(projectedActions).getByTestId("execution-action-apply_office_result");
+    expect(within(applyAction).getByText(/failed, pending, or unknown items/i)).toBeTruthy();
+    expect(within(applyAction).getByText(/only partially rolled back/i)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Approve and apply office result" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -2416,7 +2463,16 @@ describe("work item summary presentation", () => {
     expect(within(dialog).getByText(/No remote branch will be pushed or merged/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply locally" }));
 
-    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_1", "local_merge", 2));
+    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith(
+      "lwi_1",
+      "local_merge",
+      2,
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining("work-item:lwi_1:apply_local_changes:2"),
+        expectedWorkItemRevision: 2,
+        expectedTargetStatus: "done",
+      }),
+    ));
     expect(mocks.transitionWorkItem).not.toHaveBeenCalled();
     expect(await screen.findByText("This work is complete")).toBeTruthy();
     const receipt = screen.getByLabelText("Local delivery receipt");

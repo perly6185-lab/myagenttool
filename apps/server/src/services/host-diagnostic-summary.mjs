@@ -38,6 +38,10 @@ function capacitySummary(kind, usedPercent, available = null) {
 export function buildHostDiagnosticSummary(action, output) {
   const lines = linesOf(output);
   if (action === "docker_status" && !lines.length) return result("info", "no_running_containers", "information_only", "review_if_unexpected", [fact("running_container_count", 0)]);
+  if (action === "login_sessions" && !lines.length) return result("info", "login_sessions_none", "interactive_sessions_only", "review_login_audit", [fact("login_session_count", 0), fact("login_user_count", 0)]);
+  if (action === "ssh_login_audit" && (!lines.length || lines.every((line) => /^-- No entries --$/i.test(line)))) {
+    return result("unknown", "ssh_login_audit_no_visible_records", "audit_visibility_limited", "check_login_audit_access", [fact("ssh_login_audit_event_count", 0)]);
+  }
   if (!lines.length) return unknown("diagnostic_result_empty");
 
   if (action === "disk_usage") {
@@ -72,6 +76,52 @@ export function buildHostDiagnosticSummary(action, output) {
   if (action === "uptime") {
     const loads = lines.join(" ").match(/load averages?:\s*([0-9.,]+(?:\s*,\s*[0-9.,]+){0,2})/i)?.[1];
     return result("info", "uptime_information_ready", "information_only", "review_if_unexpected", loads ? [fact("load_average", loads)] : []);
+  }
+
+  if (action === "login_sessions") {
+    const users = new Set(lines.map((line) => line.split(/\s+/, 1)[0]).filter(Boolean));
+    return result("info", "login_sessions_found", "information_only", "review_login_sessions", [fact("login_session_count", lines.length), fact("login_user_count", users.size)]);
+  }
+
+  if (action === "ssh_login_audit") {
+    let successful = 0;
+    let failed = 0;
+    let invalidUser = 0;
+    const preauthSessions = new Set();
+    const auditEvents = new Set();
+    for (const line of lines) {
+      const processId = line.match(/\bsshd(?:-session)?\[(\d+)\]/i)?.[1];
+      const eventKey = processId ? `pid:${processId}` : `line:${line}`;
+      let recognized = false;
+      if (/\bAccepted\s+(?:password|publickey|keyboard-interactive|gssapi-with-mic)\b/i.test(line)) {
+        successful += 1;
+        recognized = true;
+      } else if (/\bFailed\s+(?:password|publickey|keyboard-interactive)\b|authentication failure|maximum authentication attempts exceeded|PAM:\s+Authentication failure/i.test(line)) {
+        failed += 1;
+        recognized = true;
+      } else if (/\bInvalid user\b/i.test(line)) {
+        failed += 1;
+        recognized = true;
+      }
+      if (/\bInvalid user\b/i.test(line)) invalidUser += 1;
+      if (/\[preauth\]/i.test(line)) {
+        preauthSessions.add(eventKey);
+        recognized = true;
+      }
+      if (recognized) auditEvents.add(eventKey);
+    }
+    const preauth = preauthSessions.size;
+    const eventCount = auditEvents.size;
+    const facts = [
+      fact("ssh_login_audit_event_count", eventCount),
+      fact("ssh_login_audit_success_count", successful, successful ? "info" : "healthy"),
+      fact("ssh_login_audit_failure_count", failed, failed ? "warning" : "healthy"),
+      fact("ssh_login_audit_invalid_user_count", invalidUser, invalidUser ? "warning" : "healthy"),
+      fact("ssh_login_audit_preauth_count", preauth, preauth ? "info" : "healthy"),
+    ];
+    if (failed) return result("warning", "ssh_login_audit_failures_found", "login_attempts_need_review", "review_login_audit_evidence", facts);
+    if (successful) return result("info", "ssh_login_audit_activity_found", "login_activity_recorded", "review_login_audit_evidence", facts);
+    return result("info", "ssh_login_audit_no_auth_events", "audit_records_read", "review_if_unexpected", facts);
   }
 
   if (action === "processes") {

@@ -192,6 +192,9 @@ export function createServerState({ defaultProjectPath, now }) {
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
     autoRuns: [],
+    // Long-term exactly-once facts for task execution actions. Recent user-facing
+    // receipts stay bounded on each Auto-run; these records are not a UI feed.
+    executionActionIdempotencyRecords: [],
     // O5.2 follow-up: the last-emitted set of below-target SLO keys, so the
     // breach→alert sweep only fires when the breach set changes (not every tick).
     autoRunSloAlert: null,
