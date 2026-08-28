@@ -17,7 +17,8 @@ const PLANS: Record<HostDiagnosticAction, HostDiagnosticPlan> = {
   memory_usage: { action: "memory_usage", title: "检查内存使用", titleEn: "Check memory use", command: "free -h", explanation: "只读取内存使用情况，不结束程序或修改系统。", explanationEn: "Reads memory use only. It does not stop apps or change the system.", check: "可用内存和内存压力", checkEn: "available memory and memory pressure" },
   system_info: { action: "system_info", title: "检查系统信息", titleEn: "Check system information", command: "uname -a", explanation: "只读取系统标识，不安装或配置软件。", explanationEn: "Reads system identity only. It does not install or configure software.", check: "操作系统和内核信息", checkEn: "operating-system and kernel information" },
   uptime: { action: "uptime", title: "检查运行状态", titleEn: "Check running status", command: "uptime", explanation: "只读取在线时长和负载，不修改系统。", explanationEn: "Reads uptime and load only. It does not change the system.", check: "在线时长和当前负载", checkEn: "uptime and current load" },
-  login_sessions: { action: "login_sessions", title: "检查登录情况", titleEn: "Check sign-in sessions", command: "who", explanation: "只读取当前登录会话，不登录其他账号、不结束会话。用户名和来源地址只在本次技术证据中显示，不写入诊断记录。", explanationEn: "Reads current sign-in sessions only. It does not sign in as another user or end sessions. User names and source addresses appear only in this session's technical evidence and are not written to diagnostic records.", check: "当前登录会话数和登录用户数", checkEn: "current sign-in session and user counts" },
+  login_sessions: { action: "login_sessions", title: "检查当前交互式登录", titleEn: "Check interactive sign-in sessions", command: "who", explanation: "只读取系统登记的当前交互式会话；MyAgentTool 的短时命令连接通常不会显示在这里。用户名和来源地址只在本次技术证据中显示。", explanationEn: "Reads interactive sessions registered by the system. MyAgentTool's short command connections normally do not appear here. User names and source addresses remain session-only.", check: "系统登记的交互式登录会话", checkEn: "interactive sign-in sessions registered by the system" },
+  ssh_login_audit: { action: "ssh_login_audit", title: "检查登录审计", titleEn: "Check SSH sign-in audit", command: "journalctl --no-pager --quiet --since '-24 hours' -u ssh.service -u sshd.service -n 100 -o short-iso", explanation: "只读取最近 24 小时、最多 100 条 SSH 服务日志，不修改或清理日志。用户名和来源地址只在本次技术证据中显示，诊断记录仅保留事件数量。", explanationEn: "Reads up to 100 SSH service log entries from the last 24 hours without changing or clearing logs. User names and source addresses remain session-only; stored diagnostic records contain counts only.", check: "成功、失败、无效账号及认证前异常会话数量", checkEn: "counts of successful, failed, invalid-account, and pre-authentication connection events" },
   failed_services: { action: "failed_services", title: "检查失败服务", titleEn: "Check failed services", command: "systemctl --failed --no-pager", explanation: "只读取失败服务数量，不重启或修复服务。", explanationEn: "Reads failed-service status only. It does not restart or repair services.", check: "是否存在失败的系统服务", checkEn: "whether any system services have failed" },
   processes: { action: "processes", title: "检查程序占用", titleEn: "Check resource-heavy apps", command: "ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -n 15", explanation: "只读取高占用程序，不结束或修改进程。", explanationEn: "Reads high-usage processes only. It does not stop or change them.", check: "当前高占用程序概况", checkEn: "a summary of high-usage processes" },
   listening_ports: { action: "listening_ports", title: "检查网络服务", titleEn: "Check network services", command: "ss -lntup", explanation: "只读取监听状态，不修改防火墙或网络配置。", explanationEn: "Reads listening services only. It does not change firewall or network settings.", check: "当前提供网络连接的服务数量", checkEn: "how many services are accepting network connections" },
@@ -40,7 +41,8 @@ export function suggestHostDiagnostic(input: string): HostDiagnosticPlan | null 
   if (/(?:&&|\|\||[;`$<>])/.test(value)) return null;
   if (/磁盘|硬盘|空间|容量|disk|storage/.test(value)) return PLANS.disk_usage;
   if (/内存|memory|ram|交换/.test(value)) return PLANS.memory_usage;
-  if (/登录|登陆|谁在线|who\s+is\s+(?:logged[- ]?in|online)|(?:login|sign-in|signed-in|logged-in|ssh)\s+(?:status|session|sessions|user|users)|active\s+(?:login|ssh)\s+sessions?/.test(value)) return PLANS.login_sessions;
+  if (/(?:登录|登陆).*(?:审计|日志|记录|历史|最近|情况|信息|异常|失败|成功|尝试)|(?:审计|日志|记录|历史|最近).*(?:登录|登陆)|ssh\s+(?:login|authentication|auth)\s+(?:audit|log|logs|history)|(?:recent|failed|successful)\s+ssh\s+(?:login|authentication)\s+(?:attempts?|events?)/.test(value)) return PLANS.ssh_login_audit;
+  if (/谁在线|当前.*(?:登录|登陆)|(?:登录|登陆).*(?:会话|用户)|who\s+is\s+(?:logged[- ]?in|online)|(?:login|sign-in|signed-in|logged-in|ssh)\s+(?:session|sessions|user|users)|active\s+(?:login|ssh)\s+sessions?/.test(value)) return PLANS.login_sessions;
   if (/日志|事件|log|journal/.test(value)) return PLANS.recent_logs;
   if (/网络|网卡|地址|network|interface/.test(value)) return PLANS.network_info;
   if (/系统|内核|版本|system|kernel|os/.test(value)) return PLANS.system_info;
@@ -62,7 +64,7 @@ export const HOST_DIAGNOSTIC_QUICK_ACTIONS = [
   PLANS.memory_usage,
   PLANS.system_info,
   PLANS.uptime,
-  PLANS.login_sessions,
+  PLANS.ssh_login_audit,
   PLANS.processes,
   PLANS.listening_ports,
   PLANS.docker_status,
@@ -91,8 +93,12 @@ const FINDINGS: Record<string, [string, string]> = {
   service_not_running: ["服务当前没有运行", "The service is not running"],
   service_state_unknown: ["无法确认服务状态", "The service state could not be confirmed"],
   uptime_information_ready: ["已读取设备运行状态", "Device running status is available"],
-  login_sessions_none: ["没有发现活动登录会话", "No active sign-in sessions were found"],
-  login_sessions_found: ["设备当前有活动登录会话", "The device has active sign-in sessions"],
+  login_sessions_none: ["未发现系统登记的交互式登录会话", "No system-registered interactive sign-in sessions were found"],
+  login_sessions_found: ["系统登记了交互式登录会话", "The system has registered interactive sign-in sessions"],
+  ssh_login_audit_no_visible_records: ["没有读取到可见的 SSH 登录审计记录", "No visible SSH sign-in audit records were available"],
+  ssh_login_audit_failures_found: ["登录审计中有失败尝试", "Failed sign-in attempts appear in the SSH audit"],
+  ssh_login_audit_activity_found: ["登录审计中有成功记录", "Successful sign-ins appear in the SSH audit"],
+  ssh_login_audit_no_auth_events: ["SSH 服务日志中没有识别到登录事件", "No sign-in events were recognized in the SSH service logs"],
   process_activity_ready: ["已读取程序占用概况", "Resource-use information is available"],
   listening_ports_ready: ["已读取网络服务概况", "Network-service information is available"],
   containers_running: ["设备上有容器正在运行", "Containers are running on the device"],
@@ -110,6 +116,11 @@ const IMPACTS: Record<string, [string, string]> = {
   performance_may_be_affected: ["设备可能变慢，长时间任务也可能更容易超时。", "The device may be slow and long-running tasks may time out more easily."],
   service_may_be_unavailable: ["依赖这个服务的功能可能暂时不可用。", "Features that depend on this service may be unavailable."],
   information_only: ["这是只读信息，不能仅凭这一项判断设备是否健康。", "This is read-only information and does not prove the device is healthy by itself."],
+  interactive_sessions_only: ["这里只反映系统登记的交互式会话，不代表没有 SSH 命令连接，也不是历史登录审计。", "This covers only system-registered interactive sessions. It does not prove there are no SSH command connections and is not a historical sign-in audit."],
+  audit_visibility_limited: ["可能确实没有记录，也可能当前登录账号无权读取系统审计日志，不能据此判断没有登录行为。", "There may be no records, or the current account may lack access to system audit logs. This does not prove that no sign-ins occurred."],
+  login_attempts_need_review: ["失败尝试不等于账号已被入侵，但需要结合时间、账号和来源地址核对。", "Failed attempts do not prove an account was compromised, but their time, account, and source address should be reviewed."],
+  login_activity_recorded: ["审计日志记录了成功登录；是否符合预期需要由设备所有者核对。", "The audit records successful sign-ins. The device owner should verify whether they were expected."],
+  audit_records_read: ["读取到了 SSH 服务日志，但没有识别到成功或失败登录事件。", "SSH service logs were readable, but no successful or failed sign-in events were recognized."],
   result_unknown: ["本次检查没有修改设备，但目前无法确认相关功能是否正常。", "The check did not change the device, but the related function cannot currently be confirmed."],
 };
 
@@ -121,6 +132,9 @@ const NEXT_ACTIONS: Record<string, [string, string]> = {
   inspect_service_setup: ["检查服务配置和最近事件，确认原因后再决定是否启动。", "Check the service setup and recent events before deciding whether to start it."],
   review_process_activity: ["如果设备仍然很慢，请展开技术证据确认高占用程序。", "If the device is still slow, open technical evidence to review high-usage apps."],
   review_login_sessions: ["如有不认识的会话，请展开技术证据核对，并联系设备管理员处理；助手不会结束会话。", "If a session is unfamiliar, review the technical evidence and contact the device administrator. The assistant will not end sessions."],
+  review_login_audit: ["如需判断最近谁登录过，请改用“检查登录审计”。", "Use “Check SSH sign-in audit” to review recent sign-in activity."],
+  check_login_audit_access: ["请让设备管理员确认当前账号能读取 SSH 服务日志，再重新检查。", "Ask the device administrator to confirm that this account can read SSH service logs, then retry."],
+  review_login_audit_evidence: ["展开技术证据核对时间、账号和来源地址；助手不会封禁账号或修改 SSH。", "Open technical evidence to review times, accounts, and source addresses. The assistant will not block accounts or change SSH."],
   review_listening_ports: ["与预期服务清单核对；不要仅凭端口数量修改防火墙。", "Compare this with the expected service list. Do not change the firewall based on the count alone."],
   review_recent_events: ["如问题仍在发生，请展开技术证据查看脱敏事件。", "If the problem continues, open technical evidence to review redacted events."],
   review_if_unexpected: ["如果结果与你的预期不符，请查看技术证据或联系设备管理员。", "If this is unexpected, review technical evidence or contact the device administrator."],
@@ -137,6 +151,11 @@ const FACTS: Record<string, [string, string]> = {
   load_average: ["系统负载", "System load"],
   login_session_count: ["登录会话", "Sign-in sessions"],
   login_user_count: ["登录用户", "Signed-in users"],
+  ssh_login_audit_event_count: ["识别到的登录事件", "Recognized sign-in events"],
+  ssh_login_audit_success_count: ["成功登录", "Successful sign-ins"],
+  ssh_login_audit_failure_count: ["失败尝试", "Failed attempts"],
+  ssh_login_audit_invalid_user_count: ["无效账号尝试", "Invalid-account attempts"],
+  ssh_login_audit_preauth_count: ["认证前异常会话", "Pre-authentication connection events"],
   process_count: ["读取的程序数", "Processes inspected"],
   listening_entry_count: ["网络监听项", "Listening entries"],
   running_container_count: ["运行中容器", "Running containers"],

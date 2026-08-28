@@ -227,7 +227,7 @@ function HostAssistant({ host, zh, professional, onRepairCredential }: { host: S
   const planMutation = useMutation({
     mutationFn: () => hostApi.planDiagnostic(host.id, input.trim()),
     onSuccess: (result) => { choose({ ...hostDiagnosticPlan(result.plan.action, result.plan.parameters), command: result.plan.command, parameters: result.plan.parameters }); },
-    onError: () => { setPlan(null); setResult(null); setMessage(zh ? "还不能判断你想检查什么。请换一种说法，例如“检查登录情况”，或直接选择下面的一项只读检查。" : "I could not determine what you want to check. Rephrase it, for example “check sign-in sessions”, or choose one of the read-only checks below."); },
+    onError: () => { setPlan(null); setResult(null); setMessage(zh ? "还不能判断你想检查什么。请换一种说法，例如“检查登录审计”，或直接选择下面的一项只读检查。" : "I could not determine what you want to check. Rephrase it, for example “check SSH sign-in audit”, or choose one of the read-only checks below."); },
   });
   const mutation = useMutation({
     mutationFn: (next: NonNullable<typeof plan>) => next.parameters ? hostApi.diagnose(host.id, next.action, next.parameters) : hostApi.diagnose(host.id, next.action),
