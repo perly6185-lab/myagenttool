@@ -196,6 +196,13 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
   });
   assert.equal(completed.status, 200);
   assert.ok(completed.body.workItem.completedAt);
+  const completionMetrics = await call("/api/work-items/completion-metrics?projectId=prj_a");
+  assert.equal(completionMetrics.status, 200);
+  assert.equal(completionMetrics.body.scope.projectId, "prj_a");
+  assert.equal(completionMetrics.body.metrics.completion.completed >= 1, true);
+  assert.equal(completionMetrics.body.metrics.completion.completionRate, 1);
+  assert.equal(completionMetrics.body.metrics.recovery.successRate, null, "no recovery sample is not reported as failure");
+  assert.equal((await call("/api/work-items/completion-metrics?projectId=prj_b")).status, 404);
   const reopened = await call(`/api/work-items/${created.body.workItem.id}`, {
     method: "PATCH",
     body: { expectedRevision: 3, status: "ready" },
@@ -2314,4 +2321,18 @@ test("local ledger changes invalidate task bindings and require a managed refres
   });
   assert.equal(unmanaged.status, 409);
   assert.equal(unmanaged.body.error, "work_item_record_bindings_require_managed_update");
+
+  const resumed = await call(`/api/work-items/${workItemId}/auto-runs`, {
+    method: "POST",
+    body: { timezoneOffset: 0 },
+  });
+  assert.equal(resumed.status, 202, JSON.stringify(resumed.body));
+  assert.equal(resumed.body.autoRun.localIssueId, workItemId);
+  const duplicateResume = await call(`/api/work-items/${workItemId}/auto-runs`, {
+    method: "POST",
+    body: { timezoneOffset: 0 },
+  });
+  assert.equal(duplicateResume.status, 409);
+  assert.equal(runtimeState.autoRuns.filter((run) => run.localIssueId === workItemId).length, 1,
+    "resuming after a material refresh starts exactly one execution");
 });

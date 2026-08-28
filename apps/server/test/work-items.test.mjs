@@ -3716,13 +3716,57 @@ test("detail reconciles the frozen plan with material, result, delivery, and ver
     completedAt: "2026-07-24T00:02:00.000Z",
   }];
 
-  const planActual = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability.planActual;
+  const observability = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability;
+  const planActual = observability.planActual;
 
   assert.equal(planActual.status, "matched");
   assert.equal(planActual.planned.method.name, "客户更新");
   assert.equal(planActual.actual.materializedCount, 1);
   assert.deepEqual(planActual.actual.resultFiles, ["客户台账.xlsx"]);
   assert.equal(planActual.checks.every((check) => check.status === "matched"), true);
+  assert.equal(observability.completionAssessment.status, "ready_to_complete");
+  assert.equal(observability.completionAssessment.evidenceComplete, true);
+
+  stored.status = "done";
+  stored.state = "closed";
+  const completed = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability.completionAssessment;
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.falseCompletion, false);
+});
+
+test("completion quality metrics use task truth and durable action receipts without counting normal sign-off", () => {
+  const { service, state } = harness();
+  const completed = service.createWorkItem({ projectId: "prj_a", title: "Verified manual result" }, ACTOR_A).body.workItem;
+  const waiting = service.createWorkItem({ projectId: "prj_a", title: "Needs an exception decision" }, ACTOR_A).body.workItem;
+  const completedRow = state.workItems.find((item) => item.id === completed.id);
+  completedRow.status = "done";
+  completedRow.state = "closed";
+  const waitingRow = state.workItems.find((item) => item.id === waiting.id);
+  waitingRow.status = "in_progress";
+  waitingRow.waitingOn = "me";
+  waitingRow.executionBindings = [{ kind: "auto_run", targetId: "aur_metrics", createdAt: "2026-07-24T00:00:00.000Z" }];
+  state.autoRuns = [{
+    id: "aur_metrics", projectId: "prj_a", teamId: "team_a", status: "running",
+    updatedAt: "2026-07-24T00:00:00.000Z",
+    executionActionReceipts: [{
+      id: "ear_metrics", status: "succeeded", externalActionAttemptCount: 1,
+      deliveryCheckpoint: { operationId: "wdo_metrics" },
+      deliveryRecovery: {
+        requiredAt: "2026-07-24T00:00:00.000Z",
+        attempts: 1,
+        recoveredAt: "2026-07-24T00:01:00.000Z",
+      },
+    }],
+  }];
+
+  const result = service.getCompletionMetrics({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.scope.trackedWorkItems, 2);
+  assert.equal(result.body.metrics.completion.completionRate, 1);
+  assert.equal(result.body.metrics.recovery.successRate, 1);
+  assert.equal(result.body.metrics.humanIntervention.count, 1);
+  assert.equal(result.body.metrics.externalActions.duplicateCount, 0);
+  assert.equal(service.getCompletionMetrics({ projectId: "prj_b" }, ACTOR_A).status, 404);
 });
 
 test("plan/actual corrections are digest-bound, replay-safe, and do not rewrite task history", () => {

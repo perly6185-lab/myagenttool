@@ -997,11 +997,52 @@ export type WorkItemPlanActual = {
   } | null;
   digest: string;
 };
+export type WorkItemCompletionAssessment = {
+  schemaVersion: 1;
+  status: "pending" | "ready_to_complete" | "completed" | "needs_attention" | "unverified" | "stopped";
+  declaredComplete: boolean;
+  evidenceComplete: boolean;
+  falseCompletion: boolean;
+  requiresUserAction: boolean;
+  humanInterventionRequired: boolean;
+  reasonCodes: string[];
+  stages: Record<string, { status: "matched" | "pending" | "unknown" | "mismatch"; reasonCodes: string[] }>;
+};
+export type WorkItemMetricCheck = {
+  status: "passed" | "attention" | "insufficient_data";
+  target: number;
+};
+export type WorkItemCompletionQualityMetrics = {
+  generatedAt: string;
+  scope: { projectId: string | null; trackedWorkItems: number; trackedAutoRuns: number };
+  metrics: {
+    schemaVersion: 1;
+    completion: {
+      tracked: number; settled: number; completed: number; falseCompletions: number;
+      requiringUserAction: number; completionRate: number | null; falseCompletionRate: number | null;
+      check: WorkItemMetricCheck;
+    };
+    recovery: {
+      required: number; succeeded: number; pending: number; successRate: number | null;
+      check: WorkItemMetricCheck;
+    };
+    humanIntervention: { count: number; rate: number | null; check: WorkItemMetricCheck };
+    externalActions: {
+      attempts: number; duplicateCount: number; unresolvedCount: number; check: WorkItemMetricCheck;
+    };
+    acceptance: {
+      status: "passed" | "attention" | "insufficient_data";
+      checks: Record<string, WorkItemMetricCheck>;
+    };
+    definitions: Record<string, string>;
+  };
+};
 export type LocalWorkItemObservability = {
   executionChainId?: string;
   nextAction: "answer_ai" | "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
   executionReview?: WorkItemExecutionReview | null;
   planActual?: WorkItemPlanActual | null;
+  completionAssessment?: WorkItemCompletionAssessment | null;
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
   outcome?: {
