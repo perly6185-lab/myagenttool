@@ -49,6 +49,7 @@ export function createWorkItemAutoSchedulerService({
   beginExecution = null,
   abortExecution = null,
   recordExecutionBinding = null,
+  recordExecutionStartOutcome = null,
   reserveAutoRun = null,
   enqueueAutoRunUnderstanding = null,
   failAutoRunUnderstanding = null,
@@ -214,6 +215,9 @@ export function createWorkItemAutoSchedulerService({
     const detail = getWorkItem({ workItemId: candidate.id }, actor);
     if (!detail.ok) return { started: false, reason: detail.body?.error ?? "work_item_not_found" };
     const item = detail.body.workItem;
+    if (item.executionStartReceipt?.status === "cancelled" || item.executionPolicy === "paused") {
+      return { started: false, reason: "execution_cancelled" };
+    }
     const capabilityReadiness = taskCapabilityReadiness(state, item.taskKind);
     if (!capabilityReadiness.ready) {
       return {
@@ -405,6 +409,15 @@ export function createWorkItemAutoSchedulerService({
           selected += 1;
           const outcome = await startCandidate(candidate, decision);
           starts.push(outcome);
+          if (!outcome.started && typeof recordExecutionStartOutcome === "function") {
+            const queued = outcome.reason === "waiting_capacity";
+            recordExecutionStartOutcome({
+              workItemId,
+              status: queued ? "queued" : "blocked",
+              reasonCode: outcome.reason ?? "execution_start_failed",
+              reasonDetail: outcome.reason ?? null,
+            }, actorFor(candidate));
+          }
           if (outcome.started || ["waiting_capacity", "scheduler_dependencies_unavailable"].includes(outcome.reason)) break;
         }
       }

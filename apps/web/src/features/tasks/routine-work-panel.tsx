@@ -422,7 +422,13 @@ export function RoutineWorkPanel({
                   onClick={() => governedExecutorKinds.has(step.kind)
                     ? onExecute(step.key)
                     : onComplete(step.key)}>
-                  {governedExecutorKinds.has(step.kind) ? text.executeStep : text.complete}
+                  {step.kind === "retrieve"
+                    ? text.retrieveStep
+                    : step.kind === "generate"
+                      ? text.prepareResult
+                      : step.kind === "create_issue"
+                        ? text.createFollowUp
+                        : text.complete}
                 </Button>
               );
             })() : null}

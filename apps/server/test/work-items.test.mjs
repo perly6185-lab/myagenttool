@@ -91,6 +91,119 @@ function harness({
   return { state, events, alerts, service };
 }
 
+test("work item detail exposes one task context summary over existing Channel and material records", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "整理供应商报价" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((item) => item.id === created.id);
+  stored.channelOrigin = { channelId: "chn_quote", conversationId: "conv_quote", threadId: "cth_quote", messageId: "evt_quote" };
+  stored.inputAssets = [{
+    id: "asset_quote",
+    originalName: "报价单.xlsx",
+    hash: "sha256:quote",
+    readiness: { state: "ready", reason: "channel_attachment_ingested" },
+  }];
+  stored.channelTaskContract = { dataSources: [{ kind: "channel_attachment", id: "asset_quote" }] };
+  state.channels = [{ id: "chn_quote", ownerTeamId: "team_a", provider: "wechat_ilink", name: "采购协作" }];
+  state.channelTaskThreads = [{
+    id: "cth_quote", workItemId: created.id, channelId: "chn_quote", conversationId: "conv_quote", sourceEventIds: ["evt_quote"],
+  }];
+
+  const detail = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+
+  assert.equal(detail.taskContextSummary.origin.kind, "channel");
+  assert.equal(detail.taskContextSummary.origin.label, "采购协作");
+  assert.equal(detail.taskContextSummary.method.kind, "custom");
+  assert.deepEqual(detail.taskContextSummary.materials.map((material) => [material.title, material.source, material.role]), [
+    ["报价单.xlsx", "channel_attachment", "required_input"],
+  ]);
+  assert.equal(detail.taskContextSummary.delivery.destination, "channel");
+});
+
+test("task context correction updates canonical material roles and result destination before execution", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "整理供应商报价" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((item) => item.id === created.id);
+  stored.channelOrigin = { channelId: "chn_quote", conversationId: "conv_quote", threadId: "cth_quote" };
+  stored.localContentRefs = [{ id: "wcr_rules", contentId: "lc_rules", title: "采购规则", purpose: "reference" }];
+  stored.taskResourceRefs = [{
+    id: "wrr_ledger",
+    resourceId: "res_ledger",
+    title: "供应商台账",
+    purpose: "query_source",
+    locality: "local",
+    capabilities: ["read", "query", "propose_change", "commit_change"],
+    allowedPurposes: ["reference", "query_source", "change_target"],
+  }];
+  state.channels = [{ id: "chn_quote", ownerTeamId: "team_a", name: "采购协作" }];
+
+  const corrected = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: stored.revision,
+    deliveryDestination: "task",
+    materialRoles: [
+      { id: "wcr_rules", role: "required_input" },
+      { id: "wrr_ledger", role: "change_target" },
+    ],
+  }, ACTOR_A);
+
+  assert.equal(corrected.status, 200);
+  assert.equal(stored.localContentRefs[0].purpose, "required_input");
+  assert.equal(stored.taskResourceRefs[0].purpose, "change_target");
+  assert.equal(stored.dataContextSnapshot.schemaVersion, 2);
+  assert.equal(stored.dataContextSnapshot.deliveryDestination, "task");
+  assert.ok(stored.dataContextSnapshot.sources.find((source) => source.referenceId === "wrr_ledger").allowedOperations.includes("commit_change"));
+  assert.equal(corrected.body.workItem.taskContextSummary.delivery.destination, "task");
+  assert.deepEqual(corrected.body.workItem.taskContextSummary.materials.map((material) => [material.id, material.role]), [
+    ["wcr_rules", "required_input"],
+    ["wrr_ledger", "change_target"],
+  ]);
+  assert.equal(state.workItemActivities[0].action, "task_context_corrected");
+  assert.deepEqual(state.workItemActivities[0].details.materials, [
+    { referenceId: "wcr_rules", from: "reference", to: "required_input" },
+    { referenceId: "wrr_ledger", from: "query_source", to: "change_target" },
+  ]);
+});
+
+test("task context correction rejects unsupported roles and locks after execution starts", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "整理规则" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((item) => item.id === created.id);
+  stored.localContentRefs = [{ id: "wcr_rules", contentId: "lc_rules", title: "规则", purpose: "reference" }];
+
+  const invalid = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: stored.revision,
+    materialRoles: [{ id: "wcr_rules", role: "change_target" }],
+  }, ACTOR_A);
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.body.error, "work_item_context_material_role_not_allowed");
+
+  stored.taskResourceRefs = [{
+    id: "wrr_remote",
+    resourceId: "res_remote",
+    title: "远程只读台账",
+    purpose: "query_source",
+    locality: "remote",
+    allowedPurposes: ["reference", "query_source"],
+  }];
+  const elevated = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: stored.revision,
+    materialRoles: [{ id: "wrr_remote", role: "change_target" }],
+  }, ACTOR_A);
+  assert.equal(elevated.status, 400);
+  assert.equal(elevated.body.error, "work_item_context_material_role_not_allowed");
+
+  stored.executionBindings = [{ kind: "auto_run", targetId: "run_1" }];
+  const locked = service.updateTaskContext({
+    workItemId: created.id,
+    expectedRevision: stored.revision,
+    materialRoles: [{ id: "wcr_rules", role: "required_input" }],
+  }, ACTOR_A);
+  assert.equal(locked.status, 409);
+  assert.equal(locked.body.error, "work_item_context_locked_after_start");
+});
+
 test("desktop intent planning creates discrete typed tasks instead of one giant task", () => {
   const { service, state } = harness();
   const input = {
@@ -2040,6 +2153,40 @@ test("binds a structured work resource to a task without copying connector rows"
   assert.deepEqual(removed.body.workItem.taskResourceRefs, []);
 });
 
+test("keeps a writable local ledger as a governed resource instead of downgrading it to a file reference", async () => {
+  const resourceId = `wres_${"d".repeat(32)}`;
+  const { service, state } = harness({
+    resolveWorkResourceReference: async () => ({
+      status: 200,
+      body: {
+        resourceId,
+        projectId: "prj_a",
+        title: "客户台账.xlsx",
+        resourceKind: "table",
+        businessRole: "contact",
+        locality: "local",
+        sourceLabel: "客户台账.xlsx",
+        currentVersion: "sha256:v1",
+        contentId: `lc_${"e".repeat(32)}`,
+        capabilities: ["read", "query", "propose_change", "commit_change"],
+        allowedPurposes: ["query_source", "change_target", "reference"],
+      },
+    }),
+  });
+  const created = service.createWorkItem({ projectId: "prj_a", title: "更新客户台账" }, ACTOR_A).body.workItem;
+  const added = await service.addResourceReference({
+    workItemId: created.id,
+    resourceId,
+    expectedRevision: created.revision,
+    purpose: "change_target",
+  }, ACTOR_A);
+
+  assert.equal(added.status, 201);
+  assert.equal(added.body.workItem.localContentRefs.length, 0);
+  assert.equal(added.body.workItem.taskResourceRefs[0].purpose, "change_target");
+  assert.ok(state.workItems[0].taskResourceRefs[0].capabilities.includes("commit_change"));
+});
+
 test("AI execution input is exposed as input work instead of an approval for any route", () => {
   const { service, state } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "Clarify scope" }, ACTOR_A).body.workItem;
@@ -2060,6 +2207,36 @@ test("AI execution input is exposed as input work instead of an approval for any
   const detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body;
   assert.equal(detail.observability.nextAction, "answer_ai");
   assert.equal(detail.workItem.executionState, "claimed");
+});
+
+test("detail exposes one unified execution review for a running direct task", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Prepare a workbook summary" }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((candidate) => candidate.id === item.id);
+  stored.executionBindings = [{
+    kind: "application_invocation",
+    targetId: "inv_execution_review",
+    createdAt: "2026-07-24T00:30:00.000Z",
+  }];
+  state.invocations = [{
+    id: "inv_execution_review",
+    status: "running",
+    agentId: "agt_office",
+    startedAt: "2026-07-24T00:30:01.000Z",
+    updatedAt: "2026-07-24T00:30:02.000Z",
+  }];
+  state.agents = [{ id: "agt_office", name: "Office assistant" }];
+
+  const detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body;
+  assert.equal(detail.observability.executionReview.state, "working");
+  assert.equal(detail.observability.executionReview.stage, "working");
+  assert.equal(detail.observability.executionReview.targetId, "inv_execution_review");
+  assert.equal(detail.observability.executionReview.agentName, "Office assistant");
+  assert.equal(detail.observability.executionReview.verification.status, "pending");
+  assert.equal(detail.observability.executionReview.impact.status, "none");
+  assert.equal(detail.observability.executionReview.recommendedAction.kind, "open_details");
+  assert.equal(detail.observability.executionReview.recommendedAction.nextOwner, "ai");
+  assert.deepEqual(detail.observability.executionReview.riskReasons, []);
 });
 
 test("attention leases expire and batch claims fail atomically on contention", () => {
@@ -2780,6 +2957,10 @@ test("execution admission creates the Run before its contract and rejects duplic
   }, ACTOR_A);
   assert.equal(admitted.status, 201);
   assert.equal(admitted.body.claim.claimedBy, "usr_a");
+  assert.equal(admitted.body.operation.contextSnapshot.schemaVersion, 2);
+  assert.equal(admitted.body.operation.contextSnapshot.workItemRevision, item.revision);
+  assert.equal(admitted.body.operation.contextSnapshot.intentContract.status, "ready");
+  assert.equal(admitted.body.operation.contextSnapshot.intentContract.goal, "Run once");
   assert.equal(service.beginExecution({
     workItemId: item.id,
     kind: "auto_run",
@@ -2799,6 +2980,11 @@ test("execution admission creates the Run before its contract and rejects duplic
   }, ACTOR_A);
   assert.equal(recorded.status, 200);
   assert.equal(recorded.body.workItem.executionOperation, null);
+  assert.equal(recorded.body.binding.contextSnapshot.digest, admitted.body.operation.contextSnapshot.digest);
+  admitted.body.operation.contextSnapshot.sources.push({ sourceId: "late_mutation" });
+  admitted.body.operation.contextSnapshot.intentContract.goal = "late mutation";
+  assert.equal(recorded.body.binding.contextSnapshot.sources.length, 0);
+  assert.equal(recorded.body.binding.contextSnapshot.intentContract.goal, "Run once");
   assert.equal(service.beginExecution({
     workItemId: item.id,
     kind: "auto_run",
@@ -3014,6 +3200,298 @@ test("AI handoff can prepare a clarification draft without confirming it", () =>
   assert.equal(prepared.body.workItem.executionContractConfirmedAt, null);
   assert.equal(prepared.body.workItem.executionContractGate.ready, false);
   assert.equal(prepared.body.draft.confirmedAt, null);
+
+  const replayed = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.workItem.revision, prepared.body.workItem.revision);
+});
+
+test("AI handoff confirms and schedules the reviewed contract atomically and idempotently", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Prepare a customer update",
+    body: "Summarize the current delivery status and open risks.",
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A).body.workItem;
+
+  const confirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A);
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.replayed, false);
+  assert.equal(confirmed.body.workItem.executionContractGate.ready, true);
+  assert.equal(confirmed.body.workItem.executionPolicy, "auto");
+  assert.equal(confirmed.body.workItem.waitingOn, "ai");
+  assert.equal(confirmed.body.workItem.status, "ready");
+  assert.equal(confirmed.body.workItem.revision, prepared.revision + 1);
+  assert.equal(confirmed.body.workItem.executionStartReceipt.status, "queued");
+  assert.equal(confirmed.body.workItem.executionStartReceipt.reasonCode, "waiting_for_turn");
+  assert.ok(confirmed.body.workItem.executionStartReceipt.id.startsWith("wsr_"));
+  assert.equal(confirmed.body.workItem.intentContract.status, "ready");
+  assert.equal(confirmed.body.workItem.intentContract.readOnly, true);
+  assert.match(confirmed.body.workItem.intentContract.digest, /^[a-f0-9]{64}$/);
+
+  const replayed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.workItem.revision, confirmed.body.workItem.revision);
+});
+
+test("AI handoff refuses an intent conflict and returns one key clarification", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "只读分析客户台账",
+    acceptanceCriteria: ["给出分析结论"],
+    verificationSop: ["核对分析范围"],
+    channelTaskContract: {
+      source: "channel",
+      operationIntent: {
+        schemaVersion: 1,
+        accessMode: "read_only",
+        action: "query_data",
+        resource: "tabular_files",
+        explicitReadOnly: true,
+      },
+    },
+  }, ACTOR_A).body.workItem;
+  state.workItems[0].taskResourceRefs = [{
+    id: "wrr_ledger", resourceId: "res_ledger", title: "客户台账",
+    purpose: "change_target", locality: "local",
+    capabilities: ["read", "query", "propose_change", "commit_change"],
+  }];
+
+  const conflict = service.confirmExecutionContractAndSchedule({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+  }, ACTOR_A);
+
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.error, "work_item_intent_conflict");
+  assert.equal(conflict.body.clarification.code, "read_only_with_change_targets");
+  assert.equal(conflict.body.intentContract.conflicts.length, 1);
+  assert.equal(state.workItems[0].executionStartRequest, undefined);
+});
+
+test("a queued AI start can be cancelled without discarding its reviewed plan", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Prepare a cancellable start",
+    acceptanceCriteria: ["The result is complete."],
+    verificationSop: ["Review the result."],
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A).body.workItem;
+  const confirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A).body.workItem;
+
+  const cancelled = service.cancelExecutionStart({
+    workItemId: item.id,
+    expectedRevision: confirmed.revision,
+  }, ACTOR_A);
+  assert.equal(cancelled.status, 200);
+  assert.equal(cancelled.body.workItem.executionStartReceipt.status, "cancelled");
+  assert.equal(cancelled.body.workItem.executionPolicy, "paused");
+  assert.equal(cancelled.body.workItem.waitingOn, "none");
+  assert.deepEqual(cancelled.body.workItem.acceptanceCriteria, confirmed.acceptanceCriteria);
+  assert.deepEqual(cancelled.body.workItem.verificationSop, confirmed.verificationSop);
+
+  const replayed = service.cancelExecutionStart({
+    workItemId: item.id,
+    expectedRevision: confirmed.revision,
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.workItem.revision, cancelled.body.workItem.revision);
+});
+
+test("an intent-affecting context change after cancellation requires a fresh confirmation", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "更新客户台账",
+    acceptanceCriteria: ["状态正确"],
+    verificationSop: ["核对变更"],
+  }, ACTOR_A).body.workItem;
+  state.workItems[0].taskResourceRefs = [{
+    id: "wrr_ledger", resourceId: "res_ledger", title: "客户台账",
+    purpose: "query_source", locality: "local",
+    capabilities: ["read", "query", "propose_change", "commit_change"],
+    allowedPurposes: ["reference", "query_source", "change_target"],
+  }];
+  const confirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+  }, ACTOR_A).body.workItem;
+  const cancelled = service.cancelExecutionStart({
+    workItemId: item.id,
+    expectedRevision: confirmed.revision,
+  }, ACTOR_A).body.workItem;
+  const changed = service.updateTaskContext({
+    workItemId: item.id,
+    expectedRevision: cancelled.revision,
+    materialRoles: [{ id: "wrr_ledger", role: "change_target" }],
+  }, ACTOR_A).body.workItem;
+
+  assert.equal(changed.executionContractGate.ready, false);
+  assert.equal(changed.executionContractGate.intentChanged, true);
+  assert.ok(changed.executionContractGate.missing.includes("intent_changed"));
+  assert.equal(changed.intentContract.confirmationStale, true);
+
+  const reconfirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: changed.revision,
+  }, ACTOR_A).body.workItem;
+  assert.equal(reconfirmed.executionContractGate.ready, true);
+  assert.equal(reconfirmed.intentContract.materials.changeTargets.length, 1);
+  assert.notEqual(reconfirmed.intentContract.digest, confirmed.intentContract.digest);
+});
+
+test("AI start outcomes are durable, idempotent, and become started with the execution binding", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Track scheduler handoff",
+    acceptanceCriteria: ["The handoff is visible."],
+    verificationSop: ["Inspect the handoff."],
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A).body.workItem;
+  const confirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A).body.workItem;
+
+  const blocked = service.recordExecutionStartOutcome({
+    workItemId: item.id,
+    status: "blocked",
+    reasonCode: "repository_agent_unavailable",
+    reasonDetail: "repository_agent_unavailable",
+  }, ACTOR_A);
+  assert.equal(blocked.body.workItem.executionStartReceipt.status, "blocked");
+  assert.equal(blocked.body.workItem.executionStartReceipt.reasonCode, "repository_agent_unavailable");
+  const replayed = service.recordExecutionStartOutcome({
+    workItemId: item.id,
+    status: "blocked",
+    reasonCode: "repository_agent_unavailable",
+    reasonDetail: "repository_agent_unavailable",
+  }, ACTOR_A);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.workItem.revision, blocked.body.workItem.revision);
+
+  const rechecked = service.recheckExecutionStart({
+    workItemId: item.id,
+    expectedRevision: blocked.body.workItem.revision,
+  }, ACTOR_A);
+  assert.equal(rechecked.status, 200);
+  assert.equal(rechecked.body.workItem.executionStartReceipt.status, "queued");
+  assert.equal(rechecked.body.workItem.executionStartReceipt.reasonCode, "waiting_for_turn");
+
+  const admission = service.beginExecution({ workItemId: item.id, kind: "auto_run", agentId: "agt_a" }, ACTOR_A);
+  assert.equal(admission.body.workItem.executionStartReceipt.status, "starting");
+  const bound = service.recordExecutionBinding({
+    workItemId: item.id,
+    kind: "auto_run",
+    targetId: "aur_start_receipt",
+    operationId: admission.body.operation.id,
+  }, ACTOR_A);
+  assert.equal(bound.status, 200);
+  assert.equal(bound.body.workItem.executionStartReceipt.status, "blocked", "a missing execution target is surfaced honestly");
+  assert.equal(bound.body.workItem.executionStartReceipt.targetId, "aur_start_receipt");
+  assert.equal(bound.body.workItem.executionStartReceipt.canCancel, false);
+  assert.ok(confirmed.executionStartReceipt.contractDigest);
+});
+
+test("AI start receipt reflects a changed execution policy and recheck resumes it", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Resume a start after settings changed",
+    acceptanceCriteria: ["The handoff resumes."],
+    verificationSop: ["Inspect the start receipt."],
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A).body.workItem;
+  const confirmed = service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A).body.workItem;
+  const disabled = service.updateWorkItem({
+    workItemId: item.id,
+    expectedRevision: confirmed.revision,
+    executionPolicy: "manual",
+  }, ACTOR_A).body.workItem;
+
+  assert.equal(disabled.executionStartReceipt.status, "blocked");
+  assert.equal(disabled.executionStartReceipt.reasonCode, "automatic_execution_disabled");
+
+  const rechecked = service.recheckExecutionStart({
+    workItemId: item.id,
+    expectedRevision: disabled.revision,
+  }, ACTOR_A);
+  assert.equal(rechecked.status, 200);
+  assert.equal(rechecked.body.replayed, false);
+  assert.equal(rechecked.body.workItem.executionPolicy, "auto");
+  assert.equal(rechecked.body.workItem.executionStartReceipt.status, "queued");
+  assert.equal(rechecked.body.workItem.executionStartReceipt.reasonCode, "waiting_for_turn");
+});
+
+test("AI start receipt resolves legacy office invocation binding ids", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Track an office execution",
+    acceptanceCriteria: ["The document is ready."],
+    verificationSop: ["Open the document."],
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A).body.workItem;
+  service.confirmExecutionContractAndSchedule({
+    workItemId: item.id,
+    expectedRevision: prepared.revision,
+  }, ACTOR_A);
+  const stored = state.workItems.find((candidate) => candidate.id === item.id);
+  stored.executionBindings = [{
+    kind: "application_invocation",
+    id: "inv_legacy_office",
+    terminalId: stored.terminalId,
+    createdAt: "2026-08-27T03:00:00.000Z",
+  }];
+  state.invocations = [{ id: "inv_legacy_office", status: "running", agentId: "agt_office" }];
+
+  const detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A);
+  assert.equal(detail.body.workItem.executionStartReceipt.status, "started");
+  assert.equal(detail.body.workItem.executionStartReceipt.executionKind, "application_invocation");
+  assert.equal(detail.body.workItem.executionStartReceipt.targetId, "inv_legacy_office");
+  assert.equal(detail.body.workItem.executionStartReceipt.phase, "running");
 });
 
 test("AI handoff prefers a validated decision-agent execution-plan draft", () => {
@@ -3098,6 +3576,7 @@ test("detail only exposes run history after a failure or rerun", () => {
     completedAt: "2026-07-24T00:02:00.000Z",
     errorCode: "transport_closed",
     summary: "The first attempt failed",
+    verification: null,
     current: true,
   });
 
@@ -3191,6 +3670,172 @@ test("detail exposes the readable delivery report and independent AI review", ()
   assert.equal(running.delivery.aiReview.status, "running", "an acknowledged review is no longer shown as merely queued");
 });
 
+test("detail reconciles the frozen plan with material, result, delivery, and verification receipts", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "更新客户台账" }, ACTOR_A).body.workItem;
+  const intentContract = {
+    goal: "更新客户台账",
+    expectedOutput: "客户台账.xlsx",
+    method: { kind: "template", definitionId: "rtd_customer", familyId: "family_customer", version: 2, name: "客户更新" },
+    action: { accessMode: "write", operation: "update" },
+    delivery: { destination: "task" },
+    verificationSop: ["运行工作簿检查"],
+  };
+  const stored = state.workItems[0];
+  stored.executionIntentContractSnapshot = intentContract;
+  stored.taskContextControl = { deliveryDestination: "task" };
+  stored.executionBindings = [{
+    kind: "auto_run", targetId: "aur_plan_actual", worktreeId: "wtr_plan_actual",
+    createdAt: "2026-07-24T00:01:00.000Z",
+  }];
+  state.autoRuns = [{
+    id: "aur_plan_actual", projectId: "prj_a", status: "done", invocationId: "inv_plan_actual",
+    link: { type: "local_issue", number: item.localNumber },
+    executionContract: {
+      intentContract,
+      dataContextSnapshot: { digest: "context-v1", sourceCount: 1, sources: [{ name: "原始客户台账" }] },
+    },
+    inputMaterialization: {
+      receipts: [{ referenceId: "wrr_customer", status: "ready" }],
+      executionContextSnapshot: { declarationDigest: "context-v1" },
+    },
+    localDelivery: { worktreeId: "wtr_plan_actual", branchName: "customer-update" },
+    deliveryReport: {
+      summary: "已生成更新后的客户台账。",
+      verification: { passed: true, verified: true, command: "pnpm check:workbook", exitCode: 0, summary: "工作簿检查通过。" },
+      changedFiles: ["客户台账.xlsx"],
+      completedAt: "2026-07-24T00:02:00.000Z",
+    },
+    deliveryReview: { status: "completed", verdict: "approved", structured: true, findings: [], summary: "结果符合范围。" },
+    updatedAt: "2026-07-24T00:02:00.000Z",
+  }];
+  state.worktrees = [{ id: "wtr_plan_actual", projectId: "prj_a", branchName: "customer-update" }];
+  state.invocations = [{
+    id: "inv_plan_actual", status: "succeeded",
+    options: { metadata: { autoRunId: "aur_plan_actual" } },
+    completedAt: "2026-07-24T00:02:00.000Z",
+  }];
+
+  const planActual = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability.planActual;
+
+  assert.equal(planActual.status, "matched");
+  assert.equal(planActual.planned.method.name, "客户更新");
+  assert.equal(planActual.actual.materializedCount, 1);
+  assert.deepEqual(planActual.actual.resultFiles, ["客户台账.xlsx"]);
+  assert.equal(planActual.checks.every((check) => check.status === "matched"), true);
+});
+
+test("plan/actual corrections are digest-bound, replay-safe, and do not rewrite task history", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "整理报价单" }, ACTOR_A).body.workItem;
+  const stored = state.workItems[0];
+  const intentContract = {
+    goal: "整理报价单",
+    expectedOutput: "报价单.xlsx",
+    method: { kind: "template", definitionId: "rtd_quote", familyId: "family_quote", version: 2, name: "报价单" },
+    action: { accessMode: "read_only", operation: "read" },
+    delivery: { destination: "task" },
+    verificationSop: ["检查报价单"],
+  };
+  stored.myTemplateBinding = { definitionId: "rtd_quote", familyId: "family_quote", version: 2 };
+  stored.executionIntentContractSnapshot = intentContract;
+  stored.taskContextControl = { deliveryDestination: "task" };
+  stored.executionBindings = [{ kind: "auto_run", targetId: "aur_quote", createdAt: "2026-07-24T00:01:00.000Z" }];
+  state.autoRuns = [{
+    id: "aur_quote", projectId: "prj_a", status: "done", invocationId: "inv_quote",
+    executionContract: { intentContract, dataContextSnapshot: { sourceCount: 0, sources: [] } },
+    deliveryReport: {
+      summary: "已生成报价结果。",
+      verification: { passed: true, verified: true, command: "check quote", exitCode: 0 },
+      changedFiles: ["报价单.csv"],
+      completedAt: "2026-07-24T00:02:00.000Z",
+    },
+    updatedAt: "2026-07-24T00:02:00.000Z",
+  }];
+  state.invocations = [{ id: "inv_quote", status: "succeeded", options: { metadata: { autoRunId: "aur_quote" } } }];
+  const beforeRevision = stored.revision;
+  const planActual = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability.planActual;
+  assert.equal(planActual.status, "attention");
+
+  const recorded = service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: planActual.digest,
+    decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+    note: "以后仍需 Excel 报价单",
+  }, ACTOR_A);
+
+  assert.equal(recorded.status, 201);
+  assert.equal(recorded.body.feedback.decisions[0].preferredValue, "报价单.xlsx");
+  assert.equal(state.workItemPlanActualFeedback[0].template.familyId, "family_quote");
+  assert.equal(stored.revision, beforeRevision, "feedback does not rewrite or revise the completed task");
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability.planActual.feedback.id, recorded.body.feedback.id);
+  const futureDraft = service.suggestWorkItemDraft({
+    projectId: "prj_a", title: "再次整理报价单", body: "沿用之前的报价要求。",
+  }, ACTOR_A).body.draft;
+  assert.deepEqual(futureDraft.preferenceHints, [{
+    kind: "template", preference: "报价单.xlsx", resolution: "keep_plan",
+    requiresConfirmation: false, learnedFrom: "plan_actual_correction",
+  }]);
+  assert.match(futureDraft.risks.join(" "), /结果类型/);
+
+  const replay = service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: planActual.digest,
+    decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+    note: "以后仍需 Excel 报价单",
+  }, ACTOR_A);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(state.workItemPlanActualFeedback.length, 1);
+
+  const listed = service.listPlanActualFeedback({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.count, 1);
+  assert.equal(listed.body.feedback[0].editable, true);
+  assert.equal(listed.body.feedback[0].workItem.localRef, item.localRef);
+  assert.deepEqual(listed.body.feedback[0].decisions[0].options, [
+    { resolution: "keep_plan", preferredValue: "报价单.xlsx" },
+    { resolution: "prefer_actual", preferredValue: "报价单.csv" },
+  ]);
+  assert.equal(service.listPlanActualFeedback({ projectId: "prj_a" }, ACTOR_B).status, 404);
+
+  const updated = service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: planActual.digest,
+    expectedFeedbackRevision: recorded.body.feedback.revision,
+    decisions: [{ code: "output_format_mismatch", resolution: "prefer_actual" }],
+    note: "以后接受 CSV 报价结果",
+  }, ACTOR_A);
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.feedback.revision, 2);
+  assert.equal(updated.body.feedback.decisions[0].preferredValue, "报价单.csv");
+  assert.equal(service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: planActual.digest,
+    expectedFeedbackRevision: 1,
+    decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+  }, ACTOR_A).body.error, "plan_actual_feedback_changed");
+
+  const stale = service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: "a".repeat(64),
+    decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+  }, ACTOR_A);
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.error, "plan_actual_changed");
+  assert.equal(service.recordPlanActualFeedback({
+    workItemId: item.id,
+    expectedPlanActualDigest: planActual.digest,
+    decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+  }, ACTOR_B).status, 404);
+  assert.equal(service.removePlanActualFeedback({ feedbackId: recorded.body.feedback.id }, ACTOR_B).status, 404);
+  const removed = service.removePlanActualFeedback({ feedbackId: recorded.body.feedback.id }, ACTOR_A);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.affectsFutureMatchesOnly, true);
+  assert.equal(service.listPlanActualFeedback({}, ACTOR_A).body.count, 0);
+  assert.equal(stored.revision, beforeRevision, "managing the preference still does not revise task history");
+});
+
 test("detail projects the current Ledger batch instead of a stale channel snapshot", () => {
   const { service, state } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "更新客户台账", taskKind: "business_spreadsheet" }, ACTOR_A).body.workItem;
@@ -3234,6 +3879,22 @@ test("detail projects the current Ledger batch instead of a stale channel snapsh
   assert.equal(evidence.actionPreview.officeDetails.batch.unknownCount, 1);
   assert.equal(evidence.actionPreview.officeDetails.batch.details[1].businessKey, "CUS-002");
   assert.equal(evidence.actionPreview.officeDetails.batch.details[2].state, "unknown");
+
+  state.autoRuns[0].localDelivery.deliveredAt = "2026-07-24T00:04:00.000Z";
+  state.ledgerBatchUpsertPreviews[0] = {
+    ...state.ledgerBatchUpsertPreviews[0],
+    state: "rolled_back",
+    childPreviewIds: ["lup_1", "lup_2"],
+    targetCount: 2,
+    operationCount: 2,
+  };
+  state.ledgerUpsertPreviews = state.ledgerUpsertPreviews.map((preview) => ({ ...preview, state: "rolled_back" }));
+  state.ledgerBatchMutationJournals[0].rollback = { restoredTargets: 2, blockedTargets: 0 };
+  const rolledBack = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability;
+  assert.equal(rolledBack.delivery, null, "an applied office batch is no longer waiting for delivery review");
+  assert.equal(rolledBack.deliveryEvidence.status, "office_batch_rolled_back");
+  assert.equal(rolledBack.executionReview.impact.status, "rolled_back");
+  assert.ok(rolledBack.executionReview.riskReasons.some((reason) => reason.code === "office_batch_rolled_back"));
 });
 
 test("AI issue assistance returns an editable draft without creating work", () => {
@@ -3477,6 +4138,34 @@ test("learned template routing prioritizes the requested result and refuses weak
   assert.deepEqual(matched.decision, { kind: "auto_apply", confidence: "high", reason: "explicit_result_match" });
   assert.equal(matched.selected.definitionId, "rtd_quote");
   assert.match(matched.selected.reasons.join(" "), /期望结果/);
+
+  const correctedPlanMatch = matchPublishedMyTemplate({
+    definitions: [quotation, summary],
+    projectId: "prj_a",
+    intent: "处理客户询价",
+    planActualFeedback: [{
+      intentTerms: ["询价"],
+      template: { familyId: "family_quote" },
+      decisions: [{ correctionTarget: "template", resolution: "keep_plan" }],
+    }],
+  });
+  assert.equal(correctedPlanMatch.state, "matched");
+  assert.equal(correctedPlanMatch.selected.definitionId, "rtd_quote");
+  assert.match(correctedPlanMatch.selected.reasons.join(" "), /参考了你之前对相似任务的纠正/);
+
+  const changedResultRequiresConfirmation = matchPublishedMyTemplate({
+    definitions: [quotation, summary],
+    projectId: "prj_a",
+    intent: "处理客户询价",
+    planActualFeedback: [{
+      intentTerms: ["询价"],
+      template: { familyId: "family_quote" },
+      decisions: [{ correctionTarget: "template", resolution: "prefer_actual" }],
+    }],
+  });
+  assert.equal(changedResultRequiresConfirmation.state, "ambiguous");
+  assert.equal(changedResultRequiresConfirmation.selected, null);
+  assert.equal(changedResultRequiresConfirmation.decision.reason, "learned_preference_conflict");
 
   const deviceChecklist = {
     id: "rtd_device_checklist", familyId: "family_device_checklist", projectId: "prj_a",

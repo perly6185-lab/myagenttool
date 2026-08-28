@@ -493,6 +493,13 @@ export function createChannelDeliveryService({
     const thread = (state.channelTaskThreads ?? []).find((candidate) =>
       (channelContext.threadId && candidate.id === channelContext.threadId)
       || (channelContext.workItemId && candidate.workItemId === channelContext.workItemId));
+    const workItem = (state.workItems ?? []).find((row) =>
+      row.id === (channelContext.workItemId ?? thread?.workItemId));
+    const successful = thread?.status === "succeeded"
+      || (!thread && ["succeeded", "completed"].includes(invocation.status));
+    if (successful && workItem?.taskContextControl?.deliveryDestination === "task") {
+      return { ok: true, suppressed: true, reason: "work_item_result_kept_in_task" };
+    }
     const autoRunId = invocation?.options?.metadata?.autoRunId ?? channelContext.autoRunId ?? thread?.autoRunId ?? null;
     const autoRun = autoRunId ? (state.autoRuns ?? []).find((run) => run.id === autoRunId) ?? null : null;
     const invocationSummary = typeof invocation.result === "string"
@@ -556,7 +563,6 @@ export function createChannelDeliveryService({
       }
     }
     if (thread?.status === "human_takeover") lines.push("请等待人工处理，我会在有进展时通知你。");
-    const workItem = (state.workItems ?? []).find((row) => row.id === channelContext.workItemId);
     const resultAssets = [
       invocation.result?.outputAssets,
       invocation.result?.output?.outputAssets,

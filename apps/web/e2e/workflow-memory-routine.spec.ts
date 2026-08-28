@@ -872,7 +872,7 @@ test("processes a routine Issue through ledger review, quotation approval, and o
   await expect(ledgerDialog.getByText("INQ-004")).toBeVisible();
   await ledgerDialog.getByRole("button", { name: "Approve ledger change" }).click();
 
-  await dailyWork.getByRole("button", { name: "Run this step" }).click();
+  await dailyWork.getByRole("button", { name: "Prepare this result" }).click();
   await dailyWork.getByRole("button", { name: "Review quotation details" }).click();
   const quotationDialog = page.getByRole("dialog", { name: "Confirm quotation details" });
   await quotationDialog.getByLabel("Quotation template").selectOption("template_1");

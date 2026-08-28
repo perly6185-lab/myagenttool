@@ -2617,6 +2617,22 @@ export const api = {
     materialDraftRevision?: number;
   }) =>
     request("POST", "/api/work-items/assist/draft", payload),
+  prepareWorkItemExecutionContract: (id: string, payload: {
+    expectedRevision: number;
+    draftOverride?: {
+      taskUnderstanding?: string;
+      acceptanceCriteria: string[];
+      verificationSop: string[];
+      risks?: string[];
+      evidence?: Record<string, unknown>;
+    };
+  }) => request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-contract/prepare`, payload),
+  confirmWorkItemExecutionContract: (id: string, expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-contract/confirm`, { expectedRevision }),
+  cancelWorkItemExecutionStart: (id: string, expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-start/cancel`, { expectedRevision }),
+  recheckWorkItemExecutionStart: (id: string, expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-start/recheck`, { expectedRevision }),
   previewWorkItemIntentPlan: (payload: {
     projectId: string;
     title: string;
@@ -2698,6 +2714,10 @@ export const api = {
     request("GET", `/api/work-items/my-template-learning${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   removeMyTemplateLearning: (feedbackId: string) =>
     request("DELETE", `/api/work-items/my-template-learning/${encodeURIComponent(feedbackId)}`),
+  listWorkItemPlanActualPreferences: (projectId?: string) =>
+    request("GET", `/api/work-items/plan-actual-preferences${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  removeWorkItemPlanActualPreference: (feedbackId: string) =>
+    request("DELETE", `/api/work-items/plan-actual-preferences/${encodeURIComponent(feedbackId)}`),
   previewMyTemplateDraft: (workItemId: string) =>
     request("GET", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-draft`),
   listMyTemplateDrafts: (projectId?: string) =>
@@ -2733,10 +2753,21 @@ export const api = {
     outcome: "met_expectations" | "wrong_result" | "needs_quality_adjustment";
     note?: string;
   }) => request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/my-template-outcome-feedback`, payload),
+  recordWorkItemPlanActualFeedback: (workItemId: string, payload: {
+    expectedPlanActualDigest: string;
+    expectedFeedbackRevision?: number;
+    decisions: Array<{ code: string; resolution: "keep_plan" | "prefer_actual" }>;
+    note?: string;
+  }) => request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/plan-actual-feedback`, payload),
   resumeMyTemplateGovernanceObservation: (familyId: string, payload: { projectId: string; confirm: true }) =>
     request("POST", `/api/work-items/my-template-governance/${encodeURIComponent(familyId)}/resume-observation`, payload),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
+  updateWorkItemTaskContext: (id: string, payload: {
+    expectedRevision: number;
+    deliveryDestination?: "channel" | "task";
+    materialRoles?: Array<{ id: string; role: "required_input" | "reference" | "query_source" | "change_target" }>;
+  }) => request("PATCH", `/api/work-items/${encodeURIComponent(id)}/task-context`, payload),
   refreshWorkItemRecordBinding: (workItemId: string, bindingId: string, expectedRevision: number) =>
     request(
       "POST",
@@ -2908,13 +2939,17 @@ export const api = {
   // U1: can this project run an auto-run, and what's missing?
   autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
   // Retry a failed/blocked run, or revise a completed local delivery, in its existing worktree.
-  retryAutoRun: (id: string, feedback?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`, {
+  retryAutoRun: (id: string, feedback?: string, action?: { idempotencyKey?: string; expectedWorkItemRevision?: number; expectedTargetStatus?: string }) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`, {
     timezoneOffset: new Date().getTimezoneOffset(),
     ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
+    ...action,
   }),
-  reverifyAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/reverify`, {
+  reverifyAutoRun: (id: string, action?: { idempotencyKey?: string; expectedWorkItemRevision?: number; expectedTargetStatus?: string }) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/reverify`, {
     timezoneOffset: new Date().getTimezoneOffset(),
+    ...action,
   }),
+  reconcileAutoRunExecutionAction: (id: string) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/execution-actions/reconcile`, {}),
   cancelAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/cancel`),
   stopAutoRunDelivery: (id: string, reason?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/stop-delivery`, { reason }),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person
@@ -2927,8 +2962,8 @@ export const api = {
   designApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/design-approval`, { action, feedback }),
   // E3: answer a clarify run's questions (posted back to the issue).
-  answerClarify: (id: string, { answers, selectedAction, repoUrl, repoName }: { answers?: string; selectedAction?: string; repoUrl?: string; repoName?: string }) =>
-    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers, selectedAction, repoUrl, repoName }),
+  answerClarify: (id: string, { answers, selectedAction, repoUrl, repoName, idempotencyKey, expectedWorkItemRevision, expectedTargetStatus }: { answers?: string; selectedAction?: string; repoUrl?: string; repoName?: string; idempotencyKey?: string; expectedWorkItemRevision?: number; expectedTargetStatus?: string }) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers, selectedAction, repoUrl, repoName, idempotencyKey, expectedWorkItemRevision, expectedTargetStatus }),
   // Epic S3: the human decomposition gate — approve spawns the N governed child issues.
   decompositionApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/decomposition-approval`, { action, feedback }),

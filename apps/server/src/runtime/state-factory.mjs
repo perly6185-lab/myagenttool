@@ -296,6 +296,7 @@ export function createServerState({ defaultProjectPath, now }) {
     channelUserPreferences: [],
     myTemplateRoutingFeedback: [],
     myTemplateOutcomeFeedback: [],
+    workItemPlanActualFeedback: [],
     myTemplateGovernanceInterventions: [],
     // A completed ordinary task can seed a new personal template. These rows
     // remain outside routineDefinitions until enough cases are reviewed and

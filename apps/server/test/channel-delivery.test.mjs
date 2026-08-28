@@ -628,6 +628,29 @@ test("notifyInvocationCompleted queues a result message only for channel-origina
   assert.equal(delivery.mediaAssets[0].path, "result.pdf");
 });
 
+test("notifyInvocationCompleted keeps a successful result in the task when the user selected task-only delivery", () => {
+  const harness = makeDeliveryHarness();
+  harness.state.workItems.push({
+    id: "task-local-result",
+    projectId: "prj_media",
+    taskContextControl: { schemaVersion: 1, deliveryDestination: "task" },
+  });
+
+  const result = harness.service.notifyInvocationCompleted({
+    id: "inv_local_result",
+    status: "succeeded",
+    result: { summary: "kept for review" },
+    options: { metadata: { channel: {
+      channelId: harness.channelId,
+      conversationId: harness.conversationId,
+      workItemId: "task-local-result",
+    } } },
+  });
+
+  assert.deepEqual(result, { ok: true, suppressed: true, reason: "work_item_result_kept_in_task" });
+  assert.equal(harness.state.channelDeliveries.length, 0);
+});
+
 test("restart reconciliation re-enqueues a terminal task result when the completion row was missing", () => {
   const harness = makeDeliveryHarness();
   const thread = {

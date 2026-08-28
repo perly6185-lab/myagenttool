@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BrainCircuit, Copy, DraftingCompass, FileAudio, FileImage, FilePlus2, FileSpreadsheet, FileText, FileVideo, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
+import { BrainCircuit, Copy, DraftingCompass, FileAudio, FileImage, FilePlus2, FileSpreadsheet, FileText, FileVideo, FolderOpen, Library, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { Button } from "@/components/ui/button";
@@ -83,6 +83,7 @@ export function DocumentsView() {
   const [selected, setSelected] = useState<ProjectDocumentEntry | null>(null);
   const [worktreeId, setWorktreeId] = useState("");
   const [browseScope, setBrowseScope] = useState<"base" | "worktree">("base");
+  const [technicalScopeOpen, setTechnicalScopeOpen] = useState(false);
   const [pendingSelectionPath, setPendingSelectionPath] = useState<string | null>(null);
   const [pendingSelectionError, setPendingSelectionError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -90,6 +91,7 @@ export function DocumentsView() {
   const [openLocalError, setOpenLocalError] = useState<string | null>(null);
   const setPendingLocalDocumentRegistration = useUiStore((state) => state.setPendingLocalDocumentRegistration);
   const setSection = useUiStore((state) => state.setSection);
+  const ordinaryMode = useUiStore((state) => state.experienceMode) === "ordinary";
   const [templateOpen, setTemplateOpen] = useState(false);
   const [manageOperation, setManageOperation] = useState<"rename" | "move" | "copy" | "delete" | null>(null);
   const [recent, setRecent] = useState<RecentDocument[]>(() => readRecentDocuments());
@@ -220,10 +222,16 @@ export function DocumentsView() {
             <button key={filter.value} type="button" onClick={() => setType(filter.value)} className={cn("px-3 py-1.5", type === filter.value ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground")}>{filter.value === "all" ? t("documents.all") : filter.label}</button>
           ))}
         </div>
-        <Select aria-label={t("documents.source")} className="h-8 w-40" value={browseScope} onChange={(event) => setBrowseScope(event.target.value as "base" | "worktree")}>
-          <option value="base">{t("documents.baseProject")}</option>
-          <option value="worktree" disabled={!worktreeId}>{t("documents.selectedWorktree")}</option>
-        </Select>
+        {!ordinaryMode || technicalScopeOpen || browseScope === "worktree" ? (
+          <Select aria-label={t("documents.source")} className="h-8 w-40" value={browseScope} onChange={(event) => setBrowseScope(event.target.value as "base" | "worktree")}>
+            <option value="base">{t("documents.baseProject")}</option>
+            <option value="worktree" disabled={!worktreeId}>{t("documents.selectedWorktree")}</option>
+          </Select>
+        ) : (
+          <Button size="sm" variant="ghost" onClick={() => setTechnicalScopeOpen(true)}>
+            {i18n.resolvedLanguage?.startsWith("zh") ? "来源与版本" : "Source and version"}
+          </Button>
+        )}
         <Select
           aria-label={importText.source}
           className="h-8 w-36"
@@ -274,6 +282,7 @@ export function DocumentsView() {
         {window.myagenttoolDesktop?.pickLocalOfficeDocument
           ? <Button size="sm" variant="secondary" disabled={!projectId} onClick={() => void openLocalDocument()}><FolderOpen className="mr-1 size-3.5" /> {t("documents.openLocal")}</Button>
           : <DesktopHandoffLink section="documents" action="open-local-document" compact>{i18n.resolvedLanguage?.startsWith("zh") ? "在桌面版打开本地文档" : "Open a local document in desktop"}</DesktopHandoffLink>}
+        <Button size="sm" variant="secondary" onClick={() => setSection("localLibrary")}><Library className="mr-1 size-3.5" /> {i18n.resolvedLanguage?.startsWith("zh") ? "可复用资料" : "Reusable resources"}</Button>
         <Button size="sm" variant="secondary" disabled={!projectId} onClick={() => setSection("workflowMemory")}><BrainCircuit className="mr-1 size-3.5" /> {t("sections.workflowMemory.label")}</Button>
         <Button size="sm" disabled={!projectId} onClick={() => setCreateOpen(true)}><FilePlus2 className="mr-1 size-3.5" /> {t("documents.new")}</Button>
       </header>

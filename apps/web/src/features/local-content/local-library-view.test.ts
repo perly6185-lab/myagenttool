@@ -166,6 +166,17 @@ describe("local library task targeting", () => {
     expect(openTasksFor(content(null), tasks).map((item) => item.id)).toEqual(["open-a", "open-b"]);
   });
 
+  it("distinguishes reusable resources from project files with a direct project-files entry", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
+
+    expect(await screen.findByRole("heading", { name: "My resources" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connected business resources" })).toBeTruthy();
+    await waitFor(() => expect(mocks.listWorkItems).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Open project files" }));
+    expect(mocks.navigate).toHaveBeenCalledWith("documents");
+  });
+
   it("adds a search result to an unfinished task without moving the original", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
@@ -198,7 +209,7 @@ describe("local library task targeting", () => {
     ));
   });
 
-  it("keeps local and remote tables in My files and binds a remote ledger by resource id", async () => {
+  it("keeps local and remote tables in My resources and binds a remote ledger by resource id", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(createElement(QueryClientProvider, { client }, createElement(LocalLibraryView)));
 

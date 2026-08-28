@@ -16,6 +16,7 @@ let server;
 let base;
 let runtimeState;
 let closeRuntimeServices;
+let sweepWorkItemAutoScheduler;
 const root = join(tmpdir(), `myagenttool-work-items-http-${process.pid}`);
 const projectAPath = join(root, "a");
 
@@ -55,6 +56,7 @@ before(async () => {
     persistenceEnabled: false, stateStorePath: join(root, "state", "local-demo-state.json"), stateSchemaVersion: 1, dispatchLeaseMs: 30_000, now,
   });
   const { httpDependencies } = runtimeServices;
+  sweepWorkItemAutoScheduler = httpDependencies.sweepWorkItemAutoScheduler;
   closeRuntimeServices = runtimeServices.closeRuntimeServices;
   server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -552,6 +554,18 @@ test("Auto-run list, summary, and routing slices are team scoped", async () => {
     status: "failed",
     decision: { path: "clarify", via: "agent", confidence: 0.4 },
     routingOverride: { actualPath: "develop", idempotencyKey: "must-not-leak", revision: 1 },
+    executionActionReceipts: [{
+      id: "ear_private_b",
+      kind: "retry_execution",
+      status: "accepted",
+      idempotencyKey: "must-not-leak-either",
+      requestDigest: "private-request-digest",
+    }],
+    executionActionIdempotencyLedger: [{
+      idempotencyKey: "must-not-leak-ledger",
+      requestDigest: "private-ledger-digest",
+      receipt: { id: "ear_private_b" },
+    }],
   });
   runtimeState.deployments.push(
     { id: "dep_a", projectId: "prj_a", autoRunId: "aur_feedback_http", status: "deployed", at: "2026-07-24T00:00:00.000Z" },
@@ -572,6 +586,56 @@ test("Auto-run list, summary, and routing slices are team scoped", async () => {
   assert.equal(teamB.body.deployments.total, 1);
   assert.equal(teamB.body.deployments.failed, 1);
   assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").routingOverride.idempotencyKey, undefined);
+  assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").executionActionReceipts, undefined);
+  assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").executionActionIdempotencyLedger, undefined);
+});
+
+test("execution action reconciliation is tenant scoped and unlocks a proven no-op retry", async () => {
+  runtimeState.autoRuns.push({
+    id: "aur_reconcile_http",
+    projectId: "prj_a",
+    teamId: "team_a",
+    status: "failed",
+    invocationId: "inv_reconcile_source",
+    executionActionReceipts: [{
+      schemaVersion: 1,
+      id: "ear_reconcile_http",
+      kind: "retry_execution",
+      status: "accepted",
+      messageCode: "request_accepted",
+      impact: "none",
+      nextOwner: "ai",
+      requestedAt: "2026-08-27T00:00:00.000Z",
+      updatedAt: "2026-08-27T00:00:00.000Z",
+      completedAt: null,
+      sourceTargetId: "inv_reconcile_source",
+      targetId: null,
+      idempotencyKey: "private-reconcile-key",
+      requestDigest: "private-reconcile-digest",
+    }],
+    executionActionIdempotencyLedger: [{
+      idempotencyKey: "private-reconcile-key",
+      requestDigest: "private-reconcile-digest",
+      receipt: { id: "ear_reconcile_http", status: "accepted" },
+    }],
+  });
+
+  const foreign = await call("/api/auto-runs/aur_reconcile_http/execution-actions/reconcile", {
+    token: "tok_b",
+    method: "POST",
+  });
+  assert.equal(foreign.status, 404);
+
+  const reconciled = await call("/api/auto-runs/aur_reconcile_http/execution-actions/reconcile", { method: "POST" });
+  assert.equal(reconciled.status, 200);
+  assert.equal(reconciled.body.safeToRetry, true);
+  assert.equal(reconciled.body.actionReceipt.status, "safe_to_retry");
+  assert.equal(reconciled.body.actionReceipt.impact, "none");
+  assert.equal(reconciled.body.autoRun.executionActionReceipts, undefined);
+  assert.equal(reconciled.body.autoRun.executionActionIdempotencyLedger, undefined);
+  assert.equal(reconciled.body.actionReceipt.idempotencyKey, undefined);
+  assert.equal(runtimeState.autoRuns.find((run) => run.id === "aur_reconcile_http")
+    .executionActionReceipts[0].status, "safe_to_retry");
 });
 
 test("GitHub issue binding and sync are wired through HTTP", async () => {
@@ -1089,6 +1153,113 @@ test("a local issue without a confirmed execution contract is prepared after han
   assert.ok(detail.body.workItem.executionContractConfirmedAt);
 });
 
+test("the real HTTP confirmation returns one durable start receipt, supports pre-start cancellation, and binds one execution", async (t) => {
+  const project = runtimeState.projects.find((candidate) => candidate.id === "prj_a");
+  const agent = runtimeState.agents.find((candidate) =>
+    candidate.adapter?.type === "cli" && candidate.location?.type === "local_device" && candidate.id !== "agt_demo_cli");
+  assert.ok(project);
+  assert.ok(agent);
+  const previousAgentId = project.defaultAgentId;
+  const previousAgentStatus = agent.status;
+  const previousLifecycle = structuredClone(agent.lifecycle ?? null);
+  const previousHealth = structuredClone(agent.health ?? null);
+  const previousMode = runtimeState.autoRunSettings.workItemAutoSchedulerMode;
+  t.after(() => {
+    project.defaultAgentId = previousAgentId;
+    agent.status = previousAgentStatus;
+    agent.lifecycle = previousLifecycle;
+    agent.health = previousHealth;
+    runtimeState.autoRunSettings.workItemAutoSchedulerMode = previousMode;
+  });
+  project.defaultAgentId = agent.id;
+  agent.status = "available";
+  agent.lifecycle = { ...(agent.lifecycle ?? {}), state: "enabled" };
+  agent.health = { ...(agent.health ?? {}), status: "healthy" };
+  runtimeState.autoRunSettings.workItemAutoSchedulerMode = "off";
+
+  const cancellable = (await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Confirm then cancel before execution",
+      body: "Prove the start receipt survives the HTTP boundary.",
+      status: "ready",
+      priority: "p0",
+      acceptanceCriteria: ["One start receipt is visible."],
+      verificationSop: ["Read the start receipt."],
+    },
+  })).body.workItem;
+  const cancellablePrepared = await call(`/api/work-items/${cancellable.id}/execution-contract/prepare`, {
+    method: "POST", body: { expectedRevision: cancellable.revision },
+  });
+  assert.equal(cancellablePrepared.status, 200, JSON.stringify(cancellablePrepared.body));
+  const cancellableConfirmed = await call(`/api/work-items/${cancellable.id}/execution-contract/confirm`, {
+    method: "POST", body: { expectedRevision: cancellablePrepared.body.workItem.revision },
+  });
+  assert.equal(cancellableConfirmed.status, 200, JSON.stringify(cancellableConfirmed.body));
+  assert.equal(cancellableConfirmed.body.workItem.executionStartReceipt.status, "queued");
+  const cancelled = await call(`/api/work-items/${cancellable.id}/execution-start/cancel`, {
+    method: "POST", body: { expectedRevision: cancellableConfirmed.body.workItem.revision },
+  });
+  assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+  assert.equal(cancelled.body.workItem.executionStartReceipt.status, "cancelled");
+  assert.equal(cancelled.body.workItem.executionBindings?.length ?? 0, 0);
+
+  runtimeState.autoRunSettings.workItemAutoSchedulerMode = "enabled";
+  const runnable = (await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Confirm and bind exactly one execution",
+      body: "Prove the scheduler consumes one confirmed start request.",
+      status: "ready",
+      priority: "p0",
+      acceptanceCriteria: ["Exactly one execution is bound."],
+      verificationSop: ["Count the execution bindings."],
+    },
+  })).body.workItem;
+  const prepared = await call(`/api/work-items/${runnable.id}/execution-contract/prepare`, {
+    method: "POST", body: { expectedRevision: runnable.revision },
+  });
+  const confirmed = await call(`/api/work-items/${runnable.id}/execution-contract/confirm`, {
+    method: "POST", body: { expectedRevision: prepared.body.workItem.revision },
+  });
+  assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+  const requestId = confirmed.body.workItem.executionStartReceipt.id;
+  let started = null;
+  for (let attempt = 0; attempt < 10 && !started; attempt += 1) {
+    await sweepWorkItemAutoScheduler();
+    const detail = await call(`/api/work-items/${runnable.id}`);
+    if (detail.body.workItem.executionStartReceipt.status === "started") started = detail.body.workItem;
+  }
+  assert.ok(started, "the composed scheduler should bind the confirmed request");
+  assert.equal(started.executionStartReceipt.id, requestId);
+  assert.equal(started.executionStartReceipt.targetId, started.executionBindings[0].targetId);
+  assert.equal(started.executionBindings.filter((binding) => ["auto_run", "application_invocation"].includes(binding.kind)).length, 1);
+
+  const replayed = await call(`/api/work-items/${runnable.id}/execution-contract/confirm`, {
+    method: "POST", body: { expectedRevision: prepared.body.workItem.revision },
+  });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  await sweepWorkItemAutoScheduler();
+  const finalDetail = await call(`/api/work-items/${runnable.id}`);
+  assert.equal(finalDetail.body.workItem.executionBindings.filter((binding) =>
+    ["auto_run", "application_invocation"].includes(binding.kind)).length, 1);
+  assert.equal(finalDetail.body.observability.executionReview.targetId, started.executionStartReceipt.targetId);
+  assert.ok(["preparing", "working", "waiting", "verifying", "review_ready"].includes(
+    finalDetail.body.observability.executionReview.state,
+  ));
+  assert.equal(finalDetail.body.observability.executionReview.impact.status, "none");
+  assert.ok(["pending", "running", "passed", "failed", "not_configured", "unavailable"].includes(
+    finalDetail.body.observability.executionReview.verification.status,
+  ));
+  assert.ok(["open_details", "answer_ai", "review_approval", "retry_execution", "fix_with_ai", "rerun_verification", "review_result", "view_result"].includes(
+    finalDetail.body.observability.executionReview.recommendedAction.kind,
+  ));
+  assert.ok(Array.isArray(finalDetail.body.observability.executionReview.riskReasons));
+});
+
 test("local issues can be queued as a durable concurrency-limited Auto-run batch", async () => {
   const first = (await call("/api/work-items", {
     method: "POST",
@@ -1549,6 +1720,105 @@ test("local content search and task references are tenant-scoped through the rea
   assert.equal(resourceAttached.body.reference.resourceId, resource.id);
   assert.equal(Object.hasOwn(resourceAttached.body.reference, "selectedFingerprint"), false);
   assert.equal(resourceAttached.body.workItem.localContentRefs[0].resourceId, resource.id);
+});
+
+test("plan/actual correction is wired through HTTP without rewriting the completed task", async () => {
+  const workItem = {
+    id: "lwi_plan_actual_http", localRef: "LOCAL-PLAN-ACTUAL", localNumber: 9101,
+    ownerTeamId: "team_a", projectId: "prj_a", title: "整理报价单", body: "生成 Excel 报价单。",
+    type: "task", priority: "p2", status: "done", state: "closed", revision: 3,
+    labels: [], assigneeIds: ["usr_a"], acceptanceCriteria: [], verificationSop: [], acceptanceResults: [],
+    verificationRecords: [], inputAssets: [], outputAssets: [], requiredCapabilities: [], externalBindings: [],
+    executionBindings: [{ kind: "auto_run", targetId: "aur_plan_actual_http", createdAt: "2026-08-11T00:01:00.000Z" }],
+    terminalId: runtimeState.device.id, createdBy: "usr_a", lastModifiedBy: "usr_a",
+    createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:02:00.000Z",
+    myTemplateBinding: { definitionId: "rtd_quote_http", familyId: "family_quote_http", version: 1 },
+    executionIntentContractSnapshot: {
+      goal: "整理报价单", expectedOutput: "报价单.xlsx",
+      method: {
+        kind: "template", definitionId: "rtd_quote_http", familyId: "family_quote_http", version: 1, name: "报价单",
+      },
+      action: { accessMode: "read_only", operation: "read" },
+      delivery: { destination: "task" }, verificationSop: ["检查报价单"],
+    },
+    taskContextControl: { deliveryDestination: "task" },
+  };
+  const autoRun = {
+    id: "aur_plan_actual_http", projectId: "prj_a", status: "done", invocationId: "inv_plan_actual_http",
+    executionContract: {
+      intentContract: workItem.executionIntentContractSnapshot,
+      dataContextSnapshot: { sourceCount: 0, sources: [] },
+    },
+    deliveryReport: {
+      summary: "已生成报价结果。",
+      verification: { passed: true, verified: true, command: "check quote", exitCode: 0 },
+      changedFiles: ["报价单.csv"], completedAt: "2026-08-11T00:02:00.000Z",
+    },
+    updatedAt: "2026-08-11T00:02:00.000Z",
+  };
+  const invocation = {
+    id: "inv_plan_actual_http", status: "succeeded",
+    options: { metadata: { autoRunId: "aur_plan_actual_http" } },
+  };
+  runtimeState.workItems.push(workItem);
+  runtimeState.autoRuns.push(autoRun);
+  runtimeState.invocations.push(invocation);
+
+  const detail = await call(`/api/work-items/${workItem.id}`);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.observability.planActual.status, "attention");
+  const planActualDigest = detail.body.observability.planActual.digest;
+
+  const recorded = await call(`/api/work-items/${workItem.id}/plan-actual-feedback`, {
+    method: "POST",
+    body: {
+      expectedPlanActualDigest: planActualDigest,
+      decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+      note: "以后仍需 Excel 报价单",
+    },
+  });
+  assert.equal(recorded.status, 201);
+  assert.equal(recorded.body.feedback.decisions[0].preferredValue, "报价单.xlsx");
+  const correctedDetail = await call(`/api/work-items/${workItem.id}`);
+  assert.equal(correctedDetail.body.workItem.revision, 3);
+  assert.equal(correctedDetail.body.observability.planActual.feedback.id, recorded.body.feedback.id);
+  assert.equal((await call(`/api/work-items/${workItem.id}/plan-actual-feedback`, {
+    token: "tok_b", method: "POST",
+    body: {
+      expectedPlanActualDigest: planActualDigest,
+      decisions: [{ code: "output_format_mismatch", resolution: "keep_plan" }],
+    },
+  })).status, 404);
+  const preferences = await call("/api/work-items/plan-actual-preferences?projectId=prj_a");
+  assert.equal(preferences.status, 200);
+  assert.equal(preferences.body.count, 1);
+  assert.equal(preferences.body.feedback[0].editable, true);
+  assert.equal(preferences.body.feedback[0].decisions[0].options.length, 2);
+  assert.equal((await call("/api/work-items/plan-actual-preferences?projectId=prj_a", { token: "tok_b" })).status, 404);
+  const updated = await call(`/api/work-items/${workItem.id}/plan-actual-feedback`, {
+    method: "POST",
+    body: {
+      expectedPlanActualDigest: planActualDigest,
+      expectedFeedbackRevision: recorded.body.feedback.revision,
+      decisions: [{ code: "output_format_mismatch", resolution: "prefer_actual" }],
+      note: "以后接受 CSV",
+    },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.feedback.revision, 2);
+  assert.equal((await call(`/api/work-items/plan-actual-preferences/${recorded.body.feedback.id}`, {
+    token: "tok_b", method: "DELETE",
+  })).status, 404);
+  const removed = await call(`/api/work-items/plan-actual-preferences/${recorded.body.feedback.id}`, { method: "DELETE" });
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.affectsFutureMatchesOnly, true);
+  assert.equal((await call("/api/work-items/plan-actual-preferences?projectId=prj_a")).body.count, 0);
+
+  runtimeState.workItems = runtimeState.workItems.filter((entry) => entry.id !== workItem.id);
+  runtimeState.autoRuns = runtimeState.autoRuns.filter((entry) => entry.id !== autoRun.id);
+  runtimeState.invocations = runtimeState.invocations.filter((entry) => entry.id !== invocation.id);
+  runtimeState.workItemPlanActualFeedback = runtimeState.workItemPlanActualFeedback
+    .filter((entry) => entry.workItemId !== workItem.id);
 });
 
 test("completed My template result feedback is recorded and summarized through HTTP", async () => {

@@ -10,6 +10,45 @@ let ordinaryDeliveryReady: boolean;
 let ordinaryDeliveryVersion: number;
 let localDeliveryConflict: boolean;
 let localDeliveryCompleted: boolean;
+let recoveryActionState: "none" | "unknown" | "safe" | "retried";
+let recoveryRetryRequests: number;
+
+function recoveryActionReceipt() {
+  const status = recoveryActionState === "unknown" ? "unknown"
+    : recoveryActionState === "safe" ? "safe_to_retry"
+      : "succeeded";
+  return {
+    schemaVersion: 1, id: "ear_recovery", kind: "retry_execution", status,
+    messageCode: status === "unknown" ? "action_result_unknown" : status === "safe_to_retry" ? "safe_to_retry" : "retry_started",
+    impact: "none", nextOwner: status === "succeeded" ? "ai" : "me",
+    requestedAt: "2026-08-05T00:00:00.000Z", updatedAt: "2026-08-05T00:12:00.000Z",
+    completedAt: status === "unknown" ? null : "2026-08-05T00:12:00.000Z",
+    targetId: status === "succeeded" ? "aur_failed" : null,
+    errorCode: null, errorMessage: null, replayed: false,
+  };
+}
+
+function recoveryExecutionReview() {
+  return {
+    schemaVersion: 1, state: "failed", stage: "verifying",
+    stages: [
+      { key: "accepted", status: "complete", at: "2026-08-05T00:01:00.000Z" },
+      { key: "preparing", status: "complete", at: "2026-08-05T00:02:00.000Z" },
+      { key: "working", status: "complete", at: "2026-08-05T00:02:10.000Z" },
+      { key: "verifying", status: "attention", at: "2026-08-05T00:03:00.000Z" },
+      { key: "review", status: "pending", at: null },
+    ],
+    executionKind: "auto_run", targetId: "aur_failed", targetStatus: "failed",
+    agentId: "agt_1", agentName: "Codex", acceptedAt: "2026-08-05T00:01:00.000Z",
+    startedAt: "2026-08-05T00:02:00.000Z", updatedAt: "2026-08-05T00:03:00.000Z", completedAt: null,
+    needsAttention: true, attentionCode: "verification_failed",
+    verification: { status: "failed", verified: true, passed: false, commands: ["pnpm test"], command: "pnpm test", exitCode: 1, summary: "One test failed.", checkedAt: "2026-08-05T00:03:00.000Z", durationMs: 1_000, evidenceCount: 1, checks: [] },
+    impact: { status: "unknown", reasonCode: "external_impact_not_recorded" },
+    riskReasons: [{ code: "execution_failed", severity: "high", scope: "execution" }],
+    recommendedAction: { kind: "retry_execution", reasonCode: "execution_failed", requiresConfirmation: true, nextOwner: "me" },
+    actionReceipt: recoveryActionReceipt(),
+  };
+}
 
 function reviewedCodingWorkItem(): Record<string, unknown> {
   return {
@@ -196,6 +235,13 @@ async function mockApi(page: Page) {
         rates: { humanEscalation: 0, selfRepair: 0 },
       },
     } });
+    if (url.pathname === "/api/work-items/lwi_1" && method === "GET" && recoveryActionState !== "none") {
+      return route.fulfill({ json: { workItem, observability: {
+        nextAction: "inspect_failure", attention: [],
+        latestRun: { id: "aur_failed", status: "failed", phase: "verifying", updatedAt: "2026-08-05T00:03:00.000Z", invocationId: "inv_1", agentId: "agt_1" },
+        executionReview: recoveryExecutionReview(), delivery: null,
+      } } });
+    }
     if (url.pathname === "/api/work-items/lwi_1" && method === "GET") {
       return route.fulfill({ json: { workItem, observability: {
         nextAction: localDeliveryCompleted ? "none" : autoRunStarted ? "review_delivery" : "start_execution",
@@ -311,6 +357,27 @@ async function mockApi(page: Page) {
       };
       return route.fulfill({ json: { workItem } });
     }
+    if (url.pathname === "/api/work-items/lwi_1/execution-contract/prepare" && method === "POST") {
+      const body = request.postDataJSON();
+      workItem = {
+        ...workItem,
+        acceptanceCriteria: body.draftOverride.acceptanceCriteria,
+        verificationSop: body.draftOverride.verificationSop,
+        executionContractSource: "assisted",
+        executionContractConfirmedAt: "2026-07-24T00:00:30.000Z",
+        executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: "2026-07-24T00:00:30.000Z" },
+        revision: Number(workItem?.revision ?? 0) + 1,
+      };
+      return route.fulfill({ json: { workItem } });
+    }
+    if (url.pathname === "/api/work-items/lwi_1/execution-contract/confirm" && method === "POST") {
+      workItem = {
+        ...workItem,
+        executionPolicy: "auto", status: "ready", waitingOn: "ai", executionState: "queued",
+        revision: Number(workItem?.revision ?? 0) + 1,
+      };
+      return route.fulfill({ json: { workItem } });
+    }
     if (url.pathname === "/api/work-items/lwi_1/delivery/local" && method === "POST") {
       if (localDeliveryConflict) {
         return route.fulfill({ status: 409, json: {
@@ -357,6 +424,15 @@ async function mockApi(page: Page) {
     }
     if (url.pathname.endsWith("/comments")) return route.fulfill({ json: { comments: [] } });
     if (url.pathname.endsWith("/activity")) return route.fulfill({ json: { activities: [] } });
+    if (url.pathname === "/api/auto-runs/aur_failed/execution-actions/reconcile" && method === "POST") {
+      recoveryActionState = "safe";
+      return route.fulfill({ json: { actionReceipt: recoveryActionReceipt(), safeToRetry: true } });
+    }
+    if (url.pathname === "/api/auto-runs/aur_failed/retry" && method === "POST") {
+      recoveryRetryRequests += 1;
+      recoveryActionState = "retried";
+      return route.fulfill({ status: 201, json: { autoRun: { id: "aur_failed", status: "running" }, actionReceipt: recoveryActionReceipt() } });
+    }
     if (url.pathname === "/api/auto-runs/aur_1/retry" && method === "POST") {
       ordinaryDeliveryReady = false;
       ordinaryDeliveryVersion += 1;
@@ -402,6 +478,8 @@ test.beforeEach(async ({ page }) => {
   ordinaryDeliveryVersion = 1;
   localDeliveryConflict = false;
   localDeliveryCompleted = false;
+  recoveryActionState = "none";
+  recoveryRetryRequests = 0;
   await page.addInitScript(() => {
     window.localStorage.setItem("myagenttool.token", "e2e-token");
     if (!window.localStorage.getItem("myagenttool-ui")) {
@@ -437,6 +515,35 @@ test("creates a separate repair task from failed result checks without auto-star
   expect(workItem).toMatchObject({ id: "lwi_1", status: "blocked" });
 });
 
+test("rechecks an unknown high-risk action before allowing one safe retry", async ({ page }) => {
+  recoveryActionState = "unknown";
+  workItem = {
+    id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
+    title: "Recover failed verification", body: "Retry only after confirming the previous request did not run.",
+    type: "task", priority: "p1", status: "blocked", state: "open", labels: [], assigneeIds: [], waitingOn: "me",
+    acceptanceCriteria: ["Verification passes"], verificationSop: ["Run pnpm test"],
+    executionContractSource: "manual", executionContractConfirmedAt: "2026-08-05T00:00:00.000Z",
+    executionContractGate: { ready: true, missing: [], source: "manual", confirmedAt: "2026-08-05T00:00:00.000Z" },
+    executionState: "failed", executionBindings: [{ kind: "auto_run", targetId: "aur_failed", worktreeId: "wt_1", createdAt: "2026-08-05T00:02:00.000Z" }],
+    revision: 2, archivedAt: null, updatedAt: "2026-08-05T00:03:00.000Z",
+  };
+
+  await page.goto("/?section=task&task=lwi_1", { waitUntil: "domcontentloaded" });
+  const review = page.getByTestId("execution-review-card");
+  await expect(review.getByText("Action result is not confirmed")).toBeVisible();
+  await expect(review.getByRole("button", { name: "Retry AI work" })).toHaveCount(0);
+  expect(recoveryRetryRequests).toBe(0);
+
+  await review.getByRole("button", { name: "Recheck action status" }).click();
+  await expect(review.getByText("Safe to retry")).toBeVisible();
+  await review.getByRole("button", { name: "Retry AI work" }).click();
+  const confirmation = page.getByRole("dialog", { name: "Retry AI work?" });
+  await confirmation.getByRole("button", { name: "Retry" }).click();
+
+  await expect.poll(() => recoveryRetryRequests).toBe(1);
+  await expect(review.getByText("AI work restarted.")).toBeVisible();
+});
+
 test("creates an ordinary task from the mobile task modal without a dead collapsed form", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/?section=task", { waitUntil: "domcontentloaded" });
@@ -470,26 +577,23 @@ test("imports a GitLab issue, opens its Local Issue, and schedules AI from simpl
   await expect(detail).toBeVisible();
   await expect(detail.getByText("GitLab #19")).toBeVisible();
   const planRequest = page.waitForRequest((request) =>
-    request.url().endsWith("/api/work-items/lwi_1")
-      && request.method() === "PATCH"
-      && Array.isArray(request.postDataJSON().acceptanceCriteria));
-  await detail.getByRole("button", { name: "Let AI start" }).click();
+    request.url().endsWith("/api/work-items/lwi_1/execution-contract/prepare")
+      && request.method() === "POST");
+  await detail.getByTestId("review-and-start-ai").click();
   expect((await planRequest).postDataJSON()).toMatchObject({
-    acceptanceCriteria: ["Provider handoff is complete"],
-    verificationSop: ["Verify the provider handoff end to end"],
+    draftOverride: {
+      acceptanceCriteria: ["Provider handoff is complete"],
+      verificationSop: ["Verify the provider handoff end to end"],
+    },
   });
   await expect(detail.getByText(/execution plan is ready/i)).toBeVisible();
   const scheduleRequest = page.waitForRequest((request) =>
-    request.url().endsWith("/api/work-items/lwi_1")
-      && request.method() === "PATCH"
-      && request.postDataJSON().executionPolicy === "auto");
-  await detail.getByRole("button", { name: "Let AI start" }).click();
-  expect((await scheduleRequest).postDataJSON()).toMatchObject({
-    executionPolicy: "auto",
-    status: "ready",
-    waitingOn: "ai",
-  });
-  await expect(detail.getByText(/task is set to automatic/i)).toBeVisible();
+    request.url().endsWith("/api/work-items/lwi_1/execution-contract/confirm")
+      && request.method() === "POST");
+  await page.getByRole("dialog", { name: "Confirm AI start" })
+    .getByRole("button", { name: "Confirm and start AI" }).click();
+  await scheduleRequest;
+  await expect(detail.getByText(/AI accepted the task/i)).toBeVisible();
 });
 
 test("browses and bulk imports GitLab issues on a narrow keyboard-accessible dialog", async ({ page }) => {
@@ -527,22 +631,17 @@ test("adopts a browsed GitHub issue and continues through the same Local Issue h
   await expect(detail).toBeVisible();
   await expect(detail.getByText("GitHub #42")).toBeVisible();
   const planRequest = page.waitForRequest((request) =>
-    request.url().endsWith("/api/work-items/lwi_1")
-      && request.method() === "PATCH"
-      && Array.isArray(request.postDataJSON().acceptanceCriteria));
-  await detail.getByRole("button", { name: "Let AI start" }).click();
+    request.url().endsWith("/api/work-items/lwi_1/execution-contract/prepare")
+      && request.method() === "POST");
+  await detail.getByTestId("review-and-start-ai").click();
   await planRequest;
   await expect(detail.getByText(/execution plan is ready/i)).toBeVisible();
   const scheduleRequest = page.waitForRequest((request) =>
-    request.url().endsWith("/api/work-items/lwi_1")
-      && request.method() === "PATCH"
-      && request.postDataJSON().executionPolicy === "auto");
-  await detail.getByRole("button", { name: "Let AI start" }).click();
-  expect((await scheduleRequest).postDataJSON()).toMatchObject({
-    executionPolicy: "auto",
-    status: "ready",
-    waitingOn: "ai",
-  });
+    request.url().endsWith("/api/work-items/lwi_1/execution-contract/confirm")
+      && request.method() === "POST");
+  await page.getByRole("dialog", { name: "Confirm AI start" })
+    .getByRole("button", { name: "Confirm and start AI" }).click();
+  await scheduleRequest;
 });
 
 test("creates an issue, routes AI execution, and reaches reviewed local delivery", async ({ page }) => {
@@ -605,15 +704,14 @@ test("completes an ordinary coding task through revision and durable local deliv
   await createDialog.getByRole("button", { name: "View task" }).click();
   let detail = page.getByRole("dialog", { name: "Local issue details" });
   await expect(detail.getByRole("button", { name: "Professional view" })).toHaveAttribute("aria-pressed", "false");
-  await detail.getByRole("button", { name: "Let AI start" }).click();
-  await expect(detail.getByText(/execution plan is ready/i)).toBeVisible();
+  await detail.getByTestId("review-and-start-ai").click();
   const scheduleRequest = page.waitForRequest((request) =>
-    request.url().endsWith("/api/work-items/lwi_1")
-      && request.method() === "PATCH"
-      && request.postDataJSON().executionPolicy === "auto");
-  await detail.getByRole("button", { name: "Let AI start" }).click();
+    request.url().endsWith("/api/work-items/lwi_1/execution-contract/confirm")
+      && request.method() === "POST");
+  await page.getByRole("dialog", { name: "Confirm AI start" })
+    .getByRole("button", { name: "Confirm and start AI" }).click();
   await scheduleRequest;
-  await expect(detail.getByText(/task is set to automatic/i)).toBeVisible();
+  await expect(detail.getByText(/AI accepted the task/i)).toBeVisible();
 
   autoRunStarted = true;
   ordinaryDeliveryReady = true;
@@ -809,7 +907,7 @@ test("keeps the Local Issue selected while fixing preflight and rechecks after r
 
   autoRunReady = true;
   await detail.getByRole("button", { name: "Recheck" }).click();
-  await expect(detail.getByRole("button", { name: "Let AI start" })).toBeEnabled();
+  await expect(detail.getByTestId("review-and-start-ai")).toBeEnabled();
 });
 
 test("restores a task-first Trace after visiting scheduling Settings", async ({ page }) => {
