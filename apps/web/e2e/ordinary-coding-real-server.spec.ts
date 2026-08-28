@@ -38,6 +38,13 @@ async function waitForValue<T>(read: () => T | null | undefined, message: string
   throw new Error(`Timed out waiting for ${message}.`);
 }
 
+async function readJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${apiBase}${path}`);
+  const body = await response.json() as T;
+  if (!response.ok) throw new Error(`${path} returned ${response.status}: ${JSON.stringify(body)}`);
+  return body;
+}
+
 function git(...args: string[]) {
   return execFileSync("git", ["-C", repositoryRoot, ...args], { encoding: "utf8" }).trim();
 }
@@ -177,11 +184,11 @@ test.beforeAll(async () => {
     "import test from \"node:test\";",
     "import { sessionCanBeReused } from \"../src/session.mjs\";",
     "",
-    "test(\"rejects expired sessions\", () => {",
-    "  assert.equal(sessionCanBeReused({ token: \"expired\", expiresAt: 1_000 }, 1_000), false);",
+    "test(\"rejects sessions without a token\", () => {",
+    "  assert.equal(sessionCanBeReused({ expiresAt: 1_000 }, 1_000), false);",
     "});",
     "",
-    "test(\"keeps active sessions\", () => {",
+    "test(\"keeps tokened sessions\", () => {",
     "  assert.equal(sessionCanBeReused({ token: \"active\", expiresAt: 1_001 }, 1_000), true);",
     "});",
     "",
@@ -222,6 +229,15 @@ test.afterAll(async () => {
 
 test("ordinary user completes a deterministic real-Worktree coding task through revision and local delivery", async ({ page }) => {
   test.setTimeout(60_000);
+  const browserApiRequests = new Set<string>();
+  page.on("request", (request) => {
+    const requestUrl = new URL(request.url());
+    if (requestUrl.origin === new URL(apiBase).origin) browserApiRequests.add(`${request.method()} ${requestUrl.pathname}`);
+  });
+  const firstSummary = "Implemented expiry checks for active and expired login sessions.";
+  const revisionFeedback = "Also reject malformed timestamps and add regression coverage.";
+  const secondSummary = "Hardened expiry validation and added malformed-session regression coverage.";
+
   await page.addInitScript(() => {
     window.localStorage.setItem("myagenttool-ui", JSON.stringify({
       version: 1,
@@ -239,6 +255,14 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
   await expect(createDialog.getByText("Task created and added to your boards.")).toBeVisible();
   await createDialog.getByRole("button", { name: "View task" }).click();
 
+  const createdItems = await readJson<{ workItems: Array<{ id: string; title: string; revision: number; intentStatement?: string }> }>("/api/work-items");
+  const trackedTask = createdItems.workItems.find((item) => item.intentStatement === "Implement expiry handling in the login session module");
+  expect(trackedTask).toBeDefined();
+  const trackedTaskId = trackedTask!.id;
+  const createdTaskRevision = trackedTask!.revision;
+  const baseCommitBeforeDelivery = git("rev-parse", "main");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
   let detail = page.getByRole("dialog", { name: "Local issue details" });
   await expect(detail.getByRole("button", { name: "Professional view" })).toHaveAttribute("aria-pressed", "false");
   await detail.getByTestId("review-and-start-ai").click();
@@ -247,7 +271,7 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
   await expect(detail.getByRole("heading", { name: "AI is working on the task" })).toBeVisible();
 
   const first = await completeCodingAttempt({
-    summary: "Implemented expiry checks for active and expired login sessions.",
+    summary: firstSummary,
     write: (worktreePath) => {
       writeFileSync(join(worktreePath, "src", "session.mjs"), [
         "export function sessionCanBeReused(session, nowMs) {",
@@ -257,17 +281,24 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
       ].join("\n"));
     },
   });
+  expect(first.autoRun.localIssueId).toBe(trackedTaskId);
+  expect(first.autoRun.worktreeId).toBe(first.worktree.id);
+  const firstInvocationId = first.autoRun.invocationId;
+  expect(firstInvocationId).toBeTruthy();
+  const afterFirstItems = await readJson<{ workItems: Array<{ id: string; revision: number }> }>("/api/work-items");
+  const afterFirstTask = afterFirstItems.workItems.find((item) => item.id === trackedTaskId);
+  expect(afterFirstTask?.revision).toBeGreaterThan(createdTaskRevision);
   await page.reload({ waitUntil: "domcontentloaded" });
   detail = page.getByRole("dialog", { name: "Local issue details" });
-  await expect(detail.getByText("Implemented expiry checks for active and expired login sessions.").first()).toBeVisible();
+  await expect(detail.getByText(firstSummary).first()).toBeVisible();
 
   await detail.getByRole("button", { name: "Ask AI to revise" }).click();
-  await detail.locator("textarea").fill("Also reject malformed timestamps and add regression coverage.");
+  await detail.locator("textarea").fill(revisionFeedback);
   await detail.getByRole("button", { name: "Send changes to AI" }).click();
   await expect(detail.getByText("The requested fix was sent to AI.")).toBeVisible();
 
   const second = await completeCodingAttempt({
-    summary: "Hardened expiry validation and added malformed-session regression coverage.",
+    summary: secondSummary,
     write: (worktreePath) => {
       writeFileSync(join(worktreePath, "src", "session.mjs"), [
         "export function sessionCanBeReused(session, nowMs) {",
@@ -301,11 +332,25 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
   expect(second.autoRun.id).toBe(first.autoRun.id);
   expect(second.worktree.id).toBe(first.worktree.id);
   expect(second.autoRun.outcomeHistory).toHaveLength(1);
+  expect(second.autoRun.outcomeHistory[0]).toMatchObject({
+    supersededByFeedback: revisionFeedback,
+    invocationId: firstInvocationId,
+  });
+  const afterRevisionItems = await readJson<{ workItems: Array<{ id: string; revision: number }> }>("/api/work-items");
+  const afterRevisionTask = afterRevisionItems.workItems.find((item) => item.id === trackedTaskId);
+  expect(afterRevisionTask?.id).toBe(trackedTaskId);
+  expect(afterRevisionTask?.revision).toBeGreaterThan(afterFirstTask!.revision);
+
+  const authoritativeDiff = await readJson<{ changedPaths: string[]; diff: string }>(`/api/worktrees/${encodeURIComponent(second.worktree.id)}/diff`);
+  expect(authoritativeDiff.changedPaths.sort()).toEqual(["src/session.mjs", "test/session.test.mjs"]);
+  expect(authoritativeDiff.diff).toContain("Number.isFinite(session.expiresAt)");
+  const verificationSummary = String(second.autoRun.verification?.summary ?? "");
+  expect(verificationSummary).toContain("node --test test/session.test.mjs");
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload({ waitUntil: "domcontentloaded" });
   detail = page.getByRole("dialog", { name: "Local issue details" });
-  await expect(detail.locator("p:visible").filter({ hasText: "Hardened expiry validation and added malformed-session regression coverage." }).first()).toBeVisible();
+  await expect(detail.locator("p:visible").filter({ hasText: secondSummary }).first()).toBeVisible();
   const intentSummary = detail.getByTestId("work-item-intent-summary");
   await expect(intentSummary.getByText("Here’s what I understand")).toBeVisible();
   await expect(intentSummary.getByText("Implement expiry handling in the login session module")).toBeVisible();
@@ -318,6 +363,7 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
   await expect(page.getByRole("button", { name: "src/session.mjs", exact: true })).toBeVisible();
   await expect(page.getByText(/Number\.isFinite\(session\.expiresAt\)/).first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  expect(browserApiRequests.has(`GET /api/worktrees/${second.worktree.id}/diff`)).toBe(true);
 
   const returnToTask = page.getByRole("button", { name: "Return to task" });
   await returnToTask.focus();
@@ -332,6 +378,7 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
   await expect(detail.getByText("This work is complete")).toBeVisible();
 
   expect(git("branch", "--show-current")).toBe("main");
+  expect(git("rev-parse", "main")).not.toBe(baseCommitBeforeDelivery);
   expect(git("remote")).toBe("");
   expect(readFileSync(join(repositoryRoot, "src", "session.mjs"), "utf8")).toContain("Number.isFinite(session.expiresAt)");
   expect(git("diff", "--name-only", "HEAD~1", "HEAD").split("\n").sort()).toEqual([
@@ -343,7 +390,9 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
   await expect(receipt.getByText("Applied successfully")).toBeVisible();
   await expect(receipt.getByText("main")).toBeVisible();
   await expect(receipt.getByText("2 file(s) applied")).toBeVisible();
-  await expect(receipt.getByText(/node --test test\/session\.test\.mjs/)).toBeVisible();
+  await expect(receipt.getByText(verificationSummary)).toBeVisible();
+  expect(browserApiRequests.has(`POST /api/work-items/${trackedTaskId}/delivery/local`)).toBe(true);
+  expect([...browserApiRequests].some((request) => request.endsWith("/push") || request.endsWith("/pr"))).toBe(false);
 
   await stopServer();
   await bootServer(serverPort);
@@ -352,5 +401,6 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
   await expect(restored.getByText("This work is complete")).toBeVisible();
   await expect(restored.getByLabel("Local delivery receipt").getByText("Applied successfully")).toBeVisible();
   await expect(restored.getByLabel("Local delivery receipt").getByText("2 file(s) applied")).toBeVisible();
+  await expect(restored.getByLabel("Local delivery receipt").getByText(verificationSummary)).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
