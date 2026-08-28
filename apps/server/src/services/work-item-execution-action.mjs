@@ -51,6 +51,26 @@ function receiptSnapshot(receipt) {
   return snapshot;
 }
 
+function normalizedDeliveryCheckpoint(value) {
+  if (!value || typeof value !== "object") return null;
+  const mode = ["local_merge", "pull_request"].includes(value.mode) ? value.mode : null;
+  const operationId = boundedText(value.operationId, 200);
+  if (!mode || !operationId) return null;
+  const result = value.result && typeof value.result === "object" ? value.result : {};
+  return {
+    schemaVersion: 1,
+    mode,
+    operationId,
+    result: {
+      baseBranch: boundedText(result.baseBranch, 200),
+      commit: boundedText(result.commit, 200),
+      deliveredAt: boundedText(result.deliveredAt, 100),
+      number: Number.isInteger(result.number) ? result.number : null,
+      url: boundedText(result.url, 2_000),
+    },
+  };
+}
+
 function ledgerRecordId(autoRunId, idempotencyKey) {
   return `eai_${createHash("sha256").update(`${autoRunId}\0${idempotencyKey}`).digest("hex").slice(0, 32)}`;
 }
@@ -372,6 +392,22 @@ export function beginExecutionAction({
   if (existing) {
     return { receipt: existing, replayed: true, workItem: boundWorkItem(state, autoRun) };
   }
+  if (DELIVERY_ACTION_KINDS.has(kind)) {
+    const unresolved = [
+      ...(autoRun.executionActionReceipts ?? []),
+      ...ensureIdempotencyRecords(state, autoRun).map((entry) => entry.receipt).filter(Boolean),
+    ].find((receipt) => DELIVERY_ACTION_KINDS.has(receipt.kind)
+      && (["accepted", "running", "unknown"].includes(receipt.status)
+        || (receipt.status === "failed" && receipt.impact === "unknown")));
+    if (unresolved) {
+      throw actionError(
+        "execution_action_delivery_unresolved",
+        "A previous delivery may already have changed the target. Reconcile it before starting another delivery.",
+        409,
+        { actionReceipt: visibleReceipt(unresolved, { now: now(), autoRun }) },
+      );
+    }
+  }
 
   const workItem = boundWorkItem(state, autoRun);
   const requestedAt = now();
@@ -443,6 +479,9 @@ export function updateExecutionAction(receipt, {
   targetId = receipt?.targetId ?? null,
   errorCode = null,
   errorMessage = null,
+  deliveryCheckpoint = undefined,
+  deliveryRecovery = null,
+  externalActionAttempt = false,
   now,
 } = {}) {
   if (!receipt) return null;
@@ -454,6 +493,25 @@ export function updateExecutionAction(receipt, {
   receipt.targetId = boundedText(targetId, 200);
   receipt.errorCode = boundedText(errorCode, 160);
   receipt.errorMessage = boundedText(errorMessage, 500);
+  if (deliveryCheckpoint !== undefined) {
+    receipt.deliveryCheckpoint = normalizedDeliveryCheckpoint(deliveryCheckpoint);
+  }
+  if (externalActionAttempt) {
+    receipt.externalActionAttemptCount = Math.max(0, Number(receipt.externalActionAttemptCount) || 0) + 1;
+    receipt.lastExternalActionAttemptAt = updatedAt;
+  }
+  if (["required", "attempt_failed", "recovered"].includes(deliveryRecovery)) {
+    const recovery = receipt.deliveryRecovery && typeof receipt.deliveryRecovery === "object"
+      ? receipt.deliveryRecovery
+      : { schemaVersion: 1, requiredAt: updatedAt, attempts: 0, recoveredAt: null, lastAttemptAt: null };
+    recovery.requiredAt ??= updatedAt;
+    if (deliveryRecovery === "attempt_failed" || deliveryRecovery === "recovered") {
+      recovery.attempts = Math.max(0, Number(recovery.attempts) || 0) + 1;
+      recovery.lastAttemptAt = updatedAt;
+    }
+    if (deliveryRecovery === "recovered") recovery.recoveredAt = updatedAt;
+    receipt.deliveryRecovery = recovery;
+  }
   receipt.updatedAt = updatedAt;
   receipt.completedAt = TERMINAL_RECEIPT_STATUSES.has(receipt.status) ? updatedAt : null;
   const ledgerEntry = receipt._executionActionLedgerEntry;

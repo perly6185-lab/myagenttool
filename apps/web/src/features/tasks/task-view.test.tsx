@@ -4,6 +4,7 @@ import { TaskView, shouldShowWorkItemCost } from "@/features/tasks/task-view";
 
 const mocks = vi.hoisted(() => ({
   listWorkItems: vi.fn(),
+  getWorkItemCompletionMetrics: vi.fn(),
   listWorkItemAttention: vi.fn(),
   getWorkItemExternalIssueFunnel: vi.fn(),
   updateWorkItemAttention: vi.fn(),
@@ -120,6 +121,7 @@ vi.mock("@/data/use-console-actions", () => ({
   useAsyncAction: () => ({ execute: mocks.execute, pending: false, error: null }),
   api: {
     listWorkItems: mocks.listWorkItems,
+    getWorkItemCompletionMetrics: mocks.getWorkItemCompletionMetrics,
     listWorkItemAttention: mocks.listWorkItemAttention,
     getWorkItemExternalIssueFunnel: mocks.getWorkItemExternalIssueFunnel,
     updateWorkItemAttention: mocks.updateWorkItemAttention,
@@ -241,6 +243,18 @@ describe("TaskView local work items", () => {
     mocks.listAutoRuns.mockResolvedValue({ autoRuns: [] });
     mocks.listWorkItemAutoRunBatches.mockResolvedValue({ batches: [] });
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
+    mocks.getWorkItemCompletionMetrics.mockResolvedValue({
+      generatedAt: "2026-08-28T00:00:00.000Z",
+      scope: { projectId: null, trackedWorkItems: 0, trackedAutoRuns: 0 },
+      metrics: {
+        schemaVersion: 1,
+        completion: { tracked: 0, settled: 0, completed: 0, falseCompletions: 0, requiringUserAction: 0, completionRate: null, falseCompletionRate: null, check: { status: "insufficient_data", target: 0.95 } },
+        recovery: { required: 0, succeeded: 0, pending: 0, successRate: null, check: { status: "insufficient_data", target: 0.95 } },
+        humanIntervention: { count: 0, rate: null, check: { status: "insufficient_data", target: 0.1 } },
+        externalActions: { attempts: 0, duplicateCount: 0, unresolvedCount: 0, check: { status: "insufficient_data", target: 0 } },
+        acceptance: { status: "insufficient_data", checks: {} }, definitions: {},
+      },
+    });
     mocks.refreshWorkItemRecordBindingsBatch.mockResolvedValue({ refreshedCount: 0 });
     mocks.getWorkItemExternalIssueFunnel.mockResolvedValue({ metrics: { total: 0, notStarted: 0, running: 0, review: 0, completed: 0, stalled: 0 }, stalls: [] });
     mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
@@ -297,6 +311,24 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("Ready")).toBeTruthy();
     expect(screen.getByText("1 pending")).toBeTruthy();
     expect(screen.getAllByText("Conflict")).toHaveLength(2);
+  });
+
+  it("keeps the task surface usable when an older mock or server returns malformed completion metrics", async () => {
+    mocks.getWorkItemCompletionMetrics.mockResolvedValue({});
+    mocks.listWorkItems.mockResolvedValue({
+      workItems: [{
+        id: "lwi_legacy", localRef: "LOCAL-LEGACY", projectId: "prj_1",
+        title: "Legacy task response", body: "", type: "task", status: "ready",
+        priority: "p2", state: "open", labels: [], assigneeIds: [],
+        updatedAt: "2026-08-28T00:00:00.000Z",
+      }],
+      count: 1,
+    });
+
+    render(<TaskView />);
+
+    expect((await screen.findAllByText("Legacy task response")).length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("Task completion quality")).toBeNull();
   });
 
   it("refreshes and confirms stale business materials from the attention queue", async () => {

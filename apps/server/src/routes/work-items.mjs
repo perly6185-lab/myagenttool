@@ -29,7 +29,7 @@ function externalBindingEmergencyStopped(state, provider, repository, issueNumbe
 
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor, state,
-  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, updateTaskContext, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+  listWorkItems, getCompletionMetrics, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, updateTaskContext, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
   reconcileWorkItemRecordBindings, reconcileVisibleWorkItemRecordBindings,
   refreshWorkItemRecordBinding, refreshWorkItemRecordBindingsBatch,
   listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
@@ -489,6 +489,11 @@ export async function handleWorkItemRoutes({
       }, actor);
     }
     const result = listAttention(Object.fromEntries(url.searchParams), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (url.pathname === "/api/work-items/completion-metrics" && req.method === "GET") {
+    const result = getCompletionMetrics(Object.fromEntries(url.searchParams), actor);
     sendJson(res, result.status, result.body);
     return true;
   }

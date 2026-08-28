@@ -3,10 +3,12 @@ import test from "node:test";
 
 import { createWorkItemReviewCommandService } from "../src/services/work-item-review-command.mjs";
 
-function deliveryHarness({ canProceed = true, operation = "apply_local_changes" } = {}) {
+function deliveryHarness({ canProceed = true, operation = "apply_local_changes", completeFailures = 0 } = {}) {
   let sequence = 0;
   let promotionCount = 0;
   let transactionCount = 0;
+  let completionAttempts = 0;
+  let remainingCompleteFailures = completeFailures;
   const current = "2026-08-28T02:00:00.000Z";
   const item = {
     id: "lwi_1",
@@ -62,6 +64,11 @@ function deliveryHarness({ canProceed = true, operation = "apply_local_changes" 
     beginDelivery: () => ({ ok: true, status: 201, body: { operation: { id: "wdo_1" } } }),
     failDelivery: () => ({ ok: true }),
     completeDelivery: ({ result }) => {
+      completionAttempts += 1;
+      if (remainingCompleteFailures > 0) {
+        remainingCompleteFailures -= 1;
+        return { ok: false, status: 503, body: { error: "delivery_commit_temporarily_unavailable" } };
+      }
       autoRun.localDelivery = { ...autoRun.localDelivery, deliveredAt: result.deliveredAt };
       item.revision += 1;
       item.status = "done";
@@ -88,6 +95,7 @@ function deliveryHarness({ canProceed = true, operation = "apply_local_changes" 
     autoRun,
     item,
     promotionCount: () => promotionCount,
+    completionAttempts: () => completionAttempts,
     transactionCount: () => transactionCount,
   };
 }
@@ -134,7 +142,7 @@ test("returns one standard receipt for local and office delivery and replays its
   assert.equal(delivered.autoRun.executionActionReceipts, undefined);
   assert.equal(h.promotionCount(), 1);
   assert.equal(h.state.executionActionIdempotencyRecords.length, 1);
-  assert.equal(h.transactionCount(), 3, "accepted, running, and succeeded receipts commit transactionally");
+  assert.equal(h.transactionCount(), 4, "accepted, external start, external result checkpoint, and success commit transactionally");
 
   const replayed = await h.service.execute(command, { userId: "usr_1" });
   assert.equal(replayed.replayed, true);
@@ -178,4 +186,79 @@ test("records a failed standard receipt when delivery evidence blocks execution"
     },
   );
   assert.equal(h.promotionCount(), 0);
+});
+
+test("development and office delivery resume from the external-result checkpoint without repeating the side effect", async () => {
+  for (const kind of ["create_pull_request", "apply_office_result"]) {
+    const h = deliveryHarness({ operation: kind, completeFailures: 1 });
+    const command = {
+      kind,
+      targetId: h.item.id,
+      request: {
+        expectedWorkItemRevision: 4,
+        expectedTargetStatus: "done",
+        idempotencyKey: `${kind}-recover-once`,
+      },
+    };
+
+    await assert.rejects(h.service.execute(command, { userId: "usr_1" }), (error) => {
+      assert.equal(error.code, "delivery_commit_temporarily_unavailable");
+      assert.equal(error.actionReceipt.status, "unknown");
+      assert.equal(error.actionReceipt.impact, "unknown");
+      return true;
+    });
+    assert.equal(h.promotionCount(), 1);
+    assert.equal(h.completionAttempts(), 1);
+    assert.equal(h.autoRun.executionActionReceipts[0].externalActionAttemptCount, 1);
+    assert.equal(h.autoRun.executionActionReceipts[0].deliveryRecovery.requiredAt, "2026-08-28T02:00:00.000Z");
+    assert.equal(h.autoRun.executionActionReceipts[0].deliveryRecovery.recoveredAt, null);
+
+    await assert.rejects(h.service.execute({
+      ...command,
+      request: { ...command.request, idempotencyKey: `${kind}-unsafe-second-key` },
+    }, { userId: "usr_1" }), (error) => {
+      assert.equal(error.code, "execution_action_delivery_unresolved");
+      assert.equal(error.actionReceipt.status, "unknown");
+      return true;
+    });
+    assert.equal(h.promotionCount(), 1, "a different request key cannot repeat an unresolved external action");
+
+    const recovered = await h.service.execute(command, { userId: "usr_1" });
+    assert.equal(recovered.replayed, true);
+    assert.equal(recovered.actionReceipt.status, "succeeded");
+    assert.equal(recovered.actionReceipt.messageCode, kind === "create_pull_request"
+      ? "pull_request_created"
+      : "office_result_applied");
+    assert.equal(h.promotionCount(), 1, "recovery commits the checkpoint instead of repeating delivery");
+    assert.equal(h.completionAttempts(), 2);
+    assert.equal(h.autoRun.executionActionReceipts[0].externalActionAttemptCount, 1);
+    assert.equal(h.autoRun.executionActionReceipts[0].deliveryRecovery.attempts, 1);
+    assert.equal(h.autoRun.executionActionReceipts[0].deliveryRecovery.recoveredAt, "2026-08-28T02:00:00.000Z");
+  }
+});
+
+test("records failed checkpoint recovery attempts until a later replay succeeds", async () => {
+  const h = deliveryHarness({ operation: "apply_local_changes", completeFailures: 2 });
+  const command = {
+    kind: "apply_local_changes",
+    targetId: h.item.id,
+    request: { expectedWorkItemRevision: 4, expectedTargetStatus: "done", idempotencyKey: "recover-after-two" },
+  };
+
+  await assert.rejects(h.service.execute(command, { userId: "usr_1" }), (error) => {
+    assert.equal(error.actionReceipt.status, "unknown");
+    return true;
+  });
+  await assert.rejects(h.service.execute(command, { userId: "usr_1" }), (error) => {
+    assert.equal(error.code, "work_item_delivery_recovery_pending");
+    assert.equal(error.actionReceipt.status, "unknown");
+    return true;
+  });
+  assert.equal(h.autoRun.executionActionReceipts[0].deliveryRecovery.attempts, 1);
+  assert.equal(h.autoRun.executionActionReceipts[0].deliveryRecovery.recoveredAt, null);
+
+  const recovered = await h.service.execute(command, { userId: "usr_1" });
+  assert.equal(recovered.actionReceipt.status, "succeeded");
+  assert.equal(h.autoRun.executionActionReceipts[0].deliveryRecovery.attempts, 2);
+  assert.equal(h.promotionCount(), 1);
 });
