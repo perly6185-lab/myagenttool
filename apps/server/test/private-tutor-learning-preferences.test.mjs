@@ -118,11 +118,12 @@ test("defaultLearningPreferences returns a fresh copy", () => {
 test("learning goal accepts a well-formed object and rejects malformed ones", () => {
   const state = makeState();
   const set = updatePrivateTutorLearningPreferences(state, "lrn_1", {
-    learningGoal: { targetTopicIds: ["topic-a", "topic-a", " topic-b "], weeklyMinutes: 120, targetDate: "2026-12-31", note: "期末前学完" },
+    learningGoal: { contentPackageId: " package-a ", targetTopicIds: ["topic-a", "topic-a", " topic-b "], weeklyMinutes: 300, targetDate: "2026-12-31", note: "期末前学完" },
   }, { now, nextId });
   assert.equal(set.ok, true);
   assert.deepEqual(set.preferences.learningGoal.targetTopicIds, ["topic-a", "topic-b"]); // deduped + trimmed
-  assert.equal(set.preferences.learningGoal.weeklyMinutes, 120);
+  assert.equal(set.preferences.learningGoal.contentPackageId, "package-a");
+  assert.equal(set.preferences.learningGoal.weeklyMinutes, 300);
   assert.equal(set.preferences.learningGoal.targetDate, "2026-12-31");
 
   const cleared = updatePrivateTutorLearningPreferences(state, "lrn_1", { learningGoal: null }, { now, nextId });
@@ -131,6 +132,7 @@ test("learning goal accepts a well-formed object and rejects malformed ones", ()
   assert.equal(updatePrivateTutorLearningPreferences(state, "lrn_1", { learningGoal: "下周" }, { now, nextId }).ok, false);
   assert.equal(updatePrivateTutorLearningPreferences(state, "lrn_1", { learningGoal: { weeklyMinutes: "很多" } }, { now, nextId }).ok, false);
   assert.equal(updatePrivateTutorLearningPreferences(state, "lrn_1", { learningGoal: { targetDate: "31/12/2026" } }, { now, nextId }).ok, false);
+  assert.equal(updatePrivateTutorLearningPreferences(state, "lrn_1", { learningGoal: { targetDate: "2026-02-31" } }, { now, nextId }).ok, false);
 });
 
 test("package deactivation toggles ids without touching other preferences", () => {

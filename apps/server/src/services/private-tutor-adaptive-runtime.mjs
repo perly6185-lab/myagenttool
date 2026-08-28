@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { buildPrivateTutorSevenDayPlan } from "./private-tutor-learning-model.mjs";
 import { privateTutorLearningPreferences } from "./private-tutor-learning-preferences.mjs";
 import { privateTutorPackageRegistryFromState } from "./private-tutor-package-registry.mjs";
+import { parseRationalAnswer } from "./plugins/math-plugin.mjs";
 
 export const PRIVATE_TUTOR_RUNTIME_VALIDATION_SCHEMA_VERSION = 1;
 export const PRIVATE_TUTOR_RUNTIME_EVIDENCE_POLICY = "runtime_validated_capped";
@@ -33,10 +34,12 @@ export function validatePrivateTutorPackageRuntime(state, packageId, {
     && item.sourceHash === pkg.source?.sourceHash
     && item.status === "parsed");
   const plugin = registry.getSubjectPlugin(pkg.evaluationSubjectId ?? pkg.subjectId);
+  const pluginCapabilities = plugin?.getCapabilities?.() ?? {};
   const questions = authoredQuestions(pkg);
   const failureCodes = [];
   if (!material) failureCodes.push("source_material_unavailable");
-  if (!plugin || plugin.getCapabilities?.().semanticEvaluation !== "anchored-concept-rubric-v2") {
+  if (!plugin || (pluginCapabilities.semanticEvaluation !== "anchored-concept-rubric-v2"
+    && pluginCapabilities.deterministicGrading !== true)) {
     failureCodes.push("runtime_evaluator_unavailable");
   }
   if (!questions.length) failureCodes.push("runtime_questions_unavailable");
@@ -234,6 +237,11 @@ export function privateTutorRuntimeQuestionFingerprint(question) {
     requiredSourceRefs: question?.requiredSourceRefs,
     sourceRefs: question?.sourceRefs,
     rubric: question?.rubric,
+    expectedAnswer: question?.expectedAnswer,
+    expectedChoice: question?.expectedChoice,
+    options: question?.options,
+    mathContract: question?.mathContract,
+    expectedSteps: question?.expectedSteps,
     evidencePolicy: question?.evidencePolicy,
   })).digest("hex");
 }
@@ -247,6 +255,9 @@ function calibrateQuestion(question, context, plugin) {
     failureCodes: [],
     anchors: [],
   };
+  if (["numeric", "choice", "math_steps"].includes(question?.kind)) {
+    return calibrateDeterministicQuestion(result, question, plugin);
+  }
   if (!plugin || question?.kind !== "rubric_response"
     || question?.rubric?.profile !== "anchored-concept-rubric-v2"
     || question?.evidencePolicy !== "practice_only_until_runtime_validation") {
@@ -283,6 +294,49 @@ function calibrateQuestion(question, context, plugin) {
     } catch {
       result.failureCodes.push(`${band}_anchor_evaluation_failed`);
     }
+  }
+  result.failureCodes = [...new Set(result.failureCodes)];
+  result.status = result.failureCodes.length ? "blocked" : "passed";
+  return result;
+}
+
+function calibrateDeterministicQuestion(result, question, plugin) {
+  const prepared = question.kind === "numeric"
+    ? { ...question, expectedRational: parseRationalAnswer(question.expectedAnswer) }
+    : question;
+  let correctSample = null;
+  let incorrectSample = null;
+  if (question.kind === "numeric" && prepared.expectedRational) {
+    correctSample = question.expectedAnswer;
+    incorrectSample = `(${question.expectedAnswer})+1`;
+  } else if (question.kind === "choice") {
+    correctSample = question.expectedChoice;
+    incorrectSample = question.options?.find((option) => option.id !== question.expectedChoice)?.id ?? null;
+  } else if (question.kind === "math_steps") {
+    correctSample = question.expectedSteps?.map((step) => step.acceptedForms?.[0]).filter(Boolean).join("\n") || null;
+    incorrectSample = "0=1";
+  }
+  if (!plugin || !correctSample || !incorrectSample) {
+    result.failureCodes.push("invalid_deterministic_contract");
+    return result;
+  }
+  try {
+    const firstCorrect = plugin.evaluator({ rawAnswer: correctSample, responseKind: "answer", source: "runtime_calibration" }, prepared);
+    const secondCorrect = plugin.evaluator({ rawAnswer: correctSample, responseKind: "answer", source: "runtime_calibration" }, prepared);
+    const firstIncorrect = plugin.evaluator({ rawAnswer: incorrectSample, responseKind: "answer", source: "runtime_calibration" }, prepared);
+    const secondIncorrect = plugin.evaluator({ rawAnswer: incorrectSample, responseKind: "answer", source: "runtime_calibration" }, prepared);
+    const correctPassed = firstCorrect?.accepted === true && firstCorrect.correct === true
+      && JSON.stringify(firstCorrect) === JSON.stringify(secondCorrect);
+    const incorrectPassed = firstIncorrect?.accepted === true && firstIncorrect.correct === false
+      && JSON.stringify(firstIncorrect) === JSON.stringify(secondIncorrect);
+    result.anchors.push(
+      { anchorId: "deterministic_correct", expectedCorrect: true, correct: firstCorrect?.correct ?? null, repeatable: JSON.stringify(firstCorrect) === JSON.stringify(secondCorrect), passed: correctPassed },
+      { anchorId: "deterministic_incorrect", expectedCorrect: false, correct: firstIncorrect?.correct ?? null, repeatable: JSON.stringify(firstIncorrect) === JSON.stringify(secondIncorrect), passed: incorrectPassed },
+    );
+    if (!correctPassed) result.failureCodes.push("correct_anchor_mismatch");
+    if (!incorrectPassed) result.failureCodes.push("incorrect_anchor_mismatch");
+  } catch {
+    result.failureCodes.push("deterministic_anchor_evaluation_failed");
   }
   result.failureCodes = [...new Set(result.failureCodes)];
   result.status = result.failureCodes.length ? "blocked" : "passed";
@@ -393,6 +447,7 @@ function createChapterEntryIntelligence(state, { learner, pkg, selection, activa
     scopeKnowledgeIds: selection.scopeKnowledgeIds,
     dailyMinutes: preferences.dailyMinutes,
     planIntensity: preferences.planIntensity,
+    learningGoal: preferences.learningGoal,
   });
   const previousPlan = state.privateTutorLearningPlans.find((row) => row.learnerId === learner.id && row.contentPackageId === pkg.id);
   const learningPlan = {
