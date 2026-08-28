@@ -36,6 +36,7 @@ const reviewBook = {
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getPrivateTutorProfile: () => Promise.resolve({ profile: learner, migrationRequired: false }),
   getPrivateTutorSnapshot: () => Promise.resolve({ learner, profile: learner, snapshot, learnerModel: null, strategyDecision: null, learningPlan: null }),
+  getPrivateTutorRoadmapLedger: () => Promise.resolve(null),
   getCurrentPrivateTutorAssessment: () => Promise.resolve(completedAssessment),
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
   getPrivateTutorReviewBook: () => Promise.resolve(reviewBook),
