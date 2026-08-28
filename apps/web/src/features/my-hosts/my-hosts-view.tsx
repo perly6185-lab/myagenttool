@@ -36,8 +36,8 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { ApiError } from "@/lib/api/request";
 import { useUiStore } from "@/store/ui-store";
 import { MAX_HOST_DOWNLOAD_BYTES, MAX_HOST_UPLOAD_BYTES, hostApi } from "./host-api";
-import { HOST_DIAGNOSTIC_QUICK_ACTIONS, hostDiagnosticPlan, hostDiagnosticPlanCopy, hostDiagnosticSummaryCopy, suggestHostDiagnostic } from "./host-assistant";
-import type { HostAuthMethod, HostDiagnosticResult, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResult, HostFileTransfer, SshHost } from "./host-types";
+import { HOST_DIAGNOSTIC_QUICK_ACTIONS, hostDiagnosticPlan, hostDiagnosticPlanCopy, hostDiagnosticSummaryCopy, parseHostLoginAuditEvents, suggestHostDiagnostic } from "./host-assistant";
+import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticResult, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResult, HostFileTransfer, SshHost } from "./host-types";
 
 type DetailTab = "overview" | "files" | "transfers" | "settings";
 
@@ -93,7 +93,7 @@ function errorText(error: unknown, zh: boolean) {
 }
 
 function hostStatus(host: SshHost, zh: boolean, professional: boolean) {
-  if (host.connectionStatus === "ready") return { tone: "success" as const, label: professional ? (zh ? "连接正常" : "Ready") : (zh ? "可以使用" : "Ready to use") };
+  if (host.connectionStatus === "ready") return { tone: "success" as const, label: professional ? (zh ? "连接正常" : "Ready") : (zh ? "状态正常" : "All good") };
   if (host.connectionStatus === "fingerprint_pending") return { tone: "warning" as const, label: professional ? (zh ? "等待确认指纹" : "Confirm fingerprint") : (zh ? "请确认设备" : "Confirm device") };
   if (host.connectionStatus === "error") {
     if (!professional && host.lastConnectionError?.code === "ssh_connection_refused") return { tone: "danger" as const, label: zh ? "连接服务未开启" : "Connection service is off" };
@@ -128,8 +128,8 @@ export function MyHostsView() {
           add: "添加主机", empty: "尚未添加主机", emptyHint: "添加后会依次保存安全凭据、确认主机身份，并配置受控文件范围。",
         }
       : {
-          eyebrow: "我的主机", title: "连接和使用我的设备", description: "查看设备状态、浏览已允许的文件，并安全完成上传和下载。",
-          add: "连接设备", empty: "还没有连接设备", emptyHint: "输入设备地址和登录信息，验证成功后即可选择允许访问的文件夹。",
+          eyebrow: "我的设备", title: "我的主机", description: "查看设备状态、管理文件，或者直接告诉 AI 你想做什么。",
+          add: "添加设备", empty: "还没有添加设备", emptyHint: "连接自己的电脑或服务器后，就可以查看状态、管理文件并让 AI 帮你处理日常问题。",
         }
     : professional
       ? {
@@ -137,8 +137,8 @@ export function MyHostsView() {
           add: "Add host", empty: "No hosts yet", emptyHint: "Add one to save a secure credential, confirm host identity, and configure a governed file range.",
         }
       : {
-          eyebrow: "My hosts", title: "Connect and use my devices", description: "Check device health, browse approved files, and safely upload or download.",
-          add: "Connect device", empty: "No devices connected", emptyHint: "Enter the device address and sign-in details, then choose which folder may be accessed.",
+          eyebrow: "My devices", title: "My hosts", description: "Check device status, manage files, or tell AI what you want to do.",
+          add: "Add device", empty: "No devices yet", emptyHint: "Connect your computer or server to check its status, manage files, and get help from AI.",
         };
 
   if (hosts.isLoading) return <Notice title={zh ? "正在读取主机…" : "Loading hosts…"} loading />;
@@ -164,13 +164,17 @@ export function MyHostsView() {
 
 function HostDetail({ host, tab, setTab, zh, professional, onContinue }: { host: SshHost; tab: DetailTab; setTab: (tab: DetailTab) => void; zh: boolean; professional: boolean; onContinue: (options?: { allowPrivate?: boolean }) => void }) {
   const scopes = useQuery({ queryKey: ["my-host-scopes", host.id], queryFn: () => hostApi.scopes(host.id) });
-  const labels: Record<DetailTab, string> = zh
-    ? { overview: "概览", files: "远程文件", transfers: "传输任务", settings: "设置" }
-    : { overview: "Overview", files: "Remote files", transfers: "Transfers", settings: "Settings" };
+  const labels: Record<DetailTab, string> = professional
+    ? zh
+      ? { overview: "概览", files: "远程文件", transfers: "传输任务", settings: "设置" }
+      : { overview: "Overview", files: "Remote files", transfers: "Transfers", settings: "Settings" }
+    : zh
+      ? { overview: "主页", files: "文件", transfers: "最近活动", settings: "设置" }
+      : { overview: "Home", files: "Files", transfers: "Recent activity", settings: "Settings" };
   const visibleTabs = (Object.keys(labels) as DetailTab[]).filter((key) => professional || key !== "settings");
   const visibleTab = professional || tab !== "settings" ? tab : "overview";
   const status = hostStatus(host, zh, professional);
-  return <Card className="min-w-0"><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>{host.name}</CardTitle>{professional ? <p className="mt-1 font-mono text-xs text-muted-foreground">{host.user}@{host.host}:{host.port}</p> : <p className="mt-1 text-xs text-muted-foreground">{zh ? "自己的电脑或服务器" : "Your computer or server"}</p>}</div><StatusBadge tone={status.tone}>{status.label}</StatusBadge></div><div className="mt-3 flex flex-wrap gap-1 border-b">{visibleTabs.map((key) => <button key={key} type="button" onClick={() => setTab(key)} className={`border-b-2 px-3 py-2 text-sm ${visibleTab === key ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{labels[key]}</button>)}</div></CardHeader>
+  return <Card className="min-w-0"><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>{host.name}</CardTitle>{professional ? <p className="mt-1 font-mono text-xs text-muted-foreground">{host.user}@{host.host}:{host.port}</p> : <p className="mt-1 text-xs text-muted-foreground">{zh ? "已确认是你的设备" : "Confirmed as your device"}</p>}</div><StatusBadge tone={status.tone}>{status.label}</StatusBadge></div><div className="mt-3 flex flex-wrap gap-1 border-b">{visibleTabs.map((key) => <button key={key} type="button" onClick={() => setTab(key)} className={`border-b-2 px-3 py-2 text-sm ${visibleTab === key ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{labels[key]}</button>)}</div></CardHeader>
     <CardContent>
       {visibleTab === "overview" ? <HostOverview host={host} scopeCount={scopes.data?.count ?? 0} zh={zh} professional={professional} onContinue={onContinue} /> : null}
       {visibleTab === "files" ? <RemoteFiles host={host} scopes={scopes.data?.scopes ?? []} loading={scopes.isLoading} error={scopes.error} zh={zh} professional={professional} onAdd={onContinue} /> : null}
@@ -186,8 +190,8 @@ function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host
   return <div className="space-y-4">
     <div className="grid gap-3 sm:grid-cols-3">
       <Summary icon={ready ? CheckCircle2 : TriangleAlert} label={professional ? (zh ? "连接" : "Connection") : (zh ? "设备状态" : "Device status")} value={ready ? professional ? (zh ? "已验证" : "Verified") : (zh ? "可以使用" : "Ready to use") : professional ? (zh ? "未完成" : "Incomplete") : (zh ? "需要处理" : "Action needed")} />
-      <Summary icon={FolderLock} label={professional ? (zh ? "文件范围" : "File ranges") : (zh ? "允许访问的文件夹" : "Approved folders")} value={zh ? `${scopeCount} 个` : String(scopeCount)} />
-      <Summary icon={ShieldCheck} label={zh ? "文件操作" : "File access"} value={professional ? (zh ? "范围内受控传输" : "Governed transfers") : (zh ? "仅限已允许文件夹" : "Approved folders only")} />
+      <Summary icon={FolderLock} label={professional ? (zh ? "文件范围" : "File ranges") : (zh ? "我的文件夹" : "My folders")} value={zh ? `${scopeCount} 个可用` : `${scopeCount} available`} />
+      <Summary icon={professional ? ShieldCheck : Sparkles} label={professional ? (zh ? "文件操作" : "File access") : (zh ? "AI 助手" : "AI assistant")} value={professional ? (zh ? "范围内受控传输" : "Governed transfers") : (zh ? "可以直接查看设备" : "Ready to check this device")} />
     </div>
     {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div className="min-w-0 flex-1"><p className="text-sm font-medium">{recovery.title}</p><p className="mt-1 text-xs text-muted-foreground">{recovery.detail}</p></div><Button onClick={() => onContinue(recovery.allowPrivate ? { allowPrivate: true } : undefined)}>{recovery.action}<ChevronRight /></Button></div> : null}
     {professional && host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
@@ -198,11 +202,11 @@ function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host
 function hostRecovery(host: SshHost, zh: boolean, professional: boolean) {
   if (host.connectionStatus === "ready") return professional
     ? { title: zh ? "添加一个文件范围" : "Add a file range", detail: zh ? "只有批准目录内的文件可以被查看。" : "Only files inside an approved directory can be viewed.", action: zh ? "继续设置" : "Continue setup", allowPrivate: false }
-    : { title: zh ? "选择允许访问的文件夹" : "Choose an approved folder", detail: zh ? "选择后只能查看和操作这个文件夹内的内容。" : "Only files in the folder you choose can be viewed or changed.", action: zh ? "选择文件夹" : "Choose folder", allowPrivate: false };
+    : { title: zh ? "添加一个常用文件夹" : "Add a folder you use", detail: zh ? "添加后可以直接浏览、搜索和传输里面的文件，AI 也能在这个文件夹里帮你查找资料。" : "Browse, search, and transfer its files directly. AI can also help find information in this folder.", action: zh ? "添加文件夹" : "Add folder", allowPrivate: false };
   const code = host.lastConnectionError?.code ?? "";
   if (code === "ssh_host_private_network_blocked") return professional
     ? { title: zh ? "需要允许访问内网设备" : "Local-network access needs approval", detail: zh ? "这是局域网地址。允许后会重新检查设备连接。" : "This is a local-network address. Approve it to check the device again.", action: zh ? "允许内网并重试" : "Allow local network and retry", allowPrivate: true }
-    : { title: zh ? "需要允许连接局域网设备" : "Local-device permission needed", detail: zh ? "尚未连接或访问文件。确认许可后才会重试。" : "No connection or file access has occurred. MyAgentTool will retry only after you approve it.", action: zh ? "允许并重试" : "Allow and retry", allowPrivate: true };
+    : { title: zh ? "确认这是你的局域网设备" : "Confirm this local device is yours", detail: zh ? "首次连接确认一次，以后会直接使用这台设备。" : "Confirm once on the first connection, then use this device directly.", action: zh ? "确认并连接" : "Confirm and connect", allowPrivate: true };
   if (!professional && ["ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid"].includes(code)) return { title: zh ? "登录信息需要更新" : "Sign-in details need updating", detail: zh ? `${errorText(new ApiError(code, code, 0), zh)} 连接尚未建立，文件没有被访问。` : `${errorText(new ApiError(code, code, 0), zh)} The connection was not established and no files were accessed.`, action: zh ? "重新输入登录信息" : "Update sign-in details", allowPrivate: false };
   if (!professional && code === "ssh_host_fingerprint_changed") return { title: zh ? "设备身份发生变化" : "Device identity changed", detail: zh ? "为保护文件，连接已在访问文件前停止。请确认你仍在连接同一台设备。" : "The connection stopped before file access. Confirm that this is still the same device.", action: zh ? "检查设备身份" : "Check device identity", allowPrivate: false };
   if (!professional && code === "ssh_connection_refused") return { title: zh ? "设备在线，但连接服务未开启" : "The device is online, but its connection service is off", detail: zh ? "文件没有被访问。请在设备上开启远程登录或 SSH，并确认端口设置。" : "No files were accessed. Turn on Remote Login or SSH on the device and check the port.", action: zh ? "检查连接设置" : "Check connection settings", allowPrivate: false };
@@ -224,38 +228,59 @@ function HostAssistant({ host, zh, professional, onRepairCredential }: { host: S
   const [result, setResult] = useState<HostDiagnosticResult | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [credentialRepairNeeded, setCredentialRepairNeeded] = useState(false);
-  const planMutation = useMutation({
-    mutationFn: () => hostApi.planDiagnostic(host.id, input.trim()),
-    onSuccess: (result) => { choose({ ...hostDiagnosticPlan(result.plan.action, result.plan.parameters), command: result.plan.command, parameters: result.plan.parameters }); },
-    onError: () => { setPlan(null); setResult(null); setMessage(zh ? "还不能判断你想检查什么。请换一种说法，例如“检查登录审计”，或直接选择下面的一项只读检查。" : "I could not determine what you want to check. Rephrase it, for example “check SSH sign-in audit”, or choose one of the read-only checks below."); },
-  });
+  const choose = (next: NonNullable<typeof plan>) => { setPlan(next); setResult(null); setMessage(null); setCredentialRepairNeeded(false); };
   const mutation = useMutation({
     mutationFn: (next: NonNullable<typeof plan>) => next.parameters ? hostApi.diagnose(host.id, next.action, next.parameters) : hostApi.diagnose(host.id, next.action),
     onSuccess: (response) => { setResult(response.result); setMessage(null); },
     onError: (error) => {
       setResult(null);
-      setMessage(diagnosticFailureText(error, zh));
+      setMessage(diagnosticFailureText(error, zh, professional));
       const repairNeeded = isCredentialDiagnosticFailure(error);
       setCredentialRepairNeeded(repairNeeded);
       if (repairNeeded) void queryClient.invalidateQueries({ queryKey: ["my-hosts"] });
     },
   });
+  const selectAction = (next: NonNullable<typeof plan>) => {
+    choose(next);
+    if (!professional) mutation.mutate(next);
+  };
+  const planMutation = useMutation({
+    mutationFn: () => hostApi.planDiagnostic(host.id, input.trim()),
+    onSuccess: (response) => {
+      selectAction({ ...hostDiagnosticPlan(response.plan.action, response.plan.parameters), command: response.plan.command, parameters: response.plan.parameters });
+    },
+    onError: () => {
+      setPlan(null);
+      setResult(null);
+      setMessage(zh ? "我还没理解你的意思。可以换种说法，例如“看看最近谁登录过”，或者直接选择下面的一项。" : "I did not understand that yet. Try “show recent sign-ins” or choose one of the options below.");
+    },
+  });
   useEffect(() => { setInput(""); setPlan(null); setResult(null); setMessage(null); setCredentialRepairNeeded(false); }, [host.id]);
   useEffect(() => { if (host.connectionStatus !== "ready") { setPlan(null); setResult(null); } }, [host.connectionStatus]);
-  const choose = (next: NonNullable<typeof plan>) => { setPlan(next); setResult(null); setMessage(null); setCredentialRepairNeeded(false); };
   const busy = planMutation.isPending || mutation.isPending;
   const submit = () => { if (input.trim() && !busy) planMutation.mutate(); };
   const ready = host.connectionStatus === "ready";
   const planCopy = plan ? hostDiagnosticPlanCopy(plan, zh) : null;
   return <div className="rounded-lg border bg-card p-4" data-testid="host-assistant">
-    <div className="flex flex-wrap items-start gap-3"><span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><Bot className="size-5" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{zh ? "AI 主机助手" : "AI host assistant"}</p><StatusBadge tone="neutral"><Sparkles className="size-3" />{zh ? "只读检查" : "Read-only checks"}</StatusBadge></div><p className="mt-1 text-xs text-muted-foreground">{zh ? "说出你遇到的问题。助手只会选择固定检查，执行前说明检查内容，完成后给出结论、影响和下一步。" : "Describe the problem. The assistant selects only fixed checks, explains what will be inspected, and then reports the finding, impact, and next step."}</p></div></div>
-    <div className="mt-4 flex flex-col gap-2 sm:flex-row"><Input disabled={busy} value={input} placeholder={zh ? "例如：看看磁盘还剩多少空间" : "For example: show remaining disk space"} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submit(); }} /><Button variant="secondary" disabled={!input.trim() || !ready || busy} onClick={submit}>{planMutation.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />}{zh ? "生成建议" : "Suggest"}</Button></div>
-    <div className="mt-3 flex flex-wrap gap-2">{HOST_DIAGNOSTIC_QUICK_ACTIONS.map((item) => <Button key={item.action} size="sm" variant="ghost" disabled={!ready || busy} onClick={() => choose(hostDiagnosticPlan(item.action))}>{hostDiagnosticPlanCopy(item, zh).title}</Button>)}</div>
+    <div className="flex flex-wrap items-start gap-3"><span className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><Bot className="size-5" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{zh ? "问问 AI" : "Ask AI"}</p>{professional ? <StatusBadge tone="neutral"><Sparkles className="size-3" />{zh ? "只读检查" : "Read-only checks"}</StatusBadge> : <StatusBadge tone="success"><Sparkles className="size-3" />{zh ? "设备助手" : "Device assistant"}</StatusBadge>}</div><p className="mt-1 text-xs text-muted-foreground">{professional ? (zh ? "说出你遇到的问题。助手会先展示固定检查计划，确认后执行。" : "Describe the problem. The assistant shows a fixed inspection plan before it runs.") : (zh ? "直接问这台设备的空间、内存、程序、网络或最近登录情况。" : "Ask about this device's storage, memory, apps, network, or recent sign-ins.")}</p></div></div>
+    <div className="mt-4 flex flex-col gap-2 sm:flex-row"><Input disabled={busy} value={input} placeholder={professional ? (zh ? "例如：看看磁盘还剩多少空间" : "For example: show remaining disk space") : (zh ? "例如：最近有谁登录过？" : "For example: who signed in recently?")} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submit(); }} /><Button variant="secondary" disabled={!input.trim() || !ready || busy} onClick={submit}>{busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{professional ? (zh ? "生成建议" : "Suggest") : (zh ? "查看" : "Ask")}</Button></div>
+    <div className="mt-3 flex flex-wrap gap-2">{HOST_DIAGNOSTIC_QUICK_ACTIONS.map((item) => <Button key={item.action} size="sm" variant="ghost" disabled={!ready || busy} onClick={() => selectAction(hostDiagnosticPlan(item.action))}>{professional ? hostDiagnosticPlanCopy(item, zh).title : ordinaryDiagnosticLabel(item.action, zh)}</Button>)}</div>
     {!ready ? <p className="mt-3 rounded-lg bg-warning/10 p-3 text-xs text-muted-foreground">{zh ? "请先完成主机连接验证，助手才会访问设备。" : "Complete host connection verification before the assistant can access this device."}</p> : null}
-    {plan && planCopy && !result ? <div className="mt-4 space-y-3 rounded-lg border border-primary/25 bg-primary/[0.04] p-3"><div><p className="text-sm font-medium">{planCopy.title}</p><p className="mt-1 text-xs text-muted-foreground">{planCopy.explanation}</p></div><div className="rounded-md bg-muted p-3 text-sm"><span className="text-xs text-muted-foreground">{zh ? "将检查" : "Will check"}</span><p className="mt-1 font-medium">{planCopy.check}</p></div>{professional ? <code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{plan.command || (zh ? "需要先指定服务名称" : "Specify a service name first")}</code> : null}<div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{zh ? "只读 · 不会上传、删除、清理或重启服务" : "Read-only · no upload, deletion, cleanup, or service restart"}</span><Button disabled={!ready || !plan.command || mutation.isPending} onClick={() => mutation.mutate(plan)}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{professional ? (zh ? "确认并执行" : "Confirm and run") : (zh ? "确认检查" : "Confirm check")}</Button></div></div> : null}
+    {professional && plan && planCopy && !result ? <div className="mt-4 space-y-3 rounded-lg border border-primary/25 bg-primary/[0.04] p-3"><div><p className="text-sm font-medium">{planCopy.title}</p><p className="mt-1 text-xs text-muted-foreground">{planCopy.explanation}</p></div><div className="rounded-md bg-muted p-3 text-sm"><span className="text-xs text-muted-foreground">{zh ? "将检查" : "Will check"}</span><p className="mt-1 font-medium">{planCopy.check}</p></div><code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{plan.command || (zh ? "需要先指定服务名称" : "Specify a service name first")}</code><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{zh ? "只读 · 不会上传、删除、清理或重启服务" : "Read-only · no upload, deletion, cleanup, or service restart"}</span><Button disabled={!ready || !plan.command || mutation.isPending} onClick={() => mutation.mutate(plan)}>{mutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "确认并执行" : "Confirm and run"}</Button></div></div> : null}
+    {!professional && mutation.isPending ? <div className="mt-4 flex items-center gap-2 rounded-lg bg-primary/[0.06] p-3 text-sm"><Loader2 className="size-4 animate-spin text-primary" />{zh ? "正在查看这台设备…" : "Checking this device…"}</div> : null}
     {message ? <div role="alert" className="mt-3 flex flex-wrap items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"><TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" /><p className="min-w-0 flex-1">{message}</p>{credentialRepairNeeded && ready ? <Button size="sm" variant="secondary" onClick={onRepairCredential}><KeyRound />{zh ? "重新输入登录信息" : "Update sign-in details"}</Button> : null}</div> : null}
-    {result ? <div className="mt-4"><div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground"><CheckCircle2 className="size-4 text-primary" />{zh ? "检查结果（仅本次会话保留技术输出）" : "Check result (technical output is session-only)"}</div><DiagnosticSummaryPanel summary={result.summary} zh={zh} /><details className="mt-3 rounded-lg border p-3" open={professional}><summary className="cursor-pointer text-xs font-medium">{zh ? "技术证据" : "Technical evidence"}</summary><div className="mt-3 space-y-2"><code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{result.command}</code>{result.resolvedAddress ? <p className="break-all text-xs text-muted-foreground">{zh ? "本次连接地址" : "Connection address"}: {result.resolvedAddress}</p> : null}<pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs leading-5">{result.output || (zh ? "设备没有返回原始输出。" : "The device returned no raw output.")}</pre><p className="text-xs text-muted-foreground">{zh ? "原始输出只在本次页面会话显示，不写入诊断审计。" : "Raw output is shown only in this page session and is not written to diagnostic audit records."}</p></div></details></div> : null}
+    {result ? <div className="mt-4"><div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground"><CheckCircle2 className="size-4 text-primary" />{professional ? (zh ? "检查结果（仅本次会话保留技术输出）" : "Check result (technical output is session-only)") : (zh ? "AI 已查看这台设备" : "AI checked this device")}</div><DiagnosticSummaryPanel summary={result.summary} zh={zh} professional={professional} />{!professional && result.action === "ssh_login_audit" ? <LoginAuditPanel output={result.output} zh={zh} /> : null}{professional ? <details className="mt-3 rounded-lg border p-3" open><summary className="cursor-pointer text-xs font-medium">{zh ? "技术证据" : "Technical evidence"}</summary><div className="mt-3 space-y-2"><code className="block overflow-x-auto rounded-md bg-muted p-3 text-xs">{result.command}</code>{result.resolvedAddress ? <p className="break-all text-xs text-muted-foreground">{zh ? "本次连接地址" : "Connection address"}: {result.resolvedAddress}</p> : null}<pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs leading-5">{result.output || (zh ? "设备没有返回原始输出。" : "The device returned no raw output.")}</pre><p className="text-xs text-muted-foreground">{zh ? "原始输出只在本次页面会话显示，不写入诊断审计。" : "Raw output is shown only in this page session and is not written to diagnostic audit records."}</p></div></details> : null}</div> : null}
   </div>;
+}
+
+function ordinaryDiagnosticLabel(action: HostDiagnosticAction, zh: boolean) {
+  const labels: Record<HostDiagnosticAction, readonly [string, string]> = {
+    disk_usage: ["磁盘空间", "Storage"], memory_usage: ["内存", "Memory"], system_info: ["系统信息", "System"], uptime: ["运行状态", "Uptime"],
+    ssh_login_audit: ["最近登录", "Recent sign-ins"], processes: ["程序占用", "App usage"], listening_ports: ["网络服务", "Network services"],
+    docker_status: ["容器", "Containers"], network_info: ["网络状态", "Network"], login_sessions: ["当前登录", "Current sign-ins"],
+    failed_services: ["异常服务", "Failed services"], service_status: ["服务状态", "Service status"], recent_logs: ["最近事件", "Recent events"],
+  };
+  return labels[action][zh ? 0 : 1];
 }
 
 function isCredentialDiagnosticFailure(error: unknown) {
@@ -263,8 +288,15 @@ function isCredentialDiagnosticFailure(error: unknown) {
   return ["ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid"].includes(code);
 }
 
-function diagnosticFailureText(error: unknown, zh: boolean) {
+function diagnosticFailureText(error: unknown, zh: boolean, professional: boolean) {
   const code = error instanceof ApiError ? error.code : "";
+  if (!professional) {
+    if (["ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid", "ssh_agent_unavailable"].includes(code)) return zh ? "需要重新登录这台设备，然后再试一次。" : "Sign in to this device again, then retry.";
+    if (code === "ssh_fixed_command_failed" || code === "ssh_diagnostic_unsupported") return zh ? "这台设备暂时看不了这一项，可以换一项继续。" : "This item is not available on the device right now. Try another one.";
+    if (code === "ssh_fixed_command_timeout" || code === "ssh_connection_timeout") return zh ? "查看超时了。确认设备在线后再试一次。" : "That took too long. Confirm the device is online and try again.";
+    if (["ssh_connection_failed", "ssh_connection_refused", "ssh_host_unreachable"].includes(code)) return zh ? "现在连不上这台设备，请先检查设备是否在线。" : "This device cannot be reached right now. Check that it is online.";
+    return errorText(error, zh);
+  }
   if (["ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid", "ssh_agent_unavailable"].includes(code)) return zh ? "无法读取这台设备的登录信息。请先重新输入密码或私钥，再重试检查；设备和文件没有被修改。" : "The sign-in details for this device are unavailable. Re-enter the password or private key before retrying. No device settings or files were changed.";
   if (code === "ssh_fixed_command_failed" || code === "ssh_diagnostic_unsupported") return zh ? "这台设备无法完成该项只读检查，设备和文件没有被修改。请选择另一项检查或查看专业设置。" : "This device could not complete that read-only check. No device settings or files were changed. Choose another check or review Professional settings.";
   if (code === "ssh_fixed_command_timeout" || code === "ssh_connection_timeout") return zh ? "检查等待超时，设备和文件没有被修改。确认设备在线后再手动重试。" : "The check timed out. No device settings or files were changed. Confirm the device is online before retrying manually.";
@@ -272,11 +304,36 @@ function diagnosticFailureText(error: unknown, zh: boolean) {
   return `${errorText(error, zh)} ${zh ? "没有自动修改设备。" : "The device was not changed automatically."}`;
 }
 
-function DiagnosticSummaryPanel({ summary, zh }: { summary: HostDiagnosticSummary; zh: boolean }) {
-  const copy = hostDiagnosticSummaryCopy(summary, zh);
+function DiagnosticSummaryPanel({ summary, zh, professional }: { summary: HostDiagnosticSummary; zh: boolean; professional: boolean }) {
+  const copy = hostDiagnosticSummaryCopy(summary, zh, !professional);
   const tone = summary.severity === "healthy" ? "success" : summary.severity === "critical" ? "danger" : summary.severity === "warning" ? "warning" : "neutral";
   const severity = summary.severity === "healthy" ? (zh ? "正常" : "Looks good") : summary.severity === "critical" ? (zh ? "需要处理" : "Needs attention") : summary.severity === "warning" ? (zh ? "请留意" : "Warning") : summary.severity === "unknown" ? (zh ? "无法确认" : "Unknown") : (zh ? "信息" : "Information");
-  return <div className="space-y-3 rounded-lg border p-3" data-testid="diagnostic-summary"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium">{copy.finding}</p><StatusBadge tone={tone}>{severity}</StatusBadge></div>{copy.facts.length ? <div className="grid gap-2 sm:grid-cols-2">{copy.facts.map((item) => <div key={`${item.key}-${item.value}`} className="rounded-md bg-muted px-3 py-2 text-xs"><span className="text-muted-foreground">{item.label}</span><strong className="mt-1 block text-sm">{item.value}</strong></div>)}</div> : null}<div className="grid gap-2 text-sm sm:grid-cols-2"><div className="rounded-md bg-muted/60 p-3"><span className="text-xs text-muted-foreground">{zh ? "影响" : "Impact"}</span><p className="mt-1">{copy.impact}</p></div><div className="rounded-md bg-primary/[0.06] p-3"><span className="text-xs text-muted-foreground">{zh ? "下一步" : "Next step"}</span><p className="mt-1 font-medium">{copy.nextAction}</p></div></div></div>;
+  return <div className="space-y-3 rounded-lg border p-3" data-testid="diagnostic-summary"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium">{copy.finding}</p><StatusBadge tone={tone}>{severity}</StatusBadge></div>{copy.facts.length ? <div className="grid gap-2 sm:grid-cols-2">{copy.facts.map((item) => <div key={`${item.key}-${item.value}`} className="rounded-md bg-muted px-3 py-2 text-xs"><span className="text-muted-foreground">{item.label}</span><strong className="mt-1 block text-sm">{item.value}</strong></div>)}</div> : null}<div className="grid gap-2 text-sm sm:grid-cols-2"><div className="rounded-md bg-muted/60 p-3"><span className="text-xs text-muted-foreground">{professional ? (zh ? "影响" : "Impact") : (zh ? "这意味着" : "What this means")}</span><p className="mt-1">{copy.impact}</p></div><div className="rounded-md bg-primary/[0.06] p-3"><span className="text-xs text-muted-foreground">{professional ? (zh ? "下一步" : "Next step") : (zh ? "建议" : "Suggestion")}</span><p className="mt-1 font-medium">{copy.nextAction}</p></div></div></div>;
+}
+
+function LoginAuditPanel({ output, zh }: { output: string; zh: boolean }) {
+  const events = parseHostLoginAuditEvents(output);
+  if (!events.length) return null;
+  const labels = {
+    success: zh ? "成功" : "Successful",
+    failed: zh ? "失败" : "Failed",
+    invalid_user: zh ? "账号不存在" : "Unknown account",
+    preauth: zh ? "认证前断开" : "Disconnected before sign-in",
+  } as const;
+  return <div className="mt-3 space-y-2 rounded-lg border p-3" data-testid="login-audit-events">
+    <div><p className="text-sm font-medium">{zh ? "最近登录记录" : "Recent sign-in activity"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "最近 24 小时，按时间从近到远排列。" : "The last 24 hours, newest first."}</p></div>
+    <div className="divide-y rounded-md border">{events.map((event, index) => <div key={`${event.time}-${event.source}-${index}`} className="grid gap-2 p-3 text-xs sm:grid-cols-[145px_90px_minmax(0,1fr)] sm:items-center">
+      <span className="text-muted-foreground">{formatAuditTime(event.time, zh)}</span>
+      <StatusBadge tone={event.status === "success" ? "success" : event.status === "preauth" ? "neutral" : "warning"}>{labels[event.status]}</StatusBadge>
+      <span className="min-w-0"><strong className="block truncate">{event.user || (zh ? "未识别账号" : "Unknown account")}</strong><span className="block truncate text-muted-foreground">{zh ? "来源" : "From"}: {event.source || (zh ? "未知" : "Unknown")}</span></span>
+    </div>)}</div>
+  </div>;
+}
+
+function formatAuditTime(value: string, zh: boolean) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return value;
+  return new Intl.DateTimeFormat(zh ? "zh-CN" : "en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed);
 }
 
 function RemoteFiles({ host, scopes, loading, error, zh, professional, onAdd }: { host: SshHost; scopes: HostFileScope[]; loading: boolean; error: unknown; zh: boolean; professional: boolean; onAdd: () => void }) {
