@@ -150,15 +150,24 @@ test("runs only confirmed, allowlisted read-only diagnostics after host verifica
 });
 
 test("normalizes site credential resolver errors at the host diagnostic boundary", async () => {
-  const { service } = harness({ credentialResult: { ok: false, error: "site_deployment_credential_unavailable" } });
+  const { service, events } = harness({ credentialResult: { ok: false, error: "site_deployment_credential_unavailable" } });
   const target = service.createSshTarget({ host: "host.example", user: "deploy", authMethod: "private_key_ref", purpose: "file_transfer" });
   target.connectionStatus = "ready";
   target.trustStatus = "pinned";
   target.knownHostFingerprint = FINGERPRINT;
+  target.capabilities = { sftp: true };
+  const revision = target.revision;
 
-  assert.deepEqual(await service.runSshHostDiagnostic(target, "login_sessions", { userId: "usr_operator" }), {
-    ok: false, status: 409, error: "ssh_credential_unavailable",
-  });
+  const result = await service.runSshHostDiagnostic(target, "login_sessions", { userId: "usr_operator" });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 409);
+  assert.equal(result.error, "ssh_credential_unavailable");
+  assert.equal(result.target, target);
+  assert.equal(target.connectionStatus, "error");
+  assert.equal(target.capabilities, null);
+  assert.equal(target.lastConnectionError?.code, "ssh_credential_unavailable");
+  assert.equal(target.revision, revision + 1);
+  assert.equal(events.at(-1)?.type, "ssh.host_diagnostic.connection_failed");
 });
 
 test("plans ordinary host questions without producing arbitrary shell", () => {
