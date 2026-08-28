@@ -88,18 +88,30 @@ export function buildHostDiagnosticSummary(action, output) {
     let failed = 0;
     let invalidUser = 0;
     const preauthSessions = new Set();
+    const auditEvents = new Set();
     for (const line of lines) {
-      if (/\bAccepted\s+(?:password|publickey|keyboard-interactive|gssapi-with-mic)\b/i.test(line)) successful += 1;
-      else if (/\bFailed\s+(?:password|publickey|keyboard-interactive)\b|authentication failure|maximum authentication attempts exceeded|PAM:\s+Authentication failure/i.test(line)) failed += 1;
-      else if (/\bInvalid user\b/i.test(line)) failed += 1;
+      const processId = line.match(/\bsshd(?:-session)?\[(\d+)\]/i)?.[1];
+      const eventKey = processId ? `pid:${processId}` : `line:${line}`;
+      let recognized = false;
+      if (/\bAccepted\s+(?:password|publickey|keyboard-interactive|gssapi-with-mic)\b/i.test(line)) {
+        successful += 1;
+        recognized = true;
+      } else if (/\bFailed\s+(?:password|publickey|keyboard-interactive)\b|authentication failure|maximum authentication attempts exceeded|PAM:\s+Authentication failure/i.test(line)) {
+        failed += 1;
+        recognized = true;
+      } else if (/\bInvalid user\b/i.test(line)) {
+        failed += 1;
+        recognized = true;
+      }
       if (/\bInvalid user\b/i.test(line)) invalidUser += 1;
       if (/\[preauth\]/i.test(line)) {
-        const processId = line.match(/\bsshd\[(\d+)\]/i)?.[1];
-        preauthSessions.add(processId ? `pid:${processId}` : `line:${line}`);
+        preauthSessions.add(eventKey);
+        recognized = true;
       }
+      if (recognized) auditEvents.add(eventKey);
     }
     const preauth = preauthSessions.size;
-    const eventCount = successful + failed + preauth;
+    const eventCount = auditEvents.size;
     const facts = [
       fact("ssh_login_audit_event_count", eventCount),
       fact("ssh_login_audit_success_count", successful, successful ? "info" : "healthy"),

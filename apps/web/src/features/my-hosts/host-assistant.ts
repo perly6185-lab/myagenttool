@@ -151,7 +151,7 @@ const FACTS: Record<string, [string, string]> = {
   load_average: ["系统负载", "System load"],
   login_session_count: ["登录会话", "Sign-in sessions"],
   login_user_count: ["登录用户", "Signed-in users"],
-  ssh_login_audit_event_count: ["识别到的登录事件", "Recognized sign-in events"],
+  ssh_login_audit_event_count: ["识别到的 SSH 会话", "Recognized SSH sessions"],
   ssh_login_audit_success_count: ["成功登录", "Successful sign-ins"],
   ssh_login_audit_failure_count: ["失败尝试", "Failed attempts"],
   ssh_login_audit_invalid_user_count: ["无效账号尝试", "Invalid-account attempts"],

@@ -82,6 +82,12 @@ test("summarizes SSH login audit events without retaining users or source addres
   const serviceOnly = buildHostDiagnosticSummary("ssh_login_audit", "host systemd[1]: Started OpenSSH server daemon.");
   assert.equal(serviceOnly.finding, "ssh_login_audit_no_auth_events");
   assert.deepEqual(serviceOnly.facts.map((item) => item.value), ["0", "0", "0", "0", "0"]);
+
+  const repeatedPreauth = buildHostDiagnosticSummary("ssh_login_audit", [
+    "host sshd-session[200]: Failed password for root from 203.0.113.20 port 52000 ssh2 [preauth]",
+    "host sshd-session[200]: Connection closed by authenticating user root 203.0.113.20 port 52000 [preauth]",
+  ].join("\n"));
+  assert.deepEqual(repeatedPreauth.facts.map((item) => item.value), ["1", "0", "1", "0", "1"]);
 });
 
 test("does not infer health from empty or unrecognized diagnostic output", () => {
