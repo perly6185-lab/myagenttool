@@ -45,10 +45,12 @@ test("a fourteen-day learning trial projects next-day recall, delayed review, an
   });
 
   const view = latestPrivateTutorLearningTrialView(state, learner.id, "2026-08-03T08:00:00.000Z");
+  assert.deepEqual(view.metrics.courseCompletion, { scheduledDayCount: 14, completedDayCount: 1, completionRate: 0.0714 });
   assert.deepEqual(view.metrics.planDays, { startedCount: 1, completedCount: 1, completionRate: 1 });
   assert.deepEqual(view.metrics.nextDayRecall, { opportunityCount: 1, attemptedCount: 1, correctCount: 1, retentionRate: 1 });
   assert.deepEqual(view.metrics.delayedReview, { opportunityCount: 1, attemptedCount: 1, correctCount: 1, retentionRate: 1 });
   assert.deepEqual(view.metrics.followUps, { askedCount: 1, feedbackCount: 1, resolvedCount: 1, resolutionRate: 1, feedbackCoverageRate: 1 });
+  assert.deepEqual(view.metrics.errorConvergence, { themeCount: 0, errorCaseCount: 0, convergedThemeCount: 0, unresolvedThemeCount: 0, reopenedThemeCount: 0, convergenceRate: null });
   assert.equal(view.progress.dayIndex, 3);
   assert.equal(view.progress.activeDayCount, 2);
   assert.equal(JSON.stringify(view).includes("normalizedAnswer"), false);
@@ -121,6 +123,7 @@ test("the observation tail includes day-fourteen reviews but excludes new sessio
     now: () => "2026-08-15T14:00:00.000Z", nextId: () => "trial_overlapping",
   }).error, "private_tutor_learning_trial_already_active");
   assert.equal(observing.progress.completedSessionCount, 1);
+  assert.deepEqual(observing.metrics.courseCompletion, { scheduledDayCount: 14, completedDayCount: 1, completionRate: 0.0714 });
   assert.deepEqual(observing.metrics.planDays, { startedCount: 1, completedCount: 1, completionRate: 1 });
   assert.deepEqual(observing.metrics.nextDayRecall, { opportunityCount: 1, attemptedCount: 1, correctCount: 1, retentionRate: 1 });
   assert.deepEqual(observing.metrics.delayedReview, { opportunityCount: 1, attemptedCount: 1, correctCount: 1, retentionRate: 1 });
@@ -134,7 +137,7 @@ test("synthetic steady, intermittent, and sparse learners keep honest sample rea
   assert.equal(steady.metrics.nextDayRecall.retentionRate, 1);
   assert.equal(steady.metrics.delayedReview.retentionRate, 1);
   assert.equal(steady.metrics.followUps.resolutionRate, 1);
-  assert.deepEqual(steady.readiness, { minimumSampleCount: 3, nextDayRecallReady: true, delayedReviewReady: true, followUpResolutionReady: true });
+  assert.deepEqual(steady.readiness, { minimumSampleCount: 3, nextDayRecallReady: true, delayedReviewReady: true, errorConvergenceReady: false, followUpResolutionReady: true });
 
   const intermittent = simulatedTrialView({
     learnerId: "intermittent", recall: [true, null, false, null], delayed: [true, null, true, null], followUps: ["resolved", null, "unresolved", null],
@@ -152,12 +155,49 @@ test("synthetic steady, intermittent, and sparse learners keep honest sample rea
   assert.equal(sparse.readiness.followUpResolutionReady, false);
 });
 
+test("error convergence requires the latest trial error to pass a completed correction chain", () => {
+  const state = trialState();
+  const learner = { id: "learner_errors", ownerTeamId: "team_trial" };
+  startPrivateTutorLearningTrial(state, learner, { goal: "让错题真正收敛" }, {
+    actorId: "usr_trial", contentPackage: { id: "course_math", version: "1.0.0", name: "课程" },
+    now: () => "2026-08-01T00:00:00.000Z", nextId: () => "trial_errors",
+  });
+  state.privateTutorErrorCases.push(
+    { id: "case_a", learnerId: learner.id, contentPackageId: "course_math", contentPackageVersion: "1.0.0", createdAt: "2026-08-01T08:00:00.000Z" },
+    { id: "case_b1", learnerId: learner.id, contentPackageId: "course_math", contentPackageVersion: "1.0.0", createdAt: "2026-08-01T09:00:00.000Z" },
+    { id: "case_b2", learnerId: learner.id, contentPackageId: "course_math", contentPackageVersion: "1.0.0", createdAt: "2026-08-03T09:00:00.000Z" },
+    { id: "case_c", learnerId: learner.id, contentPackageId: "course_math", contentPackageVersion: "1.0.0", createdAt: "2026-08-02T08:00:00.000Z" },
+  );
+  state.privateTutorErrorThemes.push(
+    { id: "theme_a", learnerId: learner.id, contentPackageId: "course_math", errorCaseIds: ["case_a"] },
+    { id: "theme_b", learnerId: learner.id, contentPackageId: "course_math", errorCaseIds: ["case_b2", "case_b1"] },
+    { id: "theme_c", learnerId: learner.id, contentPackageId: "course_math", errorCaseIds: ["case_c"] },
+  );
+  state.privateTutorReviewSchedules.push(
+    { id: "schedule_a", learnerId: learner.id, contentPackageId: "course_math", themeId: "theme_a", completedAt: "2026-08-02T08:00:00.000Z" },
+    { id: "schedule_b", learnerId: learner.id, contentPackageId: "course_math", themeId: "theme_b", completedAt: "2026-08-02T09:00:00.000Z" },
+  );
+
+  const view = latestPrivateTutorLearningTrialView(state, learner.id, "2026-08-05T00:00:00.000Z");
+  assert.deepEqual(view.metrics.errorConvergence, {
+    themeCount: 3,
+    errorCaseCount: 4,
+    convergedThemeCount: 1,
+    unresolvedThemeCount: 2,
+    reopenedThemeCount: 1,
+    convergenceRate: 0.3333,
+  });
+  assert.equal(view.readiness.errorConvergenceReady, true);
+});
+
 function trialState() {
   return {
     privateTutorLearningTrials: [],
     privateTutorSessions: [],
     privateTutorAttempts: [],
     privateTutorReviewSchedules: [],
+    privateTutorErrorCases: [],
+    privateTutorErrorThemes: [],
   };
 }
 
