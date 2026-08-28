@@ -96,11 +96,47 @@ it("gives an ordinary user one plain recovery action for invalid sign-in details
   expect(screen.getAllByRole("button", { name: "Update sign-in details" })).toHaveLength(1);
   expect(screen.queryByText("ssh_authentication_failed")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Update sign-in details" }));
-  expect(await screen.findByRole("heading", { name: "Connect my device" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "Update sign-in details" })).toBeTruthy();
+  expect(screen.getByText(/previous check will not run automatically/)).toBeTruthy();
   expect(screen.queryByPlaceholderText("Leave blank to reuse the securely stored password")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Connect this device" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and reconnect" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Enter the login password");
   expect(hostApi.update).not.toHaveBeenCalled();
+});
+
+it("saves repaired credentials, verifies the existing host, and closes without rerunning work", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const credentialErrorHost: SshHost = {
+    ...host,
+    authMethod: "password_ref",
+    connectionStatus: "error",
+    capabilities: null,
+    lastConnectionError: { code: "ssh_credential_unavailable", at: "2026-08-28T00:00:00.000Z" },
+  };
+  const updatedHost: SshHost = { ...credentialErrorHost, connectionStatus: "untested", lastConnectionError: null, revision: 5 };
+  const observedHost: SshHost = { ...updatedHost, observedFingerprint: host.knownHostFingerprint, revision: 6 };
+  const readyHost: SshHost = { ...host, authMethod: "password_ref", revision: 7 };
+  vi.mocked(hostApi.list).mockResolvedValueOnce({ hosts: [credentialErrorHost], count: 1 }).mockResolvedValue({ hosts: [readyHost], count: 1 });
+  vi.mocked(hostApi.update).mockResolvedValue({ host: updatedHost });
+  vi.mocked(hostApi.observeFingerprint).mockResolvedValue({ host: observedHost, observation: { fingerprint: host.knownHostFingerprint!, resolvedAddress: "203.0.113.10" } });
+  vi.mocked(hostApi.verify).mockResolvedValue({ host: readyHost, verification: { capabilities: readyHost.capabilities } });
+  const saveSshHostCredential = vi.fn().mockResolvedValue({ ok: true, reference: host.credentialRef, authMethod: "password_ref" });
+  const getSshHostCredentialStatus = vi.fn();
+  window.myagenttoolDesktop = { saveSshHostCredential, getSshHostCredentialStatus };
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Update sign-in details" }));
+  expect(getSshHostCredentialStatus).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("Login password"), { target: { value: "replacement-password" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save and reconnect" }));
+
+  await waitFor(() => expect(saveSshHostCredential).toHaveBeenCalledWith(expect.objectContaining({ hostId: host.id, password: "replacement-password" })));
+  expect(hostApi.update).toHaveBeenCalledWith(host.id, expect.objectContaining({ expectedRevision: credentialErrorHost.revision }));
+  expect(hostApi.observeFingerprint).toHaveBeenCalledWith(host.id);
+  expect(hostApi.verify).toHaveBeenCalledWith(host.id);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(hostApi.createScope).not.toHaveBeenCalled();
+  expect(hostApi.diagnose).not.toHaveBeenCalled();
 });
 
 it("distinguishes an offline device from an unavailable SSH service for ordinary users", async () => {
@@ -427,6 +463,17 @@ it("explains a timed-out read-only check without leaking the error code or imply
 
 it("turns a missing desktop credential into a clear host-assistant recovery message", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
+  const credentialErrorHost: SshHost = {
+    ...host,
+    authMethod: "password_ref",
+    connectionStatus: "error",
+    capabilities: null,
+    lastConnectionError: { code: "ssh_credential_unavailable", at: "2026-08-28T00:00:00.000Z" },
+    revision: host.revision + 1,
+  };
+  vi.mocked(hostApi.list)
+    .mockResolvedValueOnce({ hosts: [host], count: 1 })
+    .mockResolvedValue({ hosts: [credentialErrorHost], count: 1 });
   vi.mocked(hostApi.diagnose).mockRejectedValue(new ApiError("ssh_credential_unavailable", "private credential resolver detail", 409));
   renderView();
 
@@ -436,6 +483,15 @@ it("turns a missing desktop credential into a clear host-assistant recovery mess
   expect(await screen.findByText(/sign-in details for this device are unavailable.*Re-enter the password or private key/)).toBeTruthy();
   expect(screen.queryByText("private credential resolver detail")).toBeNull();
   expect(screen.queryByText("ssh_credential_unavailable")).toBeNull();
+  expect(await screen.findByText("Sign-in details need updating")).toBeTruthy();
+  expect(screen.getAllByRole("button", { name: "Update sign-in details" })).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Update sign-in details" }));
+
+  expect(await screen.findByRole("heading", { name: "Update sign-in details" })).toBeTruthy();
+  expect(screen.getByText(/previous check will not run automatically/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Save and reconnect" })).toBeTruthy();
+  expect(screen.queryByLabelText("Connection progress")).toBeNull();
+  expect(screen.queryByPlaceholderText("Leave blank to reuse the securely stored password")).toBeNull();
 });
 
 it("previews approved text files without executing their contents", async () => {
