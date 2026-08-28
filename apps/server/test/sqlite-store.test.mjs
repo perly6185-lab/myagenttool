@@ -132,7 +132,7 @@ test("sqlite: ADR 0019 — a history row SURVIVES replaceSnapshot (never mirrore
   }
 });
 
-test("sqlite: ADR 0019 — a v1 store migrates to v2 (history table added) on open", { skip }, () => {
+test("sqlite: a v1 store migrates through v3 (history and execution-action indexes) on open", { skip }, () => {
   const dir = mkdtempSync(join(tmpdir(), "sqlite-store-mig-"));
   const path = join(dir, "store.sqlite");
   try {
@@ -143,11 +143,53 @@ test("sqlite: ADR 0019 — a v1 store migrates to v2 (history table added) on op
     raw.exec("CREATE TABLE records(collection TEXT NOT NULL, id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(collection, id))");
     raw.prepare("INSERT INTO meta(key,value) VALUES('schema_version','1')").run();
     raw.close();
-    // Opening with this (v2) binary runs migration step 1 → history exists + usable.
+    // Opening runs every forward migration; history and the v3 business-key
+    // constraint are both immediately usable.
     const store = createSqliteStore({ DatabaseSync, path });
-    assert.equal(store.schemaVersion, 2);
+    assert.equal(store.schemaVersion, 3);
     store.appendHistory("refusals", [{ id: "r1", invocationId: "inv_1", at: "t" }]);
     assert.deepEqual(store.queryHistory("refusals", { invocationId: "inv_1" }).rows.map((r) => r.id), ["r1"]);
+    store.transaction((tx) => tx.insert("executionActionIdempotencyRecords", {
+      id: "eai_1", autoRunId: "aur_1", idempotencyKey: "retry-once",
+    }));
+    assert.throws(() => store.transaction((tx) => tx.insert("executionActionIdempotencyRecords", {
+      id: "eai_corrupt_duplicate", autoRunId: "aur_1", idempotencyKey: "retry-once",
+    })), /UNIQUE constraint failed/);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sqlite: execution-action business key is unique per Auto-run and indexed independently of record id", { skip }, () => {
+  const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
+  try {
+    store.transaction((tx) => {
+      tx.insert("executionActionIdempotencyRecords", { id: "eai_a", autoRunId: "aur_a", idempotencyKey: "same-key" });
+      tx.insert("executionActionIdempotencyRecords", { id: "eai_b", autoRunId: "aur_b", idempotencyKey: "same-key" });
+    });
+    assert.throws(() => store.transaction((tx) => tx.insert("executionActionIdempotencyRecords", {
+      id: "eai_other_id", autoRunId: "aur_a", idempotencyKey: "same-key",
+    })), /UNIQUE constraint failed/);
+    assert.equal(store.query("executionActionIdempotencyRecords").length, 2);
+  } finally {
+    store.close();
+  }
+});
+
+test("sqlite: application migration metadata survives reopen and cannot replace schema_version", { skip }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlite-store-meta-"));
+  const path = join(dir, "store.sqlite");
+  try {
+    let store = createSqliteStore({ DatabaseSync, path });
+    assert.equal(store.getMetadata("application_migration.example.v1"), null);
+    store.setMetadata("application_migration.example.v1", '{"status":"complete"}');
+    assert.throws(() => store.setMetadata("schema_version", "1"), /managed by SQLite migrations/);
+    store.close();
+
+    store = createSqliteStore({ DatabaseSync, path });
+    assert.equal(store.getMetadata("application_migration.example.v1"), '{"status":"complete"}');
+    assert.equal(store.schemaVersion, 3);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

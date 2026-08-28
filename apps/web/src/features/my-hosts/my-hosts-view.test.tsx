@@ -55,20 +55,20 @@ afterEach(() => cleanup());
 it("loads owned hosts directly in Ordinary mode while hiding professional metadata", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   renderView();
-  expect(await screen.findByRole("heading", { name: "Connect and use my devices" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "My hosts" })).toBeTruthy();
   expect((await screen.findAllByText("Production website host")).length).toBe(2);
-  expect(screen.getByRole("button", { name: "Overview" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Remote files" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Transfers" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Home" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Files" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Recent activity" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
   expect(screen.queryByText("deploy@host.example:22")).toBeNull();
   expect(screen.queryByText("host.example")).toBeNull();
-  expect(screen.getByText("Approved folders")).toBeTruthy();
-  expect(screen.getByText("Approved folders only")).toBeTruthy();
+  expect(screen.getByText("My folders")).toBeTruthy();
+  expect(screen.getByText("Ready to check this device")).toBeTruthy();
   expect(hostApi.list).toHaveBeenCalledTimes(1);
   expect(useUiStore.getState().experienceMode).toBe("ordinary");
 
-  fireEvent.click(screen.getByRole("button", { name: "Connect device" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add device" }));
   expect(await screen.findByRole("heading", { name: "Connect my device" })).toBeTruthy();
   expect((screen.getByLabelText("Device address") as HTMLInputElement).value).toBe("");
 });
@@ -96,11 +96,47 @@ it("gives an ordinary user one plain recovery action for invalid sign-in details
   expect(screen.getAllByRole("button", { name: "Update sign-in details" })).toHaveLength(1);
   expect(screen.queryByText("ssh_authentication_failed")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Update sign-in details" }));
-  expect(await screen.findByRole("heading", { name: "Connect my device" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "Update sign-in details" })).toBeTruthy();
+  expect(screen.getByText(/previous check will not run automatically/)).toBeTruthy();
   expect(screen.queryByPlaceholderText("Leave blank to reuse the securely stored password")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Connect this device" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and reconnect" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Enter the login password");
   expect(hostApi.update).not.toHaveBeenCalled();
+});
+
+it("saves repaired credentials, verifies the existing host, and closes without rerunning work", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const credentialErrorHost: SshHost = {
+    ...host,
+    authMethod: "password_ref",
+    connectionStatus: "error",
+    capabilities: null,
+    lastConnectionError: { code: "ssh_credential_unavailable", at: "2026-08-28T00:00:00.000Z" },
+  };
+  const updatedHost: SshHost = { ...credentialErrorHost, connectionStatus: "untested", lastConnectionError: null, revision: 5 };
+  const observedHost: SshHost = { ...updatedHost, observedFingerprint: host.knownHostFingerprint, revision: 6 };
+  const readyHost: SshHost = { ...host, authMethod: "password_ref", revision: 7 };
+  vi.mocked(hostApi.list).mockResolvedValueOnce({ hosts: [credentialErrorHost], count: 1 }).mockResolvedValue({ hosts: [readyHost], count: 1 });
+  vi.mocked(hostApi.update).mockResolvedValue({ host: updatedHost });
+  vi.mocked(hostApi.observeFingerprint).mockResolvedValue({ host: observedHost, observation: { fingerprint: host.knownHostFingerprint!, resolvedAddress: "203.0.113.10" } });
+  vi.mocked(hostApi.verify).mockResolvedValue({ host: readyHost, verification: { capabilities: readyHost.capabilities } });
+  const saveSshHostCredential = vi.fn().mockResolvedValue({ ok: true, reference: host.credentialRef, authMethod: "password_ref" });
+  const getSshHostCredentialStatus = vi.fn();
+  window.myagenttoolDesktop = { saveSshHostCredential, getSshHostCredentialStatus };
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Update sign-in details" }));
+  expect(getSshHostCredentialStatus).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("Login password"), { target: { value: "replacement-password" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save and reconnect" }));
+
+  await waitFor(() => expect(saveSshHostCredential).toHaveBeenCalledWith(expect.objectContaining({ hostId: host.id, password: "replacement-password" })));
+  expect(hostApi.update).toHaveBeenCalledWith(host.id, expect.objectContaining({ expectedRevision: credentialErrorHost.revision }));
+  expect(hostApi.observeFingerprint).toHaveBeenCalledWith(host.id);
+  expect(hostApi.verify).toHaveBeenCalledWith(host.id);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(hostApi.createScope).not.toHaveBeenCalled();
+  expect(hostApi.diagnose).not.toHaveBeenCalled();
 });
 
 it("distinguishes an offline device from an unavailable SSH service for ordinary users", async () => {
@@ -160,7 +196,7 @@ it("keeps certificate infrastructure out of the ordinary file view", async () =>
   }], count: 1 });
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Remote files" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Files" }));
   expect(await screen.findByText("Managed by My Site")).toBeTruthy();
   expect(screen.getByText("This folder is safely managed by My Site")).toBeTruthy();
   expect(screen.queryByText(/Docker Nginx/i)).toBeNull();
@@ -177,7 +213,7 @@ it("replaces raw transfer errors with an ordinary recovery message", async () =>
   }] });
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Transfers" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Recent activity" }));
   expect(await screen.findByText(/The connection timed out.*You can safely retry/)).toBeTruthy();
   expect(screen.queryByText("ssh_connection_timeout")).toBeNull();
   expect(screen.queryByText("/reports/summary.pdf")).toBeNull();
@@ -193,7 +229,7 @@ it("never falls back to an unknown API error code in ordinary mode", async () =>
   }] });
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Transfers" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Recent activity" }));
   expect(await screen.findByText(/operation could not be completed/i)).toBeTruthy();
   expect(screen.queryByText("remote_private_detail_123")).toBeNull();
 });
@@ -214,7 +250,7 @@ it("requires inspection before retrying permission, capacity, or interrupted tra
   ] });
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Transfers" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Recent activity" }));
   expect(await screen.findByText(/no longer allows access.*file result may be incomplete/i)).toBeTruthy();
   expect(screen.getByText(/ran out of space.*file result may be incomplete/i)).toBeTruthy();
   expect(screen.getByText(/stopped before confirming.*completion is unknown/i)).toBeTruthy();
@@ -236,7 +272,7 @@ it("opens host setup from Ordinary mode without changing the experience mode", a
   vi.mocked(hostApi.list).mockResolvedValue({ hosts: [], count: 0 });
   renderView();
 
-  fireEvent.click((await screen.findAllByRole("button", { name: "Connect device" }))[0]);
+  fireEvent.click((await screen.findAllByRole("button", { name: "Add device" }))[0]);
   expect(await screen.findByRole("heading", { name: "Connect my device" })).toBeTruthy();
   expect(screen.getByLabelText("Device address")).toBeTruthy();
   expect(screen.getByText("1. Connect device")).toBeTruthy();
@@ -258,7 +294,7 @@ it("guides an ordinary user through local permission, device identity, and the r
   window.myagenttoolDesktop = { saveSshHostCredential: vi.fn().mockResolvedValue({ ok: true, reference: host.credentialRef, authMethod: "password_ref" }) };
   renderView();
 
-  fireEvent.click((await screen.findAllByRole("button", { name: "Connect device" }))[0]);
+  fireEvent.click((await screen.findAllByRole("button", { name: "Add device" }))[0]);
   fireEvent.change(screen.getByLabelText("Device address"), { target: { value: "10.10.10.222" } });
   fireEvent.change(screen.getByLabelText("Login password"), { target: { value: "test-password" } });
   const localConsent = screen.getByLabelText(/Allow access to my local device/);
@@ -318,7 +354,7 @@ it("finds approved files for an ordinary user without showing matched text or te
   });
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Remote files" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Files" }));
   fireEvent.change(await screen.findByPlaceholderText("For example: deployment guide or mytoolagent.com"), { target: { value: "mytoolagent.com" } });
   fireEvent.click(screen.getByRole("button", { name: "Find files" }));
 
@@ -358,7 +394,31 @@ it("turns a plain-language host request into a reviewed read-only diagnostic", a
   expect(assistant).toBeTruthy();
 });
 
-it("gives ordinary users a conclusion, impact, and next step before technical evidence", async () => {
+it("turns the reported Chinese login question into a reviewed audit check", async () => {
+  vi.mocked(hostApi.planDiagnostic).mockResolvedValue({ plan: { action: "ssh_login_audit", command: "journalctl --no-pager --quiet --since '-24 hours' -u ssh.service -u sshd.service -n 100 -o short-iso", risk: "read_only" } });
+  renderView();
+  fireEvent.change(await screen.findByPlaceholderText("For example: show remaining disk space"), { target: { value: "检查登陆情况" } });
+  fireEvent.click(screen.getByRole("button", { name: "Suggest" }));
+
+  expect(await screen.findByText("counts of successful, failed, invalid-account, and pre-authentication connection events")).toBeTruthy();
+  expect(screen.getByText(/journalctl.*ssh\.service/)).toBeTruthy();
+  expect(hostApi.planDiagnostic).toHaveBeenCalledWith(host.id, "检查登陆情况");
+  expect(hostApi.diagnose).not.toHaveBeenCalled();
+});
+
+it("shows an actionable alert when a host question is not recognized", async () => {
+  vi.mocked(hostApi.planDiagnostic).mockRejectedValue(new ApiError("ssh_diagnostic_intent_unsupported", "unsupported", 422));
+  renderView();
+  fireEvent.change(await screen.findByPlaceholderText("For example: show remaining disk space"), { target: { value: "make it better" } });
+  fireEvent.click(screen.getByRole("button", { name: "Suggest" }));
+
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("show recent sign-ins");
+  expect(alert.textContent).toContain("options below");
+  expect(screen.getByRole("button", { name: "Check SSH sign-in audit" })).toBeTruthy();
+});
+
+it("lets ordinary owners run a check directly and hides technical evidence", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   vi.mocked(hostApi.diagnose).mockResolvedValue({ result: {
     action: "disk_usage",
@@ -369,22 +429,46 @@ it("gives ordinary users a conclusion, impact, and next step before technical ev
   } });
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Check device space" }));
-  expect(screen.getByText("remaining space and the highest usage level")).toBeTruthy();
-  expect(screen.queryByText("df -h")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Confirm check" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Storage" }));
+  await waitFor(() => expect(hostApi.diagnose).toHaveBeenCalledWith(host.id, "disk_usage"));
+  expect(screen.queryByRole("button", { name: "Confirm check" })).toBeNull();
 
   expect(await screen.findByText("Device space is critically low")).toBeTruthy();
-  expect(screen.getByText(/Uploading, saving, or publishing files may fail/)).toBeTruthy();
-  expect(screen.getByText(/Free device space, then check the target file/)).toBeTruthy();
+  expect(screen.getByText(/Uploads, saves, or publishing may fail/)).toBeTruthy();
+  expect(screen.getByText(/Free some device space, then retry/)).toBeTruthy();
   expect(screen.getByText("95%")).toBeTruthy();
-  const evidence = screen.getByText("Technical evidence").closest("details") as HTMLDetailsElement;
-  expect(evidence.open).toBe(false);
-  fireEvent.click(screen.getByText("Technical evidence"));
-  expect(evidence.open).toBe(true);
-  expect(screen.getByText("df -h")).toBeTruthy();
-  expect(screen.getByText(/private-volume/)).toBeTruthy();
-  expect(screen.getByText(/10\.10\.10\.222/)).toBeTruthy();
+  expect(screen.queryByText("Technical evidence")).toBeNull();
+  expect(screen.queryByText("df -h")).toBeNull();
+  expect(screen.queryByText(/private-volume/)).toBeNull();
+  expect(screen.queryByText(/10\.10\.10\.222/)).toBeNull();
+});
+
+it("shows recent sign-ins as owner-readable activity instead of raw journal output", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.diagnose).mockResolvedValue({ result: {
+    action: "ssh_login_audit",
+    command: "journalctl --since '-24 hours' -u ssh.service",
+    output: [
+      "2026-08-28T08:10:00+08:00 server sshd[101]: Accepted password for devagent from 10.10.10.5 port 51000 ssh2",
+      "2026-08-28T08:20:00+08:00 server sshd[102]: Failed password for admin from 198.51.100.20 port 42000 ssh2",
+    ].join("\n"),
+    summary: { version: 1, severity: "warning", finding: "ssh_login_audit_failures_found", impact: "login_attempts_need_review", nextAction: "review_login_audit_evidence", facts: [
+      { key: "ssh_login_audit_success_count", value: "1", severity: "info" },
+      { key: "ssh_login_audit_failure_count", value: "1", severity: "warning" },
+    ] },
+  } });
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Recent sign-ins" }));
+
+  expect(await screen.findByText("Recent sign-in activity")).toBeTruthy();
+  expect(screen.getByText("devagent")).toBeTruthy();
+  expect(screen.getByText(/From: 10\.10\.10\.5/)).toBeTruthy();
+  expect(screen.getByText("admin")).toBeTruthy();
+  expect(screen.getByText(/From: 198\.51\.100\.20/)).toBeTruthy();
+  expect(screen.getByText(/Change the password/)).toBeTruthy();
+  expect(screen.queryByText(/journalctl/)).toBeNull();
+  expect(screen.queryByText("Technical evidence")).toBeNull();
 });
 
 it("explains a timed-out read-only check without leaking the error code or implying a device change", async () => {
@@ -392,13 +476,44 @@ it("explains a timed-out read-only check without leaking the error code or imply
   vi.mocked(hostApi.diagnose).mockRejectedValue(new ApiError("ssh_fixed_command_timeout", "private socket detail", 502));
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Check memory use" }));
-  fireEvent.click(screen.getByRole("button", { name: "Confirm check" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Memory" }));
 
-  expect(await screen.findByText(/The check timed out.*No device settings or files were changed/)).toBeTruthy();
+  expect(await screen.findByText(/That took too long.*device is online/)).toBeTruthy();
   expect(screen.queryByText("ssh_fixed_command_timeout")).toBeNull();
   expect(screen.queryByText("private socket detail")).toBeNull();
-  expect(screen.getByRole("button", { name: "Confirm check" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Memory" })).toBeTruthy();
+});
+
+it("turns a missing desktop credential into a clear host-assistant recovery message", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const credentialErrorHost: SshHost = {
+    ...host,
+    authMethod: "password_ref",
+    connectionStatus: "error",
+    capabilities: null,
+    lastConnectionError: { code: "ssh_credential_unavailable", at: "2026-08-28T00:00:00.000Z" },
+    revision: host.revision + 1,
+  };
+  vi.mocked(hostApi.list)
+    .mockResolvedValueOnce({ hosts: [host], count: 1 })
+    .mockResolvedValue({ hosts: [credentialErrorHost], count: 1 });
+  vi.mocked(hostApi.diagnose).mockRejectedValue(new ApiError("ssh_credential_unavailable", "private credential resolver detail", 409));
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Recent sign-ins" }));
+
+  expect(await screen.findByText(/Sign in to this device again/)).toBeTruthy();
+  expect(screen.queryByText("private credential resolver detail")).toBeNull();
+  expect(screen.queryByText("ssh_credential_unavailable")).toBeNull();
+  expect(await screen.findByText("Sign-in details need updating")).toBeTruthy();
+  expect(screen.getAllByRole("button", { name: "Update sign-in details" })).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Update sign-in details" }));
+
+  expect(await screen.findByRole("heading", { name: "Update sign-in details" })).toBeTruthy();
+  expect(screen.getByText(/previous check will not run automatically/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Save and reconnect" })).toBeTruthy();
+  expect(screen.queryByLabelText("Connection progress")).toBeNull();
+  expect(screen.queryByPlaceholderText("Leave blank to reuse the securely stored password")).toBeNull();
 });
 
 it("previews approved text files without executing their contents", async () => {

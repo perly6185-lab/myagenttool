@@ -124,6 +124,7 @@ export const persistedArrayKeys = [
   "invocations",
   "worktrees",
   "autoRuns",
+  "executionActionIdempotencyRecords",
   "deployments",
   "compareRuns",
   "worktreeReviews",
@@ -361,6 +362,7 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   // #1152: auto-runs stamp their owning team at creation. Pre-stamp rows have
   // no `teamId` and are skipped by the scan (no stamp → nothing to cross-check).
   { key: "autoRuns", owner: "teamId" },
+  { key: "executionActionIdempotencyRecords", owner: "ownerTeamId" },
   { key: "businessDocumentClassifications", owner: "ownerTeamId" },
   { key: "businessDocumentAnalysisJobs", owner: "ownerTeamId" },
   { key: "workflowIntakeObservations", owner: "ownerTeamId" },
