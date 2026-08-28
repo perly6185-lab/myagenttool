@@ -38,6 +38,7 @@ import { createMailboxService, isMailClassificationEnabled } from "../services/m
 import { createLocalContentCatalogService } from "../services/local-content-catalog.mjs";
 import { createWorkResourceDirectoryService } from "../services/work-resource-directory.mjs";
 import { createMaterialWorkSessionService } from "../services/material-work-sessions.mjs";
+import { createMaterialWorkRetrievalService } from "../services/material-work-retrieval.mjs";
 import {
   createLocalContentRetrievalAuthorizer,
   createLocalContentRetrievalService,
@@ -456,6 +457,7 @@ export function createServerRuntimeServices({
     authorizeRetrieval: createLocalContentRetrievalAuthorizer({ state, teamOf }),
     appendEvent,
   });
+  let cancelPendingMaterialWorkReads = () => ({ status: 200, body: { cancelled: 0 } });
   const materialWorkSessionService = createMaterialWorkSessionService({
     state,
     now,
@@ -464,7 +466,21 @@ export function createServerRuntimeServices({
     appendEvent,
     store,
     getLocalContent: localContentCatalogService.get,
+    onCancelled: (input, actor) => cancelPendingMaterialWorkReads(input, actor),
+    onRevisionAdvanced: (input, actor) => cancelPendingMaterialWorkReads(input, actor),
   });
+  const materialWorkRetrievalService = createMaterialWorkRetrievalService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    appendEvent,
+    store,
+    resolveOwnedSession: materialWorkSessionService.resolveOwnedSession,
+    getLocalContent: localContentCatalogService.get,
+    readLocalContentText: localContentCatalogService.readTextChunk,
+  });
+  cancelPendingMaterialWorkReads = materialWorkRetrievalService.cancelPending;
   const persistIndexedContentStateSoon = (sources, reason) => (...args) => {
     const result = persistStateSoon(...args);
     void localContentCatalogService.requestAutomaticIncremental({ reason, sources }).catch(() => {});
@@ -8119,6 +8135,7 @@ export function createServerRuntimeServices({
 
   return {
     httpDependencies,
+    materialWorkRetrieval: materialWorkRetrievalService,
     startLocalContentIndexing: localContentCatalogService.start,
     flushLocalContentIndexing: localContentCatalogService.flushIncremental,
     closeRuntimeServices: async () => {

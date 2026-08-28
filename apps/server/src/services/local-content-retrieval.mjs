@@ -6,6 +6,12 @@ const MAX_INVOCATION_READS = 8;
 const MAX_INVOCATION_CHARACTERS = 128 * 1024;
 const MAX_TRACKED_INVOCATIONS = 1_000;
 
+export const LOCAL_CONTENT_RETRIEVAL_LIMITS = Object.freeze({
+  maxChunkCharacters: MAX_READ_CHARACTERS,
+  maxReads: MAX_INVOCATION_READS,
+  maxCharacters: MAX_INVOCATION_CHARACTERS,
+});
+
 export const LOCAL_CONTENT_RETRIEVAL_CONTRACT = Object.freeze({
   version: "1.0.0",
   trust: "untrusted_reference",
