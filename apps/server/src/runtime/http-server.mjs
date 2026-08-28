@@ -584,6 +584,7 @@ export function createHttpServer({
   updateCanvasScene,
   deleteCanvasScene,
   listWorkItems,
+  getWorkItemCompletionMetrics,
   getHomeWorkbench,
   listWorkItemAttention,
   getWorkItem,
@@ -1243,7 +1244,7 @@ export function createHttpServer({
 
       if (await handleWorkItemRoutes({
         req, res, url, sendJson, readJson, actor, state,
-        listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, updateTaskContext: updateWorkItemTaskContext, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+        listWorkItems, getCompletionMetrics: getWorkItemCompletionMetrics, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, updateTaskContext: updateWorkItemTaskContext, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
         reconcileWorkItemRecordBindings, reconcileVisibleWorkItemRecordBindings,
         refreshWorkItemRecordBinding, refreshWorkItemRecordBindingsBatch,
         listReportDrafts: listWorkItemReportDrafts,
