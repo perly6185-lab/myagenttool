@@ -143,7 +143,50 @@ export function createWorkItemReviewCommandService({
       state,
     });
     if (replay) {
-      const actionReceipt = executionActionReceiptView(replay, { now: now(), autoRun, replayed: true });
+      let actionReceipt = executionActionReceiptView(replay, { now: now(), autoRun, replayed: true });
+      if (replay.deliveryCheckpoint && actionReceipt.status !== "succeeded") {
+        const checkpoint = replay.deliveryCheckpoint;
+        const recovered = completeDelivery({
+          workItemId,
+          mode: checkpoint.mode,
+          autoRunId: autoRun.id,
+          operationId: checkpoint.operationId,
+          result: checkpoint.result,
+        }, actor);
+        if (recovered.ok) {
+          runTx(() => updateExecutionAction(replay, {
+            status: "succeeded",
+            ...deliverySuccess(command.kind, checkpoint.result),
+            deliveryRecovery: "recovered",
+            now,
+          }));
+          actionReceipt = executionActionReceiptView(replay, { now: now(), autoRun, replayed: true });
+          return {
+            ...recovered.body,
+            autoRun: publicAutoRun(recovered.body.autoRun),
+            actionReceipt,
+            replayed: true,
+          };
+        }
+        runTx(() => updateExecutionAction(replay, {
+          status: "unknown",
+          messageCode: "delivery_recovery_pending",
+          impact: replay.impact ?? "unknown",
+          nextOwner: "me",
+          errorCode: recovered.body?.error ?? "delivery_commit_failed",
+          errorMessage: "The external delivery succeeded, but its local completion receipt still could not be committed.",
+          deliveryRecovery: "attempt_failed",
+          now,
+        }));
+        actionReceipt = executionActionReceiptView(replay, { now: now(), autoRun, replayed: true });
+        throw commandError(
+          "work_item_delivery_recovery_pending",
+          "The external delivery succeeded, but its local completion receipt still could not be committed.",
+          409,
+          { recoveryError: recovered.body?.error ?? "delivery_commit_failed" },
+          actionReceipt,
+        );
+      }
       if (actionReceipt.status === "failed") {
         throw commandError(
           actionReceipt.errorCode ?? "work_item_delivery_failed",
@@ -187,12 +230,13 @@ export function createWorkItemReviewCommandService({
           ? error
           : commandError(fallbackCode, String(error ?? fallbackCode));
       runTx(() => updateExecutionAction(receipt, {
-        status: "failed",
-        messageCode: normalized.code ?? fallbackCode,
+        status: impact === "unknown" ? "unknown" : "failed",
+        messageCode: impact === "unknown" ? "delivery_result_unknown" : normalized.code ?? fallbackCode,
         impact,
         nextOwner: "me",
         errorCode: normalized.code ?? fallbackCode,
         errorMessage: normalized.message,
+        deliveryRecovery: receipt.deliveryCheckpoint ? "required" : null,
         now,
       }));
       normalized.actionReceipt = executionActionReceiptView(receipt, { now: now(), autoRun });
@@ -247,6 +291,7 @@ export function createWorkItemReviewCommandService({
         impact: "unknown",
         nextOwner: "system",
         targetId: operationId,
+        externalActionAttempt: true,
         now,
       }));
 
@@ -264,6 +309,17 @@ export function createWorkItemReviewCommandService({
         throw commandError("work_item_delivery_failed", error?.message ?? String(error), 409);
       }
 
+      const externalResult = deliverySuccess(command.kind, result);
+      runTx(() => updateExecutionAction(receipt, {
+        status: "running",
+        messageCode: "delivery_external_action_succeeded",
+        impact: externalResult.impact,
+        nextOwner: "system",
+        targetId: externalResult.targetId,
+        deliveryCheckpoint: { operationId, mode, result },
+        now,
+      }));
+
       const completed = completeDelivery({
         workItemId,
         mode,
@@ -272,7 +328,6 @@ export function createWorkItemReviewCommandService({
         result,
       }, actor);
       if (!completed.ok) {
-        failDelivery({ workItemId, operationId, error: completed.body?.error ?? "delivery_commit_failed" }, actor);
         throw resultError(completed);
       }
       runTx(() => updateExecutionAction(receipt, {

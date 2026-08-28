@@ -2466,6 +2466,8 @@ export const api = {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
     return request("GET", `/api/work-items${params.size ? `?${params}` : ""}`);
   },
+  getWorkItemCompletionMetrics: (projectId?: string) =>
+    request("GET", `/api/work-items/completion-metrics${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   listWorkItemAttention: (query: {
     projectId?: string; kind?: string; severity?: string; sla?: string;
     handler?: "mine" | "unclaimed"; includeResolved?: "1";
