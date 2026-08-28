@@ -55,10 +55,32 @@ test("a runtime write mirrors to SQLite and a fresh boot hydrates it back", { sk
     // Boot 1: empty SQLite → seeds from the default state, then a runtime write.
     let store = await openSqliteStore({ path: sqlitePath });
     const b1 = boot({ projectPath, stateStorePath, sqliteStore: store });
+    b1.state.materialWorkReadReceipts.push({
+      id: "material_work_read_sqlite",
+      sessionId: "material_work_session_sqlite",
+      messageId: "material_work_message_sqlite",
+      ownerTeamId: "team_local",
+      requestedBy: "usr_local",
+      retrievalRevision: 1,
+      contentId: `lc_${"a".repeat(32)}`,
+      sourceVersion: "source-version-sqlite",
+      requestedOffset: 0,
+      requestedCharacters: 12,
+      reservedCharacters: 0,
+      sourceOffset: 0,
+      nextSourceOffset: null,
+      charactersRead: 12,
+      textHash: "a".repeat(64),
+      status: "completed",
+      createdAt: now(),
+      completedAt: now(),
+      updatedAt: now(),
+    });
     const created = b1.api.createAgentSkill({ name: "Integration Skill" });
     assert(created?.id, "the skill was created");
     // The create ran through runTx → the SQLite-mirroring commit.
     assert(store.query("agentSkills").some((s) => s.name === "Integration Skill"), "the write mirrored to SQLite");
+    assert(store.query("materialWorkReadReceipts").some((row) => row.id === "material_work_read_sqlite"), "material read receipts mirror to SQLite");
     store.close();
 
     // Boot 2: reopen the same file → SQLite is authoritative → state hydrates.
@@ -67,6 +89,10 @@ test("a runtime write mirrors to SQLite and a fresh boot hydrates it back", { sk
     assert(
       (b2.state.agentSkills ?? []).some((s) => s.name === "Integration Skill"),
       "the skill survived the restart via the SQLite backing",
+    );
+    assert(
+      (b2.state.materialWorkReadReceipts ?? []).some((row) => row.id === "material_work_read_sqlite"),
+      "the material read receipt survived the restart via the SQLite backing",
     );
     // devices persist through their own JSON path, but the SQLite backing mirrors +
     // hydrates them too (else they'd be lost when JSON is retired), brought back offline.
