@@ -9,6 +9,8 @@ describe("host assistant safe suggestions", () => {
     expect(suggestHostDiagnostic("哪些服务失败了")?.action).toBe("failed_services");
     expect(suggestHostDiagnostic("列出当前监听端口")?.action).toBe("listening_ports");
     expect(suggestHostDiagnostic("看看 Docker 容器")?.action).toBe("docker_status");
+    expect(suggestHostDiagnostic("检查登陆情况")?.action).toBe("login_sessions");
+    expect(suggestHostDiagnostic("who is logged-in")?.command).toBe("who");
     expect(suggestHostDiagnostic("看看 nginx 服务运行状态")?.parameters).toEqual({ serviceName: "nginx" });
     expect(suggestHostDiagnostic("看看服务状态")).toBeNull();
   });
@@ -21,6 +23,7 @@ describe("host assistant safe suggestions", () => {
   it("keeps the command plan stable and reviewable", () => {
     expect(hostDiagnosticPlan("system_info")).toMatchObject({ action: "system_info", command: "uname -a" });
     expect(hostDiagnosticPlan("processes").command).toContain("head -n 15");
+    expect(hostDiagnosticPlan("login_sessions")).toMatchObject({ action: "login_sessions", command: "who" });
     expect(hostDiagnosticPlanCopy(hostDiagnosticPlan("disk_usage"), false)).toMatchObject({
       title: "Check device space",
       check: "remaining space and the highest usage level",

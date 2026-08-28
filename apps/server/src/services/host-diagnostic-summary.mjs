@@ -38,6 +38,7 @@ function capacitySummary(kind, usedPercent, available = null) {
 export function buildHostDiagnosticSummary(action, output) {
   const lines = linesOf(output);
   if (action === "docker_status" && !lines.length) return result("info", "no_running_containers", "information_only", "review_if_unexpected", [fact("running_container_count", 0)]);
+  if (action === "login_sessions" && !lines.length) return result("info", "login_sessions_none", "information_only", "no_action_needed", [fact("login_session_count", 0), fact("login_user_count", 0)]);
   if (!lines.length) return unknown("diagnostic_result_empty");
 
   if (action === "disk_usage") {
@@ -72,6 +73,11 @@ export function buildHostDiagnosticSummary(action, output) {
   if (action === "uptime") {
     const loads = lines.join(" ").match(/load averages?:\s*([0-9.,]+(?:\s*,\s*[0-9.,]+){0,2})/i)?.[1];
     return result("info", "uptime_information_ready", "information_only", "review_if_unexpected", loads ? [fact("load_average", loads)] : []);
+  }
+
+  if (action === "login_sessions") {
+    const users = new Set(lines.map((line) => line.split(/\s+/, 1)[0]).filter(Boolean));
+    return result("info", "login_sessions_found", "information_only", "review_login_sessions", [fact("login_session_count", lines.length), fact("login_user_count", users.size)]);
   }
 
   if (action === "processes") {

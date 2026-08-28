@@ -41,6 +41,18 @@ test("uses bounded informational counts for ports, processes, containers, logs, 
   assert.deepEqual(buildHostDiagnosticSummary("network_info", "lo UNKNOWN 127.0.0.1\neth0 UP 10.0.0.2").facts.map((item) => item.value), ["2", "1"]);
 });
 
+test("summarizes login sessions as counts without retaining users or source addresses", () => {
+  const active = buildHostDiagnosticSummary("login_sessions", "devagent pts/0 2026-08-27 17:00 (10.10.10.10)\noperator pts/1 2026-08-27 17:10 (10.10.10.11)\ndevagent pts/2 2026-08-27 17:20 (10.10.10.12)");
+  assert.equal(active.finding, "login_sessions_found");
+  assert.deepEqual(active.facts.map((item) => item.value), ["3", "2"]);
+  assert.equal(JSON.stringify(active).includes("devagent"), false);
+  assert.equal(JSON.stringify(active).includes("10.10.10.10"), false);
+
+  const empty = buildHostDiagnosticSummary("login_sessions", "");
+  assert.equal(empty.finding, "login_sessions_none");
+  assert.deepEqual(empty.facts.map((item) => item.value), ["0", "0"]);
+});
+
 test("does not infer health from empty or unrecognized diagnostic output", () => {
   assert.deepEqual(buildHostDiagnosticSummary("disk_usage", ""), {
     version: 1,

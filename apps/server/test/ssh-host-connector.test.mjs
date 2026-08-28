@@ -184,8 +184,11 @@ test("maps host questions to a finite read-only diagnostic vocabulary", () => {
   assert.equal(sshDiagnosticActionForInput("列出 Docker 容器"), "docker_status");
   assert.equal(sshDiagnosticActionForInput("看看最近系统日志"), "recent_logs");
   assert.equal(sshDiagnosticActionForInput("检查网卡和网络地址"), "network_info");
+  assert.equal(sshDiagnosticActionForInput("检查登陆情况"), "login_sessions");
+  assert.equal(sshDiagnosticActionForInput("show SSH sessions"), "login_sessions");
   assert.equal(sshDiagnosticActionForInput("delete old logs && whoami"), null);
   assert.equal(sshDiagnosticCommand("docker_status"), "docker ps --format '{{.Names}}\\t{{.Status}}'");
+  assert.equal(sshDiagnosticCommand("login_sessions"), "who");
   assert.equal(sshDiagnosticCommand("processes; id"), null);
 });
 

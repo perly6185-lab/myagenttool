@@ -30,6 +30,13 @@ function sanitizeSshDiagnosticOutput(action, output) {
   return normalized.split("\n").map((line) => /password|passwd|secret|token|api[_-]?key|authorization|private[ _-]?key/i.test(line) ? "[redacted sensitive log line]" : line).join("\n");
 }
 
+function sshCredentialErrorCode(value) {
+  const code = String(value ?? "").trim();
+  return ["ssh_credential_unavailable", "ssh_credential_invalid", "ssh_agent_unavailable"].includes(code)
+    ? code
+    : "ssh_credential_unavailable";
+}
+
 export function createTerminalRuntimeCapability({ now = defaultNow } = {}) {
   const platform = process.platform;
   const isWindows = platform === "win32";
@@ -247,7 +254,7 @@ export function createTerminalService({
       ? { ok: true, credential: { agentSocket: process.env.SSH_AUTH_SOCK } }
       : await resolveCredential(target.credentialRef);
     if (!resolved?.ok) {
-      return recordSshConnectionFailure(target, new SshHostConnectorError(resolved?.error ?? "ssh_credential_unavailable", "The SSH credential is unavailable."), "ssh.host.verification_failed");
+      return recordSshConnectionFailure(target, new SshHostConnectorError(sshCredentialErrorCode(resolved?.error), "The SSH credential is unavailable."), "ssh.host.verification_failed");
     }
     try {
       const verification = await sshHostConnector.verifyConnection(target, resolved.credential);
@@ -286,7 +293,7 @@ export function createTerminalService({
     const resolved = target.authMethod === "ssh_agent"
       ? { ok: true, credential: { agentSocket: process.env.SSH_AUTH_SOCK } }
       : await resolveCredential(target.credentialRef);
-    if (!resolved?.ok) return { ok: false, status: 409, error: resolved?.error ?? "ssh_credential_unavailable" };
+    if (!resolved?.ok) return { ok: false, status: 409, error: sshCredentialErrorCode(resolved?.error) };
     try {
       const result = await sshHostConnector.runFixedCommand(target, resolved.credential, action, parameters, { operationTimeoutMs: 120_000 });
       const output = sanitizeSshDiagnosticOutput(action, String(result?.value?.output ?? "")).slice(0, 8_000);
