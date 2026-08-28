@@ -42,6 +42,7 @@ import { ExecutionStartStatusCard } from "./execution-start-status-card";
 import { ExecutionReviewCard, type ExecutionActionReceipt } from "./execution-review-card";
 import { createWorkItemReviewActionController } from "./work-item-review-action-controller";
 import { WorkItemPlanActualCard } from "./work-item-plan-actual-card";
+import { WorkItemCompletionStatus } from "./work-item-completion-status";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
 import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
@@ -2259,6 +2260,10 @@ export function WorkItemSummaryView({
           actionReceipt={executionReview.actionReceipt ?? executionActionReceipt}
           attemptHistory={observability?.runHistory ?? []}
         />
+      ) : null}
+
+      {observability?.completionAssessment ? (
+        <WorkItemCompletionStatus assessment={observability.completionAssessment} language={language} />
       ) : null}
 
       {observability?.planActual ? (

@@ -341,6 +341,48 @@ test("keeps old idempotency keys after their receipts leave the recent-20 displa
   }), (error) => error.code === "execution_action_idempotency_conflict");
 });
 
+test("an unresolved delivery still blocks a new external action after leaving the recent display window", () => {
+  const h = harness();
+  const { receipt: delivery } = beginExecutionAction({
+    state: h.state,
+    autoRun: h.autoRun,
+    kind: "create_pull_request",
+    idempotencyKey: "unresolved-old-delivery",
+    request: { mode: "pull_request", baseBranch: null },
+    now: h.now,
+    nextId: h.nextId,
+  });
+  updateExecutionAction(delivery, {
+    status: "unknown", messageCode: "delivery_result_unknown", impact: "unknown", nextOwner: "me", now: h.now,
+  });
+  for (let index = 0; index < 20; index += 1) {
+    const { receipt } = beginExecutionAction({
+      state: h.state,
+      autoRun: h.autoRun,
+      kind: "retry_execution",
+      idempotencyKey: `later-retry-${index}`,
+      request: { feedback: null },
+      now: h.now,
+      nextId: h.nextId,
+    });
+    updateExecutionAction(receipt, {
+      status: "succeeded", messageCode: "retry_started", impact: "none", nextOwner: "ai",
+      targetId: `inv_later_${index}`, now: h.now,
+    });
+  }
+  assert.equal(h.autoRun.executionActionReceipts.some((receipt) => receipt.id === delivery.id), false);
+
+  assert.throws(() => beginExecutionAction({
+    state: h.state,
+    autoRun: h.autoRun,
+    kind: "create_pull_request",
+    idempotencyKey: "unsafe-new-delivery",
+    request: { mode: "pull_request", baseBranch: null },
+    now: h.now,
+    nextId: h.nextId,
+  }), (error) => error.code === "execution_action_delivery_unresolved" && error.status === 409);
+});
+
 test("fails closed instead of evicting old keys when the long-term ledger reaches capacity", () => {
   const h = harness();
   const first = beginExecutionAction({

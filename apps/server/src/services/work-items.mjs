@@ -58,6 +58,7 @@ import { projectWorkItemReviewEvidence } from "./work-item-review-evidence.mjs";
 import { normalizeExecutionStartFailure, projectExecutionStartReceipt } from "./work-item-execution-start.mjs";
 import { projectWorkItemExecutionReview } from "./work-item-execution-review.mjs";
 import { projectWorkItemPlanActual } from "./work-item-plan-actual.mjs";
+import { assessWorkItemCompletion, taskCompletionQualityMetrics } from "./work-item-completion-assessment.mjs";
 import { projectWorkItemContextSummary } from "./work-item-context-summary.mjs";
 import { buildWorkItemIntentContract, freezeWorkItemIntentContract } from "./work-item-intent-contract.mjs";
 
@@ -1967,6 +1968,49 @@ export function createWorkItemService({
     };
   }
 
+  function getCompletionMetrics(query = {}, actor = null) {
+    const projectId = String(query.projectId ?? "").trim();
+    if (projectId && !actorCanAccessProject(state, actor, projectId)) return notFound();
+    const items = (state.workItems ?? [])
+      .filter((item) => item.ownerTeamId === actorTeam(actor))
+      .filter((item) => !projectId || item.projectId === projectId)
+      .filter((item) => !item.archivedAt)
+      .filter((item) => (item.executionBindings ?? []).length > 0
+        || item.executionStartRequest
+        || ["in_progress", "review", "blocked", "done"].includes(item.status)
+        || item.state === "closed");
+    const assessments = [];
+    const runIds = new Set();
+    for (const item of items) {
+      for (const binding of item.executionBindings ?? []) {
+        if (binding.kind === "auto_run" && binding.targetId) runIds.add(binding.targetId);
+      }
+      const detail = getWorkItem({ workItemId: item.id }, actor);
+      if (detail.ok) assessments.push(detail.body.observability?.completionAssessment ?? null);
+    }
+    const receipts = [];
+    for (const entry of state.executionActionIdempotencyRecords ?? []) {
+      if (runIds.has(entry.autoRunId) && entry.receipt) receipts.push(entry.receipt);
+    }
+    for (const autoRun of state.autoRuns ?? []) {
+      if (!runIds.has(autoRun.id)) continue;
+      receipts.push(...(autoRun.executionActionReceipts ?? []));
+    }
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        generatedAt: now(),
+        scope: {
+          projectId: projectId || null,
+          trackedWorkItems: assessments.filter(Boolean).length,
+          trackedAutoRuns: runIds.size,
+        },
+        metrics: taskCompletionQualityMetrics({ assessments, receipts }),
+      },
+    };
+  }
+
   function getHomeWorkbench(query = {}, actor = null) {
     const timezoneOffset = Number(query.timezoneOffset ?? 0);
     if (!Number.isInteger(timezoneOffset) || timezoneOffset < -840 || timezoneOffset > 840) {
@@ -2855,6 +2899,12 @@ export function createWorkItemService({
       ...projectedPlanActual,
       feedback: planActualFeedbackView(planActualFeedback),
     } : null;
+    const completionAssessment = assessWorkItemCompletion({
+      item,
+      latestRun,
+      planActual,
+      completionGate: completionGate(item),
+    });
     return {
       ok: true,
       status: 200,
@@ -2865,6 +2915,7 @@ export function createWorkItemService({
           nextAction,
           executionReview,
           planActual,
+          completionAssessment,
           attention,
           latestRun: latestRun ? {
             id: latestRun.id,
@@ -8095,7 +8146,7 @@ export function createWorkItemService({
   }
 
   return {
-    listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+    listWorkItems, getCompletionMetrics, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
     listReportDrafts: reportDraftService.list,
     getReportDraft: reportDraftService.get,
     generateReportDraft: reportDraftService.generate,

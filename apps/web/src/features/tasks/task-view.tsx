@@ -38,12 +38,28 @@ import {
   type TaskTab,
   type WorkItemAttention,
   type WorkItemAttentionMetrics,
+  type WorkItemCompletionQualityMetrics,
 } from "./task-view-types";
 import { WorktreeOptionsForm } from "./worktree-options-form";
 import { deriveWorkItemUserStatus, type WorkItemUserStatus } from "./work-item-user-status";
 import { WorkItemViewSwitch } from "./work-item-view-switch";
+import { WorkItemCompletionMetricsCard } from "./work-item-completion-metrics-card";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
+
+function isWorkItemCompletionQualityMetrics(value: unknown): value is WorkItemCompletionQualityMetrics {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<WorkItemCompletionQualityMetrics>;
+  return Boolean(
+    candidate.scope
+      && Number.isFinite(candidate.scope.trackedWorkItems)
+      && candidate.metrics?.completion?.check
+      && candidate.metrics.recovery?.check
+      && candidate.metrics.humanIntervention?.check
+      && candidate.metrics.externalActions?.check
+      && candidate.metrics.acceptance,
+  );
+}
 
 const CreateLocalWorkItemForm = lazy(() => import("./create-local-work-item-form"));
 const ExternalIssueImportDialog = lazy(() => import("./external-issue-import-dialog")
@@ -241,6 +257,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
   const [attentionNextCursor, setAttentionNextCursor] = useState<string | null>(null);
   const [attentionMetrics, setAttentionMetrics] = useState<WorkItemAttentionMetrics | null>(null);
+  const [completionMetrics, setCompletionMetrics] = useState<WorkItemCompletionQualityMetrics | null>(null);
   const staleRecordAttentionItems = attentionItems.filter((item) =>
     item.kind === "record_binding_stale" && item.details.refreshable === true);
   const [externalFunnel, setExternalFunnel] = useState<{
@@ -475,6 +492,16 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
     void (api.getWorkItemExternalIssueFunnel(projectId === "all" ? undefined : projectId) as Promise<typeof externalFunnel>)
       .then((result) => { if (!cancelled) setExternalFunnel(result); })
       .catch(() => { if (!cancelled) setExternalFunnel(null); });
+    return () => { cancelled = true; };
+  }, [nonce, projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (api.getWorkItemCompletionMetrics(projectId === "all" ? undefined : projectId) as Promise<unknown>)
+      .then((result) => {
+        if (!cancelled) setCompletionMetrics(isWorkItemCompletionQualityMetrics(result) ? result : null);
+      })
+      .catch(() => { if (!cancelled) setCompletionMetrics(null); });
     return () => { cancelled = true; };
   }, [nonce, projectId]);
 
@@ -810,6 +837,10 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                 ) : null}
               </section>
             ) : null}
+            {completionMetrics
+              && (completionMetrics.scope.trackedWorkItems > 0 || completionMetrics.metrics.externalActions.attempts > 0) ? (
+                <WorkItemCompletionMetricsCard report={completionMetrics} language={i18n.language} />
+              ) : null}
             <Suspense fallback={null}>
               <RoutineBatchQueue
                 projectId={projectId === "all" ? undefined : projectId}
