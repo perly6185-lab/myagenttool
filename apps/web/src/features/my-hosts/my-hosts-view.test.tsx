@@ -358,6 +358,30 @@ it("turns a plain-language host request into a reviewed read-only diagnostic", a
   expect(assistant).toBeTruthy();
 });
 
+it("turns the reported Chinese login question into a reviewed session check", async () => {
+  vi.mocked(hostApi.planDiagnostic).mockResolvedValue({ plan: { action: "login_sessions", command: "who", risk: "read_only" } });
+  renderView();
+  fireEvent.change(await screen.findByPlaceholderText("For example: show remaining disk space"), { target: { value: "检查登陆情况" } });
+  fireEvent.click(screen.getByRole("button", { name: "Suggest" }));
+
+  expect(await screen.findByText("current sign-in session and user counts")).toBeTruthy();
+  expect(screen.getByText("who")).toBeTruthy();
+  expect(hostApi.planDiagnostic).toHaveBeenCalledWith(host.id, "检查登陆情况");
+  expect(hostApi.diagnose).not.toHaveBeenCalled();
+});
+
+it("shows an actionable alert when a host question is not recognized", async () => {
+  vi.mocked(hostApi.planDiagnostic).mockRejectedValue(new ApiError("ssh_diagnostic_intent_unsupported", "unsupported", 422));
+  renderView();
+  fireEvent.change(await screen.findByPlaceholderText("For example: show remaining disk space"), { target: { value: "make it better" } });
+  fireEvent.click(screen.getByRole("button", { name: "Suggest" }));
+
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("check sign-in sessions");
+  expect(alert.textContent).toContain("read-only checks below");
+  expect(screen.getByRole("button", { name: "Check sign-in sessions" })).toBeTruthy();
+});
+
 it("gives ordinary users a conclusion, impact, and next step before technical evidence", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   vi.mocked(hostApi.diagnose).mockResolvedValue({ result: {
@@ -399,6 +423,19 @@ it("explains a timed-out read-only check without leaking the error code or imply
   expect(screen.queryByText("ssh_fixed_command_timeout")).toBeNull();
   expect(screen.queryByText("private socket detail")).toBeNull();
   expect(screen.getByRole("button", { name: "Confirm check" })).toBeTruthy();
+});
+
+it("turns a missing desktop credential into a clear host-assistant recovery message", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.diagnose).mockRejectedValue(new ApiError("ssh_credential_unavailable", "private credential resolver detail", 409));
+  renderView();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Check sign-in sessions" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm check" }));
+
+  expect(await screen.findByText(/sign-in details for this device are unavailable.*Re-enter the password or private key/)).toBeTruthy();
+  expect(screen.queryByText("private credential resolver detail")).toBeNull();
+  expect(screen.queryByText("ssh_credential_unavailable")).toBeNull();
 });
 
 it("previews approved text files without executing their contents", async () => {
