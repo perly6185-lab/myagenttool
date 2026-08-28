@@ -271,8 +271,7 @@ export async function handleProjectRoutes({
   publishWorktreeBranch,
   ensureLocalOrigin,
   startAutoRun,
-  retryAutoRun,
-  reverifyAutoRun,
+  executeReviewCommand,
   reconcileExecutionAction,
   cancelAutoRun,
   stopAutoRunDelivery,
@@ -285,7 +284,6 @@ export async function handleProjectRoutes({
   listIssueClaims,
   approveDesign,
   rejectDesign,
-  answerClarify,
   approveDecomposition,
   rejectDecomposition,
   budgetStatusFor,
@@ -478,15 +476,12 @@ export async function handleProjectRoutes({
     if (denyForeignAutoRun(decodeURIComponent(autoRunRetryMatch[1]))) return true;
     try {
       const body = await readJson(req);
-      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), {
-        actor,
-        terminalId: body?.terminalId,
-        timezoneOffset: body?.timezoneOffset,
-        feedback: body?.feedback,
-        idempotencyKey: body?.idempotencyKey,
-        expectedWorkItemRevision: body?.expectedWorkItemRevision,
-        expectedTargetStatus: body?.expectedTargetStatus,
-      });
+      const feedback = String(body?.feedback ?? "").trim();
+      const result = await executeReviewCommand({
+        kind: feedback ? "fix_with_ai" : "retry_execution",
+        targetId: decodeURIComponent(autoRunRetryMatch[1]),
+        request: { ...body, feedback },
+      }, actor);
       sendJson(res, 200, executionActionResultView(result));
     } catch (error) {
       sendJson(res, error?.status ?? 400, {
@@ -531,13 +526,11 @@ export async function handleProjectRoutes({
     if (denyForeignAutoRun(decodeURIComponent(autoRunReverifyMatch[1]))) return true;
     try {
       const body = await readJson(req);
-      const result = await reverifyAutoRun(decodeURIComponent(autoRunReverifyMatch[1]), {
-        actor,
-        terminalId: body?.terminalId,
-        idempotencyKey: body?.idempotencyKey,
-        expectedWorkItemRevision: body?.expectedWorkItemRevision,
-        expectedTargetStatus: body?.expectedTargetStatus,
-      });
+      const result = await executeReviewCommand({
+        kind: "rerun_verification",
+        targetId: decodeURIComponent(autoRunReverifyMatch[1]),
+        request: body,
+      }, actor);
       sendJson(res, 200, executionActionResultView(result));
     } catch (error) {
       sendJson(res, error?.status ?? 400, {
@@ -631,15 +624,11 @@ export async function handleProjectRoutes({
     if (denyForeignAutoRun(decodeURIComponent(clarifyAnswerMatch[1]))) return true;
     try {
       const ranBody = await readJson(req);
-      const result = await answerClarify(decodeURIComponent(clarifyAnswerMatch[1]), {
-        actor,
-        answers: ranBody?.answers,
-        selectedAction: ranBody?.selectedAction,
-        repoUrl: ranBody?.repoUrl,
-        idempotencyKey: ranBody?.idempotencyKey,
-        expectedWorkItemRevision: ranBody?.expectedWorkItemRevision,
-        expectedTargetStatus: ranBody?.expectedTargetStatus,
-      });
+      const result = await executeReviewCommand({
+        kind: "answer_ai",
+        targetId: decodeURIComponent(clarifyAnswerMatch[1]),
+        request: ranBody,
+      }, actor);
       const continuation = await continueStructuredClarification({
         state,
         autoRunId: decodeURIComponent(clarifyAnswerMatch[1]),

@@ -2463,7 +2463,16 @@ describe("work item summary presentation", () => {
     expect(within(dialog).getByText(/No remote branch will be pushed or merged/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply locally" }));
 
-    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_1", "local_merge", 2));
+    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith(
+      "lwi_1",
+      "local_merge",
+      2,
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining("work-item:lwi_1:apply_local_changes:2"),
+        expectedWorkItemRevision: 2,
+        expectedTargetStatus: "done",
+      }),
+    ));
     expect(mocks.transitionWorkItem).not.toHaveBeenCalled();
     expect(await screen.findByText("This work is complete")).toBeTruthy();
     const receipt = screen.getByLabelText("Local delivery receipt");

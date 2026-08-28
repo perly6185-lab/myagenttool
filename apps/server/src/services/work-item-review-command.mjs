@@ -1,0 +1,302 @@
+import {
+  beginExecutionAction,
+  executionActionReceiptView,
+  replayExecutionAction,
+  updateExecutionAction,
+} from "./work-item-execution-action.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
+
+const AUTO_RUN_ACTIONS = new Set(["retry_execution", "fix_with_ai", "rerun_verification", "answer_ai"]);
+const DELIVERY_ACTIONS = new Set([
+  "create_pull_request",
+  "update_pull_request",
+  "apply_office_result",
+  "apply_local_changes",
+]);
+
+function commandError(code, message, status = 400, details = {}, actionReceipt = null) {
+  const error = new Error(message || code);
+  error.code = code;
+  error.status = status;
+  error.details = details;
+  if (actionReceipt) error.actionReceipt = actionReceipt;
+  return error;
+}
+
+function resultError(result, actionReceipt = null) {
+  const body = result?.body ?? {};
+  const { error = "review_command_failed", message = error, ...details } = body;
+  return commandError(error, message, result?.status ?? 400, details, actionReceipt);
+}
+
+function publicAutoRun(autoRun) {
+  if (!autoRun) return autoRun;
+  const {
+    executionActionReceipts: _executionActionReceipts,
+    executionActionIdempotencyLedger: _executionActionIdempotencyLedger,
+    ...visible
+  } = autoRun;
+  return visible;
+}
+
+function deliveryMode(kind) {
+  return ["create_pull_request", "update_pull_request"].includes(kind)
+    ? "pull_request"
+    : "local_merge";
+}
+
+function deliverySuccess(kind, result) {
+  if (["create_pull_request", "update_pull_request"].includes(kind)) {
+    return {
+      messageCode: kind === "update_pull_request" ? "pull_request_updated" : "pull_request_created",
+      impact: "proposed",
+      nextOwner: "me",
+      targetId: result?.url ?? (result?.number == null ? null : `pull_request:${result.number}`),
+    };
+  }
+  return {
+    messageCode: kind === "apply_office_result" ? "office_result_applied" : "local_changes_applied",
+    impact: "applied",
+    nextOwner: "none",
+    targetId: result?.commit ?? result?.baseBranch ?? null,
+  };
+}
+
+function requireTargetId(command) {
+  const targetId = String(command?.targetId ?? "").trim();
+  if (!targetId) throw commandError("review_command_target_required", "A review command target is required.");
+  return targetId;
+}
+
+/**
+ * One application-service boundary for every mutating action projected by the
+ * task review read model. HTTP routes remain compatibility adapters; all
+ * admission checks, execution dispatch, and receipt semantics live here.
+ */
+export function createWorkItemReviewCommandService({
+  state,
+  now = () => new Date().toISOString(),
+  nextId,
+  store = null,
+  persistStateSoon = () => {},
+  getWorkItem,
+  retryAutoRun,
+  reverifyAutoRun,
+  answerClarify,
+  promoteWorktreeToBase,
+  promoteWorktreeToPullRequest,
+  beginDelivery,
+  failDelivery,
+  completeDelivery,
+} = {}) {
+  const runTx = makeRunTx({ store, persistStateSoon });
+
+  async function executeAutoRunCommand(command, actor) {
+    const targetId = requireTargetId(command);
+    const request = command.request ?? {};
+    const common = {
+      actor,
+      terminalId: request.terminalId,
+      idempotencyKey: request.idempotencyKey,
+      expectedWorkItemRevision: request.expectedWorkItemRevision,
+      expectedTargetStatus: request.expectedTargetStatus,
+    };
+    if (["retry_execution", "fix_with_ai"].includes(command.kind)) {
+      const feedback = String(request.feedback ?? "").trim();
+      if (command.kind === "fix_with_ai" && !feedback) {
+        throw commandError("review_command_feedback_required", "AI repair requires review feedback.");
+      }
+      return retryAutoRun(targetId, {
+        ...common,
+        timezoneOffset: request.timezoneOffset,
+        feedback: command.kind === "fix_with_ai" ? feedback : null,
+      });
+    }
+    if (command.kind === "rerun_verification") return reverifyAutoRun(targetId, common);
+    return answerClarify(targetId, {
+      actor,
+      answers: request.answers,
+      selectedAction: request.selectedAction,
+      repoUrl: request.repoUrl,
+      idempotencyKey: request.idempotencyKey,
+      expectedWorkItemRevision: request.expectedWorkItemRevision,
+      expectedTargetStatus: request.expectedTargetStatus,
+    });
+  }
+
+  async function executeDeliveryCommand(command, actor) {
+    const workItemId = requireTargetId(command);
+    const request = command.request ?? {};
+    const detail = getWorkItem({ workItemId }, actor);
+    if (!detail?.ok) throw resultError(detail);
+    const item = detail.body.workItem;
+    const projectedRun = detail.body.observability?.latestRun ?? null;
+    const autoRun = (state.autoRuns ?? []).find((candidate) => candidate.id === projectedRun?.id) ?? null;
+    if (!autoRun) throw commandError("auto_run_not_found", "The task execution could not be found.", 404);
+
+    const mode = deliveryMode(command.kind);
+    const actionRequest = { mode, baseBranch: request.baseBranch == null ? null : String(request.baseBranch) };
+    const replay = replayExecutionAction(autoRun, {
+      kind: command.kind,
+      idempotencyKey: request.idempotencyKey,
+      request: actionRequest,
+      state,
+    });
+    if (replay) {
+      const actionReceipt = executionActionReceiptView(replay, { now: now(), autoRun, replayed: true });
+      if (actionReceipt.status === "failed") {
+        throw commandError(
+          actionReceipt.errorCode ?? "work_item_delivery_failed",
+          actionReceipt.errorMessage ?? "The delivery action failed.",
+          409,
+          {},
+          actionReceipt,
+        );
+      }
+      return {
+        workItem: item,
+        autoRun: projectedRun,
+        delivery: projectedRun?.localDelivery ?? null,
+        actionReceipt,
+        replayed: true,
+      };
+    }
+    if (!Number.isInteger(request.expectedWorkItemRevision)) {
+      throw commandError("expected_revision_required", "The reviewed task revision is required.");
+    }
+
+    const { receipt } = runTx(() => beginExecutionAction({
+      state,
+      autoRun,
+      kind: command.kind,
+      actor,
+      idempotencyKey: request.idempotencyKey,
+      expectedWorkItemRevision: request.expectedWorkItemRevision,
+      expectedTargetStatus: request.expectedTargetStatus,
+      request: actionRequest,
+      nextOwner: "system",
+      now,
+      nextId,
+    }));
+    let externalActionStarted = false;
+
+    const fail = (error, { impact = "none", fallbackCode = "review_command_failed" } = {}) => {
+      const normalized = error?.body
+        ? resultError(error)
+        : error instanceof Error
+          ? error
+          : commandError(fallbackCode, String(error ?? fallbackCode));
+      runTx(() => updateExecutionAction(receipt, {
+        status: "failed",
+        messageCode: normalized.code ?? fallbackCode,
+        impact,
+        nextOwner: "me",
+        errorCode: normalized.code ?? fallbackCode,
+        errorMessage: normalized.message,
+        now,
+      }));
+      normalized.actionReceipt = executionActionReceiptView(receipt, { now: now(), autoRun });
+      return normalized;
+    };
+
+    try {
+      if (!item.completionGate?.ready) {
+        throw resultError({ status: 409, body: { error: "work_item_acceptance_incomplete", ...item.completionGate } });
+      }
+      if (!item.executionContractGate?.ready) {
+        throw resultError({ status: 409, body: { error: "work_item_execution_contract_required", ...item.executionContractGate } });
+      }
+      const worktreeId = projectedRun?.localDelivery?.worktreeId ?? null;
+      if (!worktreeId || projectedRun?.status !== "done" || projectedRun.localDelivery?.deliveredAt) {
+        throw commandError("work_item_delivery_not_ready", "The task delivery is not ready.", 409);
+      }
+      const evidence = detail.body.observability?.deliveryEvidence ?? null;
+      if (!evidence || evidence.actionPreview?.canProceed !== true) {
+        throw resultError({
+          status: 409,
+          body: {
+            error: "work_item_delivery_evidence_not_ready",
+            status: evidence?.status ?? "evidence_missing",
+            risk: evidence?.risk ?? "unknown",
+            blockingReasonCodes: evidence?.blockingReasonCodes ?? ["delivery_evidence_required"],
+            deliveryEvidence: evidence,
+          },
+        });
+      }
+      if (evidence.actionPreview.operation !== command.kind) {
+        throw commandError(
+          "review_command_stale",
+          "The available delivery action changed after this review was loaded.",
+          409,
+          { currentActionKind: evidence.actionPreview.operation },
+        );
+      }
+
+      const admission = beginDelivery({
+        workItemId,
+        expectedRevision: request.expectedWorkItemRevision,
+        mode,
+        autoRunId: autoRun.id,
+      }, actor);
+      if (!admission.ok) throw resultError(admission);
+      const operationId = admission.body.operation.id;
+      externalActionStarted = true;
+      runTx(() => updateExecutionAction(receipt, {
+        status: "running",
+        messageCode: "delivery_running",
+        impact: "unknown",
+        nextOwner: "system",
+        targetId: operationId,
+        now,
+      }));
+
+      let result;
+      try {
+        result = mode === "local_merge"
+          ? await promoteWorktreeToBase(worktreeId)
+          : await promoteWorktreeToPullRequest(worktreeId, {
+            title: item.title,
+            body: `Delivers ${item.localRef}.\n\n${item.body ?? ""}`.trim(),
+            base: request.baseBranch,
+          });
+      } catch (error) {
+        failDelivery({ workItemId, operationId, error: error?.message ?? String(error) }, actor);
+        throw commandError("work_item_delivery_failed", error?.message ?? String(error), 409);
+      }
+
+      const completed = completeDelivery({
+        workItemId,
+        mode,
+        autoRunId: autoRun.id,
+        operationId,
+        result,
+      }, actor);
+      if (!completed.ok) {
+        failDelivery({ workItemId, operationId, error: completed.body?.error ?? "delivery_commit_failed" }, actor);
+        throw resultError(completed);
+      }
+      runTx(() => updateExecutionAction(receipt, {
+        status: "succeeded",
+        ...deliverySuccess(command.kind, result),
+        now,
+      }));
+      return {
+        ...completed.body,
+        autoRun: publicAutoRun(completed.body.autoRun),
+        actionReceipt: executionActionReceiptView(receipt, { now: now(), autoRun }),
+        replayed: false,
+      };
+    } catch (error) {
+      if (error?.actionReceipt) throw error;
+      throw fail(error, { impact: externalActionStarted ? "unknown" : "none", fallbackCode: "work_item_delivery_failed" });
+    }
+  }
+
+  async function execute(command = {}, actor = null) {
+    if (AUTO_RUN_ACTIONS.has(command.kind)) return executeAutoRunCommand(command, actor);
+    if (DELIVERY_ACTIONS.has(command.kind)) return executeDeliveryCommand(command, actor);
+    throw commandError("review_command_kind_invalid", "The review action is not supported.");
+  }
+
+  return { execute };
+}

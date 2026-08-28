@@ -1094,13 +1094,27 @@ test("approved local delivery fast-forwards the base and only then closes the is
     completedAt: new Date().toISOString(),
   };
   detail = await call(`/api/work-items/${item.id}`);
+  const deliveryRequest = {
+    expectedRevision: detail.body.workItem.revision,
+    expectedTargetStatus: "done",
+    idempotencyKey: `deliver-local-${item.id}`,
+  };
   const delivered = await call(`/api/work-items/${item.id}/delivery/local`, {
-    method: "POST", body: { expectedRevision: detail.body.workItem.revision },
+    method: "POST", body: deliveryRequest,
   });
   assert.equal(delivered.status, 200);
   assert.equal(delivered.body.workItem.status, "done");
   assert.equal(delivered.body.workItem.state, "closed");
+  assert.equal(delivered.body.actionReceipt.kind, "apply_local_changes");
+  assert.equal(delivered.body.actionReceipt.status, "succeeded");
+  assert.equal(delivered.body.actionReceipt.impact, "applied");
   assert.equal(execFileSync("git", ["-C", projectAPath, "show", `HEAD:DELIVERY-${item.localNumber}.txt`], { encoding: "utf8" }).trim(), "delivered");
+  const replayedDelivery = await call(`/api/work-items/${item.id}/delivery/local`, {
+    method: "POST", body: deliveryRequest,
+  });
+  assert.equal(replayedDelivery.status, 200);
+  assert.equal(replayedDelivery.body.replayed, true);
+  assert.equal(replayedDelivery.body.actionReceipt.id, delivered.body.actionReceipt.id);
 });
 
 test("a local issue starts an auto-run with its local body and acceptance criteria", async () => {

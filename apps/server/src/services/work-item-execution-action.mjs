@@ -1,6 +1,18 @@
 import { createHash } from "node:crypto";
 
-const ACTION_KINDS = new Set(["retry_execution", "fix_with_ai", "rerun_verification", "answer_ai"]);
+const DELIVERY_ACTION_KINDS = new Set([
+  "create_pull_request",
+  "update_pull_request",
+  "apply_office_result",
+  "apply_local_changes",
+]);
+const ACTION_KINDS = new Set([
+  "retry_execution",
+  "fix_with_ai",
+  "rerun_verification",
+  "answer_ai",
+  ...DELIVERY_ACTION_KINDS,
+]);
 const RECEIPT_STATUSES = new Set(["accepted", "running", "succeeded", "failed", "safe_to_retry", "unknown"]);
 const TERMINAL_RECEIPT_STATUSES = new Set(["succeeded", "failed", "safe_to_retry"]);
 export const EXECUTION_ACTION_RECEIPT_LIMIT = 20;
@@ -245,8 +257,32 @@ function hasReachedTarget(receipt, autoRun) {
     || (receipt.kind === "answer_ai" && (
       autoRun?.clarificationResume?.startedAt === receipt.requestedAt
       || autoRun?.clarifyAnswer?.at === receipt.requestedAt
-    )),
+    ))
+    || (["create_pull_request", "update_pull_request"].includes(receipt.kind)
+      && Boolean(autoRun?.localDelivery?.promotedAt || autoRun?.prNumber || autoRun?.prUrl))
+    || (["apply_office_result", "apply_local_changes"].includes(receipt.kind)
+      && Boolean(autoRun?.localDelivery?.deliveredAt)),
   );
+}
+
+function deliveryCompletion(receipt, autoRun) {
+  if (!DELIVERY_ACTION_KINDS.has(receipt?.kind)) return null;
+  if (["create_pull_request", "update_pull_request"].includes(receipt.kind)) {
+    return {
+      messageCode: receipt.kind === "update_pull_request" ? "pull_request_updated" : "pull_request_created",
+      impact: "proposed",
+      nextOwner: "me",
+      targetId: autoRun?.prUrl
+        ?? autoRun?.localDelivery?.prUrl
+        ?? (autoRun?.prNumber == null ? null : `pull_request:${autoRun.prNumber}`),
+    };
+  }
+  return {
+    messageCode: receipt.kind === "apply_office_result" ? "office_result_applied" : "local_changes_applied",
+    impact: "applied",
+    nextOwner: "none",
+    targetId: autoRun?.localDelivery?.deliveredCommit ?? autoRun?.localDelivery?.baseBranch ?? null,
+  };
 }
 
 function isStalePending(receipt, now) {
@@ -265,6 +301,10 @@ function projectedReceiptStatus(receipt, { now, autoRun }) {
     return "succeeded";
   }
   if (isStalePending(receipt, now)) {
+    // Delivery can cross a process boundary after mutating git, a remote PR, or
+    // an office artifact. Absence of completion evidence cannot prove that it
+    // is safe to repeat, even when the source invocation did not change.
+    if (DELIVERY_ACTION_KINDS.has(receipt.kind)) return "unknown";
     const sourceUnchanged = Boolean(receipt.sourceTargetId)
       && (autoRun?.invocationId ?? null) === receipt.sourceTargetId;
     status = sourceUnchanged ? "safe_to_retry" : "unknown";
@@ -275,20 +315,27 @@ function projectedReceiptStatus(receipt, { now, autoRun }) {
 function visibleReceipt(receipt, { now = new Date().toISOString(), autoRun = null } = {}) {
   if (!receipt) return null;
   const status = projectedReceiptStatus(receipt, { now, autoRun });
+  const completedDelivery = status === "succeeded" && hasReachedTarget(receipt, autoRun)
+    ? deliveryCompletion(receipt, autoRun)
+    : null;
   return {
     schemaVersion: 1,
     id: receipt.id,
     kind: receipt.kind,
     status,
-    messageCode: status === "safe_to_retry" ? "safe_to_retry" : boundedText(receipt.messageCode, 120),
-    impact: ["none", "proposed", "applied", "unknown"].includes(receipt.impact) ? receipt.impact : "unknown",
+    messageCode: status === "safe_to_retry"
+      ? "safe_to_retry"
+      : completedDelivery?.messageCode ?? boundedText(receipt.messageCode, 120),
+    impact: completedDelivery?.impact
+      ?? (["none", "proposed", "applied", "unknown"].includes(receipt.impact) ? receipt.impact : "unknown"),
     nextOwner: ["unknown", "safe_to_retry"].includes(status)
       ? "me"
-      : (["ai", "me", "system", "none"].includes(receipt.nextOwner) ? receipt.nextOwner : "me"),
+      : completedDelivery?.nextOwner
+        ?? (["ai", "me", "system", "none"].includes(receipt.nextOwner) ? receipt.nextOwner : "me"),
     requestedAt: receipt.requestedAt ?? null,
     updatedAt: receipt.updatedAt ?? receipt.requestedAt ?? null,
     completedAt: receipt.completedAt ?? null,
-    targetId: boundedText(receipt.targetId, 200),
+    targetId: boundedText(completedDelivery?.targetId ?? receipt.targetId, 200),
     errorCode: boundedText(receipt.errorCode, 160),
     errorMessage: boundedText(receipt.errorMessage, 500),
     replayed: receipt.replayed === true,
@@ -472,19 +519,31 @@ export function reconcileExecutionActionReceipt(receipt, {
       if (changed) set("updatedAt", now);
       return finish();
     }
+    const completedDelivery = deliveryCompletion(receipt, autoRun);
     set("status", "succeeded");
-    set("messageCode", receipt.messageCode === "request_accepted"
+    set("messageCode", completedDelivery?.messageCode ?? (receipt.messageCode === "request_accepted"
       ? (["retry_execution", "fix_with_ai"].includes(receipt.kind)
           ? (receipt.kind === "fix_with_ai" ? "ai_fix_started" : "retry_started")
           : receipt.kind === "rerun_verification" ? "verification_completed" : "answer_recorded")
-      : receipt.messageCode);
-    set("nextOwner", ["retry_execution", "fix_with_ai"].includes(receipt.kind) ? "ai" : "system");
+      : receipt.messageCode));
+    set("impact", completedDelivery?.impact ?? receipt.impact);
+    set("nextOwner", completedDelivery?.nextOwner
+      ?? (["retry_execution", "fix_with_ai"].includes(receipt.kind) ? "ai" : "system"));
+    if (completedDelivery?.targetId) set("targetId", completedDelivery.targetId);
     set("updatedAt", now);
     set("completedAt", now);
     return finish();
   }
 
   if (force || isStalePending(receipt, now) || receipt.status === "unknown") {
+    if (DELIVERY_ACTION_KINDS.has(receipt.kind)) {
+      set("status", "unknown");
+      set("messageCode", "delivery_result_unknown");
+      set("impact", "unknown");
+      set("nextOwner", "me");
+      if (changed) set("updatedAt", now);
+      return finish();
+    }
     const sourceUnchanged = Boolean(receipt.sourceTargetId)
       && (autoRun.invocationId ?? null) === receipt.sourceTargetId;
     set("status", sourceUnchanged ? "safe_to_retry" : "unknown");

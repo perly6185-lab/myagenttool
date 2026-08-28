@@ -39,7 +39,7 @@ export async function handleWorkItemRoutes({
   startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
   createAutoRunBatch, listAutoRunBatches,
   previewAutoScheduler,
-  promoteWorktreeToBase, promoteWorktreeToPullRequest, beginDelivery, failDelivery, completeDelivery,
+  executeReviewCommand,
   claimWorkItem, releaseWorkItemClaim, assignWorkItemToSelf,
   bindGithubIssue, syncGithubIssue,
   bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
@@ -1045,80 +1045,28 @@ export async function handleWorkItemRoutes({
       return true;
     }
     const body = await readJson(req);
-    const item = detail.body.workItem;
-    if (!Number.isInteger(body?.expectedRevision)) {
-      sendJson(res, 400, { error: "expected_revision_required" });
-      return true;
-    }
-    if (body.expectedRevision !== item.revision) {
-      sendJson(res, 409, { error: "work_item_revision_conflict", currentRevision: item.revision });
-      return true;
-    }
-    if (!item.completionGate?.ready) {
-      sendJson(res, 409, { error: "work_item_acceptance_incomplete", ...item.completionGate });
-      return true;
-    }
-    if (!item.executionContractGate?.ready) {
-      sendJson(res, 409, { error: "work_item_execution_contract_required", ...item.executionContractGate });
-      return true;
-    }
-    const autoRun = detail.body.observability?.latestRun ?? null;
-    const worktreeId = autoRun?.localDelivery?.worktreeId ?? null;
-    if (!worktreeId || autoRun?.status !== "done" || autoRun.localDelivery?.deliveredAt) {
-      sendJson(res, 409, { error: "work_item_delivery_not_ready" });
-      return true;
-    }
-    const deliveryEvidence = detail.body.observability?.deliveryEvidence ?? null;
-    if (!deliveryEvidence || deliveryEvidence.actionPreview?.canProceed !== true) {
-      sendJson(res, 409, {
-        error: "work_item_delivery_evidence_not_ready",
-        status: deliveryEvidence?.status ?? "evidence_missing",
-        risk: deliveryEvidence?.risk ?? "unknown",
-        blockingReasonCodes: deliveryEvidence?.blockingReasonCodes ?? ["delivery_evidence_required"],
-        deliveryEvidence,
-      });
-      return true;
-    }
-    const mode = deliveryMatch[2] === "local" ? "local_merge" : "pull_request";
-    const admission = beginDelivery({
-      workItemId,
-      expectedRevision: body.expectedRevision,
-      mode,
-      autoRunId: autoRun.id,
-    }, actor);
-    if (!admission.ok) {
-      sendJson(res, admission.status, admission.body);
-      return true;
-    }
-    const operationId = admission.body.operation.id;
+    const projectedOperation = detail.body.observability?.deliveryEvidence?.actionPreview?.operation;
+    const kind = deliveryMatch[2] === "pull-request"
+      ? (projectedOperation === "update_pull_request" ? "update_pull_request" : "create_pull_request")
+      : (projectedOperation === "apply_office_result" ? "apply_office_result" : "apply_local_changes");
     try {
-      const result = mode === "local_merge"
-        ? await promoteWorktreeToBase(worktreeId)
-        : await promoteWorktreeToPullRequest(worktreeId, {
-          title: item.title,
-          body: `Delivers ${item.localRef}.\n\n${item.body ?? ""}`.trim(),
-          base: body?.baseBranch,
-        });
-      const completed = completeDelivery({
-        workItemId,
-        mode,
-        autoRunId: autoRun.id,
-        operationId,
-        result,
+      const result = await executeReviewCommand({
+        kind,
+        targetId: workItemId,
+        request: {
+          expectedWorkItemRevision: body?.expectedRevision,
+          expectedTargetStatus: body?.expectedTargetStatus,
+          idempotencyKey: body?.idempotencyKey,
+          baseBranch: body?.baseBranch,
+        },
       }, actor);
-      if (!completed.ok) {
-        failDelivery({ workItemId, operationId, error: completed.body?.error ?? "delivery_commit_failed" }, actor);
-      }
-      sendJson(res, completed.status, completed.body);
+      sendJson(res, 200, result);
     } catch (error) {
-      failDelivery({
-        workItemId,
-        operationId,
-        error: error instanceof Error ? error.message : String(error),
-      }, actor);
-      sendJson(res, 409, {
-        error: "work_item_delivery_failed",
-        message: error instanceof Error ? error.message : String(error),
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "work_item_delivery_failed",
+        ...(error?.message ? { message: error.message } : {}),
+        ...(error?.details ?? {}),
+        ...(error?.actionReceipt ? { actionReceipt: error.actionReceipt } : {}),
       });
     }
     return true;

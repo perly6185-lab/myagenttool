@@ -119,6 +119,61 @@ test("marks an abandoned accepted request safe to retry when its source target i
   assert.equal(receipt.requestDigest, undefined);
 });
 
+test("keeps an interrupted delivery unknown because an external side effect may have happened", () => {
+  const h = harness();
+  beginExecutionAction({
+    state: h.state,
+    autoRun: h.autoRun,
+    kind: "create_pull_request",
+    idempotencyKey: "lost-pr-response",
+    expectedWorkItemRevision: 4,
+    expectedTargetStatus: "failed",
+    request: { mode: "pull_request", baseBranch: null },
+    nextOwner: "system",
+    now: h.now,
+    nextId: h.nextId,
+  });
+  h.advance("2026-08-27T01:11:00.000Z");
+
+  const receipt = latestExecutionActionReceipt(h.autoRun, { now: h.now() });
+  assert.equal(receipt.status, "unknown");
+  assert.equal(receipt.impact, "none");
+  assert.equal(receipt.nextOwner, "me");
+});
+
+test("reconciles an interrupted delivery from durable completion evidence", () => {
+  const h = harness();
+  const { receipt } = beginExecutionAction({
+    state: h.state,
+    autoRun: h.autoRun,
+    kind: "apply_local_changes",
+    idempotencyKey: "completed-local-delivery",
+    request: { mode: "local_merge", baseBranch: null },
+    nextOwner: "system",
+    now: h.now,
+    nextId: h.nextId,
+  });
+  receipt.status = "running";
+  h.autoRun.localDelivery = {
+    deliveredAt: "2026-08-27T01:01:00.000Z",
+    deliveredCommit: "abc123",
+    baseBranch: "main",
+  };
+
+  const result = reconcileExecutionActionReceipt(receipt, {
+    state: h.state,
+    autoRun: h.autoRun,
+    now: "2026-08-27T01:02:00.000Z",
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(receipt.status, "succeeded");
+  assert.equal(receipt.messageCode, "local_changes_applied");
+  assert.equal(receipt.impact, "applied");
+  assert.equal(receipt.nextOwner, "none");
+  assert.equal(receipt.targetId, "abc123");
+});
+
 test("reconciles a crash after target binding as a completed retry admission", () => {
   const h = harness();
   const { receipt } = beginExecutionAction({

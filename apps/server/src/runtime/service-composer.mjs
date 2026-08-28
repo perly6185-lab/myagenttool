@@ -152,6 +152,7 @@ import { convergeAutoRunTerminalState, createAutoRunService } from "../services/
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
+import { createWorkItemReviewCommandService } from "../services/work-item-review-command.mjs";
 import { applyResultRepairSpec } from "../services/result-repair-task.mjs";
 import { createTaskMaterialService } from "../services/task-materials.mjs";
 import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
@@ -284,8 +285,8 @@ export function createServerRuntimeServices({
     state,
     now,
     nextId,
-    persistStateSoon,
     store,
+    persistStateSoon,
   });
   const eventArchive = retentionArchive.prepareInvocationEventArchive();
   if (eventArchive.readError) {
@@ -2447,6 +2448,22 @@ export function createServerRuntimeServices({
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
     materializeTaskMaterials: taskMaterialService.materialize,
     store,
+  });
+  const workItemReviewCommandService = createWorkItemReviewCommandService({
+    state,
+    now,
+    nextId,
+    store,
+    persistStateSoon,
+    getWorkItem: workItemService.getWorkItem,
+    retryAutoRun,
+    reverifyAutoRun,
+    answerClarify,
+    promoteWorktreeToBase,
+    promoteWorktreeToPullRequest,
+    beginDelivery: workItemService.beginDelivery,
+    failDelivery: workItemService.failDelivery,
+    completeDelivery: workItemService.completeDelivery,
   });
   const workItemAutoRunUnderstandingService = createWorkItemAutoRunUnderstandingService({
     state,
@@ -7347,6 +7364,7 @@ export function createServerRuntimeServices({
     startAutoRun,
     retryAutoRun,
     reverifyAutoRun,
+    executeWorkItemReviewCommand: workItemReviewCommandService.execute,
     reconcileExecutionAction,
     recoverTimedOutCodexApproval: codexApprovalRecovery.recoverTimedOutApproval,
     processPlanningRecommendedActions,

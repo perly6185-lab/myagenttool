@@ -1,0 +1,181 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { createWorkItemReviewCommandService } from "../src/services/work-item-review-command.mjs";
+
+function deliveryHarness({ canProceed = true, operation = "apply_local_changes" } = {}) {
+  let sequence = 0;
+  let promotionCount = 0;
+  let transactionCount = 0;
+  const current = "2026-08-28T02:00:00.000Z";
+  const item = {
+    id: "lwi_1",
+    localRef: "LOCAL-1",
+    title: "Apply reviewed result",
+    body: "Apply it safely.",
+    revision: 4,
+    status: "review",
+    state: "open",
+    completionGate: { ready: true },
+    executionContractGate: { ready: true },
+  };
+  const autoRun = {
+    id: "aur_1",
+    status: "done",
+    invocationId: "inv_1",
+    localDelivery: { worktreeId: "wtr_1", deliveredAt: null },
+  };
+  const state = {
+    autoRuns: [autoRun],
+    executionActionIdempotencyRecords: [],
+    workItems: [{ id: item.id, revision: item.revision, executionBindings: [{ kind: "auto_run", targetId: autoRun.id }] }],
+  };
+  const getWorkItem = () => ({
+    ok: true,
+    status: 200,
+    body: {
+      workItem: { ...item },
+      observability: {
+        latestRun: {
+          id: autoRun.id,
+          status: autoRun.status,
+          localDelivery: { ...autoRun.localDelivery },
+        },
+        deliveryEvidence: {
+          status: canProceed ? "ready" : "verification_missing",
+          risk: canProceed ? "low" : "medium",
+          blockingReasonCodes: canProceed ? [] : ["verification_required"],
+          actionPreview: { operation, canProceed },
+        },
+      },
+    },
+  });
+  const service = createWorkItemReviewCommandService({
+    state,
+    now: () => current,
+    nextId: (prefix) => `${prefix}_${++sequence}`,
+    store: { transaction: (fn) => { transactionCount += 1; return fn(); } },
+    getWorkItem,
+    retryAutoRun: async () => ({}),
+    reverifyAutoRun: async () => ({}),
+    answerClarify: async () => ({}),
+    beginDelivery: () => ({ ok: true, status: 201, body: { operation: { id: "wdo_1" } } }),
+    failDelivery: () => ({ ok: true }),
+    completeDelivery: ({ result }) => {
+      autoRun.localDelivery = { ...autoRun.localDelivery, deliveredAt: result.deliveredAt };
+      item.revision += 1;
+      item.status = "done";
+      item.state = "closed";
+      state.workItems[0].revision = item.revision;
+      return {
+        ok: true,
+        status: 200,
+        body: { workItem: { ...item }, autoRun, delivery: autoRun.localDelivery },
+      };
+    },
+    promoteWorktreeToBase: async () => {
+      promotionCount += 1;
+      return { baseBranch: "main", commit: "abc123", deliveredAt: current };
+    },
+    promoteWorktreeToPullRequest: async () => {
+      promotionCount += 1;
+      return { number: 7, url: "https://example.test/pull/7", deliveredAt: current };
+    },
+  });
+  return {
+    service,
+    state,
+    autoRun,
+    item,
+    promotionCount: () => promotionCount,
+    transactionCount: () => transactionCount,
+  };
+}
+
+test("dispatches retry, AI repair, verification, and clarification through one command boundary", async () => {
+  const calls = [];
+  const service = createWorkItemReviewCommandService({
+    retryAutoRun: async (id, options) => { calls.push(["retry", id, options]); return { actionReceipt: { kind: options.feedback ? "fix_with_ai" : "retry_execution" } }; },
+    reverifyAutoRun: async (id, options) => { calls.push(["verify", id, options]); return { actionReceipt: { kind: "rerun_verification" } }; },
+    answerClarify: async (id, options) => { calls.push(["answer", id, options]); return { actionReceipt: { kind: "answer_ai" } }; },
+  });
+  const actor = { userId: "usr_1" };
+
+  await service.execute({ kind: "retry_execution", targetId: "aur_1", request: { feedback: "ignored", idempotencyKey: "retry-1" } }, actor);
+  await service.execute({ kind: "fix_with_ai", targetId: "aur_1", request: { feedback: "Fix the failed check.", idempotencyKey: "fix-1" } }, actor);
+  await service.execute({ kind: "rerun_verification", targetId: "aur_1", request: { idempotencyKey: "verify-1" } }, actor);
+  await service.execute({ kind: "answer_ai", targetId: "aur_1", request: { answers: "Use option A.", idempotencyKey: "answer-1" } }, actor);
+
+  assert.deepEqual(calls.map(([kind]) => kind), ["retry", "retry", "verify", "answer"]);
+  assert.equal(calls[0][2].feedback, null);
+  assert.equal(calls[1][2].feedback, "Fix the failed check.");
+  assert.equal(calls[2][2].actor, actor);
+  assert.equal(calls[3][2].answers, "Use option A.");
+});
+
+test("returns one standard receipt for local and office delivery and replays its durable key", async () => {
+  const h = deliveryHarness({ operation: "apply_office_result" });
+  const command = {
+    kind: "apply_office_result",
+    targetId: h.item.id,
+    request: {
+      expectedWorkItemRevision: 4,
+      expectedTargetStatus: "done",
+      idempotencyKey: "deliver-once",
+    },
+  };
+
+  const delivered = await h.service.execute(command, { userId: "usr_1" });
+  assert.equal(delivered.actionReceipt.kind, "apply_office_result");
+  assert.equal(delivered.actionReceipt.status, "succeeded");
+  assert.equal(delivered.actionReceipt.messageCode, "office_result_applied");
+  assert.equal(delivered.actionReceipt.impact, "applied");
+  assert.equal(delivered.actionReceipt.targetId, "abc123");
+  assert.equal(delivered.autoRun.executionActionReceipts, undefined);
+  assert.equal(h.promotionCount(), 1);
+  assert.equal(h.state.executionActionIdempotencyRecords.length, 1);
+  assert.equal(h.transactionCount(), 3, "accepted, running, and succeeded receipts commit transactionally");
+
+  const replayed = await h.service.execute(command, { userId: "usr_1" });
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.actionReceipt.replayed, true);
+  assert.equal(replayed.actionReceipt.id, delivered.actionReceipt.id);
+  assert.equal(h.promotionCount(), 1);
+});
+
+test("records a failed standard receipt when delivery evidence blocks execution", async () => {
+  const h = deliveryHarness({ canProceed: false });
+
+  await assert.rejects(
+    h.service.execute({
+      kind: "apply_local_changes",
+      targetId: h.item.id,
+      request: { expectedWorkItemRevision: 4, idempotencyKey: "blocked-delivery" },
+    }, { userId: "usr_1" }),
+    (error) => {
+      assert.equal(error.code, "work_item_delivery_evidence_not_ready");
+      assert.equal(error.status, 409);
+      assert.deepEqual(error.details.blockingReasonCodes, ["verification_required"]);
+      assert.equal(error.actionReceipt.kind, "apply_local_changes");
+      assert.equal(error.actionReceipt.status, "failed");
+      assert.equal(error.actionReceipt.impact, "none");
+      return true;
+    },
+  );
+  assert.equal(h.promotionCount(), 0);
+
+  await assert.rejects(
+    h.service.execute({
+      kind: "apply_local_changes",
+      targetId: h.item.id,
+      request: { expectedWorkItemRevision: 4, idempotencyKey: "blocked-delivery" },
+    }, { userId: "usr_1" }),
+    (error) => {
+      assert.equal(error.code, "work_item_delivery_evidence_not_ready");
+      assert.equal(error.actionReceipt.status, "failed");
+      assert.equal(error.actionReceipt.replayed, true);
+      return true;
+    },
+  );
+  assert.equal(h.promotionCount(), 0);
+});

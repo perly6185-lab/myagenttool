@@ -693,7 +693,7 @@ export function WorkItemSummaryView({
   const showExecutionReview = Boolean(executionReview?.targetId && executionReview.state !== "queued");
   const executionReviewOwnsProgress = showExecutionReview;
   const usesProjectedReviewActions = Boolean(showExecutionReview && executionReview?.actionAvailability);
-  const executionActionRequest = (kind: "retry_execution" | "fix_with_ai" | "rerun_verification" | "answer_ai") => ({
+  const executionActionRequest = (kind: "retry_execution" | "fix_with_ai" | "rerun_verification" | "answer_ai" | "create_pull_request" | "update_pull_request" | "apply_local_changes" | "apply_office_result") => ({
     idempotencyKey: `work-item:${item.id}:${kind}:${item.revision}:${effectiveExecutionActionReceipt?.id ?? "none"}:${effectiveExecutionActionReceipt?.status ?? "none"}:${effectiveExecutionActionReceipt?.updatedAt ?? "none"}:${executionReview?.targetId ?? observability?.latestRun?.id ?? "none"}:${executionReview?.targetStatus ?? observability?.latestRun?.status ?? "none"}`.slice(0, 200),
     expectedWorkItemRevision: item.revision,
     expectedTargetStatus: executionReview?.targetStatus ?? observability?.latestRun?.status ?? undefined,
@@ -1902,14 +1902,22 @@ export function WorkItemSummaryView({
       }
       const response: {
         workItem: LocalWorkItem;
+        actionReceipt?: ExecutionActionReceipt;
         delivery?: {
           baseBranch?: string | null;
           deliveredCommit?: string | null;
           deliveredAt?: string | null;
         };
       } = observability?.delivery
-        ? await api.deliverWorkItem(current.id, observability.delivery.mode, current.revision) as {
+        ? await api.deliverWorkItem(
+            current.id,
+            observability.delivery.mode,
+            current.revision,
+            executionActionRequest(deliveryOperation
+              ?? (observability.delivery.mode === "pull_request" ? "create_pull_request" : "apply_local_changes")),
+          ) as {
             workItem: LocalWorkItem;
+            actionReceipt?: ExecutionActionReceipt;
             delivery?: {
               baseBranch?: string | null;
               deliveredCommit?: string | null;
@@ -1918,6 +1926,7 @@ export function WorkItemSummaryView({
           }
         : await api.transitionWorkItem(current.id, "close", current.revision) as { workItem: LocalWorkItem };
       setItem(response.workItem);
+      if (response.actionReceipt) setExecutionActionReceipt(response.actionReceipt);
       if (observability?.delivery?.mode === "local_merge") {
         setLocalDeliveryReceipt({
           baseBranch: response.delivery?.baseBranch ?? null,
