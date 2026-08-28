@@ -2,6 +2,7 @@ import { AlertTriangle, CheckCircle2, Circle, Clock3, ExternalLink, LoaderCircle
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { LocalWorkItemObservability, WorkItemExecutionReview } from "./task-view-types";
+import { ExecutionReviewActionList, isReadOnlyReviewAction, reviewActionBlockedReasons, reviewActionLabel } from "./execution-review-actions";
 
 const STAGE_COPY = {
   accepted: ["已接单", "Accepted"],
@@ -63,17 +64,6 @@ const RISK_REASON_COPY: Record<WorkItemExecutionReview["riskReasons"][number]["c
   office_batch_partial: ["办公批次只有部分内容成功。", "Only part of the office batch succeeded."],
   office_batch_rolled_back: ["办公批次已回滚，需要核对恢复结果。", "The office batch was rolled back and its recovery needs review."],
   pull_request_not_applied: ["Pull Request 尚未合并生效。", "The pull request has not been merged or applied."],
-};
-
-const ACTION_COPY: Record<WorkItemExecutionReview["recommendedAction"]["kind"], [string, string]> = {
-  open_details: ["查看完整过程", "Full execution details"],
-  answer_ai: ["回答 AI", "Answer AI"],
-  review_approval: ["处理审批", "Review approval"],
-  retry_execution: ["重试 AI 工作", "Retry AI work"],
-  fix_with_ai: ["让 AI 修复", "Ask AI to fix"],
-  rerun_verification: ["重新运行验证", "Rerun verification"],
-  review_result: ["复核结果", "Review result"],
-  view_result: ["查看结果", "View result"],
 };
 
 const NEXT_OWNER_COPY = {
@@ -143,8 +133,10 @@ export function ExecutionReviewCard({
   agentName,
   onOpenDetails,
   onRecommendedAction,
+  onAction,
   onReconcileAction,
   recommendedActionPending = false,
+  pendingActionKind = null,
   reconcileActionPending = false,
   actionReceipt = null,
   attemptHistory = [],
@@ -154,8 +146,10 @@ export function ExecutionReviewCard({
   agentName?: string | null;
   onOpenDetails: () => void;
   onRecommendedAction?: () => void;
+  onAction?: (kind: string) => void;
   onReconcileAction?: () => void;
   recommendedActionPending?: boolean;
+  pendingActionKind?: string | null;
   reconcileActionPending?: boolean;
   actionReceipt?: ExecutionActionReceipt | null;
   attemptHistory?: NonNullable<LocalWorkItemObservability["runHistory"]>;
@@ -178,15 +172,30 @@ export function ExecutionReviewCard({
   const receiptPending = receiptStatus === "accepted" || receiptStatus === "running";
   const receiptUnknown = receiptStatus === "unknown";
   const receiptSafeToRetry = receiptStatus === "safe_to_retry";
-  const effectiveActionHandler = receiptUnknown ? onReconcileAction : recommendedActionHandler;
-  const effectiveActionDisabled = receiptPending || !effectiveActionHandler || recommendedActionPending || reconcileActionPending;
+  const projectedLocked = review.actionAvailability?.locked === true;
+  const primaryMutationLocked = projectedLocked && !isReadOnlyReviewAction(review.recommendedAction.kind);
+  const projectedRecommendedAction = review.actionAvailability?.actions.find(
+    (candidate) => candidate.kind === review.recommendedAction.kind,
+  ) ?? null;
+  const projectedActions = review.actionAvailability?.actions ?? [];
+  const actionHandler = (kind: string) => onAction ? () => onAction(kind) : undefined;
+  const effectiveActionHandler = receiptUnknown
+    ? onReconcileAction
+    : actionHandler(review.recommendedAction.kind) ?? recommendedActionHandler;
+  const effectiveActionDisabled = receiptPending
+    || (!receiptUnknown && primaryMutationLocked)
+    || (!receiptUnknown && projectedRecommendedAction?.enabled === false)
+    || !effectiveActionHandler
+    || recommendedActionPending
+    || reconcileActionPending;
   const actionLabel = receiptUnknown
     ? reconcileActionPending
       ? language === "zh" ? "正在重新检查" : "Checking again"
       : language === "zh" ? "重新检查操作状态" : "Recheck action status"
     : receiptPending
       ? language === "zh" ? "正在确认操作" : "Confirming action"
-      : ACTION_COPY[review.recommendedAction.kind][index];
+      : reviewActionLabel(review.recommendedAction.kind, language);
+  const primaryBlockedReasons = reviewActionBlockedReasons(projectedRecommendedAction, language, receiptPending || primaryMutationLocked);
   return (
     <section className="rounded-xl border border-primary/25 bg-primary/[0.04] p-4" aria-label={language === "zh" ? "执行进度与复核证据" : "Execution progress and review evidence"} data-testid="execution-review-card">
       <div className="flex items-start gap-3">
@@ -220,6 +229,19 @@ export function ExecutionReviewCard({
               </Button>
             </div>
           </div>
+          {!receiptUnknown && (primaryMutationLocked || projectedRecommendedAction?.enabled === false) ? (
+            <ul className="mt-1.5 list-disc space-y-1 pl-5 text-xs text-muted-foreground" data-testid="execution-action-unavailable">
+              {primaryBlockedReasons.map((reason) => <li key={reason}>{reason}</li>)}
+            </ul>
+          ) : null}
+          <ExecutionReviewActionList
+            actions={projectedActions}
+            primaryKind={review.recommendedAction.kind}
+            language={language}
+            mutationsLocked={receiptPending || receiptUnknown || projectedLocked}
+            pendingActionKind={pendingActionKind}
+            onAction={onAction}
+          />
           {actionReceipt ? (
             <div className={`mt-3 rounded-lg border px-3 py-2.5 ${receiptStatus === "failed" || receiptUnknown ? "border-destructive/30 bg-destructive/[0.045]" : receiptPending ? "border-primary/30 bg-primary/[0.05]" : "border-success/30 bg-success/[0.06]"}`} role="status" data-testid="execution-action-receipt">
               <div className="flex items-center gap-2 text-xs font-medium">

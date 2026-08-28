@@ -2855,8 +2855,14 @@ export const api = {
       ...payload,
       timezoneOffset: new Date().getTimezoneOffset(),
     }),
-  deliverWorkItem: (id: string, mode: "local_merge" | "pull_request", expectedRevision: number) =>
+  deliverWorkItem: (
+    id: string,
+    mode: "local_merge" | "pull_request",
+    expectedRevision: number,
+    actionRequest: { idempotencyKey?: string; expectedTargetStatus?: string } = {},
+  ) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/delivery/${mode === "local_merge" ? "local" : "pull-request"}`, {
+      ...actionRequest,
       expectedRevision,
     }),
   retryWorkItemAlert: (workItemId: string, alertId: string) =>
