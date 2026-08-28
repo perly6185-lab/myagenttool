@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  PRIVATE_TUTOR_MATERIAL_MAX_FILE_BYTES,
   parseMaterialDocument,
   parseUploadedMaterialDocument,
   parseMarkdownSections,
@@ -208,6 +209,32 @@ test("extracts real PDF bytes page by page without persisting binary text", asyn
   assert.doesNotMatch(doc.pages[0].text, /%PDF-|endstream|xref/);
   assert.equal("rawText" in doc, false);
   assert.equal(doc.sections[0].pageNumber, 1);
+});
+
+test("accepts private tutor PDF uploads above the former 10 MiB limit and caps them at 100 MiB", async () => {
+  const bytes = Buffer.alloc(10 * 1024 * 1024 + 1);
+  Buffer.from("%PDF-").copy(bytes);
+  const doc = await parseUploadedMaterialDocument(pdfUpload(bytes), {
+    ocrAdapter: unavailableOcr,
+    extractPdf: async () => ({
+      pages: [{ pageNumber: 1, text: "Chapter 1: Whole textbook material with enough meaningful content for parsing.", source: "pdf_text" }],
+      pageCount: 1,
+      warnings: [],
+      truncated: false,
+      truncatedPages: false,
+    }),
+  });
+
+  assert.equal(doc.status, "parsed");
+  assert.equal(doc.fileSize, bytes.length);
+  assert.equal(PRIVATE_TUTOR_MATERIAL_MAX_FILE_BYTES, 100 * 1024 * 1024);
+
+  await assert.rejects(
+    () => parseUploadedMaterialDocument(pdfUpload(minimalPdf(), {
+      fileSize: PRIVATE_TUTOR_MATERIAL_MAX_FILE_BYTES + 1,
+    }), { ocrAdapter: unavailableOcr }),
+    (error) => error.code === "file_size_exceeds_limit" && /100 MB/.test(error.message),
+  );
 });
 
 test("parses the tracked Chinese textbook PDF with stable page sources", async () => {

@@ -108,6 +108,7 @@ export function createServerState({ defaultProjectPath, now }) {
     privateTutorKnowledgeComponents: [],
     privateTutorSubjectPlugins: [],
     privateTutorMaterialDocuments: [],
+    privateTutorOcrJobs: [],
     privateTutorKnowledgeMapDrafts: [],
     privateTutorLearningPreferences: [],
     privateTutorLearningTrials: [],

@@ -2,29 +2,30 @@ import { useRef, useState } from "react";
 import { Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { uploadPrivateTutorMaterial, type MaterialDocument } from "../private-tutor-api";
+import { uploadPrivateTutorMaterial, type MaterialDocument, type PrivateTutorOcrJob } from "../private-tutor-api";
 import { readPrivateTutorMaterialFile } from "../private-tutor-material-file";
 
 const ACCEPTED_FILE_TYPES = ["markdown", "pdf", "plain_text"] as const;
 type AcceptedFileType = (typeof ACCEPTED_FILE_TYPES)[number];
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
 interface PrivateTutorMaterialImportProps {
   onClose: () => void;
-  onUploaded: (material: MaterialDocument) => void;
+  onUploaded: (material: MaterialDocument, job?: PrivateTutorOcrJob | null) => void;
 }
 
 export function PrivateTutorMaterialImport({ onClose, onUploaded }: PrivateTutorMaterialImportProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [dragActive, setDragActive] = useState(false);
+  const [cloudAllowed, setCloudAllowed] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(file: File) {
     setError("");
     if (file.size > MAX_FILE_SIZE) {
-      setError("文件大小不能超过 10MB。");
+      setError("文件大小不能超过 100MB。");
       return;
     }
     const fileName = file.name;
@@ -54,6 +55,24 @@ export function PrivateTutorMaterialImport({ onClose, onUploaded }: PrivateTutor
       onUploaded(material);
     } catch (err) {
       setError(err instanceof Error ? err.message : "上传失败，请重试。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importLocalTextbook() {
+    if (!window.myagenttoolDesktop?.importPrivateTutorLocalMaterial) return;
+    if (!cloudAllowed) {
+      setError("请先确认是否允许将教材页图发送给 Codex 视觉模型。");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const result = await window.myagenttoolDesktop.importPrivateTutorLocalMaterial({ startOcr: true, cloudAllowed: true });
+      if (result) onUploaded(result.material, result.job);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "本地教材导入失败，请重试。");
     } finally {
       setBusy(false);
     }
@@ -93,8 +112,20 @@ export function PrivateTutorMaterialImport({ onClose, onUploaded }: PrivateTutor
         <Button variant="secondary" size="sm" className="mt-3" disabled={busy} onClick={() => fileInputRef.current?.click()}>
           {busy ? "正在上传…" : "选择文件"}
         </Button>
-        <p className="mt-3 text-[10px] text-muted-foreground">支持 .md / .txt / .pdf，单文件不超过 10MB</p>
+        <p className="mt-3 text-[10px] text-muted-foreground">支持 .md / .txt / .pdf，单文件不超过 100MB</p>
       </div>
+
+      {window.myagenttoolDesktop?.importPrivateTutorLocalMaterial ? (
+        <div className="mt-3 rounded-lg border bg-card p-3">
+          <label className="flex items-start gap-2 text-xs text-muted-foreground">
+            <input type="checkbox" className="mt-0.5" checked={cloudAllowed} onChange={(event) => setCloudAllowed(event.target.checked)} />
+            <span>我同意把教材的分片页图发送给 Codex 视觉模型识别；原始 PDF 保留在本机受管目录，识别结果按页保存并可断点续跑。</span>
+          </label>
+          <Button type="button" variant="secondary" size="sm" className="mt-3" disabled={busy} onClick={() => void importLocalTextbook()}>
+            {busy ? "正在建立分片任务…" : "从本机导入大教材并识别"}
+          </Button>
+        </div>
+      ) : null}
 
       <input ref={fileInputRef} type="file" accept=".md,.markdown,.txt,.text,.pdf" className="hidden" onChange={onFileInputChange} />
 

@@ -2,6 +2,7 @@ process.env.MYAGENT_REQUIRE_AUTH = "1";
 process.env.MYAGENT_LOCAL_MODE = "1";
 process.env.MYAGENT_SECURE_COOKIES = "0";
 process.env.MYAGENTTOOL_STATE_DISABLED = "1";
+process.env.MYAGENT_DESKTOP_CREDENTIAL_TOKEN = "private-tutor-desktop-test-token";
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -9,6 +10,7 @@ import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { after, before, test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 let server;
 let base;
@@ -1844,6 +1846,42 @@ test("accepts preserved PDF bytes and exposes page-grounded extraction metadata"
   assert.equal(decodedAsText.body.error, "pdf_binary_required");
 
   const removed = await call(`/api/private-tutor/materials/${materialId}`, {
+    token: "tok_personal",
+    method: "DELETE",
+  });
+  assert.equal(removed.status, 200);
+});
+
+test("imports a desktop-selected scanned textbook into managed local storage without base64 transport", async () => {
+  const path = fileURLToPath(new URL("../../../../demos/pdfcli/97-动态热机械分析仪DMA.pdf", import.meta.url));
+  const unauthorized = await fetch(`${base}/api/private-tutor/internal/local-materials`, {
+    method: "POST",
+    headers: { authorization: "Bearer tok_personal", "content-type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  assert.equal(unauthorized.status, 404);
+
+  const response = await fetch(`${base}/api/private-tutor/internal/local-materials`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer tok_personal",
+      "content-type": "application/json",
+      "x-desktop-credential-token": process.env.MYAGENT_DESKTOP_CREDENTIAL_TOKEN,
+    },
+    body: JSON.stringify({ path, startOcr: false, cloudAllowed: false }),
+  });
+  const imported = await response.json();
+  assert.equal(response.status, 201, JSON.stringify(imported));
+  assert.equal(imported.material.status, "needs_ocr");
+  assert.equal(imported.material.extraction.pageCount, 6);
+  assert.equal(imported.material.managedSource.storage, "managed_local");
+  assert.equal(imported.job, null);
+
+  const jobs = await call(`/api/private-tutor/materials/${imported.material.id}/ocr-jobs`, { token: "tok_personal" });
+  assert.equal(jobs.status, 200);
+  assert.deepEqual(jobs.body.jobs, []);
+
+  const removed = await call(`/api/private-tutor/materials/${imported.material.id}`, {
     token: "tok_personal",
     method: "DELETE",
   });

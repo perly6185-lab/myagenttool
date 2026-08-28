@@ -690,6 +690,7 @@ export function createHttpServer({
   persistStateNow,
   finalizePrivateTutorLearnerDeletion = null,
   privateTutorReleaseBuildId = "development-unversioned",
+  privateTutorMaterialOcrService = null,
   identityProviderCore = null,
   provisionSiteCredential,
   revokeSiteCredential,
@@ -985,6 +986,8 @@ export function createHttpServer({
         persistStateNow,
         finalizePrivateTutorLearnerDeletion,
         privateTutorReleaseBuildId,
+        privateTutorMaterialOcrService,
+        desktopToken: process.env.MYAGENT_DESKTOP_CREDENTIAL_TOKEN ?? "",
       })) {
         return;
       }

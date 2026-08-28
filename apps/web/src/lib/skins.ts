@@ -114,6 +114,11 @@ declare global {
           readiness: "ready" | "inspect" | "needs_ocr";
         }>;
       } | null>;
+      importPrivateTutorLocalMaterial?: (input: { startOcr: boolean; cloudAllowed: boolean }) => Promise<{
+        material: import("@/features/private-tutor/private-tutor-model").MaterialDocument;
+        job: import("@/features/private-tutor/private-tutor-model").PrivateTutorOcrJob | null;
+        replayed: boolean;
+      } | null>;
       stageWorkflowCase?: (input: {
         requestId: string;
         sourceId: string;

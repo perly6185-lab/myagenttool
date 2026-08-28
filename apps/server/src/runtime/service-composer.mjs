@@ -61,6 +61,7 @@ import { createChannelConsultationAdapter, resolveChannelConsultationConfig } fr
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
 import { createChannelNotificationService } from "../services/channel-notifications.mjs";
 import { erasePrivateTutorLearnerData, PRIVATE_TUTOR_LEARNER_COLLECTION_KEYS } from "../services/private-tutor-governance.mjs";
+import { createPrivateTutorMaterialOcrService } from "../services/private-tutor-material-ocr.mjs";
 import {
   channelObjectValidationMatches,
   channelObjectValidationSummary,
@@ -709,6 +710,15 @@ export function createServerRuntimeServices({
     codexAdapter: createCodexVisionOcrAdapter({
       config: resolveCodexVisionOcrConfig(),
     }),
+  });
+  const privateTutorMaterialOcrService = createPrivateTutorMaterialOcrService({
+    state,
+    stateStorePath,
+    ocrAdapter: workflowOcrAdapter,
+    now,
+    nextId,
+    persistStateSoon,
+    store,
   });
   const workflowMemoryService = createWorkflowMemoryService({
     state,
@@ -7330,6 +7340,7 @@ export function createServerRuntimeServices({
     now,
     privateTutorReleaseBuildId,
     finalizePrivateTutorLearnerDeletion,
+    privateTutorMaterialOcrService,
     // #1302 long-poll: the bridge cancellations route waits on this shared signal.
     cancellationSignal,
     recordRoundEvent,

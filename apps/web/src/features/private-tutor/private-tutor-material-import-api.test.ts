@@ -4,6 +4,11 @@ import {
   uploadPrivateTutorMaterial,
   getPrivateTutorMaterial,
   deletePrivateTutorMaterial,
+  startPrivateTutorMaterialOcr,
+  listPrivateTutorMaterialOcrJobs,
+  getPrivateTutorOcrJob,
+  retryPrivateTutorOcrJob,
+  cancelPrivateTutorOcrJob,
   generatePrivateTutorKnowledgeMapDraft,
   getPrivateTutorKnowledgeMapDraft,
   updatePrivateTutorKnowledgeMapDraft,
@@ -99,6 +104,28 @@ describe("private tutor material import & draft API", () => {
     const res = await deletePrivateTutorMaterial("mat_abc123");
     expect(res).toEqual({ deleted: true });
     expect(spy).toHaveBeenCalledWith("DELETE", "/api/private-tutor/materials/mat_abc123");
+  });
+
+  it("uses the resumable OCR job endpoints", async () => {
+    const job = { id: "ptocr_1", materialId: "mat_abc123", status: "queued" };
+    const spy = vi.spyOn(apiRequest, "request")
+      .mockResolvedValueOnce({ job, replayed: false })
+      .mockResolvedValueOnce({ jobs: [job] })
+      .mockResolvedValueOnce({ job, material: fakeMaterial })
+      .mockResolvedValueOnce({ job })
+      .mockResolvedValueOnce({ job: { ...job, status: "cancelled" } });
+    await startPrivateTutorMaterialOcr("mat_abc123", { cloudAllowed: true });
+    await listPrivateTutorMaterialOcrJobs("mat_abc123");
+    await getPrivateTutorOcrJob("ptocr_1");
+    await retryPrivateTutorOcrJob("ptocr_1", { cloudAllowed: true });
+    await cancelPrivateTutorOcrJob("ptocr_1");
+    expect(spy.mock.calls).toEqual([
+      ["POST", "/api/private-tutor/materials/mat_abc123/ocr-jobs", { cloudAllowed: true }],
+      ["GET", "/api/private-tutor/materials/mat_abc123/ocr-jobs"],
+      ["GET", "/api/private-tutor/ocr-jobs/ptocr_1"],
+      ["POST", "/api/private-tutor/ocr-jobs/ptocr_1/retry", { cloudAllowed: true }],
+      ["POST", "/api/private-tutor/ocr-jobs/ptocr_1/cancel", {}],
+    ]);
   });
 
   it("generatePrivateTutorKnowledgeMapDraft calls generate-draft endpoint", async () => {

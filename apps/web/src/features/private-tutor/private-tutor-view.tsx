@@ -98,9 +98,15 @@ import {
   type PrivateTutorPackageActivationResult,
   type LearningContentPackage,
   listPrivateTutorMaterials,
+  listPrivateTutorMaterialOcrJobs,
+  getPrivateTutorOcrJob,
+  startPrivateTutorMaterialOcr,
+  retryPrivateTutorOcrJob,
+  cancelPrivateTutorOcrJob,
   generatePrivateTutorKnowledgeMapDraft,
   type MaterialDocument,
   type KnowledgeMapDraft,
+  type PrivateTutorOcrJob,
 } from "@/features/private-tutor/private-tutor-api";
 import { PrivateTutorMaterialImport } from "@/features/private-tutor/components/private-tutor-material-import";
 import { PrivateTutorDraftEditor } from "@/features/private-tutor/components/private-tutor-draft-editor";
@@ -1934,6 +1940,7 @@ function TutorSettings({ state, preferences, onPreferencesChange, onPackageActiv
   const [error, setError] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [materials, setMaterials] = useState<MaterialDocument[]>([]);
+  const [ocrJobs, setOcrJobs] = useState<Record<string, PrivateTutorOcrJob>>({});
   const [activeDraft, setActiveDraft] = useState<{ material: MaterialDocument; draft: KnowledgeMapDraft } | null>(null);
   const [pendingPackage, setPendingPackage] = useState<LearningContentPackage | null>(null);
   const [entryMode, setEntryMode] = useState<"diagnostic" | "chapter">("diagnostic");
@@ -1973,23 +1980,39 @@ function TutorSettings({ state, preferences, onPreferencesChange, onPackageActiv
         if (!current) return;
         if (pkgsRes.status === "fulfilled") setPackages(pkgsRes.value);
         if (activeRes.status === "fulfilled") setActivePackage(activeRes.value);
-        if (materialsRes.status === "fulfilled") setMaterials(materialsRes.value);
+        if (materialsRes.status === "fulfilled") {
+          setMaterials(materialsRes.value);
+          void Promise.all(materialsRes.value.map(async (material) => {
+            const jobs = await listPrivateTutorMaterialOcrJobs(material.id);
+            return jobs[0] ?? null;
+          })).then((jobs) => setOcrJobs(Object.fromEntries(jobs.filter(Boolean).map((job) => [job!.materialId, job!])))).catch(() => {});
+        }
         if (pkgsRes.status === "rejected" || activeRes.status === "rejected") setError("无法加载内容包。");
         setLoading(false);
       });
     return () => { current = false; };
   }, []);
 
-  async function handleMaterialUploaded(material: MaterialDocument) {
-    setShowImport(false);
-    setMaterials((prev) => [...prev.filter((item) => item.id !== material.id), material]);
-    if (material.status !== "parsed") {
-      const reason = privateTutorOcrReasonLabel(material.extraction?.ocr.reason);
-      setError(material.status === "needs_ocr"
-        ? `这份 PDF 没有足够的可提取文字，本机 OCR 暂时无法完成识别${reason ? `（${reason}）` : ""}。资料已保留，但不会生成错误的知识地图。`
-        : "资料尚未解析完成，暂时不能生成知识地图。");
-      return;
-    }
+  useEffect(() => {
+    const activeJobs = Object.values(ocrJobs).filter((job) => ["queued", "running"].includes(job.status));
+    if (!activeJobs.length) return undefined;
+    const timer = window.setTimeout(() => {
+      void Promise.all(activeJobs.map((job) => getPrivateTutorOcrJob(job.id))).then((results) => {
+        setOcrJobs((current) => {
+          const next = { ...current };
+          for (const result of results) next[result.job.materialId] = result.job;
+          return next;
+        });
+        setMaterials((current) => current.map((material) => {
+          const updated = results.find((result) => result.material?.id === material.id)?.material;
+          return updated ?? material;
+        }));
+      }).catch(() => {});
+    }, 1_000);
+    return () => window.clearTimeout(timer);
+  }, [ocrJobs]);
+
+  async function openMaterialDraft(material: MaterialDocument) {
     setLoading(true);
     setError("");
     try {
@@ -2001,6 +2024,49 @@ function TutorSettings({ state, preferences, onPreferencesChange, onPackageActiv
       setError(err instanceof Error ? err.message : "生成知识地图草稿失败，请重试。");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleMaterialUploaded(material: MaterialDocument, job: PrivateTutorOcrJob | null = null) {
+    setShowImport(false);
+    setMaterials((prev) => [...prev.filter((item) => item.id !== material.id), material]);
+    if (job) {
+      setOcrJobs((current) => ({ ...current, [material.id]: job }));
+      setError("");
+      return;
+    }
+    if (material.status !== "parsed") {
+      const reason = privateTutorOcrReasonLabel(material.extraction?.ocr.reason);
+      setError(material.status === "needs_ocr"
+        ? `这份 PDF 没有足够的可提取文字，本机 OCR 暂时无法完成识别${reason ? `（${reason}）` : ""}。资料已保留，但不会生成错误的知识地图。`
+        : "资料尚未解析完成，暂时不能生成知识地图。");
+      return;
+    }
+    await openMaterialDraft(material);
+  }
+
+  async function startMaterialOcr(material: MaterialDocument, retryJob: PrivateTutorOcrJob | null = null) {
+    if (!window.confirm("识别会把教材分片页图发送给 Codex 视觉模型。是否同意并继续？")) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = retryJob
+        ? await retryPrivateTutorOcrJob(retryJob.id, { cloudAllowed: true })
+        : await startPrivateTutorMaterialOcr(material.id, { cloudAllowed: true });
+      setOcrJobs((current) => ({ ...current, [material.id]: result.job }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "无法启动教材识别。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function cancelMaterialOcr(job: PrivateTutorOcrJob) {
+    try {
+      const result = await cancelPrivateTutorOcrJob(job.id);
+      setOcrJobs((current) => ({ ...current, [job.materialId]: result.job }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "无法取消教材识别。");
     }
   }
 
@@ -2171,14 +2237,29 @@ function TutorSettings({ state, preferences, onPreferencesChange, onPackageActiv
                   <p className="text-sm font-medium">我的资料库</p>
                   <div className="mt-3 space-y-2">
                     {materials.map((m) => (
-                      <div key={m.id} className="flex items-center justify-between rounded-lg border bg-card px-3 py-2 text-sm">
-                        <div className="flex items-center gap-2 truncate">
-                          <span className="truncate font-medium">{m.fileName}</span>
-                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{m.fileType}</span>
+                      <div key={m.id} className="rounded-lg border bg-card px-3 py-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-2 truncate">
+                            <span className="truncate font-medium">{m.fileName}</span>
+                            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{m.fileType}</span>
+                          </div>
+                          <span className={cn("shrink-0 text-xs", m.status === "needs_ocr" ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
+                            {m.status === "parsed" ? "已解析" : m.status === "needs_ocr" ? "等待识别" : m.status === "draft_ready" ? "草稿待确认" : m.status === "published" ? "已发布" : m.status}
+                          </span>
                         </div>
-                        <span className={cn("text-xs", m.status === "needs_ocr" ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
-                          {m.status === "parsed" ? "已解析" : m.status === "needs_ocr" ? "需要本地 OCR" : m.status === "draft_ready" ? "草稿待确认" : m.status === "published" ? "已发布" : m.status}
-                        </span>
+                        {ocrJobs[m.id] ? (
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                            <span>{ocrJobs[m.id].status === "running" || ocrJobs[m.id].status === "queued"
+                              ? `识别进度 ${ocrJobs[m.id].completedPages}/${ocrJobs[m.id].totalPages ?? "?"}`
+                              : ocrJobs[m.id].status === "completed" ? "整册识别完成" : ocrJobs[m.id].failureMessage ?? ocrJobs[m.id].status}</span>
+                            {["queued", "running"].includes(ocrJobs[m.id].status) ? <Button size="sm" variant="ghost" onClick={() => void cancelMaterialOcr(ocrJobs[m.id])}>取消</Button> : null}
+                            {["failed", "cancelled", "needs_review"].includes(ocrJobs[m.id].status) ? <Button size="sm" variant="secondary" onClick={() => void startMaterialOcr(m, ocrJobs[m.id])}>继续识别</Button> : null}
+                          </div>
+                        ) : null}
+                        <div className="mt-2 flex gap-2">
+                          {m.status === "needs_ocr" && !ocrJobs[m.id] ? <Button size="sm" variant="secondary" onClick={() => void startMaterialOcr(m)}>使用 Codex 分片识别</Button> : null}
+                          {m.status === "parsed" ? <Button size="sm" variant="secondary" onClick={() => void openMaterialDraft(m)}>生成知识地图</Button> : null}
+                        </div>
                       </div>
                     ))}
                   </div>

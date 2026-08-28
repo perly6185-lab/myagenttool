@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, resolve } from "node:path";
 
@@ -9,7 +9,7 @@ import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 const require = createRequire(import.meta.url);
 const SUPPORTED_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
-const MAX_PAGES = 40;
+const MAX_PAGES = 300;
 const PAGES_PER_REQUEST = 8;
 const MAX_PAGE_CHARS = 80_000;
 const MAX_PROCESS_OUTPUT_BYTES = 2 * 1024 * 1024;
@@ -80,6 +80,7 @@ export async function renderPdfForVision(path, outputDirectory, {
   maxPages = MAX_PAGES,
   scale = 2,
 } = {}) {
+  mkdirSync(outputDirectory, { recursive: true });
   const bytes = new Uint8Array(readFileSync(path));
   const loadingTask = getDocument({
     data: bytes,
@@ -103,15 +104,32 @@ export async function renderPdfForVision(path, outputDirectory, {
       const width = Math.max(1, Math.ceil(viewport.width));
       const height = Math.max(1, Math.ceil(viewport.height));
       const canvas = createCanvas(width, height);
-      await page.render({ canvas, canvasContext: canvas.getContext("2d"), viewport }).promise;
       const imagePath = join(outputDirectory, `page-${String(index).padStart(3, "0")}.png`);
-      writeFileSync(imagePath, canvas.toBuffer("image/png"), { mode: 0o600 });
+      if (!existsSync(imagePath) || statSync(imagePath).size < 8) {
+        await page.render({ canvas, canvasContext: canvas.getContext("2d"), viewport }).promise;
+        atomicWrite(imagePath, canvas.toBuffer("image/png"));
+      }
       rendered.push({ index, path: imagePath, width, height });
       page.cleanup();
     }
     return rendered;
   } finally {
     await loadingTask.destroy();
+  }
+}
+
+function atomicWrite(path, data) {
+  const temporaryPath = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporaryPath, data, { mode: 0o600 });
+  renameSync(temporaryPath, path);
+}
+
+function cachedBatch(path, expectedPages) {
+  if (!existsSync(path)) return null;
+  try {
+    return normalizeCodexPages(JSON.parse(readFileSync(path, "utf8")), expectedPages);
+  } catch {
+    return null;
   }
 }
 
@@ -228,13 +246,14 @@ export function createCodexVisionOcrAdapter({
       return {
         state: config.enabled ? "ready" : "unavailable",
         providerId: config.providerId,
+        providerVersion: config.providerVersion ?? config.model ?? null,
         reason: config.reason,
         localOnly: false,
         requiresCloudConsent: true,
         supportedExtensions: [...SUPPORTED_EXTENSIONS],
       };
     },
-    async recognize({ path, signal, onProgress = () => {}, cloudAllowed = false } = {}) {
+    async recognize({ path, signal, onProgress = () => {}, cloudAllowed = false, artifactRoot = null } = {}) {
       if (!cloudAllowed) {
         throw codedError(
           "Codex OCR requires permission to send copied pages for AI recognition.",
@@ -248,16 +267,31 @@ export function createCodexVisionOcrAdapter({
       if (typeof path !== "string" || !isAbsolute(path) || !SUPPORTED_EXTENSIONS.has(extension)) {
         throw codedError("Codex OCR requires an absolute PDF or image path.", "workflow_ocr_invalid_input");
       }
-      const workingDirectory = mkdtempSync(join(tmpdir(), "myagenttool-codex-ocr-"));
+      const temporary = !artifactRoot;
+      const workingDirectory = temporary
+        ? mkdtempSync(join(tmpdir(), "myagenttool-codex-ocr-"))
+        : resolve(artifactRoot);
       try {
-        writeFileSync(join(workingDirectory, "ocr-output.schema.json"), JSON.stringify(OUTPUT_SCHEMA), { mode: 0o600 });
+        mkdirSync(workingDirectory, { recursive: true });
+        const pagesDirectory = join(workingDirectory, "pages");
+        const recognitionDirectory = join(workingDirectory, "recognition");
+        mkdirSync(recognitionDirectory, { recursive: true });
+        atomicWrite(join(workingDirectory, "ocr-output.schema.json"), JSON.stringify(OUTPUT_SCHEMA));
         const pages = extension === ".pdf"
-          ? await renderPdf(resolve(path), workingDirectory)
+          ? await renderPdf(resolve(path), pagesDirectory)
           : [{ index: 1, path: resolve(path), width: null, height: null }];
         const recognized = [];
         for (let offset = 0; offset < pages.length; offset += PAGES_PER_REQUEST) {
           const batch = pages.slice(offset, offset + PAGES_PER_REQUEST);
-          const outputPath = join(workingDirectory, `ocr-result-${offset + 1}.json`);
+          const shardName = `pages-${String(batch[0].index).padStart(3, "0")}-${String(batch.at(-1).index).padStart(3, "0")}.json`;
+          const shardPath = join(recognitionDirectory, shardName);
+          const cached = cachedBatch(shardPath, batch);
+          if (cached) {
+            recognized.push(...cached);
+            onProgress({ completedPages: Math.min(offset + batch.length, pages.length), totalPages: pages.length, resumed: true });
+            continue;
+          }
+          const outputPath = join(workingDirectory, `${shardName}.${process.pid}.pending`);
           const args = [
             config.cliPath,
             "exec",
@@ -292,7 +326,14 @@ export function createCodexVisionOcrAdapter({
           } catch {
             throw codedError("Codex OCR returned malformed JSON.", "workflow_codex_ocr_invalid_result");
           }
-          recognized.push(...normalizeCodexPages(payload, batch));
+          const normalized = normalizeCodexPages(payload, batch);
+          atomicWrite(shardPath, JSON.stringify({ pages: normalized.map((page) => ({
+            index: page.index,
+            text: page.text,
+            confidence: page.confidence,
+          })) }));
+          rmSync(outputPath, { force: true });
+          recognized.push(...normalized);
           onProgress({ completedPages: Math.min(offset + batch.length, pages.length), totalPages: pages.length });
         }
         return {
@@ -304,7 +345,7 @@ export function createCodexVisionOcrAdapter({
           localOnly: false,
         };
       } finally {
-        rmSync(workingDirectory, { recursive: true, force: true });
+        if (temporary) rmSync(workingDirectory, { recursive: true, force: true });
       }
     },
   };
@@ -325,6 +366,7 @@ export function createFallbackWorkflowOcrAdapter({ localAdapter, codexAdapter } 
       return {
         state: localReady || codexReady ? "ready" : "unavailable",
         providerId: localReady ? localReadiness.providerId : codexReadiness.providerId,
+        providerVersion: localReady ? localReadiness.providerVersion ?? null : codexReadiness.providerVersion ?? null,
         reason: localReady || codexReady ? null : localReadiness.reason ?? codexReadiness.reason,
         localOnly: localReady,
         requiresCloudConsent: !localReady && codexReady,
