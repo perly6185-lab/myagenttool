@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   answerPrivateTutorFollowUp,
   completePrivateTutorActivity,
+  completePrivateTutorPlanDay,
   createPrivateTutorSession,
   pausePrivateTutorSession,
   privateTutorSessionView,
@@ -59,6 +60,35 @@ test("a standard session scales its five safe phases to the persisted daily targ
   assert.equal(view.progress.every((item) => item.budgetMinutes >= 1), true);
 });
 
+test("a goal-budgeted plan day overrides the general daily target", () => {
+  const now = () => "2026-08-20T08:00:00.000Z";
+  const session = createPrivateTutorSession({
+    id: "ptsess_goal_budget",
+    ownerTeamId: "team_a",
+    learnerId: "learner_a",
+    plan: { id: "plan_goal", days: [{ dayIndex: 1, status: "planned", minutes: 25, knowledgeId: "balance", strategy: "concept_rebuild" }] },
+    decision: { id: "decision_goal", targetKnowledgeId: "balance", strategy: "concept_rebuild" },
+    pace: "standard",
+    targetMinutes: 35,
+    now,
+  });
+  assert.equal(session.plannedMinutes, 25);
+  assert.equal(session.planDayIndex, 1);
+});
+
+test("finishing the only budgeted learning day preserves recovery days and completes the plan", () => {
+  const plan = {
+    status: "active",
+    days: [
+      { dayIndex: 1, status: "in_progress" },
+      ...Array.from({ length: 6 }, (_, index) => ({ dayIndex: index + 2, status: "rest" })),
+    ],
+  };
+  assert.equal(completePrivateTutorPlanDay(plan, { status: "completed", planDayIndex: 1 }, "2026-08-20T09:00:00.000Z"), true);
+  assert.equal(plan.status, "completed");
+  assert.equal(plan.days.slice(1).every((day) => day.status === "rest"), true);
+});
+
 test("pause and resume preserve the exact activity", () => {
   const { session, now } = fixture();
   const questionId = privateTutorSessionView(session).currentActivity.question.revisionId;
@@ -92,6 +122,28 @@ test("the summary distinguishes hinted practice from an independent new-question
   assert.equal(session.summary.independentCompleted, true);
   assert.deepEqual(session.summary.hintedActivities, ["guided_practice"]);
   assert.equal(session.summary.evidenceCount, 3);
+});
+
+test("a personalized policy changes hint granularity and the actual review interval", () => {
+  const now = () => "2026-08-20T08:00:00.000Z";
+  const session = createPrivateTutorSession({
+    id: "ptsess_policy",
+    ownerTeamId: "team_a",
+    learnerId: "learner_a",
+    plan: { id: "plan_policy", days: [{ knowledgeId: "balance", strategy: "concept_rebuild" }] },
+    decision: { id: "decision_policy", targetKnowledgeId: "balance", strategy: "concept_rebuild" },
+    pace: "standard",
+    now,
+    teachingPolicy: { explanationMode: "small_step", questionDifficulty: "support", hintGranularity: "micro_steps", reviewIntervalHours: 8 },
+  });
+  revealPrivateTutorHint(session, now);
+  assert.match(privateTutorSessionView(session).currentActivity.hint, /只看这一小步/);
+  recordPrivateTutorSessionAnswer(session, { correct: true, attemptId: "recall", now });
+  completePrivateTutorActivity(session, now);
+  recordPrivateTutorSessionAnswer(session, { correct: true, attemptId: "guided", now });
+  recordPrivateTutorSessionAnswer(session, { correct: true, attemptId: "transfer", now });
+  completePrivateTutorActivity(session, now);
+  assert.equal(session.summary.reviewAt, "2026-08-20T16:00:00.000Z");
 });
 
 function prefState(preferences = []) {

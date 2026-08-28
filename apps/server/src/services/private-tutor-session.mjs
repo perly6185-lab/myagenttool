@@ -36,11 +36,11 @@ const KNOWLEDGE_CONTENT = {
   ]),
 };
 
-export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, decision, pace, now, state, contentPackageId = null, activationId = null, targetMinutes = null }) {
-  const paceDefinition = sessionPaceDefinition(pace, targetMinutes);
-  if (!paceDefinition) return null;
+export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, decision, pace, now, state, contentPackageId = null, activationId = null, targetMinutes = null, teachingPolicy = null }) {
   const planDayIndex = selectPlanDayIndex(plan);
   const planDay = plan?.days?.[planDayIndex] ?? null;
+  const paceDefinition = sessionPaceDefinition(pace, planDay?.minutes ?? targetMinutes);
+  if (!paceDefinition) return null;
   const targetKnowledgeId = planDay?.knowledgeId ?? decision?.targetKnowledgeId;
   const runtime = contentPackageId ? sessionRuntime(state, contentPackageId, targetKnowledgeId) : null;
   const target = runtime?.content ?? KNOWLEDGE_CONTENT[targetKnowledgeId];
@@ -52,7 +52,7 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
     status: index === 0 ? "active" : "pending",
     questionRevisionId: activeQuestionRevisionId(
       state,
-      runtime ? runtimeQuestionId(runtime.knowledge, kind) : questionId(target.questionPrefix, kind),
+      runtime ? runtimeQuestionId(runtime.knowledge, kind, teachingPolicy?.questionDifficulty) : questionId(target.questionPrefix, kind),
     ),
     hintLevel: 0,
     followUpCount: 0,
@@ -84,7 +84,9 @@ export function createPrivateTutorSession({ id, ownerTeamId, learnerId, plan, de
     activities,
     consecutiveIncorrect: 0,
     methodSwitchCount: 0,
-    teachingMethod: initialMethod(decision?.strategy),
+    teachingMethod: teachingPolicy?.explanationMode ?? initialMethod(decision?.strategy),
+    teachingPolicy,
+    teachingStrategyDecisionId: null,
     intervention: null,
     evidenceAttemptIds: [],
     practiceAttemptIds: [],
@@ -162,7 +164,7 @@ export function privateTutorSessionView(session, state) {
       attemptCount: activity.attemptCount,
       instruction: instructionFor(activity.kind, contentDefinition, session.teachingMethod, preferences),
       question,
-      hint: activity.hintLevel ? contentDefinition.hints[Math.min(activity.hintLevel, contentDefinition.hints.length) - 1] : null,
+      hint: activity.hintLevel ? personalizedHint(contentDefinition.hints, activity.hintLevel, session.teachingPolicy?.hintGranularity) : null,
       visualScene: runtime?.capabilities.visualInteractions === false ? null : buildPrivateTutorVisualScene({
         knowledgeId: session.targetKnowledgeId,
         activityKind: activity.kind,
@@ -171,6 +173,8 @@ export function privateTutorSessionView(session, state) {
       }),
     } : null,
     teachingMethod: session.teachingMethod,
+    teachingPolicy: session.teachingPolicy ?? null,
+    teachingStrategyDecisionId: session.teachingStrategyDecisionId ?? null,
     teachingPreferences: preferences ? {
       teacherStyle: preferences.teacherStyle,
       explanationDepth: preferences.explanationDepth,
@@ -345,7 +349,7 @@ export function completePrivateTutorPlanDay(plan, session, at) {
   if (!day) return false;
   day.status = "completed";
   day.completedAt = at;
-  plan.status = plan.days.every((item) => item.status === "completed") ? "completed" : "active";
+  plan.status = plan.days.every((item) => ["completed", "rest", "rescheduled"].includes(item.status)) ? "completed" : "active";
   plan.updatedAt = at;
   return true;
 }
@@ -393,13 +397,33 @@ function sessionRuntime(state, contentPackageId, knowledgeId) {
   };
 }
 
-function runtimeQuestionId(knowledge, kind) {
+function runtimeQuestionId(knowledge, kind, difficulty = "core") {
   const questions = knowledge.tutoringQuestions ?? [];
   if (!questions.length) return null;
-  if (kind === "recall") return questions[0]?.id ?? null;
-  if (kind === "guided_practice") return questions[1]?.id ?? questions[0]?.id ?? null;
-  if (kind === "independent_check") return questions[2]?.id ?? questions.at(-1)?.id ?? null;
+  const ranked = [...questions].sort((left, right) => difficultyRank(left?.difficulty) - difficultyRank(right?.difficulty));
+  const preferred = difficulty === "support" ? ranked[0] : difficulty === "challenge" ? ranked.at(-1) : ranked[Math.floor((ranked.length - 1) / 2)];
+  if (kind === "recall") return ranked[0]?.id ?? null;
+  if (kind === "guided_practice") return preferred?.id ?? ranked[0]?.id ?? null;
+  if (kind === "independent_check") return difficulty === "support"
+    ? ranked[Math.min(1, ranked.length - 1)]?.id ?? preferred?.id ?? null
+    : ranked.at(-1)?.id ?? null;
   return null;
+}
+
+function difficultyRank(value) {
+  return { easy: 0, support: 0, medium: 1, core: 1, hard: 2, challenge: 2 }[value] ?? 1;
+}
+
+function personalizedHint(hints, level, granularity = "progressive") {
+  if (!hints?.length) return null;
+  if (granularity === "minimal" && level === 1) return "先重新读一遍条件，找出最关键的关系。";
+  if (granularity === "retrieval_cue" && level === 1) return `先回想这条规则解决的是什么关系：${hints[0]}`;
+  if (granularity === "fading" && level === 1) return "先说出你最确定的一步，再对照提示检查。";
+  if (granularity === "micro_steps") {
+    const hint = hints[Math.min(level, hints.length) - 1];
+    return `只看这一小步：${hint}`;
+  }
+  return hints[Math.min(level, hints.length) - 1];
 }
 
 function groundedSourceRefs(knowledge) {
@@ -516,7 +540,7 @@ function buildSummary(session, completedAt) {
   const hintedActivities = session.activities.filter((item) => item.hintLevel > 0).map((item) => item.kind);
   const independentWithoutHelp = Boolean(independent?.completedAt && independent.hintLevel === 0 && (independent.followUpCount ?? 0) === 0);
   const reviewAt = new Date(completedAt);
-  reviewAt.setUTCDate(reviewAt.getUTCDate() + 1);
+  reviewAt.setUTCHours(reviewAt.getUTCHours() + Math.max(1, Number(session.teachingPolicy?.reviewIntervalHours ?? 24)));
   return {
     learned: `今天完成了“${session.targetTitle}”的回想、理解和练习。`,
     independentCompleted: independentWithoutHelp,
@@ -542,6 +566,5 @@ function touch(session, now) {
 
 function selectPlanDayIndex(plan) {
   const days = Array.isArray(plan?.days) ? plan.days : [];
-  const index = days.findIndex((item) => item.status === "in_progress" || item.status === "planned");
-  return index >= 0 ? index : 0;
+  return days.findIndex((item) => item.status === "in_progress" || item.status === "planned");
 }
