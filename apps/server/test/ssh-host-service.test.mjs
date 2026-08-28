@@ -189,6 +189,11 @@ test("plans ordinary host questions without producing arbitrary shell", () => {
     ok: true, action: "network_info", command: "ip -brief address", risk: "read_only",
   });
   assert.deepEqual(service.planSshHostDiagnostic("检查登陆情况"), {
+    ok: true, action: "ssh_login_audit",
+    command: "journalctl --no-pager --quiet --since '-24 hours' -u ssh.service -u sshd.service -n 100 -o short-iso",
+    risk: "read_only",
+  });
+  assert.deepEqual(service.planSshHostDiagnostic("查看当前登录用户"), {
     ok: true, action: "login_sessions", command: "who", risk: "read_only",
   });
 });

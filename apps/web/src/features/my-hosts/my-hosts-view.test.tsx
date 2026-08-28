@@ -394,14 +394,14 @@ it("turns a plain-language host request into a reviewed read-only diagnostic", a
   expect(assistant).toBeTruthy();
 });
 
-it("turns the reported Chinese login question into a reviewed session check", async () => {
-  vi.mocked(hostApi.planDiagnostic).mockResolvedValue({ plan: { action: "login_sessions", command: "who", risk: "read_only" } });
+it("turns the reported Chinese login question into a reviewed audit check", async () => {
+  vi.mocked(hostApi.planDiagnostic).mockResolvedValue({ plan: { action: "ssh_login_audit", command: "journalctl --no-pager --quiet --since '-24 hours' -u ssh.service -u sshd.service -n 100 -o short-iso", risk: "read_only" } });
   renderView();
   fireEvent.change(await screen.findByPlaceholderText("For example: show remaining disk space"), { target: { value: "检查登陆情况" } });
   fireEvent.click(screen.getByRole("button", { name: "Suggest" }));
 
-  expect(await screen.findByText("current sign-in session and user counts")).toBeTruthy();
-  expect(screen.getByText("who")).toBeTruthy();
+  expect(await screen.findByText("counts of successful, failed, invalid-account, and pre-authentication connection events")).toBeTruthy();
+  expect(screen.getByText(/journalctl.*ssh\.service/)).toBeTruthy();
   expect(hostApi.planDiagnostic).toHaveBeenCalledWith(host.id, "检查登陆情况");
   expect(hostApi.diagnose).not.toHaveBeenCalled();
 });
@@ -413,9 +413,9 @@ it("shows an actionable alert when a host question is not recognized", async () 
   fireEvent.click(screen.getByRole("button", { name: "Suggest" }));
 
   const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("check sign-in sessions");
+  expect(alert.textContent).toContain("check SSH sign-in audit");
   expect(alert.textContent).toContain("read-only checks below");
-  expect(screen.getByRole("button", { name: "Check sign-in sessions" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Check SSH sign-in audit" })).toBeTruthy();
 });
 
 it("gives ordinary users a conclusion, impact, and next step before technical evidence", async () => {
@@ -477,7 +477,7 @@ it("turns a missing desktop credential into a clear host-assistant recovery mess
   vi.mocked(hostApi.diagnose).mockRejectedValue(new ApiError("ssh_credential_unavailable", "private credential resolver detail", 409));
   renderView();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Check sign-in sessions" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Check SSH sign-in audit" }));
   fireEvent.click(screen.getByRole("button", { name: "Confirm check" }));
 
   expect(await screen.findByText(/sign-in details for this device are unavailable.*Re-enter the password or private key/)).toBeTruthy();

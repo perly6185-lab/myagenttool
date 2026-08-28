@@ -95,7 +95,7 @@ export interface HostFileSearchResponse {
   boundaries: HostFileSearchBoundaries;
 }
 
-export type HostDiagnosticAction = "disk_usage" | "memory_usage" | "system_info" | "uptime" | "login_sessions" | "failed_services" | "processes" | "listening_ports" | "docker_status" | "service_status" | "recent_logs" | "network_info";
+export type HostDiagnosticAction = "disk_usage" | "memory_usage" | "system_info" | "uptime" | "login_sessions" | "ssh_login_audit" | "failed_services" | "processes" | "listening_ports" | "docker_status" | "service_status" | "recent_logs" | "network_info";
 
 export interface HostDiagnosticParameters {
   serviceName?: string;
