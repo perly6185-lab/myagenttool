@@ -50,8 +50,28 @@ ARM64 Linux has equivalent `:arm64` pack and dist commands.
 The `:mac` and `:linux` commands intentionally skip `desktop:prepare-assets`:
 PortableGit is a Windows-only fallback and its self-extractor cannot run on
 POSIX systems. macOS uses system Git and emits an ARM64 app/DMG under
-`apps/electron/release/`. Local development builds are unsigned; signing,
-notarization, Linux branding, and the branded icon are release prerequisites.
+`apps/electron/release/`. With no Apple code-signing identity installed,
+`pnpm desktop:pack:mac` keeps the development package ad-hoc signed and prints a
+warning: macOS may ask for Keychain access again after the package changes.
+
+For stable Keychain access during real-device validation, install an Apple-issued
+`Apple Development` or `Developer ID Application` identity in the login
+keychain, then run:
+
+```sh
+pnpm desktop:pack:mac:signed
+```
+
+The signing check auto-detects either supported identity, verifies the Team ID,
+bundle requirement, hardened runtime entitlements, and final signature, and
+fails rather than silently producing an unstable package. Set `CSC_NAME` when
+more than one suitable identity exists. macOS may ask once when credentials are
+migrated from an older ad-hoc build; packages signed for the same bundle by the
+same Apple team can then reuse that approval.
+
+Distribution builds still require a Developer ID Application certificate and
+Apple notarization. Linux branding and the branded icon are also release
+prerequisites.
 
 ## Smoke Check
 

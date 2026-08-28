@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const HOST_ID = /^ssh_target_[A-Za-z0-9._~-]{1,80}$/;
@@ -57,16 +57,27 @@ export function registerSshHostCredentialConnector({
   platform = process.platform,
   credentialRoot,
   requestServer,
+  onError = () => {},
   now = () => new Date().toISOString(),
 }) {
   for (const channel of CHANNELS) ipcMain.removeHandler(channel);
 
   const pathFor = (hostId) => join(credentialRoot, "ssh-host-credentials", `${hostId}.json`);
+  const credentialDirectory = join(credentialRoot, "ssh-host-credentials");
   async function hydrate(record) {
-    const decoded = safeStorage.decryptString(Buffer.from(record.encrypted, "base64"));
-    const credential = normalizeCredential(JSON.parse(decoded));
+    let credential;
+    try {
+      const decoded = safeStorage.decryptString(Buffer.from(record.encrypted, "base64"));
+      credential = normalizeCredential(JSON.parse(decoded));
+    } catch {
+      throw new Error("credential_decrypt_failed");
+    }
     if (!credential || credential.authMethod !== record.authMethod) throw new Error("credential_invalid");
-    await requestServer("PUT", "/api/internal/site-credentials", { reference: record.reference, provider: "ssh", credential });
+    try {
+      await requestServer("PUT", "/api/internal/site-credentials", { reference: record.reference, provider: "ssh", credential });
+    } catch {
+      throw new Error("credential_handoff_failed");
+    }
   }
 
   ipcMain.handle("ssh-host:get-credential-status", async (_event, input) => {
@@ -76,7 +87,13 @@ export function registerSshHostCredentialConnector({
     const record = readRecord(pathFor(hostId), hostId);
     let ready = false;
     if (secureStorage && record) {
-      try { await hydrate(record); ready = true; } catch { ready = false; }
+      try {
+        await hydrate(record);
+        ready = true;
+      } catch (error) {
+        onError("hydrate", error instanceof Error ? error.message : "credential_status_failed");
+        ready = false;
+      }
     }
     return { desktop: true, secureStorage, stored: Boolean(record), ready, reference: record?.reference ?? null, authMethod: record?.authMethod ?? null };
   });
@@ -95,7 +112,8 @@ export function registerSshHostCredentialConnector({
       writeJsonAtomic(credentialPath, { version: 1, provider: "ssh", hostId, authMethod: credential.authMethod, reference, encrypted, updatedAt: now() });
       await requestServer("PUT", "/api/internal/site-credentials", { reference, provider: "ssh", credential });
       return { ok: true, reference, authMethod: credential.authMethod };
-    } catch {
+    } catch (error) {
+      onError("save", error instanceof Error ? error.message : "credential_save_failed");
       try {
         if (previous) writeJsonAtomic(credentialPath, previous);
         else if (existsSync(credentialPath)) unlinkSync(credentialPath);
@@ -112,8 +130,42 @@ export function registerSshHostCredentialConnector({
       await requestServer("DELETE", "/api/internal/site-credentials", { reference: referenceFor(hostId) });
       if (existsSync(credentialPath)) unlinkSync(credentialPath);
       return { ok: true, disconnected: true };
-    } catch {
+    } catch (error) {
+      onError("remove", error instanceof Error ? error.message : "credential_remove_failed");
       return failure("remove_failed");
     }
   });
+
+  return {
+    hydrateStoredCredentials: async () => {
+      if (!secureStorageAvailable(safeStorage, platform) || !existsSync(credentialDirectory)) return { stored: 0, ready: 0, failed: 0 };
+      let entries;
+      try {
+        entries = readdirSync(credentialDirectory, { withFileTypes: true })
+          .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+          .slice(0, 256);
+      } catch {
+        onError("startup-scan", "credential_directory_unreadable");
+        return { stored: 0, ready: 0, failed: 0 };
+      }
+      let stored = 0;
+      let ready = 0;
+      let failed = 0;
+      for (const entry of entries) {
+        const hostId = normalizeHostId(entry.name.slice(0, -5));
+        if (!hostId) continue;
+        const record = readRecord(pathFor(hostId), hostId);
+        if (!record) continue;
+        stored += 1;
+        try {
+          await hydrate(record);
+          ready += 1;
+        } catch (error) {
+          failed += 1;
+          onError("startup-hydrate", error instanceof Error ? error.message : "credential_status_failed");
+        }
+      }
+      return { stored, ready, failed };
+    },
+  };
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,23 +8,24 @@ import { registerSshHostCredentialConnector } from "../src/ssh-host-credential-c
 const HOST_ID = "ssh_target_website";
 const PRIVATE_KEY = "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-material\n-----END OPENSSH PRIVATE KEY-----";
 
-function harness({ secure = true } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "ssh-host-credential-"));
+function harness({ secure = true, decryptString, requestServer, root = mkdtempSync(join(tmpdir(), "ssh-host-credential-")) } = {}) {
   const handlers = new Map();
   const requests = [];
+  const errors = [];
   const ipcMain = { removeHandler: (name) => handlers.delete(name), handle: (name, handler) => handlers.set(name, handler) };
   const safeStorage = {
     isEncryptionAvailable: () => secure,
     getSelectedStorageBackend: () => "gnome_libsecret",
     encryptString: (value) => Buffer.from(`protected:${value}`),
-    decryptString: (value) => value.toString("utf8").replace(/^protected:/, ""),
+    decryptString: decryptString ?? ((value) => value.toString("utf8").replace(/^protected:/, "")),
   };
-  registerSshHostCredentialConnector({
+  const connector = registerSshHostCredentialConnector({
     ipcMain, safeStorage, platform: "linux", credentialRoot: root,
-    requestServer: async (method, path, body) => { requests.push({ method, path, body }); },
+    requestServer: requestServer ?? (async (method, path, body) => { requests.push({ method, path, body }); }),
+    onError: (operation, code) => errors.push({ operation, code }),
     now: () => "2026-08-25T00:00:00.000Z",
   });
-  return { root, handlers, requests };
+  return { root, handlers, requests, errors, connector };
 }
 
 test("encrypts a private key per host and hydrates only the process-local vault", async () => {
@@ -55,4 +56,47 @@ test("keeps host credentials independent, validates ids, and revokes one host", 
 test("fails closed when OS secure storage is unavailable", async () => {
   const { handlers } = harness({ secure: false });
   assert.deepEqual(await handlers.get("ssh-host:save-credential")(null, { hostId: HOST_ID, authMethod: "private_key_ref", privateKey: PRIVATE_KEY }), { ok: false, error: "secure_storage_unavailable" });
+});
+
+test("audits hydration stages without returning credential details", async () => {
+  const decryptFailure = harness({ decryptString: () => { throw new Error("platform detail"); } });
+  await decryptFailure.handlers.get("ssh-host:save-credential")(null, { hostId: HOST_ID, authMethod: "password_ref", password: "secret" });
+  const decryptStatus = await decryptFailure.handlers.get("ssh-host:get-credential-status")(null, { hostId: HOST_ID });
+  assert.equal(decryptStatus.ready, false);
+  assert.deepEqual(decryptFailure.errors.at(-1), { operation: "hydrate", code: "credential_decrypt_failed" });
+
+  let failHandoff = false;
+  const handoffFailure = harness({ requestServer: async () => { if (failHandoff) throw new Error("server detail"); } });
+  await handoffFailure.handlers.get("ssh-host:save-credential")(null, { hostId: HOST_ID, authMethod: "password_ref", password: "secret" });
+  failHandoff = true;
+  const handoffStatus = await handoffFailure.handlers.get("ssh-host:get-credential-status")(null, { hostId: HOST_ID });
+  assert.equal(handoffStatus.ready, false);
+  assert.deepEqual(handoffFailure.errors.at(-1), { operation: "hydrate", code: "credential_handoff_failed" });
+  assert.equal(JSON.stringify(handoffFailure.errors).includes("secret"), false);
+});
+
+test("restores every valid stored host credential into a fresh process vault", async () => {
+  const firstRun = harness();
+  await firstRun.handlers.get("ssh-host:save-credential")(null, { hostId: HOST_ID, authMethod: "password_ref", password: "secret" });
+  await firstRun.handlers.get("ssh-host:save-credential")(null, { hostId: "ssh_target_backup", authMethod: "password_ref", password: "backup-secret" });
+
+  const restarted = harness({ root: firstRun.root });
+  const recovery = await restarted.connector.hydrateStoredCredentials();
+  assert.deepEqual(recovery, { stored: 2, ready: 2, failed: 0 });
+  assert.deepEqual(restarted.requests.map((request) => request.body.reference).sort(), [
+    "credential://ssh/ssh_target_backup",
+    `credential://ssh/${HOST_ID}`,
+  ]);
+  assert.equal(JSON.stringify(restarted.requests).includes("backup-secret"), true);
+  assert.equal(existsSync(join(firstRun.root, "ssh-host-credentials", "ssh_target_backup.json")), true);
+});
+
+test("does not block startup when the credential directory cannot be read", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ssh-host-credential-unreadable-"));
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "ssh-host-credentials"), "not a directory");
+  const restarted = harness({ root });
+
+  assert.deepEqual(await restarted.connector.hydrateStoredCredentials(), { stored: 0, ready: 0, failed: 0 });
+  assert.deepEqual(restarted.errors, [{ operation: "startup-scan", code: "credential_directory_unreadable" }]);
 });

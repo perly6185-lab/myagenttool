@@ -122,6 +122,24 @@ async function startApp() {
 
   await waitForHttp(`${serverUrl}/api/state`, "server");
 
+  const requestCredentialServer = async (method, path, body) => {
+    const response = await fetch(`${serverUrl}${path}`, {
+      method,
+      headers: { ...loopbackHeaders, "X-Desktop-Credential-Token": desktopCredentialToken, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`${method} ${path} failed.`);
+  };
+  const sshCredentialConnector = registerSshHostCredentialConnector({
+    ipcMain,
+    safeStorage,
+    credentialRoot: join(app.getPath("appData"), "myagenttool"),
+    requestServer: requestCredentialServer,
+    onError: (operation, code) => appendLog("ssh-credential", `${operation} failed: ${code}`),
+  });
+  const sshCredentialRecovery = await sshCredentialConnector.hydrateStoredCredentials();
+  appendLog("ssh-credential", `startup recovery: ${sshCredentialRecovery.ready}/${sshCredentialRecovery.stored} ready, ${sshCredentialRecovery.failed} failed`);
+
   startNodeService("desktop", paths.desktopEntry, {
     BRIDGE_SERVER_URL: serverUrl,
     BRIDGE_LOOPBACK_TOKEN: loopbackToken,
@@ -258,19 +276,6 @@ function createMainWindow(url, serverUrl) {
     },
   });
   registerSiteCloudCredentialConnector({
-    ipcMain,
-    safeStorage,
-    credentialRoot: join(app.getPath("appData"), "myagenttool"),
-    requestServer: async (method, path, body) => {
-      const response = await fetch(`${serverUrl}${path}`, {
-        method,
-        headers: { ...loopbackHeaders, "X-Desktop-Credential-Token": desktopCredentialToken, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) throw new Error(`${method} ${path} failed.`);
-    },
-  });
-  registerSshHostCredentialConnector({
     ipcMain,
     safeStorage,
     credentialRoot: join(app.getPath("appData"), "myagenttool"),

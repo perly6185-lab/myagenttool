@@ -9,6 +9,7 @@
     "pack:win": "pnpm --dir ../.. desktop:pack",
     "dist:win": "pnpm --dir ../.. desktop:dist",
     "pack:mac": "pnpm --dir ../.. desktop:pack:mac",
+    "pack:mac:signed": "pnpm --dir ../.. desktop:pack:mac:signed",
     "dist:mac": "pnpm --dir ../.. desktop:dist:mac",
     "pack:linux": "pnpm --dir ../.. desktop:pack:linux",
     "dist:linux": "pnpm --dir ../.. desktop:dist:linux",
