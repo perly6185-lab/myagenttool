@@ -178,8 +178,15 @@ export function ExecutionReviewCard({
   const receiptPending = receiptStatus === "accepted" || receiptStatus === "running";
   const receiptUnknown = receiptStatus === "unknown";
   const receiptSafeToRetry = receiptStatus === "safe_to_retry";
+  const projectedRecommendedAction = review.actionAvailability?.actions.find(
+    (candidate) => candidate.kind === review.recommendedAction.kind,
+  ) ?? null;
   const effectiveActionHandler = receiptUnknown ? onReconcileAction : recommendedActionHandler;
-  const effectiveActionDisabled = receiptPending || !effectiveActionHandler || recommendedActionPending || reconcileActionPending;
+  const effectiveActionDisabled = receiptPending
+    || (!receiptUnknown && projectedRecommendedAction?.enabled === false)
+    || !effectiveActionHandler
+    || recommendedActionPending
+    || reconcileActionPending;
   const actionLabel = receiptUnknown
     ? reconcileActionPending
       ? language === "zh" ? "正在重新检查" : "Checking again"
@@ -220,6 +227,11 @@ export function ExecutionReviewCard({
               </Button>
             </div>
           </div>
+          {!receiptUnknown && projectedRecommendedAction?.enabled === false ? (
+            <p className="mt-1.5 text-xs text-muted-foreground" data-testid="execution-action-unavailable">
+              {language === "zh" ? "当前证据或任务状态尚不满足此操作，请先处理上方风险并刷新状态。" : "The current evidence or task state does not allow this action yet. Resolve the risks above and refresh the task."}
+            </p>
+          ) : null}
           {actionReceipt ? (
             <div className={`mt-3 rounded-lg border px-3 py-2.5 ${receiptStatus === "failed" || receiptUnknown ? "border-destructive/30 bg-destructive/[0.045]" : receiptPending ? "border-primary/30 bg-primary/[0.05]" : "border-success/30 bg-success/[0.06]"}`} role="status" data-testid="execution-action-receipt">
               <div className="flex items-center gap-2 text-xs font-medium">

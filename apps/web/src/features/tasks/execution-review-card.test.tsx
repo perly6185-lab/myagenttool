@@ -150,6 +150,39 @@ describe("execution review card", () => {
     expect(screen.getByText("Next: AI")).toBeTruthy();
   });
 
+  it("honors the server action gate and explains why the primary action is unavailable", () => {
+    const act = vi.fn();
+    render(<ExecutionReviewCard
+      review={review({
+        state: "review_ready",
+        stage: "review",
+        recommendedAction: { kind: "review_result", reasonCode: "result_ready_for_review", requiresConfirmation: false, nextOwner: "me" },
+        actionAvailability: {
+          schemaVersion: 1,
+          primaryActionKind: "review_result",
+          locked: false,
+          actions: [{
+            kind: "review_result",
+            visible: true,
+            enabled: false,
+            requiresConfirmation: true,
+            nextOwner: "me",
+            blockedReasonCodes: ["verification_required"],
+          }],
+        },
+      })}
+      language="en"
+      onOpenDetails={() => {}}
+      onRecommendedAction={act}
+    />);
+
+    const button = screen.getByRole("button", { name: "Review result" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(button);
+    expect(act).not.toHaveBeenCalled();
+    expect(screen.getByTestId("execution-action-unavailable").textContent).toMatch(/does not allow this action yet/i);
+  });
+
   it("turns an uncertain result into a status check instead of a second execution", () => {
     const reconcile = vi.fn();
     const act = vi.fn();

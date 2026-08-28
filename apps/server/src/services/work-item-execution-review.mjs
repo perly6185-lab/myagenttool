@@ -1,5 +1,6 @@
 import { resolveWorkItemExecution } from "./work-item-execution.mjs";
 import { latestExecutionActionReceipt } from "./work-item-execution-action.mjs";
+import { projectWorkItemReviewActions } from "./work-item-review-actions.mjs";
 import { projectWorkItemRiskReview } from "./work-item-risk-review.mjs";
 
 const STAGE_KEYS = ["accepted", "preparing", "working", "verifying", "review"];
@@ -198,6 +199,17 @@ export function projectWorkItemExecutionReview({
     impact,
     deliveryEvidence,
   });
+  const actionAvailability = projectWorkItemReviewActions({
+    state: stateValue,
+    attentionCode,
+    targetStatus,
+    executionKind: binding?.kind ?? startReceipt?.executionKind ?? null,
+    verification,
+    deliveryEvidence,
+    actionReceipt,
+    recommendedAction: riskReview.recommendedAction,
+    hasWorktree: Boolean(autoRun?.worktreeId ?? deliveryEvidence?.actionPreview?.worktreeId),
+  });
   return {
     schemaVersion: 1,
     state: stateValue,
@@ -218,6 +230,7 @@ export function projectWorkItemExecutionReview({
     impact,
     riskReasons: riskReview.riskReasons,
     recommendedAction: riskReview.recommendedAction,
+    actionAvailability,
     actionReceipt,
   };
 }

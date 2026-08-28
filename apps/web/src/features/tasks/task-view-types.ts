@@ -1155,6 +1155,19 @@ export type WorkItemExecutionReview = {
     requiresConfirmation: boolean;
     nextOwner: "ai" | "me" | "system" | "none";
   };
+  actionAvailability?: {
+    schemaVersion: 1;
+    primaryActionKind: string | null;
+    locked: boolean;
+    actions: Array<{
+      kind: string;
+      visible: true;
+      enabled: boolean;
+      requiresConfirmation: boolean;
+      nextOwner: "ai" | "me" | "system" | "none";
+      blockedReasonCodes: string[];
+    }>;
+  };
   actionReceipt?: null | {
     schemaVersion: 1;
     id: string;

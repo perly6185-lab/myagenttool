@@ -1268,6 +1268,12 @@ test("the real HTTP confirmation returns one durable start receipt, supports pre
     finalDetail.body.observability.executionReview.recommendedAction.kind,
   ));
   assert.ok(Array.isArray(finalDetail.body.observability.executionReview.riskReasons));
+  assert.equal(finalDetail.body.observability.executionReview.actionAvailability.schemaVersion, 1);
+  assert.equal(
+    finalDetail.body.observability.executionReview.actionAvailability.primaryActionKind,
+    finalDetail.body.observability.executionReview.recommendedAction.kind,
+  );
+  assert.ok(Array.isArray(finalDetail.body.observability.executionReview.actionAvailability.actions));
 });
 
 test("local issues can be queued as a durable concurrency-limited Auto-run batch", async () => {
