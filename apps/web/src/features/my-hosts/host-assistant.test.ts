@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hostDiagnosticPlan, hostDiagnosticPlanCopy, hostDiagnosticSummaryCopy, suggestHostDiagnostic } from "./host-assistant";
+import { hostDiagnosticPlan, hostDiagnosticPlanCopy, hostDiagnosticSummaryCopy, parseHostLoginAuditEvents, suggestHostDiagnostic } from "./host-assistant";
 
 describe("host assistant safe suggestions", () => {
   it("maps ordinary language to a fixed read-only action", () => {
@@ -52,5 +52,33 @@ describe("host assistant safe suggestions", () => {
       finding: "The check result could not be assessed",
       impact: "The check did not change the device, but its impact still needs confirmation.",
     });
+  });
+
+  it("turns bounded SSH audit output into owner-readable sign-in rows", () => {
+    const output = [
+      "2026-08-28T08:10:00+08:00 server sshd[101]: Accepted password for devagent from 10.10.10.5 port 51000 ssh2",
+      "2026-08-28T08:20:00+08:00 server sshd[102]: Invalid user admin from 198.51.100.20 port 42000",
+      "2026-08-28T08:20:01+08:00 server sshd[102]: Failed password for invalid user admin from 198.51.100.20 port 42000 ssh2",
+      "unrelated service output",
+    ].join("\n");
+
+    expect(parseHostLoginAuditEvents(output)).toEqual([
+      { time: "2026-08-28T08:20:00+08:00", status: "invalid_user", user: "admin", source: "198.51.100.20" },
+      { time: "2026-08-28T08:10:00+08:00", status: "success", user: "devagent", source: "10.10.10.5" },
+    ]);
+  });
+
+  it("uses owner language without sending the device owner to an administrator", () => {
+    const copy = hostDiagnosticSummaryCopy({
+      version: 1,
+      severity: "warning",
+      finding: "ssh_login_audit_failures_found",
+      impact: "login_attempts_need_review",
+      nextAction: "review_login_audit_evidence",
+      facts: [],
+    }, false, true);
+    expect(copy.nextAction).toContain("Change the password");
+    expect(copy.nextAction).not.toContain("administrator");
+    expect(copy.nextAction).not.toContain("technical evidence");
   });
 });
