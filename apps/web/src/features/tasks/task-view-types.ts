@@ -1099,6 +1099,15 @@ export type LocalWorkItemObservability = {
   } | null;
 };
 
+export type WorkItemReviewAction = {
+  kind: string;
+  visible: true;
+  enabled: boolean;
+  requiresConfirmation: boolean;
+  nextOwner: "ai" | "me" | "system" | "none";
+  blockedReasonCodes: string[];
+};
+
 export type WorkItemExecutionReview = {
   schemaVersion: 1;
   state: "queued" | "preparing" | "working" | "waiting" | "verifying" | "review_ready" | "completed" | "failed" | "cancelled";
@@ -1159,14 +1168,7 @@ export type WorkItemExecutionReview = {
     schemaVersion: 1;
     primaryActionKind: string | null;
     locked: boolean;
-    actions: Array<{
-      kind: string;
-      visible: true;
-      enabled: boolean;
-      requiresConfirmation: boolean;
-      nextOwner: "ai" | "me" | "system" | "none";
-      blockedReasonCodes: string[];
-    }>;
+    actions: WorkItemReviewAction[];
   };
   actionReceipt?: null | {
     schemaVersion: 1;

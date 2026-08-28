@@ -180,7 +180,102 @@ describe("execution review card", () => {
     expect(button.hasAttribute("disabled")).toBe(true);
     fireEvent.click(button);
     expect(act).not.toHaveBeenCalled();
-    expect(screen.getByTestId("execution-action-unavailable").textContent).toMatch(/does not allow this action yet/i);
+    expect(screen.getByTestId("execution-action-unavailable").textContent).toMatch(/reproducible verification result is still required/i);
+  });
+
+  it("renders every server-projected action and explains each blocked prerequisite", () => {
+    const act = vi.fn();
+    render(<ExecutionReviewCard
+      review={review({
+        state: "review_ready",
+        stage: "review",
+        recommendedAction: { kind: "review_result", reasonCode: "result_ready_for_review", requiresConfirmation: false, nextOwner: "me" },
+        actionAvailability: {
+          schemaVersion: 1,
+          primaryActionKind: "review_result",
+          locked: false,
+          actions: [
+            { kind: "view_changes", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
+            { kind: "rerun_verification", visible: true, enabled: false, requiresConfirmation: false, nextOwner: "system", blockedReasonCodes: ["worktree_unavailable"] },
+            { kind: "fix_with_ai", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "ai", blockedReasonCodes: [] },
+            { kind: "create_pull_request", visible: true, enabled: false, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: ["review_changes_requested", "verification_failed"] },
+            { kind: "review_result", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
+          ],
+        },
+      })}
+      language="zh"
+      onOpenDetails={() => {}}
+      onAction={act}
+    />);
+
+    const actions = screen.getByTestId("execution-available-actions");
+    expect(within(actions).getByRole("button", { name: "查看变更" }).hasAttribute("disabled")).toBe(false);
+    expect(within(actions).getByRole("button", { name: "重新运行验证" }).hasAttribute("disabled")).toBe(true);
+    expect(within(actions).getByRole("button", { name: "让 AI 修复" }).hasAttribute("disabled")).toBe(false);
+    expect(within(actions).getByRole("button", { name: "创建 Pull Request" }).hasAttribute("disabled")).toBe(true);
+    expect(within(actions).getByText("本次执行的隔离工作区不可用，无法安全操作变更。")).toBeTruthy();
+    expect(within(actions).getByText("复核要求继续修改，完成修复后才能交付。")).toBeTruthy();
+    expect(within(actions).getByText("验证未通过，请先修复问题或重新运行验证。")).toBeTruthy();
+
+    fireEvent.click(within(actions).getByRole("button", { name: "查看变更" }));
+    fireEvent.click(within(actions).getByRole("button", { name: "让 AI 修复" }));
+    expect(act).toHaveBeenNthCalledWith(1, "view_changes");
+    expect(act).toHaveBeenNthCalledWith(2, "fix_with_ai");
+  });
+
+  it("locks secondary mutations while an action receipt is still being confirmed", () => {
+    render(<ExecutionReviewCard
+      review={review({
+        state: "review_ready",
+        stage: "review",
+        recommendedAction: { kind: "review_result", reasonCode: "result_ready_for_review", requiresConfirmation: false, nextOwner: "me" },
+        actionAvailability: {
+          schemaVersion: 1,
+          primaryActionKind: "review_result",
+          locked: false,
+          actions: [
+            { kind: "review_result", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
+            { kind: "apply_office_result", visible: true, enabled: true, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: [] },
+          ],
+        },
+      })}
+      language="en"
+      onOpenDetails={() => {}}
+      onAction={() => {}}
+      actionReceipt={{ status: "running", messageCode: "request_accepted", impact: "none", nextOwner: "system" }}
+    />);
+
+    const officeAction = screen.getByTestId("execution-action-apply_office_result");
+    expect(within(officeAction).getByRole("button", { name: "Apply office result" }).hasAttribute("disabled")).toBe(true);
+    expect(within(officeAction).getByText(/previous action is still running or unconfirmed/i)).toBeTruthy();
+  });
+
+  it("treats the top-level server lock as authoritative during projection races", () => {
+    const act = vi.fn();
+    render(<ExecutionReviewCard
+      review={review({
+        state: "review_ready",
+        stage: "review",
+        recommendedAction: { kind: "review_result", reasonCode: "result_ready_for_review", requiresConfirmation: false, nextOwner: "me" },
+        actionAvailability: {
+          schemaVersion: 1,
+          primaryActionKind: "review_result",
+          locked: true,
+          actions: [
+            { kind: "review_result", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
+            { kind: "create_pull_request", visible: true, enabled: true, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: [] },
+          ],
+        },
+      })}
+      language="en"
+      onOpenDetails={() => {}}
+      onAction={act}
+    />);
+
+    expect(screen.getByRole("button", { name: "Review result" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Create Pull Request" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getAllByText(/previous action is still running or unconfirmed/i)).toHaveLength(2);
+    expect(act).not.toHaveBeenCalled();
   });
 
   it("turns an uncertain result into a status check instead of a second execution", () => {

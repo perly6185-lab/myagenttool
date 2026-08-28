@@ -691,6 +691,7 @@ export function WorkItemSummaryView({
   const effectiveExecutionActionReceipt = executionReview?.actionReceipt ?? executionActionReceipt;
   const showExecutionReview = Boolean(executionReview?.targetId && executionReview.state !== "queued");
   const executionReviewOwnsProgress = showExecutionReview;
+  const usesProjectedReviewActions = Boolean(showExecutionReview && executionReview?.actionAvailability);
   const executionActionRequest = (kind: "retry_execution" | "fix_with_ai" | "rerun_verification" | "answer_ai") => ({
     idempotencyKey: `work-item:${item.id}:${kind}:${item.revision}:${effectiveExecutionActionReceipt?.id ?? "none"}:${effectiveExecutionActionReceipt?.status ?? "none"}:${effectiveExecutionActionReceipt?.updatedAt ?? "none"}:${executionReview?.targetId ?? observability?.latestRun?.id ?? "none"}:${executionReview?.targetStatus ?? observability?.latestRun?.status ?? "none"}`.slice(0, 200),
     expectedWorkItemRevision: item.revision,
@@ -786,6 +787,7 @@ export function WorkItemSummaryView({
           : `Waiting for ${unresolvedDependency.localRef} · ${unresolvedDependency.title} to finish.`)
       : phaseDescription ?? copy.next[status];
   const resultSectionId = `work-item-result-${item.id}`;
+  const officeBatchResultId = `work-item-office-batch-${item.id}`;
   const acceptancePassed = reviewAcceptanceCriteria.filter((criterion) =>
     (item.reviewEvidence ?? item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed")).length;
   const acceptanceNeedsReview = reviewAcceptanceCriteria.length - acceptancePassed;
@@ -2004,6 +2006,12 @@ export function WorkItemSummaryView({
     }
     onOpenExpert(expertSectionFor(item, status));
   };
+  const openReviewResult = (targetId = resultSectionId) => {
+    setResultExpanded(true);
+    window.requestAnimationFrame(() => {
+      document.getElementById(targetId)?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    });
+  };
   const retryAiWork = async () => {
     if (!retryableRun || retryPending || executionActionLocked) return;
     setRetryPending(true);
@@ -2054,18 +2062,28 @@ export function WorkItemSummaryView({
       setRetryPending(false);
     }
   };
-  const runExecutionReviewAction = () => {
+  const runExecutionReviewAction = (requestedKind?: string) => {
     if (!executionReview) return;
-    switch (executionReview.recommendedAction.kind) {
+    const kind = requestedKind ?? executionReview.recommendedAction.kind;
+    switch (kind) {
       case "answer_ai":
       case "retry_execution":
+        runPrimaryAction();
+        return;
       case "review_result":
       case "view_result":
-        runPrimaryAction();
+        openReviewResult();
         return;
       case "review_approval":
       case "open_details":
         onOpenExpert("process");
+        return;
+      case "view_changes":
+        if (deliveryWorktreeId && onOpenDeliveryChanges) onOpenDeliveryChanges(item.projectId, deliveryWorktreeId);
+        else onOpenExpert("process");
+        return;
+      case "view_batch_details":
+        openReviewResult(officeBatchResultId);
         return;
       case "fix_with_ai":
         askAiToFix();
@@ -2073,6 +2091,18 @@ export function WorkItemSummaryView({
       case "rerun_verification":
         void rerunDeliveryVerification();
         return;
+      case "create_pull_request":
+      case "update_pull_request":
+        openPullRequestConfirmation();
+        return;
+      case "apply_local_changes":
+      case "apply_office_result":
+        if (actionPending || deliveryEvidenceNotReady) return;
+        setCompletionWriteback("local_only");
+        setAcceptOpen(true);
+        return;
+      default:
+        onOpenExpert("process");
     }
   };
   const reconcileExecutionReviewAction = async () => {
@@ -2133,6 +2163,17 @@ export function WorkItemSummaryView({
         : executionReview?.recommendedAction.kind === "answer_ai"
           ? clarifyPending
           : false;
+  const executionReviewPendingActionKind = retryPending
+    ? "retry_execution"
+    : actionPending === "changes"
+      ? "fix_with_ai"
+      : actionPending === "reverify"
+        ? "rerun_verification"
+        : actionPending === "complete"
+          ? deliveryOperation
+          : clarifyPending
+            ? "answer_ai"
+            : null;
 
   return (
     <div className="space-y-4" data-testid="work-item-summary-view">
@@ -2196,8 +2237,10 @@ export function WorkItemSummaryView({
           agentName={executionReview.agentId ? consoleState?.agents?.find((agent) => agent.id === executionReview.agentId)?.name ?? executionReview.agentName ?? executionReview.agentId : executionReview.agentName}
           onOpenDetails={() => onOpenExpert("process")}
           onRecommendedAction={runExecutionReviewAction}
+          onAction={runExecutionReviewAction}
           onReconcileAction={() => void reconcileExecutionReviewAction()}
           recommendedActionPending={executionReviewActionPending}
+          pendingActionKind={executionReviewPendingActionKind}
           reconcileActionPending={actionPending === "reconcile"}
           actionReceipt={executionReview.actionReceipt ?? executionActionReceipt}
           attemptHistory={observability?.runHistory ?? []}
@@ -2780,11 +2823,12 @@ export function WorkItemSummaryView({
               copy={copy}
               scopeLabel={presentation.completedScope}
               actionPreview={deliveryEvidence?.actionPreview ?? null}
+              officeBatchResultId={officeBatchResultId}
               language={language}
-              onViewChanges={deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
-              onRerunVerification={canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
-              onAskAiToFix={canAskAiToFix ? askAiToFix : undefined}
-              onCreatePullRequest={deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
+              onViewChanges={!usesProjectedReviewActions && deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
+              onRerunVerification={!usesProjectedReviewActions && canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
+              onAskAiToFix={!usesProjectedReviewActions && canAskAiToFix ? askAiToFix : undefined}
+              onCreatePullRequest={!usesProjectedReviewActions && deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
               actionDisabled={Boolean(actionPending) || executionActionLocked}
               verificationPending={actionPending === "reverify"}
             />
@@ -3760,6 +3804,7 @@ function DeliveryDecisionCard({
   copy,
   scopeLabel,
   actionPreview,
+  officeBatchResultId,
   language,
   onViewChanges,
   onRerunVerification,
@@ -3772,6 +3817,7 @@ function DeliveryDecisionCard({
   copy: SummaryCopy;
   scopeLabel?: string;
   actionPreview?: LocalWorkItemDeliveryEvidence["actionPreview"] | null;
+  officeBatchResultId?: string;
   language: "zh" | "en";
   onViewChanges?: () => void;
   onRerunVerification?: () => void;
@@ -3846,7 +3892,7 @@ function DeliveryDecisionCard({
                 <div><dt className="inline text-muted-foreground">{language === "zh" ? "确认：" : "Confirmation: "}</dt><dd className="inline">{language === "zh" ? "仍需人工确认" : "Human confirmation is still required"}</dd></div>
           </dl>
           {actionPreview.officeDetails?.batch ? (
-            <OfficeBatchResult batch={actionPreview.officeDetails.batch} copy={copy} language={language} />
+            <OfficeBatchResult id={officeBatchResultId} batch={actionPreview.officeDetails.batch} copy={copy} language={language} />
           ) : null}
         </div>
       ) : null}
@@ -3876,10 +3922,12 @@ function DeliveryDecisionCard({
 }
 
 function OfficeBatchResult({
+  id,
   batch,
   copy,
   language,
 }: {
+  id?: string;
   batch: NonNullable<NonNullable<LocalWorkItemDeliveryEvidence["actionPreview"]["officeDetails"]>["batch"]>;
   copy: SummaryCopy;
   language: "zh" | "en";
@@ -3905,7 +3953,7 @@ function OfficeBatchResult({
   const state = stateLabel[batch.state]?.[language === "zh" ? 0 : 1] ?? batch.state;
   const rollback = rollbackLabel[batch.rollback.status]?.[language === "zh" ? 0 : 1] ?? batch.rollback.status;
   return (
-    <div className="mt-3 rounded-md border border-border/80 bg-background/60 px-3 py-2.5" data-testid="office-batch-result">
+    <div id={id} className="mt-3 scroll-mt-4 rounded-md border border-border/80 bg-background/60 px-3 py-2.5" data-testid="office-batch-result">
       <div className="flex flex-wrap items-center gap-2">
         <p className="text-xs font-medium text-muted-foreground">{copy.officeBatchResult}</p>
         <Badge tone={batch.failedCount > 0 || batch.rollback.status === "partial" ? "warning" : batch.state === "committed" ? "success" : "neutral"}>{state}</Badge>
