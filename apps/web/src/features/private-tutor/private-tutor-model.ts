@@ -52,6 +52,49 @@ export interface MaterialPage {
   characterCount: number;
   source: "pdf_text" | "local_ocr";
   confidence: number | null;
+  schemaVersion?: "private-tutor-textbook-page-v1" | "private-tutor-textbook-page-v2";
+  coordinateSystem?: "normalized";
+  printedPageNumber?: string | null;
+  blocks?: Array<{
+    id: string;
+    order: number;
+    type: "heading" | "paragraph" | "formula" | "table" | "worked_example" | "exercise" | "illustration_caption" | "other";
+    text: string;
+    confidence: number;
+    box?: { x: number; y: number; width: number; height: number };
+    math?: {
+      notation: string;
+      confidence: number;
+      ast: null | {
+        rootId: string;
+        nodes: Array<{
+          id: string;
+          type: "number" | "identifier" | "operator" | "relation" | "fraction" | "power" | "root" | "group" | "function" | "text" | "unknown";
+          value: string;
+          childIds: string[];
+        }>;
+      };
+      vertical: null | {
+        operator: "add" | "subtract" | "multiply" | "divide" | "other";
+        rows: Array<{
+          role: "operand" | "operator" | "partial" | "separator" | "result" | "remainder";
+          text: string;
+          indent: number;
+        }>;
+      };
+    } | null;
+    source: {
+      providerId: string | null;
+      providerVersion: string | null;
+      schemaVersion: "private-tutor-textbook-page-v1" | "private-tutor-textbook-page-v2";
+    };
+  }>;
+  review?: {
+    status: "not_required" | "pending" | "confirmed";
+    reasons: Array<"low_page_confidence" | "low_block_confidence" | "unclear_characters" | "math_structure_missing" | "math_structure_low_confidence">;
+    confirmedAt: string | null;
+    textEdited: boolean;
+  };
 }
 
 export interface MaterialExtractionWarning {
@@ -63,7 +106,7 @@ export interface MaterialExtractionWarning {
 
 export interface MaterialExtraction {
   parserVersion: number;
-  state: "ready" | "needs_ocr" | "empty";
+  state: "ready" | "needs_ocr" | "needs_review" | "empty";
   method: "native_text" | "pdf_text" | "pdf_text_with_local_ocr" | "legacy_extracted_pdf_text";
   pageCount: number | null;
   processedPageCount: number | null;
@@ -76,10 +119,20 @@ export interface MaterialExtraction {
   ocr: {
     required: boolean;
     attempted: boolean;
-    state: "not_required" | "unavailable" | "completed" | "failed";
+    state: "not_required" | "unavailable" | "completed" | "needs_review" | "failed";
     providerId: string | null;
     providerVersion?: string | null;
+    artifactKey?: string | null;
     reason: string | null;
+  };
+  ocrReview?: {
+    schemaVersion: "private-tutor-textbook-page-v1" | "private-tutor-textbook-page-v2";
+    revision: number;
+    status: "not_required" | "pending" | "confirmed";
+    confidenceThreshold: number;
+    requiredPageNumbers: number[];
+    confirmedPageNumbers: number[];
+    confirmedAt: string | null;
   };
   warnings: MaterialExtractionWarning[];
 }
@@ -98,7 +151,7 @@ export interface MaterialDocument {
     sourceHash: string;
     byteSize: number;
   };
-  status: "uploaded" | "parsing" | "parsed" | "needs_ocr" | "draft_ready" | "published" | "failed" | "empty";
+  status: "uploaded" | "parsing" | "parsed" | "needs_ocr" | "needs_review" | "draft_ready" | "published" | "failed" | "empty";
   rawText?: string;
   pages?: MaterialPage[];
   sections: MaterialSection[];
@@ -125,6 +178,7 @@ export interface PrivateTutorOcrJob {
   startedAt: string | null;
   updatedAt: string;
   completedAt: string | null;
+  artifactKey?: string | null;
 }
 
 export interface DraftSourceRef {
@@ -169,14 +223,17 @@ export interface AuthoredQuestion {
   knowledgeId: string;
   context: "diagnostic" | "tutoring" | "practice" | "review";
   difficulty: number;
-  kind: "rubric_response";
+  kind: "rubric_response" | "numeric" | "choice" | "math_steps";
   prompt: string;
-  referenceAnswer: string;
+  referenceAnswer?: string;
+  expectedAnswer?: string;
+  options?: Array<{ id: string; label: string }>;
+  expectedChoice?: string;
   requiredSourceRefs: string[];
   sourceRefs: DraftSourceRef[];
-  rubric: AuthoredRubric;
+  rubric?: AuthoredRubric;
   evidencePolicy: "practice_only_until_runtime_validation";
-  provenance: "rule_extracted";
+  provenance: "rule_extracted" | "source_math_expression" | "source_grounded_choice";
 }
 
 export interface AuthoredKnowledgeContent {
@@ -253,6 +310,7 @@ export interface DraftKnowledgeComponent {
   sourceRef?: DraftSourceRef;
   sourceRefs?: DraftSourceRef[];
   candidateQuestions?: DraftCandidateQuestion[];
+  mathFacts?: Array<{ expression: string; expectedAnswer: string; sourceRef: DraftSourceRef }>;
   orderIndex: number;
 }
 
@@ -268,7 +326,22 @@ export interface KnowledgeMapDraft {
   learningProfileId: string;
   packageName: string;
   subjectId: string;
+  evaluationSubjectId?: string;
+  subjectDetection?: {
+    requestedSubjectId: string;
+    resolvedSubjectId: string;
+    evaluationSubjectId: string;
+    confidence: number;
+    mode: "automatic" | "manual";
+    signals: string[];
+  };
   domain: string;
+  aggregation?: {
+    strategy: "textbook_units_v1" | "section_hierarchy_v1";
+    sourceSectionCount: number;
+    detectedUnitCount: number;
+    moduleCount: number;
+  };
   schemaVersion: number;
   revision: number;
   sourceSnapshot: {

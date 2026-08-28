@@ -195,6 +195,56 @@ Properties of shapes.
   assert.equal(doc.sections[1].content, "Properties of shapes.");
 });
 
+test("recognizes textbook unit and lesson headings across PDF pages", () => {
+  const sections = parsePdfTextSections(`--- Page 1 ---
+第一单元 大数的认识
+本单元学习大数。
+--- Page 2 ---
+第一课 亿以内数的认识
+学习计数单位。
+--- Page 3 ---
+第二单元 公顷和平方千米
+学习面积单位。`);
+  assert.deepEqual(sections.map((section) => [section.title, section.level, section.pageNumber]), [
+    ["第一单元 大数的认识", 1, 1],
+    ["第一课 亿以内数的认识", 2, 2],
+    ["第二单元 公顷和平方千米", 1, 3],
+  ]);
+});
+
+test("aggregates numbered OCR textbook opener headings as sequential units", () => {
+  const pageTexts = [
+    "1 大数的认识\n1 亿以内数的认识\n学习计数单位和大数读写。",
+    "2 解答下面的问题。\n练习题不能抢占第二单元编号。",
+    "2 公顷和平方千米\n1 认识公顷\n边长100米的正方形面积是1公顷。",
+  ];
+  const sections = parsePdfTextSections(pageTexts.map((text, offset) => `--- Page ${offset + 1} ---\n${text}`).join("\n"));
+  const materialDocument = {
+    id: "mat_numbered_units",
+    learningProfileId: "learner_pdf",
+    fileName: "四年级数学上册.pdf",
+    fileType: "pdf",
+    sourceHash: "numbered-units-source",
+    status: "parsed",
+    pages: pageTexts.map((text, offset) => ({
+      pageNumber: offset + 1,
+      text,
+      blocks: [
+        { order: 1, type: "heading", text: text.split("\n")[0] },
+        { order: 2, type: "heading", text: text.split("\n")[1] },
+      ],
+    })),
+    sections,
+    extraction: { parserVersion: 2, pageCount: 3 },
+  };
+
+  const draft = generateKnowledgeMapDraft({ materialDocument, packageName: "四年级数学上册", subjectId: "auto" });
+  assert.equal(draft.aggregation.strategy, "textbook_units_v1");
+  assert.equal(draft.aggregation.detectedUnitCount, 2);
+  assert.deepEqual(draft.draftModules.map((module) => module.name), ["1 大数的认识", "2 公顷和平方千米"]);
+  assert.equal(draft.evaluationSubjectId, "math");
+});
+
 test("extracts real PDF bytes page by page without persisting binary text", async () => {
   const bytes = minimalPdf("Chapter 1: Learning Systems");
   const doc = await parseUploadedMaterialDocument(pdfUpload(bytes), { ocrAdapter: unavailableOcr });

@@ -314,6 +314,11 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
               className="mt-1 w-full max-w-md rounded border-none bg-transparent p-0 text-xl font-bold focus:ring-0"
               aria-label="内容包名称"
             />
+            <p className="mt-1 text-xs text-muted-foreground">
+              {draft.subjectDetection?.mode === "automatic" ? "自动识别" : "已选择"}：{draft.subjectId === "math" ? "数学" : draft.subjectId}
+              {draft.evaluationSubjectId ? ` · ${draft.evaluationSubjectId} 评测器` : ""}
+              {draft.aggregation?.strategy === "textbook_units_v1" ? ` · 按 ${draft.aggregation.detectedUnitCount} 个单元合并` : ""}
+            </p>
           </div>
           <div className="flex items-center gap-3">
             {saveMessage ? <span className="text-xs text-emerald-600">{saveMessage}</span> : null}
@@ -535,26 +540,27 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
                             />
                           </label>
                         </div>
-                        <div>
-                          <label className="text-xs font-medium text-muted-foreground">
-                            参考答案（原文约束）
-                            <textarea
-                              aria-label="参考答案"
-                              value={selectedAuthoredContent.dailyQuestions[0].referenceAnswer}
-                              onChange={(event) => updateSelectedAuthoredContent((item) => ({
-                                ...item,
-                                dailyQuestions: item.dailyQuestions.map((question, index) =>
-                                  index === 0 ? { ...question, referenceAnswer: event.target.value } : question),
-                              }))}
-                              rows={3}
-                              className="mt-1 w-full rounded-lg border bg-card p-2 text-sm leading-relaxed text-foreground"
-                            />
-                          </label>
-                        </div>
-                        <div>
-                          <p className="text-xs font-medium text-muted-foreground">评分锚点</p>
-                          <div className="mt-2 space-y-2">
-                            {selectedAuthoredContent.dailyQuestions[0].rubric.anchors.map((anchor) => (
+                        {selectedAuthoredContent.dailyQuestions[0].kind === "rubric_response" ? <>
+                          <div>
+                            <label className="text-xs font-medium text-muted-foreground">
+                              参考答案（原文约束）
+                              <textarea
+                                aria-label="参考答案"
+                                value={selectedAuthoredContent.dailyQuestions[0].referenceAnswer ?? ""}
+                                onChange={(event) => updateSelectedAuthoredContent((item) => ({
+                                  ...item,
+                                  dailyQuestions: item.dailyQuestions.map((question, index) =>
+                                    index === 0 ? { ...question, referenceAnswer: event.target.value } : question),
+                                }))}
+                                rows={3}
+                                className="mt-1 w-full rounded-lg border bg-card p-2 text-sm leading-relaxed text-foreground"
+                              />
+                            </label>
+                          </div>
+                          <div>
+                            <p className="text-xs font-medium text-muted-foreground">评分锚点</p>
+                            <div className="mt-2 space-y-2">
+                            {(selectedAuthoredContent.dailyQuestions[0].rubric?.anchors ?? []).map((anchor) => (
                               <div key={anchor.id} className="rounded border p-2">
                                 <p className="font-medium">{anchor.band}</p>
                                 <p className="mt-1 text-muted-foreground">{anchor.description}</p>
@@ -569,8 +575,8 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
                                         questionIndex === 0 ? {
                                           ...question,
                                           rubric: {
-                                            ...question.rubric,
-                                            anchors: question.rubric.anchors.map((candidate) =>
+                                            ...question.rubric!,
+                                            anchors: question.rubric!.anchors.map((candidate) =>
                                               candidate.id === anchor.id ? { ...candidate, sample: event.target.value } : candidate),
                                           },
                                         } : question),
@@ -581,8 +587,18 @@ export function PrivateTutorDraftEditor({ material, draft: initialDraft, onClose
                                 </label>
                               </div>
                             ))}
+                            </div>
                           </div>
-                        </div>
+                        </> : (
+                          <div className="rounded border border-sky-200 bg-sky-50 p-3 text-xs dark:border-sky-900 dark:bg-sky-950/30">
+                            <p className="font-medium">数学专用评测 · {selectedAuthoredContent.dailyQuestions[0].kind}</p>
+                            {selectedAuthoredContent.dailyQuestions[0].kind === "numeric" ? (
+                              <label className="mt-2 block text-muted-foreground">确定性答案
+                                <input aria-label="数学确定性答案" value={selectedAuthoredContent.dailyQuestions[0].expectedAnswer ?? ""} onChange={(event) => updateSelectedAuthoredContent((item) => ({ ...item, dailyQuestions: item.dailyQuestions.map((question, index) => index === 0 ? { ...question, expectedAnswer: event.target.value } : question) }))} className="mt-1 h-9 w-full rounded border bg-card px-2 text-foreground" />
+                              </label>
+                            ) : <p className="mt-2 text-muted-foreground">正确选项：{selectedAuthoredContent.dailyQuestions[0].expectedChoice}</p>}
+                          </div>
+                        )}
                         <p className="text-xs text-amber-700 dark:text-amber-300">当前题目仅形成练习反馈；M7.4 运行时验证前不写入高置信度掌握证据。</p>
                       </div>
                     ) : null}

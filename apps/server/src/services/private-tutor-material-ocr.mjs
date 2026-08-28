@@ -1,11 +1,17 @@
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
-import { applyPrivateTutorOcrResult, parsePrivateTutorMaterialPath } from "./private-tutor-material-parser.mjs";
+import {
+  applyPrivateTutorOcrResult,
+  parsePrivateTutorMaterialPath,
+  reviewPrivateTutorOcrPage,
+} from "./private-tutor-material-parser.mjs";
 
 const JOB_TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const MAX_OCR_PAGE_IMAGE_BYTES = 20 * 1024 * 1024;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 function codedError(message, code, status = 400) {
   return Object.assign(new Error(message), { code, status });
@@ -134,6 +140,9 @@ export function createPrivateTutorMaterialOcrService({
         "ocr",
         `${safeSegment(readiness.providerId)}-${safeSegment(readiness.providerVersion ?? "v1")}`,
       );
+      runTx(() => {
+        job.artifactKey = `${safeSegment(readiness.providerId)}-${safeSegment(readiness.providerVersion ?? "v1")}`;
+      });
       const recognized = await ocrAdapter.recognize({
         path,
         cloudAllowed: job.cloudAllowed === true,
@@ -151,6 +160,7 @@ export function createPrivateTutorMaterialOcrService({
       const updated = applyPrivateTutorOcrResult(material, recognized, now());
       runTx(() => {
         Object.assign(material, updated);
+        material.extraction.ocr.artifactKey = job.artifactKey;
         job.status = updated.status === "parsed" ? "completed" : "needs_review";
         job.completedPages = recognized.pages.length;
         job.totalPages = recognized.pageCount ?? recognized.pages.length;
@@ -211,6 +221,7 @@ export function createPrivateTutorMaterialOcrService({
       startedAt: null,
       updatedAt: at,
       completedAt: null,
+      artifactKey: null,
     };
     runTx(() => state.privateTutorOcrJobs.unshift(job));
     schedule(job);
@@ -280,6 +291,65 @@ export function createPrivateTutorMaterialOcrService({
     return job;
   }
 
+  function reviewPage(material, learningProfileId, input) {
+    if (!material || material.learningProfileId !== learningProfileId) {
+      throw codedError("Material not found.", "material_not_found", 404);
+    }
+    let updated;
+    runTx(() => {
+      updated = reviewPrivateTutorOcrPage(material, input, now());
+      Object.assign(material, updated);
+      const job = state.privateTutorOcrJobs.find((item) =>
+        item.materialId === material.id && item.learningProfileId === learningProfileId && item.status === "needs_review");
+      if (job && updated.status === "parsed") {
+        job.status = "completed";
+        job.completedAt = updated.updatedAt;
+        job.updatedAt = updated.updatedAt;
+      }
+    });
+    return updated;
+  }
+
+  function readPageImage(material, learningProfileId, pageNumber) {
+    if (!material || material.learningProfileId !== learningProfileId) {
+      throw codedError("Material not found.", "material_not_found", 404);
+    }
+    const normalizedPageNumber = Number(pageNumber);
+    const page = material.pages?.find((item) => item.pageNumber === normalizedPageNumber);
+    if (!Number.isInteger(normalizedPageNumber) || normalizedPageNumber < 1 || !page || page.source !== "local_ocr") {
+      throw codedError("OCR page image not found.", "private_tutor_ocr_page_image_not_found", 404);
+    }
+    const artifactKey = String(material.extraction?.ocr?.artifactKey ?? "");
+    if (!artifactKey || artifactKey !== safeSegment(artifactKey)) {
+      throw codedError("OCR page image not found.", "private_tutor_ocr_page_image_not_found", 404);
+    }
+    const candidate = resolve(
+      root,
+      material.sourceHash,
+      "ocr",
+      artifactKey,
+      "pages",
+      `page-${String(normalizedPageNumber).padStart(3, "0")}.png`,
+    );
+    if (!confined(root, candidate) || !existsSync(candidate)) {
+      throw codedError("OCR page image not found.", "private_tutor_ocr_page_image_not_found", 404);
+    }
+    const actual = realpathSync(candidate);
+    const info = statSync(actual);
+    if (!confined(root, actual) || !info.isFile() || info.size < 8 || info.size > MAX_OCR_PAGE_IMAGE_BYTES) {
+      throw codedError("OCR page image not found.", "private_tutor_ocr_page_image_not_found", 404);
+    }
+    const bytes = readFileSync(actual);
+    if (!bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+      throw codedError("OCR page image not found.", "private_tutor_ocr_page_image_not_found", 404);
+    }
+    return {
+      bytes,
+      contentType: "image/png",
+      fileName: `page-${String(normalizedPageNumber).padStart(3, "0")}.png`,
+    };
+  }
+
   function removeMaterialArtifacts(material) {
     if (!material?.sourceHash) return;
     const shared = state.privateTutorMaterialDocuments.some((item) => item.id !== material.id && item.sourceHash === material.sourceHash);
@@ -311,6 +381,8 @@ export function createPrivateTutorMaterialOcrService({
     start,
     retry,
     cancel,
+    reviewPage,
+    readPageImage,
     removeMaterialArtifacts,
     resumePendingJobs,
     getJob: (id, learningProfileId) => state.privateTutorOcrJobs.find((job) => job.id === id && job.learningProfileId === learningProfileId) ?? null,

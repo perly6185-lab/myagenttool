@@ -31,6 +31,10 @@ pnpm-debug.log*
 .agents/runs/
 .agents/deploy-runs/
 .codex-run/
+.tmp/
+
+# Local evaluation inputs and derived textbook artifacts
+materials/
 
 # OS/editor noise
 .DS_Store

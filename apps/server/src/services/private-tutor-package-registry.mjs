@@ -99,6 +99,7 @@ function packageSummary(pkg) {
     id: pkg.id,
     name: pkg.name,
     subjectId: pkg.subjectId,
+    evaluationSubjectId: pkg.evaluationSubjectId ?? pkg.subjectId,
     domain: pkg.domain,
     sourceType: pkg.sourceType,
     version: pkg.version,

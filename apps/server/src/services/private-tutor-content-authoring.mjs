@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { parseRationalAnswer } from "./plugins/math-plugin.mjs";
 
 export const AUTHORED_CONTENT_SCHEMA_VERSION = 1;
 export const AUTHORED_CONTENT_GENERATOR_VERSION = "source-template-v1";
@@ -37,7 +38,7 @@ export function generateAuthoredContentVersion(state, draftId, {
     sourceMapRevision: draft.revision,
     sourceMapFingerprint: draft.confirmation.fingerprint,
     status: "in_review",
-    knowledgeContents: draft.draftKnowledgeComponents.map(authorKnowledgeContent),
+    knowledgeContents: draft.draftKnowledgeComponents.map((knowledge) => authorKnowledgeContent(knowledge, draft)),
     validationIssues: [],
     confirmation: null,
     generatedBy: actorId,
@@ -148,7 +149,10 @@ export function validateAuthoredContentVersion(draft, content) {
     for (const [field, minimum, context] of [["diagnosticQuestions", 1, "diagnostic"], ["tutoringQuestions", 3, "tutoring"], ["dailyQuestions", 1, "practice"], ["reviewQuestions", 1, "review"]]) {
       const questions = Array.isArray(item?.[field]) ? item[field] : [];
       if (questions.length < minimum || questions.length > 20) addIssue(issues, "authored_question_set_incomplete", `知识点 ${item.knowledgeId} 的 ${field} 数量无效。`, "error");
-      for (const question of questions) validateQuestion(issues, question, item, expectedRefs, sourceText, questionIds, context);
+      for (const question of questions) validateQuestion(issues, question, item, expectedRefs, sourceText, questionIds, context, {
+        mathMode: draft.evaluationSubjectId === "math",
+        sourceKnowledge,
+      });
     }
   }
   return issues;
@@ -185,11 +189,15 @@ export function requireConfirmedAuthoredContent(draft) {
   return content;
 }
 
-function authorKnowledgeContent(knowledge) {
+function authorKnowledgeContent(knowledge, draft) {
   const refs = knowledgeSourceRefs(knowledge);
   const referenceAnswer = refs.map((ref) => normalizeText(ref.excerpt)).filter(Boolean).join(" ").slice(0, 1_200);
   const sourceKeys = [...new Set(refs.map((ref) => ref.sectionId))];
   const rubric = createRubric(knowledge, sourceKeys, referenceAnswer);
+  const mathMode = draft?.evaluationSubjectId === "math";
+  const question = (context, index, action) => mathMode
+    ? createMathQuestion(knowledge, context, index, action, referenceAnswer, sourceKeys)
+    : createQuestion(knowledge, context, index, action, rubric, referenceAnswer, sourceKeys);
   return {
     knowledgeId: knowledge.id,
     sourceRefs: structuredClone(refs),
@@ -203,14 +211,51 @@ function authorKnowledgeContent(knowledge) {
       hints: [`先定位 ${sourceKeys.map((key) => `[ref:${key}]`).join("、")}。`, "回答时区分原文信息与自己的推断。"],
       methods: { default: "source-read-explain-apply-review" },
     },
-    diagnosticQuestions: [createQuestion(knowledge, "diagnostic", 1, "依据原文说明", rubric, referenceAnswer, sourceKeys)],
+    diagnosticQuestions: [question("diagnostic", 1, "依据原文完成")],
     tutoringQuestions: [
-      createQuestion(knowledge, "tutoring", 1, "用自己的话复述", rubric, referenceAnswer, sourceKeys),
-      createQuestion(knowledge, "tutoring", 2, "结合原文细节解释", rubric, referenceAnswer, sourceKeys),
-      createQuestion(knowledge, "tutoring", 3, "说明如何应用或辨析", rubric, referenceAnswer, sourceKeys),
+      question("tutoring", 1, "先独立完成"),
+      question("tutoring", 2, "核对计算后再完成"),
+      question("tutoring", 3, "再次完成并检查结果"),
     ],
-    dailyQuestions: [createQuestion(knowledge, "practice", 1, "独立解释并引用来源", rubric, referenceAnswer, sourceKeys)],
-    reviewQuestions: [createQuestion(knowledge, "review", 1, "不看提示回忆核心内容", rubric, referenceAnswer, sourceKeys)],
+    dailyQuestions: [question("practice", 1, "独立完成")],
+    reviewQuestions: [question("review", 1, "复习并完成")],
+  };
+}
+
+function createMathQuestion(knowledge, context, index, action, referenceAnswer, sourceKeys) {
+  const id = `${stableScopedId(knowledge.id)}-${context}-${index}-v1`;
+  const base = {
+    id,
+    questionId: id.replace(/-v\d+$/, ""),
+    knowledgeId: knowledge.id,
+    context,
+    difficulty: context === "diagnostic" ? 1 : context === "review" ? 2 : 2,
+    requiredSourceRefs: [...sourceKeys],
+    sourceRefs: structuredClone(knowledgeSourceRefs(knowledge)),
+    evidencePolicy: "practice_only_until_runtime_validation",
+  };
+  const fact = Array.isArray(knowledge.mathFacts) ? knowledge.mathFacts[0] : null;
+  if (fact?.expression && parseRationalAnswer(fact.expectedAnswer)) {
+    return {
+      ...base,
+      kind: "numeric",
+      prompt: `${action}：${fact.expression} = ?（依据 ${sourceKeys.map((key) => `[ref:${key}]`).join(" 或 ")}）`,
+      expectedAnswer: fact.expectedAnswer,
+      provenance: "source_math_expression",
+    };
+  }
+  const groundedOption = normalizeText(referenceAnswer).slice(0, 160);
+  return {
+    ...base,
+    kind: "choice",
+    prompt: `${action}：以下哪一项与 ${sourceKeys.map((key) => `[ref:${key}]`).join(" 或 ")} 的原文一致？`,
+    options: [
+      { id: "a", label: groundedOption },
+      { id: "b", label: "原文没有提供与本节相关的数学信息。" },
+      { id: "c", label: "以上内容均无法从所列来源核对。" },
+    ],
+    expectedChoice: "a",
+    provenance: "source_grounded_choice",
   };
 }
 
@@ -265,14 +310,16 @@ function createRubric(knowledge, sourceKeys, referenceAnswer) {
   };
 }
 
-function validateQuestion(issues, question, item, expectedRefs, sourceText, questionIds, expectedContext) {
+function validateQuestion(issues, question, item, expectedRefs, sourceText, questionIds, expectedContext, {
+  mathMode = false,
+  sourceKnowledge = null,
+} = {}) {
   const label = question?.id ?? "unknown";
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{2,159}$/.test(label) || questionIds.has(label)) {
     addIssue(issues, "invalid_authored_question_id", `教学问题标识无效或重复: ${label}`, "error");
   }
   questionIds.add(label);
   if (question?.knowledgeId !== item.knowledgeId || question?.context !== expectedContext
-    || question?.kind !== "rubric_response" || question?.provenance !== "rule_extracted"
     || !Number.isSafeInteger(question?.difficulty) || question.difficulty < 1 || question.difficulty > 5
     || !boundedText(question?.prompt, 800) || INVALID_SOURCE_TEXT.test(question?.prompt ?? "")) {
     addIssue(issues, "invalid_authored_question", `教学问题 ${label} 的基本结构无效。`, "error");
@@ -286,6 +333,13 @@ function validateQuestion(issues, question, item, expectedRefs, sourceText, ques
   if (expectedRefs.some((ref) => !String(question?.prompt ?? "").includes(`[ref:${ref.sectionId}]`))) {
     addIssue(issues, "authored_question_citation_missing", `教学问题 ${label} 未提示所需来源标记。`, "error");
   }
+  if (mathMode) {
+    validateMathQuestion(issues, question, sourceKnowledge, sourceText, label);
+    return;
+  }
+  if (question?.kind !== "rubric_response" || question?.provenance !== "rule_extracted") {
+    addIssue(issues, "invalid_authored_question", `教学问题 ${label} 未使用来源约束评分结构。`, "error");
+  }
   const answer = boundedText(question?.referenceAnswer, MAX_TEXT);
   if (!answer || INVALID_SOURCE_TEXT.test(answer) || !sourceText.includes(normalizeText(answer))) {
     addIssue(issues, "authored_reference_answer_not_grounded", `教学问题 ${label} 的参考答案未锚定原文。`, "error");
@@ -293,6 +347,28 @@ function validateQuestion(issues, question, item, expectedRefs, sourceText, ques
   if (!validRubric(question?.rubric, expectedRefs.map((ref) => ref.sectionId), sourceText)) {
     addIssue(issues, "invalid_authored_rubric", `教学问题 ${label} 的评分量表无效。`, "error");
   }
+}
+
+function validateMathQuestion(issues, question, sourceKnowledge, sourceText, label) {
+  if (question?.kind === "numeric") {
+    const expected = parseRationalAnswer(question.expectedAnswer);
+    const grounded = (sourceKnowledge?.mathFacts ?? []).some((fact) =>
+      fact.expression && fact.expectedAnswer === question.expectedAnswer && String(question.prompt ?? "").includes(fact.expression));
+    if (!expected || !grounded || question.provenance !== "source_math_expression") {
+      addIssue(issues, "invalid_authored_math_question", `数学问题 ${label} 未锚定可验证算式。`, "error");
+    }
+    return;
+  }
+  if (question?.kind === "choice") {
+    const options = Array.isArray(question.options) ? question.options : [];
+    const expected = options.find((option) => option.id === question.expectedChoice);
+    if (options.length < 2 || !expected || !sourceText.includes(normalizeText(expected.label))
+      || question.provenance !== "source_grounded_choice") {
+      addIssue(issues, "invalid_authored_math_question", `数学选择题 ${label} 未锚定原文。`, "error");
+    }
+    return;
+  }
+  addIssue(issues, "invalid_authored_math_question", `数学问题 ${label} 不是数学评测器支持的题型。`, "error");
 }
 
 function validRubric(rubric, sourceKeys, sourceText) {

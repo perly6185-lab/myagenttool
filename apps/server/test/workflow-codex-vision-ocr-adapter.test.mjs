@@ -51,7 +51,39 @@ test("Codex vision OCR requires cloud consent and returns normalized page eviden
       calls.push({ args, options });
       const outputPath = args[args.indexOf("--output-last-message") + 1];
       writeFileSync(outputPath, JSON.stringify({
-        pages: [{ index: 1, text: "设备名称：腐蚀试验箱\n型号：WHQ-2000B", confidence: 0.94 }],
+        pages: [{
+          index: 1,
+          printedPageNumber: "8",
+          text: "设备名称：腐蚀试验箱\n型号：WHQ-2000B",
+          confidence: 0.94,
+          blocks: [
+            { order: 1, type: "heading", text: "设备名称：腐蚀试验箱", confidence: 0.96, box: { x: 0.1, y: 0.08, width: 0.8, height: 0.08 }, math: null },
+            {
+              order: 2,
+              type: "formula",
+              text: "125×8=1000",
+              confidence: 0.92,
+              box: { x: 0.2, y: 0.4, width: 0.5, height: 0.1 },
+              math: {
+                notation: "125 \\times 8 = 1000",
+                confidence: 0.91,
+                ast: {
+                  rootId: "eq",
+                  nodes: [
+                    { id: "eq", type: "relation", value: "=", childIds: ["mul", "result", "cycle"] },
+                    { id: "mul", type: "operator", value: "×", childIds: ["lhs", "rhs"] },
+                    { id: "lhs", type: "number", value: "125", childIds: [] },
+                    { id: "rhs", type: "number", value: "8", childIds: [] },
+                    { id: "result", type: "number", value: "1000", childIds: [] },
+                    { id: "cycle", type: "unknown", value: "", childIds: ["eq"] },
+                    { id: "orphan", type: "number", value: "999", childIds: [] },
+                  ],
+                },
+                vertical: null,
+              },
+            },
+          ],
+        }],
       }));
     },
   });
@@ -68,12 +100,22 @@ test("Codex vision OCR requires cloud consent and returns normalized page eviden
       onProgress: (value) => progress.push(value),
     });
     assert.equal(result.providerId, "codex-vision");
+    assert.equal(result.schemaVersion, "private-tutor-textbook-page-v2");
     assert.equal(result.localOnly, false);
     assert.equal(result.pages[0].evidence.length, 2);
+    assert.equal(result.pages[0].printedPageNumber, "8");
+    assert.equal(result.pages[0].coordinateSystem, "normalized");
+    assert.equal(result.pages[0].blocks[1].type, "formula");
+    assert.deepEqual(result.pages[0].blocks[1].box, { x: 0.2, y: 0.4, width: 0.5, height: 0.1 });
+    assert.equal(result.pages[0].blocks[1].math.ast.nodes.length, 6);
+    assert.deepEqual(result.pages[0].blocks[1].math.ast.nodes.find((node) => node.id === "cycle").childIds, []);
+    assert.equal(result.pages[0].blocks[1].math.ast.nodes.some((node) => node.id === "orphan"), false);
     assert.deepEqual(progress, [{ completedPages: 1, totalPages: 1 }]);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].args.includes("--image"), true);
     assert.match(calls[0].options.prompt, /忠实抄录/);
+    assert.match(calls[0].options.prompt, /归一化坐标/);
+    assert.match(calls[0].options.prompt, /竖式/);
 
     const resumedProgress = [];
     const resumed = await adapter.recognize({
@@ -83,6 +125,7 @@ test("Codex vision OCR requires cloud consent and returns normalized page eviden
       onProgress: (value) => resumedProgress.push(value),
     });
     assert.equal(resumed.pages[0].text, result.pages[0].text);
+    assert.equal(resumed.pages[0].blocks[1].math.ast.rootId, "eq");
     assert.equal(calls.length, 1, "a valid persisted shard must not invoke Codex again");
     assert.deepEqual(resumedProgress, [{ completedPages: 1, totalPages: 1, resumed: true }]);
   } finally {
@@ -169,7 +212,13 @@ test("Codex vision OCR partitions and resumes a 126-page textbook", async () => 
       writeFileSync(outputPath, JSON.stringify({
         pages: imagePaths.map((path) => {
           const index = Number(/page-(\d+)\.png$/.exec(path)?.[1]);
-          return { index, text: `教材第${index}页：完整的测试识别内容。`, confidence: 0.95 };
+          return {
+            index,
+            printedPageNumber: String(index),
+            text: `教材第${index}页：完整的测试识别内容。`,
+            confidence: 0.95,
+            blocks: [{ order: 1, type: "paragraph", text: `教材第${index}页：完整的测试识别内容。`, confidence: 0.95 }],
+          };
         }),
       }));
     },

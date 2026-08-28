@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "private-tutor-textbook-experiment-v1",
+  "id": "pep-math-grade4-volume1-2022-full-book-v1",
+  "source": {
+    "title": "义务教育教科书 数学 四年级 上册（2022年8月第2版）",
+    "relativePath": "materials/textbooks/pep-math-grade4-volume1-2022/人教版数学四年级上册（2022官方电子版）.pdf",
+    "sha256": "0c54d6710c7d01899e1bdab716021cc66e20e260264a286acc5a119e43557301",
+    "pageCount": 126,
+    "expectedSubjectId": "math"
+  },
+  "unitGroundTruth": [
+    { "unitNumber": 1, "title": "大数的认识", "printedPageNumber": "2", "sourcePageNumber": 8 },
+    { "unitNumber": 2, "title": "公顷和平方千米", "printedPageNumber": "34", "sourcePageNumber": 40 },
+    { "unitNumber": 3, "title": "角的度量", "printedPageNumber": "38", "sourcePageNumber": 44 },
+    { "unitNumber": 4, "title": "三位数乘两位数", "printedPageNumber": "47", "sourcePageNumber": 53 },
+    { "unitNumber": 5, "title": "平行四边形和梯形", "printedPageNumber": "56", "sourcePageNumber": 62 },
+    { "unitNumber": 6, "title": "除数是两位数的除法", "printedPageNumber": "71", "sourcePageNumber": 77 },
+    { "unitNumber": 7, "title": "条形统计图", "printedPageNumber": "94", "sourcePageNumber": 100 },
+    { "unitNumber": 8, "title": "数学广角——优化", "printedPageNumber": "104", "sourcePageNumber": 110 },
+    { "unitNumber": 9, "title": "总复习", "printedPageNumber": "109", "sourcePageNumber": 115 }
+  ],
+  "subjectControls": [
+    {
+      "id": "full-math-textbook",
+      "sourceKind": "recognized_textbook",
+      "expectedSubjectId": "math"
+    },
+    {
+      "id": "curated-math-unit",
+      "sourceKind": "markdown",
+      "relativePath": "materials/textbooks/pep-math-grade4-volume1-2022/unit4-formal-import.md",
+      "expectedSubjectId": "math"
+    },
+    {
+      "id": "loop-engineering-paper",
+      "sourceKind": "pdf_text",
+      "relativePath": "docs/Loop-Engineering-IEEE-中文版-优化版.pdf",
+      "expectedSubjectId": "general"
+    },
+    {
+      "id": "dynamic-mechanical-analyzer-manual",
+      "sourceKind": "pdf_text",
+      "relativePath": "demos/pdfcli/97-动态热机械分析仪DMA.pdf",
+      "expectedSubjectId": "general"
+    }
+  ],
+  "reviewCostModel": {
+    "secondsPerPage": 90
+  },
+  "thresholds": {
+    "minimumUnitRecallRate": 0.9,
+    "maximumMathMisclassificationRate": 0,
+    "maximumReviewPageRate": 0.25
+  }
+}

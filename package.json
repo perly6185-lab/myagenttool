@@ -38,6 +38,8 @@
     "eval:intent:channel": "node tools/dev/channel-intent-replay.mjs",
     "eval:plan-actual": "node tools/dev/work-item-plan-actual-eval.mjs",
     "eval:private-tutor": "node tools/dev/private-tutor-eval.mjs",
+    "eval:private-tutor:textbook": "node tools/dev/private-tutor-textbook-experiment.mjs",
+    "review:private-tutor:textbook": "node tools/dev/private-tutor-textbook-human-review.mjs",
     "release:private-tutor": "node tools/dev/private-tutor-eval.mjs",
     "eval:channel:blackbox": "node --test apps/server/test/channel-ordinary-user-blackbox.test.mjs",
     "dev": "node tools/dev/run-local-demo.mjs",

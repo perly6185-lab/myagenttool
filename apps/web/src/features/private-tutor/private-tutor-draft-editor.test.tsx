@@ -280,6 +280,44 @@ describe("private tutor source-grounded draft editor", () => {
     });
   });
 
+  it("shows automatic unit aggregation and the math evaluator contract", () => {
+    const mathQuestion = {
+      ...question,
+      kind: "numeric" as const,
+      prompt: "计算 125×8 = ?（依据 [ref:sec_1]）",
+      expectedAnswer: "1000",
+      referenceAnswer: undefined,
+      rubric: undefined,
+      provenance: "source_math_expression" as const,
+    };
+    const mathContent = {
+      ...authoredContent,
+      knowledgeContents: [{
+        ...authoredContent.knowledgeContents[0],
+        dailyQuestions: [mathQuestion],
+      }],
+    };
+    const mathDraft: KnowledgeMapDraft = {
+      ...confirmedDraft,
+      subjectId: "math",
+      evaluationSubjectId: "math",
+      subjectDetection: {
+        requestedSubjectId: "general", resolvedSubjectId: "math", evaluationSubjectId: "math",
+        confidence: 0.95, mode: "automatic", signals: ["math_filename"],
+      },
+      aggregation: { strategy: "textbook_units_v1", sourceSectionCount: 8, detectedUnitCount: 2, moduleCount: 2 },
+      status: "content_in_review",
+      authoredContentVersions: [mathContent],
+      activeAuthoredContentVersion: 1,
+    };
+    render(<PrivateTutorDraftEditor material={material} draft={mathDraft} onClose={vi.fn()} onPublished={vi.fn()} />);
+    expect(screen.getByText(/自动识别：数学 · math 评测器 · 按 2 个单元合并/)).toBeTruthy();
+    fireEvent.click(screen.getByText("概念一"));
+    expect(screen.getByText("数学专用评测 · numeric")).toBeTruthy();
+    expect((screen.getByLabelText("数学确定性答案") as HTMLInputElement).value).toBe("1000");
+    expect(screen.queryByText("评分锚点")).toBeNull();
+  });
+
   it("splits a knowledge component while preserving source evidence", async () => {
     render(<PrivateTutorDraftEditor material={material} draft={initialDraft} onClose={vi.fn()} onPublished={vi.fn()} />);
     fireEvent.click(screen.getByText("概念一"));
