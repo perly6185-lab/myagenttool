@@ -250,7 +250,7 @@ describe("execution review card", () => {
     expect(within(officeAction).getByText(/previous action is still running or unconfirmed/i)).toBeTruthy();
   });
 
-  it("treats the top-level server lock as authoritative during projection races", () => {
+  it("keeps read-only review navigation available while the top-level lock freezes mutations", () => {
     const act = vi.fn();
     render(<ExecutionReviewCard
       review={review({
@@ -272,9 +272,9 @@ describe("execution review card", () => {
       onAction={act}
     />);
 
-    expect(screen.getByRole("button", { name: "Review result" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Review result" }).hasAttribute("disabled")).toBe(false);
     expect(screen.getByRole("button", { name: "Create Pull Request" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getAllByText(/previous action is still running or unconfirmed/i)).toHaveLength(2);
+    expect(screen.getAllByText(/previous action is still running or unconfirmed/i)).toHaveLength(1);
     expect(act).not.toHaveBeenCalled();
   });
 

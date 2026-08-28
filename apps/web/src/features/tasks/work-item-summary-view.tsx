@@ -40,6 +40,7 @@ import { ExecutionStartConfirmation } from "./execution-start-confirmation";
 import { deriveExecutionStartSummary } from "./execution-start-summary";
 import { ExecutionStartStatusCard } from "./execution-start-status-card";
 import { ExecutionReviewCard, type ExecutionActionReceipt } from "./execution-review-card";
+import { createWorkItemReviewActionController } from "./work-item-review-action-controller";
 import { WorkItemPlanActualCard } from "./work-item-plan-actual-card";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
@@ -51,7 +52,7 @@ import { deriveWorkItemUserStatus } from "./work-item-user-status";
 import { WorkItemJobOverview } from "./work-item-job-overview";
 import { WorkItemContextCard, type TaskContextUpdate } from "./work-item-context-card";
 import { isLocalWorkItem } from "./work-item-response";
-import { COPY, type SummaryCopy } from "./work-item-summary-copy";
+import { COPY } from "./work-item-summary-copy";
 import {
   WAITING_LABEL,
   aiPhaseDescription,
@@ -61,9 +62,9 @@ import {
   expertSectionFor,
   latestExecutionKind,
   resultPresentation,
-  type DeliveryDecision,
   type WorkItemIntentSummary,
 } from "./work-item-summary-model";
+import { DeliveryDecisionCard } from "./work-item-delivery-decision-card";
 import {
   DeliverableFileList,
   DeliveryMarkdownDocument,
@@ -1617,7 +1618,8 @@ export function WorkItemSummaryView({
   };
   const rerunDeliveryVerification = async () => {
     const run = observability?.latestRun;
-    if (!run || actionPending || executionActionLocked || !canRerunVerification) return;
+    if (!run || actionPending || executionActionLocked
+      || !reviewActionController.isEnabled("rerun_verification", canRerunVerification)) return;
     setActionPending("reverify");
     setActionError(null);
     setExecutionActionReceipt(null);
@@ -1645,11 +1647,13 @@ export function WorkItemSummaryView({
     }
   };
   const askAiToFix = () => {
-    if (!canAskAiToFix || actionPending || executionActionLocked) return;
+    if (!reviewActionController.isEnabled("fix_with_ai", canAskAiToFix) || actionPending || executionActionLocked) return;
     void sendChangeRequest(askAiFixFeedback, "revision");
   };
   const openPullRequestConfirmation = () => {
-    if (actionPending || deliveryMode !== "pull_request" || deliveryEvidenceNotReady) return;
+    const actionKind = deliveryOperation ?? "create_pull_request";
+    if (actionPending || deliveryMode !== "pull_request"
+      || !reviewActionController.isEnabled(actionKind, !deliveryEvidenceNotReady)) return;
     if (observability?.delivery?.review?.verdict !== "approved") {
       setActionError(copy.deliveryReviewRequired);
       return;
@@ -1660,7 +1664,8 @@ export function WorkItemSummaryView({
   const answerAiClarification = async () => {
     const run = observability?.latestRun;
     const answer = clarifyAnswer.trim();
-    if (!run || run.status !== "needs_input" || !answer || clarifyPending || executionActionLocked) return;
+    if (!run || run.status !== "needs_input" || !answer || clarifyPending || executionActionLocked
+      || !reviewActionController.isEnabled("answer_ai", true)) return;
     setClarifyPending(true);
     setClarifyError(null);
     setExecutionActionReceipt(null);
@@ -1855,6 +1860,10 @@ export function WorkItemSummaryView({
   };
   const acceptAndComplete = async () => {
     if (actionPending) return;
+    if (!reviewActionController.isEnabled(deliveryOperation ?? "review_result", !deliveryEvidenceNotReady)) {
+      setActionError(language === "zh" ? "任务状态或交付证据已经变化，请刷新后重新确认。" : "The task state or delivery evidence changed. Refresh before confirming again.");
+      return;
+    }
     if (!executionContractReady) {
       setActionError(language === "zh"
         ? "这次执行开始前没有确认完整的完成标准和检查步骤，不能形成正式审核结论。请补全后重新运行。"
@@ -1865,7 +1874,7 @@ export function WorkItemSummaryView({
       setActionError(copy.deliveryReviewRequired);
       return;
     }
-    if (deliveryEvidenceNotReady) {
+    if (!reviewActionController.usesProjection && deliveryEvidenceNotReady) {
       setActionError(language === "zh" ? "当前复核或验证证据还不完整，不能确认交付。请先处理预览中的阻塞原因。" : "The review or verification evidence is incomplete, so delivery cannot be confirmed yet. Resolve the blockers shown in the preview first.");
       return;
     }
@@ -2013,7 +2022,8 @@ export function WorkItemSummaryView({
     });
   };
   const retryAiWork = async () => {
-    if (!retryableRun || retryPending || executionActionLocked) return;
+    if (!retryableRun || retryPending || executionActionLocked
+      || !reviewActionController.isEnabled("retry_execution", true)) return;
     setRetryPending(true);
     setRetryError(null);
     setExecutionActionReceipt(null);
@@ -2062,48 +2072,37 @@ export function WorkItemSummaryView({
       setRetryPending(false);
     }
   };
-  const runExecutionReviewAction = (requestedKind?: string) => {
-    if (!executionReview) return;
-    const kind = requestedKind ?? executionReview.recommendedAction.kind;
-    switch (kind) {
-      case "answer_ai":
-      case "retry_execution":
-        runPrimaryAction();
-        return;
-      case "review_result":
-      case "view_result":
-        openReviewResult();
-        return;
-      case "review_approval":
-      case "open_details":
-        onOpenExpert("process");
-        return;
-      case "view_changes":
+  const openDeliveryConfirmation = () => {
+    if (actionPending || (!reviewActionController.usesProjection && deliveryEvidenceNotReady)) return;
+    setCompletionWriteback("local_only");
+    setAcceptOpen(true);
+  };
+  const reviewActionController = createWorkItemReviewActionController({
+    review: executionReview,
+    handlers: {
+      answer_ai: runPrimaryAction,
+      retry_execution: runPrimaryAction,
+      review_result: openReviewResult,
+      view_result: openReviewResult,
+      review_approval: () => onOpenExpert("process"),
+      open_details: () => onOpenExpert("process"),
+      view_changes: () => {
         if (deliveryWorktreeId && onOpenDeliveryChanges) onOpenDeliveryChanges(item.projectId, deliveryWorktreeId);
         else onOpenExpert("process");
-        return;
-      case "view_batch_details":
-        openReviewResult(officeBatchResultId);
-        return;
-      case "fix_with_ai":
-        askAiToFix();
-        return;
-      case "rerun_verification":
-        void rerunDeliveryVerification();
-        return;
-      case "create_pull_request":
-      case "update_pull_request":
-        openPullRequestConfirmation();
-        return;
-      case "apply_local_changes":
-      case "apply_office_result":
-        if (actionPending || deliveryEvidenceNotReady) return;
-        setCompletionWriteback("local_only");
-        setAcceptOpen(true);
-        return;
-      default:
-        onOpenExpert("process");
-    }
+      },
+      view_batch_details: () => openReviewResult(officeBatchResultId),
+      fix_with_ai: askAiToFix,
+      rerun_verification: () => void rerunDeliveryVerification(),
+      create_pull_request: openPullRequestConfirmation,
+      update_pull_request: openPullRequestConfirmation,
+      apply_local_changes: openDeliveryConfirmation,
+      apply_office_result: openDeliveryConfirmation,
+    },
+    onUnknownAction: () => onOpenExpert("process"),
+  });
+  const runExecutionReviewAction = (requestedKind?: string) => {
+    if (!executionReview) return;
+    reviewActionController.run(requestedKind ?? executionReview.recommendedAction.kind);
   };
   const reconcileExecutionReviewAction = async () => {
     const run = observability?.latestRun;
@@ -2174,6 +2173,12 @@ export function WorkItemSummaryView({
           : clarifyPending
             ? "answer_ai"
             : null;
+  const deliveryReviewActionKind = deliveryOperation ?? "review_result";
+  const canConfirmProjectedDelivery = reviewActionController.isEnabled(deliveryReviewActionKind, !deliveryEvidenceNotReady);
+  const canViewProjectedChanges = reviewActionController.isEnabled("view_changes", Boolean(deliveryWorktreeId && onOpenDeliveryChanges));
+  const canRerunProjectedVerification = reviewActionController.isEnabled("rerun_verification", canRerunVerification);
+  const canRequestProjectedAiFix = reviewActionController.isEnabled("fix_with_ai", canAskAiToFix);
+  const canOpenProjectedPullRequest = reviewActionController.isEnabled(deliveryOperation ?? "create_pull_request", deliveryMode === "pull_request" && !deliveryEvidenceNotReady);
 
   return (
     <div className="space-y-4" data-testid="work-item-summary-view">
@@ -3012,7 +3017,7 @@ export function WorkItemSummaryView({
               <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("follow_up"); setChangeRequestOpen(true); }}><MessageSquare aria-hidden />{language === "zh" ? "继续追问" : "Ask follow-up"}</Button>
               <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("revision"); setChangeRequestOpen(true); }}>{copy.requestChanges}</Button>
               <Button
-                disabled={!executionContractReady || Boolean(actionPending) || deliveryEvidenceNotReady || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
+                disabled={!executionContractReady || Boolean(actionPending) || !canConfirmProjectedDelivery || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
                 onClick={() => { setCompletionWriteback("local_only"); setAcceptOpen(true); }}
               >
                 <CheckCircle2 aria-hidden />{acceptActionLabel}
@@ -3490,7 +3495,7 @@ export function WorkItemSummaryView({
                   <RefreshCw aria-hidden />{copy.requestChanges}
                 </Button>
                 <Button
-                  disabled={!executionContractReady || !outcomeReady || Boolean(actionPending) || deliveryEvidenceNotReady || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
+                  disabled={!executionContractReady || !outcomeReady || Boolean(actionPending) || !canConfirmProjectedDelivery || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
                   onClick={() => { setReportOpen(false); setCompletionWriteback("local_only"); setAcceptOpen(true); }}
                 >
                   <CheckCircle2 aria-hidden />{acceptActionLabel}
@@ -3506,11 +3511,11 @@ export function WorkItemSummaryView({
             copy={copy}
             actionPreview={deliveryEvidence?.actionPreview ?? null}
             language={language}
-            onViewChanges={deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
-            onRerunVerification={canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
-            onAskAiToFix={canAskAiToFix ? askAiToFix : undefined}
-            onCreatePullRequest={deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
-            actionDisabled={Boolean(actionPending) || executionActionLocked}
+            onViewChanges={canViewProjectedChanges && deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
+            onRerunVerification={canRerunProjectedVerification ? () => void rerunDeliveryVerification() : undefined}
+            onAskAiToFix={canRequestProjectedAiFix ? askAiToFix : undefined}
+            onCreatePullRequest={canOpenProjectedPullRequest ? openPullRequestConfirmation : undefined}
+            actionDisabled={Boolean(actionPending)}
             verificationPending={actionPending === "reverify"}
           />
 
@@ -3796,201 +3801,5 @@ function WorkItemIntentCard({
         </div>
       </dl>
     </section>
-  );
-}
-
-function DeliveryDecisionCard({
-  decision,
-  copy,
-  scopeLabel,
-  actionPreview,
-  officeBatchResultId,
-  language,
-  onViewChanges,
-  onRerunVerification,
-  onAskAiToFix,
-  onCreatePullRequest,
-  actionDisabled = false,
-  verificationPending = false,
-}: {
-  decision: DeliveryDecision;
-  copy: SummaryCopy;
-  scopeLabel?: string;
-  actionPreview?: LocalWorkItemDeliveryEvidence["actionPreview"] | null;
-  officeBatchResultId?: string;
-  language: "zh" | "en";
-  onViewChanges?: () => void;
-  onRerunVerification?: () => void;
-  onAskAiToFix?: () => void;
-  onCreatePullRequest?: () => void;
-  actionDisabled?: boolean;
-  verificationPending?: boolean;
-}) {
-  const confirmedProblem = decision.state === "changes" && decision.risk === "high";
-  const tone = decision.state === "ready" ? "success" : confirmedProblem ? "danger" : decision.state === "waiting" ? "neutral" : "warning";
-  const riskLabel = {
-    low: copy.riskLow,
-    medium: copy.riskMedium,
-    high: copy.riskHigh,
-    unknown: copy.riskUnknown,
-  }[decision.risk];
-  const showPullRequestAction = ["create_pull_request", "update_pull_request"].includes(actionPreview?.operation ?? "") && actionPreview?.canProceed && Boolean(onCreatePullRequest);
-  const hasDeliveryAction = Boolean(onViewChanges || onRerunVerification || onAskAiToFix || showPullRequestAction);
-  return (
-    <section className={`rounded-lg border p-4 ${
-      decision.state === "ready"
-        ? "border-success/35 bg-success/[0.06]"
-        : confirmedProblem
-          ? "border-destructive/35 bg-destructive/[0.05]"
-          : "border-warning/35 bg-warning/[0.05]"
-    }`} aria-label={copy.decisionSummary}>
-      <div className="flex flex-wrap items-center gap-2">
-        {decision.state === "ready"
-          ? <CheckCircle2 className="size-5 text-success" aria-hidden />
-          : <AlertTriangle className={`size-5 ${confirmedProblem ? "text-destructive" : "text-warning"}`} aria-hidden />}
-        <h3 className="font-semibold">{decision.headline}</h3>
-        <Badge tone="neutral">{decision.domainLabel}</Badge>
-        <Badge tone={tone}>{copy.resultStatus}: {decision.statusLabel}</Badge>
-        <Badge tone={tone}>{copy.resultRisk}: {riskLabel}</Badge>
-      </div>
-      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{decision.riskReason}</p>
-      <div className="mt-3 grid gap-3 lg:grid-cols-3">
-        <div className="rounded-md bg-background/75 px-3 py-2.5">
-          <p className="text-xs font-medium text-muted-foreground">{scopeLabel ?? copy.completedScope}</p>
-          <p className="mt-1.5 text-sm leading-relaxed">{decision.scope}</p>
-        </div>
-        <div className="rounded-md bg-background/75 px-3 py-2.5">
-          <p className="text-xs font-medium text-muted-foreground">{copy.checkResult}</p>
-          <p className="mt-1.5 text-sm leading-relaxed">{decision.checks}</p>
-        </div>
-        <div className="rounded-md bg-background/75 px-3 py-2.5">
-          <p className="text-xs font-medium text-muted-foreground">{copy.recommendedNext}</p>
-          <p className="mt-1.5 text-sm font-medium leading-relaxed">{decision.recommendation}</p>
-        </div>
-      </div>
-      {actionPreview ? (
-        <div className="mt-3 rounded-md border border-border/80 bg-background/60 px-3 py-2.5" data-testid="delivery-action-preview">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-xs font-medium text-muted-foreground">{language === "zh" ? "应用前预览" : "Before-apply preview"}</p>
-            <Badge tone={actionPreview.canProceed ? "success" : "warning"}>
-              {actionPreview.canProceed ? (language === "zh" ? "满足确认条件" : "Ready for confirmation") : (language === "zh" ? "暂不能应用" : "Not ready to apply")}
-            </Badge>
-          </div>
-          <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
-            <div><dt className="inline text-muted-foreground">{language === "zh" ? "动作：" : "Action: "}</dt><dd className="inline">{actionPreview.operation === "update_pull_request" ? (language === "zh" ? "更新现有 Pull Request" : "Update existing pull request") : actionPreview.operation === "create_pull_request" ? (language === "zh" ? "创建 Pull Request" : "Create pull request") : actionPreview.operation === "apply_office_result" ? (language === "zh" ? "应用办公结果" : "Apply office result") : (language === "zh" ? "应用到本地项目" : "Apply to local project")}</dd></div>
-            <div><dt className="inline text-muted-foreground">{language === "zh" ? "范围：" : "Scope: "}</dt><dd className="inline">{language === "zh" ? `${actionPreview.changedFileCount || actionPreview.officeDetails?.targetFiles.length || 0} 个文件` : `${actionPreview.changedFileCount || actionPreview.officeDetails?.targetFiles.length || 0} file(s)`}</dd></div>
-            {actionPreview.branchName ? <div className="min-w-0"><dt className="inline text-muted-foreground">{language === "zh" ? "分支：" : "Branch: "}</dt><dd className="break-all font-mono">{actionPreview.branchName}</dd></div> : null}
-            {actionPreview.officeDetails ? (
-              <>
-                {actionPreview.officeDetails.targetFiles.length ? <div className="min-w-0 sm:col-span-2"><dt className="inline text-muted-foreground">{language === "zh" ? "目标资料：" : "Target files: "}</dt><dd className="inline break-all">{actionPreview.officeDetails.targetFiles.join("、")}</dd></div> : null}
-                {actionPreview.officeDetails.targetResources?.length ? <div className="min-w-0 sm:col-span-2"><dt className="inline text-muted-foreground">{language === "zh" ? "资料来源：" : "Resource source: "}</dt><dd className="inline break-all">{actionPreview.officeDetails.targetResources.map((resource) => `${resource.displayName} · ${resource.locality === "local" ? (language === "zh" ? "本地" : "Local") : (language === "zh" ? "远程" : "Remote")}`).join("；")}</dd></div> : null}
-                {actionPreview.officeDetails.estimatedAffectedRows != null ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "预计记录：" : "Estimated records: "}</dt><dd className="inline">{actionPreview.officeDetails.estimatedAffectedRows}</dd></div> : null}
-                {actionPreview.officeDetails.fields.length ? <div className="min-w-0 sm:col-span-2"><dt className="inline text-muted-foreground">{language === "zh" ? "字段范围：" : "Fields: "}</dt><dd className="inline break-all">{actionPreview.officeDetails.fields.join("、")}</dd></div> : null}
-                <div><dt className="inline text-muted-foreground">{language === "zh" ? "失败保护：" : "Failure protection: "}</dt><dd className="inline">{actionPreview.officeDetails.reversible === true ? (language === "zh" ? "系统已记录恢复依据" : "Recovery evidence recorded") : actionPreview.officeDetails.reversible === false ? (language === "zh" ? "未准备自动恢复" : "Automatic recovery not prepared") : (language === "zh" ? "待确认" : "Unknown")}</dd></div>
-              </>
-            ) : null}
-                <div><dt className="inline text-muted-foreground">{language === "zh" ? "确认：" : "Confirmation: "}</dt><dd className="inline">{language === "zh" ? "仍需人工确认" : "Human confirmation is still required"}</dd></div>
-          </dl>
-          {actionPreview.officeDetails?.batch ? (
-            <OfficeBatchResult id={officeBatchResultId} batch={actionPreview.officeDetails.batch} copy={copy} language={language} />
-          ) : null}
-        </div>
-      ) : null}
-      {actionPreview && hasDeliveryAction ? (
-        <div className="mt-3 rounded-md border border-primary/20 bg-primary/[0.04] px-3 py-2.5" data-testid="development-actions">
-          <p className="text-xs font-medium text-muted-foreground">{decision.domain === "development" ? copy.developmentActions : language === "zh" ? "可执行动作" : "Available actions"}</p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {onViewChanges ? <Button size="sm" variant="secondary" disabled={actionDisabled} onClick={onViewChanges}>
-              <FolderOpen aria-hidden />{copy.viewChanges}
-            </Button> : null}
-            {onRerunVerification ? <Button size="sm" variant="secondary" disabled={actionDisabled} onClick={onRerunVerification}>
-              <CheckCircle2 aria-hidden />{verificationPending ? copy.verifying : copy.rerunVerification}
-            </Button> : null}
-            {onAskAiToFix ? <Button size="sm" variant={confirmedProblem ? "primary" : "secondary"} disabled={actionDisabled} onClick={onAskAiToFix}>
-              <Wrench aria-hidden />{copy.askAiToFix}
-            </Button> : null}
-            {showPullRequestAction ? (
-              <Button size="sm" disabled={actionDisabled} onClick={onCreatePullRequest}>
-                <ExternalLink aria-hidden />{actionPreview.operation === "update_pull_request" ? (language === "zh" ? "更新 Pull Request" : "Update Pull Request") : copy.createPullRequest}
-              </Button>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function OfficeBatchResult({
-  id,
-  batch,
-  copy,
-  language,
-}: {
-  id?: string;
-  batch: NonNullable<NonNullable<LocalWorkItemDeliveryEvidence["actionPreview"]["officeDetails"]>["batch"]>;
-  copy: SummaryCopy;
-  language: "zh" | "en";
-}) {
-  const stateLabel: Record<string, [string, string]> = {
-    pending: ["待处理", "Pending"],
-    waiting: ["等待执行", "Waiting"],
-    committing: ["处理中", "Committing"],
-    partial: ["部分完成", "Partial"],
-    committed: ["已完成", "Committed"],
-    rolled_back: ["已回滚", "Rolled back"],
-    needs_attention: ["需要处理", "Needs attention"],
-    invalidated: ["已失效", "Invalidated"],
-    expired: ["已过期", "Expired"],
-  };
-  const rollbackLabel: Record<string, [string, string]> = {
-    prepared: ["系统已准备自动恢复", "Automatic recovery prepared"],
-    available: ["已记录恢复保障", "Recovery evidence recorded"],
-    partial: ["部分回滚", "Partial"],
-    rolled_back: ["已回滚", "Rolled back"],
-    not_available: ["无回滚记录", "Not available"],
-  };
-  const state = stateLabel[batch.state]?.[language === "zh" ? 0 : 1] ?? batch.state;
-  const rollback = rollbackLabel[batch.rollback.status]?.[language === "zh" ? 0 : 1] ?? batch.rollback.status;
-  return (
-    <div id={id} className="mt-3 scroll-mt-4 rounded-md border border-border/80 bg-background/60 px-3 py-2.5" data-testid="office-batch-result">
-      <div className="flex flex-wrap items-center gap-2">
-        <p className="text-xs font-medium text-muted-foreground">{copy.officeBatchResult}</p>
-        <Badge tone={batch.failedCount > 0 || batch.rollback.status === "partial" ? "warning" : batch.state === "committed" ? "success" : "neutral"}>{state}</Badge>
-      </div>
-      <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
-        <div><dt className="inline text-muted-foreground">{copy.batchSuccess}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{batch.successCount}</dd></div>
-        {(batch.restoredCount ?? batch.rollback.restoredTargets) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "已恢复：" : "Restored: "}</dt><dd className="inline">{batch.restoredCount ?? batch.rollback.restoredTargets}</dd></div> : null}
-        <div><dt className="inline text-muted-foreground">{copy.batchFailed}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{batch.failedCount}</dd></div>
-        {(batch.pendingCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "待处理：" : "Pending: "}</dt><dd className="inline">{batch.pendingCount}</dd></div> : null}
-        {(batch.unknownCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "状态未知：" : "Unknown: "}</dt><dd className="inline">{batch.unknownCount}</dd></div> : null}
-        <div><dt className="inline text-muted-foreground">{copy.batchRollback}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{rollback}</dd></div>
-      </dl>
-      {batch.rollback.restoredTargets || batch.rollback.blockedTargets ? (
-        <p className="mt-1 text-xs text-muted-foreground">
-          {language === "zh"
-            ? `已恢复 ${batch.rollback.restoredTargets} 项，受阻 ${batch.rollback.blockedTargets} 项`
-            : `${batch.rollback.restoredTargets} restored, ${batch.rollback.blockedTargets} blocked`}
-        </p>
-      ) : null}
-      <details className="mt-2">
-        <summary className="cursor-pointer text-xs font-medium">
-          {language === "zh" ? `${copy.batchDetails}（${batch.operationCount}）` : `${copy.batchDetails} (${batch.operationCount})`}
-        </summary>
-        {batch.details.length ? (
-          <ul className="mt-2 space-y-1.5">
-            {batch.details.slice(0, 8).map((detail, index) => (
-              <li key={detail.id ?? `${detail.businessKey ?? "item"}-${index}`} className="rounded bg-muted/40 px-2.5 py-2 text-xs">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="font-medium">{detail.businessKey ?? (language === "zh" ? `第 ${detail.rowNumber ?? "?"} 行` : `Row ${detail.rowNumber ?? "?"}`)}</span>
-                  <Badge tone={detail.state === "committed" ? "success" : ["invalidated", "expired"].includes(detail.state) ? "danger" : "neutral"}>{stateLabel[detail.state]?.[language === "zh" ? 0 : 1] ?? detail.state}</Badge>
-                </div>
-                {detail.changedFields.length ? <p className="mt-1 text-muted-foreground">{language === "zh" ? "字段：" : "Fields: "}{detail.changedFields.join("、")}</p> : null}
-              </li>
-            ))}
-          </ul>
-        ) : <p className="mt-2 text-xs text-muted-foreground">{copy.batchNoDetails}</p>}
-      </details>
-    </div>
   );
 }
