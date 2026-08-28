@@ -37,9 +37,19 @@ function receiptSnapshot(receipt) {
   return snapshot;
 }
 
-function ledgerEntryForReceipt(receipt) {
+function ledgerRecordId(autoRunId, idempotencyKey) {
+  return `eai_${createHash("sha256").update(`${autoRunId}\0${idempotencyKey}`).digest("hex").slice(0, 32)}`;
+}
+
+function ledgerEntryForReceipt(receipt, autoRun = null) {
   return {
     schemaVersion: 1,
+    ...(autoRun ? {
+      id: ledgerRecordId(autoRun.id, receipt.idempotencyKey),
+      autoRunId: autoRun.id,
+      ownerTeamId: autoRun.teamId ?? autoRun.ownerTeamId ?? null,
+      projectId: autoRun.projectId ?? null,
+    } : {}),
     idempotencyKey: receipt.idempotencyKey,
     kind: receipt.kind,
     requestDigest: receipt.requestDigest,
@@ -61,15 +71,36 @@ function attachLedgerEntry(receipt, entry) {
   return receipt;
 }
 
-function ensureIdempotencyLedger(autoRun) {
-  const ledger = Array.isArray(autoRun.executionActionIdempotencyLedger)
-    ? autoRun.executionActionIdempotencyLedger
-    : (autoRun.executionActionIdempotencyLedger = []);
+function ensureIdempotencyRecords(state, autoRun) {
+  const durableRecords = state
+    ? (state.executionActionIdempotencyRecords ??= [])
+    : null;
+  const ledger = durableRecords
+    ? durableRecords.filter((entry) => entry.autoRunId === autoRun.id)
+    : Array.isArray(autoRun.executionActionIdempotencyLedger)
+      ? autoRun.executionActionIdempotencyLedger
+      : [];
+  if (durableRecords && Array.isArray(autoRun.executionActionIdempotencyLedger)) {
+    for (const legacy of autoRun.executionActionIdempotencyLedger) {
+      if (!legacy?.idempotencyKey || ledger.some((entry) => entry.idempotencyKey === legacy.idempotencyKey)) continue;
+      const entry = {
+        ...legacy,
+        id: ledgerRecordId(autoRun.id, legacy.idempotencyKey),
+        autoRunId: autoRun.id,
+        ownerTeamId: autoRun.teamId ?? autoRun.ownerTeamId ?? null,
+        projectId: autoRun.projectId ?? null,
+      };
+      durableRecords.push(entry);
+      ledger.push(entry);
+    }
+    delete autoRun.executionActionIdempotencyLedger;
+  }
   for (const receipt of [...(autoRun.executionActionReceipts ?? [])].reverse()) {
     if (!receipt?.idempotencyKey || !receipt.requestDigest) continue;
     let entry = ledger.find((candidate) => candidate.idempotencyKey === receipt.idempotencyKey) ?? null;
     if (!entry && ledger.length < EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) {
-      entry = ledgerEntryForReceipt(receipt);
+      entry = ledgerEntryForReceipt(receipt, durableRecords ? autoRun : null);
+      if (durableRecords) durableRecords.push(entry);
       ledger.push(entry);
     }
     if (entry) attachLedgerEntry(receipt, entry);
@@ -77,15 +108,41 @@ function ensureIdempotencyLedger(autoRun) {
   return ledger;
 }
 
-export function syncExecutionActionIdempotencyLedger(autoRun, receipt) {
+export function executionActionIdempotencyMigrationNeeded(state) {
+  const durableKeys = new Set((state?.executionActionIdempotencyRecords ?? []).map((entry) =>
+    `${entry.autoRunId}\0${entry.idempotencyKey}`));
+  return (state?.autoRuns ?? []).some((autoRun) => {
+    if (Object.hasOwn(autoRun, "executionActionIdempotencyLedger")) return true;
+    return (autoRun.executionActionReceipts ?? []).some((receipt) =>
+      receipt?.idempotencyKey
+      && receipt.requestDigest
+      && !durableKeys.has(`${autoRun.id}\0${receipt.idempotencyKey}`));
+  });
+}
+
+export function migrateExecutionActionIdempotencyRecords(state) {
+  const before = (state?.executionActionIdempotencyRecords ?? []).length;
+  let legacyRuns = 0;
+  for (const autoRun of state?.autoRuns ?? []) {
+    if (Object.hasOwn(autoRun, "executionActionIdempotencyLedger")) legacyRuns += 1;
+    ensureIdempotencyRecords(state, autoRun);
+  }
+  return {
+    migratedRecords: (state?.executionActionIdempotencyRecords ?? []).length - before,
+    legacyRuns,
+  };
+}
+
+export function syncExecutionActionIdempotencyLedger(autoRun, receipt, state = null) {
   if (!autoRun || !receipt?.idempotencyKey || !receipt.requestDigest) return false;
-  const ledger = ensureIdempotencyLedger(autoRun);
+  const ledger = ensureIdempotencyRecords(state, autoRun);
   let entry = receipt._executionActionLedgerEntry
     ?? ledger.find((candidate) => candidate.idempotencyKey === receipt.idempotencyKey)
     ?? null;
   if (!entry) {
     if (ledger.length >= EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) return false;
-    entry = ledgerEntryForReceipt(receipt);
+    entry = ledgerEntryForReceipt(receipt, state ? autoRun : null);
+    if (state) state.executionActionIdempotencyRecords.push(entry);
     ledger.push(entry);
   } else {
     entry.kind = receipt.kind;
@@ -109,11 +166,16 @@ function boundWorkItem(state, autoRun) {
   }) ?? null;
 }
 
-export function replayExecutionAction(autoRun, { kind, idempotencyKey = null, request = null } = {}) {
+export function replayExecutionAction(autoRun, {
+  kind,
+  idempotencyKey = null,
+  request = null,
+  state = null,
+} = {}) {
   const key = boundedText(idempotencyKey, 200);
   if (!key) return null;
   const recent = (autoRun?.executionActionReceipts ?? []).find((receipt) => receipt.idempotencyKey === key) ?? null;
-  const ledgerEntry = (autoRun?.executionActionIdempotencyLedger ?? [])
+  const ledgerEntry = ensureIdempotencyRecords(state, autoRun)
     .find((entry) => entry.idempotencyKey === key) ?? null;
   if (!recent && ledgerEntry && !ledgerEntry.receipt) {
     throw actionError(
@@ -216,7 +278,7 @@ export function beginExecutionAction({
   if (!ACTION_KINDS.has(kind)) throw actionError("execution_action_kind_invalid", "The execution action is not supported.");
   const key = boundedText(idempotencyKey, 200);
   const digest = requestDigest(kind, request);
-  const existing = replayExecutionAction(autoRun, { kind, idempotencyKey: key, request });
+  const existing = replayExecutionAction(autoRun, { kind, idempotencyKey: key, request, state });
   if (existing) {
     return { receipt: existing, replayed: true, workItem: boundWorkItem(state, autoRun) };
   }
@@ -260,7 +322,7 @@ export function beginExecutionAction({
       actionReceipt: visibleReceipt(receipt, { now: requestedAt, autoRun }),
     });
   }
-  const ledger = key ? ensureIdempotencyLedger(autoRun) : null;
+  const ledger = key ? ensureIdempotencyRecords(state, autoRun) : null;
   if (key && ledger.length >= EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) {
     throw actionError(
       "execution_action_idempotency_capacity",
@@ -271,7 +333,8 @@ export function beginExecutionAction({
   (autoRun.executionActionReceipts ??= []).unshift(receipt);
   autoRun.executionActionReceipts = autoRun.executionActionReceipts.slice(0, EXECUTION_ACTION_RECEIPT_LIMIT);
   if (key) {
-    const entry = ledgerEntryForReceipt(receipt);
+    const entry = ledgerEntryForReceipt(receipt, state ? autoRun : null);
+    if (state) state.executionActionIdempotencyRecords.push(entry);
     ledger.push(entry);
     attachLedgerEntry(receipt, entry);
   }
@@ -312,6 +375,7 @@ export function updateExecutionAction(receipt, {
 }
 
 export function reconcileExecutionActionReceipt(receipt, {
+  state = null,
   autoRun,
   findInvocation = () => null,
   findTargetInvocation = () => null,
@@ -320,13 +384,13 @@ export function reconcileExecutionActionReceipt(receipt, {
 } = {}) {
   if (!receipt || !autoRun) return { changed: false, receipt };
   if (TERMINAL_RECEIPT_STATUSES.has(receipt.status)) {
-    syncExecutionActionIdempotencyLedger(autoRun, receipt);
+    syncExecutionActionIdempotencyLedger(autoRun, receipt, state);
     return { changed: false, receipt };
   }
 
   let changed = false;
   const finish = () => {
-    syncExecutionActionIdempotencyLedger(autoRun, receipt);
+    syncExecutionActionIdempotencyLedger(autoRun, receipt, state);
     return { changed, receipt };
   };
   const set = (key, value) => {

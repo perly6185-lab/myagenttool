@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   beginExecutionAction,
   EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT,
+  executionActionIdempotencyMigrationNeeded,
   latestExecutionActionReceipt,
+  migrateExecutionActionIdempotencyRecords,
   reconcileExecutionActionReceipt,
   replayExecutionAction,
   updateExecutionAction,
@@ -16,6 +18,7 @@ function harness() {
   const autoRun = { id: "aur_1", status: "failed", invocationId: "inv_failed" };
   const state = {
     autoRuns: [autoRun],
+    executionActionIdempotencyRecords: [],
     workItems: [{ id: "lwi_1", revision: 4, executionBindings: [{ kind: "auto_run", targetId: autoRun.id }] }],
   };
   return {
@@ -47,7 +50,7 @@ test("persists one bounded execution action and replays the same request key", (
   });
 
   const replay = replayExecutionAction(h.autoRun, {
-    kind: "retry_execution", idempotencyKey: "retry-once", request: { feedback: null },
+    kind: "retry_execution", idempotencyKey: "retry-once", request: { feedback: null }, state: h.state,
   });
   assert.equal(replay.id, started.receipt.id);
   assert.equal(h.autoRun.executionActionReceipts.length, 1);
@@ -131,6 +134,7 @@ test("reconciles a crash after target binding as a completed retry admission", (
   h.advance("2026-08-27T01:11:00.000Z");
 
   const result = reconcileExecutionActionReceipt(receipt, {
+    state: h.state,
     autoRun: h.autoRun,
     findInvocation: (id) => id === "inv_retry" ? { id, status: "running" } : null,
     now: h.now(),
@@ -156,6 +160,7 @@ test("recovers a target created immediately before a crash by its receipt correl
   const target = { id: "inv_unbound_retry", status: "queued" };
 
   reconcileExecutionActionReceipt(receipt, {
+    state: h.state,
     autoRun: h.autoRun,
     findInvocation: () => null,
     findTargetInvocation: (candidate) => candidate.id === receipt.id ? target : null,
@@ -181,6 +186,7 @@ test("reconciles a crash before target creation as safe to retry", () => {
   h.advance("2026-08-27T01:11:00.000Z");
 
   const result = reconcileExecutionActionReceipt(receipt, {
+    state: h.state,
     autoRun: h.autoRun,
     findInvocation: () => null,
     now: h.now(),
@@ -207,6 +213,7 @@ test("keeps a legacy receipt unknown when no source target can prove a retry is 
   h.advance("2026-08-27T01:11:00.000Z");
 
   const result = reconcileExecutionActionReceipt(h.autoRun.executionActionReceipts[0], {
+    state: h.state,
     autoRun: h.autoRun,
     findInvocation: () => null,
     now: h.now(),
@@ -228,7 +235,7 @@ test("refuses reuse of one action key for different input", () => {
     nextId: h.nextId,
   });
   assert.throws(() => replayExecutionAction(h.autoRun, {
-    kind: "fix_with_ai", idempotencyKey: "fix-key", request: { feedback: "Change the API too." },
+    kind: "fix_with_ai", idempotencyKey: "fix-key", request: { feedback: "Change the API too." }, state: h.state,
   }), (error) => error.code === "execution_action_idempotency_conflict" && error.status === 409);
 });
 
@@ -257,12 +264,14 @@ test("keeps old idempotency keys after their receipts leave the recent-20 displa
 
   assert.equal(h.autoRun.executionActionReceipts.length, 20);
   assert.equal(h.autoRun.executionActionReceipts.some((receipt) => receipt.id === started[0].id), false);
-  assert.equal(h.autoRun.executionActionIdempotencyLedger.length, 21);
+  assert.equal(h.state.executionActionIdempotencyRecords.length, 21);
+  assert.equal(h.autoRun.executionActionIdempotencyLedger, undefined);
 
   const replay = replayExecutionAction(h.autoRun, {
     kind: "retry_execution",
     idempotencyKey: "retry-0",
     request: { feedback: "attempt-0" },
+    state: h.state,
   });
   assert.equal(replay.id, started[0].id);
   assert.equal(replay.targetId, "inv_retry_0");
@@ -271,6 +280,7 @@ test("keeps old idempotency keys after their receipts leave the recent-20 displa
     kind: "retry_execution",
     idempotencyKey: "retry-0",
     request: { feedback: "different-request" },
+    state: h.state,
   }), (error) => error.code === "execution_action_idempotency_conflict");
 });
 
@@ -285,15 +295,20 @@ test("fails closed instead of evicting old keys when the long-term ledger reache
     now: h.now,
     nextId: h.nextId,
   });
-  while (h.autoRun.executionActionIdempotencyLedger.length < EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) {
-    const index = h.autoRun.executionActionIdempotencyLedger.length;
-    h.autoRun.executionActionIdempotencyLedger.push({ idempotencyKey: `seed-${index}` });
+  while (h.state.executionActionIdempotencyRecords.length < EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) {
+    const index = h.state.executionActionIdempotencyRecords.length;
+    h.state.executionActionIdempotencyRecords.push({
+      id: `eai_seed_${index}`,
+      autoRunId: h.autoRun.id,
+      idempotencyKey: `seed-${index}`,
+    });
   }
 
   assert.equal(replayExecutionAction(h.autoRun, {
     kind: "retry_execution",
     idempotencyKey: "oldest-key",
     request: { feedback: null },
+    state: h.state,
   }).id, first.receipt.id);
   assert.throws(() => beginExecutionAction({
     state: h.state,
@@ -304,13 +319,15 @@ test("fails closed instead of evicting old keys when the long-term ledger reache
     now: h.now,
     nextId: h.nextId,
   }), (error) => error.code === "execution_action_idempotency_capacity" && error.status === 409);
-  assert.equal(h.autoRun.executionActionIdempotencyLedger[0].idempotencyKey, "oldest-key");
+  assert.equal(h.state.executionActionIdempotencyRecords[0].idempotencyKey, "oldest-key");
   assert.equal(h.autoRun.executionActionReceipts.length, 1);
 });
 
 test("fails closed when an existing ledger key has lost its result snapshot", () => {
   const h = harness();
-  h.autoRun.executionActionIdempotencyLedger = [{
+  h.state.executionActionIdempotencyRecords = [{
+    id: "eai_damaged",
+    autoRunId: h.autoRun.id,
     idempotencyKey: "damaged-key",
     kind: "retry_execution",
     requestDigest: "damaged-digest",
@@ -326,4 +343,28 @@ test("fails closed when an existing ledger key has lost its result snapshot", ()
     nextId: h.nextId,
   }), (error) => error.code === "execution_action_idempotency_evidence_missing" && error.status === 409);
   assert.deepEqual(h.autoRun.executionActionReceipts ?? [], []);
+});
+
+test("migrates a legacy embedded ledger into independent durable records", () => {
+  const h = harness();
+  h.autoRun.executionActionIdempotencyLedger = [{
+    idempotencyKey: "legacy-key",
+    kind: "retry_execution",
+    requestDigest: "legacy-digest",
+    receipt: { id: "ear_legacy", idempotencyKey: "legacy-key", requestDigest: "legacy-digest" },
+  }];
+
+  assert.equal(executionActionIdempotencyMigrationNeeded(h.state), true);
+  assert.deepEqual(migrateExecutionActionIdempotencyRecords(h.state), {
+    migratedRecords: 1,
+    legacyRuns: 1,
+  });
+  assert.equal(h.autoRun.executionActionIdempotencyLedger, undefined);
+  assert.equal(h.state.executionActionIdempotencyRecords[0].autoRunId, h.autoRun.id);
+  assert.equal(h.state.executionActionIdempotencyRecords[0].idempotencyKey, "legacy-key");
+  assert.equal(executionActionIdempotencyMigrationNeeded(h.state), false);
+  assert.deepEqual(migrateExecutionActionIdempotencyRecords(h.state), {
+    migratedRecords: 0,
+    legacyRuns: 0,
+  });
 });

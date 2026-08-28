@@ -567,6 +567,14 @@ test("Auto-run list, summary, and routing slices are team scoped", async () => {
       receipt: { id: "ear_private_b" },
     }],
   });
+  runtimeState.executionActionIdempotencyRecords.push({
+    id: "eai_private_b",
+    autoRunId: "aur_private_b",
+    ownerTeamId: "team_b",
+    projectId: "prj_b",
+    idempotencyKey: "must-not-leak-global-ledger",
+    requestDigest: "private-global-ledger-digest",
+  });
   runtimeState.deployments.push(
     { id: "dep_a", projectId: "prj_a", autoRunId: "aur_feedback_http", status: "deployed", at: "2026-07-24T00:00:00.000Z" },
     { id: "dep_b", projectId: "prj_b", autoRunId: "aur_private_b", status: "failed", at: "2026-07-24T00:00:00.000Z" },
@@ -588,6 +596,8 @@ test("Auto-run list, summary, and routing slices are team scoped", async () => {
   assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").routingOverride.idempotencyKey, undefined);
   assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").executionActionReceipts, undefined);
   assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").executionActionIdempotencyLedger, undefined);
+  const publicState = await call("/api/state", { token: "tok_b" });
+  assert.equal(publicState.body.executionActionIdempotencyRecords, undefined);
 });
 
 test("execution action reconciliation is tenant scoped and unlocks a proven no-op retry", async () => {

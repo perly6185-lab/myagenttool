@@ -17,7 +17,7 @@ try {
 const skip = openSqliteStore ? false : "node:sqlite unavailable in this runtime";
 const writerPath = fileURLToPath(new URL("./fixtures/store-crash-writer.mjs", import.meta.url));
 
-test("a Store commit survives SIGKILL without a graceful SQLite close", { skip }, async () => {
+test("a Store commit and long-term idempotency facts survive SIGKILL", { skip }, async () => {
   const directory = mkdtempSync(join(tmpdir(), "store-crash-recovery-"));
   const sqlitePath = join(directory, "state", "local.sqlite");
   const stateStorePath = join(directory, "state", "local.json");
@@ -39,6 +39,12 @@ test("a Store commit survives SIGKILL without a graceful SQLite close", { skip }
         reopened.get("invocations", "inv_committed_before_crash")?.status,
         "queued",
       );
+      const run = reopened.get("autoRuns", "aur_crash_ledger");
+      assert.equal(run.executionActionReceipts.length, 20, "the display window stays bounded");
+      assert.equal(run.executionActionIdempotencyLedger, undefined, "the Auto-run row does not carry the long ledger");
+      const ledger = reopened.query("executionActionIdempotencyRecords", (row) => row.autoRunId === run.id);
+      assert.equal(ledger.length, 21, "every exactly-once fact survives independently");
+      assert.equal(ledger.some((row) => row.idempotencyKey === "crash-ledger-0"), true);
     } finally {
       reopened.close();
     }

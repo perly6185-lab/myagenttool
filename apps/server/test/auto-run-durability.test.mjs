@@ -118,12 +118,16 @@ test("an execution-action reconciliation and its safe-retry evidence survive res
     const result = svc.reconcileExecutionAction("aur_gate");
     assert.equal(result.actionReceipt.status, "safe_to_retry");
 
-    const run = (reload().autoRuns ?? []).find((candidate) => candidate.id === "aur_gate");
+    const restarted = reload();
+    const run = (restarted.autoRuns ?? []).find((candidate) => candidate.id === "aur_gate");
+    const ledger = (restarted.executionActionIdempotencyRecords ?? [])
+      .find((candidate) => candidate.autoRunId === "aur_gate" && candidate.idempotencyKey === "durable-gate-key");
     assert.equal(run.executionActionReceipts[0].status, "safe_to_retry");
     assert.equal(run.executionActionReceipts[0].messageCode, "safe_to_retry");
     assert.equal(run.executionActionReceipts[0].impact, "none");
-    assert.equal(run.executionActionIdempotencyLedger[0].receipt.status, "safe_to_retry");
-    assert.equal(run.executionActionIdempotencyLedger[0].receipt.messageCode, "safe_to_retry");
+    assert.equal(run.executionActionIdempotencyLedger, undefined);
+    assert.equal(ledger.receipt.status, "safe_to_retry");
+    assert.equal(ledger.receipt.messageCode, "safe_to_retry");
   } finally {
     cleanup();
   }

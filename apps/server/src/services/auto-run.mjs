@@ -18,7 +18,9 @@ import {
   beginExecutionAction,
   executionActionReceiptView,
   executionActionError,
+  executionActionIdempotencyMigrationNeeded,
   latestExecutionActionReceipt,
+  migrateExecutionActionIdempotencyRecords,
   reconcileExecutionActionReceipt,
   replayExecutionAction,
   updateExecutionAction,
@@ -430,6 +432,9 @@ export function createAutoRunService({
   store,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
+  if (executionActionIdempotencyMigrationNeeded(state)) {
+    runTx(() => migrateExecutionActionIdempotencyRecords(state));
+  }
   // Production injects the shared refusal writer; fall back to one bound to this
   // service's own state so a directly-constructed service (unit tests) still
   // records the veto instead of throwing (refusal model Phase 2, #760).
@@ -3183,7 +3188,9 @@ export function createAutoRunService({
     const reviewerFeedback = String(feedback ?? "").trim().slice(0, 4000);
     const actionKind = reviewerFeedback ? "fix_with_ai" : "retry_execution";
     const actionRequest = { feedback: reviewerFeedback || null };
-    const replayReceipt = replayExecutionAction(autoRun, { kind: actionKind, idempotencyKey, request: actionRequest });
+    const replayReceipt = replayExecutionAction(autoRun, {
+      kind: actionKind, idempotencyKey, request: actionRequest, state,
+    });
     if (replayReceipt) {
       const replayInvocation = replayReceipt.targetId
         ? (typeof findInvocation === "function" ? findInvocation(replayReceipt.targetId) : null)
@@ -3571,6 +3578,7 @@ export function createAutoRunService({
       return { autoRun, actionReceipt: null, safeToRetry: true, reconciled: false };
     }
     const reconciliation = runTx(() => reconcileExecutionActionReceipt(receipt, {
+      state,
       autoRun,
       findInvocation,
       findTargetInvocation: (candidate) => (state.invocations ?? []).find((invocation) =>
@@ -3600,6 +3608,7 @@ export function createAutoRunService({
       kind: "rerun_verification",
       idempotencyKey,
       request: actionRequest,
+      state,
     });
     if (replayReceipt) {
       return {
@@ -4444,6 +4453,7 @@ export function createAutoRunService({
       kind: "answer_ai",
       idempotencyKey,
       request: actionRequest,
+      state,
     });
     if (replayReceipt) {
       const replayView = executionActionReceiptView(replayReceipt, { now: now(), autoRun, replayed: true });
@@ -5059,6 +5069,7 @@ export function createAutoRunService({
       let changed = 0;
       for (const receipt of autoRun.executionActionReceipts ?? []) {
         if (reconcileExecutionActionReceipt(receipt, {
+          state,
           autoRun,
           findInvocation,
           findTargetInvocation: (candidate) => (state.invocations ?? []).find((invocation) =>
