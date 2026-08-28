@@ -417,6 +417,18 @@ test("creates a Home task, reviews its plan, then schedules AI from simple detai
       }
       return route.fulfill({ json: { workItem } });
     }
+    if (pathname === "/api/work-items/lwi_home/execution-contract/confirm" && request.method() === "POST") {
+      scheduled = true;
+      workItem = {
+        ...workItem,
+        executionPolicy: "auto", status: "ready", waitingOn: "ai", executionState: "queued",
+        executionContractSource: "assisted",
+        executionContractConfirmedAt: "2026-08-06T00:01:00.000Z",
+        executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: "2026-08-06T00:01:00.000Z" },
+        revision: Number(workItem?.revision ?? 0) + 1,
+      };
+      return route.fulfill({ json: { workItem } });
+    }
     if (pathname === "/api/work-items/lwi_home/auto-runs" && request.method() === "POST") {
       workItem = {
         ...workItem,
@@ -467,13 +479,13 @@ test("creates a Home task, reviews its plan, then schedules AI from simple detai
 
   const detail = page.getByRole("dialog", { name: "Task details" });
   await expect(detail.getByRole("heading", { name: "Prepare the weekly customer update" })).toBeVisible();
-  await detail.getByRole("button", { name: "Let AI start" }).click();
-  await expect(detail.getByText(/execution plan is ready/i)).toBeVisible();
+  await detail.getByTestId("review-and-start-ai").click();
   expect(scheduled).toBe(false);
   await expect(detail.getByTestId("work-item-intent-summary").getByText("Customer-ready weekly update")).toBeVisible();
 
-  await detail.getByRole("button", { name: "Let AI start" }).click();
-  await expect(detail.getByText(/set to automatic/i)).toBeVisible();
+  await page.getByRole("dialog", { name: "Confirm AI start" })
+    .getByRole("button", { name: "Confirm and start AI" }).click();
+  await expect(detail.getByText(/AI accepted the task/i)).toBeVisible();
   expect(scheduled).toBe(true);
 });
 

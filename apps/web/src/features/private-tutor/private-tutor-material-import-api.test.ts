@@ -14,6 +14,9 @@ import {
   publishPrivateTutorKnowledgeMapDraft,
   activatePrivateTutorContentPackage,
   getPrivateTutorLearningHistory,
+  getPrivateTutorLearningTrial,
+  startPrivateTutorLearningTrial,
+  stopPrivateTutorLearningTrial,
 } from "@/features/private-tutor/private-tutor-api";
 import * as apiRequest from "@/lib/api/request";
 
@@ -184,5 +187,21 @@ describe("private tutor material import & draft API", () => {
     const result = await getPrivateTutorLearningHistory();
     expect(result).toEqual(history);
     expect(spy).toHaveBeenCalledWith("GET", "/api/private-tutor/profile/learning-history");
+  });
+
+  it("uses the profile-scoped fourteen-day learning trial contract", async () => {
+    const trial = { id: "ptlt_1", durationDays: 14 };
+    const spy = vi.spyOn(apiRequest, "request")
+      .mockResolvedValueOnce({ trial: null })
+      .mockResolvedValueOnce({ trial })
+      .mockResolvedValueOnce({ trial: { ...trial, status: "stopped" } });
+    expect(await getPrivateTutorLearningTrial()).toBeNull();
+    expect(await startPrivateTutorLearningTrial("验证真实课程")).toEqual(trial);
+    expect(await stopPrivateTutorLearningTrial()).toEqual({ ...trial, status: "stopped" });
+    expect(spy.mock.calls).toEqual([
+      ["GET", "/api/private-tutor/profile/learning-trial"],
+      ["POST", "/api/private-tutor/profile/learning-trial/start", { goal: "验证真实课程" }],
+      ["POST", "/api/private-tutor/profile/learning-trial/stop", {}],
+    ]);
   });
 });

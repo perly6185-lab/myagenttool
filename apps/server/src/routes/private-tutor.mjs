@@ -23,11 +23,14 @@ import {
   DIAGNOSTIC_MIN_QUESTIONS,
   DIAGNOSTIC_TARGET_SECONDS,
   initialDiagnosticQuestion,
+  initialQuickDiagnosticQuestion,
   judgePrivateTutorAnswer,
   privateTutorDiagnosticConfig,
+  privateTutorQuickDiagnosticConfig,
   privateTutorQuestion,
   publicQuestion,
   selectNextDiagnosticQuestion,
+  selectNextQuickDiagnosticQuestion,
 } from "../services/private-tutor-assessment.mjs";
 import {
   buildPrivateTutorSevenDayPlan,
@@ -36,6 +39,14 @@ import {
 } from "../services/private-tutor-learning-model.mjs";
 import { buildPrivateTutorLearningHistory } from "../services/private-tutor-learning-history.mjs";
 import {
+  completeExpiredPrivateTutorLearningTrials,
+  latestPrivateTutorLearningTrialView,
+  recordPrivateTutorFollowUpResolution,
+  startPrivateTutorLearningTrial,
+  stopPrivateTutorLearningTrial,
+} from "../services/private-tutor-learning-trial.mjs";
+import {
+  answerPrivateTutorFollowUp,
   completePrivateTutorActivity,
   completePrivateTutorPlanDay,
   createPrivateTutorSession,
@@ -148,6 +159,14 @@ import {
   listPrivateTutorGoldenCandidates,
   reviewPrivateTutorGoldenCandidate,
 } from "../services/private-tutor-golden-candidates.mjs";
+import {
+  applyPrivateTutorContentMigration,
+  confirmPrivateTutorContentMigration,
+  createPrivateTutorContentMigrationPreview,
+  listPrivateTutorContentMigrationCandidates,
+  rollbackPrivateTutorContentMigration,
+  updatePrivateTutorContentMigrationMapping,
+} from "../services/private-tutor-content-migration.mjs";
 
 const LOCAL_TEAM_ID = "team_local";
 const LOCAL_USER_ID = "usr_local";
@@ -1159,6 +1178,112 @@ export async function handlePrivateTutorRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/private-tutor/profile/content-migrations/candidates") {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    sendJson(res, 200, {
+      candidates: listPrivateTutorContentMigrationCandidates(state, resolved.learner, actor?.userId ?? LOCAL_USER_ID),
+    });
+    return true;
+  }
+
+  if (url.pathname === "/api/private-tutor/profile/content-migrations/preview") {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    const result = createPrivateTutorContentMigrationPreview(
+      state, resolved.learner, actor?.userId ?? LOCAL_USER_ID, body, { now, nextId },
+    );
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    recordAudit(state, { learner: resolved.learner, actor, action: "content_migration_previewed", details: { previewId: result.preview.id, fingerprint: result.preview.previewFingerprint }, now, nextId });
+    persistStateSoon();
+    sendJson(res, result.status, { preview: result.preview, replayed: result.replayed });
+    return true;
+  }
+
+  const contentMigrationMatch = url.pathname.match(/^\/api\/private-tutor\/profile\/content-migrations\/([^/]+)\/(mapping|confirm|apply)$/);
+  if (contentMigrationMatch) {
+    const [, previewId, operation] = contentMigrationMatch;
+    const expectedMethod = operation === "mapping" ? "PUT" : "POST";
+    if (req.method !== expectedMethod) {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    const actorId = actor?.userId ?? LOCAL_USER_ID;
+    const body = await readJson(req).catch(() => ({}));
+    const result = operation === "mapping"
+      ? updatePrivateTutorContentMigrationMapping(state, resolved.learner, actorId, previewId, body, { now })
+      : operation === "confirm"
+        ? confirmPrivateTutorContentMigration(state, resolved.learner, actorId, previewId, body, { now })
+        : applyPrivateTutorContentMigration(state, resolved.learner, actorId, previewId, body, { now, nextId });
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    recordAudit(state, {
+      learner: resolved.learner,
+      actor,
+      action: `content_migration_${operation === "mapping" ? "mapping_updated" : operation === "confirm" ? "confirmed" : "applied"}`,
+      details: operation === "apply"
+        ? { previewId, applicationId: result.application.id, fingerprint: result.application.previewFingerprint }
+        : { previewId, revision: result.preview.revision, fingerprint: result.preview.previewFingerprint },
+      now,
+      nextId,
+    });
+    (persistStateNow ?? persistStateSoon)();
+    sendJson(res, result.status, operation === "apply"
+      ? { application: result.application, replayed: result.replayed }
+      : { preview: result.preview });
+    return true;
+  }
+
+  const contentMigrationRollbackMatch = url.pathname.match(/^\/api\/private-tutor\/profile\/content-migration-applications\/([^/]+)\/rollback$/);
+  if (contentMigrationRollbackMatch) {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    const result = rollbackPrivateTutorContentMigration(
+      state, resolved.learner, actor?.userId ?? LOCAL_USER_ID, contentMigrationRollbackMatch[1], body, { now },
+    );
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    recordAudit(state, { learner: resolved.learner, actor, action: "content_migration_rolled_back", details: { applicationId: result.application.id, previewId: result.application.previewId }, now, nextId });
+    (persistStateNow ?? persistStateSoon)();
+    sendJson(res, result.status, { application: result.application, replayed: result.replayed });
+    return true;
+  }
+
   if (url.pathname === "/api/private-tutor/profile/content-package"
     || url.pathname === "/api/private-tutor/profile/content-package/activate") {
     const resolved = resolveOwnedProfileLearner(state, actor, {});
@@ -1326,6 +1451,55 @@ export async function handlePrivateTutorRoutes({
         learningProfileId: actor?.userId ?? LOCAL_USER_ID,
       }),
     });
+    return true;
+  }
+
+  const profileLearningTrialMatch = url.pathname.match(/^\/api\/private-tutor\/profile\/learning-trial(?:\/(start|stop))?$/);
+  if (profileLearningTrialMatch) {
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    const learner = resolved.learner;
+    const action = profileLearningTrialMatch[1] ?? null;
+    if (!action && req.method === "GET") {
+      const at = now();
+      const changed = completeExpiredPrivateTutorLearningTrials(state, at);
+      if (changed) persistStateSoon();
+      sendJson(res, 200, { trial: latestPrivateTutorLearningTrialView(state, learner.id, at) });
+      return true;
+    }
+    if (action === "start" && req.method === "POST") {
+      const body = await readJson(req).catch(() => ({}));
+      const contentPackage = privateTutorPackageRegistryFromState(state).getPackage(activeContentPackageId(learner));
+      const result = startPrivateTutorLearningTrial(state, learner, body, {
+        actorId: actor?.userId ?? LOCAL_USER_ID,
+        contentPackage,
+        now,
+        nextId,
+      });
+      if (!result.ok) {
+        sendJson(res, result.status, { error: result.error });
+        return true;
+      }
+      recordAudit(state, { learner, actor, action: "learning_trial_started", details: { trialId: result.trial.id, durationDays: result.trial.durationDays, observationDays: result.trial.observationDays }, now, nextId });
+      persistStateSoon();
+      sendJson(res, 201, { trial: result.trial });
+      return true;
+    }
+    if (action === "stop" && req.method === "POST") {
+      const result = stopPrivateTutorLearningTrial(state, learner.id, { now });
+      if (!result.ok) {
+        sendJson(res, result.status, { error: result.error });
+        return true;
+      }
+      recordAudit(state, { learner, actor, action: "learning_trial_stopped", details: { trialId: result.trial.id }, now, nextId });
+      persistStateSoon();
+      sendJson(res, 200, { trial: result.trial });
+      return true;
+    }
+    sendJson(res, 405, { error: "method_not_allowed" });
     return true;
   }
 
@@ -2326,23 +2500,39 @@ async function handleAssessmentRoute({
       return true;
     }
     const body = await readJson(req).catch(() => ({}));
+    const mode = body?.mode == null || body?.mode === "full" ? "full" : body?.mode === "quick" ? "quick" : null;
+    const targetKnowledgeId = mode === "quick" ? String(body?.targetKnowledgeId ?? "").trim() : null;
+    if (!mode || (mode === "quick" && !targetKnowledgeId)) {
+      sendJson(res, 400, { error: "invalid_private_tutor_assessment_mode" });
+      return true;
+    }
     if (latest && ["active", "paused"].includes(latest.status)) {
       sendJson(res, 200, { assessment: assessmentView(latest, state), resumed: true });
       return true;
     }
-    if (latest?.status === "completed" && body?.restart !== true) {
+    const latestMode = latest?.mode ?? "full";
+    const sameCompletedAssessment = latest?.status === "completed"
+      && latestMode === mode
+      && (mode !== "quick" || latest.targetKnowledgeId === targetKnowledgeId);
+    if (sameCompletedAssessment && body?.restart !== true) {
       sendJson(res, 200, { assessment: assessmentView(latest, state), resumed: true });
       return true;
     }
-    if (latest?.status === "completed" && body?.restart === true && actor?.privateTutorLearnerId) {
+    if (sameCompletedAssessment && body?.restart === true && actor?.privateTutorLearnerId) {
       sendJson(res, 403, { error: "private_tutor_parent_reverification_required" });
       return true;
     }
     const startedAt = now();
-    const diagnosticConfig = privateTutorDiagnosticConfig(state, contentPackageId);
-    const firstQuestion = initialDiagnosticQuestion(state, contentPackageId);
+    const diagnosticConfig = mode === "quick"
+      ? privateTutorQuickDiagnosticConfig(state, contentPackageId, targetKnowledgeId)
+      : privateTutorDiagnosticConfig(state, contentPackageId);
+    const firstQuestion = mode === "quick"
+      ? initialQuickDiagnosticQuestion(state, contentPackageId, targetKnowledgeId)
+      : initialDiagnosticQuestion(state, contentPackageId);
     if (!firstQuestion || !diagnosticConfig || !contentPackage) {
-      sendJson(res, 409, { error: "private_tutor_published_diagnostic_content_required" });
+      sendJson(res, 409, { error: mode === "quick"
+        ? "private_tutor_quick_diagnostic_content_required"
+        : "private_tutor_published_diagnostic_content_required" });
       return true;
     }
     const assessment = {
@@ -2354,6 +2544,8 @@ async function handleAssessmentRoute({
       subjectId: contentPackage.subjectId,
       activationId: activation?.id ?? null,
       activationStatus: "active",
+      mode,
+      targetKnowledgeId,
       status: "active",
       revision: 1,
       startedAt,
@@ -2372,7 +2564,7 @@ async function handleAssessmentRoute({
       updatedAt: startedAt,
     };
     state.privateTutorAssessments.unshift(assessment);
-    recordAudit(state, { learner, actor, action: "diagnostic_started", details: { assessmentId: assessment.id }, now, nextId });
+    recordAudit(state, { learner, actor, action: "diagnostic_started", details: { assessmentId: assessment.id, mode, targetKnowledgeId }, now, nextId });
     persistStateSoon();
     sendJson(res, 201, { assessment: assessmentView(assessment, state), resumed: false });
     return true;
@@ -2534,7 +2726,9 @@ async function handleAssessmentRoute({
   assessment.questionPresentedAt = createdAt;
   assessment.revision += 1;
   assessment.updatedAt = createdAt;
-  const nextQuestion = selectNextDiagnosticQuestion(assessment.answerSummaries, state, assessment.contentPackageId);
+  const nextQuestion = assessment.mode === "quick"
+    ? selectNextQuickDiagnosticQuestion(assessment.answerSummaries, state, assessment.contentPackageId, assessment.targetKnowledgeId)
+    : selectNextDiagnosticQuestion(assessment.answerSummaries, state, assessment.contentPackageId);
   assessment.currentQuestionRevisionId = nextQuestion?.revisionId ?? null;
   if (!nextQuestion) {
     assessment.status = "completed";
@@ -2556,7 +2750,7 @@ async function handleAssessmentRoute({
       learner,
       actor,
       action: "diagnostic_completed",
-      details: { assessmentId, answeredCount: assessment.answerSummaries.length },
+      details: { assessmentId, answeredCount: assessment.answerSummaries.length, mode: assessment.mode ?? "full", targetKnowledgeId: assessment.targetKnowledgeId ?? null },
       now,
       nextId,
     });
@@ -2777,6 +2971,7 @@ async function handleTutoringSessionRoute({
       sendJson(res, 400, { error: "invalid_private_tutor_session_pace" });
       return true;
     }
+    const preferences = privateTutorLearningPreferences(state, learner.id);
     const session = createPrivateTutorSession({
       id: nextId("ptsess"),
       ownerTeamId: learner.ownerTeamId,
@@ -2788,6 +2983,7 @@ async function handleTutoringSessionRoute({
       state,
       contentPackageId,
       activationId: activation?.id ?? null,
+      targetMinutes: preferences.dailyMinutes,
     });
     if (!session) {
       sendJson(res, 409, { error: "private_tutor_session_content_unavailable" });
@@ -2861,7 +3057,8 @@ async function handleTutoringSessionRoute({
       const snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
       if (snapshot) {
         snapshot.completedSessions += 1;
-        snapshot.dailyMinutes = Math.min(20, Math.max(snapshot.dailyMinutes, session.plannedMinutes));
+        const preferences = privateTutorLearningPreferences(state, learner.id);
+        snapshot.dailyMinutes = Math.min(preferences.dailyMinutes, Math.max(snapshot.dailyMinutes, session.plannedMinutes));
         snapshot.revision += 1;
         snapshot.updatedAt = session.completedAt;
       }
@@ -2892,6 +3089,58 @@ async function handleTutoringSessionRoute({
       return true;
     }
     recordTutoringSessionEvent(state, { learner, actor, session, type: "hint_revealed", details: { activity: activity.kind, level: activity.hintLevel }, now, nextId });
+    persistStateSoon();
+    sendJson(res, 200, { session: privateTutorSessionView(session, state) });
+    return true;
+  }
+
+  if (actionType === "follow_up") {
+    const result = answerPrivateTutorFollowUp(session, {
+      mode: String(body?.mode ?? "question"),
+      question: body?.question,
+      state,
+      now,
+      nextId,
+    });
+    if (!result.ok) {
+      sendJson(res, 400, { error: result.error });
+      return true;
+    }
+    recordTutoringSessionEvent(state, {
+      learner,
+      actor,
+      session,
+      type: "grounded_follow_up_answered",
+      details: {
+        activity: activity?.kind ?? null,
+        mode: result.followUp.mode,
+        grounding: result.followUp.grounding,
+        sourceCount: result.followUp.sourceRefs.length,
+        evidenceEligible: false,
+      },
+      now,
+      nextId,
+    });
+    persistStateSoon();
+    sendJson(res, 200, { session: privateTutorSessionView(session, state), followUp: result.followUp });
+    return true;
+  }
+
+  if (actionType === "follow_up_feedback") {
+    const result = recordPrivateTutorFollowUpResolution(session, body, { now });
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    recordTutoringSessionEvent(state, {
+      learner,
+      actor,
+      session,
+      type: "follow_up_resolution_recorded",
+      details: { followUpId: result.followUp.id, resolution: result.followUp.resolution, evidenceEligible: false },
+      now,
+      nextId,
+    });
     persistStateSoon();
     sendJson(res, 200, { session: privateTutorSessionView(session, state) });
     return true;
@@ -2987,8 +3236,9 @@ async function handleTutoringSessionRoute({
     knowledgeId: session.targetKnowledgeId,
     questionRevisionId,
     correct: judgement.correct,
-    independent: activity.kind === "independent_check" && activity.hintLevel === 0,
+    independent: activity.kind === "independent_check" && activity.hintLevel === 0 && (activity.followUpCount ?? 0) === 0,
     usedHint: activity.hintLevel > 0,
+    usedFollowUp: (activity.followUpCount ?? 0) > 0,
     source,
     recognitionConfidence: Number.isFinite(recognitionConfidence) ? recognitionConfidence : null,
     responseKind: judgement.responseKind,
@@ -3048,7 +3298,7 @@ async function handleTutoringSessionRoute({
     actor,
     session,
     type: attempt.correct ? "answer_correct" : answerResult.advanced ? "activity_completed" : "answer_incorrect",
-    details: { activity: attempt.activityKind, attemptId: attempt.id, voiceTurnId, usedHint: attempt.usedHint, independent: attempt.independent },
+    details: { activity: attempt.activityKind, attemptId: attempt.id, voiceTurnId, usedHint: attempt.usedHint, usedFollowUp: attempt.usedFollowUp, independent: attempt.independent },
     now,
     nextId,
   });
@@ -3066,6 +3316,8 @@ function assessmentView(assessment, state) {
     contentPackageVersion: assessment.contentPackageVersion ?? null,
     subjectId: assessment.subjectId ?? "math",
     activationId: assessment.activationId ?? null,
+    mode: assessment.mode ?? "full",
+    targetKnowledgeId: assessment.targetKnowledgeId ?? null,
     status: assessment.status,
     revision: assessment.revision,
     startedAt: assessment.startedAt,
@@ -3188,12 +3440,15 @@ function refreshPrivateTutorIntelligence(state, learner, {
     };
   }
 
+  const preferences = privateTutorLearningPreferences(state, learner.id);
   const planValue = buildPrivateTutorSevenDayPlan({
     model: learnerModel,
     decision: strategyDecision,
     now,
     reason,
     carryForwardKnowledgeId,
+    dailyMinutes: preferences.dailyMinutes,
+    planIntensity: preferences.planIntensity,
   });
   const previousPlan = state.privateTutorLearningPlans.find((row) =>
     row.learnerId === learner.id && sameContentPackage(row.contentPackageId, contentPackageId)) ?? null;

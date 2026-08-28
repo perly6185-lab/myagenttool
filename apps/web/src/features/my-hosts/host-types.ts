@@ -69,16 +69,60 @@ export interface HostFileEntry {
   modifiedAt: string | null;
 }
 
-export type HostDiagnosticAction = "disk_usage" | "memory_usage" | "system_info" | "uptime" | "failed_services" | "processes" | "listening_ports" | "docker_status" | "service_status" | "recent_logs" | "network_info";
+export interface HostFileSearchResult extends HostFileEntry {
+  matchKind: "name" | "content";
+  previewKind: "text" | "image" | "pdf" | null;
+  restricted: boolean;
+}
+
+export interface HostFileSearchBoundaries {
+  scannedEntries: number;
+  scannedTextFiles: number;
+  readBytes: number;
+  skippedEntries: number;
+  truncated: boolean;
+  maxDepth: number;
+  maxEntries: number;
+  maxResults: number;
+}
+
+export interface HostFileSearchResponse {
+  scopeId: string;
+  scopeRevision: number;
+  results: HostFileSearchResult[];
+  count: number;
+  contentSearchEnabled: boolean;
+  boundaries: HostFileSearchBoundaries;
+}
+
+export type HostDiagnosticAction = "disk_usage" | "memory_usage" | "system_info" | "uptime" | "login_sessions" | "ssh_login_audit" | "failed_services" | "processes" | "listening_ports" | "docker_status" | "service_status" | "recent_logs" | "network_info";
 
 export interface HostDiagnosticParameters {
   serviceName?: string;
+}
+
+export type HostDiagnosticSeverity = "healthy" | "info" | "warning" | "critical" | "unknown";
+
+export interface HostDiagnosticFact {
+  key: string;
+  value: string;
+  severity: HostDiagnosticSeverity;
+}
+
+export interface HostDiagnosticSummary {
+  version: 1;
+  severity: HostDiagnosticSeverity;
+  finding: string;
+  impact: string;
+  nextAction: string;
+  facts: HostDiagnosticFact[];
 }
 
 export interface HostDiagnosticResult {
   action: HostDiagnosticAction;
   command: string;
   output: string;
+  summary: HostDiagnosticSummary;
   parameters?: HostDiagnosticParameters;
   resolvedAddress?: string;
 }
@@ -111,5 +155,7 @@ export interface HostFileTransfer {
   retryOf: string | null;
   errorCode: string | null;
   createdAt: string;
+  startedAt?: string;
+  updatedAt?: string;
   completedAt: string | null;
 }

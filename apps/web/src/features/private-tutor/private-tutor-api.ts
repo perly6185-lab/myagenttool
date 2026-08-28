@@ -21,6 +21,46 @@ export interface PrivateTutorLearner {
   updatedAt: string;
 }
 
+export type PrivateTutorTeacherStyle = "heuristic_guidance" | "direct_concept" | "case_driven" | "socratic_questioning";
+export type PrivateTutorExplanationDepth = "concise_then_expand" | "from_foundations" | "key_difficulties_only" | "professional_depth";
+export type PrivateTutorFollowUpStyle = "gentle_probe" | "direct_check" | "none";
+export type PrivateTutorVoicePreference = "push_to_talk" | "hands_free" | "text_only";
+export type PrivateTutorPlanIntensity = "relaxed" | "standard" | "intensive";
+
+export interface PrivateTutorLearningPreferences {
+  learnerId: string;
+  captions: boolean;
+  reducedMotion: boolean;
+  dailyMinutes: number;
+  planIntensity: PrivateTutorPlanIntensity;
+  teacherStyle: PrivateTutorTeacherStyle;
+  explanationDepth: PrivateTutorExplanationDepth;
+  followUpStyle: PrivateTutorFollowUpStyle;
+  voicePreference: PrivateTutorVoicePreference;
+  learningGoal: {
+    targetTopicIds: string[];
+    weeklyMinutes: number | null;
+    targetDate: string | null;
+    note: string;
+  } | null;
+  deactivatedPackageIds: string[];
+  revision: number;
+  schemaVersion: number;
+  updatedAt: string | null;
+}
+
+export type PrivateTutorLearningPreferencesPatch = Partial<Pick<PrivateTutorLearningPreferences,
+  | "captions"
+  | "reducedMotion"
+  | "dailyMinutes"
+  | "planIntensity"
+  | "teacherStyle"
+  | "explanationDepth"
+  | "followUpStyle"
+  | "voicePreference"
+  | "learningGoal"
+>>;
+
 export interface PrivateTutorDeletionJobStatus {
   reportId: string;
   status: "pending_erasure" | "erasing" | "erasure_failed";
@@ -87,6 +127,8 @@ export interface PrivateTutorAssessment {
   contentPackageVersion: string | null;
   subjectId: string;
   activationId?: string | null;
+  mode?: "full" | "quick";
+  targetKnowledgeId?: string | null;
   status: "active" | "paused" | "completed";
   revision: number;
   startedAt: string;
@@ -341,6 +383,8 @@ export interface PrivateTutorLearningPlan {
   startKnowledgeId?: string | null;
   reason: string;
   studentReason: string;
+  planIntensity?: PrivateTutorPlanIntensity;
+  dailyMinutes?: number;
   generatedAt: string;
   days: Array<{
     dayIndex: number;
@@ -419,6 +463,7 @@ export interface PrivateTutorSession {
     kind: PrivateTutorSessionActivityKind;
     budgetMinutes: number;
     hintLevel: number;
+    followUpCount?: number;
     attemptCount: number;
     instruction: string;
     question: PrivateTutorAssessmentQuestion | null;
@@ -439,6 +484,7 @@ export interface PrivateTutorSession {
   } | null;
   methodSwitchCount: number;
   intervention: { type: "gentle_hint" | "method_switch" | "prerequisite_reset"; message: string } | null;
+  followUps?: PrivateTutorFollowUp[];
   pausedAt: string | null;
   startedAt: string;
   completedAt: string | null;
@@ -453,6 +499,58 @@ export interface PrivateTutorSession {
     reviewAt: string;
     nextStep: string;
   } | null;
+}
+
+export type PrivateTutorFollowUpMode = "question" | "explain_again" | "source_example";
+
+export interface PrivateTutorFollowUp {
+  id: string;
+  activityKind: PrivateTutorSessionActivityKind;
+  mode: PrivateTutorFollowUpMode;
+  question: string;
+  response: string;
+  grounding: "source_excerpt" | "reviewed_curriculum";
+  sourceRefs: Array<{ sectionId: string; pageNumber: number | null; excerpt: string }>;
+  evidenceEligible: false;
+  resolution?: "resolved" | "unresolved" | null;
+  resolutionRecordedAt?: string | null;
+  createdAt: string;
+}
+
+export interface PrivateTutorLearningTrial {
+  id: string;
+  learnerId: string;
+  contentPackageId: string;
+  contentPackageVersion: string;
+  contentPackageName: string;
+  goal: string;
+  durationDays: number;
+  observationDays: number;
+  status: "active" | "observing" | "completed" | "stopped";
+  startedAt: string;
+  endsAt: string;
+  observationEndsAt: string;
+  stoppedAt: string | null;
+  completedAt: string | null;
+  progress: {
+    dayIndex: number;
+    activeDayCount: number;
+    daysRemaining: number;
+    completedSessionCount: number;
+  };
+  metrics: {
+    planDays: { startedCount: number; completedCount: number; completionRate: number | null };
+    nextDayRecall: { opportunityCount: number; attemptedCount: number; correctCount: number; retentionRate: number | null };
+    delayedReview: { opportunityCount: number; attemptedCount: number; correctCount: number; retentionRate: number | null };
+    followUps: { askedCount: number; feedbackCount: number; resolvedCount: number; resolutionRate: number | null; feedbackCoverageRate: number | null };
+  };
+  readiness: {
+    minimumSampleCount: number;
+    nextDayRecallReady: boolean;
+    delayedReviewReady: boolean;
+    followUpResolutionReady: boolean;
+  };
+  generatedAt: string;
 }
 
 export interface PrivateTutorVoiceTurn {
@@ -749,6 +847,16 @@ export async function createPrivateTutorProfile(input: { displayName: string; gr
   }>("POST", "/api/private-tutor/profile", input);
 }
 
+export async function getPrivateTutorLearningPreferences() {
+  const result = await request<{ preferences: PrivateTutorLearningPreferences }>("GET", "/api/private-tutor/profile/preferences");
+  return result.preferences;
+}
+
+export async function updatePrivateTutorLearningPreferences(preferences: PrivateTutorLearningPreferencesPatch) {
+  const result = await request<{ preferences: PrivateTutorLearningPreferences }>("PUT", "/api/private-tutor/profile/preferences", { preferences });
+  return result.preferences;
+}
+
 export interface PrivateTutorProfileMigrationCandidate {
   learnerId: string;
   displayName: string;
@@ -879,6 +987,103 @@ export interface PrivateTutorPackageActivation {
 export interface PrivateTutorPackageActivationResult extends PrivateTutorContentPackageUpdateResult, PrivateTutorIntelligence {
   activation: PrivateTutorPackageActivation;
   runtimeValidation: PrivateTutorRuntimeValidation | null;
+}
+
+export interface PrivateTutorContentMigrationCandidate {
+  packageId: string;
+  packageVersion: string;
+  packageName: string;
+  sourceType: ContentSourceType;
+  status: string;
+  contentChecksum: string | null;
+  knowledgeCount: number;
+  hasLearningState: boolean;
+  evidenceCount: number;
+}
+
+export interface PrivateTutorContentMigrationMapping {
+  sourceKnowledgeId: string;
+  sourceName: string;
+  targetKnowledgeIds: string[];
+  targetNames: string[];
+  sourceEvidenceCount: number;
+  relation: "unchanged" | "renamed" | "changed" | "split" | "merged" | "removed";
+  compatibility: "safe" | "review_required" | "archive_only";
+  decision: "transfer" | "provisional" | "archive";
+  changes: string[];
+}
+
+export interface PrivateTutorContentMigrationPreview {
+  id: string;
+  revision: number;
+  status: "draft" | "confirmed" | "applied" | "rolled_back";
+  source: { packageId: string; packageVersion: string; packageName: string; contentChecksum: string };
+  target: { packageId: string; packageVersion: string; packageName: string; contentChecksum: string };
+  mappings: PrivateTutorContentMigrationMapping[];
+  targetAdditions: Array<{ knowledgeId: string; name: string; status: "added" }>;
+  impact: {
+    transferableKnowledgeCount: number;
+    provisionalKnowledgeCount: number;
+    archivedKnowledgeCount: number;
+    addedKnowledgeCount: number;
+    transferableEvidenceCount: number;
+    provisionalEvidenceCount: number;
+    archivedEvidenceCount: number;
+    affectedActivePlanCount: number;
+    affectedOpenSessionCount: number;
+    activeRuntimeWillChange: false;
+    targetActivationRequired: true;
+    targetStateExists: boolean;
+    requiresExplicitConfirmation: boolean;
+  };
+  previewFingerprint: string;
+  applicationId: string | null;
+}
+
+export interface PrivateTutorContentMigrationApplication {
+  id: string;
+  previewId: string;
+  previewFingerprint: string;
+  status: "applied" | "rolled_back";
+  source: PrivateTutorContentMigrationPreview["source"];
+  target: PrivateTutorContentMigrationPreview["target"];
+  transferredKnowledgeCount: number;
+  provisionalKnowledgeCount: number;
+  archivedKnowledgeCount: number;
+  appliedAt: string;
+  rolledBackAt: string | null;
+  rollbackReceipt: { sourceFactCountBefore: number; sourceFactCountAfter: number; sourceFactsRewritten: 0; targetStateFingerprint: string; targetPackageWasActivated: false };
+  rollbackVerification: { targetStatePresent: boolean; sourceFactsRewritten: 0 } | null;
+}
+
+export async function listPrivateTutorContentMigrationCandidates() {
+  const result = await request<{ candidates: PrivateTutorContentMigrationCandidate[] }>("GET", "/api/private-tutor/profile/content-migrations/candidates");
+  return result.candidates;
+}
+
+export async function createPrivateTutorContentMigrationPreview(input: { sourcePackageId: string; sourcePackageVersion: string; targetPackageId: string; targetPackageVersion: string; idempotencyKey: string }) {
+  const result = await request<{ preview: PrivateTutorContentMigrationPreview }>("POST", "/api/private-tutor/profile/content-migrations/preview", input);
+  return result.preview;
+}
+
+export async function updatePrivateTutorContentMigrationMapping(previewId: string, input: { expectedRevision: number; mappings: Array<Pick<PrivateTutorContentMigrationMapping, "sourceKnowledgeId" | "targetKnowledgeIds" | "decision">> }) {
+  const result = await request<{ preview: PrivateTutorContentMigrationPreview }>("PUT", `/api/private-tutor/profile/content-migrations/${encodeURIComponent(previewId)}/mapping`, input);
+  return result.preview;
+}
+
+export async function confirmPrivateTutorContentMigration(previewId: string, input: { expectedRevision: number; previewFingerprint: string; acknowledgeHistoricalPreservation: boolean; acknowledgeRiskyMappings: boolean }) {
+  const result = await request<{ preview: PrivateTutorContentMigrationPreview }>("POST", `/api/private-tutor/profile/content-migrations/${encodeURIComponent(previewId)}/confirm`, input);
+  return result.preview;
+}
+
+export async function applyPrivateTutorContentMigration(previewId: string, previewFingerprint: string, idempotencyKey: string) {
+  const result = await request<{ application: PrivateTutorContentMigrationApplication }>("POST", `/api/private-tutor/profile/content-migrations/${encodeURIComponent(previewId)}/apply`, { previewFingerprint, idempotencyKey });
+  return result.application;
+}
+
+export async function rollbackPrivateTutorContentMigration(applicationId: string) {
+  const result = await request<{ application: PrivateTutorContentMigrationApplication }>("POST", `/api/private-tutor/profile/content-migration-applications/${encodeURIComponent(applicationId)}/rollback`, { confirmRollback: true });
+  return result.application;
 }
 
 export async function listPrivateTutorContentPackages(filters: { sourceType?: ContentSourceType; domain?: string } = {}) {
@@ -1198,6 +1403,21 @@ export async function getPrivateTutorLearningHistory() {
   return result.history;
 }
 
+export async function getPrivateTutorLearningTrial() {
+  const result = await request<{ trial: PrivateTutorLearningTrial | null }>("GET", "/api/private-tutor/profile/learning-trial");
+  return result.trial;
+}
+
+export async function startPrivateTutorLearningTrial(goal: string) {
+  const result = await request<{ trial: PrivateTutorLearningTrial }>("POST", "/api/private-tutor/profile/learning-trial/start", { goal });
+  return result.trial;
+}
+
+export async function stopPrivateTutorLearningTrial() {
+  const result = await request<{ trial: PrivateTutorLearningTrial }>("POST", "/api/private-tutor/profile/learning-trial/stop", {});
+  return result.trial;
+}
+
 export async function rebalancePrivateTutorLearningPlan(missedDayIndex: number) {
   return request<PrivateTutorIntelligence>(
     "POST",
@@ -1240,6 +1460,8 @@ export async function resumePrivateTutorSession(sessionId: string) {
 
 export async function actOnPrivateTutorSession(sessionId: string, input:
   | { action: "continue" | "hint" }
+  | { action: "follow_up"; mode: PrivateTutorFollowUpMode; question?: string }
+  | { action: "follow_up_feedback"; followUpId: string; resolution: "resolved" | "unresolved" }
   | {
     action: "answer";
     idempotencyKey: string;
@@ -1254,6 +1476,7 @@ export async function actOnPrivateTutorSession(sessionId: string, input:
     session: PrivateTutorSession;
     snapshot?: PrivateTutorSnapshot;
     answer?: PrivateTutorAttemptEvaluation;
+    followUp?: PrivateTutorFollowUp;
     voiceTurn?: PrivateTutorVoiceTurn | null;
     replayed?: boolean;
   } & Partial<PrivateTutorIntelligence>>(
@@ -1297,11 +1520,15 @@ export async function getCurrentPrivateTutorAssessment() {
   return result.assessment;
 }
 
-export async function startPrivateTutorAssessment() {
+export async function startPrivateTutorAssessment(input: {
+  mode?: "full" | "quick";
+  targetKnowledgeId?: string;
+  restart?: boolean;
+} = {}) {
   const result = await request<{ assessment: PrivateTutorAssessment }>(
     "POST",
     "/api/private-tutor/profile/assessments/start",
-    {},
+    input,
   );
   return result.assessment;
 }

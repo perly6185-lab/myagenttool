@@ -14,6 +14,20 @@ import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./a
 import { resolveAutoRunVerifyCommandFor } from "./worktree-verify.mjs";
 import { propagateCompletedWorkGoalTask } from "./work-goal-artifacts.mjs";
 import { verifyWorkItemResult } from "./work-item-result-verification.mjs";
+import {
+  archiveExecutionActionIdempotencyRecords,
+  beginExecutionAction,
+  EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY,
+  executionActionReceiptView,
+  executionActionError,
+  executionActionIdempotencyArchiveNeeded,
+  executionActionIdempotencyMigrationNeeded,
+  latestExecutionActionReceipt,
+  migrateExecutionActionIdempotencyRecords,
+  reconcileExecutionActionReceipt,
+  replayExecutionAction,
+  updateExecutionAction,
+} from "./work-item-execution-action.mjs";
 import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } from "./auto-run-design.mjs";
 import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
 import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
@@ -419,8 +433,41 @@ export function createAutoRunService({
   fileRemediationIssue,
   materializeTaskMaterials,
   store,
+  getDurableMetadata = null,
+  setDurableMetadata = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
+  let idempotencyMigration = { migratedRecords: 0, legacyRuns: 0 };
+  if (executionActionIdempotencyMigrationNeeded(state)) {
+    idempotencyMigration = runTx(() => migrateExecutionActionIdempotencyRecords(state));
+  }
+  const startupArchiveAt = now();
+  let startupArchive = { archivedRecords: 0, archivedAt: null };
+  if (executionActionIdempotencyArchiveNeeded(state, { now: startupArchiveAt })) {
+    startupArchive = runTx(() => archiveExecutionActionIdempotencyRecords(state, { now: startupArchiveAt }));
+  }
+  if (typeof setDurableMetadata === "function") {
+    const currentMarker = typeof getDurableMetadata === "function"
+      ? getDurableMetadata(EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY)
+      : null;
+    let markerComplete = false;
+    try {
+      const marker = JSON.parse(currentMarker);
+      markerComplete = marker?.version === 1 && marker?.status === "complete";
+    } catch {
+      markerComplete = false;
+    }
+    if (!markerComplete) {
+      setDurableMetadata(EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY, JSON.stringify({
+        version: 1,
+        status: "complete",
+        completedAt: startupArchiveAt,
+        migratedRecords: idempotencyMigration.migratedRecords,
+        legacyRuns: idempotencyMigration.legacyRuns,
+        archivedRecords: startupArchive.archivedRecords,
+      }));
+    }
+  }
   // Production injects the shared refusal writer; fall back to one bound to this
   // service's own state so a directly-constructed service (unit tests) still
   // records the veto instead of throwing (refusal model Phase 2, #760).
@@ -1286,12 +1333,25 @@ export function createAutoRunService({
     const confirmedBy = executionPlan.confirmedBy ?? "ai_policy";
     const localWorkItem = (state.workItems ?? []).find((item) =>
       item.id === (autoRun.localIssueId ?? autoRun.executionChainId));
-    const dataContextSnapshot = localWorkItem?.dataContextSnapshot
+    const executionBinding = [...(localWorkItem?.executionBindings ?? [])].reverse().find((binding) =>
+      binding.kind === "auto_run" && binding.targetId === autoRun.id);
+    const frozenContext = executionBinding?.contextSnapshot ?? localWorkItem?.dataContextSnapshot ?? null;
+    const dataContextSnapshot = frozenContext
       ? {
-        ...localWorkItem.dataContextSnapshot,
-        sources: (localWorkItem.dataContextSnapshot.sources ?? []).map((source) => ({ ...source })),
+        ...frozenContext,
+        sources: (frozenContext.sources ?? []).map((source) => ({
+          ...source,
+          allowedOperations: [...(source.allowedOperations ?? ["read"])],
+        })),
       }
       : null;
+    const intentContract = localWorkItem?.executionIntentContractSnapshot
+      ?? executionPlan.intentContract
+      ?? frozenContext?.intentContract
+      ?? null;
+    if (intentContract?.status === "needs_clarification") {
+      throw new Error("The work item intent contract requires clarification before implementation starts.");
+    }
     const frozenDataContextDigest = autoRun.executionContract
       ? autoRun.executionContract.dataContextSnapshot?.digest ?? null
       : dataContextSnapshot?.digest ?? null;
@@ -1301,6 +1361,7 @@ export function createAutoRunService({
       acceptanceCriteria: criteria,
       verificationSop: sop,
       dataContextDigest: frozenDataContextDigest,
+      intentContractDigest: intentContract?.digest ?? null,
       confirmedBy,
       confirmedAt: executionPlan.confirmedAt,
     })).digest("hex");
@@ -1332,6 +1393,10 @@ export function createAutoRunService({
         acceptanceCriteria: criteria,
         verificationSop: sop,
         dataContextSnapshot,
+        intentContract: intentContract ? {
+          ...intentContract,
+          conflicts: (intentContract.conflicts ?? []).map((conflict) => ({ ...conflict })),
+        } : null,
         confirmedBy,
         confirmedAt: executionPlan.confirmedAt,
         digest,
@@ -1682,16 +1747,35 @@ export function createAutoRunService({
         });
       }
       if (taskMaterialWorkItemId && typeof materializeTaskMaterials === "function") {
-        const prepared = await materializeTaskMaterials({ workItemId: taskMaterialWorkItemId, worktree, actor });
+        const materialWorkItem = (state.workItems ?? []).find((item) => item.id === String(taskMaterialWorkItemId));
+        const materialBinding = [...(materialWorkItem?.executionBindings ?? [])].reverse().find((binding) =>
+          binding.kind === "auto_run" && binding.targetId === autoRunId);
+        const contextSnapshot = pendingAutoRun?.executionContract?.dataContextSnapshot
+          ?? materialBinding?.contextSnapshot
+          ?? materialWorkItem?.dataContextSnapshot
+          ?? null;
+        const prepared = await materializeTaskMaterials({
+          workItemId: taskMaterialWorkItemId,
+          worktree,
+          actor,
+          contextSnapshot,
+        });
         if (!prepared?.ok) {
           const error = new Error(prepared?.error ?? "task_material_preparation_failed");
           error.code = prepared?.error ?? "task_material_preparation_failed";
+          throw error;
+        }
+        if (pendingAutoRun?.executionContextSnapshot && prepared.executionContextSnapshot
+          && pendingAutoRun.executionContextSnapshot.digest !== prepared.executionContextSnapshot.digest) {
+          const error = new Error("task_execution_context_changed");
+          error.code = "task_execution_context_changed";
           throw error;
         }
         if (pendingAutoRun && (prepared.manifest || prepared.receipts?.length)) {
           preparedInputMaterialization = {
             manifest: prepared.manifest ?? null,
             receipts: (prepared.receipts ?? []).slice(0, 20),
+            executionContextSnapshot: prepared.executionContextSnapshot ?? null,
             ...(prepared.skippedReferences?.length
               ? { skippedReferences: prepared.skippedReferences.slice(0, 20) }
               : {}),
@@ -1699,12 +1783,14 @@ export function createAutoRunService({
           };
           runTx(() => {
             pendingAutoRun.inputMaterialization = preparedInputMaterialization;
+            pendingAutoRun.executionContextSnapshot ??= prepared.executionContextSnapshot ?? null;
             pendingAutoRun.updatedAt = now();
           });
         } else if (prepared.manifest || prepared.receipts?.length) {
           preparedInputMaterialization = {
             manifest: prepared.manifest ?? null,
             receipts: (prepared.receipts ?? []).slice(0, 20),
+            executionContextSnapshot: prepared.executionContextSnapshot ?? null,
             ...(prepared.skippedReferences?.length
               ? { skippedReferences: prepared.skippedReferences.slice(0, 20) }
               : {}),
@@ -1748,6 +1834,8 @@ export function createAutoRunService({
           "local_content_original_unreadable",
           "work_resource_version_changed",
           "work_resource_unavailable",
+          "work_resource_change_permission_unavailable",
+          "task_execution_context_changed",
         ]);
         const needsInput = recoverableInputErrors.has(errorCode);
         runTx(() => setAutoRunStatus(pendingAutoRun, needsInput ? "needs_input" : "failed", {
@@ -1813,6 +1901,9 @@ export function createAutoRunService({
       executionPlan: executionPlan ?? pendingAutoRun?.executionPlan ?? null,
       executionContract: pendingAutoRun?.executionContract ?? null,
       inputMaterialization: preparedInputMaterialization,
+      executionContextSnapshot: pendingAutoRun?.executionContextSnapshot
+        ?? preparedInputMaterialization?.executionContextSnapshot
+        ?? null,
       channelOrigin: normalizedChannelOrigin(channelOrigin ?? pendingAutoRun?.channelOrigin),
       operationIntent: operationIntent && typeof operationIntent === "object"
         ? structuredClone(operationIntent)
@@ -3122,9 +3213,34 @@ export function createAutoRunService({
     approvalRecoveryRequestId = null,
     approvalRecoveryClaimToken = null,
     idempotencyKey = null,
+    expectedWorkItemRevision = null,
+    expectedTargetStatus = null,
   } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
+    const reviewerFeedback = String(feedback ?? "").trim().slice(0, 4000);
+    const actionKind = reviewerFeedback ? "fix_with_ai" : "retry_execution";
+    const actionRequest = { feedback: reviewerFeedback || null };
+    const replayReceipt = replayExecutionAction(autoRun, {
+      kind: actionKind, idempotencyKey, request: actionRequest, state,
+    });
+    if (replayReceipt) {
+      const replayInvocation = replayReceipt.targetId
+        ? (typeof findInvocation === "function" ? findInvocation(replayReceipt.targetId) : null)
+          ?? (state.invocations ?? []).find((item) => item.id === replayReceipt.targetId)
+          ?? {
+            id: replayReceipt.targetId,
+            status: autoRun.status,
+            worktreeId: autoRun.worktreeId ?? null,
+          }
+        : null;
+      return {
+        autoRun,
+        invocation: replayInvocation,
+        actionReceipt: executionActionReceiptView(replayReceipt, { now: now(), autoRun, replayed: true }),
+        replayed: true,
+      };
+    }
     if (terminalId && String(terminalId) !== autoRun.terminalId) {
       throw new Error("This run belongs to a different terminal.");
     }
@@ -3246,9 +3362,41 @@ export function createAutoRunService({
     )) {
       throw new Error("The late approval recovery grant is invalid or no longer active.");
     }
-    const issueBody = approvalRecoveryRequest
-      ? autoRun.issueBody ?? null
-      : (await maybeFetchIssueBody(autoRun.link, autoRun.projectId)) ?? autoRun.issueBody ?? null;
+    const { receipt: actionReceipt } = runTx(() => beginExecutionAction({
+      state,
+      autoRun,
+      kind: actionKind,
+      actor,
+      idempotencyKey,
+      expectedWorkItemRevision,
+      expectedTargetStatus,
+      request: actionRequest,
+      nextOwner: "ai",
+      now,
+      nextId,
+    }));
+    let issueBody;
+    try {
+      issueBody = approvalRecoveryRequest
+        ? autoRun.issueBody ?? null
+        : (await maybeFetchIssueBody(autoRun.link, autoRun.projectId)) ?? autoRun.issueBody ?? null;
+    } catch (error) {
+      runTx(() => updateExecutionAction(actionReceipt, {
+        status: "failed",
+        messageCode: "retry_prepare_failed",
+        impact: "none",
+        nextOwner: "me",
+        errorCode: error?.code ?? "retry_prepare_failed",
+        errorMessage: error?.message ?? error,
+        now,
+      }));
+      throw executionActionError(
+        error?.code ?? "retry_prepare_failed",
+        error?.message ?? "The retry could not prepare its source context.",
+        error?.status ?? 500,
+        { actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }) },
+      );
+    }
     // A normal retry can yield while refreshing an issue body. Re-check the
     // claim before creating an invocation so a simultaneous late-approval
     // recovery (or a second retry click) cannot launch a duplicate run.
@@ -3256,10 +3404,26 @@ export function createAutoRunService({
       (!["failed", "blocked"].includes(autoRun.status) && !revisingReviewableOutcome)
       || (autoRun.invocationId ?? null) !== retrySourceInvocationId
     ) {
-      throw new Error("Another retry has already started for this auto-run.");
+      runTx(() => updateExecutionAction(actionReceipt, {
+        status: "failed",
+        messageCode: "retry_superseded",
+        impact: "none",
+        nextOwner: "me",
+        errorCode: "execution_action_superseded",
+        errorMessage: "Another retry has already started or another action advanced this task; this retry was not started.",
+        now,
+      }));
+      throw executionActionError(
+        "execution_action_superseded",
+        "Another retry has already started or another action advanced this task; this retry was not started.",
+        409,
+        {
+          currentTargetStatus: autoRun.status ?? null,
+          actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }),
+        },
+      );
     }
     const retryPath = autoRun.decision?.path ?? "develop";
-    const reviewerFeedback = String(feedback ?? "").trim().slice(0, 4000);
     const baseTask = approvalRecoveryRequest
       ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody, readOnly: autoRun.operationIntent?.accessMode === "read_only" })}\n\n` +
         "The earlier launch expired while waiting for approval. That exact task has now been approved. " +
@@ -3291,6 +3455,7 @@ export function createAutoRunService({
           worktreeId: worktree.id,
           projectId: worktree.projectId,
           autoRunId: autoRun.id,
+          executionActionReceiptId: actionReceipt.id,
           role: retryPath,
           scheduler: autoRun.scheduler,
           ...(resumesExecutionTimeout
@@ -3325,6 +3490,14 @@ export function createAutoRunService({
         // instead of leaving the auto-run pointed at its expired invocation.
         autoRun.invocationId = invocation.id;
         autoRun.agentId = agent.id;
+        updateExecutionAction(actionReceipt, {
+          status: "running",
+          messageCode: "request_accepted",
+          impact: "none",
+          nextOwner: "ai",
+          targetId: invocation.id,
+          now,
+        });
         if (migrateDemoAgent) worktree.agentId = agent.id;
         // Fresh repair budget for the retry — otherwise a run that exhausted its
         // repairs stays at the cap and the retried attempt gets zero self-repair.
@@ -3403,18 +3576,81 @@ export function createAutoRunService({
         });
       });
       startInvocationIfAllowed(invocation, agent);
+      runTx(() => updateExecutionAction(actionReceipt, {
+        status: "succeeded",
+        messageCode: reviewerFeedback ? "ai_fix_started" : "retry_started",
+        impact: "none",
+        nextOwner: "ai",
+        targetId: invocation.id,
+        now,
+      }));
     } catch (error) {
       runTx(() => {
         setAutoRunStatus(autoRun, "failed", { error: `Retry could not start the agent run: ${String(error?.message ?? error)}` });
+        updateExecutionAction(actionReceipt, {
+          status: "failed",
+          messageCode: "retry_start_failed",
+          impact: "none",
+          nextOwner: "me",
+          errorCode: error?.code ?? "retry_start_failed",
+          errorMessage: error?.message ?? error,
+          now,
+        });
       });
       throw error;
     }
-    return { autoRun, invocation };
+    return { autoRun, invocation, actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }), replayed: false };
   }
 
-  async function reverifyAutoRun(autoRunId, { actor, terminalId = null } = {}) {
+  function reconcileExecutionAction(autoRunId) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw executionActionError("auto_run_not_found", "Auto-run not found.", 404);
+    const receipt = [...(autoRun.executionActionReceipts ?? [])]
+      .sort((left, right) => String(right.requestedAt ?? "").localeCompare(String(left.requestedAt ?? "")))[0] ?? null;
+    if (!receipt) {
+      return { autoRun, actionReceipt: null, safeToRetry: true, reconciled: false };
+    }
+    const reconciliation = runTx(() => reconcileExecutionActionReceipt(receipt, {
+      state,
+      autoRun,
+      findInvocation,
+      findTargetInvocation: (candidate) => (state.invocations ?? []).find((invocation) =>
+        invocation.options?.metadata?.autoRunId === autoRun.id
+        && invocation.options?.metadata?.executionActionReceiptId === candidate.id) ?? null,
+      now: now(),
+    }));
+    return {
+      autoRun,
+      actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }),
+      safeToRetry: reconciliation.receipt?.status === "safe_to_retry",
+      reconciled: reconciliation.changed,
+    };
+  }
+
+  async function reverifyAutoRun(autoRunId, {
+    actor,
+    terminalId = null,
+    idempotencyKey = null,
+    expectedWorkItemRevision = null,
+    expectedTargetStatus = null,
+  } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
+    const actionRequest = { verification: "platform" };
+    const replayReceipt = replayExecutionAction(autoRun, {
+      kind: "rerun_verification",
+      idempotencyKey,
+      request: actionRequest,
+      state,
+    });
+    if (replayReceipt) {
+      return {
+        autoRun,
+        verification: autoRun.verification ?? null,
+        actionReceipt: executionActionReceiptView(replayReceipt, { now: now(), autoRun, replayed: true }),
+        replayed: true,
+      };
+    }
     if (autoRun.verificationAttempt?.status === "running") {
       throw new Error("Platform reverification is already running for this Auto-run.");
     }
@@ -3437,8 +3673,28 @@ export function createAutoRunService({
     const previousStatus = ["blocked", "cancelled"].includes(autoRun.status)
       ? (autoRun.prUrl ? "pr_open" : "done")
       : autoRun.status;
-    const requestedAt = now();
+    const { receipt: actionReceipt } = runTx(() => beginExecutionAction({
+      state,
+      autoRun,
+      kind: "rerun_verification",
+      actor,
+      idempotencyKey,
+      expectedWorkItemRevision,
+      expectedTargetStatus,
+      request: actionRequest,
+      nextOwner: "system",
+      now,
+      nextId,
+    }));
+    const requestedAt = actionReceipt.requestedAt;
     runTx(() => {
+      updateExecutionAction(actionReceipt, {
+        status: "running",
+        messageCode: "verification_running",
+        impact: "none",
+        nextOwner: "system",
+        now,
+      });
       autoRun.verificationAttempt = {
         status: "running",
         requestedAt,
@@ -3510,6 +3766,21 @@ export function createAutoRunService({
           commands: Array.isArray(verification.commands) ? verification.commands : [],
         },
       });
+      updateExecutionAction(actionReceipt, {
+        status: verification.unavailable || !verification.verified ? "failed" : "succeeded",
+        messageCode: verification.unavailable
+          ? "verification_unavailable"
+          : !verification.verified
+            ? "verification_not_configured"
+            : verification.passed ? "verification_passed" : "verification_failed",
+        impact: "none",
+        nextOwner: "me",
+        errorCode: verification.unavailable
+          ? "verification_unavailable"
+          : !verification.verified ? "verification_not_configured" : null,
+        errorMessage: verification.unavailable || !verification.verified ? verification.summary : null,
+        now,
+      });
     });
 
     if (verification.unavailable) {
@@ -3518,7 +3789,12 @@ export function createAutoRunService({
     if (!verification.verified) {
       throw new Error("No platform verification command is configured for this project.");
     }
-    return { autoRun, verification: autoRun.verification };
+    return {
+      autoRun,
+      verification: autoRun.verification,
+      actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }),
+      replayed: false,
+    };
   }
 
   // #1268 (3b): after a run fails for an INFRASTRUCTURE reason (the executor died,
@@ -4188,9 +4464,56 @@ export function createAutoRunService({
   // develop: free-text answers re-route the same run. Structured repository
   // actions retain their payload so the HTTP boundary can clone and start the
   // selected repository flow.
-  async function answerClarify(autoRunId, { actor, answers, selectedAction, repoUrl, inputAssets = [] } = {}) {
+  async function answerClarify(autoRunId, {
+    actor,
+    answers,
+    selectedAction,
+    repoUrl,
+    inputAssets = [],
+    idempotencyKey = null,
+    expectedWorkItemRevision = null,
+    expectedTargetStatus = null,
+  } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
+    const actionRequest = {
+      answers: String(answers ?? "").trim().slice(0, 4000),
+      selectedAction: String(selectedAction ?? "").trim().slice(0, 64) || null,
+      repoUrl: String(repoUrl ?? "").trim().slice(0, 500) || null,
+      inputAssetIds: (Array.isArray(inputAssets) ? inputAssets : []).map((asset) => String(asset?.id ?? "")).filter(Boolean).slice(0, 20),
+    };
+    const replayReceipt = replayExecutionAction(autoRun, {
+      kind: "answer_ai",
+      idempotencyKey,
+      request: actionRequest,
+      state,
+    });
+    if (replayReceipt) {
+      const replayView = executionActionReceiptView(replayReceipt, { now: now(), autoRun, replayed: true });
+      const replaySucceeded = replayView.status === "succeeded";
+      const replayProcessing = ["accepted", "running"].includes(replayView.status);
+      const waitingForInput = replayReceipt.messageCode === "answer_needs_more_input";
+      const structuredAnswer = autoRun.clarifyAnswer?.selectedAction ? autoRun.clarifyAnswer : null;
+      return {
+        ok: replayView.status !== "failed",
+        autoRun,
+        resumed: !structuredAnswer && (replaySucceeded || replayProcessing),
+        waitingForInput,
+        ...(structuredAnswer ? {
+          alreadyDecided: {
+            decidedBy: structuredAnswer.by ?? null,
+            decidedAt: structuredAnswer.at ?? null,
+            status: "answered",
+          },
+          shouldRetry: Boolean(structuredAnswer.repoUrl && structuredAnswer.selectedAction),
+          repoUrl: structuredAnswer.repoUrl ?? null,
+          selectedAction: structuredAnswer.selectedAction ?? null,
+        } : {}),
+        ...(["failed", "unknown"].includes(replayView.status) ? { reason: replayView.errorCode ?? `clarification_resume_${replayView.status}` } : {}),
+        actionReceipt: replayView,
+        replayed: true,
+      };
+    }
     // #1151: a repeated answer must not dispatch another continuation or
     // overwrite the recorded customer decision. First answer wins.
     if (autoRun.clarifyAnswer && autoRun.status !== "needs_input") {
@@ -4241,6 +4564,19 @@ export function createAutoRunService({
 
     if (chosenAction) {
       return runTx(() => {
+        const { receipt: actionReceipt } = beginExecutionAction({
+          state,
+          autoRun,
+          kind: "answer_ai",
+          actor,
+          idempotencyKey,
+          expectedWorkItemRevision,
+          expectedTargetStatus,
+          request: actionRequest,
+          nextOwner: "system",
+          now,
+          nextId,
+        });
         maybePostIssueReport(autoRun, worktree, body);
         autoRun.issueBody = clarifiedIssueBody;
         autoRun.clarifyAnswer = {
@@ -4263,7 +4599,21 @@ export function createAutoRunService({
           message: `Auto-run ${autoRun.id} structured clarification answered by ${by}.`,
           data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null, selectedAction: chosenAction },
         });
-        return { ok: true, shouldRetry: Boolean(chosenRepoUrl), repoUrl: chosenRepoUrl || null, selectedAction: chosenAction };
+        updateExecutionAction(actionReceipt, {
+          status: "succeeded",
+          messageCode: "answer_recorded",
+          impact: "none",
+          nextOwner: chosenRepoUrl ? "system" : "me",
+          now,
+        });
+        return {
+          ok: true,
+          shouldRetry: Boolean(chosenRepoUrl),
+          repoUrl: chosenRepoUrl || null,
+          selectedAction: chosenAction,
+          actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }),
+          replayed: false,
+        };
       });
     }
 
@@ -4312,9 +4662,29 @@ export function createAutoRunService({
       throw new Error("The Auto-run execution plan must be prepared before the clarification can resume.");
     }
 
-    const answerAt = now();
+    const { receipt: actionReceipt } = runTx(() => beginExecutionAction({
+      state,
+      autoRun,
+      kind: "answer_ai",
+      actor,
+      idempotencyKey,
+      expectedWorkItemRevision,
+      expectedTargetStatus,
+      request: actionRequest,
+      nextOwner: "ai",
+      now,
+      nextId,
+    }));
+    const answerAt = actionReceipt.requestedAt;
     const resumeToken = nextId("clarify_resume");
     runTx(() => {
+      updateExecutionAction(actionReceipt, {
+        status: "running",
+        messageCode: "answer_processing",
+        impact: "none",
+        nextOwner: "system",
+        now,
+      });
       autoRun.clarificationResume = { status: "processing", token: resumeToken, by, startedAt: answerAt };
       autoRun.phase = "understanding";
       autoRun.updatedAt = answerAt;
@@ -4336,7 +4706,11 @@ export function createAutoRunService({
         },
       });
       if (autoRun.status !== "needs_input" || autoRun.clarificationResume?.token !== resumeToken) {
-        return { ok: true, resumed: false, reason: "clarification_resume_cancelled", autoRun };
+        runTx(() => updateExecutionAction(actionReceipt, {
+          status: "failed", messageCode: "answer_cancelled", impact: "none", nextOwner: "me",
+          errorCode: "clarification_resume_cancelled", errorMessage: "The clarification changed before it could resume.", now,
+        }));
+        return { ok: true, resumed: false, reason: "clarification_resume_cancelled", autoRun, actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }) };
       }
       const nextPath = nextDecision.path;
       const revisedPlan = plan ? {
@@ -4415,11 +4789,18 @@ export function createAutoRunService({
       maybePostIssueReport(autoRun, worktree, body);
 
       if (nextPath === "clarify") {
-        return { ok: true, resumed: true, waitingForInput: true, autoRun };
+        runTx(() => updateExecutionAction(actionReceipt, {
+          status: "succeeded", messageCode: "answer_needs_more_input", impact: "none", nextOwner: "me", now,
+        }));
+        return { ok: true, resumed: true, waitingForInput: true, autoRun, actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }) };
       }
 
       if (autoRun.status !== "needs_input" || autoRun.clarificationResume?.token !== resumeToken) {
-        return { ok: true, resumed: false, reason: "clarification_resume_cancelled", autoRun };
+        runTx(() => updateExecutionAction(actionReceipt, {
+          status: "failed", messageCode: "answer_cancelled", impact: "none", nextOwner: "me",
+          errorCode: "clarification_resume_cancelled", errorMessage: "The clarification changed before it could resume.", now,
+        }));
+        return { ok: true, resumed: false, reason: "clarification_resume_cancelled", autoRun, actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }) };
       }
 
       if (!worktree) {
@@ -4441,6 +4822,10 @@ export function createAutoRunService({
         });
         runTx(() => {
           autoRun.clarificationResume = null;
+          updateExecutionAction(actionReceipt, {
+            status: "succeeded", messageCode: "answer_resumed", impact: "none", nextOwner: "ai",
+            targetId: resumed.invocation?.id ?? null, now,
+          });
           appendEvent({
             invocationId: resumed.invocation?.id ?? null,
             type: "auto_run_resumed_after_clarification",
@@ -4449,7 +4834,7 @@ export function createAutoRunService({
             data: { autoRunId: autoRun.id, worktreeId: resumed.worktree?.id ?? null, answeredBy: by, path: nextPath },
           });
         });
-        return { ok: true, resumed: true, ...resumed };
+        return { ok: true, resumed: true, ...resumed, actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }), replayed: false };
       }
 
       const verifyProject = state.projects.find((project) => project.id === autoRun.projectId) ?? null;
@@ -4464,6 +4849,7 @@ export function createAutoRunService({
           worktreeId: worktree.id,
           projectId: worktree.projectId,
           autoRunId: autoRun.id,
+          executionActionReceiptId: actionReceipt.id,
           role: nextPath,
           executionChainId: autoRun.executionChainId,
           autonomyProfile: autoRun.autonomyProfile,
@@ -4474,6 +4860,10 @@ export function createAutoRunService({
       runTx(() => {
         autoRun.clarificationResume = null;
         autoRun.invocationId = invocation.id;
+        updateExecutionAction(actionReceipt, {
+          status: "succeeded", messageCode: "answer_resumed", impact: "none", nextOwner: "ai",
+          targetId: invocation.id, now,
+        });
         const artifactExecution = ["develop", "office", "general", "creative", "content"].includes(nextPath);
         autoRun.phase = artifactExecution ? "implementing" : "planning";
         autoRun.executionStage = artifactExecution ? "execution" : "analysis";
@@ -4487,7 +4877,7 @@ export function createAutoRunService({
         });
       });
       startInvocationIfAllowed(invocation, agent);
-      return { ok: true, resumed: true, autoRun, invocation };
+      return { ok: true, resumed: true, autoRun, invocation, actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }), replayed: false };
     } catch (error) {
       runTx(() => {
         if (autoRun.clarificationResume?.token === resumeToken) autoRun.clarificationResume = null;
@@ -4507,6 +4897,15 @@ export function createAutoRunService({
           autoRun.phase = "waiting_for_input";
           autoRun.updatedAt = now();
         }
+        updateExecutionAction(actionReceipt, {
+          status: "failed",
+          messageCode: "answer_resume_failed",
+          impact: "none",
+          nextOwner: "me",
+          errorCode: error?.code ?? "answer_resume_failed",
+          errorMessage: error?.message ?? error,
+          now,
+        });
       });
       throw error;
     }
@@ -4699,7 +5098,26 @@ export function createAutoRunService({
       }).length,
       0,
     ));
-    return { reaped, readvanced, capacityRetried, capacityBlocked, holdsReleased, deliveryReviews, workItemsConverged };
+    const executionActionsReconciled = runTx(() => (state.autoRuns ?? []).reduce((count, autoRun) => {
+      let changed = 0;
+      for (const receipt of autoRun.executionActionReceipts ?? []) {
+        if (reconcileExecutionActionReceipt(receipt, {
+          state,
+          autoRun,
+          findInvocation,
+          findTargetInvocation: (candidate) => (state.invocations ?? []).find((invocation) =>
+            invocation.options?.metadata?.autoRunId === autoRun.id
+            && invocation.options?.metadata?.executionActionReceiptId === candidate.id) ?? null,
+          now: now(),
+        }).changed) changed += 1;
+      }
+      return count + changed;
+    }, 0));
+    const archiveAt = now();
+    const idempotencyRecordsArchived = executionActionIdempotencyArchiveNeeded(state, { now: archiveAt })
+      ? runTx(() => archiveExecutionActionIdempotencyRecords(state, { now: archiveAt })).archivedRecords
+      : 0;
+    return { reaped, readvanced, capacityRetried, capacityBlocked, holdsReleased, deliveryReviews, workItemsConverged, executionActionsReconciled, idempotencyRecordsArchived };
   }
 
   function recordRoutingOverride(autoRunId, {
@@ -4755,5 +5173,5 @@ export function createAutoRunService({
     return { ok: true, routingOverride: publicOverride(autoRun.routingOverride), replayed: false };
   }
 
-  return { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, stopAutoRunDelivery, mergeAutoRunPr, recordRoutingOverride, maybeDeployAfterMerge, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
+  return { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, reconcileExecutionAction, attemptFailover, cancelAutoRun, stopAutoRunDelivery, mergeAutoRunPr, recordRoutingOverride, maybeDeployAfterMerge, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }

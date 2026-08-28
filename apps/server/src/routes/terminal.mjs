@@ -20,6 +20,8 @@ export async function handleTerminalRoutes({
   createHostFileScope,
   updateHostFileScope,
   listHostFileEntries,
+  searchHostFiles,
+  previewHostFile,
   listHostFileTransfers,
   uploadHostFile,
   downloadHostFile,
@@ -220,6 +222,46 @@ export async function handleTerminalRoutes({
     sendJson(res, result.ok ? 200 : result.status, result.ok
       ? { scope: result.scope, path: result.path, entries: result.entries, count: result.count }
       : { error: result.error });
+    return true;
+  }
+
+  const scopeSearchMatch = url.pathname.match(/^\/api\/host-file-scopes\/([^/]+)\/search$/);
+  if (req.method === "POST" && scopeSearchMatch) {
+    const scope = findVisibleHostFileScope(state, actor, decodeURIComponent(scopeSearchMatch[1]));
+    const target = scope ? findVisibleSshTarget(state, actor, scope.sshTargetId) : null;
+    if (!scope || !target) {
+      sendJson(res, 404, { error: "host_file_scope_not_found" });
+      return true;
+    }
+    const result = await searchHostFiles(target, scope, await readJson(req), actor);
+    sendJson(res, result.ok ? 200 : result.status, result.ok
+      ? { scopeId: result.scopeId, scopeRevision: result.scopeRevision, results: result.results, count: result.count, contentSearchEnabled: result.contentSearchEnabled, boundaries: result.boundaries }
+      : { error: result.error, ...(result.currentRevision ? { currentRevision: result.currentRevision } : {}) });
+    return true;
+  }
+
+  const scopePreviewMatch = url.pathname.match(/^\/api\/host-file-scopes\/([^/]+)\/preview$/);
+  if (req.method === "POST" && scopePreviewMatch) {
+    const scope = findVisibleHostFileScope(state, actor, decodeURIComponent(scopePreviewMatch[1]));
+    const target = scope ? findVisibleSshTarget(state, actor, scope.sshTargetId) : null;
+    if (!scope || !target) {
+      sendJson(res, 404, { error: "host_file_scope_not_found" });
+      return true;
+    }
+    const result = await previewHostFile(target, scope, await readJson(req), actor);
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error, ...(result.currentRevision ? { currentRevision: result.currentRevision } : {}) });
+      return true;
+    }
+    res.writeHead(200, {
+      "Content-Type": result.contentType,
+      "Content-Length": String(result.bytes.length),
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": "sandbox",
+      "X-Content-Type-Options": "nosniff",
+      "X-Host-Preview-Kind": result.kind,
+    });
+    res.end(result.bytes);
     return true;
   }
 

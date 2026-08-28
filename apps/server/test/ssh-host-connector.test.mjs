@@ -81,6 +81,29 @@ test("fails closed when the observed fingerprint changes", async () => {
   }, { password: "do-not-leak" }), { code: "ssh_host_fingerprint_changed" });
 });
 
+test("classifies refused, timed out, and unreachable connections without exposing socket details", async () => {
+  const target = {
+    host: "host.example", port: 22, user: "deploy", authMethod: "password_ref", networkPolicy: "public_only",
+    knownHostFingerprint: sshHostFingerprint(HOST_KEY),
+  };
+  for (const [socketCode, expected] of [
+    ["ECONNREFUSED", "ssh_connection_refused"],
+    ["ETIMEDOUT", "ssh_connection_timeout"],
+    ["EHOSTUNREACH", "ssh_host_unreachable"],
+    ["ENETUNREACH", "ssh_host_unreachable"],
+  ]) {
+    class FailingClient extends EventEmitter {
+      connect() { setImmediate(() => this.emit("error", Object.assign(new Error("socket detail must stay private"), { code: socketCode }))); }
+      end() {}
+    }
+    const connector = createSshHostConnector({ ClientClass: FailingClient, lookup: async () => [{ address: "93.184.216.22", family: 4 }] });
+    await assert.rejects(
+      connector.verifyConnection(target, { password: "secret" }),
+      (error) => error.code === expected && !error.message.includes("socket detail"),
+    );
+  }
+});
+
 test("SFTP callback preserves only explicitly safe deployment failures", async () => {
   const ClientClass = fakeClientClass();
   const connector = createSshHostConnector({ ClientClass, lookup: async () => [{ address: "93.184.216.23", family: 4 }] });
@@ -100,6 +123,14 @@ test("SFTP callback preserves only explicitly safe deployment failures", async (
   await assert.rejects(
     connector.runSftp(target, { password: "secret" }, async () => { throw Object.assign(new Error("password=secret"), { code: "unsafe_detail" }); }),
     (error) => error.code === "ssh_sftp_operation_failed" && !error.message.includes("secret"),
+  );
+  await assert.rejects(
+    connector.runSftp(target, { password: "secret" }, async () => { throw Object.assign(new Error("private remote path"), { code: 3 }); }),
+    (error) => error.code === "ssh_sftp_permission_denied" && !error.message.includes("private remote path"),
+  );
+  await assert.rejects(
+    connector.runSftp(target, { password: "secret" }, async () => { throw Object.assign(new Error("No space left on device: /private/path"), { code: 4 }); }),
+    (error) => error.code === "ssh_sftp_no_space" && !error.message.includes("private/path"),
   );
 });
 
@@ -151,8 +182,17 @@ test("maps host questions to a finite read-only diagnostic vocabulary", () => {
   assert.equal(sshDiagnosticActionForInput("show top CPU processes"), "processes");
   assert.equal(sshDiagnosticActionForInput("查看监听端口"), "listening_ports");
   assert.equal(sshDiagnosticActionForInput("列出 Docker 容器"), "docker_status");
+  assert.equal(sshDiagnosticActionForInput("看看最近系统日志"), "recent_logs");
+  assert.equal(sshDiagnosticActionForInput("检查网卡和网络地址"), "network_info");
+  assert.equal(sshDiagnosticActionForInput("检查登陆情况"), "ssh_login_audit");
+  assert.equal(sshDiagnosticActionForInput("查看最近登陆信息"), "ssh_login_audit");
+  assert.equal(sshDiagnosticActionForInput("检查 SSH 登录审计日志"), "ssh_login_audit");
+  assert.equal(sshDiagnosticActionForInput("查看当前登录用户"), "login_sessions");
+  assert.equal(sshDiagnosticActionForInput("show SSH sessions"), "login_sessions");
   assert.equal(sshDiagnosticActionForInput("delete old logs && whoami"), null);
   assert.equal(sshDiagnosticCommand("docker_status"), "docker ps --format '{{.Names}}\\t{{.Status}}'");
+  assert.equal(sshDiagnosticCommand("login_sessions"), "who");
+  assert.equal(sshDiagnosticCommand("ssh_login_audit"), "journalctl --no-pager --quiet --since '-24 hours' -u ssh.service -u sshd.service -n 100 -o short-iso");
   assert.equal(sshDiagnosticCommand("processes; id"), null);
 });
 

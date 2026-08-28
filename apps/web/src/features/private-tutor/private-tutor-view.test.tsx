@@ -10,10 +10,19 @@ const apiMocks = vi.hoisted(() => ({
   confirmMigration: vi.fn(),
   snapshot: vi.fn(),
   currentAssessment: vi.fn(),
+  startAssessment: vi.fn(),
+  answerAssessment: vi.fn(),
+  startSession: vi.fn(),
+  activePackage: vi.fn(),
   listPackages: vi.fn(),
   getPackage: vi.fn(),
   activatePackage: vi.fn(),
   learningHistory: vi.fn(),
+  learningTrial: vi.fn(),
+  startLearningTrial: vi.fn(),
+  stopLearningTrial: vi.fn(),
+  learningPreferences: vi.fn(),
+  updateLearningPreferences: vi.fn(),
 }));
 
 const sessionUser = { role: "viewer" } as const;
@@ -61,6 +70,11 @@ const completedAssessment = {
 } as const;
 
 const emptyReviewBook = { learnerId: activeProfile.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] } as const;
+const learningPreferences = {
+  learnerId: activeProfile.id, captions: true, reducedMotion: false, dailyMinutes: 20, planIntensity: "standard",
+  teacherStyle: "heuristic_guidance", explanationDepth: "concise_then_expand", followUpStyle: "gentle_probe", voicePreference: "push_to_talk",
+  learningGoal: null, deactivatedPackageIds: [], revision: 1, schemaVersion: 1, updatedAt: "2026-08-24T00:00:00.000Z",
+} as const;
 
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getPrivateTutorProfile: apiMocks.getProfile,
@@ -72,6 +86,11 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
   getPrivateTutorReviewBook: () => Promise.resolve(emptyReviewBook),
   getPrivateTutorLearningHistory: apiMocks.learningHistory,
+  getPrivateTutorLearningTrial: apiMocks.learningTrial,
+  startPrivateTutorLearningTrial: apiMocks.startLearningTrial,
+  stopPrivateTutorLearningTrial: apiMocks.stopLearningTrial,
+  getPrivateTutorLearningPreferences: apiMocks.learningPreferences,
+  updatePrivateTutorLearningPreferences: apiMocks.updateLearningPreferences,
   getPrivateTutorWeeklyReport: () => Promise.reject(new Error("not used")),
   getPrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
   updatePrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
@@ -80,11 +99,11 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   deletePrivateTutorProfile: () => Promise.reject(new Error("not used")),
   listPrivateTutorDeletionJobs: () => Promise.resolve([]),
   retryPrivateTutorLearnerDeletion: () => Promise.reject(new Error("not used")),
-  startPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
-  answerPrivateTutorAssessment: () => Promise.reject(new Error("not used")),
+  startPrivateTutorAssessment: apiMocks.startAssessment,
+  answerPrivateTutorAssessment: apiMocks.answerAssessment,
   pausePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
   resumePrivateTutorAssessment: () => Promise.reject(new Error("not used")),
-  startPrivateTutorSession: () => Promise.reject(new Error("not used")),
+  startPrivateTutorSession: apiMocks.startSession,
   pausePrivateTutorSession: () => Promise.reject(new Error("not used")),
   resumePrivateTutorSession: () => Promise.reject(new Error("not used")),
   actOnPrivateTutorSession: () => Promise.reject(new Error("not used")),
@@ -96,22 +115,19 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   listPrivateTutorContentPackages: apiMocks.listPackages,
   getPrivateTutorContentPackage: apiMocks.getPackage,
   activatePrivateTutorContentPackage: apiMocks.activatePackage,
-  getPrivateTutorActiveContentPackage: () => Promise.resolve({
-    id: "demo-math-foundations-v1",
-    name: "初中数学基础：一元一次方程",
-    subjectId: "math",
-    domain: "math",
-    sourceType: "textbook",
-    version: "1.0.0",
-    targetAudience: { stage: "初中/通用基础" },
-    evaluationCapabilities: { deterministicGrading: true },
-  }),
+  getPrivateTutorActiveContentPackage: apiMocks.activePackage,
   listPrivateTutorMaterials: () => Promise.resolve([]),
   uploadPrivateTutorMaterial: () => Promise.reject(new Error("not used")),
   generatePrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
   getPrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
   updatePrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
   publishPrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
+  listPrivateTutorContentMigrationCandidates: () => Promise.resolve([]),
+  createPrivateTutorContentMigrationPreview: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorContentMigrationMapping: () => Promise.reject(new Error("not used")),
+  confirmPrivateTutorContentMigration: () => Promise.reject(new Error("not used")),
+  applyPrivateTutorContentMigration: () => Promise.reject(new Error("not used")),
+  rollbackPrivateTutorContentMigration: () => Promise.reject(new Error("not used")),
 }));
 
 const migrationReportFixture = {
@@ -133,6 +149,23 @@ describe("My private tutor personal learning information architecture", () => {
     apiMocks.confirmMigration.mockReset().mockRejectedValue(new Error("not used"));
     apiMocks.snapshot.mockReset().mockResolvedValue({ learner: activeProfile, profile: activeProfile, snapshot: freshSnapshot, learnerModel: null, strategyDecision: null, learningPlan: null });
     apiMocks.currentAssessment.mockReset().mockResolvedValue(completedAssessment);
+    apiMocks.startAssessment.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.answerAssessment.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.startSession.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.activePackage.mockReset().mockResolvedValue({
+      id: "demo-math-foundations-v1",
+      name: "初中数学基础：一元一次方程",
+      subjectId: "math",
+      domain: "math",
+      sourceType: "textbook",
+      version: "1.0.0",
+      targetAudience: { stage: "初中/通用基础" },
+      evaluationCapabilities: { deterministicGrading: true },
+      knowledgeComponents: [
+        { id: "integer", name: "有理数运算", shortDescription: "正负数加减" },
+        { id: "balance", name: "等式两边同乘同除", shortDescription: "保持等式平衡" },
+      ],
+    });
     apiMocks.listPackages.mockReset().mockResolvedValue([{
       id: "demo-math-foundations-v1",
       name: "初中数学基础：一元一次方程",
@@ -188,6 +221,11 @@ describe("My private tutor personal learning information architecture", () => {
         recentSessions: [{ id: "session-1", status: "completed", moduleId: "mod-equations", moduleName: "一元一次方程与等式性质", knowledgeId: "integer", knowledgeTitle: "有理数运算", planId: "plan-1", planDayIndex: 1, practiceCount: 3, evidenceCount: 2, startedAt: "2026-08-25T08:00:00.000Z", completedAt: "2026-08-25T08:20:00.000Z", reviewAt: "2026-08-26T08:20:00.000Z" }],
       }],
     });
+    apiMocks.learningTrial.mockReset().mockResolvedValue(null);
+    apiMocks.startLearningTrial.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.stopLearningTrial.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.learningPreferences.mockReset().mockResolvedValue(learningPreferences);
+    apiMocks.updateLearningPreferences.mockReset().mockImplementation(async (patch) => ({ ...learningPreferences, ...patch, revision: 2 }));
   });
   afterEach(() => cleanup());
 
@@ -202,6 +240,7 @@ describe("My private tutor personal learning information architecture", () => {
 
   it("creates the current account profile through the single-profile contract", async () => {
     apiMocks.createProfile.mockResolvedValue({ profile: activeProfile, created: true, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(null);
     render(<PrivateTutorView />);
 
     fireEvent.change(await screen.findByLabelText("私教怎么称呼你"), { target: { value: "小林" } });
@@ -213,7 +252,101 @@ describe("My private tutor personal learning information architecture", () => {
       grade: "大学课程",
       curriculumEditionId: "demo-math-foundations-v1",
     });
-    expect(await screen.findByRole("button", { name: "今日学习" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "先选择这次想学什么" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /快速学一个知识点/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /用当前内容开始摸底/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /选择课程或导入我的教材/ })).toBeTruthy();
+  });
+
+  it("starts a three-question diagnostic for one learner-selected knowledge point", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(null);
+    apiMocks.startAssessment.mockResolvedValue({
+      id: "pas_quick",
+      learnerId: activeProfile.id,
+      mode: "quick",
+      targetKnowledgeId: "balance",
+      status: "active",
+      revision: 1,
+      startedAt: "2026-08-27T00:00:00.000Z",
+      pausedAt: null,
+      completedAt: null,
+      activeSeconds: 0,
+      targetSeconds: 135,
+      minQuestions: 3,
+      maxQuestions: 3,
+      answeredCount: 0,
+      currentQuestion: { revisionId: "diag-bal-01-v1", knowledgeId: "balance", difficulty: 1, kind: "choice", prompt: "为了保持等式平衡，下一步应该怎么做？", options: [{ id: "a", label: "只改左边" }, { id: "b", label: "两边相同操作" }] },
+      result: null,
+      updatedAt: "2026-08-27T00:00:00.000Z",
+    });
+    render(<PrivateTutorView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /快速学一个知识点/ }));
+    expect(await screen.findByRole("heading", { name: "选择一个知识点，3 题后开始学" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /等式两边同乘同除/ }));
+    fireEvent.click(screen.getByRole("button", { name: "开始 3 题快速摸底" }));
+
+    await waitFor(() => expect(apiMocks.startAssessment).toHaveBeenCalledWith({ mode: "quick", targetKnowledgeId: "balance" }));
+    expect(await screen.findByText("为了保持等式平衡，下一步应该怎么做？")).toBeTruthy();
+    expect(screen.getByText("第 1 题 · 共 3 题")).toBeTruthy();
+  });
+
+  it("moves a completed quick diagnostic directly into a five-minute lesson", async () => {
+    const activeQuickAssessment = {
+      id: "pas_quick",
+      learnerId: activeProfile.id,
+      mode: "quick",
+      targetKnowledgeId: "balance",
+      status: "active",
+      revision: 3,
+      startedAt: "2026-08-27T00:00:00.000Z",
+      pausedAt: null,
+      completedAt: null,
+      activeSeconds: 80,
+      targetSeconds: 135,
+      minQuestions: 3,
+      maxQuestions: 3,
+      answeredCount: 2,
+      currentQuestion: { revisionId: "diag-bal-03-v1", knowledgeId: "balance", difficulty: 3, kind: "numeric", prompt: "2(x + 1) = 8，x 是多少？", options: null },
+      result: null,
+      updatedAt: "2026-08-27T00:01:20.000Z",
+    } as const;
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(activeQuickAssessment);
+    apiMocks.answerAssessment.mockResolvedValue({
+      ...activeQuickAssessment,
+      status: "completed",
+      revision: 4,
+      completedAt: "2026-08-27T00:02:00.000Z",
+      answeredCount: 3,
+      currentQuestion: null,
+      result: { knowledge: [{ knowledgeId: "balance", mastery: 0.85, level: "mastered", evidenceCount: 3, correctCount: 3, dontKnowCount: 0 }], strengths: ["balance"], focus: [], answeredCount: 3 },
+    });
+    apiMocks.startSession.mockResolvedValue({ session: null, resumedExisting: false });
+    render(<PrivateTutorView />);
+
+    fireEvent.change(await screen.findByLabelText("写下答案"), { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交并看下一题" }));
+    expect(await screen.findByRole("heading", { name: "3 题快速摸底完成" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "开始 5 分钟私教" }));
+
+    await waitFor(() => expect(apiMocks.startSession).toHaveBeenCalledWith("easy"));
+  });
+
+  it("lets a new learner manage content before starting a diagnostic", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(null);
+    render(<PrivateTutorView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /选择课程或导入我的教材/ }));
+
+    expect(await screen.findByRole("heading", { name: "我的设置" })).toBeTruthy();
+    expect(screen.getByText("选择学习内容")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "导入我的资料" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "返回开始方式" }));
+    fireEvent.click(screen.getByRole("button", { name: /用当前内容开始摸底/ }));
+    expect(await screen.findByRole("heading", { name: "先让我认识一下你会什么" })).toBeTruthy();
   });
 
   it("keeps the five personal learning capabilities at level one", async () => {
@@ -238,6 +371,19 @@ describe("My private tutor personal learning information architecture", () => {
     expect(screen.queryByText("家长入口")).toBeNull();
   });
 
+  it("persists AI teacher and daily-plan preferences through the profile contract", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的设置" }));
+
+    fireEvent.change(screen.getByLabelText("每天可用时间"), { target: { value: "35" } });
+    await waitFor(() => expect(apiMocks.updateLearningPreferences).toHaveBeenCalledWith({ dailyMinutes: 35 }));
+
+    fireEvent.click(screen.getByRole("button", { name: /AI 私教/ }));
+    fireEvent.change(screen.getByLabelText("老师的讲解方式"), { target: { value: "socratic_questioning" } });
+    await waitFor(() => expect(apiMocks.updateLearningPreferences).toHaveBeenCalledWith({ teacherStyle: "socratic_questioning" }));
+  });
+
   it("shows versioned chapter history and real long-term quality metrics", async () => {
     apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
     render(<PrivateTutorView />);
@@ -248,6 +394,61 @@ describe("My private tutor personal learning information architecture", () => {
     expect(screen.getByText("当前计划：完成 1/7 天，进行中 1 天。")).toBeTruthy();
     expect(screen.getByText("有理数运算")).toBeTruthy();
     expect(apiMocks.learningHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a fourteen-day real-course trial without inventing early results", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.startLearningTrial.mockResolvedValue({
+      id: "ptlt_1", learnerId: activeProfile.id, contentPackageId: "demo-math-foundations-v1", contentPackageVersion: "1.0.0",
+      contentPackageName: "初中数学基础：一元一次方程", goal: "验证方程学习效果", durationDays: 14, observationDays: 2, status: "active",
+      startedAt: "2026-08-27T00:00:00.000Z", endsAt: "2026-09-10T00:00:00.000Z", observationEndsAt: "2026-09-12T00:00:00.000Z", stoppedAt: null, completedAt: null,
+      progress: { dayIndex: 1, activeDayCount: 0, daysRemaining: 13, completedSessionCount: 0 },
+      metrics: {
+        planDays: { startedCount: 0, completedCount: 0, completionRate: null },
+        nextDayRecall: { opportunityCount: 0, attemptedCount: 0, correctCount: 0, retentionRate: null },
+        delayedReview: { opportunityCount: 0, attemptedCount: 0, correctCount: 0, retentionRate: null },
+        followUps: { askedCount: 0, feedbackCount: 0, resolvedCount: 0, resolutionRate: null, feedbackCoverageRate: null },
+      },
+      readiness: { minimumSampleCount: 3, nextDayRecallReady: false, delayedReviewReady: false, followUpResolutionReady: false },
+      generatedAt: "2026-08-27T00:00:00.000Z",
+    });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的成长" }));
+
+    expect(await screen.findByRole("heading", { name: /验证次日还能不能想起/ })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("试学目标"), { target: { value: "验证方程学习效果" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始 14 天试学" }));
+
+    await waitFor(() => expect(apiMocks.startLearningTrial).toHaveBeenCalledWith("验证方程学习效果"));
+    expect(await screen.findByText("试学中 · 第 1/14 天")).toBeTruthy();
+    expect(screen.getByText(/14 天学习期后会保留 48 小时/)).toBeTruthy();
+    expect(screen.getAllByText("暂无").length).toBeGreaterThanOrEqual(3);
+    expect(screen.getAllByText(/· 样本不足$/).length).toBe(3);
+  });
+
+  it("explains the observation tail without counting new lessons", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.learningTrial.mockResolvedValue({
+      id: "ptlt_observing", learnerId: activeProfile.id, contentPackageId: "demo-math-foundations-v1", contentPackageVersion: "1.0.0",
+      contentPackageName: "初中数学基础：一元一次方程", goal: "验证方程学习效果", durationDays: 14, observationDays: 2, status: "observing",
+      startedAt: "2026-08-27T00:00:00.000Z", endsAt: "2026-09-10T00:00:00.000Z", observationEndsAt: "2026-09-12T00:00:00.000Z", stoppedAt: null, completedAt: null,
+      progress: { dayIndex: 14, activeDayCount: 12, daysRemaining: 0, completedSessionCount: 11 },
+      metrics: {
+        planDays: { startedCount: 12, completedCount: 11, completionRate: 0.9167 },
+        nextDayRecall: { opportunityCount: 10, attemptedCount: 9, correctCount: 7, retentionRate: 0.7778 },
+        delayedReview: { opportunityCount: 10, attemptedCount: 8, correctCount: 6, retentionRate: 0.75 },
+        followUps: { askedCount: 8, feedbackCount: 7, resolvedCount: 5, resolutionRate: 0.7143, feedbackCoverageRate: 0.875 },
+      },
+      readiness: { minimumSampleCount: 3, nextDayRecallReady: true, delayedReviewReady: true, followUpResolutionReady: true },
+      generatedAt: "2026-09-10T12:00:00.000Z",
+    });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的成长" }));
+
+    expect(await screen.findByText("观察结算中 · 第 14/14 天")).toBeTruthy();
+    expect(screen.getByText("学习期已结束，正在等待最后复测")).toBeTruthy();
+    expect(screen.getByText(/新课程不会进入本轮报告/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "提前结束并保留记录" })).toBeNull();
   });
 
   it("chooses diagnostic or a concrete chapter before activating personal material", async () => {

@@ -36,6 +36,12 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useSessionUser } from "@/hooks/use-session-user";
 import { type SectionKey, type WorkItemSection } from "@/store/ui-store";
 import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item-progress-dialog";
+import { ExecutionStartConfirmation } from "./execution-start-confirmation";
+import { deriveExecutionStartSummary } from "./execution-start-summary";
+import { ExecutionStartStatusCard } from "./execution-start-status-card";
+import { ExecutionReviewCard, type ExecutionActionReceipt } from "./execution-review-card";
+import { createWorkItemReviewActionController } from "./work-item-review-action-controller";
+import { WorkItemPlanActualCard } from "./work-item-plan-actual-card";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { TaskContentReferences } from "./task-content-references";
 import { readableAutoRunReadinessCheck, readinessFixLabel, readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
@@ -44,8 +50,9 @@ import { ApiError, type BusinessRoutineDefinition } from "@/lib/api-client";
 import type { LocalWorkItem, LocalWorkItemDeliveryEvidence, LocalWorkItemObservability, WorkItemComment, WorkItemOutcomeFile } from "./task-view-types";
 import { deriveWorkItemUserStatus } from "./work-item-user-status";
 import { WorkItemJobOverview } from "./work-item-job-overview";
+import { WorkItemContextCard, type TaskContextUpdate } from "./work-item-context-card";
 import { isLocalWorkItem } from "./work-item-response";
-import { COPY, type SummaryCopy } from "./work-item-summary-copy";
+import { COPY } from "./work-item-summary-copy";
 import {
   WAITING_LABEL,
   aiPhaseDescription,
@@ -55,9 +62,9 @@ import {
   expertSectionFor,
   latestExecutionKind,
   resultPresentation,
-  type DeliveryDecision,
   type WorkItemIntentSummary,
 } from "./work-item-summary-model";
+import { DeliveryDecisionCard } from "./work-item-delivery-decision-card";
 import {
   DeliverableFileList,
   DeliveryMarkdownDocument,
@@ -320,6 +327,8 @@ type TaskTemplateCandidate = {
 type PendingTemplateClarification = {
   acceptanceCriteria: string[];
   verificationSop: string[];
+  risks?: string[];
+  evidence?: Record<string, unknown>;
   candidates: TaskTemplateCandidate[];
   reason?: string;
 };
@@ -446,6 +455,7 @@ export function WorkItemSummaryView({
   const [progressOpen, setProgressOpen] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [executionActionReceipt, setExecutionActionReceipt] = useState<ExecutionActionReceipt | null>(null);
   const [retryOpen, setRetryOpen] = useState(false);
   const [retryPending, setRetryPending] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -453,8 +463,9 @@ export function WorkItemSummaryView({
   const [repairError, setRepairError] = useState<string | null>(null);
   const [resultExpanded, setResultExpanded] = useState(false);
   const [discussionOpen, setDiscussionOpen] = useState(false);
-  const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | "reverify" | null>(null);
+  const [actionPending, setActionPending] = useState<"start" | "cancel-start" | "recheck-start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | "reverify" | "reconcile" | "context" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [startConfirmationOpen, setStartConfirmationOpen] = useState(false);
   const [pendingTemplateClarification, setPendingTemplateClarification] = useState<PendingTemplateClarification | null>(null);
   const [templateCorrectionOpen, setTemplateCorrectionOpen] = useState(false);
   const [templateCorrectionOptions, setTemplateCorrectionOptions] = useState<BusinessRoutineDefinition[]>([]);
@@ -516,6 +527,7 @@ export function WorkItemSummaryView({
     setMaterialPreviewError(null);
     setLoadError(null);
     setSyncNotice(null);
+    setExecutionActionReceipt(null);
     setRetryOpen(false);
     setRetryPending(false);
     setRetryError(null);
@@ -612,6 +624,26 @@ export function WorkItemSummaryView({
   }, [observability?.delivery?.aiReview?.status]);
 
   useEffect(() => {
+    if (!item?.executionStartReceipt || !["queued", "starting"].includes(item.executionStartReceipt.status)) return undefined;
+    const timer = window.setTimeout(() => setRefreshVersion((version) => version + 1), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [item?.executionStartReceipt?.status, item?.executionStartReceipt?.updatedAt]);
+
+  useEffect(() => {
+    const reviewState = observability?.executionReview?.state;
+    if (!reviewState || !["preparing", "working", "waiting", "verifying"].includes(reviewState)) return undefined;
+    const timer = window.setTimeout(() => setRefreshVersion((version) => version + 1), reviewState === "waiting" ? 5_000 : 2_000);
+    return () => window.clearTimeout(timer);
+  }, [observability?.executionReview?.state, observability?.executionReview?.updatedAt]);
+
+  useEffect(() => {
+    const receipt = observability?.executionReview?.actionReceipt ?? executionActionReceipt;
+    if (!receipt || !["accepted", "running"].includes(receipt.status ?? "")) return undefined;
+    const timer = window.setTimeout(() => setRefreshVersion((version) => version + 1), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [executionActionReceipt, observability?.executionReview?.actionReceipt]);
+
+  useEffect(() => {
     if (!materialUndo) return undefined;
     const timer = window.setTimeout(() => setMaterialUndo(null), 8_000);
     return () => window.clearTimeout(timer);
@@ -655,6 +687,33 @@ export function WorkItemSummaryView({
   const presentation = resultPresentation(executionKind, language);
   const hasBoundAutoRun = item.executionBindings?.some((binding) => binding.kind === "auto_run") ?? false;
   const hasManagedExecution = Boolean(executionKind) || Boolean(item.executionState && item.executionState !== "unclaimed");
+  const startReceipt = item.executionStartReceipt ?? null;
+  const executionReview = observability?.executionReview ?? null;
+  const effectiveExecutionActionReceipt = executionReview?.actionReceipt ?? executionActionReceipt;
+  const showExecutionReview = Boolean(executionReview?.targetId && executionReview.state !== "queued");
+  const executionReviewOwnsProgress = showExecutionReview;
+  const usesProjectedReviewActions = Boolean(showExecutionReview && executionReview?.actionAvailability);
+  const executionActionRequest = (kind: "retry_execution" | "fix_with_ai" | "rerun_verification" | "answer_ai" | "create_pull_request" | "update_pull_request" | "apply_local_changes" | "apply_office_result") => ({
+    idempotencyKey: `work-item:${item.id}:${kind}:${item.revision}:${effectiveExecutionActionReceipt?.id ?? "none"}:${effectiveExecutionActionReceipt?.status ?? "none"}:${effectiveExecutionActionReceipt?.updatedAt ?? "none"}:${executionReview?.targetId ?? observability?.latestRun?.id ?? "none"}:${executionReview?.targetStatus ?? observability?.latestRun?.status ?? "none"}`.slice(0, 200),
+    expectedWorkItemRevision: item.revision,
+    expectedTargetStatus: executionReview?.targetStatus ?? observability?.latestRun?.status ?? undefined,
+  });
+  const uncertainActionReceipt = (message: string): ExecutionActionReceipt => ({
+    status: "unknown",
+    message,
+    impact: "none",
+    nextOwner: "me",
+  });
+  const actionReceiptFromError = (error: unknown): ExecutionActionReceipt | null => {
+    if (!(error instanceof ApiError) || !error.details?.actionReceipt || typeof error.details.actionReceipt !== "object") return null;
+    return error.details.actionReceipt as ExecutionActionReceipt;
+  };
+  const executionActionStatus = effectiveExecutionActionReceipt?.status ?? null;
+  const executionActionLocked = executionActionStatus === "accepted"
+    || executionActionStatus === "running"
+    || executionActionStatus === "unknown";
+  const startRequestActive = Boolean(startReceipt && startReceipt.status !== "cancelled");
+  const startHandoffPending = Boolean(startReceipt && ["queued", "starting", "blocked", "paused"].includes(startReceipt.status));
   const executionContractReady = item.executionContractGate?.ready === true;
   const reviewAcceptanceCriteria = item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria;
   const reviewVerificationSop = item.reviewContract?.verificationSop ?? item.verificationSop ?? [];
@@ -663,6 +722,7 @@ export function WorkItemSummaryView({
     && item.verificationSop?.length
     && item.executionContractConfirmedAt,
   );
+  const executionPlanPrepared = Boolean(item.acceptanceCriteria.length && item.verificationSop?.length);
   const scheduleConflict = hasManagedExecution && Boolean(item.dueDate && item.plannedDate && item.plannedDate > item.dueDate);
   const collaborationStage = status === "completed"
     ? 3
@@ -671,14 +731,33 @@ export function WorkItemSummaryView({
       : hasManagedExecution
       ? 1
       : 0;
-  const startEligible = ["not_started", "scheduled"].includes(status) && !hasBoundAutoRun && !observability?.latestRun;
+  const startEligible = ["not_started", "scheduled"].includes(status) && !hasBoundAutoRun && !observability?.latestRun && !startRequestActive;
   const canCorrectMyTemplate = Boolean(item.myTemplateBinding && startEligible && canOperate);
   const learnedTemplateMatch = Boolean(item.myTemplateBinding?.matchReasons.some((reason) =>
     /纠正|corrected|correction/i.test(reason)));
-  const canStartAi = startEligible && readiness?.ready === true;
+  const materialExecutionBlocked = (item.recordBindings ?? []).some((binding) =>
+    ["stale", "needs_confirmation", "unavailable"].includes(binding.resolution.state));
+  const canStartAi = startEligible && readiness?.ready === true && !materialExecutionBlocked;
+  const canCorrectTaskContext = canOperate
+    && item.state !== "closed"
+    && status !== "completed"
+    && !hasManagedExecution
+    && !startRequestActive;
   const readinessBlocked = startEligible && readiness?.ready === false;
   const readinessChecking = startEligible && readiness == null;
   const readinessWarnings = readiness?.checks.filter((check) => check.status === "warn") ?? [];
+  const readableReadiness = readiness ? {
+    ...readiness,
+    checks: readiness.checks.map((check) => readableAutoRunReadinessCheck(check, language)),
+  } : null;
+  const startSummary = deriveExecutionStartSummary({
+    item,
+    project: consoleState?.projects?.find((project) => project.id === item.projectId) ?? null,
+    readiness: readableReadiness,
+    language,
+  });
+  const contextHasBlockingIssues = startSummary.issues.some((issue) => issue.severity === "blocking");
+  const intentConflictResolution = startSummary.clarification?.resolution ?? null;
   const primaryUsesProgress = (["not_started", "scheduled", "ai_working", "waiting"].includes(status)
     || (status === "needs_action" && item.waitingOn === "me" && !["failed", "awaiting_approval"].includes(item.executionState ?? ""))
     || (status === "blocked" && !observability?.latestRun)) && !startEligible;
@@ -693,7 +772,11 @@ export function WorkItemSummaryView({
   const clarificationSectionId = `work-item-human-action-${item.id}`;
   const firstClarificationQuestion = observability?.latestRun?.decision?.clarifyingQuestions?.find(Boolean) ?? null;
   const unresolvedDependency = item.blockedBy?.find((dependency) => !dependency.resolved) ?? null;
-  const primaryGuidance = pendingClarification
+  const primaryGuidance = startHandoffPending
+    ? (language === "zh"
+        ? "AI 启动请求已经保存；排队或待处理情况会在当前任务中持续更新。"
+        : "The AI start request is saved. Queue and action updates will continue in this task.")
+    : pendingClarification
     ? canOperate
       ? firstClarificationQuestion
         ? (language === "zh" ? `AI 需要你回答：${firstClarificationQuestion}` : `AI needs your answer: ${firstClarificationQuestion}`)
@@ -705,6 +788,7 @@ export function WorkItemSummaryView({
           : `Waiting for ${unresolvedDependency.localRef} · ${unresolvedDependency.title} to finish.`)
       : phaseDescription ?? copy.next[status];
   const resultSectionId = `work-item-result-${item.id}`;
+  const officeBatchResultId = `work-item-office-batch-${item.id}`;
   const acceptancePassed = reviewAcceptanceCriteria.filter((criterion) =>
     (item.reviewEvidence ?? item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed")).length;
   const acceptanceNeedsReview = reviewAcceptanceCriteria.length - acceptancePassed;
@@ -1182,8 +1266,13 @@ export function WorkItemSummaryView({
       setSyncNotice(language === "zh"
         ? "重新执行所需的完成标准和检查步骤已建立。请先核对内容，再选择“让 AI 继续修改”启动新一轮执行；旧结果仍不能据此确认通过。"
         : "The criteria and verification steps for a new run are ready. Review them, then choose Ask AI to revise to start a new run. The old result still cannot be approved against these later requirements.");
-    } catch {
-      setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
+    } catch (caught) {
+      const changed = caught instanceof ApiError
+        && ["work_item_revision_conflict", "work_item_record_bindings_stale"].includes(caught.code);
+      setActionError(changed
+        ? (language === "zh" ? "任务或资料刚刚发生变化，已为你刷新，请按最新内容重新核对。" : "The task or its materials just changed. Review the refreshed content before continuing.")
+        : (language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later."));
+      if (changed) setRefreshVersion((version) => version + 1);
     } finally {
       setActionPending(null);
     }
@@ -1195,8 +1284,11 @@ export function WorkItemSummaryView({
     try {
       const assisted = await api.suggestWorkItemDraft({ projectId: item.projectId, title: item.title, body: item.body }) as {
         draft: {
+          taskUnderstanding?: string;
           acceptanceCriteria: string[];
           verificationSop: string[];
+          risks?: string[];
+          evidence?: Record<string, unknown>;
           templateMatch?: {
             state: "matched" | "ambiguous" | "missing";
             candidates: TaskTemplateCandidate[];
@@ -1212,6 +1304,8 @@ export function WorkItemSummaryView({
         setPendingTemplateClarification({
           acceptanceCriteria: assisted.draft.acceptanceCriteria,
           verificationSop: assisted.draft.verificationSop,
+          risks: assisted.draft.risks,
+          evidence: assisted.draft.evidence,
           candidates: assisted.draft.templateMatch.candidates,
           reason: assisted.draft.templateMatch.clarification?.reason,
         });
@@ -1240,25 +1334,41 @@ export function WorkItemSummaryView({
               : "Several results may fit. Confirm only the result you want; you do not need to choose a template."));
         return;
       }
-      const prepared = await api.updateWorkItem(item.id, {
-        expectedRevision: item.revision,
-        acceptanceCriteria: assisted.draft.acceptanceCriteria,
-        verificationSop: assisted.draft.verificationSop,
-        ...(assisted.draft.templateMatch?.state === "matched" && assisted.draft.templateMatch.selected ? {
+      let latestItem = item;
+      if (assisted.draft.templateMatch?.state === "matched" && assisted.draft.templateMatch.selected) {
+        const bound = await api.updateWorkItem(item.id, {
+          expectedRevision: item.revision,
           myTemplateBinding: {
             definitionId: assisted.draft.templateMatch.selected.definitionId,
             familyId: assisted.draft.templateMatch.selected.templateId,
             version: assisted.draft.templateMatch.selected.version,
             matchReasons: assisted.draft.templateMatch.selected.reasons,
           },
-        } : {}),
+        }) as { workItem: LocalWorkItem };
+        latestItem = bound.workItem;
+      }
+      const prepared = await api.prepareWorkItemExecutionContract(item.id, {
+        expectedRevision: latestItem.revision,
+        draftOverride: {
+          taskUnderstanding: assisted.draft.taskUnderstanding,
+          acceptanceCriteria: assisted.draft.acceptanceCriteria,
+          verificationSop: assisted.draft.verificationSop,
+          risks: assisted.draft.risks,
+          evidence: assisted.draft.evidence,
+        },
       }) as { workItem: LocalWorkItem };
       setItem(prepared.workItem);
+      setStartConfirmationOpen(true);
       setSyncNotice(language === "zh"
-        ? "执行方案已生成。请核对任务目标、完成标准和检查步骤；确认无误后，再次选择“让 AI 开始”。"
-        : "The execution plan is ready. Review the goal, completion criteria, and verification steps, then choose Let AI start again to confirm.");
-    } catch {
-      setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
+        ? "执行方案已生成，请在确认页核对后决定是否开始。"
+        : "The execution plan is ready. Review it in the confirmation before deciding whether to start.");
+    } catch (caught) {
+      const changed = caught instanceof ApiError
+        && ["work_item_revision_conflict", "work_item_record_bindings_stale"].includes(caught.code);
+      setActionError(changed
+        ? (language === "zh" ? "任务或资料刚刚发生变化，已为你刷新，请按最新内容重新核对。" : "The task or its materials just changed. Review the refreshed content before continuing.")
+        : (language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later."));
+      if (changed) setRefreshVersion((version) => version + 1);
     } finally {
       setActionPending(null);
     }
@@ -1271,10 +1381,8 @@ export function WorkItemSummaryView({
       const confirmation = language === "zh"
         ? `你确认这次需要“${candidate.expectedOutput}”`
         : `You confirmed the desired result is “${candidate.expectedOutput}”`;
-      const prepared = await api.updateWorkItem(item.id, {
+      const bound = await api.updateWorkItem(item.id, {
         expectedRevision: item.revision,
-        acceptanceCriteria: pendingTemplateClarification.acceptanceCriteria,
-        verificationSop: pendingTemplateClarification.verificationSop,
         myTemplateBinding: {
           definitionId: candidate.definitionId,
           familyId: candidate.templateId,
@@ -1283,13 +1391,28 @@ export function WorkItemSummaryView({
           userConfirmedResult: true,
         },
       }) as { workItem: LocalWorkItem };
+      const prepared = await api.prepareWorkItemExecutionContract(item.id, {
+        expectedRevision: bound.workItem.revision,
+        draftOverride: {
+          acceptanceCriteria: pendingTemplateClarification.acceptanceCriteria,
+          verificationSop: pendingTemplateClarification.verificationSop,
+          risks: pendingTemplateClarification.risks,
+          evidence: pendingTemplateClarification.evidence,
+        },
+      }) as { workItem: LocalWorkItem };
       setItem(prepared.workItem);
       setPendingTemplateClarification(null);
+      setStartConfirmationOpen(true);
       setSyncNotice(language === "zh"
-        ? `已确认最终得到“${candidate.expectedOutput}”。请核对执行方案，再选择“让 AI 开始”。`
-        : `The desired result is “${candidate.expectedOutput}”. Review the plan, then choose Let AI start.`);
-    } catch {
-      setActionError(language === "zh" ? "处理结果暂时无法确认，请重试。" : "The desired result could not be confirmed. Try again.");
+        ? `已确认最终得到“${candidate.expectedOutput}”。请在确认页核对执行方案。`
+        : `The desired result is “${candidate.expectedOutput}”. Review the execution plan in the confirmation.`);
+    } catch (caught) {
+      const changed = caught instanceof ApiError
+        && ["work_item_revision_conflict", "work_item_record_bindings_stale"].includes(caught.code);
+      setActionError(changed
+        ? (language === "zh" ? "任务或资料刚刚发生变化，已为你刷新，请重新选择结果。" : "The task or its materials just changed. Review the refresh and choose the result again.")
+        : (language === "zh" ? "处理结果暂时无法确认，请重试。" : "The desired result could not be confirmed. Try again."));
+      if (changed) setRefreshVersion((version) => version + 1);
     } finally {
       setActionPending(null);
     }
@@ -1418,20 +1541,27 @@ export function WorkItemSummaryView({
     setActionPending("start");
     setActionError(null);
     try {
-      const response = await api.updateWorkItem(item.id, {
-        expectedRevision: item.revision,
-        executionPolicy: "auto",
-        waitingOn: "ai",
-        ...(item.status === "backlog" ? { status: "ready" } : {}),
-      }) as { workItem: LocalWorkItem };
+      const response = await api.confirmWorkItemExecutionContract(item.id, item.revision) as { workItem: LocalWorkItem };
       setItem(response.workItem);
+      setStartConfirmationOpen(false);
       setSyncNotice(language === "zh"
-        ? "任务已设为自动处理。AI 会按截止风险和优先级开始；需要你决定时会在当前任务中提问。"
-        : "The task is set to automatic. AI will start based on deadline risk and priority, and ask here only when a decision is needed.");
+        ? "AI 已接单。任务会按截止风险和优先级进入执行；排队或阻塞原因会显示在当前任务中。"
+        : "AI accepted the task. Execution follows deadline risk and priority, with queue or blocking reasons shown here.");
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-start-ai", workItemId: item.id } }));
       setRefreshVersion((version) => version + 1);
-    } catch {
-      setActionError(copy.aiStartFailed);
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.details?.readiness) {
+        setReadiness(caught.details.readiness as AutoRunReadiness);
+        setActionError(language === "zh" ? "启动条件发生变化，请按提示处理后再确认。" : "Start requirements changed. Resolve the issue shown and confirm again.");
+      } else if (caught instanceof ApiError
+        && ["work_item_revision_conflict", "work_item_record_bindings_stale"].includes(caught.code)) {
+        setActionError(language === "zh"
+          ? "任务或资料刚刚发生变化，本次没有启动。请核对刷新后的内容再确认。"
+          : "The task or its materials just changed, so nothing started. Review the refreshed content and confirm again.");
+        setRefreshVersion((version) => version + 1);
+      } else {
+        setActionError(copy.aiStartFailed);
+      }
     } finally {
       setActionPending(null);
     }
@@ -1439,15 +1569,17 @@ export function WorkItemSummaryView({
   const sendChangeRequest = async (bodyOverride?: string, modeOverride?: "revision" | "follow_up") => {
     const body = (bodyOverride ?? changeRequest).trim();
     const mode = modeOverride ?? feedbackMode;
-    if (!body || actionPending) return;
+    if (!body || actionPending || executionActionLocked) return;
     setActionPending("changes");
     setActionError(null);
+    setExecutionActionReceipt(null);
     let commentSaved = false;
     try {
       await api.createWorkItemComment(item.id, body);
       commentSaved = true;
       if (observability?.latestRun?.id) {
-        await api.retryAutoRun(observability.latestRun.id, body);
+        const response = await api.retryAutoRun(observability.latestRun.id, body, executionActionRequest("fix_with_ai")) as { actionReceipt?: ExecutionActionReceipt };
+        if (response.actionReceipt) setExecutionActionReceipt(response.actionReceipt);
       } else {
         await api.startWorkItemAutoRun(item.id);
       }
@@ -1455,15 +1587,28 @@ export function WorkItemSummaryView({
       setChangeRequestOpen(false);
       setResultExpanded(false);
       setReportOpen(false);
-      setSyncNotice(mode === "follow_up"
+      const notice = mode === "follow_up"
         ? language === "zh" ? "问题已交给 AI。AI 会沿用当前任务和材料继续处理，并生成新版结果。" : "Your question was sent to AI. It will continue with the same task and materials and produce a new result."
-        : copy.changesSent);
+        : copy.changesSent;
+      setSyncNotice(notice);
+      setExecutionActionReceipt((current) => current ?? { message: notice, impact: "none", nextOwner: "ai" });
       if (bodyOverride) setMaterialNotice(copy.materialReprocessStarted);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-request-changes", workItemId: item.id } }));
       setRefreshVersion((version) => version + 1);
-    } catch {
-      setActionError(commentSaved ? copy.changesFailed : copy.commentFailed);
+    } catch (error) {
+      const errorReceipt = actionReceiptFromError(error);
+      setActionError(error instanceof ApiError && error.code === "execution_action_stale"
+        ? language === "zh"
+          ? "任务刚刚发生变化，修改要求已保留，但没有重复启动 AI。请核对刷新后的状态。"
+          : "The task just changed. Your feedback was kept, but AI was not started again. Review the refreshed status."
+        : commentSaved ? copy.changesFailed : copy.commentFailed);
+      if (errorReceipt) setExecutionActionReceipt(errorReceipt);
       if (commentSaved) {
+        if (!(error instanceof ApiError)) {
+          setExecutionActionReceipt(uncertainActionReceipt(language === "zh"
+            ? "修改请求已发送，但暂时无法确认 AI 是否开始处理。"
+            : "The fix request was sent, but it is not yet clear whether AI started."));
+        }
         window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-change-comment", workItemId: item.id } }));
         setRefreshVersion((version) => version + 1);
       }
@@ -1473,26 +1618,42 @@ export function WorkItemSummaryView({
   };
   const rerunDeliveryVerification = async () => {
     const run = observability?.latestRun;
-    if (!run || actionPending || !canRerunVerification) return;
+    if (!run || actionPending || executionActionLocked
+      || !reviewActionController.isEnabled("rerun_verification", canRerunVerification)) return;
     setActionPending("reverify");
     setActionError(null);
+    setExecutionActionReceipt(null);
     try {
-      await api.reverifyAutoRun(run.id);
-      setSyncNotice(language === "zh" ? "验证已重新开始，完成后会刷新本次交付证据。" : "Verification has restarted. The delivery evidence will refresh when it finishes.");
+      const response = await api.reverifyAutoRun(run.id, executionActionRequest("rerun_verification")) as { actionReceipt?: ExecutionActionReceipt };
+      const notice = language === "zh" ? "验证已重新开始，完成后会刷新本次交付证据。" : "Verification has restarted. The delivery evidence will refresh when it finishes.";
+      setSyncNotice(notice);
+      setExecutionActionReceipt(response.actionReceipt ?? { message: notice, impact: "none", nextOwner: "system" });
       setRefreshVersion((version) => version + 1);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-reverification-started", workItemId: item.id, autoRunId: run.id } }));
     } catch (error) {
+      const errorReceipt = actionReceiptFromError(error);
       setActionError(error instanceof Error ? error.message : (language === "zh" ? "验证暂时无法重新执行，请稍后重试。" : "Verification could not be rerun. Try again later."));
+      if (errorReceipt) {
+        setExecutionActionReceipt(errorReceipt);
+        setRefreshVersion((version) => version + 1);
+      } else if (!(error instanceof ApiError)) {
+        setExecutionActionReceipt(uncertainActionReceipt(language === "zh"
+          ? "验证请求已发送，但暂时无法确认是否已经开始。"
+          : "The verification request was sent, but its start is not yet confirmed."));
+        setRefreshVersion((version) => version + 1);
+      }
     } finally {
       setActionPending(null);
     }
   };
   const askAiToFix = () => {
-    if (!canAskAiToFix || actionPending) return;
+    if (!reviewActionController.isEnabled("fix_with_ai", canAskAiToFix) || actionPending || executionActionLocked) return;
     void sendChangeRequest(askAiFixFeedback, "revision");
   };
   const openPullRequestConfirmation = () => {
-    if (actionPending || deliveryMode !== "pull_request" || deliveryEvidenceNotReady) return;
+    const actionKind = deliveryOperation ?? "create_pull_request";
+    if (actionPending || deliveryMode !== "pull_request"
+      || !reviewActionController.isEnabled(actionKind, !deliveryEvidenceNotReady)) return;
     if (observability?.delivery?.review?.verdict !== "approved") {
       setActionError(copy.deliveryReviewRequired);
       return;
@@ -1503,31 +1664,46 @@ export function WorkItemSummaryView({
   const answerAiClarification = async () => {
     const run = observability?.latestRun;
     const answer = clarifyAnswer.trim();
-    if (!run || run.status !== "needs_input" || !answer || clarifyPending) return;
+    if (!run || run.status !== "needs_input" || !answer || clarifyPending || executionActionLocked
+      || !reviewActionController.isEnabled("answer_ai", true)) return;
     setClarifyPending(true);
     setClarifyError(null);
+    setExecutionActionReceipt(null);
     try {
-      const response = await api.answerClarify(run.id, { answers: answer }) as {
+      const response = await api.answerClarify(run.id, { answers: answer, ...executionActionRequest("answer_ai") }) as {
         resumed?: boolean;
         waitingForInput?: boolean;
         alreadyDecided?: unknown;
         reason?: string;
+        actionReceipt?: ExecutionActionReceipt;
       };
       if (response.resumed !== true && !response.alreadyDecided) {
         throw new Error(response.reason ?? "clarification_resume_failed");
       }
       setClarifyAnswer("");
-      setSyncNotice(response.waitingForInput
+      const notice = response.waitingForInput
         ? language === "zh"
           ? "AI 已重新理解你的回答，但仍需要你确认一个问题。"
           : "AI reconsidered your answer and still needs one more decision."
         : language === "zh"
           ? "你的回答已交给 AI，AI 将在同一次任务运行中继续处理。"
-          : "Your answer was sent to AI. It will continue in the same task run.");
+          : "Your answer was sent to AI. It will continue in the same task run.";
+      setSyncNotice(notice);
+      setExecutionActionReceipt(response.actionReceipt ?? { message: notice, impact: "none", nextOwner: response.waitingForInput ? "me" : "ai" });
       setRefreshVersion((version) => version + 1);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-clarification-answered", workItemId: item.id, autoRunId: run.id } }));
-    } catch {
+    } catch (error) {
+      const errorReceipt = actionReceiptFromError(error);
       setClarifyError(language === "zh" ? "回答暂时无法提交，请稍后重试。" : "The answer could not be submitted. Try again later.");
+      if (errorReceipt) {
+        setExecutionActionReceipt(errorReceipt);
+        setRefreshVersion((version) => version + 1);
+      } else if (!(error instanceof ApiError)) {
+        setExecutionActionReceipt(uncertainActionReceipt(language === "zh"
+          ? "回答已发送，但暂时无法确认 AI 是否收到。"
+          : "The answer was sent, but it is not yet clear whether AI received it."));
+        setRefreshVersion((version) => version + 1);
+      }
     } finally {
       setClarifyPending(false);
     }
@@ -1564,6 +1740,46 @@ export function WorkItemSummaryView({
       setActionPending(null);
     }
   };
+  const cancelPendingExecutionStart = async () => {
+    if (actionPending || !startReceipt?.canCancel) return;
+    setActionPending("cancel-start");
+    setActionError(null);
+    try {
+      const response = await api.cancelWorkItemExecutionStart(item.id, item.revision) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setSyncNotice(language === "zh"
+        ? "本次启动已取消，AI 尚未开始执行。执行方案仍保留，需要时可以重新核对并启动。"
+        : "This start was cancelled before AI began. The plan is preserved so you can review and start it later.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-start-cancelled", workItemId: item.id } }));
+    } catch (caught) {
+      const changed = caught instanceof ApiError && caught.code === "work_item_revision_conflict";
+      setActionError(changed
+        ? (language === "zh" ? "任务状态刚刚发生变化，已刷新后请重新确认。" : "The task just changed. Review the refreshed status.")
+        : (language === "zh" ? "AI 可能已经开始，暂时无法取消。请查看最新执行状态。" : "AI may have started, so this request could not be cancelled. Check the latest status."));
+      setRefreshVersion((version) => version + 1);
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const recheckPendingExecutionStart = async () => {
+    if (actionPending || !startReceipt || !["queued", "blocked"].includes(startReceipt.status)) return;
+    setActionPending("recheck-start");
+    setActionError(null);
+    try {
+      const response = await api.recheckWorkItemExecutionStart(item.id, item.revision) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setReadiness(null);
+      setSyncNotice(language === "zh"
+        ? "已按最新状态重新检查并唤醒调度，启动结果会自动更新。"
+        : "The latest state was rechecked and scheduling was awakened. The start result will update automatically.");
+      setRefreshVersion((version) => version + 1);
+    } catch {
+      setActionError(language === "zh" ? "重新检查失败，已刷新任务状态。" : "Recheck failed. The task status has been refreshed.");
+      setRefreshVersion((version) => version + 1);
+    } finally {
+      setActionPending(null);
+    }
+  };
   const markUrgent = async () => {
     if (actionPending || item.priority === "p0") return;
     setActionPending("priority");
@@ -1575,6 +1791,27 @@ export function WorkItemSummaryView({
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-priority", workItemId: item.id } }));
     } catch {
       setActionError(language === "zh" ? "加急失败，请重试。" : "The task could not be marked urgent. Try again.");
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const updateTaskContext = async (update: TaskContextUpdate) => {
+    if (actionPending || !canCorrectTaskContext) throw new Error("work_item_context_locked");
+    setActionPending("context");
+    setActionError(null);
+    try {
+      const response = await api.updateWorkItemTaskContext(item.id, {
+        expectedRevision: item.revision,
+        ...update,
+      }) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setSyncNotice(language === "zh" ? "任务范围已更新，启动确认会使用最新设置。" : "Task scope updated. Start confirmation will use the latest settings.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-task-context", workItemId: item.id } }));
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.code === "work_item_revision_conflict") {
+        setRefreshVersion((version) => version + 1);
+      }
+      throw caught;
     } finally {
       setActionPending(null);
     }
@@ -1623,6 +1860,10 @@ export function WorkItemSummaryView({
   };
   const acceptAndComplete = async () => {
     if (actionPending) return;
+    if (!reviewActionController.isEnabled(deliveryOperation ?? "review_result", !deliveryEvidenceNotReady)) {
+      setActionError(language === "zh" ? "任务状态或交付证据已经变化，请刷新后重新确认。" : "The task state or delivery evidence changed. Refresh before confirming again.");
+      return;
+    }
     if (!executionContractReady) {
       setActionError(language === "zh"
         ? "这次执行开始前没有确认完整的完成标准和检查步骤，不能形成正式审核结论。请补全后重新运行。"
@@ -1633,7 +1874,7 @@ export function WorkItemSummaryView({
       setActionError(copy.deliveryReviewRequired);
       return;
     }
-    if (deliveryEvidenceNotReady) {
+    if (!reviewActionController.usesProjection && deliveryEvidenceNotReady) {
       setActionError(language === "zh" ? "当前复核或验证证据还不完整，不能确认交付。请先处理预览中的阻塞原因。" : "The review or verification evidence is incomplete, so delivery cannot be confirmed yet. Resolve the blockers shown in the preview first.");
       return;
     }
@@ -1661,14 +1902,22 @@ export function WorkItemSummaryView({
       }
       const response: {
         workItem: LocalWorkItem;
+        actionReceipt?: ExecutionActionReceipt;
         delivery?: {
           baseBranch?: string | null;
           deliveredCommit?: string | null;
           deliveredAt?: string | null;
         };
       } = observability?.delivery
-        ? await api.deliverWorkItem(current.id, observability.delivery.mode, current.revision) as {
+        ? await api.deliverWorkItem(
+            current.id,
+            observability.delivery.mode,
+            current.revision,
+            executionActionRequest(deliveryOperation
+              ?? (observability.delivery.mode === "pull_request" ? "create_pull_request" : "apply_local_changes")),
+          ) as {
             workItem: LocalWorkItem;
+            actionReceipt?: ExecutionActionReceipt;
             delivery?: {
               baseBranch?: string | null;
               deliveredCommit?: string | null;
@@ -1677,6 +1926,7 @@ export function WorkItemSummaryView({
           }
         : await api.transitionWorkItem(current.id, "close", current.revision) as { workItem: LocalWorkItem };
       setItem(response.workItem);
+      if (response.actionReceipt) setExecutionActionReceipt(response.actionReceipt);
       if (observability?.delivery?.mode === "local_merge") {
         setLocalDeliveryReceipt({
           baseBranch: response.delivery?.baseBranch ?? null,
@@ -1722,6 +1972,7 @@ export function WorkItemSummaryView({
     setRefreshVersion((version) => version + 1);
   };
   const runPrimaryAction = () => {
+    if (retryableRun && executionActionLocked) return;
     if (pendingTemplateClarification) {
       document.getElementById("task-template-result-question")?.scrollIntoView?.({ behavior: "smooth", block: "center" });
       return;
@@ -1754,12 +2005,17 @@ export function WorkItemSummaryView({
       return;
     }
     if (startEligible) {
-      if (!canStartAi) return;
-      if (!executionContractDefined) {
+      if (readinessChecking) return;
+      if (!executionPlanPrepared) {
         void prepareStartExecutionPlan();
         return;
       }
-      void startAiWork();
+      setActionError(null);
+      setStartConfirmationOpen(true);
+      return;
+    }
+    if (startHandoffPending) {
+      onOpenExpert("process");
       return;
     }
     if (primaryUsesProgress) {
@@ -1768,10 +2024,18 @@ export function WorkItemSummaryView({
     }
     onOpenExpert(expertSectionFor(item, status));
   };
+  const openReviewResult = (targetId = resultSectionId) => {
+    setResultExpanded(true);
+    window.requestAnimationFrame(() => {
+      document.getElementById(targetId)?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    });
+  };
   const retryAiWork = async () => {
-    if (!retryableRun || retryPending) return;
+    if (!retryableRun || retryPending || executionActionLocked
+      || !reviewActionController.isEnabled("retry_execution", true)) return;
     setRetryPending(true);
     setRetryError(null);
+    setExecutionActionReceipt(null);
     try {
       if (!executionContractDefined) {
         const assisted = await api.suggestWorkItemDraft({ projectId: item.projectId, title: item.title, body: item.body }) as {
@@ -1789,17 +2053,141 @@ export function WorkItemSummaryView({
           : "The execution plan is ready, but the retry has not started. Review the criteria and SOP, then retry again.");
         return;
       }
-      await api.retryAutoRun(retryableRun.id);
+      const response = await api.retryAutoRun(retryableRun.id, undefined, executionActionRequest("retry_execution")) as { actionReceipt?: ExecutionActionReceipt };
       setRetryOpen(false);
       setSyncNotice(copy.retrySucceeded);
+      setExecutionActionReceipt(response.actionReceipt ?? { message: copy.retrySucceeded, impact: "none", nextOwner: "ai" });
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-retry", workItemId: item.id } }));
       setRefreshVersion((version) => version + 1);
-    } catch {
+    } catch (error) {
+      const errorReceipt = actionReceiptFromError(error);
+      if (errorReceipt) setExecutionActionReceipt(errorReceipt);
       setRetryError(copy.retryFailed);
+      if (error instanceof ApiError && error.code === "execution_action_stale") {
+        setRetryError(language === "zh"
+          ? "任务刚刚发生变化，本次没有重复执行。请核对刷新后的状态。"
+          : "The task just changed, so this action was not repeated. Review the refreshed status.");
+        setRefreshVersion((version) => version + 1);
+      } else if (!(error instanceof ApiError)) {
+        setRetryError(language === "zh"
+          ? "请求已发出，但连接中断，暂时无法确认是否已重新开始。请先检查任务状态，不要重复重试。"
+          : "The request was sent, but the connection ended before confirmation. Check the task status before retrying.");
+        setExecutionActionReceipt(uncertainActionReceipt(language === "zh"
+          ? "重试请求已发送，但暂时无法确认 AI 是否重新开始。"
+          : "The retry request was sent, but it is not yet clear whether AI restarted."));
+        setRefreshVersion((version) => version + 1);
+      }
     } finally {
       setRetryPending(false);
     }
   };
+  const openDeliveryConfirmation = () => {
+    if (actionPending || (!reviewActionController.usesProjection && deliveryEvidenceNotReady)) return;
+    setCompletionWriteback("local_only");
+    setAcceptOpen(true);
+  };
+  const reviewActionController = createWorkItemReviewActionController({
+    review: executionReview,
+    handlers: {
+      answer_ai: runPrimaryAction,
+      retry_execution: runPrimaryAction,
+      review_result: openReviewResult,
+      view_result: openReviewResult,
+      review_approval: () => onOpenExpert("process"),
+      open_details: () => onOpenExpert("process"),
+      view_changes: () => {
+        if (deliveryWorktreeId && onOpenDeliveryChanges) onOpenDeliveryChanges(item.projectId, deliveryWorktreeId);
+        else onOpenExpert("process");
+      },
+      view_batch_details: () => openReviewResult(officeBatchResultId),
+      fix_with_ai: askAiToFix,
+      rerun_verification: () => void rerunDeliveryVerification(),
+      create_pull_request: openPullRequestConfirmation,
+      update_pull_request: openPullRequestConfirmation,
+      apply_local_changes: openDeliveryConfirmation,
+      apply_office_result: openDeliveryConfirmation,
+    },
+    onUnknownAction: () => onOpenExpert("process"),
+  });
+  const runExecutionReviewAction = (requestedKind?: string) => {
+    if (!executionReview) return;
+    reviewActionController.run(requestedKind ?? executionReview.recommendedAction.kind);
+  };
+  const reconcileExecutionReviewAction = async () => {
+    const run = observability?.latestRun;
+    if (!run || actionPending) return;
+    setActionPending("reconcile");
+    setActionError(null);
+    try {
+      const response = await api.reconcileAutoRunExecutionAction(run.id) as {
+        actionReceipt?: ExecutionActionReceipt | null;
+        safeToRetry?: boolean;
+      };
+      const receipt = response.actionReceipt ?? (response.safeToRetry ? {
+        status: "safe_to_retry" as const,
+        messageCode: "safe_to_retry",
+        impact: "none" as const,
+        nextOwner: "me" as const,
+      } : null);
+      setExecutionActionReceipt(receipt);
+      setSyncNotice(receipt?.status === "safe_to_retry"
+        ? language === "zh"
+          ? "检查完成：没有发现新的执行，可以安全重试。"
+          : "Check complete: no new execution was found, so it is safe to retry."
+        : language === "zh"
+          ? "操作状态已重新检查，页面会继续同步最新结果。"
+          : "The action status was rechecked. This page will continue syncing the latest result.");
+      setRefreshVersion((version) => version + 1);
+    } catch {
+      setActionError(language === "zh"
+        ? "暂时无法重新检查操作状态，请稍后再试；在确认前不要重复执行。"
+        : "The action status could not be rechecked. Try again later and do not repeat the action yet.");
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const savePlanActualFeedback = async (input: {
+    decisions: Array<{ code: string; resolution: "keep_plan" | "prefer_actual" }>;
+    note: string;
+  }) => {
+    const planActual = observability?.planActual;
+    if (!planActual) throw new Error("plan_actual_not_available");
+    const response = await api.recordWorkItemPlanActualFeedback(item.id, {
+      expectedPlanActualDigest: planActual.digest,
+      decisions: input.decisions,
+      note: input.note,
+    }) as { planActual: NonNullable<LocalWorkItemObservability["planActual"]> };
+    setObservability((current) => current ? { ...current, planActual: response.planActual } : current);
+    setSyncNotice(language === "zh"
+      ? "已记住这次纠正，只用于以后相似任务；本次执行记录保持不变。"
+      : "This correction was saved for future similar tasks. The current execution record remains unchanged.");
+  };
+  const executionReviewActionPending = executionReview?.recommendedAction.kind === "retry_execution"
+    ? retryPending
+    : executionReview?.recommendedAction.kind === "fix_with_ai"
+      ? actionPending === "changes"
+      : executionReview?.recommendedAction.kind === "rerun_verification"
+        ? actionPending === "reverify"
+        : executionReview?.recommendedAction.kind === "answer_ai"
+          ? clarifyPending
+          : false;
+  const executionReviewPendingActionKind = retryPending
+    ? "retry_execution"
+    : actionPending === "changes"
+      ? "fix_with_ai"
+      : actionPending === "reverify"
+        ? "rerun_verification"
+        : actionPending === "complete"
+          ? deliveryOperation
+          : clarifyPending
+            ? "answer_ai"
+            : null;
+  const deliveryReviewActionKind = deliveryOperation ?? "review_result";
+  const canConfirmProjectedDelivery = reviewActionController.isEnabled(deliveryReviewActionKind, !deliveryEvidenceNotReady);
+  const canViewProjectedChanges = reviewActionController.isEnabled("view_changes", Boolean(deliveryWorktreeId && onOpenDeliveryChanges));
+  const canRerunProjectedVerification = reviewActionController.isEnabled("rerun_verification", canRerunVerification);
+  const canRequestProjectedAiFix = reviewActionController.isEnabled("fix_with_ai", canAskAiToFix);
+  const canOpenProjectedPullRequest = reviewActionController.isEnabled(deliveryOperation ?? "create_pull_request", deliveryMode === "pull_request" && !deliveryEvidenceNotReady);
 
   return (
     <div className="space-y-4" data-testid="work-item-summary-view">
@@ -1819,10 +2207,10 @@ export function WorkItemSummaryView({
           {item.priority !== "p0" ? <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void markUrgent()}>
             {language === "zh" ? "加急" : "Mark urgent"}
           </Button> : null}
-          {item.executionPolicy === "auto" ? <Button size="sm" variant="ghost" disabled={Boolean(actionPending)} onClick={() => void setAutomaticExecution("paused")}>
+          {item.executionPolicy === "auto" && !startReceipt?.canCancel ? <Button size="sm" variant="ghost" disabled={Boolean(actionPending)} onClick={() => void setAutomaticExecution("paused")}>
             {language === "zh" ? "暂停后续 AI 处理" : "Pause future AI work"}
           </Button> : null}
-          {item.executionPolicy === "paused" ? <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void setAutomaticExecution("auto")}>
+          {item.executionPolicy === "paused" && startReceipt?.status !== "cancelled" ? <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void setAutomaticExecution("auto")}>
             <Bot aria-hidden />{language === "zh" ? "恢复 AI 自动处理" : "Resume automatic AI work"}
           </Button> : null}
         </div> : null}
@@ -1834,7 +2222,55 @@ export function WorkItemSummaryView({
         onEdit={canOperate && status !== "completed" ? () => onOpenExpert("overview") : undefined}
       />
 
-      {status !== "completed" ? <section className="rounded-xl border border-primary/30 bg-primary/[0.055] p-4" aria-labelledby={`work-item-next-${item.id}`}>
+      <WorkItemContextCard
+        summary={item.taskContextSummary}
+        language={language}
+        onOpenChannel={item.taskContextSummary?.origin.kind === "channel" && onOpenSetup ? () => onOpenSetup("channels") : undefined}
+        onUpdate={canCorrectTaskContext ? updateTaskContext : undefined}
+        lockedReason={!canCorrectTaskContext && hasManagedExecution
+          ? (language === "zh" ? "任务已经开始，本次使用的资料范围和版本已锁定；后续调整只会在下一次执行生效。" : "This run's material scope and versions are locked. Later changes only apply to the next run.")
+          : null}
+      />
+
+      {startReceipt && !showExecutionReview ? (
+        <ExecutionStartStatusCard
+          receipt={startReceipt}
+          language={language}
+          agentName={startReceipt.agentId ? consoleState?.agents?.find((agent) => agent.id === startReceipt.agentId)?.name ?? startReceipt.agentId : null}
+          pendingAction={actionPending === "cancel-start" ? "cancel" : actionPending === "recheck-start" ? "recheck" : null}
+          onRecheck={() => { void recheckPendingExecutionStart(); }}
+          onCancel={startReceipt.canCancel && canOperate ? () => { void cancelPendingExecutionStart(); } : undefined}
+          onOpenDetails={() => onOpenExpert("process")}
+        />
+      ) : null}
+
+      {executionReview && showExecutionReview ? (
+        <ExecutionReviewCard
+          review={executionReview}
+          language={language}
+          agentName={executionReview.agentId ? consoleState?.agents?.find((agent) => agent.id === executionReview.agentId)?.name ?? executionReview.agentName ?? executionReview.agentId : executionReview.agentName}
+          onOpenDetails={() => onOpenExpert("process")}
+          onRecommendedAction={runExecutionReviewAction}
+          onAction={runExecutionReviewAction}
+          onReconcileAction={() => void reconcileExecutionReviewAction()}
+          recommendedActionPending={executionReviewActionPending}
+          pendingActionKind={executionReviewPendingActionKind}
+          reconcileActionPending={actionPending === "reconcile"}
+          actionReceipt={executionReview.actionReceipt ?? executionActionReceipt}
+          attemptHistory={observability?.runHistory ?? []}
+        />
+      ) : null}
+
+      {observability?.planActual ? (
+        <WorkItemPlanActualCard
+          plan={observability.planActual}
+          language={language}
+          onOpenDetails={() => onOpenExpert("process")}
+          onSaveFeedback={canOperate ? savePlanActualFeedback : undefined}
+        />
+      ) : null}
+
+      {status !== "completed" && !executionReviewOwnsProgress ? <section className="rounded-xl border border-primary/30 bg-primary/[0.055] p-4" aria-labelledby={`work-item-next-${item.id}`}>
         <div className="flex gap-3">
           <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground"><CircleDot className="size-4" aria-hidden /></span>
           <div className="min-w-0 flex-1">
@@ -1843,7 +2279,8 @@ export function WorkItemSummaryView({
             {item.lastProgressSummary ? <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{copy.lastProgress}: {item.lastProgressSummary}</p> : null}
             <Button
               className="mt-3 w-full sm:w-auto"
-              disabled={Boolean(actionPending) || readinessChecking || readinessBlocked}
+              data-testid={startEligible ? "review-and-start-ai" : undefined}
+              disabled={Boolean(actionPending) || readinessChecking || (Boolean(retryableRun) && executionActionLocked)}
               aria-expanded={status === "ready_for_review" ? resultExpanded : undefined}
               aria-controls={status === "ready_for_review" ? resultSectionId : undefined}
               onClick={runPrimaryAction}
@@ -1854,8 +2291,16 @@ export function WorkItemSummaryView({
                   ? language === "zh" ? "查看前置任务" : "View prerequisite"
                 : retryableRun
                 ? copy.retryAi
+                : startHandoffPending
+                  ? (language === "zh" ? "查看执行详情" : "Execution details")
                 : startEligible
-                  ? actionPending === "start" ? copy.startingAi : readinessChecking ? copy.readinessChecking : copy.startAi
+                  ? actionPending === "start"
+                    ? copy.startingAi
+                    : readinessChecking
+                      ? copy.readinessChecking
+                      : executionPlanPrepared
+                        ? (language === "zh" ? "核对并让 AI 开始" : "Review and start AI")
+                        : copy.startAi
                   : resultExpanded ? copy.hideResult : copy.action[status]}
               {retryableRun || startEligible || status !== "ready_for_review"
                 ? <ArrowRight aria-hidden />
@@ -1951,7 +2396,7 @@ export function WorkItemSummaryView({
                         {clarifyStopPending ? <RefreshCw className="animate-spin" aria-hidden /> : <X aria-hidden />}
                         {clarifyStopPending ? language === "zh" ? "正在停止" : "Stopping" : language === "zh" ? "停止 AI" : "Stop AI"}
                       </Button>
-                      <Button disabled={!clarifyAnswer.trim() || clarifyPending || clarifyStopPending} onClick={() => void answerAiClarification()}>
+                      <Button disabled={!clarifyAnswer.trim() || clarifyPending || clarifyStopPending || executionActionLocked} onClick={() => void answerAiClarification()}>
                         {clarifyPending ? <RefreshCw className="animate-spin" aria-hidden /> : <ArrowRight aria-hidden />}
                         {clarifyPending ? language === "zh" ? "正在提交" : "Submitting" : language === "zh" ? "提交并让 AI 继续" : "Submit and continue"}
                       </Button>
@@ -1998,7 +2443,7 @@ export function WorkItemSummaryView({
         </div>
       ) : null}
 
-      {syncNotice ? (
+      {syncNotice && !(executionActionReceipt && showExecutionReview) ? (
         <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/[0.06] px-3 py-2 text-sm" role="status">
           <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
           <span className="min-w-0 flex-1">{syncNotice}</span>
@@ -2392,12 +2837,13 @@ export function WorkItemSummaryView({
               copy={copy}
               scopeLabel={presentation.completedScope}
               actionPreview={deliveryEvidence?.actionPreview ?? null}
+              officeBatchResultId={officeBatchResultId}
               language={language}
-              onViewChanges={deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
-              onRerunVerification={canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
-              onAskAiToFix={canAskAiToFix ? askAiToFix : undefined}
-              onCreatePullRequest={deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
-              actionDisabled={Boolean(actionPending)}
+              onViewChanges={!usesProjectedReviewActions && deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
+              onRerunVerification={!usesProjectedReviewActions && canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
+              onAskAiToFix={!usesProjectedReviewActions && canAskAiToFix ? askAiToFix : undefined}
+              onCreatePullRequest={!usesProjectedReviewActions && deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
+              actionDisabled={Boolean(actionPending) || executionActionLocked}
               verificationPending={actionPending === "reverify"}
             />
           </div>
@@ -2418,7 +2864,7 @@ export function WorkItemSummaryView({
                   </Badge>
                 </div>
                 {deliveryReview?.verdict === "changes_requested" && reviewFeedback ? (
-                  <Button size="sm" disabled={Boolean(actionPending)} onClick={() => void sendChangeRequest(reviewFeedback)}>
+                  <Button size="sm" disabled={Boolean(actionPending) || executionActionLocked} onClick={() => void sendChangeRequest(reviewFeedback)}>
                     <RefreshCw aria-hidden />{copy.sendAiReviewBack}
                   </Button>
                 ) : null}
@@ -2571,7 +3017,7 @@ export function WorkItemSummaryView({
               <Textarea rows={3} autoFocus value={changeRequest} placeholder={feedbackMode === "follow_up" ? language === "zh" ? "例如：第二个结论依据是什么？请补充原文证据。" : "For example: What supports the second conclusion? Add source evidence." : copy.changePlaceholder} onChange={(event) => setChangeRequest(event.target.value)} />
               <div className="mt-2 flex flex-wrap justify-end gap-2">
                 <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => { setChangeRequestOpen(false); setChangeRequest(""); }}>{language === "zh" ? "取消" : "Cancel"}</Button>
-                <Button disabled={!changeRequest.trim() || Boolean(actionPending)} onClick={() => void sendChangeRequest()}>{actionPending === "changes" ? copy.sendingChanges : feedbackMode === "follow_up" ? language === "zh" ? "提交追问" : "Send follow-up" : copy.sendChanges}</Button>
+                <Button disabled={!changeRequest.trim() || Boolean(actionPending) || executionActionLocked} onClick={() => void sendChangeRequest()}>{actionPending === "changes" ? copy.sendingChanges : feedbackMode === "follow_up" ? language === "zh" ? "提交追问" : "Send follow-up" : copy.sendChanges}</Button>
               </div>
             </div>
           ) : (
@@ -2580,7 +3026,7 @@ export function WorkItemSummaryView({
               <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("follow_up"); setChangeRequestOpen(true); }}><MessageSquare aria-hidden />{language === "zh" ? "继续追问" : "Ask follow-up"}</Button>
               <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("revision"); setChangeRequestOpen(true); }}>{copy.requestChanges}</Button>
               <Button
-                disabled={!executionContractReady || Boolean(actionPending) || deliveryEvidenceNotReady || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
+                disabled={!executionContractReady || Boolean(actionPending) || !canConfirmProjectedDelivery || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
                 onClick={() => { setCompletionWriteback("local_only"); setAcceptOpen(true); }}
               >
                 <CheckCircle2 aria-hidden />{acceptActionLabel}
@@ -2768,12 +3214,12 @@ export function WorkItemSummaryView({
         ) : null}
         {item.inputAssets?.length && item.materialChangesPending && status === "ready_for_review" && !materialChangesApplyOnRerun ? (
           <div className="mt-3 flex justify-end">
-            <Button size="sm" disabled={Boolean(actionPending)} onClick={() => void sendChangeRequest(copy.materialReprocessComment)}><RefreshCw aria-hidden />{copy.useUpdatedMaterials}</Button>
+            <Button size="sm" disabled={Boolean(actionPending) || executionActionLocked} onClick={() => void sendChangeRequest(copy.materialReprocessComment)}><RefreshCw aria-hidden />{copy.useUpdatedMaterials}</Button>
           </div>
         ) : null}
         {item.inputAssets?.length && status === "needs_action" && failed ? (
           <div className="mt-3 flex justify-end">
-            <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => setRetryOpen(true)}><RefreshCw aria-hidden />{copy.retryWithMaterials}</Button>
+            <Button size="sm" variant="secondary" disabled={Boolean(actionPending) || executionActionLocked} onClick={() => setRetryOpen(true)}><RefreshCw aria-hidden />{copy.retryWithMaterials}</Button>
           </div>
         ) : null}
         {materialError ? <p className="mt-2 text-sm text-destructive" role="alert">{materialError}</p> : null}
@@ -2903,6 +3349,37 @@ export function WorkItemSummaryView({
         <Button variant="secondary" onClick={() => onOpenExpert("overview")}><Wrench aria-hidden />{copy.expert}</Button>
       </footer>
 
+      <ExecutionStartConfirmation
+        open={startConfirmationOpen}
+        summary={startSummary}
+        language={language}
+        pending={actionPending === "start"}
+        canConfirm={canStartAi && executionPlanPrepared && !contextHasBlockingIssues}
+        error={startConfirmationOpen ? actionError : null}
+        blockedActionLabel={materialExecutionBlocked
+          ? (language === "zh" ? "检查相关资料" : "Review materials")
+          : intentConflictResolution === "task_context"
+            ? (language === "zh" ? "调整资料权限" : "Adjust material access")
+            : intentConflictResolution
+              ? (language === "zh" ? "修正任务理解" : "Correct task intent")
+              : readinessBlocked ? readinessFixLabel(readiness, language) : undefined}
+        onResolveBlocked={materialExecutionBlocked ? () => {
+          setStartConfirmationOpen(false);
+          window.requestAnimationFrame(() => document.getElementById(`work-item-records-${item.id}`)?.scrollIntoView?.({ behavior: "smooth", block: "center" }));
+        } : intentConflictResolution === "task_context" ? () => {
+          setStartConfirmationOpen(false);
+          window.requestAnimationFrame(() => document.querySelector('[data-testid="work-item-context-card"]')?.scrollIntoView?.({ behavior: "smooth", block: "center" }));
+        } : intentConflictResolution ? () => {
+          setStartConfirmationOpen(false);
+          onOpenExpert("overview");
+        } : readinessBlocked ? () => {
+          setStartConfirmationOpen(false);
+          if (onOpenSetup) onOpenSetup(readinessSetupSection(readiness));
+          else onOpenExpert("process");
+        } : undefined}
+        onClose={() => { if (actionPending !== "start") setStartConfirmationOpen(false); }}
+        onConfirm={() => { void startAiWork(); }}
+      />
       <WorkItemProgressDialog
         target={progressTarget}
         open={progressOpen}
@@ -3007,7 +3484,7 @@ export function WorkItemSummaryView({
                 />
                 <div className="mt-2 flex flex-wrap justify-end gap-2">
                   <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => { setChangeRequestOpen(false); setChangeRequest(""); }}>{language === "zh" ? "取消修改" : "Cancel revision"}</Button>
-                  <Button disabled={!changeRequest.trim() || Boolean(actionPending)} onClick={() => void sendChangeRequest()}>
+                  <Button disabled={!changeRequest.trim() || Boolean(actionPending) || executionActionLocked} onClick={() => void sendChangeRequest()}>
                     <RefreshCw className={actionPending === "changes" ? "animate-spin" : ""} aria-hidden />
                     {actionPending === "changes" ? copy.sendingChanges : feedbackMode === "follow_up" ? language === "zh" ? "提交追问" : "Send follow-up" : copy.sendChanges}
                   </Button>
@@ -3027,7 +3504,7 @@ export function WorkItemSummaryView({
                   <RefreshCw aria-hidden />{copy.requestChanges}
                 </Button>
                 <Button
-                  disabled={!executionContractReady || !outcomeReady || Boolean(actionPending) || deliveryEvidenceNotReady || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
+                  disabled={!executionContractReady || !outcomeReady || Boolean(actionPending) || !canConfirmProjectedDelivery || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
                   onClick={() => { setReportOpen(false); setCompletionWriteback("local_only"); setAcceptOpen(true); }}
                 >
                   <CheckCircle2 aria-hidden />{acceptActionLabel}
@@ -3043,10 +3520,10 @@ export function WorkItemSummaryView({
             copy={copy}
             actionPreview={deliveryEvidence?.actionPreview ?? null}
             language={language}
-            onViewChanges={deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
-            onRerunVerification={canRerunVerification ? () => void rerunDeliveryVerification() : undefined}
-            onAskAiToFix={canAskAiToFix ? askAiToFix : undefined}
-            onCreatePullRequest={deliveryMode === "pull_request" ? openPullRequestConfirmation : undefined}
+            onViewChanges={canViewProjectedChanges && deliveryWorktreeId && onOpenDeliveryChanges ? () => onOpenDeliveryChanges(item.projectId, deliveryWorktreeId) : undefined}
+            onRerunVerification={canRerunProjectedVerification ? () => void rerunDeliveryVerification() : undefined}
+            onAskAiToFix={canRequestProjectedAiFix ? askAiToFix : undefined}
+            onCreatePullRequest={canOpenProjectedPullRequest ? openPullRequestConfirmation : undefined}
             actionDisabled={Boolean(actionPending)}
             verificationPending={actionPending === "reverify"}
           />
@@ -3127,7 +3604,7 @@ export function WorkItemSummaryView({
           {retryError ? <p className="text-sm text-destructive" role="alert">{retryError}</p> : null}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" disabled={retryPending} onClick={() => setRetryOpen(false)}>{language === "zh" ? "取消" : "Cancel"}</Button>
-            <Button disabled={retryPending} onClick={() => void retryAiWork()}>
+            <Button disabled={retryPending || executionActionLocked} onClick={() => void retryAiWork()}>
               <RefreshCw className={retryPending ? "animate-spin" : ""} aria-hidden />
               {retryPending ? copy.retrying : executionContractDefined ? copy.retryConfirm : language === "zh" ? "先生成执行方案" : "Prepare execution plan"}
             </Button>
@@ -3333,197 +3810,5 @@ function WorkItemIntentCard({
         </div>
       </dl>
     </section>
-  );
-}
-
-function DeliveryDecisionCard({
-  decision,
-  copy,
-  scopeLabel,
-  actionPreview,
-  language,
-  onViewChanges,
-  onRerunVerification,
-  onAskAiToFix,
-  onCreatePullRequest,
-  actionDisabled = false,
-  verificationPending = false,
-}: {
-  decision: DeliveryDecision;
-  copy: SummaryCopy;
-  scopeLabel?: string;
-  actionPreview?: LocalWorkItemDeliveryEvidence["actionPreview"] | null;
-  language: "zh" | "en";
-  onViewChanges?: () => void;
-  onRerunVerification?: () => void;
-  onAskAiToFix?: () => void;
-  onCreatePullRequest?: () => void;
-  actionDisabled?: boolean;
-  verificationPending?: boolean;
-}) {
-  const confirmedProblem = decision.state === "changes" && decision.risk === "high";
-  const tone = decision.state === "ready" ? "success" : confirmedProblem ? "danger" : decision.state === "waiting" ? "neutral" : "warning";
-  const riskLabel = {
-    low: copy.riskLow,
-    medium: copy.riskMedium,
-    high: copy.riskHigh,
-    unknown: copy.riskUnknown,
-  }[decision.risk];
-  const showPullRequestAction = ["create_pull_request", "update_pull_request"].includes(actionPreview?.operation ?? "") && actionPreview?.canProceed && Boolean(onCreatePullRequest);
-  const hasDeliveryAction = Boolean(onViewChanges || onRerunVerification || onAskAiToFix || showPullRequestAction);
-  return (
-    <section className={`rounded-lg border p-4 ${
-      decision.state === "ready"
-        ? "border-success/35 bg-success/[0.06]"
-        : confirmedProblem
-          ? "border-destructive/35 bg-destructive/[0.05]"
-          : "border-warning/35 bg-warning/[0.05]"
-    }`} aria-label={copy.decisionSummary}>
-      <div className="flex flex-wrap items-center gap-2">
-        {decision.state === "ready"
-          ? <CheckCircle2 className="size-5 text-success" aria-hidden />
-          : <AlertTriangle className={`size-5 ${confirmedProblem ? "text-destructive" : "text-warning"}`} aria-hidden />}
-        <h3 className="font-semibold">{decision.headline}</h3>
-        <Badge tone="neutral">{decision.domainLabel}</Badge>
-        <Badge tone={tone}>{copy.resultStatus}: {decision.statusLabel}</Badge>
-        <Badge tone={tone}>{copy.resultRisk}: {riskLabel}</Badge>
-      </div>
-      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{decision.riskReason}</p>
-      <div className="mt-3 grid gap-3 lg:grid-cols-3">
-        <div className="rounded-md bg-background/75 px-3 py-2.5">
-          <p className="text-xs font-medium text-muted-foreground">{scopeLabel ?? copy.completedScope}</p>
-          <p className="mt-1.5 text-sm leading-relaxed">{decision.scope}</p>
-        </div>
-        <div className="rounded-md bg-background/75 px-3 py-2.5">
-          <p className="text-xs font-medium text-muted-foreground">{copy.checkResult}</p>
-          <p className="mt-1.5 text-sm leading-relaxed">{decision.checks}</p>
-        </div>
-        <div className="rounded-md bg-background/75 px-3 py-2.5">
-          <p className="text-xs font-medium text-muted-foreground">{copy.recommendedNext}</p>
-          <p className="mt-1.5 text-sm font-medium leading-relaxed">{decision.recommendation}</p>
-        </div>
-      </div>
-      {actionPreview ? (
-        <div className="mt-3 rounded-md border border-border/80 bg-background/60 px-3 py-2.5" data-testid="delivery-action-preview">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-xs font-medium text-muted-foreground">{language === "zh" ? "应用前预览" : "Before-apply preview"}</p>
-            <Badge tone={actionPreview.canProceed ? "success" : "warning"}>
-              {actionPreview.canProceed ? (language === "zh" ? "满足确认条件" : "Ready for confirmation") : (language === "zh" ? "暂不能应用" : "Not ready to apply")}
-            </Badge>
-          </div>
-          <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
-            <div><dt className="inline text-muted-foreground">{language === "zh" ? "动作：" : "Action: "}</dt><dd className="inline">{actionPreview.operation === "update_pull_request" ? (language === "zh" ? "更新现有 Pull Request" : "Update existing pull request") : actionPreview.operation === "create_pull_request" ? (language === "zh" ? "创建 Pull Request" : "Create pull request") : actionPreview.operation === "apply_office_result" ? (language === "zh" ? "应用办公结果" : "Apply office result") : (language === "zh" ? "应用到本地项目" : "Apply to local project")}</dd></div>
-            <div><dt className="inline text-muted-foreground">{language === "zh" ? "范围：" : "Scope: "}</dt><dd className="inline">{language === "zh" ? `${actionPreview.changedFileCount || actionPreview.officeDetails?.targetFiles.length || 0} 个文件` : `${actionPreview.changedFileCount || actionPreview.officeDetails?.targetFiles.length || 0} file(s)`}</dd></div>
-            {actionPreview.branchName ? <div className="min-w-0"><dt className="inline text-muted-foreground">{language === "zh" ? "分支：" : "Branch: "}</dt><dd className="break-all font-mono">{actionPreview.branchName}</dd></div> : null}
-            {actionPreview.officeDetails ? (
-              <>
-                {actionPreview.officeDetails.targetFiles.length ? <div className="min-w-0 sm:col-span-2"><dt className="inline text-muted-foreground">{language === "zh" ? "目标资料：" : "Target files: "}</dt><dd className="inline break-all">{actionPreview.officeDetails.targetFiles.join("、")}</dd></div> : null}
-                {actionPreview.officeDetails.targetResources?.length ? <div className="min-w-0 sm:col-span-2"><dt className="inline text-muted-foreground">{language === "zh" ? "资料来源：" : "Resource source: "}</dt><dd className="inline break-all">{actionPreview.officeDetails.targetResources.map((resource) => `${resource.displayName} · ${resource.locality === "local" ? (language === "zh" ? "本地" : "Local") : (language === "zh" ? "远程" : "Remote")}`).join("；")}</dd></div> : null}
-                {actionPreview.officeDetails.estimatedAffectedRows != null ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "预计记录：" : "Estimated records: "}</dt><dd className="inline">{actionPreview.officeDetails.estimatedAffectedRows}</dd></div> : null}
-                {actionPreview.officeDetails.fields.length ? <div className="min-w-0 sm:col-span-2"><dt className="inline text-muted-foreground">{language === "zh" ? "字段范围：" : "Fields: "}</dt><dd className="inline break-all">{actionPreview.officeDetails.fields.join("、")}</dd></div> : null}
-                <div><dt className="inline text-muted-foreground">{language === "zh" ? "失败保护：" : "Failure protection: "}</dt><dd className="inline">{actionPreview.officeDetails.reversible === true ? (language === "zh" ? "系统已记录恢复依据" : "Recovery evidence recorded") : actionPreview.officeDetails.reversible === false ? (language === "zh" ? "未准备自动恢复" : "Automatic recovery not prepared") : (language === "zh" ? "待确认" : "Unknown")}</dd></div>
-              </>
-            ) : null}
-                <div><dt className="inline text-muted-foreground">{language === "zh" ? "确认：" : "Confirmation: "}</dt><dd className="inline">{language === "zh" ? "仍需人工确认" : "Human confirmation is still required"}</dd></div>
-          </dl>
-          {actionPreview.officeDetails?.batch ? (
-            <OfficeBatchResult batch={actionPreview.officeDetails.batch} copy={copy} language={language} />
-          ) : null}
-        </div>
-      ) : null}
-      {actionPreview && hasDeliveryAction ? (
-        <div className="mt-3 rounded-md border border-primary/20 bg-primary/[0.04] px-3 py-2.5" data-testid="development-actions">
-          <p className="text-xs font-medium text-muted-foreground">{decision.domain === "development" ? copy.developmentActions : language === "zh" ? "可执行动作" : "Available actions"}</p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {onViewChanges ? <Button size="sm" variant="secondary" disabled={actionDisabled} onClick={onViewChanges}>
-              <FolderOpen aria-hidden />{copy.viewChanges}
-            </Button> : null}
-            {onRerunVerification ? <Button size="sm" variant="secondary" disabled={actionDisabled} onClick={onRerunVerification}>
-              <CheckCircle2 aria-hidden />{verificationPending ? copy.verifying : copy.rerunVerification}
-            </Button> : null}
-            {onAskAiToFix ? <Button size="sm" variant={confirmedProblem ? "primary" : "secondary"} disabled={actionDisabled} onClick={onAskAiToFix}>
-              <Wrench aria-hidden />{copy.askAiToFix}
-            </Button> : null}
-            {showPullRequestAction ? (
-              <Button size="sm" disabled={actionDisabled} onClick={onCreatePullRequest}>
-                <ExternalLink aria-hidden />{actionPreview.operation === "update_pull_request" ? (language === "zh" ? "更新 Pull Request" : "Update Pull Request") : copy.createPullRequest}
-              </Button>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function OfficeBatchResult({
-  batch,
-  copy,
-  language,
-}: {
-  batch: NonNullable<NonNullable<LocalWorkItemDeliveryEvidence["actionPreview"]["officeDetails"]>["batch"]>;
-  copy: SummaryCopy;
-  language: "zh" | "en";
-}) {
-  const stateLabel: Record<string, [string, string]> = {
-    pending: ["待处理", "Pending"],
-    waiting: ["等待执行", "Waiting"],
-    committing: ["处理中", "Committing"],
-    partial: ["部分完成", "Partial"],
-    committed: ["已完成", "Committed"],
-    rolled_back: ["已回滚", "Rolled back"],
-    needs_attention: ["需要处理", "Needs attention"],
-    invalidated: ["已失效", "Invalidated"],
-    expired: ["已过期", "Expired"],
-  };
-  const rollbackLabel: Record<string, [string, string]> = {
-    prepared: ["系统已准备自动恢复", "Automatic recovery prepared"],
-    available: ["已记录恢复保障", "Recovery evidence recorded"],
-    partial: ["部分回滚", "Partial"],
-    rolled_back: ["已回滚", "Rolled back"],
-    not_available: ["无回滚记录", "Not available"],
-  };
-  const state = stateLabel[batch.state]?.[language === "zh" ? 0 : 1] ?? batch.state;
-  const rollback = rollbackLabel[batch.rollback.status]?.[language === "zh" ? 0 : 1] ?? batch.rollback.status;
-  return (
-    <div className="mt-3 rounded-md border border-border/80 bg-background/60 px-3 py-2.5" data-testid="office-batch-result">
-      <div className="flex flex-wrap items-center gap-2">
-        <p className="text-xs font-medium text-muted-foreground">{copy.officeBatchResult}</p>
-        <Badge tone={batch.failedCount > 0 || batch.rollback.status === "partial" ? "warning" : batch.state === "committed" ? "success" : "neutral"}>{state}</Badge>
-      </div>
-      <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
-        <div><dt className="inline text-muted-foreground">{copy.batchSuccess}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{batch.successCount}</dd></div>
-        {(batch.restoredCount ?? batch.rollback.restoredTargets) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "已恢复：" : "Restored: "}</dt><dd className="inline">{batch.restoredCount ?? batch.rollback.restoredTargets}</dd></div> : null}
-        <div><dt className="inline text-muted-foreground">{copy.batchFailed}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{batch.failedCount}</dd></div>
-        {(batch.pendingCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "待处理：" : "Pending: "}</dt><dd className="inline">{batch.pendingCount}</dd></div> : null}
-        {(batch.unknownCount ?? 0) > 0 ? <div><dt className="inline text-muted-foreground">{language === "zh" ? "状态未知：" : "Unknown: "}</dt><dd className="inline">{batch.unknownCount}</dd></div> : null}
-        <div><dt className="inline text-muted-foreground">{copy.batchRollback}{language === "zh" ? "：" : ": "}</dt><dd className="inline">{rollback}</dd></div>
-      </dl>
-      {batch.rollback.restoredTargets || batch.rollback.blockedTargets ? (
-        <p className="mt-1 text-xs text-muted-foreground">
-          {language === "zh"
-            ? `已恢复 ${batch.rollback.restoredTargets} 项，受阻 ${batch.rollback.blockedTargets} 项`
-            : `${batch.rollback.restoredTargets} restored, ${batch.rollback.blockedTargets} blocked`}
-        </p>
-      ) : null}
-      <details className="mt-2">
-        <summary className="cursor-pointer text-xs font-medium">
-          {language === "zh" ? `${copy.batchDetails}（${batch.operationCount}）` : `${copy.batchDetails} (${batch.operationCount})`}
-        </summary>
-        {batch.details.length ? (
-          <ul className="mt-2 space-y-1.5">
-            {batch.details.slice(0, 8).map((detail, index) => (
-              <li key={detail.id ?? `${detail.businessKey ?? "item"}-${index}`} className="rounded bg-muted/40 px-2.5 py-2 text-xs">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="font-medium">{detail.businessKey ?? (language === "zh" ? `第 ${detail.rowNumber ?? "?"} 行` : `Row ${detail.rowNumber ?? "?"}`)}</span>
-                  <Badge tone={detail.state === "committed" ? "success" : ["invalidated", "expired"].includes(detail.state) ? "danger" : "neutral"}>{stateLabel[detail.state]?.[language === "zh" ? 0 : 1] ?? detail.state}</Badge>
-                </div>
-                {detail.changedFields.length ? <p className="mt-1 text-muted-foreground">{language === "zh" ? "字段：" : "Fields: "}{detail.changedFields.join("、")}</p> : null}
-              </li>
-            ))}
-          </ul>
-        ) : <p className="mt-2 text-xs text-muted-foreground">{copy.batchNoDetails}</p>}
-      </details>
-    </div>
   );
 }

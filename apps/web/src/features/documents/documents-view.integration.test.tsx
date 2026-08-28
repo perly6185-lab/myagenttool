@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   setSelectedProjectId: vi.fn(),
   setSelectedWorktreeId: vi.fn(),
   setPendingLocalDocumentRegistration: vi.fn(),
+  experienceMode: "professional" as "ordinary" | "professional",
 }));
 
 vi.mock("@/data/use-console-actions", () => ({
@@ -58,6 +59,7 @@ vi.mock("@/store/ui-store", () => ({
     setSelectedProjectId: mocks.setSelectedProjectId,
     setSelectedWorktreeId: mocks.setSelectedWorktreeId,
     setPendingLocalDocumentRegistration: mocks.setPendingLocalDocumentRegistration,
+    experienceMode: mocks.experienceMode,
   }),
 }));
 
@@ -78,6 +80,7 @@ beforeEach(async () => {
   mocks.cadDocumentInfo.mockResolvedValue({ path: "drawings/plan.dxf", size: 512, version: "AC1027", units: 6, extents: { min: [0, 0, 0], max: [100, 50, 0] }, layoutExtents: { Model: { min: [0, 0, 0], max: [100, 50, 0] }, "Sheet 1": { min: [0, 0, 0], max: [200, 100, 0] } }, layouts: ["Model", "Sheet 1"], layers: ["Walls", "Notes"], entityCounts: { LINE: 4, TEXT: 1 }, texts: [{ text: "Lobby", type: "TEXT", layer: "Notes", layout: "Model", x: 10, y: 10 }], warnings: [], audit: { errors: 0, fixes: 0 } });
   mocks.cadDocumentLayout.mockResolvedValue({ path: "drawings/plan.dxf", size: 512, svg: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>' });
   mocks.cadRuntimeReadiness.mockResolvedValue({ state: "ready", ready: true, summary: "Managed DXF runtime is ready." });
+  mocks.experienceMode = "professional";
 });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -88,6 +91,17 @@ function renderView() {
 }
 
 describe("DocumentsView interaction", () => {
+  it("keeps worktree scope behind an advanced entry in ordinary mode and links reusable resources", async () => {
+    mocks.experienceMode = "ordinary";
+    renderView();
+
+    expect(screen.queryByLabelText("Document source")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Source and version" }));
+    expect(screen.getByLabelText("Document source")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reusable resources" }));
+    expect(mocks.setSection).toHaveBeenCalledWith("localLibrary");
+  });
+
   it("opens a governed non-Office asset through the contained desktop bridge", async () => {
     const openContainedAsset = vi.fn().mockResolvedValue({ opened: true });
     window.myagenttoolDesktop = { openContainedAsset };

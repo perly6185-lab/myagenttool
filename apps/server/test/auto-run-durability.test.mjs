@@ -16,6 +16,7 @@ import { createPersistenceRuntime } from "../src/runtime/persistence.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
 import { createInMemoryStore } from "../src/runtime/store/in-memory-store.mjs";
 import { createAutoRunService } from "../src/services/auto-run.mjs";
+import { EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY } from "../src/services/work-item-execution-action.mjs";
 
 const now = () => "2026-07-15T00:00:00.000Z";
 
@@ -27,7 +28,49 @@ function harness({ wireStore }) {
   const { state, defaultProject } = createServerState({ defaultProjectPath: projectPath, now });
   state.autoRuns = [
     { id: "aur_demo", status: "running", invocationId: null, worktreeId: null, updatedAt: now(), createdAt: now(), link: null },
-    { id: "aur_gate", status: "awaiting_approval", invocationId: "inv_gate", worktreeId: null, updatedAt: now(), createdAt: now(), link: null },
+    {
+      id: "aur_gate", status: "awaiting_approval", invocationId: "inv_gate", worktreeId: null,
+      updatedAt: now(), createdAt: now(), link: null,
+      executionActionReceipts: [{
+        schemaVersion: 1,
+        id: "ear_gate",
+        kind: "retry_execution",
+        status: "accepted",
+        messageCode: "request_accepted",
+        impact: "none",
+        nextOwner: "ai",
+        requestedAt: "2026-07-14T00:00:00.000Z",
+        updatedAt: "2026-07-14T00:00:00.000Z",
+        sourceTargetId: "inv_gate",
+        targetId: null,
+        idempotencyKey: "durable-gate-key",
+        requestDigest: "durable-gate-digest",
+      }],
+      executionActionIdempotencyLedger: [{
+        schemaVersion: 1,
+        idempotencyKey: "durable-gate-key",
+        kind: "retry_execution",
+        requestDigest: "durable-gate-digest",
+        receiptId: "ear_gate",
+        requestedAt: "2026-07-14T00:00:00.000Z",
+        updatedAt: "2026-07-14T00:00:00.000Z",
+        receipt: {
+          schemaVersion: 1,
+          id: "ear_gate",
+          kind: "retry_execution",
+          status: "accepted",
+          messageCode: "request_accepted",
+          impact: "none",
+          nextOwner: "ai",
+          requestedAt: "2026-07-14T00:00:00.000Z",
+          updatedAt: "2026-07-14T00:00:00.000Z",
+          sourceTargetId: "inv_gate",
+          targetId: null,
+          idempotencyKey: "durable-gate-key",
+          requestDigest: "durable-gate-digest",
+        },
+      }],
+    },
   ];
   const persistence = createPersistenceRuntime({ state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject, sameProjectPath: () => false });
   const svc = createAutoRunService({
@@ -68,6 +111,66 @@ test("#1001 (5d-2 hot path) a granted-approval sync survives a crash via the Sto
   } finally {
     cleanup();
   }
+});
+
+test("an execution-action reconciliation and its safe-retry evidence survive restart", () => {
+  const { svc, reload, cleanup } = harness({ wireStore: true });
+  try {
+    const result = svc.reconcileExecutionAction("aur_gate");
+    assert.equal(result.actionReceipt.status, "safe_to_retry");
+
+    const restarted = reload();
+    const run = (restarted.autoRuns ?? []).find((candidate) => candidate.id === "aur_gate");
+    const ledger = (restarted.executionActionIdempotencyRecords ?? [])
+      .find((candidate) => candidate.autoRunId === "aur_gate" && candidate.idempotencyKey === "durable-gate-key");
+    assert.equal(run.executionActionReceipts[0].status, "safe_to_retry");
+    assert.equal(run.executionActionReceipts[0].messageCode, "safe_to_retry");
+    assert.equal(run.executionActionReceipts[0].impact, "none");
+    assert.equal(run.executionActionIdempotencyLedger, undefined);
+    assert.equal(ledger.receipt.status, "safe_to_retry");
+    assert.equal(ledger.receipt.messageCode, "safe_to_retry");
+  } finally {
+    cleanup();
+  }
+});
+
+test("execution-action data migration writes one durable completion marker after state commit", () => {
+  const state = {
+    autoRuns: [{
+      id: "aur_legacy",
+      status: "failed",
+      executionActionIdempotencyLedger: [{
+        idempotencyKey: "legacy-key",
+        kind: "retry_execution",
+        requestDigest: "legacy-digest",
+        updatedAt: now(),
+        receipt: { id: "ear_legacy", status: "succeeded", completedAt: now() },
+      }],
+    }],
+    executionActionIdempotencyRecords: [],
+  };
+  const metadata = new Map();
+  const create = () => createAutoRunService({
+    state,
+    now,
+    nextId: (prefix) => `${prefix}_1`,
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+    getDurableMetadata: (key) => metadata.get(key) ?? null,
+    setDurableMetadata: (key, value) => metadata.set(key, value),
+  });
+
+  create();
+  assert.equal(state.autoRuns[0].executionActionIdempotencyLedger, undefined);
+  assert.equal(state.executionActionIdempotencyRecords.length, 1);
+  const marker = JSON.parse(metadata.get(EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY));
+  assert.equal(marker.status, "complete");
+  assert.equal(marker.migratedRecords, 1);
+  assert.equal(marker.legacyRuns, 1);
+
+  metadata.set(EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY, JSON.stringify({ ...marker, sentinel: true }));
+  create();
+  assert.equal(JSON.parse(metadata.get(EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY)).sentinel, true, "a complete marker is not rewritten on every boot");
 });
 
 test("#1001 the durability test bites — without the Store the eaten debounce loses the cancellation", () => {

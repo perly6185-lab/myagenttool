@@ -16,6 +16,27 @@ export type WorkItemExecutionKind = "auto_run" | "application_invocation" | "art
 export type WorkItemRequesterRelation = "boss" | "manager" | "customer" | "child" | "colleague" | "self" | "unknown";
 export type WorkItemIntakeChannel = "manual" | "meeting" | "email" | "chat" | "phone" | "github" | "import" | "other" | "unknown";
 export type WorkItemWaitingOn = "me" | "requester" | "internal" | "ai" | "none";
+export type WorkItemIntentContract = {
+  schemaVersion: number;
+  workItemId: string | null;
+  goal: string;
+  taskKind: string;
+  action: { accessMode: string; operation: string };
+  expectedOutput: string | null;
+  method: { kind: "template" | "custom"; definitionId: string | null; familyId: string | null; version: number | null; name: string | null };
+  materials: { inputCount: number; changeTargets: Array<{ id: string; title: string; canCommit: boolean }> };
+  delivery: { destination: "channel" | "task"; platformId: string | null; platformLabel: string | null };
+  acceptanceCriteria: string[];
+  verificationSop: string[];
+  conflicts: Array<{ code: string; severity: "blocking" | "warning"; subject: string; message: string; question: string; resolution: "task_context" | "task_definition" | "template" }>;
+  missing: string[];
+  clarification: { code: string; question: string; resolution: "task_context" | "task_definition" | "template" } | null;
+  status: "ready" | "incomplete" | "needs_clarification";
+  digest: string;
+  confirmedAt?: string | null;
+  confirmedBy?: string | null;
+  readOnly?: true;
+};
 export type ExternalWorkItemBinding = {
   kind: "github_issue" | "gitlab_issue" | "gitea_issue";
   provider?: "github" | "gitlab" | "gitea";
@@ -110,13 +131,37 @@ export type LocalWorkItem = {
   verificationSop?: string[];
   executionContractSource?: "manual" | "body_extracted" | "assisted" | null;
   executionContractConfirmedAt?: string | null;
+  executionStartReceipt?: {
+    schemaVersion: 1;
+    id: string;
+    status: "queued" | "starting" | "started" | "blocked" | "paused" | "cancelled";
+    requestedAt: string | null;
+    requestedBy: string | null;
+    confirmedRevision: number | null;
+    contractDigest: string | null;
+    updatedAt: string | null;
+    startedAt: string | null;
+    executionKind: "auto_run" | "application_invocation" | null;
+    targetId: string | null;
+    agentId: string | null;
+    phase: string | null;
+    reasonCode: string | null;
+    reasonDetail: string | null;
+    cancelledAt: string | null;
+    cancelledBy: string | null;
+    canCancel: boolean;
+  } | null;
   executionContractGate?: {
     ready: boolean;
-    missing: ("acceptance_criteria" | "verification_sop" | "confirmation" | "confirmed_before_execution")[];
+    missing: ("acceptance_criteria" | "verification_sop" | "confirmation" | "confirmed_before_execution" | "intent_changed")[];
     source: string | null;
     confirmedAt: string | null;
     latestAttemptStartedAt?: string | null;
+    intentReady?: boolean;
+    clarification?: WorkItemIntentContract["clarification"];
+    intentChanged?: boolean;
   };
+  intentContract?: WorkItemIntentContract;
   reviewContract?: {
     schemaVersion: "legacy-v1" | "execution-contract-v2" | string;
     id: string;
@@ -125,6 +170,7 @@ export type LocalWorkItem = {
     autoRunId: string | null;
     acceptanceCriteria: string[];
     verificationSop: string[];
+    intentContract?: WorkItemIntentContract | null;
     confirmedBy: string | null;
     confirmedAt: string | null;
     digest: string | null;
@@ -163,6 +209,51 @@ export type LocalWorkItem = {
   }) | null;
   localContentRefs?: WorkItemContentReference[];
   taskResourceRefs?: WorkItemResourceReference[];
+  taskContextSummary?: {
+    schemaVersion: 1;
+    origin: {
+      kind: "channel" | "issue" | "manual" | "meeting" | "email" | "chat" | "phone" | "import" | "other" | string;
+      label: string;
+      provider: string | null;
+      channelId: string | null;
+      conversationId: string | null;
+      threadId: string | null;
+      sourceMessageCount: number;
+    };
+    method: {
+      kind: "template" | "custom";
+      name: string;
+      definitionId: string | null;
+      familyId: string | null;
+      version: number | null;
+      expectedOutput: string | null;
+      snapshotHash: string | null;
+    };
+    materials: Array<{
+      id: string;
+      title: string;
+      role: "required_input" | "reference" | "query_source" | "change_target" | "output";
+      allowedRoles: Array<"required_input" | "reference" | "query_source" | "change_target" | "output">;
+      source: "channel_attachment" | "task_file" | "my_materials" | "local_resource" | "remote_resource" | "business_record";
+      sources?: string[];
+      locality: "local" | "remote" | "managed";
+      availability: "ready" | "selected" | "pending" | "stale";
+      versionPolicy: "pinned" | "latest_at_start";
+    }>;
+    delivery: {
+      destination: "channel" | "task";
+      label: string;
+      channelId: string | null;
+      conversationId: string | null;
+      status: string | null;
+    };
+  };
+  taskContextControl?: {
+    schemaVersion: 1;
+    deliveryDestination: "channel" | "task";
+    updatedAt: string;
+    updatedBy: string;
+  } | null;
   materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
   executionArtifacts?: {
@@ -848,9 +939,69 @@ export type LocalWorkItemAutoRun = {
     actorId: string; recordedAt: string; revision: number;
   } | null;
 };
+export type WorkItemPlanActual = {
+  schemaVersion: 1;
+  runId: string;
+  status: "pending" | "matched" | "attention" | "unverified";
+  summaryCode: string;
+  planned: {
+    goal: string | null;
+    expectedOutput: string | null;
+    method: { kind: string; name: string | null; definitionId: string | null; familyId: string | null; version: number | null } | null;
+    materialCount: number;
+    materialNames: string[];
+    deliveryDestination: "task" | "channel" | string;
+    actionAccessMode: string;
+    verificationStepCount: number;
+  };
+  actual: {
+    resultStatus: string;
+    resultFiles: string[];
+    materializedCount: number;
+    skippedMaterialCount: number;
+    deliveryStatus: string | null;
+    verificationStatus: string;
+    impactStatus: string;
+  };
+  checks: Array<{
+    key: "method" | "materials" | "output" | "action" | "delivery" | "verification";
+    status: "matched" | "mismatch" | "unknown" | "pending";
+    reasonCode: string;
+    severity?: "low" | "medium" | "high";
+    correctionTarget?: string | null;
+    expected: Record<string, unknown> | null;
+    actual: Record<string, unknown> | null;
+  }>;
+  deviations: Array<{
+    code: string;
+    severity: "low" | "medium" | "high";
+    scope: string;
+    correctionTarget: string | null;
+  }>;
+  feedback?: {
+    id: string;
+    runId: string;
+    planActualDigest: string;
+    decisions: Array<{
+      code: string;
+      scope: string;
+      correctionTarget: string | null;
+      resolution: "keep_plan" | "prefer_actual";
+      preferredValue: string;
+      requiresConfirmation: boolean;
+    }>;
+    note: string;
+    revision: number;
+    createdAt: string;
+    updatedAt: string;
+  } | null;
+  digest: string;
+};
 export type LocalWorkItemObservability = {
   executionChainId?: string;
   nextAction: "answer_ai" | "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
+  executionReview?: WorkItemExecutionReview | null;
+  planActual?: WorkItemPlanActual | null;
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
   outcome?: {
@@ -889,6 +1040,11 @@ export type LocalWorkItemObservability = {
     completedAt: string | null;
     errorCode: string | null;
     summary: string | null;
+    verification: {
+      status: "passed" | "failed" | "not_run";
+      command: string | null;
+      summary: string | null;
+    } | null;
     current: boolean;
   }[];
   delivery?: {
@@ -941,6 +1097,95 @@ export type LocalWorkItemObservability = {
     humanCorrection?: { actualPath: string; reason: string; actorId: string; recordedAt: string } | null;
     candidates: { path: string; selected: boolean; score?: number | null; reason: string }[];
   } | null;
+};
+
+export type WorkItemReviewAction = {
+  kind: string;
+  visible: true;
+  enabled: boolean;
+  requiresConfirmation: boolean;
+  nextOwner: "ai" | "me" | "system" | "none";
+  blockedReasonCodes: string[];
+};
+
+export type WorkItemExecutionReview = {
+  schemaVersion: 1;
+  state: "queued" | "preparing" | "working" | "waiting" | "verifying" | "review_ready" | "completed" | "failed" | "cancelled";
+  stage: "accepted" | "preparing" | "working" | "verifying" | "review";
+  stages: Array<{
+    key: "accepted" | "preparing" | "working" | "verifying" | "review";
+    status: "complete" | "current" | "pending" | "attention";
+    at: string | null;
+  }>;
+  executionKind: WorkItemExecutionKind | null;
+  targetId: string | null;
+  targetStatus: string | null;
+  agentId: string | null;
+  agentName: string | null;
+  acceptedAt: string | null;
+  startedAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+  needsAttention: boolean;
+  attentionCode: string | null;
+  verification: {
+    status: "pending" | "running" | "passed" | "failed" | "not_configured" | "unavailable";
+    verified: boolean;
+    passed: boolean | null;
+    commands: string[];
+    command: string | null;
+    exitCode: number | null;
+    summary: string | null;
+    checkedAt: string | null;
+    durationMs: number | null;
+    evidenceCount: number;
+    checks: Array<{
+      id: string;
+      kind: string;
+      status: "passed" | "failed";
+      command: string | null;
+      summary: string | null;
+      recordedAt: string | null;
+      evidenceCount: number;
+    }>;
+  };
+  impact: {
+    status: "none" | "prepared" | "proposed" | "applied" | "partial" | "rolled_back" | "unknown";
+    reasonCode: string;
+  };
+  riskReasons: Array<{
+    code: "execution_failed" | "user_input_required" | "approval_required" | "verification_failed" | "verification_not_configured" | "verification_unavailable" | "external_impact_unknown" | "office_batch_partial" | "office_batch_rolled_back" | "pull_request_not_applied";
+    severity: "medium" | "high";
+    scope: "execution" | "approval" | "verification" | "external_impact";
+  }>;
+  recommendedAction: {
+    kind: "open_details" | "answer_ai" | "review_approval" | "retry_execution" | "fix_with_ai" | "rerun_verification" | "review_result" | "view_result";
+    reasonCode: string;
+    requiresConfirmation: boolean;
+    nextOwner: "ai" | "me" | "system" | "none";
+  };
+  actionAvailability?: {
+    schemaVersion: 1;
+    primaryActionKind: string | null;
+    locked: boolean;
+    actions: WorkItemReviewAction[];
+  };
+  actionReceipt?: null | {
+    schemaVersion: 1;
+    id: string;
+    kind: "retry_execution" | "fix_with_ai" | "rerun_verification" | "answer_ai";
+    status: "accepted" | "running" | "succeeded" | "failed" | "safe_to_retry" | "unknown";
+    messageCode: string | null;
+    impact: "none" | "proposed" | "applied" | "unknown";
+    nextOwner: "ai" | "me" | "system" | "none";
+    requestedAt: string | null;
+    updatedAt: string | null;
+    completedAt: string | null;
+    targetId: string | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+    replayed: boolean;
+  };
 };
 
 export type WorkItemOutcomeFile = {

@@ -241,8 +241,10 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
 
   let detail = page.getByRole("dialog", { name: "Local issue details" });
   await expect(detail.getByRole("button", { name: "Professional view" })).toHaveAttribute("aria-pressed", "false");
-  await detail.getByRole("button", { name: "Let AI start" }).click();
-  await expect(detail.getByText(/task is set to automatic/i)).toBeVisible();
+  await detail.getByTestId("review-and-start-ai").click();
+  await page.getByRole("dialog", { name: "Confirm AI start" })
+    .getByRole("button", { name: "Confirm and start AI" }).click();
+  await expect(detail.getByRole("heading", { name: "AI is working on the task" })).toBeVisible();
 
   const first = await completeCodingAttempt({
     summary: "Implemented expiry checks for active and expired login sessions.",
@@ -262,7 +264,7 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
   await detail.getByRole("button", { name: "Ask AI to revise" }).click();
   await detail.locator("textarea").fill("Also reject malformed timestamps and add regression coverage.");
   await detail.getByRole("button", { name: "Send changes to AI" }).click();
-  await expect(detail.getByText("Your changes were recorded and AI has started another pass.")).toBeVisible();
+  await expect(detail.getByText("The requested fix was sent to AI.")).toBeVisible();
 
   const second = await completeCodingAttempt({
     summary: "Hardened expiry validation and added malformed-session regression coverage.",
@@ -303,7 +305,7 @@ test("ordinary user completes a deterministic real-Worktree coding task through 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload({ waitUntil: "domcontentloaded" });
   detail = page.getByRole("dialog", { name: "Local issue details" });
-  await expect(detail.getByText("Hardened expiry validation and added malformed-session regression coverage.").first()).toBeVisible();
+  await expect(detail.locator("p:visible").filter({ hasText: "Hardened expiry validation and added malformed-session regression coverage." }).first()).toBeVisible();
   const intentSummary = detail.getByTestId("work-item-intent-summary");
   await expect(intentSummary.getByText("Here’s what I understand")).toBeVisible();
   await expect(intentSummary.getByText("Implement expiry handling in the login session module")).toBeVisible();

@@ -5,7 +5,7 @@ import { sshHostFingerprint } from "../src/services/ssh-host-connector.mjs";
 
 const FINGERPRINT = sshHostFingerprint(Buffer.from("service-test-host-key"));
 
-function harness({ verifyError = null } = {}) {
+function harness({ verifyError = null, credentialResult = { ok: true, credential: { privateKey: "PRIVATE-KEY-MATERIAL" } } } = {}) {
   const state = {
     device: { id: "dev_local", platform: "linux" }, projects: [], worktrees: [], users: [],
     sshTargets: [], sshConnectionTests: [], terminalSessions: [], terminalBridgeActions: [], terminalEvidenceRecords: [],
@@ -24,7 +24,7 @@ function harness({ verifyError = null } = {}) {
     codexSessionForInvocation: () => null,
     resolveCredential: async (reference) => {
       resolvedCredentials.push(reference);
-      return { ok: true, credential: { privateKey: "PRIVATE-KEY-MATERIAL" } };
+      return credentialResult;
     },
     sshHostConnector: {
       observeFingerprint: async () => ({ fingerprint: FINGERPRINT, resolvedAddress: "203.0.113.30", resolvedAddresses: ["203.0.113.30"] }),
@@ -135,12 +135,39 @@ test("runs only confirmed, allowlisted read-only diagnostics after host verifica
   assert.equal(result.ok, true);
   assert.equal(result.command, "df -h");
   assert.match(result.output, /Filesystem/);
+  assert.equal(result.summary.finding, "disk_capacity_healthy");
+  assert.equal(result.summary.impact, "no_issue_detected");
   assert.deepEqual(resolvedCredentials, [`credential://ssh/${target.id}`]);
   assert.equal(events.at(-1)?.type, "ssh.host_diagnostic.completed");
+  assert.equal(events.at(-1)?.data?.outputPreview, undefined);
+  assert.equal(events.at(-1)?.data?.command, undefined);
+  assert.equal(JSON.stringify(events.at(-1)).includes("/dev/sda1"), false);
+  assert.deepEqual(events.at(-1)?.data?.summary, result.summary);
 
   assert.deepEqual(await service.runSshHostDiagnostic(target, "shell", { userId: "usr_operator" }), {
     ok: false, status: 400, error: "ssh_diagnostic_unsupported",
   });
+});
+
+test("normalizes site credential resolver errors at the host diagnostic boundary", async () => {
+  const { service, events } = harness({ credentialResult: { ok: false, error: "site_deployment_credential_unavailable" } });
+  const target = service.createSshTarget({ host: "host.example", user: "deploy", authMethod: "private_key_ref", purpose: "file_transfer" });
+  target.connectionStatus = "ready";
+  target.trustStatus = "pinned";
+  target.knownHostFingerprint = FINGERPRINT;
+  target.capabilities = { sftp: true };
+  const revision = target.revision;
+
+  const result = await service.runSshHostDiagnostic(target, "login_sessions", { userId: "usr_operator" });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 409);
+  assert.equal(result.error, "ssh_credential_unavailable");
+  assert.equal(result.target, target);
+  assert.equal(target.connectionStatus, "error");
+  assert.equal(target.capabilities, null);
+  assert.equal(target.lastConnectionError?.code, "ssh_credential_unavailable");
+  assert.equal(target.revision, revision + 1);
+  assert.equal(events.at(-1)?.type, "ssh.host_diagnostic.connection_failed");
 });
 
 test("plans ordinary host questions without producing arbitrary shell", () => {
@@ -154,5 +181,19 @@ test("plans ordinary host questions without producing arbitrary shell", () => {
   assert.deepEqual(service.planSshHostDiagnostic("查看 nginx 服务状态"), {
     ok: true, action: "service_status", parameters: { serviceName: "nginx" },
     command: "systemctl status --no-pager --lines=30 nginx || true", risk: "read_only",
+  });
+  assert.deepEqual(service.planSshHostDiagnostic("检查最近系统日志"), {
+    ok: true, action: "recent_logs", command: "journalctl -n 40 --no-pager", risk: "read_only",
+  });
+  assert.deepEqual(service.planSshHostDiagnostic("检查网络状态"), {
+    ok: true, action: "network_info", command: "ip -brief address", risk: "read_only",
+  });
+  assert.deepEqual(service.planSshHostDiagnostic("检查登陆情况"), {
+    ok: true, action: "ssh_login_audit",
+    command: "journalctl --no-pager --quiet --since '-24 hours' -u ssh.service -u sshd.service -n 100 -o short-iso",
+    risk: "read_only",
+  });
+  assert.deepEqual(service.planSshHostDiagnostic("查看当前登录用户"), {
+    ok: true, action: "login_sessions", command: "who", risk: "read_only",
   });
 });

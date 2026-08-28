@@ -189,7 +189,7 @@ export function evaluateMyTemplateGovernance({ outcomeFeedback = [], interventio
  * an ordinary Issue instead of forcing a template.
  */
 export function matchPublishedMyTemplate({
-  definitions = [], routingFeedback = [], outcomeFeedback = [], governanceInterventions = [], projectId = "", intent = "", attachments = [],
+  definitions = [], routingFeedback = [], outcomeFeedback = [], planActualFeedback = [], governanceInterventions = [], projectId = "", intent = "", attachments = [],
 } = {}) {
   const attachmentNames = attachments.map((asset) => asset?.originalName).filter(Boolean).join("\n");
   const normalizedIntent = compactMatchText(`${intent}\n${attachmentNames}`);
@@ -207,6 +207,15 @@ export function matchPublishedMyTemplate({
   });
   const relevantRoutingFeedback = explicitlyRequestsKnownOutput ? [] : routingFeedback.filter((feedback) =>
     (feedback.intentTerms ?? []).some((term) => currentRoutingTerms.includes(term)));
+  const definitionFamilyIds = new Set(definitions.map((definition) => definition.familyId));
+  const relevantPlanActualFeedback = explicitlyRequestsKnownOutput ? [] : planActualFeedback.filter((feedback) =>
+    definitionFamilyIds.has(feedback.template?.familyId)
+    && (feedback.intentTerms ?? []).some((term) => currentRoutingTerms.includes(term))
+    && (feedback.decisions ?? []).some((decision) => ["template", "result"].includes(decision.correctionTarget)));
+  const planActualConflictingFamilyIds = new Set(relevantPlanActualFeedback
+    .filter((feedback) => (feedback.decisions ?? []).some((decision) =>
+      ["template", "result"].includes(decision.correctionTarget) && decision.resolution === "prefer_actual"))
+    .map((feedback) => feedback.template.familyId));
   const learnedChoiceCounts = [...relevantRoutingFeedback.reduce((counts, feedback) => {
     const key = compactMatchText(feedback.selectedOutput);
     if (!key) return counts;
@@ -287,6 +296,19 @@ export function matchPublishedMyTemplate({
         const boundedCorrectionScore = Math.max(-6, Math.min(6, correctionScore));
         score += boundedCorrectionScore;
         if (boundedCorrectionScore > 0) reasons.push("参考了你之前对相似任务的纠正");
+        const planActualCorrectionScore = relevantPlanActualFeedback.reduce((total, feedback) => {
+          if (feedback.template?.familyId !== definition.familyId) return total;
+          return total + (feedback.decisions ?? []).reduce((decisionTotal, decision) => {
+            if (!["template", "result"].includes(decision.correctionTarget)) return decisionTotal;
+            return decisionTotal + (decision.resolution === "keep_plan" ? 3 : 0);
+          }, 0);
+        }, 0);
+        const boundedPlanActualScore = Math.max(-6, Math.min(6, planActualCorrectionScore));
+        score += boundedPlanActualScore;
+        if (boundedPlanActualScore > 0 && !reasons.includes("参考了你之前对相似任务的纠正")) {
+          reasons.push("参考了你之前对相似任务的纠正");
+        }
+        if (planActualConflictingFamilyIds.has(definition.familyId)) reasons.push("相似任务曾接受不同结果，本次使用前需要重新判断");
       }
       const governance = evaluateMyTemplateGovernance({
         outcomeFeedback, interventions: governanceInterventions, familyId: definition.familyId,
@@ -312,7 +334,7 @@ export function matchPublishedMyTemplate({
     });
   const candidates = scoredCandidates
     .filter((candidate) => candidate.governance.state !== "paused"
-      && (candidate.rawScore >= 5 || conflictingFamilyIds.has(candidate.templateId)))
+      && (candidate.rawScore >= 5 || conflictingFamilyIds.has(candidate.templateId) || planActualConflictingFamilyIds.has(candidate.templateId)))
     .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
     .slice(0, 3);
   const pausedCandidates = scoredCandidates
@@ -360,17 +382,21 @@ export function matchPublishedMyTemplate({
     .filter((candidate) => conflictingFamilyIds.has(candidate.templateId))
     .map((candidate) => compactMatchText(candidate.expectedOutput)));
   const hasActionableLearnedConflict = learnedPreferenceConflict && conflictingCandidateOutputs.size > 1;
+  const hasPlanActualPreferenceConflict = relevantPlanActualFeedback.some((feedback) =>
+    candidates.some((candidate) => candidate.templateId === feedback.template?.familyId)
+    && (feedback.decisions ?? []).some((decision) =>
+      ["template", "result"].includes(decision.correctionTarget) && decision.resolution === "prefer_actual"));
   const governanceNeedsConfirmation = candidates[0]?.governance.requiresConfirmation === true;
   const manualObservationConfirmation = candidates[0]?.governance.manualObservation === true;
-  const ambiguous = governanceNeedsConfirmation || actionableExplicitOutputConflict || hasActionableLearnedConflict || (closeCandidates
+  const ambiguous = governanceNeedsConfirmation || actionableExplicitOutputConflict || hasActionableLearnedConflict || hasPlanActualPreferenceConflict || (closeCandidates
     && compactMatchText(candidates[0].expectedOutput) !== compactMatchText(candidates[1].expectedOutput));
   const decisionReason = manualObservationConfirmation ? "manual_resume_observation"
     : governanceNeedsConfirmation ? "outcome_feedback_watch"
     : actionableExplicitOutputConflict ? "explicit_output_conflict"
-    : hasActionableLearnedConflict ? "learned_preference_conflict"
+    : hasActionableLearnedConflict || hasPlanActualPreferenceConflict ? "learned_preference_conflict"
       : ambiguous ? "close_different_results"
         : explicitlyRequestedOutputs.length === 1 ? "explicit_result_match"
-          : relevantRoutingFeedback.length ? "consistent_learned_preference"
+          : relevantRoutingFeedback.length || relevantPlanActualFeedback.length ? "consistent_learned_preference"
             : "strong_template_match";
   const confidence = ambiguous ? "low"
     : (explicitlyRequestedOutputs.length === 1 || (candidates[0].score >= 9 && scoreGap >= 3)) ? "high" : "medium";

@@ -54,7 +54,12 @@ import { planDiscreteTasks } from "./discrete-task-planner.mjs";
 import { validateTaskPlan } from "./task-plan-contract.mjs";
 import { taskPlanCapabilityReadiness } from "./task-capability-readiness.mjs";
 import { applyResultRepairSpec, buildResultRepairTaskSpec } from "./result-repair-task.mjs";
-import { buildDeliveryEvidence } from "./work-item-delivery-evidence.mjs";
+import { projectWorkItemReviewEvidence } from "./work-item-review-evidence.mjs";
+import { normalizeExecutionStartFailure, projectExecutionStartReceipt } from "./work-item-execution-start.mjs";
+import { projectWorkItemExecutionReview } from "./work-item-execution-review.mjs";
+import { projectWorkItemPlanActual } from "./work-item-plan-actual.mjs";
+import { projectWorkItemContextSummary } from "./work-item-context-summary.mjs";
+import { buildWorkItemIntentContract, freezeWorkItemIntentContract } from "./work-item-intent-contract.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
 export { defaultVerificationSop, extractAcceptanceCriteriaFromBody } from "./work-item-verification.mjs";
@@ -73,7 +78,7 @@ const TASK_CREATION_BASES = new Set([
 const ARTIFACT_KINDS_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const CHANNEL_TASK_DOMAINS = new Set(["general", "office", "development", "design", "product_design", "creative", "content"]);
 const CHANNEL_TASK_RISK_LEVELS = new Set(["low", "local_change", "external_communication", "financial", "destructive"]);
-const DATA_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1;
+const DATA_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 2;
 // Friendly aliases normalized to canonical p0–p3 before validation, so callers
 // may pass "critical"/"high"/"medium"/"low" etc. (mirrors the alias→canonical
 // pattern in normalizeClaudePermissionMode). Invalid values still reject.
@@ -770,6 +775,14 @@ function dataContextSourceFingerprint(source) {
   return source?.version || source?.hash || null;
 }
 
+function materialAllowedOperations(purpose, capabilities = []) {
+  const operations = ["read"];
+  if (["query_source", "change_target"].includes(purpose)) operations.push("query");
+  if (purpose === "change_target" && capabilities.includes("propose_change")) operations.push("propose_change");
+  if (purpose === "change_target" && capabilities.includes("commit_change")) operations.push("commit_change");
+  return operations;
+}
+
 function buildDataContextSnapshot({
   workItemId,
   workItemRevision,
@@ -778,22 +791,26 @@ function buildDataContextSnapshot({
   localContentRefs = [],
   taskResourceRefs = [],
   channelTaskContract = null,
+  channelOrigin = null,
+  taskContextControl = null,
 } = {}) {
-  const channelOrigin = channelTaskContract?.source === "channel";
+  const fromChannel = channelTaskContract?.source === "channel" || Boolean(channelOrigin?.channelId);
   const sources = [];
   for (const asset of Array.isArray(inputAssets) ? inputAssets.slice(0, 100) : []) {
     const sourceId = asset?.id ?? asset?.path ?? asset?.originalName ?? null;
     if (!sourceId) continue;
     sources.push({
       sourceId: String(sourceId).slice(0, 300),
+      referenceId: asset?.id ? String(asset.id).slice(0, 200) : null,
       kind: "asset",
-      origin: channelOrigin ? "channel_attachment" : "work_item_input",
+      origin: fromChannel ? "channel_attachment" : "work_item_input",
       name: String(asset?.originalName ?? asset?.path ?? "输入材料").replace(/[\r\n\t]/g, " ").slice(0, 300),
       path: asset?.path ? String(asset.path).replaceAll("\\", "/").slice(0, 1_000) : null,
       family: asset?.family ? String(asset.family).slice(0, 80) : null,
       version: asset?.version ? String(asset.version).slice(0, 200) : null,
       hash: asset?.hash ? String(asset.hash).slice(0, 200) : null,
       purpose: "required_input",
+      allowedOperations: ["read"],
       trust: "untrusted_reference",
     });
   }
@@ -802,6 +819,7 @@ function buildDataContextSnapshot({
     if (!sourceId) continue;
     sources.push({
       sourceId: String(sourceId).slice(0, 300),
+      referenceId: reference?.id ? String(reference.id).slice(0, 200) : null,
       kind: "local_content",
       origin: "local_content_reference",
       name: String(reference?.title ?? "本地内容").replace(/[\r\n\t]/g, " ").slice(0, 300),
@@ -810,14 +828,20 @@ function buildDataContextSnapshot({
       version: reference?.selectedFingerprint ? String(reference.selectedFingerprint).slice(0, 200) : null,
       hash: reference?.selectedFingerprint ? String(reference.selectedFingerprint).slice(0, 200) : null,
       purpose: ["reference", "required_input"].includes(reference?.purpose) ? reference.purpose : "reference",
+      allowedOperations: ["read"],
       trust: "untrusted_reference",
     });
   }
   for (const reference of Array.isArray(taskResourceRefs) ? taskResourceRefs.slice(0, 20) : []) {
     const sourceId = reference?.resourceId ?? reference?.id ?? null;
     if (!sourceId) continue;
+    const purpose = ["query_source", "change_target", "reference"].includes(reference?.purpose) ? reference.purpose : "reference";
+    const capabilities = Array.isArray(reference?.capabilities)
+      ? reference.capabilities.filter((capability) => ["read", "query", "propose_change", "commit_change"].includes(capability)).slice(0, 10)
+      : [];
     sources.push({
       sourceId: String(sourceId).slice(0, 300),
+      referenceId: reference?.id ? String(reference.id).slice(0, 200) : null,
       kind: "work_resource",
       origin: reference?.locality === "remote" ? "remote_resource_reference" : "local_resource_reference",
       name: String(reference?.title ?? "工作资料").replace(/[\r\n\t]/g, " ").slice(0, 300),
@@ -825,7 +849,8 @@ function buildDataContextSnapshot({
       family: reference?.resourceKind ? String(reference.resourceKind).slice(0, 80) : null,
       version: reference?.selectedVersion ? String(reference.selectedVersion).slice(0, 200) : null,
       hash: null,
-      purpose: ["query_source", "change_target", "reference"].includes(reference?.purpose) ? reference.purpose : "reference",
+      purpose,
+      allowedOperations: materialAllowedOperations(purpose, capabilities),
       trust: "untrusted_reference",
     });
   }
@@ -835,6 +860,7 @@ function buildDataContextSnapshot({
   ])).values()].slice(0, 120);
   const canonical = uniqueSources.map((source) => ({
     sourceId: source.sourceId,
+    referenceId: source.referenceId,
     kind: source.kind,
     origin: source.origin,
     name: source.name,
@@ -843,8 +869,11 @@ function buildDataContextSnapshot({
     version: source.version,
     hash: source.hash,
     purpose: source.purpose,
+    allowedOperations: source.allowedOperations,
   }));
-  const digest = createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+  const deliveryDestination = taskContextControl?.deliveryDestination === "task" ? "task"
+    : fromChannel ? "channel" : "task";
+  const digest = createHash("sha256").update(JSON.stringify({ sources: canonical, deliveryDestination })).digest("hex");
   const hasUnversioned = uniqueSources.some((source) => !dataContextSourceFingerprint(source));
   return {
     schemaVersion: DATA_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
@@ -855,6 +884,7 @@ function buildDataContextSnapshot({
     status: uniqueSources.length === 0 ? "empty" : hasUnversioned ? "partial" : "captured",
     sources: uniqueSources,
     sourceCount: uniqueSources.length,
+    deliveryDestination,
     digest,
   };
 }
@@ -868,6 +898,8 @@ function compareDataContextSnapshot(item) {
     localContentRefs: item?.localContentRefs,
     taskResourceRefs: item?.taskResourceRefs,
     channelTaskContract: item?.channelTaskContract,
+    channelOrigin: item?.channelOrigin,
+    taskContextControl: item?.taskContextControl,
   });
   const current = buildDataContextSnapshot({
     workItemId: item?.id,
@@ -877,6 +909,8 @@ function compareDataContextSnapshot(item) {
     localContentRefs: item?.localContentRefs,
     taskResourceRefs: item?.taskResourceRefs,
     channelTaskContract: item?.channelTaskContract,
+    channelOrigin: item?.channelOrigin,
+    taskContextControl: item?.taskContextControl,
   });
   const baselineByKey = new Map((baseline.sources ?? []).map((source) => [
     `${source.kind}:${dataContextSourceKey(source)}`,
@@ -902,6 +936,13 @@ function compareDataContextSnapshot(item) {
   }
   for (const [key, source] of currentByKey) {
     if (!baselineByKey.has(key)) changes.push({ kind: "added", sourceId: source.sourceId, name: source.name });
+  }
+  if (!changes.length && Number(baseline.schemaVersion) >= 2 && baseline.digest !== current.digest) {
+    changes.push({
+      kind: "scope_changed",
+      previous: baseline.digest,
+      current: current.digest,
+    });
   }
   const status = changes.length
     ? "stale"
@@ -1000,6 +1041,20 @@ function taskResourceReferenceView(reference) {
   return { ...visible, versionPinned: Boolean(reference?.selectedVersion) };
 }
 
+function planActualFeedbackView(feedback) {
+  if (!feedback) return null;
+  return {
+    id: feedback.id,
+    runId: feedback.runId,
+    planActualDigest: feedback.planActualDigest,
+    decisions: (feedback.decisions ?? []).map((decision) => ({ ...decision })),
+    note: feedback.note ?? "",
+    revision: feedback.revision,
+    createdAt: feedback.createdAt,
+    updatedAt: feedback.updatedAt,
+  };
+}
+
 export function createWorkItemService({
   state,
   now,
@@ -1026,6 +1081,7 @@ export function createWorkItemService({
 }) {
   state.myTemplateRoutingFeedback ??= [];
   state.myTemplateOutcomeFeedback ??= [];
+  state.workItemPlanActualFeedback ??= [];
   state.myTemplateGovernanceInterventions ??= [];
   state.myTemplateDrafts ??= [];
   state.myTemplateLearningCases ??= [];
@@ -1369,12 +1425,40 @@ export function createWorkItemService({
       && Date.parse(item.executionContractConfirmedAt) > Date.parse(latestAttemptStartedAt)) {
       missing.push("confirmed_before_execution");
     }
+    const intentContract = buildWorkItemIntentContract(item);
+    const intentChanged = Boolean(
+      item.executionContractConfirmedAt
+      && item.executionIntentContractSnapshot?.digest
+      && item.executionIntentContractSnapshot.digest !== intentContract.digest,
+    );
+    if (intentChanged) missing.push("intent_changed");
     return {
-      ready: missing.length === 0,
+      ready: missing.length === 0 && intentContract.status !== "needs_clarification",
       missing,
       source: item.executionContractSource ?? null,
       confirmedAt: item.executionContractConfirmedAt ?? null,
       latestAttemptStartedAt,
+      intentReady: intentContract.status === "ready" && !intentChanged,
+      clarification: intentContract.clarification,
+      intentChanged,
+    };
+  }
+
+  function intentContractView(item) {
+    const current = buildWorkItemIntentContract(item);
+    const frozen = item.executionIntentContractSnapshot ?? null;
+    const executionActive = Boolean(
+      item.executionOperation
+      || (item.executionBindings ?? []).length
+      || (item.executionStartRequest && item.executionStartRequest.status !== "cancelled"),
+    );
+    if (executionActive && frozen) return frozen;
+    return {
+      ...current,
+      ...(frozen?.digest && frozen.digest !== current.digest ? {
+        previousConfirmedDigest: frozen.digest,
+        confirmationStale: true,
+      } : {}),
     };
   }
 
@@ -1393,6 +1477,10 @@ export function createWorkItemService({
       autoRunId: contract.autoRunId ?? latestRun?.id ?? null,
       acceptanceCriteria: [...(contract.acceptanceCriteria ?? [])],
       verificationSop: [...(contract.verificationSop ?? [])],
+      intentContract: contract.intentContract ? {
+        ...contract.intentContract,
+        conflicts: (contract.intentContract.conflicts ?? []).map((conflict) => ({ ...conflict })),
+      } : null,
       dataContextSnapshot: contract.dataContextSnapshot
         ? {
           ...contract.dataContextSnapshot,
@@ -1623,6 +1711,7 @@ export function createWorkItemService({
     const {
       createIdempotencyKey: _createIdempotencyKey,
       followUpScheduleRevision: _followUpScheduleRevision,
+      executionStartRequest: _executionStartRequest,
       ...publicItem
     } = item;
     const bodyAcceptanceCriteria = (item.acceptanceCriteria ?? []).length
@@ -1693,6 +1782,11 @@ export function createWorkItemService({
       feedback.ownerTeamId === actorTeam(actor) && feedback.workItemId === item.id) ?? null;
     return {
       ...publicItem,
+      taskContextSummary: projectWorkItemContextSummary({
+        item,
+        state,
+        ownerTeamId: actorTeam(actor),
+      }),
       dataContext: dataContextView(item),
       localContentRefs: (item.localContentRefs ?? []).map(contentReferenceView),
       taskResourceRefs: (item.taskResourceRefs ?? []).map(taskResourceReferenceView),
@@ -1722,6 +1816,8 @@ export function createWorkItemService({
       resultVerificationContract: item.resultVerificationContract ?? null,
       resultVerification,
       executionContractGate: executionContractGate(item),
+      intentContract: intentContractView(item),
+      executionStartReceipt: projectExecutionStartReceipt(item, state, { now: now() }),
       reviewContract: frozenReviewContract,
       reviewEvidence: reviewEvidence(item, frozenReviewContract),
       myTemplateOutcomeFeedback: templateOutcomeFeedback ? {
@@ -2473,7 +2569,6 @@ export function createWorkItemService({
     const deliveryReview = deliveryWorktree
       ? (state.worktreeReviews ?? []).find((review) => review.worktreeId === deliveryWorktree.id) ?? null
       : null;
-    const deliveryProject = (state.projects ?? []).find((project) => project.id === item.projectId) ?? null;
     const latestRunBinding = [...(item.executionBindings ?? [])].reverse().find(
       (binding) => binding.kind === "auto_run" && binding.targetId === latestRun?.id,
     ) ?? null;
@@ -2482,6 +2577,26 @@ export function createWorkItemService({
       .map((binding) => binding.worktreeId)
       .filter(Boolean));
     if (outcomeWorktreeId) boundWorktreeIds.add(outcomeWorktreeId);
+    const {
+      deliveryProject,
+      deliveryRemoteUrl,
+      deliveryMode,
+      relatedInvocations,
+      runInvocations,
+      latestExecutionInvocation,
+      projectedDeliveryReview,
+      projectedDeliveryReport,
+      deliveryEvidence,
+    } = projectWorkItemReviewEvidence({
+      item,
+      state,
+      boundRuns,
+      latestRun,
+      pendingLocalDelivery,
+      deliveryWorktree,
+      deliveryReview,
+      outcomeWorktreeId,
+    });
     const outcomeFileContext = {
       projectId: item.projectId,
       worktreeId: outcomeWorktreeId,
@@ -2492,93 +2607,6 @@ export function createWorkItemService({
           .map((worktree) => ({ root: worktree.path ?? worktree.worktreePath, worktreeId: worktree.id })),
       ].filter((scope) => scope.root),
     };
-    const deliveryRemoteUrl = deliveryProject?.git?.remoteUrl ?? null;
-    const deliveryMode = deliveryRemoteUrl && /github\.com[/:]/i.test(deliveryRemoteUrl)
-      ? "pull_request"
-      : "local_merge";
-    const currentInvocationIds = new Set(boundRuns
-      .filter((run) => run.invocationId)
-      .map((run) => run.invocationId));
-    const relatedInvocations = (state.invocations ?? [])
-      .filter((invocation) => {
-        const autoRunId = invocation.options?.metadata?.autoRunId;
-        return (autoRunId && runIds.has(autoRunId)) || currentInvocationIds.has(invocation.id);
-      })
-      .sort((left, right) =>
-        String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""))
-        || String(left.id).localeCompare(String(right.id)));
-    const runInvocations = relatedInvocations.filter(
-      (invocation) => invocation.options?.metadata?.role !== "delivery_review",
-    );
-    const latestExecutionInvocation = runInvocations.find((invocation) => invocation.id === latestRun?.invocationId) ?? null;
-    const reviewInvocation = latestRun?.deliveryReview?.invocationId
-      ? relatedInvocations.find((invocation) => invocation.id === latestRun.deliveryReview.invocationId) ?? null
-      : null;
-    const projectedDeliveryReview = latestRun?.deliveryReview
-      ? {
-        ...latestRun.deliveryReview,
-        status: latestRun.deliveryReview.status === "queued" && reviewInvocation?.status === "running"
-          ? "running"
-          : latestRun.deliveryReview.status,
-      }
-      : null;
-    const projectedDeliveryReport = latestRun?.deliveryReport ?? (pendingLocalDelivery ? {
-      summary: latestExecutionInvocation?.result?.output?.latestMessage
-        ?? latestExecutionInvocation?.result?.output?.summary
-        ?? latestExecutionInvocation?.result?.summary
-        ?? null,
-      verification: latestRun?.verification ? { ...latestRun.verification } : null,
-      changedFiles: [],
-      completedAt: latestExecutionInvocation?.completedAt ?? latestRun?.updatedAt ?? null,
-    } : null);
-    const storedLedgerPreview = item.channelTaskContract?.ledgerMutationPreview ?? item.ledgerMutationPreview ?? null;
-    const liveLedgerBatch = storedLedgerPreview?.kind === "batch" && storedLedgerPreview.id
-      ? (state.ledgerBatchUpsertPreviews ?? []).find((batch) =>
-        batch.id === storedLedgerPreview.id
-        && batch.ownerTeamId === item.ownerTeamId
-        && batch.projectId === item.projectId) ?? null
-      : null;
-    const liveLedgerJournal = liveLedgerBatch
-      ? (state.ledgerBatchMutationJournals ?? [])
-        .filter((journal) => journal.batchPreviewId === liveLedgerBatch.id && journal.ownerTeamId === item.ownerTeamId)
-        .sort((left, right) => String(left.updatedAt ?? "").localeCompare(String(right.updatedAt ?? "")))
-        .at(-1) ?? null
-      : null;
-    const liveLedgerChildren = liveLedgerBatch
-      ? (liveLedgerBatch.childPreviewIds ?? []).map((previewId) =>
-        (state.ledgerUpsertPreviews ?? []).find((preview) =>
-          preview.id === previewId && preview.ownerTeamId === item.ownerTeamId && preview.projectId === item.projectId)
-          ?? { id: previewId, state: "unknown", missing: true })
-      : [];
-    const staleLedgerBatch = storedLedgerPreview?.kind === "batch" && storedLedgerPreview.id && !liveLedgerBatch;
-    const evidenceItem = liveLedgerBatch || staleLedgerBatch
-      ? {
-          ...item,
-          channelTaskContract: {
-            ...(item.channelTaskContract ?? {}),
-            ledgerMutationPreview: {
-              ...(liveLedgerBatch ?? storedLedgerPreview),
-              kind: "batch",
-              state: staleLedgerBatch ? "needs_attention" : liveLedgerBatch.state,
-              children: staleLedgerBatch ? [] : liveLedgerChildren,
-              journal: staleLedgerBatch ? null : liveLedgerJournal,
-              evidenceStale: staleLedgerBatch,
-            },
-          },
-        }
-      : item;
-    const deliveryEvidence = pendingLocalDelivery
-      ? buildDeliveryEvidence({
-        item: evidenceItem,
-        autoRun: latestRun,
-        deliveryReport: projectedDeliveryReport,
-        deliveryReview: deliveryReview ?? projectedDeliveryReview,
-        deliveryMode,
-        worktreeId: latestRun.localDelivery.worktreeId,
-        branchName: latestRun.localDelivery.branchName ?? deliveryWorktree?.branchName ?? null,
-        remoteUrl: deliveryRemoteUrl,
-      })
-      : null;
     const taskOutcome = projectWorkItemOutcome({
       item,
       latestRun,
@@ -2610,22 +2638,46 @@ export function createWorkItemService({
     const showRunHistory = runInvocations.length > 1
       || runInvocations.some((invocation) => failureStatuses.has(invocation.status));
     const runHistory = showRunHistory
-      ? runInvocations.map((invocation, index) => ({
-        invocationId: invocation.id,
-        autoRunId: invocation.options?.metadata?.autoRunId
+      ? runInvocations.map((invocation, index) => {
+        const autoRunId = invocation.options?.metadata?.autoRunId
           ?? boundRuns.find((run) => run.invocationId === invocation.id)?.id
-          ?? null,
-        attempt: index + 1,
-        status: invocation.status,
-        createdAt: invocation.createdAt ?? null,
-        startedAt: invocation.startedAt ?? null,
-        completedAt: invocation.completedAt ?? null,
-        errorCode: invocation.result?.errorCode ?? null,
-        summary: invocation.result?.summary
-          ? String(invocation.result.summary).slice(0, 500)
-          : null,
-        current: invocation.id === latestRun?.invocationId,
-      }))
+          ?? null;
+        const run = autoRunId ? boundRuns.find((candidate) => candidate.id === autoRunId) ?? null : null;
+        const historicalOutcome = run?.outcomeHistory?.find((entry) => entry.invocationId === invocation.id) ?? null;
+        const invocationSettled = failureStatuses.has(invocation.status) || invocation.status === "succeeded";
+        const verification = historicalOutcome?.verification
+          ?? historicalOutcome?.deliveryReport?.verification
+          ?? (invocation.id === latestRun?.invocationId && invocationSettled
+            ? latestRun?.deliveryReport?.verification ?? latestRun?.verification
+            : null)
+          ?? invocation.result?.output?.verification
+          ?? invocation.result?.verification
+          ?? null;
+        const verified = verification?.verified === true
+          || verification?.passed === true
+          || verification?.passed === false
+          || Number.isInteger(verification?.exitCode);
+        const passed = verification?.passed === true || verification?.exitCode === 0;
+        return {
+          invocationId: invocation.id,
+          autoRunId,
+          attempt: index + 1,
+          status: invocation.status,
+          createdAt: invocation.createdAt ?? null,
+          startedAt: invocation.startedAt ?? null,
+          completedAt: invocation.completedAt ?? null,
+          errorCode: invocation.result?.errorCode ?? null,
+          summary: invocation.result?.summary
+            ? String(invocation.result.summary).slice(0, 500)
+            : historicalOutcome?.report ? String(historicalOutcome.report).slice(0, 500) : null,
+          verification: verification ? {
+            status: verified ? (passed ? "passed" : "failed") : "not_run",
+            command: String(verification.command ?? verification.commands?.at?.(-1) ?? "").slice(0, 500) || null,
+            summary: String(verification.summary ?? "").slice(0, 500) || null,
+          } : null,
+          current: invocation.id === latestRun?.invocationId,
+        };
+      })
       : [];
     const activeClaim = item.claim?.status === "active" && Date.parse(item.claim.leaseExpiresAt) > Date.parse(now())
       ? item.claim
@@ -2771,6 +2823,38 @@ export function createWorkItemService({
             : latestRun
               ? "monitor_execution"
               : "start_execution";
+    const startReceipt = projectExecutionStartReceipt(item, state, { now: now() });
+    const executionReview = projectWorkItemExecutionReview({
+      item,
+      state,
+      startReceipt,
+      deliveryEvidence,
+      now: now(),
+    });
+    const taskContextSummary = projectWorkItemContextSummary({
+      item,
+      state,
+      ownerTeamId: actorTeam(actor),
+    });
+    const projectedPlanActual = projectWorkItemPlanActual({
+      item,
+      latestRun,
+      outcome: taskOutcome,
+      deliveryEvidence,
+      executionReview,
+      contextSummary: taskContextSummary,
+    });
+    const planActualFeedback = projectedPlanActual
+      ? state.workItemPlanActualFeedback.find((feedback) =>
+        feedback.ownerTeamId === actorTeam(actor)
+        && feedback.workItemId === item.id
+        && feedback.runId === projectedPlanActual.runId
+        && feedback.planActualDigest === projectedPlanActual.digest) ?? null
+      : null;
+    const planActual = projectedPlanActual ? {
+      ...projectedPlanActual,
+      feedback: planActualFeedbackView(planActualFeedback),
+    } : null;
     return {
       ok: true,
       status: 200,
@@ -2779,6 +2863,8 @@ export function createWorkItemService({
         observability: {
           executionChainId: item.id,
           nextAction,
+          executionReview,
+          planActual,
           attention,
           latestRun: latestRun ? {
             id: latestRun.id,
@@ -2918,12 +3004,15 @@ export function createWorkItemService({
         feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
       outcomeFeedback: state.myTemplateOutcomeFeedback.filter((feedback) =>
         feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+      planActualFeedback: state.workItemPlanActualFeedback.filter((feedback) =>
+        feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
       governanceInterventions: state.myTemplateGovernanceInterventions.filter((entry) =>
         entry.ownerTeamId === actorTeam(actor) && entry.projectId === projectId),
       projectId,
       intent: `${title}\n${body}`,
       attachments,
     });
+    const preferenceHints = planActualPreferenceHints({ projectId, intent: `${title}\n${body}`, actor });
     const selectedDefinition = templateMatch.selected
       ? (state.routineDefinitions ?? []).find((definition) => definition.id === templateMatch.selected.definitionId)
       : null;
@@ -2971,6 +3060,15 @@ export function createWorkItemService({
           suggestedRoute: type === "initiative" ? "decompose" : body.length < 40 ? "clarify" : "develop",
           templateMatch,
           risks: [
+            ...preferenceHints.map((hint) => hint.kind === "materials"
+              ? "相似任务曾纠正过资料版本；启动前请重新确认资料范围。"
+              : hint.kind === "delivery"
+                ? "相似任务曾纠正过交付位置；启动前请确认结果留在任务还是发送到 Channel。"
+                : hint.kind === "scope"
+                  ? "相似任务曾纠正过读写范围；本次仍需单独确认，不会自动扩大写入权限。"
+                  : hint.kind === "template" || hint.kind === "result"
+                    ? "相似任务曾纠正过结果类型；系统已将它作为本次模板匹配信号。"
+                    : "相似任务曾纠正过检查要求；本次仍保留独立验证。"),
             ...(businessLike && chinese
               ? ["系统只处理任务中的安全副本，不会修改原始文件。"]
               : [...(!body ? ["The problem statement needs more context."] : []), "Confirm affected users and rollback expectations before execution."]),
@@ -2984,6 +3082,7 @@ export function createWorkItemService({
             })).digest("hex"),
             confidence: body.length >= 120 ? 0.78 : body.length >= 40 ? 0.65 : 0.45,
           },
+          preferenceHints,
         },
       },
     };
@@ -3341,6 +3440,8 @@ export function createWorkItemService({
               localContentRefs: stored.localContentRefs,
               taskResourceRefs: stored.taskResourceRefs,
               channelTaskContract: stored.channelTaskContract,
+              channelOrigin: stored.channelOrigin,
+              taskContextControl: stored.taskContextControl,
             });
           });
           item = workItemView(stored, actor);
@@ -3427,6 +3528,8 @@ export function createWorkItemService({
         localContentRefs: repair.localContentRefs,
         taskResourceRefs: repair.taskResourceRefs,
         channelTaskContract: repair.channelTaskContract,
+        channelOrigin: repair.channelOrigin,
+        taskContextControl: repair.taskContextControl,
       });
       const goal = source.workGoalId
         ? (state.workGoals ?? []).find((candidate) => candidate.id === source.workGoalId
@@ -4249,18 +4352,304 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { feedback: view.myTemplateOutcomeFeedback, workItem: view, replayed: false } };
   }
 
+  function planActualPreferenceValue(planActual, deviation, resolution) {
+    const target = deviation.correctionTarget;
+    if (target === "template" || target === "result") {
+      const actualResult = planActual.actual.resultFiles?.[0] ?? null;
+      return resolution === "prefer_actual" ? actualResult : planActual.planned.expectedOutput;
+    }
+    if (target === "materials") return resolution === "prefer_actual" ? "latest_at_start" : "confirmed_snapshot";
+    if (target === "delivery") {
+      if (resolution === "prefer_actual") {
+        return planActual.planned.deliveryDestination === "channel" && planActual.actual.resultStatus === "available"
+          ? "task"
+          : null;
+      }
+      return planActual.planned.deliveryDestination;
+    }
+    if (target === "scope") {
+      if (resolution === "prefer_actual") {
+        return ["prepared", "proposed", "applied", "partial", "rolled_back"].includes(planActual.actual.impactStatus)
+          ? "write"
+          : null;
+      }
+      return planActual.planned.actionAccessMode;
+    }
+    if (target === "verification") return "required";
+    return null;
+  }
+
+  function planActualPreferenceHints({ projectId, intent, actor }) {
+    const terms = templateRoutingTerms(intent);
+    if (!terms.length) return [];
+    const relevant = state.workItemPlanActualFeedback
+      .filter((feedback) => feedback.ownerTeamId === actorTeam(actor)
+        && feedback.projectId === projectId
+        && (feedback.intentTerms ?? []).some((term) => terms.includes(term)))
+      .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+    const grouped = new Map();
+    for (const feedback of relevant) {
+      for (const decision of feedback.decisions ?? []) {
+        if (!decision.correctionTarget || grouped.has(decision.correctionTarget)) continue;
+        grouped.set(decision.correctionTarget, {
+          kind: decision.correctionTarget,
+          preference: decision.preferredValue,
+          resolution: decision.resolution,
+          requiresConfirmation: decision.requiresConfirmation === true,
+          learnedFrom: "plan_actual_correction",
+        });
+      }
+      if (grouped.size >= 5) break;
+    }
+    return [...grouped.values()];
+  }
+
+  function listPlanActualFeedback({ projectId = null, limit = 2_000 } = {}, actor = null) {
+    const selectedProjectId = projectId ? String(projectId) : null;
+    if (selectedProjectId && !actorCanAccessProject(state, actor, selectedProjectId)) return notFound();
+    const boundedLimit = Math.max(1, Math.min(2_000, Number(limit) || 2_000));
+    const feedback = state.workItemPlanActualFeedback
+      .filter((entry) => entry.ownerTeamId === actorTeam(actor)
+        && actorCanAccessProject(state, actor, entry.projectId)
+        && (!selectedProjectId || entry.projectId === selectedProjectId))
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
+      .slice(0, boundedLimit)
+      .map((entry) => {
+        const workItem = (state.workItems ?? []).find((item) => item.id === entry.workItemId
+          && item.ownerTeamId === actorTeam(actor));
+        const detail = workItem ? getWorkItem({ workItemId: workItem.id }, actor) : null;
+        const planActual = detail?.body?.observability?.planActual ?? null;
+        const deviationCodes = new Set((planActual?.deviations ?? []).map((deviation) => deviation.code));
+        const editable = planActual?.digest === entry.planActualDigest
+          && planActual.status === "attention"
+          && (entry.decisions ?? []).every((decision) => deviationCodes.has(decision.code));
+        const visible = planActualFeedbackView(entry);
+        return {
+          ...visible,
+          decisions: visible.decisions.map((decision) => {
+            const deviation = (planActual?.deviations ?? []).find((candidate) => candidate.code === decision.code);
+            if (!editable || !deviation) return { ...decision, options: [] };
+            const keepPlanValue = planActualPreferenceValue(planActual, deviation, "keep_plan");
+            const preferActualValue = deviation.correctionTarget === "verification"
+              ? null
+              : planActualPreferenceValue(planActual, deviation, "prefer_actual");
+            return {
+              ...decision,
+              options: [
+                ...(keepPlanValue ? [{ resolution: "keep_plan", preferredValue: keepPlanValue }] : []),
+                ...(preferActualValue ? [{ resolution: "prefer_actual", preferredValue: preferActualValue }] : []),
+              ],
+            };
+          }),
+          projectId: entry.projectId,
+          workItemId: entry.workItemId,
+          workItem: workItem ? { id: workItem.id, localRef: workItem.localRef, title: workItem.title } : null,
+          intentTerms: [...(entry.intentTerms ?? [])],
+          template: entry.template ? { ...entry.template } : null,
+          editable,
+          editUnavailableReason: editable ? null : "execution_evidence_unavailable",
+        };
+      });
+    return { ok: true, status: 200, body: { feedback, count: feedback.length } };
+  }
+
+  function removePlanActualFeedback({ feedbackId } = {}, actor = null) {
+    const ownerTeamId = actorTeam(actor);
+    const index = state.workItemPlanActualFeedback.findIndex((entry) =>
+      entry.id === String(feedbackId ?? "")
+      && entry.ownerTeamId === ownerTeamId
+      && actorCanAccessProject(state, actor, entry.projectId));
+    if (index < 0) return notFound();
+    const feedback = state.workItemPlanActualFeedback[index];
+    runTx(() => {
+      state.workItemPlanActualFeedback.splice(index, 1);
+      const workItem = (state.workItems ?? []).find((item) => item.id === feedback.workItemId
+        && item.ownerTeamId === ownerTeamId);
+      if (workItem) {
+        recordActivity(workItem, actor, "plan_actual_feedback_removed", {
+          feedbackId: feedback.id,
+          affectsFutureMatchesOnly: true,
+        });
+      }
+      appendEvent({
+        invocationId: null,
+        type: "work_item_plan_actual_feedback_removed",
+        level: "info",
+        message: "A learned plan/actual preference was removed.",
+        data: { feedbackId: feedback.id, projectId: feedback.projectId, actorTeamId: ownerTeamId },
+      });
+    });
+    return {
+      ok: true,
+      status: 200,
+      body: { removed: planActualFeedbackView(feedback), affectsFutureMatchesOnly: true },
+    };
+  }
+
+  function recordPlanActualFeedback({
+    workItemId, expectedPlanActualDigest, expectedFeedbackRevision = null, decisions, note = "",
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const expectedDigest = String(expectedPlanActualDigest ?? "").trim();
+    if (!/^[a-f0-9]{64}$/.test(expectedDigest)) {
+      return { ok: false, status: 400, body: { error: "invalid_plan_actual_digest" } };
+    }
+    if (!Array.isArray(decisions) || !decisions.length || decisions.length > 20) {
+      return { ok: false, status: 400, body: { error: "invalid_plan_actual_feedback" } };
+    }
+    const detail = getWorkItem({ workItemId }, actor);
+    const planActual = detail.body?.observability?.planActual ?? null;
+    if (!planActual) return { ok: false, status: 409, body: { error: "plan_actual_not_available" } };
+    if (planActual.digest !== expectedDigest) {
+      return {
+        ok: false, status: 409,
+        body: { error: "plan_actual_changed", currentDigest: planActual.digest, planActual },
+      };
+    }
+    if (planActual.status !== "attention" || !(planActual.deviations ?? []).length) {
+      return { ok: false, status: 409, body: { error: "plan_actual_has_no_confirmed_deviation", planActual } };
+    }
+    const deviations = new Map(planActual.deviations.map((deviation) => [deviation.code, deviation]));
+    const normalized = [];
+    const seen = new Set();
+    for (const decision of decisions) {
+      const code = String(decision?.code ?? "").trim().slice(0, 120);
+      const resolution = String(decision?.resolution ?? "");
+      const deviation = deviations.get(code);
+      if (!deviation || seen.has(code) || !["keep_plan", "prefer_actual"].includes(resolution)) {
+        return { ok: false, status: 400, body: { error: "invalid_plan_actual_feedback_decision", code } };
+      }
+      const preferredValue = planActualPreferenceValue(planActual, deviation, resolution);
+      if (!preferredValue || (resolution === "prefer_actual" && deviation.correctionTarget === "verification")) {
+        return { ok: false, status: 400, body: { error: "plan_actual_preference_not_available", code } };
+      }
+      seen.add(code);
+      normalized.push({
+        code,
+        scope: deviation.scope,
+        correctionTarget: deviation.correctionTarget,
+        resolution,
+        preferredValue: String(preferredValue).replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 500),
+        requiresConfirmation: resolution === "prefer_actual" && ["materials", "scope"].includes(deviation.correctionTarget),
+      });
+    }
+    const normalizedNote = String(note ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1_000);
+    const timestamp = now();
+    let feedback = state.workItemPlanActualFeedback.find((candidate) =>
+      candidate.ownerTeamId === actorTeam(actor)
+      && candidate.workItemId === item.id
+      && candidate.runId === planActual.runId
+      && candidate.planActualDigest === planActual.digest) ?? null;
+    if (expectedFeedbackRevision !== null && expectedFeedbackRevision !== undefined) {
+      const expectedRevision = Number(expectedFeedbackRevision);
+      if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+        return { ok: false, status: 400, body: { error: "invalid_plan_actual_feedback_revision" } };
+      }
+      if (!feedback || feedback.revision !== expectedRevision) {
+        return {
+          ok: false, status: 409,
+          body: {
+            error: "plan_actual_feedback_changed",
+            currentFeedback: planActualFeedbackView(feedback),
+          },
+        };
+      }
+    }
+    const unchanged = feedback
+      && JSON.stringify(feedback.decisions) === JSON.stringify(normalized)
+      && feedback.note === normalizedNote;
+    if (unchanged) {
+      return { ok: true, status: 200, body: { feedback: planActualFeedbackView(feedback), planActual, replayed: true } };
+    }
+    runTx(() => {
+      if (feedback) {
+        feedback.decisions = normalized;
+        feedback.note = normalizedNote;
+        feedback.revision += 1;
+        feedback.updatedAt = timestamp;
+        feedback.updatedBy = actorUser(actor);
+      } else {
+        feedback = {
+          id: nextId("wpaf"),
+          ownerTeamId: actorTeam(actor),
+          projectId: item.projectId,
+          workItemId: item.id,
+          runId: planActual.runId,
+          planActualDigest: planActual.digest,
+          intentTerms: templateRoutingTerms(`${item.title}\n${item.body ?? ""}`),
+          template: item.myTemplateBinding ? {
+            definitionId: item.myTemplateBinding.definitionId,
+            familyId: item.myTemplateBinding.familyId,
+            version: item.myTemplateBinding.version,
+          } : null,
+          decisions: normalized,
+          note: normalizedNote,
+          source: "user",
+          revision: 1,
+          createdBy: actorUser(actor),
+          updatedBy: actorUser(actor),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        state.workItemPlanActualFeedback.unshift(feedback);
+        state.workItemPlanActualFeedback = state.workItemPlanActualFeedback.slice(0, 2_000);
+      }
+      recordActivity(item, actor, "plan_actual_feedback_recorded", {
+        feedbackId: feedback.id,
+        runId: planActual.runId,
+        planActualDigest: planActual.digest,
+        decisions: normalized.map(({ code, correctionTarget, resolution }) => ({ code, correctionTarget, resolution })),
+      });
+      appendEvent({
+        invocationId: null,
+        type: "work_item_plan_actual_feedback_recorded",
+        level: "info",
+        message: `${item.localRef} recorded a plan/actual correction for future similar tasks.`,
+        data: { workItemId: item.id, runId: planActual.runId, feedbackId: feedback.id, actorTeamId: actorTeam(actor) },
+      });
+    });
+    notifyWorkItemChanged(item, actor, "plan_actual_feedback_recorded");
+    return {
+      ok: true,
+      status: feedback.revision === 1 ? 201 : 200,
+      body: { feedback: planActualFeedbackView(feedback), planActual: { ...planActual, feedback: planActualFeedbackView(feedback) }, replayed: false },
+    };
+  }
+
   function prepareExecutionContract({ workItemId, expectedRevision, confirm = true, draftOverride = null } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
     if (!Number.isInteger(expectedRevision)) {
       return { ok: false, status: 400, body: { error: "expected_revision_required" } };
     }
-    if (expectedRevision !== item.revision) {
-      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
-    }
     const currentGate = executionContractDefinitionGate(item);
+    const contractPrepared = (item.acceptanceCriteria ?? []).length > 0
+      && (item.verificationSop ?? []).length > 0;
+    if (contractPrepared && !confirm) {
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          workItem: workItemView(item, actor),
+          draft: {
+            taskUnderstanding: item.body ?? "",
+            acceptanceCriteria: [...item.acceptanceCriteria],
+            verificationSop: [...item.verificationSop],
+            suggestedRoute: null,
+            risks: [],
+            evidence: null,
+            confirmedAt: item.executionContractConfirmedAt ?? null,
+          },
+          replayed: true,
+        },
+      };
+    }
     if (currentGate.ready && confirm) {
       return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
     }
     const assisted = suggestWorkItemDraft({ projectId: item.projectId, title: item.title, body: item.body }, actor);
     if (!assisted.ok) return assisted;
@@ -4323,6 +4712,209 @@ export function createWorkItemService({
         },
       },
     };
+  }
+
+  function confirmExecutionContractAndSchedule({ workItemId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const alreadyScheduled = executionContractGate(item).ready
+      && item.executionPolicy === "auto"
+      && item.waitingOn === "ai";
+    if (alreadyScheduled) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!(item.acceptanceCriteria ?? []).length || !(item.verificationSop ?? []).length) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_plan_required" } };
+    }
+    const intentContract = buildWorkItemIntentContract(item);
+    if (intentContract.status === "needs_clarification") {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "work_item_intent_conflict",
+          intentContract,
+          clarification: intentContract.clarification,
+        },
+      };
+    }
+    if (item.state !== "open" || item.status === "done" || (item.executionBindings ?? []).length) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_already_started" } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      item.executionContractSource ??= "manual";
+      item.executionContractConfirmedAt = timestamp;
+      item.executionIntentContractSnapshot = freezeWorkItemIntentContract(item, {
+        confirmedAt: timestamp,
+        confirmedBy: actorUser(actor),
+      });
+      item.executionPolicy = "auto";
+      item.waitingOn = "ai";
+      if (item.status === "backlog") item.status = "ready";
+      item.executionStartRequest = {
+        schemaVersion: 1,
+        id: nextId("wsr"),
+        status: "queued",
+        requestedAt: timestamp,
+        requestedBy: actorUser(actor),
+        confirmedRevision: item.revision + 1,
+        contractDigest: createHash("sha256").update(JSON.stringify({
+          workItemId: item.id,
+          acceptanceCriteria: item.acceptanceCriteria,
+          verificationSop: item.verificationSop,
+          intentContractDigest: item.executionIntentContractSnapshot.digest,
+          confirmedAt: timestamp,
+        })).digest("hex"),
+        updatedAt: timestamp,
+        startedAt: null,
+        executionKind: null,
+        targetId: null,
+        agentId: null,
+        reasonCode: "waiting_for_turn",
+        reasonDetail: null,
+        cancelledAt: null,
+        cancelledBy: null,
+      };
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_contract_confirmed", {
+        executionPolicy: "auto",
+        waitingOn: "ai",
+        intentContractDigest: item.executionIntentContractSnapshot.digest,
+      });
+      applyPlanningAutomation(item, actor);
+      appendEvent({
+        invocationId: null,
+        type: "work_item_updated",
+        level: "info",
+        message: `${item.localRef} execution confirmed.`,
+        data: { workItemId: item.id, revision: item.revision, actorTeamId: actorTeam(actor) },
+      });
+    });
+    notifyWorkItemChanged(item, actor, "execution_contract_confirmed");
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: false } };
+  }
+
+  function cancelExecutionStart({ workItemId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    const receipt = projectExecutionStartReceipt(item, state, { now: now() });
+    if (receipt?.status === "cancelled") {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!item.executionStartRequest || !receipt?.canCancel || item.executionOperation
+      || (item.executionBindings ?? []).some((binding) => ["auto_run", "application_invocation"].includes(binding.kind))) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_start_cannot_cancel" } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      item.executionStartRequest = {
+        ...item.executionStartRequest,
+        status: "cancelled",
+        reasonCode: "cancelled_by_user",
+        reasonDetail: null,
+        cancelledAt: timestamp,
+        cancelledBy: actorUser(actor),
+        updatedAt: timestamp,
+      };
+      item.executionPolicy = "paused";
+      item.waitingOn = "none";
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_start_cancelled", { requestId: item.executionStartRequest.id });
+    });
+    notifyWorkItemChanged(item, actor, "execution_start_cancelled");
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: false } };
+  }
+
+  function recheckExecutionStart({ workItemId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const receipt = projectExecutionStartReceipt(item, state, { now: now() });
+    if (!item.executionStartRequest || !["queued", "blocked"].includes(receipt?.status ?? "")
+      || item.executionOperation || (item.executionBindings ?? []).some((binding) =>
+        ["auto_run", "application_invocation"].includes(binding.kind))) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_start_cannot_recheck" } };
+    }
+    if (receipt.status === "queued" && item.executionPolicy === "auto" && item.waitingOn === "ai"
+      && item.executionStartRequest.status === "queued" && item.executionStartRequest.reasonCode === "waiting_for_turn") {
+      notifyWorkItemChanged(item, actor, "execution_start_rechecked");
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      item.executionStartRequest = {
+        ...item.executionStartRequest,
+        status: "queued",
+        reasonCode: "waiting_for_turn",
+        reasonDetail: null,
+        updatedAt: timestamp,
+      };
+      item.executionPolicy = "auto";
+      item.waitingOn = "ai";
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_start_rechecked", { requestId: item.executionStartRequest.id });
+    });
+    notifyWorkItemChanged(item, actor, "execution_start_rechecked");
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: false } };
+  }
+
+  function recordExecutionStartOutcome({ workItemId, status, reasonCode, reasonDetail = null } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const request = item.executionStartRequest;
+    if (!request || request.status === "cancelled" || (item.executionBindings ?? []).some((binding) =>
+      ["auto_run", "application_invocation"].includes(binding.kind))) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    if (!["queued", "blocked"].includes(status)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_execution_start_outcome" } };
+    }
+    const normalizedCode = String(reasonCode ?? (status === "queued" ? "waiting_for_turn" : "execution_start_failed")).slice(0, 160);
+    const normalizedDetail = reasonDetail == null ? null : String(reasonDetail).slice(0, 500);
+    if (request.status === status && request.reasonCode === normalizedCode && request.reasonDetail === normalizedDetail) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      item.executionStartRequest = {
+        ...request,
+        status,
+        reasonCode: normalizedCode,
+        reasonDetail: normalizedDetail,
+        updatedAt: timestamp,
+      };
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_start_status_changed", {
+        requestId: request.id, status, reasonCode: normalizedCode,
+      });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: false } };
   }
 
   function retryWorkItemAlert({ workItemId, alertId } = {}, actor = null) {
@@ -4704,6 +5296,8 @@ export function createWorkItemService({
           feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
         outcomeFeedback: state.myTemplateOutcomeFeedback.filter((feedback) =>
           feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
+        planActualFeedback: state.workItemPlanActualFeedback.filter((feedback) =>
+          feedback.ownerTeamId === actorTeam(actor) && feedback.projectId === projectId),
         governanceInterventions: state.myTemplateGovernanceInterventions.filter((entry) =>
           entry.ownerTeamId === actorTeam(actor) && entry.projectId === projectId),
         projectId,
@@ -4859,6 +5453,8 @@ export function createWorkItemService({
       localContentRefs: workItem.localContentRefs,
       taskResourceRefs: workItem.taskResourceRefs,
       channelTaskContract: workItem.channelTaskContract,
+      channelOrigin: workItem.channelOrigin,
+      taskContextControl: workItem.taskContextControl,
     });
     workItem.dataContextSnapshotHistory = [];
     const assetReadiness = evaluateAssetRequirements(
@@ -5998,6 +6594,30 @@ export function createWorkItemService({
         };
       }
     }
+    const currentIntentContract = buildWorkItemIntentContract(item);
+    const startRequestActive = Boolean(item.executionStartRequest && item.executionStartRequest.status !== "cancelled");
+    if (startRequestActive && item.executionIntentContractSnapshot?.digest
+      && item.executionIntentContractSnapshot.digest !== currentIntentContract.digest) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_intent_contract_changed", intentContract: currentIntentContract },
+      };
+    }
+    const intentContract = startRequestActive && item.executionIntentContractSnapshot
+      ? item.executionIntentContractSnapshot
+      : currentIntentContract;
+    if (intentContract.status === "needs_clarification") {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "work_item_intent_conflict",
+          intentContract,
+          clarification: intentContract.clarification,
+        },
+      };
+    }
     const holderId = actorUser(actor);
     const claimActive = item.claim?.status === "active"
       && Date.parse(item.claim.leaseExpiresAt) > Date.parse(timestamp);
@@ -6012,6 +6632,25 @@ export function createWorkItemService({
       agentId: agentId ? String(agentId) : null,
       startedAt: timestamp,
       expiresAt: new Date(Date.parse(timestamp) + EXECUTION_OPERATION_TTL_MS).toISOString(),
+      contextSnapshot: {
+        ...buildDataContextSnapshot({
+          workItemId: item.id,
+          workItemRevision: item.revision,
+          capturedAt: timestamp,
+          inputAssets: item.inputAssets,
+          localContentRefs: item.localContentRefs,
+          taskResourceRefs: item.taskResourceRefs,
+          channelTaskContract: item.channelTaskContract,
+          channelOrigin: item.channelOrigin,
+          taskContextControl: item.taskContextControl,
+        }),
+        confirmedAt: timestamp,
+        confirmedBy: holderId,
+        intentContract: {
+          ...intentContract,
+          conflicts: (intentContract.conflicts ?? []).map((conflict) => ({ ...conflict })),
+        },
+      },
     };
     runTx(() => {
       if (!claimActive) {
@@ -6055,6 +6694,16 @@ export function createWorkItemService({
     runTx(() => {
       const operation = item.executionOperation;
       item.executionOperation = null;
+      if (item.executionStartRequest && item.executionStartRequest.status !== "cancelled") {
+        const failure = normalizeExecutionStartFailure(reason);
+        item.executionStartRequest = {
+          ...item.executionStartRequest,
+          status: failure.status,
+          reasonCode: failure.reasonCode,
+          reasonDetail: failure.reasonDetail,
+          updatedAt: now(),
+        };
+      }
       if (item.claim?.status === "active" && item.claim.executionOperationId === operation.id) {
         item.claim = {
           ...item.claim,
@@ -6086,15 +6735,46 @@ export function createWorkItemService({
       && (item.executionOperation?.id !== String(operationId) || item.executionOperation.kind !== kind)) {
       return { ok: false, status: 409, body: { error: "work_item_execution_operation_conflict" } };
     }
+    const bindingCreatedAt = now();
     const binding = {
       kind,
       targetId: String(targetId),
       worktreeId: worktreeId ? String(worktreeId) : null,
       terminalId: item.terminalId,
-      createdAt: now(),
+      createdAt: bindingCreatedAt,
+      contextSnapshot: item.executionOperation?.contextSnapshot
+        ? structuredClone(item.executionOperation.contextSnapshot)
+        : {
+          ...buildDataContextSnapshot({
+            workItemId: item.id,
+            workItemRevision: item.revision,
+            capturedAt: bindingCreatedAt,
+            inputAssets: item.inputAssets,
+            localContentRefs: item.localContentRefs,
+            taskResourceRefs: item.taskResourceRefs,
+            channelTaskContract: item.channelTaskContract,
+            channelOrigin: item.channelOrigin,
+            taskContextControl: item.taskContextControl,
+          }),
+          confirmedAt: bindingCreatedAt,
+          confirmedBy: actorUser(actor),
+        },
     };
     runTx(() => {
       item.executionBindings = [...(item.executionBindings ?? []), binding];
+      if (item.executionStartRequest && item.executionStartRequest.status !== "cancelled"
+        && ["auto_run", "application_invocation"].includes(kind)) {
+        item.executionStartRequest = {
+          ...item.executionStartRequest,
+          status: "started",
+          startedAt: binding.createdAt,
+          executionKind: kind,
+          targetId: binding.targetId,
+          reasonCode: null,
+          reasonDetail: null,
+          updatedAt: binding.createdAt,
+        };
+      }
       if (kind === "worktree" || kind === "auto_run") item.materialChangesPending = false;
       if (operationId != null) {
         item.executionOperation = null;
@@ -6958,6 +7638,8 @@ export function createWorkItemService({
           localContentRefs: item.localContentRefs,
           taskResourceRefs: item.taskResourceRefs,
           channelTaskContract: item.channelTaskContract,
+          channelOrigin: item.channelOrigin,
+          taskContextControl: item.taskContextControl,
         }),
         confirmedAt: confirm === true ? timestamp : null,
         confirmedBy: confirm === true ? actorUser(actor) : null,
@@ -7121,7 +7803,7 @@ export function createWorkItemService({
     }
     let reference;
     let targetCollection;
-    if (resource.contentId) {
+    if (resource.contentId && purpose !== "change_target") {
       if (typeof resolveLocalContentReference !== "function") {
         return { ok: false, status: 503, body: { error: "local_content_resolver_unavailable" } };
       }
@@ -7149,6 +7831,8 @@ export function createWorkItemService({
         businessRole: resource.businessRole,
         locality: resource.locality,
         sourceLabel: resource.sourceLabel,
+        capabilities: Array.isArray(resource.capabilities) ? resource.capabilities.slice(0, 20) : [],
+        allowedPurposes: Array.isArray(resource.allowedPurposes) ? resource.allowedPurposes.slice(0, 10) : [],
         selectedVersion: resource.currentVersion,
         addedBy: actorUser(actor),
         createdAt: now(),
@@ -7202,6 +7886,8 @@ export function createWorkItemService({
       reference.businessRole = resource.businessRole;
       reference.locality = resource.locality;
       reference.sourceLabel = resource.sourceLabel;
+      reference.capabilities = Array.isArray(resource.capabilities) ? resource.capabilities.slice(0, 20) : [];
+      reference.allowedPurposes = Array.isArray(resource.allowedPurposes) ? resource.allowedPurposes.slice(0, 10) : [];
       item.materialChangesPending = true;
       item.revision += 1;
       item.updatedAt = now();
@@ -7294,6 +7980,120 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
   }
 
+  function updateTaskContext({
+    workItemId,
+    expectedRevision,
+    deliveryDestination,
+    materialRoles = [],
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done" || item.archivedAt) {
+      return { ok: false, status: 409, body: { error: "work_item_context_reopen_required" } };
+    }
+    if ((item.executionBindings ?? []).length
+      || (item.executionStartRequest && item.executionStartRequest.status !== "cancelled")) {
+      return { ok: false, status: 409, body: { error: "work_item_context_locked_after_start" } };
+    }
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!Array.isArray(materialRoles) || materialRoles.length > 50) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_context_material_roles" } };
+    }
+    const normalizedDestination = deliveryDestination == null ? null : String(deliveryDestination);
+    if (normalizedDestination && !["task", "channel"].includes(normalizedDestination)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_context_delivery_destination" } };
+    }
+    if (normalizedDestination === "channel" && !item.channelOrigin?.channelId) {
+      return { ok: false, status: 409, body: { error: "work_item_context_channel_unavailable" } };
+    }
+
+    const updates = [];
+    const seen = new Set();
+    for (const candidate of materialRoles) {
+      const referenceId = String(candidate?.id ?? "").trim();
+      const role = String(candidate?.role ?? "").trim();
+      if (!referenceId || referenceId.length > 200 || seen.has(referenceId)) {
+        return { ok: false, status: 400, body: { error: "invalid_work_item_context_material_roles" } };
+      }
+      seen.add(referenceId);
+      const local = (item.localContentRefs ?? []).find((reference) => reference.id === referenceId);
+      const resource = (item.taskResourceRefs ?? []).find((reference) => reference.id === referenceId);
+      if (!local && !resource) {
+        return { ok: false, status: 404, body: { error: "work_item_context_material_not_found", referenceId } };
+      }
+      const allowed = local
+        ? ["reference", "required_input"]
+        : Array.isArray(resource.allowedPurposes) && resource.allowedPurposes.length
+          ? resource.allowedPurposes
+          : ["reference", "query_source"];
+      if (!allowed.includes(role)) {
+        return { ok: false, status: 400, body: { error: "work_item_context_material_role_not_allowed", referenceId, allowed } };
+      }
+      updates.push({ reference: local ?? resource, role });
+    }
+
+    const currentDestination = item.taskContextControl?.deliveryDestination
+      ?? (item.channelOrigin?.channelId ? "channel" : "task");
+    const nextDestination = normalizedDestination ?? currentDestination;
+    const materialChanges = updates
+      .filter(({ reference, role }) => reference.purpose !== role)
+      .map(({ reference, role }) => ({ reference, from: reference.purpose, role }));
+    if (!materialChanges.length && nextDestination === currentDestination) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+
+    const timestamp = now();
+    runTx(() => {
+      for (const { reference, role } of materialChanges) reference.purpose = role;
+      item.taskContextControl = {
+        schemaVersion: 1,
+        deliveryDestination: nextDestination,
+        updatedAt: timestamp,
+        updatedBy: actorUser(actor),
+      };
+      item.materialChangesPending = materialChanges.length > 0 || item.materialChangesPending === true;
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      item.dataContextSnapshotHistory = item.dataContextSnapshot
+        ? [item.dataContextSnapshot, ...(item.dataContextSnapshotHistory ?? [])].slice(0, 5)
+        : (item.dataContextSnapshotHistory ?? []);
+      item.dataContextSnapshot = buildDataContextSnapshot({
+        workItemId: item.id,
+        workItemRevision: item.revision,
+        capturedAt: timestamp,
+        inputAssets: item.inputAssets,
+        localContentRefs: item.localContentRefs,
+        taskResourceRefs: item.taskResourceRefs,
+        channelTaskContract: item.channelTaskContract,
+        channelOrigin: item.channelOrigin,
+        taskContextControl: item.taskContextControl,
+      });
+      recordActivity(item, actor, "task_context_corrected", {
+        delivery: { from: currentDestination, to: nextDestination },
+        materials: materialChanges.map(({ reference, from, role }) => ({
+          referenceId: reference.id,
+          from,
+          to: role,
+        })),
+      });
+      appendEvent({
+        invocationId: null,
+        type: "work_item_context_corrected",
+        level: "info",
+        message: `${item.localRef} execution context corrected.`,
+        data: { workItemId: item.id, revision: item.revision, actorTeamId: actorTeam(actor) },
+      });
+    });
+    notifyWorkItemChanged(item, actor, "context_corrected");
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
+  }
+
   return {
     listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
     listReportDrafts: reportDraftService.list,
@@ -7315,7 +8115,7 @@ export function createWorkItemService({
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
-    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, retryWorkItemAlert,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, previewIntentTaskPlan, commitIntentTaskPlan, createResultRepairTask, listMyTemplateRoutingFeedback, removeMyTemplateRoutingFeedback, previewMyTemplateDraft, listMyTemplateDrafts, reviewMyTemplateDraft, listSimilarMyTemplateWorkItems, createMyTemplateDraft, addMyTemplateLearningCase, activateMyTemplateDraft, listMyTemplateOutcomeFeedback, recordMyTemplateOutcomeFeedback, listPlanActualFeedback, removePlanActualFeedback, recordPlanActualFeedback, resumeMyTemplateGovernanceObservation, prepareExecutionContract, confirmExecutionContractAndSchedule, cancelExecutionStart, recheckExecutionStart, recordExecutionStartOutcome, retryWorkItemAlert,
     startApplicationExecution, requestApplicationExecutionApproval,
     applyLocalSchedulePlan,
     applyLocalScheduleRollover,
@@ -7330,5 +8130,6 @@ export function createWorkItemService({
     refreshResourceReference,
     inspectResourceReferences,
     removeResourceReference,
+    updateTaskContext,
   };
 }

@@ -75,6 +75,8 @@ export function createServerState({ defaultProjectPath, now }) {
     privateTutorStrategyDecisions: [],
     privateTutorLearningPlans: [],
     privateTutorPackageActivations: [],
+    privateTutorContentMigrationPreviews: [],
+    privateTutorContentMigrationApplications: [],
     privateTutorRuntimeValidations: [],
     privateTutorSessions: [],
     privateTutorSessionEvents: [],
@@ -108,6 +110,7 @@ export function createServerState({ defaultProjectPath, now }) {
     privateTutorMaterialDocuments: [],
     privateTutorKnowledgeMapDrafts: [],
     privateTutorLearningPreferences: [],
+    privateTutorLearningTrials: [],
     applications: [],
     applicationInstallRuns: [],
     applicationRecoveryActions: [],
@@ -189,6 +192,9 @@ export function createServerState({ defaultProjectPath, now }) {
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
     autoRuns: [],
+    // Long-term exactly-once facts for task execution actions. Recent user-facing
+    // receipts stay bounded on each Auto-run; these records are not a UI feed.
+    executionActionIdempotencyRecords: [],
     // O5.2 follow-up: the last-emitted set of below-target SLO keys, so the
     // breach→alert sweep only fires when the breach set changes (not every tick).
     autoRunSloAlert: null,
@@ -294,6 +300,7 @@ export function createServerState({ defaultProjectPath, now }) {
     channelUserPreferences: [],
     myTemplateRoutingFeedback: [],
     myTemplateOutcomeFeedback: [],
+    workItemPlanActualFeedback: [],
     myTemplateGovernanceInterventions: [],
     // A completed ordinary task can seed a new personal template. These rows
     // remain outside routineDefinitions until enough cases are reviewed and

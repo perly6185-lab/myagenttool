@@ -8,10 +8,8 @@
  * Storage model: one generic `records(collection, id, json)` table — a row per
  * record, the record serialized as JSON. This mirrors the in-memory adapter's
  * "collections of records" shape so both pass one contract suite (runStoreContract,
- * #966). Real per-column indexing (owner/tenant, idempotency key) is #969; this
- * slice is the adapter + JSON→SQLite importer + a boot migration runner, delivered
- * as a standalone capability (not yet the live backing — that cutover needs the
- * services to READ through the store, a later step).
+ * #966). Collection-specific expression indexes enforce selected business keys
+ * while the live in-memory view is incrementally mirrored to this durable backing.
  *
  * Transaction semantics match the contract: a single connection runs
  * BEGIN → fn(tx) → COMMIT (ROLLBACK on throw); reads inside the tx see the tx's own
@@ -19,7 +17,7 @@
  * pending changes.
  */
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 // Upper bound on a single history page. Aligned with the largest history reader
 // (invocation-trace's MAX_SPAN_LIMIT = 2000) so the SQLite path never silently
 // returns fewer rows than the whole-file JSONL scan would for the same request.
@@ -71,6 +69,8 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
   const del = db.prepare("DELETE FROM records WHERE collection = ? AND id = ?");
   // ADR 0019: append-only history. OR IGNORE dedupes a crash re-append by (collection,id).
   const insertHistory = db.prepare("INSERT OR IGNORE INTO history(collection, id, invocation_id, created_at, json) VALUES(?, ?, ?, ?, ?)");
+  const selectMetadata = db.prepare("SELECT value FROM meta WHERE key = ?");
+  const upsertMetadata = db.prepare("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
 
   const parse = (row) => (row ? JSON.parse(row.json) : null);
   // Reentrancy guard: node:sqlite's BEGIN cannot nest ("cannot start a
@@ -87,6 +87,20 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
   function query(collection, predicate) {
     const rows = selectColl.all(collection).map((r) => JSON.parse(r.json));
     return typeof predicate === "function" ? rows.filter(predicate) : rows;
+  }
+
+  // Application migrations use the same durable meta table as the numbered SQL
+  // schema, but may not mutate the schema_version row. Values stay strings so
+  // callers own their payload versioning and older binaries can inspect them.
+  function getMetadata(key) {
+    return selectMetadata.get(String(key))?.value ?? null;
+  }
+  function setMetadata(key, value) {
+    const normalizedKey = String(key ?? "").trim();
+    if (!normalizedKey) throw new Error("setMetadata requires a non-empty key.");
+    if (normalizedKey === "schema_version") throw new Error("schema_version is managed by SQLite migrations.");
+    upsertMetadata.run(normalizedKey, String(value));
+    return String(value);
   }
 
   function transaction(fn) {
@@ -316,7 +330,7 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
     db.close();
   }
 
-  return { get, query, transaction, importSnapshot, replaceSnapshot, readSnapshot, appendHistory, queryHistory, deleteHistory, redactHistory, reapHistory, compactForErasure, close, schemaVersion: SCHEMA_VERSION };
+  return { get, query, transaction, importSnapshot, replaceSnapshot, readSnapshot, getMetadata, setMetadata, appendHistory, queryHistory, deleteHistory, redactHistory, reapHistory, compactForErasure, close, schemaVersion: SCHEMA_VERSION };
 }
 
 /**
@@ -344,6 +358,20 @@ function runMigrations(db) {
       // index; these cover the WHERE, the rowid scan handles ORDER BY / the cursor.
       db.exec("CREATE INDEX IF NOT EXISTS history_by_invocation ON history(collection, invocation_id)");
       db.exec("CREATE INDEX IF NOT EXISTS history_by_collection ON history(collection)");
+    },
+    // v3: exactly-once execution actions need a business-key constraint in
+    // addition to the generic (collection,id) primary key. The deterministic id
+    // remains useful, but this partial expression index also rejects corrupted or
+    // manually imported rows that reuse one (Auto-run, request key) pair under a
+    // different id. A second index supports Auto-run-scoped ledger reads without
+    // indexing unrelated JSON collections.
+    () => {
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS execution_action_idempotency_key
+        ON records(json_extract(json, '$.autoRunId'), json_extract(json, '$.idempotencyKey'))
+        WHERE collection = 'executionActionIdempotencyRecords'`);
+      db.exec(`CREATE INDEX IF NOT EXISTS execution_action_idempotency_by_auto_run
+        ON records(json_extract(json, '$.autoRunId'))
+        WHERE collection = 'executionActionIdempotencyRecords'`);
     },
   ];
   db.exec("BEGIN");

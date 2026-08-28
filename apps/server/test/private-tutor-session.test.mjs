@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  answerPrivateTutorFollowUp,
   completePrivateTutorActivity,
   createPrivateTutorSession,
   pausePrivateTutorSession,
@@ -11,7 +12,7 @@ import {
 } from "../src/services/private-tutor-session.mjs";
 import { updatePrivateTutorLearningPreferences } from "../src/services/private-tutor-learning-preferences.mjs";
 
-function fixture(pace = "standard") {
+function fixture(pace = "standard", targetMinutes = null) {
   let tick = 0;
   const now = () => new Date(Date.UTC(2026, 7, 20, 8, 0, tick++)).toISOString();
   return {
@@ -23,6 +24,7 @@ function fixture(pace = "standard") {
       plan: { id: "plan_1", days: [{ knowledgeId: "balance", strategy: "concept_rebuild" }] },
       decision: { id: "decision_1", targetKnowledgeId: "balance", strategy: "concept_rebuild" },
       pace,
+      targetMinutes,
       now,
     }),
   };
@@ -47,6 +49,14 @@ test("light and review modes keep the same safe phases within their shorter budg
     assert.equal(view.progress.reduce((total, item) => total + item.budgetMinutes, 0), expectedMinutes);
     assert.equal(view.progress.length, 5);
   }
+});
+
+test("a standard session scales its five safe phases to the persisted daily target", () => {
+  const { session } = fixture("standard", 35);
+  const view = privateTutorSessionView(session);
+  assert.equal(view.plannedMinutes, 35);
+  assert.equal(view.progress.reduce((total, item) => total + item.budgetMinutes, 0), 35);
+  assert.equal(view.progress.every((item) => item.budgetMinutes >= 1), true);
 });
 
 test("pause and resume preserve the exact activity", () => {
@@ -99,6 +109,7 @@ test("teaching preferences reframe the explanation without touching questions or
   updatePrivateTutorLearningPreferences(state, "learner_a", {
     teacherStyle: "socratic_questioning",
     explanationDepth: "professional_depth",
+    followUpStyle: "direct_check",
   }, { now: prefNow, nextId: (p) => `${p}_${++prefId}` });
 
   const styled = privateTutorSessionView(session, state);
@@ -117,6 +128,7 @@ test("teaching preferences reframe the explanation without touching questions or
   assert.ok(explainStyled.startsWith(explainPlain));
   assert.match(explainStyled, /连续追问/);
   assert.match(explainStyled, /专业标准深入/);
+  assert.match(explainStyled, /直接用一个检查问题/);
 
   const recallIndex = session.activities.findIndex((a) => a.kind === "recall");
   session.currentActivityIndex = recallIndex;
@@ -142,4 +154,126 @@ test("session view without preferences state keeps prior behavior", () => {
   const view = privateTutorSessionView(session);
   assert.equal(view.teachingPreferences, null);
   assert.equal(view.currentActivity.instruction.includes("讲解方式："), false);
+});
+
+test("a learner can request another explanation without creating mastery evidence", () => {
+  const { session, now } = fixture();
+  const originalMethod = session.teachingMethod;
+  const originalActivity = session.currentActivityIndex;
+  const originalEvidence = [...session.evidenceAttemptIds];
+  const result = answerPrivateTutorFollowUp(session, {
+    mode: "explain_again",
+    question: "",
+    state: {},
+    now,
+    nextId: (prefix) => `${prefix}_1`,
+  });
+
+  assert.equal(result.ok, true);
+  assert.notEqual(session.teachingMethod, originalMethod);
+  assert.equal(session.currentActivityIndex, originalActivity);
+  assert.deepEqual(session.evidenceAttemptIds, originalEvidence);
+  assert.equal(result.followUp.evidenceEligible, false);
+  assert.equal(result.followUp.grounding, "reviewed_curriculum");
+  assert.match(result.followUp.response, /不会读取题目答案/);
+  assert.equal(privateTutorSessionView(session).followUps.length, 1);
+});
+
+test("follow-up answers quote only the active published source and never expose an answer key", () => {
+  const now = () => "2026-08-25T01:00:00.000Z";
+  const knowledge = {
+    id: "grounded-concept",
+    name: "来源约束",
+    prerequisiteKnowledgeIds: [],
+    sourceRefs: [{ sectionId: "sec_2", pageNumber: 7, excerpt: "可靠回答需要区分原文信息与自己的推断。", sourceHash: "hash", origin: "source" }],
+    teachingContent: { explanation: "只依据可核验来源回答。", keyPoints: ["先定位原文", "再标明推断边界"] },
+    tutoringQuestions: [
+      { id: "grounded-recall-v1", expectedAnswer: "never expose this" },
+      { id: "grounded-guided-v1", expectedAnswer: "never expose this" },
+      { id: "grounded-transfer-v1", expectedAnswer: "never expose this" },
+    ],
+  };
+  const state = {
+    privateTutorContentPackages: [{
+      id: "grounded-package",
+      name: "来源教材",
+      subjectId: "conceptual",
+      evaluationSubjectId: "conceptual",
+      domain: "reasoning",
+      sourceType: "user_material",
+      version: "1.0.0",
+      status: "published",
+      knowledgeComponents: [knowledge],
+      modules: [],
+    }],
+    privateTutorModules: [],
+    privateTutorTopics: [],
+    privateTutorKnowledgeComponents: [],
+    privateTutorSubjectPlugins: [],
+  };
+  const session = createPrivateTutorSession({
+    id: "ptsess_grounded",
+    ownerTeamId: "team_a",
+    learnerId: "learner_a",
+    plan: { id: "plan_grounded", days: [{ knowledgeId: knowledge.id, strategy: "concept_rebuild" }] },
+    decision: { id: "decision_grounded", targetKnowledgeId: knowledge.id, strategy: "concept_rebuild" },
+    pace: "standard",
+    now,
+    state,
+    contentPackageId: "grounded-package",
+  });
+
+  const result = answerPrivateTutorFollowUp(session, {
+    mode: "question",
+    question: "这段话最重要的边界是什么？",
+    state,
+    now,
+    nextId: (prefix) => `${prefix}_grounded`,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.followUp.grounding, "source_excerpt");
+  assert.deepEqual(result.followUp.sourceRefs, [{ sectionId: "sec_2", pageNumber: 7, excerpt: "可靠回答需要区分原文信息与自己的推断。" }]);
+  assert.match(result.followUp.response, /可靠回答需要区分原文信息与自己的推断/);
+  assert.match(result.followUp.response, /资料没有覆盖的结论，我不会补写/);
+  assert.equal(result.followUp.response.includes("never expose this"), false);
+  assert.equal(session.evidenceAttemptIds.length, 0);
+});
+
+test("free-form follow-up questions are bounded before session state changes", () => {
+  const { session, now } = fixture();
+  const revision = session.revision;
+  const result = answerPrivateTutorFollowUp(session, {
+    mode: "question",
+    question: "x".repeat(501),
+    state: {},
+    now,
+    nextId: (prefix) => `${prefix}_1`,
+  });
+  assert.deepEqual(result, { ok: false, error: "invalid_private_tutor_follow_up_question" });
+  assert.equal(session.revision, revision);
+  assert.equal(session.followUps.length, 0);
+});
+
+test("asking for help on the transfer check prevents it from being summarized as independent", () => {
+  const { session, now } = fixture();
+  recordPrivateTutorSessionAnswer(session, { correct: true, attemptId: "recall", now });
+  completePrivateTutorActivity(session, now);
+  recordPrivateTutorSessionAnswer(session, { correct: true, attemptId: "guided", now });
+  assert.equal(privateTutorSessionView(session).currentActivity.kind, "independent_check");
+
+  answerPrivateTutorFollowUp(session, {
+    mode: "question",
+    question: "这一步该从哪里开始？",
+    state: {},
+    now,
+    nextId: (prefix) => `${prefix}_transfer`,
+  });
+  assert.equal(privateTutorSessionView(session).currentActivity.followUpCount, 1);
+  recordPrivateTutorSessionAnswer(session, { correct: true, attemptId: "transfer", now });
+  completePrivateTutorActivity(session, now);
+
+  assert.equal(session.status, "completed");
+  assert.equal(session.summary.independentCompleted, false);
+  assert.match(session.summary.nextStep, /小提示/);
 });

@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { computeProjectAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 
 function externalIssuePolicyFor(state, projectId) {
   const policy = state?.projects?.find((project) => project.id === projectId)?.externalIssuePolicy ?? {};
@@ -28,7 +29,7 @@ function externalBindingEmergencyStopped(state, provider, repository, issueNumbe
 
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor, state,
-  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, updateTaskContext, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
   reconcileWorkItemRecordBindings, reconcileVisibleWorkItemRecordBindings,
   refreshWorkItemRecordBinding, refreshWorkItemRecordBindingsBatch,
   listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
@@ -38,7 +39,7 @@ export async function handleWorkItemRoutes({
   startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
   createAutoRunBatch, listAutoRunBatches,
   previewAutoScheduler,
-  promoteWorktreeToBase, promoteWorktreeToPullRequest, beginDelivery, failDelivery, completeDelivery,
+  executeReviewCommand,
   claimWorkItem, releaseWorkItemClaim, assignWorkItemToSelf,
   bindGithubIssue, syncGithubIssue,
   bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
@@ -72,8 +73,15 @@ export async function handleWorkItemRoutes({
   activateMyTemplateDraft,
   listMyTemplateOutcomeFeedback,
   recordMyTemplateOutcomeFeedback,
+  listPlanActualFeedback,
+  removePlanActualFeedback,
+  recordPlanActualFeedback,
   resumeMyTemplateGovernanceObservation,
   prepareExecutionContract,
+  confirmExecutionContractAndSchedule,
+  cancelExecutionStart,
+  recheckExecutionStart,
+  budgetStatusFor,
   retryWorkItemAlert,
   inspectArticleImport,
   startArticleImport,
@@ -357,6 +365,24 @@ export async function handleWorkItemRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/work-items/plan-actual-preferences" && req.method === "GET") {
+    const result = listPlanActualFeedback({
+      projectId: url.searchParams.get("projectId"),
+      limit: url.searchParams.get("limit"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const planActualPreferenceMatch = url.pathname.match(/^\/api\/work-items\/plan-actual-preferences\/([^/]+)$/);
+  if (planActualPreferenceMatch && req.method === "DELETE") {
+    const result = removePlanActualFeedback({
+      feedbackId: decodeURIComponent(planActualPreferenceMatch[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (url.pathname === "/api/work-items/my-template-drafts" && req.method === "GET") {
     const result = listMyTemplateDrafts({ projectId: url.searchParams.get("projectId") }, actor);
     sendJson(res, result.status, result.body);
@@ -440,6 +466,16 @@ export async function handleWorkItemRoutes({
   if (myTemplateOutcomeMatch && req.method === "POST") {
     const result = recordMyTemplateOutcomeFeedback({
       workItemId: decodeURIComponent(myTemplateOutcomeMatch[1]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const planActualFeedbackMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/plan-actual-feedback$/);
+  if (planActualFeedbackMatch && req.method === "POST") {
+    const result = recordPlanActualFeedback({
+      workItemId: decodeURIComponent(planActualFeedbackMatch[1]),
       ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);
@@ -1009,82 +1045,94 @@ export async function handleWorkItemRoutes({
       return true;
     }
     const body = await readJson(req);
-    const item = detail.body.workItem;
-    if (!Number.isInteger(body?.expectedRevision)) {
-      sendJson(res, 400, { error: "expected_revision_required" });
-      return true;
-    }
-    if (body.expectedRevision !== item.revision) {
-      sendJson(res, 409, { error: "work_item_revision_conflict", currentRevision: item.revision });
-      return true;
-    }
-    if (!item.completionGate?.ready) {
-      sendJson(res, 409, { error: "work_item_acceptance_incomplete", ...item.completionGate });
-      return true;
-    }
-    if (!item.executionContractGate?.ready) {
-      sendJson(res, 409, { error: "work_item_execution_contract_required", ...item.executionContractGate });
-      return true;
-    }
-    const autoRun = detail.body.observability?.latestRun ?? null;
-    const worktreeId = autoRun?.localDelivery?.worktreeId ?? null;
-    if (!worktreeId || autoRun?.status !== "done" || autoRun.localDelivery?.deliveredAt) {
-      sendJson(res, 409, { error: "work_item_delivery_not_ready" });
-      return true;
-    }
-    const deliveryEvidence = detail.body.observability?.deliveryEvidence ?? null;
-    if (!deliveryEvidence || deliveryEvidence.actionPreview?.canProceed !== true) {
-      sendJson(res, 409, {
-        error: "work_item_delivery_evidence_not_ready",
-        status: deliveryEvidence?.status ?? "evidence_missing",
-        risk: deliveryEvidence?.risk ?? "unknown",
-        blockingReasonCodes: deliveryEvidence?.blockingReasonCodes ?? ["delivery_evidence_required"],
-        deliveryEvidence,
-      });
-      return true;
-    }
-    const mode = deliveryMatch[2] === "local" ? "local_merge" : "pull_request";
-    const admission = beginDelivery({
-      workItemId,
-      expectedRevision: body.expectedRevision,
-      mode,
-      autoRunId: autoRun.id,
-    }, actor);
-    if (!admission.ok) {
-      sendJson(res, admission.status, admission.body);
-      return true;
-    }
-    const operationId = admission.body.operation.id;
+    const projectedOperation = detail.body.observability?.deliveryEvidence?.actionPreview?.operation;
+    const kind = deliveryMatch[2] === "pull-request"
+      ? (projectedOperation === "update_pull_request" ? "update_pull_request" : "create_pull_request")
+      : (projectedOperation === "apply_office_result" ? "apply_office_result" : "apply_local_changes");
     try {
-      const result = mode === "local_merge"
-        ? await promoteWorktreeToBase(worktreeId)
-        : await promoteWorktreeToPullRequest(worktreeId, {
-          title: item.title,
-          body: `Delivers ${item.localRef}.\n\n${item.body ?? ""}`.trim(),
-          base: body?.baseBranch,
-        });
-      const completed = completeDelivery({
-        workItemId,
-        mode,
-        autoRunId: autoRun.id,
-        operationId,
-        result,
+      const result = await executeReviewCommand({
+        kind,
+        targetId: workItemId,
+        request: {
+          expectedWorkItemRevision: body?.expectedRevision,
+          expectedTargetStatus: body?.expectedTargetStatus,
+          idempotencyKey: body?.idempotencyKey,
+          baseBranch: body?.baseBranch,
+        },
       }, actor);
-      if (!completed.ok) {
-        failDelivery({ workItemId, operationId, error: completed.body?.error ?? "delivery_commit_failed" }, actor);
-      }
-      sendJson(res, completed.status, completed.body);
+      sendJson(res, 200, result);
     } catch (error) {
-      failDelivery({
-        workItemId,
-        operationId,
-        error: error instanceof Error ? error.message : String(error),
-      }, actor);
-      sendJson(res, 409, {
-        error: "work_item_delivery_failed",
-        message: error instanceof Error ? error.message : String(error),
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "work_item_delivery_failed",
+        ...(error?.message ? { message: error.message } : {}),
+        ...(error?.details ?? {}),
+        ...(error?.actionReceipt ? { actionReceipt: error.actionReceipt } : {}),
       });
     }
+    return true;
+  }
+
+  const executionContractMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/execution-contract\/(prepare|confirm)$/);
+  if (executionContractMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(executionContractMatch[1]);
+    const action = executionContractMatch[2];
+    const body = await readJson(req);
+    const freshnessFailure = await reconcileRecordBindings(workItemId, { blockExecution: action === "confirm" });
+    if (freshnessFailure) {
+      sendJson(res, freshnessFailure.status, freshnessFailure.body);
+      return true;
+    }
+    const detail = getWorkItem({ workItemId }, actor);
+    if (!detail.ok) {
+      sendJson(res, detail.status, detail.body);
+      return true;
+    }
+    const item = detail.body.workItem;
+    if (action === "prepare") {
+      const prepared = prepareExecutionContract({
+        workItemId,
+        expectedRevision: body?.expectedRevision,
+        confirm: false,
+        draftOverride: body?.draftOverride ?? null,
+      }, actor);
+      sendJson(res, prepared.status, prepared.body);
+      return true;
+    }
+
+    const alreadyScheduled = item.executionContractGate?.ready === true
+      && item.executionPolicy === "auto"
+      && item.waitingOn === "ai";
+    if (alreadyScheduled) {
+      sendJson(res, 200, { workItem: item, replayed: true });
+      return true;
+    }
+    if (!(item.acceptanceCriteria ?? []).length || !(item.verificationSop ?? []).length) {
+      sendJson(res, 409, { error: "work_item_execution_plan_required" });
+      return true;
+    }
+    const readiness = computeProjectAutoRunReadiness({ state, projectId: item.projectId, budgetStatusFor });
+    if (!readiness.ready) {
+      sendJson(res, 409, { error: "work_item_auto_run_not_ready", readiness });
+      return true;
+    }
+    const confirmed = confirmExecutionContractAndSchedule({
+      workItemId,
+      expectedRevision: body?.expectedRevision,
+    }, actor);
+    sendJson(res, confirmed.status, {
+      ...confirmed.body,
+      ...(confirmed.ok ? { readiness } : {}),
+    });
+    return true;
+  }
+
+  const executionStartActionMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/execution-start\/(cancel|recheck)$/);
+  if (executionStartActionMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(executionStartActionMatch[1]);
+    const body = await readJson(req);
+    const action = executionStartActionMatch[2] === "cancel" ? cancelExecutionStart : recheckExecutionStart;
+    const result = action({ workItemId, expectedRevision: body?.expectedRevision }, actor);
+    sendJson(res, result.status, result.body);
     return true;
   }
 
@@ -1250,6 +1298,16 @@ export async function handleWorkItemRoutes({
     const result = await refreshWorkItemRecordBinding({
       workItemId: decodeURIComponent(recordBindingRefreshMatch[1]),
       bindingId: decodeURIComponent(recordBindingRefreshMatch[2]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const taskContextMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/task-context$/);
+  if (taskContextMatch && req.method === "PATCH") {
+    const result = updateTaskContext({
+      workItemId: decodeURIComponent(taskContextMatch[1]),
       ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);

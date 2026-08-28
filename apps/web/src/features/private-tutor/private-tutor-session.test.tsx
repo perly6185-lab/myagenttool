@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrivateTutorView } from "@/features/private-tutor/private-tutor-view";
 
@@ -62,6 +62,8 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorAssessment: () => Promise.resolve(completedAssessment),
   getCurrentPrivateTutorSession: apiMocks.currentSession,
   getPrivateTutorReviewBook: () => Promise.resolve({ learnerId: learner.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] }),
+  getPrivateTutorLearningPreferences: () => Promise.reject(new Error("not used")),
+  updatePrivateTutorLearningPreferences: () => Promise.reject(new Error("not used")),
   startPrivateTutorSession: apiMocks.startSession,
   pausePrivateTutorSession: apiMocks.pauseSession,
   resumePrivateTutorSession: apiMocks.resumeSession,
@@ -108,8 +110,11 @@ describe("My private tutor resumable daily session", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /开始今天的学习/ }));
     expect(await screen.findByText("2x = 10，x 是多少？")).toBeTruthy();
+    await act(async () => { await Promise.resolve(); });
     fireEvent.change(screen.getByLabelText("写下答案"), { target: { value: "x=5" } });
-    fireEvent.click(screen.getByRole("button", { name: "提交答案" }));
+    const submitButton = screen.getByRole("button", { name: "提交答案" });
+    await waitFor(() => expect((submitButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(submitButton);
 
     await waitFor(() => expect(apiMocks.action).toHaveBeenCalled());
     const input = apiMocks.action.mock.calls[0][1];
@@ -184,6 +189,49 @@ describe("My private tutor resumable daily session", () => {
     fireEvent.click(screen.getByRole("button", { name: /就是这个/ }));
     await waitFor(() => expect(apiMocks.action).toHaveBeenCalled());
     expect(apiMocks.action.mock.calls[0][1]).toMatchObject({ source: "voice_confirmed", voiceTurnId: "ptvt_1", rawAnswer: "" });
+  });
+
+  it("asks the active material and shows source-bounded feedback outside mastery evidence", async () => {
+    const explain = sessionAt("explain");
+    apiMocks.currentSession.mockResolvedValue(explain);
+    apiMocks.action.mockResolvedValue({
+      session: {
+        ...explain,
+        revision: explain.revision + 1,
+        followUps: [{
+          id: "ptfu_1",
+          activityKind: "explain",
+          mode: "question",
+          question: "为什么两边要做相同操作？",
+          response: "当前资料能确认的是：等式两边始终做相同的事情。资料没有覆盖的结论，我不会补写。",
+          grounding: "source_excerpt",
+          sourceRefs: [{ sectionId: "sec_2", pageNumber: 7, excerpt: "等式两边始终做相同的事情。" }],
+          evidenceEligible: false,
+          createdAt: "2026-08-20T00:13:00.000Z",
+        }],
+      },
+    });
+    render(<PrivateTutorView />);
+
+    fireEvent.change(await screen.findByLabelText("向私教追问"), { target: { value: "为什么两边要做相同操作？" } });
+    fireEvent.click(screen.getByRole("button", { name: "基于资料回答" }));
+
+    await waitFor(() => expect(apiMocks.action).toHaveBeenCalledWith(explain.id, {
+      action: "follow_up",
+      mode: "question",
+      question: "为什么两边要做相同操作？",
+    }));
+    expect(await screen.findByText(/当前资料能确认的是/)).toBeTruthy();
+    expect(screen.getByText("等式两边始终做相同的事情。")).toBeTruthy();
+    expect(screen.getByText("sec_2 · 第 7 页")).toBeTruthy();
+    expect(screen.getByText("本次追问不产生练习证据。")).toBeTruthy();
+    expect(screen.getByText("这次回答解决你的问题了吗？")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "解决了" }));
+    await waitFor(() => expect(apiMocks.action).toHaveBeenLastCalledWith(explain.id, {
+      action: "follow_up_feedback",
+      followUpId: "ptfu_1",
+      resolution: "resolved",
+    }));
   });
 
   it("summarizes independent completion, help used, and the next review without ranking", async () => {
