@@ -24,7 +24,6 @@ import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
 import { ApiError } from "@/lib/api/request";
 import { useSessionUser } from "@/hooks/use-session-user";
-import { usePageNavigation } from "@/hooks/use-page-navigation";
 import {
   createInitialLearnerState,
   strategyLabel,
@@ -161,7 +160,6 @@ function defaultPrivateTutorLearningPreferences(learnerId: string): PrivateTutor
 
 export function PrivateTutorView() {
   const sessionUser = useSessionUser();
-  const navigate = usePageNavigation();
   const [learnerId, setLearnerId] = useState<string | null>(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [profileError, setProfileError] = useState("");
@@ -169,11 +167,6 @@ export function PrivateTutorView() {
   const [loadProfileAttempt, setLoadProfileAttempt] = useState(0);
 
   useEffect(() => {
-    if (!sessionUser) {
-      setLoadingProfile(false);
-      setMigrationRequired(false);
-      return;
-    }
     let current = true;
     setLoadingProfile(true);
     setProfileError("");
@@ -193,20 +186,7 @@ export function PrivateTutorView() {
       })
       .finally(() => { if (current) setLoadingProfile(false); });
     return () => { current = false; };
-  }, [loadProfileAttempt, sessionUser]);
-
-  if (!sessionUser) {
-    return (
-      <div className="mx-auto grid min-h-[65vh] max-w-2xl place-items-center p-4">
-        <Card className="w-full p-8 text-center">
-          <GraduationCap className="mx-auto size-11 text-emerald-600" />
-          <h1 className="mt-4 text-2xl font-bold">登录后开始我的学习</h1>
-          <p className="mt-2 text-sm text-muted-foreground">学习内容、知识地图、计划和错题都会归到你自己的账号。</p>
-          <Button className="mt-6" onClick={() => navigate("me")}>前往登录</Button>
-        </Card>
-      </div>
-    );
-  }
+  }, [loadProfileAttempt, sessionUser?.id]);
   if (loadingProfile) return <div className="grid min-h-[65vh] place-items-center text-sm text-muted-foreground">正在读取我的学习档案…</div>;
   if (migrationRequired) return <MigrationRequiredBanner onMigrated={() => setLoadProfileAttempt((value) => value + 1)} />;
   if (profileError) {
