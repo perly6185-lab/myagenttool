@@ -135,3 +135,33 @@ test("runtime store boundary seeds SQLite and mirrors later store commits", { sk
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test("a populated SQLite backing never reimports a stale JSON snapshot", { skip: sqliteSkip }, () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "store-migration-once-"));
+  const stateStorePath = join(stateDir, "state.json");
+  const sqliteStore = createSqliteStore({ DatabaseSync, path: ":memory:" });
+  try {
+    const { boundary: jsonBoundary } = createBoundary({
+      persistenceEnabled: true,
+      stateStorePath,
+    });
+    jsonBoundary.store.transaction((tx) => {
+      tx.insert("invocations", { id: "inv_stale_json", status: "queued" });
+    });
+    sqliteStore.transaction((tx) => {
+      tx.insert("invocations", { id: "inv_sqlite_authoritative", status: "running" });
+    });
+
+    const { state, boundary } = createBoundary({
+      sqliteStore,
+      persistenceEnabled: true,
+      stateStorePath,
+    });
+    assert.equal(boundary.backing, "sqlite");
+    assert.equal(state.invocations.some((row) => row.id === "inv_sqlite_authoritative"), true);
+    assert.equal(state.invocations.some((row) => row.id === "inv_stale_json"), false);
+  } finally {
+    sqliteStore.close();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
