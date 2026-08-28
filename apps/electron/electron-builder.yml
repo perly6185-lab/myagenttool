@@ -48,12 +48,12 @@ files:
   - "!**/test/**"
   - "!**/*.test.*"
 
-# Keep local macOS packages launchable when a Developer ID certificate is not
-# available. Release builds intended for distribution should override this
-# identity with a Developer ID Application certificate and enable notarization.
+# Keep certificate-free development packages launchable. The post-package
+# signing check replaces this ad-hoc identity when an Apple identity is present.
+# Distribution builds also require notarization credentials from the release host.
 mac:
   identity: "-"
-  hardenedRuntime: false
+  hardenedRuntime: true
 
 win:
   target:
