@@ -88,7 +88,7 @@ test("a learner reaches a five-minute lesson and starts an evidence-only fourtee
   expect(sessionBody.session).toMatchObject({ pace: "easy", plannedMinutes: 5, targetKnowledgeId: "balance" });
 
   await page.getByRole("button", { name: "我的成长" }).click();
-  await expect(page.getByRole("heading", { name: /验证次日还能不能想起/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /验证课程是否完成/ })).toBeVisible();
   await page.getByLabel("试学目标").fill("验证我能否真正掌握方程平衡");
   await page.getByRole("button", { name: "开始 14 天试学" }).click();
   await expect(page.getByText("试学中 · 第 1/14 天")).toBeVisible();
