@@ -40,6 +40,8 @@ test("runtime store boundary preserves the in-memory/test path without durable h
   assert.equal(boundary.restored, undefined);
   assert.equal(boundary.historyAppend, null);
   assert.equal(boundary.queryDurableRecords, null);
+  assert.equal(boundary.getDurableMetadata, null);
+  assert.equal(boundary.setDurableMetadata, null);
   assert.equal(boundary.compactDurableStoreForErasure, null);
   assert.equal(boundary.historyQuery, null);
   assert.equal(boundary.historyDelete, null);
@@ -115,6 +117,8 @@ test("runtime store boundary seeds SQLite and mirrors later store commits", { sk
     assert.equal(sqliteStore.query("projects").length, 1, "fresh defaults seeded SQLite");
     assert.equal(typeof boundary.historyAppend, "function");
     assert.equal(typeof boundary.queryDurableRecords, "function");
+    assert.equal(typeof boundary.getDurableMetadata, "function");
+    assert.equal(typeof boundary.setDurableMetadata, "function");
     assert.equal(typeof boundary.compactDurableStoreForErasure, "function");
 
     boundary.store.transaction((tx) => {

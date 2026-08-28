@@ -16,6 +16,7 @@ import { createPersistenceRuntime } from "../src/runtime/persistence.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
 import { createInMemoryStore } from "../src/runtime/store/in-memory-store.mjs";
 import { createAutoRunService } from "../src/services/auto-run.mjs";
+import { EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY } from "../src/services/work-item-execution-action.mjs";
 
 const now = () => "2026-07-15T00:00:00.000Z";
 
@@ -131,6 +132,45 @@ test("an execution-action reconciliation and its safe-retry evidence survive res
   } finally {
     cleanup();
   }
+});
+
+test("execution-action data migration writes one durable completion marker after state commit", () => {
+  const state = {
+    autoRuns: [{
+      id: "aur_legacy",
+      status: "failed",
+      executionActionIdempotencyLedger: [{
+        idempotencyKey: "legacy-key",
+        kind: "retry_execution",
+        requestDigest: "legacy-digest",
+        updatedAt: now(),
+        receipt: { id: "ear_legacy", status: "succeeded", completedAt: now() },
+      }],
+    }],
+    executionActionIdempotencyRecords: [],
+  };
+  const metadata = new Map();
+  const create = () => createAutoRunService({
+    state,
+    now,
+    nextId: (prefix) => `${prefix}_1`,
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+    getDurableMetadata: (key) => metadata.get(key) ?? null,
+    setDurableMetadata: (key, value) => metadata.set(key, value),
+  });
+
+  create();
+  assert.equal(state.autoRuns[0].executionActionIdempotencyLedger, undefined);
+  assert.equal(state.executionActionIdempotencyRecords.length, 1);
+  const marker = JSON.parse(metadata.get(EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY));
+  assert.equal(marker.status, "complete");
+  assert.equal(marker.migratedRecords, 1);
+  assert.equal(marker.legacyRuns, 1);
+
+  metadata.set(EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY, JSON.stringify({ ...marker, sentinel: true }));
+  create();
+  assert.equal(JSON.parse(metadata.get(EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY)).sentinel, true, "a complete marker is not rewritten on every boot");
 });
 
 test("#1001 the durability test bites — without the Store the eaten debounce loses the cancellation", () => {

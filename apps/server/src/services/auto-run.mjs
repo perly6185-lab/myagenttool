@@ -15,9 +15,12 @@ import { resolveAutoRunVerifyCommandFor } from "./worktree-verify.mjs";
 import { propagateCompletedWorkGoalTask } from "./work-goal-artifacts.mjs";
 import { verifyWorkItemResult } from "./work-item-result-verification.mjs";
 import {
+  archiveExecutionActionIdempotencyRecords,
   beginExecutionAction,
+  EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY,
   executionActionReceiptView,
   executionActionError,
+  executionActionIdempotencyArchiveNeeded,
   executionActionIdempotencyMigrationNeeded,
   latestExecutionActionReceipt,
   migrateExecutionActionIdempotencyRecords,
@@ -430,10 +433,40 @@ export function createAutoRunService({
   fileRemediationIssue,
   materializeTaskMaterials,
   store,
+  getDurableMetadata = null,
+  setDurableMetadata = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
+  let idempotencyMigration = { migratedRecords: 0, legacyRuns: 0 };
   if (executionActionIdempotencyMigrationNeeded(state)) {
-    runTx(() => migrateExecutionActionIdempotencyRecords(state));
+    idempotencyMigration = runTx(() => migrateExecutionActionIdempotencyRecords(state));
+  }
+  const startupArchiveAt = now();
+  let startupArchive = { archivedRecords: 0, archivedAt: null };
+  if (executionActionIdempotencyArchiveNeeded(state, { now: startupArchiveAt })) {
+    startupArchive = runTx(() => archiveExecutionActionIdempotencyRecords(state, { now: startupArchiveAt }));
+  }
+  if (typeof setDurableMetadata === "function") {
+    const currentMarker = typeof getDurableMetadata === "function"
+      ? getDurableMetadata(EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY)
+      : null;
+    let markerComplete = false;
+    try {
+      const marker = JSON.parse(currentMarker);
+      markerComplete = marker?.version === 1 && marker?.status === "complete";
+    } catch {
+      markerComplete = false;
+    }
+    if (!markerComplete) {
+      setDurableMetadata(EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY, JSON.stringify({
+        version: 1,
+        status: "complete",
+        completedAt: startupArchiveAt,
+        migratedRecords: idempotencyMigration.migratedRecords,
+        legacyRuns: idempotencyMigration.legacyRuns,
+        archivedRecords: startupArchive.archivedRecords,
+      }));
+    }
   }
   // Production injects the shared refusal writer; fall back to one bound to this
   // service's own state so a directly-constructed service (unit tests) still
@@ -5080,7 +5113,11 @@ export function createAutoRunService({
       }
       return count + changed;
     }, 0));
-    return { reaped, readvanced, capacityRetried, capacityBlocked, holdsReleased, deliveryReviews, workItemsConverged, executionActionsReconciled };
+    const archiveAt = now();
+    const idempotencyRecordsArchived = executionActionIdempotencyArchiveNeeded(state, { now: archiveAt })
+      ? runTx(() => archiveExecutionActionIdempotencyRecords(state, { now: archiveAt })).archivedRecords
+      : 0;
+    return { reaped, readvanced, capacityRetried, capacityBlocked, holdsReleased, deliveryReviews, workItemsConverged, executionActionsReconciled, idempotencyRecordsArchived };
   }
 
   function recordRoutingOverride(autoRunId, {

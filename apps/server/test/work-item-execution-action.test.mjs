@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  archiveExecutionActionIdempotencyRecords,
   beginExecutionAction,
+  EXECUTION_ACTION_IDEMPOTENCY_ARCHIVE_AFTER_MS,
   EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT,
   executionActionIdempotencyMigrationNeeded,
   latestExecutionActionReceipt,
@@ -321,6 +323,68 @@ test("fails closed instead of evicting old keys when the long-term ledger reache
   }), (error) => error.code === "execution_action_idempotency_capacity" && error.status === 409);
   assert.equal(h.state.executionActionIdempotencyRecords[0].idempotencyKey, "oldest-key");
   assert.equal(h.autoRun.executionActionReceipts.length, 1);
+});
+
+test("archives old terminal keys without forgetting them and frees only hot-ledger capacity", () => {
+  const h = harness();
+  const old = beginExecutionAction({
+    state: h.state,
+    autoRun: h.autoRun,
+    kind: "retry_execution",
+    idempotencyKey: "old-archived-key",
+    request: { feedback: "old attempt" },
+    now: h.now,
+    nextId: h.nextId,
+  });
+  updateExecutionAction(old.receipt, {
+    status: "succeeded", messageCode: "retry_started", targetId: "inv_old", now: h.now,
+  });
+  for (let index = 1; index < EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT; index += 1) {
+    h.state.executionActionIdempotencyRecords.push({
+      id: `eai_hot_${index}`,
+      autoRunId: h.autoRun.id,
+      idempotencyKey: `hot-${index}`,
+      storageTier: "hot",
+    });
+  }
+  h.advance(new Date(Date.parse(h.now()) + EXECUTION_ACTION_IDEMPOTENCY_ARCHIVE_AFTER_MS + 1).toISOString());
+
+  const next = beginExecutionAction({
+    state: h.state,
+    autoRun: h.autoRun,
+    kind: "retry_execution",
+    idempotencyKey: "new-key-after-archive",
+    request: { feedback: "new attempt" },
+    now: h.now,
+    nextId: h.nextId,
+  });
+
+  const tombstone = h.state.executionActionIdempotencyRecords.find((entry) => entry.idempotencyKey === "old-archived-key");
+  assert.equal(tombstone.storageTier, "archive");
+  assert.equal(tombstone.retentionClass, "exactly_once_tombstone");
+  assert.equal(next.replayed, false);
+  assert.equal(replayExecutionAction(h.autoRun, {
+    kind: "retry_execution",
+    idempotencyKey: "old-archived-key",
+    request: { feedback: "old attempt" },
+    state: h.state,
+  }).targetId, "inv_old", "the archived key still replays its original result");
+});
+
+test("archive policy keeps recent, pending, and undated idempotency evidence hot", () => {
+  const h = harness();
+  h.state.executionActionIdempotencyRecords = [
+    { id: "eai_recent", autoRunId: h.autoRun.id, idempotencyKey: "recent", updatedAt: h.now(), receipt: { status: "succeeded" } },
+    { id: "eai_pending", autoRunId: h.autoRun.id, idempotencyKey: "pending", updatedAt: "2020-01-01T00:00:00.000Z", receipt: { status: "running" } },
+    { id: "eai_undated", autoRunId: h.autoRun.id, idempotencyKey: "undated", receipt: { status: "succeeded" } },
+  ];
+  assert.deepEqual(archiveExecutionActionIdempotencyRecords(h.state, { now: h.now(), archiveAfterMs: 0 }), {
+    archivedRecords: 1,
+    archivedAt: h.now(),
+  });
+  assert.equal(h.state.executionActionIdempotencyRecords.find((entry) => entry.id === "eai_recent").storageTier, "archive");
+  assert.equal(h.state.executionActionIdempotencyRecords.find((entry) => entry.id === "eai_pending").storageTier, undefined);
+  assert.equal(h.state.executionActionIdempotencyRecords.find((entry) => entry.id === "eai_undated").storageTier, undefined);
 });
 
 test("fails closed when an existing ledger key has lost its result snapshot", () => {

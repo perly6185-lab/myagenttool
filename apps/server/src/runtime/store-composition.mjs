@@ -122,6 +122,8 @@ export function createRuntimeStoreBoundary({
     restored,
     backing: sqliteStore ? "sqlite" : persistenceEnabled ? "json" : "memory",
     queryDurableRecords: sqliteMethod(sqliteStore, "query"),
+    getDurableMetadata: sqliteMethod(sqliteStore, "getMetadata"),
+    setDurableMetadata: sqliteMethod(sqliteStore, "setMetadata"),
     compactDurableStoreForErasure: sqliteMethod(sqliteStore, "compactForErasure"),
     historyAppend: sqliteMethod(sqliteStore, "appendHistory"),
     historyQuery: sqliteMethod(sqliteStore, "queryHistory"),

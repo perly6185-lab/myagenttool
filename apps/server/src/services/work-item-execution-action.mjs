@@ -5,6 +5,8 @@ const RECEIPT_STATUSES = new Set(["accepted", "running", "succeeded", "failed", 
 const TERMINAL_RECEIPT_STATUSES = new Set(["succeeded", "failed", "safe_to_retry"]);
 export const EXECUTION_ACTION_RECEIPT_LIMIT = 20;
 export const EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT = 2_000;
+export const EXECUTION_ACTION_IDEMPOTENCY_ARCHIVE_AFTER_MS = 90 * 24 * 60 * 60_000;
+export const EXECUTION_ACTION_IDEMPOTENCY_MIGRATION_KEY = "application_migration.execution_action_idempotency_records.v1";
 const UNCERTAIN_AFTER_MS = 10 * 60_000;
 
 function boundedText(value, max = 2_000) {
@@ -44,6 +46,7 @@ function ledgerRecordId(autoRunId, idempotencyKey) {
 function ledgerEntryForReceipt(receipt, autoRun = null) {
   return {
     schemaVersion: 1,
+    storageTier: "hot",
     ...(autoRun ? {
       id: ledgerRecordId(autoRun.id, receipt.idempotencyKey),
       autoRunId: autoRun.id,
@@ -69,6 +72,10 @@ function attachLedgerEntry(receipt, entry) {
     enumerable: false,
   });
   return receipt;
+}
+
+function hotLedgerSize(ledger) {
+  return ledger.filter((entry) => entry.storageTier !== "archive").length;
 }
 
 function ensureIdempotencyRecords(state, autoRun) {
@@ -98,7 +105,7 @@ function ensureIdempotencyRecords(state, autoRun) {
   for (const receipt of [...(autoRun.executionActionReceipts ?? [])].reverse()) {
     if (!receipt?.idempotencyKey || !receipt.requestDigest) continue;
     let entry = ledger.find((candidate) => candidate.idempotencyKey === receipt.idempotencyKey) ?? null;
-    if (!entry && ledger.length < EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) {
+    if (!entry && hotLedgerSize(ledger) < EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) {
       entry = ledgerEntryForReceipt(receipt, durableRecords ? autoRun : null);
       if (durableRecords) durableRecords.push(entry);
       ledger.push(entry);
@@ -133,6 +140,42 @@ export function migrateExecutionActionIdempotencyRecords(state) {
   };
 }
 
+function executionActionArchiveCandidates(state, {
+  now = new Date().toISOString(),
+  archiveAfterMs = EXECUTION_ACTION_IDEMPOTENCY_ARCHIVE_AFTER_MS,
+  autoRunId = null,
+} = {}) {
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(nowMs) || !Number.isFinite(archiveAfterMs) || archiveAfterMs < 0) return [];
+  const cutoff = nowMs - archiveAfterMs;
+  return (state?.executionActionIdempotencyRecords ?? []).filter((entry) => {
+    if (!entry || entry.storageTier === "archive") return false;
+    if (autoRunId && entry.autoRunId !== autoRunId) return false;
+    if (!TERMINAL_RECEIPT_STATUSES.has(entry.receipt?.status)) return false;
+    const settledAt = Date.parse(entry.receipt?.completedAt ?? entry.updatedAt ?? entry.requestedAt ?? "");
+    return Number.isFinite(settledAt) && settledAt <= cutoff;
+  });
+}
+
+export function executionActionIdempotencyArchiveNeeded(state, options = {}) {
+  return executionActionArchiveCandidates(state, options).length > 0;
+}
+
+// Archiving is deliberately a logical storage tier, not deletion. The compact
+// tombstone remains in the authoritative collection and replay searches it just
+// like a hot record, so an old request key can never become executable again.
+// Archived records stop consuming the per-run hot capacity budget.
+export function archiveExecutionActionIdempotencyRecords(state, options = {}) {
+  const archivedAt = options.now ?? new Date().toISOString();
+  const candidates = executionActionArchiveCandidates(state, { ...options, now: archivedAt });
+  for (const entry of candidates) {
+    entry.storageTier = "archive";
+    entry.archivedAt = archivedAt;
+    entry.retentionClass = "exactly_once_tombstone";
+  }
+  return { archivedRecords: candidates.length, archivedAt: candidates.length ? archivedAt : null };
+}
+
 export function syncExecutionActionIdempotencyLedger(autoRun, receipt, state = null) {
   if (!autoRun || !receipt?.idempotencyKey || !receipt.requestDigest) return false;
   const ledger = ensureIdempotencyRecords(state, autoRun);
@@ -140,7 +183,7 @@ export function syncExecutionActionIdempotencyLedger(autoRun, receipt, state = n
     ?? ledger.find((candidate) => candidate.idempotencyKey === receipt.idempotencyKey)
     ?? null;
   if (!entry) {
-    if (ledger.length >= EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) return false;
+    if (hotLedgerSize(ledger) >= EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) return false;
     entry = ledgerEntryForReceipt(receipt, state ? autoRun : null);
     if (state) state.executionActionIdempotencyRecords.push(entry);
     ledger.push(entry);
@@ -323,10 +366,14 @@ export function beginExecutionAction({
     });
   }
   const ledger = key ? ensureIdempotencyRecords(state, autoRun) : null;
-  if (key && ledger.length >= EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) {
+  if (key && state) {
+    archiveExecutionActionIdempotencyRecords(state, { now: requestedAt, autoRunId: autoRun.id });
+  }
+  const activeLedgerSize = ledger ? hotLedgerSize(ledger) : 0;
+  if (key && activeLedgerSize >= EXECUTION_ACTION_IDEMPOTENCY_LEDGER_LIMIT) {
     throw actionError(
       "execution_action_idempotency_capacity",
-      "The long-term action ledger is full. No new action was started; keep the existing ledger and archive this run before retrying.",
+      "The active long-term action ledger is full. No new action was started; old keys were retained to prevent duplicate execution.",
       409,
     );
   }

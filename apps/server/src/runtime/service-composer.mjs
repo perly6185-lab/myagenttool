@@ -262,6 +262,8 @@ export function createServerRuntimeServices({
     restored,
     backing: storeBacking,
     queryDurableRecords,
+    getDurableMetadata,
+    setDurableMetadata,
     compactDurableStoreForErasure,
     historyAppend,
     historyQuery,
@@ -2149,6 +2151,8 @@ export function createServerRuntimeServices({
     },
     appendEvent,
     persistStateSoon,
+    getDurableMetadata,
+    setDurableMetadata,
     createWorktree,
     // Destructive teardown for a denied/abandoned run's worktree+branch (so a
     // re-run on the same issue isn't blocked by a leftover branch).
