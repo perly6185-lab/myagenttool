@@ -47,6 +47,20 @@ import { WorkItemCompletionMetricsCard } from "./work-item-completion-metrics-ca
 
 export { shouldShowWorkItemCost } from "./task-view-types";
 
+function isWorkItemCompletionQualityMetrics(value: unknown): value is WorkItemCompletionQualityMetrics {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<WorkItemCompletionQualityMetrics>;
+  return Boolean(
+    candidate.scope
+      && Number.isFinite(candidate.scope.trackedWorkItems)
+      && candidate.metrics?.completion?.check
+      && candidate.metrics.recovery?.check
+      && candidate.metrics.humanIntervention?.check
+      && candidate.metrics.externalActions?.check
+      && candidate.metrics.acceptance,
+  );
+}
+
 const CreateLocalWorkItemForm = lazy(() => import("./create-local-work-item-form"));
 const ExternalIssueImportDialog = lazy(() => import("./external-issue-import-dialog")
   .then((module) => ({ default: module.ExternalIssueImportDialog })));
@@ -483,8 +497,10 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
 
   useEffect(() => {
     let cancelled = false;
-    void (api.getWorkItemCompletionMetrics(projectId === "all" ? undefined : projectId) as Promise<WorkItemCompletionQualityMetrics>)
-      .then((result) => { if (!cancelled) setCompletionMetrics(result); })
+    void (api.getWorkItemCompletionMetrics(projectId === "all" ? undefined : projectId) as Promise<unknown>)
+      .then((result) => {
+        if (!cancelled) setCompletionMetrics(isWorkItemCompletionQualityMetrics(result) ? result : null);
+      })
       .catch(() => { if (!cancelled) setCompletionMetrics(null); });
     return () => { cancelled = true; };
   }, [nonce, projectId]);

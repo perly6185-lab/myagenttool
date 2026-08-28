@@ -313,6 +313,24 @@ describe("TaskView local work items", () => {
     expect(screen.getAllByText("Conflict")).toHaveLength(2);
   });
 
+  it("keeps the task surface usable when an older mock or server returns malformed completion metrics", async () => {
+    mocks.getWorkItemCompletionMetrics.mockResolvedValue({});
+    mocks.listWorkItems.mockResolvedValue({
+      workItems: [{
+        id: "lwi_legacy", localRef: "LOCAL-LEGACY", projectId: "prj_1",
+        title: "Legacy task response", body: "", type: "task", status: "ready",
+        priority: "p2", state: "open", labels: [], assigneeIds: [],
+        updatedAt: "2026-08-28T00:00:00.000Z",
+      }],
+      count: 1,
+    });
+
+    render(<TaskView />);
+
+    expect((await screen.findAllByText("Legacy task response")).length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("Task completion quality")).toBeNull();
+  });
+
   it("refreshes and confirms stale business materials from the attention queue", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
     mocks.listWorkItemAttention.mockResolvedValue({
