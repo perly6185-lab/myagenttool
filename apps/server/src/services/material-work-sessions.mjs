@@ -29,6 +29,8 @@ export function createMaterialWorkSessionService({
   store,
   getLocalContent,
   deterministicResponder = null,
+  onCancelled = null,
+  onRevisionAdvanced = null,
 } = {}) {
   const runTx = makeRunTx({ store, persistStateSoon });
   state.materialWorkSessions ??= [];
@@ -140,6 +142,13 @@ export function createMaterialWorkSessionService({
     return { status: 200, body: sessionView(resolved.session) };
   }
 
+  function resolveOwnedSession({ sessionId } = {}, actor = null) {
+    const resolved = ownedSession(sessionId, actor);
+    return resolved.ok
+      ? { ok: true, session: resolved.session, identity: resolved.identity }
+      : { ok: false, status: resolved.result.status, error: resolved.result.body.error };
+  }
+
   async function addMessage({ sessionId, content, expectedRevision, idempotencyKey } = {}, actor = null) {
     const resolved = ownedSession(sessionId, actor);
     if (!resolved.ok) return resolved.result;
@@ -191,6 +200,14 @@ export function createMaterialWorkSessionService({
       session.lastMessageAt = timestamp;
       session.updatedAt = timestamp;
     });
+    runTx.afterCommit(() => onRevisionAdvanced?.({
+      sessionId: session.id,
+      previousRevision: expectedRevision,
+      currentRevision: session.revision,
+    }, {
+      userId: resolved.identity.userId,
+      teamId: resolved.identity.teamId,
+    }));
     record("material_work_message_recorded", session, {
       messageId: userMessage.id,
       generationEnabled: responderEnabled,
@@ -248,6 +265,10 @@ export function createMaterialWorkSessionService({
       session.revision += 1;
       session.updatedAt = timestamp;
     });
+    runTx.afterCommit(() => onCancelled?.({ sessionId: session.id }, {
+      userId: resolved.identity.userId,
+      teamId: resolved.identity.teamId,
+    }));
     record("material_work_session_cancelled", session, {});
     return { status: 200, body: sessionView(session) };
   }
@@ -433,7 +454,7 @@ export function createMaterialWorkSessionService({
     });
   }
 
-  return { createSession, createFromChannel, getSession, addMessage, cancelSession };
+  return { createSession, createFromChannel, getSession, resolveOwnedSession, addMessage, cancelSession };
 }
 
 function actorIdentity(actor) {

@@ -214,6 +214,7 @@ export const persistedArrayKeys = [
   "materialWorkSessions",
   "materialWorkMessages",
   "materialWorkCitations",
+  "materialWorkReadReceipts",
   "githubWorkItemWebhookDeliveries",
   "githubWorkItemWebhookFailures",
   "workItemOperationalAlerts",
