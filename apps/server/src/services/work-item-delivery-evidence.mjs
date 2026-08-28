@@ -1,3 +1,5 @@
+import { normalizeReviewVerdict } from "@myagenttool/protocol/review-verdict";
+
 import { workResourceId } from "./work-resource-directory.mjs";
 
 const EVIDENCE_SCHEMA_VERSION = 1;
@@ -6,7 +8,6 @@ const FINDING_SEVERITIES = new Set(["low", "medium", "high"]);
 const DEVELOPMENT_TASK_RE = /(?:^|_)software_(?:analysis|implementation|verification|deployment)(?:$|_)/i;
 const OFFICE_TASK_RE = /(?:^|_)(?:business|office|document|spreadsheet|procurement|legal|mail)_[a-z0-9_]+$/i;
 const OFFICE_TEXT_RE = /(?:台账|表格|工作簿|报价|订单|合同|发货|回款|客户|联系人|报表|清单|名单|邮件|文档|演示文稿|excel|xlsx?|docx?|pptx?|spreadsheet|workbook|quotation|contract|invoice)/i;
-const CLEAN_RE = /(?:no\s+(?:actionable\s+)?(?:findings?|issues?|bugs?|regressions?)|tests?\s+pass|looks\s+good|consistent|no\s+observable\s+regressions|未发现|没有发现|(?:结果|改动|补丁).{0,10}(?:相互)?一致|未引入明显回归)/i;
 
 function boundedText(value, max = 2_000) {
   if (value == null) return null;
@@ -53,29 +54,30 @@ function reviewEvidence(review) {
     result[finding.severity] += 1;
     return result;
   }, { low: 0, medium: 0, high: 0 });
-  const verdict = review?.verdict === "approved" || review?.verdict === "changes_requested" ? review.verdict : null;
+  const storedVerdict = review?.verdict === "approved" || review?.verdict === "changes_requested" ? review.verdict : null;
   const status = ["queued", "running", "completed", "failed", "unavailable"].includes(review?.status)
     ? review.status
-    : verdict ? "completed" : "unavailable";
+    : storedVerdict ? "completed" : "unavailable";
   const summary = boundedText(review?.summary);
   const blockingCount = counts.medium + counts.high;
-  const consistency = verdict == null
-    ? "unknown"
-    : verdict === "changes_requested" && findings.length === 0 && CLEAN_RE.test(summary ?? "")
-      ? "inconsistent"
-      : verdict === "approved" && blockingCount > 0
-        ? "inconsistent"
-        : "consistent";
+  const verdictDecision = storedVerdict == null
+    ? null
+    : normalizeReviewVerdict({
+      reportedVerdict: review?.reportedVerdict ?? storedVerdict,
+      findings: findings.filter((finding) => finding.severity === "medium" || finding.severity === "high"),
+      summary,
+    });
   return {
     status,
     source,
-    verdict,
+    verdict: verdictDecision?.verdict ?? null,
+    reportedVerdict: verdictDecision?.reportedVerdict ?? null,
     summary,
     structured: review?.structured !== false,
     findings,
     findingCounts: { ...counts, total: findings.length },
     blockingCount,
-    consistency,
+    consistency: verdictDecision?.consistency ?? "unknown",
     reviewedCommit: boundedText(review?.reviewedCommit, 200),
     reviewer: boundedText(review?.reviewer ?? review?.reviewerName, 200),
     invocationId: boundedText(review?.invocationId ?? review?.reviewInvocationId, 200),

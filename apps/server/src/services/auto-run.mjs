@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { detectPromptInjection, roleAutoRunPrompt, UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
+import { normalizeReviewVerdict } from "@myagenttool/protocol/review-verdict";
 
 import { teamOf } from "../runtime/auth.mjs";
 import { findDevice, listDevices } from "../runtime/device.mjs";
@@ -841,18 +842,6 @@ export function createAutoRunService({
       .slice(0, 100);
   }
 
-  function summaryIndicatesCleanDeliveryReview(value) {
-    const summary = String(value ?? "");
-    const clean = [
-      /\bno\s+(?:findings?|issues?|bugs?|regressions?)(?:\s+(?:were\s+)?(?:found|identified|detected))?\b/i,
-      /\bno\s+actionable(?:\s+[a-z-]+){0,6}\s+(?:findings?|issues?|bugs?|regressions?)(?:\s+(?:were\s+)?(?:found|identified|detected))?\b/i,
-      /\bpatch is correct\b/i,
-      /\blooks good\b/i,
-    ].some((pattern) => pattern.test(summary));
-    const contradictory = /\b(?:but|however|although|yet)\b[\s\S]{0,300}\b(?:issue|bug|regression|failure|incorrect|missing|broken)\b/i.test(summary);
-    return clean && !contradictory;
-  }
-
   function completeDeliveryReview(invocation) {
     const autoRun = (state.autoRuns ?? []).find((run) => run.deliveryReview?.invocationId === invocation?.id) ?? null;
     if (!autoRun) return autoRun;
@@ -881,22 +870,22 @@ export function createAutoRunService({
     }
     const findings = deliveryReviewFindings(invocation);
     const blockingFindings = findings.filter((finding) => ["medium", "high"].includes(finding.severity));
-    const reportedVerdict = invocation.result?.output?.verdict;
+    const reportedVerdict = invocation.result?.output?.reportedVerdict
+      ?? invocation.result?.output?.verdict;
     const summary = String(
       invocation.result?.output?.summary
       ?? invocation.result?.summary
       ?? (blockingFindings.length ? `AI review found ${blockingFindings.length} blocking issue(s).` : "AI review found no blocking issues."),
     ).slice(0, 2000);
     const unstructured = invocation.result?.output?.structured === false;
-    const verdict = unstructured && !blockingFindings.length
-      ? summaryIndicatesCleanDeliveryReview(summary) ? "approved" : "changes_requested"
-      : ["approved", "changes_requested"].includes(reportedVerdict)
-        ? reportedVerdict
-        : blockingFindings.length ? "changes_requested" : "approved";
+    const verdictDecision = normalizeReviewVerdict({ reportedVerdict, findings: blockingFindings, summary });
+    const verdict = verdictDecision.verdict;
     if (
       autoRun.deliveryReview?.status === "completed"
       && autoRun.deliveryReview.verdict === verdict
       && autoRun.deliveryReview.summary === summary
+      && autoRun.deliveryReview.reportedVerdict === verdictDecision.reportedVerdict
+      && autoRun.deliveryReview.verdictConsistency === verdictDecision.consistency
     ) return autoRun;
     let review = null;
     try {
@@ -941,6 +930,8 @@ export function createAutoRunService({
         verdict,
         summary,
         findings,
+        reportedVerdict: verdictDecision.reportedVerdict,
+        verdictConsistency: verdictDecision.consistency,
         reviewedCommit: review?.reviewedCommit ?? null,
         completedAt: invocation.completedAt ?? now(),
         errorCode: null,
@@ -952,7 +943,14 @@ export function createAutoRunService({
         type: "auto_run_delivery_review_completed",
         level: verdict === "approved" ? "info" : "warn",
         message: `AI delivery review ${verdict === "approved" ? "approved" : "requested changes for"} Auto-run ${autoRun.id}.`,
-        data: { autoRunId: autoRun.id, worktreeId: autoRun.worktreeId, verdict, findingCount: findings.length },
+        data: {
+          autoRunId: autoRun.id,
+          worktreeId: autoRun.worktreeId,
+          verdict,
+          reportedVerdict: verdictDecision.reportedVerdict,
+          verdictConsistency: verdictDecision.consistency,
+          findingCount: findings.length,
+        },
       });
       return autoRun;
     });
@@ -981,6 +979,19 @@ export function createAutoRunService({
       && review.reviewedCommit
       && (!currentHead || review.reviewedCommit === currentHead));
     if (existing) {
+      const findings = (existing.comments ?? []).map((comment) => ({
+        severity: comment.severity ?? "medium",
+        file: comment.path ?? "",
+        line: comment.line ?? null,
+        message: comment.body ?? "",
+        suggestion: comment.suggestion ?? null,
+        confidence: null,
+      })).filter((finding) => finding.file && finding.message);
+      const verdictDecision = normalizeReviewVerdict({
+        reportedVerdict: existing.reportedVerdict ?? existing.verdict,
+        findings: findings.filter((finding) => ["medium", "high"].includes(finding.severity)),
+        summary: existing.summary,
+      });
       return runTx(() => {
         autoRun.deliveryReview = {
           status: "completed",
@@ -988,16 +999,11 @@ export function createAutoRunService({
           reviewer: existing.reviewerName ?? "Codex",
           startedAt: existing.createdAt ?? now(),
           completedAt: existing.createdAt ?? now(),
-          verdict: existing.verdict,
+          verdict: verdictDecision.verdict,
+          reportedVerdict: verdictDecision.reportedVerdict,
+          verdictConsistency: verdictDecision.consistency,
           summary: existing.summary ?? null,
-          findings: (existing.comments ?? []).map((comment) => ({
-            severity: comment.severity ?? "medium",
-            file: comment.path ?? "",
-            line: comment.line ?? null,
-            message: comment.body ?? "",
-            suggestion: comment.suggestion ?? null,
-            confidence: null,
-          })).filter((finding) => finding.file && finding.message),
+          findings,
           reviewedCommit: existing.reviewedCommit,
           errorCode: null,
           structured: true,
@@ -1104,14 +1110,17 @@ export function createAutoRunService({
         // A missing legacy worktree should not block newer delivery reviews.
       }
     }
-    // Older Codex CLI builds can return a complete native review as text even
-    // when an output schema is supplied. Re-evaluate any such completed review
-    // with the current fail-closed classifier so a clearly clean conclusion is
-    // not left behind as a false "changes requested" verdict after an upgrade.
+    // Re-evaluate completed reviews that predate the shared verdict contract.
+    // This repairs both unstructured CLI fallbacks and structured payloads whose
+    // summary/findings contradict their reported verdict after an upgrade.
     for (const autoRun of state.autoRuns ?? []) {
       if (autoRun.deliveryReview?.status !== "completed") continue;
       const invocation = (state.invocations ?? []).find((item) => item.id === autoRun.deliveryReview.invocationId) ?? null;
-      if (invocation?.status === "succeeded" && invocation.result?.output?.structured === false) {
+      if (
+        invocation?.status === "succeeded"
+        && (!autoRun.deliveryReview.verdictConsistency
+          || invocation.result?.output?.structured === false)
+      ) {
         completeDeliveryReview(invocation);
       }
     }

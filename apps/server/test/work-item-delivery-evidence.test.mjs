@@ -68,7 +68,7 @@ test("does not allow an explicitly unstructured review to become approval eviden
   assert.equal(evidence.actionPreview.canProceed, false);
 });
 
-test("marks a contradictory review as needing re-review and uses office action language", () => {
+test("normalizes a historical clean review contradiction and uses office action language", () => {
   const evidence = buildDeliveryEvidence({
     item: { taskKind: "business_document", title: "整理客户台账", body: "" },
     autoRun: { decision: { path: "office", workKind: "office" } },
@@ -77,7 +77,10 @@ test("marks a contradictory review as needing re-review and uses office action l
     deliveryMode: "local_merge",
   });
 
-  assert.equal(evidence.status, "review_inconsistent");
+  assert.equal(evidence.status, "verification_missing");
+  assert.equal(evidence.review.verdict, "approved");
+  assert.equal(evidence.review.reportedVerdict, "changes_requested");
+  assert.equal(evidence.review.consistency, "corrected_clean_summary");
   assert.equal(evidence.domain, "office");
   assert.equal(evidence.actionPreview.operation, "apply_office_result");
   assert.equal(evidence.actionPreview.targetType, "office_artifact");

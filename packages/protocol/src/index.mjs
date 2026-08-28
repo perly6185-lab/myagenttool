@@ -17,6 +17,12 @@ export {
   taskTemplateSourceKinds,
   taskTemplateStates,
 } from "./task-resources.mjs";
+export {
+  normalizeReviewVerdict,
+  reviewSummaryIndicatesClean,
+  reviewVerdictConsistencies,
+  reviewVerdicts,
+} from "./review-verdict.mjs";
 
 export const invocationStatuses = [
   "created",

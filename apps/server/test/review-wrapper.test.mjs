@@ -258,6 +258,26 @@ test("codex wrapper normalizes native review findings", () => {
   });
 });
 
+test("codex wrapper corrects a clean empty review with a contradictory native verdict", () => {
+  const capture = join(workdir, "native-clean-contradiction-capture.json");
+  const native = JSON.stringify({
+    overall_correctness: "patch is incorrect",
+    overall_explanation: "The changes are consistent, type-safe, and do not introduce observable regressions.",
+    findings: [],
+  });
+  const stub = writeCodexStub(capture, native);
+  const res = runWrapper(codexWrapper, [
+    "--mode", "diff-review", "--cwd", workdir, "--codex-cli", stub,
+    "--base-ref", "d".repeat(40),
+  ], { STUB_CAPTURE: capture });
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.equal(payload.output.verdict, "approved");
+  assert.equal(payload.output.reportedVerdict, "changes_requested");
+  assert.equal(payload.output.verdictConsistency, "corrected_clean_summary");
+  assert.deepEqual(payload.output.findings, []);
+});
+
 test("codex wrapper drops absolute and relative findings outside the review worktree", () => {
   const capture = join(workdir, "outside-path-capture.json");
   const native = JSON.stringify({

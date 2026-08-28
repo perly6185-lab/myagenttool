@@ -758,7 +758,45 @@ test("a local delivery produces a readable report and records an independent Cod
   });
   assert.equal(autoRun.deliveryReview.verdict, "approved", "a clearly clean text review corrects a stale fail-closed verdict");
   assert.equal(autoRun.deliveryReview.structured, false);
+  assert.equal(autoRun.deliveryReview.reportedVerdict, "changes_requested");
+  assert.equal(autoRun.deliveryReview.verdictConsistency, "corrected_clean_summary");
   assert.equal(calls.deliveryReviewSubmit.length, 2);
+
+  await svc.advanceAutoRunForInvocation({
+    id: "inv_delivery_review",
+    status: "succeeded",
+    completedAt: "2026-08-07T08:03:00.000Z",
+    result: {
+      output: {
+        structured: true,
+        verdict: "changes_requested",
+        summary: "The changes are consistent, type-safe, and do not introduce observable regressions.",
+        findings: [],
+      },
+    },
+  });
+  assert.equal(autoRun.deliveryReview.verdict, "approved", "structured contradictions use the same normalized decision");
+  assert.equal(autoRun.deliveryReview.structured, true);
+  assert.equal(autoRun.deliveryReview.reportedVerdict, "changes_requested");
+  assert.equal(autoRun.deliveryReview.verdictConsistency, "corrected_clean_summary");
+  assert.equal(calls.deliveryReviewSubmit.length, 3);
+
+  await svc.advanceAutoRunForInvocation({
+    id: "inv_delivery_review",
+    status: "succeeded",
+    completedAt: "2026-08-07T08:04:00.000Z",
+    result: {
+      output: {
+        structured: true,
+        verdict: "changes_requested",
+        summary: "The requested behavior is incomplete.",
+        findings: [],
+      },
+    },
+  });
+  assert.equal(autoRun.deliveryReview.verdict, "changes_requested", "an explicit negative summary still fails closed");
+  assert.equal(autoRun.deliveryReview.verdictConsistency, "consistent");
+  assert.equal(calls.deliveryReviewSubmit.length, 4);
 });
 
 test("reconciliation backfills changed files for a historical local delivery", async () => {
@@ -821,8 +859,8 @@ test("reconciliation hydrates a reused AI review and then advances to the next d
     source: "ai",
     reviewerName: "Codex",
     reviewInvocationId: "inv_existing_ai_review",
-    verdict: "approved",
-    summary: "Existing review is clean.",
+    verdict: "changes_requested",
+    summary: "No issues or regressions were found.",
     comments: [],
     reviewedCommit: `head-${newer.worktree.id}`,
     createdAt: "2026-08-07T08:00:00.000Z",
@@ -836,6 +874,9 @@ test("reconciliation hydrates a reused AI review and then advances to the next d
   await reconciler.svc.reconcileDeliveryReviews();
   assert.equal(newer.autoRun.deliveryReview.status, "completed");
   assert.equal(newer.autoRun.deliveryReview.reusedReviewId, "wrv_existing_ai");
+  assert.equal(newer.autoRun.deliveryReview.verdict, "approved");
+  assert.equal(newer.autoRun.deliveryReview.reportedVerdict, "changes_requested");
+  assert.equal(newer.autoRun.deliveryReview.verdictConsistency, "corrected_clean_summary");
   assert.equal(reconciler.calls.deliveryReviewStart.length, 0);
 
   await reconciler.svc.reconcileDeliveryReviews();

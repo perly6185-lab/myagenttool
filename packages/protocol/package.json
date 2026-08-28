@@ -43,6 +43,10 @@
       "types": "./src/task-resources.ts",
       "default": "./src/task-resources.mjs"
     },
+    "./review-verdict": {
+      "types": "./src/review-verdict.ts",
+      "default": "./src/review-verdict.mjs"
+    },
     "./site": {
       "types": "./src/site.ts",
       "default": "./src/site.mjs"

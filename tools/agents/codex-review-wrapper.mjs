@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeReviewVerdict } from "@myagenttool/protocol/review-verdict";
 
 const reviewOutputSchemaPath = resolve(dirname(fileURLToPath(import.meta.url)), "codex-review-output.schema.json");
 
@@ -34,6 +35,12 @@ if (code !== 0) {
 const review = parseReviewOutput(stdout);
 const findings = normalizeFindings(review.findings, options.cwd)
   .filter((finding) => severityRank(finding.severity) >= severityRank(options.severityFloor));
+const reportedVerdict = review.overallCorrectness === "patch is correct"
+  ? "approved"
+  : review.overallCorrectness === "patch is incorrect"
+    ? "changes_requested"
+    : null;
+const verdictDecision = normalizeReviewVerdict({ reportedVerdict, findings, summary: review.summary });
 console.log(`RESULT ${JSON.stringify({
   summary: summarizeFindings(findings, review.summary),
   touchedUserFiles: false,
@@ -45,11 +52,9 @@ console.log(`RESULT ${JSON.stringify({
     instruction: options.instruction,
     summary: review.summary ?? null,
     findings,
-    verdict: review.overallCorrectness === "patch is correct"
-      ? "approved"
-      : review.overallCorrectness === "patch is incorrect" || findings.length
-        ? "changes_requested"
-        : "approved",
+    verdict: verdictDecision.verdict,
+    reportedVerdict: verdictDecision.reportedVerdict,
+    verdictConsistency: verdictDecision.consistency,
     structured: review.structured,
   },
   cost: {

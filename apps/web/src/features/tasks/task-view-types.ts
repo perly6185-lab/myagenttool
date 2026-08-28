@@ -806,12 +806,13 @@ export type LocalWorkItemDeliveryEvidence = {
     status: "queued" | "running" | "completed" | "failed" | "unavailable" | string;
     source: string;
     verdict: "approved" | "changes_requested" | null;
+    reportedVerdict?: "approved" | "changes_requested" | null;
     summary: string | null;
     structured: boolean;
     findings: { severity: "low" | "medium" | "high"; file: string | null; line: number | null; message: string; suggestion: string | null; confidence: "low" | "medium" | "high" | null }[];
     findingCounts: { low: number; medium: number; high: number; total: number };
     blockingCount: number;
-    consistency: "consistent" | "inconsistent" | "unknown";
+    consistency: "consistent" | "corrected_clean_summary" | "corrected_actionable_findings" | "inconsistent" | "unknown";
     reviewedCommit: string | null;
     reviewer: string | null;
     invocationId: string | null;
