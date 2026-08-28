@@ -4,7 +4,7 @@ import { evaluateIntentUnderstanding } from "../src/services/intent-understandin
 
 test("ordinary-user intent replay set stays green across creator, software, and business work", () => {
   const evaluation = evaluateIntentUnderstanding();
-  assert.equal(evaluation.total, 291);
+  assert.equal(evaluation.total, 294);
   assert.equal(evaluation.failed.length, 0, JSON.stringify(evaluation.failed, null, 2));
   assert.equal(evaluation.passed, evaluation.total);
   assert.equal(evaluation.metrics.taskBoundaryAccuracy, 1);

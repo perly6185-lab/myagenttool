@@ -56,6 +56,43 @@ test("external effects remain separate approval-gated tasks", () => {
   assert.deepEqual(development.tasks.find((task) => task.kind === "software_implementation").artifactContract.verification.requiredKinds, ["test", "build"]);
 });
 
+test("office and professional quality checks do not become software verification tasks", () => {
+  const samples = [
+    ["用 officecli 更新 sales.xlsx，并验证公式和单元格格式", []],
+    ["整理 Excel 客户表格并测试公式是否正确", ["business_document"]],
+    ["制作季度汇报 PPT，并验证每页排版无误", ["presentation_creation"]],
+    ["核对发票和银行流水，并验证金额一致", ["finance_reconciliation"]],
+    ["审查合同风险，并验证条款编号连续", ["legal_contract_review"]],
+    ["写一篇文章并验证文中的链接有效", ["content_article"]],
+    ["Create the report with officecli and verify the spreadsheet formulas", []],
+    ["Use office CLI to update the workbook, then run a validation", []],
+  ];
+
+  for (const [text, expectedKinds] of samples) {
+    const plan = planDiscreteTasks({ text });
+    assert.deepEqual(plan.tasks.map((task) => task.kind), expectedKinds, text);
+    assert.ok(!plan.tasks.some((task) => task.kind === "software_verification"), text);
+    assert.ok(plan.tasks.every((task) => task.artifactContract.verification == null), text);
+  }
+});
+
+test("explicit software test requests still produce software verification", () => {
+  const samples = [
+    ["跑一下测试", ["software_verification"]],
+    ["运行 pnpm test 验证代码改动", ["software_verification"]],
+    ["修改代码修复登录 bug，并跑回归测试", ["software_implementation", "software_verification"]],
+    ["Run the API integration tests", ["software_verification"]],
+    ["验证登录功能是否正常", ["software_verification"]],
+  ];
+
+  for (const [text, expectedKinds] of samples) {
+    const plan = planDiscreteTasks({ text });
+    assert.deepEqual(plan.tasks.map((task) => task.kind), expectedKinds, text);
+    const verification = plan.tasks.find((task) => task.kind === "software_verification");
+    assert.deepEqual(verification.artifactContract.verification.requiredKinds, ["test", "build"], text);
+  }
+});
+
 test("content task contracts carry the right measurable quality checks", () => {
   const result = planDiscreteTasks({ text: "写一篇深度文章，同时做漫画、口播和视频", domain: "content" });
   const qualityByKind = new Map(result.tasks.map((task) => [task.kind, task.artifactContract.requirements[0].quality]));

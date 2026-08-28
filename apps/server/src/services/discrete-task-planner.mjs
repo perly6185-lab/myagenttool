@@ -40,6 +40,9 @@ const DEFAULT_CONTENT_PROPOSAL_KINDS = new Set(["knowledge_analysis", "content_a
 const CODING_SOURCE_RE = /(?:今天|今日|本周|这次|刚才|最近|当前).{0,12}(?:编码|代码|开发|提交|commit)|(?:编码|代码|开发|提交|commit).{0,12}(?:工作|成果|记录|内容|过程|变更)/i;
 const CONTENT_TARGET_RE = /文章|博客|公众号|小红书|配图|插图|图片|漫画|口播|视频|发布|article|blog|image|video|publish/i;
 const CODING_DIGEST_ACTION_RE = /整理|总结|复盘|提炼|汇总|转成|做成|写成|内容化|记录|summari[sz]e|digest|recap/i;
+const OFFICE_WORK_CONTEXT_RE = /(?:office[-_\s]?cli|microsoft\s*office|word|excel|powerpoint|pptx?|docx?|xlsx?|spreadsheet|workbook|worksheet|slides?|document|\.csv\b|\.pdf\b|表格|工作簿|工作表|单元格|公式|文档|幻灯片|演示文稿|汇报材料|排版|版式|页眉|页脚)/i;
+const SOFTWARE_WORK_CONTEXT_RE = /(?:代码|源码|代码库|仓库|软件|应用程序|客户端|服务端|前端|后端|接口|功能|网页|网站|数据库|组件|模块|开发环境|编译|构建|依赖|单元测试|集成测试|回归测试|端到端测试|冒烟测试|自动化测试|性能测试|压力测试|\bapi\b|\bsdk\b|\bui\b|\bcli\b|\bbug\b|\bcode\b|\brepositor(?:y|ies)\b|\bfrontend\b|\bbackend\b|\bdatabase\b|\bcomponent\b|\bmodule\b|\bfeature\b|\bbuild\b|\bcompile\b|\bunit tests?\b|\bintegration tests?\b|\bregression tests?\b|\be2e\b|\bsmoke tests?\b|\btest suite\b|\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|swift|cs|rb|php)\b)/i;
+const EXPLICIT_SOFTWARE_TEST_ACTION_RE = /(?:(?:跑|执行|运行|补跑|重跑|重新跑|再跑|做).{0,8}(?:测试|验证)|(?:测试|验证)(?:一下|一遍|一次)|\b(?:run|execute|rerun)\s+(?:the\s+)?(?:tests?|test suite|checks?)\b|\b(?:unit|integration|regression|e2e|smoke|automated|performance|load)\s+tests?\b|\b(?:pnpm|npm|yarn|bun|pytest|jest|vitest|playwright|mvn|gradle|cargo|go)\s+(?:run\s+)?test\b)/i;
 const WECHAT_DRAFT_SYNC_RE = /(?:保存|同步|存入|放到).{0,12}(?:公众号|微信公众平台).{0,8}(?:草稿箱|草稿)|(?:公众号|微信公众平台).{0,12}(?:草稿箱|草稿)/i;
 const CONTENT_OUTPUT_KINDS = new Set([
   "content_article", "content_image", "content_comic", "content_voiceover", "content_video",
@@ -100,6 +103,15 @@ function requestedMatch(statement, pattern) {
 function definitionRequested(statement, definition) {
   if (!definition?.pattern) return false;
   return Boolean(requestedMatch(statement, definition.pattern));
+}
+
+export function isSoftwareVerificationRequest(statement, { domain = null, companionSoftwareWork = false } = {}) {
+  if (domain === "development") return true;
+  const hasOfficeContext = OFFICE_WORK_CONTEXT_RE.test(statement);
+  const softwareEvidenceText = String(statement ?? "").replace(/office[-_\s]?cli/gi, " ");
+  const hasSoftwareContext = SOFTWARE_WORK_CONTEXT_RE.test(softwareEvidenceText);
+  if (hasOfficeContext && !hasSoftwareContext) return false;
+  return companionSoftwareWork || hasSoftwareContext || EXPLICIT_SOFTWARE_TEST_ACTION_RE.test(statement);
 }
 
 function describesExistingInput(statement, kind) {
@@ -398,6 +410,10 @@ export function planDiscreteTasks({
     .map((key) => bounded(key, 160))
     .filter(Boolean));
   const isCodingSource = CODING_SOURCE_RE.test(statement) && CONTENT_TARGET_RE.test(statement);
+  const companionSoftwareWork = TASK_DEFINITIONS.some((definition) =>
+    definition.domain === "development"
+    && definition.kind !== "software_verification"
+    && definitionRequested(statement, definition));
   const tasks = [];
   const add = (kind, options = {}) => {
     const definition = TASK_DEFINITIONS.find((candidate) => candidate.kind === kind);
@@ -409,6 +425,8 @@ export function planDiscreteTasks({
   if (statement && isCodingSource && CODING_DIGEST_ACTION_RE.test(statement)) add("coding_digest");
   for (const definition of TASK_DEFINITIONS) {
     if (!definitionRequested(statement, definition)) continue;
+    if (definition.kind === "software_verification"
+      && !isSoftwareVerificationRequest(statement, { domain, companionSoftwareWork })) continue;
     if (describesExistingInput(statement, definition.kind)) continue;
     if (definition.kind === "content_publish" || (definition.kind === "software_implementation" && isCodingSource)) continue;
     const instanceScopes = professionalTaskInstanceScopes(statement, definition.kind);

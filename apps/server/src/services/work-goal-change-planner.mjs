@@ -1,4 +1,4 @@
-import { platformTargetsIn } from "./discrete-task-planner.mjs";
+import { isSoftwareVerificationRequest, platformTargetsIn } from "./discrete-task-planner.mjs";
 
 export const WORK_GOAL_CHANGE_TTL_MS = 10 * 60 * 1000;
 
@@ -39,9 +39,13 @@ function splitClauses(text) {
     .filter(Boolean);
 }
 
-function kindsIn(text) {
+function kindsIn(text, tasks = []) {
   const value = clean(text);
-  return TASK_KINDS.filter((entry) => entry.aliases.test(value));
+  const hasExistingSoftwareVerification = tasks.some((task) => task.kind === "software_verification");
+  return TASK_KINDS.filter((entry) => entry.aliases.test(value)
+    && (entry.kind !== "software_verification"
+      || hasExistingSoftwareVerification
+      || isSoftwareVerificationRequest(value)));
 }
 
 function normalizedTask(task) {
@@ -111,7 +115,7 @@ export function planWorkGoalChange({ text, goal = null, tasks = [] } = {}) {
   const changes = [];
   const unresolved = [];
   for (const clause of splitClauses(requestedText)) {
-    const kinds = kindsIn(clause);
+    const kinds = kindsIn(clause, currentTasks);
     const platforms = platformTargetsIn(clause);
 
     if (REBIND_RE.test(clause) && platforms.length && kinds.some((entry) => entry.kind.startsWith("content_"))) {

@@ -238,6 +238,31 @@ test("desktop intent planning creates discrete typed tasks instead of one giant 
   assert.equal(state.workItems.length, 4);
 });
 
+test("desktop office validation wording stays out of the software verification flow", () => {
+  const { service } = harness();
+  const officecli = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "用 officecli 更新 sales.xlsx，并验证公式和单元格格式",
+    body: "用 officecli 更新 sales.xlsx，并验证公式和单元格格式",
+    mode: "ai",
+  }, ACTOR_A);
+  assert.equal(officecli.status, 200);
+  assert.deepEqual(officecli.body.plan.tasks.map((task) => task.kind), ["general"]);
+  assert.equal(officecli.body.summary.requiresRepository, false);
+  assert.equal(officecli.body.plan.tasks[0].artifactContract.verification, undefined);
+
+  const spreadsheet = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "整理 Excel 客户表格并测试公式是否正确",
+    body: "整理 Excel 客户表格并测试公式是否正确",
+    mode: "ai",
+  }, ACTOR_A);
+  assert.equal(spreadsheet.status, 200);
+  assert.deepEqual(spreadsheet.body.plan.tasks.map((task) => task.kind), ["business_document"]);
+  assert.equal(spreadsheet.body.summary.requiresRepository, false);
+  assert.equal(spreadsheet.body.plan.tasks[0].artifactContract.verification, undefined);
+});
+
 test("work items persist provider-neutral record bindings and require managed refreshes", () => {
   const { service, state } = harness();
   const fingerprint = `sha256:${"b".repeat(64)}`;
