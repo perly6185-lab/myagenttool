@@ -142,12 +142,17 @@ test("a signed-in learner keeps one personal profile and never sees family hando
   await page.getByRole("button", { name: "重新读取" }).click();
   await expect(page.getByRole("heading", { name: "先选择这次想学什么" })).toBeVisible();
 
-  await page.getByRole("button", { name: /选择课程或导入我的教材/ }).click();
+  await page.getByRole("button", { name: /先选课程或教材/ }).click();
   await expect(page.getByRole("heading", { name: "我的设置" })).toBeVisible();
   await expect(page.getByText("选择学习内容")).toBeVisible();
   await expect(page.getByText("四年级数学上册（2022课标原创）", { exact: true })).toBeVisible();
   await expect(page.getByText("八年级数学上册（2022课标原创）", { exact: true })).toBeVisible();
   await expect(page.getByText("课标原创", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("4年级 · 上册 · 2022课标 · 答完立即反馈", { exact: true })).toBeVisible();
+  await expect(page.getByText("8年级 · 上册 · 2022课标 · 答完立即反馈", { exact: true })).toBeVisible();
+  await expect(page.getByText("支持确定性判题")).toHaveCount(0);
+  await expect(page.getByLabel("迁移目标版本")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "更换课程版本（高级）" })).toBeVisible();
   await expect(page.getByText("非出版社官方教材；可导入本人教材进行本地对齐。")).toHaveCount(2);
   await testInfo.attach("private-tutor-curricula-desktop", {
     body: await page.screenshot({ fullPage: true }),

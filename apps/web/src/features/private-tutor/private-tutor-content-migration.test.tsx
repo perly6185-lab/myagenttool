@@ -37,6 +37,9 @@ describe("PrivateTutorContentMigration", () => {
 
   it("runs preview, explicit confirmation, non-activating apply, and rollback", async () => {
     render(<PrivateTutorContentMigration />);
+    expect(api.list).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("迁移目标版本")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "更换课程版本（高级）" }));
     await waitFor(() => expect((screen.getByLabelText("迁移来源版本") as HTMLSelectElement).value).toBe("book@1.0.0"));
     fireEvent.click(screen.getByRole("button", { name: "生成迁移预览" }));
     expect(await screen.findByText("安全继承")).toBeTruthy();
@@ -55,6 +58,7 @@ describe("PrivateTutorContentMigration", () => {
 
   it("keeps target options available and blocks confirmation until mapping edits are saved", async () => {
     render(<PrivateTutorContentMigration />);
+    fireEvent.click(screen.getByRole("button", { name: "更换课程版本（高级）" }));
     await waitFor(() => expect((screen.getByLabelText("迁移来源版本") as HTMLSelectElement).value).toBe("book@1.0.0"));
     fireEvent.click(screen.getByRole("button", { name: "生成迁移预览" }));
     const mapping = await screen.findByLabelText("核心概念的目标知识点") as HTMLSelectElement;

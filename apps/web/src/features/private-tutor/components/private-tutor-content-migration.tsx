@@ -16,6 +16,8 @@ const relationLabels = { unchanged: "未变化", renamed: "仅改名", changed: 
 const decisionLabels = { transfer: "继承掌握证据", provisional: "仅保留线索，重新评估", archive: "归档，不迁移" } as const;
 
 export function PrivateTutorContentMigration() {
+  const [expanded, setExpanded] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [candidates, setCandidates] = useState<PrivateTutorContentMigrationCandidate[]>([]);
   const [sourceKey, setSourceKey] = useState("");
   const [targetKey, setTargetKey] = useState("");
@@ -29,17 +31,19 @@ export function PrivateTutorContentMigration() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (!expanded || loaded) return undefined;
     let current = true;
     void listPrivateTutorContentMigrationCandidates().then((rows) => {
       if (!current) return;
       setCandidates(rows);
+      setLoaded(true);
       const source = rows.find((row) => row.hasLearningState);
       const target = rows.find((row) => keyFor(row) !== (source ? keyFor(source) : ""));
       setSourceKey(source ? keyFor(source) : "");
       setTargetKey(target ? keyFor(target) : "");
     }).catch(() => current && setError("无法加载可迁移的内容版本。"));
     return () => { current = false; };
-  }, []);
+  }, [expanded, loaded]);
 
   const source = candidates.find((row) => keyFor(row) === sourceKey);
   const target = candidates.find((row) => keyFor(row) === targetKey);
@@ -72,30 +76,40 @@ export function PrivateTutorContentMigration() {
 
   return (
     <div className="mt-5 rounded-xl border border-sky-200 bg-sky-50/30 p-4 dark:border-sky-900 dark:bg-sky-950/20">
-      <p className="text-sm font-semibold">跨版本迁移预览</p>
-      <p className="mt-1 text-xs leading-5 text-muted-foreground">先比较知识点和证据影响。应用只建立目标版本的待用学习状态，不改写历史，也不会自动切换当前内容包。</p>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="text-xs font-medium">来源版本
-          <select aria-label="迁移来源版本" value={sourceKey} onChange={(event) => { setSourceKey(event.target.value); resetMigration(); }} className="mt-1 h-10 w-full rounded-lg border bg-card px-2 text-sm font-normal">
-            <option value="">请选择</option>
-            {candidates.filter((row) => row.hasLearningState).map((row) => <option key={keyFor(row)} value={keyFor(row)}>{row.packageName} · v{row.packageVersion} · {row.evidenceCount} 条证据</option>)}
-          </select>
-        </label>
-        <label className="text-xs font-medium">目标版本
-          <select aria-label="迁移目标版本" value={targetKey} onChange={(event) => { setTargetKey(event.target.value); resetMigration(); }} className="mt-1 h-10 w-full rounded-lg border bg-card px-2 text-sm font-normal">
-            <option value="">请选择</option>
-            {candidates.filter((row) => keyFor(row) !== sourceKey).map((row) => <option key={keyFor(row)} value={keyFor(row)}>{row.packageName} · v{row.packageVersion}</option>)}
-          </select>
-        </label>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold">课程版本</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">只有升级或更换同一课程版本时才需要，日常学习可以忽略。</p>
+        </div>
+        <Button size="sm" variant="secondary" aria-expanded={expanded} aria-controls="private-tutor-version-migration" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "收起高级选项" : "更换课程版本（高级）"}
+        </Button>
       </div>
-      <Button className="mt-3" size="sm" disabled={busy || !source || !target} onClick={() => void run(async () => {
-        const result = await createPrivateTutorContentMigrationPreview({ sourcePackageId: source!.packageId, sourcePackageVersion: source!.packageVersion, targetPackageId: target!.packageId, targetPackageVersion: target!.packageVersion, idempotencyKey: crypto.randomUUID() });
-        acceptPreview(result); setApplication(null); setHistoryAck(false); setRiskAck(false);
-      })}>生成迁移预览</Button>
-      {error ? <p role="alert" className="mt-3 text-xs text-rose-600">{error}</p> : null}
+      {expanded ? <div id="private-tutor-version-migration" className="mt-4 border-t border-sky-200 pt-4 dark:border-sky-900">
+        <p className="text-sm font-semibold">先预览版本变化</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">比较知识点和学习记录的影响。应用后仍需手动启用新版本，历史记录不会被改写。</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <label className="text-xs font-medium">来源版本
+            <select aria-label="迁移来源版本" value={sourceKey} onChange={(event) => { setSourceKey(event.target.value); resetMigration(); }} className="mt-1 h-10 w-full rounded-lg border bg-card px-2 text-sm font-normal">
+              <option value="">请选择</option>
+              {candidates.filter((row) => row.hasLearningState).map((row) => <option key={keyFor(row)} value={keyFor(row)}>{row.packageName} · v{row.packageVersion} · {row.evidenceCount} 条证据</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-medium">目标版本
+            <select aria-label="迁移目标版本" value={targetKey} onChange={(event) => { setTargetKey(event.target.value); resetMigration(); }} className="mt-1 h-10 w-full rounded-lg border bg-card px-2 text-sm font-normal">
+              <option value="">请选择</option>
+              {candidates.filter((row) => keyFor(row) !== sourceKey).map((row) => <option key={keyFor(row)} value={keyFor(row)}>{row.packageName} · v{row.packageVersion}</option>)}
+            </select>
+          </label>
+        </div>
+        <Button className="mt-3" size="sm" disabled={busy || !source || !target} onClick={() => void run(async () => {
+          const result = await createPrivateTutorContentMigrationPreview({ sourcePackageId: source!.packageId, sourcePackageVersion: source!.packageVersion, targetPackageId: target!.packageId, targetPackageVersion: target!.packageVersion, idempotencyKey: crypto.randomUUID() });
+          acceptPreview(result); setApplication(null); setHistoryAck(false); setRiskAck(false);
+        })}>生成迁移预览</Button>
+        {error ? <p role="alert" className="mt-3 text-xs text-rose-600">{error}</p> : null}
 
-      {preview ? (
-        <div className="mt-4 grid gap-3">
+        {preview ? (
+          <div className="mt-4 grid gap-3">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Impact value={preview.impact.transferableKnowledgeCount} label="安全继承" />
             <Impact value={preview.impact.provisionalKnowledgeCount} label="需要重评" />
@@ -132,14 +146,15 @@ export function PrivateTutorContentMigration() {
             setApplication(result);
             setPreview((current) => current ? { ...current, status: "applied", applicationId: result.id } : current);
           })}>应用迁移（不切换版本）</Button> : null}
-        </div>
-      ) : null}
+          </div>
+        ) : null}
 
-      {application ? <div className="mt-4 rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-xs dark:border-emerald-900 dark:bg-emerald-950/30"><p className="font-semibold">{application.status === "applied" ? "迁移已应用，目标版本等待你手动启用" : "迁移已回滚"}</p><p className="mt-1 text-muted-foreground">历史改写：{application.rollbackReceipt.sourceFactsRewritten} 条；继承 {application.transferredKnowledgeCount} 项，待重评 {application.provisionalKnowledgeCount} 项。</p>{application.status === "applied" ? <Button className="mt-2" size="sm" variant="secondary" disabled={busy} onClick={() => void run(async () => {
-        const result = await rollbackPrivateTutorContentMigration(application.id);
-        setApplication(result);
-        setPreview((current) => current ? { ...current, status: "rolled_back" } : current);
-      })}>回滚这次迁移</Button> : null}</div> : null}
+        {application ? <div className="mt-4 rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-xs dark:border-emerald-900 dark:bg-emerald-950/30"><p className="font-semibold">{application.status === "applied" ? "迁移已应用，目标版本等待你手动启用" : "迁移已回滚"}</p><p className="mt-1 text-muted-foreground">历史改写：{application.rollbackReceipt.sourceFactsRewritten} 条；继承 {application.transferredKnowledgeCount} 项，待重评 {application.provisionalKnowledgeCount} 项。</p>{application.status === "applied" ? <Button className="mt-2" size="sm" variant="secondary" disabled={busy} onClick={() => void run(async () => {
+          const result = await rollbackPrivateTutorContentMigration(application.id);
+          setApplication(result);
+          setPreview((current) => current ? { ...current, status: "rolled_back" } : current);
+        })}>回滚这次迁移</Button> : null}</div> : null}
+      </div> : null}
     </div>
   );
 }
