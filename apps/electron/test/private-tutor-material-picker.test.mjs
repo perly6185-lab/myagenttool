@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -29,7 +29,7 @@ test("private tutor local picker keeps the path inside Electron and requests a m
   try {
     const result = await handler(null, { startOcr: true, cloudAllowed: true });
     assert.equal(result.material.id, "mat_local");
-    assert.equal(request.path, path);
+    assert.equal(request.path, realpathSync(path));
     assert.equal(request.startOcr, true);
     assert.equal(request.cloudAllowed, true);
   } finally {
