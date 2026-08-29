@@ -13,16 +13,30 @@ import { conceptualSubjectPlugin } from "../src/services/plugins/conceptual-plug
 import { judgePrivateTutorAnswer } from "../src/services/private-tutor-assessment.mjs";
 import { DEMO_MATH_FOUNDATIONS_PACKAGE_ID } from "../src/services/packages/demo-math-foundations.mjs";
 import { CS_LOGIC_FOUNDATIONS_PACKAGE_ID } from "../src/services/packages/cs-logic-foundations.mjs";
+import { GRADE_4_MATH_UPPER_PACKAGE_ID } from "../src/services/packages/grade-4-math-upper-2022-standard.mjs";
+import { GRADE_8_MATH_UPPER_PACKAGE_ID } from "../src/services/packages/grade-8-math-upper-2022-standard.mjs";
 
 test("content package registry initializes all built-in M5 subject packages", () => {
   const registry = createPrivateTutorPackageRegistry();
   const packages = registry.listPackages();
-  assert.equal(packages.length, 5);
+  assert.equal(packages.length, 7);
   const mathSummary = packages.find((p) => p.id === DEMO_MATH_FOUNDATIONS_PACKAGE_ID);
   assert.ok(mathSummary);
   assert.equal(mathSummary.subjectId, "math");
   assert.equal(mathSummary.sourceType, "textbook");
   assert.equal(mathSummary.evaluationCapabilities.deterministicGrading, true);
+
+  for (const [id, grade] of [[GRADE_4_MATH_UPPER_PACKAGE_ID, 4], [GRADE_8_MATH_UPPER_PACKAGE_ID, 8]]) {
+    const curriculum = packages.find((pkg) => pkg.id === id);
+    assert.ok(curriculum);
+    assert.equal(curriculum.sourceType, "curriculum");
+    assert.equal(curriculum.grade, grade);
+    assert.equal(curriculum.semester, "upper");
+    assert.equal(curriculum.curriculumStandardVersion, "2022");
+    assert.equal(curriculum.rightsStatus, "original");
+    assert.equal(curriculum.officialPublisherProduct, false);
+    assert.equal(curriculum.publisherAlignment.status, "none");
+  }
 
   const csSummary = packages.find((p) => p.id === CS_LOGIC_FOUNDATIONS_PACKAGE_ID);
   assert.ok(csSummary);
@@ -207,8 +221,8 @@ test("seedPrivateTutorContentPackages populates state idempotently", () => {
   const state = {};
   const at = "2026-08-25T00:00:00.000Z";
   assert.equal(seedPrivateTutorContentPackages(state, at), true);
-  assert.equal(state.privateTutorContentPackages.length, 5);
-  assert.equal(state.privateTutorKnowledgeComponents.length, 9);
+  assert.equal(state.privateTutorContentPackages.length, 7);
+  assert.equal(state.privateTutorKnowledgeComponents.length, 25);
   assert.equal(state.privateTutorSubjectPlugins.length, 5);
   assert.equal(seedPrivateTutorContentPackages(state, at), false, "second seed call must be idempotent");
 

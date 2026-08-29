@@ -423,6 +423,37 @@ describe("My private tutor personal learning information architecture", () => {
     expect(await screen.findByRole("heading", { name: "先让我认识一下你会什么" })).toBeTruthy();
   });
 
+  it("labels original curriculum packages without claiming publisher ownership", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(null);
+    apiMocks.activePackage.mockResolvedValue(null);
+    apiMocks.listPackages.mockResolvedValue([{
+      id: "grade-4-math-upper-2022-standard-v1",
+      name: "四年级数学上册（2022课标原创）",
+      subjectId: "math",
+      domain: "math",
+      sourceType: "curriculum",
+      version: "1.0.0",
+      license: "MyAgentTool-Original-Content-v1",
+      grade: 4,
+      semester: "upper",
+      curriculumStandardVersion: "2022",
+      rightsStatus: "original",
+      officialPublisherProduct: false,
+      publisherAlignment: { status: "none", publisher: null, edition: null },
+      contentNotice: "依据课标独立编写，非出版社官方教材。",
+      targetAudience: { stage: "grade-4-upper" },
+      evaluationCapabilities: { deterministicGrading: true, stepEvaluation: true, speechEvaluation: false, visualInteractions: true },
+    }]);
+    render(<PrivateTutorView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /选择课程或导入我的教材/ }));
+
+    expect(await screen.findByText("课标原创")).toBeTruthy();
+    expect(screen.getByText("4年级 · 上册 · 2022课标 · 支持确定性判题")).toBeTruthy();
+    expect(screen.getByText("非出版社官方教材；可导入本人教材进行本地对齐。")).toBeTruthy();
+  });
+
   it("keeps the five personal learning capabilities at level one", async () => {
     apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
     render(<PrivateTutorView />);

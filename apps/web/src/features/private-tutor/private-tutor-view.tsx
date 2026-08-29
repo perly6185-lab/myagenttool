@@ -2152,6 +2152,20 @@ function privateTutorOcrReasonLabel(reason: string | null | undefined) {
   return "本地 OCR 未能完成识别";
 }
 
+function contentSourceLabel(sourceType: LearningContentPackage["sourceType"]) {
+  if (sourceType === "curriculum") return "课标原创";
+  if (sourceType === "textbook") return "教材内容";
+  if (sourceType === "user_material") return "我的资料";
+  if (sourceType === "university_course") return "课程内容";
+  return "专业技能";
+}
+
+function curriculumScopeLabel(pkg: LearningContentPackage) {
+  if (pkg.sourceType !== "curriculum") return null;
+  const semester = pkg.semester === "upper" ? "上册" : pkg.semester === "lower" ? "下册" : "全学年";
+  return `${pkg.grade ?? "—"}年级 · ${semester} · ${pkg.curriculumStandardVersion ?? "—"}课标`;
+}
+
 function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirmed, onPackageActivated, onProfileDeleted, initialSpace = "preferences" }: { state: LearnerTutorState; preferences: PrivateTutorLearningPreferences; onPreferencesChange: (patch: PrivateTutorLearningPreferencesPatch) => Promise<string | null>; onGoalConfirmed: (result: Awaited<ReturnType<typeof confirmPrivateTutorLearningGoal>>) => void; onPackageActivated: (result: PrivateTutorPackageActivationResult) => void; onProfileDeleted: () => void; initialSpace?: TutorSettingsSpace }) {
   const [space, setSpace] = useState<TutorSettingsSpace>(initialSpace);
   const [preferenceBusy, setPreferenceBusy] = useState(false);
@@ -2532,6 +2546,9 @@ function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirme
                   </div>
                   <h3 className="mt-1 text-base font-bold">{activePackage.name}</h3>
                   <p className="mt-1 text-xs text-muted-foreground">{activePackage.targetAudience?.description || "通识与专业基础"}</p>
+                  {activePackage.sourceType === "curriculum" && activePackage.officialPublisherProduct === false ? (
+                    <p className="mt-2 rounded-lg bg-white/70 px-3 py-2 text-xs leading-5 text-amber-800 dark:bg-black/20 dark:text-amber-200">{activePackage.contentNotice || "课标原创内容，非出版社官方教材。"}</p>
+                  ) : null}
                 </div>
               ) : null}
               {pendingPackage ? (
@@ -2574,9 +2591,10 @@ function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirme
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-bold">{pkg.name}</span>
-                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{pkg.sourceType}</span>
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{contentSourceLabel(pkg.sourceType)}</span>
                         </div>
-                        <p className="mt-1 text-xs text-muted-foreground">{pkg.targetAudience?.stage ?? "全部阶段"} · {pkg.sourceType === "user_material" ? "来源量表将在启动时校准" : pkg.evaluationCapabilities?.deterministicGrading ? "支持确定性判题" : "主观开放评估"}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{curriculumScopeLabel(pkg) ?? pkg.targetAudience?.stage ?? "全部阶段"} · {pkg.sourceType === "user_material" ? "来源量表将在启动时校准" : pkg.evaluationCapabilities?.deterministicGrading ? "支持确定性判题" : "主观开放评估"}</p>
+                        {pkg.sourceType === "curriculum" && pkg.officialPublisherProduct === false ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">非出版社官方教材；可导入本人教材进行本地对齐。</p> : null}
                       </div>
                       <Button size="sm" variant={isActive ? "secondary" : "primary"} disabled={loading || isActive} onClick={() => void choosePackage(pkg.id)}>
                         {isActive ? "正在学习" : "选择开始方式"}
