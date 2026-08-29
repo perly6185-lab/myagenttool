@@ -1205,6 +1205,81 @@ describe("TaskView local work items", () => {
     await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_delivery", "local_merge", 4));
   });
 
+  it("keeps an explicitly uncommitted worktree review-only", async () => {
+    const item = {
+      id: "lwi_uncommitted", localRef: "LOCAL-21", projectId: "prj_1",
+      title: "Keep this change uncommitted", body: "Do not commit, open a PR, or push.", type: "feature", status: "review",
+      priority: "p1", state: "open", labels: [], assigneeIds: [],
+      acceptanceCriteria: [], verificationRecords: [], completionGate: {
+        ready: true, missingCriteria: [], verificationRequired: false,
+      },
+      revision: 6, archivedAt: null, updatedAt: "2026-08-29T02:00:00.000Z",
+      executionBindings: [{
+        kind: "auto_run", targetId: "aur_uncommitted", worktreeId: "wtr_uncommitted",
+        createdAt: "2026-08-29T02:00:00.000Z",
+      }],
+    };
+    const observability = {
+      nextAction: "review_delivery",
+      attention: [],
+      latestRun: {
+        id: "aur_uncommitted", status: "done", updatedAt: "2026-08-29T02:05:00.000Z",
+        localDelivery: {
+          worktreeId: "wtr_uncommitted", branchName: "local-21", mode: "uncommitted_worktree",
+          commitCreated: false,
+        },
+      },
+      delivery: {
+        state: "awaiting_review", mode: "local_merge", worktreeId: "wtr_uncommitted",
+        branchName: "local-21", remoteUrl: null,
+        evidence: {
+          schemaVersion: 1, status: "ready", risk: "low", domain: "development",
+          blockingReasonCodes: ["delivery_action_forbidden_by_intent"],
+          review: {
+            status: "completed", source: "ai", verdict: "approved", summary: "No issues found.", structured: true,
+            findings: [], findingCounts: { low: 0, medium: 0, high: 0, total: 0 }, blockingCount: 0,
+            consistency: "consistent", reviewedCommit: null, reviewer: "Codex",
+            invocationId: "inv_review_uncommitted", completedAt: "2026-08-29T02:05:00.000Z",
+          },
+          verification: {
+            status: "passed", passed: true, verified: true, command: null, commands: [], exitCode: null,
+            summary: "Document result verification passed.",
+          },
+          actionPreview: {
+            mode: "local_merge", operation: "apply_local_changes", targetType: "local_project",
+            worktreeId: "wtr_uncommitted", branchName: "local-21", remoteUrl: null,
+            changedFileCount: 1, changedFiles: ["docs/result.md"], officeDetails: null,
+            reviewedCommit: null, requiresConfirmation: true, canProceed: false,
+            blockedReasonCodes: ["delivery_action_forbidden_by_intent"],
+          },
+        },
+        review: {
+          verdict: "approved", reviewedCommit: null, reviewedBy: "agt_review",
+          createdAt: "2026-08-29T02:05:00.000Z",
+        },
+      },
+      activeClaim: null,
+      cost: { knownUsd: 0, unknownEntries: 0, entryCount: 0, projectBudget: null, teamBudget: null },
+      alerts: { queued: 0, failed: 0, sent: 0, skipped: 0, items: [] },
+    };
+    mocks.listWorkItems.mockResolvedValue({ workItems: [item], count: 1 });
+    mocks.getWorkItem.mockResolvedValue({ workItem: item, observability });
+    mocks.listWorkItemComments.mockResolvedValue({ comments: [] });
+    mocks.listWorkItemActivity.mockResolvedValue({ activities: [] });
+    render(<TaskView />);
+
+    fireEvent.click(await screen.findByText("Keep this change uncommitted"));
+    await openExpertDetails();
+    fireEvent.click(await screen.findByRole("tab", { name: "Process" }));
+
+    expect(await screen.findByText("Changes ready for review")).toBeTruthy();
+    expect(screen.getByText(/remain isolated in the worktree without a commit/)).toBeTruthy();
+    expect(screen.getByText(/explicitly forbids committing/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Review changes" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Merge into base" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create pull request" })).toBeNull();
+  });
+
   it("shows task run history and promotes a posted report", async () => {
     const item = {
       id: "lwi_history", localRef: "LOCAL-60", projectId: "prj_1",

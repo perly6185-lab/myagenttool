@@ -217,6 +217,46 @@ test("a verified local software delivery projects Git changes and every required
   assert.equal(item.resultVerification.status, "passed");
 });
 
+test("a recovered legacy repository delivery creates compatibility evidence without inventing runtime tests", () => {
+  const item = {
+    id: "lwi_legacy", ownerTeamId: "team_local", projectId: "prj_1", terminalId: "dev_local_001",
+    taskKind: "general", status: "in_progress", state: "open", revision: 1,
+    acceptanceCriteria: ["The requested document exists"],
+    artifactContract: { consumes: [], produces: [] },
+    executionBindings: [{ kind: "auto_run", targetId: "aur_legacy" }],
+  };
+  const autoRun = {
+    id: "aur_legacy", status: "done", worktreeId: "wtr_legacy",
+    link: { type: "local_issue", number: 20 },
+    decision: { path: "develop", workKind: "development" },
+    executionRecovery: {
+      requestId: "ear_legacy", sourceKind: "application_invocation",
+      sourceTargetId: "inv_legacy", routeHint: "develop",
+    },
+    localDelivery: { worktreeId: "wtr_legacy", branchName: "local-20", mode: "uncommitted_worktree" },
+    deliveryReport: {
+      changedFiles: ["docs/result.md"], changedFilesBaseCommit: "b".repeat(40),
+      completedAt: "2026-08-29T00:00:00.000Z",
+    },
+    verification: { verified: false, passed: true, summary: "No runtime command was needed." },
+  };
+  const state = { workItems: [item], workItemActivities: [] };
+
+  syncBoundWorkItemsForAutoRun({
+    state, autoRun, status: "done",
+    now: () => "2026-08-29T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_legacy`,
+  });
+
+  assert.equal(item.status, "review");
+  assert.equal(item.executionArtifacts[0].legacyExecutionRecovery, true);
+  assert.equal(item.executionArtifacts[0].recoveryRequestId, "ear_legacy");
+  assert.equal(item.resultVerificationContract.enforced, true);
+  assert.deepEqual(item.resultVerification.verificationChecks, []);
+  assert.equal(item.resultVerification.status, "passed");
+  assert.equal(item.verificationRecords, undefined, "no test or build receipt is fabricated");
+});
+
 test("auto-run cannot close a criteria-bearing item without completion evidence", () => {
   const state = {
     workItems: [{

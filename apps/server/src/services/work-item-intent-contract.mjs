@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { analyzeChannelOperationIntent } from "./channel-operation-intent.mjs";
 
 export const WORK_ITEM_INTENT_CONTRACT_VERSION = 1;
 
@@ -58,7 +59,23 @@ function addConflict(conflicts, conflict) {
  */
 export function buildWorkItemIntentContract(item) {
   const channel = item?.channelTaskContract ?? null;
-  const operation = channel?.operationIntent ?? null;
+  // Desktop-created tasks do not have a Channel contract, but their natural
+  // language still carries the same action boundary. Leaving those tasks at
+  // `unknown` made an explicit "只读取 / 不要修改" request enter a writable
+  // direct invocation. Reuse the deterministic semantics for every intake.
+  const inferredOperation = analyzeChannelOperationIntent(`${item?.title ?? ""}\n${item?.intentStatement ?? ""}\n${item?.body ?? ""}`);
+  const suppliedOperation = channel?.operationIntent ?? null;
+  const suppliedOperationIsSpecific = suppliedOperation
+    && (suppliedOperation.accessMode && suppliedOperation.accessMode !== "unknown"
+      || suppliedOperation.action && suppliedOperation.action !== "unknown");
+  const operation = suppliedOperationIsSpecific ? {
+    ...inferredOperation,
+    ...suppliedOperation,
+    forbiddenActions: [...new Set([
+      ...(Array.isArray(suppliedOperation.forbiddenActions) ? suppliedOperation.forbiddenActions : []),
+      ...(inferredOperation.forbiddenActions ?? []).filter((action) => ["commit", "pull_request", "push"].includes(action)),
+    ])],
+  } : inferredOperation;
   const template = item?.myTemplateBinding ?? null;
   const selectedChannelTemplate = channel?.templateMatch?.state === "matched"
     ? channel.templateMatch
@@ -166,6 +183,9 @@ export function buildWorkItemIntentContract(item) {
     action: {
       accessMode: bounded(operation?.accessMode ?? (materials.changeTargets.length ? "write" : "unknown"), 40),
       operation: bounded(operation?.action ?? "unknown", 80),
+      forbiddenActions: Array.isArray(operation?.forbiddenActions)
+        ? [...new Set(operation.forbiddenActions.map((action) => bounded(action, 40)).filter(Boolean))].slice(0, 20)
+        : [],
     },
     expectedOutput,
     method,

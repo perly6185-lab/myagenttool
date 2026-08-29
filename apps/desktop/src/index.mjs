@@ -37,6 +37,10 @@ import { applyAgentModelArgs } from "./agent-model-selection.mjs";
 import { spawnCapture } from "./spawn-capture.mjs";
 import { isInactiveInvocationError } from "./bridge-events.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
+import {
+  directWorkItemOutputChanged,
+  snapshotDirectWorkItemOutput,
+} from "./scoped-output-change.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
 import { managedRuntimeBinDirectory, runApprovedApplicationInstall } from "./application-installer.mjs";
@@ -1107,17 +1111,26 @@ async function runInvocation(work, { shutdownSignal = null } = {}) {
     toolName: "Bash",
     summary: preview.commandLine
   });
-  const permissionHook = await sendCodexHookEvent(invocationId, adapter, {
-    eventName: "PermissionRequest",
-    toolName: "Bash",
-    summary: normalizeCodexPermissionMode(
-      work.options?.approvalMode ?? work.options?.metadata?.permissionMode ?? adapter.permissionMode,
-    ) === "full"
-      ? "Codex Full access launch was explicitly approved by the MyAgentTool local gate."
-      : "Codex requested permission for a sandbox-bound command preview.",
-    timeoutSeconds: process.env.MYAGENTTOOL_CODEX_APPROVAL_TIMEOUT_SECONDS
-  });
-  const permissionDecision = await waitForCodexApprovalDecision(permissionHook);
+  const permissionMode = normalizeCodexPermissionMode(
+    work.options?.approvalMode ?? work.options?.metadata?.permissionMode ?? adapter.permissionMode,
+  );
+  // A strict read-only launch has already been narrowed to Codex's read-only
+  // sandbox with approval_policy=never. Filing a synthetic Bash approval here
+  // would widen that contract and stall every harmless directory/file read.
+  // Any attempted escalation remains denied by Codex itself.
+  const permissionHook = permissionMode === "read_only"
+    ? null
+    : await sendCodexHookEvent(invocationId, adapter, {
+        eventName: "PermissionRequest",
+        toolName: "Bash",
+        summary: permissionMode === "full"
+          ? "Codex Full access launch was explicitly approved by the MyAgentTool local gate."
+          : "Codex requested permission for a sandbox-bound command preview.",
+        timeoutSeconds: process.env.MYAGENTTOOL_CODEX_APPROVAL_TIMEOUT_SECONDS
+      });
+  const permissionDecision = permissionMode === "read_only"
+    ? "not_required"
+    : await waitForCodexApprovalDecision(permissionHook);
   if (permissionDecision === "denied" || permissionDecision === "timed_out") {
     await request("POST", "/api/bridge/complete", {
       invocationId,
@@ -1766,6 +1779,7 @@ async function runCodexAppServerInvocation(work, {
     ?? adapter.permissionMode
     ?? codexPermissionModeFromLegacySandbox(adapter.sandbox),
   );
+  const outputBefore = snapshotDirectWorkItemOutput(work, spawnPlan.cwd);
   const client = sharedCodexAppServerClient({
     ...appServerPlan,
     cwd: process.cwd(),
@@ -1876,7 +1890,31 @@ async function runCodexAppServerInvocation(work, {
     stopWatchingCancel();
   }
 
-  finalResult = mergeCodexAppServerResult(finalResult, outcome.result);
+  const outputAfter = snapshotDirectWorkItemOutput(work, spawnPlan.cwd);
+  const scopedOutputChanged = directWorkItemOutputChanged(outputBefore, outputAfter);
+  finalResult = mergeCodexAppServerResult(finalResult, {
+    ...outcome.result,
+    touchedUserFiles: Boolean(outcome.result?.touchedUserFiles || scopedOutputChanged),
+    ...(scopedOutputChanged ? {
+      outputChangeEvidence: {
+        scope: "direct_work_item_output",
+        entriesBefore: outputBefore?.entries ?? null,
+        entriesAfter: outputAfter?.entries ?? null,
+      },
+    } : {}),
+  });
+  if (scopedOutputChanged) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "direct_work_item_output_changed",
+      level: "info",
+      message: "The isolated direct-work-item output directory changed during execution.",
+      data: {
+        entriesBefore: outputBefore?.entries ?? null,
+        entriesAfter: outputAfter?.entries ?? null,
+      },
+    });
+  }
   const succeeded = outcome.status === "succeeded";
   await sendCodexHookEvent(invocationId, adapter, {
     eventName: "PostToolUse",

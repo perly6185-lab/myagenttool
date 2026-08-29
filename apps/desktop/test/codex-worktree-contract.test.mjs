@@ -64,3 +64,19 @@ test("explicit sandbox/cwd are preserved and resume receives no unsupported opti
   assert.deepEqual(fullAccess.args, ["exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "task"]);
   assert.deepEqual(fullAccess.additionalWritableRoots, []);
 });
+
+test("read-only linked-worktree execution never receives a writable Git admin root", () => {
+  const worktree = join(root, "read-only-worktree");
+  const gitAdmin = join(root, "source", ".git", "worktrees", "read-only-worktree");
+  mkdirSync(worktree, { recursive: true });
+  mkdirSync(gitAdmin, { recursive: true });
+  writeFileSync(join(worktree, ".git"), `gitdir: ${gitAdmin}\n`);
+
+  const contract = applyCodexWorktreeContract(
+    ["exec", "--sandbox", "read-only", "--cd", worktree, "--json", "task"],
+    { cwd: worktree },
+  );
+
+  assert.deepEqual(contract.additionalWritableRoots, []);
+  assert.equal(contract.args.includes("--add-dir"), false);
+});

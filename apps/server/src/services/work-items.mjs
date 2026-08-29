@@ -1392,7 +1392,7 @@ export function createWorkItemService({
   function completionGate(item) {
     const hasCriteria = (item.acceptanceCriteria ?? []).length > 0;
     const resultVerification = item.resultVerificationContract?.enforced === true
-      ? (item.resultVerification ?? verifyWorkItemResult(item))
+      ? verifyWorkItemResult(item)
       : null;
     if (!hasCriteria && !resultVerification) {
       return { ready: true, missingCriteria: [], verificationRequired: false, resultVerificationRequired: false };
@@ -1401,7 +1401,8 @@ export function createWorkItemService({
       .filter((result) => result.status === "passed")
       .map((result) => result.criterion));
     const missingCriteria = (item.acceptanceCriteria ?? []).filter((criterion) => !passed.has(criterion));
-    const verificationRequired = !(item.verificationRecords ?? []).some((record) => record.status === "passed");
+    const verificationRequired = !resultVerification
+      && !(item.verificationRecords ?? []).some((record) => record.status === "passed");
     const resultVerificationRequired = Boolean(resultVerification && resultVerification.status !== "passed");
     return {
       ready: missingCriteria.length === 0 && !verificationRequired && !resultVerificationRequired,
@@ -1766,8 +1767,14 @@ export function createWorkItemService({
         ownerTeamId: actorTeam(actor),
       })
       : null;
-    const resultVerification = item.resultVerificationContract
-      ? (item.resultVerification ?? verifyWorkItemResult(item))
+    const effectiveResultVerificationContract = item.resultVerificationContract
+      ? resultVerificationContract(item, { enforced: item.resultVerificationContract.enforced === true })
+      : null;
+    const effectiveVerificationItem = effectiveResultVerificationContract
+      ? { ...item, resultVerificationContract: effectiveResultVerificationContract }
+      : item;
+    const resultVerification = effectiveResultVerificationContract
+      ? verifyWorkItemResult(effectiveVerificationItem)
       : null;
     const latestGoalChange = workGoal
       ? (state.workGoalChanges ?? [])
@@ -1817,8 +1824,8 @@ export function createWorkItemService({
         planning: item.status,
         execution: derivedExecutionState,
       },
-      completionGate: completionGate({ ...item, acceptanceCriteria: visibleAcceptanceCriteria }),
-      resultVerificationContract: item.resultVerificationContract ?? null,
+      completionGate: completionGate({ ...effectiveVerificationItem, acceptanceCriteria: visibleAcceptanceCriteria }),
+      resultVerificationContract: effectiveResultVerificationContract,
       resultVerification,
       executionContractGate: executionContractGate(item),
       intentContract: intentContractView(item),
@@ -2600,6 +2607,16 @@ export function createWorkItemService({
   function getWorkItem({ workItemId }, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
+    const effectiveResultVerificationContract = item.resultVerificationContract
+      ? resultVerificationContract(item, { enforced: item.resultVerificationContract.enforced === true })
+      : null;
+    const projectedItem = effectiveResultVerificationContract
+      ? {
+        ...item,
+        resultVerificationContract: effectiveResultVerificationContract,
+        resultVerification: verifyWorkItemResult({ ...item, resultVerificationContract: effectiveResultVerificationContract }),
+      }
+      : item;
     const attention = listAttention({ workItemId, limit: 100 }, actor).body.items ?? [];
     const runIds = new Set((item.executionBindings ?? [])
       .filter((binding) => binding.kind === "auto_run")
@@ -2636,7 +2653,7 @@ export function createWorkItemService({
       projectedDeliveryReport,
       deliveryEvidence,
     } = projectWorkItemReviewEvidence({
-      item,
+      item: projectedItem,
       state,
       boundRuns,
       latestRun,
@@ -2656,7 +2673,7 @@ export function createWorkItemService({
       ].filter((scope) => scope.root),
     };
     const taskOutcome = projectWorkItemOutcome({
-      item,
+      item: projectedItem,
       latestRun,
       deliveryReport: projectedDeliveryReport,
       invocationSummary: latestExecutionInvocation?.result?.output?.latestMessage
@@ -2668,7 +2685,7 @@ export function createWorkItemService({
     const outcomeHistory = (latestRun?.outcomeHistory ?? []).map((entry, index, entries) => ({
       version: entries.length - index,
       ...projectWorkItemOutcome({
-        item,
+        item: projectedItem,
         latestRun: {
           status: entry.status,
           report: entry.report,
@@ -2873,7 +2890,7 @@ export function createWorkItemService({
               : "start_execution";
     const startReceipt = projectExecutionStartReceipt(item, state, { now: now() });
     const executionReview = projectWorkItemExecutionReview({
-      item,
+      item: projectedItem,
       state,
       startReceipt,
       deliveryEvidence,
@@ -2884,8 +2901,11 @@ export function createWorkItemService({
       state,
       ownerTeamId: actorTeam(actor),
     });
+    const projectedIntentContract = item.executionIntentContractSnapshot ?? buildWorkItemIntentContract(item);
     const projectedPlanActual = projectWorkItemPlanActual({
-      item,
+      item: projectedItem.executionIntentContractSnapshot
+        ? projectedItem
+        : { ...projectedItem, intentContract: projectedIntentContract },
       latestRun,
       outcome: taskOutcome,
       deliveryEvidence,
@@ -2904,16 +2924,16 @@ export function createWorkItemService({
       feedback: planActualFeedbackView(planActualFeedback),
     } : null;
     const completionAssessment = assessWorkItemCompletion({
-      item,
+      item: projectedItem,
       latestRun,
       planActual,
-      completionGate: completionGate(item),
+      completionGate: completionGate(projectedItem),
     });
     return {
       ok: true,
       status: 200,
       body: {
-        workItem: workItemView(item, actor),
+        workItem: workItemView(projectedItem, actor),
         observability: {
           executionChainId: item.id,
           nextAction,

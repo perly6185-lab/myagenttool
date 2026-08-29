@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  requiredRuntimeVerificationKinds,
   resultVerificationContract,
   resultVerificationEvidence,
   verifyWorkItemResult,
@@ -128,6 +129,90 @@ test("software result verification requires both passed test and build evidence"
   result = verifyWorkItemResult(item);
   assert.equal(result.status, "passed");
   assert.deepEqual(resultVerificationEvidence(item, result).map((entry) => entry.ref).sort(), ["build_1", "outputs/change.diff", "test_1"]);
+});
+
+test("legacy documentation-only software tasks migrate away from irrelevant test and build requirements", () => {
+  const item = {
+    title: "文档型代码任务：新增 docs/client-closure.md",
+    body: "这是文档型代码任务，仅新增 docs/client-closure.md 并逐字检查内容。",
+    taskKind: "software_implementation",
+    artifactContract: {
+      requirements: [{ kind: "software_change", minCount: 1, extensions: [".diff", ".patch", ".md", ".txt"] }],
+      verification: { requiredKinds: ["test", "build"] },
+    },
+    executionArtifacts: [{
+      id: "aur_docs:software_change",
+      kind: "software_change",
+      source: "auto_run",
+      autoRunId: "aur_docs",
+      worktreeId: "wtr_docs",
+      changedFiles: ["docs/client-closure.md"],
+      changedFileCount: 1,
+    }],
+    verificationRecords: [],
+  };
+
+  const contract = resultVerificationContract(item, { enforced: true });
+  const result = verifyWorkItemResult({ ...item, resultVerificationContract: contract });
+  assert.deepEqual(contract.verificationChecks, []);
+  assert.equal(result.status, "passed");
+  assert.deepEqual(result.verificationChecks, []);
+
+  const codeTask = {
+    ...item,
+    title: "Implement session handling",
+    body: "Change src/session.mjs and update its tests.",
+    executionArtifacts: [{ ...item.executionArtifacts[0], changedFiles: ["src/session.mjs"] }],
+  };
+  assert.deepEqual(resultVerificationContract(codeTask, { enforced: true }).verificationChecks, [
+    { kind: "test" },
+    { kind: "build" },
+  ]);
+});
+
+test("legacy tasks mislabeled as software implementation migrate when the declared and delivered scope is one document", () => {
+  const workItem = {
+    title: "软件实现",
+    body: "在当前项目新增 docs/client-closure.md，内容仅包含指定标题和说明。不修改其他文件。",
+    taskKind: "software_implementation",
+    intentContract: {
+      goal: "这是代码实现任务：新增 docs/client-closure.md，内容仅包含指定标题和说明。不修改其他文件。",
+    },
+    artifactContract: {
+      requirements: [{ kind: "software_change", minCount: 1 }],
+      verification: { requiredKinds: ["test", "build"] },
+    },
+    executionArtifacts: [{
+      id: "artifact-doc-only-legacy",
+      kind: "software_change",
+      source: "auto_run",
+      worktreeId: "wtr-doc-only-legacy",
+      changedFileCount: 1,
+      changedFiles: ["docs/client-closure.md"],
+    }],
+  };
+
+  assert.deepEqual(requiredRuntimeVerificationKinds(workItem), []);
+  const result = verifyWorkItemResult(workItem);
+  assert.equal(result.status, "passed");
+  assert.deepEqual(result.verificationChecks, []);
+});
+
+test("legacy Auto-run recovery evidence supplies a bounded software-change contract", () => {
+  const item = {
+    taskKind: "general",
+    artifactContract: { consumes: [], produces: [] },
+    executionArtifacts: [{
+      id: "aur_legacy:software_change", kind: "software_change", source: "auto_run",
+      worktreeId: "wtr_legacy", changedFileCount: 1, changedFiles: ["docs/result.md"],
+      legacyExecutionRecovery: true, recoveryRequestId: "ear_legacy",
+    }],
+  };
+
+  const contract = resultVerificationContract(item, { enforced: true });
+  assert.equal(contract.enforced, true);
+  assert.deepEqual(contract.verificationChecks, []);
+  assert.equal(verifyWorkItemResult({ ...item, resultVerificationContract: contract }).status, "passed");
 });
 
 test("authoritative Auto-run Worktree changes satisfy software-change artifact evidence", () => {

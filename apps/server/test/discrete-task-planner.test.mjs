@@ -58,8 +58,9 @@ test("external effects remain separate approval-gated tasks", () => {
 
 test("office and professional quality checks do not become software verification tasks", () => {
   const samples = [
-    ["用 officecli 更新 sales.xlsx，并验证公式和单元格格式", []],
+    ["用 officecli 更新 sales.xlsx，并验证公式和单元格格式", ["business_document"]],
     ["整理 Excel 客户表格并测试公式是否正确", ["business_document"]],
+    ["客户端闭环验收：在 Documents 下创建办公验证清单.xlsx，包含清单和统计两个工作表；完成后验证工作表名称与合计公式正确", ["business_document"]],
     ["制作季度汇报 PPT，并验证每页排版无误", ["presentation_creation"]],
     ["核对发票和银行流水，并验证金额一致", ["finance_reconciliation"]],
     ["审查合同风险，并验证条款编号连续", ["legal_contract_review"]],
@@ -91,6 +92,32 @@ test("explicit software test requests still produce software verification", () =
     const verification = plan.tasks.find((task) => task.kind === "software_verification");
     assert.deepEqual(verification.artifactContract.verification.requiredKinds, ["test", "build"], text);
   }
+});
+
+test("an explicitly documentation-only software change does not require code test and build receipts", () => {
+  const text = "这是代码实现任务。在当前 Git 项目新增 docs/client-closure-20260829.md；完成前运行 git diff --check 和文件内容检查。不修改其他文件，不创建提交、不创建 PR、不推送远程。";
+  const plan = planDiscreteTasks({ text, domain: "development" });
+  const implementation = plan.tasks.find((task) => task.kind === "software_implementation");
+
+  assert.ok(implementation);
+  assert.equal(implementation.artifactContract.verification, undefined);
+  assert.deepEqual(implementation.artifactContract.produces, ["software_change"]);
+});
+
+test("an explicit Git repository file mutation is software implementation even when it is documentation-only", () => {
+  const text = "这是文档型代码任务。在当前 Git 项目新增 docs/client-closure-20260829-c2.md，完成前运行 git diff --check。不修改其他文件，不创建提交。";
+  const plan = planDiscreteTasks({ text });
+
+  assert.deepEqual(plan.tasks.map((task) => task.kind), ["software_implementation"]);
+  assert.equal(plan.tasks[0].artifactContract.verification, undefined);
+});
+
+test("a code file change keeps code test and build receipts even when documentation also changes", () => {
+  const text = "修改 src/router.ts 修复路由问题，同时更新 README.md，不修改其他文件。";
+  const plan = planDiscreteTasks({ text, domain: "development" });
+  const implementation = plan.tasks.find((task) => task.kind === "software_implementation");
+
+  assert.deepEqual(implementation.artifactContract.verification.requiredKinds, ["test", "build"]);
 });
 
 test("content task contracts carry the right measurable quality checks", () => {

@@ -903,7 +903,9 @@ export type LocalWorkItemAutoRun = {
   terminalOutcome?: { disposition: "MERGED" | "CLOSED"; source: string; convergedAt: string } | null;
   report?: string | null;
   localDelivery?: {
-    worktreeId: string; branchName: string | null; mode?: "local_merge" | "pull_request";
+    worktreeId: string; branchName: string | null;
+    mode?: "local_merge" | "pull_request" | "uncommitted_worktree" | "committed_worktree";
+    commitCreated?: boolean;
     baseBranch?: string | null; deliveredCommit?: string | null;
     deliveredAt?: string | null; promotedAt?: string | null; prNumber?: number | null; prUrl?: string | null;
     existingPullRequest?: { number: number | null; url: string | null; state: string | null } | null;

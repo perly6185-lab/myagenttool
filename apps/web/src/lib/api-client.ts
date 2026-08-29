@@ -2857,6 +2857,17 @@ export const api = {
       ...payload,
       timezoneOffset: new Date().getTimezoneOffset(),
     }),
+  retryLegacyWorkItemExecution: (id: string, payload: {
+    expectedWorkItemRevision: number;
+    expectedTargetStatus: string;
+    sourceTargetId: string;
+    idempotencyKey: string;
+    agentId?: string;
+    baseBranch?: string;
+  }) => request("POST", `/api/work-items/${encodeURIComponent(id)}/execution-retry`, {
+    ...payload,
+    timezoneOffset: new Date().getTimezoneOffset(),
+  }),
   deliverWorkItem: (
     id: string,
     mode: "local_merge" | "pull_request",

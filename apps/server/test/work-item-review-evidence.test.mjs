@@ -33,6 +33,35 @@ test("development evidence resolves the live review invocation without mutating 
   assert.equal(result.runInvocations.length, 1);
 });
 
+test("an uncommitted worktree stays a local delivery even when the project has GitHub", () => {
+  const latestRun = {
+    id: "aur_uncommitted",
+    invocationId: "inv_work",
+    status: "done",
+    localDelivery: { worktreeId: "wtr_1", branchName: "local-work", mode: "uncommitted_worktree", commitCreated: false },
+    deliveryReport: { changedFiles: ["docs/result.md"] },
+    deliveryReview: { status: "completed", verdict: "approved", findings: [], summary: "No findings." },
+  };
+  const result = projectWorkItemReviewEvidence({
+    item: {
+      id: "wi_uncommitted", projectId: "prj_1", taskKind: "software_implementation",
+      intentStatement: "新增 docs/result.md，不创建提交、不创建 PR、不推送远程。",
+      acceptanceCriteria: ["文档正确"], verificationSop: ["检查内容"],
+    },
+    state: {
+      projects: [{ id: "prj_1", git: { remoteUrl: "https://github.com/example/repo.git" } }],
+      invocations: [{ id: "inv_work", createdAt: "2026-01-01T00:00:00.000Z" }],
+    },
+    boundRuns: [latestRun], latestRun, pendingLocalDelivery: true,
+    deliveryWorktree: { id: "wtr_1", branchName: "local-work" }, outcomeWorktreeId: "wtr_1",
+  });
+
+  assert.equal(result.deliveryMode, "local_merge");
+  assert.equal(result.deliveryEvidence.actionPreview.operation, "apply_local_changes");
+  assert.equal(result.deliveryEvidence.actionPreview.canProceed, false);
+  assert.ok(result.deliveryEvidence.blockingReasonCodes.includes("delivery_action_forbidden_by_intent"));
+});
+
 test("office evidence resolves the live batch and reports missing children as unknown", () => {
   const item = {
     id: "wi_office",

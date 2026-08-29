@@ -131,15 +131,19 @@ async function startApp() {
     });
     if (!response.ok) throw new Error(`${method} ${path} failed.`);
   };
-  const sshCredentialConnector = registerSshHostCredentialConnector({
+  registerSshHostCredentialConnector({
     ipcMain,
     safeStorage,
     credentialRoot: join(app.getPath("appData"), "myagenttool"),
     requestServer: requestCredentialServer,
     onError: (operation, code) => appendLog("ssh-credential", `${operation} failed: ${code}`),
   });
-  const sshCredentialRecovery = await sshCredentialConnector.hydrateStoredCredentials();
-  appendLog("ssh-credential", `startup recovery: ${sshCredentialRecovery.ready}/${sshCredentialRecovery.stored} ready, ${sshCredentialRecovery.failed} failed`);
+  // Do not decrypt every stored SSH credential during application startup.
+  // On macOS an ad-hoc or newly signed build can require Keychain approval for
+  // each record, which used to prevent the desktop bridge, renderer, and main
+  // window from starting. Credential status is hydrated by the existing IPC
+  // handler when the user opens or uses that host, keeping the security prompt
+  // attached to an explicit connector action instead of blocking the app.
 
   startNodeService("desktop", paths.desktopEntry, {
     BRIDGE_SERVER_URL: serverUrl,

@@ -247,7 +247,7 @@ test("desktop office validation wording stays out of the software verification f
     mode: "ai",
   }, ACTOR_A);
   assert.equal(officecli.status, 200);
-  assert.deepEqual(officecli.body.plan.tasks.map((task) => task.kind), ["general"]);
+  assert.deepEqual(officecli.body.plan.tasks.map((task) => task.kind), ["business_document"]);
   assert.equal(officecli.body.summary.requiresRepository, false);
   assert.equal(officecli.body.plan.tasks[0].artifactContract.verification, undefined);
 
@@ -261,6 +261,18 @@ test("desktop office validation wording stays out of the software verification f
   assert.deepEqual(spreadsheet.body.plan.tasks.map((task) => task.kind), ["business_document"]);
   assert.equal(spreadsheet.body.summary.requiresRepository, false);
   assert.equal(spreadsheet.body.plan.tasks[0].artifactContract.verification, undefined);
+
+  const clientAcceptance = service.previewIntentTaskPlan({
+    projectId: "prj_a",
+    title: "客户端闭环验收 20260829-B：在当前 Documents 项目下创建‘客户端验收/办公验证清单-20260829.xlsx’，包含‘清单’和‘统计’两个工作表；清单录入 4 条示例事项（事项、负责人、状态、金额），统计表按状态汇总数量和金额。完成后验证工作表名称与合计公式正确。只创建该文件，不覆盖、不发送其他内容。",
+    body: "客户端闭环验收 20260829-B：在当前 Documents 项目下创建‘客户端验收/办公验证清单-20260829.xlsx’，包含‘清单’和‘统计’两个工作表；清单录入 4 条示例事项（事项、负责人、状态、金额），统计表按状态汇总数量和金额。完成后验证工作表名称与合计公式正确。只创建该文件，不覆盖、不发送其他内容。",
+    mode: "ai",
+  }, ACTOR_A);
+  assert.equal(clientAcceptance.status, 200);
+  assert.deepEqual(clientAcceptance.body.plan.tasks.map((task) => task.kind), ["business_document"]);
+  assert.equal(clientAcceptance.body.summary.requiresRepository, false);
+  assert.equal(clientAcceptance.body.summary.canStartAi, true);
+  assert.equal(clientAcceptance.body.plan.tasks[0].artifactContract.verification, undefined);
 });
 
 test("work items persist provider-neutral record bindings and require managed refreshes", () => {

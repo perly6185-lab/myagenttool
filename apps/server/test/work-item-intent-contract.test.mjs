@@ -61,3 +61,36 @@ test("frozen intent contract is deterministic and records confirmation evidence"
   assert.equal(first.confirmedBy, "usr_a");
   assert.equal(first.readOnly, true);
 });
+
+test("desktop-created development requests freeze explicit delivery prohibitions", () => {
+  const contract = buildWorkItemIntentContract({
+    id: "wi_no_commit",
+    title: "软件实现",
+    intentStatement: "新增 docs/result.md，不创建提交、不创建 PR、不推送远程。",
+    taskKind: "software_implementation",
+    acceptanceCriteria: ["文件存在"],
+    verificationSop: ["检查文件"],
+  });
+
+  assert.equal(contract.action.accessMode, "write");
+  assert.deepEqual(contract.action.forbiddenActions, ["commit", "pull_request", "push"]);
+});
+
+test("an unknown intake operation falls back to the full task statement before freezing", () => {
+  const contract = buildWorkItemIntentContract({
+    id: "wi_unknown_intake",
+    title: "文档型代码任务",
+    intentStatement: "在当前 Git 项目新增 docs/result.md，不修改其他文件，不创建提交、不创建 PR、不推送远程。",
+    taskKind: "software_implementation",
+    acceptanceCriteria: ["文件存在"],
+    verificationSop: ["检查文件"],
+    channelTaskContract: {
+      source: "desktop",
+      operationIntent: { accessMode: "unknown", action: "unknown", forbiddenActions: [] },
+    },
+  });
+
+  assert.equal(contract.action.accessMode, "write");
+  assert.equal(contract.action.operation, "mutate_files");
+  assert.deepEqual(contract.action.forbiddenActions, ["commit", "pull_request", "push"]);
+});

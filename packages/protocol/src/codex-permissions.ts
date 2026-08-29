@@ -47,7 +47,9 @@ export function codexPermissionProfile(value: unknown): CodexPermissionProfile {
     return {
       mode,
       sandboxMode: "read-only",
-      approvalPolicy: "on-request",
+      // Strict read-only work cannot be widened by an approval prompt. Codex
+      // may perform reads in the sandbox; attempted escalation is refused.
+      approvalPolicy: "never",
       approvalsReviewer: "user",
       bypassApprovalsAndSandbox: false,
     };

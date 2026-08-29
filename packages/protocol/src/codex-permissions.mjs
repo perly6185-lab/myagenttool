@@ -30,7 +30,11 @@ export function codexPermissionProfile(value) {
     return {
       mode,
       sandboxMode: "read-only",
-      approvalPolicy: "on-request",
+      // A strict read-only run has no authority to cross the sandbox boundary.
+      // Asking a person for escalation both stalls harmless reads and turns a
+      // read-only contract into a latent write-authority prompt. Refuse any
+      // attempted escalation in-process and let ordinary reads run unattended.
+      approvalPolicy: "never",
       approvalsReviewer: "user",
       bypassApprovalsAndSandbox: false,
     };

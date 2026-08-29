@@ -9,16 +9,49 @@ function extensionOf(asset) {
 }
 
 function normalizedRequirements(workItem) {
-  return Array.isArray(workItem?.artifactContract?.requirements)
+  const declared = Array.isArray(workItem?.artifactContract?.requirements)
     ? workItem.artifactContract.requirements.filter((requirement) => requirement?.kind)
+    : [];
+  if (declared.length) return declared;
+  const recoveredRepositoryChange = (workItem?.executionArtifacts ?? []).some((artifact) =>
+    artifact?.kind === "software_change"
+    && artifact?.source === "auto_run"
+    && artifact?.legacyExecutionRecovery === true);
+  return recoveredRepositoryChange
+    ? [{ kind: "software_change", minCount: 1, extensions: [".diff", ".patch", ".md", ".txt"] }]
     : [];
 }
 
-function normalizedVerificationKinds(workItem) {
+const DOCUMENT_EXTENSIONS = new Set([".md", ".txt", ".rst", ".adoc"]);
+const CODE_RUNTIME_VERIFICATION_KINDS = new Set(["test", "build", "typecheck", "lint"]);
+
+function documentationOnlyTask(workItem) {
+  const text = [workItem?.title, workItem?.body, workItem?.intentStatement, workItem?.intentContract?.goal]
+    .filter(Boolean)
+    .join("\n");
+  const changedFiles = (workItem?.executionArtifacts ?? [])
+    .flatMap((artifact) => Array.isArray(artifact?.changedFiles) ? artifact.changedFiles : [])
+    .map((path) => extensionOf({ path }))
+    .filter(Boolean);
+  const explicitlyDocumentationOnly = /文档型(?:代码)?任务|documentation[- ]only/i.test(text);
+  const hasDocumentTarget = /(?:^|[\s"'“])(?:docs?\/)?[a-z0-9._/-]+\.(?:md|txt|rst|adoc)(?=$|[\s"'””,，。；;])/i.test(text);
+  const constrainsOtherChanges = /不修改其他文件|仅(?:新增|创建|修改|包含)|只(?:新增|创建|修改|包含)|only\s+(?:add|create|change|contain)/i.test(text);
+  if (changedFiles.length) {
+    const deliveredOnlyDocuments = changedFiles.every((extension) => DOCUMENT_EXTENSIONS.has(extension));
+    return deliveredOnlyDocuments
+      && (explicitlyDocumentationOnly || (hasDocumentTarget && constrainsOtherChanges));
+  }
+  return explicitlyDocumentationOnly && hasDocumentTarget;
+}
+
+export function requiredRuntimeVerificationKinds(workItem) {
   const kinds = workItem?.artifactContract?.verification?.requiredKinds;
-  return Array.isArray(kinds)
+  const normalized = Array.isArray(kinds)
     ? [...new Set(kinds.map((kind) => String(kind).toLowerCase()).filter(Boolean))]
     : [];
+  return documentationOnlyTask(workItem)
+    ? normalized.filter((kind) => !CODE_RUNTIME_VERIFICATION_KINDS.has(kind))
+    : normalized;
 }
 
 function taskDomain(taskKind) {
@@ -39,7 +72,7 @@ function normalizeQuality(quality) {
 
 export function resultVerificationContract(workItem, { enforced = false } = {}) {
   const requirements = normalizedRequirements(workItem);
-  const verificationKinds = normalizedVerificationKinds(workItem);
+  const verificationKinds = requiredRuntimeVerificationKinds(workItem);
   if (!requirements.length && !verificationKinds.length) return null;
   return {
     schemaVersion: RESULT_VERIFICATION_SCHEMA_VERSION,

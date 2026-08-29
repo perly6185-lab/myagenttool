@@ -104,21 +104,29 @@ export function projectWorkItemReviewActions({
     // `review_result` is the compatibility action rendered by today's review
     // card; retain the concrete operation alongside it for the next UI slice.
     if (recommendedAction?.kind === "review_result" && preview.operation !== "review_result") {
-      actions.push(action("review_result", deliveryActionOptions));
+      const blockedOnlyByNoDeliveryIntent = deliveryEvidence?.status === "ready"
+        && deliveryBlockedReasons.length === 1
+        && deliveryBlockedReasons[0] === "delivery_action_forbidden_by_intent"
+        && !locked;
+      actions.push(action("review_result", blockedOnlyByNoDeliveryIntent
+        ? { enabled: true, requiresConfirmation: true, nextOwner: "me" }
+        : deliveryActionOptions));
     }
   }
 
   if (state === "failed" && !actions.some((candidate) => candidate.kind === "fix_with_ai")) {
-    const retryable = hasAutoRun && ["failed", "blocked"].includes(targetStatus) && hasWorktree && !locked;
+    const legacyRestartable = executionKind === "application_invocation" && targetStatus === "failed";
+    const retryable = !locked && (legacyRestartable
+      || (hasAutoRun && ["failed", "blocked"].includes(targetStatus) && hasWorktree));
     actions.push(action("retry_execution", {
       enabled: retryable,
       requiresConfirmation: true,
       nextOwner: "ai",
       blockedReasonCodes: [
         ...lockReasons,
-        !hasAutoRun && "auto_run_required",
+        !hasAutoRun && !legacyRestartable && "auto_run_required",
         !["failed", "blocked"].includes(targetStatus) && "target_status_not_retryable",
-        !hasWorktree && "worktree_unavailable",
+        !hasWorktree && !legacyRestartable && "worktree_unavailable",
       ],
     }));
   }

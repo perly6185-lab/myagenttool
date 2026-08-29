@@ -121,6 +121,83 @@ test("dispatches retry, AI repair, verification, and clarification through one c
   assert.equal(calls[3][2].answers, "Use option A.");
 });
 
+test("restarts one failed legacy invocation as an Auto-run and replays the durable recovery receipt", async () => {
+  let sequence = 0;
+  let restartCount = 0;
+  const item = {
+    id: "lwi_legacy",
+    revision: 7,
+    projectId: "prj_1",
+    ownerTeamId: "team_1",
+    executionBindings: [{ kind: "application_invocation", targetId: "inv_failed" }],
+  };
+  const state = {
+    workItems: [item],
+    autoRuns: [],
+    executionActionIdempotencyRecords: [],
+  };
+  const getWorkItem = () => ({
+    ok: true,
+    status: 200,
+    body: {
+      workItem: { ...item },
+      observability: {
+        executionReview: {
+          state: "failed",
+          executionKind: "application_invocation",
+          targetId: "inv_failed",
+          targetStatus: "failed",
+        },
+      },
+    },
+  });
+  const service = createWorkItemReviewCommandService({
+    state,
+    now: () => "2026-08-29T04:00:00.000Z",
+    nextId: (prefix) => `${prefix}_${++sequence}`,
+    store: { transaction: (fn) => fn() },
+    getWorkItem,
+    restartLegacyExecutionAsAutoRun: async ({ recoveryRequestId }) => {
+      restartCount += 1;
+      const autoRun = {
+        id: "aur_recovered",
+        status: "materializing",
+        projectId: item.projectId,
+        teamId: item.ownerTeamId,
+        localIssueId: item.id,
+        executionRecovery: { requestId: recoveryRequestId },
+      };
+      state.autoRuns.push(autoRun);
+      item.executionBindings.push({ kind: "auto_run", targetId: autoRun.id });
+      return { autoRun, replayed: false };
+    },
+  });
+  const command = {
+    kind: "retry_execution",
+    targetId: item.id,
+    request: {
+      restartAsAutoRun: true,
+      sourceTargetId: "inv_failed",
+      expectedWorkItemRevision: 7,
+      expectedTargetStatus: "failed",
+      idempotencyKey: "legacy-recovery-once",
+    },
+  };
+
+  const recovered = await service.execute(command, { userId: "usr_1" });
+  assert.equal(recovered.autoRun.id, "aur_recovered");
+  assert.equal(recovered.actionReceipt.kind, "retry_execution");
+  assert.equal(recovered.actionReceipt.status, "succeeded");
+  assert.equal(restartCount, 1);
+  assert.equal(state.executionActionIdempotencyRecords[0].autoRunId, "aur_recovered");
+
+  const replayed = await service.execute(command, { userId: "usr_1" });
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.actionReceipt.id, recovered.actionReceipt.id);
+  assert.equal(replayed.actionReceipt.replayed, true);
+  assert.equal(restartCount, 1);
+});
+
 test("returns one standard receipt for local and office delivery and replays its durable key", async () => {
   const h = deliveryHarness({ operation: "apply_office_result" });
   const command = {

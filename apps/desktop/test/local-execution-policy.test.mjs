@@ -145,6 +145,67 @@ test("allows a fresh Codex run only with its exact workspace and linked-worktree
   }
 });
 
+test("allows strict read-only Codex without approval evidence or writable roots", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-gate-read-only-"));
+  try {
+    const gate = localExecutionGate(
+      { options: { approvalMode: "read_only", metadata: { projectPath: root } } },
+      { type: "cli", command: "codex" },
+      {
+        command: process.execPath,
+        args: [
+          codexFixtureAgentPath,
+          "exec",
+          "--sandbox", "read-only",
+          "--cd", root,
+          "--config", 'approval_policy="never"',
+          "task",
+        ],
+        cwd: root,
+        codexAdditionalWritableRoots: [],
+        localPolicy: { filePolicy: "native_controls", networkPolicy: "native_controls", source: "test" },
+      },
+      { permissionDecision: "not_required", manifest },
+    );
+    assert.equal(gate.allowed, true);
+    assert.equal(gate.evidence.permissionDecision, "not_required");
+    assert.equal(gate.evidence.codexWorkspace.sandbox[0], "read-only");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses writable roots on a strict read-only Codex run", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-gate-read-only-root-"));
+  const writableRoot = join(root, ".git", "worktrees", "task");
+  mkdirSync(writableRoot, { recursive: true });
+  try {
+    const gate = localExecutionGate(
+      { options: { approvalMode: "read_only", metadata: { projectPath: root } } },
+      { type: "cli", command: "codex" },
+      {
+        command: process.execPath,
+        args: [
+          codexFixtureAgentPath,
+          "exec",
+          "--sandbox", "read-only",
+          "--cd", root,
+          "--add-dir", writableRoot,
+          "task",
+        ],
+        cwd: root,
+        codexAdditionalWritableRoots: [writableRoot],
+        localPolicy: { filePolicy: "native_controls", networkPolicy: "native_controls", source: "test" },
+      },
+      { permissionDecision: "not_required", manifest },
+    );
+    assert.equal(gate.allowed, false);
+    assert.equal(gate.evidence.refusalCode, "codex_read_only_writable_root");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("refuses Codex cwd and add-dir values that exceed the bridge-created contract", () => {
   const root = mkdtempSync(join(tmpdir(), "codex-gate-refuse-"));
   const gitAdmin = join(root, ".git", "worktrees", "issue-1");

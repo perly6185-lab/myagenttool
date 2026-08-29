@@ -12,7 +12,7 @@ test("Codex permission modes normalize to the official sandbox and reviewer comb
   assert.deepEqual(codexPermissionProfile("read_only"), {
     mode: "read_only",
     sandboxMode: "read-only",
-    approvalPolicy: "on-request",
+    approvalPolicy: "never",
     approvalsReviewer: "user",
     bypassApprovalsAndSandbox: false,
   });
@@ -34,7 +34,14 @@ test("Codex permission modes normalize to the official sandbox and reviewer comb
 });
 
 test("Codex exec flags encode the same permission profiles", () => {
-  assert.ok(codexExecPermissionArgs("read_only").includes("read-only"));
+  assert.deepEqual(codexExecPermissionArgs("read_only"), [
+    "--sandbox",
+    "read-only",
+    "--config",
+    'approval_policy="never"',
+    "--config",
+    'approvals_reviewer="user"',
+  ]);
   assert.deepEqual(codexExecPermissionArgs("ask"), [
     "--sandbox",
     "workspace-write",

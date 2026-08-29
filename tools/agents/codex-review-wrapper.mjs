@@ -14,13 +14,15 @@ requireReviewCwd(options);
 console.log(`Codex review started: ${options.mode}`);
 
 const officeDocumentReview = options.baseRef && officeDocumentChanged(options.cwd, options.baseRef);
-const commandArgs = options.baseRef && !officeDocumentReview
+const taskAwareReview = Boolean(options.instruction);
+const commandArgs = options.baseRef && !officeDocumentReview && !taskAwareReview
   // Pin the native review sandbox explicitly. On Windows the implicit native
   // review default can inherit workspace-write and leave inspection artifacts
   // in the delivery worktree. Codex forbids a custom prompt with --base, so the
-  // task context remains in the delivery report.
+  // task context remains in the delivery report. Governed delivery reviews do
+  // carry task context, so they use structured `codex exec` below instead.
   ? ["exec", "review", "-c", 'sandbox_mode="read-only"', "--base", options.baseRef, "--ephemeral", "-c", "model_reasoning_effort=low", "--output-schema", reviewOutputSchemaPath, "--json"]
-  : ["exec", "--sandbox", "read-only", "--ephemeral", "--json", "-c", "model_reasoning_effort=low", buildPrompt(options, { officeDocumentReview })];
+  : ["exec", "--sandbox", "read-only", "--ephemeral", "--json", "--output-schema", reviewOutputSchemaPath, "-c", "model_reasoning_effort=low", buildPrompt(options, { officeDocumentReview })];
 const commandPlan = codexCommandPlan(options.codexCli, commandArgs);
 const { code, stdout, stderr } = await run(commandPlan.command, commandPlan.args, {
   cwd: options.cwd,
@@ -143,13 +145,13 @@ function normalizeBaseRef(value) {
 
 function buildPrompt(value, { officeDocumentReview = false } = {}) {
   return [
-    "Review the current worktree diff for bugs, regressions, and missing tests.",
+    "Review the current worktree diff against the stated task and acceptance context for bugs, regressions, and missing verification.",
     value.baseRef ? `Compare the worktree against the exact base commit ${value.baseRef}.` : null,
     officeDocumentReview
       ? "The delivery includes an Office document. Never infer its text, metadata, worksheet names, comments, or encoding from git's binary diff or raw binary bytes. Inspect OOXML structurally (for example with an installed Office parser or by unzipping it and decoding XML as UTF-8). If structured inspection is unavailable, report the document as unverified instead of claiming corruption. Files under .myagenttool/inputs may use an internal tma_<id>-- storage prefix; that prefix is not part of the user's original filename and must not be required or exposed in user-visible Office output."
       : null,
-    "Return JSON only with this shape:",
-    "{\"summary\":\"...\",\"findings\":[{\"severity\":\"high|medium|low\",\"file\":\"path\",\"line\":1,\"message\":\"...\",\"suggestion\":\"...\",\"confidence\":\"high|medium|low\"}]}",
+    "Choose verification appropriate to the requested change. Do not require code tests or a build for documentation-only changes unless the task or acceptance context explicitly requires them.",
+    "Return the review using the required output schema. Use overall_correctness='patch is correct' exactly when there are no actionable findings and the change satisfies the stated task.",
     `Only include findings at or above severity floor: ${value.severityFloor}.`,
     value.instruction ? `Additional reviewer instruction: ${value.instruction}` : null,
   ].filter(Boolean).join("\n");

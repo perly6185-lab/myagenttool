@@ -55,6 +55,31 @@ test("does not infer verified evidence from passed alone", () => {
   assert.equal(evidence.actionPreview.canProceed, false);
 });
 
+test("uses passed document result verification and blocks delivery actions forbidden by intent", () => {
+  const evidence = buildDeliveryEvidence({
+    item: {
+      taskKind: "software_implementation",
+      title: "软件实现",
+      intentStatement: "新增 docs/result.md，不创建提交、不创建 PR、不推送远程。",
+      artifactContract: { produces: ["software_change"], requirements: [{ kind: "software_change", minCount: 1 }] },
+      resultVerification: { status: "passed", summary: "目标文档及内容检查通过。", checks: [{ kind: "software_change", status: "passed" }] },
+      acceptanceCriteria: ["文档正确"],
+      verificationSop: ["检查内容"],
+    },
+    autoRun: { decision: { path: "develop", workKind: "development" }, localDelivery: { mode: "uncommitted_worktree" } },
+    deliveryReport: { changedFiles: ["docs/result.md"], verification: { passed: true, verified: false, summary: "No verification command configured." } },
+    deliveryReview: { status: "completed", verdict: "approved", summary: "No findings.", findings: [] },
+    deliveryMode: "local_merge",
+  });
+
+  assert.equal(evidence.status, "ready");
+  assert.equal(evidence.verification.status, "passed");
+  assert.equal(evidence.verification.source, "result_verification");
+  assert.equal(evidence.actionPreview.operation, "apply_local_changes");
+  assert.equal(evidence.actionPreview.canProceed, false);
+  assert.deepEqual(evidence.blockingReasonCodes, ["delivery_action_forbidden_by_intent"]);
+});
+
 test("does not allow an explicitly unstructured review to become approval evidence", () => {
   const evidence = buildDeliveryEvidence({
     item: { taskKind: "software_implementation", title: "Update API", body: "" },

@@ -550,6 +550,13 @@ export function LocalWorkItemDetail({
   const nextActionKey = observability?.nextAction ?? "start_execution";
   const nextAction = t(`taskNextAction.${nextActionKey}` as never);
   const boundRun = observability?.latestRun ?? null;
+  const deliveryActionPreview = observability?.delivery?.evidence?.actionPreview
+    ?? observability?.deliveryEvidence?.actionPreview
+    ?? null;
+  const deliveryForbiddenByIntent = deliveryActionPreview?.blockedReasonCodes.includes("delivery_action_forbidden_by_intent") === true;
+  const uncommittedWorktree = boundRun?.localDelivery?.mode === "uncommitted_worktree"
+    || (boundRun?.localDelivery?.commitCreated === false && deliveryForbiddenByIntent);
+  const deliveryActionAllowed = deliveryActionPreview ? deliveryActionPreview.canProceed : true;
   const activeAutoRunStatuses = new Set(["materializing", "running", "waiting_capacity", "awaiting_approval", "verifying", "publishing"]);
   const activeAutoRunId = boundRun && activeAutoRunStatuses.has(boundRun.status) ? boundRun.id : null;
   const latestTimelineAt = (observability?.timeline ?? []).reduce(
@@ -1120,10 +1127,12 @@ export function LocalWorkItemDetail({
         <section hidden={selectedWorkItemSection !== "process"} className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
-              <h3 className="text-sm font-semibold">{t("taskDelivery.title")}</h3>
+              <h3 className="text-sm font-semibold">{t(uncommittedWorktree ? "taskDelivery.uncommittedTitle" : "taskDelivery.title")}</h3>
               <p className="text-xs text-muted-foreground">
                 {observability.delivery.branchName ?? observability.delivery.worktreeId}
-                {" · "}{t(observability.delivery.mode === "local_merge" ? "taskDelivery.localMode" : "taskDelivery.prMode")}
+                {" · "}{t(uncommittedWorktree
+                  ? "taskDelivery.uncommittedMode"
+                  : observability.delivery.mode === "local_merge" ? "taskDelivery.localMode" : "taskDelivery.prMode")}
               </p>
             </div>
             <Badge tone={observability.delivery.review?.verdict === "approved" ? "success" : "warning"}>
@@ -1134,15 +1143,22 @@ export function LocalWorkItemDetail({
                   : t("taskDelivery.reviewRequired")}
             </Badge>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">{t("taskDelivery.hint")}</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t(uncommittedWorktree ? "taskDelivery.uncommittedHint" : "taskDelivery.hint")}
+          </p>
+          {deliveryForbiddenByIntent ? (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">{t("taskDelivery.intentProtected")}</p>
+          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             <Button variant="secondary" size="sm" onClick={() => openWorktreeResult(observability.delivery?.worktreeId)}>
               {t("taskDelivery.review")}
             </Button>
-            <Button size="sm" disabled={pending || observability.delivery.review?.verdict !== "approved"}
-              onClick={() => setDeliveryConfirmMode(observability.delivery?.mode ?? null)}>
-              {t(observability.delivery.mode === "local_merge" ? "taskDelivery.merge" : "taskDelivery.createPr")}
-            </Button>
+            {!deliveryForbiddenByIntent && !uncommittedWorktree ? (
+              <Button size="sm" disabled={pending || !deliveryActionAllowed || observability.delivery.review?.verdict !== "approved"}
+                onClick={() => setDeliveryConfirmMode(observability.delivery?.mode ?? null)}>
+                {t(observability.delivery.mode === "local_merge" ? "taskDelivery.merge" : "taskDelivery.createPr")}
+              </Button>
+            ) : null}
           </div>
         </section>
       ) : null}
