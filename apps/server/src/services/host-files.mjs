@@ -539,10 +539,18 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
       const purpose = scopePurpose(body.purpose);
       if (!targetAllowsPurpose(target, purpose)) throw new HostFileScopeError("host_file_scope_purpose_not_allowed", "The host connection is not approved for this file range purpose.", 409);
       const rootPath = normalizeHostScopeRoot(body.rootPath);
-      assertCertificateScopeIsolation(state, target, purpose, rootPath);
+      const existingScope = state.hostFileScopes.find((scope) => scope.sshTargetId === target.id
+        && scope.purpose === purpose
+        && (scope.rootPath === rootPath || scope.resolvedRootPath === rootPath));
+      if (existingScope) return { ok: true, scope: existingScope, reused: true };
       const credential = await resolveCredential(target.credentialRef);
       if (!credential?.ok) throw new HostFileScopeError(credential?.error ?? "ssh_credential_unavailable", "The SSH credential is unavailable.", 409);
       const inspected = await sshHostConnector.runSftp(target, credential.credential, (sftp) => inspectRoot(sftp, rootPath));
+      const existingResolvedScope = state.hostFileScopes.find((scope) => scope.sshTargetId === target.id
+        && scope.purpose === purpose
+        && scope.resolvedRootPath === inspected.value);
+      if (existingResolvedScope) return { ok: true, scope: existingResolvedScope, reused: true };
+      assertCertificateScopeIsolation(state, target, purpose, inspected.value);
       const timestamp = now();
       const scope = {
         id: nextId("hfs"),
@@ -567,7 +575,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
         state.hostFileScopes.push(scope);
         appendEvent({ invocationId: null, type: "ssh.host_file_scope.created", level: "info", message: "A governed SSH file range was verified.", data: { targetId: target.id, scopeId: scope.id, purpose } });
       });
-      return { ok: true, scope };
+      return { ok: true, scope, reused: false };
     } catch (error) {
       return scopeFailure(error);
     }

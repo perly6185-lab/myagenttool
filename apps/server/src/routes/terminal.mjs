@@ -140,7 +140,7 @@ export async function handleTerminalRoutes({
       return true;
     }
     const result = await createHostFileScope(target, await readJson(req), actor);
-    sendJson(res, result.ok ? 201 : result.status, result.ok ? { scope: result.scope } : { error: result.error });
+    sendJson(res, result.ok ? (result.reused ? 200 : 201) : result.status, result.ok ? { scope: result.scope, reused: result.reused } : { error: result.error });
     return true;
   }
 
