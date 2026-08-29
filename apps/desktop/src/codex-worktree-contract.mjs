@@ -5,6 +5,13 @@ function hasOption(args, ...names) {
   return args.some((arg) => names.includes(String(arg)));
 }
 
+function optionValue(args, ...names) {
+  for (let index = 0; index < args.length; index += 1) {
+    if (names.includes(String(args[index]))) return String(args[index + 1] ?? "");
+  }
+  return null;
+}
+
 /**
  * Resolve only the linked-worktree administration directory named by the
  * worktree's own .git file. Never return the source checkout or its whole .git
@@ -51,7 +58,10 @@ export function applyCodexWorktreeContract(args, { cwd } = {}) {
     injected.push("--cd", cwd);
   }
 
-  const gitAdminDir = linkedWorktreeGitAdminDir(cwd);
+  // A linked-worktree Git admin directory is writable state. It is required for
+  // workspace-write tasks, but must never be added to a strict read-only run.
+  const sandbox = optionValue(input, "--sandbox", "-s") ?? "workspace-write";
+  const gitAdminDir = sandbox === "read-only" ? null : linkedWorktreeGitAdminDir(cwd);
   if (gitAdminDir && !hasOption(input, "--add-dir")) {
     injected.push("--add-dir", gitAdminDir);
   }

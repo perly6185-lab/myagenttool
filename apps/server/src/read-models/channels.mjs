@@ -204,6 +204,7 @@ export function channelOperations({
       taskDayDate: channel.taskDayDate ?? null,
       taskDayCount: channel.taskDayCount ?? 0,
       allowSelfApprove: Boolean(channel.allowSelfApprove),
+      inlineApprovalAllowed: channel.operationMode !== "team" || channel.allowSelfApprove === true,
       counts: {
         identities: byChannel(channelIdentities, channel.id).length,
         conversations: byChannel(channelConversations, channel.id).length,

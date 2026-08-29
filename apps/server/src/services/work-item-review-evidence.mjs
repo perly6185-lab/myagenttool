@@ -16,9 +16,12 @@ export function projectWorkItemReviewEvidence({
 } = {}) {
   const deliveryProject = (state?.projects ?? []).find((project) => project.id === item?.projectId) ?? null;
   const deliveryRemoteUrl = deliveryProject?.git?.remoteUrl ?? null;
-  const deliveryMode = deliveryRemoteUrl && /github\.com[/:]/i.test(deliveryRemoteUrl)
-    ? "pull_request"
-    : "local_merge";
+  const localDeliveryMode = latestRun?.localDelivery?.mode ?? null;
+  const deliveryMode = ["uncommitted_worktree", "committed_worktree"].includes(localDeliveryMode)
+    ? "local_merge"
+    : deliveryRemoteUrl && /github\.com[/:]/i.test(deliveryRemoteUrl)
+      ? "pull_request"
+      : "local_merge";
   const runIds = new Set(boundRuns.map((run) => run.id));
   const currentInvocationIds = new Set(boundRuns
     .filter((run) => run.invocationId)

@@ -177,7 +177,9 @@ test("codex wrapper normalizes findings and filters malformed ones", () => {
   assert.equal(payload.output.findings[0].file, "a.ts");
   const captured = JSON.parse(readFileSync(capture, "utf8"));
   assert.deepEqual(captured.args.slice(0, 5), ["exec", "--sandbox", "read-only", "--ephemeral", "--json"]);
-  assert.deepEqual(captured.args.slice(5, 7), ["-c", "model_reasoning_effort=low"]);
+  assert.equal(captured.args[5], "--output-schema");
+  assert.match(captured.args[6], /codex-review-output\.schema\.json$/);
+  assert.deepEqual(captured.args.slice(7, 9), ["-c", "model_reasoning_effort=low"]);
 });
 
 test("codex wrapper binds delivery review to the recorded base commit", () => {
@@ -193,6 +195,35 @@ test("codex wrapper binds delivery review to the recorded base commit", () => {
   assert.deepEqual(captured.args.slice(7, 10), ["-c", "model_reasoning_effort=low", "--output-schema"]);
   assert.match(captured.args[10], /codex-review-output\.schema\.json$/);
   assert.equal(captured.args[11], "--json");
+});
+
+test("codex wrapper preserves task context in a structured base review", () => {
+  const capture = join(workdir, "task-aware-base-capture.json");
+  const structured = JSON.stringify({
+    overall_correctness: "patch is correct",
+    overall_explanation: "The requested documentation file is present and needs no code test.",
+    overall_confidence_score: 0.98,
+    findings: [],
+  });
+  const stub = writeCodexStub(capture, structured);
+  const base = "e".repeat(40);
+  const instruction = "The task only requests docs/client-closure.md and explicitly forbids commits.";
+  const res = runWrapper(codexWrapper, [
+    "--mode", "diff-review", "--cwd", workdir, "--codex-cli", stub,
+    "--base-ref", base, "--instruction", instruction,
+  ], { STUB_CAPTURE: capture });
+
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.equal(payload.output.verdict, "approved");
+  assert.equal(payload.output.structured, true);
+  const captured = JSON.parse(readFileSync(capture, "utf8"));
+  assert.deepEqual(captured.args.slice(0, 5), ["exec", "--sandbox", "read-only", "--ephemeral", "--json"]);
+  assert.equal(captured.args[5], "--output-schema");
+  assert.match(captured.args[6], /codex-review-output\.schema\.json$/);
+  assert.match(captured.prompt, new RegExp(base));
+  assert.match(captured.prompt, /do not require code tests or a build for documentation-only changes/i);
+  assert.match(captured.prompt, /Additional reviewer instruction: The task only requests/);
 });
 
 test("codex wrapper uses structured inspection instructions for Office binary changes", () => {
@@ -256,6 +287,26 @@ test("codex wrapper normalizes native review findings", () => {
     suggestion: "",
     confidence: "high",
   });
+});
+
+test("codex wrapper corrects a clean empty review with a contradictory native verdict", () => {
+  const capture = join(workdir, "native-clean-contradiction-capture.json");
+  const native = JSON.stringify({
+    overall_correctness: "patch is incorrect",
+    overall_explanation: "The changes are consistent, type-safe, and do not introduce observable regressions.",
+    findings: [],
+  });
+  const stub = writeCodexStub(capture, native);
+  const res = runWrapper(codexWrapper, [
+    "--mode", "diff-review", "--cwd", workdir, "--codex-cli", stub,
+    "--base-ref", "d".repeat(40),
+  ], { STUB_CAPTURE: capture });
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.equal(payload.output.verdict, "approved");
+  assert.equal(payload.output.reportedVerdict, "changes_requested");
+  assert.equal(payload.output.verdictConsistency, "corrected_clean_summary");
+  assert.deepEqual(payload.output.findings, []);
 });
 
 test("codex wrapper drops absolute and relative findings outside the review worktree", () => {

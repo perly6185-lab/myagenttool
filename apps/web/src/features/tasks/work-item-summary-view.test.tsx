@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   createWorkItemComment: vi.fn(),
   recordWorkItemProgress: vi.fn(),
   retryAutoRun: vi.fn(),
+  retryLegacyWorkItemExecution: vi.fn(),
   reverifyAutoRun: vi.fn(),
   reconcileAutoRunExecutionAction: vi.fn(),
   startWorkItemAutoRun: vi.fn(),
@@ -87,6 +88,7 @@ vi.mock("@/data/use-console-actions", () => ({
     createWorkItemComment: mocks.createWorkItemComment,
     recordWorkItemProgress: mocks.recordWorkItemProgress,
     retryAutoRun: mocks.retryAutoRun,
+    retryLegacyWorkItemExecution: mocks.retryLegacyWorkItemExecution,
     reverifyAutoRun: mocks.reverifyAutoRun,
     reconcileAutoRunExecutionAction: mocks.reconcileAutoRunExecutionAction,
     startWorkItemAutoRun: mocks.startWorkItemAutoRun,
@@ -1099,6 +1101,64 @@ describe("work item summary presentation", () => {
     expect(await screen.findByText(/AI work restarted/)).toBeTruthy();
     expect(changed).toHaveBeenCalledTimes(1);
     window.removeEventListener("myagenttool:state-change", changed);
+  });
+
+  it("restarts a failed legacy application invocation as an Auto-run", async () => {
+    const legacyReview = {
+      ...failedExecutionReview(),
+      executionKind: "application_invocation" as const,
+      targetId: "inv_legacy_failed",
+      attentionCode: "transport_closed",
+      actionAvailability: {
+        schemaVersion: 1 as const,
+        primaryActionKind: "retry_execution" as const,
+        locked: false,
+        actions: [{
+          kind: "retry_execution" as const,
+          visible: true,
+          enabled: true,
+          requiresConfirmation: true,
+          nextOwner: "ai" as const,
+          blockedReasonCodes: [],
+        }],
+      },
+    };
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        executionState: "failed",
+        executionBindings: [{
+          kind: "application_invocation",
+          targetId: "inv_legacy_failed",
+          worktreeId: null,
+          terminalId: "local",
+          createdAt: "2026-08-29T03:00:00.000Z",
+        }],
+      }),
+      observability: { latestRun: null, executionReview: legacyReview },
+    });
+    mocks.retryLegacyWorkItemExecution.mockResolvedValue({
+      autoRun: { id: "aur_recovered", status: "materializing" },
+      actionReceipt: {
+        kind: "retry_execution", status: "succeeded", message: "AI work restarted.",
+        impact: "none", nextOwner: "ai",
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retry AI work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(mocks.retryLegacyWorkItemExecution).toHaveBeenCalledWith(
+      "lwi_1",
+      expect.objectContaining({
+        expectedWorkItemRevision: 2,
+        expectedTargetStatus: "failed",
+        sourceTargetId: "inv_legacy_failed",
+        idempotencyKey: expect.stringContaining(":retry_execution:"),
+      }),
+    ));
+    expect(mocks.retryAutoRun).not.toHaveBeenCalled();
+    expect(await screen.findByText(/AI work restarted/)).toBeTruthy();
   });
 
   it("does not invite a duplicate retry when the connection ends before confirmation", async () => {
@@ -2481,6 +2541,99 @@ describe("work item summary presentation", () => {
     expect(within(receipt).getByText("1234567890ab")).toBeTruthy();
     expect(within(receipt).getByText("2 file(s) applied")).toBeTruthy();
     expect(within(receipt).getByText("Login tests passed.")).toBeTruthy();
+  });
+
+  it("confirms an intent-protected result without applying, committing, or opening a pull request", async () => {
+    const reviewItem = item({
+      status: "review",
+      executionState: "completed",
+      acceptanceResults: [{
+        criterion: "Customer-ready summary",
+        status: "passed",
+        note: "Verified",
+        verificationId: "ver_uncommitted",
+      }],
+    });
+    const completedItem = item({ ...reviewItem, revision: 3, status: "done", state: "closed" });
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: reviewItem,
+      observability: {
+        executionReview: reviewReadyExecutionReview([
+          { kind: "view_changes", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "me", blockedReasonCodes: [] },
+          { kind: "rerun_verification", visible: true, enabled: true, requiresConfirmation: false, nextOwner: "system", blockedReasonCodes: [] },
+          { kind: "apply_local_changes", visible: true, enabled: false, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: ["delivery_action_forbidden_by_intent"] },
+          { kind: "review_result", visible: true, enabled: true, requiresConfirmation: true, nextOwner: "me", blockedReasonCodes: [] },
+        ]),
+        latestRun: {
+          id: "aur_uncommitted", status: "done", updatedAt: "2026-08-29T02:49:31.000Z",
+          localDelivery: {
+            worktreeId: "wtr_uncommitted", branchName: "local-uncommitted",
+            mode: "uncommitted_worktree", commitCreated: false,
+          },
+        },
+        outcome: {
+          status: "available", summary: "The requested document is ready.", fullReport: "The requested document is ready.",
+          highlights: [], warnings: [], files: ["docs/result.md"],
+          verification: { passed: true, verified: true, summary: "Content checks passed." }, deliveredAt: null,
+        },
+        delivery: {
+          state: "awaiting_review", mode: "local_merge", worktreeId: "wtr_uncommitted",
+          branchName: "local-uncommitted", remoteUrl: null,
+          report: {
+            summary: "The requested document is ready.",
+            verification: { passed: true, verified: true, summary: "Content checks passed." },
+            changedFiles: ["docs/result.md"], completedAt: "2026-08-29T02:49:31.000Z",
+          },
+          aiReview: {
+            status: "completed", invocationId: "inv_fresh_review", reviewer: "codex",
+            startedAt: "2026-08-29T02:49:00.000Z", completedAt: "2026-08-29T02:49:30.000Z",
+            verdict: "approved", summary: "No blocking issues.", findings: [], reviewedCommit: "base123", errorCode: null,
+          },
+          review: {
+            verdict: "approved", summary: "No blocking issues.", comments: [], reviewedCommit: "base123",
+            reviewedBy: "usr_autorun_review", source: "ai", reviewerName: "Codex",
+            reviewInvocationId: "inv_fresh_review", createdAt: "2026-08-29T02:49:30.000Z",
+          },
+        },
+        deliveryEvidence: {
+          schemaVersion: 1, status: "ready", risk: "low", domain: "development",
+          blockingReasonCodes: ["delivery_action_forbidden_by_intent"],
+          review: {
+            status: "completed", source: "ai", verdict: "approved", summary: "No blocking issues.", structured: true,
+            findings: [], findingCounts: { low: 0, medium: 0, high: 0, total: 0 }, blockingCount: 0,
+            consistency: "consistent", reviewedCommit: "base123", reviewer: "Codex",
+            invocationId: "inv_fresh_review", completedAt: "2026-08-29T02:49:30.000Z",
+          },
+          verification: {
+            status: "passed", passed: true, verified: true, command: null, commands: [], exitCode: null,
+            summary: "Content checks passed.",
+          },
+          actionPreview: {
+            mode: "local_merge", operation: "apply_local_changes", targetType: "local_project",
+            worktreeId: "wtr_uncommitted", branchName: "local-uncommitted", remoteUrl: null,
+            changedFileCount: 1, changedFiles: ["docs/result.md"], officeDetails: null,
+            reviewedCommit: "base123", requiresConfirmation: true, canProceed: false,
+            blockedReasonCodes: ["delivery_action_forbidden_by_intent"],
+          },
+        },
+        outcomeHistory: [],
+      },
+    });
+    mocks.transitionWorkItem.mockResolvedValue({ workItem: completedItem });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    const approveButton = await screen.findByRole("button", { name: "Approve result and complete without applying" });
+    expect(screen.getAllByText(/Only record your result confirmation/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Apply this 1-file delivery to the local base branch/)).toBeNull();
+    expect(screen.getAllByText(/base branch and external systems are unchanged/).length).toBeGreaterThan(0);
+    fireEvent.click(approveButton);
+    const dialog = screen.getByRole("dialog", { name: "Approve the result and complete the task?" });
+    expect(within(dialog).getByText(/remains in the uncommitted worktree/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Complete without applying" }));
+
+    await waitFor(() => expect(mocks.transitionWorkItem).toHaveBeenCalledWith("lwi_1", "close", 2));
+    expect(mocks.deliverWorkItem).not.toHaveBeenCalled();
+    expect(await screen.findByText("This work is complete")).toBeTruthy();
   });
 
   it("keeps a failed local delivery in review and guides the user back to current changes", async () => {

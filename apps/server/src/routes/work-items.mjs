@@ -1041,6 +1041,37 @@ export async function handleWorkItemRoutes({
     return true;
   }
 
+  const legacyExecutionRetryMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/execution-retry$/);
+  if (legacyExecutionRetryMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(legacyExecutionRetryMatch[1]);
+    const body = await readJson(req);
+    try {
+      const result = await executeReviewCommand({
+        kind: "retry_execution",
+        targetId: workItemId,
+        request: {
+          restartAsAutoRun: true,
+          expectedWorkItemRevision: body?.expectedWorkItemRevision,
+          expectedTargetStatus: body?.expectedTargetStatus,
+          sourceTargetId: body?.sourceTargetId,
+          idempotencyKey: body?.idempotencyKey,
+          timezoneOffset: body?.timezoneOffset,
+          agentId: body?.agentId,
+          baseBranch: body?.baseBranch,
+        },
+      }, actor);
+      sendJson(res, 202, result);
+    } catch (error) {
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "legacy_execution_recovery_failed",
+        ...(error?.message ? { message: error.message } : {}),
+        ...(error?.details ?? {}),
+        ...(error?.actionReceipt ? { actionReceipt: error.actionReceipt } : {}),
+      });
+    }
+    return true;
+  }
+
   const deliveryMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/delivery\/(local|pull-request)$/);
   if (deliveryMatch && req.method === "POST") {
     const workItemId = decodeURIComponent(deliveryMatch[1]);

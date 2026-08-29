@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { detectPromptInjection, roleAutoRunPrompt, UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
+import { normalizeReviewVerdict } from "@myagenttool/protocol/review-verdict";
 
 import { teamOf } from "../runtime/auth.mjs";
 import { findDevice, listDevices } from "../runtime/device.mjs";
@@ -13,7 +14,7 @@ import { judgmentEvidence } from "./auto-run-judge.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { resolveAutoRunVerifyCommandFor } from "./worktree-verify.mjs";
 import { propagateCompletedWorkGoalTask } from "./work-goal-artifacts.mjs";
-import { verifyWorkItemResult } from "./work-item-result-verification.mjs";
+import { requiredRuntimeVerificationKinds, resultVerificationContract, verifyWorkItemResult } from "./work-item-result-verification.mjs";
 import {
   archiveExecutionActionIdempotencyRecords,
   beginExecutionAction,
@@ -56,6 +57,34 @@ import {
 const AUTO_APPROVABLE_PATHS = new Set(["office", "general", "design", "creative", "content", "clarify", "prototype", "decompose"]);
 const DELIVERY_REVIEW_MAX_ATTEMPTS = 3;
 const DELIVERY_REVIEW_RETRY_DELAY_MS = 5 * 60_000;
+const DOCUMENT_DELIVERY_EXTENSION_RE = /\.(?:md|txt|rst|adoc)$/i;
+
+function needsLegacyDocumentReviewRerun(autoRun, workItem) {
+  const review = autoRun?.deliveryReview;
+  const changedFiles = Array.isArray(autoRun?.deliveryReport?.changedFiles)
+    ? autoRun.deliveryReport.changedFiles.map(String).filter(Boolean)
+    : [];
+  const completedFreshRerun = Boolean(
+    autoRun?.deliveryReviewLegacyRerunAt
+    && review?.invocationId
+    && review.invocationId !== autoRun.deliveryReviewLegacySource?.invocationId
+    && !review.reusedReviewId,
+  );
+  const legacyAmbiguousReview = review?.structured === false
+    || Boolean(autoRun?.deliveryReviewLegacyRerunAt && review?.reusedReviewId);
+  return (
+    review?.status === "completed"
+    && review.verdict === "changes_requested"
+    && legacyAmbiguousReview
+    && review.verdictConsistency === "consistent"
+    && (!Array.isArray(review.findings) || review.findings.length === 0)
+    && !completedFreshRerun
+    && Number(review.attempts ?? 0) < DELIVERY_REVIEW_MAX_ATTEMPTS
+    && changedFiles.length > 0
+    && changedFiles.every((path) => DOCUMENT_DELIVERY_EXTENSION_RE.test(path))
+    && requiredRuntimeVerificationKinds(workItem).length === 0
+  );
+}
 
 function isCodexAgent(agent) {
   const command = String(agent?.adapter?.command ?? "").trim().toLowerCase();
@@ -215,12 +244,15 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
     const changedFiles = Array.isArray(autoRun.deliveryReport?.changedFiles)
       ? autoRun.deliveryReport.changedFiles.map(String).filter(Boolean).slice(0, 100)
       : [];
+    const recoveredRepositoryDelivery = autoRun.executionRecovery?.sourceKind === "application_invocation"
+      && autoRun.executionRecovery?.routeHint === "develop"
+      && autoRun.decision?.path === "develop";
     if (
       status === "done"
       && autoRun.link?.type === "local_issue"
       && autoRun.localDelivery?.worktreeId
       && changedFiles.length > 0
-      && (item.artifactContract?.produces ?? []).includes("software_change")
+      && ((item.artifactContract?.produces ?? []).includes("software_change") || recoveredRepositoryDelivery)
     ) {
       const artifact = {
         id: `${autoRun.id}:software_change`,
@@ -232,19 +264,23 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
         changedFileCount: changedFiles.length,
         baseCommit: autoRun.deliveryReport?.changedFilesBaseCommit ?? null,
         completedAt: autoRun.deliveryReport?.completedAt ?? autoRun.updatedAt ?? now(),
+        ...(recoveredRepositoryDelivery
+          ? { legacyExecutionRecovery: true, recoveryRequestId: autoRun.executionRecovery.requestId ?? null }
+          : {}),
       };
       item.executionArtifacts = [
         ...(item.executionArtifacts ?? []).filter((candidate) => candidate?.id !== artifact.id),
         artifact,
       ].slice(-100);
+      if (recoveredRepositoryDelivery && !item.resultVerificationContract) {
+        item.resultVerificationContract = resultVerificationContract(item, { enforced: true });
+      }
     }
     let verificationRecorded = false;
     if (["pr_open", "report_posted", "done", "blocked"].includes(status)
       && autoRun.verification?.verified) {
       const recordedAt = now();
-      const requiredKinds = Array.isArray(item.artifactContract?.verification?.requiredKinds)
-        ? item.artifactContract.verification.requiredKinds.map(String).filter(Boolean)
-        : [];
+      const requiredKinds = requiredRuntimeVerificationKinds(item);
       // The project owner configures one governed verification plan (often a
       // test:ci command) for the run. A successful receipt satisfies each facet
       // the task contract required; keep separate records so the result gate can
@@ -698,6 +734,14 @@ export function createAutoRunService({
     }
     return "Auto-run changes";
   }
+  function forbiddenDeliveryActionSet(autoRun) {
+    const candidates = [
+      autoRun?.operationIntent?.forbiddenActions,
+      autoRun?.executionContract?.intentContract?.action?.forbiddenActions,
+      autoRun?.executionPlan?.intentContract?.action?.forbiddenActions,
+    ];
+    return new Set(candidates.flatMap((value) => Array.isArray(value) ? value : []).map(String));
+  }
   // Best-effort issue status writeback (Phase 4). Only for issue-linked runs;
   // fire-and-forget so a slow/failed gh never blocks the orchestrator.
   function maybeWriteIssueStatus(autoRun, worktree, to) {
@@ -841,18 +885,6 @@ export function createAutoRunService({
       .slice(0, 100);
   }
 
-  function summaryIndicatesCleanDeliveryReview(value) {
-    const summary = String(value ?? "");
-    const clean = [
-      /\bno\s+(?:findings?|issues?|bugs?|regressions?)(?:\s+(?:were\s+)?(?:found|identified|detected))?\b/i,
-      /\bno\s+actionable(?:\s+[a-z-]+){0,6}\s+(?:findings?|issues?|bugs?|regressions?)(?:\s+(?:were\s+)?(?:found|identified|detected))?\b/i,
-      /\bpatch is correct\b/i,
-      /\blooks good\b/i,
-    ].some((pattern) => pattern.test(summary));
-    const contradictory = /\b(?:but|however|although|yet)\b[\s\S]{0,300}\b(?:issue|bug|regression|failure|incorrect|missing|broken)\b/i.test(summary);
-    return clean && !contradictory;
-  }
-
   function completeDeliveryReview(invocation) {
     const autoRun = (state.autoRuns ?? []).find((run) => run.deliveryReview?.invocationId === invocation?.id) ?? null;
     if (!autoRun) return autoRun;
@@ -881,22 +913,22 @@ export function createAutoRunService({
     }
     const findings = deliveryReviewFindings(invocation);
     const blockingFindings = findings.filter((finding) => ["medium", "high"].includes(finding.severity));
-    const reportedVerdict = invocation.result?.output?.verdict;
+    const reportedVerdict = invocation.result?.output?.reportedVerdict
+      ?? invocation.result?.output?.verdict;
     const summary = String(
       invocation.result?.output?.summary
       ?? invocation.result?.summary
       ?? (blockingFindings.length ? `AI review found ${blockingFindings.length} blocking issue(s).` : "AI review found no blocking issues."),
     ).slice(0, 2000);
     const unstructured = invocation.result?.output?.structured === false;
-    const verdict = unstructured && !blockingFindings.length
-      ? summaryIndicatesCleanDeliveryReview(summary) ? "approved" : "changes_requested"
-      : ["approved", "changes_requested"].includes(reportedVerdict)
-        ? reportedVerdict
-        : blockingFindings.length ? "changes_requested" : "approved";
+    const verdictDecision = normalizeReviewVerdict({ reportedVerdict, findings: blockingFindings, summary });
+    const verdict = verdictDecision.verdict;
     if (
       autoRun.deliveryReview?.status === "completed"
       && autoRun.deliveryReview.verdict === verdict
       && autoRun.deliveryReview.summary === summary
+      && autoRun.deliveryReview.reportedVerdict === verdictDecision.reportedVerdict
+      && autoRun.deliveryReview.verdictConsistency === verdictDecision.consistency
     ) return autoRun;
     let review = null;
     try {
@@ -941,6 +973,8 @@ export function createAutoRunService({
         verdict,
         summary,
         findings,
+        reportedVerdict: verdictDecision.reportedVerdict,
+        verdictConsistency: verdictDecision.consistency,
         reviewedCommit: review?.reviewedCommit ?? null,
         completedAt: invocation.completedAt ?? now(),
         errorCode: null,
@@ -952,7 +986,14 @@ export function createAutoRunService({
         type: "auto_run_delivery_review_completed",
         level: verdict === "approved" ? "info" : "warn",
         message: `AI delivery review ${verdict === "approved" ? "approved" : "requested changes for"} Auto-run ${autoRun.id}.`,
-        data: { autoRunId: autoRun.id, worktreeId: autoRun.worktreeId, verdict, findingCount: findings.length },
+        data: {
+          autoRunId: autoRun.id,
+          worktreeId: autoRun.worktreeId,
+          verdict,
+          reportedVerdict: verdictDecision.reportedVerdict,
+          verdictConsistency: verdictDecision.consistency,
+          findingCount: findings.length,
+        },
       });
       return autoRun;
     });
@@ -975,12 +1016,32 @@ export function createAutoRunService({
     const worktree = (state.worktrees ?? []).find((item) => item.id === autoRun.localDelivery.worktreeId) ?? null;
     if (!worktree) return null;
     const currentHead = typeof worktreeHeadSha === "function" ? worktreeHeadSha(worktree.id) : null;
-    const existing = (state.worktreeReviews ?? []).find((review) =>
-      review.worktreeId === autoRun.localDelivery.worktreeId
-      && review.source === "ai"
-      && review.reviewedCommit
-      && (!currentHead || review.reviewedCommit === currentHead));
+    // A commit SHA cannot identify an uncommitted delivery revision: every
+    // repair on the same worktree keeps HEAD stable while changing the diff.
+    // Never reuse a commit-bound review for that mode; run a fresh read-only
+    // inspection after each repaired outcome instead.
+    const forceFreshLegacyReview = autoRun.deliveryReview?.errorCode === "legacy_document_review_requires_rerun";
+    const existing = autoRun.localDelivery?.mode === "uncommitted_worktree" || forceFreshLegacyReview
+      ? null
+      : (state.worktreeReviews ?? []).find((review) =>
+        review.worktreeId === autoRun.localDelivery.worktreeId
+        && review.source === "ai"
+        && review.reviewedCommit
+        && (!currentHead || review.reviewedCommit === currentHead));
     if (existing) {
+      const findings = (existing.comments ?? []).map((comment) => ({
+        severity: comment.severity ?? "medium",
+        file: comment.path ?? "",
+        line: comment.line ?? null,
+        message: comment.body ?? "",
+        suggestion: comment.suggestion ?? null,
+        confidence: null,
+      })).filter((finding) => finding.file && finding.message);
+      const verdictDecision = normalizeReviewVerdict({
+        reportedVerdict: existing.reportedVerdict ?? existing.verdict,
+        findings: findings.filter((finding) => ["medium", "high"].includes(finding.severity)),
+        summary: existing.summary,
+      });
       return runTx(() => {
         autoRun.deliveryReview = {
           status: "completed",
@@ -988,16 +1049,11 @@ export function createAutoRunService({
           reviewer: existing.reviewerName ?? "Codex",
           startedAt: existing.createdAt ?? now(),
           completedAt: existing.createdAt ?? now(),
-          verdict: existing.verdict,
+          verdict: verdictDecision.verdict,
+          reportedVerdict: verdictDecision.reportedVerdict,
+          verdictConsistency: verdictDecision.consistency,
           summary: existing.summary ?? null,
-          findings: (existing.comments ?? []).map((comment) => ({
-            severity: comment.severity ?? "medium",
-            file: comment.path ?? "",
-            line: comment.line ?? null,
-            message: comment.body ?? "",
-            suggestion: comment.suggestion ?? null,
-            confidence: null,
-          })).filter((finding) => finding.file && finding.message),
+          findings,
           reviewedCommit: existing.reviewedCommit,
           errorCode: null,
           structured: true,
@@ -1104,15 +1160,46 @@ export function createAutoRunService({
         // A missing legacy worktree should not block newer delivery reviews.
       }
     }
-    // Older Codex CLI builds can return a complete native review as text even
-    // when an output schema is supplied. Re-evaluate any such completed review
-    // with the current fail-closed classifier so a clearly clean conclusion is
-    // not left behind as a false "changes requested" verdict after an upgrade.
+    // Re-evaluate completed reviews that predate the shared verdict contract.
+    // This repairs both unstructured CLI fallbacks and structured payloads whose
+    // summary/findings contradict their reported verdict after an upgrade.
     for (const autoRun of state.autoRuns ?? []) {
       if (autoRun.deliveryReview?.status !== "completed") continue;
       const invocation = (state.invocations ?? []).find((item) => item.id === autoRun.deliveryReview.invocationId) ?? null;
-      if (invocation?.status === "succeeded" && invocation.result?.output?.structured === false) {
+      if (
+        invocation?.status === "succeeded"
+        && (!autoRun.deliveryReview.verdictConsistency
+          || invocation.result?.output?.structured === false)
+      ) {
         completeDeliveryReview(invocation);
+      }
+      const workItem = (state.workItems ?? []).find((item) =>
+        (item.executionBindings ?? []).some((binding) => binding.kind === "auto_run" && binding.targetId === autoRun.id)) ?? null;
+      if (reviewableRunIds.has(autoRun.id) && needsLegacyDocumentReviewRerun(autoRun, workItem)) {
+        runTx(() => {
+          const previous = autoRun.deliveryReview;
+          autoRun.deliveryReviewLegacyRerunAt ??= now();
+          autoRun.deliveryReviewLegacySource ??= {
+            invocationId: previous.invocationId ?? null,
+            reportedVerdict: previous.reportedVerdict ?? previous.verdict ?? null,
+            summary: previous.summary ?? null,
+          };
+          autoRun.deliveryReview = {
+            ...previous,
+            status: "failed",
+            verdict: null,
+            errorCode: "legacy_document_review_requires_rerun",
+            nextRetryAt: null,
+          };
+          autoRun.updatedAt = now();
+          appendEvent({
+            invocationId: previous.invocationId ?? null,
+            type: "auto_run_legacy_document_review_rerun_scheduled",
+            level: "info",
+            message: `Scheduled a fresh review for legacy document delivery ${autoRun.id}.`,
+            data: { autoRunId: autoRun.id, worktreeId: autoRun.worktreeId, previousVerdict: previous.verdict },
+          });
+        });
       }
     }
     const pending = (state.autoRuns ?? []).filter((autoRun) =>
@@ -1143,7 +1230,7 @@ export function createAutoRunService({
     projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody,
     executionChainId = null, autonomyProfile = "standard", terminalId = null,
     taskMaterialWorkItemId = null, localIssueId = null,
-    scheduler = null, channelOrigin = null, operationIntent = null,
+    scheduler = null, channelOrigin = null, operationIntent = null, executionRecovery = null,
   } = {}) {
     const normalizedLink = normalizeWorktreeLink(link);
     if (!normalizedLink) throw new Error("A GitHub issue or PR link is required to start an auto-run.");
@@ -1189,6 +1276,16 @@ export function createAutoRunService({
       link: normalizedLink,
       localIssueId: localIssueId ?? taskMaterialWorkItemId ?? null,
       executionChainId: executionChainId ? String(executionChainId) : null,
+      executionRecovery: executionRecovery?.requestId ? {
+        schemaVersion: 1,
+        requestId: String(executionRecovery.requestId).slice(0, 200),
+        operationId: executionRecovery.operationId ? String(executionRecovery.operationId).slice(0, 200) : null,
+        sourceKind: executionRecovery.sourceKind === "application_invocation" ? "application_invocation" : null,
+        sourceTargetId: executionRecovery.sourceTargetId ? String(executionRecovery.sourceTargetId).slice(0, 200) : null,
+        reasonCode: executionRecovery.reasonCode ? String(executionRecovery.reasonCode).slice(0, 160) : null,
+        routeHint: executionRecovery.routeHint === "develop" ? "develop" : null,
+        requestedAt: createdAt,
+      } : null,
       sourceBinding,
       executionProfile: restrictedMailExecution ? "mail_response_restricted" : null,
       autonomyProfile: ["cautious", "standard", "high"].includes(autonomyProfile) ? autonomyProfile : "standard",
@@ -2617,17 +2714,44 @@ export function createAutoRunService({
         // Commit the agent's edits so they actually reach the PR (publish only
         // ships commits), and stop early if the run produced nothing to open a PR
         // with — otherwise gh pr create would fail with a confusing error.
+        const forbiddenDeliveryActions = forbiddenDeliveryActionSet(autoRun);
+        let commitSkippedByIntent = false;
         if (typeof commitWorktreeChanges === "function") {
           let commitResult;
-          try {
-            commitResult = await commitWorktreeChanges(autoRun.worktreeId, {
-              message: commitMessageFor(autoRun),
-              signal: reactionController.signal,
+          if (forbiddenDeliveryActions.has("commit")) {
+            let changed = [];
+            try {
+              changed = typeof listWorktreeChangedFiles === "function"
+                ? (await listWorktreeChangedFiles(autoRun.worktreeId)) ?? []
+                : [];
+            } catch {
+              changed = [];
+            }
+            if (autoRunReactionSuperseded(autoRun, invocation, "uncommitted change inspection")) return null;
+            commitSkippedByIntent = true;
+            commitResult = {
+              committed: false,
+              hasCommits: changed.length > 0,
+              uncommittedDelivery: true,
+            };
+            appendEvent({
+              invocationId: invocation.id,
+              type: "auto_run_commit_skipped",
+              level: "info",
+              message: "Auto-run preserved the reviewable worktree without creating a commit because the confirmed task forbids commits.",
+              data: { autoRunId: autoRun.id, worktreeId: autoRun.worktreeId, changedFileCount: changed.length },
             });
-          } catch (error) {
-            if (autoRunReactionSuperseded(autoRun, invocation, "commit failure")) return null;
-            runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Commit failed: ${String(error?.message ?? error)}` }));
-            return autoRun;
+          } else {
+            try {
+              commitResult = await commitWorktreeChanges(autoRun.worktreeId, {
+                message: commitMessageFor(autoRun),
+                signal: reactionController.signal,
+              });
+            } catch (error) {
+              if (autoRunReactionSuperseded(autoRun, invocation, "commit failure")) return null;
+              runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Commit failed: ${String(error?.message ?? error)}` }));
+              return autoRun;
+            }
           }
           if (autoRunReactionSuperseded(autoRun, invocation, "commit")) return null;
           // evaluate runs produce a report (evaluate/REPORT.md), so they
@@ -2958,12 +3082,38 @@ export function createAutoRunService({
             localDelivery: {
               worktreeId: autoRun.worktreeId,
               branchName: worktree.branchName ?? worktree.branch ?? autoRun.branchName ?? null,
+              ...(commitSkippedByIntent ? { mode: "uncommitted_worktree", commitCreated: false } : {}),
               ...(autoRun.localDelivery?.existingPullRequest
                 ? {
                     mode: "pull_request",
                     existingPullRequest: autoRun.localDelivery.existingPullRequest,
                   }
                 : {}),
+            },
+            deliveryReport: {
+              summary: extractRunSummary(invocation),
+              verification: autoRun.verification ? { ...autoRun.verification } : null,
+              changedFiles: changedFiles.map(String).filter(Boolean).slice(0, 100),
+              changedFilesBaseCommit: worktree.baseCommit ?? null,
+              changedFilesHydratedAt: now(),
+              completedAt: invocation.completedAt ?? now(),
+            },
+            ...(screenshots.length ? { screenshots } : {}),
+          }));
+          await ensureDeliveryReview(autoRun);
+          return autoRun;
+        }
+        if (commitSkippedByIntent
+          || forbiddenDeliveryActions.has("push")
+          || forbiddenDeliveryActions.has("pull_request")) {
+          runTx(() => setAutoRunStatus(autoRun, "done", {
+            error: null,
+            localDelivery: {
+              worktreeId: autoRun.worktreeId,
+              branchName: worktree.branchName ?? worktree.branch ?? autoRun.branchName ?? null,
+              mode: commitSkippedByIntent ? "uncommitted_worktree" : "committed_worktree",
+              commitCreated: !commitSkippedByIntent,
+              remoteDeliverySkipped: true,
             },
             deliveryReport: {
               summary: extractRunSummary(invocation),
@@ -3422,6 +3572,30 @@ export function createAutoRunService({
           actionReceipt: latestExecutionActionReceipt(autoRun, { now: now() }),
         },
       );
+    }
+    const correctsLegacyRecoveryRoute = autoRun.executionRecovery?.sourceKind === "application_invocation"
+      && autoRun.decision?.path === "general"
+      && (autoRun.executionRecovery?.routeHint === "develop"
+        || /^The general task did not create a verified deliverable under deliverables\/general\//.test(String(autoRun.error ?? "")));
+    if (correctsLegacyRecoveryRoute) {
+      runTx(() => {
+        autoRun.executionRecovery = { ...autoRun.executionRecovery, routeHint: "develop" };
+        autoRun.decision = {
+          ...(autoRun.decision ?? {}),
+          path: "develop",
+          workKind: "development",
+          rationale: "Legacy execution recovery preserved an explicit repository file-change scope.",
+        };
+        autoRun.intent = "change";
+        autoRun.updatedAt = now();
+        appendEvent({
+          invocationId: retrySourceInvocationId,
+          type: "auto_run_recovery_route_corrected",
+          level: "info",
+          message: `Auto-run ${autoRun.id} corrected a legacy general-delivery route to the repository change flow.`,
+          data: { autoRunId: autoRun.id, from: "general", to: "develop", recoveryRequestId: autoRun.executionRecovery.requestId ?? null },
+        });
+      });
     }
     const retryPath = autoRun.decision?.path ?? "develop";
     const baseTask = approvalRecoveryRequest

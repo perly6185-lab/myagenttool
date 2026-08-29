@@ -634,10 +634,12 @@ function codexWorkspaceArgumentGate(spawnPlan, permissionDecision) {
     }
     return { allowed: true, evidence };
   }
-  if (execIndex < 0 || sandboxValues.length !== 1 || sandboxValues[0] !== "workspace-write") {
+  if (execIndex < 0
+    || sandboxValues.length !== 1
+    || !["read-only", "workspace-write"].includes(sandboxValues[0])) {
     return {
       allowed: false,
-      reason: "Local execution gate requires fresh Codex runs to use the workspace-write sandbox.",
+      reason: "Local execution gate requires fresh Codex runs to use the read-only or workspace-write sandbox.",
       refusalCode: "invalid_codex_sandbox",
       evidence,
     };
@@ -651,6 +653,17 @@ function codexWorkspaceArgumentGate(spawnPlan, permissionDecision) {
       refusalCode: "codex_cwd_mismatch",
       evidence,
     };
+  }
+  if (sandboxValues[0] === "read-only") {
+    if (addDirValues.length || expectedAddDirs.length) {
+      return {
+        allowed: false,
+        reason: "Local execution gate refused writable --add-dir roots on a read-only Codex run.",
+        refusalCode: "codex_read_only_writable_root",
+        evidence,
+      };
+    }
+    return { allowed: true, evidence };
   }
   const actualRoots = normalizedPathSet(addDirValues);
   const expectedRoots = normalizedPathSet(expectedAddDirs);

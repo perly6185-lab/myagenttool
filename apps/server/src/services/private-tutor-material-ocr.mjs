@@ -12,6 +12,9 @@ import {
 const JOB_TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const MAX_OCR_PAGE_IMAGE_BYTES = 20 * 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const DEFERRED_IMPORT_OCR = {
+  readiness: () => ({ state: "unavailable", reason: "workflow_ocr_deferred" }),
+};
 
 function codedError(message, code, status = 400) {
   return Object.assign(new Error(message), { code, status });
@@ -59,10 +62,11 @@ export function createPrivateTutorMaterialOcrService({
   persistStateSoon = () => {},
   store,
 } = {}) {
-  const root = privateTutorMaterialRoot(stateStorePath);
+  const configuredRoot = privateTutorMaterialRoot(stateStorePath);
+  mkdirSync(configuredRoot, { recursive: true });
+  const root = realpathSync(configuredRoot);
   const active = new Map();
   const runTx = makeRunTx({ store, persistStateSoon });
-  mkdirSync(root, { recursive: true });
 
   function storeSource({ bytes, sourceHash, fileName, fileType }) {
     if (!Buffer.isBuffer(bytes) || !bytes.length || !/^[a-f0-9]{64}$/.test(String(sourceHash))) {
@@ -241,6 +245,7 @@ export function createPrivateTutorMaterialOcrService({
       now: now(),
     }, {
       sourceStore: storeSource,
+      ocrAdapter: DEFERRED_IMPORT_OCR,
     });
     const existingIndex = state.privateTutorMaterialDocuments.findIndex((item) =>
       item.learningProfileId === learningProfileId && item.sourceHash === material.sourceHash);

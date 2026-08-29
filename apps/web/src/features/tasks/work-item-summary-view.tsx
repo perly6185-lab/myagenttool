@@ -716,8 +716,13 @@ export function WorkItemSummaryView({
   const startRequestActive = Boolean(startReceipt && startReceipt.status !== "cancelled");
   const startHandoffPending = Boolean(startReceipt && ["queued", "starting", "blocked", "paused"].includes(startReceipt.status));
   const executionContractReady = item.executionContractGate?.ready === true;
-  const reviewAcceptanceCriteria = item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria;
-  const reviewVerificationSop = item.reviewContract?.verificationSop ?? item.verificationSop ?? [];
+  const reviewContractCurrent = item.reviewContract?.supersededByGoalRevision !== true;
+  const reviewAcceptanceCriteria = reviewContractCurrent
+    ? item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria
+    : item.acceptanceCriteria;
+  const reviewVerificationSop = reviewContractCurrent
+    ? item.reviewContract?.verificationSop ?? item.verificationSop ?? []
+    : item.verificationSop ?? [];
   const executionContractDefined = Boolean(
     item.acceptanceCriteria.length
     && item.verificationSop?.length
@@ -766,6 +771,14 @@ export function WorkItemSummaryView({
     && ["failed", "blocked"].includes(observability.latestRun.status)
     ? observability.latestRun
     : null;
+  const retryableLegacyExecution = Boolean(
+    failed
+      && !observability?.latestRun
+      && executionKind === "application_invocation"
+      && executionReview?.state === "failed"
+      && executionReview.targetStatus === "failed",
+  );
+  const hasRetryableExecution = Boolean(retryableRun || retryableLegacyExecution);
   const phaseDescription = aiPhaseDescription(observability?.latestRun?.phase, language);
   const understandingContext = observability?.latestRun?.understandingContext ?? null;
   const pendingClarification = observability?.latestRun?.status === "needs_input"
@@ -900,8 +913,24 @@ export function WorkItemSummaryView({
   const deliveryMode = observability?.delivery?.mode ?? null;
   const officeDelivery = deliveryDecision.domain === "office";
   const deliveryOperation = deliveryEvidence?.actionPreview.operation ?? null;
+  const deliveryBlockedReasonCodes = deliveryEvidence?.actionPreview.blockedReasonCodes ?? [];
+  const confirmResultWithoutDelivery = deliveryEvidence?.status === "ready"
+    && deliveryBlockedReasonCodes.length === 1
+    && deliveryBlockedReasonCodes[0] === "delivery_action_forbidden_by_intent";
+  const confirmActionEffect = confirmResultWithoutDelivery
+    ? language === "zh"
+      ? "只记录你已确认结果并完成任务；变更继续保留在当前未提交工作树中，不会写入基础分支、创建提交、创建 PR 或推送远程。"
+      : "Only record your result confirmation and complete the task. The change remains in the current uncommitted worktree and is not applied, committed, opened as a pull request, or pushed."
+    : deliveryDecision.confirmEffect;
+  const confirmActionRisk = confirmResultWithoutDelivery
+    ? language === "zh"
+      ? "较低：不会修改基础分支或外部系统；请确认你接受由当前未提交工作树继续保管结果。"
+      : "Low: the base branch and external systems are unchanged. Confirm that the current uncommitted worktree should continue to hold the result."
+    : deliveryDecision.confirmRisk;
   const updatesPullRequest = deliveryOperation === "update_pull_request";
-  const acceptActionLabel = deliveryMode === "pull_request"
+  const acceptActionLabel = confirmResultWithoutDelivery
+    ? language === "zh" ? "确认结果并完成任务（不应用）" : "Approve result and complete without applying"
+    : deliveryMode === "pull_request"
     ? updatesPullRequest
       ? officeDelivery
         ? language === "zh" ? "审核通过并更新办公结果 PR" : "Approve and update office result PR"
@@ -937,7 +966,9 @@ export function WorkItemSummaryView({
       && (["failed", "blocked"].includes(deliveryRun.status)
         || ["done", "report_posted", "plan_proposed", "pr_open"].includes(deliveryRun.status)),
   );
-  const acceptDialogTitle = deliveryMode === "pull_request"
+  const acceptDialogTitle = confirmResultWithoutDelivery
+    ? language === "zh" ? "确认结果并完成任务？" : "Approve the result and complete the task?"
+    : deliveryMode === "pull_request"
     ? updatesPullRequest
       ? language === "zh" ? "确认审核通过并更新现有 Pull Request？" : "Approve and update the existing pull request?"
       : language === "zh" ? "确认审核通过并创建 Pull Request？" : "Approve and create a pull request?"
@@ -946,7 +977,11 @@ export function WorkItemSummaryView({
     : deliveryMode === "local_merge"
       ? language === "zh" ? "确认审核通过并应用到本地？" : "Approve and apply this delivery locally?"
       : copy.acceptTitle;
-  const acceptDialogDescription = deliveryMode === "pull_request"
+  const acceptDialogDescription = confirmResultWithoutDelivery
+    ? language === "zh"
+      ? "系统只会记录你已确认结果并完成任务；变更继续保留在未提交工作树中，不会应用到主分支、创建提交、创建 PR 或推送远程。"
+      : "Only your result confirmation and task completion will be recorded. The change remains in the uncommitted worktree and will not be applied, committed, opened as a pull request, or pushed."
+    : deliveryMode === "pull_request"
     ? updatesPullRequest
       ? language === "zh"
         ? "系统会先把当前分支的最新改动推送到已有 Pull Request；不会新建重复 PR，也不会直接合并远端主分支。"
@@ -963,7 +998,9 @@ export function WorkItemSummaryView({
         ? "系统会把已审核的 Worktree 改动应用到本地基准分支并完成任务；不会推送或合并任何远端分支。"
         : "The reviewed worktree changes will be applied to the local base branch and the task will be completed. No remote branch will be pushed or merged."
       : copy.acceptDescription;
-  const acceptDialogConfirm = deliveryMode === "pull_request"
+  const acceptDialogConfirm = confirmResultWithoutDelivery
+    ? language === "zh" ? "确认完成，不应用" : "Complete without applying"
+    : deliveryMode === "pull_request"
     ? updatesPullRequest
       ? language === "zh" ? "确认更新 Pull Request" : "Update pull request"
       : language === "zh" ? "确认创建 Pull Request" : "Create pull request"
@@ -1861,7 +1898,8 @@ export function WorkItemSummaryView({
   };
   const acceptAndComplete = async () => {
     if (actionPending) return;
-    if (!reviewActionController.isEnabled(deliveryOperation ?? "review_result", !deliveryEvidenceNotReady)) {
+    const confirmationActionKind = confirmResultWithoutDelivery ? "review_result" : deliveryOperation ?? "review_result";
+    if (!reviewActionController.isEnabled(confirmationActionKind, confirmResultWithoutDelivery || !deliveryEvidenceNotReady)) {
       setActionError(language === "zh" ? "任务状态或交付证据已经变化，请刷新后重新确认。" : "The task state or delivery evidence changed. Refresh before confirming again.");
       return;
     }
@@ -1909,7 +1947,7 @@ export function WorkItemSummaryView({
           deliveredCommit?: string | null;
           deliveredAt?: string | null;
         };
-      } = observability?.delivery
+      } = observability?.delivery && !confirmResultWithoutDelivery
         ? await api.deliverWorkItem(
             current.id,
             observability.delivery.mode,
@@ -1928,7 +1966,7 @@ export function WorkItemSummaryView({
         : await api.transitionWorkItem(current.id, "close", current.revision) as { workItem: LocalWorkItem };
       setItem(response.workItem);
       if (response.actionReceipt) setExecutionActionReceipt(response.actionReceipt);
-      if (observability?.delivery?.mode === "local_merge") {
+      if (observability?.delivery?.mode === "local_merge" && !confirmResultWithoutDelivery) {
         setLocalDeliveryReceipt({
           baseBranch: response.delivery?.baseBranch ?? null,
           deliveredCommit: response.delivery?.deliveredCommit ?? observability.delivery.review?.reviewedCommit ?? null,
@@ -1952,7 +1990,7 @@ export function WorkItemSummaryView({
         }
       }
     } catch (error) {
-      const failure = observability?.delivery?.mode === "local_merge" ? localDeliveryFailure(error, language) : null;
+      const failure = observability?.delivery?.mode === "local_merge" && !confirmResultWithoutDelivery ? localDeliveryFailure(error, language) : null;
       setActionError(failure?.message ?? copy.completionFailed);
       setDeliveryRecovery(failure?.action ?? null);
       setRefreshVersion((version) => version + 1);
@@ -1973,7 +2011,7 @@ export function WorkItemSummaryView({
     setRefreshVersion((version) => version + 1);
   };
   const runPrimaryAction = () => {
-    if (retryableRun && executionActionLocked) return;
+    if (hasRetryableExecution && executionActionLocked) return;
     if (pendingTemplateClarification) {
       document.getElementById("task-template-result-question")?.scrollIntoView?.({ behavior: "smooth", block: "center" });
       return;
@@ -1989,7 +2027,7 @@ export function WorkItemSummaryView({
       else onOpenExpert("overview");
       return;
     }
-    if (retryableRun) {
+    if (hasRetryableExecution) {
       setRetryError(null);
       setRetryOpen(true);
       return;
@@ -2032,7 +2070,7 @@ export function WorkItemSummaryView({
     });
   };
   const retryAiWork = async () => {
-    if (!retryableRun || retryPending || executionActionLocked
+    if (!hasRetryableExecution || retryPending || executionActionLocked
       || !reviewActionController.isEnabled("retry_execution", true)) return;
     setRetryPending(true);
     setRetryError(null);
@@ -2054,7 +2092,14 @@ export function WorkItemSummaryView({
           : "The execution plan is ready, but the retry has not started. Review the criteria and SOP, then retry again.");
         return;
       }
-      const response = await api.retryAutoRun(retryableRun.id, undefined, executionActionRequest("retry_execution")) as { actionReceipt?: ExecutionActionReceipt };
+      const response = retryableLegacyExecution
+        ? await api.retryLegacyWorkItemExecution(item.id, {
+          expectedWorkItemRevision: item.revision,
+          expectedTargetStatus: executionReview?.targetStatus ?? "failed",
+          sourceTargetId: executionReview?.targetId ?? "",
+          idempotencyKey: executionActionRequest("retry_execution").idempotencyKey,
+        }) as { actionReceipt?: ExecutionActionReceipt }
+        : await api.retryAutoRun(retryableRun!.id, undefined, executionActionRequest("retry_execution")) as { actionReceipt?: ExecutionActionReceipt };
       setRetryOpen(false);
       setSyncNotice(copy.retrySucceeded);
       setExecutionActionReceipt(response.actionReceipt ?? { message: copy.retrySucceeded, impact: "none", nextOwner: "ai" });
@@ -2179,12 +2224,12 @@ export function WorkItemSummaryView({
       : actionPending === "reverify"
         ? "rerun_verification"
         : actionPending === "complete"
-          ? deliveryOperation
+          ? confirmResultWithoutDelivery ? "review_result" : deliveryOperation
           : clarifyPending
             ? "answer_ai"
             : null;
-  const deliveryReviewActionKind = deliveryOperation ?? "review_result";
-  const canConfirmProjectedDelivery = reviewActionController.isEnabled(deliveryReviewActionKind, !deliveryEvidenceNotReady);
+  const deliveryReviewActionKind = confirmResultWithoutDelivery ? "review_result" : deliveryOperation ?? "review_result";
+  const canConfirmProjectedDelivery = reviewActionController.isEnabled(deliveryReviewActionKind, confirmResultWithoutDelivery || !deliveryEvidenceNotReady);
   const canViewProjectedChanges = reviewActionController.isEnabled("view_changes", Boolean(deliveryWorktreeId && onOpenDeliveryChanges));
   const canRerunProjectedVerification = reviewActionController.isEnabled("rerun_verification", canRerunVerification);
   const canRequestProjectedAiFix = reviewActionController.isEnabled("fix_with_ai", canAskAiToFix);
@@ -2285,7 +2330,7 @@ export function WorkItemSummaryView({
             <Button
               className="mt-3 w-full sm:w-auto"
               data-testid={startEligible ? "review-and-start-ai" : undefined}
-              disabled={Boolean(actionPending) || readinessChecking || (Boolean(retryableRun) && executionActionLocked)}
+              disabled={Boolean(actionPending) || readinessChecking || (hasRetryableExecution && executionActionLocked)}
               aria-expanded={status === "ready_for_review" ? resultExpanded : undefined}
               aria-controls={status === "ready_for_review" ? resultSectionId : undefined}
               onClick={runPrimaryAction}
@@ -2294,7 +2339,7 @@ export function WorkItemSummaryView({
                 ? canOperate ? language === "zh" ? "回答 AI" : "Answer AI" : language === "zh" ? "查看问题" : "View question"
                 : unresolvedDependency
                   ? language === "zh" ? "查看前置任务" : "View prerequisite"
-                : retryableRun
+                : hasRetryableExecution
                 ? copy.retryAi
                 : startHandoffPending
                   ? (language === "zh" ? "查看执行详情" : "Execution details")
@@ -2307,7 +2352,7 @@ export function WorkItemSummaryView({
                         ? (language === "zh" ? "核对并让 AI 开始" : "Review and start AI")
                         : copy.startAi
                   : resultExpanded ? copy.hideResult : copy.action[status]}
-              {retryableRun || startEligible || status !== "ready_for_review"
+              {hasRetryableExecution || startEligible || status !== "ready_for_review"
                 ? <ArrowRight aria-hidden />
                 : <ChevronDown className={`transition-transform ${resultExpanded ? "rotate-180" : ""}`} aria-hidden />}
             </Button>
@@ -3000,9 +3045,9 @@ export function WorkItemSummaryView({
                 {deliveryDecision.state === "ready" ? <Badge tone="success">{language === "zh" ? "建议" : "Recommended"}</Badge> : null}
               </div>
               <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionEffect}</p>
-              <p className="mt-1 text-sm leading-relaxed">{deliveryDecision.confirmEffect}</p>
+              <p className="mt-1 text-sm leading-relaxed">{confirmActionEffect}</p>
               <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionRisk}</p>
-              <p className="mt-1 text-sm leading-relaxed">{deliveryDecision.confirmRisk}</p>
+              <p className="mt-1 text-sm leading-relaxed">{confirmActionRisk}</p>
             </div>
           </div>
           {observability?.delivery && deliveryReview?.verdict !== "approved" ? (
@@ -3547,9 +3592,9 @@ export function WorkItemSummaryView({
               <div className="rounded-md bg-background/75 px-3 py-2.5">
                 <p className="text-sm font-semibold">{acceptActionLabel}</p>
                 <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionEffect}</p>
-                <p className="mt-1 text-sm leading-relaxed">{deliveryDecision.confirmEffect}</p>
+                <p className="mt-1 text-sm leading-relaxed">{confirmActionEffect}</p>
                 <p className="mt-2 text-xs font-medium text-muted-foreground">{copy.actionRisk}</p>
-                <p className="mt-1 text-sm leading-relaxed">{deliveryDecision.confirmRisk}</p>
+                <p className="mt-1 text-sm leading-relaxed">{confirmActionRisk}</p>
               </div>
             </div>
           </details>

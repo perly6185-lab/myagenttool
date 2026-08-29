@@ -20,7 +20,7 @@ test("channelOperations rolls up readiness, health, counts, and last activity", 
     channels: [
       { id: "chn_1", provider: "wecom", name: "ops", status: "enabled", ownerTeamId: "team_local", readiness: { callback_token: true, encoding_aes_key: true, corp_secret: true }, capabilityAllowlist: ["git.status"] },
       { id: "chn_2", provider: "wecom", name: "idle", status: "registered", readiness: { callback_token: false } },
-      { id: "chn_3", provider: "wecom", name: "sick", status: "enabled", readiness: { callback_token: true, encoding_aes_key: false, corp_secret: true } },
+      { id: "chn_3", provider: "wecom", name: "sick", status: "enabled", operationMode: "team", allowSelfApprove: false, readiness: { callback_token: true, encoding_aes_key: false, corp_secret: true } },
     ],
     channelIdentities: [{ channelId: "chn_1" }],
     channelEvents: [
@@ -56,6 +56,7 @@ test("channelOperations rolls up readiness, health, counts, and last activity", 
   const ops = rows.find((r) => r.id === "chn_1");
   assert.equal(ops.ready, true);
   assert.equal(ops.health, "attention"); // enabled + a terminal failure
+  assert.equal(ops.inlineApprovalAllowed, true, "legacy/default personal channels allow exact ordinary approval");
   assert.equal(ops.counts.identities, 1);
   assert.equal(ops.counts.events, 3);
   assert.equal(ops.counts.failedDeliveries, 1);
@@ -95,6 +96,7 @@ test("channelOperations rolls up readiness, health, counts, and last activity", 
 
   assert.equal(rows.find((r) => r.id === "chn_2").health, "idle"); // not enabled
   assert.equal(rows.find((r) => r.id === "chn_3").health, "attention"); // enabled but not ready
+  assert.equal(rows.find((r) => r.id === "chn_3").inlineApprovalAllowed, false, "team channels still require an explicit opt-in");
 });
 
 test("channelOperations can use runtime readiness instead of stale state fields", () => {

@@ -83,6 +83,7 @@ export function createWorkItemReviewCommandService({
   retryAutoRun,
   reverifyAutoRun,
   answerClarify,
+  restartLegacyExecutionAsAutoRun,
   promoteWorktreeToBase,
   promoteWorktreeToPullRequest,
   beginDelivery,
@@ -91,7 +92,142 @@ export function createWorkItemReviewCommandService({
 } = {}) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
+  async function executeLegacyRestartCommand(command, actor) {
+    const workItemId = requireTargetId(command);
+    const request = command.request ?? {};
+    const idempotencyKey = String(request.idempotencyKey ?? "").trim();
+    if (!idempotencyKey) throw commandError("idempotency_key_required", "A recovery idempotency key is required.");
+    if (!Number.isInteger(request.expectedWorkItemRevision)) {
+      throw commandError("expected_revision_required", "The reviewed task revision is required.");
+    }
+    if (typeof restartLegacyExecutionAsAutoRun !== "function") {
+      throw commandError("legacy_execution_recovery_unavailable", "Legacy execution recovery is unavailable.", 503);
+    }
+
+    const actionRequest = {
+      restartAsAutoRun: true,
+      workItemId,
+      sourceTargetId: String(request.sourceTargetId ?? "").trim() || null,
+    };
+    const existingEntry = (state.executionActionIdempotencyRecords ?? []).find((entry) =>
+      entry.idempotencyKey === idempotencyKey
+      && entry.receipt?.recoveryWorkItemId === workItemId) ?? null;
+    if (existingEntry) {
+      const existingRun = (state.autoRuns ?? []).find((candidate) => candidate.id === existingEntry.autoRunId) ?? {
+        id: existingEntry.autoRunId,
+        localIssueId: workItemId,
+        status: request.expectedTargetStatus ?? "failed",
+        executionActionReceipts: [],
+      };
+      const replay = replayExecutionAction(existingRun, {
+        kind: "retry_execution",
+        idempotencyKey,
+        request: actionRequest,
+        state,
+      });
+      return {
+        autoRun: publicAutoRun((state.autoRuns ?? []).find((candidate) => candidate.id === existingEntry.autoRunId) ?? null),
+        actionReceipt: executionActionReceiptView(replay, { now: now(), autoRun: existingRun, replayed: true }),
+        replayed: true,
+      };
+    }
+
+    const detail = getWorkItem({ workItemId }, actor);
+    if (!detail?.ok) throw resultError(detail);
+    const item = detail.body.workItem;
+    const sourceReview = detail.body.observability?.executionReview ?? null;
+    const pseudoRun = {
+      id: `legacy-recovery:${workItemId}`,
+      localIssueId: workItemId,
+      executionChainId: workItemId,
+      projectId: item.projectId ?? null,
+      teamId: item.ownerTeamId ?? null,
+      status: sourceReview?.targetStatus ?? "failed",
+      invocationId: sourceReview?.targetId ?? null,
+      executionActionReceipts: [],
+    };
+    const { receipt } = runTx(() => beginExecutionAction({
+      state,
+      autoRun: pseudoRun,
+      kind: "retry_execution",
+      actor,
+      idempotencyKey,
+      expectedWorkItemRevision: request.expectedWorkItemRevision,
+      expectedTargetStatus: request.expectedTargetStatus,
+      request: actionRequest,
+      nextOwner: "ai",
+      now,
+      nextId,
+    }));
+    receipt.recoveryWorkItemId = workItemId;
+    receipt.recoverySourceKind = "application_invocation";
+    runTx(() => updateExecutionAction(receipt, {
+      status: "running",
+      messageCode: "legacy_recovery_starting",
+      impact: "none",
+      nextOwner: "ai",
+      targetId: null,
+      now,
+    }));
+
+    try {
+      const recovered = await restartLegacyExecutionAsAutoRun({
+        workItemId,
+        actor,
+        timezoneOffset: request.timezoneOffset,
+        recoveryRequestId: receipt.id,
+        sourceTargetId: actionRequest.sourceTargetId,
+        agentId: request.agentId,
+        baseBranch: request.baseBranch,
+      });
+      const autoRun = recovered.autoRun;
+      runTx(() => {
+        autoRun.executionActionReceipts = [
+          receipt,
+          ...(autoRun.executionActionReceipts ?? []).filter((candidate) => candidate.id !== receipt.id),
+        ].slice(0, 20);
+        const ledgerEntry = (state.executionActionIdempotencyRecords ?? []).find((entry) => entry.receiptId === receipt.id);
+        if (ledgerEntry) {
+          ledgerEntry.autoRunId = autoRun.id;
+          ledgerEntry.ownerTeamId = autoRun.teamId ?? null;
+          ledgerEntry.projectId = autoRun.projectId ?? null;
+        }
+        updateExecutionAction(receipt, {
+          status: "succeeded",
+          messageCode: "legacy_execution_restarted_as_auto_run",
+          impact: "none",
+          nextOwner: "ai",
+          targetId: autoRun.id,
+          now,
+        });
+      });
+      return {
+        autoRun: publicAutoRun(autoRun),
+        actionReceipt: executionActionReceiptView(receipt, { now: now(), autoRun }),
+        replayed: recovered.replayed === true,
+      };
+    } catch (error) {
+      runTx(() => updateExecutionAction(receipt, {
+        status: "failed",
+        messageCode: "legacy_execution_recovery_failed",
+        impact: "none",
+        nextOwner: "me",
+        errorCode: error?.code ?? "legacy_execution_recovery_failed",
+        errorMessage: error instanceof Error ? error.message : String(error),
+        now,
+      }));
+      const normalized = error instanceof Error
+        ? error
+        : commandError("legacy_execution_recovery_failed", String(error));
+      normalized.actionReceipt = executionActionReceiptView(receipt, { now: now(), autoRun: pseudoRun });
+      throw normalized;
+    }
+  }
+
   async function executeAutoRunCommand(command, actor) {
+    if (command.kind === "retry_execution" && command.request?.restartAsAutoRun === true) {
+      return executeLegacyRestartCommand(command, actor);
+    }
     const targetId = requireTargetId(command);
     const request = command.request ?? {};
     const common = {

@@ -17,6 +17,7 @@ const NEGATION_RE = /(?:不要|不需要|无需|禁止|不得|不允许|不能|�
 const EXPLICIT_READ_ONLY_RE = /(?:只读(?:取)?|仅(?:查看|查询|读取|列出|检查)|只(?:查看|查询|读取|列出|检查)|(?:不要|不再|不做)[^，,。；;！!？?\n]{0,24}(?:修改|更新|删除|清空|新增|追加|覆盖|替换|回填|写入|写回|移动|重命名|改动)|不(?:修改|更新|删除|写入|改动)|不得[^，,。；;！!？?\n]{0,24}(?:修改|写入|删除)|禁止[^，,。；;！!？?\n]{0,24}(?:修改|写入|删除))/i;
 
 const FORBIDDEN_WRITE_ACTIONS = ["create", "modify", "delete", "move", "rename", "write"];
+const GOVERNED_DELIVERY_ACTIONS = new Set(["commit", "pull_request", "push"]);
 const ACCESS_MODES = new Set(["read_only", "write", "unknown"]);
 const ACTIONS = new Set(["list_directory", "list_files", "read_files", "query_data", "mutate_files", "create_output", "unknown"]);
 const RESOURCES = new Set(["current_project", "directory", "tabular_files", "files", "unspecified"]);
@@ -42,6 +43,20 @@ function actionEvidence(value, pattern) {
     positive: [...new Set(positive)].slice(0, 10),
     negated: [...new Set(negated)].slice(0, 10),
   };
+}
+
+function forbiddenDeliveryActions(value) {
+  const actions = [];
+  if (/(?:不创建|不要创建|禁止创建|不得创建|不生成|不要生成)(?:\s*git\s*)?提交|(?:不要|禁止|不得|无需|不需要)(?:执行|运行)?\s*(?:git\s+)?commit\b|\b(?:do not|don't|never)\s+(?:create\s+(?:a\s+)?)?(?:git\s+)?commit\b/i.test(value)) {
+    actions.push("commit");
+  }
+  if (/(?:不创建|不要创建|禁止创建|不得创建|不发起|不要发起)\s*(?:PR|Pull\s*Request|合并请求)|\b(?:do not|don't|never)\s+(?:create|open)\s+(?:a\s+)?(?:PR|pull request)\b/i.test(value)) {
+    actions.push("pull_request");
+  }
+  if (/(?:不推送|不要推送|禁止推送|不得推送)(?:[^，,。；;！!？?\n]{0,12}(?:远程|代码|分支))?|\b(?:do not|don't|never)\s+(?:git\s+)?push\b/i.test(value)) {
+    actions.push("push");
+  }
+  return actions;
 }
 
 export function analyzeChannelOperationIntent(input) {
@@ -84,6 +99,7 @@ export function analyzeChannelOperationIntent(input) {
     : accessMode !== "unknown"
       ? 0.9
       : 0.5;
+  const deliveryRestrictions = forbiddenDeliveryActions(value);
   return {
     schemaVersion: 1,
     accessMode,
@@ -92,7 +108,10 @@ export function analyzeChannelOperationIntent(input) {
     explicitReadOnly,
     mutatesExistingData,
     createsOutput,
-    forbiddenActions: accessMode === "read_only" ? [...FORBIDDEN_WRITE_ACTIONS] : [],
+    forbiddenActions: [...new Set([
+      ...(accessMode === "read_only" ? FORBIDDEN_WRITE_ACTIONS : []),
+      ...deliveryRestrictions,
+    ])],
     evidence: {
       read: reads,
       positiveWriteTerms: [...new Set([...writes.positive, ...outputs.positive])].slice(0, 10),
@@ -109,6 +128,9 @@ export function normalizeChannelOperationIntent(input) {
   const action = ACTIONS.has(input.action) ? input.action : "unknown";
   const resource = RESOURCES.has(input.resource) ? input.resource : "unspecified";
   const explicitReadOnly = accessMode === "read_only" && input.explicitReadOnly === true;
+  const deliveryRestrictions = Array.isArray(input.forbiddenActions)
+    ? input.forbiddenActions.filter((action) => GOVERNED_DELIVERY_ACTIONS.has(action))
+    : [];
   return {
     schemaVersion: 1,
     accessMode,
@@ -117,7 +139,10 @@ export function normalizeChannelOperationIntent(input) {
     explicitReadOnly,
     mutatesExistingData: accessMode === "write" && input.mutatesExistingData === true,
     createsOutput: accessMode === "write" && input.createsOutput === true,
-    forbiddenActions: accessMode === "read_only" ? [...FORBIDDEN_WRITE_ACTIONS] : [],
+    forbiddenActions: [...new Set([
+      ...(accessMode === "read_only" ? FORBIDDEN_WRITE_ACTIONS : []),
+      ...deliveryRestrictions,
+    ])],
     evidence: {
       read: input.evidence?.read === true,
       positiveWriteTerms: Array.isArray(input.evidence?.positiveWriteTerms)

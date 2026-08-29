@@ -1,4 +1,8 @@
+import { normalizeReviewVerdict } from "@myagenttool/protocol/review-verdict";
+
 import { workResourceId } from "./work-resource-directory.mjs";
+import { buildWorkItemIntentContract } from "./work-item-intent-contract.mjs";
+import { requiredRuntimeVerificationKinds } from "./work-item-result-verification.mjs";
 
 const EVIDENCE_SCHEMA_VERSION = 1;
 const FINDING_SEVERITIES = new Set(["low", "medium", "high"]);
@@ -6,7 +10,6 @@ const FINDING_SEVERITIES = new Set(["low", "medium", "high"]);
 const DEVELOPMENT_TASK_RE = /(?:^|_)software_(?:analysis|implementation|verification|deployment)(?:$|_)/i;
 const OFFICE_TASK_RE = /(?:^|_)(?:business|office|document|spreadsheet|procurement|legal|mail)_[a-z0-9_]+$/i;
 const OFFICE_TEXT_RE = /(?:台账|表格|工作簿|报价|订单|合同|发货|回款|客户|联系人|报表|清单|名单|邮件|文档|演示文稿|excel|xlsx?|docx?|pptx?|spreadsheet|workbook|quotation|contract|invoice)/i;
-const CLEAN_RE = /(?:no\s+(?:actionable\s+)?(?:findings?|issues?|bugs?|regressions?)|tests?\s+pass|looks\s+good|consistent|no\s+observable\s+regressions|未发现|没有发现|(?:结果|改动|补丁).{0,10}(?:相互)?一致|未引入明显回归)/i;
 
 function boundedText(value, max = 2_000) {
   if (value == null) return null;
@@ -53,29 +56,30 @@ function reviewEvidence(review) {
     result[finding.severity] += 1;
     return result;
   }, { low: 0, medium: 0, high: 0 });
-  const verdict = review?.verdict === "approved" || review?.verdict === "changes_requested" ? review.verdict : null;
+  const storedVerdict = review?.verdict === "approved" || review?.verdict === "changes_requested" ? review.verdict : null;
   const status = ["queued", "running", "completed", "failed", "unavailable"].includes(review?.status)
     ? review.status
-    : verdict ? "completed" : "unavailable";
+    : storedVerdict ? "completed" : "unavailable";
   const summary = boundedText(review?.summary);
   const blockingCount = counts.medium + counts.high;
-  const consistency = verdict == null
-    ? "unknown"
-    : verdict === "changes_requested" && findings.length === 0 && CLEAN_RE.test(summary ?? "")
-      ? "inconsistent"
-      : verdict === "approved" && blockingCount > 0
-        ? "inconsistent"
-        : "consistent";
+  const verdictDecision = storedVerdict == null
+    ? null
+    : normalizeReviewVerdict({
+      reportedVerdict: review?.reportedVerdict ?? storedVerdict,
+      findings: findings.filter((finding) => finding.severity === "medium" || finding.severity === "high"),
+      summary,
+    });
   return {
     status,
     source,
-    verdict,
+    verdict: verdictDecision?.verdict ?? null,
+    reportedVerdict: verdictDecision?.reportedVerdict ?? null,
     summary,
     structured: review?.structured !== false,
     findings,
     findingCounts: { ...counts, total: findings.length },
     blockingCount,
-    consistency,
+    consistency: verdictDecision?.consistency ?? "unknown",
     reviewedCommit: boundedText(review?.reviewedCommit, 200),
     reviewer: boundedText(review?.reviewer ?? review?.reviewerName, 200),
     invocationId: boundedText(review?.invocationId ?? review?.reviewInvocationId, 200),
@@ -83,8 +87,22 @@ function reviewEvidence(review) {
   };
 }
 
-function verificationEvidence(report, autoRun) {
+function verificationEvidence(item, report, autoRun) {
   const verification = report?.verification ?? autoRun?.verification ?? null;
+  const requiredRuntimeKinds = requiredRuntimeVerificationKinds(item);
+  const resultVerification = item?.resultVerification ?? null;
+  if (!requiredRuntimeKinds.length && resultVerification?.status === "passed") {
+    return {
+      status: "passed",
+      passed: true,
+      verified: true,
+      command: null,
+      commands: [],
+      exitCode: null,
+      summary: boundedText(resultVerification.summary),
+      source: "result_verification",
+    };
+  }
   const commands = Array.isArray(verification?.commands)
     ? verification.commands.map((command) => boundedText(command, 500)).filter(Boolean).slice(0, 20)
     : [];
@@ -104,6 +122,7 @@ function verificationEvidence(report, autoRun) {
     commands,
     exitCode: Number.isInteger(verification?.exitCode) ? verification.exitCode : null,
     summary: boundedText(verification?.summary),
+    source: "runtime_verification",
   };
 }
 
@@ -230,7 +249,7 @@ export function buildDeliveryEvidence({
 } = {}) {
   const domain = deliveryDomain({ item, autoRun });
   const review = reviewEvidence(deliveryReview);
-  const verification = verificationEvidence(deliveryReport, autoRun);
+  const verification = verificationEvidence(item, deliveryReport, autoRun);
   const officeDetails = domain === "office" ? officeActionDetails(item) : null;
   const existingPullRequest = autoRun?.localDelivery?.existingPullRequest ?? null;
   const pullRequestExists = Boolean(existingPullRequest?.number || existingPullRequest?.url
@@ -251,6 +270,16 @@ export function buildDeliveryEvidence({
     ? deliveryReport.changedFiles.map((file) => boundedText(file, 500)).filter(Boolean)
     : [];
   const changedFiles = changedFileNames.slice(0, 100);
+  const intentAction = item?.executionIntentContractSnapshot?.action
+    ?? item?.intentContract?.action
+    ?? buildWorkItemIntentContract(item).action;
+  const forbiddenActions = new Set(Array.isArray(intentAction?.forbiddenActions) ? intentAction.forbiddenActions : []);
+  const projectedOperation = deliveryMode === "pull_request"
+    ? pullRequestExists ? "update_pull_request" : "create_pull_request"
+    : domain === "office" ? "apply_office_result" : "apply_local_changes";
+  const deliveryActionForbidden = ["create_pull_request", "update_pull_request"].includes(projectedOperation)
+    ? forbiddenActions.has("pull_request") || forbiddenActions.has("push")
+    : domain === "development" && forbiddenActions.has("commit");
   const blockedReasonCodes = [];
   for (const status of new Set([evidenceDecision.status, decision.status])) {
     if (status === "review_inconsistent") blockedReasonCodes.push("review_inconsistent");
@@ -263,6 +292,7 @@ export function buildDeliveryEvidence({
     if (status === "office_batch_rolled_back") blockedReasonCodes.push("office_batch_rolled_back");
     if (status === "office_batch_in_progress") blockedReasonCodes.push("office_batch_in_progress");
   }
+  if (deliveryActionForbidden) blockedReasonCodes.push("delivery_action_forbidden_by_intent");
   return {
     schemaVersion: EVIDENCE_SCHEMA_VERSION,
     status: decision.status,
@@ -273,9 +303,7 @@ export function buildDeliveryEvidence({
     blockingReasonCodes: blockedReasonCodes,
     actionPreview: {
       mode: deliveryMode,
-      operation: deliveryMode === "pull_request"
-        ? pullRequestExists ? "update_pull_request" : "create_pull_request"
-        : domain === "office" ? "apply_office_result" : "apply_local_changes",
+      operation: projectedOperation,
       targetType: deliveryMode === "pull_request" ? "pull_request" : domain === "office" ? "office_artifact" : "local_project",
       artifactKind: domain === "office" ? "office_artifact" : "source_code",
       deliveryTransport: deliveryMode,
@@ -287,7 +315,7 @@ export function buildDeliveryEvidence({
       officeDetails,
       reviewedCommit: review.reviewedCommit,
       requiresConfirmation: true,
-      canProceed: decision.status === "ready",
+      canProceed: decision.status === "ready" && !deliveryActionForbidden,
       blockedReasonCodes,
     },
   };

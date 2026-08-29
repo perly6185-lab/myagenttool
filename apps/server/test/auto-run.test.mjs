@@ -691,6 +691,55 @@ test("a successful local issue completes on its committed worktree without a rem
   assert.equal(calls.pr.length, 0, "local issue completion never opens a GitHub PR");
 });
 
+test("a confirmed no-commit task stays as an uncommitted local worktree delivery", async () => {
+  const { svc, calls } = makeAutoRun({
+    listWorktreeChangedFiles: async () => ["docs/result.md"],
+    startDeliveryReview: async () => ({ id: "inv_fresh_uncommitted_review", status: "queued" }),
+    worktreeHeadSha: () => "unchanged-head",
+  });
+  const { autoRun, invocation, worktree } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 21, title: "Keep the diff uncommitted", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-21-uncommitted",
+    executionPlan: {
+      status: "ready",
+      intentContract: {
+        action: { accessMode: "write", operation: "mutate_files", forbiddenActions: ["commit", "pull_request", "push"] },
+      },
+    },
+  });
+  state.worktreeReviews = [{
+    id: "wrv_stale_uncommitted",
+    worktreeId: worktree.id,
+    source: "ai",
+    verdict: "approved",
+    summary: "This review belongs to an earlier uncommitted diff.",
+    comments: [],
+    reviewedCommit: "unchanged-head",
+    reviewInvocationId: "inv_stale_uncommitted_review",
+    createdAt: "2026-08-28T00:00:00.000Z",
+  }];
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(autoRun.status, "done");
+  assert.deepEqual(autoRun.localDelivery, {
+    worktreeId: worktree.id,
+    branchName: worktree.branchName,
+    mode: "uncommitted_worktree",
+    commitCreated: false,
+  });
+  assert.equal(calls.commit.length, 0);
+  assert.equal(calls.verify.length, 1);
+  assert.equal(calls.publish.length, 0);
+  assert.equal(calls.pr.length, 0);
+  assert.equal(calls.deliveryReviewStart.length, 1, "an uncommitted diff gets a fresh review even when HEAD did not move");
+  assert.equal(autoRun.deliveryReview.invocationId, "inv_fresh_uncommitted_review");
+  assert.equal(autoRun.deliveryReview.reusedReviewId, undefined);
+  assert.ok(calls.events.some((event) => event.type === "auto_run_commit_skipped"));
+});
+
 test("a local delivery produces a readable report and records an independent Codex review", async () => {
   const { svc, calls } = makeAutoRun({
     listWorktreeChangedFiles: async () => ["apps/server/src/routes/agents.mjs", "apps/server/test/agents.test.mjs"],
@@ -758,7 +807,45 @@ test("a local delivery produces a readable report and records an independent Cod
   });
   assert.equal(autoRun.deliveryReview.verdict, "approved", "a clearly clean text review corrects a stale fail-closed verdict");
   assert.equal(autoRun.deliveryReview.structured, false);
+  assert.equal(autoRun.deliveryReview.reportedVerdict, "changes_requested");
+  assert.equal(autoRun.deliveryReview.verdictConsistency, "corrected_clean_summary");
   assert.equal(calls.deliveryReviewSubmit.length, 2);
+
+  await svc.advanceAutoRunForInvocation({
+    id: "inv_delivery_review",
+    status: "succeeded",
+    completedAt: "2026-08-07T08:03:00.000Z",
+    result: {
+      output: {
+        structured: true,
+        verdict: "changes_requested",
+        summary: "The changes are consistent, type-safe, and do not introduce observable regressions.",
+        findings: [],
+      },
+    },
+  });
+  assert.equal(autoRun.deliveryReview.verdict, "approved", "structured contradictions use the same normalized decision");
+  assert.equal(autoRun.deliveryReview.structured, true);
+  assert.equal(autoRun.deliveryReview.reportedVerdict, "changes_requested");
+  assert.equal(autoRun.deliveryReview.verdictConsistency, "corrected_clean_summary");
+  assert.equal(calls.deliveryReviewSubmit.length, 3);
+
+  await svc.advanceAutoRunForInvocation({
+    id: "inv_delivery_review",
+    status: "succeeded",
+    completedAt: "2026-08-07T08:04:00.000Z",
+    result: {
+      output: {
+        structured: true,
+        verdict: "changes_requested",
+        summary: "The requested behavior is incomplete.",
+        findings: [],
+      },
+    },
+  });
+  assert.equal(autoRun.deliveryReview.verdict, "changes_requested", "an explicit negative summary still fails closed");
+  assert.equal(autoRun.deliveryReview.verdictConsistency, "consistent");
+  assert.equal(calls.deliveryReviewSubmit.length, 4);
 });
 
 test("reconciliation backfills changed files for a historical local delivery", async () => {
@@ -821,8 +908,8 @@ test("reconciliation hydrates a reused AI review and then advances to the next d
     source: "ai",
     reviewerName: "Codex",
     reviewInvocationId: "inv_existing_ai_review",
-    verdict: "approved",
-    summary: "Existing review is clean.",
+    verdict: "changes_requested",
+    summary: "No issues or regressions were found.",
     comments: [],
     reviewedCommit: `head-${newer.worktree.id}`,
     createdAt: "2026-08-07T08:00:00.000Z",
@@ -836,11 +923,138 @@ test("reconciliation hydrates a reused AI review and then advances to the next d
   await reconciler.svc.reconcileDeliveryReviews();
   assert.equal(newer.autoRun.deliveryReview.status, "completed");
   assert.equal(newer.autoRun.deliveryReview.reusedReviewId, "wrv_existing_ai");
+  assert.equal(newer.autoRun.deliveryReview.verdict, "approved");
+  assert.equal(newer.autoRun.deliveryReview.reportedVerdict, "changes_requested");
+  assert.equal(newer.autoRun.deliveryReview.verdictConsistency, "corrected_clean_summary");
   assert.equal(reconciler.calls.deliveryReviewStart.length, 0);
 
   await reconciler.svc.reconcileDeliveryReviews();
   assert.equal(older.autoRun.deliveryReview.status, "queued");
   assert.equal(reconciler.calls.deliveryReviewStart.length, 1, "the reused newest review no longer starves the older delivery");
+});
+
+test("reconciliation reruns one ambiguous unstructured review for a legacy document-only delivery", async () => {
+  let reviewSequence = 0;
+  const { svc, calls } = makeAutoRun({
+    listWorktreeChangedFiles: async () => ["docs/legacy-delivery.md"],
+    startDeliveryReview: async () => ({ id: `inv_legacy_document_review_${++reviewSequence}`, status: "queued" }),
+    worktreeHeadSha: () => "legacy-document-head",
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 66, title: "Legacy document delivery", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-66-legacy-document-delivery",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  autoRun.deliveryReview = {
+    status: "completed",
+    invocationId: "inv_legacy_ambiguous_review",
+    reviewer: "codex",
+    startedAt: "2026-08-07T08:00:00.000Z",
+    completedAt: "2026-08-07T08:01:00.000Z",
+    verdict: "changes_requested",
+    reportedVerdict: "changes_requested",
+    verdictConsistency: "consistent",
+    summary: "The change only adds a documentation file and does not affect executable code.",
+    findings: [],
+    structured: false,
+    attempts: 1,
+  };
+  autoRun.deliveryReport.changedFiles = ["docs/legacy-delivery.md"];
+  state.worktreeReviews = [{
+    id: "wrv_legacy_ambiguous_review",
+    worktreeId: autoRun.worktreeId,
+    source: "ai",
+    reviewerName: "Codex",
+    reviewInvocationId: "inv_legacy_ambiguous_review",
+    verdict: "changes_requested",
+    summary: "The change only adds a documentation file and does not affect executable code.",
+    comments: [],
+    reviewedCommit: "legacy-document-head",
+    createdAt: "2026-08-07T08:01:00.000Z",
+  }];
+  state.workItems = [{
+    id: "lwi_66",
+    state: "open",
+    title: "仅新增 docs/legacy-delivery.md，不修改其他文件",
+    artifactContract: { verification: { requiredKinds: ["test", "build"] } },
+    executionArtifacts: [{ kind: "software_change", changedFiles: ["docs/legacy-delivery.md"] }],
+    executionBindings: [{ kind: "auto_run", targetId: autoRun.id }],
+  }];
+
+  await svc.reconcileDeliveryReviews();
+
+  assert.ok(autoRun.deliveryReviewLegacyRerunAt);
+  assert.equal(autoRun.deliveryReviewLegacySource.invocationId, "inv_legacy_ambiguous_review");
+  assert.equal(autoRun.deliveryReview.status, "queued");
+  assert.equal(autoRun.deliveryReview.invocationId, "inv_legacy_document_review_2");
+  assert.equal(autoRun.deliveryReview.reusedReviewId, undefined);
+  assert.equal(autoRun.deliveryReview.attempts, 2);
+  assert.equal(calls.deliveryReviewStart.length, 2);
+
+  autoRun.deliveryReview = {
+    ...autoRun.deliveryReview,
+    status: "completed",
+    verdict: "changes_requested",
+    reportedVerdict: "changes_requested",
+    verdictConsistency: "consistent",
+    summary: "Review finished.",
+    findings: [],
+    structured: false,
+  };
+  await svc.reconcileDeliveryReviews();
+  assert.equal(calls.deliveryReviewStart.length, 2, "the compatibility rerun is durable and happens only once");
+});
+
+test("reconciliation replaces a legacy document review that an older migration accidentally reused", async () => {
+  let reviewSequence = 0;
+  const { svc, calls } = makeAutoRun({
+    listWorktreeChangedFiles: async () => ["docs/legacy-reused.md"],
+    startDeliveryReview: async () => ({ id: `inv_fresh_after_reuse_${++reviewSequence}`, status: "queued" }),
+    worktreeHeadSha: () => "legacy-reused-head",
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 67, title: "Legacy reused document review", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-67-legacy-reused-document-review",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  autoRun.deliveryReport.changedFiles = ["docs/legacy-reused.md"];
+  autoRun.deliveryReviewLegacyRerunAt = "2026-08-07T08:02:00.000Z";
+  autoRun.deliveryReviewLegacySource = {
+    invocationId: "inv_original_ambiguous",
+    reportedVerdict: "changes_requested",
+    summary: "The change only adds a documentation file.",
+  };
+  autoRun.deliveryReview = {
+    status: "completed",
+    invocationId: "inv_original_ambiguous",
+    verdict: "changes_requested",
+    reportedVerdict: "changes_requested",
+    verdictConsistency: "consistent",
+    summary: "The change only adds a documentation file.",
+    findings: [],
+    structured: true,
+    attempts: 1,
+    reusedReviewId: "wrv_original_ambiguous",
+  };
+  state.workItems = [{
+    id: "lwi_67",
+    state: "open",
+    title: "仅新增 docs/legacy-reused.md，不修改其他文件",
+    artifactContract: { verification: { requiredKinds: ["test", "build"] } },
+    executionArtifacts: [{ kind: "software_change", changedFiles: ["docs/legacy-reused.md"] }],
+    executionBindings: [{ kind: "auto_run", targetId: autoRun.id }],
+  }];
+
+  await svc.reconcileDeliveryReviews();
+
+  assert.equal(autoRun.deliveryReview.status, "queued");
+  assert.equal(autoRun.deliveryReview.invocationId, "inv_fresh_after_reuse_2");
+  assert.equal(autoRun.deliveryReview.reusedReviewId, undefined);
+  assert.equal(calls.deliveryReviewStart.length, 2);
 });
 
 test("a failed delivery review backs off and stops after three attempts", async () => {
@@ -2139,6 +2353,32 @@ test("retryAutoRun migrates a legacy Demo Agent failure to the project's Codex a
   assert.equal(calls.createInvocation.at(-1).agent.id, "agt_codex_cli");
   assert.equal(autoRun.agentId, "agt_codex_cli");
   assert.equal(worktree.agentId, "agt_codex_cli");
+});
+
+test("retryAutoRun corrects an upgraded legacy repository recovery that was routed as a general deliverable", async () => {
+  const { svc, calls } = makeAutoRun();
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 61, title: "Create docs/result.md in this Git project", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-61-legacy-route-recovery",
+  });
+  autoRun.status = "blocked";
+  autoRun.error = "The general task did not create a verified deliverable under deliverables/general/.";
+  autoRun.decision = { path: "general", workKind: "general", rationale: "Legacy route." };
+  autoRun.executionRecovery = {
+    requestId: "ear_legacy_route",
+    sourceKind: "application_invocation",
+    sourceTargetId: "inv_legacy_route",
+  };
+
+  await svc.retryAutoRun(autoRun.id, { idempotencyKey: "retry-legacy-route" });
+
+  assert.equal(autoRun.decision.path, "develop");
+  assert.equal(autoRun.decision.workKind, "development");
+  assert.equal(autoRun.executionRecovery.routeHint, "develop");
+  assert.equal(calls.createInvocation.at(-1).options.metadata.role, "develop");
+  assert.match(calls.createInvocation.at(-1).task, /implement the change/i);
 });
 
 test("execution timeout obeys a configured one-attempt continuation bound on the same worktree", async () => {

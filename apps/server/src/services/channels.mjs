@@ -160,7 +160,11 @@ export function createChannelService({
   }
 
   function publicChannel(channel) {
-    return { ...channel, readiness: readiness(channel) };
+    return {
+      ...channel,
+      inlineApprovalAllowed: channel.operationMode !== "team" || channel.allowSelfApprove === true,
+      readiness: readiness(channel),
+    };
   }
 
   function registerChannel({ provider, name } = {}, actor = null) {
@@ -202,9 +206,9 @@ export function createChannelService({
       taskDailyLimit: DEFAULT_TASK_DAILY_LIMIT,
       taskDayDate: null, // the UTC day taskDayCount is counting
       taskDayCount: 0,
-      // Personal mode removes the team-admin step for ordinary confirmed
-      // tasks. High-risk invocation approval remains a separate, explicit
-      // console action unless the owner opts into in-channel approval.
+      // Personal mode lets the mapped owner explicitly confirm an exact,
+      // ordinary pending action in the conversation. Team channels still need
+      // an explicit self-approval opt-in; high-risk actions remain console-only.
       allowSelfApprove: false,
       createdAt: now(),
       updatedAt: now(),

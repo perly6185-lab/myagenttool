@@ -173,8 +173,11 @@ export function createWorkItemAutoRunUnderstandingService({
         workItem,
         searchProjectContent,
       });
+      const routingContext = autoRun.executionRecovery?.routeHint === "develop"
+        ? { ...understandingContext.context, taskKind: "software_implementation" }
+        : understandingContext.context;
       await decideReservedAutoRun(id, {
-        projectContext: understandingContext.context,
+        projectContext: routingContext,
         contextSummary: understandingContext.summary,
       });
       let contractDraft = null;

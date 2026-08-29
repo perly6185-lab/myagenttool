@@ -175,6 +175,7 @@ export type LocalWorkItem = {
     confirmedAt: string | null;
     digest: string | null;
     readOnly: true;
+    supersededByGoalRevision?: boolean;
   } | null;
   reviewEvidence?: {
     criterion: string;
@@ -805,12 +806,13 @@ export type LocalWorkItemDeliveryEvidence = {
     status: "queued" | "running" | "completed" | "failed" | "unavailable" | string;
     source: string;
     verdict: "approved" | "changes_requested" | null;
+    reportedVerdict?: "approved" | "changes_requested" | null;
     summary: string | null;
     structured: boolean;
     findings: { severity: "low" | "medium" | "high"; file: string | null; line: number | null; message: string; suggestion: string | null; confidence: "low" | "medium" | "high" | null }[];
     findingCounts: { low: number; medium: number; high: number; total: number };
     blockingCount: number;
-    consistency: "consistent" | "inconsistent" | "unknown";
+    consistency: "consistent" | "corrected_clean_summary" | "corrected_actionable_findings" | "inconsistent" | "unknown";
     reviewedCommit: string | null;
     reviewer: string | null;
     invocationId: string | null;
@@ -901,7 +903,9 @@ export type LocalWorkItemAutoRun = {
   terminalOutcome?: { disposition: "MERGED" | "CLOSED"; source: string; convergedAt: string } | null;
   report?: string | null;
   localDelivery?: {
-    worktreeId: string; branchName: string | null; mode?: "local_merge" | "pull_request";
+    worktreeId: string; branchName: string | null;
+    mode?: "local_merge" | "pull_request" | "uncommitted_worktree" | "committed_worktree";
+    commitCreated?: boolean;
     baseBranch?: string | null; deliveredCommit?: string | null;
     deliveredAt?: string | null; promotedAt?: string | null; prNumber?: number | null; prUrl?: string | null;
     existingPullRequest?: { number: number | null; url: string | null; state: string | null } | null;

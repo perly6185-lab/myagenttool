@@ -78,6 +78,25 @@ test("software changes preserve verification while pausing deployment", () => {
   assert.ok(result.unchanged.some((item) => item.id === "implementation"));
 });
 
+test("office validation wording cannot add a software verification task to a work goal", () => {
+  const office = planWorkGoalChange({
+    text: "另外验证一下 Excel 公式和单元格格式",
+    goal,
+    tasks: [task("document", "business_document", "客户统计表")],
+  });
+  assert.equal(office.matched, false);
+  assert.ok(!office.changes.some((change) => change.taskKind === "software_verification"));
+
+  const development = planWorkGoalChange({
+    text: "另外补一个代码回归测试",
+    goal,
+    tasks: [task("implementation", "software_implementation", "软件实现")],
+  });
+  assert.equal(development.matched, true);
+  assert.ok(development.changes.some((change) =>
+    change.action === "add" && change.taskKind === "software_verification"));
+});
+
 test("a source modification previews every real downstream impact", () => {
   const result = planWorkGoalChange({
     text: "文章改成1500字，图片不动",

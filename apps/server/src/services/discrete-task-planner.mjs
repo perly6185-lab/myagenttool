@@ -30,7 +30,7 @@ const TASK_DEFINITIONS = [
   { kind: "software_verification", domain: "development", label: "软件验证", outcome: "形成独立的测试和验证结果", pattern: /(?:测试|验证|代码审查|test|verify|code review)/i, produces: ["verification_report"] },
   { kind: "software_deployment", domain: "development", label: "部署发布", outcome: "完成一次有明确目标环境的部署", pattern: /(?:部署|上线|发版|deploy|release)/i, externalEffect: true, produces: ["deployment_receipt"] },
   { kind: "business_research", domain: "business", label: "商务调研", outcome: "形成可独立使用的商务调研结果", pattern: /(?:商务调研|客户调研|竞品调研|市场调研|研究.{0,12}竞品|(?:整理|梳理|汇总)(?:一下)?客户资料|客户资料(?:整理|梳理|汇总)|提炼(?:一下)?合同要点|合同要点提炼|business research|market research)/i, produces: ["business_research"] },
-  { kind: "business_document", domain: "business", label: "商务材料", outcome: "形成可独立审阅的商务文档", pattern: /(?:(?:准备|制作|撰写|起草|整理|输出|形成|更新|完善|做|写|出(?:一版)?).{0,16}(?:客户方案|报价方案|方案|报价|合同草稿|商务材料|客户汇报|内部汇报|更新说明|跟进邮件|邮件草稿|客户名单|名单|excel|表格)|(?:合同草稿|商务材料|客户汇报|内部汇报|更新说明|邮件草稿)|proposal|quotation|contract draft)/i, produces: ["business_document"] },
+  { kind: "business_document", domain: "business", label: "商务材料", outcome: "形成可独立审阅的商务文档", pattern: /(?:(?:准备|创建|新建|制作|撰写|起草|整理|输出|形成|更新|完善|做|写|出(?:一版)?).{0,64}(?:客户方案|报价方案|方案|报价|合同草稿|商务材料|客户汇报|内部汇报|更新说明|跟进邮件|邮件草稿|客户名单|名单|excel|xlsx?|电子表格|表格|工作簿|工作表)|(?:客户方案|报价方案|合同草稿|商务材料|客户汇报|内部汇报|更新说明|邮件草稿|excel|xlsx?|电子表格|表格|工作簿|工作表).{0,40}(?:准备|创建|新建|制作|撰写|起草|整理|输出|形成|更新|完善)|proposal|quotation|contract draft)/i, produces: ["business_document"] },
   { kind: "business_communication", domain: "business", label: "对外沟通", outcome: "完成一次有明确对象的外部沟通", pattern: /(?:发送邮件|回复客户|联系客户|(?:邮件|报价|方案|名单|文件|资料).{0,12}(?:发|发送|转发)(?:给|至|到).{0,12}(?:客户|销售|同事|负责人|经理|联系人|[\u3400-\u9fff]{1,4}总)|(?:给|向)(?:客户|销售|同事|负责人|经理|联系人|[\u3400-\u9fff]{1,4}总).{0,8}(?:发|发送|转发).{0,8}(?:邮件|消息|报价|方案|文件)|send email|reply to (?:the )?customer)/i, externalEffect: true, produces: ["communication_receipt"] },
   { kind: "business_scheduling", domain: "business", label: "安排日程", outcome: "建立一个时间和参与人明确的日程", pattern: /(?:安排会议|预约会议|安排日程|(?:约|邀请).{0,16}(?:开会|会议|见面|沟通)|(?:会议|见面).{0,10}(?:约|安排)|schedule (?:a )?meeting)/i, externalEffect: true, produces: ["calendar_receipt"] },
   ...PROFESSIONAL_TASK_DEFINITIONS,
@@ -40,6 +40,12 @@ const DEFAULT_CONTENT_PROPOSAL_KINDS = new Set(["knowledge_analysis", "content_a
 const CODING_SOURCE_RE = /(?:今天|今日|本周|这次|刚才|最近|当前).{0,12}(?:编码|代码|开发|提交|commit)|(?:编码|代码|开发|提交|commit).{0,12}(?:工作|成果|记录|内容|过程|变更)/i;
 const CONTENT_TARGET_RE = /文章|博客|公众号|小红书|配图|插图|图片|漫画|口播|视频|发布|article|blog|image|video|publish/i;
 const CODING_DIGEST_ACTION_RE = /整理|总结|复盘|提炼|汇总|转成|做成|写成|内容化|记录|summari[sz]e|digest|recap/i;
+const OFFICE_WORK_CONTEXT_RE = /(?:office[-_\s]?cli|microsoft\s*office|word|excel|powerpoint|pptx?|docx?|xlsx?|spreadsheet|workbook|worksheet|slides?|document|\.csv\b|\.pdf\b|表格|工作簿|工作表|单元格|公式|文档|幻灯片|演示文稿|汇报材料|排版|版式|页眉|页脚)/i;
+const SOFTWARE_WORK_CONTEXT_RE = /(?:代码|源码|代码库|仓库|软件|应用程序|客户端|服务端|前端|后端|接口|功能|网页|网站|数据库|组件|模块|开发环境|编译|构建|依赖|单元测试|集成测试|回归测试|端到端测试|冒烟测试|自动化测试|性能测试|压力测试|\bapi\b|\bsdk\b|\bui\b|\bcli\b|\bbug\b|\bcode\b|\brepositor(?:y|ies)\b|\bfrontend\b|\bbackend\b|\bdatabase\b|\bcomponent\b|\bmodule\b|\bfeature\b|\bbuild\b|\bcompile\b|\bunit tests?\b|\bintegration tests?\b|\bregression tests?\b|\be2e\b|\bsmoke tests?\b|\btest suite\b|\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|swift|cs|rb|php)\b)/i;
+const STRONG_SOFTWARE_WORK_CONTEXT_RE = /(?:代码|源码|代码库|仓库|服务端|前端|后端|接口|数据库|组件|模块|开发环境|编译|构建|依赖|单元测试|集成测试|回归测试|端到端测试|冒烟测试|自动化测试|性能测试|压力测试|(?:软件|应用程序|客户端|网页|网站).{0,16}(?:功能|代码|构建|编译|测试)|(?:功能|代码|构建|编译|测试).{0,16}(?:软件|应用程序|客户端|网页|网站)|\bapi\b|\bsdk\b|\bbug\b|\bcode\b|\brepositor(?:y|ies)\b|\bfrontend\b|\bbackend\b|\bdatabase\b|\bcomponent\b|\bmodule\b|\bfeature\b|\bbuild\b|\bcompile\b|\bunit tests?\b|\bintegration tests?\b|\bregression tests?\b|\be2e\b|\bsmoke tests?\b|\btest suite\b|\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|swift|cs|rb|php)\b)/i;
+const EXPLICIT_SOFTWARE_TEST_ACTION_RE = /(?:(?:跑|执行|运行|补跑|重跑|重新跑|再跑|做).{0,8}(?:测试|验证)|(?:测试|验证)(?:一下|一遍|一次)|\b(?:run|execute|rerun)\s+(?:the\s+)?(?:tests?|test suite|checks?)\b|\b(?:unit|integration|regression|e2e|smoke|automated|performance|load)\s+tests?\b|\b(?:pnpm|npm|yarn|bun|pytest|jest|vitest|playwright|mvn|gradle|cargo|go)\s+(?:run\s+)?test\b)/i;
+const REPOSITORY_CONTEXT_RE = /(?:\bgit\s*(?:项目|仓库|repository|repo)?\b|代码仓库|代码库|source\s+repository|codebase)/i;
+const REPOSITORY_FILE_MUTATION_RE = /(?:新增|创建|添加|修改|更新|删除|移动|重命名|add|create|modify|update|delete|move|rename).{0,80}(?:[\w.-]+\/)+[\w.-]+\.[a-z0-9]{1,8}\b/i;
 const WECHAT_DRAFT_SYNC_RE = /(?:保存|同步|存入|放到).{0,12}(?:公众号|微信公众平台).{0,8}(?:草稿箱|草稿)|(?:公众号|微信公众平台).{0,12}(?:草稿箱|草稿)/i;
 const CONTENT_OUTPUT_KINDS = new Set([
   "content_article", "content_image", "content_comic", "content_voiceover", "content_video",
@@ -99,7 +105,24 @@ function requestedMatch(statement, pattern) {
 
 function definitionRequested(statement, definition) {
   if (!definition?.pattern) return false;
+  if (definition.kind === "software_implementation"
+    && REPOSITORY_CONTEXT_RE.test(statement)
+    && REPOSITORY_FILE_MUTATION_RE.test(statement)) return true;
   return Boolean(requestedMatch(statement, definition.pattern));
+}
+
+export function isSoftwareVerificationRequest(statement, { domain = null, companionSoftwareWork = false } = {}) {
+  if (domain === "development") return true;
+  const hasOfficeContext = OFFICE_WORK_CONTEXT_RE.test(statement);
+  const softwareEvidenceText = String(statement ?? "").replace(/office[-_\s]?cli/gi, " ");
+  const hasSoftwareContext = SOFTWARE_WORK_CONTEXT_RE.test(softwareEvidenceText);
+  // An explicit Office deliverable owns nearby words such as “验证”, even if
+  // the surrounding request mentions the desktop client used for acceptance.
+  // Only concrete code/repository evidence or a companion software task may
+  // promote that quality check into an independent software-verification task.
+  if (hasOfficeContext && !companionSoftwareWork && !STRONG_SOFTWARE_WORK_CONTEXT_RE.test(softwareEvidenceText)) return false;
+  if (hasOfficeContext && !hasSoftwareContext) return false;
+  return companionSoftwareWork || hasSoftwareContext || EXPLICIT_SOFTWARE_TEST_ACTION_RE.test(statement);
 }
 
 function describesExistingInput(statement, kind) {
@@ -292,6 +315,23 @@ function artifactRequirements(definition, statement, produces = definition.produ
   }));
 }
 
+const DOCUMENT_ONLY_EXTENSIONS = new Set(["md", "mdx", "txt", "rst", "adoc"]);
+
+function explicitTargetExtensions(statement) {
+  return [...String(statement ?? "").matchAll(/(?:^|[\\/\s"'“”‘’（(、，,：:])(?:[\w.-]+\/)*[\w.-]+\.([a-z0-9]{1,8})\b/gi)]
+    .map((match) => String(match[1]).toLowerCase());
+}
+
+function documentationOnlySoftwareChange(definition, statement) {
+  if (definition.kind !== "software_implementation") return false;
+  const extensions = explicitTargetExtensions(statement);
+  if (!extensions.length || extensions.some((extension) => !DOCUMENT_ONLY_EXTENSIONS.has(extension))) return false;
+  const scopeIsExplicitlyDocumentOnly = /(?:不|不要|无需)(?:再)?(?:修改|改动|触碰|覆盖)(?:任何)?其他文件|只(?:创建|新增|修改|更新|改动)(?:该|这个|上述)?(?:文档|文件)|仅(?:创建|新增|修改|更新|改动)(?:该|这个|上述)?(?:文档|文件)|documentation[-\s]?only|only\s+(?:create|add|modify|change|touch)\s+(?:this|the)\s+(?:document|file)/i.test(statement);
+  const describesDocumentWork = /(?:文档|说明|readme|changelog|documentation)/i.test(statement);
+  const describesExecutableChange = /(?:业务逻辑|代码逻辑|接口|数据库|组件|模块|功能|bug|编译|构建|依赖|source code|runtime|api|database|component|module|feature)/i.test(statement);
+  return scopeIsExplicitlyDocumentOnly || (describesDocumentWork && !describesExecutableChange);
+}
+
 function taskFrom(definition, { intentId, statement, sources, key = definition.kind, title = definition.label,
   platform = null, requires = [], consumes = [], produces = null, approvalRequired = null, gate = null,
   executionInstructions = null, instanceScope = null } = {}) {
@@ -314,6 +354,7 @@ function taskFrom(definition, { intentId, statement, sources, key = definition.k
       produces: [...outputKinds],
       requirements: artifactRequirements(definition, statement, outputKinds),
       ...(["software_implementation", "software_verification"].includes(definition.kind)
+        && !documentationOnlySoftwareChange(definition, statement)
         ? { verification: { requiredKinds: ["test", "build"] } }
         : {}),
     },
@@ -398,6 +439,10 @@ export function planDiscreteTasks({
     .map((key) => bounded(key, 160))
     .filter(Boolean));
   const isCodingSource = CODING_SOURCE_RE.test(statement) && CONTENT_TARGET_RE.test(statement);
+  const companionSoftwareWork = TASK_DEFINITIONS.some((definition) =>
+    definition.domain === "development"
+    && definition.kind !== "software_verification"
+    && definitionRequested(statement, definition));
   const tasks = [];
   const add = (kind, options = {}) => {
     const definition = TASK_DEFINITIONS.find((candidate) => candidate.kind === kind);
@@ -409,6 +454,8 @@ export function planDiscreteTasks({
   if (statement && isCodingSource && CODING_DIGEST_ACTION_RE.test(statement)) add("coding_digest");
   for (const definition of TASK_DEFINITIONS) {
     if (!definitionRequested(statement, definition)) continue;
+    if (definition.kind === "software_verification"
+      && !isSoftwareVerificationRequest(statement, { domain, companionSoftwareWork })) continue;
     if (describesExistingInput(statement, definition.kind)) continue;
     if (definition.kind === "content_publish" || (definition.kind === "software_implementation" && isCodingSource)) continue;
     const instanceScopes = professionalTaskInstanceScopes(statement, definition.kind);

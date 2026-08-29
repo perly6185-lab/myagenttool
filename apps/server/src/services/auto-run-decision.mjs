@@ -63,6 +63,7 @@ const DECLARED_TASK_KIND_TO_WORK_KIND = new Map([
   ["business_document", "office"],
   ["business_communication", "general"],
   ["business_scheduling", "general"],
+  ["general", "general"],
 ]);
 
 export function classifyLocalWorkKind(link, issueBody = "", projectContext = null) {
@@ -101,7 +102,8 @@ function localWorkDecision(link, issueBody, projectContext) {
   // The stricter ordinary-language gate is for Channel-origin work, where the
   // user did not choose a development workflow and must never be assumed to
   // want code changes merely because their sentence is imperative.
-  if (projectContext?.channelOrigin !== true && link?.channelOrigin !== true) return null;
+  const hasDeclaredTaskKind = DECLARED_TASK_KIND_TO_WORK_KIND.has(String(projectContext?.taskKind ?? ""));
+  if (projectContext?.channelOrigin !== true && link?.channelOrigin !== true && !hasDeclaredTaskKind) return null;
   const work = classifyLocalWorkKind(link, issueBody, projectContext);
   const base = {
     spawnChildIssues: false,

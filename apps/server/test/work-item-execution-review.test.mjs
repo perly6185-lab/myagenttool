@@ -133,6 +133,67 @@ test("separates a created pull request from an applied result", () => {
   assert.deepEqual(review.riskReasons, [{ code: "pull_request_not_applied", severity: "medium", scope: "external_impact" }]);
 });
 
+test("uses result verification for a document-only code task without runtime verification requirements", () => {
+  const item = {
+    id: "wi_document_change",
+    state: "open",
+    status: "review",
+    artifactContract: { verification: { requiredKinds: [] } },
+    resultVerification: {
+      status: "passed",
+      summary: "Target document and content checks passed.",
+      checkedAt: "2026-08-27T03:04:00.000Z",
+      checks: [{
+        id: "result_check_1",
+        kind: "software_change",
+        status: "passed",
+        summary: "The requested document is the only changed file.",
+        executionArtifactIds: ["artifact_1"],
+      }],
+    },
+    executionBindings: [{ kind: "auto_run", targetId: "aur_document_change", createdAt: "2026-08-27T03:00:00.000Z" }],
+  };
+  const state = {
+    autoRuns: [{
+      id: "aur_document_change",
+      status: "done",
+      phase: "review_ready",
+      deliveryReport: {
+        verification: {
+          passed: true,
+          verified: false,
+          summary: "No verification command configured — PR opened unverified.",
+        },
+      },
+      localDelivery: { mode: "uncommitted_worktree", commitCreated: false },
+      updatedAt: "2026-08-27T03:05:00.000Z",
+    }],
+    invocations: [],
+  };
+
+  const review = projectWorkItemExecutionReview({
+    item,
+    state,
+    startReceipt: { ...STARTED, targetId: "aur_document_change" },
+  });
+
+  assert.equal(review.verification.status, "passed");
+  assert.equal(review.verification.verified, true);
+  assert.equal(review.verification.passed, true);
+  assert.equal(review.verification.summary, "Target document and content checks passed.");
+  assert.equal(review.verification.checkedAt, "2026-08-27T03:04:00.000Z");
+  assert.equal(review.verification.evidenceCount, 1);
+  assert.deepEqual(review.verification.checks, [{
+    id: "result_check_1",
+    kind: "software_change",
+    status: "passed",
+    command: null,
+    summary: "The requested document is the only changed file.",
+    recordedAt: "2026-08-27T03:04:00.000Z",
+    evidenceCount: 1,
+  }]);
+});
+
 test("only reports an applied result when a delivery or office commit proves it", () => {
   const completedItem = {
     id: "wi_completed",

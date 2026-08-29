@@ -2,6 +2,7 @@ import { resolveWorkItemExecution } from "./work-item-execution.mjs";
 import { latestExecutionActionReceipt } from "./work-item-execution-action.mjs";
 import { projectWorkItemReviewActions } from "./work-item-review-actions.mjs";
 import { projectWorkItemRiskReview } from "./work-item-risk-review.mjs";
+import { requiredRuntimeVerificationKinds } from "./work-item-result-verification.mjs";
 
 const STAGE_KEYS = ["accepted", "preparing", "working", "verifying", "review"];
 const TERMINAL_FAILURES = new Set(["failed", "blocked", "timed_out", "rejected", "expired"]);
@@ -22,7 +23,7 @@ function latestTimestamp(...values) {
 }
 
 function verificationSource(item, autoRun, invocation) {
-  const runtime = autoRun?.deliveryReport?.verification
+  const runtimeCandidate = autoRun?.deliveryReport?.verification
     ?? autoRun?.verification
     ?? invocation?.result?.output?.verification
     ?? invocation?.result?.verification
@@ -30,7 +31,17 @@ function verificationSource(item, autoRun, invocation) {
   const attempt = autoRun?.verificationAttempt ?? null;
   const records = [...(item?.verificationRecords ?? [])]
     .sort((left, right) => String(right.recordedAt ?? "").localeCompare(String(left.recordedAt ?? "")));
-  return { runtime, attempt, records };
+  const requiredRuntimeKinds = requiredRuntimeVerificationKinds(item);
+  const resultVerification = !requiredRuntimeKinds.length ? item?.resultVerification ?? null : null;
+  const runtimeConclusive = runtimeCandidate?.verified === true
+    || runtimeCandidate?.testsPassed === true
+    || runtimeCandidate?.checkPassed === true
+    || runtimeCandidate?.checkPassed === false
+    || Number.isInteger(runtimeCandidate?.exitCode)
+    || Number.isInteger(runtimeCandidate?.testExitCode);
+  const resultConclusive = resultVerification?.status === "passed" || resultVerification?.status === "failed";
+  const runtime = resultConclusive && !runtimeConclusive ? null : runtimeCandidate;
+  return { runtime, attempt, records, resultVerification };
 }
 
 function normalizeCommands(verification) {
@@ -42,7 +53,7 @@ function normalizeCommands(verification) {
 }
 
 function projectVerification(item, autoRun, invocation, executionState) {
-  const { runtime, attempt, records } = verificationSource(item, autoRun, invocation);
+  const { runtime, attempt, records, resultVerification } = verificationSource(item, autoRun, invocation);
   const latestRecord = records[0] ?? null;
   const commands = normalizeCommands(runtime);
   const runtimeVerified = runtime?.verified === true
@@ -65,12 +76,15 @@ function projectVerification(item, autoRun, invocation, executionState) {
     status = runtimeVerified ? (runtimePassed ? "passed" : "failed") : "not_configured";
   } else if (latestRecord) {
     status = latestRecord.status === "passed" ? "passed" : "failed";
+  } else if (resultVerification?.status === "passed" || resultVerification?.status === "failed") {
+    status = resultVerification.status;
   }
   const checkedAt = latestTimestamp(
     attempt?.completedAt,
     runtime?.verifiedAt,
     autoRun?.deliveryReport?.completedAt,
     latestRecord?.recordedAt,
+    resultVerification?.checkedAt,
   );
   const durationMs = timestamp(attempt?.requestedAt) != null && timestamp(attempt?.completedAt) != null
     ? Math.max(0, timestamp(attempt.completedAt) - timestamp(attempt.requestedAt))
@@ -84,6 +98,19 @@ function projectVerification(item, autoRun, invocation, executionState) {
     recordedAt: record.recordedAt ?? null,
     evidenceCount: Array.isArray(record.evidence) ? record.evidence.length : 0,
   }));
+  if (!checks.length && resultVerification) {
+    checks.push(...[...(resultVerification.checks ?? []), ...(resultVerification.verificationChecks ?? [])]
+      .slice(0, 20)
+      .map((check, index) => ({
+        id: check.id ?? `result_verification:${index + 1}`,
+        kind: check.kind ?? "result",
+        status: check.status,
+        command: null,
+        summary: boundedText(check.summary),
+        recordedAt: resultVerification.checkedAt ?? null,
+        evidenceCount: (check.outputAssetIds?.length ?? 0) + (check.executionArtifactIds?.length ?? 0) + (check.verificationIds?.length ?? 0),
+      })));
+  }
   const evidenceCount = checks.reduce((total, check) => total + check.evidenceCount, 0);
   return {
     status,
@@ -94,7 +121,7 @@ function projectVerification(item, autoRun, invocation, executionState) {
     exitCode: Number.isInteger(runtime?.exitCode)
       ? runtime.exitCode
       : Number.isInteger(runtime?.testExitCode) ? runtime.testExitCode : null,
-    summary: boundedText(runtime?.summary ?? runtime?.error ?? latestRecord?.summary),
+    summary: boundedText(runtime?.summary ?? runtime?.error ?? latestRecord?.summary ?? resultVerification?.summary),
     checkedAt,
     durationMs,
     evidenceCount,

@@ -114,6 +114,34 @@ test("missing review evidence disables delivery while preserving safe inspection
   ]);
 });
 
+test("an intent that forbids delivery still allows confirming the reviewed result as complete", () => {
+  const result = projectWorkItemReviewActions({
+    state: "review_ready",
+    targetStatus: "done",
+    executionKind: "auto_run",
+    verification: { status: "passed" },
+    hasWorktree: true,
+    recommendedAction: { kind: "review_result" },
+    deliveryEvidence: {
+      domain: "development",
+      status: "ready",
+      review: { verdict: "approved" },
+      actionPreview: {
+        operation: "apply_local_changes",
+        changedFileCount: 1,
+        canProceed: false,
+        requiresConfirmation: true,
+        blockedReasonCodes: ["delivery_action_forbidden_by_intent"],
+      },
+    },
+  });
+
+  assert.equal(byKind(result, "apply_local_changes").enabled, false);
+  assert.deepEqual(byKind(result, "apply_local_changes").blockedReasonCodes, ["delivery_action_forbidden_by_intent"]);
+  assert.equal(byKind(result, "review_result").enabled, true);
+  assert.deepEqual(byKind(result, "review_result").blockedReasonCodes, []);
+});
+
 test("an uncertain execution receipt locks every mutating review action", () => {
   const result = projectWorkItemReviewActions({
     state: "review_ready",
@@ -136,6 +164,19 @@ test("an uncertain execution receipt locks every mutating review action", () => 
   assert.equal(byKind(result, "view_changes").enabled, true);
   assert.ok(byKind(result, "rerun_verification").blockedReasonCodes.includes("execution_action_in_flight_or_unknown"));
   assert.ok(byKind(result, "fix_with_ai").blockedReasonCodes.includes("execution_action_in_flight_or_unknown"));
+});
+
+test("a failed legacy application invocation can restart through the Auto-run recovery path", () => {
+  const result = projectWorkItemReviewActions({
+    state: "failed",
+    targetStatus: "failed",
+    executionKind: "application_invocation",
+    hasWorktree: false,
+    recommendedAction: { kind: "retry_execution" },
+  });
+
+  assert.equal(byKind(result, "retry_execution").enabled, true);
+  assert.deepEqual(byKind(result, "retry_execution").blockedReasonCodes, []);
 });
 
 test("a disabled delivery without a specialized diagnosis still returns a usable reason", () => {

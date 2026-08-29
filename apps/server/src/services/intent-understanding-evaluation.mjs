@@ -121,6 +121,9 @@ export const INTENT_EVALUATION_PROFESSIONAL_NATURAL_CASES = [
 ];
 
 export const INTENT_EVALUATION_PROFESSIONAL_BOUNDARY_CASES = [
+  { id: "professional-office-excel-validation", text: "整理 Excel 客户表格并测试公式是否正确", expectedKinds: ["business_document"], forbiddenKinds: ["software_verification"], tags: ["professional-boundary", "office", "verification-wording"] },
+  { id: "professional-office-ppt-validation", text: "制作季度汇报 PPT，并验证每页排版无误", expectedKinds: ["presentation_creation"], forbiddenKinds: ["software_verification"], tags: ["professional-boundary", "office", "verification-wording"] },
+  { id: "professional-finance-validation", text: "核对发票和银行流水，并验证金额一致", expectedKinds: ["finance_reconciliation"], forbiddenKinds: ["software_verification"], tags: ["professional-boundary", "finance", "verification-wording"] },
   { id: "professional-negation-hr", text: "只筛选简历，不安排面试", expectedKinds: ["hr_candidate_screening"], forbiddenKinds: ["hr_interview_scheduling"], tags: ["professional-boundary", "negation"] },
   { id: "professional-negation-finance", text: "先核对发票和流水，付款申请暂不做", expectedKinds: ["finance_reconciliation"], forbiddenKinds: ["finance_payment_request", "finance_payment_request_draft"], tags: ["professional-boundary", "negation"] },
   { id: "professional-negation-legal", text: "合同只审风险，不要修改", expectedKinds: ["legal_contract_review"], forbiddenKinds: ["legal_document_revision"], tags: ["professional-boundary", "negation"] },

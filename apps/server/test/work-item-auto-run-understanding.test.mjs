@@ -212,6 +212,23 @@ test("enqueue returns immediately and advances the persisted Run in background",
   assert.equal(autoRun.executionPlan.intentContract, null);
 });
 
+test("legacy repository recovery routes a stale general task through the development delivery flow", async () => {
+  const { service, autoRun, workItem, calls } = fixture();
+  workItem.taskKind = "general";
+  autoRun.executionRecovery = {
+    requestId: "ear_legacy",
+    sourceKind: "application_invocation",
+    sourceTargetId: "inv_legacy",
+    routeHint: "develop",
+  };
+
+  const result = await service.processRun(autoRun.id);
+  assert.equal(result.ok, true);
+  assert.equal(calls.projectContext.taskKind, "software_implementation");
+  assert.equal(calls.contextSummary.taskKind, "general", "the historical task projection remains unchanged");
+  assert.equal(autoRun.decision.path, "develop");
+});
+
 test("read-only Channel work carries its boundary into the real auto-run start", async () => {
   const { service, autoRun, calls, workItem } = fixture({ readOnly: true, channel: true });
   const result = await service.processRun(autoRun.id);

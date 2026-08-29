@@ -99,6 +99,21 @@ test("local ordinary-language tasks require positive work-type evidence", async 
   });
   assert.equal(declaredImage.path, "creative");
 
+  const desktopGeneral = await resolveDecision({
+    link: { type: "local_issue", title: "客户端闭环验收：只读取 Documents 项目根目录，列出 3 个文件，不要修改任何内容" },
+    issueBody: "只读取当前目录并返回结果。",
+    projectContext: { channelOrigin: false, taskKind: "general" },
+  });
+  assert.equal(desktopGeneral.path, "general", "a typed desktop task must not fall back to the legacy develop route");
+  assert.equal(desktopGeneral.workKind, "general");
+
+  const desktopOffice = await resolveDecision({
+    link: { type: "local_issue", title: "创建办公验证清单.xlsx" },
+    projectContext: { channelOrigin: false, taskKind: "business_document" },
+  });
+  assert.equal(desktopOffice.path, "office");
+  assert.equal(desktopOffice.workKind, "office");
+
   const general = await resolveDecision({ link: { type: "local_issue", title: "帮我翻译这段说明" }, projectContext: { channelOrigin: true } });
   assert.equal(general.path, "general");
   assert.equal(general.workKind, "general");
