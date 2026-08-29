@@ -33,6 +33,8 @@ test("builds versioned chapter history from plans, sessions, attempts, reviews, 
   assert.equal(math.chapters[0].moduleName, "一元一次方程与等式性质");
   assert.equal(math.chapters[0].summary.completedSessionCount, 3);
   assert.equal(math.chapters[0].summary.currentPlan.completedDays, 2);
+  assert.equal(math.chapters[0].summary.currentPlan.scheduledDays, 4);
+  assert.equal(math.chapters[0].summary.currentPlan.restDays, 1);
   assert.equal(math.recentSessions.length, 3);
   assert.equal(math.recentSessions[0].knowledgeTitle, "方程应用");
   assert.equal(JSON.stringify(history).includes("secret learner answer"), false);
@@ -132,6 +134,7 @@ function fixture() {
         { dayIndex: 2, knowledgeId: "balance", status: "completed" },
         { dayIndex: 3, knowledgeId: "word-problem", status: "in_progress" },
         { dayIndex: 4, knowledgeId: "equation-meaning", status: "planned" },
+        { dayIndex: 5, knowledgeId: "equation-meaning", status: "rest" },
       ],
     }],
     privateTutorAssessments: [],

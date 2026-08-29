@@ -7,6 +7,13 @@ import { extname, isAbsolute, join, resolve } from "node:path";
 import { createCanvas } from "@napi-rs/canvas";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
+import {
+  PRIVATE_TUTOR_MATH_AST_NODE_TYPES,
+  PRIVATE_TUTOR_TEXTBOOK_BLOCK_TYPES,
+  PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION,
+  PRIVATE_TUTOR_VERTICAL_MATH_ROW_ROLES,
+} from "./private-tutor-textbook-page-schema.mjs";
+
 const require = createRequire(import.meta.url);
 const SUPPORTED_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
 const MAX_PAGES = 300;
@@ -14,6 +21,91 @@ const PAGES_PER_REQUEST = 8;
 const MAX_PAGE_CHARS = 80_000;
 const MAX_PROCESS_OUTPUT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 8 * 60_000;
+const TEXTBOOK_BLOCK_TYPES = new Set(PRIVATE_TUTOR_TEXTBOOK_BLOCK_TYPES);
+const MATH_AST_NODE_TYPES = new Set(PRIVATE_TUTOR_MATH_AST_NODE_TYPES);
+const VERTICAL_MATH_ROW_ROLES = new Set(PRIVATE_TUTOR_VERTICAL_MATH_ROW_ROLES);
+
+const BOX_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["x", "y", "width", "height"],
+  properties: {
+    x: { type: "number", minimum: 0, maximum: 1 },
+    y: { type: "number", minimum: 0, maximum: 1 },
+    width: { type: "number", minimum: 0, maximum: 1 },
+    height: { type: "number", minimum: 0, maximum: 1 },
+  },
+};
+
+const MATH_SCHEMA = {
+  anyOf: [
+    { type: "null" },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["notation", "confidence", "ast", "vertical"],
+      properties: {
+        notation: { type: "string", maxLength: 1_000 },
+        confidence: { type: "number", minimum: 0, maximum: 1 },
+        ast: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["rootId", "nodes"],
+              properties: {
+                rootId: { type: "string", maxLength: 40 },
+                nodes: {
+                  type: "array",
+                  maxItems: 200,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["id", "type", "value", "childIds"],
+                    properties: {
+                      id: { type: "string", maxLength: 40 },
+                      type: { type: "string", enum: [...PRIVATE_TUTOR_MATH_AST_NODE_TYPES] },
+                      value: { type: "string", maxLength: 200 },
+                      childIds: { type: "array", maxItems: 20, items: { type: "string", maxLength: 40 } },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        },
+        vertical: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["operator", "rows"],
+              properties: {
+                operator: { type: "string", enum: ["add", "subtract", "multiply", "divide", "other"] },
+                rows: {
+                  type: "array",
+                  maxItems: 30,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["role", "text", "indent"],
+                    properties: {
+                      role: { type: "string", enum: [...PRIVATE_TUTOR_VERTICAL_MATH_ROW_ROLES] },
+                      text: { type: "string", maxLength: 200 },
+                      indent: { type: "integer", minimum: 0, maximum: 40 },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      },
+    },
+  ],
+};
 
 const OUTPUT_SCHEMA = {
   type: "object",
@@ -27,11 +119,32 @@ const OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["index", "text", "confidence"],
+        required: ["index", "printedPageNumber", "text", "confidence", "blocks"],
         properties: {
           index: { type: "integer", minimum: 1, maximum: MAX_PAGES },
+          printedPageNumber: { type: "string", maxLength: 40 },
           text: { type: "string", maxLength: MAX_PAGE_CHARS },
           confidence: { type: "number", minimum: 0, maximum: 1 },
+          blocks: {
+            type: "array",
+            maxItems: 2_000,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["order", "type", "text", "confidence", "box", "math"],
+              properties: {
+                order: { type: "integer", minimum: 1, maximum: 2_000 },
+                type: {
+                  type: "string",
+                  enum: ["heading", "paragraph", "formula", "table", "worked_example", "exercise", "illustration_caption", "other"],
+                },
+                text: { type: "string", maxLength: 2_000 },
+                confidence: { type: "number", minimum: 0, maximum: 1 },
+                box: BOX_SCHEMA,
+                math: MATH_SCHEMA,
+              },
+            },
+          },
         },
       },
     },
@@ -44,6 +157,78 @@ function codedError(message, code) {
 
 function boundedText(value, max = MAX_PAGE_CHARS) {
   return String(value ?? "").replaceAll("\0", "").slice(0, max);
+}
+
+function boundedNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : fallback;
+}
+
+function normalizeBox(value) {
+  const x = boundedNumber(value?.x);
+  const y = boundedNumber(value?.y);
+  const width = Math.min(boundedNumber(value?.width, 1), 1 - x);
+  const height = Math.min(boundedNumber(value?.height, 1), 1 - y);
+  if (width <= 0 || height <= 0) return { x: 0, y: 0, width: 1, height: 1 };
+  return { x, y, width, height };
+}
+
+function normalizeMath(value, blockConfidence) {
+  if (!value || typeof value !== "object") return null;
+  const notation = boundedText(value.notation, 1_000).trim();
+  const rawNodes = Array.isArray(value.ast?.nodes) ? value.ast.nodes.slice(0, 200) : [];
+  const nodes = [];
+  const nodeIds = new Set();
+  for (const [offset, rawNode] of rawNodes.entries()) {
+    let id = boundedText(rawNode?.id, 40).trim() || `node_${offset + 1}`;
+    if (nodeIds.has(id)) id = `node_${offset + 1}`;
+    nodeIds.add(id);
+    nodes.push({
+      id,
+      type: MATH_AST_NODE_TYPES.has(rawNode?.type) ? rawNode.type : "unknown",
+      value: boundedText(rawNode?.value, 200).trim(),
+      childIds: Array.isArray(rawNode?.childIds)
+        ? rawNode.childIds.slice(0, 20).map((childId) => boundedText(childId, 40).trim()).filter(Boolean)
+        : [],
+    });
+  }
+  for (const node of nodes) node.childIds = node.childIds.filter((childId) => nodeIds.has(childId) && childId !== node.id);
+  const requestedRootId = boundedText(value.ast?.rootId, 40).trim();
+  const rootId = nodeIds.has(requestedRootId) ? requestedRootId : nodes[0]?.id;
+  const byNodeId = new Map(nodes.map((node) => [node.id, node]));
+  const reachable = new Set();
+  const visiting = new Set();
+  function visit(nodeId) {
+    const node = byNodeId.get(nodeId);
+    if (!node || visiting.has(nodeId)) return false;
+    if (reachable.has(nodeId)) return true;
+    visiting.add(nodeId);
+    node.childIds = node.childIds.filter((childId) => visit(childId));
+    visiting.delete(nodeId);
+    reachable.add(nodeId);
+    return true;
+  }
+  if (rootId) visit(rootId);
+  const astNodes = nodes.filter((node) => reachable.has(node.id));
+  const ast = rootId && astNodes.length > 0 ? { rootId, nodes: astNodes } : null;
+  const rows = Array.isArray(value.vertical?.rows) ? value.vertical.rows.slice(0, 30).map((row) => ({
+    role: VERTICAL_MATH_ROW_ROLES.has(row?.role) ? row.role : "operand",
+    text: boundedText(row?.text, 200).trim(),
+    indent: Math.max(0, Math.min(40, Math.trunc(Number(row?.indent) || 0))),
+  })).filter((row) => row.text) : [];
+  const vertical = rows.length > 0 ? {
+    operator: ["add", "subtract", "multiply", "divide", "other"].includes(value.vertical?.operator)
+      ? value.vertical.operator
+      : "other",
+    rows,
+  } : null;
+  if (!notation && !ast && !vertical) return null;
+  return {
+    notation,
+    confidence: boundedNumber(value.confidence, blockConfidence),
+    ast,
+    vertical,
+  };
 }
 
 function codexCliPath() {
@@ -218,18 +403,37 @@ function normalizeCodexPages(payload, expectedPages) {
       throw codedError("Codex OCR omitted a required page.", "workflow_codex_ocr_invalid_result");
     }
     const text = boundedText(page.text);
-    const evidence = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 2_000)
-      .map((line) => ({
-        text: boundedText(line, 2_000),
-        confidence: Math.max(0, Math.min(1, Number(page.confidence))),
-        box: { x: 0, y: 0, width: 1, height: 1 },
-      }));
+    const pageConfidence = Math.max(0, Math.min(1, Number(page.confidence)));
+    const suppliedBlocks = Array.isArray(page.blocks) ? page.blocks : [];
+    const blocks = suppliedBlocks.length > 0
+      ? suppliedBlocks.slice(0, 2_000).map((block, offset) => {
+          const confidence = boundedNumber(block?.confidence);
+          return {
+          order: Number.isInteger(Number(block?.order)) ? Number(block.order) : offset + 1,
+          type: TEXTBOOK_BLOCK_TYPES.has(block?.type) ? block.type : "other",
+          text: boundedText(block?.text, 2_000).trim(),
+          confidence,
+          box: normalizeBox(block?.box),
+          math: normalizeMath(block?.math, confidence),
+        };
+        }).filter((block) => block.text)
+      : text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 2_000)
+        .map((line, offset) => ({ order: offset + 1, type: "paragraph", text: boundedText(line, 2_000), confidence: pageConfidence, box: { x: 0, y: 0, width: 1, height: 1 }, math: null }));
+    const evidence = blocks.map((block) => ({
+      text: block.text,
+      confidence: block.confidence,
+      box: block.box,
+    }));
     return {
+      schemaVersion: PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION,
       index: expected.index,
+      printedPageNumber: boundedText(page.printedPageNumber, 40).trim() || null,
       text,
-      confidence: Math.max(0, Math.min(1, Number(page.confidence))),
+      confidence: pageConfidence,
       width: expected.width ?? null,
       height: expected.height ?? null,
+      coordinateSystem: "normalized",
+      blocks,
       evidence,
     };
   });
@@ -274,9 +478,10 @@ export function createCodexVisionOcrAdapter({
       try {
         mkdirSync(workingDirectory, { recursive: true });
         const pagesDirectory = join(workingDirectory, "pages");
-        const recognitionDirectory = join(workingDirectory, "recognition");
+        const recognitionDirectory = join(workingDirectory, "recognition", PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION);
         mkdirSync(recognitionDirectory, { recursive: true });
-        atomicWrite(join(workingDirectory, "ocr-output.schema.json"), JSON.stringify(OUTPUT_SCHEMA));
+        const schemaPath = join(workingDirectory, `ocr-output.${PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION}.schema.json`);
+        atomicWrite(schemaPath, JSON.stringify(OUTPUT_SCHEMA));
         const pages = extension === ".pdf"
           ? await renderPdf(resolve(path), pagesDirectory)
           : [{ index: 1, path: resolve(path), width: null, height: null }];
@@ -300,7 +505,7 @@ export function createCodexVisionOcrAdapter({
             "--ignore-rules",
             "--sandbox", "read-only",
             "--skip-git-repo-check",
-            "--output-schema", join(workingDirectory, "ocr-output.schema.json"),
+            "--output-schema", schemaPath,
             "--output-last-message", outputPath,
             "-C", workingDirectory,
           ];
@@ -311,8 +516,11 @@ export function createCodexVisionOcrAdapter({
           const prompt = [
             "你是文档文字识别器。请逐页忠实抄录附件图片中的全部可见文字。",
             "保留标题、段落、编号和表格行列关系；无法确定的字符使用〔不清楚〕，不要推测或总结。",
+            "把阅读顺序拆成 blocks，并把公式、例题、练习、表格与普通段落分类；printedPageNumber 只填写页面上实际印刷的页码，看不到时返回空字符串。",
+            "每个 block 的 box 使用相对整页的归一化坐标 x、y、width、height（左上角为原点，范围 0 到 1）。",
+            "数学内容必须填写 math：notation 使用 LaTeX 或忠实的线性表达；ast 用 rootId 和 nodes 表示语法树，childIds 保留运算顺序；竖式另填 vertical，逐行标注 role、原文 text 和右对齐缩进 indent。非数学块的 math 返回 null。",
             `附件依次对应原文第 ${pageNumbers} 页。返回 pages 数组，每页 index 必须使用原文页码。`,
-            "confidence 是该页整体识别可信度（0 到 1）。只返回符合指定 JSON Schema 的结果。",
+            `schema 版本是 ${PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION}。confidence 是页或文字块的识别可信度（0 到 1）。只返回符合指定 JSON Schema 的结果。`,
           ].join("\n");
           await run(config.command, args, {
             prompt,
@@ -328,9 +536,12 @@ export function createCodexVisionOcrAdapter({
           }
           const normalized = normalizeCodexPages(payload, batch);
           atomicWrite(shardPath, JSON.stringify({ pages: normalized.map((page) => ({
+            schemaVersion: page.schemaVersion,
             index: page.index,
+            printedPageNumber: page.printedPageNumber ?? "",
             text: page.text,
             confidence: page.confidence,
+            blocks: page.blocks,
           })) }));
           rmSync(outputPath, { force: true });
           recognized.push(...normalized);
@@ -339,6 +550,7 @@ export function createCodexVisionOcrAdapter({
         return {
           providerId: "codex-vision",
           providerVersion: config.model ?? "codex-default",
+          schemaVersion: PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION,
           inputKind: extension === ".pdf" ? "pdf" : "image",
           pageCount: recognized.length,
           pages: recognized,

@@ -4,6 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createLocalWorkflowOcrAdapter } from "./workflow-ocr-adapter.mjs";
+import {
+  PRIVATE_TUTOR_MATH_AST_NODE_TYPES,
+  PRIVATE_TUTOR_OCR_REVIEW_CONFIDENCE_THRESHOLD,
+  PRIVATE_TUTOR_TEXTBOOK_BLOCK_TYPES,
+  PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION,
+  PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSIONS,
+  PRIVATE_TUTOR_VERTICAL_MATH_ROW_ROLES,
+} from "./private-tutor-textbook-page-schema.mjs";
 
 export const PRIVATE_TUTOR_MATERIAL_PARSER_VERSION = 2;
 export const PRIVATE_TUTOR_MATERIAL_MAX_FILE_BYTES = 100 * 1024 * 1024;
@@ -13,6 +21,10 @@ export const PRIVATE_TUTOR_MATERIAL_MAX_PDF_PAGES = 300;
 const MAX_RAW_TEXT_CHARS = 500_000;
 const MIN_MEANINGFUL_PAGE_CHARS = 20;
 const SUPPORTED_FILE_TYPES = new Set(["markdown", "pdf", "plain_text"]);
+const TEXTBOOK_BLOCK_TYPES = new Set(PRIVATE_TUTOR_TEXTBOOK_BLOCK_TYPES);
+const TEXTBOOK_PAGE_SCHEMA_VERSIONS = new Set(PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSIONS);
+const MATH_AST_NODE_TYPES = new Set(PRIVATE_TUTOR_MATH_AST_NODE_TYPES);
+const VERTICAL_MATH_ROW_ROLES = new Set(PRIVATE_TUTOR_VERTICAL_MATH_ROW_ROLES);
 
 export class PrivateTutorMaterialParseError extends Error {
   constructor(code, message = code) {
@@ -173,41 +185,137 @@ export function applyPrivateTutorOcrResult(materialDocument, recognized, now = n
   if (!pageCount || !Array.isArray(materialDocument.pages) || materialDocument.pages.length !== pageCount) {
     throw new PrivateTutorMaterialParseError("private_tutor_ocr_material_invalid", "OCR requires the original PDF page index.");
   }
-  const pages = mergeOcrPages(materialDocument.pages, recognized?.pages, pageCount);
+  const pages = mergeOcrPages(materialDocument.pages, recognized?.pages, pageCount, {
+    providerId: recognized?.providerId ?? null,
+    providerVersion: recognized?.providerVersion ?? null,
+  });
   const quality = pdfTextQuality(pages, pageCount);
   const needsOcr = quality.needsOcr;
-  let sections = needsOcr ? [] : parsePdfTextSections(pages.map(
+  const ocrReview = summarizeOcrReview(pages, 1, now);
+  const needsReview = !needsOcr && ocrReview.requiredPageNumbers.length > 0;
+  let sections = needsOcr || needsReview ? [] : parsePdfTextSections(pages.map(
     (page) => `--- Page ${page.pageNumber} ---\n${page.text}`,
   ).join("\n"));
-  if (!needsOcr && sections.length === 0) sections = pdfPageSections(pages, materialDocument.fileName);
+  if (!needsOcr && !needsReview && sections.length === 0) sections = pdfPageSections(pages, materialDocument.fileName);
   const retainedWarnings = (materialDocument.extraction?.warnings ?? []).filter((warning) => ![
     "local_ocr_unavailable",
     "local_ocr_failed",
     "pages_with_little_or_no_text",
+    "ocr_pages_need_review",
   ].includes(warning.code));
   if (quality.lowTextPageNumbers.length > 0) {
     retainedWarnings.push({ code: "pages_with_little_or_no_text", pageNumbers: quality.lowTextPageNumbers });
   }
+  if (needsReview) {
+    retainedWarnings.push({ code: "ocr_pages_need_review", pageNumbers: ocrReview.requiredPageNumbers });
+  }
   return {
     ...materialDocument,
-    status: needsOcr ? "needs_ocr" : "parsed",
+    status: needsOcr ? "needs_ocr" : needsReview ? "needs_review" : "parsed",
     pages,
     sections,
     extraction: {
       ...materialDocument.extraction,
-      state: needsOcr ? "needs_ocr" : "ready",
+      state: needsOcr ? "needs_ocr" : needsReview ? "needs_review" : "ready",
       method: "pdf_text_with_local_ocr",
       processedPageCount: pages.length,
       characterCount: quality.characterCount,
       textPageCount: quality.textPageCount,
       lowTextPageNumbers: quality.lowTextPageNumbers,
       needsOcr,
+      ocrReview,
       ocr: {
         required: true,
         attempted: true,
-        state: "completed",
+        state: needsReview ? "needs_review" : "completed",
         providerId: recognized?.providerId ?? null,
         providerVersion: recognized?.providerVersion ?? null,
+        reason: needsOcr ? "private_tutor_ocr_text_quality_insufficient" : null,
+      },
+      warnings: dedupeWarnings(retainedWarnings),
+    },
+    updatedAt: now,
+  };
+}
+
+export function reviewPrivateTutorOcrPage(materialDocument, input, now = new Date().toISOString()) {
+  if (!materialDocument || materialDocument.fileType !== "pdf" || !Array.isArray(materialDocument.pages)) {
+    throw new PrivateTutorMaterialParseError("private_tutor_ocr_material_invalid", "OCR review requires a PDF material document.");
+  }
+  const review = materialDocument.extraction?.ocrReview;
+  if (!review || Number(input?.expectedRevision) !== Number(review.revision)) {
+    throw new PrivateTutorMaterialParseError("private_tutor_ocr_review_revision_conflict", "The OCR review changed; reload before confirming this page.");
+  }
+  const pageNumber = Number(input?.pageNumber);
+  const pageIndex = materialDocument.pages.findIndex((page) => page.pageNumber === pageNumber);
+  const page = materialDocument.pages[pageIndex];
+  if (!page || page.source !== "local_ocr" || page.review?.status !== "pending") {
+    throw new PrivateTutorMaterialParseError("private_tutor_ocr_review_page_not_pending", "This OCR page is not waiting for review.");
+  }
+  if (input?.acknowledge !== true) {
+    throw new PrivateTutorMaterialParseError("private_tutor_ocr_review_acknowledgement_required", "Confirm that the recognized page was checked against the source image.");
+  }
+  const nextText = typeof input.text === "string"
+    ? input.text.replaceAll("\0", "").trim().slice(0, MAX_RAW_TEXT_CHARS)
+    : page.text;
+  if (!nextText) {
+    throw new PrivateTutorMaterialParseError("private_tutor_ocr_review_text_required", "A reviewed OCR page must contain text.");
+  }
+  const textEdited = nextText !== page.text;
+  const previousSource = page.blocks?.[0]?.source ?? {};
+  const blocks = textEdited ? normalizeOcrBlocks(null, nextText, page.confidence, page.pageNumber, previousSource) : page.blocks;
+  const nextPages = materialDocument.pages.slice();
+  nextPages[pageIndex] = {
+    ...page,
+    text: nextText,
+    characterCount: nextText.length,
+    printedPageNumber: typeof input.printedPageNumber === "string"
+      ? input.printedPageNumber.replaceAll("\0", "").trim().slice(0, 40) || null
+      : page.printedPageNumber ?? null,
+    schemaVersion: textEdited ? PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION : page.schemaVersion,
+    coordinateSystem: textEdited ? "normalized" : page.coordinateSystem,
+    blocks,
+    review: {
+      ...page.review,
+      status: "confirmed",
+      confirmedAt: now,
+      textEdited,
+    },
+  };
+  const nextRevision = Number(review.revision) + 1;
+  const ocrReview = summarizeOcrReview(nextPages, nextRevision, now);
+  const quality = pdfTextQuality(nextPages, materialDocument.extraction?.pageCount);
+  const needsOcr = quality.needsOcr;
+  const needsReview = !needsOcr && ocrReview.requiredPageNumbers.length > 0;
+  const status = needsOcr ? "needs_ocr" : needsReview ? "needs_review" : "parsed";
+  let sections = status === "parsed" ? parsePdfTextSections(nextPages.map(
+    (item) => `--- Page ${item.pageNumber} ---\n${item.text}`,
+  ).join("\n")) : [];
+  if (status === "parsed" && sections.length === 0) sections = pdfPageSections(nextPages, materialDocument.fileName);
+  const retainedWarnings = (materialDocument.extraction?.warnings ?? []).filter((warning) => ![
+    "pages_with_little_or_no_text",
+    "ocr_pages_need_review",
+  ].includes(warning.code));
+  if (quality.lowTextPageNumbers.length > 0) {
+    retainedWarnings.push({ code: "pages_with_little_or_no_text", pageNumbers: quality.lowTextPageNumbers });
+  }
+  if (needsReview) retainedWarnings.push({ code: "ocr_pages_need_review", pageNumbers: ocrReview.requiredPageNumbers });
+  return {
+    ...materialDocument,
+    status,
+    pages: nextPages,
+    sections,
+    extraction: {
+      ...materialDocument.extraction,
+      state: status === "parsed" ? "ready" : status,
+      characterCount: quality.characterCount,
+      textPageCount: quality.textPageCount,
+      lowTextPageNumbers: quality.lowTextPageNumbers,
+      needsOcr,
+      ocrReview,
+      ocr: {
+        ...materialDocument.extraction.ocr,
+        state: status === "parsed" ? "completed" : status === "needs_review" ? "needs_review" : "completed",
         reason: needsOcr ? "private_tutor_ocr_text_quality_insufficient" : null,
       },
       warnings: dedupeWarnings(retainedWarnings),
@@ -464,7 +572,7 @@ function safeOcrReadiness(adapter) {
   }
 }
 
-function mergeOcrPages(pdfPages, ocrPages, pageCount) {
+function mergeOcrPages(pdfPages, ocrPages, pageCount, provider = {}) {
   if (!Array.isArray(ocrPages) || ocrPages.length !== pageCount) {
     throw new PrivateTutorMaterialParseError("private_tutor_ocr_invalid_result", "Local OCR returned incomplete page results.");
   }
@@ -477,14 +585,140 @@ function mergeOcrPages(pdfPages, ocrPages, pageCount) {
     const existingLength = page.text.replace(/\s+/g, "").length;
     const ocrText = recognized.text.replaceAll("\0", "").trim().slice(0, MAX_RAW_TEXT_CHARS);
     if (existingLength >= MIN_MEANINGFUL_PAGE_CHARS || ocrText.length <= existingLength) return page;
+    const confidence = Math.max(0, Math.min(1, Number(recognized.confidence) || 0));
+    const blocks = normalizeOcrBlocks(recognized.blocks, ocrText, confidence, page.pageNumber, provider);
+    const reasons = [];
+    if (confidence < PRIVATE_TUTOR_OCR_REVIEW_CONFIDENCE_THRESHOLD) reasons.push("low_page_confidence");
+    if (blocks.some((block) => block.confidence < PRIVATE_TUTOR_OCR_REVIEW_CONFIDENCE_THRESHOLD)) reasons.push("low_block_confidence");
+    const formulaBlocks = blocks.filter((block) => block.type === "formula");
+    if (formulaBlocks.some((block) => !block.math?.ast && !block.math?.vertical)) reasons.push("math_structure_missing");
+    if (formulaBlocks.some((block) => block.math && block.math.confidence < PRIVATE_TUTOR_OCR_REVIEW_CONFIDENCE_THRESHOLD)) reasons.push("math_structure_low_confidence");
+    if (/〔不清楚〕/.test(ocrText)) reasons.push("unclear_characters");
     return {
       pageNumber: page.pageNumber,
       text: ocrText,
       characterCount: ocrText.length,
       source: "local_ocr",
-      confidence: Math.max(0, Math.min(1, Number(recognized.confidence) || 0)),
+      confidence,
+      schemaVersion: PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION,
+      coordinateSystem: "normalized",
+      printedPageNumber: String(recognized.printedPageNumber ?? "").trim().slice(0, 40) || null,
+      blocks,
+      review: {
+        status: reasons.length > 0 ? "pending" : "not_required",
+        reasons: [...new Set(reasons)],
+        confirmedAt: null,
+        textEdited: false,
+      },
     };
   });
+}
+
+function normalizeOcrBlocks(input, text, pageConfidence, pageNumber, provider) {
+  const raw = Array.isArray(input) && input.length > 0
+    ? input
+    : blocksFromText(text, pageConfidence);
+  return raw.slice(0, 2_000).map((block, offset) => {
+    const confidence = boundedConfidence(block?.confidence, pageConfidence);
+    return {
+      id: `page_${pageNumber}_block_${offset + 1}`,
+      order: offset + 1,
+      type: TEXTBOOK_BLOCK_TYPES.has(block?.type) ? block.type : "other",
+      text: String(block?.text ?? "").replaceAll("\0", "").trim().slice(0, 2_000),
+      confidence,
+      box: normalizeOcrBox(block?.box),
+      math: normalizeOcrMath(block?.math, confidence),
+      source: {
+        providerId: provider.providerId ?? null,
+        providerVersion: provider.providerVersion ?? null,
+        schemaVersion: PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION,
+      },
+    };
+  }).filter((block) => block.text);
+}
+
+function boundedConfidence(value, fallback = 0) {
+  const number = Number(value);
+  return Math.max(0, Math.min(1, Number.isFinite(number) ? number : Number(fallback) || 0));
+}
+
+function normalizeOcrBox(value) {
+  const x = boundedConfidence(value?.x);
+  const y = boundedConfidence(value?.y);
+  const width = Math.min(boundedConfidence(value?.width, 1), 1 - x);
+  const height = Math.min(boundedConfidence(value?.height, 1), 1 - y);
+  return width > 0 && height > 0 ? { x, y, width, height } : { x: 0, y: 0, width: 1, height: 1 };
+}
+
+function normalizeOcrMath(value, blockConfidence) {
+  if (!value || typeof value !== "object") return null;
+  const notation = String(value.notation ?? "").replaceAll("\0", "").trim().slice(0, 1_000);
+  const rawNodes = Array.isArray(value.ast?.nodes) ? value.ast.nodes.slice(0, 200) : [];
+  const nodes = [];
+  const ids = new Set();
+  rawNodes.forEach((node, offset) => {
+    let id = String(node?.id ?? "").replaceAll("\0", "").trim().slice(0, 40) || `node_${offset + 1}`;
+    if (ids.has(id)) id = `node_${offset + 1}`;
+    ids.add(id);
+    nodes.push({
+      id,
+      type: MATH_AST_NODE_TYPES.has(node?.type) ? node.type : "unknown",
+      value: String(node?.value ?? "").replaceAll("\0", "").trim().slice(0, 200),
+      childIds: Array.isArray(node?.childIds)
+        ? node.childIds.slice(0, 20).map((childId) => String(childId ?? "").trim().slice(0, 40)).filter(Boolean)
+        : [],
+    });
+  });
+  for (const node of nodes) node.childIds = node.childIds.filter((childId) => ids.has(childId) && childId !== node.id);
+  const requestedRootId = String(value.ast?.rootId ?? "").trim().slice(0, 40);
+  const rootId = ids.has(requestedRootId) ? requestedRootId : nodes[0]?.id;
+  const byNodeId = new Map(nodes.map((node) => [node.id, node]));
+  const reachable = new Set();
+  const visiting = new Set();
+  function visit(nodeId) {
+    const node = byNodeId.get(nodeId);
+    if (!node || visiting.has(nodeId)) return false;
+    if (reachable.has(nodeId)) return true;
+    visiting.add(nodeId);
+    node.childIds = node.childIds.filter((childId) => visit(childId));
+    visiting.delete(nodeId);
+    reachable.add(nodeId);
+    return true;
+  }
+  if (rootId) visit(rootId);
+  const astNodes = nodes.filter((node) => reachable.has(node.id));
+  const ast = rootId && astNodes.length > 0 ? { rootId, nodes: astNodes } : null;
+  const rows = Array.isArray(value.vertical?.rows) ? value.vertical.rows.slice(0, 30).map((row) => ({
+    role: VERTICAL_MATH_ROW_ROLES.has(row?.role) ? row.role : "operand",
+    text: String(row?.text ?? "").replaceAll("\0", "").trim().slice(0, 200),
+    indent: Math.max(0, Math.min(40, Math.trunc(Number(row?.indent) || 0))),
+  })).filter((row) => row.text) : [];
+  const vertical = rows.length > 0 ? {
+    operator: ["add", "subtract", "multiply", "divide", "other"].includes(value.vertical?.operator) ? value.vertical.operator : "other",
+    rows,
+  } : null;
+  if (!notation && !ast && !vertical) return null;
+  return { notation, confidence: boundedConfidence(value.confidence, blockConfidence), ast, vertical };
+}
+
+function blocksFromText(text, confidence) {
+  return String(text ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 2_000)
+    .map((line, offset) => ({ order: offset + 1, type: "paragraph", text: line, confidence }));
+}
+
+function summarizeOcrReview(pages, revision, now) {
+  const ocrPages = pages.filter((page) => page.source === "local_ocr" && TEXTBOOK_PAGE_SCHEMA_VERSIONS.has(page.schemaVersion));
+  const requiredPageNumbers = ocrPages.filter((page) => page.review?.status === "pending").map((page) => page.pageNumber);
+  const confirmedPageNumbers = ocrPages.filter((page) => page.review?.status === "confirmed").map((page) => page.pageNumber);
+  return {
+    schemaVersion: PRIVATE_TUTOR_TEXTBOOK_PAGE_SCHEMA_VERSION,
+    revision,
+    status: requiredPageNumbers.length > 0 ? "pending" : confirmedPageNumbers.length > 0 ? "confirmed" : "not_required",
+    confidenceThreshold: PRIVATE_TUTOR_OCR_REVIEW_CONFIDENCE_THRESHOLD,
+    requiredPageNumbers,
+    confirmedPageNumbers,
+    confirmedAt: requiredPageNumbers.length === 0 && confirmedPageNumbers.length > 0 ? now : null,
+  };
 }
 
 function pdfPageSections(pages, fileName) {
@@ -652,7 +886,7 @@ export function parsePdfTextSections(pdfText) {
     }
 
     const markdownHeading = line.match(/^(#{1,6})\s+(.+)$/);
-    const structuralHeading = line.trim().match(/^(第[0-9一二三四五六七八九十百]+[章回讲节篇]|Chapter\s+\d+|Unit\s+\d+|Part\s+[0-9IVXLCDM]+|[IVXLCDM]+\.|[A-Z]\.|[0-9]+(?:\.[0-9]+)*[.、]?\s+|摘要$|引言$|结论$|参考文献$|附录(?:\s*[A-Z一二三四五六七八九十])?[:：]?)/i);
+    const structuralHeading = line.trim().match(/^(第[0-9零〇一二三四五六七八九十百]+(?:章|回|讲|节|篇|单元|课)|Chapter\s+\d+|Unit\s+\d+|Part\s+[0-9IVXLCDM]+|[IVXLCDM]+\.|[A-Z]\.|[0-9]+(?:\.[0-9]+)*[.、]?\s+|摘要$|引言$|结论$|参考文献$|附录(?:\s*[A-Z一二三四五六七八九十])?[:：]?)/i);
     const headingMatch = markdownHeading || structuralHeading;
 
     if (headingMatch) {
@@ -664,7 +898,11 @@ export function parsePdfTextSections(pdfText) {
       }
 
       const isMd = Boolean(markdownHeading);
-      const title = isMd ? line.replace(/^#+\s+/, "").trim() : line.trim();
+      const structuralLine = line.trim();
+      const inlineSentenceBreak = isMd ? -1 : structuralLine.search(/[。！？!?]/);
+      const title = isMd
+        ? line.replace(/^#+\s+/, "").trim()
+        : inlineSentenceBreak > 0 ? structuralLine.slice(0, inlineSentenceBreak).trim() : structuralLine;
       const level = isMd ? markdownHeading[1].length : pdfStructuralHeadingLevel(title);
 
       currentSection = {
@@ -674,7 +912,9 @@ export function parsePdfTextSections(pdfText) {
         pageNumber: currentPage,
         lineStart: i + 1,
         lineEnd: lines.length,
-        contentLines: [],
+        contentLines: inlineSentenceBreak > 0
+          ? [structuralLine.slice(inlineSentenceBreak + 1).trim()].filter(Boolean)
+          : [],
       };
     } else if (currentSection) {
       currentSection.contentLines.push(line);
@@ -692,7 +932,7 @@ export function parsePdfTextSections(pdfText) {
 }
 
 function pdfStructuralHeadingLevel(title) {
-  if (/^[A-Z]\.\s+/.test(title) || /^第[0-9一二三四五六七八九十百]+节/.test(title)) return 2;
+  if (/^[A-Z]\.\s+/.test(title) || /^第[0-9零〇一二三四五六七八九十百]+(?:节|课)/.test(title)) return 2;
   const decimal = title.match(/^([0-9]+(?:\.[0-9]+)+)[.、]?\s+/);
   if (decimal) return Math.min(6, decimal[1].split(".").length);
   return 1;

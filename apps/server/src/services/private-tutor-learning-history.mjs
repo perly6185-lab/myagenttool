@@ -175,9 +175,10 @@ function summarizeHistory({ attempts, sessions, plans, at }) {
     currentPlan: {
       planId: latestPlan?.id ?? null,
       status: latestPlan?.status ?? null,
-      scheduledDays: currentDays.length,
+      scheduledDays: currentDays.filter((item) => !["rest", "rescheduled"].includes(item.status)).length,
       completedDays: currentDays.filter((item) => item.status === "completed").length,
       inProgressDays: currentDays.filter((item) => item.status === "in_progress").length,
+      restDays: currentDays.filter((item) => item.status === "rest").length,
     },
     practiceAttemptCount: attempts.length,
     eligibleEvidenceCount: eligible.length,

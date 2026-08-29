@@ -26,16 +26,17 @@ const DEFAULTS = Object.freeze({
 
 const MAX_GOAL_TEXT_LENGTH = 200;
 
-function sanitizeGoal(input) {
+export function sanitizePrivateTutorLearningGoal(input) {
   if (input == null) return null;
   if (typeof input !== "object") return { __invalid: true };
   const targetTopicIds = Array.isArray(input.targetTopicIds)
     ? [...new Set(input.targetTopicIds.map((id) => String(id).trim()).filter(Boolean))]
     : [];
   const goal = {
+    contentPackageId: typeof input.contentPackageId === "string" ? input.contentPackageId.trim().slice(0, 200) || null : null,
     targetTopicIds,
-    weeklyMinutes: input.weeklyMinutes != null ? clampDailyMinutes(input.weeklyMinutes) : null,
-    targetDate: typeof input.targetDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.targetDate) ? input.targetDate : null,
+    weeklyMinutes: input.weeklyMinutes != null ? clampWeeklyMinutes(input.weeklyMinutes) : null,
+    targetDate: validDateOnly(input.targetDate) ? input.targetDate : null,
     note: typeof input.note === "string" ? input.note.slice(0, MAX_GOAL_TEXT_LENGTH) : "",
   };
   if (input.weeklyMinutes != null && goal.weeklyMinutes === null) return { __invalid: true };
@@ -47,6 +48,19 @@ function clampDailyMinutes(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
   return Math.min(180, Math.max(5, Math.round(n)));
+}
+
+function clampWeeklyMinutes(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(1_260, Math.max(5, Math.round(n)));
+}
+
+function validDateOnly(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
 }
 
 export function defaultLearningPreferences() {
@@ -109,7 +123,7 @@ export function updatePrivateTutorLearningPreferences(state, learnerId, patch, {
     base.voicePreference = patch.voicePreference;
   }
   if (patch.learningGoal !== undefined) {
-    const goal = sanitizeGoal(patch.learningGoal);
+    const goal = sanitizePrivateTutorLearningGoal(patch.learningGoal);
     if (goal?.__invalid) return { ok: false, error: "invalid_learning_goal" };
     base.learningGoal = goal;
   }

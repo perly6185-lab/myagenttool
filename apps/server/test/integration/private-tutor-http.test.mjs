@@ -6,7 +6,7 @@ process.env.MYAGENT_DESKTOP_CREDENTIAL_TOKEN = "private-tutor-desktop-test-token
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { after, before, test } from "node:test";
@@ -16,6 +16,7 @@ let server;
 let base;
 let runtimeState;
 let deletionFinalizer;
+let materialOcrService;
 const root = join(tmpdir(), `myagenttool-private-tutor-http-${process.pid}`);
 
 before(async () => {
@@ -81,6 +82,7 @@ before(async () => {
     now,
   });
   deletionFinalizer = httpDependencies.finalizePrivateTutorLearnerDeletion;
+  materialOcrService = httpDependencies.privateTutorMaterialOcrService;
   server = createHttpServer({
     host: "127.0.0.1",
     port: 0,
@@ -214,7 +216,9 @@ test("a personal learner starts one fourteen-day trial and reads evidence-only t
   assert.equal(started.body.trial.observationDays, 2);
   assert.equal(Date.parse(started.body.trial.observationEndsAt) - Date.parse(started.body.trial.endsAt), 2 * 24 * 60 * 60 * 1000);
   assert.equal(started.body.trial.status, "active");
+  assert.deepEqual(started.body.trial.metrics.courseCompletion, { scheduledDayCount: 14, completedDayCount: 0, completionRate: 0 });
   assert.equal(started.body.trial.metrics.nextDayRecall.retentionRate, null);
+  assert.equal(started.body.trial.metrics.errorConvergence.convergenceRate, null);
   assert.equal(started.body.trial.readiness.nextDayRecallReady, false);
 
   const repeated = await call("/api/private-tutor/profile/learning-trial/start", {
@@ -245,6 +249,7 @@ test("a personal learner starts one fourteen-day trial and reads evidence-only t
   assert.equal(metrics.status, 200);
   assert.equal(metrics.body.trial.metrics.nextDayRecall.opportunityCount, 1);
   assert.equal(metrics.body.trial.metrics.nextDayRecall.correctCount, 1);
+  assert.deepEqual(metrics.body.trial.metrics.courseCompletion, { scheduledDayCount: 14, completedDayCount: 1, completionRate: 0.0714 });
   assert.equal(metrics.body.trial.metrics.followUps.resolutionRate, 1);
   assert.equal(JSON.stringify(metrics.body).includes("normalizedAnswer"), false);
   assert.equal(runtimeState.privateTutorAuditEvents.some((row) => row.action === "learning_trial_started" && row.learnerId === learner.id), true);
@@ -323,6 +328,16 @@ test("a learner can target one knowledge point with exactly three quick diagnost
   assert.equal(lesson.status, 201);
   assert.equal(lesson.body.session.targetKnowledgeId, "balance");
   assert.equal(lesson.body.session.plannedMinutes, 5);
+  assert.equal(lesson.body.session.teachingPolicy.schemaVersion, 1);
+  assert.equal(["support", "core", "challenge"].includes(lesson.body.session.teachingPolicy.questionDifficulty), true);
+  assert.equal("rawAnswer" in lesson.body.session.teachingPolicy.evidenceSummary, false);
+
+  const experience = await call("/api/private-tutor/profile/experience-report", { token });
+  assert.equal(experience.status, 200);
+  assert.equal(experience.body.report.smoothness.startedSessionCount, 1);
+  assert.equal(experience.body.report.smoothness.suggestionPresentedCount, 1);
+  assert.equal(experience.body.report.teachingPersonalization.decisionCount, 1);
+  assert.equal(JSON.stringify(experience.body.report).includes("rawAnswer"), false);
 });
 
 test("multiple legacy profiles require an explicit migration instead of implicit selection", async () => {
@@ -988,7 +1003,165 @@ test("the adaptive diagnostic is resumable, server-graded, idempotent, and produ
   assert.equal(completedSession.body.session.summary.independentCompleted, true);
   assert.deepEqual(completedSession.body.session.summary.hintedActivities, ["guided_practice"]);
   assert.equal(completedSession.body.snapshot.completedSessions, 1);
+  assert.equal(completedSession.body.learningPlan.reason, "tutoring_session_completed");
+  assert.equal(completedSession.body.learningPlan.days[0].status, "completed");
+  assert.equal(completedSession.body.learningPlan.days.slice(1).some((day) => day.status === "planned"), true);
   assert.equal(runtimeState.privateTutorSessionEvents.some((row) => row.sessionId === tutoringSession.id && row.type === "session_completed"), true);
+});
+
+test("learning goal changes require a current preview and explicit confirmation", async () => {
+  const token = "tok_personal";
+  const preferences = await call("/api/private-tutor/profile/preferences", { token });
+  const learningGoal = {
+    contentPackageId: "demo-math-foundations-v1",
+    targetTopicIds: ["top-balance-and-apps"],
+    weeklyMinutes: 120,
+    targetDate: "2026-12-31",
+    note: "年底前掌握等式平衡",
+  };
+  const bypass = await call("/api/private-tutor/profile/preferences", {
+    token, method: "PUT", body: { learningGoal },
+  });
+  assert.equal(bypass.status, 409);
+  assert.equal(bypass.body.error, "private_tutor_learning_goal_preview_required");
+
+  const previewed = await call("/api/private-tutor/profile/learning-goal/preview", {
+    token,
+    method: "POST",
+    body: { learningGoal, expectedPreferencesRevision: preferences.body.preferences.revision },
+  });
+  assert.equal(previewed.status, 200);
+  assert.equal(previewed.body.preview.requiresConfirmation, true);
+  assert.equal(previewed.body.preview.forecast.completionWindow.optimistic <= previewed.body.preview.forecast.completionWindow.likely, true);
+  assert.equal(previewed.body.preview.forecast.completionWindow.likely <= previewed.body.preview.forecast.completionWindow.conservative, true);
+  assert.equal(previewed.body.preview.forecast.effortProfile.modelVersion, "observed-session-effort-v1");
+
+  runtimeState.privateTutorSessions.unshift({
+    id: "pts_goal_preview_timing_change",
+    learnerId: preferences.body.preferences.learnerId,
+    contentPackageId: "demo-math-foundations-v1",
+    targetKnowledgeId: "balance-model",
+    status: "completed",
+    plannedMinutes: 20,
+    startedAt: "2026-08-20T08:00:00.000Z",
+    completedAt: "2026-08-20T08:25:00.000Z",
+    activities: [],
+  });
+  const stale = await call("/api/private-tutor/profile/learning-goal/confirm", {
+    token,
+    method: "POST",
+    body: { learningGoal, expectedPreferencesRevision: preferences.body.preferences.revision, previewFingerprint: previewed.body.preview.fingerprint },
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.error, "private_tutor_learning_goal_preview_stale");
+
+  const refreshedPreview = await call("/api/private-tutor/profile/learning-goal/preview", {
+    token,
+    method: "POST",
+    body: { learningGoal, expectedPreferencesRevision: preferences.body.preferences.revision },
+  });
+  assert.equal(refreshedPreview.status, 200);
+  assert.notEqual(refreshedPreview.body.preview.fingerprint, previewed.body.preview.fingerprint);
+  assert.equal(refreshedPreview.body.preview.forecast.effortProfile.sampleCount >= 1, true);
+
+  const previousPlan = runtimeState.privateTutorLearningPlans.find((row) => row.learnerId === preferences.body.preferences.learnerId && row.status === "active");
+  const confirmed = await call("/api/private-tutor/profile/learning-goal/confirm", {
+    token,
+    method: "POST",
+    body: {
+      learningGoal,
+      expectedPreferencesRevision: preferences.body.preferences.revision,
+      previewFingerprint: refreshedPreview.body.preview.fingerprint,
+    },
+  });
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.preferences.learningGoal.targetTopicIds[0], "top-balance-and-apps");
+  assert.equal(confirmed.body.learningPlan.reason, "learning_goal_confirmed");
+  if (previousPlan) assert.equal(previousPlan.status, "superseded");
+  assert.equal(runtimeState.privateTutorLearningPlans.some((row) => row.id === confirmed.body.learningPlan.id && row.status === "active"), true);
+  assert.equal(runtimeState.privateTutorAuditEvents.some((row) => row.action === "learning_goal_confirmed" && row.details.previewFingerprint === refreshedPreview.body.preview.fingerprint), true);
+  const ledger = await call("/api/private-tutor/profile/roadmap-ledger", { token });
+  assert.equal(ledger.status, 200);
+  assert.equal(ledger.body.ledger.baseline.planId, confirmed.body.learningPlan.id);
+  assert.equal(ledger.body.ledger.routeVersions[0].reason, "learning_goal_confirmed");
+  assert.equal(ledger.body.ledger.learningGoal.targetDate, "2026-12-31");
+});
+
+test("overdue work exposes a progress alert and only moves to a buffer day after catch-up confirmation", async () => {
+  const token = "tok_personal";
+  const preferences = await call("/api/private-tutor/profile/preferences", { token });
+  const plan = runtimeState.privateTutorLearningPlans.find((row) => row.learnerId === preferences.body.preferences.learnerId && row.status === "active");
+  assert.ok(plan);
+  const source = plan.days.find((day) => day.status === "planned");
+  const buffer = plan.days.find((day) => day.status === "rest") ?? plan.days.at(-1);
+  assert.ok(source);
+  assert.ok(buffer);
+  buffer.status = "rest";
+  buffer.minutes = 0;
+  buffer.activity = "rest";
+  const dateFromToday = (offset) => {
+    const value = new Date();
+    value.setUTCDate(value.getUTCDate() + offset);
+    return value.toISOString().slice(0, 10);
+  };
+  source.date = dateFromToday(-2);
+  buffer.date = dateFromToday(1);
+
+  const loaded = await call("/api/private-tutor/profile/learning-plan", { token });
+  assert.equal(loaded.status, 200);
+  assert.equal(loaded.body.learningPlan.progressSignal.overdueDayCount >= 1, true);
+  assert.equal(loaded.body.learningPlan.progressSignal.catchUpAvailable, true);
+  assert.equal(loaded.body.learningPlan.goalRoadmap.milestones.length > 0, true);
+
+  const previewed = await call("/api/private-tutor/profile/learning-plan/catch-up/preview", {
+    token,
+    method: "POST",
+    body: { expectedPlanRevision: plan.revision },
+  });
+  assert.equal(previewed.status, 200);
+  assert.equal(previewed.body.preview.canConfirm, true);
+  assert.equal(previewed.body.preview.assignments.some((item) => item.sourceDayIndex === source.dayIndex && item.targetDayIndex === buffer.dayIndex), true);
+
+  const confirmed = await call("/api/private-tutor/profile/learning-plan/catch-up/confirm", {
+    token,
+    method: "POST",
+    body: { expectedPlanRevision: plan.revision, previewFingerprint: previewed.body.preview.fingerprint },
+  });
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.learningPlan.reason, "catch_up_confirmed");
+  assert.equal(confirmed.body.learningPlan.days.find((day) => day.dayIndex === source.dayIndex).status, "rescheduled");
+  assert.equal(confirmed.body.learningPlan.days.find((day) => day.dayIndex === buffer.dayIndex).catchUpSourceDayIndex, source.dayIndex);
+  assert.equal(runtimeState.privateTutorAuditEvents.some((row) => row.action === "learning_plan_catch_up_confirmed" && row.details.planId === plan.id), true);
+  const ledger = await call("/api/private-tutor/profile/roadmap-ledger", { token });
+  assert.equal(ledger.status, 200);
+  assert.equal(ledger.body.ledger.routeVersions[0].reason, "catch_up_confirmed");
+  assert.equal(ledger.body.ledger.routeVersions[0].rescheduledDayCount >= 1, true);
+});
+
+test("a completed seven-day plan automatically continues into the next week", async () => {
+  const learnerId = runtimeState.testPrivateTutorLearnerIds[0];
+  const previousPlan = runtimeState.privateTutorLearningPlans.find((row) => row.learnerId === learnerId && row.status === "active");
+  assert.ok(previousPlan);
+  for (const day of previousPlan.days) {
+    if (day.status !== "rest") day.status = "completed";
+  }
+  previousPlan.status = "completed";
+  previousPlan.goalRoadmap ??= { currentWeekIndex: 1 };
+
+  const started = await call(`/api/private-tutor/learners/${learnerId}/tutoring-sessions/start`, {
+    method: "POST",
+    body: { pace: "standard" },
+  });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  const continuedPlan = runtimeState.privateTutorLearningPlans.find((row) => row.id === started.body.session.planId);
+  assert.ok(continuedPlan);
+  assert.notEqual(continuedPlan.id, previousPlan.id);
+  assert.equal(continuedPlan.goalRoadmap.currentWeekIndex, 2);
+  assert.equal(continuedPlan.reason, "next_week_started");
+  assert.equal(runtimeState.privateTutorAuditEvents.some((row) => row.action === "learning_plan_auto_continued" && row.details.planId === continuedPlan.id), true);
+  const ledger = runtimeState.privateTutorRoadmapLedgers.find((row) => row.learnerId === learnerId && row.status === "active");
+  assert.ok(ledger);
+  assert.equal(ledger.weeklyReviews.some((row) => row.weekIndex === 1), true);
 });
 
 test("review and family routes preserve learner isolation and low-pressure defaults", async () => {
@@ -1687,6 +1860,15 @@ Details on bubble sort.
   assert.equal(activationRes.body.learningPlan.days.length, 7);
   assert.equal(activationRes.body.snapshot.knowledge.every((item) => item.mastery === null && item.evidenceCount === 0), true);
 
+  const trialStart = await call("/api/private-tutor/profile/learning-trial/start", {
+    token: "tok_personal",
+    method: "POST",
+    body: { goal: "验证已确认并发布的资料课程" },
+  });
+  assert.equal(trialStart.status, 201, JSON.stringify(trialStart.body));
+  assert.equal(trialStart.body.trial.contentPackageId, publishedPackageId);
+  assert.equal(trialStart.body.trial.metrics.courseCompletion.completionRate, 0);
+
   let sessionRes = await call("/api/private-tutor/profile/tutoring-sessions/start", {
     token: "tok_personal",
     method: "POST",
@@ -1747,6 +1929,18 @@ Details on bubble sort.
   assert.equal(sessionRes.body.session.status, "completed");
   assert.equal(sessionRes.body.learningPlan.days[0].status, "completed");
   assert.equal(sessionRes.body.session.summary.evidenceCount, 3);
+
+  const trialProgress = await call("/api/private-tutor/profile/learning-trial", { token: "tok_personal" });
+  assert.equal(trialProgress.status, 200);
+  assert.equal(trialProgress.body.trial.contentPackageId, publishedPackageId);
+  assert.equal(trialProgress.body.trial.metrics.courseCompletion.completedDayCount, 1);
+  const trialStop = await call("/api/private-tutor/profile/learning-trial/stop", {
+    token: "tok_personal",
+    method: "POST",
+    body: {},
+  });
+  assert.equal(trialStop.status, 200);
+  assert.equal(trialStop.body.trial.status, "stopped");
 
   const diagnosticReactivation = await call("/api/private-tutor/profile/content-package/activate", {
     token: "tok_personal",
@@ -1886,6 +2080,143 @@ test("imports a desktop-selected scanned textbook into managed local storage wit
     method: "DELETE",
   });
   assert.equal(removed.status, 200);
+});
+
+test("requires account-scoped page review before OCR content can generate a knowledge map", async () => {
+  const at = new Date().toISOString();
+  const material = {
+    id: "mat_http_ocr_review",
+    learningProfileId: "usr_personal",
+    fileName: "四年级数学.pdf",
+    fileType: "pdf",
+    fileSize: 100,
+    sourceHash: "a".repeat(64),
+    status: "needs_review",
+    pages: [{
+      pageNumber: 1,
+      text: "第一单元 大数的认识。这里包含等待人工校对的完整教材文字。",
+      characterCount: 31,
+      source: "local_ocr",
+      confidence: 0.7,
+      schemaVersion: "private-tutor-textbook-page-v1",
+      printedPageNumber: "1",
+      blocks: [{
+        id: "page_1_block_1",
+        order: 1,
+        type: "heading",
+        text: "第一单元 大数的认识",
+        confidence: 0.7,
+        source: { providerId: "codex-vision", providerVersion: "test-v2", schemaVersion: "private-tutor-textbook-page-v1" },
+      }],
+      review: { status: "pending", reasons: ["low_page_confidence"], confirmedAt: null, textEdited: false },
+    }],
+    sections: [],
+    extraction: {
+      parserVersion: 2,
+      state: "needs_review",
+      method: "pdf_text_with_local_ocr",
+      pageCount: 1,
+      processedPageCount: 1,
+      characterCount: 31,
+      textPageCount: 1,
+      lowTextPageNumbers: [],
+      truncated: false,
+      truncatedPages: false,
+      needsOcr: false,
+      ocr: { required: true, attempted: true, state: "needs_review", providerId: "codex-vision", providerVersion: "test-v2", artifactKey: "codex-vision-test-v2", reason: null },
+      ocrReview: {
+        schemaVersion: "private-tutor-textbook-page-v1",
+        revision: 1,
+        status: "pending",
+        confidenceThreshold: 0.85,
+        requiredPageNumbers: [1],
+        confirmedPageNumbers: [],
+        confirmedAt: null,
+      },
+      warnings: [{ code: "ocr_pages_need_review", pageNumbers: [1] }],
+    },
+    createdAt: at,
+    updatedAt: at,
+  };
+  runtimeState.privateTutorMaterialDocuments.push(material);
+  runtimeState.privateTutorOcrJobs.unshift({
+    id: "ptocr_http_review",
+    materialId: material.id,
+    learningProfileId: "usr_personal",
+    sourceHash: material.sourceHash,
+    status: "needs_review",
+    cloudAllowed: true,
+    providerId: "codex-vision",
+    totalPages: 1,
+    completedPages: 1,
+    resumedPages: 0,
+    attempts: 1,
+    failureCode: null,
+    failureMessage: null,
+    createdAt: at,
+    startedAt: at,
+    updatedAt: at,
+    completedAt: at,
+  });
+  const pageImageDirectory = join(materialOcrService.root, material.sourceHash, "ocr", "codex-vision-test-v2", "pages");
+  mkdirSync(pageImageDirectory, { recursive: true });
+  writeFileSync(
+    join(pageImageDirectory, "page-001.png"),
+    Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("http-review-page")]),
+  );
+
+  const blocked = await call(`/api/private-tutor/materials/${material.id}/generate-draft`, {
+    token: "tok_personal", method: "POST", body: { packageName: "校对教材" },
+  });
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.status, "needs_review");
+
+  const image = await fetch(`${base}/api/private-tutor/materials/${material.id}/ocr-pages/1/image`, {
+    headers: { authorization: "Bearer tok_personal" },
+  });
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get("content-type"), "image/png");
+  assert.equal(image.headers.get("cache-control"), "private, no-store");
+  assert.equal(Buffer.from(await image.arrayBuffer()).subarray(1, 4).toString("ascii"), "PNG");
+
+  const foreignImage = await fetch(`${base}/api/private-tutor/materials/${material.id}/ocr-pages/1/image`, {
+    headers: { authorization: "Bearer tok_parent_b" },
+  });
+  assert.equal(foreignImage.status, 404);
+  const missingImage = await fetch(`${base}/api/private-tutor/materials/${material.id}/ocr-pages/2/image`, {
+    headers: { authorization: "Bearer tok_personal" },
+  });
+  assert.equal(missingImage.status, 404);
+
+  const foreign = await call(`/api/private-tutor/materials/${material.id}/ocr-review`, {
+    token: "tok_parent_b", method: "POST", body: { pageNumber: 1, expectedRevision: 1, acknowledge: true },
+  });
+  assert.equal(foreign.status, 404);
+
+  const reviewed = await call(`/api/private-tutor/materials/${material.id}/ocr-review`, {
+    token: "tok_personal",
+    method: "POST",
+    body: {
+      pageNumber: 1,
+      expectedRevision: 1,
+      printedPageNumber: "一",
+      text: "第一单元 大数的认识\n例题：125×8=1000。这里是已经对照原页修正后的完整教材文字。",
+      acknowledge: true,
+    },
+  });
+  assert.equal(reviewed.status, 200, JSON.stringify(reviewed.body));
+  assert.equal(reviewed.body.material.status, "parsed");
+  assert.equal(reviewed.body.material.extraction.ocrReview.revision, 2);
+  assert.equal(reviewed.body.job.status, "completed");
+
+  const generated = await call(`/api/private-tutor/materials/${material.id}/generate-draft`, {
+    token: "tok_personal", method: "POST", body: { packageName: "校对教材" },
+  });
+  assert.equal(generated.status, 201, JSON.stringify(generated.body));
+  assert.equal(generated.body.draft.subjectId, "math");
+  assert.equal(generated.body.draft.evaluationSubjectId, "math");
+  assert.equal(generated.body.draft.aggregation.strategy, "textbook_units_v1");
+  assert.equal(generated.body.draft.aggregation.detectedUnitCount, 1);
 });
 
 test("math and computer-science packages share the learning runtime without contaminating mastery", async () => {

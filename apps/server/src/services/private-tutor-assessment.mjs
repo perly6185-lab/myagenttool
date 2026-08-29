@@ -358,6 +358,9 @@ function resolveRuntimeCatalogQuestion(question, state, runtime) {
   const resolved = hasGovernedRevision ? resolveCatalogQuestion(question, state) : question;
   const materialized = resolved ? {
     ...resolved,
+    ...(resolved.kind === "numeric" && resolved.expectedAnswer
+      ? { expectedRational: parseRationalAnswer(resolved.expectedAnswer) }
+      : {}),
     context: question.context ?? resolved.context,
     contentPackageId: runtime.package.id,
     contentPackageVersion: runtime.package.version,

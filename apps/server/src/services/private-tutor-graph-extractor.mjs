@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { authoredContentFingerprint, requireConfirmedAuthoredContent } from "./private-tutor-content-authoring.mjs";
+import { parseRationalAnswer, rationalEquals } from "./plugins/math-plugin.mjs";
 
 export const DRAFT_SCHEMA_VERSION = 2;
 
@@ -7,6 +8,9 @@ const MAX_MODULES = 100;
 const MAX_TOPICS = 500;
 const MAX_KNOWLEDGE_COMPONENTS = 2_000;
 const INVALID_SOURCE_TEXT = /%PDF-|\bendstream\b|\bxref\b|\uFFFD{3,}/i;
+const UNIT_HEADING = /^(第[0-9零〇一二三四五六七八九十百]+单元)(?:\s+|[：:、.]?)(.*)$/i;
+const ENGLISH_UNIT_HEADING = /^(Unit\s+\d+)(?:\s*[:：.\-]?\s*)(.*)$/i;
+const MATH_TERMS = /数学|算式|计算|公式|方程|乘法|除法|加法|减法|分数|小数|几何|面积|周长|角度|竖式|等式/g;
 
 export function generateKnowledgeMapDraft({
   materialDocument,
@@ -22,6 +26,7 @@ export function generateKnowledgeMapDraft({
     throw new Error("invalid_material_document");
   }
   const normalizedPackageName = boundedRequiredString(packageName, 160, "invalid_package_name");
+  const subjectDetection = detectPrivateTutorMaterialSubject(materialDocument, subjectId);
   const draftIdHash = createHash("sha256")
     .update(`${materialDocument.learningProfileId}\0${materialDocument.sourceHash}\0${normalizedPackageName}`)
     .digest("hex");
@@ -31,11 +36,11 @@ export function generateKnowledgeMapDraft({
   let currentModule = null;
   let currentTopic = null;
 
-  const addModule = (section, implicit = false) => {
+  const addModule = (section, implicit = false, name = null) => {
     if (draftModules.length >= MAX_MODULES) return draftModules.at(-1) ?? null;
     const module = {
       id: `mod_${implicit ? "implicit_" : ""}${section.id}`,
-      name: implicit ? "课程内容" : section.title,
+      name: name ?? (implicit ? "课程内容" : section.title),
       description: summary(section.content || section.title, 160),
       sourceSectionId: section.id,
       sourceRef: sourceRef(materialDocument, section),
@@ -80,6 +85,7 @@ export function generateKnowledgeMapDraft({
       sourceRef: ref,
       sourceRefs: [ref],
       candidateQuestions: questions,
+      mathFacts: extractGroundedMathFacts(content, ref),
       orderIndex: draftKnowledgeComponents.length + 1,
     };
     const previous = [...draftKnowledgeComponents].reverse().find((item) => item.topicId === knowledge.topicId);
@@ -88,9 +94,33 @@ export function generateKnowledgeMapDraft({
     return knowledge;
   };
 
+  const numberedTextbookUnits = materialDocument.fileType === "pdf"
+    ? detectNumberedTextbookUnitHeadings(materialDocument)
+    : new Map();
+  const unitHeadingFor = (section) => textbookUnitHeading(section)
+    ?? numberedTextbookUnits.get(sectionUnitKey(section))
+    ?? null;
+  const textbookUnits = materialDocument.fileType === "pdf"
+    ? materialDocument.sections.map((section) => unitHeadingFor(section)).filter(Boolean)
+    : [];
+  const unitAware = textbookUnits.length > 0;
+  let detectedUnitCount = 0;
   for (const section of materialDocument.sections) {
     const level = Math.max(1, Number(section.level) || 1);
-    if (level === 1) {
+    const unit = unitAware ? unitHeadingFor(section) : null;
+    if (unit) {
+      detectedUnitCount += 1;
+      addModule(section, false, unit);
+      currentTopic = null;
+      if (String(section.content ?? "").trim()) {
+        addTopic(section, { implicit: true, name: `${unit} · 核心内容` });
+        addKnowledge(section);
+      }
+    } else if (unitAware) {
+      if (!currentModule) addModule(section, false, "教材导读");
+      addTopic(section, { name: textbookSectionTitle(section) });
+      addKnowledge(section);
+    } else if (level === 1) {
       addModule(section);
       currentTopic = null;
       if (String(section.content ?? "").trim()) {
@@ -128,8 +158,16 @@ export function generateKnowledgeMapDraft({
     materialDocumentId: materialDocument.id,
     learningProfileId: materialDocument.learningProfileId,
     packageName: normalizedPackageName,
-    subjectId: boundedRequiredString(subjectId, 100, "invalid_subject_id"),
+    subjectId: subjectDetection.resolvedSubjectId,
+    evaluationSubjectId: subjectDetection.evaluationSubjectId,
+    subjectDetection,
     domain: boundedRequiredString(domain, 100, "invalid_domain"),
+    aggregation: {
+      strategy: unitAware ? "textbook_units_v1" : "section_hierarchy_v1",
+      sourceSectionCount: materialDocument.sections.length,
+      detectedUnitCount,
+      moduleCount: groundedModules.length,
+    },
     schemaVersion: DRAFT_SCHEMA_VERSION,
     revision: 1,
     sourceSnapshot,
@@ -158,7 +196,21 @@ export function updateKnowledgeMapDraft(state, draftId, patch, now = new Date().
   if (draft.status === "published") throw new Error("cannot_edit_published_draft");
   const materialDocument = findDraftMaterial(state, draft);
   if (patch.packageName != null) draft.packageName = boundedRequiredString(patch.packageName, 160, "invalid_package_name");
-  if (patch.subjectId != null) draft.subjectId = boundedRequiredString(patch.subjectId, 100, "invalid_subject_id");
+  if (patch.subjectId != null) {
+    const nextSubjectId = boundedRequiredString(patch.subjectId, 100, "invalid_subject_id");
+    if (nextSubjectId !== draft.subjectId) {
+      draft.subjectId = nextSubjectId;
+      draft.evaluationSubjectId = evaluatorSubjectId(nextSubjectId);
+      draft.subjectDetection = {
+        requestedSubjectId: nextSubjectId,
+        resolvedSubjectId: nextSubjectId,
+        evaluationSubjectId: draft.evaluationSubjectId,
+        confidence: 1,
+        mode: "manual",
+        signals: ["user_selected_subject"],
+      };
+    }
+  }
   if (patch.domain != null) draft.domain = boundedRequiredString(patch.domain, 100, "invalid_domain");
   if (patch.draftModules != null) draft.draftModules = boundedObjectArray(patch.draftModules, MAX_MODULES, "invalid_draft_modules");
   if (patch.draftTopics != null) draft.draftTopics = boundedObjectArray(patch.draftTopics, MAX_TOPICS, "invalid_draft_topics");
@@ -378,7 +430,7 @@ export function publishKnowledgeMapDraft(state, draftId, now = new Date().toISOS
     name: draft.packageName,
     learningProfileId: draft.learningProfileId,
     subjectId: draft.subjectId,
-    evaluationSubjectId: "conceptual_studies",
+    evaluationSubjectId: draft.evaluationSubjectId ?? "conceptual_studies",
     domain: draft.domain,
     sourceType: "user_material",
     version: `${authoredContent.version}.0.0`,
@@ -394,17 +446,11 @@ export function publishKnowledgeMapDraft(state, draftId, now = new Date().toISOS
       authoredContentFingerprint: authoredContentFingerprint(authoredContent),
       authoredContentConfirmedAt: authoredContent.confirmation.confirmedAt,
       generatorVersion: authoredContent.generatorVersion,
+      aggregation: structuredClone(draft.aggregation ?? null),
+      subjectDetection: structuredClone(draft.subjectDetection ?? null),
     },
     targetAudience: { stage: "custom", description: "用户导入并确认的自定义学习资料", prerequisites: [] },
-    evaluationCapabilities: {
-      deterministicGrading: false,
-      semanticEvaluation: "source_grounded_rubric",
-      evidenceConfidenceCapped: true,
-      sourceGrounding: true,
-      stepEvaluation: false,
-      speechEvaluation: false,
-      visualInteractions: false,
-    },
+    evaluationCapabilities: evaluationCapabilitiesFor(draft.evaluationSubjectId ?? "conceptual_studies"),
     modules: draft.draftModules.map((module) => ({
       id: module.id,
       name: module.name,
@@ -432,6 +478,7 @@ export function publishKnowledgeMapDraft(state, draftId, now = new Date().toISOS
         orderIndex: knowledge.orderIndex,
         prerequisiteKnowledgeIds: knowledge.prerequisiteDraftIds,
         learningObjectives: knowledge.learningObjectives,
+        mathFacts: structuredClone(knowledge.mathFacts ?? []),
         sourceRefs: knowledgeSourceRefs(knowledge),
         sourceGrounding: "user_confirmed",
         teachingContent: authored.teachingContent,
@@ -455,6 +502,8 @@ export function publishKnowledgeMapDraft(state, draftId, now = new Date().toISOS
   pkg.contentChecksum = createHash("sha256").update(JSON.stringify({
     name: pkg.name,
     subjectId: pkg.subjectId,
+    evaluationSubjectId: pkg.evaluationSubjectId,
+    evaluationCapabilities: pkg.evaluationCapabilities,
     domain: pkg.domain,
     version: pkg.version,
     source: pkg.source,
@@ -485,12 +534,161 @@ export function knowledgeMapDraftFingerprint(draft) {
     revision: draft.revision,
     packageName: draft.packageName,
     subjectId: draft.subjectId,
+    evaluationSubjectId: draft.evaluationSubjectId,
+    subjectDetection: draft.subjectDetection,
     domain: draft.domain,
+    aggregation: draft.aggregation,
     sourceSnapshot: draft.sourceSnapshot,
     modules: draft.draftModules,
     topics: draft.draftTopics,
     knowledgeComponents: draft.draftKnowledgeComponents,
   })).digest("hex");
+}
+
+export function detectPrivateTutorMaterialSubject(materialDocument, requestedSubjectId = "general") {
+  const requested = boundedRequiredString(requestedSubjectId || "general", 100, "invalid_subject_id");
+  if (!new Set(["general", "auto"]).has(requested)) {
+    return {
+      requestedSubjectId: requested,
+      resolvedSubjectId: requested,
+      evaluationSubjectId: evaluatorSubjectId(requested),
+      confidence: 1,
+      mode: "manual",
+      signals: ["user_selected_subject"],
+    };
+  }
+  const pages = Array.isArray(materialDocument?.pages) ? materialDocument.pages : [];
+  const blocks = pages.flatMap((page) => Array.isArray(page?.blocks) ? page.blocks : []);
+  const structuredMathBlocks = blocks.filter((block) => block?.math?.ast || block?.math?.vertical).length;
+  const formulaBlocks = blocks.filter((block) => block?.type === "formula").length;
+  const text = `${materialDocument?.fileName ?? ""}\n${(materialDocument?.sections ?? []).map((section) => `${section.title}\n${section.content}`).join("\n")}`.slice(0, 500_000);
+  const termCount = Math.min(6, [...text.matchAll(MATH_TERMS)].length);
+  const equationCount = Math.min(6, (text.match(/\d\s*[+\-×÷*/=]\s*\d/g) ?? []).length);
+  const curriculumMathCount = Math.min(6, (text.match(/数学|算式|方程|竖式|例题|练习|第[0-9零〇一二三四五六七八九十百]+单元/g) ?? []).length);
+  let score = 0;
+  const signals = [];
+  const mathFilename = /数学|math/i.test(String(materialDocument?.fileName ?? ""));
+  if (mathFilename) {
+    score += 4;
+    signals.push("math_filename");
+  }
+  if (structuredMathBlocks > 0) {
+    score += Math.min(8, structuredMathBlocks * 3);
+    signals.push(`structured_math_blocks:${structuredMathBlocks}`);
+  }
+  if (formulaBlocks > 0) {
+    score += Math.min(4, formulaBlocks);
+    signals.push(`formula_blocks:${formulaBlocks}`);
+  }
+  if (termCount > 0) {
+    score += Math.min(4, termCount);
+    signals.push(`math_terms:${termCount}`);
+  }
+  if (equationCount > 0) {
+    score += Math.min(4, equationCount);
+    signals.push(`equation_patterns:${equationCount}`);
+  }
+  if (curriculumMathCount > 0) signals.push(`curriculum_math_markers:${curriculumMathCount}`);
+  const isMath = score >= 5
+    && (mathFilename || structuredMathBlocks > 0 || formulaBlocks > 0 || curriculumMathCount >= 2);
+  return {
+    requestedSubjectId: requested,
+    resolvedSubjectId: isMath ? "math" : "general",
+    evaluationSubjectId: isMath ? "math" : "conceptual_studies",
+    confidence: Number((isMath ? Math.min(0.99, 0.65 + score * 0.025) : Math.max(0.5, 0.9 - score * 0.06)).toFixed(2)),
+    mode: "automatic",
+    signals: signals.length ? signals : ["no_math_signal"],
+  };
+}
+
+function evaluatorSubjectId(subjectId) {
+  return subjectId === "math" ? "math" : "conceptual_studies";
+}
+
+function evaluationCapabilitiesFor(evaluationSubjectId) {
+  if (evaluationSubjectId === "math") {
+    return {
+      deterministicGrading: true,
+      semanticEvaluation: false,
+      evidenceConfidenceCapped: true,
+      sourceGrounding: true,
+      stepEvaluation: true,
+      speechEvaluation: false,
+      visualInteractions: true,
+    };
+  }
+  return {
+    deterministicGrading: false,
+    semanticEvaluation: "source_grounded_rubric",
+    evidenceConfidenceCapped: true,
+    sourceGrounding: true,
+    stepEvaluation: false,
+    speechEvaluation: false,
+    visualInteractions: false,
+  };
+}
+
+function textbookUnitHeading(section) {
+  const candidates = [section?.title, ...String(section?.content ?? "").split(/\r?\n/).slice(0, 6)]
+    .map((value) => String(value ?? "").trim()).filter(Boolean);
+  for (const candidate of candidates) {
+    const match = candidate.match(UNIT_HEADING) ?? candidate.match(ENGLISH_UNIT_HEADING);
+    if (match) return `${match[1]}${match[2] ? ` ${match[2].trim()}` : ""}`.trim().slice(0, 200);
+  }
+  return null;
+}
+
+function detectNumberedTextbookUnitHeadings(materialDocument) {
+  const detected = new Map();
+  let expectedUnitNumber = 1;
+  for (const page of materialDocument.pages ?? []) {
+    const firstHeading = [...(page.blocks ?? [])]
+      .filter((block) => block?.type === "heading" && String(block?.text ?? "").trim())
+      .sort((left, right) => Number(left.order) - Number(right.order))[0];
+    const match = String(firstHeading?.text ?? "").trim().match(/^([1-9][0-9]?)\s+(.{2,100})$/u);
+    if (!match || Number(match[1]) !== expectedUnitNumber || /[。！？!?：:]$/u.test(match[2].trim())) continue;
+    const title = `${match[1]} ${match[2].trim()}`.slice(0, 200);
+    const section = materialDocument.sections.find((candidate) => (
+      Number(candidate.pageNumber) === Number(page.pageNumber)
+      && normalizedHeading(candidate.title) === normalizedHeading(title)
+    ));
+    if (!section) continue;
+    detected.set(sectionUnitKey(section), title);
+    expectedUnitNumber += 1;
+  }
+  return detected;
+}
+
+function sectionUnitKey(section) {
+  return `${Number(section?.pageNumber) || 0}:${normalizedHeading(section?.title)}`;
+}
+
+function normalizedHeading(value) {
+  return String(value ?? "").normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function textbookSectionTitle(section) {
+  const firstLine = String(section?.content ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  if (firstLine && firstLine.length <= 100) return firstLine;
+  return String(section?.title ?? "教材内容").trim().slice(0, 200) || "教材内容";
+}
+
+function extractGroundedMathFacts(content, ref) {
+  const facts = [];
+  const seen = new Set();
+  const pattern = /(?:^|[：:，,。；;\s])([+\-]?\d[\d\s()+\-×÷*/.]{0,60})\s*=\s*([+\-]?\d+(?:\.\d+)?(?:\/\d+)?)/g;
+  for (const match of String(content ?? "").matchAll(pattern)) {
+    const expression = match[1].trim().replace(/\s+/g, " ");
+    const expectedAnswer = match[2].trim();
+    const left = parseRationalAnswer(expression);
+    const right = parseRationalAnswer(expectedAnswer);
+    const key = `${expression}=${expectedAnswer}`;
+    if (!left || !right || !rationalEquals(left, right) || seen.has(key)) continue;
+    seen.add(key);
+    facts.push({ expression, expectedAnswer, sourceRef: structuredClone(ref) });
+    if (facts.length >= 10) break;
+  }
+  return facts;
 }
 
 function extractObjectivesAndQuestions(content) {

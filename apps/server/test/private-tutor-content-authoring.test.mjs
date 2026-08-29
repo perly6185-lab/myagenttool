@@ -16,6 +16,7 @@ import {
 } from "../src/services/private-tutor-graph-extractor.mjs";
 import { parseMaterialDocument } from "../src/services/private-tutor-material-parser.mjs";
 import { judgePrivateTutorAnswer } from "../src/services/private-tutor-assessment.mjs";
+import { validatePrivateTutorPackageRuntime } from "../src/services/private-tutor-adaptive-runtime.mjs";
 
 function fixture() {
   const material = parseMaterialDocument({
@@ -51,6 +52,68 @@ function fixture() {
   });
   return { material, draft, state };
 }
+
+test("merges a full math textbook by unit and routes compatible questions to the math evaluator", () => {
+  const material = {
+    id: "mat_unit_math",
+    learningProfileId: "learner_unit_math",
+    fileName: "四年级数学上册.pdf",
+    fileType: "pdf",
+    sourceHash: "a".repeat(64),
+    status: "parsed",
+    pages: [{
+      pageNumber: 1,
+      text: "第一单元 大数的认识\n例题：125×8=1000。",
+      source: "local_ocr",
+      blocks: [{ type: "formula", text: "125×8=1000", math: { ast: { rootId: "eq", nodes: [{ id: "eq" }] }, vertical: null } }],
+    }],
+    sections: [
+      { id: "sec_page_1", title: "教材 · 第 1 页", level: 1, pageNumber: 1, content: "第一单元 大数的认识\n例题：125×8=1000。理解乘法的计算方法。" },
+      { id: "sec_page_2", title: "教材 · 第 2 页", level: 1, pageNumber: 2, content: "练习：说明乘法结合律，并核对计算过程。" },
+      { id: "sec_page_3", title: "教材 · 第 3 页", level: 1, pageNumber: 3, content: "第二单元 公顷和平方千米\n边长 10 米的正方形面积是 10×10=100 平方米。" },
+    ].map((section, index) => ({ ...section, lineStart: index + 1, lineEnd: index + 1 })),
+    extraction: { parserVersion: 2, pageCount: 3 },
+  };
+  const draft = generateKnowledgeMapDraft({ materialDocument: material, packageName: "四年级数学" });
+  assert.equal(draft.subjectId, "math");
+  assert.equal(draft.evaluationSubjectId, "math");
+  assert.equal(draft.subjectDetection.mode, "automatic");
+  assert.equal(draft.aggregation.strategy, "textbook_units_v1");
+  assert.equal(draft.aggregation.detectedUnitCount, 2);
+  assert.deepEqual(draft.draftModules.map((module) => module.name), ["第一单元 大数的认识", "第二单元 公顷和平方千米"]);
+  assert.equal(draft.draftKnowledgeComponents[0].mathFacts[0].expectedAnswer, "1000");
+
+  const state = {
+    privateTutorMaterialDocuments: [material],
+    privateTutorKnowledgeMapDrafts: [draft],
+    privateTutorContentPackages: [],
+    privateTutorModules: [],
+    privateTutorTopics: [],
+    privateTutorKnowledgeComponents: [],
+    privateTutorSubjectPlugins: [],
+    privateTutorRuntimeValidations: [],
+  };
+  confirmKnowledgeMapDraft(state, draft.id, { actorId: material.learningProfileId, expectedRevision: 1, acknowledgeSourceReview: true });
+  const content = generateAuthoredContentVersion(state, draft.id, { actorId: material.learningProfileId });
+  assert.deepEqual(content.validationIssues, []);
+  assert.equal(content.knowledgeContents[0].dailyQuestions[0].kind, "numeric");
+  assert.equal(content.knowledgeContents[1].dailyQuestions[0].kind, "choice");
+  confirmAuthoredContentVersion(state, draft.id, { actorId: material.learningProfileId, expectedRevision: 1, acknowledgeContentReview: true });
+  const packageId = publishKnowledgeMapDraft(state, draft.id);
+  const pkg = state.privateTutorContentPackages.find((item) => item.id === packageId);
+  assert.equal(pkg.evaluationSubjectId, "math");
+  assert.equal(pkg.evaluationCapabilities.deterministicGrading, true);
+  const validation = validatePrivateTutorPackageRuntime(state, packageId, {
+    actorId: material.learningProfileId,
+    nextId: () => "ptrv_unit_math",
+  });
+  assert.equal(validation.status, "passed");
+  const question = pkg.knowledgeComponents[0].dailyQuestions[0];
+  const result = judgePrivateTutorAnswer(question.id, { rawAnswer: "1000" }, state, packageId);
+  assert.equal(result.accepted, true);
+  assert.equal(result.correct, true);
+  assert.equal(result.evaluation.evaluatorId, "private-tutor:math");
+});
 
 test("authors complete source-grounded learning activities and anchored rubrics", () => {
   const { draft, state } = fixture();

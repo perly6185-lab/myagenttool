@@ -13,6 +13,9 @@ export const PRIVATE_TUTOR_LEARNER_COLLECTION_KEYS = [
   "privateTutorLearnerModels",
   "privateTutorStrategyDecisions",
   "privateTutorLearningPlans",
+  "privateTutorRoadmapLedgers",
+  "privateTutorTeachingStrategyDecisions",
+  "privateTutorExperienceEvents",
   "privateTutorPackageActivations",
   "privateTutorContentMigrationPreviews",
   "privateTutorContentMigrationApplications",
@@ -35,6 +38,7 @@ export const PRIVATE_TUTOR_LEARNER_COLLECTION_KEYS = [
   "privateTutorPilotCheckIns",
   "privateTutorPilotDeletionRequests",
   "privateTutorLearningTrials",
+  "privateTutorLearningPreferences",
 ];
 
 const TRANSCRIPT_RETENTION_DAYS = new Set([0, 7, 30, 90, 365]);
@@ -162,6 +166,17 @@ export function applyPrivateTutorDataRetention(state, { now, nextId }) {
     state.privateTutorLearnerModels = state.privateTutorLearnerModels.filter((row) =>
       row.learnerId !== learner.id || protectedModelIds.has(row.id) || !olderThan(row.updatedAt ?? row.createdAt, derivedCutoff));
     reaped += modelsBefore - state.privateTutorLearnerModels.length;
+
+    const latestTeachingDecisionId = state.privateTutorTeachingStrategyDecisions.find((row) => row.learnerId === learner.id)?.id;
+    const teachingDecisionsBefore = state.privateTutorTeachingStrategyDecisions.length;
+    state.privateTutorTeachingStrategyDecisions = state.privateTutorTeachingStrategyDecisions.filter((row) =>
+      row.learnerId !== learner.id || row.id === latestTeachingDecisionId || !olderThan(row.createdAt, derivedCutoff));
+    reaped += teachingDecisionsBefore - state.privateTutorTeachingStrategyDecisions.length;
+
+    const experienceEventsBefore = state.privateTutorExperienceEvents.length;
+    state.privateTutorExperienceEvents = state.privateTutorExperienceEvents.filter((row) =>
+      row.learnerId !== learner.id || !olderThan(row.createdAt, derivedCutoff));
+    reaped += experienceEventsBefore - state.privateTutorExperienceEvents.length;
   }
   if (reaped > 0) {
     state.privateTutorAuditEvents.unshift({

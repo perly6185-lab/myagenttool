@@ -1,5 +1,5 @@
 import { getCurrentSession } from "@/lib/api-client";
-import { request } from "@/lib/api/request";
+import { apiBase, request } from "@/lib/api/request";
 import type {
   AuthoredContentVersion,
   ContentSourceType,
@@ -39,6 +39,7 @@ export interface PrivateTutorLearningPreferences {
   followUpStyle: PrivateTutorFollowUpStyle;
   voicePreference: PrivateTutorVoicePreference;
   learningGoal: {
+    contentPackageId?: string | null;
     targetTopicIds: string[];
     weeklyMinutes: number | null;
     targetDate: string | null;
@@ -377,7 +378,7 @@ export interface PrivateTutorLearningPlan {
   subjectId: string;
   activationId?: string | null;
   revision: number;
-  status: "active" | "completed" | "source_unavailable";
+  status: "active" | "completed" | "superseded" | "source_unavailable";
   entryMode?: "diagnostic" | "chapter";
   startModuleId?: string | null;
   startTopicId?: string | null;
@@ -386,11 +387,81 @@ export interface PrivateTutorLearningPlan {
   studentReason: string;
   planIntensity?: PrivateTutorPlanIntensity;
   dailyMinutes?: number;
+  weeklyMinutes?: number | null;
+  learningGoal?: PrivateTutorLearningPreferences["learningGoal"];
+  scopeKnowledgeIds?: string[];
+  goalForecast?: {
+    schemaVersion: 1;
+    assumptionVersion: string;
+    generatedAt: string;
+    status: "no_target_date" | "achieved" | "overdue" | "on_track" | "at_risk" | "infeasible";
+    reasonCode: string;
+    targetDate: string | null;
+    scopeKnowledgeCount: number;
+    masteredKnowledgeCount: number;
+    remainingKnowledgeCount: number;
+    baselineRemainingMinutes: number;
+    optimisticRemainingMinutes: number;
+    estimatedRemainingMinutes: number;
+    conservativeRemainingMinutes: number;
+    weeklyCapacityMinutes: number;
+    estimatedWeekCount: number;
+    projectedCompletionDate: string;
+    completionWindow: { optimistic: string; likely: string; conservative: string };
+    daysRemaining: number | null;
+    availableMinutesUntilTarget: number | null;
+    requiredWeeklyMinutes: number;
+    effortProfile: {
+      schemaVersion: 1;
+      modelVersion: string;
+      sampleCount: number;
+      calibrationFactor: number;
+      uncertaintyRate: number;
+      confidence: "low" | "medium" | "high";
+      source: "completed_session_timing" | "default_assumptions";
+      knowledgeFactors: Array<{ knowledgeId: string; sampleCount: number; factor: number }>;
+    };
+  } | null;
+  goalRoadmap?: {
+    schemaVersion?: 2;
+    generatedAt?: string;
+    currentWeekIndex: number;
+    estimatedWeekCount: number;
+    projectedFinalWeekIndex?: number;
+    scopeKnowledgeCount: number;
+    completedKnowledgeCount: number;
+    targetDate: string | null;
+    status: "no_target_date" | "achieved" | "overdue" | "on_track" | "at_risk" | "infeasible";
+    milestones?: Array<{
+      weekIndex: number;
+      startDate: string;
+      endDate: string;
+      status: "current" | "upcoming";
+      plannedMinutes: number;
+      cumulativePlannedMinutes: number;
+      expectedCompletedKnowledgeCount: number;
+      knowledgeGoals: Array<{ knowledgeId: string; title: string; plannedMinutes: number; expectedComplete: boolean }>;
+    }>;
+    hiddenMilestoneCount?: number;
+  } | null;
+  progressSignal?: {
+    schemaVersion: 1;
+    calculatedAt: string;
+    status: "no_due_work" | "on_track" | "attention" | "behind";
+    scheduledElapsedMinutes: number;
+    completedElapsedMinutes: number;
+    behindMinutes: number;
+    overdueDayCount: number;
+    overdueDayIndexes: number[];
+    recoverableDayCount: number;
+    catchUpAvailable: boolean;
+    nextPlannedDate: string | null;
+  };
   generatedAt: string;
   days: Array<{
     dayIndex: number;
     date: string;
-    status: "planned" | "in_progress" | "completed";
+    status: "planned" | "in_progress" | "completed" | "rest" | "rescheduled";
     startedAt?: string;
     completedAt?: string;
     knowledgeId: string;
@@ -400,6 +471,9 @@ export interface PrivateTutorLearningPlan {
     minutes: number;
     strategy: PrivateTutorTeachingStrategy;
     rationale: string;
+    originalMinutes?: number;
+    rescheduledToDayIndex?: number;
+    catchUpSourceDayIndex?: number;
   }>;
   updatedAt: string;
 }
@@ -408,6 +482,121 @@ export interface PrivateTutorIntelligence {
   learnerModel: PrivateTutorLearnerModel | null;
   strategyDecision: PrivateTutorStrategyDecision | null;
   learningPlan: PrivateTutorLearningPlan | null;
+}
+
+export interface PrivateTutorLearningGoalPreview {
+  schemaVersion: 1;
+  fingerprint: string;
+  expectedPreferencesRevision: number;
+  contentPackage: { id: string; version: string; name: string };
+  currentGoal: PrivateTutorLearningPreferences["learningGoal"];
+  proposedGoal: PrivateTutorLearningPreferences["learningGoal"];
+  forecast: NonNullable<PrivateTutorLearningPlan["goalForecast"]>;
+  changes: {
+    addedKnowledgeIds: string[];
+    removedKnowledgeIds: string[];
+    preservedCompletedDayCount: number;
+    replacedFutureDayCount: number;
+    inProgressDayCount: number;
+    weeklyMinutesBefore: number;
+    weeklyMinutesAfter: number;
+    targetDateBefore: string | null;
+    targetDateAfter: string | null;
+  };
+  requiresConfirmation: true;
+  generatedAt: string;
+}
+
+export interface PrivateTutorCatchUpPreview {
+  schemaVersion: 1;
+  planId: string;
+  expectedPlanRevision: number;
+  generatedAt: string;
+  fingerprint: string;
+  requiresConfirmation: true;
+  progress: NonNullable<PrivateTutorLearningPlan["progressSignal"]>;
+  assignments: Array<{
+    sourceDayIndex: number;
+    sourceDate: string;
+    targetDayIndex: number;
+    targetDate: string;
+    minutes: number;
+    knowledgeId: string;
+    knowledgeTitle: string;
+    title: string;
+  }>;
+  recoveredMinutes: number;
+  remainingBehindMinutes: number;
+  canConfirm: boolean;
+}
+
+export interface PrivateTutorRoadmapLedger {
+  schemaVersion: 1;
+  id: string;
+  learnerId: string;
+  contentPackageId: string | null;
+  contentPackageVersion: string | null;
+  status: "active" | "superseded";
+  revision: number;
+  learningGoal: PrivateTutorLearningPreferences["learningGoal"];
+  scopeKnowledgeIds: string[];
+  baseline: {
+    recordedAt: string;
+    planId: string;
+    planRevision: number;
+    weekIndex: number;
+    weeklyMinutes: number;
+    targetDate: string | null;
+    completionWindow: { optimistic: string; likely: string; conservative: string } | null;
+    projectedCompletionDate: string | null;
+    estimatedRemainingMinutes: number;
+    estimatedWeekCount: number;
+    milestones: NonNullable<NonNullable<PrivateTutorLearningPlan["goalRoadmap"]>["milestones"]>;
+  };
+  currentReview: {
+    weekIndex: number;
+    startDate: string | null;
+    endDate: string | null;
+    fullWeekPlannedMinutes: number;
+    plannedToDateMinutes: number;
+    completedToDateMinutes: number;
+    deviationMinutes: number;
+    overdueDayCount: number;
+    status: "not_started" | "on_track" | "behind";
+    reasonCodes: string[];
+    nextAction: { type: string; dayIndex: number | null; date: string | null; knowledgeId: string | null; label: string };
+    calculatedAt: string;
+  } | null;
+  weeklyReviews: Array<{
+    id: string;
+    weekIndex: number;
+    startDate: string | null;
+    endDate: string | null;
+    plannedMinutes: number;
+    completedMinutes: number;
+    deviationMinutes: number;
+    completionRate: number | null;
+    status: "completed" | "partial" | "missed";
+    reasonCodes: string[];
+    completedKnowledgeIds: string[];
+    nextAction: { type: string; dayIndex: number | null; date: string | null; knowledgeId: string | null; label: string };
+    closedAt: string;
+  }>;
+  routeVersions: Array<{
+    id: string;
+    recordedAt: string;
+    reason: string;
+    planId: string;
+    planRevision: number;
+    weekIndex: number;
+    forecastStatus: string | null;
+    projectedCompletionDate: string | null;
+    estimatedRemainingMinutes: number;
+    completedDayCount: number;
+    rescheduledDayCount: number;
+  }>;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type PrivateTutorSessionPace = "easy" | "standard" | "review";
@@ -472,6 +661,28 @@ export interface PrivateTutorSession {
     visualScene?: PrivateTutorVisualScene | null;
   } | null;
   teachingMethod: string;
+  teachingStrategyDecisionId?: string | null;
+  teachingPolicy?: {
+    schemaVersion: 1;
+    explanationMode: "small_step" | "visual_model" | "worked_example" | "contrast_case";
+    questionDifficulty: "support" | "core" | "challenge";
+    hintGranularity: "micro_steps" | "progressive" | "fading" | "retrieval_cue" | "minimal";
+    reviewIntervalHours: number;
+    reasonCodes: string[];
+    confidence: "low" | "medium" | "high";
+    evidenceSummary: {
+      attemptCount: number;
+      incorrectRate: number | null;
+      hintRate: number | null;
+      independentAttemptCount: number;
+      independentCorrectRate: number | null;
+      mastery: number | null;
+      forgettingRisk: number | null;
+      prerequisiteGap: boolean;
+    };
+    suggestion: { id: string; type: string; label: string; expectedAction: string } | null;
+    derivedAt: string;
+  } | null;
   subjectCapabilities: {
     deterministicGrading: boolean;
     stepEvaluation: boolean;
@@ -540,15 +751,18 @@ export interface PrivateTutorLearningTrial {
     completedSessionCount: number;
   };
   metrics: {
+    courseCompletion: { scheduledDayCount: number; completedDayCount: number; completionRate: number | null };
     planDays: { startedCount: number; completedCount: number; completionRate: number | null };
     nextDayRecall: { opportunityCount: number; attemptedCount: number; correctCount: number; retentionRate: number | null };
     delayedReview: { opportunityCount: number; attemptedCount: number; correctCount: number; retentionRate: number | null };
+    errorConvergence: { themeCount: number; errorCaseCount: number; convergedThemeCount: number; unresolvedThemeCount: number; reopenedThemeCount: number; convergenceRate: number | null };
     followUps: { askedCount: number; feedbackCount: number; resolvedCount: number; resolutionRate: number | null; feedbackCoverageRate: number | null };
   };
   readiness: {
     minimumSampleCount: number;
     nextDayRecallReady: boolean;
     delayedReviewReady: boolean;
+    errorConvergenceReady: boolean;
     followUpResolutionReady: boolean;
   };
   generatedAt: string;
@@ -856,6 +1070,61 @@ export async function getPrivateTutorLearningPreferences() {
 export async function updatePrivateTutorLearningPreferences(preferences: PrivateTutorLearningPreferencesPatch) {
   const result = await request<{ preferences: PrivateTutorLearningPreferences }>("PUT", "/api/private-tutor/profile/preferences", { preferences });
   return result.preferences;
+}
+
+export interface PrivateTutorExperienceReport {
+  schemaVersion: 1;
+  learnerId: string;
+  contentPackageId: string | null;
+  window: { days: number; startedAt: string; endedAt: string };
+  teachingPersonalization: {
+    decisionCount: number;
+    latestPolicy: PrivateTutorSession["teachingPolicy"];
+    distinctExplanationModeCount: number;
+    distinctDifficultyCount: number;
+  };
+  smoothness: {
+    startedSessionCount: number;
+    completedSessionCount: number;
+    completedStepCount: number;
+    totalStepCount: number;
+    stepCompletionRate: number | null;
+    interruptedSessionCount: number;
+    interruptionRate: number | null;
+    manuallyAdjustedPlanCount: number;
+    observedPlanCount: number;
+    manualPlanAdjustmentRate: number | null;
+    suggestionPresentedCount: number;
+    suggestionAdoptedCount: number;
+    suggestionAdoptionRate: number | null;
+  };
+  readiness: {
+    minimumSessionCount: number;
+    minimumSuggestionCount: number;
+    smoothnessReady: boolean;
+    suggestionAdoptionReady: boolean;
+  };
+  generatedAt: string;
+}
+
+export async function previewPrivateTutorLearningGoal(learningGoal: PrivateTutorLearningPreferences["learningGoal"], expectedPreferencesRevision: number) {
+  const result = await request<{ preview: PrivateTutorLearningGoalPreview }>("POST", "/api/private-tutor/profile/learning-goal/preview", {
+    learningGoal,
+    expectedPreferencesRevision,
+  });
+  return result.preview;
+}
+
+export async function confirmPrivateTutorLearningGoal(preview: PrivateTutorLearningGoalPreview) {
+  return request<{ preferences: PrivateTutorLearningPreferences; preview: PrivateTutorLearningGoalPreview } & PrivateTutorIntelligence>(
+    "POST",
+    "/api/private-tutor/profile/learning-goal/confirm",
+    {
+      learningGoal: preview.proposedGoal,
+      expectedPreferencesRevision: preview.expectedPreferencesRevision,
+      previewFingerprint: preview.fingerprint,
+    },
+  );
 }
 
 export interface PrivateTutorProfileMigrationCandidate {
@@ -1225,6 +1494,25 @@ export async function cancelPrivateTutorOcrJob(jobId: string) {
   );
 }
 
+export async function confirmPrivateTutorOcrPage(materialId: string, input: {
+  pageNumber: number;
+  expectedRevision: number;
+  text: string;
+  printedPageNumber?: string | null;
+  acknowledge: true;
+}) {
+  return request<{ material: MaterialDocument; job: PrivateTutorOcrJob | null }>(
+    "POST",
+    `/api/private-tutor/materials/${encodeURIComponent(materialId)}/ocr-review`,
+    input,
+  );
+}
+
+export function getPrivateTutorOcrPageImageUrl(materialId: string, pageNumber: number) {
+  const normalizedPageNumber = Math.max(1, Math.trunc(Number(pageNumber) || 1));
+  return `${apiBase}/api/private-tutor/materials/${encodeURIComponent(materialId)}/ocr-pages/${normalizedPageNumber}/image`;
+}
+
 export async function deletePrivateTutorMaterial(materialId: string) {
   return request<{ deleted: boolean }>(
     "DELETE",
@@ -1338,6 +1626,7 @@ export interface PrivateTutorLearningHistoryMetrics {
     scheduledDays: number;
     completedDays: number;
     inProgressDays: number;
+    restDays: number;
   };
   practiceAttemptCount: number;
   eligibleEvidenceCount: number;
@@ -1443,6 +1732,11 @@ export async function getPrivateTutorLearningHistory() {
   return result.history;
 }
 
+export async function getPrivateTutorExperienceReport() {
+  const result = await request<{ report: PrivateTutorExperienceReport }>("GET", "/api/private-tutor/profile/experience-report");
+  return result.report;
+}
+
 export async function getPrivateTutorLearningTrial() {
   const result = await request<{ trial: PrivateTutorLearningTrial | null }>("GET", "/api/private-tutor/profile/learning-trial");
   return result.trial;
@@ -1463,6 +1757,28 @@ export async function rebalancePrivateTutorLearningPlan(missedDayIndex: number) 
     "POST",
     "/api/private-tutor/profile/learning-plan/rebalance",
     { missedDayIndex },
+  );
+}
+
+export async function getPrivateTutorRoadmapLedger() {
+  const result = await request<{ ledger: PrivateTutorRoadmapLedger | null }>("GET", "/api/private-tutor/profile/roadmap-ledger");
+  return result.ledger;
+}
+
+export async function previewPrivateTutorCatchUp(expectedPlanRevision: number) {
+  const result = await request<{ preview: PrivateTutorCatchUpPreview }>(
+    "POST",
+    "/api/private-tutor/profile/learning-plan/catch-up/preview",
+    { expectedPlanRevision },
+  );
+  return result.preview;
+}
+
+export async function confirmPrivateTutorCatchUp(preview: PrivateTutorCatchUpPreview) {
+  return request<{ preview: PrivateTutorCatchUpPreview } & PrivateTutorIntelligence>(
+    "POST",
+    "/api/private-tutor/profile/learning-plan/catch-up/confirm",
+    { expectedPlanRevision: preview.expectedPlanRevision, previewFingerprint: preview.fingerprint },
   );
 }
 

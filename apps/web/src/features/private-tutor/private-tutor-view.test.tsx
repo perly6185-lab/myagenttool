@@ -17,18 +17,28 @@ const apiMocks = vi.hoisted(() => ({
   listPackages: vi.fn(),
   getPackage: vi.fn(),
   activatePackage: vi.fn(),
+  experienceReport: vi.fn(),
   learningHistory: vi.fn(),
+  roadmapLedger: vi.fn(),
   learningTrial: vi.fn(),
   startLearningTrial: vi.fn(),
   stopLearningTrial: vi.fn(),
   learningPreferences: vi.fn(),
   updateLearningPreferences: vi.fn(),
+  previewLearningGoal: vi.fn(),
+  confirmLearningGoal: vi.fn(),
+  previewCatchUp: vi.fn(),
+  confirmCatchUp: vi.fn(),
+  listMaterials: vi.fn(),
+  listOcrJobs: vi.fn(),
+  confirmOcrPage: vi.fn(),
 }));
 
-const sessionUser = { role: "viewer" } as const;
+const signedInSessionUser = { id: "usr_personal", role: "viewer" } as const;
+const sessionState: { user: typeof signedInSessionUser | null } = { user: signedInSessionUser };
 
 vi.mock("@/hooks/use-session-user", () => ({
-  useSessionUser: () => sessionUser,
+  useSessionUser: () => sessionState.user,
 }));
 
 const activeProfile = { id: "lrn_personal", displayName: "小林", grade: "大学课程", curriculumEditionId: "demo-math-foundations-v1", status: "active", createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:00:00.000Z" } as const;
@@ -85,12 +95,18 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getCurrentPrivateTutorAssessment: apiMocks.currentAssessment,
   getCurrentPrivateTutorSession: () => Promise.resolve(null),
   getPrivateTutorReviewBook: () => Promise.resolve(emptyReviewBook),
+  getPrivateTutorExperienceReport: apiMocks.experienceReport,
   getPrivateTutorLearningHistory: apiMocks.learningHistory,
+  getPrivateTutorRoadmapLedger: apiMocks.roadmapLedger,
   getPrivateTutorLearningTrial: apiMocks.learningTrial,
   startPrivateTutorLearningTrial: apiMocks.startLearningTrial,
   stopPrivateTutorLearningTrial: apiMocks.stopLearningTrial,
   getPrivateTutorLearningPreferences: apiMocks.learningPreferences,
   updatePrivateTutorLearningPreferences: apiMocks.updateLearningPreferences,
+  previewPrivateTutorLearningGoal: apiMocks.previewLearningGoal,
+  confirmPrivateTutorLearningGoal: apiMocks.confirmLearningGoal,
+  previewPrivateTutorCatchUp: apiMocks.previewCatchUp,
+  confirmPrivateTutorCatchUp: apiMocks.confirmCatchUp,
   getPrivateTutorWeeklyReport: () => Promise.reject(new Error("not used")),
   getPrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
   updatePrivateTutorDataPolicy: () => Promise.reject(new Error("not used")),
@@ -116,7 +132,14 @@ vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getPrivateTutorContentPackage: apiMocks.getPackage,
   activatePrivateTutorContentPackage: apiMocks.activatePackage,
   getPrivateTutorActiveContentPackage: apiMocks.activePackage,
-  listPrivateTutorMaterials: () => Promise.resolve([]),
+  listPrivateTutorMaterials: apiMocks.listMaterials,
+  listPrivateTutorMaterialOcrJobs: apiMocks.listOcrJobs,
+  getPrivateTutorOcrJob: () => Promise.reject(new Error("not used")),
+  startPrivateTutorMaterialOcr: () => Promise.reject(new Error("not used")),
+  retryPrivateTutorOcrJob: () => Promise.reject(new Error("not used")),
+  cancelPrivateTutorOcrJob: () => Promise.reject(new Error("not used")),
+  confirmPrivateTutorOcrPage: apiMocks.confirmOcrPage,
+  getPrivateTutorOcrPageImageUrl: (materialId: string, pageNumber: number) => `/api/private-tutor/materials/${encodeURIComponent(materialId)}/ocr-pages/${pageNumber}/image`,
   uploadPrivateTutorMaterial: () => Promise.reject(new Error("not used")),
   generatePrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
   getPrivateTutorKnowledgeMapDraft: () => Promise.reject(new Error("not used")),
@@ -142,6 +165,7 @@ const migrationReportFixture = {
 
 describe("My private tutor personal learning information architecture", () => {
   beforeEach(() => {
+    sessionState.user = signedInSessionUser;
     window.localStorage.clear();
     apiMocks.getProfile.mockReset().mockResolvedValue({ profile: null, migrationRequired: false });
     apiMocks.createProfile.mockReset().mockRejectedValue(new Error("not used"));
@@ -161,6 +185,13 @@ describe("My private tutor personal learning information architecture", () => {
       version: "1.0.0",
       targetAudience: { stage: "初中/通用基础" },
       evaluationCapabilities: { deterministicGrading: true },
+      modules: [{
+        id: "module-equation", name: "一元一次方程", description: "", orderIndex: 1,
+        topics: [
+          { id: "topic-integer", name: "有理数", description: "", orderIndex: 1, knowledgeComponentIds: ["integer"] },
+          { id: "topic-balance", name: "等式平衡", description: "", orderIndex: 2, knowledgeComponentIds: ["balance"] },
+        ],
+      }],
       knowledgeComponents: [
         { id: "integer", name: "有理数运算", shortDescription: "正负数加减" },
         { id: "balance", name: "等式两边同乘同除", shortDescription: "保持等式平衡" },
@@ -178,6 +209,32 @@ describe("My private tutor personal learning information architecture", () => {
     }]);
     apiMocks.getPackage.mockReset().mockRejectedValue(new Error("not used"));
     apiMocks.activatePackage.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.roadmapLedger.mockReset().mockResolvedValue(null);
+    apiMocks.experienceReport.mockReset().mockResolvedValue({
+      schemaVersion: 1,
+      learnerId: activeProfile.id,
+      contentPackageId: "demo-math-foundations-v1",
+      window: { days: 30, startedAt: "2026-07-28T08:00:00.000Z", endedAt: "2026-08-27T08:00:00.000Z" },
+      teachingPersonalization: {
+        decisionCount: 8,
+        latestPolicy: {
+          schemaVersion: 1, explanationMode: "small_step", questionDifficulty: "support", hintGranularity: "micro_steps",
+          reviewIntervalHours: 8, reasonCodes: ["repeated_incorrect"], confidence: "medium",
+          evidenceSummary: { attemptCount: 4, incorrectRate: 0.5, hintRate: 0.25, independentAttemptCount: 2, independentCorrectRate: 0.5, mastery: 0.4, forgettingRisk: 0.2, prerequisiteGap: false },
+          suggestion: { id: "suggestion-1", type: "use_personalized_hint", label: "先看一个最小提示", expectedAction: "hint" },
+          derivedAt: "2026-08-27T08:00:00.000Z",
+        },
+        distinctExplanationModeCount: 2,
+        distinctDifficultyCount: 2,
+      },
+      smoothness: {
+        startedSessionCount: 6, completedSessionCount: 5, completedStepCount: 24, totalStepCount: 30, stepCompletionRate: 0.8,
+        interruptedSessionCount: 1, interruptionRate: 0.1667, manuallyAdjustedPlanCount: 1, observedPlanCount: 4, manualPlanAdjustmentRate: 0.25,
+        suggestionPresentedCount: 10, suggestionAdoptedCount: 7, suggestionAdoptionRate: 0.7,
+      },
+      readiness: { minimumSessionCount: 5, minimumSuggestionCount: 5, smoothnessReady: true, suggestionAdoptionReady: true },
+      generatedAt: "2026-08-27T08:00:00.000Z",
+    });
     apiMocks.learningHistory.mockReset().mockResolvedValue({
       schemaVersion: 1,
       learnerId: activeProfile.id,
@@ -226,8 +283,25 @@ describe("My private tutor personal learning information architecture", () => {
     apiMocks.stopLearningTrial.mockReset().mockRejectedValue(new Error("not used"));
     apiMocks.learningPreferences.mockReset().mockResolvedValue(learningPreferences);
     apiMocks.updateLearningPreferences.mockReset().mockImplementation(async (patch) => ({ ...learningPreferences, ...patch, revision: 2 }));
+    apiMocks.previewLearningGoal.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.confirmLearningGoal.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.previewCatchUp.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.confirmCatchUp.mockReset().mockRejectedValue(new Error("not used"));
+    apiMocks.listMaterials.mockReset().mockResolvedValue([]);
+    apiMocks.listOcrJobs.mockReset().mockResolvedValue([]);
+    apiMocks.confirmOcrPage.mockReset().mockRejectedValue(new Error("not used"));
   });
   afterEach(() => cleanup());
+
+  it("uses the server-controlled local identity without a tutor-specific login", async () => {
+    sessionState.user = null;
+    render(<PrivateTutorView />);
+
+    expect(await screen.findByRole("heading", { name: "为我建立一份长期学习档案" })).toBeTruthy();
+    expect(apiMocks.getProfile).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("登录后开始我的学习")).toBeNull();
+    expect(screen.queryByRole("button", { name: "前往登录" })).toBeNull();
+  });
 
   it("starts a signed-in user with one personal learning profile instead of a family handoff", async () => {
     render(<PrivateTutorView />);
@@ -328,7 +402,7 @@ describe("My private tutor personal learning information architecture", () => {
 
     fireEvent.change(await screen.findByLabelText("写下答案"), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: "提交并看下一题" }));
-    expect(await screen.findByRole("heading", { name: "3 题快速摸底完成" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "3 题快速摸底完成" }, { timeout: 3_000 })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "开始 5 分钟私教" }));
 
     await waitFor(() => expect(apiMocks.startSession).toHaveBeenCalledWith("easy"));
@@ -371,6 +445,124 @@ describe("My private tutor personal learning information architecture", () => {
     expect(screen.queryByText("家长入口")).toBeNull();
   });
 
+  it("previews and explicitly confirms a topic-scoped long-term goal", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    const proposedGoal = { contentPackageId: "demo-math-foundations-v1", targetTopicIds: ["topic-balance"], note: "", weeklyMinutes: 120, targetDate: "2026-10-31" };
+    const preview = {
+      schemaVersion: 1, fingerprint: "goal-preview-fingerprint", expectedPreferencesRevision: 1,
+      contentPackage: { id: "demo-math-foundations-v1", version: "1.0.0", name: "初中数学基础：一元一次方程" },
+      currentGoal: null, proposedGoal,
+      forecast: {
+        schemaVersion: 1, assumptionVersion: "knowledge-effort-v1", generatedAt: "2026-08-28T00:00:00.000Z",
+        status: "on_track", reasonCode: "capacity_covers_estimate", targetDate: "2026-10-31",
+        scopeKnowledgeCount: 2, masteredKnowledgeCount: 0, remainingKnowledgeCount: 2,
+        baselineRemainingMinutes: 135, optimisticRemainingMinutes: 95, estimatedRemainingMinutes: 135, conservativeRemainingMinutes: 176,
+        weeklyCapacityMinutes: 120, estimatedWeekCount: 2, projectedCompletionDate: "2026-09-05",
+        completionWindow: { optimistic: "2026-09-02", likely: "2026-09-05", conservative: "2026-09-09" },
+        daysRemaining: 64, availableMinutesUntilTarget: 1114, requiredWeeklyMinutes: 15,
+        effortProfile: { schemaVersion: 1, modelVersion: "observed-session-effort-v1", sampleCount: 0, calibrationFactor: 1, uncertaintyRate: 0.3, confidence: "low", source: "default_assumptions", knowledgeFactors: [] },
+      },
+      changes: { addedKnowledgeIds: [], removedKnowledgeIds: [], preservedCompletedDayCount: 0, replacedFutureDayCount: 0, inProgressDayCount: 0, weeklyMinutesBefore: 140, weeklyMinutesAfter: 120, targetDateBefore: null, targetDateAfter: "2026-10-31" },
+      requiresConfirmation: true, generatedAt: "2026-08-28T00:00:00.000Z",
+    } as const;
+    apiMocks.previewLearningGoal.mockResolvedValue(preview);
+    apiMocks.confirmLearningGoal.mockResolvedValue({ preferences: { ...learningPreferences, learningGoal: proposedGoal, revision: 2 }, preview, learnerModel: null, strategyDecision: null, learningPlan: null });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的设置" }));
+
+    fireEvent.click(await screen.findByText("等式平衡"));
+    fireEvent.change(screen.getByLabelText("每周投入分钟"), { target: { value: "120" } });
+    fireEvent.change(screen.getByLabelText("目标日期"), { target: { value: "2026-10-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "预览计划变化" }));
+
+    await waitFor(() => expect(apiMocks.previewLearningGoal).toHaveBeenCalledWith(proposedGoal, 1));
+    expect(await screen.findByText(/乐观 2026-09-02/)).toBeTruthy();
+    expect(screen.getByText(/确认后才会调整学习路线/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "确认并应用路线" }));
+    await waitFor(() => expect(apiMocks.confirmLearningGoal).toHaveBeenCalledWith(preview));
+    expect(await screen.findByText(/后续路线已确认更新/)).toBeTruthy();
+  });
+
+  it("blocks low-confidence OCR pages until the learner reviews them", async () => {
+    const pendingMaterial = {
+      id: "mat-review",
+      learningProfileId: activeProfile.id,
+      fileName: "四年级数学.pdf",
+      fileType: "pdf",
+      fileSize: 100,
+      sourceHash: "a".repeat(64),
+      status: "needs_review",
+      pages: [{
+        pageNumber: 7,
+        text: "例题：计算 125×8，并说明完整计算过程。",
+        characterCount: 25,
+        source: "local_ocr",
+        confidence: 0.72,
+        schemaVersion: "private-tutor-textbook-page-v2",
+        coordinateSystem: "normalized",
+        printedPageNumber: "5",
+        blocks: [{
+          id: "page_7_block_1", order: 1, type: "formula", text: "125×8=1000", confidence: 0.72,
+          box: { x: 0.2, y: 0.35, width: 0.5, height: 0.2 },
+          math: {
+            notation: "125 \\times 8 = 1000", confidence: 0.72,
+            ast: { rootId: "mul", nodes: [{ id: "mul", type: "operator", value: "×", childIds: [] }] },
+            vertical: { operator: "multiply", rows: [{ role: "operand", text: "125", indent: 0 }, { role: "result", text: "1000", indent: 0 }] },
+          },
+          source: { providerId: "codex-vision", providerVersion: "v2", schemaVersion: "private-tutor-textbook-page-v2" },
+        }],
+        review: { status: "pending", reasons: ["low_page_confidence", "math_structure_low_confidence"], confirmedAt: null, textEdited: false },
+      }],
+      sections: [],
+      extraction: {
+        parserVersion: 2, state: "needs_review", method: "pdf_text_with_local_ocr", pageCount: 1, processedPageCount: 1,
+        characterCount: 25, textPageCount: 1, lowTextPageNumbers: [], truncated: false, truncatedPages: false, needsOcr: false,
+        ocr: { required: true, attempted: true, state: "needs_review", providerId: "codex-vision", reason: null },
+        ocrReview: { schemaVersion: "private-tutor-textbook-page-v2", revision: 1, status: "pending", confidenceThreshold: 0.85, requiredPageNumbers: [7], confirmedPageNumbers: [], confirmedAt: null },
+        warnings: [{ code: "ocr_pages_need_review", pageNumbers: [7] }],
+      },
+      createdAt: "2026-08-28T00:00:00.000Z",
+      updatedAt: "2026-08-28T00:00:00.000Z",
+    } as const;
+    const parsedMaterial = {
+      ...pendingMaterial,
+      status: "parsed" as const,
+      sections: [{ id: "sec_1", title: "例题", level: 1, pageNumber: 7, lineStart: 1, lineEnd: 1, content: "例题：计算 125×8=1000。" }],
+      extraction: {
+        ...pendingMaterial.extraction,
+        state: "ready" as const,
+        ocr: { ...pendingMaterial.extraction.ocr, state: "completed" as const },
+        ocrReview: { ...pendingMaterial.extraction.ocrReview, revision: 2, status: "confirmed" as const, requiredPageNumbers: [], confirmedPageNumbers: [7], confirmedAt: "2026-08-28T01:00:00.000Z" },
+      },
+    };
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.listMaterials.mockResolvedValue([pendingMaterial]);
+    apiMocks.confirmOcrPage.mockResolvedValue({ material: parsedMaterial, job: null });
+    render(<PrivateTutorView />);
+    fireEvent.click(await screen.findByRole("button", { name: "我的设置" }));
+    fireEvent.click(screen.getByRole("button", { name: /学习内容/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "校对 1 页" }));
+    const originalPage = screen.getByRole("img", { name: "教材原图 PDF 第 7 页" });
+    expect(originalPage.getAttribute("src")).toBe("/api/private-tutor/materials/mat-review/ocr-pages/7/image");
+    expect(screen.getByText("受控原页预览 · 不显示本地文件路径")).toBeTruthy();
+    expect(screen.getByLabelText("OCR 版面坐标叠加层")).toBeTruthy();
+    expect(screen.getByText(/AST 1 节点 · 竖式 2 行 · 坐标 20%,35% \/ 50%×20%/)).toBeTruthy();
+    const editor = screen.getByLabelText("校对 PDF 第 7 页");
+    fireEvent.change(editor, { target: { value: "例题：计算 125×8=1000，并说明完整计算过程。" } });
+    fireEvent.click(screen.getByRole("button", { name: "我已对照原页，确认本页" }));
+
+    await waitFor(() => expect(apiMocks.confirmOcrPage).toHaveBeenCalledWith("mat-review", {
+      pageNumber: 7,
+      expectedRevision: 1,
+      text: "例题：计算 125×8=1000，并说明完整计算过程。",
+      printedPageNumber: "5",
+      acknowledge: true,
+    }));
+    expect(await screen.findByText("低置信度页面已全部确认，现在可以生成知识地图。")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "生成知识地图" })).toBeTruthy();
+  });
+
   it("persists AI teacher and daily-plan preferences through the profile contract", async () => {
     apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
     render(<PrivateTutorView />);
@@ -393,6 +585,9 @@ describe("My private tutor personal learning information architecture", () => {
     expect(screen.getByText("一元一次方程与等式性质")).toBeTruthy();
     expect(screen.getByText("当前计划：完成 1/7 天，进行中 1 天。")).toBeTruthy();
     expect(screen.getByText("有理数运算")).toBeTruthy();
+    expect(screen.getByText("个性化教学与使用顺畅度")).toBeTruthy();
+    expect(screen.getByText("70%")).toBeTruthy();
+    expect(screen.getByText(/当前教学策略：拆成小步 · 支架题 · 最小步提示/)).toBeTruthy();
     expect(apiMocks.learningHistory).toHaveBeenCalledTimes(1);
   });
 
@@ -404,18 +599,20 @@ describe("My private tutor personal learning information architecture", () => {
       startedAt: "2026-08-27T00:00:00.000Z", endsAt: "2026-09-10T00:00:00.000Z", observationEndsAt: "2026-09-12T00:00:00.000Z", stoppedAt: null, completedAt: null,
       progress: { dayIndex: 1, activeDayCount: 0, daysRemaining: 13, completedSessionCount: 0 },
       metrics: {
+        courseCompletion: { scheduledDayCount: 14, completedDayCount: 0, completionRate: 0 },
         planDays: { startedCount: 0, completedCount: 0, completionRate: null },
         nextDayRecall: { opportunityCount: 0, attemptedCount: 0, correctCount: 0, retentionRate: null },
         delayedReview: { opportunityCount: 0, attemptedCount: 0, correctCount: 0, retentionRate: null },
+        errorConvergence: { themeCount: 0, errorCaseCount: 0, convergedThemeCount: 0, unresolvedThemeCount: 0, reopenedThemeCount: 0, convergenceRate: null },
         followUps: { askedCount: 0, feedbackCount: 0, resolvedCount: 0, resolutionRate: null, feedbackCoverageRate: null },
       },
-      readiness: { minimumSampleCount: 3, nextDayRecallReady: false, delayedReviewReady: false, followUpResolutionReady: false },
+      readiness: { minimumSampleCount: 3, nextDayRecallReady: false, delayedReviewReady: false, errorConvergenceReady: false, followUpResolutionReady: false },
       generatedAt: "2026-08-27T00:00:00.000Z",
     });
     render(<PrivateTutorView />);
     fireEvent.click(await screen.findByRole("button", { name: "我的成长" }));
 
-    expect(await screen.findByRole("heading", { name: /验证次日还能不能想起/ })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: /验证课程是否完成/ })).toBeTruthy();
     fireEvent.change(screen.getByLabelText("试学目标"), { target: { value: "验证方程学习效果" } });
     fireEvent.click(screen.getByRole("button", { name: "开始 14 天试学" }));
 
@@ -434,12 +631,14 @@ describe("My private tutor personal learning information architecture", () => {
       startedAt: "2026-08-27T00:00:00.000Z", endsAt: "2026-09-10T00:00:00.000Z", observationEndsAt: "2026-09-12T00:00:00.000Z", stoppedAt: null, completedAt: null,
       progress: { dayIndex: 14, activeDayCount: 12, daysRemaining: 0, completedSessionCount: 11 },
       metrics: {
+        courseCompletion: { scheduledDayCount: 14, completedDayCount: 11, completionRate: 0.7857 },
         planDays: { startedCount: 12, completedCount: 11, completionRate: 0.9167 },
         nextDayRecall: { opportunityCount: 10, attemptedCount: 9, correctCount: 7, retentionRate: 0.7778 },
         delayedReview: { opportunityCount: 10, attemptedCount: 8, correctCount: 6, retentionRate: 0.75 },
+        errorConvergence: { themeCount: 5, errorCaseCount: 7, convergedThemeCount: 4, unresolvedThemeCount: 1, reopenedThemeCount: 1, convergenceRate: 0.8 },
         followUps: { askedCount: 8, feedbackCount: 7, resolvedCount: 5, resolutionRate: 0.7143, feedbackCoverageRate: 0.875 },
       },
-      readiness: { minimumSampleCount: 3, nextDayRecallReady: true, delayedReviewReady: true, followUpResolutionReady: true },
+      readiness: { minimumSampleCount: 3, nextDayRecallReady: true, delayedReviewReady: true, errorConvergenceReady: true, followUpResolutionReady: true },
       generatedAt: "2026-09-10T12:00:00.000Z",
     });
     render(<PrivateTutorView />);

@@ -120,8 +120,10 @@ function privateTutorLearningTrialView(state, trial, at) {
     ...attempts.filter((row) => inLearningWindow(row.createdAt)).map((row) => String(row.createdAt).slice(0, 10)),
   ]);
   const planDays = planDayMetrics(allSessions);
+  const courseCompletion = courseCompletionMetrics(sessions, trial.durationDays);
   const nextDayRecall = nextDayRecallMetrics(sessions, attempts, observationEnd);
   const delayedReview = delayedReviewMetrics(schedules, attempts, observationEnd);
+  const errorConvergence = errorConvergenceMetrics(state, trial, observationEnd, inLearningWindow, samePackage);
   const followUps = followUpMetrics(allSessions, trial, observationEnd);
   const learningProgressEnd = [observationEnd, trial.endsAt]
     .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
@@ -147,14 +149,24 @@ function privateTutorLearningTrialView(state, trial, at) {
       daysRemaining: trial.status === "active" ? Math.max(0, trial.durationDays - dayIndex) : 0,
       completedSessionCount: sessions.length,
     },
-    metrics: { planDays, nextDayRecall, delayedReview, followUps },
+    metrics: { courseCompletion, planDays, nextDayRecall, delayedReview, errorConvergence, followUps },
     readiness: {
       minimumSampleCount: PRIVATE_TUTOR_LEARNING_TRIAL_MINIMUM_SAMPLES,
       nextDayRecallReady: nextDayRecall.attemptedCount >= PRIVATE_TUTOR_LEARNING_TRIAL_MINIMUM_SAMPLES,
       delayedReviewReady: delayedReview.attemptedCount >= PRIVATE_TUTOR_LEARNING_TRIAL_MINIMUM_SAMPLES,
+      errorConvergenceReady: errorConvergence.themeCount >= PRIVATE_TUTOR_LEARNING_TRIAL_MINIMUM_SAMPLES,
       followUpResolutionReady: followUps.feedbackCount >= PRIVATE_TUTOR_LEARNING_TRIAL_MINIMUM_SAMPLES,
     },
     generatedAt: at,
+  };
+}
+
+function courseCompletionMetrics(sessions, durationDays) {
+  const completedDays = new Set(sessions.map((row) => String(row.completedAt).slice(0, 10)));
+  return {
+    scheduledDayCount: durationDays,
+    completedDayCount: Math.min(durationDays, completedDays.size),
+    completionRate: rate(Math.min(durationDays, completedDays.size), durationDays),
   };
 }
 
@@ -211,6 +223,47 @@ function delayedReviewMetrics(schedules, attempts, observationEnd) {
     if (delayed.correct === true) correctCount += 1;
   }
   return { opportunityCount: opportunities.length, attemptedCount, correctCount, retentionRate: rate(correctCount, attemptedCount) };
+}
+
+function errorConvergenceMetrics(state, trial, observationEnd, inLearningWindow, samePackage) {
+  const errorCases = (state.privateTutorErrorCases ?? []).filter((row) => row.learnerId === trial.learnerId
+    && samePackage(row)
+    && inLearningWindow(row.createdAt));
+  const casesByTheme = new Map();
+  for (const theme of state.privateTutorErrorThemes ?? []) {
+    if (theme.learnerId !== trial.learnerId || !samePackage(theme)) continue;
+    const ids = new Set(theme.errorCaseIds ?? []);
+    const cases = errorCases.filter((row) => ids.has(row.id));
+    if (cases.length) casesByTheme.set(theme.id, cases);
+  }
+  const completedByTheme = new Map();
+  for (const schedule of state.privateTutorReviewSchedules ?? []) {
+    if (!casesByTheme.has(schedule.themeId) || !schedule.completedAt) continue;
+    const completedAt = Date.parse(schedule.completedAt);
+    if (!Number.isFinite(completedAt)
+      || completedAt < Date.parse(trial.startedAt)
+      || completedAt > Date.parse(observationEnd)) continue;
+    const values = completedByTheme.get(schedule.themeId) ?? [];
+    values.push(completedAt);
+    completedByTheme.set(schedule.themeId, values);
+  }
+  let convergedThemeCount = 0;
+  let reopenedThemeCount = 0;
+  for (const [themeId, cases] of casesByTheme) {
+    const errorTimes = cases.map((row) => Date.parse(row.createdAt)).filter(Number.isFinite);
+    const completions = completedByTheme.get(themeId) ?? [];
+    const lastErrorAt = Math.max(...errorTimes);
+    if (completions.some((completedAt) => completedAt >= lastErrorAt)) convergedThemeCount += 1;
+    if (completions.some((completedAt) => errorTimes.some((errorAt) => errorAt > completedAt))) reopenedThemeCount += 1;
+  }
+  return {
+    themeCount: casesByTheme.size,
+    errorCaseCount: errorCases.length,
+    convergedThemeCount,
+    unresolvedThemeCount: casesByTheme.size - convergedThemeCount,
+    reopenedThemeCount,
+    convergenceRate: rate(convergedThemeCount, casesByTheme.size),
+  };
 }
 
 function followUpMetrics(sessions, trial, observationEnd) {

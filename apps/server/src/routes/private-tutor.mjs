@@ -34,11 +34,28 @@ import {
   selectNextQuickDiagnosticQuestion,
 } from "../services/private-tutor-assessment.mjs";
 import {
+  applyPrivateTutorCatchUpPlan,
+  buildPrivateTutorCatchUpPlanPreview,
+  buildPrivateTutorGoalForecast,
   buildPrivateTutorSevenDayPlan,
   decidePrivateTutorStrategy,
+  derivePrivateTutorPlanProgress,
   derivePrivateTutorLearnerModel,
+  rollPrivateTutorFuturePlan,
+  resolvePrivateTutorGoalScopeKnowledgeIds,
 } from "../services/private-tutor-learning-model.mjs";
 import { buildPrivateTutorLearningHistory } from "../services/private-tutor-learning-history.mjs";
+import {
+  buildPrivateTutorRoadmapLedgerView,
+  recordPrivateTutorRoadmapSnapshot,
+} from "../services/private-tutor-roadmap-ledger.mjs";
+import {
+  buildPrivateTutorExperienceReport,
+  buildPrivateTutorTeachingPolicy,
+  recordPrivateTutorExperienceEvent,
+  recordPrivateTutorSuggestionAdoption,
+  recordPrivateTutorTeachingStrategyDecision,
+} from "../services/private-tutor-teaching-strategy.mjs";
 import {
   completeExpiredPrivateTutorLearningTrials,
   latestPrivateTutorLearningTrialView,
@@ -145,6 +162,7 @@ import {
 } from "../services/private-tutor-content-authoring.mjs";
 import {
   privateTutorLearningPreferences,
+  sanitizePrivateTutorLearningGoal,
   setPrivateTutorPackageDeactivated,
   updatePrivateTutorLearningPreferences,
 } from "../services/private-tutor-learning-preferences.mjs";
@@ -521,6 +539,84 @@ export async function handlePrivateTutorRoutes({
       return true;
     }
     sendJson(res, 405, { error: "method_not_allowed" });
+    return true;
+  }
+
+  const materialOcrPageImageMatch = url.pathname.match(/^\/api\/private-tutor\/materials\/([^/]+)\/ocr-pages\/(\d+)\/image$/);
+  if (materialOcrPageImageMatch) {
+    const learnerId = actor?.privateTutorLearnerId || actor?.userId;
+    if (!learnerId) {
+      sendJson(res, 403, { error: "private_tutor_learner_required" });
+      return true;
+    }
+    if (!privateTutorMaterialOcrService) {
+      sendJson(res, 503, { error: "private_tutor_ocr_service_unavailable" });
+      return true;
+    }
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const materialId = decodeURIComponent(materialOcrPageImageMatch[1]);
+    const material = state.privateTutorMaterialDocuments.find((item) =>
+      item.id === materialId && item.learningProfileId === learnerId);
+    if (!material) {
+      sendJson(res, 404, { error: "material_not_found" });
+      return true;
+    }
+    try {
+      const image = privateTutorMaterialOcrService.readPageImage(
+        material,
+        learnerId,
+        Number(materialOcrPageImageMatch[2]),
+      );
+      res.writeHead(200, {
+        "Content-Type": image.contentType,
+        "Content-Length": image.bytes.length,
+        "Content-Disposition": `inline; filename="${image.fileName}"`,
+        "Cache-Control": "private, no-store",
+        "Cross-Origin-Resource-Policy": "same-site",
+        "X-Content-Type-Options": "nosniff",
+      });
+      res.end(image.bytes);
+    } catch (error) {
+      sendJson(res, Number(error?.status) || 400, { error: String(error?.code ?? error?.message ?? "private_tutor_ocr_page_image_failed") });
+    }
+    return true;
+  }
+
+  const materialOcrReviewMatch = url.pathname.match(/^\/api\/private-tutor\/materials\/([^/]+)\/ocr-review$/);
+  if (materialOcrReviewMatch) {
+    const learnerId = actor?.privateTutorLearnerId || actor?.userId;
+    if (!learnerId) {
+      sendJson(res, 403, { error: "private_tutor_learner_required" });
+      return true;
+    }
+    if (!privateTutorMaterialOcrService) {
+      sendJson(res, 503, { error: "private_tutor_ocr_service_unavailable" });
+      return true;
+    }
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const materialId = decodeURIComponent(materialOcrReviewMatch[1]);
+    const material = state.privateTutorMaterialDocuments.find((item) =>
+      item.id === materialId && item.learningProfileId === learnerId);
+    if (!material) {
+      sendJson(res, 404, { error: "material_not_found" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    try {
+      const updated = privateTutorMaterialOcrService.reviewPage(material, learnerId, body);
+      const job = privateTutorMaterialOcrService.listJobs(learnerId, materialId)[0] ?? null;
+      sendJson(res, 200, { material: updated, job });
+    } catch (error) {
+      const code = String(error?.code ?? error?.message ?? "private_tutor_ocr_review_failed");
+      const status = code === "private_tutor_ocr_review_revision_conflict" ? 409 : Number(error?.status) || 400;
+      sendJson(res, status, { error: code, message: String(error?.message ?? code).slice(0, 500) });
+    }
     return true;
   }
 
@@ -1459,6 +1555,9 @@ export async function handlePrivateTutorRoutes({
           now,
           nextId,
         });
+        if (runtime.learningPlan) {
+          recordPrivateTutorRoadmapSnapshot(state, { learner, plan: runtime.learningPlan, reason: "content_package_activated", at: changedAt, nextId });
+        }
         recordAudit(state, {
           learner,
           actor,
@@ -1489,6 +1588,81 @@ export async function handlePrivateTutorRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/private-tutor/profile/learning-goal/preview"
+    || url.pathname === "/api/private-tutor/profile/learning-goal/confirm") {
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const learner = resolved.learner;
+    const body = await readJson(req).catch(() => ({}));
+    const current = privateTutorLearningPreferences(state, learner.id);
+    const expectedRevision = Number(body?.expectedPreferencesRevision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision) {
+      sendJson(res, 409, { error: "private_tutor_learning_goal_revision_conflict", currentRevision: current.revision });
+      return true;
+    }
+    const proposedGoal = sanitizePrivateTutorLearningGoal(body?.learningGoal ?? null);
+    if (proposedGoal?.__invalid) {
+      sendJson(res, 400, { error: "invalid_learning_goal" });
+      return true;
+    }
+    const preview = privateTutorLearningGoalPreview(state, learner, current, proposedGoal, { now });
+    if (!preview.ok) {
+      sendJson(res, preview.status, { error: preview.error });
+      return true;
+    }
+    if (url.pathname.endsWith("/preview")) {
+      sendJson(res, 200, { preview: preview.value });
+      return true;
+    }
+    if (String(body?.previewFingerprint ?? "") !== preview.value.fingerprint) {
+      sendJson(res, 409, { error: "private_tutor_learning_goal_preview_stale" });
+      return true;
+    }
+    const activeSession = state.privateTutorSessions.find((row) => row.learnerId === learner.id && ["active", "paused"].includes(row.status));
+    if (activeSession) {
+      sendJson(res, 409, { error: "private_tutor_learning_goal_session_in_progress" });
+      return true;
+    }
+    const result = updatePrivateTutorLearningPreferences(state, learner.id, { learningGoal: proposedGoal }, { now, nextId });
+    const intelligence = refreshPrivateTutorIntelligence(state, learner, {
+      now,
+      nextId,
+      reason: "learning_goal_confirmed",
+    });
+    recordAudit(state, {
+      learner,
+      actor,
+      action: "learning_goal_confirmed",
+      details: {
+        previousRevision: current.revision,
+        revision: result.preferences.revision,
+        previewFingerprint: preview.value.fingerprint,
+        forecastStatus: preview.value.forecast.status,
+        planId: intelligence.learningPlan?.id ?? null,
+      },
+      now,
+      nextId,
+    });
+    recordPrivateTutorExperienceEvent(state, {
+      learner,
+      planId: intelligence.learningPlan?.id ?? null,
+      type: "manual_plan_adjustment",
+      details: { reason: "learning_goal_confirmed" },
+      at: now(),
+      nextId,
+    });
+    persistStateSoon();
+    sendJson(res, 200, { preferences: result.preferences, preview: preview.value, ...intelligence });
+    return true;
+  }
+
   if (url.pathname === "/api/private-tutor/profile/preferences") {
     const resolved = resolveOwnedProfileLearner(state, actor, {});
     if (!resolved.ok) {
@@ -1503,6 +1677,10 @@ export async function handlePrivateTutorRoutes({
     if (req.method === "PUT") {
       const body = await readJson(req).catch(() => ({}));
       const patch = body?.preferences && typeof body.preferences === "object" ? body.preferences : body;
+      if (Object.hasOwn(patch ?? {}, "learningGoal")) {
+        sendJson(res, 409, { error: "private_tutor_learning_goal_preview_required" });
+        return true;
+      }
       const result = updatePrivateTutorLearningPreferences(state, learner.id, patch ?? {}, { now, nextId });
       if (!result.ok) {
         sendJson(res, 400, { error: result.error });
@@ -1514,6 +1692,13 @@ export async function handlePrivateTutorRoutes({
         action: "learning_preferences_updated",
         details: { revision: result.preferences.revision },
         now,
+        nextId,
+      });
+      recordPrivateTutorExperienceEvent(state, {
+        learner,
+        type: "manual_plan_adjustment",
+        details: { reason: "learning_preferences_updated" },
+        at: now(),
         nextId,
       });
       persistStateSoon();
@@ -1543,7 +1728,7 @@ export async function handlePrivateTutorRoutes({
       learner: learnerView(resolved.learner),
       profile: learnerView(resolved.learner),
       snapshot: snapshotView(snapshot),
-      ...currentPrivateTutorIntelligence(state, resolved.learner.id),
+      ...currentPrivateTutorIntelligence(state, resolved.learner.id, { at: now() }),
     });
     return true;
   }
@@ -1691,6 +1876,140 @@ export async function handlePrivateTutorRoutes({
     });
   }
 
+  if (url.pathname === "/api/private-tutor/profile/roadmap-ledger") {
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const learner = resolved.learner;
+    const contentPackageId = activeContentPackageId(learner);
+    const activation = activePrivateTutorPackageActivation(state, learner.id, contentPackageId);
+    const currentPlan = state.privateTutorLearningPlans.find((row) => row.learnerId === learner.id
+      && sameContentPackage(row.contentPackageId, contentPackageId)
+      && samePrivateTutorActivation(row, activation)
+      && row.status === "active") ?? null;
+    if (currentPlan) {
+      const beforeLedger = state.privateTutorRoadmapLedgers.find((row) => row.learnerId === learner.id
+        && row.contentPackageId === contentPackageId
+        && row.activationId === (activation?.id ?? null)
+        && row.status === "active") ?? null;
+      const beforeVersion = beforeLedger ? `${beforeLedger.id}:${beforeLedger.revision}` : null;
+      const ledger = recordPrivateTutorRoadmapSnapshot(state, { learner, plan: currentPlan, reason: "ledger_bootstrap", at: now(), nextId });
+      const afterVersion = ledger ? `${ledger.id}:${ledger.revision}` : null;
+      if (afterVersion !== beforeVersion) persistStateSoon();
+    }
+    sendJson(res, 200, {
+      ledger: buildPrivateTutorRoadmapLedgerView(state, learner.id, {
+        contentPackageId,
+        activationId: activation?.id ?? null,
+        at: now(),
+      }),
+    });
+    return true;
+  }
+
+  if (url.pathname === "/api/private-tutor/profile/experience-report") {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    sendJson(res, 200, {
+      report: buildPrivateTutorExperienceReport(state, resolved.learner.id, {
+        contentPackageId: activeContentPackageId(resolved.learner),
+        at: now(),
+      }),
+    });
+    return true;
+  }
+
+  if (url.pathname === "/api/private-tutor/profile/learning-plan/catch-up/preview"
+    || url.pathname === "/api/private-tutor/profile/learning-plan/catch-up/confirm") {
+    const resolved = resolveOwnedProfileLearner(state, actor, {});
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, resolved.body);
+      return true;
+    }
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const learner = resolved.learner;
+    if (rejectPausedPrivateTutorLearningWrite({ req, res, url, sendJson, state, learner })) return true;
+    const contentPackageId = activeContentPackageId(learner);
+    const activation = activePrivateTutorPackageActivation(state, learner.id, contentPackageId);
+    const currentPlan = state.privateTutorLearningPlans.find((row) => row.learnerId === learner.id
+      && sameContentPackage(row.contentPackageId, contentPackageId)
+      && samePrivateTutorActivation(row, activation)
+      && row.status === "active") ?? null;
+    if (!currentPlan) {
+      sendJson(res, 409, { error: "private_tutor_learning_plan_required" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    const preview = privateTutorCatchUpPreview(currentPlan, learner.id, { now });
+    if (Number(body?.expectedPlanRevision) !== currentPlan.revision) {
+      sendJson(res, 409, { error: "private_tutor_catch_up_revision_conflict", currentRevision: currentPlan.revision });
+      return true;
+    }
+    if (url.pathname.endsWith("/preview")) {
+      sendJson(res, 200, { preview });
+      return true;
+    }
+    if (String(body?.previewFingerprint ?? "") !== preview.fingerprint) {
+      sendJson(res, 409, { error: "private_tutor_catch_up_preview_stale" });
+      return true;
+    }
+    if (!preview.canConfirm) {
+      sendJson(res, 409, { error: "private_tutor_catch_up_buffer_unavailable" });
+      return true;
+    }
+    const activeSession = state.privateTutorSessions.find((row) => row.learnerId === learner.id && ["active", "paused"].includes(row.status));
+    if (activeSession) {
+      sendJson(res, 409, { error: "private_tutor_catch_up_session_in_progress" });
+      return true;
+    }
+    const applied = applyPrivateTutorCatchUpPlan(currentPlan, preview, { at: now() });
+    if (!applied) {
+      sendJson(res, 409, { error: "private_tutor_catch_up_preview_stale" });
+      return true;
+    }
+    recordPrivateTutorRoadmapSnapshot(state, { learner, plan: applied, reason: "catch_up_confirmed", at: now(), nextId });
+    recordAudit(state, {
+      learner,
+      actor,
+      action: "learning_plan_catch_up_confirmed",
+      details: {
+        planId: currentPlan.id,
+        previewFingerprint: preview.fingerprint,
+        assignmentCount: preview.assignments.length,
+        recoveredMinutes: preview.recoveredMinutes,
+      },
+      now,
+      nextId,
+    });
+    recordPrivateTutorExperienceEvent(state, {
+      learner,
+      planId: currentPlan.id,
+      type: "manual_plan_adjustment",
+      details: { reason: "catch_up_confirmed" },
+      at: now(),
+      nextId,
+    });
+    persistStateSoon();
+    sendJson(res, 200, { preview, ...currentPrivateTutorIntelligence(state, learner.id, { at: now() }) });
+    return true;
+  }
+
   const profileLearningPlanMatch = url.pathname.match(/^\/api\/private-tutor\/profile\/learning-plan(?:\/(rebalance))?$/);
   if (profileLearningPlanMatch) {
     const resolved = resolveOwnedProfileLearner(state, actor, {});
@@ -1701,7 +2020,7 @@ export async function handlePrivateTutorRoutes({
     const learner = resolved.learner;
     if (rejectPausedPrivateTutorLearningWrite({ req, res, url, sendJson, state, learner })) return true;
     if (!profileLearningPlanMatch[1] && req.method === "GET") {
-      sendJson(res, 200, currentPrivateTutorIntelligence(state, learner.id));
+      sendJson(res, 200, currentPrivateTutorIntelligence(state, learner.id, { at: now() }));
       return true;
     }
     if (profileLearningPlanMatch[1] === "rebalance" && req.method === "POST") {
@@ -1713,11 +2032,12 @@ export async function handlePrivateTutorRoutes({
         row.learnerId === learner.id
         && sameContentPackage(row.contentPackageId, contentPackageId)
         && samePrivateTutorActivation(row, activation));
-      if (!currentPlan || !Number.isInteger(missedDayIndex) || missedDayIndex < 1 || missedDayIndex > 7) {
+      const missedDay = currentPlan?.days.find((day) => day.dayIndex === missedDayIndex) ?? null;
+      if (!currentPlan || !Number.isInteger(missedDayIndex) || !["planned", "in_progress"].includes(missedDay?.status)) {
         sendJson(res, 400, { error: "invalid_private_tutor_plan_rebalance" });
         return true;
       }
-      const carryForwardKnowledgeId = currentPlan.days.find((day) => day.dayIndex === missedDayIndex)?.knowledgeId ?? null;
+      const carryForwardKnowledgeId = missedDay.knowledgeId;
       const intelligence = refreshPrivateTutorIntelligence(state, learner, {
         now,
         nextId,
@@ -1730,6 +2050,14 @@ export async function handlePrivateTutorRoutes({
         action: "learning_plan_rebalanced",
         details: { missedDayIndex, planId: intelligence.learningPlan?.id ?? null },
         now,
+        nextId,
+      });
+      recordPrivateTutorExperienceEvent(state, {
+        learner,
+        planId: intelligence.learningPlan?.id ?? null,
+        type: "manual_plan_adjustment",
+        details: { reason: "missed_day_rescheduled" },
+        at: now(),
         nextId,
       });
       persistStateSoon();
@@ -2128,7 +2456,7 @@ export async function handlePrivateTutorRoutes({
     }
     if (rejectPausedPrivateTutorLearningWrite({ req, res, url, sendJson, state, learner })) return true;
     if (!learningPlanMatch[2] && req.method === "GET") {
-      sendJson(res, 200, currentPrivateTutorIntelligence(state, learner.id));
+      sendJson(res, 200, currentPrivateTutorIntelligence(state, learner.id, { at: now() }));
       return true;
     }
     if (learningPlanMatch[2] === "rebalance" && req.method === "POST") {
@@ -2140,11 +2468,12 @@ export async function handlePrivateTutorRoutes({
         row.learnerId === learner.id
         && sameContentPackage(row.contentPackageId, contentPackageId)
         && samePrivateTutorActivation(row, activation));
-      if (!currentPlan || !Number.isInteger(missedDayIndex) || missedDayIndex < 1 || missedDayIndex > 7) {
+      const missedDay = currentPlan?.days.find((day) => day.dayIndex === missedDayIndex) ?? null;
+      if (!currentPlan || !Number.isInteger(missedDayIndex) || !["planned", "in_progress"].includes(missedDay?.status)) {
         sendJson(res, 400, { error: "invalid_private_tutor_plan_rebalance" });
         return true;
       }
-      const carryForwardKnowledgeId = currentPlan.days.find((day) => day.dayIndex === missedDayIndex)?.knowledgeId ?? null;
+      const carryForwardKnowledgeId = missedDay.knowledgeId;
       const intelligence = refreshPrivateTutorIntelligence(state, learner, {
         now,
         nextId,
@@ -2474,7 +2803,7 @@ export async function handlePrivateTutorRoutes({
     sendJson(res, 200, {
       learner: learnerView(learner),
       snapshot: snapshotView(snapshot),
-      ...currentPrivateTutorIntelligence(state, learner.id),
+      ...currentPrivateTutorIntelligence(state, learner.id, { at: now() }),
     });
     return true;
   }
@@ -3065,15 +3394,39 @@ async function handleTutoringSessionRoute({
       return true;
     }
     const snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
-    const plan = state.privateTutorLearningPlans.find((row) =>
-      row.learnerId === learner.id
-      && sameContentPackage(row.contentPackageId, contentPackageId)
-      && row.status === "active"
-      && samePrivateTutorActivation(row, activation));
-    const decision = state.privateTutorStrategyDecisions.find((row) =>
+    const latestPlan = state.privateTutorLearningPlans.find((row) =>
       row.learnerId === learner.id
       && sameContentPackage(row.contentPackageId, contentPackageId)
       && samePrivateTutorActivation(row, activation));
+    let plan = latestPlan?.status === "active" ? latestPlan : null;
+    let decision = state.privateTutorStrategyDecisions.find((row) =>
+      row.learnerId === learner.id
+      && sameContentPackage(row.contentPackageId, contentPackageId)
+      && samePrivateTutorActivation(row, activation));
+    if (!plan && decision) {
+      const completedPlan = latestPlan?.status === "completed" ? latestPlan : state.privateTutorLearningPlans.find((row) =>
+        row.learnerId === learner.id
+        && sameContentPackage(row.contentPackageId, contentPackageId)
+        && row.status === "completed"
+        && samePrivateTutorActivation(row, activation));
+      if (completedPlan) {
+        const continued = refreshPrivateTutorIntelligence(state, learner, {
+          now,
+          nextId,
+          reason: "next_week_started",
+        });
+        plan = state.privateTutorLearningPlans.find((row) => row.id === continued.learningPlan?.id) ?? null;
+        decision = state.privateTutorStrategyDecisions.find((row) => row.id === continued.strategyDecision?.id) ?? decision;
+        if (plan) recordAudit(state, {
+          learner,
+          actor,
+          action: "learning_plan_auto_continued",
+          details: { previousPlanId: completedPlan.id, planId: plan.id, weekIndex: plan.goalRoadmap?.currentWeekIndex ?? null },
+          now,
+          nextId,
+        });
+      }
+    }
     if (!plan || !decision) {
       sendJson(res, 409, { error: "private_tutor_learning_plan_required" });
       return true;
@@ -3085,8 +3438,17 @@ async function handleTutoringSessionRoute({
       return true;
     }
     const preferences = privateTutorLearningPreferences(state, learner.id);
+    const sessionId = nextId("ptsess");
+    const teachingPolicy = buildPrivateTutorTeachingPolicy(state, {
+      learnerId: learner.id,
+      contentPackageId,
+      targetKnowledgeId: plan.days?.find((day) => ["in_progress", "planned"].includes(day.status))?.knowledgeId ?? decision.targetKnowledgeId,
+      strategy: plan.days?.find((day) => ["in_progress", "planned"].includes(day.status))?.strategy ?? decision.strategy,
+      trigger: "session_started",
+      at: now(),
+    });
     const session = createPrivateTutorSession({
-      id: nextId("ptsess"),
+      id: sessionId,
       ownerTeamId: learner.ownerTeamId,
       learnerId: learner.id,
       plan,
@@ -3097,12 +3459,30 @@ async function handleTutoringSessionRoute({
       contentPackageId,
       activationId: activation?.id ?? null,
       targetMinutes: preferences.dailyMinutes,
+      teachingPolicy,
     });
     if (!session) {
       sendJson(res, 409, { error: "private_tutor_session_content_unavailable" });
       return true;
     }
     state.privateTutorSessions.unshift(session);
+    const startedAt = now();
+    recordPrivateTutorTeachingStrategyDecision(state, {
+      learner,
+      session,
+      trigger: "session_started",
+      policy: teachingPolicy,
+      at: startedAt,
+      nextId,
+    });
+    recordPrivateTutorExperienceEvent(state, {
+      learner,
+      session,
+      type: "session_started",
+      dedupeKey: `session_started:${session.id}`,
+      at: startedAt,
+      nextId,
+    });
     recordTutoringSessionEvent(state, { learner, actor, session, type: "session_started", details: { pace }, now, nextId });
     recordAudit(state, { learner, actor, action: "tutoring_session_started", details: { sessionId: session.id, pace }, now, nextId });
     persistStateSoon();
@@ -3125,6 +3505,15 @@ async function handleTutoringSessionRoute({
       sendJson(res, 409, { error: "private_tutor_session_not_active" });
       return true;
     }
+    recordPrivateTutorExperienceEvent(state, {
+      learner,
+      session,
+      type: "session_interrupted",
+      details: { activity: currentPrivateTutorActivity(session)?.kind ?? "unknown" },
+      dedupeKey: `session_interrupted:${session.id}:${session.revision}`,
+      at: now(),
+      nextId,
+    });
     recordTutoringSessionEvent(state, { learner, actor, session, type: "session_paused", details: { activity: currentPrivateTutorActivity(session)?.kind ?? null }, now, nextId });
     persistStateSoon();
     sendJson(res, 200, { session: privateTutorSessionView(session, state) });
@@ -3140,6 +3529,15 @@ async function handleTutoringSessionRoute({
       sendJson(res, 409, { error: "private_tutor_session_not_paused" });
       return true;
     }
+    recordPrivateTutorExperienceEvent(state, {
+      learner,
+      session,
+      type: "session_resumed",
+      details: { activity: currentPrivateTutorActivity(session)?.kind ?? "unknown" },
+      dedupeKey: `session_resumed:${session.id}:${session.revision}`,
+      at: now(),
+      nextId,
+    });
     recordTutoringSessionEvent(state, { learner, actor, session, type: "session_resumed", details: { activity: currentPrivateTutorActivity(session)?.kind ?? null }, now, nextId });
     persistStateSoon();
     sendJson(res, 200, { session: privateTutorSessionView(session, state) });
@@ -3164,8 +3562,20 @@ async function handleTutoringSessionRoute({
       return true;
     }
     const completedKind = activity.kind;
+    const actionAt = now();
+    recordPrivateTutorSuggestionAdoption(state, { learner, session, action: "continue", at: actionAt, nextId });
     const result = completePrivateTutorActivity(session, now);
+    recordPrivateTutorExperienceEvent(state, {
+      learner,
+      session,
+      type: "learning_step_completed",
+      details: { activity: completedKind, stepIndex: session.currentActivityIndex },
+      dedupeKey: `learning_step_completed:${session.id}:${completedKind}`,
+      at: actionAt,
+      nextId,
+    });
     const sessionPlan = state.privateTutorLearningPlans.find((row) => row.id === session.planId) ?? null;
+    let intelligence = { learningPlan: learningPlanView(sessionPlan) };
     if (result.completed) {
       const snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
       if (snapshot) {
@@ -3176,6 +3586,12 @@ async function handleTutoringSessionRoute({
         snapshot.updatedAt = session.completedAt;
       }
       completePrivateTutorPlanDay(sessionPlan, session, session.completedAt);
+      intelligence = refreshPrivateTutorIntelligence(state, learner, {
+        now,
+        nextId,
+        reason: "tutoring_session_completed",
+        learningPlanId: sessionPlan?.id ?? null,
+      });
       recordAudit(state, {
         learner,
         actor,
@@ -3184,23 +3600,56 @@ async function handleTutoringSessionRoute({
         now,
         nextId,
       });
+      recordPrivateTutorExperienceEvent(state, {
+        learner,
+        session,
+        type: "session_completed",
+        dedupeKey: `session_completed:${session.id}`,
+        at: session.completedAt,
+        nextId,
+      });
+    } else {
+      recordPrivateTutorTeachingStrategyDecision(state, {
+        learner,
+        session,
+        trigger: "activity_completed",
+        at: now(),
+        nextId,
+      });
     }
     recordTutoringSessionEvent(state, { learner, actor, session, type: result.completed ? "session_completed" : "activity_completed", details: { activity: completedKind }, now, nextId });
     persistStateSoon();
     sendJson(res, 200, {
       session: privateTutorSessionView(session, state),
       snapshot: snapshotView(state.privateTutorSnapshots.find((row) => row.learnerId === learner.id)),
-      learningPlan: learningPlanView(sessionPlan),
+      ...intelligence,
     });
     return true;
   }
 
   if (actionType === "hint") {
+    const actionAt = now();
+    recordPrivateTutorSuggestionAdoption(state, { learner, session, action: "hint", at: actionAt, nextId });
     const result = revealPrivateTutorHint(session, now);
     if (!result.ok) {
       sendJson(res, 409, { error: result.error });
       return true;
     }
+    recordPrivateTutorExperienceEvent(state, {
+      learner,
+      session,
+      type: "hint_used",
+      details: { activity: activity.kind, stepIndex: activity.hintLevel },
+      at: actionAt,
+      nextId,
+    });
+    recordPrivateTutorTeachingStrategyDecision(state, {
+      learner,
+      session,
+      trigger: "hint_used",
+      at: now(),
+      nextId,
+    });
     recordTutoringSessionEvent(state, { learner, actor, session, type: "hint_revealed", details: { activity: activity.kind, level: activity.hintLevel }, now, nextId });
     persistStateSoon();
     sendJson(res, 200, { session: privateTutorSessionView(session, state) });
@@ -3208,6 +3657,8 @@ async function handleTutoringSessionRoute({
   }
 
   if (actionType === "follow_up") {
+    const actionAt = now();
+    recordPrivateTutorSuggestionAdoption(state, { learner, session, action: "follow_up", at: actionAt, nextId });
     const result = answerPrivateTutorFollowUp(session, {
       mode: String(body?.mode ?? "question"),
       question: body?.question,
@@ -3219,6 +3670,21 @@ async function handleTutoringSessionRoute({
       sendJson(res, 400, { error: result.error });
       return true;
     }
+    recordPrivateTutorExperienceEvent(state, {
+      learner,
+      session,
+      type: "teaching_support_used",
+      details: { activity: activity?.kind ?? "unknown", action: result.followUp.mode },
+      at: actionAt,
+      nextId,
+    });
+    recordPrivateTutorTeachingStrategyDecision(state, {
+      learner,
+      session,
+      trigger: "follow_up_used",
+      at: now(),
+      nextId,
+    });
     recordTutoringSessionEvent(state, {
       learner,
       actor,
@@ -3335,6 +3801,7 @@ async function handleTutoringSessionRoute({
     return true;
   }
   const createdAt = now();
+  recordPrivateTutorSuggestionAdoption(state, { learner, session, action: "answer", at: createdAt, nextId });
   const attempt = {
     id: nextId("pta"),
     ownerTeamId: learner.ownerTeamId,
@@ -3371,6 +3838,24 @@ async function handleTutoringSessionRoute({
     attemptId: attempt.id,
     evidenceEligible: attempt.evidenceEligible,
     now,
+  });
+  if (answerResult.advanced) {
+    recordPrivateTutorExperienceEvent(state, {
+      learner,
+      session,
+      type: "learning_step_completed",
+      details: { activity: attempt.activityKind },
+      dedupeKey: `learning_step_completed:${session.id}:${attempt.activityKind}`,
+      at: createdAt,
+      nextId,
+    });
+  }
+  recordPrivateTutorTeachingStrategyDecision(state, {
+    learner,
+    session,
+    trigger: attempt.correct ? "answer_correct" : "answer_incorrect",
+    at: now(),
+    nextId,
   });
   const intelligence = attempt.evidenceEligible === false
     ? currentPrivateTutorIntelligence(state, learner.id)
@@ -3451,6 +3936,136 @@ function assessmentView(assessment, state) {
   };
 }
 
+function privateTutorCatchUpPreview(plan, learnerId, { now }) {
+  const value = buildPrivateTutorCatchUpPlanPreview(plan, { at: now() });
+  const fingerprint = stableHash({
+    schemaVersion: 1,
+    learnerId,
+    planId: plan.id,
+    planRevision: plan.revision,
+    calculationDate: value.generatedAt.slice(0, 10),
+    assignments: value.assignments,
+    dayStates: plan.days.map((day) => ({
+      dayIndex: day.dayIndex,
+      date: day.date,
+      status: day.status,
+      minutes: day.minutes,
+      knowledgeId: day.knowledgeId,
+    })),
+  });
+  return { ...value, fingerprint, requiresConfirmation: true };
+}
+
+function privateTutorLearningGoalPreview(state, learner, preferences, proposedGoal, { now }) {
+  const contentPackageId = activeContentPackageId(learner);
+  const contentPackage = privateTutorPackageRegistryFromState(state).getPackage(contentPackageId);
+  if (!contentPackage) return { ok: false, status: 409, error: "private_tutor_learning_goal_content_required" };
+  if (proposedGoal?.contentPackageId && proposedGoal.contentPackageId !== contentPackageId) {
+    return { ok: false, status: 400, error: "private_tutor_learning_goal_content_mismatch" };
+  }
+  const activation = activePrivateTutorPackageActivation(state, learner.id, contentPackageId);
+  const storedModel = state.privateTutorLearnerModels.find((row) => row.learnerId === learner.id
+    && sameContentPackage(row.contentPackageId, contentPackageId)
+    && samePrivateTutorActivation(row, activation));
+  const model = storedModel ?? {
+    knowledge: (contentPackage.knowledgeComponents ?? []).map((item) => ({
+      id: item.id,
+      title: item.name ?? item.title ?? item.id,
+      mastery: null,
+      level: "unknown",
+      forgettingRisk: 0,
+      prerequisiteGap: false,
+      misconception: null,
+    })),
+  };
+  const resolvedProposedScope = resolvePrivateTutorGoalScopeKnowledgeIds(contentPackage, proposedGoal);
+  if (proposedGoal?.targetTopicIds?.length && !resolvedProposedScope) {
+    return { ok: false, status: 400, error: "private_tutor_learning_goal_scope_invalid" };
+  }
+  const proposedScope = resolvedProposedScope ?? model.knowledge.map((item) => item.id);
+  const currentScope = resolvePrivateTutorGoalScopeKnowledgeIds(contentPackage, preferences.learningGoal)
+    ?? model.knowledge.map((item) => item.id);
+  const dailyCapacity = Math.max(5, Math.min(180, Number(preferences.dailyMinutes) || 20));
+  const requestedWeekly = proposedGoal?.weeklyMinutes ?? dailyCapacity * 7;
+  const weeklyCapacity = Math.max(5, Math.min(requestedWeekly, dailyCapacity * 7));
+  const effortEvidence = state.privateTutorSessions.filter((row) => row.learnerId === learner.id
+    && sameContentPackage(row.contentPackageId, contentPackageId));
+  const forecast = buildPrivateTutorGoalForecast({
+    model,
+    scopeKnowledgeIds: proposedScope,
+    learningGoal: proposedGoal,
+    weeklyMinutes: weeklyCapacity,
+    at: now(),
+    effortEvidence,
+  });
+  const currentSet = new Set(currentScope);
+  const proposedSet = new Set(proposedScope);
+  const currentPlan = state.privateTutorLearningPlans.find((row) => row.learnerId === learner.id
+    && sameContentPackage(row.contentPackageId, contentPackageId)
+    && samePrivateTutorActivation(row, activation)) ?? null;
+  const completedTimingEvidence = effortEvidence
+    .filter((row) => row.status === "completed")
+    .map((row) => ({
+      id: row.id,
+      targetKnowledgeId: row.targetKnowledgeId,
+      plannedMinutes: row.plannedMinutes,
+      startedAt: row.startedAt,
+      completedAt: row.completedAt,
+      activities: (row.activities ?? []).map((activity) => ({
+        id: activity.id,
+        budgetMinutes: activity.budgetMinutes,
+        startedAt: activity.startedAt,
+        completedAt: activity.completedAt,
+      })),
+    }));
+  const fingerprint = stableHash({
+    schemaVersion: 1,
+    learnerId: learner.id,
+    preferencesRevision: preferences.revision,
+    contentPackageId,
+    contentPackageVersion: contentPackage.version,
+    learnerModel: storedModel ? {
+      id: storedModel.id,
+      revision: storedModel.revision,
+      sourceSnapshotRevision: storedModel.sourceSnapshotRevision,
+    } : null,
+    currentPlan: currentPlan ? {
+      id: currentPlan.id,
+      revision: currentPlan.revision,
+      status: currentPlan.status,
+      updatedAt: currentPlan.updatedAt,
+      dayStatuses: currentPlan.days?.map((day) => ({ dayIndex: day.dayIndex, status: day.status })),
+    } : null,
+    completedTimingEvidence,
+    proposedGoal,
+  });
+  return {
+    ok: true,
+    value: {
+      schemaVersion: 1,
+      fingerprint,
+      expectedPreferencesRevision: preferences.revision,
+      contentPackage: { id: contentPackageId, version: contentPackage.version, name: contentPackage.name },
+      currentGoal: preferences.learningGoal,
+      proposedGoal,
+      forecast,
+      changes: {
+        addedKnowledgeIds: proposedScope.filter((id) => !currentSet.has(id)),
+        removedKnowledgeIds: currentScope.filter((id) => !proposedSet.has(id)),
+        preservedCompletedDayCount: currentPlan?.days?.filter((day) => day.status === "completed").length ?? 0,
+        replacedFutureDayCount: currentPlan?.days?.filter((day) => day.status === "planned" || day.status === "rest").length ?? 0,
+        inProgressDayCount: currentPlan?.days?.filter((day) => day.status === "in_progress").length ?? 0,
+        weeklyMinutesBefore: preferences.learningGoal?.weeklyMinutes ?? dailyCapacity * 7,
+        weeklyMinutesAfter: weeklyCapacity,
+        targetDateBefore: preferences.learningGoal?.targetDate ?? null,
+        targetDateAfter: proposedGoal?.targetDate ?? null,
+      },
+      requiresConfirmation: true,
+      generatedAt: forecast.generatedAt,
+    },
+  };
+}
+
 function applyDiagnosticResultToSnapshot(state, learner, assessment, { now, nextId }) {
   let snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
   if (!snapshot) {
@@ -3482,6 +4097,7 @@ function refreshPrivateTutorIntelligence(state, learner, {
   nextId,
   reason,
   carryForwardKnowledgeId = null,
+  learningPlanId = null,
 }) {
   const snapshot = state.privateTutorSnapshots.find((row) => row.learnerId === learner.id);
   if (!snapshot) return currentPrivateTutorIntelligence(state, learner.id);
@@ -3523,7 +4139,12 @@ function refreshPrivateTutorIntelligence(state, learner, {
   };
   state.privateTutorLearnerModels.unshift(learnerModel);
 
-  const decisionValue = decidePrivateTutorStrategy({ model: learnerModel, attempts, previousDecision });
+  const preferences = privateTutorLearningPreferences(state, learner.id);
+  const scopeKnowledgeIds = resolvePrivateTutorGoalScopeKnowledgeIds(contentPackage, preferences.learningGoal);
+  const decisionValue = decidePrivateTutorStrategy({ model: learnerModel, attempts, previousDecision, scopeKnowledgeIds })
+    ?? (reason === "learning_goal_confirmed"
+      ? privateTutorUnknownScopeDecision(learnerModel, scopeKnowledgeIds)
+      : null);
   if (!decisionValue) return currentPrivateTutorIntelligence(state, learner.id);
   const strategyDecision = {
     id: nextId("ptd"),
@@ -3545,6 +4166,12 @@ function refreshPrivateTutorIntelligence(state, learner, {
     && sameContentPackage(row.contentPackageId, contentPackageId)
     && samePrivateTutorActivation(row, activation)
     && row.status === "active") ?? null;
+  const rollingPlan = reason === "tutoring_session_completed" && learningPlanId
+    ? state.privateTutorLearningPlans.find((row) => row.id === learningPlanId
+      && row.learnerId === learner.id
+      && sameContentPackage(row.contentPackageId, contentPackageId)
+      && samePrivateTutorActivation(row, activation)) ?? runningPlan
+    : runningPlan;
   if (reason === "tutoring_session_evidence" && runningPlan) {
     return {
       learnerModel: learnerModelView(learnerModel),
@@ -3553,18 +4180,36 @@ function refreshPrivateTutorIntelligence(state, learner, {
     };
   }
 
-  const preferences = privateTutorLearningPreferences(state, learner.id);
+  const previousPlan = state.privateTutorLearningPlans.find((row) =>
+    row.learnerId === learner.id && sameContentPackage(row.contentPackageId, contentPackageId)) ?? null;
+  const previousWeekIndex = Math.max(1, Number(previousPlan?.goalRoadmap?.currentWeekIndex) || 1);
   const planValue = buildPrivateTutorSevenDayPlan({
     model: learnerModel,
     decision: strategyDecision,
     now,
     reason,
     carryForwardKnowledgeId,
+    scopeKnowledgeIds,
     dailyMinutes: preferences.dailyMinutes,
     planIntensity: preferences.planIntensity,
+    learningGoal: preferences.learningGoal,
+    planWeekIndex: reason === "next_week_started" ? previousWeekIndex + 1 : previousWeekIndex,
+    effortEvidence: state.privateTutorSessions.filter((row) => row.learnerId === learner.id
+      && sameContentPackage(row.contentPackageId, contentPackageId)),
   });
-  const previousPlan = state.privateTutorLearningPlans.find((row) =>
-    row.learnerId === learner.id && sameContentPackage(row.contentPackageId, contentPackageId)) ?? null;
+  if (reason === "tutoring_session_completed" && rollingPlan) {
+    rollPrivateTutorFuturePlan(rollingPlan, planValue, {
+      modelId: learnerModel.id,
+      decisionId: strategyDecision.id,
+      now: now(),
+    });
+    recordPrivateTutorRoadmapSnapshot(state, { learner, plan: rollingPlan, reason, at: rollingPlan.updatedAt, nextId });
+    return {
+      learnerModel: learnerModelView(learnerModel),
+      strategyDecision: strategyDecisionView(strategyDecision),
+      learningPlan: learningPlanView(rollingPlan),
+    };
+  }
   const learningPlan = {
     id: nextId("ptp"),
     ownerTeamId: learner.ownerTeamId,
@@ -3581,7 +4226,13 @@ function refreshPrivateTutorIntelligence(state, learner, {
     ...planValue,
     updatedAt: planValue.generatedAt,
   };
+  if (runningPlan && runningPlan.id !== learningPlan.id) {
+    runningPlan.status = "superseded";
+    runningPlan.supersededAt = planValue.generatedAt;
+    runningPlan.updatedAt = planValue.generatedAt;
+  }
   state.privateTutorLearningPlans.unshift(learningPlan);
+  recordPrivateTutorRoadmapSnapshot(state, { learner, plan: learningPlan, reason, at: learningPlan.updatedAt, nextId });
   return {
     learnerModel: learnerModelView(learnerModel),
     strategyDecision: strategyDecisionView(strategyDecision),
@@ -3589,14 +4240,33 @@ function refreshPrivateTutorIntelligence(state, learner, {
   };
 }
 
-function currentPrivateTutorIntelligence(state, learnerId) {
+function privateTutorUnknownScopeDecision(model, scopeKnowledgeIds) {
+  const scope = new Set(Array.isArray(scopeKnowledgeIds) ? scopeKnowledgeIds : []);
+  const target = model.knowledge.find((item) => !scope.size || scope.has(item.id));
+  if (!target) return null;
+  return {
+    targetKnowledgeId: target.id,
+    targetTitle: target.title,
+    strategy: "concept_rebuild",
+    reasonCode: "goal_scope_needs_diagnostic",
+    studentReason: `“${target.title}”还没有足够学习证据，先从一次低压力讲解和检查开始。`,
+    misconception: null,
+    evidenceAttemptIds: [],
+    exitConditions: [
+      `完成“${target.title}”的首次讲解与练习`,
+      "用首次作答结果校准后续计划",
+    ],
+  };
+}
+
+function currentPrivateTutorIntelligence(state, learnerId, { at = null } = {}) {
   const learner = state.privateTutorLearners.find((row) => row.id === learnerId);
   const contentPackageId = activeContentPackageId(learner);
   const activation = activePrivateTutorPackageActivation(state, learnerId, contentPackageId);
   return {
     learnerModel: learnerModelView(state.privateTutorLearnerModels.find((row) => row.learnerId === learnerId && sameContentPackage(row.contentPackageId, contentPackageId) && samePrivateTutorActivation(row, activation)) ?? null),
     strategyDecision: strategyDecisionView(state.privateTutorStrategyDecisions.find((row) => row.learnerId === learnerId && sameContentPackage(row.contentPackageId, contentPackageId) && samePrivateTutorActivation(row, activation)) ?? null),
-    learningPlan: learningPlanView(state.privateTutorLearningPlans.find((row) => row.learnerId === learnerId && sameContentPackage(row.contentPackageId, contentPackageId) && samePrivateTutorActivation(row, activation)) ?? null),
+    learningPlan: learningPlanView(state.privateTutorLearningPlans.find((row) => row.learnerId === learnerId && sameContentPackage(row.contentPackageId, contentPackageId) && samePrivateTutorActivation(row, activation)) ?? null, { at }),
   };
 }
 
@@ -3659,7 +4329,7 @@ function strategyDecisionView(decision) {
   };
 }
 
-function learningPlanView(plan) {
+function learningPlanView(plan, { at = null } = {}) {
   if (!plan) return null;
   return {
     id: plan.id,
@@ -3676,6 +4346,14 @@ function learningPlanView(plan) {
     status: plan.status,
     reason: plan.reason,
     studentReason: plan.studentReason,
+    dailyMinutes: plan.dailyMinutes ?? null,
+    weeklyMinutes: plan.weeklyMinutes ?? null,
+    planIntensity: plan.planIntensity ?? "standard",
+    learningGoal: plan.learningGoal ? { ...plan.learningGoal, targetTopicIds: [...(plan.learningGoal.targetTopicIds ?? [])] } : null,
+    scopeKnowledgeIds: [...(plan.scopeKnowledgeIds ?? [])],
+    goalForecast: plan.goalForecast ? { ...plan.goalForecast } : null,
+    goalRoadmap: plan.goalRoadmap ? structuredClone(plan.goalRoadmap) : null,
+    progressSignal: derivePrivateTutorPlanProgress(plan, { at: at ?? plan.updatedAt ?? plan.generatedAt }),
     generatedAt: plan.generatedAt,
     days: plan.days.map((day) => ({ ...day })),
     updatedAt: plan.updatedAt,

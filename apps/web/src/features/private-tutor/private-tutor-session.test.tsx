@@ -59,6 +59,7 @@ function sessionAt(kind: "recall" | "explain" | "guided_practice" | "independent
 vi.mock("@/features/private-tutor/private-tutor-api", () => ({
   getPrivateTutorProfile: () => Promise.resolve({ profile: learner, migrationRequired: false }),
   getPrivateTutorSnapshot: () => Promise.resolve({ learner, profile: learner, snapshot, learnerModel: null, strategyDecision, learningPlan }),
+  getPrivateTutorRoadmapLedger: () => Promise.resolve(null),
   getCurrentPrivateTutorAssessment: () => Promise.resolve(completedAssessment),
   getCurrentPrivateTutorSession: apiMocks.currentSession,
   getPrivateTutorReviewBook: () => Promise.resolve({ learnerId: learner.id, counts: { challengeToday: 0, working: 0, mastered: 0 }, themes: [] }),

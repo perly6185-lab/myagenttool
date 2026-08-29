@@ -24,7 +24,6 @@ import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
 import { ApiError } from "@/lib/api/request";
 import { useSessionUser } from "@/hooks/use-session-user";
-import { usePageNavigation } from "@/hooks/use-page-navigation";
 import {
   createInitialLearnerState,
   strategyLabel,
@@ -39,12 +38,16 @@ import {
   createPrivateTutorProfile,
   createPrivateTutorVoiceTurn,
   correctPrivateTutorReviewDiagnosis,
+  confirmPrivateTutorCatchUp,
+  confirmPrivateTutorLearningGoal,
   deletePrivateTutorProfile,
   answerPrivateTutorAssessment,
   answerPrivateTutorReview,
   getCurrentPrivateTutorAssessment,
   getCurrentPrivateTutorSession,
+  getPrivateTutorExperienceReport,
   getPrivateTutorLearningHistory,
+  getPrivateTutorRoadmapLedger,
   getPrivateTutorLearningTrial,
   getPrivateTutorLearningPreferences,
   getPrivateTutorProfile,
@@ -59,6 +62,8 @@ import {
   pausePrivateTutorSession,
   exportPrivateTutorLearnerData,
   previewPrivateTutorLearnerDeletion,
+  previewPrivateTutorCatchUp,
+  previewPrivateTutorLearningGoal,
   recordPrivateTutorVoiceEvent,
   rebalancePrivateTutorLearningPlan,
   resumePrivateTutorAssessment,
@@ -75,14 +80,18 @@ import {
   type PrivateTutorDeletionJobStatus,
   type PrivateTutorDeletionPreview,
   type PrivateTutorEvaluation,
+  type PrivateTutorExperienceReport,
   type PrivateTutorLearnerModel,
   type PrivateTutorReviewBook,
   type PrivateTutorLearner,
   type PrivateTutorLearningPlan,
+  type PrivateTutorRoadmapLedger,
   type PrivateTutorLearningHistory,
   type PrivateTutorLearningTrial,
   type PrivateTutorLearningPreferences,
   type PrivateTutorLearningPreferencesPatch,
+  type PrivateTutorLearningGoalPreview,
+  type PrivateTutorCatchUpPreview,
   type PrivateTutorFollowUpMode,
   type PrivateTutorProfileMigrationReport,
   type PrivateTutorSession,
@@ -103,6 +112,8 @@ import {
   startPrivateTutorMaterialOcr,
   retryPrivateTutorOcrJob,
   cancelPrivateTutorOcrJob,
+  confirmPrivateTutorOcrPage,
+  getPrivateTutorOcrPageImageUrl,
   generatePrivateTutorKnowledgeMapDraft,
   type MaterialDocument,
   type KnowledgeMapDraft,
@@ -161,7 +172,6 @@ function defaultPrivateTutorLearningPreferences(learnerId: string): PrivateTutor
 
 export function PrivateTutorView() {
   const sessionUser = useSessionUser();
-  const navigate = usePageNavigation();
   const [learnerId, setLearnerId] = useState<string | null>(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [profileError, setProfileError] = useState("");
@@ -169,11 +179,6 @@ export function PrivateTutorView() {
   const [loadProfileAttempt, setLoadProfileAttempt] = useState(0);
 
   useEffect(() => {
-    if (!sessionUser) {
-      setLoadingProfile(false);
-      setMigrationRequired(false);
-      return;
-    }
     let current = true;
     setLoadingProfile(true);
     setProfileError("");
@@ -193,20 +198,7 @@ export function PrivateTutorView() {
       })
       .finally(() => { if (current) setLoadingProfile(false); });
     return () => { current = false; };
-  }, [loadProfileAttempt, sessionUser]);
-
-  if (!sessionUser) {
-    return (
-      <div className="mx-auto grid min-h-[65vh] max-w-2xl place-items-center p-4">
-        <Card className="w-full p-8 text-center">
-          <GraduationCap className="mx-auto size-11 text-emerald-600" />
-          <h1 className="mt-4 text-2xl font-bold">登录后开始我的学习</h1>
-          <p className="mt-2 text-sm text-muted-foreground">学习内容、知识地图、计划和错题都会归到你自己的账号。</p>
-          <Button className="mt-6" onClick={() => navigate("me")}>前往登录</Button>
-        </Card>
-      </div>
-    );
-  }
+  }, [loadProfileAttempt, sessionUser?.id]);
   if (loadingProfile) return <div className="grid min-h-[65vh] place-items-center text-sm text-muted-foreground">正在读取我的学习档案…</div>;
   if (migrationRequired) return <MigrationRequiredBanner onMigrated={() => setLoadProfileAttempt((value) => value + 1)} />;
   if (profileError) {
@@ -354,6 +346,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
   const [learnerModel, setLearnerModel] = useState<PrivateTutorLearnerModel | null>(null);
   const [strategyDecision, setStrategyDecision] = useState<PrivateTutorStrategyDecision | null>(null);
   const [learningPlan, setLearningPlan] = useState<PrivateTutorLearningPlan | null>(null);
+  const [roadmapLedger, setRoadmapLedger] = useState<PrivateTutorRoadmapLedger | null>(null);
   const [tutoringSession, setTutoringSession] = useState<PrivateTutorSession | null>(null);
   const [reviewBook, setReviewBook] = useState<PrivateTutorReviewBook | null>(null);
   const [assessmentReady, setAssessmentReady] = useState(false);
@@ -370,6 +363,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     setLoadError("");
     setDiagnosticDismissed(false);
     setInitialLearningRoute("choose");
+    setRoadmapLedger(null);
     setLearningPreferences(defaultPrivateTutorLearningPreferences(learnerId));
     void Promise.allSettled([getPrivateTutorSnapshot(), getCurrentPrivateTutorAssessment(), getCurrentPrivateTutorSession(), getPrivateTutorReviewBook(), getPrivateTutorLearningPreferences()])
       .then(([snapshotResult, assessmentResult, sessionResult, reviewResult, preferencesResult]) => {
@@ -396,6 +390,17 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     return () => { current = false; };
   }, [learnerId, loadAttempt]);
   useEffect(() => {
+    if (!learningPlan) {
+      setRoadmapLedger(null);
+      return;
+    }
+    let current = true;
+    void getPrivateTutorRoadmapLedger()
+      .then((ledger) => { if (current) setRoadmapLedger(ledger); })
+      .catch(() => { if (current) setRoadmapLedger(null); });
+    return () => { current = false; };
+  }, [learningPlan?.id, learningPlan?.revision]);
+  useEffect(() => {
     if (learnerState.learner.id === learnerId) saveLearnerState(learnerState);
   }, [learnerId, learnerState]);
 
@@ -418,8 +423,11 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
   }
 
   async function rescheduleToday() {
+    const missedDay = learningPlan?.days.find((day) => day.status === "in_progress")
+      ?? learningPlan?.days.find((day) => day.status === "planned");
+    if (!missedDay) return "当前没有需要顺延的学习任务。";
     try {
-      const result = await rebalancePrivateTutorLearningPlan(1);
+      const result = await rebalancePrivateTutorLearningPlan(missedDay.dayIndex);
       setLearnerModel(result.learnerModel ?? null);
       setStrategyDecision(result.strategyDecision ?? null);
       setLearningPlan(result.learningPlan ?? null);
@@ -504,6 +512,20 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
     }
   }
 
+  function applyCatchUpConfirmation(result: Awaited<ReturnType<typeof confirmPrivateTutorCatchUp>>) {
+    setLearnerModel(result.learnerModel ?? null);
+    setStrategyDecision(result.strategyDecision ?? null);
+    setLearningPlan(result.learningPlan ?? null);
+  }
+
+  function applyLearningGoalConfirmation(result: Awaited<ReturnType<typeof confirmPrivateTutorLearningGoal>>) {
+    setLearningPreferences(result.preferences);
+    setLearnerModel(result.learnerModel ?? null);
+    setStrategyDecision(result.strategyDecision ?? null);
+    setLearningPlan(result.learningPlan ?? null);
+    setTutoringSession(null);
+  }
+
   const allKnowledgeUnknown = learnerState.knowledge.every((item) => item.level === "unknown");
   const needsInitialLearningRoute = !assessment && allKnowledgeUnknown && !learningPlan;
   if (!assessmentReady) {
@@ -551,6 +573,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
           state={learnerState}
           preferences={learningPreferences}
           onPreferencesChange={saveLearningPreferences}
+          onGoalConfirmed={applyLearningGoalConfirmation}
           onPackageActivated={applyPackageActivation}
           onProfileDeleted={() => window.location.reload()}
           initialSpace="content"
@@ -618,7 +641,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
       </nav>
 
       <div className="p-4 sm:p-7">
-        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} strategyDecision={strategyDecision} session={tutoringSession} preferences={learningPreferences} onReschedule={rescheduleToday} onStart={startLesson} onPause={pauseLesson} onResume={resumeLesson} onAction={actOnLesson} /> : null}
+        {tab === "today" ? <TodayLearning state={learnerState} learningPlan={learningPlan} roadmapLedger={roadmapLedger} strategyDecision={strategyDecision} session={tutoringSession} preferences={learningPreferences} onReschedule={rescheduleToday} onCatchUpConfirmed={applyCatchUpConfirmation} onStart={startLesson} onPause={pauseLesson} onResume={resumeLesson} onAction={actOnLesson} /> : null}
         {tab === "map" ? <KnowledgeMap state={learnerState} learnerModel={learnerModel} /> : null}
         {tab === "errors" ? <ErrorBook state={learnerState} reviewBook={reviewBook} onReviewBookChange={setReviewBook} onSnapshot={(snapshot) => setLearnerState((current) => applyServerSnapshot(current, snapshot))} /> : null}
         {tab === "growth" ? <Growth state={learnerState} /> : null}
@@ -627,6 +650,7 @@ function PersonalTutorExperience({ learnerId }: { learnerId: string }) {
             state={learnerState}
             preferences={learningPreferences}
             onPreferencesChange={saveLearningPreferences}
+            onGoalConfirmed={applyLearningGoalConfirmation}
             onPackageActivated={applyPackageActivation}
             onProfileDeleted={() => window.location.reload()}
           />
@@ -1011,10 +1035,12 @@ export function formatPrivateTutorEvaluationFeedback(evaluation: PrivateTutorEva
 function TodayLearning({
   state,
   learningPlan,
+  roadmapLedger,
   strategyDecision,
   session,
   preferences,
   onReschedule,
+  onCatchUpConfirmed,
   onStart,
   onPause,
   onResume,
@@ -1022,10 +1048,12 @@ function TodayLearning({
 }: {
   state: LearnerTutorState;
   learningPlan: PrivateTutorLearningPlan | null;
+  roadmapLedger: PrivateTutorRoadmapLedger | null;
   strategyDecision: PrivateTutorStrategyDecision | null;
   session: PrivateTutorSession | null;
   preferences: PrivateTutorLearningPreferences;
   onReschedule: () => Promise<string | null>;
+  onCatchUpConfirmed: (result: Awaited<ReturnType<typeof confirmPrivateTutorCatchUp>>) => void;
   onStart: (pace: PrivateTutorSessionPace) => Promise<string | null>;
   onPause: () => Promise<string | null>;
   onResume: () => Promise<string | null>;
@@ -1372,7 +1400,8 @@ function TodayLearning({
           </Card>
         </div>
         {message ? <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900 lg:col-span-2">{message}</p> : null}
-        {learningPlan ? <SevenDayPlan plan={learningPlan} onReschedule={onReschedule} /> : null}
+        {learningPlan ? <SevenDayPlan plan={learningPlan} onReschedule={onReschedule} onCatchUpConfirmed={onCatchUpConfirmed} /> : null}
+        {roadmapLedger ? <RoadmapLedgerCard ledger={roadmapLedger} /> : null}
       </div>
     );
   }
@@ -1455,6 +1484,7 @@ function TodayLearning({
           ) : <div className="grid min-h-48 place-items-center rounded-2xl border bg-sky-50 text-center dark:bg-sky-950/30"><div><BrainCircuit className="mx-auto size-10 text-sky-600" /><p className="mt-3 font-semibold">使用静态步骤继续学习</p></div></div>}
           <div className="mt-5 rounded-2xl bg-muted/60 p-4">
             <p className="flex gap-2 text-sm leading-6"><Volume2 className="mt-1 size-4 shrink-0 text-emerald-600" />{current.instruction}</p>
+            {session.teachingPolicy ? <p className="mt-2 text-xs leading-5 text-emerald-700 dark:text-emerald-300">本步已按你的表现选择：{teachingModeLabel(session.teachingPolicy.explanationMode)}、{difficultyLabel(session.teachingPolicy.questionDifficulty)}、{hintGranularityLabel(session.teachingPolicy.hintGranularity)}。{session.teachingPolicy.suggestion ? ` 建议：${session.teachingPolicy.suggestion.label}。` : ""}</p> : null}
             <div className="mt-3 flex flex-wrap gap-2">
               <Button type="button" size="sm" variant="secondary" onClick={() => speaking ? stopPlayback() : speakCurrent()}>{speaking ? <MicOff /> : <Volume2 />}{speaking ? "停止播放" : "读给我听"}</Button>
               <button type="button" className="rounded-md px-3 text-xs text-muted-foreground hover:bg-muted" onClick={() => { const nextRate = speechRate === 1 ? 0.78 : 1; setSpeechRate(nextRate); }}>{speechRate < 1 ? "慢速" : "正常语速"}</button>
@@ -1558,10 +1588,74 @@ function TodayLearning({
   );
 }
 
-function SevenDayPlan({ plan, onReschedule }: { plan: PrivateTutorLearningPlan; onReschedule: () => Promise<string | null> }) {
+function RoadmapLedgerCard({ ledger }: { ledger: PrivateTutorRoadmapLedger }) {
+  const review = ledger.currentReview;
+  const baselineDate = ledger.baseline.completionWindow?.likely ?? ledger.baseline.projectedCompletionDate;
+  return (
+    <Card className="p-5 lg:col-span-2 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-sky-700 dark:text-sky-300">长期路线账本</p>
+          <h2 className="mt-1 text-lg font-bold">原计划、实际进展和调整原因都留在这里</h2>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">初始预计 {ledger.baseline.estimatedWeekCount} 周、{ledger.baseline.estimatedRemainingMinutes} 分钟{baselineDate ? `，最可能完成于 ${baselineDate}` : ""}。当前已记录 {ledger.routeVersions.length} 个路线版本。</p>
+        </div>
+        <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-200">账本版本 {ledger.revision}</span>
+      </div>
+      {review ? (
+        <div className={cn("mt-4 rounded-xl border p-4", review.status === "behind" ? "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950" : "border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950")}>
+          <p className="text-sm font-semibold">第 {review.weekIndex} 周复盘 · {roadmapReviewStatusLabel(review.status)}</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            <p className="rounded-lg bg-background/70 p-3 text-xs">截至今天应完成<br /><span className="mt-1 block text-lg font-bold">{review.plannedToDateMinutes} 分钟</span></p>
+            <p className="rounded-lg bg-background/70 p-3 text-xs">实际完成<br /><span className="mt-1 block text-lg font-bold">{review.completedToDateMinutes} 分钟</span></p>
+            <p className="rounded-lg bg-background/70 p-3 text-xs">进度差<br /><span className="mt-1 block text-lg font-bold">{review.deviationMinutes >= 0 ? "+" : ""}{review.deviationMinutes} 分钟</span></p>
+          </div>
+          <p className="mt-3 text-xs leading-5">原因：{review.reasonCodes.map(roadmapReasonLabel).join("、")}。</p>
+          <p className="mt-1 text-xs font-medium">唯一下一步：{review.nextAction.label}</p>
+        </div>
+      ) : null}
+      {ledger.weeklyReviews.length ? (
+        <div className="mt-4">
+          <p className="text-xs font-semibold text-muted-foreground">已封存周复盘</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-3">
+            {ledger.weeklyReviews.slice(0, 3).map((item) => (
+              <div key={item.id} className="rounded-xl border p-3 text-xs">
+                <p className="font-semibold">第 {item.weekIndex} 周 · {roadmapReviewStatusLabel(item.status)}</p>
+                <p className="mt-1 text-muted-foreground">计划 {item.plannedMinutes} · 完成 {item.completedMinutes} 分钟</p>
+                <p className="mt-1">偏差 {item.deviationMinutes >= 0 ? "+" : ""}{item.deviationMinutes} 分钟</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : <p className="mt-4 text-xs text-muted-foreground">第一周结束后会在这里封存计划与实际结果，后续重排不会覆盖它。</p>}
+    </Card>
+  );
+}
+
+function roadmapReviewStatusLabel(status: string) {
+  return ({ not_started: "尚未开始", on_track: "按计划", behind: "需要调整", completed: "完成", partial: "部分完成", missed: "尚未完成" } as Record<string, string>)[status] ?? status;
+}
+
+function roadmapReasonLabel(reason: string) {
+  return ({ schedule_adjusted: "安排发生顺延", missed_learning_days: "存在到期未完成学习日", learning_evidence_replan: "学习证据触发重排", buffer_day_used: "使用了机动日", plan_completed: "按计划完成", awaiting_activity: "等待开始学习" } as Record<string, string>)[reason] ?? reason;
+}
+
+function SevenDayPlan({ plan, onReschedule, onCatchUpConfirmed }: { plan: PrivateTutorLearningPlan; onReschedule: () => Promise<string | null>; onCatchUpConfirmed: (result: Awaited<ReturnType<typeof confirmPrivateTutorCatchUp>>) => void }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [hasError, setHasError] = useState(false);
+  const [catchUpPreview, setCatchUpPreview] = useState<PrivateTutorCatchUpPreview | null>(null);
+  const forecast = plan.goalForecast;
+  const progress = plan.progressSignal;
+  const milestones = plan.goalRoadmap?.milestones ?? [];
+  const completionWindow = forecast?.completionWindow ?? (forecast ? { optimistic: forecast.projectedCompletionDate, likely: forecast.projectedCompletionDate, conservative: forecast.projectedCompletionDate } : null);
+  const effortProfile = forecast?.effortProfile ?? { sampleCount: 0, confidence: "low" as const };
+  const forecastTone = forecast?.status === "on_track" || forecast?.status === "achieved"
+    ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+    : forecast?.status === "at_risk"
+      ? "bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-200"
+      : forecast && ["infeasible", "overdue"].includes(forecast.status)
+        ? "bg-rose-50 text-rose-800 dark:bg-rose-950 dark:text-rose-200"
+        : "bg-muted text-muted-foreground";
 
   async function reschedule() {
     setBusy(true);
@@ -1572,6 +1666,38 @@ function SevenDayPlan({ plan, onReschedule }: { plan: PrivateTutorLearningPlan; 
     setBusy(false);
   }
 
+  async function previewCatchUp() {
+    setBusy(true);
+    setMessage("");
+    try {
+      setCatchUpPreview(await previewPrivateTutorCatchUp(plan.revision));
+      setHasError(false);
+    } catch (error) {
+      setHasError(true);
+      setMessage(error instanceof Error ? error.message : "暂时无法生成追赶安排，请稍后再试。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmCatchUp() {
+    if (!catchUpPreview) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await confirmPrivateTutorCatchUp(catchUpPreview);
+      onCatchUpConfirmed(result);
+      setCatchUpPreview(null);
+      setHasError(false);
+      setMessage("已把欠下的任务移到机动日，其他课程和历史证据都没有变化。");
+    } catch (error) {
+      setHasError(true);
+      setMessage(error instanceof Error ? error.message : "追赶安排已经变化，请重新预览。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <Card className="p-5 lg:col-span-2 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1579,21 +1705,79 @@ function SevenDayPlan({ plan, onReschedule }: { plan: PrivateTutorLearningPlan; 
           <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">我的 7 天计划</p>
           <h2 className="mt-1 text-lg font-bold">每天只看今天这一小步</h2>
           <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">{plan.studentReason}</p>
+          {plan.weeklyMinutes ? <p className="mt-1 text-xs text-muted-foreground">本周安排 {plan.weeklyMinutes} 分钟；休息日不计为未完成。</p> : null}
+          {plan.goalRoadmap ? <p className="mt-1 text-xs text-muted-foreground">长期路线第 {plan.goalRoadmap.currentWeekIndex} 周 · 当前范围 {plan.goalRoadmap.scopeKnowledgeCount} 个知识点</p> : null}
         </div>
         <Button variant="ghost" size="sm" disabled={busy} onClick={() => void reschedule()}>{busy ? "正在调整…" : "今天来不及，帮我顺延"}</Button>
       </div>
+      {forecast ? (
+        <div className={cn("mt-4 rounded-xl p-3 text-sm", forecastTone)}>
+          <p className="font-medium">{goalForecastTitle(forecast.status)}</p>
+          <p className="mt-1 text-xs leading-5">
+            估计还需 {forecast.estimatedRemainingMinutes} 分钟，按当前每周 {forecast.weeklyCapacityMinutes} 分钟，完成窗口为 {completionWindow?.optimistic} 至 {completionWindow?.conservative}，最可能 {completionWindow?.likely}。
+            {forecast.targetDate ? ` 目标日期 ${forecast.targetDate}${forecast.status === "infeasible" ? `；建议提高到每周约 ${forecast.requiredWeeklyMinutes} 分钟，或调整范围/日期。` : "。"}` : " 设置目标日期后可以判断是否来得及。"}
+          </p>
+          <p className="mt-1 text-[11px]">预测依据：{effortProfile.sampleCount} 节有效计时 · 把握 {effortConfidenceLabel(effortProfile.confidence)}</p>
+        </div>
+      ) : null}
+      {progress && ["attention", "behind"].includes(progress.status) ? (
+        <div className={cn("mt-4 rounded-xl border p-3", progress.status === "behind" ? "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-200" : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200")}>
+          <p className="text-sm font-semibold">{progress.status === "behind" ? "学习进度需要调整" : "有一小段进度待补上"}</p>
+          <p className="mt-1 text-xs leading-5">已有 {progress.overdueDayCount} 个到期学习日未完成，合计 {progress.behindMinutes} 分钟。系统不会自动加课。</p>
+          {progress.catchUpAvailable ? <Button className="mt-2" size="sm" variant="secondary" disabled={busy} onClick={() => void previewCatchUp()}>查看机动日追赶安排</Button> : <p className="mt-2 text-xs">本周没有足够机动日；可以继续按当前节奏，或在学习目标中调整每周投入和日期。</p>}
+          {catchUpPreview ? (
+            <div className="mt-3 rounded-lg border border-current/20 bg-background/70 p-3 text-foreground">
+              <p className="text-xs font-semibold">确认前预览</p>
+              {catchUpPreview.assignments.map((assignment) => <p key={`${assignment.sourceDayIndex}-${assignment.targetDayIndex}`} className="mt-1 text-xs leading-5">第 {assignment.sourceDayIndex} 天 → {assignment.targetDate} 机动日：{assignment.knowledgeTitle}（{assignment.minutes} 分钟）</p>)}
+              {catchUpPreview.remainingBehindMinutes ? <p className="mt-1 text-xs text-muted-foreground">本次仍有 {catchUpPreview.remainingBehindMinutes} 分钟无法放入机动日。</p> : null}
+              <Button className="mt-2" size="sm" disabled={busy || !catchUpPreview.canConfirm} onClick={() => void confirmCatchUp()}>确认使用机动日</Button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {milestones.length ? (
+        <div className="mt-4">
+          <p className="text-sm font-semibold">跨周路线图</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {milestones.slice(0, 4).map((milestone) => (
+              <div key={milestone.weekIndex} className={cn("rounded-xl border p-3", milestone.status === "current" ? "border-sky-300 bg-sky-50 dark:border-sky-900 dark:bg-sky-950" : "bg-card")}>
+                <p className="text-xs font-semibold">第 {milestone.weekIndex} 周 · {milestone.plannedMinutes} 分钟</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{milestone.startDate} 至 {milestone.endDate}</p>
+                <p className="mt-2 text-xs leading-5">{milestone.knowledgeGoals.map((item) => item.title).join("、") || "巩固已掌握内容"}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">预计累计稳定 {milestone.expectedCompletedKnowledgeCount} 个知识点</p>
+              </div>
+            ))}
+          </div>
+          {(plan.goalRoadmap?.hiddenMilestoneCount ?? 0) > 0 || milestones.length > 4 ? <p className="mt-2 text-[11px] text-muted-foreground">当前先展示最近 4 周；后续里程碑会随真实学习结果重新校准。</p> : null}
+        </div>
+      ) : null}
       <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-7">
         {plan.days.map((day) => (
-          <div key={`${plan.id}-${day.dayIndex}`} className={cn("rounded-xl border p-3", day.status === "completed" ? "border-emerald-300 bg-emerald-50/60 dark:bg-emerald-950" : day.status === "in_progress" ? "border-sky-400 bg-sky-50 dark:bg-sky-950" : "bg-card")}>
-            <p className="text-[11px] font-medium text-muted-foreground">{day.status === "completed" ? "已完成" : day.status === "in_progress" ? "正在学习" : `第 ${day.dayIndex} 天`}</p>
+          <div key={`${plan.id}-${day.dayIndex}`} className={cn("rounded-xl border p-3", day.status === "completed" ? "border-emerald-300 bg-emerald-50/60 dark:bg-emerald-950" : day.status === "in_progress" ? "border-sky-400 bg-sky-50 dark:bg-sky-950" : day.status === "rest" || day.status === "rescheduled" ? "border-dashed bg-muted/30" : "bg-card")}>
+            <p className="text-[11px] font-medium text-muted-foreground">{day.status === "completed" ? "已完成" : day.status === "in_progress" ? "正在学习" : day.status === "rest" ? "休息 / 机动" : day.status === "rescheduled" ? `已移到第 ${day.rescheduledToDayIndex} 天` : `第 ${day.dayIndex} 天`}</p>
             <p className="mt-2 text-sm font-semibold leading-5">{day.title}</p>
-            <p className="mt-2 text-[11px] text-muted-foreground">{day.minutes} 分钟</p>
+            <p className="mt-2 text-[11px] text-muted-foreground">{day.status === "rest" ? "没有必做任务" : day.status === "rescheduled" ? "不重复计入欠账" : `${day.minutes} 分钟`}</p>
           </div>
         ))}
       </div>
       {message ? <p role="status" className={cn("mt-3 rounded-lg p-3 text-sm", hasError ? "bg-rose-50 text-rose-700 dark:bg-rose-950" : "bg-emerald-50 text-emerald-800 dark:bg-emerald-950")}>{message}</p> : null}
     </Card>
   );
+}
+
+function goalForecastTitle(status: NonNullable<PrivateTutorLearningPlan["goalForecast"]>["status"]) {
+  return {
+    no_target_date: "已估算学习工作量",
+    achieved: "目标范围已有稳定证据",
+    overdue: "目标日期已经过去",
+    on_track: "按当前节奏可以按期推进",
+    at_risk: "可以尝试，但缓冲时间很少",
+    infeasible: "当前投入不足以覆盖目标范围",
+  }[status];
+}
+
+function effortConfidenceLabel(value: "low" | "medium" | "high") {
+  return { low: "较低", medium: "中等", high: "较高" }[value];
 }
 
 function KnowledgeMap({ state, learnerModel }: { state: LearnerTutorState; learnerModel: PrivateTutorLearnerModel | null }) {
@@ -1748,6 +1932,7 @@ function reviewPhaseLabel(phase: "correction" | "similar" | "variation" | "delay
 function Growth({ state: _state }: { state: LearnerTutorState }) {
   const [history, setHistory] = useState<PrivateTutorLearningHistory | null>(null);
   const [trial, setTrial] = useState<PrivateTutorLearningTrial | null>(null);
+  const [experienceReport, setExperienceReport] = useState<PrivateTutorExperienceReport | null>(null);
   const [trialGoal, setTrialGoal] = useState("验证我能否在私教指导下掌握当前课程");
   const [trialBusy, setTrialBusy] = useState(false);
   const [trialMessage, setTrialMessage] = useState("");
@@ -1760,11 +1945,12 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
     let current = true;
     setLoading(true);
     setError("");
-    void Promise.all([getPrivateTutorLearningHistory(), getPrivateTutorLearningTrial()])
-      .then(([value, learningTrial]) => {
+    void Promise.all([getPrivateTutorLearningHistory(), getPrivateTutorLearningTrial(), getPrivateTutorExperienceReport()])
+      .then(([value, learningTrial, experience]) => {
         if (!current) return;
         setHistory(value);
         setTrial(learningTrial);
+        setExperienceReport(experience);
         setSelectedPackageKey((selected) => value.packages.some((item) => historyPackageKey(item) === selected)
           ? selected
           : value.packages[0] ? historyPackageKey(value.packages[0]) : "");
@@ -1815,7 +2001,7 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
         <Card className="mt-6 overflow-hidden border-violet-200 dark:border-violet-900">
           <div className="bg-violet-50/70 p-5 dark:bg-violet-950/30">
             <p className="text-sm font-semibold text-violet-700 dark:text-violet-300">14 天真实课程试学</p>
-            <h2 className="mt-1 text-lg font-bold">验证次日还能不能想起、延迟复测是否站稳、追问是否真正解决</h2>
+            <h2 className="mt-1 text-lg font-bold">验证课程是否完成、次日还能不能想起、延迟复测和错题是否真正收敛</h2>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">自动化测试只验证记录是否正确；只有你真实学习产生的样本，才会进入这里的结果。14 天学习期后会保留 48 小时，只结算最后产生的复测与追问反馈。</p>
           </div>
           {!trial ? (
@@ -1829,10 +2015,10 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
             <div className="p-5">
               <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold">{trial.contentPackageName}</p><p className="mt-1 text-sm text-muted-foreground">目标：{trial.goal}</p></div><span className="rounded-full bg-violet-100 px-3 py-1.5 text-xs font-medium text-violet-800 dark:bg-violet-950 dark:text-violet-200">{trialStatusLabel(trial.status)} · 第 {trial.progress.dayIndex}/{trial.durationDays} 天</span></div>
               <div className="mt-5 grid gap-3 sm:grid-cols-4">
-                <TrialMetric label="真实参与天数" value={`${trial.progress.activeDayCount}/${trial.durationDays}`} detail={`${trial.progress.completedSessionCount} 节完整学习`} />
+                <TrialMetric label="课程完成率" value={formatHistoryRate(trial.metrics.courseCompletion.completionRate)} detail={`${trial.metrics.courseCompletion.completedDayCount}/${trial.metrics.courseCompletion.scheduledDayCount} 个学习日 · 实际参与 ${trial.progress.activeDayCount} 天`} />
                 <TrialMetric label="次日回忆保持" value={formatHistoryRate(trial.metrics.nextDayRecall.retentionRate)} detail={`${trial.metrics.nextDayRecall.correctCount}/${trial.metrics.nextDayRecall.attemptedCount} 次已完成 · ${trial.metrics.nextDayRecall.opportunityCount} 次到期`} ready={trial.readiness.nextDayRecallReady} />
                 <TrialMetric label="延迟复测保持" value={formatHistoryRate(trial.metrics.delayedReview.retentionRate)} detail={`${trial.metrics.delayedReview.correctCount}/${trial.metrics.delayedReview.attemptedCount} 次已完成 · ${trial.metrics.delayedReview.opportunityCount} 次到期`} ready={trial.readiness.delayedReviewReady} />
-                <TrialMetric label="追问解决率" value={formatHistoryRate(trial.metrics.followUps.resolutionRate)} detail={`${trial.metrics.followUps.resolvedCount}/${trial.metrics.followUps.feedbackCount} 次已反馈追问`} ready={trial.readiness.followUpResolutionReady} />
+                <TrialMetric label="错题收敛率" value={formatHistoryRate(trial.metrics.errorConvergence.convergenceRate)} detail={`${trial.metrics.errorConvergence.convergedThemeCount}/${trial.metrics.errorConvergence.themeCount} 类错因已通过延迟复测 · 重开 ${trial.metrics.errorConvergence.reopenedThemeCount} 类`} ready={trial.readiness.errorConvergenceReady} />
               </div>
               {trial.status === "observing" ? <div role="status" className="mt-4 rounded-xl border border-violet-200 bg-violet-50 p-4 text-sm leading-6 text-violet-900 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-100"><p className="font-medium">学习期已结束，正在等待最后复测</p><p className="mt-1 text-xs">观察期只补收第 14 天产生的次日回忆、延迟复测和已有追问反馈；新课程不会进入本轮报告。预计 {formatHistoryDate(trial.observationEndsAt)} 完成结算。</p></div> : null}
               <p className="mt-4 text-xs text-muted-foreground">每项至少需要 {trial.readiness.minimumSampleCount} 个样本才标记为“可初步判断”；样本不足时显示暂无，不补算成绩。</p>
@@ -1840,6 +2026,29 @@ function Growth({ state: _state }: { state: LearnerTutorState }) {
             </div>
           )}
           {trialMessage ? <p role="status" className="mx-5 mb-5 rounded-lg bg-muted p-3 text-sm">{trialMessage}</p> : null}
+        </Card>
+      ) : null}
+      {!loading && !error && experienceReport ? (
+        <Card className="mt-5 overflow-hidden border-emerald-200 dark:border-emerald-900">
+          <div className="bg-emerald-50/70 p-5 dark:bg-emerald-950/30">
+            <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">个性化教学与使用顺畅度</p>
+            <h2 className="mt-1 text-lg font-bold">讲法、题目难度、提示粒度和复习时间会随真实表现调整</h2>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">只统计流程事件和派生比例，不保存原始答案。指标窗口为最近 {experienceReport.window.days} 天。</p>
+          </div>
+          <div className="p-5">
+            <div className="grid gap-3 sm:grid-cols-4">
+              <TrialMetric label="完成步骤" value={`${experienceReport.smoothness.completedStepCount}/${experienceReport.smoothness.totalStepCount}`} detail={`步骤完成率 ${formatHistoryRate(experienceReport.smoothness.stepCompletionRate)}`} ready={experienceReport.readiness.smoothnessReady} />
+              <TrialMetric label="学习中断率" value={formatHistoryRate(experienceReport.smoothness.interruptionRate)} detail={`${experienceReport.smoothness.interruptedSessionCount}/${experienceReport.smoothness.startedSessionCount} 次会话发生暂停`} ready={experienceReport.readiness.smoothnessReady} />
+              <TrialMetric label="人工改计划率" value={formatHistoryRate(experienceReport.smoothness.manualPlanAdjustmentRate)} detail={`${experienceReport.smoothness.manuallyAdjustedPlanCount}/${experienceReport.smoothness.observedPlanCount} 份计划发生人工调整`} />
+              <TrialMetric label="建议采纳率" value={formatHistoryRate(experienceReport.smoothness.suggestionAdoptionRate)} detail={`${experienceReport.smoothness.suggestionAdoptedCount}/${experienceReport.smoothness.suggestionPresentedCount} 条建议被执行`} ready={experienceReport.readiness.suggestionAdoptionReady} />
+            </div>
+            {experienceReport.teachingPersonalization.latestPolicy ? (
+              <div className="mt-4 rounded-xl bg-muted/55 p-4 text-sm">
+                <p className="font-medium">当前教学策略：{teachingModeLabel(experienceReport.teachingPersonalization.latestPolicy.explanationMode)} · {difficultyLabel(experienceReport.teachingPersonalization.latestPolicy.questionDifficulty)} · {hintGranularityLabel(experienceReport.teachingPersonalization.latestPolicy.hintGranularity)}</p>
+                <p className="mt-1 text-xs text-muted-foreground">建议在 {experienceReport.teachingPersonalization.latestPolicy.reviewIntervalHours} 小时后复习；个性化置信度 {confidenceLabel(experienceReport.teachingPersonalization.latestPolicy.confidence)}。已经记录 {experienceReport.teachingPersonalization.decisionCount} 次策略决策。</p>
+              </div>
+            ) : <p className="mt-4 text-sm text-muted-foreground">完成第一次课程后，这里会出现你的教学策略。</p>}
+          </div>
         </Card>
       ) : null}
       {loading ? <p className="mt-6 text-sm text-muted-foreground">正在整理学习历史…</p> : null}
@@ -1892,6 +2101,22 @@ function TrialMetric({ label, value, detail, ready }: { label: string; value: st
   return <div className="rounded-xl bg-muted/55 p-3"><p className="text-lg font-bold">{value}</p><p className="mt-1 text-xs font-medium">{label}</p><p className="mt-1 text-[11px] text-muted-foreground">{detail}{ready == null ? "" : ` · ${ready ? "可初步判断" : "样本不足"}`}</p></div>;
 }
 
+function teachingModeLabel(value: string) {
+  return ({ small_step: "拆成小步", visual_model: "图形化理解", worked_example: "例题示范", contrast_case: "对比辨析" } as Record<string, string>)[value] ?? value;
+}
+
+function difficultyLabel(value: string) {
+  return ({ support: "支架题", core: "核心题", challenge: "挑战题" } as Record<string, string>)[value] ?? value;
+}
+
+function hintGranularityLabel(value: string) {
+  return ({ micro_steps: "最小步提示", progressive: "逐级提示", fading: "渐隐提示", retrieval_cue: "回忆线索", minimal: "最少提示" } as Record<string, string>)[value] ?? value;
+}
+
+function confidenceLabel(value: string) {
+  return ({ low: "较低", medium: "中等", high: "较高" } as Record<string, string>)[value] ?? value;
+}
+
 function trialStatusLabel(status: PrivateTutorLearningTrial["status"]) {
   return { active: "试学中", observing: "观察结算中", completed: "已完成", stopped: "已提前结束" }[status];
 }
@@ -1927,20 +2152,29 @@ function privateTutorOcrReasonLabel(reason: string | null | undefined) {
   return "本地 OCR 未能完成识别";
 }
 
-function TutorSettings({ state, preferences, onPreferencesChange, onPackageActivated, onProfileDeleted, initialSpace = "preferences" }: { state: LearnerTutorState; preferences: PrivateTutorLearningPreferences; onPreferencesChange: (patch: PrivateTutorLearningPreferencesPatch) => Promise<string | null>; onPackageActivated: (result: PrivateTutorPackageActivationResult) => void; onProfileDeleted: () => void; initialSpace?: TutorSettingsSpace }) {
+function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirmed, onPackageActivated, onProfileDeleted, initialSpace = "preferences" }: { state: LearnerTutorState; preferences: PrivateTutorLearningPreferences; onPreferencesChange: (patch: PrivateTutorLearningPreferencesPatch) => Promise<string | null>; onGoalConfirmed: (result: Awaited<ReturnType<typeof confirmPrivateTutorLearningGoal>>) => void; onPackageActivated: (result: PrivateTutorPackageActivationResult) => void; onProfileDeleted: () => void; initialSpace?: TutorSettingsSpace }) {
   const [space, setSpace] = useState<TutorSettingsSpace>(initialSpace);
   const [preferenceBusy, setPreferenceBusy] = useState(false);
   const [preferenceMessage, setPreferenceMessage] = useState("");
   const [goalDescription, setGoalDescription] = useState(preferences.learningGoal?.note ?? "");
   const [goalWeeklyMinutes, setGoalWeeklyMinutes] = useState(preferences.learningGoal?.weeklyMinutes?.toString() ?? "");
   const [goalTargetDate, setGoalTargetDate] = useState(preferences.learningGoal?.targetDate ?? "");
+  const [goalTopicIds, setGoalTopicIds] = useState<string[]>(preferences.learningGoal?.targetTopicIds ?? []);
+  const [goalPreview, setGoalPreview] = useState<PrivateTutorLearningGoalPreview | null>(null);
   const [packages, setPackages] = useState<LearningContentPackage[]>([]);
   const [activePackage, setActivePackage] = useState<LearningContentPackage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [ocrReviewMessage, setOcrReviewMessage] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [materials, setMaterials] = useState<MaterialDocument[]>([]);
   const [ocrJobs, setOcrJobs] = useState<Record<string, PrivateTutorOcrJob>>({});
+  const [ocrReviewEditor, setOcrReviewEditor] = useState<{
+    materialId: string;
+    pageNumber: number;
+    text: string;
+    printedPageNumber: string;
+  } | null>(null);
   const [activeDraft, setActiveDraft] = useState<{ material: MaterialDocument; draft: KnowledgeMapDraft } | null>(null);
   const [pendingPackage, setPendingPackage] = useState<LearningContentPackage | null>(null);
   const [entryMode, setEntryMode] = useState<"diagnostic" | "chapter">("diagnostic");
@@ -1951,7 +2185,11 @@ function TutorSettings({ state, preferences, onPreferencesChange, onPackageActiv
     setGoalDescription(preferences.learningGoal?.note ?? "");
     setGoalWeeklyMinutes(preferences.learningGoal?.weeklyMinutes?.toString() ?? "");
     setGoalTargetDate(preferences.learningGoal?.targetDate ?? "");
-  }, [preferences.revision, preferences.learningGoal]);
+    setGoalTopicIds(preferences.learningGoal?.contentPackageId && activePackage?.id && preferences.learningGoal.contentPackageId !== activePackage.id
+      ? []
+      : preferences.learningGoal?.targetTopicIds ?? []);
+    setGoalPreview(null);
+  }, [preferences.revision, preferences.learningGoal, activePackage?.id]);
 
   async function savePreference(patch: PrivateTutorLearningPreferencesPatch, success = "学习偏好已保存。") {
     setPreferenceBusy(true);
@@ -1964,11 +2202,37 @@ function TutorSettings({ state, preferences, onPreferencesChange, onPackageActiv
   async function saveLearningGoal() {
     const description = goalDescription.trim();
     const weeklyMinutes = goalWeeklyMinutes ? Number(goalWeeklyMinutes) : null;
-    await savePreference({
-      learningGoal: description || weeklyMinutes || goalTargetDate
-        ? { targetTopicIds: preferences.learningGoal?.targetTopicIds ?? [], note: description, weeklyMinutes, targetDate: goalTargetDate || null }
-        : null,
-    }, "学习目标已保存。后续计划会保留这个目标。" );
+    const learningGoal: PrivateTutorLearningPreferences["learningGoal"] = description || weeklyMinutes || goalTargetDate || goalTopicIds.length
+      ? { contentPackageId: activePackage?.id ?? preferences.learningGoal?.contentPackageId ?? null, targetTopicIds: goalTopicIds, note: description, weeklyMinutes, targetDate: goalTargetDate || null }
+      : null;
+    setPreferenceBusy(true);
+    setPreferenceMessage("");
+    setGoalPreview(null);
+    try {
+      const preview = await previewPrivateTutorLearningGoal(learningGoal, preferences.revision);
+      setGoalPreview(preview);
+      setPreferenceMessage("预演已生成。确认后才会调整学习路线。");
+    } catch (error) {
+      setPreferenceMessage(error instanceof Error ? error.message : "暂时无法预演目标变化，请重试。");
+    } finally {
+      setPreferenceBusy(false);
+    }
+  }
+
+  async function confirmLearningGoal() {
+    if (!goalPreview) return;
+    setPreferenceBusy(true);
+    setPreferenceMessage("");
+    try {
+      const result = await confirmPrivateTutorLearningGoal(goalPreview);
+      onGoalConfirmed(result);
+      setGoalPreview(null);
+      setPreferenceMessage("学习目标和后续路线已确认更新；已完成证据保持不变。");
+    } catch (error) {
+      setPreferenceMessage(error instanceof Error ? error.message : "目标预演已经失效，请重新预演。");
+    } finally {
+      setPreferenceBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -2070,15 +2334,76 @@ function TutorSettings({ state, preferences, onPreferencesChange, onPackageActiv
     }
   }
 
+  function toggleGoalTopic(topicId: string) {
+    setGoalPreview(null);
+    setGoalTopicIds((current) => current.includes(topicId) ? current.filter((id) => id !== topicId) : [...current, topicId]);
+  }
+
+  function openOcrReview(material: MaterialDocument, pageNumber?: number) {
+    const targetPageNumber = pageNumber ?? material.extraction?.ocrReview?.requiredPageNumbers[0];
+    const page = material.pages?.find((item) => item.pageNumber === targetPageNumber);
+    if (!page) {
+      setError("找不到等待校对的教材页，请刷新后重试。");
+      return;
+    }
+    setOcrReviewEditor({
+      materialId: material.id,
+      pageNumber: page.pageNumber,
+      text: page.text,
+      printedPageNumber: page.printedPageNumber ?? "",
+    });
+  }
+
+  async function confirmOcrReviewPage(material: MaterialDocument) {
+    if (!ocrReviewEditor || ocrReviewEditor.materialId !== material.id) return;
+    const revision = material.extraction?.ocrReview?.revision;
+    if (!revision) {
+      setError("OCR 校对版本已失效，请刷新资料后重试。");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setOcrReviewMessage("");
+    try {
+      const result = await confirmPrivateTutorOcrPage(material.id, {
+        pageNumber: ocrReviewEditor.pageNumber,
+        expectedRevision: revision,
+        text: ocrReviewEditor.text,
+        printedPageNumber: ocrReviewEditor.printedPageNumber || null,
+        acknowledge: true,
+      });
+      setMaterials((current) => current.map((item) => item.id === result.material.id ? result.material : item));
+      if (result.job) setOcrJobs((current) => ({ ...current, [result.material.id]: result.job! }));
+      const nextPageNumber = result.material.extraction?.ocrReview?.requiredPageNumbers[0];
+      if (nextPageNumber) {
+        openOcrReview(result.material, nextPageNumber);
+      } else {
+        setOcrReviewEditor(null);
+        setOcrReviewMessage("低置信度页面已全部确认，现在可以生成知识地图。");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存 OCR 校对失败，请刷新后重试。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleDraftPublished(packageId: string) {
     setActiveDraft(null);
     setLoading(true);
     try {
-      const [pkgs, active] = await Promise.all([listPrivateTutorContentPackages(), getPrivateTutorActiveContentPackage()]);
+      const [pkgs, active, published] = await Promise.all([
+        listPrivateTutorContentPackages(),
+        getPrivateTutorActiveContentPackage(),
+        getPrivateTutorContentPackage(packageId),
+      ]);
       setPackages(pkgs);
       setActivePackage(active);
+      setPendingPackage(published);
+      setEntryMode("diagnostic");
+      setStartModuleId(published.modules?.[0]?.id ?? "");
       setError("");
-      alert(`发布成功！已生成专属内容包: ${packageId}`);
+      alert("发布成功。请选择摸底或具体章节；校准通过后即可在“我的成长”启动 14 天试学。");
     } catch (err) {
       setError(err instanceof Error ? err.message : "刷新内容包失败。");
     } finally {
@@ -2155,12 +2480,40 @@ function TutorSettings({ state, preferences, onPreferencesChange, onPackageActiv
               </div>
               <div className="grid gap-3 rounded-xl border p-4">
                 <p className="text-sm font-medium">我的学习目标</p>
-                <textarea aria-label="学习目标" value={goalDescription} disabled={preferenceBusy} onChange={(event) => setGoalDescription(event.target.value.slice(0, 200))} rows={3} placeholder="例如：六周内读完前三章，并能独立解释核心概念" className="w-full rounded-lg border bg-card p-3 text-sm" />
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="text-xs font-medium">每周投入分钟<input aria-label="每周投入分钟" type="number" min={5} max={180} value={goalWeeklyMinutes} disabled={preferenceBusy} onChange={(event) => setGoalWeeklyMinutes(event.target.value)} className="mt-1 h-9 w-full rounded-md border bg-card px-2 text-sm font-normal" /></label>
-                  <label className="text-xs font-medium">目标日期<input aria-label="目标日期" type="date" value={goalTargetDate} disabled={preferenceBusy} onChange={(event) => setGoalTargetDate(event.target.value)} className="mt-1 h-9 w-full rounded-md border bg-card px-2 text-sm font-normal" /></label>
+                <textarea aria-label="学习目标" value={goalDescription} disabled={preferenceBusy} onChange={(event) => { setGoalPreview(null); setGoalDescription(event.target.value.slice(0, 200)); }} rows={3} placeholder="例如：六周内读完前三章，并能独立解释核心概念" className="w-full rounded-lg border bg-card p-3 text-sm" />
+                <div className="grid gap-2 rounded-lg bg-muted/40 p-3">
+                  <p className="text-xs font-medium">目标范围（按当前学习内容多选）</p>
+                  {activePackage?.modules?.length ? activePackage.modules.map((module) => (
+                    <div key={module.id}>
+                      <p className="text-xs text-muted-foreground">{module.name}</p>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        {(module.topics ?? []).map((topic) => (
+                          <label key={topic.id} className={cn("cursor-pointer rounded-full border px-2.5 py-1 text-xs", goalTopicIds.includes(topic.id) ? "border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-950" : "bg-card")}>
+                            <input className="sr-only" type="checkbox" checked={goalTopicIds.includes(topic.id)} onChange={() => toggleGoalTopic(topic.id)} />
+                            {topic.name}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )) : <p className="text-xs text-muted-foreground">先选择并激活一份学习内容，再设置具体目标范围。</p>}
+                  <p className="text-[11px] text-muted-foreground">未选择时按当前内容整体规划；必要的前置知识会自动加入。</p>
                 </div>
-                <Button size="sm" variant="secondary" disabled={preferenceBusy} onClick={() => void saveLearningGoal()}>保存学习目标</Button>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-xs font-medium">每周投入分钟<input aria-label="每周投入分钟" type="number" min={5} max={preferences.dailyMinutes * 7} value={goalWeeklyMinutes} disabled={preferenceBusy} onChange={(event) => { setGoalPreview(null); setGoalWeeklyMinutes(event.target.value); }} className="mt-1 h-9 w-full rounded-md border bg-card px-2 text-sm font-normal" /></label>
+                  <label className="text-xs font-medium">目标日期<input aria-label="目标日期" type="date" value={goalTargetDate} disabled={preferenceBusy} onChange={(event) => { setGoalPreview(null); setGoalTargetDate(event.target.value); }} className="mt-1 h-9 w-full rounded-md border bg-card px-2 text-sm font-normal" /></label>
+                </div>
+                <Button size="sm" variant="secondary" disabled={preferenceBusy} onClick={() => void saveLearningGoal()}>预览计划变化</Button>
+                {goalPreview ? (
+                  <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4 text-sm dark:border-sky-900 dark:bg-sky-950/30">
+                    <p className="font-medium">确认前预演</p>
+                    <p className="mt-2 text-xs leading-5">预计完成窗口：乐观 {goalPreview.forecast.completionWindow.optimistic} · 最可能 {goalPreview.forecast.completionWindow.likely} · 保守 {goalPreview.forecast.completionWindow.conservative}</p>
+                    <p className="mt-1 text-xs leading-5">个性化依据：{goalPreview.forecast.effortProfile.sampleCount} 节有效计时，预测把握 {effortConfidenceLabel(goalPreview.forecast.effortProfile.confidence)}。</p>
+                    <p className="mt-1 text-xs leading-5">将替换 {goalPreview.changes.replacedFutureDayCount} 个未来安排；保留 {goalPreview.changes.preservedCompletedDayCount} 个已完成学习日和全部历史证据。</p>
+                    {goalPreview.changes.addedKnowledgeIds.length || goalPreview.changes.removedKnowledgeIds.length ? <p className="mt-1 text-xs leading-5">知识范围变化：新增 {goalPreview.changes.addedKnowledgeIds.length} 个，移出 {goalPreview.changes.removedKnowledgeIds.length} 个。</p> : null}
+                    {goalPreview.changes.inProgressDayCount ? <p className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-300">当前课程进行中，完成或退出课程后才能确认换路线。</p> : null}
+                    <Button className="mt-3" size="sm" disabled={preferenceBusy || goalPreview.changes.inProgressDayCount > 0} onClick={() => void confirmLearningGoal()}>确认并应用路线</Button>
+                  </div>
+                ) : null}
               </div>
               <div className="rounded-xl bg-muted/60 p-4"><p className="text-sm font-medium">当前学习档案</p><p className="mt-1 text-sm text-muted-foreground">{state.learner.displayName} · {state.learner.grade} · {state.learner.curriculum}</p></div>
               {preferenceMessage ? <p role="status" className="rounded-lg bg-muted p-3 text-sm">{preferenceMessage}</p> : null}
@@ -2170,6 +2523,7 @@ function TutorSettings({ state, preferences, onPreferencesChange, onPackageActiv
             <div className="mt-6 grid gap-4">
               {loading ? <p className="text-sm text-muted-foreground">正在加载可用内容包…</p> : null}
               {error ? <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
+              {ocrReviewMessage ? <p role="status" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">{ocrReviewMessage}</p> : null}
               {activePackage ? (
                 <div className="rounded-xl border border-emerald-300 bg-emerald-50/50 p-4 dark:border-emerald-900 dark:bg-emerald-950/20">
                   <div className="flex items-center justify-between gap-2">
@@ -2243,23 +2597,81 @@ function TutorSettings({ state, preferences, onPreferencesChange, onPackageActiv
                             <span className="truncate font-medium">{m.fileName}</span>
                             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{m.fileType}</span>
                           </div>
-                          <span className={cn("shrink-0 text-xs", m.status === "needs_ocr" ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
-                            {m.status === "parsed" ? "已解析" : m.status === "needs_ocr" ? "等待识别" : m.status === "draft_ready" ? "草稿待确认" : m.status === "published" ? "已发布" : m.status}
+                          <span className={cn("shrink-0 text-xs", ["needs_ocr", "needs_review"].includes(m.status) ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
+                            {m.status === "parsed" ? "已解析" : m.status === "needs_ocr" ? "等待识别" : m.status === "needs_review" ? "等待人工校对" : m.status === "draft_ready" ? "草稿待确认" : m.status === "published" ? "已发布" : m.status}
                           </span>
                         </div>
                         {ocrJobs[m.id] ? (
                           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                             <span>{ocrJobs[m.id].status === "running" || ocrJobs[m.id].status === "queued"
                               ? `识别进度 ${ocrJobs[m.id].completedPages}/${ocrJobs[m.id].totalPages ?? "?"}`
-                              : ocrJobs[m.id].status === "completed" ? "整册识别完成" : ocrJobs[m.id].failureMessage ?? ocrJobs[m.id].status}</span>
+                              : ocrJobs[m.id].status === "completed" ? "整册识别完成" : ocrJobs[m.id].status === "needs_review" ? "识别完成，低置信度页等待校对" : ocrJobs[m.id].failureMessage ?? ocrJobs[m.id].status}</span>
                             {["queued", "running"].includes(ocrJobs[m.id].status) ? <Button size="sm" variant="ghost" onClick={() => void cancelMaterialOcr(ocrJobs[m.id])}>取消</Button> : null}
-                            {["failed", "cancelled", "needs_review"].includes(ocrJobs[m.id].status) ? <Button size="sm" variant="secondary" onClick={() => void startMaterialOcr(m, ocrJobs[m.id])}>继续识别</Button> : null}
+                            {["failed", "cancelled"].includes(ocrJobs[m.id].status) ? <Button size="sm" variant="secondary" onClick={() => void startMaterialOcr(m, ocrJobs[m.id])}>继续识别</Button> : null}
                           </div>
                         ) : null}
                         <div className="mt-2 flex gap-2">
                           {m.status === "needs_ocr" && !ocrJobs[m.id] ? <Button size="sm" variant="secondary" onClick={() => void startMaterialOcr(m)}>使用 Codex 分片识别</Button> : null}
+                          {m.status === "needs_review" ? <Button size="sm" variant="secondary" onClick={() => openOcrReview(m)}>校对 {m.extraction?.ocrReview?.requiredPageNumbers.length ?? 0} 页</Button> : null}
                           {m.status === "parsed" ? <Button size="sm" variant="secondary" onClick={() => void openMaterialDraft(m)}>生成知识地图</Button> : null}
                         </div>
+                        {ocrReviewEditor?.materialId === m.id ? (() => {
+                          const page = m.pages?.find((item) => item.pageNumber === ocrReviewEditor.pageNumber);
+                          const blockKinds = [...new Set(page?.blocks?.map((block) => block.type) ?? [])];
+                          const positionedBlocks = page?.blocks?.filter((block) => block.box).slice(0, 200) ?? [];
+                          const mathBlocks = page?.blocks?.filter((block) => block.math) ?? [];
+                          return (
+                            <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-900 dark:bg-amber-950/20">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div><p className="text-sm font-semibold">校对 PDF 第 {ocrReviewEditor.pageNumber} 页</p><p className="text-xs text-muted-foreground">识别置信度 {Math.round((page?.confidence ?? 0) * 100)}% · {page?.blocks?.length ?? 0} 个文字块{blockKinds.length ? ` · ${blockKinds.join(" / ")}` : ""}</p></div>
+                                <Button size="sm" variant="ghost" onClick={() => setOcrReviewEditor(null)}>暂后处理</Button>
+                              </div>
+                              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                <figure className="overflow-hidden rounded-lg border bg-slate-100 p-2 dark:bg-slate-900">
+                                  <div className="relative mx-auto w-fit max-w-full">
+                                    <img
+                                      src={getPrivateTutorOcrPageImageUrl(m.id, ocrReviewEditor.pageNumber)}
+                                      alt={`教材原图 PDF 第 ${ocrReviewEditor.pageNumber} 页`}
+                                      loading="lazy"
+                                      decoding="async"
+                                      draggable={false}
+                                      referrerPolicy="no-referrer"
+                                      className="block max-h-[34rem] max-w-full"
+                                    />
+                                    {positionedBlocks.length > 0 ? (
+                                      <svg aria-label="OCR 版面坐标叠加层" className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1 1" preserveAspectRatio="none">
+                                        {positionedBlocks.map((block) => <rect key={block.id} x={block.box!.x} y={block.box!.y} width={block.box!.width} height={block.box!.height} fill="none" stroke={block.math ? "#e11d48" : "#0284c7"} strokeWidth="0.003" vectorEffect="non-scaling-stroke" />)}
+                                      </svg>
+                                    ) : null}
+                                  </div>
+                                  <figcaption className="mt-2 text-center text-[11px] text-muted-foreground">受控原页预览 · 不显示本地文件路径</figcaption>
+                                </figure>
+                                <div>
+                                  <label className="block text-xs font-medium">印刷页码（看不到可留空）<input value={ocrReviewEditor.printedPageNumber} onChange={(event) => setOcrReviewEditor((current) => current ? { ...current, printedPageNumber: event.target.value.slice(0, 40) } : current)} className="mt-1 h-9 w-full rounded-md border bg-card px-2 text-sm font-normal" /></label>
+                                  <label className="mt-3 block text-xs font-medium">识别文字<textarea aria-label={`校对 PDF 第 ${ocrReviewEditor.pageNumber} 页`} value={ocrReviewEditor.text} onChange={(event) => setOcrReviewEditor((current) => current ? { ...current, text: event.target.value } : current)} rows={16} className="mt-1 w-full rounded-md border bg-card p-2 font-mono text-xs leading-5" /></label>
+                                </div>
+                              </div>
+                              <div className="mt-3 rounded-md border bg-card/80 p-3">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-xs font-semibold">数学与版面结构</p>
+                                  <p className="text-[11px] text-muted-foreground">{page?.schemaVersion ?? "旧版"} · {positionedBlocks.length} 个坐标框 · {mathBlocks.length} 个数学块</p>
+                                </div>
+                                {mathBlocks.length > 0 ? (
+                                  <div className="mt-2 space-y-2">
+                                    {mathBlocks.map((block) => (
+                                      <div key={block.id} className="rounded border px-2 py-1.5 text-xs">
+                                        <code>{block.math?.notation || block.text}</code>
+                                        <span className="ml-2 text-muted-foreground">AST {block.math?.ast?.nodes.length ?? 0} 节点{block.math?.vertical ? ` · 竖式 ${block.math.vertical.rows.length} 行` : ""}{block.box ? ` · 坐标 ${Math.round(block.box.x * 100)}%,${Math.round(block.box.y * 100)}% / ${Math.round(block.box.width * 100)}%×${Math.round(block.box.height * 100)}%` : ""}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : <p className="mt-2 text-xs text-muted-foreground">本页没有已识别的数学结构；公式块缺少结构时会保留在人工确认门禁中。</p>}
+                              </div>
+                              <p className="mt-2 text-xs text-amber-800 dark:text-amber-200">请对照教材原页修正文字。确认前，本页不会进入章节合并或知识地图。</p>
+                              <Button className="mt-3" size="sm" disabled={loading || !ocrReviewEditor.text.trim()} onClick={() => void confirmOcrReviewPage(m)}>我已对照原页，确认本页</Button>
+                            </div>
+                          );
+                        })() : null}
                       </div>
                     ))}
                   </div>

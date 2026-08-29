@@ -9,6 +9,8 @@ import {
   getPrivateTutorOcrJob,
   retryPrivateTutorOcrJob,
   cancelPrivateTutorOcrJob,
+  confirmPrivateTutorOcrPage,
+  getPrivateTutorOcrPageImageUrl,
   generatePrivateTutorKnowledgeMapDraft,
   getPrivateTutorKnowledgeMapDraft,
   updatePrivateTutorKnowledgeMapDraft,
@@ -113,19 +115,35 @@ describe("private tutor material import & draft API", () => {
       .mockResolvedValueOnce({ jobs: [job] })
       .mockResolvedValueOnce({ job, material: fakeMaterial })
       .mockResolvedValueOnce({ job })
-      .mockResolvedValueOnce({ job: { ...job, status: "cancelled" } });
+      .mockResolvedValueOnce({ job: { ...job, status: "cancelled" } })
+      .mockResolvedValueOnce({ material: fakeMaterial, job });
     await startPrivateTutorMaterialOcr("mat_abc123", { cloudAllowed: true });
     await listPrivateTutorMaterialOcrJobs("mat_abc123");
     await getPrivateTutorOcrJob("ptocr_1");
     await retryPrivateTutorOcrJob("ptocr_1", { cloudAllowed: true });
     await cancelPrivateTutorOcrJob("ptocr_1");
+    await confirmPrivateTutorOcrPage("mat_abc123", {
+      pageNumber: 7,
+      expectedRevision: 2,
+      text: "已校对教材页",
+      printedPageNumber: "5",
+      acknowledge: true,
+    });
     expect(spy.mock.calls).toEqual([
       ["POST", "/api/private-tutor/materials/mat_abc123/ocr-jobs", { cloudAllowed: true }],
       ["GET", "/api/private-tutor/materials/mat_abc123/ocr-jobs"],
       ["GET", "/api/private-tutor/ocr-jobs/ptocr_1"],
       ["POST", "/api/private-tutor/ocr-jobs/ptocr_1/retry", { cloudAllowed: true }],
       ["POST", "/api/private-tutor/ocr-jobs/ptocr_1/cancel", {}],
+      ["POST", "/api/private-tutor/materials/mat_abc123/ocr-review", {
+        pageNumber: 7,
+        expectedRevision: 2,
+        text: "已校对教材页",
+        printedPageNumber: "5",
+        acknowledge: true,
+      }],
     ]);
+    expect(getPrivateTutorOcrPageImageUrl("mat/abc", 7)).toMatch(/\/api\/private-tutor\/materials\/mat%2Fabc\/ocr-pages\/7\/image$/);
   });
 
   it("generatePrivateTutorKnowledgeMapDraft calls generate-draft endpoint", async () => {

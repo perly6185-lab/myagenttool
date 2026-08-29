@@ -64,8 +64,9 @@ export function derivePrivateTutorLearnerModel({ snapshot, attempts, now, knowle
   return { at, knowledge };
 }
 
-export function decidePrivateTutorStrategy({ model, attempts, previousDecision = null }) {
-  const measured = model.knowledge.filter((item) => item.mastery != null);
+export function decidePrivateTutorStrategy({ model, attempts, previousDecision = null, scopeKnowledgeIds = null }) {
+  const scope = normalizedScope(scopeKnowledgeIds);
+  const measured = model.knowledge.filter((item) => item.mastery != null && (!scope || scope.has(item.id)));
   if (!measured.length) return null;
   const ranked = [...measured].sort((left, right) => priorityScore(right) - priorityScore(left));
   let target = ranked[0];
@@ -118,11 +119,9 @@ export function decidePrivateTutorStrategy({ model, attempts, previousDecision =
   };
 }
 
-export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "diagnostic_completed", carryForwardKnowledgeId = null, scopeKnowledgeIds = null, dailyMinutes = 20, planIntensity = "standard" }) {
+export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "diagnostic_completed", carryForwardKnowledgeId = null, scopeKnowledgeIds = null, dailyMinutes = 20, planIntensity = "standard", learningGoal = null, planWeekIndex = 1, effortEvidence = [] }) {
   if (!decision) return null;
-  const scope = new Set(Array.isArray(scopeKnowledgeIds) && scopeKnowledgeIds.length
-    ? scopeKnowledgeIds
-    : model.knowledge.map((item) => item.id));
+  const scope = normalizedScope(scopeKnowledgeIds) ?? new Set(model.knowledge.map((item) => item.id));
   const scoped = model.knowledge.filter((item) => scope.has(item.id));
   const measured = scoped
     .filter((item) => item.mastery != null)
@@ -137,6 +136,16 @@ export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "
   const tertiary = alternatives[1] ?? secondary;
   const plannedMinutes = Math.max(5, Math.min(180, Math.round(Number(dailyMinutes) || 20)));
   const intensity = ["relaxed", "standard", "intensive"].includes(planIntensity) ? planIntensity : "standard";
+  const goal = normalizedLearningGoal(learningGoal);
+  const schedule = weeklySchedule(plannedMinutes, goal?.weeklyMinutes ?? null);
+  const goalForecast = buildPrivateTutorGoalForecast({
+    model,
+    scopeKnowledgeIds: [...scope],
+    learningGoal: goal,
+    weeklyMinutes: schedule.weeklyMinutes,
+    at: generatedDate(now),
+    effortEvidence,
+  });
   const pattern = [
     { item: primary, activity: "teach", strategy: decision.strategy },
     { item: secondary, activity: "repair", strategy: basicStrategy(secondary) },
@@ -146,16 +155,26 @@ export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "
     { item: secondary, activity: intensity === "intensive" ? "mixed_check" : "spaced_review", strategy: "transfer_challenge" },
     { item: primary, activity: "mixed_check", strategy: "transfer_challenge" },
   ];
-  const generatedAt = now();
-  return {
-    generatedAt,
-    reason,
-    dailyMinutes: plannedMinutes,
-    planIntensity: intensity,
-    studentReason: reason === "missed_day_rescheduled"
-      ? "昨天没完成也没关系，计划已经顺延，今天从最合适的位置继续。"
-      : decision.studentReason,
-    days: pattern.map(({ item, activity, strategy }, index) => ({
+  const generatedAt = goalForecast.generatedAt;
+  let learningDayIndex = 0;
+  const days = schedule.days.map((minutes, index) => {
+    if (minutes === 0) {
+      return {
+        dayIndex: index + 1,
+        date: addDays(generatedAt, index),
+        status: "rest",
+        knowledgeId: primary.id,
+        knowledgeTitle: primary.title,
+        activity: "rest",
+        title: "休息或机动回顾",
+        minutes: 0,
+        strategy: decision.strategy,
+        rationale: "按每周时间预算留出恢复空间；如果状态好，可以自由回想，不计为必做任务。",
+      };
+    }
+    const { item, activity, strategy } = pattern[learningDayIndex % pattern.length];
+    learningDayIndex += 1;
+    return {
       dayIndex: index + 1,
       date: addDays(generatedAt, index),
       status: "planned",
@@ -163,11 +182,361 @@ export function buildPrivateTutorSevenDayPlan({ model, decision, now, reason = "
       knowledgeTitle: item.title,
       activity,
       title: activityTitle(activity, item.title),
-      minutes: plannedMinutes,
+      minutes,
       strategy,
-      rationale: index === 0 ? decision.studentReason : rationale(activity, item.title),
-    })),
+      rationale: learningDayIndex === 1 ? decision.studentReason : rationale(activity, item.title),
+    };
+  });
+  return {
+    generatedAt,
+    reason,
+    dailyMinutes: plannedMinutes,
+    weeklyMinutes: schedule.weeklyMinutes,
+    planIntensity: intensity,
+    learningGoal: goal,
+    scopeKnowledgeIds: [...scope],
+    goalForecast,
+    goalRoadmap: buildPrivateTutorGoalRoadmap({
+      model,
+      scopeKnowledgeIds: [...scope],
+      goalForecast,
+      currentWeekIndex: planWeekIndex,
+    }),
+    studentReason: reason === "missed_day_rescheduled"
+      ? "昨天没完成也没关系，计划已经顺延，今天从最合适的位置继续。"
+      : goal?.note
+        ? `${decision.studentReason} 这周围绕“${goal.note}”安排。`
+        : decision.studentReason,
+    days,
   };
+}
+
+export function buildPrivateTutorGoalRoadmap({ model, scopeKnowledgeIds = null, goalForecast, currentWeekIndex = 1 }) {
+  const scope = normalizedScope(scopeKnowledgeIds) ?? new Set(model?.knowledge?.map((item) => item.id) ?? []);
+  const weekIndex = Math.max(1, Math.round(Number(currentWeekIndex) || 1));
+  const capacity = Math.max(5, Number(goalForecast?.weeklyCapacityMinutes) || 140);
+  const effortProfile = goalForecast?.effortProfile ?? derivePrivateTutorEffortProfile([]);
+  const tasks = (model?.knowledge ?? [])
+    .filter((item) => scope.has(item.id) && estimatedGoalMinutes(item) > 0)
+    .sort((left, right) => priorityScore(right) - priorityScore(left))
+    .map((item) => ({
+      knowledgeId: item.id,
+      title: item.title,
+      remainingMinutes: Math.max(5, Math.round(estimatedGoalMinutes(item) * effortFactorForKnowledge(effortProfile, item.id))),
+    }));
+  const totalWeekCount = Math.max(0, Number(goalForecast?.estimatedWeekCount) || 0);
+  const visibleWeekCount = Math.min(totalWeekCount, 52);
+  const mutableTasks = tasks.map((item) => ({ ...item }));
+  let taskIndex = 0;
+  let cumulativePlannedMinutes = 0;
+  let cumulativeCompletedKnowledgeCount = Number(goalForecast?.masteredKnowledgeCount) || 0;
+  const milestones = [];
+  for (let offset = 0; offset < visibleWeekCount; offset += 1) {
+    let available = capacity;
+    const knowledgeGoals = [];
+    while (available > 0 && taskIndex < mutableTasks.length) {
+      const task = mutableTasks[taskIndex];
+      const allocatedMinutes = Math.min(available, task.remainingMinutes);
+      task.remainingMinutes -= allocatedMinutes;
+      available -= allocatedMinutes;
+      cumulativePlannedMinutes += allocatedMinutes;
+      const expectedComplete = task.remainingMinutes === 0;
+      knowledgeGoals.push({
+        knowledgeId: task.knowledgeId,
+        title: task.title,
+        plannedMinutes: allocatedMinutes,
+        expectedComplete,
+      });
+      if (expectedComplete) {
+        cumulativeCompletedKnowledgeCount += 1;
+        taskIndex += 1;
+      }
+    }
+    const plannedMinutes = capacity - available;
+    milestones.push({
+      weekIndex: weekIndex + offset,
+      startDate: addDays(goalForecast.generatedAt, offset * 7),
+      endDate: addDays(goalForecast.generatedAt, offset * 7 + 6),
+      status: offset === 0 ? "current" : "upcoming",
+      plannedMinutes,
+      cumulativePlannedMinutes,
+      expectedCompletedKnowledgeCount: cumulativeCompletedKnowledgeCount,
+      knowledgeGoals,
+    });
+  }
+  return {
+    schemaVersion: 2,
+    generatedAt: goalForecast.generatedAt,
+    currentWeekIndex: weekIndex,
+    estimatedWeekCount: totalWeekCount,
+    projectedFinalWeekIndex: totalWeekCount ? weekIndex + totalWeekCount - 1 : weekIndex,
+    scopeKnowledgeCount: goalForecast.scopeKnowledgeCount,
+    completedKnowledgeCount: goalForecast.masteredKnowledgeCount,
+    targetDate: goalForecast.targetDate,
+    status: goalForecast.status,
+    milestones,
+    hiddenMilestoneCount: Math.max(0, totalWeekCount - visibleWeekCount),
+  };
+}
+
+export function derivePrivateTutorPlanProgress(plan, { at } = {}) {
+  const today = generatedDate(() => at ?? new Date().toISOString()).slice(0, 10);
+  const learningDays = (plan?.days ?? []).filter((day) => Number(day.minutes) > 0 && day.status !== "rescheduled");
+  const dueDays = learningDays.filter((day) => String(day.date).slice(0, 10) < today);
+  const overdueDays = dueDays.filter((day) => !["completed", "rescheduled"].includes(day.status));
+  const scheduledElapsedMinutes = dueDays.reduce((total, day) => total + Number(day.minutes || 0), 0);
+  const completedElapsedMinutes = dueDays.filter((day) => day.status === "completed")
+    .reduce((total, day) => total + Number(day.minutes || 0), 0);
+  const behindMinutes = overdueDays.reduce((total, day) => total + Number(day.minutes || 0), 0);
+  const futureBufferDays = (plan?.days ?? []).filter((day) => day.status === "rest" && String(day.date).slice(0, 10) >= today);
+  const recoverableDayCount = Math.min(overdueDays.length, futureBufferDays.length);
+  const dailyMinutes = Math.max(5, Number(plan?.dailyMinutes) || 20);
+  let status = "no_due_work";
+  if (dueDays.length && behindMinutes === 0) status = "on_track";
+  else if (behindMinutes > 0 && (overdueDays.length >= 2 || behindMinutes >= dailyMinutes * 2)) status = "behind";
+  else if (behindMinutes > 0) status = "attention";
+  return {
+    schemaVersion: 1,
+    calculatedAt: generatedDate(() => at ?? new Date().toISOString()),
+    status,
+    scheduledElapsedMinutes,
+    completedElapsedMinutes,
+    behindMinutes,
+    overdueDayCount: overdueDays.length,
+    overdueDayIndexes: overdueDays.map((day) => day.dayIndex),
+    recoverableDayCount,
+    catchUpAvailable: recoverableDayCount > 0,
+    nextPlannedDate: learningDays.find((day) => day.status === "planned" && String(day.date).slice(0, 10) >= today)?.date ?? null,
+  };
+}
+
+export function buildPrivateTutorCatchUpPlanPreview(plan, { at } = {}) {
+  const progress = derivePrivateTutorPlanProgress(plan, { at });
+  const today = progress.calculatedAt.slice(0, 10);
+  const overdueDays = progress.overdueDayIndexes
+    .map((dayIndex) => plan?.days?.find((day) => day.dayIndex === dayIndex))
+    .filter(Boolean);
+  const bufferDays = (plan?.days ?? []).filter((day) => day.status === "rest" && String(day.date).slice(0, 10) >= today);
+  const assignments = overdueDays.slice(0, bufferDays.length).map((source, index) => ({
+    sourceDayIndex: source.dayIndex,
+    sourceDate: source.date,
+    targetDayIndex: bufferDays[index].dayIndex,
+    targetDate: bufferDays[index].date,
+    minutes: source.minutes,
+    knowledgeId: source.knowledgeId,
+    knowledgeTitle: source.knowledgeTitle,
+    title: source.title,
+  }));
+  return {
+    schemaVersion: 1,
+    planId: plan?.id ?? null,
+    expectedPlanRevision: Number(plan?.revision) || 0,
+    generatedAt: progress.calculatedAt,
+    progress,
+    assignments,
+    recoveredMinutes: assignments.reduce((total, item) => total + Number(item.minutes || 0), 0),
+    remainingBehindMinutes: Math.max(0, progress.behindMinutes - assignments.reduce((total, item) => total + Number(item.minutes || 0), 0)),
+    canConfirm: assignments.length > 0,
+  };
+}
+
+export function applyPrivateTutorCatchUpPlan(plan, preview, { at } = {}) {
+  if (!plan || !preview?.canConfirm || plan.id !== preview.planId || Number(plan.revision) !== Number(preview.expectedPlanRevision)) return null;
+  for (const assignment of preview.assignments) {
+    const source = plan.days.find((day) => day.dayIndex === assignment.sourceDayIndex);
+    const target = plan.days.find((day) => day.dayIndex === assignment.targetDayIndex);
+    if (!source || !target || target.status !== "rest" || ["completed", "rescheduled"].includes(source.status)) return null;
+    const originalMinutes = Number(source.minutes || assignment.minutes);
+    source.status = "rescheduled";
+    source.originalMinutes = originalMinutes;
+    source.minutes = 0;
+    source.rescheduledToDayIndex = target.dayIndex;
+    target.status = "planned";
+    target.knowledgeId = source.knowledgeId;
+    target.knowledgeTitle = source.knowledgeTitle;
+    target.activity = "catch_up";
+    target.title = `机动补上：${source.knowledgeTitle}`;
+    target.minutes = originalMinutes;
+    target.strategy = source.strategy;
+    target.rationale = `把第 ${source.dayIndex} 天未完成的任务移到机动日；原学习证据和其他安排保持不变。`;
+    target.catchUpSourceDayIndex = source.dayIndex;
+  }
+  plan.reason = "catch_up_confirmed";
+  plan.revision = Number(plan.revision ?? 0) + 1;
+  plan.updatedAt = generatedDate(() => at ?? new Date().toISOString());
+  return plan;
+}
+
+export function buildPrivateTutorGoalForecast({ model, scopeKnowledgeIds = null, learningGoal = null, weeklyMinutes = 140, at, effortEvidence = [] }) {
+  const generatedAt = generatedDate(() => at);
+  const scope = normalizedScope(scopeKnowledgeIds) ?? new Set(model?.knowledge?.map((item) => item.id) ?? []);
+  const knowledge = (model?.knowledge ?? []).filter((item) => scope.has(item.id));
+  const masteredKnowledgeCount = knowledge.filter((item) => item.level === "mastered" && Number(item.forgettingRisk ?? 0) < 0.5).length;
+  const effortProfile = derivePrivateTutorEffortProfile(effortEvidence);
+  const baselineRemainingMinutes = knowledge.reduce((total, item) => total + estimatedGoalMinutes(item), 0);
+  const estimatedRemainingMinutes = Math.round(knowledge.reduce((total, item) => (
+    total + estimatedGoalMinutes(item) * effortFactorForKnowledge(effortProfile, item.id)
+  ), 0));
+  const optimisticRemainingMinutes = estimatedRemainingMinutes === 0 ? 0 : Math.max(5, Math.round(estimatedRemainingMinutes * (1 - effortProfile.uncertaintyRate)));
+  const conservativeRemainingMinutes = estimatedRemainingMinutes === 0 ? 0 : Math.round(estimatedRemainingMinutes * (1 + effortProfile.uncertaintyRate));
+  const capacity = Math.max(5, Math.round(Number(weeklyMinutes) || 140));
+  const goal = normalizedLearningGoal(learningGoal);
+  const targetDate = goal?.targetDate ?? null;
+  const estimatedWeekCount = estimatedRemainingMinutes > 0 ? Math.max(1, Math.ceil(estimatedRemainingMinutes / capacity)) : 0;
+  const projectedCompletionDate = estimatedRemainingMinutes > 0
+    ? addDays(generatedAt, Math.max(0, Math.ceil((estimatedRemainingMinutes / capacity) * 7) - 1))
+    : generatedAt.slice(0, 10);
+  const optimisticCompletionDate = optimisticRemainingMinutes > 0
+    ? addDays(generatedAt, Math.max(0, Math.ceil((optimisticRemainingMinutes / capacity) * 7) - 1))
+    : generatedAt.slice(0, 10);
+  const conservativeCompletionDate = conservativeRemainingMinutes > 0
+    ? addDays(generatedAt, Math.max(0, Math.ceil((conservativeRemainingMinutes / capacity) * 7) - 1))
+    : generatedAt.slice(0, 10);
+  const daysRemaining = targetDate ? differenceInUtcDays(generatedAt, targetDate) : null;
+  const availableMinutesUntilTarget = daysRemaining == null
+    ? null
+    : Math.max(0, Math.floor(capacity * (Math.max(0, daysRemaining) + 1) / 7));
+  const requiredWeeklyMinutes = daysRemaining == null || estimatedRemainingMinutes === 0
+    ? 0
+    : Math.ceil(estimatedRemainingMinutes / Math.max((daysRemaining + 1) / 7, 1 / 7));
+  let status = "no_target_date";
+  let reasonCode = "target_date_not_set";
+  if (estimatedRemainingMinutes === 0) {
+    status = "achieved";
+    reasonCode = "goal_evidence_stable";
+  } else if (daysRemaining != null && daysRemaining < 0) {
+    status = "overdue";
+    reasonCode = "target_date_passed";
+  } else if (daysRemaining != null && availableMinutesUntilTarget < optimisticRemainingMinutes) {
+    status = "infeasible";
+    reasonCode = "weekly_capacity_below_estimate";
+  } else if (daysRemaining != null && availableMinutesUntilTarget < conservativeRemainingMinutes) {
+    status = "at_risk";
+    reasonCode = "capacity_has_little_buffer";
+  } else if (daysRemaining != null) {
+    status = "on_track";
+    reasonCode = "capacity_covers_estimate";
+  }
+  return {
+    schemaVersion: 1,
+    assumptionVersion: "knowledge-effort-v1",
+    generatedAt,
+    status,
+    reasonCode,
+    targetDate,
+    scopeKnowledgeCount: knowledge.length,
+    masteredKnowledgeCount,
+    remainingKnowledgeCount: Math.max(0, knowledge.length - masteredKnowledgeCount),
+    baselineRemainingMinutes,
+    optimisticRemainingMinutes,
+    estimatedRemainingMinutes,
+    conservativeRemainingMinutes,
+    weeklyCapacityMinutes: capacity,
+    estimatedWeekCount,
+    projectedCompletionDate,
+    completionWindow: {
+      optimistic: optimisticCompletionDate,
+      likely: projectedCompletionDate,
+      conservative: conservativeCompletionDate,
+    },
+    daysRemaining,
+    availableMinutesUntilTarget,
+    requiredWeeklyMinutes,
+    effortProfile,
+  };
+}
+
+export function derivePrivateTutorEffortProfile(sessions = []) {
+  const observations = (Array.isArray(sessions) ? sessions : []).flatMap((session) => {
+    const actualMinutes = observedPrivateTutorSessionMinutes(session);
+    const plannedMinutes = Number(session?.plannedMinutes ?? 0);
+    if (!Number.isFinite(actualMinutes) || actualMinutes < 1 || !Number.isFinite(plannedMinutes) || plannedMinutes < 1) return [];
+    return [{
+      knowledgeId: String(session.targetKnowledgeId ?? ""),
+      ratio: Math.max(0.5, Math.min(2, actualMinutes / plannedMinutes)),
+    }];
+  });
+  const ratios = observations.map((item) => item.ratio);
+  const calibrationFactor = ratios.length ? rounded(median(ratios), 2) : 1;
+  const deviation = ratios.length ? median(ratios.map((ratio) => Math.abs(ratio - calibrationFactor))) : 0.3;
+  const uncertaintyRate = rounded(ratios.length >= 8 ? Math.max(0.12, Math.min(0.3, deviation * 1.5)) : ratios.length >= 3 ? 0.2 : 0.3, 2);
+  const knowledgeFactors = [...new Set(observations.map((item) => item.knowledgeId).filter(Boolean))].map((knowledgeId) => {
+    const values = observations.filter((item) => item.knowledgeId === knowledgeId).map((item) => item.ratio);
+    return { knowledgeId, sampleCount: values.length, factor: rounded(values.length >= 2 ? median(values) : calibrationFactor, 2) };
+  });
+  return {
+    schemaVersion: 1,
+    modelVersion: "observed-session-effort-v1",
+    sampleCount: observations.length,
+    calibrationFactor,
+    uncertaintyRate,
+    confidence: observations.length >= 8 ? "high" : observations.length >= 3 ? "medium" : "low",
+    source: observations.length ? "completed_session_timing" : "default_assumptions",
+    knowledgeFactors,
+  };
+}
+
+export function rollPrivateTutorFuturePlan(plan, generated, { modelId = null, decisionId = null, now } = {}) {
+  if (!plan || !generated || !Array.isArray(plan.days) || !Array.isArray(generated.days)) return plan;
+  const replacements = generated.days.filter((day) => day.status === "planned");
+  let replacementIndex = 0;
+  plan.days = plan.days.map((day) => {
+    if (day.status !== "planned") return day;
+    const replacement = replacements[replacementIndex++] ?? replacements.at(-1);
+    if (!replacement) return day;
+    return {
+      ...replacement,
+      dayIndex: day.dayIndex,
+      date: day.date,
+    };
+  });
+  plan.modelId = modelId ?? plan.modelId;
+  plan.decisionId = decisionId ?? plan.decisionId;
+  plan.reason = "tutoring_session_completed";
+  plan.studentReason = generated.studentReason;
+  plan.dailyMinutes = generated.dailyMinutes;
+  plan.weeklyMinutes = plan.days.reduce(
+    (total, day) => total + Number(day.minutes || 0),
+    0
+  );
+  plan.planIntensity = generated.planIntensity;
+  plan.learningGoal = generated.learningGoal;
+  plan.scopeKnowledgeIds = generated.scopeKnowledgeIds;
+  plan.goalForecast = generated.goalForecast;
+  plan.goalRoadmap = generated.goalRoadmap;
+  plan.revision = Number(plan.revision ?? 0) + 1;
+  plan.status = plan.days.every((day) => ["completed", "rest", "rescheduled"].includes(day.status)) ? "completed" : "active";
+  plan.updatedAt = now ?? generated.generatedAt;
+  return plan;
+}
+
+export function resolvePrivateTutorGoalScopeKnowledgeIds(contentPackage, learningGoal) {
+  if (learningGoal?.contentPackageId && learningGoal.contentPackageId !== contentPackage?.id) return null;
+  const requested = new Set((learningGoal?.targetTopicIds ?? []).map((id) => String(id).trim()).filter(Boolean));
+  if (!requested.size) return null;
+  const definitions = contentPackage?.knowledgeComponents ?? [];
+  const definitionsById = new Map(definitions.map((item) => [item.id, item]));
+  const selected = new Set(definitions.filter((item) => requested.has(item.id)).map((item) => item.id));
+  for (const module of contentPackage?.modules ?? []) {
+    for (const topic of module.topics ?? []) {
+      if (!requested.has(topic.id)) continue;
+      for (const knowledgeId of topic.knowledgeComponentIds ?? []) {
+        if (definitionsById.has(knowledgeId)) selected.add(knowledgeId);
+      }
+    }
+  }
+  if (!selected.size) return null;
+  const pending = [...selected];
+  while (pending.length) {
+    const knowledgeId = pending.pop();
+    const definition = definitionsById.get(knowledgeId);
+    for (const prerequisiteId of definition?.prerequisiteKnowledgeIds ?? []) {
+      if (!definitionsById.has(prerequisiteId) || selected.has(prerequisiteId)) continue;
+      selected.add(prerequisiteId);
+      pending.push(prerequisiteId);
+    }
+  }
+  return definitions.map((item) => item.id).filter((id) => selected.has(id));
 }
 
 function inferMisconception(evidence, definition) {
@@ -194,6 +563,99 @@ function normalizeKnowledgeDefinition(definition) {
     downstreamImpact: Number(definition.downstreamImpact ?? 1),
     misconceptions: definition.misconceptions ?? [],
   };
+}
+
+function normalizedScope(scopeKnowledgeIds) {
+  if (!Array.isArray(scopeKnowledgeIds) || !scopeKnowledgeIds.length) return null;
+  return new Set(scopeKnowledgeIds.map((id) => String(id).trim()).filter(Boolean));
+}
+
+function normalizedLearningGoal(goal) {
+  if (!goal || typeof goal !== "object") return null;
+  const weeklyMinutes = Number.isFinite(Number(goal.weeklyMinutes))
+    ? Math.max(5, Math.min(1_260, Math.round(Number(goal.weeklyMinutes))))
+    : null;
+  return {
+    contentPackageId: typeof goal.contentPackageId === "string" ? goal.contentPackageId.trim().slice(0, 200) || null : null,
+    targetTopicIds: Array.isArray(goal.targetTopicIds) ? [...new Set(goal.targetTopicIds.map((id) => String(id).trim()).filter(Boolean))] : [],
+    weeklyMinutes,
+    targetDate: typeof goal.targetDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(goal.targetDate) ? goal.targetDate : null,
+    note: typeof goal.note === "string" ? goal.note.trim().slice(0, 200) : "",
+  };
+}
+
+function estimatedGoalMinutes(item) {
+  if (item.level === "mastered" && Number(item.forgettingRisk ?? 0) < 0.5) return 0;
+  let minutes = item.level === "mastered" ? 20 : item.level === "learning" ? 45 : item.level === "needs_support" ? 75 : 60;
+  if (item.prerequisiteGap) minutes += 15;
+  if (item.misconception) minutes += 15;
+  return minutes;
+}
+
+function effortFactorForKnowledge(profile, knowledgeId) {
+  return profile.knowledgeFactors.find((item) => item.knowledgeId === knowledgeId)?.factor ?? profile.calibrationFactor;
+}
+
+function observedPrivateTutorSessionMinutes(session) {
+  if (session?.status !== "completed") return null;
+  const activitySeconds = (session.activities ?? []).reduce((total, activity) => {
+    const started = Date.parse(activity.startedAt ?? "");
+    const completed = Date.parse(activity.completedAt ?? "");
+    if (!Number.isFinite(started) || !Number.isFinite(completed) || completed <= started) return total;
+    const cap = Math.max(60, Number(activity.budgetMinutes ?? 1) * 60 * 2);
+    return total + Math.min(cap, (completed - started) / 1_000);
+  }, 0);
+  if (activitySeconds >= 60) return activitySeconds / 60;
+  const started = Date.parse(session.startedAt ?? "");
+  const completed = Date.parse(session.completedAt ?? "");
+  if (!Number.isFinite(started) || !Number.isFinite(completed) || completed <= started) return null;
+  const wallMinutes = (completed - started) / 60_000;
+  const cap = Math.max(5, Number(session.plannedMinutes ?? 20) * 2);
+  return Math.min(cap, wallMinutes);
+}
+
+function median(values) {
+  const sorted = values.filter(Number.isFinite).slice().sort((left, right) => left - right);
+  if (!sorted.length) return 1;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function rounded(value, digits) {
+  return Number(Number(value).toFixed(digits));
+}
+
+function generatedDate(now) {
+  const value = typeof now === "function" ? now() : now;
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date(0).toISOString();
+}
+
+function differenceInUtcDays(from, targetDate) {
+  const fromDate = new Date(from);
+  const fromDay = Date.UTC(fromDate.getUTCFullYear(), fromDate.getUTCMonth(), fromDate.getUTCDate());
+  return Math.round((Date.parse(`${targetDate}T00:00:00.000Z`) - fromDay) / 86_400_000);
+}
+
+function weeklySchedule(dailyMinutes, requestedWeeklyMinutes) {
+  if (requestedWeeklyMinutes == null) return { weeklyMinutes: dailyMinutes * 7, days: Array(7).fill(dailyMinutes) };
+  const weeklyMinutes = Math.max(5, Math.min(requestedWeeklyMinutes, dailyMinutes * 7));
+  const learningDayCount = Math.max(1, Math.min(7, Math.ceil(weeklyMinutes / dailyMinutes)));
+  const slots = evenlySpacedSlots(learningDayCount);
+  const base = Math.floor(weeklyMinutes / learningDayCount);
+  let remainder = weeklyMinutes - base * learningDayCount;
+  const days = Array(7).fill(0);
+  for (const slot of slots) {
+    days[slot] = base + (remainder > 0 ? 1 : 0);
+    remainder = Math.max(0, remainder - 1);
+  }
+  return { weeklyMinutes, days };
+}
+
+function evenlySpacedSlots(count) {
+  if (count >= 7) return [0, 1, 2, 3, 4, 5, 6];
+  if (count === 1) return [0];
+  return Array.from({ length: count }, (_, index) => Math.round(index * 6 / (count - 1)));
 }
 
 function misconceptionIdForAttempt(attempt) {

@@ -86,13 +86,20 @@ export function App() {
   if (section === "privateTutor") {
     const PrivateTutorView = SECTION_VIEWS.privateTutor;
     return (
-      <main className="h-full overflow-y-auto bg-background p-2 sm:p-4">
-        <ErrorBoundary resetKey={PrivateTutorView} onRetry={() => location.reload()}>
-          <Suspense fallback={<div role="status" className="py-8 text-center text-sm text-muted-foreground">{t("tasks.loading")}</div>}>
-            <PrivateTutorView />
-          </Suspense>
-        </ErrorBoundary>
-      </main>
+      <div className="flex h-full overflow-hidden">
+        <NavRail />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Topbar />
+          <main className="min-h-0 flex-1 overflow-y-auto bg-background p-2 sm:p-4">
+            <ErrorBoundary resetKey={PrivateTutorView} onRetry={() => location.reload()}>
+              <Suspense fallback={<div role="status" className="py-8 text-center text-sm text-muted-foreground">{t("tasks.loading")}</div>}>
+                <PrivateTutorView />
+              </Suspense>
+            </ErrorBoundary>
+          </main>
+          <MobileBottomNavigation />
+        </div>
+      </div>
     );
   }
 
