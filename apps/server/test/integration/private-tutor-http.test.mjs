@@ -2066,8 +2066,15 @@ test("imports a desktop-selected scanned textbook into managed local storage wit
   });
   const imported = await response.json();
   assert.equal(response.status, 201, JSON.stringify(imported));
-  assert.equal(imported.material.status, "needs_ocr");
+  assert.equal(["needs_ocr", "parsed"].includes(imported.material.status), true);
   assert.equal(imported.material.extraction.pageCount, 6);
+  if (imported.material.status === "parsed") {
+    assert.equal(imported.material.extraction.method, "pdf_text_with_local_ocr");
+    assert.equal(imported.material.extraction.ocr.attempted, true);
+    assert.equal(imported.material.extraction.ocr.state, "completed");
+  } else {
+    assert.equal(imported.material.extraction.state, "needs_ocr");
+  }
   assert.equal(imported.material.managedSource.storage, "managed_local");
   assert.equal(imported.job, null);
 
