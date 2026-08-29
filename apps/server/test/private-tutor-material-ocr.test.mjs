@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { applyPrivateTutorOcrResult, parseUploadedMaterialDocument } from "../src/services/private-tutor-material-parser.mjs";
 import { createPrivateTutorMaterialOcrService } from "../src/services/private-tutor-material-ocr.mjs";
@@ -156,6 +157,36 @@ test("requires explicit cloud confirmation before scheduling Codex OCR", async (
     const started = service.start(material, material.learningProfileId);
     const failed = await waitFor(() => started.job.status === "failed" && started.job);
     assert.equal(failed.failureCode, "workflow_ocr_cloud_confirmation_required");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("desktop local import defers OCR until it is explicitly scheduled", async () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-private-tutor-ocr-import-"));
+  const state = { privateTutorMaterialDocuments: [], privateTutorOcrJobs: [] };
+  let recognitionCalls = 0;
+  const service = createPrivateTutorMaterialOcrService({
+    state,
+    stateStorePath: join(root, "state.json"),
+    nextId: () => "ptocr_import",
+    ocrAdapter: {
+      readiness: () => ({ state: "ready", providerId: "codex-vision", requiresCloudConsent: true }),
+      recognize: async () => {
+        recognitionCalls += 1;
+        throw new Error("OCR should not run during import.");
+      },
+    },
+  });
+  try {
+    const path = fileURLToPath(new URL("../../../demos/pdfcli/97-动态热机械分析仪DMA.pdf", import.meta.url));
+    const imported = await service.importLocalPath(path, "learner_import", { startOcr: false, cloudAllowed: false });
+
+    assert.equal(imported.material.status, "needs_ocr");
+    assert.equal(imported.material.managedSource.storage, "managed_local");
+    assert.equal(imported.job, null);
+    assert.equal(recognitionCalls, 0);
+    assert.deepEqual(state.privateTutorOcrJobs, []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
