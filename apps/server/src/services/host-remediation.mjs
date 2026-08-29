@@ -5,6 +5,8 @@ import { normalizeSshFingerprint, SshHostConnectorError } from "./ssh-host-conne
 const PLAN_TTL_MS = 10 * 60_000;
 const DIAGNOSTIC_TTL_MS = 10 * 60_000;
 const MAX_REMEDIATION_PLANS_PER_USER = 50;
+const POST_RELOAD_HEALTH_ATTEMPTS = 4;
+const POST_RELOAD_HEALTH_DELAY_MS = 250;
 const TERMINAL_STATUSES = new Set(["not_needed", "completed", "completed_unresolved", "failed", "outcome_unknown"]);
 const ACTIVE_BINDING_STATUSES = new Set(["staging_deployed", "active"]);
 const SHA256_HEX = /^[a-f0-9]{64}$/;
@@ -65,10 +67,21 @@ export function createHostRemediationService({
   sshHostConnector,
   checkWebsiteHealth,
   store,
+  wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   state.hostDiagnosticRuns ??= [];
   state.hostRemediationPlans ??= [];
+
+  async function checkWebsiteAfterPossibleReload(healthTarget) {
+    let health;
+    for (let attempt = 0; attempt < POST_RELOAD_HEALTH_ATTEMPTS; attempt += 1) {
+      health = healthSummary(await checkWebsiteHealth(healthTarget));
+      if (health.reason !== "website_unreachable" || attempt === POST_RELOAD_HEALTH_ATTEMPTS - 1) break;
+      await wait(POST_RELOAD_HEALTH_DELAY_MS);
+    }
+    return health;
+  }
 
   function contextFor(target, profileId) {
     const profile = state.hostTlsActivationProfiles?.find((item) => item.id === profileId
@@ -356,7 +369,7 @@ export function createHostRemediationService({
       });
       await run("docker_nginx_inspect", "verification_container_running");
       await run("docker_nginx_config_test", "verification_configuration_valid");
-      const after = healthSummary(await checkWebsiteHealth(context.healthTarget));
+      const after = await checkWebsiteAfterPossibleReload(context.healthTarget);
       completedChecks.push("verification_website_health");
       if (after.status !== "healthy") {
         return finalize("completed_unresolved", { outcome: "not_restored", changeAttempted: true, verification: "failed", completedChecks, websiteHealth: after }, "ssh.host_remediation.completed_unresolved", "warning", "The website service was reloaded, but the managed website was still unhealthy.");
@@ -388,7 +401,7 @@ export function createHostRemediationService({
       if (context.site.id !== plan.siteId || context.publication.id !== plan.publicationId || context.binding.id !== plan.websiteBindingId) {
         throw new HostRemediationError("host_remediation_plan_stale", "The managed website changed after this repair.", 409);
       }
-      const health = healthSummary(await checkWebsiteHealth(context.healthTarget));
+      const health = await checkWebsiteAfterPossibleReload(context.healthTarget);
       const timestamp = now();
       runTx(() => {
         plan.lastRecheckedHealth = health;

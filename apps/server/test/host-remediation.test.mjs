@@ -68,6 +68,7 @@ function harness({ failAt = null, failCode = "ssh_fixed_command_failed", changed
       const status = healthStatuses[Math.min(healthChecks.length - 1, healthStatuses.length - 1)];
       return { status, reason: status === "healthy" ? "website_healthy" : "website_unreachable", statusCodeClass: status === "healthy" ? 2 : null, contentMatched: status === "healthy", checkedAt: timestamp };
     },
+    wait: async () => {},
   });
   return { actions, binding, diagnostic, events, healthChecks, profile, scope, service, state, target, setNow: (value) => { timestamp = value; } };
 }
@@ -208,8 +209,21 @@ test("records that no repair is needed when the real website is already healthy"
   assert.equal(actions.length, 0);
 });
 
+test("waits through a transient connection reset after reload without reloading twice", async () => {
+  const { actions, diagnostic, healthChecks, profile, service, target } = harness({ healthStatuses: ["unhealthy", "unhealthy", "unhealthy", "healthy"] });
+  diagnostic.createdByUserId = "usr_local";
+  const planned = await service.createPlan(target, { profileId: profile.id, diagnosticRunId: diagnostic.id });
+
+  const result = await service.confirmPlan(target, planned.plan, { confirmed: true, expectedRevision: planned.plan.revision });
+
+  assert.equal(result.plan.status, "completed");
+  assert.equal(result.plan.result.outcome, "restored");
+  assert.equal(healthChecks.length, 4);
+  assert.equal(actions.filter((item) => item.action === "docker_nginx_reload").length, 1);
+});
+
 test("reports that the service was reloaded but the website is still unavailable", async () => {
-  const { actions, diagnostic, profile, service, target } = harness({ healthStatuses: ["unhealthy", "unhealthy", "unhealthy", "healthy"] });
+  const { actions, diagnostic, profile, service, target } = harness({ healthStatuses: ["unhealthy", "unhealthy", "unhealthy", "unhealthy", "unhealthy", "unhealthy", "healthy"] });
   diagnostic.createdByUserId = "usr_local";
   const planned = await service.createPlan(target, { profileId: profile.id, diagnosticRunId: diagnostic.id });
 
@@ -222,6 +236,22 @@ test("reports that the service was reloaded but the website is still unavailable
   const rechecked = await service.recheckPlan(target, result.plan);
   assert.equal(rechecked.plan.lastRecheckedHealth.status, "healthy");
   assert.equal(actions.length, 5, "a read-only reconciliation must not reload the service again");
+});
+
+test("waits through a transient connection reset during a read-only reconciliation", async () => {
+  const { actions, diagnostic, healthChecks, profile, service, target } = harness({
+    healthStatuses: ["unhealthy", "unhealthy", "unhealthy", "unhealthy", "unhealthy", "unhealthy", "unhealthy", "healthy"],
+  });
+  diagnostic.createdByUserId = "usr_local";
+  const planned = await service.createPlan(target, { profileId: profile.id, diagnosticRunId: diagnostic.id });
+  const result = await service.confirmPlan(target, planned.plan, { confirmed: true, expectedRevision: planned.plan.revision });
+  assert.equal(result.plan.status, "completed_unresolved");
+
+  const rechecked = await service.recheckPlan(target, result.plan);
+
+  assert.equal(rechecked.plan.lastRecheckedHealth.status, "healthy");
+  assert.equal(healthChecks.length, 8);
+  assert.equal(actions.filter((item) => item.action === "docker_nginx_reload").length, 1);
 });
 
 test("requires a recent website diagnostic before checking or repairing a managed site", async () => {
