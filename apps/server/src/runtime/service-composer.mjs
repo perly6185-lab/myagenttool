@@ -212,6 +212,7 @@ import { createTerminalService } from "../services/terminal.mjs";
 import { createSshHostConnector } from "../services/ssh-host-connector.mjs";
 import { createHostFileService } from "../services/host-files.mjs";
 import { createHostTlsActivationProfileService } from "../services/host-tls-activation-profiles.mjs";
+import { createHostRemediationService } from "../services/host-remediation.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 import { createExternalIssueProviderClient } from "../services/external-issue-provider.mjs";
 import { createSiteCredentialVault } from "../services/site-credential-vault.mjs";
@@ -1288,6 +1289,16 @@ export function createServerRuntimeServices({
     store,
   });
   const hostTlsActivationProfileService = createHostTlsActivationProfileService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    sshHostConnector,
+    store,
+  });
+  const hostRemediationService = createHostRemediationService({
     state,
     now,
     nextId,
@@ -8036,6 +8047,9 @@ export function createServerRuntimeServices({
     downloadHostFile: hostFileService.downloadFile,
     listHostTlsActivationProfiles: hostTlsActivationProfileService.listProfiles,
     createHostTlsActivationProfile: hostTlsActivationProfileService.createProfile,
+    createHostRemediationPlan: hostRemediationService.createPlan,
+    confirmHostRemediationPlan: hostRemediationService.confirmPlan,
+    findHostRemediationPlan: hostRemediationService.findPlan,
     createManagedTerminalSession,
     queueTerminalBridgeAction,
     nextTerminalBridgeAction,
