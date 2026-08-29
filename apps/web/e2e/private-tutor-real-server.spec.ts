@@ -145,6 +145,22 @@ test("a signed-in learner keeps one personal profile and never sees family hando
   await page.getByRole("button", { name: /选择课程或导入我的教材/ }).click();
   await expect(page.getByRole("heading", { name: "我的设置" })).toBeVisible();
   await expect(page.getByText("选择学习内容")).toBeVisible();
+  await expect(page.getByText("四年级数学上册（2022课标原创）", { exact: true })).toBeVisible();
+  await expect(page.getByText("八年级数学上册（2022课标原创）", { exact: true })).toBeVisible();
+  await expect(page.getByText("课标原创", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("非出版社官方教材；可导入本人教材进行本地对齐。")).toHaveCount(2);
+  await testInfo.attach("private-tutor-curricula-desktop", {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
+  });
+  const desktopViewport = page.viewportSize();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByText("四年级数学上册（2022课标原创）", { exact: true })).toBeVisible();
+  await testInfo.attach("private-tutor-curricula-mobile", {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
+  });
+  if (desktopViewport) await page.setViewportSize(desktopViewport);
   await page.getByRole("button", { name: "返回开始方式" }).click();
   await page.getByRole("button", { name: /用当前内容开始摸底/ }).click();
   await expect(page.getByRole("heading", { name: "先让我认识一下你会什么" })).toBeVisible();
