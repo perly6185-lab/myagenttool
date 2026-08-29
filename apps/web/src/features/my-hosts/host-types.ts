@@ -134,6 +134,28 @@ export interface HostDiagnosticPlan {
   parameters?: HostDiagnosticParameters;
 }
 
+export type HostDiagnosticRunIntent = "health" | "performance" | "website" | "security" | "containers" | "targeted";
+
+export interface HostDiagnosticRunStep {
+  action: HostDiagnosticAction;
+  parameters?: HostDiagnosticParameters;
+  status: "completed" | "unavailable";
+  command?: string;
+  output?: string;
+  summary?: HostDiagnosticSummary;
+  error?: string;
+}
+
+export interface HostDiagnosticRun {
+  version: 1;
+  intent: HostDiagnosticRunIntent;
+  risk: "read_only";
+  steps: HostDiagnosticRunStep[];
+  summary: HostDiagnosticSummary;
+  primaryAction?: HostDiagnosticAction | null;
+  resolvedAddress?: string | null;
+}
+
 export type HostFileConflictPolicy = "deny" | "rename" | "replace";
 
 export interface HostFileTransfer {

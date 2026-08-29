@@ -3,6 +3,7 @@ import { resolve, sep } from "node:path";
 import { DEFAULT_DEVICE_ID } from "../runtime/device.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { buildHostDiagnosticSummary } from "./host-diagnostic-summary.mjs";
+import { buildHostDiagnosticRunSummary, hostDiagnosticRunPlanForInput, primaryHostDiagnosticAction } from "./host-diagnostic-run.mjs";
 import { createSshHostConnector, normalizeSshFingerprint, sshDiagnosticPlanForInput, sshDiagnosticCommand, SshHostConnectorError } from "./ssh-host-connector.mjs";
 
 // A local managed terminal is the broadest execution surface on the bridge (an
@@ -282,7 +283,7 @@ export function createTerminalService({
     }
   }
 
-  async function runSshHostDiagnostic(target, action, actor = null, parameters = {}) {
+  async function runSshHostDiagnostic(target, action, actor = null, parameters = {}, options = {}) {
     const command = sshDiagnosticCommand(action, parameters);
     if (!command) return { ok: false, status: 400, error: "ssh_diagnostic_unsupported" };
     if (target.connectionStatus !== "ready") return { ok: false, status: 409, error: "ssh_host_not_ready" };
@@ -301,7 +302,7 @@ export function createTerminalService({
       );
     }
     try {
-      const result = await sshHostConnector.runFixedCommand(target, resolved.credential, action, parameters, { operationTimeoutMs: 120_000 });
+      const result = await sshHostConnector.runFixedCommand(target, resolved.credential, action, parameters, { operationTimeoutMs: options.operationTimeoutMs ?? 120_000 });
       const output = sanitizeSshDiagnosticOutput(action, String(result?.value?.output ?? "")).slice(0, 8_000);
       const summary = buildHostDiagnosticSummary(action, output);
       runTx(() => {
@@ -327,6 +328,46 @@ export function createTerminalService({
     const plan = sshDiagnosticPlanForInput(input);
     if (!plan) return { ok: false, status: 422, error: "ssh_diagnostic_intent_unsupported" };
     return { ok: true, action: plan.action, command: plan.command, risk: "read_only", ...(Object.keys(plan.parameters ?? {}).length ? { parameters: plan.parameters } : {}) };
+  }
+
+  async function runSshHostDiagnosticRun(target, input, actor = null) {
+    const plan = hostDiagnosticRunPlanForInput(input);
+    if (!plan) return { ok: false, status: 422, error: "ssh_diagnostic_intent_unsupported" };
+    const steps = [];
+    for (const planned of plan.steps) {
+      const result = await runSshHostDiagnostic(target, planned.action, actor, planned.parameters, { operationTimeoutMs: 30_000 });
+      if (result.ok) {
+        steps.push({
+          action: planned.action,
+          parameters: planned.parameters,
+          status: "completed",
+          summary: result.summary,
+        });
+        continue;
+      }
+      if (["ssh_host_not_ready", "ssh_host_fingerprint_required", "ssh_agent_forwarding_forbidden", "ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid", "ssh_agent_unavailable", "ssh_host_fingerprint_changed", "ssh_connection_failed", "ssh_connection_refused", "ssh_host_unreachable", "ssh_host_unresolvable", "ssh_connection_timeout"].includes(result.error)) {
+        return result;
+      }
+      steps.push({ action: planned.action, parameters: planned.parameters, status: "unavailable", error: result.error });
+    }
+    const summary = buildHostDiagnosticRunSummary(steps);
+    const run = { version: 1, intent: plan.intent, risk: "read_only", steps, summary, primaryAction: primaryHostDiagnosticAction(steps) };
+    runTx(() => {
+      appendEvent({
+        invocationId: null,
+        type: "ssh.host_diagnostic_run.completed",
+        level: summary.severity === "critical" ? "error" : summary.severity === "warning" ? "warning" : "info",
+        message: "A confirmed multi-step read-only SSH host diagnostic completed.",
+        data: {
+          targetId: target.id,
+          intent: plan.intent,
+          requestedBy: actor?.userId ?? "usr_local",
+          summary,
+          steps: steps.map((step) => ({ action: step.action, status: step.status, ...(step.summary ? { summary: step.summary } : {}), ...(step.error ? { error: step.error } : {}) })),
+        },
+      });
+    });
+    return { ok: true, run };
   }
 
   function recordSshConnectionFailure(target, error, eventType) {
@@ -698,6 +739,7 @@ export function createTerminalService({
     recordTerminalEvidence,
     planSshHostDiagnostic,
     runSshHostDiagnostic,
+    runSshHostDiagnosticRun,
     updateSshTarget,
     verifySshHostConnection,
   };

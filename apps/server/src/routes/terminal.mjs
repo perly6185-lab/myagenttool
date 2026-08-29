@@ -34,6 +34,7 @@ export async function handleTerminalRoutes({
   recordTerminalEvidence,
   planSshHostDiagnostic,
   runSshHostDiagnostic,
+  runSshHostDiagnosticRun,
   requireBridgeCredential,
   summarizeText,
 }) {
@@ -376,6 +377,23 @@ export async function handleTerminalRoutes({
     const body = await readJson(req);
     const result = planSshHostDiagnostic(body.input);
     sendJson(res, result.ok ? 200 : result.status, result.ok ? { plan: result } : { error: result.error });
+    return true;
+  }
+
+  const hostAssistantRunMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/diagnose$/);
+  if (req.method === "POST" && hostAssistantRunMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostAssistantRunMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const body = await readJson(req);
+    if (body.confirmed !== true) {
+      sendJson(res, 400, { error: "ssh_diagnostic_confirmation_required" });
+      return true;
+    }
+    const result = await runSshHostDiagnosticRun(target, body.input, actor);
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { run: result.run } : { error: result.error });
     return true;
   }
 
