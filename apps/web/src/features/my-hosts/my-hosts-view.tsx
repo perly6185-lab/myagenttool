@@ -37,7 +37,7 @@ import { ApiError } from "@/lib/api/request";
 import { useUiStore } from "@/store/ui-store";
 import { MAX_HOST_DOWNLOAD_BYTES, MAX_HOST_UPLOAD_BYTES, hostApi } from "./host-api";
 import { HOST_DIAGNOSTIC_QUICK_ACTIONS, hostDiagnosticPlan, hostDiagnosticPlanCopy, hostDiagnosticSummaryCopy, parseHostLoginAuditEvents, suggestHostDiagnostic } from "./host-assistant";
-import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticResult, HostDiagnosticRun, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResult, HostFileTransfer, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
+import type { HostAuthMethod, HostDiagnosticAction, HostDiagnosticResult, HostDiagnosticRun, HostDiagnosticSummary, HostFileConflictPolicy, HostFileEntry, HostFileScope, HostFileScopePurpose, HostFileScopeSuggestion, HostFileSearchResult, HostFileTransfer, HostHealthIncident, HostHealthSnapshot, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
 
 type DetailTab = "overview" | "files" | "transfers" | "settings";
 
@@ -93,6 +93,7 @@ function errorText(error: unknown, zh: boolean) {
 }
 
 function hostStatus(host: SshHost, zh: boolean, professional: boolean) {
+  if (host.connectionStatus === "ready" && (host.healthSummary?.openIncidentCount ?? 0) > 0) return { tone: "warning" as const, label: professional ? (zh ? "健康检查需留意" : "Health needs attention") : (zh ? "需要留意" : "Needs attention") };
   if (host.connectionStatus === "ready") return { tone: "success" as const, label: professional ? (zh ? "连接正常" : "Ready") : (zh ? "状态正常" : "All good") };
   if (host.connectionStatus === "fingerprint_pending") return { tone: "warning" as const, label: professional ? (zh ? "等待确认指纹" : "Confirm fingerprint") : (zh ? "请确认设备" : "Confirm device") };
   if (host.connectionStatus === "error") {
@@ -215,6 +216,7 @@ function HostOverview({ host, scopeCount, zh, professional, onContinue }: { host
     </div>
     {!ready || !scopeCount ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4"><div className="min-w-0 flex-1"><p className="text-sm font-medium">{recovery.title}</p><p className="mt-1 text-xs text-muted-foreground">{recovery.detail}</p></div><Button onClick={() => onContinue(recovery.allowPrivate ? { allowPrivate: true } : undefined)}>{recovery.action}<ChevronRight /></Button></div> : null}
     {professional && host.lastConnectionError ? <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{errorText(new ApiError(host.lastConnectionError.code, host.lastConnectionError.code, 0), zh)}</p> : null}
+    <HostHealthPanel host={host} zh={zh} professional={professional} onRepairCredential={onContinue} />
     <HostAssistant host={host} zh={zh} professional={professional} onRepairCredential={onContinue} />
   </div>;
 }
@@ -239,6 +241,54 @@ function hostRecovery(host: SshHost, zh: boolean, professional: boolean) {
 
 function Summary({ icon: Icon, label, value }: { icon: typeof Server; label: string; value: string }) {
   return <div className="rounded-lg border p-3"><Icon className="size-5 text-primary" /><p className="mt-3 text-xs text-muted-foreground">{label}</p><p className="mt-1 text-sm font-medium">{value}</p></div>;
+}
+
+function HostHealthPanel({ host, zh, professional, onRepairCredential }: { host: SshHost; zh: boolean; professional: boolean; onRepairCredential: () => void }) {
+  const queryClient = useQueryClient();
+  const overview = useQuery({ queryKey: ["host-health", host.id], queryFn: () => hostApi.health(host.id) });
+  const check = useMutation({
+    mutationFn: () => hostApi.checkHealth(host.id),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["host-health", host.id] }); void queryClient.invalidateQueries({ queryKey: ["my-hosts"] }); },
+  });
+  const monitoring = useMutation({
+    mutationFn: (enabled: boolean) => hostApi.setHealthMonitoring(host.id, { enabled, cadence: overview.data?.policy.cadence ?? "daily" }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["host-health", host.id] }); void queryClient.invalidateQueries({ queryKey: ["my-hosts"] }); },
+  });
+  const snapshot = overview.data?.latestSnapshot ?? null;
+  const openCount = overview.data?.openIncidentCount ?? 0;
+  const copy = healthStatusCopy(snapshot, openCount, zh, professional);
+  const busy = check.isPending || monitoring.isPending;
+  const recent = overview.data?.incidents.slice(0, 3) ?? [];
+  return <div className="rounded-lg border bg-card p-4" data-testid="host-health-panel">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex min-w-0 flex-1 items-start gap-3">
+        <span className={`grid size-9 shrink-0 place-items-center rounded-lg ${snapshot?.status === "needs_attention" ? "bg-warning/10 text-warning" : "bg-primary/10 text-primary"}`}>{snapshot?.status === "needs_attention" ? <TriangleAlert className="size-5" /> : <ShieldCheck className="size-5" />}</span>
+        <div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{professional ? (zh ? "持续健康检查" : "Continuous health checks") : (zh ? "设备照看" : "Device care")}</p>{overview.data?.policy.enabled ? <StatusBadge tone="success">{zh ? "已开启" : "On"}</StatusBadge> : null}</div><p className="mt-1 text-sm font-medium">{copy.title}</p><p className="mt-1 text-xs text-muted-foreground">{copy.detail}</p></div>
+      </div>
+      <Button size="sm" variant="secondary" disabled={busy} onClick={() => check.mutate()}>{check.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}{zh ? "立即检查" : "Check now"}</Button>
+    </div>
+    {overview.error ? <p role="alert" className="mt-3 rounded-lg bg-warning/10 p-3 text-xs">{zh ? "暂时无法读取设备照看记录，你仍可以稍后重新检查。" : "Device care history is temporarily unavailable. You can check again later."}</p> : null}
+    {check.error ? <p role="alert" className="mt-3 rounded-lg bg-warning/10 p-3 text-xs">{zh ? "这次检查没有完成，设备没有被修改。请稍后重试。" : "This check did not finish. The device was not changed. Try again later."}</p> : null}
+    {monitoring.error ? <p role="alert" className="mt-3 rounded-lg bg-warning/10 p-3 text-xs">{zh ? "自动照看设置没有保存，现有设置保持不变。" : "Automatic care was not changed. The existing setting is still in effect."}</p> : null}
+    {snapshot?.status === "paused" && snapshot.reason === "sign_in_required" ? <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-warning/10 p-3"><p className="text-xs text-muted-foreground">{zh ? "此电脑需要先准备好保存的登录信息，设备本身未被判定为离线。" : "This computer needs the saved sign-in details. The device was not marked offline."}</p><Button size="sm" variant="ghost" onClick={onRepairCredential}><KeyRound />{zh ? "准备登录信息" : "Prepare sign-in"}</Button></div> : null}
+    {recent.length ? <div className="mt-3 divide-y rounded-lg border" data-testid="host-health-timeline">{recent.map((incident) => <HostHealthEvent key={incident.id} incident={incident} zh={zh} />)}</div> : snapshot ? <p className="mt-3 rounded-lg bg-muted p-3 text-xs text-muted-foreground">{zh ? "最近没有需要处理的健康事件。" : "No recent health events need attention."}</p> : null}
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-3"><p className="text-xs text-muted-foreground">{overview.data?.policy.enabled ? (zh ? `自动照看已开启 · ${overview.data.policy.cadence === "daily" ? "每天一次" : "每 6 小时一次"} · 只读检查` : `Automatic care is on · ${overview.data.policy.cadence === "daily" ? "daily" : "every 6 hours"} · read-only`) : (zh ? "开启后会定期只读检查；不会自动清理、重启或修改设备。" : "Turn this on for periodic read-only checks. It never cleans, restarts, or changes the device automatically.")}</p><Button size="sm" variant="ghost" disabled={busy || overview.isLoading} onClick={() => monitoring.mutate(!overview.data?.policy.enabled)}>{monitoring.isPending ? <Loader2 className="animate-spin" /> : null}{overview.data?.policy.enabled ? (zh ? "停止自动照看" : "Stop automatic care") : (zh ? "每天帮我看一下" : "Check daily for me")}</Button></div>
+  </div>;
+}
+
+function healthStatusCopy(snapshot: HostHealthSnapshot | null, openCount: number, zh: boolean, professional: boolean) {
+  if (!snapshot) return { title: zh ? "还没有健康记录" : "No health record yet", detail: zh ? "点“立即检查”，先了解这台设备现在是否正常。" : "Choose Check now to see how this device is doing." };
+  const checkedAt = new Date(snapshot.checkedAt).toLocaleString();
+  if (snapshot.status === "healthy") return { title: zh ? "最近检查正常" : "The latest check looks good", detail: professional ? `${checkedAt} · ${zh ? "固定只读检查均未发现明显问题。" : "The fixed read-only checks found no obvious issue."}` : `${checkedAt} · ${zh ? "没有发现需要你处理的问题。" : "Nothing needs your attention."}` };
+  if (snapshot.status === "paused") return { title: zh ? "自动照看暂时停下了" : "Device care is paused", detail: snapshot.reason === "sign_in_required" ? (zh ? "保存的登录信息在此电脑上尚未准备好。" : "The saved sign-in details are not ready on this computer.") : (zh ? "请先完成这台设备的连接设置。" : "Finish connecting this device first.") };
+  if (snapshot.status === "needs_attention") return { title: openCount ? (zh ? `${openCount} 个问题需要留意` : `${openCount} issue${openCount > 1 ? "s" : ""} need attention`) : (zh ? "发现一个情况，正在再次确认" : "A finding is waiting for confirmation"), detail: zh ? "系统会连续确认，避免一次网络波动就打扰你。" : "It is confirmed across checks so a brief fluctuation does not bother you." };
+  return { title: zh ? "这次没有检查完整" : "This check was incomplete", detail: zh ? "当前不会据此判断设备异常，也不会自动处理。" : "The device is not marked unhealthy from this result, and nothing is changed automatically." };
+}
+
+function HostHealthEvent({ incident, zh }: { incident: HostHealthIncident; zh: boolean }) {
+  const action = incident.action === "connection" ? (zh ? "设备连接" : "Device connection") : ordinaryDiagnosticLabel(incident.action, zh);
+  const recovered = incident.status === "recovered";
+  return <div className="flex flex-wrap items-center justify-between gap-2 p-3 text-xs"><span className="flex items-center gap-2">{recovered ? <CheckCircle2 className="size-4 text-primary" /> : <TriangleAlert className="size-4 text-warning" />}<span className="font-medium">{recovered ? (zh ? `${action}已恢复` : `${action} recovered`) : (zh ? `${action}需要留意` : `${action} needs attention`)}</span></span><time className="text-muted-foreground">{new Date(incident.recoveredAt ?? incident.lastSeenAt).toLocaleString()}</time></div>;
 }
 
 function HostAssistant({ host, zh, professional, onRepairCredential }: { host: SshHost; zh: boolean; professional: boolean; onRepairCredential: () => void }) {

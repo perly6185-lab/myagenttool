@@ -19,6 +19,7 @@ export interface SshHost {
   lastConnectionError: { code: string; at: string } | null;
   verifiedAt: string | null;
   revision: number;
+  healthSummary?: { status: HostHealthStatus | null; checkedAt: string | null; openIncidentCount: number; monitoringEnabled: boolean };
 }
 
 export type HostFileScopePurpose = "general_files" | "site_publish" | "backup" | "tls_certificate";
@@ -203,6 +204,57 @@ export interface HostRemediationPlan {
   lastRecheckedAt?: string | null;
   lastRecheckedHealth?: HostWebsiteHealthSummary | null;
   result: HostRemediationResult | null;
+}
+
+export type HostHealthStatus = "healthy" | "needs_attention" | "paused" | "unknown";
+
+export interface HostHealthPolicy {
+  enabled: boolean;
+  cadence: "every_6_hours" | "daily";
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastRunStatus: HostHealthStatus | null;
+  revision: number;
+}
+
+export interface HostHealthFinding {
+  key: string;
+  action: HostDiagnosticAction | "connection";
+  severity: "warning" | "critical";
+  finding: string;
+  impact: string;
+  nextAction: string;
+}
+
+export interface HostHealthSnapshot {
+  id: string;
+  version: 1;
+  source: "manual" | "scheduled";
+  status: HostHealthStatus;
+  reason: "sign_in_required" | "setup_required" | "device_unreachable" | "check_incomplete" | "findings_detected" | "no_obvious_issue";
+  severity: HostDiagnosticSeverity;
+  findings: HostHealthFinding[];
+  checkedActions: Array<HostDiagnosticAction | "connection">;
+  diagnosticRunId: string | null;
+  checkedAt: string;
+}
+
+export interface HostHealthIncident extends HostHealthFinding {
+  id: string;
+  status: "open" | "recovered";
+  occurrenceCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  openedAt: string | null;
+  recoveredAt: string | null;
+}
+
+export interface HostHealthOverview {
+  policy: HostHealthPolicy;
+  latestSnapshot: HostHealthSnapshot | null;
+  snapshots: HostHealthSnapshot[];
+  incidents: HostHealthIncident[];
+  openIncidentCount: number;
 }
 
 export type HostFileConflictPolicy = "deny" | "rename" | "replace";

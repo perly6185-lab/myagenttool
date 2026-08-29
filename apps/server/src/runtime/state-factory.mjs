@@ -359,6 +359,11 @@ export function createServerState({ defaultProjectPath, now }) {
     // Short-lived, revision-bound fixed remediation plans and their structured
     // outcomes. Commands, remote output, addresses, and credentials stay out.
     hostRemediationPlans: [],
+    // Opt-in read-only monitoring policy, bounded structured snapshots, and
+    // deduplicated issue lifecycles. Raw remote output and credentials stay out.
+    hostHealthPolicies: [],
+    hostHealthSnapshots: [],
+    hostHealthIncidents: [],
     // Transfer metadata and audit status only. Uploaded/downloaded bytes are
     // intentionally never stored in the control-plane snapshot.
     hostFileTransfers: [],
