@@ -716,8 +716,13 @@ export function WorkItemSummaryView({
   const startRequestActive = Boolean(startReceipt && startReceipt.status !== "cancelled");
   const startHandoffPending = Boolean(startReceipt && ["queued", "starting", "blocked", "paused"].includes(startReceipt.status));
   const executionContractReady = item.executionContractGate?.ready === true;
-  const reviewAcceptanceCriteria = item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria;
-  const reviewVerificationSop = item.reviewContract?.verificationSop ?? item.verificationSop ?? [];
+  const reviewContractCurrent = item.reviewContract?.supersededByGoalRevision !== true;
+  const reviewAcceptanceCriteria = reviewContractCurrent
+    ? item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria
+    : item.acceptanceCriteria;
+  const reviewVerificationSop = reviewContractCurrent
+    ? item.reviewContract?.verificationSop ?? item.verificationSop ?? []
+    : item.verificationSop ?? [];
   const executionContractDefined = Boolean(
     item.acceptanceCriteria.length
     && item.verificationSop?.length

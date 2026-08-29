@@ -874,10 +874,14 @@ describe("TaskView local work items", () => {
     await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
       expectedRevision: 1,
       title: "Edited issue",
+      refreshExecutionContract: true,
       requesterRelation: "customer",
       requesterName: "Alex Client",
       waitingOn: "ai",
     })));
+    const savedPayload = mocks.updateWorkItem.mock.calls.at(-1)?.[1];
+    expect(savedPayload).not.toHaveProperty("acceptanceCriteria");
+    expect(savedPayload).not.toHaveProperty("verificationSop");
     await waitFor(() => expect(screen.getByRole("tab", { name: "Process" }).getAttribute("aria-selected")).toBe("true"));
     fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
     await waitFor(() => expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_1"));

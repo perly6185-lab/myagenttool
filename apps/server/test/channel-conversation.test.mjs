@@ -2657,7 +2657,11 @@ test("a compound goal adjustment is previewed before changing only the named tas
   harness.state.workGoals.push({ id: goalId, conversationId: conversation.id, ownerTeamId: "team_local", projectId: null, title: "制作文章和图片", status: "active", taskIds: ["wi_article", "wi_image"] });
   conversation.activeWorkGoalId = goalId;
   harness.state.workItems.push(
-    { id: "wi_article", workGoalId: goalId, revision: 1, status: "ready", executionPolicy: "inherit", dependencyIds: [], body: "写文章" },
+    {
+      id: "wi_article", workGoalId: goalId, revision: 1, status: "ready", executionPolicy: "inherit", dependencyIds: [], body: "写文章",
+      acceptanceCriteria: ["文章不少于 800 字"], verificationSop: ["检查文章达到 800 字"],
+      acceptanceResults: [{ criterion: "文章不少于 800 字", status: "passed" }],
+    },
     { id: "wi_image", workGoalId: goalId, revision: 1, status: "ready", executionPolicy: "inherit", dependencyIds: [], body: "做图片" },
   );
   harness.state.channelTaskThreads.push(
@@ -2668,12 +2672,17 @@ test("a compound goal adjustment is previewed before changing only the named tas
   const preview = await harness.receive("文章改成1500字，图片不动").dispatched;
   assert.equal(preview.data.previewOnly, true);
   assert.match(preview.reply, /尚未执行/);
+  assert.match(preview.reply, /按新目标重建完成标准和检查步骤/);
   assert.match(preview.reply, /其余 1 个任务保持不变/);
   assert.equal(updates.length, 0);
 
   const applied = await harness.receive("确认调整").dispatched;
   assert.match(applied.reply, /调整已应用/);
   assert.deepEqual(updates.map((entry) => entry.workItemId), ["wi_article"]);
+  assert.equal(updates[0].changes.refreshExecutionContract, true);
+  assert.deepEqual(updates[0].changes.acceptanceCriteria, ["已完成用户确认的目标调整：文章改成1500字"]);
+  assert.deepEqual(updates[0].changes.verificationSop, ["对照用户确认的目标调整检查结果：文章改成1500字"]);
+  assert.ok(!updates[0].changes.acceptanceCriteria.includes("文章不少于 800 字"));
   assert.match(harness.state.workItems.find((item) => item.id === "wi_article").body, /1500字/);
   assert.equal(harness.state.workItems.find((item) => item.id === "wi_image").body, "做图片");
   assert.equal(conversation.pendingWorkGoalChange, null);

@@ -225,6 +225,9 @@ export function workGoalChangeReply(proposal, { revised = false } = {}) {
       ? `连带影响：${proposal.downstream.map((task) => `“${task.title}”`).slice(0, 5).join("、")}等 ${proposal.downstream.length} 个下游任务需要等待、重新确认或处理受阻。`
       : null,
     proposal?.unchanged?.length ? `其余 ${proposal.unchanged.length} 个任务保持不变。` : null,
+    material.some((change) => change.action === "modify")
+      ? "修改任务会按新目标重建完成标准和检查步骤；旧目标的通过记录不会沿用。"
+      : null,
     preserved.some((change) => change.alreadyAbsent) ? "你明确不要的步骤目前本来就没有，我不会补建。" : null,
     proposal?.unresolved?.length ? `暂未纳入：${proposal.unresolved.join("；")}。` : null,
     material.length

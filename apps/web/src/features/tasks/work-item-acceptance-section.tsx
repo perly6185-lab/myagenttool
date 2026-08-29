@@ -4,7 +4,10 @@ import type { LocalWorkItem } from "./task-view-types";
 
 export function WorkItemAcceptanceSection({ item }: { item: LocalWorkItem }) {
   const { t } = useAppTranslation();
-  const criteria = item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria;
+  const reviewContractSuperseded = item.reviewContract?.supersededByGoalRevision === true;
+  const criteria = reviewContractSuperseded
+    ? item.acceptanceCriteria
+    : item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria;
   if (!criteria.length && !item.verificationRecords?.length) return null;
   return (
     <section className="space-y-2 rounded-md border border-border p-3">
@@ -16,7 +19,7 @@ export function WorkItemAcceptanceSection({ item }: { item: LocalWorkItem }) {
       </div>
       <ul className="space-y-1">
         {criteria.map((criterion) => {
-          const result = item.reviewEvidence?.find((candidate) => candidate.criterion === criterion)
+          const result = (!reviewContractSuperseded ? item.reviewEvidence : [])?.find((candidate) => candidate.criterion === criterion)
             ?? item.acceptanceResults?.find((candidate) => candidate.criterion === criterion);
           return (
             <li key={criterion} className="flex items-start justify-between gap-2 text-xs">
@@ -28,7 +31,7 @@ export function WorkItemAcceptanceSection({ item }: { item: LocalWorkItem }) {
           );
         })}
       </ul>
-      {item.reviewContract ? (
+      {!reviewContractSuperseded && item.reviewContract ? (
         <p className="font-mono text-[10px] text-muted-foreground">
           {item.reviewContract.schemaVersion} · {item.reviewContract.digest?.slice(0, 12) ?? item.reviewContract.id}
         </p>

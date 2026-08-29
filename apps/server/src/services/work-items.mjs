@@ -1470,6 +1470,9 @@ export function createWorkItemService({
       .find(Boolean) ?? null;
     const contract = latestRun?.executionContract ?? item.executionContractSnapshot ?? null;
     if (!contract) return null;
+    const supersededByGoalRevision = Number.isInteger(item.executionContractRefreshRevision)
+      && (!Number.isInteger(contract.workItemRevision)
+        || contract.workItemRevision < item.executionContractRefreshRevision);
     return {
       schemaVersion: contract.schemaVersion ?? "execution-contract-v2",
       id: contract.id,
@@ -1492,6 +1495,7 @@ export function createWorkItemService({
       confirmedAt: contract.confirmedAt ?? null,
       digest: contract.digest ?? null,
       readOnly: true,
+      supersededByGoalRevision,
     };
   }
 
@@ -3024,7 +3028,9 @@ export function createWorkItemService({
     const type = /bug|fix|error|fail|崩溃|错误|修复/.test(lower) ? "bug"
       : /initiative|epic|项目|计划/.test(lower) ? "initiative"
         : /feature|新增|支持|能力/.test(lower) ? "feature" : "task";
-    const extractedCriteria = extractAcceptanceCriteriaFromBody(body);
+    const extractedCriteria = input.ignoreBodyAcceptanceCriteria === true
+      ? []
+      : extractAcceptanceCriteriaFromBody(body);
     let materialDraft = null;
     const materialDraftId = String(input.materialDraftId ?? "").trim();
     if (materialDraftId) {
@@ -5637,9 +5643,12 @@ export function createWorkItemService({
     return { ok: true, status: 201, body: { workItem: workItemView(workItem, actor) } };
   }
 
-  function updateWorkItem({ workItemId, expectedRevision, ...changes } = {}, actor = null) {
+  function updateWorkItem({ workItemId, expectedRevision, refreshExecutionContract = false, ...changes } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
+    if (typeof refreshExecutionContract !== "boolean") {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_execution_contract_refresh" } };
+    }
     if (item.deliveryOperation?.status === "in_progress"
       && Date.parse(item.deliveryOperation.expiresAt) > Date.parse(now())) {
       return {
@@ -5682,6 +5691,11 @@ export function createWorkItemService({
     }
     const validated = validateDraft(changes, { partial: true });
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    const goalChanged = (Object.hasOwn(validated.value, "title") && validated.value.title !== item.title)
+      || (Object.hasOwn(validated.value, "body") && validated.value.body !== item.body);
+    if (refreshExecutionContract && !goalChanged) {
+      return { ok: false, status: 400, body: { error: "work_item_execution_contract_refresh_requires_goal_change" } };
+    }
     const followUpContextChanged = WORK_ITEM_FOLLOW_UP_MUTABLE_FIELDS.some((field) => Object.hasOwn(changes, field));
     if (followUpContextChanged) {
       const followUp = resolveFollowUpContext({
@@ -5702,6 +5716,46 @@ export function createWorkItemService({
       ...outputMetricsOptions(item.projectId),
     });
     const timestamp = now();
+    if (refreshExecutionContract) {
+      const assisted = suggestWorkItemDraft({
+        projectId: validated.value.projectId ?? item.projectId,
+        title: validated.value.title ?? item.title,
+        body: validated.value.body ?? item.body,
+        ignoreBodyAcceptanceCriteria: true,
+      }, actor);
+      if (!assisted.ok) return assisted;
+      const draft = assisted.body?.draft ?? {};
+      const suppliedCriteria = Object.hasOwn(changes, "acceptanceCriteria")
+        ? validated.value.acceptanceCriteria
+        : null;
+      const suppliedVerification = Object.hasOwn(changes, "verificationSop")
+        ? validated.value.verificationSop
+        : null;
+      const refreshedCriteria = suppliedCriteria?.length
+        ? suppliedCriteria
+        : strings(draft.acceptanceCriteria ?? [], { limit: 100, maxLength: 2_000 });
+      const refreshedVerification = suppliedVerification?.length
+        ? suppliedVerification
+        : strings(draft.verificationSop ?? [], { limit: 30, maxLength: 2_000 });
+      if (!refreshedCriteria?.length || !refreshedVerification?.length) {
+        return { ok: false, status: 409, body: { error: "work_item_execution_contract_assistance_incomplete" } };
+      }
+      validated.value.acceptanceCriteria = refreshedCriteria;
+      validated.value.verificationSop = refreshedVerification;
+      validated.value.executionContractSource = suppliedCriteria?.length ? "manual" : "assisted";
+      validated.value.executionContractConfirmedAt = timestamp;
+      validated.value.executionContractRefreshedAt = timestamp;
+      validated.value.executionContractRefreshRevision = item.revision + 1;
+      if (["review", "done"].includes(validated.value.status ?? item.status)) {
+        validated.value.status = "ready";
+      }
+      // Goal revisions start a fresh active evidence set. The update activity
+      // below retains the previous values for audit, but they cannot pass the
+      // new contract merely because the wording happens to overlap.
+      validated.value.acceptanceResults = [];
+      validated.value.verificationRecords = [];
+      validated.value.resultVerification = null;
+    }
     const previousTemplateBinding = item.myTemplateBinding ?? null;
     const templateResultConfirmed = validated.value.myTemplateBinding?.userConfirmedResult === true;
     if (validated.value.myTemplateBinding) {
@@ -5760,10 +5814,11 @@ export function createWorkItemService({
           createdAt: timestamp,
         }
       : null;
-    const contractInputChanged = Object.hasOwn(changes, "acceptanceCriteria")
+    const contractInputChanged = refreshExecutionContract
+      || Object.hasOwn(changes, "acceptanceCriteria")
       || Object.hasOwn(changes, "verificationSop")
       || (Object.hasOwn(changes, "body") && !(item.acceptanceCriteria ?? []).length);
-    if (contractInputChanged) {
+    if (contractInputChanged && !refreshExecutionContract) {
       let nextCriteria = validated.value.acceptanceCriteria ?? item.acceptanceCriteria ?? [];
       if (!Object.hasOwn(changes, "acceptanceCriteria") && !nextCriteria.length && Object.hasOwn(changes, "body")) {
         nextCriteria = extractAcceptanceCriteriaFromBody(validated.value.body);
@@ -5895,6 +5950,7 @@ export function createWorkItemService({
           key, { from: previous[key], to: value },
         ])),
         ...(followUpContextChanged ? { followUpContextChanged: true } : {}),
+        ...(refreshExecutionContract ? { executionContractRefreshed: true } : {}),
       });
       if (templateCorrection) {
         state.myTemplateRoutingFeedback.unshift(templateCorrection);
@@ -5932,7 +5988,14 @@ export function createWorkItemService({
     });
     if (validated.value.status === "done") propagateCompletedGoalTask(item, actor);
     notifyWorkItemChanged(item, actor, "updated");
-    return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        workItem: workItemView(item, actor),
+        ...(refreshExecutionContract ? { executionContractRefreshed: true } : {}),
+      },
+    };
   }
 
   function recordWorkItemProgress({

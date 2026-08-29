@@ -2611,6 +2611,89 @@ test("updates are revision-gated and validate structured fields", () => {
   assert.deepEqual(updated.body.workItem.labels, ["local"]);
 });
 
+test("refreshing a changed task goal replaces stale acceptance and invalidates prior passes", () => {
+  const { service, state } = harness();
+  let item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Prepare a short release note",
+    body: "Summarize the bug fix in 200 words.",
+    acceptanceCriteria: ["The release note is no longer than 200 words"],
+    verificationSop: ["Count the words in the release note"],
+  }, ACTOR_A).body.workItem;
+  item = service.recordVerification({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    kind: "review",
+    status: "passed",
+    summary: "The old 200-word goal passed.",
+    acceptanceResults: [{
+      criterion: "The release note is no longer than 200 words",
+      status: "passed",
+      note: "188 words",
+    }],
+  }, ACTOR_A).body.workItem;
+  assert.equal(item.completionGate.ready, true);
+  const stored = state.workItems.find((candidate) => candidate.id === item.id);
+  stored.status = "review";
+  stored.executionContractSnapshot = {
+    schemaVersion: "execution-contract-v2",
+    id: "contract_old_goal",
+    workItemId: item.id,
+    workItemRevision: item.revision,
+    autoRunId: "run_old_goal",
+    acceptanceCriteria: ["The release note is no longer than 200 words"],
+    verificationSop: ["Count the words in the release note"],
+    confirmedAt: "2026-07-24T00:00:00.000Z",
+    digest: "digest_old_goal",
+  };
+
+  const refreshed = service.updateWorkItem({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    body: "Write a detailed migration guide with examples.",
+    refreshExecutionContract: true,
+  }, ACTOR_A);
+
+  assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
+  const changed = refreshed.body.workItem;
+  assert.equal(changed.executionContractSource, "assisted");
+  assert.equal(changed.status, "ready");
+  assert.ok(changed.acceptanceCriteria.length >= 1);
+  assert.ok(changed.verificationSop.length >= 1);
+  assert.ok(changed.acceptanceCriteria.every((criterion) => !criterion.includes("200 words")));
+  assert.ok(changed.verificationSop.every((step) => !step.includes("Count the words")));
+  assert.deepEqual(changed.acceptanceResults, []);
+  assert.equal(changed.completionGate.ready, false);
+  assert.equal(changed.completionGate.verificationRequired, true);
+  assert.equal(changed.reviewContract.supersededByGoalRevision, true);
+  assert.equal(refreshed.body.executionContractRefreshed, true);
+});
+
+test("a goal refresh keeps explicit new acceptance while regenerating an omitted verification plan", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Prepare release notes",
+    body: "Write a short release note.",
+    acceptanceCriteria: ["The old short note exists"],
+    verificationSop: ["Review the old short note"],
+  }, ACTOR_A).body.workItem;
+
+  const refreshed = service.updateWorkItem({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    body: "Write a detailed migration guide with runnable examples.",
+    refreshExecutionContract: true,
+    acceptanceCriteria: ["The migration guide contains two runnable examples"],
+  }, ACTOR_A);
+
+  assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
+  assert.deepEqual(refreshed.body.workItem.acceptanceCriteria, ["The migration guide contains two runnable examples"]);
+  assert.ok(refreshed.body.workItem.verificationSop.length >= 1);
+  assert.ok(refreshed.body.workItem.verificationSop.every((step) => !step.includes("old short note")));
+  assert.equal(refreshed.body.workItem.executionContractSource, "manual");
+});
+
 test("assigning an unowned work item to self is revision-gated and cannot steal assigned work", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "Available", assigneeIds: [] }, ACTOR_A).body.workItem;

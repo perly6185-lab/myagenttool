@@ -4612,6 +4612,9 @@ function sharedContentContinuation(text, conversation) {
     const reopen = ["succeeded", "failed", "cancelled", "needs_attention"].includes(thread.status);
     const changes = {
       body: revisedDescription,
+      refreshExecutionContract: true,
+      acceptanceCriteria: [`已完成用户确认的目标调整：${change.request}`],
+      verificationSop: [`对照用户确认的目标调整检查结果：${change.request}`],
       ...(reopen ? { status: "ready", executionPolicy: "inherit", outputAssets: [] } : {}),
     };
     const updated = updateBoundWorkItem(thread, changes, actor);

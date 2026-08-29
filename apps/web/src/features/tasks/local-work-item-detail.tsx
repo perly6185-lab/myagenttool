@@ -163,6 +163,9 @@ export function LocalWorkItemDetail({
     || assigneeIds.join("\u0000") !== item.assigneeIds.join("\u0000")
     || !followUpDraftEquals(followUp, followUpDraftFromWorkItem(item))
   );
+  const goalChanged = item != null && (title !== item.title || body !== item.body);
+  const acceptanceChanged = item != null && acceptance !== item.acceptanceCriteria.join("\n");
+  const verificationSopChanged = item != null && verificationSop !== (item.verificationSop ?? []).join("\n");
   const dirty = taskDirty || reportDirty;
   const syncDraft = (next: LocalWorkItem) => {
     setItem(next);
@@ -299,6 +302,15 @@ export function LocalWorkItemDetail({
 
   const save = (afterSave?: () => void) => {
     if (validateFollowUpDraft(followUp)) return;
+    const acceptanceCriteria = acceptance.split("\n").map((value) => value.trim()).filter(Boolean);
+    const verificationSteps = verificationSop.split("\n").map((value) => value.trim()).filter(Boolean);
+    const executionContractChanges = goalChanged
+      ? {
+          refreshExecutionContract: true,
+          ...(acceptanceChanged ? { acceptanceCriteria } : {}),
+          ...(verificationSopChanged ? { verificationSop: verificationSteps } : {}),
+        }
+      : { acceptanceCriteria, verificationSop: verificationSteps };
     void execute(() => api.updateWorkItem(item.id, {
       expectedRevision: item.revision,
       title,
@@ -307,8 +319,7 @@ export function LocalWorkItemDetail({
       status,
       priority,
       labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
-      acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
-      verificationSop: verificationSop.split("\n").map((value) => value.trim()).filter(Boolean),
+      ...executionContractChanges,
       assigneeIds,
       plannedDate: plannedDate || null,
       dueDate: dueDate || null,
@@ -318,7 +329,11 @@ export function LocalWorkItemDetail({
       ...followUpPayload(followUp),
     })).then((ok) => {
       if (!ok) return;
-      setNotice(`${t("taskLocal.save")} ✓`);
+      setNotice(goalChanged
+        ? (i18n.language.startsWith("zh")
+            ? "任务目标已保存，完成标准和检查步骤已按新目标更新。"
+            : "Task goal saved. Completion criteria and checks were refreshed for the new goal.")
+        : `${t("taskLocal.save")} ✓`);
       onChanged();
       void load();
       afterSave?.();
@@ -987,6 +1002,11 @@ export function LocalWorkItemDetail({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} />
       </Field>
+      {goalChanged ? <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-100" role="status">
+        {i18n.language.startsWith("zh")
+          ? "任务目标已修改。保存时会按新目标重建完成标准和检查步骤；你在这里手动修改的内容会优先保留。"
+          : "The task goal changed. Saving will rebuild completion criteria and checks for the new goal; edits you make here take precedence."}
+      </p> : null}
       <Field label={verificationSopLabel}>
         <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={verificationSop} onChange={(event) => setVerificationSop(event.target.value)} />
       </Field>

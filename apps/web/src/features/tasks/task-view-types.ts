@@ -175,6 +175,7 @@ export type LocalWorkItem = {
     confirmedAt: string | null;
     digest: string | null;
     readOnly: true;
+    supersededByGoalRevision?: boolean;
   } | null;
   reviewEvidence?: {
     criterion: string;
