@@ -49,6 +49,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 describe("ChannelsView task operations", () => {
   it("defaults to a simple view and reveals diagnostics only on demand", async () => {
     render(<ChannelsView />);
+    expect(screen.getByText("个人模式可确认普通授权")).toBeTruthy();
     expect(screen.getByTestId("channel-outbound-delay-fallback").textContent).toContain("微信回复可能延迟");
     expect(screen.getByTestId("channel-outbound-delay-fallback").textContent).toContain("收消息和任务执行仍然正常");
     expect(screen.getByRole("button", { name: "查看本地结果" })).toBeTruthy();

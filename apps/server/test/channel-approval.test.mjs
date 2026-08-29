@@ -17,7 +17,7 @@ import { pendingDecisions } from "../src/read-models/pending-decisions.mjs";
 
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeHarness({ approveApplies = true, allowSelfApprove = true, riskLevel = "medium" } = {}) {
+function makeHarness({ approveApplies = true, allowSelfApprove = true, riskLevel = "medium", operationMode = "personal" } = {}) {
   let clockMs = 1_800_000_000_000;
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => new Date(clockMs).toISOString() });
   const now = () => new Date(clockMs).toISOString();
@@ -77,6 +77,7 @@ function makeHarness({ approveApplies = true, allowSelfApprove = true, riskLevel
 
   const { body } = channelService.registerChannel({ provider: "wecom", name: "ops" }, owner);
   const channelId = body.channel.id;
+  state.channels.find((channel) => channel.id === channelId).operationMode = operationMode;
   channelService.enableChannel({ channelId, approvalToken: "ok" }, owner);
   channelService.setChannelAllowlist({ channelId, capabilities: ["deploy.app"], approvalToken: "ok" }, owner);
   if (allowSelfApprove) channelService.setChannelApprovalPolicy({ channelId, allowSelfApprove: true, approvalToken: "ok" }, owner);
@@ -93,7 +94,7 @@ function makeHarness({ approveApplies = true, allowSelfApprove = true, riskLevel
 }
 
 test("by default (no opt-in) in-channel /approve is refused → the run must be approved in the console", () => {
-  const h = makeHarness({ allowSelfApprove: false });
+  const h = makeHarness({ allowSelfApprove: false, operationMode: "team" });
   const { dispatched } = h.receive("/run deploy.app prod");
   const invocation = h.state.invocations.at(-1);
   const approved = h.receive(`/approve ${invocation.id}`).dispatched;
@@ -101,6 +102,41 @@ test("by default (no opt-in) in-channel /approve is refused → the run must be 
   assert.match(approved.reply, /separate operator|console/i);
   assert.equal(h.approveCalls.length, 0, "no approval was applied");
   assert.equal(invocation.status, "waiting_for_local_approval", "still parked");
+});
+
+test("a personal channel can approve its current ordinary operation without a separate policy opt-in", () => {
+  const h = makeHarness({ allowSelfApprove: false, operationMode: "personal" });
+  h.receive("/run deploy.app prod");
+  const invocation = h.state.invocations.at(-1);
+
+  const approved = h.receive("为我批准").dispatched;
+
+  assert.equal(approved.status, "dispatched");
+  assert.match(approved.reply, /已批准.*任务已经继续/);
+  assert.equal(invocation.status, "queued");
+  assert.equal(h.approveCalls.length, 1);
+});
+
+test("a legacy channel without operationMode keeps the personal inline-approval default", () => {
+  const h = makeHarness({ allowSelfApprove: false });
+  delete h.state.channels.find((channel) => channel.id === h.channelId).operationMode;
+  h.receive("/run deploy.app prod");
+
+  const approved = h.receive("为我批准").dispatched;
+
+  assert.match(approved.reply, /任务已经继续/);
+  assert.equal(h.state.invocations.at(-1).status, "queued");
+});
+
+test("an explicit continue phrase approves the only current ordinary operation", () => {
+  const h = makeHarness();
+  h.receive("/run deploy.app prod");
+  const invocation = h.state.invocations.at(-1);
+
+  const approved = h.receive("同意继续").dispatched;
+
+  assert.match(approved.reply, /任务已经继续/);
+  assert.equal(invocation.status, "queued");
 });
 
 test("a write /run parks for approval and gives ordinary natural-language actions", () => {
@@ -148,6 +184,21 @@ test("multiple pending approvals require a natural-language ordinal selection", 
   assert.match(approved.reply, /授权成功/);
   assert.equal(first.status, "waiting_for_local_approval");
   assert.equal(second.status, "queued");
+});
+
+test("current-task approval selects the focused task while generic approval remains ambiguous", () => {
+  const h = makeHarness();
+  h.receive("/run deploy.app first");
+  const first = h.state.invocations.at(-1);
+  h.receive("/run deploy.app second");
+  const second = h.state.invocations.at(-1);
+
+  const approved = h.receive("批准当前任务").dispatched;
+
+  assert.match(approved.reply, /任务已经继续/);
+  assert.equal(first.status, "waiting_for_local_approval");
+  assert.equal(second.status, "queued");
+  assert.equal(h.approveCalls.length, 1);
 });
 
 test("natural-language denial is always allowed and stops the pending operation", () => {

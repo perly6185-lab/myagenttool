@@ -1728,8 +1728,10 @@ export interface ChannelOperations {
   taskDailyLimit?: number;
   taskDayDate?: string | null;
   taskDayCount?: number;
-  /** Whether in-channel /approve is allowed (default off — approve in the console). */
+  /** Team-mode opt-in for requester approval; personal mode permits ordinary exact approvals. */
   allowSelfApprove?: boolean;
+  /** Effective ordinary in-channel approval policy after operation-mode defaults. */
+  inlineApprovalAllowed?: boolean;
   counts: {
     identities: number;
     conversations: number;

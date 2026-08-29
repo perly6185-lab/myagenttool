@@ -901,7 +901,7 @@ function sharedContentContinuation(text, conversation) {
     const approvalInvocation = thread?.invocationId ? findInvocation(thread.invocationId) : null;
     const approval = approvalInvocation ? pendingApprovalFor(approvalInvocation) : null;
     const approvalChannel = thread?.channelId ? findChannel(thread.channelId) : null;
-    const approvalAction = approval && approvalChannel?.allowSelfApprove && !approvalRequiresDesktop(approval)
+    const approvalAction = approval && channelAllowsInlineApproval(approvalChannel) && !approvalRequiresDesktop(approval)
       ? "回复“确认授权”继续，或回复“拒绝授权”停止"
       : "请在桌面端审批中心批准，批准后会自动继续";
     return ({
@@ -999,13 +999,19 @@ function sharedContentContinuation(text, conversation) {
     const value = normalizedText(text).replace(/[!！。.,，?？~～]+$/g, "");
     const approve = /^(?:确认|同意|批准|允许)(?:这项|这个|当前)?(?:授权|审批)(?:执行|继续)?$/.test(value);
     const reject = /^(?:拒绝|不同意|不批准|取消)(?:这项|这个|当前)?(?:授权|审批)$/.test(value);
+    const currentApprove = /^(?:(?:请)?(?:为我|帮我)(?:批准|同意|确认)(?:当前|这个|这项)?(?:任务|操作|授权|审批)?(?:并)?(?:继续执行|继续)?|(?:批准|同意|确认|允许)(?:当前|这个|这项)(?:任务|操作)(?:并)?(?:继续执行|继续)?|(?:同意|批准)(?:并)?继续(?:执行)?)$/.test(value);
+    const currentReject = /^(?:(?:请)?(?:为我|帮我)(?:拒绝|不批准)(?:当前|这个|这项)?(?:操作|授权|审批)|(?:拒绝|不批准)(?:当前|这个|这项)(?:操作|授权|审批))$/.test(value);
     const selected = value.match(/^(确认|同意|批准|允许|拒绝|不同意|不批准|取消)\s*第\s*([0-9]+|[一二三四五六七八九十])\s*(?:个|项|条)?(?:授权|审批)?$/);
-    if (!approve && !reject && !selected) return null;
+    if (!approve && !reject && !currentApprove && !currentReject && !selected) return null;
     const numerals = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
     const rawIndex = selected?.[2] ?? null;
     const index = rawIndex == null ? null : (Number.isFinite(Number(rawIndex)) ? Number(rawIndex) : numerals[rawIndex]);
-    const action = reject || ["拒绝", "不同意", "不批准", "取消"].includes(selected?.[1]) ? "deny" : "approve";
-    return { action, index: Number.isInteger(index) && index > 0 ? index : null };
+    const action = reject || currentReject || ["拒绝", "不同意", "不批准", "取消"].includes(selected?.[1]) ? "deny" : "approve";
+    return {
+      action,
+      index: Number.isInteger(index) && index > 0 ? index : null,
+      scope: currentApprove || currentReject ? "current_task" : "conversation",
+    };
   }
 
   function isGreeting(text) {
@@ -5223,8 +5229,8 @@ function sharedContentContinuation(text, conversation) {
         && (thread.status === "awaiting_confirmation"
           || (thread.status === "waiting_approval"
             && ["channel_confirmation", "data_sources", "data_review", "data_operation", "data_mutation", "execution_strategy", "execution_input", "publication_review", "artifact_review", "delivery"].includes(thread.waitingFor))));
-      if (!hasBusinessConfirmation && pendingApprovalsForConversation(conversation).length > 0) {
-        authorization = { action: "approve", index: null };
+      if (!hasBusinessConfirmation && pendingApprovalActionsForConversation(conversation).length > 0) {
+        authorization = { action: "approve", index: null, scope: "conversation" };
       }
     }
     if (authorization) return handleNaturalApproval(event, channel, conversation, actor, authorization);
@@ -6931,6 +6937,10 @@ function sharedContentContinuation(text, conversation) {
     return ["high", "critical"].includes(String(approval?.riskLevel ?? "").toLowerCase());
   }
 
+  function channelAllowsInlineApproval(channel) {
+    return Boolean(channel) && (channel.operationMode !== "team" || channel.allowSelfApprove === true);
+  }
+
   function approvalSummary(approval, invocation) {
     const summary = approval?.summary;
     const raw = typeof summary === "string"
@@ -6954,13 +6964,53 @@ function sharedContentContinuation(text, conversation) {
       .sort((left, right) => String(left.approval.createdAt ?? "").localeCompare(String(right.approval.createdAt ?? "")));
   }
 
+  function pendingTaskRoutesForConversation(conversation) {
+    return (state.channelTaskThreads ?? [])
+      .filter((thread) => thread.conversationId === conversation?.id
+        && thread.status === "waiting_approval"
+        && thread.waitingFor === "approval")
+      .map((thread) => ({
+        thread,
+        request: (state.channelTaskRequests ?? []).find((request) => request.status === "pending"
+          && (request.id === thread.channelTaskRequestId
+            || (thread.workItemId && request.workItemId === thread.workItemId)
+            || request.threadId === thread.id)) ?? null,
+      }))
+      .filter(({ request }) => Boolean(request))
+      .sort((left, right) => String(left.request.createdAt ?? left.thread.createdAt ?? "")
+        .localeCompare(String(right.request.createdAt ?? right.thread.createdAt ?? "")));
+  }
+
+  function pendingApprovalActionsForConversation(conversation) {
+    const invocationActions = pendingApprovalsForConversation(conversation).map(({ approval, invocation }) => {
+      const context = executionContext({ invocation });
+      return { kind: "invocation", approval, invocation, thread: context.thread ?? null };
+    });
+    const taskActions = pendingTaskRoutesForConversation(conversation).map(({ request, thread }) => ({
+      kind: "task_route",
+      request,
+      thread,
+    }));
+    return [...invocationActions, ...taskActions].sort((left, right) => {
+      const leftAt = left.approval?.createdAt ?? left.request?.createdAt ?? left.thread?.createdAt ?? "";
+      const rightAt = right.approval?.createdAt ?? right.request?.createdAt ?? right.thread?.createdAt ?? "";
+      return String(leftAt).localeCompare(String(rightAt));
+    });
+  }
+
+  function approvalActionSummary(row) {
+    return row.kind === "task_route"
+      ? String(row.thread?.summary ?? "让当前任务进入执行队列").replace(/\s+/g, " ").trim().slice(0, 500)
+      : approvalSummary(row.approval, row.invocation);
+  }
+
   function approvalPrompt({ approval, invocation, channel, includeHeading = true } = {}) {
     const lines = [];
     if (includeHeading) lines.push("任务执行到需要授权的步骤：");
     lines.push(approvalSummary(approval, invocation));
     if (approvalRequiresDesktop(approval)) {
       lines.push("这属于高风险操作，请打开 MyAgentTool → 审批中心，查看影响后决定；微信里不能直接批准。回复“拒绝授权”可以停止这一步。");
-    } else if (!channel?.allowSelfApprove) {
+    } else if (!channelAllowsInlineApproval(channel)) {
       lines.push("当前未开启微信内本人授权，请打开 MyAgentTool → 审批中心批准；批准后任务会自动继续。回复“拒绝授权”可以停止这一步。");
     } else {
       lines.push("回复“确认授权”继续，回复“拒绝授权”停止。授权确认 10 分钟内有效。");
@@ -6971,13 +7021,17 @@ function sharedContentContinuation(text, conversation) {
   function approvalSelectionReply(rows, channel) {
     return [
       "当前有多项操作等待授权，请选择：",
-      ...rows.map(({ approval, invocation }, index) => `${index + 1}. ${approvalSummary(approval, invocation)}${approvalRequiresDesktop(approval) ? "（高风险，需桌面端批准）" : !channel?.allowSelfApprove ? "（需桌面端批准）" : ""}`),
+      ...rows.map((row, index) => `${index + 1}. ${approvalActionSummary(row)}${row.kind === "invocation" && approvalRequiresDesktop(row.approval) ? "（高风险，需桌面端批准）" : row.kind === "invocation" && !channelAllowsInlineApproval(channel) ? "（需桌面端批准）" : ""}`),
       "回复“确认第 1 项授权”或“拒绝第 1 项授权”。高风险操作仍需在桌面端批准。",
     ].join("\n");
   }
 
   function handleNaturalApproval(event, channel, conversation, actor, control) {
-    const rows = pendingApprovalsForConversation(conversation);
+    const allRows = pendingApprovalActionsForConversation(conversation);
+    const focusedRows = control.scope === "current_task" && conversation.activeTaskThreadId
+      ? allRows.filter((row) => row.thread?.id === conversation.activeTaskThreadId)
+      : [];
+    const rows = focusedRows.length ? focusedRows : allRows;
     if (!rows.length) {
       const deliveryThread = (state.channelTaskThreads ?? []).find((thread) =>
         thread.conversationId === conversation.id
@@ -6987,7 +7041,7 @@ function sharedContentContinuation(text, conversation) {
         status: "dispatched",
         reply: deliveryThread
           ? "当前等待的是把已复核结果应用到原项目，不是普通运行授权。请在桌面端查看变更并确认应用；微信中不能直接应用。"
-          : "当前没有等待授权的操作。回复“进度”可以查看任务状态。",
+          : "当前没有等待审批的操作；如果任务已经在执行，不需要重复批准。回复“进度”可以查看任务状态。",
         data: { authorization: control.action, reason: deliveryThread ? "delivery_confirmation_requires_console" : "no_pending_approval", taskThreadId: deliveryThread?.id ?? null },
       });
     }
@@ -7006,6 +7060,11 @@ function sharedContentContinuation(text, conversation) {
         reply: `${approvalSelectionReply(rows, channel)}\n没有找到第 ${control.index} 项，请重新选择。`,
         data: { authorization: control.action, reason: "approval_selection_not_found", pendingCount: rows.length },
       });
+    }
+    if (selected.kind === "task_route") {
+      return control.action === "deny"
+        ? cancelChannelRiskTask(event, selected.thread, actor)
+        : confirmChannelRiskTask(event, conversation, selected.thread, actor);
     }
     const { approval, invocation } = selected;
     const context = executionContext({ invocation });
@@ -7039,7 +7098,7 @@ function sharedContentContinuation(text, conversation) {
         reply: approvalPrompt({ approval, invocation, channel }),
       });
     }
-    if (!channel.allowSelfApprove) {
+    if (!channelAllowsInlineApproval(channel)) {
       return refuseDispatch(event, {
         code: "action_not_permitted",
         summary: `Natural Channel approval refused: self-approval disabled for ${invocation.id}.`,
@@ -7073,7 +7132,7 @@ function sharedContentContinuation(text, conversation) {
     syncTaskThreadFromInvocation(invocation, { notify: false, reason: "channel_authorization_approved" });
     return settle(event, {
       status: "dispatched",
-      reply: "授权成功，任务已经继续执行；有新进展或完成后我会通知你。",
+      reply: `授权成功，已批准“${approvalSummary(approval, invocation)}”，任务已经继续执行；有新进展或完成后我会通知你。`,
       invocationId: invocation.id,
       data: { authorization: "approved", approvalId: approval.id, taskThreadId: context.thread?.id ?? null },
     });
@@ -7296,7 +7355,7 @@ function sharedContentContinuation(text, conversation) {
         // local-approval gate. Unless the owner explicitly opted this channel into
         // self-approval, route the decision to the console (a separate operator),
         // preserving the human gate's separation.
-        if (!channel.allowSelfApprove) {
+        if (!channelAllowsInlineApproval(channel)) {
           return refuseDispatch(event, {
             code: "action_not_permitted",
             summary: `Channel /approve refused: self-approval disabled for ${invocation.id}.`,

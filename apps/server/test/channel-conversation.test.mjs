@@ -4357,6 +4357,35 @@ test("/task creates a local work item in the bound project without exposing its 
   assert.deepEqual(conv.taskIssues.map((t) => t.number), [42]);
 });
 
+test("a current-task approval routes the captured task and replay does not route it twice", async () => {
+  const routeCalls = [];
+  const harness = makeHarness({
+    operationMode: "team",
+    createChannelTaskIssue: async () => ({ ok: true, number: 43, localRef: "LOCAL-43", workItemId: "wi_43", autoRoute: false }),
+    routeChannelTask: async (requestId, actor, options) => {
+      routeCalls.push({ requestId, actor, options });
+      return { status: 200, body: { workItemId: "wi_43", autoRunId: "aur_43", invocationId: "inv_43" } };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  const created = await harness.receive("/task prepare the release notes").dispatched;
+  const thread = harness.state.channelTaskThreads.at(-1);
+  assert.equal(created.status, "dispatched");
+  assert.equal(thread.status, "waiting_approval");
+  assert.equal(thread.waitingFor, "approval");
+
+  const approved = await harness.receive("为我批准").dispatched;
+  assert.equal(approved.status, "dispatched");
+  assert.equal(thread.status, "queued");
+  assert.equal(thread.waitingFor, null);
+  assert.equal(routeCalls.length, 1);
+  assert.equal(routeCalls[0].requestId, thread.channelTaskRequestId);
+
+  const replay = await harness.receive("为我批准").dispatched;
+  assert.match(replay.reply, /没有等待审批|已经在执行/);
+  assert.equal(routeCalls.length, 1);
+});
+
 test("/task enforces a per-channel/day aggregate cap across all users, resetting on a new day", async () => {
   const harness = makeHarness({ createChannelTaskIssue: async () => ({ ok: true, number: 1 }) });
   harness.bindTaskProject("proj_a");

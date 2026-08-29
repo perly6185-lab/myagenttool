@@ -848,9 +848,9 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
             ) : null}
           </div>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1 text-xs text-muted-foreground" title="允许本人在微信中确认普通授权；高风险操作仍必须在桌面端审批中心处理。">
-              <input type="checkbox" checked={Boolean(channel.allowSelfApprove)} onChange={(e) => toggleSelfApprove(e.target.checked)} disabled={pending} />
-              允许微信确认普通授权
+            <label className="flex items-center gap-1 text-xs text-muted-foreground" title="个人模式可直接确认精确的普通授权；团队模式需显式开启。高风险操作仍必须在桌面端审批中心处理。">
+              <input type="checkbox" checked={operationMode === "personal" || Boolean(channel.allowSelfApprove)} onChange={(e) => toggleSelfApprove(e.target.checked)} disabled={pending || operationMode === "personal"} />
+              {operationMode === "personal" ? "个人模式可确认普通授权" : "允许微信确认普通授权"}
             </label>
             {channel.provider === "wechat_ilink" && channel.status !== "enabled" ? null : channel.status === "enabled" ? (
               <Button variant="secondary" size="sm" onClick={disable} disabled={pending}>
