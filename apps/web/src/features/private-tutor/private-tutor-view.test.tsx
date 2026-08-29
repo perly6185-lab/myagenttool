@@ -329,7 +329,7 @@ describe("My private tutor personal learning information architecture", () => {
     expect(await screen.findByRole("heading", { name: "先选择这次想学什么" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /快速学一个知识点/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /用当前内容开始摸底/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /选择课程或导入我的教材/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /先选课程或教材/ })).toBeTruthy();
   });
 
   it("starts a three-question diagnostic for one learner-selected knowledge point", async () => {
@@ -413,7 +413,7 @@ describe("My private tutor personal learning information architecture", () => {
     apiMocks.currentAssessment.mockResolvedValue(null);
     render(<PrivateTutorView />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /选择课程或导入我的教材/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /先选课程或教材/ }));
 
     expect(await screen.findByRole("heading", { name: "我的设置" })).toBeTruthy();
     expect(screen.getByText("选择学习内容")).toBeTruthy();
@@ -421,6 +421,40 @@ describe("My private tutor personal learning information architecture", () => {
     fireEvent.click(screen.getByRole("button", { name: "返回开始方式" }));
     fireEvent.click(screen.getByRole("button", { name: /用当前内容开始摸底/ }));
     expect(await screen.findByRole("heading", { name: "先让我认识一下你会什么" })).toBeTruthy();
+  });
+
+  it("labels original curriculum packages without claiming publisher ownership", async () => {
+    apiMocks.getProfile.mockResolvedValue({ profile: activeProfile, migrationRequired: false });
+    apiMocks.currentAssessment.mockResolvedValue(null);
+    apiMocks.activePackage.mockResolvedValue(null);
+    apiMocks.listPackages.mockResolvedValue([{
+      id: "grade-4-math-upper-2022-standard-v1",
+      name: "四年级数学上册（2022课标原创）",
+      subjectId: "math",
+      domain: "math",
+      sourceType: "curriculum",
+      version: "1.0.0",
+      license: "MyAgentTool-Original-Content-v1",
+      grade: 4,
+      semester: "upper",
+      curriculumStandardVersion: "2022",
+      rightsStatus: "original",
+      officialPublisherProduct: false,
+      publisherAlignment: { status: "none", publisher: null, edition: null },
+      contentNotice: "依据课标独立编写，非出版社官方教材。",
+      targetAudience: { stage: "grade-4-upper" },
+      evaluationCapabilities: { deterministicGrading: true, stepEvaluation: true, speechEvaluation: false, visualInteractions: true },
+    }]);
+    render(<PrivateTutorView />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /先选课程或教材/ }));
+
+    expect(await screen.findByText("课标原创")).toBeTruthy();
+    expect(screen.getByText("4年级 · 上册 · 2022课标 · 答完立即反馈")).toBeTruthy();
+    expect(screen.getByText("非出版社官方教材；可导入本人教材进行本地对齐。")).toBeTruthy();
+    expect(screen.queryByText(/支持确定性判题/)).toBeNull();
+    expect(screen.queryByLabelText("迁移目标版本")).toBeNull();
+    expect(screen.getByRole("button", { name: "更换课程版本（高级）" })).toBeTruthy();
   });
 
   it("keeps the five personal learning capabilities at level one", async () => {
@@ -678,12 +712,13 @@ describe("My private tutor personal learning information architecture", () => {
     render(<PrivateTutorView />);
     fireEvent.click(await screen.findByRole("button", { name: "我的设置" }));
     fireEvent.click(screen.getByRole("button", { name: /学习内容/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "选择开始方式" }));
+    fireEvent.click(await screen.findByRole("button", { name: "开始学习" }));
 
     expect(await screen.findByText(/如何开始“形成性反馈”/)).toBeTruthy();
-    fireEvent.click(screen.getByLabelText(/从指定章节开始/));
+    expect(screen.getByText(/首次开始前会检查题目和反馈是否可靠/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/从一个章节直接开始/));
     expect((screen.getByLabelText("开始章节") as HTMLSelectElement).value).toBe("mod-feedback");
-    fireEvent.click(screen.getByRole("button", { name: "校准并开始" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认并从本章开始" }));
 
     await waitFor(() => expect(apiMocks.activatePackage).toHaveBeenCalledWith({
       packageId: "pkg-user-feedback",

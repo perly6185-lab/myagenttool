@@ -670,6 +670,11 @@ function InitialLearningRoute({ learnerName, onQuick, onDiagnostic, onContent }:
           <p className="mt-3 max-w-2xl leading-7 text-emerald-50">可以选一个知识点快速开始，也可以做完整摸底或先导入自己的教材。没有测到的内容不会被当成薄弱，历史学习记录也不会被覆盖。</p>
         </div>
         <div className="grid gap-4 p-6 sm:grid-cols-3 sm:p-8">
+          <button type="button" onClick={onContent} className="rounded-2xl border-2 border-sky-200 bg-sky-50/60 p-5 text-left transition hover:border-sky-500 dark:border-sky-900 dark:bg-sky-950/30">
+            <BookHeart className="size-8 text-sky-600" />
+            <span className="mt-4 block text-lg font-bold">先选课程或教材</span>
+            <span className="mt-2 block text-sm leading-6 text-muted-foreground">可以直接选择四、八年级数学，也可以导入自己的资料。</span>
+          </button>
           <button type="button" onClick={onQuick} className="rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-5 text-left transition hover:border-amber-500 dark:border-amber-900 dark:bg-amber-950/30">
             <Sparkles className="size-8 text-amber-600" />
             <span className="mt-4 block text-lg font-bold">快速学一个知识点</span>
@@ -679,11 +684,6 @@ function InitialLearningRoute({ learnerName, onQuick, onDiagnostic, onContent }:
             <BrainCircuit className="size-8 text-emerald-600" />
             <span className="mt-4 block text-lg font-bold">用当前内容开始摸底</span>
             <span className="mt-2 block text-sm leading-6 text-muted-foreground">先了解已经会什么，再生成七日计划。</span>
-          </button>
-          <button type="button" onClick={onContent} className="rounded-2xl border-2 border-sky-200 bg-sky-50/60 p-5 text-left transition hover:border-sky-500 dark:border-sky-900 dark:bg-sky-950/30">
-            <BookHeart className="size-8 text-sky-600" />
-            <span className="mt-4 block text-lg font-bold">选择课程或导入我的教材</span>
-            <span className="mt-2 block text-sm leading-6 text-muted-foreground">支持已有内容包、PDF、Markdown 和文本资料。</span>
           </button>
         </div>
       </Card>
@@ -920,7 +920,7 @@ function DiagnosticExperience({
             <Star className="size-11 fill-amber-300 text-amber-300" />
             <h1 className="mt-4 text-3xl font-bold">{quick ? "3 题快速摸底完成" : "我已经更了解你了"}</h1>
             <p className="mt-2 text-emerald-50">完成了 {assessment.result.answeredCount} 道{quick ? "定向" : "自适应"}题。{quick ? "现在直接用 5 分钟把这个知识点向前推进。" : "先看看你已经站稳的地方。"}</p>
-            {assessment.runtimeValidationId ? <p className="mt-2 text-xs text-emerald-100">其中 {assessment.evidenceAnswerCount ?? 0} 道通过来源量表运行校准并形成受限置信度证据。</p> : null}
+            {assessment.runtimeValidationId ? <p className="mt-2 text-xs text-emerald-100">其中 {assessment.evidenceAnswerCount ?? 0} 道通过题目质量检查，可用于更新学习进度。</p> : null}
           </div>
           <div className="grid gap-5 p-6 sm:grid-cols-2 sm:p-8">
             <div className="rounded-2xl bg-emerald-50 p-5 dark:bg-emerald-950">
@@ -2152,6 +2152,26 @@ function privateTutorOcrReasonLabel(reason: string | null | undefined) {
   return "本地 OCR 未能完成识别";
 }
 
+function contentSourceLabel(sourceType: LearningContentPackage["sourceType"]) {
+  if (sourceType === "curriculum") return "课标原创";
+  if (sourceType === "textbook") return "教材内容";
+  if (sourceType === "user_material") return "我的资料";
+  if (sourceType === "university_course") return "课程内容";
+  return "专业技能";
+}
+
+function curriculumScopeLabel(pkg: LearningContentPackage) {
+  if (pkg.sourceType !== "curriculum") return null;
+  const semester = pkg.semester === "upper" ? "上册" : pkg.semester === "lower" ? "下册" : "全学年";
+  return `${pkg.grade ?? "—"}年级 · ${semester} · ${pkg.curriculumStandardVersion ?? "—"}课标`;
+}
+
+function learningFeedbackLabel(pkg: LearningContentPackage) {
+  if (pkg.sourceType === "user_material") return "首次开始前会检查题目质量";
+  if (pkg.evaluationCapabilities?.deterministicGrading) return "答完立即反馈";
+  return "老师会根据学习过程给反馈";
+}
+
 function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirmed, onPackageActivated, onProfileDeleted, initialSpace = "preferences" }: { state: LearnerTutorState; preferences: PrivateTutorLearningPreferences; onPreferencesChange: (patch: PrivateTutorLearningPreferencesPatch) => Promise<string | null>; onGoalConfirmed: (result: Awaited<ReturnType<typeof confirmPrivateTutorLearningGoal>>) => void; onPackageActivated: (result: PrivateTutorPackageActivationResult) => void; onProfileDeleted: () => void; initialSpace?: TutorSettingsSpace }) {
   const [space, setSpace] = useState<TutorSettingsSpace>(initialSpace);
   const [preferenceBusy, setPreferenceBusy] = useState(false);
@@ -2251,7 +2271,7 @@ function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirme
             return jobs[0] ?? null;
           })).then((jobs) => setOcrJobs(Object.fromEntries(jobs.filter(Boolean).map((job) => [job!.materialId, job!])))).catch(() => {});
         }
-        if (pkgsRes.status === "rejected" || activeRes.status === "rejected") setError("无法加载内容包。");
+        if (pkgsRes.status === "rejected" || activeRes.status === "rejected") setError("无法加载学习内容，请重试。");
         setLoading(false);
       });
     return () => { current = false; };
@@ -2403,9 +2423,9 @@ function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirme
       setEntryMode("diagnostic");
       setStartModuleId(published.modules?.[0]?.id ?? "");
       setError("");
-      alert("发布成功。请选择摸底或具体章节；校准通过后即可在“我的成长”启动 14 天试学。");
+      alert("发布成功。请选择摸底或具体章节；题目检查通过后即可在“我的成长”启动 14 天试学。");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "刷新内容包失败。");
+      setError(err instanceof Error ? err.message : "刷新学习内容失败。");
     } finally {
       setLoading(false);
     }
@@ -2420,7 +2440,7 @@ function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirme
       setEntryMode("diagnostic");
       setStartModuleId(pkg.modules?.[0]?.id ?? "");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "无法读取内容包，请重试。");
+      setError(err instanceof Error ? err.message : "无法读取学习内容，请重试。");
     } finally {
       setLoading(false);
     }
@@ -2444,11 +2464,16 @@ function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirme
       setPendingPackage(null);
       onPackageActivated(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "内容包校准或激活失败，请检查内容后重试。");
+      setError(err instanceof Error ? err.message : "这份学习内容暂时没有准备好，请稍后重试。");
     } finally {
       setLoading(false);
     }
   }
+
+  const orderedPackages = [...packages].sort((left, right) => {
+    const curriculumOrder = Number(right.sourceType === "curriculum") - Number(left.sourceType === "curriculum");
+    return curriculumOrder || left.name.localeCompare(right.name, "zh-CN");
+  });
 
   return (
     <section>
@@ -2521,32 +2546,35 @@ function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirme
           ) : null}
           {space === "content" ? (
             <div className="mt-6 grid gap-4">
-              {loading ? <p className="text-sm text-muted-foreground">正在加载可用内容包…</p> : null}
+              {loading ? <p className="text-sm text-muted-foreground">正在加载可用课程…</p> : null}
               {error ? <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
               {ocrReviewMessage ? <p role="status" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">{ocrReviewMessage}</p> : null}
               {activePackage ? (
                 <div className="rounded-xl border border-emerald-300 bg-emerald-50/50 p-4 dark:border-emerald-900 dark:bg-emerald-950/20">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">当前学习内容包</span>
-                    <span className="rounded-full bg-emerald-200/60 px-2 py-0.5 text-[10px] text-emerald-900 dark:bg-emerald-900 dark:text-emerald-200">v{activePackage.version}</span>
+                    <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">当前学习内容</span>
+                    <span className="rounded-full bg-emerald-200/60 px-2 py-0.5 text-[10px] text-emerald-900 dark:bg-emerald-900 dark:text-emerald-200">已选择</span>
                   </div>
                   <h3 className="mt-1 text-base font-bold">{activePackage.name}</h3>
                   <p className="mt-1 text-xs text-muted-foreground">{activePackage.targetAudience?.description || "通识与专业基础"}</p>
+                  {activePackage.sourceType === "curriculum" && activePackage.officialPublisherProduct === false ? (
+                    <p className="mt-2 rounded-lg bg-white/70 px-3 py-2 text-xs leading-5 text-amber-800 dark:bg-black/20 dark:text-amber-200">{activePackage.contentNotice || "课标原创内容，非出版社官方教材。"}</p>
+                  ) : null}
                 </div>
               ) : null}
               {pendingPackage ? (
                 <div className="rounded-xl border border-sky-300 bg-sky-50/60 p-4 dark:border-sky-900 dark:bg-sky-950/30">
                   <p className="text-sm font-semibold">如何开始“{pendingPackage.name}”</p>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">个人资料会先回放不足、发展中、熟练三档评分锚点；校准未通过时不会启动，也不会写入掌握证据。</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{pendingPackage.sourceType === "user_material" ? "首次开始前会检查题目和反馈是否可靠；检查未通过时不会开始学习。" : "选择一种开始方式并确认。已有学习记录会保留，不会被这次选择覆盖。"}</p>
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
                     <label className={cn("cursor-pointer rounded-lg border p-3 text-sm", entryMode === "diagnostic" ? "border-sky-500 bg-card" : "bg-card/60")}>
                       <input className="mr-2 accent-sky-600" type="radio" name="package-entry-mode" checked={entryMode === "diagnostic"} onChange={() => setEntryMode("diagnostic")} />
-                      先做练习模式摸底
-                      <span className="mt-1 block text-xs text-muted-foreground">根据可验证作答生成七日计划。</span>
+                      先摸底，再安排学习计划
+                      <span className="mt-1 block text-xs text-muted-foreground">先看看已经会什么，再生成七日计划。</span>
                     </label>
                     <label className={cn("cursor-pointer rounded-lg border p-3 text-sm", entryMode === "chapter" ? "border-sky-500 bg-card" : "bg-card/60")}>
                       <input className="mr-2 accent-sky-600" type="radio" name="package-entry-mode" checked={entryMode === "chapter"} onChange={() => setEntryMode("chapter")} />
-                      从指定章节开始
+                      从一个章节直接开始
                       <span className="mt-1 block text-xs text-muted-foreground">只确定学习起点，不假定已经掌握。</span>
                     </label>
                   </div>
@@ -2558,7 +2586,7 @@ function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirme
                     </label>
                   ) : null}
                   <div className="mt-4 flex gap-2">
-                    <Button size="sm" disabled={loading} onClick={() => void activatePackage()}>{loading ? "正在校准…" : "校准并开始"}</Button>
+                    <Button size="sm" disabled={loading} onClick={() => void activatePackage()}>{loading ? "正在准备…" : entryMode === "diagnostic" ? "确认并开始摸底" : "确认并从本章开始"}</Button>
                     <Button size="sm" variant="secondary" disabled={loading} onClick={() => setPendingPackage(null)}>取消</Button>
                   </div>
                 </div>
@@ -2568,18 +2596,19 @@ function TutorSettings({ state, preferences, onPreferencesChange, onGoalConfirme
                   <p className="text-sm font-medium">选择学习内容</p>
                   <Button size="sm" variant="secondary" onClick={() => setShowImport(true)}>导入我的资料</Button>
                 </div>
-                {packages.map((pkg) => {                  const isActive = activePackage?.id === pkg.id;
+                {orderedPackages.map((pkg) => {                  const isActive = activePackage?.id === pkg.id;
                   return (
                     <div key={pkg.id} className={cn("flex flex-col justify-between gap-3 rounded-xl border p-4 sm:flex-row sm:items-center", isActive ? "border-emerald-500 bg-emerald-50/30 dark:bg-emerald-950/20" : "bg-card")}>
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-bold">{pkg.name}</span>
-                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{pkg.sourceType}</span>
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{contentSourceLabel(pkg.sourceType)}</span>
                         </div>
-                        <p className="mt-1 text-xs text-muted-foreground">{pkg.targetAudience?.stage ?? "全部阶段"} · {pkg.sourceType === "user_material" ? "来源量表将在启动时校准" : pkg.evaluationCapabilities?.deterministicGrading ? "支持确定性判题" : "主观开放评估"}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{curriculumScopeLabel(pkg) ?? pkg.targetAudience?.stage ?? "全部阶段"} · {learningFeedbackLabel(pkg)}</p>
+                        {pkg.sourceType === "curriculum" && pkg.officialPublisherProduct === false ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">非出版社官方教材；可导入本人教材进行本地对齐。</p> : null}
                       </div>
                       <Button size="sm" variant={isActive ? "secondary" : "primary"} disabled={loading || isActive} onClick={() => void choosePackage(pkg.id)}>
-                        {isActive ? "正在学习" : "选择开始方式"}
+                        {isActive ? "正在学习" : "开始学习"}
                       </Button>
                     </div>
                   );

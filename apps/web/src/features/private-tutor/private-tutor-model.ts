@@ -1,4 +1,10 @@
-export type ContentSourceType = "textbook" | "university_course" | "professional_skill" | "user_material";
+export type ContentSourceType = "curriculum" | "textbook" | "university_course" | "professional_skill" | "user_material";
+
+export interface PublisherAlignment {
+  status: "none" | "licensed" | "user_local";
+  publisher: string | null;
+  edition: string | null;
+}
 
 export interface EvaluationCapabilities {
   deterministicGrading: boolean;
@@ -32,6 +38,16 @@ export interface LearningContentPackage {
   releasedAt?: string;
   targetAudience?: ContentTargetAudience;
   evaluationCapabilities?: EvaluationCapabilities;
+  curriculumStandardVersion?: string | null;
+  curriculumReference?: { title: string; url: string } | null;
+  publisherAlignment?: PublisherAlignment | null;
+  editionYear?: number | null;
+  grade?: number | null;
+  semester?: "upper" | "lower" | "full-year" | null;
+  rightsStatus?: "original" | "licensed" | "user_supplied" | null;
+  officialPublisherProduct?: boolean | null;
+  contentNotice?: string | null;
+  supersedesPackageId?: string | null;
   modules?: Module[];
   knowledgeComponents?: KnowledgeComponentSummary[];
 }

@@ -4,6 +4,8 @@ import { csLogicFoundationsPackage } from "./packages/cs-logic-foundations.mjs";
 import { languageCausalExplanationsPackage } from "./packages/language-causal-explanations.mjs";
 import { programmingFunctionsPackage } from "./packages/programming-functions.mjs";
 import { conceptualSourceReasoningPackage } from "./packages/conceptual-source-reasoning.mjs";
+import { grade4MathUpper2022StandardPackage } from "./packages/grade-4-math-upper-2022-standard.mjs";
+import { grade8MathUpper2022StandardPackage } from "./packages/grade-8-math-upper-2022-standard.mjs";
 import { mathSubjectPlugin } from "./plugins/math-plugin.mjs";
 import { computerScienceSubjectPlugin } from "./plugins/computer-science-plugin.mjs";
 import { languageSubjectPlugin } from "./plugins/language-plugin.mjs";
@@ -11,7 +13,8 @@ import { programmingSubjectPlugin } from "./plugins/programming-plugin.mjs";
 import { conceptualSubjectPlugin } from "./plugins/conceptual-plugin.mjs";
 
 const PACKAGE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,99}$/;
-const SOURCE_TYPES = new Set(["textbook", "university_course", "professional_skill", "user_material"]);
+const SOURCE_TYPES = new Set(["curriculum", "textbook", "university_course", "professional_skill", "user_material"]);
+const PUBLISHER_ALIGNMENT_STATUSES = new Set(["none", "licensed", "user_local"]);
 
 export const CONTENT_PACKAGE_SCHEMA_VERSION = 1;
 
@@ -86,6 +89,20 @@ function registerPackage(packageMap, pkg) {
   if (!pkg || !PACKAGE_ID_PATTERN.test(pkg.id)) throw new Error("invalid_or_duplicate_content_package");
   if (packageMap.has(pkg.id)) return; // Idempotent if already registered
   if (!SOURCE_TYPES.has(pkg.sourceType) || !pkg.version || !pkg.subjectId || !pkg.domain) throw new Error("invalid_content_package_metadata");
+  if (pkg.sourceType === "curriculum" && (
+    !pkg.curriculumStandardVersion
+    || !Number.isInteger(pkg.grade)
+    || !["upper", "lower", "full-year"].includes(pkg.semester)
+    || !Number.isInteger(pkg.editionYear)
+    || !["original", "licensed"].includes(pkg.rightsStatus)
+    || !PUBLISHER_ALIGNMENT_STATUSES.has(pkg.publisherAlignment?.status)
+    || typeof pkg.officialPublisherProduct !== "boolean"
+    || !pkg.contentNotice
+  )) throw new Error("invalid_curriculum_package_metadata");
+  if (pkg.sourceType === "curriculum" && pkg.publisherAlignment.status === "none" && pkg.officialPublisherProduct) {
+    throw new Error("invalid_curriculum_publisher_claim");
+  }
+  if (pkg.supersedesPackageId === pkg.id) throw new Error("invalid_curriculum_package_supersession");
   packageMap.set(pkg.id, deepFreeze(structuredClone(pkg)));
 }
 
@@ -107,6 +124,16 @@ function packageSummary(pkg) {
     license: pkg.license,
     targetAudience: structuredClone(pkg.targetAudience),
     evaluationCapabilities: structuredClone(pkg.evaluationCapabilities),
+    curriculumStandardVersion: pkg.curriculumStandardVersion ?? null,
+    curriculumReference: structuredClone(pkg.curriculumReference ?? null),
+    publisherAlignment: structuredClone(pkg.publisherAlignment ?? null),
+    editionYear: pkg.editionYear ?? null,
+    grade: pkg.grade ?? null,
+    semester: pkg.semester ?? null,
+    rightsStatus: pkg.rightsStatus ?? null,
+    officialPublisherProduct: pkg.officialPublisherProduct ?? null,
+    contentNotice: pkg.contentNotice ?? null,
+    supersedesPackageId: pkg.supersedesPackageId ?? null,
     moduleCount: pkg.modules?.length ?? 0,
     knowledgeComponentCount: pkg.knowledgeComponents?.length ?? 0,
   };
@@ -177,7 +204,15 @@ function checksum(value) {
 }
 
 function builtInPackages() {
-  return [demoMathFoundationsPackage, csLogicFoundationsPackage, languageCausalExplanationsPackage, programmingFunctionsPackage, conceptualSourceReasoningPackage];
+  return [
+    demoMathFoundationsPackage,
+    grade4MathUpper2022StandardPackage,
+    grade8MathUpper2022StandardPackage,
+    csLogicFoundationsPackage,
+    languageCausalExplanationsPackage,
+    programmingFunctionsPackage,
+    conceptualSourceReasoningPackage,
+  ];
 }
 
 function builtInPlugins() {
