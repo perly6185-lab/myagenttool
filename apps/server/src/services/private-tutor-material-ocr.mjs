@@ -59,10 +59,11 @@ export function createPrivateTutorMaterialOcrService({
   persistStateSoon = () => {},
   store,
 } = {}) {
-  const root = privateTutorMaterialRoot(stateStorePath);
+  const configuredRoot = privateTutorMaterialRoot(stateStorePath);
+  mkdirSync(configuredRoot, { recursive: true });
+  const root = realpathSync(configuredRoot);
   const active = new Map();
   const runTx = makeRunTx({ store, persistStateSoon });
-  mkdirSync(root, { recursive: true });
 
   function storeSource({ bytes, sourceHash, fileName, fileType }) {
     if (!Buffer.isBuffer(bytes) || !bytes.length || !/^[a-f0-9]{64}$/.test(String(sourceHash))) {
