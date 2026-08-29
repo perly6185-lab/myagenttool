@@ -203,7 +203,7 @@ test("plans ordinary host questions without producing arbitrary shell", () => {
 });
 
 test("runs a bounded multi-step diagnosis for an ordinary host problem", async () => {
-  const { events, fixedActions, service } = harness();
+  const { events, fixedActions, service, state } = harness();
   const target = service.createSshTarget({ host: "host.example", user: "deploy", authMethod: "private_key_ref", purpose: "file_transfer" });
   target.connectionStatus = "ready";
   target.trustStatus = "pinned";
@@ -213,6 +213,10 @@ test("runs a bounded multi-step diagnosis for an ordinary host problem", async (
 
   assert.equal(result.ok, true);
   assert.equal(result.run.intent, "performance");
+  assert.match(result.run.id, /^hdr_/);
+  assert.equal(result.run.targetRevision, target.revision);
+  assert.equal(state.hostDiagnosticRuns.length, 1);
+  assert.equal(state.hostDiagnosticRuns[0].createdByUserId, "usr_operator");
   assert.deepEqual(fixedActions, ["uptime", "disk_usage", "memory_usage", "processes", "failed_services"]);
   assert.equal(result.run.steps.length, 5);
   assert.equal(result.run.steps.every((step) => step.status === "completed"), true);

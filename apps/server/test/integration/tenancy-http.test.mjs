@@ -238,6 +238,7 @@ before(async () => {
     stateSchemaVersion: 1,
     dispatchLeaseMs: 30_000,
     now,
+    hostWebsiteHealthChecker: async () => ({ status: "unhealthy", reason: "website_unreachable", statusCodeClass: null, contentMatched: false, checkedAt: now() }),
   });
 
   server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
@@ -800,7 +801,7 @@ test("My hosts API reuses SSH identity while keeping file-transfer hosts team sc
   assert.equal(unverifiedScope.body.error, "ssh_host_not_ready");
 
   testState.hostFileScopes.push(
-    { id: "hfs_team_b", ownerTeamId: TEAM_B, sshTargetId: hostId, label: "Website files", purpose: "site_publish", rootPath: "/srv/www/example", resolvedRootPath: "/srv/www/example", permissions: ["list", "upload", "download"], status: "ready", revision: 1, lastVerifiedAt: now() },
+    { id: "hfs_team_b", ownerTeamId: TEAM_B, sshTargetId: hostId, label: "Website files", purpose: "site_publish", rootPath: "/srv/www/example", resolvedRootPath: "/srv/www/example", permissions: ["list", "upload", "download"], status: "ready", revision: 1, lastResolvedAddress: "203.0.113.30", lastVerifiedAt: now() },
     { id: "hfs_team_b_duplicate", ownerTeamId: TEAM_B, sshTargetId: hostId, label: "Historical duplicate", purpose: "site_publish", rootPath: "/srv/www/example", resolvedRootPath: "/srv/www/example", permissions: ["list", "upload", "download"], status: "ready", revision: 1, lastVerifiedAt: now() },
     { id: "hfs_team_a", ownerTeamId: TEAM_A, sshTargetId: "ssh_a", label: "Team A secret site", purpose: "site_publish", rootPath: "/srv/www/secret", resolvedRootPath: "/srv/www/secret", permissions: ["list", "upload", "download"], status: "ready", revision: 1, lastVerifiedAt: now() },
   );
@@ -829,21 +830,48 @@ test("My hosts API reuses SSH identity while keeping file-transfer hosts team sc
     id: "htp_team_b", ownerTeamId: TEAM_B, sshTargetId: hostId, certificateScopeId: "hfs_tls_team_b",
     label: "Website service", type: "docker_nginx", containerName: "site-nginx", status: "ready", revision: 1,
   });
+  testState.hostDiagnosticRuns.push({
+    id: "hdr_team_b", ownerTeamId: TEAM_B, sshTargetId: hostId, targetRevision: managedTarget.revision, createdByUserId: "usr_b",
+    version: 1, intent: "website", risk: "read_only", steps: [], summary: { severity: "warning", finding: "host_warnings_found" }, createdAt: now(),
+  });
+  testState.siteDeploymentTargets.push({ id: "sdt_team_b", ownerTeamId: TEAM_B, siteId: "site_team_b", kind: "ssh_static", customDomain: "site.example.com", remoteProjectRef: "hfs_team_b", status: "ready" });
+  testState.sites.push({ id: "site_team_b", ownerTeamId: TEAM_B, activePublicationId: "spb_team_b" });
+  testState.sitePublications.push({ id: "spb_team_b", ownerTeamId: TEAM_B, siteId: "site_team_b", status: "active", remoteDeployment: { provider: "ssh_static", verification: { contentHash: "b".repeat(64), contentBytes: 128 } } });
+  testState.siteDomainTlsBindings.push({
+    id: "stb_team_b", ownerTeamId: TEAM_B, siteId: "site_team_b", deploymentTargetId: "sdt_team_b", hostname: "site.example.com",
+    certificateScopeId: "hfs_tls_team_b", activationProfileId: "htp_team_b", status: "active", certificateEnvironment: "production", certificateFingerprint: "a".repeat(64), revision: 1,
+  });
   const remediation = await call(`/api/hosts/${hostId}/assistant/remediation-plan`, {
-    token: "tok_b", method: "POST", body: { profileId: "htp_team_b" },
+    token: "tok_b", method: "POST", body: { profileId: "htp_team_b", diagnosticRunId: "hdr_team_b" },
   });
   assert.equal(remediation.status, 201);
   assert.equal(remediation.body.plan.action, "reload_managed_website");
   assert.equal(JSON.stringify(remediation.body).includes("site-nginx"), false);
   const foreignRemediation = await call(`/api/hosts/${hostId}/assistant/remediation-plan`, {
-    token: "tok_a", method: "POST", body: { profileId: "htp_team_b" },
+    token: "tok_a", method: "POST", body: { profileId: "htp_team_b", diagnosticRunId: "hdr_team_b" },
   });
   assert.equal(foreignRemediation.status, 404);
+  const remediationHistory = await call(`/api/hosts/${hostId}/assistant/remediation-plans`, { token: "tok_b" });
+  assert.equal(remediationHistory.status, 200);
+  assert.deepEqual(remediationHistory.body.plans.map((plan) => plan.id), [remediation.body.plan.id]);
+  const remediationDetail = await call(`/api/hosts/${hostId}/assistant/remediation-plans/${remediation.body.plan.id}`, { token: "tok_b" });
+  assert.equal(remediationDetail.status, 200);
+  assert.equal(remediationDetail.body.plan.diagnosticRunId, "hdr_team_b");
+  const foreignRemediationHistory = await call(`/api/hosts/${hostId}/assistant/remediation-plans`, { token: "tok_a" });
+  assert.equal(foreignRemediationHistory.status, 404);
   const unconfirmedRemediation = await call(`/api/hosts/${hostId}/assistant/remediation-plans/${remediation.body.plan.id}/confirm`, {
     token: "tok_b", method: "POST", body: { expectedRevision: remediation.body.plan.revision },
   });
   assert.equal(unconfirmedRemediation.status, 400);
   assert.equal(unconfirmedRemediation.body.error, "host_remediation_confirmation_required");
+  Object.assign(testState.hostRemediationPlans.find((plan) => plan.id === remediation.body.plan.id), {
+    status: "outcome_unknown", phase: "finished", result: { outcome: "verification_incomplete", changeAttempted: true, verification: "incomplete", completedChecks: [], error: "host_remediation_interrupted" },
+  });
+  const recheckedRemediation = await call(`/api/hosts/${hostId}/assistant/remediation-plans/${remediation.body.plan.id}/recheck`, { token: "tok_b", method: "POST", body: {} });
+  assert.equal(recheckedRemediation.status, 200);
+  assert.equal(recheckedRemediation.body.plan.lastRecheckedHealth.status, "unhealthy");
+  const foreignRecheck = await call(`/api/hosts/${hostId}/assistant/remediation-plans/${remediation.body.plan.id}/recheck`, { token: "tok_a", method: "POST", body: {} });
+  assert.equal(foreignRecheck.status, 404);
 
   const unobservedConfirmation = await call(`/api/hosts/${hostId}/confirm-fingerprint`, {
     token: "tok_b", method: "POST", body: { expectedRevision: 2, fingerprint: "SHA256:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/ab" },

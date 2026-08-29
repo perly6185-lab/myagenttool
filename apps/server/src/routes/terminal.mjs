@@ -29,7 +29,9 @@ export async function handleTerminalRoutes({
   createHostTlsActivationProfile,
   createHostRemediationPlan,
   confirmHostRemediationPlan,
+  recheckHostRemediationPlan,
   findHostRemediationPlan,
+  listHostRemediationPlans,
   createManagedTerminalSession,
   queueTerminalBridgeAction,
   nextTerminalBridgeAction,
@@ -407,8 +409,32 @@ export async function handleTerminalRoutes({
       sendJson(res, 404, { error: "ssh_target_not_found" });
       return true;
     }
-    const result = createHostRemediationPlan(target, await readJson(req), actor);
+    const result = await createHostRemediationPlan(target, await readJson(req), actor);
     sendJson(res, result.ok ? (result.reused ? 200 : 201) : result.status, result.ok ? { plan: result.plan, reused: result.reused } : { error: result.error });
+    return true;
+  }
+
+  const hostRemediationPlansMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/remediation-plans$/);
+  if (req.method === "GET" && hostRemediationPlansMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostRemediationPlansMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const plans = listHostRemediationPlans(target, actor);
+    sendJson(res, 200, { plans, count: plans.length });
+    return true;
+  }
+
+  const hostRemediationDetailMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/remediation-plans\/([^/]+)$/);
+  if (req.method === "GET" && hostRemediationDetailMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostRemediationDetailMatch[1]));
+    const plan = target ? findHostRemediationPlan(target, decodeURIComponent(hostRemediationDetailMatch[2]), actor) : null;
+    if (!target || !plan) {
+      sendJson(res, 404, { error: "host_remediation_plan_not_found" });
+      return true;
+    }
+    sendJson(res, 200, { plan });
     return true;
   }
 
@@ -422,6 +448,19 @@ export async function handleTerminalRoutes({
     }
     const result = await confirmHostRemediationPlan(target, plan, await readJson(req), actor);
     sendJson(res, result.ok ? 200 : result.status, result.ok ? { plan: result.plan, reused: result.reused } : { error: result.error, ...(result.currentRevision ? { currentRevision: result.currentRevision } : {}) });
+    return true;
+  }
+
+  const hostRemediationRecheckMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/remediation-plans\/([^/]+)\/recheck$/);
+  if (req.method === "POST" && hostRemediationRecheckMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostRemediationRecheckMatch[1]));
+    const plan = target ? findHostRemediationPlan(target, decodeURIComponent(hostRemediationRecheckMatch[2]), actor) : null;
+    if (!target || !plan) {
+      sendJson(res, 404, { error: "host_remediation_plan_not_found" });
+      return true;
+    }
+    const result = await recheckHostRemediationPlan(target, plan, actor);
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { plan: result.plan } : { error: result.error });
     return true;
   }
 

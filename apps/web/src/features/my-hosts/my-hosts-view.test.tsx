@@ -11,7 +11,7 @@ import { MyHostsView } from "./my-hosts-view";
 
 vi.mock("./host-api", () => ({ MAX_HOST_UPLOAD_BYTES: 10 * 1024 * 1024, MAX_HOST_DOWNLOAD_BYTES: 25 * 1024 * 1024, hostApi: {
   list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
-  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), diagnoseIssue: vi.fn(), planRemediation: vi.fn(), confirmRemediation: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
+  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), diagnoseIssue: vi.fn(), planRemediation: vi.fn(), confirmRemediation: vi.fn(), remediationPlans: vi.fn(), remediationPlan: vi.fn(), recheckRemediation: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
 } }));
 
 const host: SshHost = {
@@ -30,9 +30,11 @@ const tlsProfile: HostTlsActivationProfile = {
   type: "docker_nginx", containerName: "site-nginx", status: "ready", lastVerifiedAt: "2026-08-25T00:00:00.000Z", revision: 2,
 };
 const remediationPlan: HostRemediationPlan = {
-  id: "hrp_1", sshTargetId: host.id, profileId: tlsProfile.id, action: "reload_managed_website", risk: "low", status: "planned",
-  checks: ["container_running", "configuration_valid", "reload_service", "container_running", "configuration_valid"],
-  impact: "brief_connections_may_retry", filesChanged: false, revision: 1, expiresAt: "2026-08-29T00:10:00.000Z", result: null,
+  id: "hrp_1", sshTargetId: host.id, diagnosticRunId: "hdr_website", diagnosticFinding: "host_critical_findings", profileId: tlsProfile.id,
+  siteId: "site_1", publicationId: "spb_1", action: "reload_managed_website", finding: "website_unreachable", risk: "low", status: "planned", phase: "awaiting_confirmation",
+  checks: ["website_health", "container_running", "configuration_valid", "reload_service", "container_running", "configuration_valid", "website_health"],
+  impact: "brief_connections_may_retry", filesChanged: false, initialHealth: { status: "unhealthy", reason: "website_unreachable", statusCodeClass: null, contentMatched: false, checkedAt: "2026-08-29T00:00:00.000Z" },
+  revision: 1, createdAt: "2026-08-29T00:00:00.000Z", expiresAt: "2026-08-29T00:10:00.000Z", result: null,
 };
 
 function renderView() {
@@ -56,12 +58,15 @@ beforeEach(async () => {
   ] });
   vi.mocked(hostApi.transfers).mockResolvedValue({ transfers: [], count: 0 });
   vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
+  vi.mocked(hostApi.remediationPlans).mockResolvedValue({ plans: [], count: 0 });
+  vi.mocked(hostApi.remediationPlan).mockResolvedValue({ plan: remediationPlan });
+  vi.mocked(hostApi.recheckRemediation).mockResolvedValue({ plan: { ...remediationPlan, status: "outcome_unknown", phase: "finished", lastRecheckedAt: "2026-08-29T00:03:00.000Z", lastRecheckedHealth: { status: "healthy", reason: "website_healthy", statusCodeClass: 2, contentMatched: true, checkedAt: "2026-08-29T00:03:00.000Z" } } });
   vi.mocked(hostApi.planRemediation).mockResolvedValue({ plan: remediationPlan, reused: false });
   vi.mocked(hostApi.confirmRemediation).mockResolvedValue({ plan: { ...remediationPlan, status: "completed", revision: 3, result: { outcome: "restored", changeAttempted: true, verification: "passed", completedChecks: ["preflight_container_running", "preflight_configuration_valid", "service_reloaded", "verification_container_running", "verification_configuration_valid"] } }, reused: false });
   vi.mocked(hostApi.diagnose).mockResolvedValue({ result: { action: "disk_usage", command: "df -h", output: "Filesystem\n/dev/sda1 20G 8G 12G 40% /", summary: { version: 1, severity: "healthy", finding: "disk_capacity_healthy", impact: "no_issue_detected", nextAction: "no_action_needed", facts: [{ key: "disk_used_percent", value: "40%", severity: "healthy" }] } } });
   vi.mocked(hostApi.planDiagnostic).mockResolvedValue({ plan: { action: "disk_usage", command: "df -h", risk: "read_only" } });
   vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
-    version: 1, intent: "performance", risk: "read_only", primaryAction: "disk_usage",
+    id: "hdr_performance", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "performance", risk: "read_only", primaryAction: "disk_usage",
     summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [
       { key: "diagnostic_completed_count", value: "2", severity: "info" },
       { key: "diagnostic_issue_count", value: "1", severity: "warning" },
@@ -514,7 +519,7 @@ it("shows one reviewed website repair and verifies it after a single confirmatio
   useUiStore.setState({ experienceMode: "ordinary" });
   vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [tlsProfile], count: 1 });
   vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
-    version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
+    id: "hdr_website", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
     summary: { version: 1, severity: "critical", finding: "host_critical_findings", impact: "host_operation_may_be_affected", nextAction: "review_critical_findings", facts: [] },
     steps: [{ action: "failed_services", status: "completed", summary: { version: 1, severity: "critical", finding: "failed_services_found", impact: "service_may_be_unavailable", nextAction: "inspect_failed_services", facts: [{ key: "failed_service_count", value: "1", severity: "critical" }] } }],
   } });
@@ -523,9 +528,9 @@ it("shows one reviewed website repair and verifies it after a single confirmatio
   fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The website is down" } });
   fireEvent.click(screen.getByRole("button", { name: "Ask" }));
 
-  expect(await screen.findByText("A safe website-service reload is available")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Review repair plan" }));
-  await waitFor(() => expect(hostApi.planRemediation).toHaveBeenCalledWith(host.id, tlsProfile.id));
+  expect(await screen.findByText("Check whether the website is actually available")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Check website" }));
+  await waitFor(() => expect(hostApi.planRemediation).toHaveBeenCalledWith(host.id, tlsProfile.id, "hdr_website"));
   expect(hostApi.confirmRemediation).not.toHaveBeenCalled();
   expect(await screen.findByText("Reload the verified website service")).toBeTruthy();
   expect(screen.getByText(/Website files are not changed/)).toBeTruthy();
@@ -533,14 +538,14 @@ it("shows one reviewed website repair and verifies it after a single confirmatio
 
   fireEvent.click(screen.getByRole("button", { name: "Confirm and repair" }));
   await waitFor(() => expect(hostApi.confirmRemediation).toHaveBeenCalledWith(host.id, remediationPlan.id, remediationPlan.revision));
-  expect(await screen.findByText("The website service was reloaded and verified")).toBeTruthy();
+  expect(await screen.findByText("The website is available again")).toBeTruthy();
 });
 
 it("does not offer an automatic retry when website repair verification is incomplete", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [tlsProfile], count: 1 });
   vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
-    version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
+    id: "hdr_website", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
     summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
     steps: [{ action: "failed_services", status: "completed", summary: { version: 1, severity: "warning", finding: "service_not_running", impact: "service_may_be_unavailable", nextAction: "inspect_service_setup", facts: [] } }],
   } });
@@ -549,13 +554,86 @@ it("does not offer an automatic retry when website repair verification is incomp
 
   fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The website is down" } });
   fireEvent.click(screen.getByRole("button", { name: "Ask" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Review repair plan" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Check website" }));
   fireEvent.click(await screen.findByRole("button", { name: "Confirm and repair" }));
 
   expect(await screen.findByText("The repair ran, but the final state is not confirmed")).toBeTruthy();
   expect(screen.getByText(/before attempting anything again/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   expect(hostApi.confirmRemediation).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Check website again" }));
+  await waitFor(() => expect(hostApi.recheckRemediation).toHaveBeenCalledWith(host.id, remediationPlan.id));
+  expect(await screen.findByText("The website is available after a fresh check")).toBeTruthy();
+  expect(hostApi.confirmRemediation).toHaveBeenCalledTimes(1);
+});
+
+it("stops without confirmation when the real website is already healthy", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [tlsProfile], count: 1 });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
+    id: "hdr_website", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "website", risk: "read_only", primaryAction: "recent_logs",
+    summary: { version: 1, severity: "info", finding: "host_no_obvious_issue", impact: "host_no_obvious_impact", nextAction: "continue_targeted_diagnosis", facts: [] },
+    steps: [{ action: "recent_logs", status: "completed", summary: { version: 1, severity: "info", finding: "recent_logs_ready", impact: "information_only", nextAction: "review_recent_events", facts: [] } }],
+  } });
+  vi.mocked(hostApi.planRemediation).mockResolvedValue({ plan: {
+    ...remediationPlan,
+    status: "not_needed",
+    phase: "finished",
+    finding: "website_healthy",
+    initialHealth: { status: "healthy", reason: "website_healthy", statusCodeClass: 2, contentMatched: true, checkedAt: "2026-08-29T00:00:01.000Z" },
+    result: { outcome: "already_healthy", changeAttempted: false, verification: "passed", completedChecks: ["preflight_website_healthy"] },
+  }, reused: false });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The website is down" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Check website" }));
+
+  expect(await screen.findByText("The website is available; no repair is needed")).toBeTruthy();
+  expect(hostApi.confirmRemediation).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "Confirm and repair" })).toBeNull();
+});
+
+it("distinguishes a completed reload from an actually restored website", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [tlsProfile], count: 1 });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
+    id: "hdr_website", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
+    summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
+    steps: [{ action: "failed_services", status: "completed", summary: { version: 1, severity: "warning", finding: "service_not_running", impact: "service_may_be_unavailable", nextAction: "inspect_service_setup", facts: [] } }],
+  } });
+  vi.mocked(hostApi.confirmRemediation).mockResolvedValue({ plan: {
+    ...remediationPlan,
+    status: "completed_unresolved",
+    phase: "finished",
+    revision: 4,
+    result: { outcome: "not_restored", changeAttempted: true, verification: "failed", completedChecks: ["service_reloaded", "verification_website_health"], websiteHealth: { status: "unhealthy", reason: "website_http_error", statusCodeClass: 5, contentMatched: false, checkedAt: "2026-08-29T00:00:02.000Z" } },
+  }, reused: false });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The website is down" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Check website" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm and repair" }));
+
+  expect(await screen.findByText("The service was reloaded, but the website is still unavailable")).toBeTruthy();
+  expect(screen.getByText(/Do not repeat the repair/)).toBeTruthy();
+});
+
+it("shows durable recent repair history after reopening the host", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.remediationPlans).mockResolvedValue({ plans: [{
+    ...remediationPlan,
+    status: "completed",
+    phase: "finished",
+    completedAt: "2026-08-29T00:02:00.000Z",
+    result: { outcome: "restored", changeAttempted: true, verification: "passed", completedChecks: ["verification_website_health"] },
+  }], count: 1 });
+  renderView();
+
+  const history = await screen.findByText("Recent repair history");
+  fireEvent.click(history);
+  expect(await screen.findByText("Website restored")).toBeTruthy();
 });
 
 it("shows recent sign-ins as owner-readable activity instead of raw journal output", async () => {

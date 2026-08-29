@@ -147,6 +147,7 @@ export interface HostDiagnosticRunStep {
 }
 
 export interface HostDiagnosticRun {
+  id: string;
   version: 1;
   intent: HostDiagnosticRunIntent;
   risk: "read_only";
@@ -154,30 +155,53 @@ export interface HostDiagnosticRun {
   summary: HostDiagnosticSummary;
   primaryAction?: HostDiagnosticAction | null;
   resolvedAddress?: string | null;
+  targetRevision: number;
+  createdAt: string;
 }
 
-export type HostRemediationPlanStatus = "planned" | "running" | "completed" | "failed" | "outcome_unknown" | "expired";
+export type HostRemediationPlanStatus = "planned" | "running" | "not_needed" | "completed" | "completed_unresolved" | "failed" | "outcome_unknown" | "expired";
+
+export interface HostWebsiteHealthSummary {
+  status: "healthy" | "unhealthy";
+  reason: "website_healthy" | "website_timeout" | "website_unreachable" | "website_certificate_invalid" | "website_certificate_mismatch" | "website_http_error" | "website_content_mismatch";
+  statusCodeClass: number | null;
+  contentMatched: boolean;
+  checkedAt: string;
+}
 
 export interface HostRemediationResult {
-  outcome: "restored" | "not_changed" | "verification_incomplete";
+  outcome: "already_healthy" | "restored" | "not_restored" | "not_changed" | "verification_incomplete";
   changeAttempted: boolean;
-  verification: "passed" | "not_started" | "incomplete";
+  verification: "passed" | "failed" | "not_started" | "incomplete";
   completedChecks: string[];
+  websiteHealth?: HostWebsiteHealthSummary;
   error?: string;
 }
 
 export interface HostRemediationPlan {
   id: string;
   sshTargetId: string;
+  diagnosticRunId: string;
+  diagnosticFinding: string;
   profileId: string;
+  siteId: string;
+  publicationId: string;
   action: "reload_managed_website";
+  finding: HostWebsiteHealthSummary["reason"];
   risk: "low";
   status: HostRemediationPlanStatus;
+  phase: "awaiting_confirmation" | "preflight" | "change_pending" | "verification" | "finished";
   checks: string[];
   impact: "brief_connections_may_retry";
   filesChanged: false;
+  initialHealth: HostWebsiteHealthSummary;
   revision: number;
   expiresAt: string;
+  createdAt: string;
+  confirmedAt?: string | null;
+  completedAt?: string | null;
+  lastRecheckedAt?: string | null;
+  lastRecheckedHealth?: HostWebsiteHealthSummary | null;
   result: HostRemediationResult | null;
 }
 

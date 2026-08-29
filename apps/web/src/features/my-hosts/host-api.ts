@@ -23,10 +23,16 @@ export const hostApi = {
     request<{ plan: HostDiagnosticPlan }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/plan`, { input }, true, 30_000),
   diagnoseIssue: (hostId: string, input: string) =>
     request<{ run: HostDiagnosticRun }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/diagnose`, { input, confirmed: true }, true, 180_000),
-  planRemediation: (hostId: string, profileId: string) =>
-    request<{ plan: HostRemediationPlan; reused: boolean }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plan`, { profileId }, true, 30_000),
+  planRemediation: (hostId: string, profileId: string, diagnosticRunId: string) =>
+    request<{ plan: HostRemediationPlan; reused: boolean }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plan`, { profileId, diagnosticRunId }, true, 30_000),
   confirmRemediation: (hostId: string, planId: string, expectedRevision: number) =>
     request<{ plan: HostRemediationPlan; reused: boolean }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plans/${encodeURIComponent(planId)}/confirm`, { confirmed: true, expectedRevision }, true, 180_000),
+  remediationPlans: (hostId: string) =>
+    request<{ plans: HostRemediationPlan[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plans`),
+  remediationPlan: (hostId: string, planId: string) =>
+    request<{ plan: HostRemediationPlan }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plans/${encodeURIComponent(planId)}`),
+  recheckRemediation: (hostId: string, planId: string) =>
+    request<{ plan: HostRemediationPlan }>("POST", `/api/hosts/${encodeURIComponent(hostId)}/assistant/remediation-plans/${encodeURIComponent(planId)}/recheck`, {}, true, 30_000),
   scopes: (hostId: string) =>
     request<{ scopes: HostFileScope[]; count: number }>("GET", `/api/hosts/${encodeURIComponent(hostId)}/file-scopes`),
   scopeSuggestions: (hostId: string) =>

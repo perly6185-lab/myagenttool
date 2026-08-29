@@ -237,6 +237,7 @@ export const persistedArrayKeys = [
   "sitePilotSandboxes",
   "hostFileScopes",
   "hostTlsActivationProfiles",
+  "hostDiagnosticRuns",
   "hostRemediationPlans",
   "hostFileTransfers",
   "workflowSources",
