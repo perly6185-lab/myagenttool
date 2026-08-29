@@ -93,6 +93,32 @@ it("keeps complete connection metadata and settings available in Professional mo
   expect(screen.getByText("Governed transfers")).toBeTruthy();
 });
 
+it("restores a stored desktop credential and reconnects after restart without asking for it again", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const unavailableHost: SshHost = {
+    ...host,
+    authMethod: "password_ref",
+    connectionStatus: "error",
+    capabilities: null,
+    lastConnectionError: { code: "ssh_credential_unavailable", at: "2026-08-29T00:00:00.000Z" },
+  };
+  const readyHost: SshHost = { ...host, authMethod: "password_ref" };
+  vi.mocked(hostApi.list).mockResolvedValueOnce({ hosts: [unavailableHost], count: 1 }).mockResolvedValue({ hosts: [readyHost], count: 1 });
+  vi.mocked(hostApi.verify).mockResolvedValue({ host: readyHost, verification: { capabilities: readyHost.capabilities } });
+  const getSshHostCredentialStatus = vi.fn().mockResolvedValue({
+    desktop: true, secureStorage: true, stored: true, ready: true,
+    reference: readyHost.credentialRef, authMethod: "password_ref",
+  });
+  const saveSshHostCredential = vi.fn();
+  window.myagenttoolDesktop = { getSshHostCredentialStatus, saveSshHostCredential };
+  renderView();
+
+  await waitFor(() => expect(getSshHostCredentialStatus).toHaveBeenCalledWith({ hostId: host.id }));
+  await waitFor(() => expect(hostApi.verify).toHaveBeenCalledWith(host.id));
+  await waitFor(() => expect(screen.getByText("Ready to check this device")).toBeTruthy());
+  expect(saveSshHostCredential).not.toHaveBeenCalled();
+});
+
 it("gives an ordinary user one plain recovery action for invalid sign-in details", async () => {
   useUiStore.setState({ experienceMode: "ordinary" });
   vi.mocked(hostApi.list).mockResolvedValue({ hosts: [{
@@ -138,7 +164,7 @@ it("saves repaired credentials, verifies the existing host, and closes without r
   renderView();
 
   fireEvent.click(await screen.findByRole("button", { name: "Update sign-in details" }));
-  expect(getSshHostCredentialStatus).not.toHaveBeenCalled();
+  expect(getSshHostCredentialStatus).toHaveBeenCalledWith({ hostId: host.id });
   fireEvent.change(screen.getByLabelText("Login password"), { target: { value: "replacement-password" } });
   fireEvent.click(screen.getByRole("button", { name: "Save and reconnect" }));
 

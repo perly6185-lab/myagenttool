@@ -114,11 +114,31 @@ export function MyHostsView() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupForNewHost, setSetupForNewHost] = useState(false);
   const [setupAllowPrivate, setSetupAllowPrivate] = useState(false);
+  const hydratedCredentialHosts = useRef(new Set<string>());
   const selected = hosts.data?.hosts.find((host) => host.id === selectedId) ?? hosts.data?.hosts[0] ?? null;
 
   useEffect(() => {
     if (!selectedId && hosts.data?.hosts[0]) setSelectedId(hosts.data.hosts[0].id);
   }, [hosts.data?.hosts, selectedId]);
+
+  useEffect(() => {
+    const getCredentialStatus = typeof window !== "undefined" ? window.myagenttoolDesktop?.getSshHostCredentialStatus : undefined;
+    if (!selected || selected.authMethod === "ssh_agent" || !getCredentialStatus || hydratedCredentialHosts.current.has(selected.id)) return;
+    hydratedCredentialHosts.current.add(selected.id);
+    let active = true;
+    void Promise.resolve(getCredentialStatus({ hostId: selected.id })).then(async (status) => {
+      if (!active || !status || !("ready" in status) || !status.ready) {
+        hydratedCredentialHosts.current.delete(selected.id);
+        return;
+      }
+      if (selected.lastConnectionError?.code !== "ssh_credential_unavailable") return;
+      await hostApi.verify(selected.id);
+      if (active) await queryClient.invalidateQueries({ queryKey: ["my-hosts"] });
+    }).catch(() => {
+      hydratedCredentialHosts.current.delete(selected.id);
+    });
+    return () => { active = false; };
+  }, [queryClient, selected]);
 
   const refresh = async () => queryClient.invalidateQueries({ queryKey: ["my-hosts"] });
   const copy = zh
