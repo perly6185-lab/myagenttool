@@ -73,6 +73,18 @@ export function normalizeHostRelativePath(value) {
   return parts.join("/");
 }
 
+export function deduplicateHostFileScopes(scopes = []) {
+  const unique = new Map();
+  for (const [index, scope] of scopes.entries()) {
+    const rootPath = String(scope?.resolvedRootPath ?? scope?.rootPath ?? "").trim();
+    const identity = scope?.sshTargetId && scope?.purpose && rootPath
+      ? `${scope.ownerTeamId ?? ""}\0${scope.sshTargetId}\0${scope.purpose}\0${rootPath}`
+      : `scope:${scope?.id ?? index}`;
+    if (!unique.has(identity)) unique.set(identity, scope);
+  }
+  return [...unique.values()];
+}
+
 function sftpCall(sftp, method, ...args) {
   return new Promise((resolve, reject) => {
     if (typeof sftp?.[method] !== "function") {
@@ -518,7 +530,7 @@ export function createHostFileService({ state, now, nextId, appendEvent, persist
   }
 
   function listScopes(target) {
-    return state.hostFileScopes.filter((scope) => scope.sshTargetId === target.id);
+    return deduplicateHostFileScopes(state.hostFileScopes.filter((scope) => scope.sshTargetId === target.id));
   }
 
   async function suggestScopes(target) {

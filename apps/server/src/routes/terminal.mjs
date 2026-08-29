@@ -1,5 +1,5 @@
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
-import { MAX_HOST_UPLOAD_BYTES } from "../services/host-files.mjs";
+import { deduplicateHostFileScopes, MAX_HOST_UPLOAD_BYTES } from "../services/host-files.mjs";
 
 export async function handleTerminalRoutes({
   req,
@@ -189,9 +189,9 @@ export async function handleTerminalRoutes({
 
   if (req.method === "GET" && url.pathname === "/api/host-file-scopes") {
     const purpose = String(url.searchParams.get("purpose") ?? "").trim();
-    const scopes = state.hostFileScopes
+    const scopes = deduplicateHostFileScopes(state.hostFileScopes
       .filter((scope) => findVisibleHostFileScope(state, actor, scope.id) === scope)
-      .filter((scope) => !purpose || scope.purpose === purpose)
+      .filter((scope) => !purpose || scope.purpose === purpose))
       .map((scope) => {
         const host = findVisibleSshTarget(state, actor, scope.sshTargetId);
         if (!host || !myHostTarget(host)) return null;
