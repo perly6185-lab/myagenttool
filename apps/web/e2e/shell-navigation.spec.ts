@@ -39,6 +39,13 @@ async function mockShellApi(page: Page, role?: "owner" | "admin" | "operator" | 
   });
 }
 
+async function readySettingsWorkspace(page: Page) {
+  const settings = page.getByRole("dialog", { name: "My settings" });
+  await expect(settings).toBeVisible();
+  await expect(settings.locator('[data-settings-navigation="ready"]')).toBeVisible();
+  return settings;
+}
+
 test.beforeEach(async ({ page }) => {
   await mockShellApi(page);
   await page.goto("/?section=dashboard");
@@ -68,8 +75,7 @@ test("keeps ordinary desktop navigation concise and nests professional capabilit
   await expect(page).toHaveURL(/section=dashboard/);
 
   await navigation.getByRole("button", { name: "My settings", exact: true }).click();
-  const settings = page.getByRole("dialog", { name: "My settings" });
-  await expect(settings).toBeVisible();
+  const settings = await readySettingsWorkspace(page);
   await settings.getByRole("button", { name: /Apps & connections/ }).click();
   await settings.locator("#settings-subnav-connections").getByRole("button", { name: "Applications", exact: true }).click();
   await expect(settings.getByRole("button", { name: "Apps & connections", exact: true })).toBeVisible();
@@ -108,7 +114,7 @@ test("defaults to a simple task surface and restores professional navigation on 
 
 test("restores professional settings context and keeps favorites within My settings", async ({ page }) => {
   await page.goto("/?section=settings");
-  const settings = page.getByRole("dialog", { name: "My settings" });
+  const settings = await readySettingsWorkspace(page);
   await page.getByRole("button", { name: /Records & diagnostics/ }).click();
   await page.getByRole("button", { name: "Favorite Invocations" }).click();
   await settings.locator("#settings-subnav-diagnostics").getByRole("button", { name: "Invocations", exact: true }).click();
@@ -119,9 +125,11 @@ test("restores professional settings context and keeps favorites within My setti
   await expect(page.getByLabel("Favorites and recent").getByRole("button", { name: "Invocations", exact: true })).toBeVisible();
 
   await page.goto("/?section=settings&settingsCategory=diagnostics&settingsQuery=run%20record");
+  await readySettingsWorkspace(page);
   await expect(page.getByLabel("Search settings", { exact: true })).toHaveValue("run record");
   await expect(settings.locator("section").getByText("Invocations", { exact: true })).toBeVisible();
   await page.reload();
+  await readySettingsWorkspace(page);
   await expect(page.getByLabel("Search settings", { exact: true })).toHaveValue("run record");
 });
 
