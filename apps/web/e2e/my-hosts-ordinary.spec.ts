@@ -37,7 +37,13 @@ type HostFixture = Omit<typeof host, "connectionStatus" | "lastConnectionError">
   lastConnectionError: null | { code: string; at: string };
 };
 
-async function mockOrdinaryHostApi(page: Page, fixture: { host?: HostFixture; scope?: typeof scope | null; transfers?: Array<Record<string, unknown>> } = {}) {
+async function mockOrdinaryHostApi(page: Page, fixture: {
+  host?: HostFixture;
+  scope?: typeof scope | null;
+  transfers?: Array<Record<string, unknown>>;
+  health?: Record<string, unknown>;
+  diagnosticRun?: Record<string, unknown>;
+} = {}) {
   const currentHost = fixture.host ?? host;
   const currentScope = fixture.scope === undefined ? scope : fixture.scope;
   await page.route("http://127.0.0.1:5001/api/**", async (route) => {
@@ -47,6 +53,12 @@ async function mockOrdinaryHostApi(page: Page, fixture: { host?: HostFixture; sc
       projects: [], worktrees: [], projectTargets: [], pendingDecisions: [], evidenceLedger: [], invocations: [], events: [],
     } });
     if (path === "/api/hosts") return route.fulfill({ json: { hosts: [currentHost], count: 1 } });
+    if (path === `/api/hosts/${currentHost.id}/health`) return route.fulfill({ json: fixture.health ?? {
+      policy: { enabled: false, cadence: "daily", nextRunAt: null, lastRunAt: null, lastRunStatus: null, revision: 0 },
+      latestSnapshot: null, snapshots: [], incidents: [], openIncidentCount: 0,
+    } });
+    if (path === `/api/hosts/${currentHost.id}/assistant/remediation-plans`) return route.fulfill({ json: { plans: [], count: 0 } });
+    if (path === `/api/hosts/${currentHost.id}/assistant/diagnose` && fixture.diagnosticRun) return route.fulfill({ json: { run: fixture.diagnosticRun } });
     if (path === `/api/hosts/${currentHost.id}/file-scopes`) return route.fulfill({ json: { scopes: currentScope ? [currentScope] : [], count: currentScope ? 1 : 0 } });
     if (currentScope && path === `/api/host-file-scopes/${currentScope.id}/entries`) return route.fulfill({ json: { scope: currentScope, path: "", count: 2, entries: [
       { name: "docs", path: "docs", type: "directory", accessible: true, size: null, modifiedAt: null },
@@ -96,6 +108,55 @@ async function mockOrdinaryHostApi(page: Page, fixture: { host?: HostFixture; sc
     return route.fulfill({ json: {} });
   });
 }
+
+test("ordinary owners understand an incident and continue with diagnosis-first guidance", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.addInitScript(() => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({
+      state: { locale: "zh-CN", section: "myHosts", experienceMode: "ordinary" },
+      version: 1,
+    }));
+  });
+  await mockOrdinaryHostApi(page, {
+    health: {
+      policy: { enabled: true, cadence: "daily", nextRunAt: "2026-09-01T00:00:00.000Z", lastRunAt: "2026-08-31T00:00:00.000Z", lastRunStatus: "needs_attention", revision: 2 },
+      latestSnapshot: {
+        id: "hhs_storage", version: 1, source: "scheduled", status: "needs_attention", reason: "findings_detected", severity: "critical",
+        findings: [{ key: "disk_usage:disk_capacity_critical", action: "disk_usage", severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space" }],
+        checkedActions: ["connection", "disk_usage"], diagnosticRunId: "hdr_health", checkedAt: "2026-08-31T00:00:00.000Z",
+      },
+      snapshots: [],
+      incidents: [{
+        id: "hhi_storage", key: "disk_usage:disk_capacity_critical", action: "disk_usage", severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space",
+        status: "open", occurrenceCount: 2, firstSeenAt: "2026-08-30T18:00:00.000Z", lastSeenAt: "2026-08-31T00:00:00.000Z", openedAt: "2026-08-31T00:00:00.000Z", recoveredAt: null,
+      }],
+      openIncidentCount: 1,
+    },
+    diagnosticRun: {
+      id: "hdr_storage", targetRevision: host.revision, createdAt: "2026-08-31T00:00:00.000Z", version: 1, intent: "performance", risk: "read_only", primaryAction: "disk_usage",
+      understanding: { version: 1, goal: "improve", domain: "storage", symptom: "storage_pressure", desiredOutcome: "free_space", requestedChange: "none", handling: "read_only_diagnosis", confidence: "high" },
+      summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [{ key: "diagnostic_completed_count", value: "1", severity: "info" }] },
+      steps: [{ action: "disk_usage", status: "completed", summary: { version: 1, severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space", facts: [{ key: "disk_used_percent", value: "95%", severity: "critical" }] } }],
+    },
+  });
+  await page.goto("/?section=myHosts");
+
+  await expect(page.getByText("设备空间严重不足")).toBeVisible();
+  await expect(page.getByText("上传、保存或发布文件可能失败。")).toBeVisible();
+  await expect(page.getByText("先清理一些设备空间，然后重试刚才的操作。")).toBeVisible();
+  await page.getByRole("button", { name: "继续帮我检查" }).click();
+  await expect(page.getByText("我理解你的目标是")).toBeVisible();
+  await expect(page.getByText("释放足够的设备空间")).toBeVisible();
+  await expect(page.getByText("我按这个目标完成了只读检查，没有修改设备。")).toBeVisible();
+  await expect(page.getByText("df -h")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("host-incident-guidance-1440w.png"), fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await page.getByText("我理解你的目标是").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("host-incident-guidance-390w.png"), fullPage: true });
+});
 
 test("ordinary owners use My Hosts directly on desktop and mobile without professional metadata", async ({ page }, testInfo) => {
   await page.addInitScript(() => {

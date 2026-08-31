@@ -357,6 +357,17 @@ export function createServerState({ defaultProjectPath, now }) {
     // Fixed, non-shell TLS activation profiles. Container names and scope
     // references are durable; commands and credentials are never persisted.
     hostTlsActivationProfiles: [],
+    // Immutable structured summaries for ordinary-user host diagnostic runs.
+    // Raw command output, addresses, usernames, and log lines stay session-only.
+    hostDiagnosticRuns: [],
+    // Short-lived, revision-bound fixed remediation plans and their structured
+    // outcomes. Commands, remote output, addresses, and credentials stay out.
+    hostRemediationPlans: [],
+    // Opt-in read-only monitoring policy, bounded structured snapshots, and
+    // deduplicated issue lifecycles. Raw remote output and credentials stay out.
+    hostHealthPolicies: [],
+    hostHealthSnapshots: [],
+    hostHealthIncidents: [],
     // Transfer metadata and audit status only. Uploaded/downloaded bytes are
     // intentionally never stored in the control-plane snapshot.
     hostFileTransfers: [],

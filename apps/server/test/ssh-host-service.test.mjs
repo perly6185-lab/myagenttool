@@ -12,6 +12,7 @@ function harness({ verifyError = null, credentialResult = { ok: true, credential
   };
   const events = [];
   const resolvedCredentials = [];
+  const fixedActions = [];
   let sequence = 0;
   const service = createTerminalService({
     state,
@@ -32,13 +33,16 @@ function harness({ verifyError = null, credentialResult = { ok: true, credential
         if (verifyError) throw verifyError;
         return { fingerprint: FINGERPRINT, resolvedAddress: "203.0.113.30", capabilities: { sftp: true, sftpVersion: 3, posixRename: true, symlink: true } };
       },
-      runFixedCommand: async (_target, _credential, action) => ({
-        resolvedAddress: "203.0.113.30",
-        value: { action, ok: true, output: "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        20G   8G   12G  40% /" },
-      }),
+      runFixedCommand: async (_target, _credential, action) => {
+        fixedActions.push(action);
+        return {
+          resolvedAddress: "203.0.113.30",
+          value: { action, ok: true, output: "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        20G   8G   12G  40% /" },
+        };
+      },
     },
   });
-  return { state, events, resolvedCredentials, service };
+  return { state, events, fixedActions, resolvedCredentials, service };
 }
 
 test("promotes a file-transfer host from observation through explicit trust to ready", async () => {
@@ -195,5 +199,48 @@ test("plans ordinary host questions without producing arbitrary shell", () => {
   });
   assert.deepEqual(service.planSshHostDiagnostic("查看当前登录用户"), {
     ok: true, action: "login_sessions", command: "who", risk: "read_only",
+  });
+});
+
+test("runs a bounded multi-step diagnosis for an ordinary host problem", async () => {
+  const { events, fixedActions, service, state } = harness();
+  const target = service.createSshTarget({ host: "host.example", user: "deploy", authMethod: "private_key_ref", purpose: "file_transfer" });
+  target.connectionStatus = "ready";
+  target.trustStatus = "pinned";
+  target.knownHostFingerprint = FINGERPRINT;
+
+  const result = await service.runSshHostDiagnosticRun(target, "The machine is very slow", { userId: "usr_operator" });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.run.intent, "performance");
+  assert.deepEqual(result.run.understanding, {
+    version: 1, goal: "improve", domain: "performance", symptom: "slow", desiredOutcome: "improve_performance",
+    requestedChange: "none", handling: "read_only_diagnosis", confidence: "high",
+  });
+  assert.match(result.run.id, /^hdr_/);
+  assert.equal(result.run.targetRevision, target.revision);
+  assert.equal(state.hostDiagnosticRuns.length, 1);
+  assert.equal(state.hostDiagnosticRuns[0].createdByUserId, "usr_operator");
+  assert.deepEqual(fixedActions, ["uptime", "disk_usage", "memory_usage", "processes", "failed_services"]);
+  assert.equal(result.run.steps.length, 5);
+  assert.equal(result.run.steps.every((step) => step.status === "completed"), true);
+  assert.equal(result.run.steps.every((step) => step.command === undefined && step.output === undefined), true);
+  assert.equal(typeof result.run.primaryAction, "string");
+  assert.equal(result.run.summary.facts.find((fact) => fact.key === "diagnostic_completed_count")?.value, "5");
+  assert.equal(events.at(-1)?.type, "ssh.host_diagnostic_run.completed");
+  assert.equal(JSON.stringify(events.at(-1)).includes("/dev/sda1"), false);
+  assert.equal(events.at(-1)?.data?.understanding?.desiredOutcome, "improve_performance");
+  assert.equal(JSON.stringify(events.at(-1)).includes("The machine is very slow"), false);
+});
+
+test("rejects unsafe or unsupported multi-step diagnostic requests", async () => {
+  const { service } = harness();
+  const target = service.createSshTarget({ host: "host.example", user: "deploy", authMethod: "private_key_ref", purpose: "file_transfer" });
+  target.connectionStatus = "ready";
+  target.trustStatus = "pinned";
+  target.knownHostFingerprint = FINGERPRINT;
+
+  assert.deepEqual(await service.runSshHostDiagnosticRun(target, "delete logs && reboot"), {
+    ok: false, status: 422, error: "ssh_diagnostic_intent_unsupported",
   });
 });

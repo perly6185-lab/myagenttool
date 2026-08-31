@@ -181,6 +181,33 @@ test("creates a list-only scope after checking every root directory component", 
   assert.equal(JSON.stringify(events).includes("PRIVATE-KEY-MATERIAL"), false);
 });
 
+test("reuses an existing file scope when the same folder is added again", async () => {
+  const { state, events, service, target } = harness();
+  const created = await service.createScope(target, { label: "Website files", purpose: "site_publish", rootPath: "/srv/www/example" });
+  const repeated = await service.createScope(target, { label: "Website files again", purpose: "site_publish", rootPath: "/srv/www/example" });
+
+  assert.equal(created.ok, true);
+  assert.equal(created.reused, false);
+  assert.equal(repeated.ok, true);
+  assert.equal(repeated.reused, true);
+  assert.equal(repeated.scope, created.scope);
+  assert.equal(state.hostFileScopes.length, 1);
+  assert.equal(events.filter((event) => event.type === "ssh.host_file_scope.created").length, 1);
+});
+
+test("lists historical duplicate scopes once without deleting their records", () => {
+  const { state, service, target } = harness();
+  const canonical = {
+    id: "hfs_original", ownerTeamId: "team_a", sshTargetId: target.id,
+    purpose: "site_publish", rootPath: "/srv/www/example", resolvedRootPath: "/srv/www/example",
+  };
+  const duplicate = { ...canonical, id: "hfs_duplicate", label: "Historical duplicate" };
+  state.hostFileScopes.push(canonical, duplicate);
+
+  assert.deepEqual(service.listScopes(target).map((scope) => scope.id), [canonical.id]);
+  assert.deepEqual(state.hostFileScopes.map((scope) => scope.id), [canonical.id, duplicate.id]);
+});
+
 test("discovers only verified dedicated content directories and recommends managed sites", async () => {
   const { service, target } = harness(discoverySftp());
   const result = await service.suggestScopes(target);

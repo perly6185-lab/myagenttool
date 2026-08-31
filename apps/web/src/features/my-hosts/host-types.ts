@@ -19,6 +19,7 @@ export interface SshHost {
   lastConnectionError: { code: string; at: string } | null;
   verifiedAt: string | null;
   revision: number;
+  healthSummary?: { status: HostHealthStatus | null; checkedAt: string | null; openIncidentCount: number; monitoringEnabled: boolean };
 }
 
 export type HostFileScopePurpose = "general_files" | "site_publish" | "backup" | "tls_certificate";
@@ -132,6 +133,140 @@ export interface HostDiagnosticPlan {
   command: string;
   risk: "read_only";
   parameters?: HostDiagnosticParameters;
+}
+
+export type HostDiagnosticRunIntent = "health" | "performance" | "website" | "security" | "containers" | "targeted";
+
+export interface HostOperationsIntentUnderstanding {
+  version: 1;
+  goal: "inspect" | "restore" | "improve" | "secure";
+  domain: "device" | "website" | "performance" | "storage" | "memory" | "network" | "security" | "containers" | "service" | "logs";
+  symptom: "unspecified" | "unavailable" | "slow" | "storage_pressure" | "memory_pressure" | "high_load" | "suspicious_access";
+  desiredOutcome: "understand_state" | "restore_availability" | "improve_performance" | "free_space" | "verify_security";
+  requestedChange: "none" | "restart_service" | "cleanup_storage" | "stop_process" | "change_access" | "other_change";
+  handling: "read_only_diagnosis" | "diagnose_before_change";
+  confidence: "high" | "medium";
+}
+
+export interface HostDiagnosticRunStep {
+  action: HostDiagnosticAction;
+  parameters?: HostDiagnosticParameters;
+  status: "completed" | "unavailable";
+  command?: string;
+  output?: string;
+  summary?: HostDiagnosticSummary;
+  error?: string;
+}
+
+export interface HostDiagnosticRun {
+  id: string;
+  version: 1;
+  intent: HostDiagnosticRunIntent;
+  understanding?: HostOperationsIntentUnderstanding;
+  risk: "read_only";
+  steps: HostDiagnosticRunStep[];
+  summary: HostDiagnosticSummary;
+  primaryAction?: HostDiagnosticAction | null;
+  resolvedAddress?: string | null;
+  targetRevision: number;
+  createdAt: string;
+}
+
+export type HostRemediationPlanStatus = "planned" | "running" | "not_needed" | "completed" | "completed_unresolved" | "failed" | "outcome_unknown" | "expired";
+
+export interface HostWebsiteHealthSummary {
+  status: "healthy" | "unhealthy";
+  reason: "website_healthy" | "website_timeout" | "website_unreachable" | "website_certificate_invalid" | "website_certificate_mismatch" | "website_http_error" | "website_content_mismatch";
+  statusCodeClass: number | null;
+  contentMatched: boolean;
+  checkedAt: string;
+}
+
+export interface HostRemediationResult {
+  outcome: "already_healthy" | "restored" | "not_restored" | "not_changed" | "verification_incomplete";
+  changeAttempted: boolean;
+  verification: "passed" | "failed" | "not_started" | "incomplete";
+  completedChecks: string[];
+  websiteHealth?: HostWebsiteHealthSummary;
+  error?: string;
+}
+
+export interface HostRemediationPlan {
+  id: string;
+  sshTargetId: string;
+  diagnosticRunId: string;
+  diagnosticFinding: string;
+  profileId: string;
+  siteId: string;
+  publicationId: string;
+  action: "reload_managed_website";
+  finding: HostWebsiteHealthSummary["reason"];
+  risk: "low";
+  status: HostRemediationPlanStatus;
+  phase: "awaiting_confirmation" | "preflight" | "change_pending" | "verification" | "finished";
+  checks: string[];
+  impact: "brief_connections_may_retry";
+  filesChanged: false;
+  initialHealth: HostWebsiteHealthSummary;
+  revision: number;
+  expiresAt: string;
+  createdAt: string;
+  confirmedAt?: string | null;
+  completedAt?: string | null;
+  lastRecheckedAt?: string | null;
+  lastRecheckedHealth?: HostWebsiteHealthSummary | null;
+  result: HostRemediationResult | null;
+}
+
+export type HostHealthStatus = "healthy" | "needs_attention" | "paused" | "unknown";
+
+export interface HostHealthPolicy {
+  enabled: boolean;
+  cadence: "every_6_hours" | "daily";
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastRunStatus: HostHealthStatus | null;
+  revision: number;
+}
+
+export interface HostHealthFinding {
+  key: string;
+  action: HostDiagnosticAction | "connection";
+  severity: "warning" | "critical";
+  finding: string;
+  impact: string;
+  nextAction: string;
+}
+
+export interface HostHealthSnapshot {
+  id: string;
+  version: 1;
+  source: "manual" | "scheduled";
+  status: HostHealthStatus;
+  reason: "sign_in_required" | "setup_required" | "device_unreachable" | "check_incomplete" | "findings_detected" | "no_obvious_issue";
+  severity: HostDiagnosticSeverity;
+  findings: HostHealthFinding[];
+  checkedActions: Array<HostDiagnosticAction | "connection">;
+  diagnosticRunId: string | null;
+  checkedAt: string;
+}
+
+export interface HostHealthIncident extends HostHealthFinding {
+  id: string;
+  status: "open" | "recovered";
+  occurrenceCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  openedAt: string | null;
+  recoveredAt: string | null;
+}
+
+export interface HostHealthOverview {
+  policy: HostHealthPolicy;
+  latestSnapshot: HostHealthSnapshot | null;
+  snapshots: HostHealthSnapshot[];
+  incidents: HostHealthIncident[];
+  openIncidentCount: number;
 }
 
 export type HostFileConflictPolicy = "deny" | "rename" | "replace";

@@ -6,12 +6,12 @@ import { i18n } from "@/lib/i18n";
 import { ApiError } from "@/lib/api/request";
 import { useUiStore } from "@/store/ui-store";
 import { hostApi } from "./host-api";
-import type { HostFileScope, SshHost } from "./host-types";
+import type { HostFileScope, HostRemediationPlan, HostTlsActivationProfile, SshHost } from "./host-types";
 import { MyHostsView } from "./my-hosts-view";
 
 vi.mock("./host-api", () => ({ MAX_HOST_UPLOAD_BYTES: 10 * 1024 * 1024, MAX_HOST_DOWNLOAD_BYTES: 25 * 1024 * 1024, hostApi: {
   list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
-  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
+  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), diagnoseIssue: vi.fn(), planRemediation: vi.fn(), confirmRemediation: vi.fn(), remediationPlans: vi.fn(), remediationPlan: vi.fn(), recheckRemediation: vi.fn(), health: vi.fn(), checkHealth: vi.fn(), setHealthMonitoring: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
 } }));
 
 const host: SshHost = {
@@ -24,6 +24,17 @@ const host: SshHost = {
 const scope: HostFileScope = {
   id: "hfs_1", sshTargetId: host.id, label: "Website files", purpose: "site_publish", rootPath: "/srv/www/site", resolvedRootPath: "/srv/www/site",
   permissions: ["list"], status: "ready", revision: 1, lastVerifiedAt: "2026-08-25T00:00:00.000Z",
+};
+const tlsProfile: HostTlsActivationProfile = {
+  id: "htp_1", sshTargetId: host.id, certificateScopeId: "hfs_tls", label: "Production website",
+  type: "docker_nginx", containerName: "site-nginx", status: "ready", lastVerifiedAt: "2026-08-25T00:00:00.000Z", revision: 2,
+};
+const remediationPlan: HostRemediationPlan = {
+  id: "hrp_1", sshTargetId: host.id, diagnosticRunId: "hdr_website", diagnosticFinding: "host_critical_findings", profileId: tlsProfile.id,
+  siteId: "site_1", publicationId: "spb_1", action: "reload_managed_website", finding: "website_unreachable", risk: "low", status: "planned", phase: "awaiting_confirmation",
+  checks: ["website_health", "container_running", "configuration_valid", "reload_service", "container_running", "configuration_valid", "website_health"],
+  impact: "brief_connections_may_retry", filesChanged: false, initialHealth: { status: "unhealthy", reason: "website_unreachable", statusCodeClass: null, contentMatched: false, checkedAt: "2026-08-29T00:00:00.000Z" },
+  revision: 1, createdAt: "2026-08-29T00:00:00.000Z", expiresAt: "2026-08-29T00:10:00.000Z", result: null,
 };
 
 function renderView() {
@@ -47,8 +58,35 @@ beforeEach(async () => {
   ] });
   vi.mocked(hostApi.transfers).mockResolvedValue({ transfers: [], count: 0 });
   vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
+  vi.mocked(hostApi.remediationPlans).mockResolvedValue({ plans: [], count: 0 });
+  vi.mocked(hostApi.remediationPlan).mockResolvedValue({ plan: remediationPlan });
+  vi.mocked(hostApi.health).mockResolvedValue({
+    policy: { enabled: false, cadence: "daily", nextRunAt: null, lastRunAt: null, lastRunStatus: null, revision: 0 },
+    latestSnapshot: null, snapshots: [], incidents: [], openIncidentCount: 0,
+  });
+  vi.mocked(hostApi.checkHealth).mockResolvedValue({ snapshot: {
+    id: "hhs_1", version: 1, source: "manual", status: "healthy", reason: "no_obvious_issue", severity: "healthy",
+    findings: [], checkedActions: ["disk_usage"], diagnosticRunId: "hdr_health", checkedAt: "2026-08-29T00:00:00.000Z",
+  } });
+  vi.mocked(hostApi.setHealthMonitoring).mockResolvedValue({ policy: { enabled: true, cadence: "daily", nextRunAt: "2026-08-30T00:00:00.000Z", lastRunAt: null, lastRunStatus: null, revision: 1 } });
+  vi.mocked(hostApi.recheckRemediation).mockResolvedValue({ plan: { ...remediationPlan, status: "outcome_unknown", phase: "finished", lastRecheckedAt: "2026-08-29T00:03:00.000Z", lastRecheckedHealth: { status: "healthy", reason: "website_healthy", statusCodeClass: 2, contentMatched: true, checkedAt: "2026-08-29T00:03:00.000Z" } } });
+  vi.mocked(hostApi.planRemediation).mockResolvedValue({ plan: remediationPlan, reused: false });
+  vi.mocked(hostApi.confirmRemediation).mockResolvedValue({ plan: { ...remediationPlan, status: "completed", revision: 3, result: { outcome: "restored", changeAttempted: true, verification: "passed", completedChecks: ["preflight_container_running", "preflight_configuration_valid", "service_reloaded", "verification_container_running", "verification_configuration_valid"] } }, reused: false });
   vi.mocked(hostApi.diagnose).mockResolvedValue({ result: { action: "disk_usage", command: "df -h", output: "Filesystem\n/dev/sda1 20G 8G 12G 40% /", summary: { version: 1, severity: "healthy", finding: "disk_capacity_healthy", impact: "no_issue_detected", nextAction: "no_action_needed", facts: [{ key: "disk_used_percent", value: "40%", severity: "healthy" }] } } });
   vi.mocked(hostApi.planDiagnostic).mockResolvedValue({ plan: { action: "disk_usage", command: "df -h", risk: "read_only" } });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
+    id: "hdr_performance", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "performance", risk: "read_only", primaryAction: "disk_usage",
+    understanding: { version: 1, goal: "improve", domain: "performance", symptom: "slow", desiredOutcome: "improve_performance", requestedChange: "none", handling: "read_only_diagnosis", confidence: "high" },
+    summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [
+      { key: "diagnostic_completed_count", value: "2", severity: "info" },
+      { key: "diagnostic_issue_count", value: "1", severity: "warning" },
+      { key: "diagnostic_unavailable_count", value: "0", severity: "healthy" },
+    ] },
+    steps: [
+      { action: "disk_usage", status: "completed", summary: { version: 1, severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space", facts: [{ key: "disk_used_percent", value: "95%", severity: "critical" }] } },
+      { action: "processes", status: "completed", summary: { version: 1, severity: "info", finding: "process_activity_ready", impact: "information_only", nextAction: "review_process_activity", facts: [] } },
+    ],
+  } });
 });
 afterEach(() => cleanup());
 
@@ -79,6 +117,76 @@ it("keeps complete connection metadata and settings available in Professional mo
   expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
   expect(screen.getByText("File ranges")).toBeTruthy();
   expect(screen.getByText("Governed transfers")).toBeTruthy();
+});
+
+it("gives ordinary users one clear health check and opt-in daily care without technical output", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  renderView();
+
+  expect(await screen.findByText("Device care")).toBeTruthy();
+  expect(screen.getByText("No health record yet")).toBeTruthy();
+  expect(screen.getByText(/never cleans, restarts, or changes the device automatically/i)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+  await waitFor(() => expect(hostApi.checkHealth).toHaveBeenCalledWith(host.id));
+  fireEvent.click(screen.getByRole("button", { name: "Check daily for me" }));
+  await waitFor(() => expect(hostApi.setHealthMonitoring).toHaveBeenCalledWith(host.id, { enabled: true, cadence: "daily" }));
+  expect(screen.queryByText("df -h")).toBeNull();
+});
+
+it("explains an open health incident and continues with the matching read-only diagnosis", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.list).mockResolvedValue({ hosts: [{ ...host, healthSummary: { status: "needs_attention", checkedAt: "2026-08-29T00:00:00.000Z", openIncidentCount: 1, monitoringEnabled: true } }], count: 1 });
+  vi.mocked(hostApi.health).mockResolvedValue({
+    policy: { enabled: true, cadence: "daily", nextRunAt: "2026-08-30T00:00:00.000Z", lastRunAt: "2026-08-29T00:00:00.000Z", lastRunStatus: "needs_attention", revision: 2 },
+    latestSnapshot: {
+      id: "hhs_warning", version: 1, source: "scheduled", status: "needs_attention", reason: "findings_detected", severity: "critical",
+      findings: [{ key: "disk_usage:disk_capacity_critical", action: "disk_usage", severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space" }],
+      checkedActions: ["connection", "disk_usage"], diagnosticRunId: "hdr_health", checkedAt: "2026-08-29T00:00:00.000Z",
+    },
+    snapshots: [],
+    incidents: [{
+      id: "hhi_disk", key: "disk_usage:disk_capacity_critical", action: "disk_usage", severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space",
+      status: "open", occurrenceCount: 2, firstSeenAt: "2026-08-28T18:00:00.000Z", lastSeenAt: "2026-08-29T00:00:00.000Z", openedAt: "2026-08-29T00:00:00.000Z", recoveredAt: null,
+    }],
+    openIncidentCount: 1,
+  });
+  renderView();
+
+  expect((await screen.findAllByText("Needs attention")).length).toBeGreaterThan(0);
+  expect(await screen.findByText("Device space is critically low")).toBeTruthy();
+  expect(screen.getByText("Uploads, saves, or publishing may fail.")).toBeTruthy();
+  expect(screen.getByText("Free some device space, then retry the operation.")).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Continue checking" }));
+  await waitFor(() => expect(hostApi.diagnoseIssue).toHaveBeenCalledWith(host.id, "Check disk space"));
+  expect((screen.getByPlaceholderText("For example: who signed in recently?") as HTMLInputElement).value).toBe("Check disk space");
+  expect(await screen.findByText("Combined check complete · 2/2")).toBeTruthy();
+});
+
+it("restores a stored desktop credential and reconnects after restart without asking for it again", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const unavailableHost: SshHost = {
+    ...host,
+    authMethod: "password_ref",
+    connectionStatus: "error",
+    capabilities: null,
+    lastConnectionError: { code: "ssh_credential_unavailable", at: "2026-08-29T00:00:00.000Z" },
+  };
+  const readyHost: SshHost = { ...host, authMethod: "password_ref" };
+  vi.mocked(hostApi.list).mockResolvedValueOnce({ hosts: [unavailableHost], count: 1 }).mockResolvedValue({ hosts: [readyHost], count: 1 });
+  vi.mocked(hostApi.verify).mockResolvedValue({ host: readyHost, verification: { capabilities: readyHost.capabilities } });
+  const getSshHostCredentialStatus = vi.fn().mockResolvedValue({
+    desktop: true, secureStorage: true, stored: true, ready: true,
+    reference: readyHost.credentialRef, authMethod: "password_ref",
+  });
+  const saveSshHostCredential = vi.fn();
+  window.myagenttoolDesktop = { getSshHostCredentialStatus, saveSshHostCredential };
+  renderView();
+
+  await waitFor(() => expect(getSshHostCredentialStatus).toHaveBeenCalledWith({ hostId: host.id }));
+  await waitFor(() => expect(hostApi.verify).toHaveBeenCalledWith(host.id));
+  await waitFor(() => expect(screen.getByText("Ready to check this device")).toBeTruthy());
+  expect(saveSshHostCredential).not.toHaveBeenCalled();
 });
 
 it("gives an ordinary user one plain recovery action for invalid sign-in details", async () => {
@@ -126,7 +234,7 @@ it("saves repaired credentials, verifies the existing host, and closes without r
   renderView();
 
   fireEvent.click(await screen.findByRole("button", { name: "Update sign-in details" }));
-  expect(getSshHostCredentialStatus).not.toHaveBeenCalled();
+  expect(getSshHostCredentialStatus).toHaveBeenCalledWith({ hostId: host.id });
   fireEvent.change(screen.getByLabelText("Login password"), { target: { value: "replacement-password" } });
   fireEvent.click(screen.getByRole("button", { name: "Save and reconnect" }));
 
@@ -441,6 +549,183 @@ it("lets ordinary owners run a check directly and hides technical evidence", asy
   expect(screen.queryByText("df -h")).toBeNull();
   expect(screen.queryByText(/private-volume/)).toBeNull();
   expect(screen.queryByText(/10\.10\.10\.222/)).toBeNull();
+});
+
+it("turns an ordinary problem description into one combined diagnostic run", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The machine is very slow" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+  await waitFor(() => expect(hostApi.diagnoseIssue).toHaveBeenCalledWith(host.id, "The machine is very slow"));
+  expect(hostApi.planDiagnostic).not.toHaveBeenCalled();
+  expect(await screen.findByText("Combined check complete · 2/2")).toBeTruthy();
+  expect(screen.getByText("find why device performance is slow and get it running smoothly")).toBeTruthy();
+  expect(screen.getByText("I ran read-only checks for this goal and did not change the device.")).toBeTruthy();
+  expect(screen.getByText("Items needing attention were found")).toBeTruthy();
+  expect(screen.getByText("First lead to review")).toBeTruthy();
+  expect(screen.getByText("Device space is critically low")).toBeTruthy();
+  expect(screen.getByText("Resource-use information is available")).toBeTruthy();
+  expect(screen.queryByText("df -h")).toBeNull();
+  expect(screen.queryByText("/dev/sda1 95% /")).toBeNull();
+});
+
+it("acknowledges a requested host change but keeps the ordinary flow diagnosis-first", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValueOnce({ run: {
+    id: "hdr_cleanup", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "performance", risk: "read_only", primaryAction: "disk_usage",
+    understanding: { version: 1, goal: "restore", domain: "storage", symptom: "storage_pressure", desiredOutcome: "free_space", requestedChange: "cleanup_storage", handling: "diagnose_before_change", confidence: "high" },
+    summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
+    steps: [{ action: "disk_usage", status: "completed", summary: { version: 1, severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space", facts: [] } }],
+  } });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The disk is full, clean it up for me" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+  expect(await screen.findByText("free enough device storage")).toBeTruthy();
+  expect(screen.getByText(/You requested a change\. I checked the cause first and did not perform it/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /clean|delete|confirm/i })).toBeNull();
+});
+
+it("shows one reviewed website repair and verifies it after a single confirmation", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [tlsProfile], count: 1 });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
+    id: "hdr_website", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
+    summary: { version: 1, severity: "critical", finding: "host_critical_findings", impact: "host_operation_may_be_affected", nextAction: "review_critical_findings", facts: [] },
+    steps: [{ action: "failed_services", status: "completed", summary: { version: 1, severity: "critical", finding: "failed_services_found", impact: "service_may_be_unavailable", nextAction: "inspect_failed_services", facts: [{ key: "failed_service_count", value: "1", severity: "critical" }] } }],
+  } });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The website is down" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+  expect(await screen.findByText("Check whether the website is actually available")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Check website" }));
+  await waitFor(() => expect(hostApi.planRemediation).toHaveBeenCalledWith(host.id, tlsProfile.id, "hdr_website"));
+  expect(hostApi.confirmRemediation).not.toHaveBeenCalled();
+  expect(await screen.findByText("Reload the verified website service")).toBeTruthy();
+  expect(screen.getByText(/Website files are not changed/)).toBeTruthy();
+  expect(screen.queryByText("site-nginx")).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "Confirm and repair" }));
+  await waitFor(() => expect(hostApi.confirmRemediation).toHaveBeenCalledWith(host.id, remediationPlan.id, remediationPlan.revision));
+  expect(await screen.findByText("The website is available again")).toBeTruthy();
+});
+
+it("explains why an unbound website cannot be repaired instead of hiding the next step", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
+    id: "hdr_website_unbound", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
+    summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
+    steps: [{ action: "failed_services", status: "completed", summary: { version: 1, severity: "warning", finding: "failed_services_found", impact: "service_may_be_unavailable", nextAction: "inspect_failed_services", facts: [] } }],
+  } });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The website is down" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+  expect(await screen.findByText("No safely managed website service is configured")).toBeTruthy();
+  expect(screen.getByText(/will not guess which service to reload/i)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Confirm and repair" })).toBeNull();
+});
+
+it("does not offer an automatic retry when website repair verification is incomplete", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [tlsProfile], count: 1 });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
+    id: "hdr_website", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
+    summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
+    steps: [{ action: "failed_services", status: "completed", summary: { version: 1, severity: "warning", finding: "service_not_running", impact: "service_may_be_unavailable", nextAction: "inspect_service_setup", facts: [] } }],
+  } });
+  vi.mocked(hostApi.confirmRemediation).mockResolvedValue({ plan: { ...remediationPlan, status: "outcome_unknown", revision: 3, result: { outcome: "verification_incomplete", changeAttempted: true, verification: "incomplete", completedChecks: ["service_reloaded"] } }, reused: false });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The website is down" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Check website" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm and repair" }));
+
+  expect(await screen.findByText("The repair ran, but the final state is not confirmed")).toBeTruthy();
+  expect(screen.getByText(/before attempting anything again/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+  expect(hostApi.confirmRemediation).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Check website again" }));
+  await waitFor(() => expect(hostApi.recheckRemediation).toHaveBeenCalledWith(host.id, remediationPlan.id));
+  expect(await screen.findByText("The website is available after a fresh check")).toBeTruthy();
+  expect(hostApi.confirmRemediation).toHaveBeenCalledTimes(1);
+});
+
+it("stops without confirmation when the real website is already healthy", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [tlsProfile], count: 1 });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
+    id: "hdr_website", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "website", risk: "read_only", primaryAction: "recent_logs",
+    summary: { version: 1, severity: "info", finding: "host_no_obvious_issue", impact: "host_no_obvious_impact", nextAction: "continue_targeted_diagnosis", facts: [] },
+    steps: [{ action: "recent_logs", status: "completed", summary: { version: 1, severity: "info", finding: "recent_logs_ready", impact: "information_only", nextAction: "review_recent_events", facts: [] } }],
+  } });
+  vi.mocked(hostApi.planRemediation).mockResolvedValue({ plan: {
+    ...remediationPlan,
+    status: "not_needed",
+    phase: "finished",
+    finding: "website_healthy",
+    initialHealth: { status: "healthy", reason: "website_healthy", statusCodeClass: 2, contentMatched: true, checkedAt: "2026-08-29T00:00:01.000Z" },
+    result: { outcome: "already_healthy", changeAttempted: false, verification: "passed", completedChecks: ["preflight_website_healthy"] },
+  }, reused: false });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The website is down" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Check website" }));
+
+  expect(await screen.findByText("The website is available; no repair is needed")).toBeTruthy();
+  expect(hostApi.confirmRemediation).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "Confirm and repair" })).toBeNull();
+});
+
+it("distinguishes a completed reload from an actually restored website", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [tlsProfile], count: 1 });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
+    id: "hdr_website", targetRevision: host.revision, createdAt: "2026-08-29T00:00:00.000Z", version: 1, intent: "website", risk: "read_only", primaryAction: "failed_services",
+    summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [] },
+    steps: [{ action: "failed_services", status: "completed", summary: { version: 1, severity: "warning", finding: "service_not_running", impact: "service_may_be_unavailable", nextAction: "inspect_service_setup", facts: [] } }],
+  } });
+  vi.mocked(hostApi.confirmRemediation).mockResolvedValue({ plan: {
+    ...remediationPlan,
+    status: "completed_unresolved",
+    phase: "finished",
+    revision: 4,
+    result: { outcome: "not_restored", changeAttempted: true, verification: "failed", completedChecks: ["service_reloaded", "verification_website_health"], websiteHealth: { status: "unhealthy", reason: "website_http_error", statusCodeClass: 5, contentMatched: false, checkedAt: "2026-08-29T00:00:02.000Z" } },
+  }, reused: false });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The website is down" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Check website" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm and repair" }));
+
+  expect(await screen.findByText("The service was reloaded, but the website is still unavailable")).toBeTruthy();
+  expect(screen.getByText(/Do not repeat the repair/)).toBeTruthy();
+});
+
+it("shows durable recent repair history after reopening the host", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  vi.mocked(hostApi.remediationPlans).mockResolvedValue({ plans: [{
+    ...remediationPlan,
+    status: "completed",
+    phase: "finished",
+    completedAt: "2026-08-29T00:02:00.000Z",
+    result: { outcome: "restored", changeAttempted: true, verification: "passed", completedChecks: ["verification_website_health"] },
+  }], count: 1 });
+  renderView();
+
+  const history = await screen.findByText("Recent repair history");
+  fireEvent.click(history);
+  expect(await screen.findByText("Website restored")).toBeTruthy();
 });
 
 it("shows recent sign-ins as owner-readable activity instead of raw journal output", async () => {

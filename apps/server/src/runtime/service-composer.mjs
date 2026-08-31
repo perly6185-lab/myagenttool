@@ -212,6 +212,9 @@ import { createTerminalService } from "../services/terminal.mjs";
 import { createSshHostConnector } from "../services/ssh-host-connector.mjs";
 import { createHostFileService } from "../services/host-files.mjs";
 import { createHostTlsActivationProfileService } from "../services/host-tls-activation-profiles.mjs";
+import { createHostRemediationService } from "../services/host-remediation.mjs";
+import { createPinnedWebsiteHealthChecker } from "../services/host-website-health.mjs";
+import { createHostHealthMonitorService } from "../services/host-health-monitor.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 import { createExternalIssueProviderClient } from "../services/external-issue-provider.mjs";
 import { createSiteCredentialVault } from "../services/site-credential-vault.mjs";
@@ -246,6 +249,9 @@ export function createServerRuntimeServices({
   // Integration-only seam for real-host acceptance. Production leaves this
   // unset and receives the strict public-HTTPS SSH adapter from createSiteService.
   siteSshAdapterFactory = null,
+  // Integration-only seam for deterministic managed-website health outcomes.
+  // Production always uses the pinned HTTPS checker composed below.
+  hostWebsiteHealthChecker = null,
 }) {
   let idCounter = 1;
   const privateTutorReleaseBuildId = resolvePrivateTutorReleaseBuildId({ protocolVersion, stateSchemaVersion });
@@ -1045,6 +1051,9 @@ export function createServerRuntimeServices({
   const stagingCaPem = stagingCaPath && existsSync(resolve(stagingCaPath))
     ? readFileSync(resolve(stagingCaPath), "utf8").slice(0, 1024 * 1024)
     : process.env.MYAGENTTOOL_ACME_STAGING_CA_PEM ?? "";
+  const checkWebsiteHealth = typeof hostWebsiteHealthChecker === "function"
+    ? hostWebsiteHealthChecker
+    : createPinnedWebsiteHealthChecker({ stagingCaPem });
   const tlsCertificateAdapter = createSshTlsCertificateAdapter({
     state,
     sshHostConnector,
@@ -1261,6 +1270,7 @@ export function createServerRuntimeServices({
     recordTerminalBridgeEvent,
     recordTerminalEvidence,
     runSshHostDiagnostic,
+    runSshHostDiagnosticRun,
     updateSshTarget,
     verifySshHostConnection,
   } = createTerminalService({
@@ -1294,6 +1304,28 @@ export function createServerRuntimeServices({
     persistStateSoon,
     resolveCredential: siteCredentialVault.resolveCredential,
     sshHostConnector,
+    store,
+  });
+  const hostRemediationService = createHostRemediationService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    sshHostConnector,
+    checkWebsiteHealth,
+    store,
+  });
+  const hostHealthMonitorService = createHostHealthMonitorService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    resolveCredential: siteCredentialVault.resolveCredential,
+    verifySshHostConnection,
+    runSshHostDiagnosticRun,
     store,
   });
 
@@ -8184,6 +8216,15 @@ export function createServerRuntimeServices({
     downloadHostFile: hostFileService.downloadFile,
     listHostTlsActivationProfiles: hostTlsActivationProfileService.listProfiles,
     createHostTlsActivationProfile: hostTlsActivationProfileService.createProfile,
+    createHostRemediationPlan: hostRemediationService.createPlan,
+    confirmHostRemediationPlan: hostRemediationService.confirmPlan,
+    recheckHostRemediationPlan: hostRemediationService.recheckPlan,
+    findHostRemediationPlan: hostRemediationService.findPlan,
+    listHostRemediationPlans: hostRemediationService.listPlans,
+    getHostHealthOverview: hostHealthMonitorService.listOverview,
+    setHostHealthPolicy: hostHealthMonitorService.setPolicy,
+    checkHostHealthNow: hostHealthMonitorService.checkNow,
+    hostHealthSweep: hostHealthMonitorService.sweepDue,
     createManagedTerminalSession,
     queueTerminalBridgeAction,
     nextTerminalBridgeAction,
@@ -8191,6 +8232,7 @@ export function createServerRuntimeServices({
     recordTerminalBridgeEvent,
     recordTerminalEvidence,
     runSshHostDiagnostic,
+    runSshHostDiagnosticRun,
     summarizeText,
     appendEvent,
     refuse,
