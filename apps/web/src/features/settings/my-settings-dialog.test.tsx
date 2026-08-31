@@ -36,7 +36,10 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.history.replaceState(null, "", "/");
+});
 
 describe("MySettingsDialog", () => {
   it("opens from Me, keeps professional navigation in the dialog, and restores the previous page", () => {
@@ -88,9 +91,11 @@ describe("MySettingsDialog", () => {
   });
 
   it("searches across permitted leaf pages without flattening the left navigation", () => {
+    window.history.replaceState(null, "", "/?section=settings");
     useUiStore.setState({ section: "settings", settingsDialogOpen: true });
     render(<MySettingsDialog />);
     const dialog = screen.getByRole("dialog", { name: "My settings" });
+    expect(dialog.querySelector('[data-settings-navigation="ready"]')).toBeTruthy();
     fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "registered health" } });
     expect(within(dialog).getByText(/professional capabilities found/)).toBeTruthy();
     expect(within(dialog).getByText("Agents", { selector: "strong" })).toBeTruthy();

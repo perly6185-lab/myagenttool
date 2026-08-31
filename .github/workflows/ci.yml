@@ -94,7 +94,9 @@ jobs:
         run: pnpm test:user-journey:e2e
 
       - name: Enforce cross-browser Entry, Settings, and Trace journeys
-        run: pnpm --filter @myagenttool/web test:e2e:cross-browser
+        # The production bundle was built above; exercise that immutable output
+        # so WebKit workers do not race Vite's first-request transforms.
+        run: pnpm --filter @myagenttool/web test:e2e:cross-browser:built
 
   smoke-gates:
     if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'

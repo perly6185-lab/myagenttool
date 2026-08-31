@@ -25,7 +25,7 @@ import { Modal } from "@/components/ui/modal";
 import { useSessionUser } from "@/hooks/use-session-user";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
-import { type SectionKey, useUiStore } from "@/store/ui-store";
+import { navigationFromSearch, type SectionKey, useUiStore } from "@/store/ui-store";
 import { MeView } from "@/features/me/me-view";
 import { SettingsHomeView } from "./settings-home-view";
 import {
@@ -73,6 +73,10 @@ export function MySettingsDialog() {
   const toggleFavorite = useUiStore((state) => state.toggleFavoriteSettingsSection);
   const [maximized, setMaximized] = useState(false);
   const open = isSettingsRoute(section, dialogOpen);
+  const urlNavigation = typeof window === "undefined" ? {} : navigationFromSearch(window.location.search);
+  const navigationReady = (urlNavigation.section === undefined || urlNavigation.section === section)
+    && (urlNavigation.settingsCategory === undefined || urlNavigation.settingsCategory === selectedCategory)
+    && (urlNavigation.settingsQuery === undefined || urlNavigation.settingsQuery === query);
 
   const categories = useMemo(() => MY_SETTINGS_CATEGORIES.map((category) => ({
     ...category,
@@ -180,7 +184,11 @@ export function MySettingsDialog() {
         </button>
       )}
     >
-      <div className={cn("flex min-h-[420px] flex-col overflow-hidden rounded-lg border bg-background md:flex-row", maximized ? "h-full" : "h-[min(760px,calc(100vh-9rem))]")}>
+      <div
+        className={cn("flex min-h-[420px] flex-col overflow-hidden rounded-lg border bg-background md:flex-row", maximized ? "h-full" : "h-[min(760px,calc(100vh-9rem))]")}
+        data-settings-navigation={navigationReady ? "ready" : "restoring"}
+        aria-busy={!navigationReady}
+      >
         <div className="border-b bg-muted/20 p-3 md:hidden">
           <label className="text-xs font-medium text-muted-foreground" htmlFor="mobile-settings-section">
             {zh ? "设置分类" : "Settings area"}
