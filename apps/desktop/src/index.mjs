@@ -929,6 +929,11 @@ async function createPtySession(action) {
     cwd,
     env: { ...process.env, TERM: process.env.TERM && process.env.TERM !== "dumb" ? process.env.TERM : "xterm-256color" }
   });
+  // The Bridge can be terminated without running shutdown hooks (Electron hard
+  // kill, OS crash, task-manager stop). Keep the PTY under the same out-of-
+  // process guardian as agent executors so its shell tree cannot outlive the
+  // owning Bridge.
+  startProcessTreeGuardian(child);
   terminalSessions.set(action.terminalSessionId, { pty: child, shellPlan, cwd });
   child.onData((output) => {
     postTerminalEvent({

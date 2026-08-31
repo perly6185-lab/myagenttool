@@ -22,9 +22,9 @@ const MIRRORED_SCALAR_KEYS = Object.freeze(["currentProjectId", "idCounter"]);
  *
  * The returned store remains the mutation facade over the live in-memory state.
  * When sqliteStore is present, SQLite is the durable backing and the JSON file is
- * read only for a one-time seed. Without sqliteStore, the existing JSON snapshot
- * behavior is preserved. Business-service composition must not depend on either
- * backing directly.
+ * read only for a one-time seed. The no-SQLite path exists for isolated tests
+ * with persistence disabled; production lifecycle wiring never selects JSON as
+ * a backing. Business-service composition must not depend on either adapter.
  */
 export function createRuntimeStoreBoundary({
   state,
@@ -65,7 +65,7 @@ export function createRuntimeStoreBoundary({
 
   // SQLite restores directly when populated. An empty SQLite store receives a
   // one-time seed from the prior JSON snapshot (when present) or fresh defaults.
-  // The JSON-only path retains the existing restore behavior.
+  // The JSON-only branch is retained for focused unit tests of legacy import.
   let restored;
   if (!sqliteStore) {
     restored = persistence.restorePersistentState();

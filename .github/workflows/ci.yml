@@ -220,3 +220,41 @@ jobs:
 
       - name: Verify Application install contract
         run: node --test apps/server/test/application-install-plans.test.mjs apps/desktop/test/application-installer.test.mjs
+
+  persistence-crash-contract:
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        # node-pty's bundled macOS 26 ARM64 prebuild loads but cannot fork even
+        # /bin/sleep (posix_spawnp failure). The packaged ARM64 desktop rebuilds
+        # native modules too, so compile it on the hosted macOS contract runner.
+        env:
+          npm_config_build_from_source: ${{ startsWith(matrix.os, 'macos') && 'true' || 'false' }}
+
+      - name: Verify hard-kill state and executor-tree recovery
+        run: |
+          node --test apps/server/test/store-crash-recovery.test.mjs
+          node --test apps/server/test/bridge-liveness.test.mjs
+          node --test apps/desktop/test/invocation-pool.test.mjs
+          node --test apps/desktop/test/process-tree-guardian.test.mjs

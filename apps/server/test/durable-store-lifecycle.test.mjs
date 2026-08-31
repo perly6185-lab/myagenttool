@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,12 +12,15 @@ import {
 function loggerFixture() {
   const logs = [];
   const warnings = [];
+  const errors = [];
   return {
     logs,
     warnings,
+    errors,
     logger: {
       log: (message) => logs.push(message),
       warn: (message) => warnings.push(message),
+      error: (message) => errors.push(message),
     },
   };
 }
@@ -36,18 +39,27 @@ test("durable store lifecycle stays in memory when persistence is disabled", asy
   assert.equal(lifecycle.diagnostic.status, "disabled");
 });
 
-test("durable store lifecycle preserves an explicit non-SQLite fallback", async () => {
+test("persistence-enabled lifecycle rejects non-SQLite stores", async () => {
   let openCalls = 0;
-  const lifecycle = await openDurableStoreLifecycle({
-    persistenceEnabled: true,
-    requestedStore: "memory",
-    stateStorePath: "/unused/state.json",
-    openSqlite: async () => { openCalls += 1; },
-  });
+  const log = loggerFixture();
+  await assert.rejects(
+    openDurableStoreLifecycle({
+      persistenceEnabled: true,
+      requestedStore: "memory",
+      stateStorePath: "/unused/state.json",
+      openSqlite: async () => { openCalls += 1; },
+      logger: log.logger,
+    }),
+    (error) => {
+      assert.equal(error.code, "unsupported_durable_store");
+      assert.equal(error.diagnostic.status, "failed");
+      assert.equal(error.diagnostic.backing, null);
+      return true;
+    },
+  );
 
   assert.equal(openCalls, 0);
-  assert.equal(lifecycle.backing, "json");
-  assert.equal(lifecycle.diagnostic.reason, "sqlite_not_requested");
+  assert.match(log.errors[0], /require SQLite/);
 });
 
 test("durable store lifecycle opens SQLite at the derived path and closes once", async () => {
@@ -83,23 +95,67 @@ test("durable store lifecycle opens SQLite at the derived path and closes once",
   }
 });
 
-test("durable store lifecycle degrades loudly with structured evidence", async () => {
+test("durable store lifecycle fails closed when SQLite cannot open", async () => {
   const directory = mkdtempSync(join(tmpdir(), "durable-store-fallback-"));
   const log = loggerFixture();
   try {
-    const lifecycle = await openDurableStoreLifecycle({
-      persistenceEnabled: true,
-      stateStorePath: join(directory, "state.json"),
-      openSqlite: async () => { throw new Error("sqlite load failed"); },
-      logger: log.logger,
-    });
+    await assert.rejects(
+      openDurableStoreLifecycle({
+        persistenceEnabled: true,
+        stateStorePath: join(directory, "state.json"),
+        openSqlite: async () => { throw new Error("sqlite load failed"); },
+        logger: log.logger,
+      }),
+      (error) => {
+        assert.equal(error.code, "durable_store_open_failed");
+        assert.equal(error.diagnostic.status, "failed");
+        assert.equal(error.diagnostic.backing, null);
+        assert.equal(error.diagnostic.error, "sqlite load failed");
+        assert.equal(error.diagnostic.recoveryDirectory, null);
+        return true;
+      },
+    );
+    assert.match(log.errors[0], /Startup was aborted/);
+    assert.doesNotMatch(log.errors[0], /falling back/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
-    assert.equal(lifecycle.store, null);
-    assert.equal(lifecycle.backing, "json");
-    assert.equal(lifecycle.diagnostic.status, "fallback");
-    assert.equal(lifecycle.diagnostic.reason, "sqlite_unavailable");
-    assert.equal(lifecycle.diagnostic.error, "sqlite load failed");
-    assert.match(log.warnings[0], /falling back to the JSON snapshot backing/);
+test("an integrity failure preserves SQLite, WAL, and SHM files before startup aborts", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "durable-store-corrupt-"));
+  const stateStorePath = join(directory, "state.json");
+  const sqlitePath = join(directory, "state.sqlite");
+  const files = [sqlitePath, `${sqlitePath}-wal`, `${sqlitePath}-shm`];
+  const contents = ["broken-main", "pending-wal", "shared-memory"];
+  const log = loggerFixture();
+  try {
+    files.forEach((file, index) => writeFileSync(file, contents[index]));
+    await assert.rejects(
+      openDurableStoreLifecycle({
+        persistenceEnabled: true,
+        stateStorePath,
+        openSqlite: async () => {
+          const error = new Error("integrity_check returned corruption");
+          error.code = "sqlite_integrity_failed";
+          throw error;
+        },
+        logger: log.logger,
+        now: () => "2026-08-31T12:34:56.000Z",
+      }),
+      (error) => {
+        assert.equal(error.code, "durable_store_integrity_failed");
+        assert.match(error.diagnostic.recoveryDirectory, /state\.sqlite\.recovery-2026-08-31T12-34-56-000Z$/);
+        files.forEach((file, index) => {
+          assert.equal(readFileSync(file, "utf8"), contents[index], "the source evidence remains untouched");
+          const backup = join(error.diagnostic.recoveryDirectory, file.split(/[\\/]/).at(-1));
+          assert.equal(readFileSync(backup, "utf8"), contents[index]);
+        });
+        return true;
+      },
+    );
+    assert.match(log.errors[0], /forensic copy was saved/);
+    assert.match(log.errors[0], /JSON export was not loaded/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

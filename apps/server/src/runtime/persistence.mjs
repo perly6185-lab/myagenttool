@@ -596,13 +596,14 @@ export function createPersistenceRuntime({
   // write path — invocation accept/completion (runStateTransaction), route-level
   // persistStateSoon, and the runtime helpers — not only store.transaction commits,
   // so SQLite never lags the JSON snapshot (and the last writes before shutdown are
-  // captured). No-op by default (JSON-only backing).
+  // captured). No-op by default for isolated tests that construct this helper
+  // without the production SQLite composition boundary.
   afterFlush = () => {},
   // #1042: when false, a per-commit flush writes ONLY the durable backing (SQLite via
   // afterFlush), not the JSON snapshot — JSON is retired AS the backing and becomes
   // an explicit export (exportJsonSnapshot: shutdown + on-demand rollback artifact).
-  // Stays true on the MYAGENTTOOL_STORE=memory path and the Node<22.13 degradation,
-  // where JSON IS the backing.
+  // Stays true only for isolated persistence tests. A persistence-enabled server
+  // must compose SQLite and sets this false; it never degrades to JSON.
   jsonBacking = true,
 }) {
   let saveStateTimer = null;

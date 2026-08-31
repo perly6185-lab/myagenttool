@@ -213,10 +213,10 @@ object as the live materialized **view** (not a full read rewrite):
   natural-keyed (id-less) collections (`agentUsageSummaries`, `auditSummaries`) store
   as one blob row. The JSON snapshot stays current, so flipping the backing off loses
   nothing.
-  - **Operator:** SQLite is the **default** (Phase C). Set `MYAGENTTOOL_STORE=memory`
-    for the legacy JSON-only backing. The DB lands at
-    `<MYAGENTTOOL_STATE_PATH without .json>.sqlite`. Requires flag-free `node:sqlite`
-    (Node ≥ 22.13 / 24) — it degrades loudly to the JSON backing otherwise.
+  - **Operator (current contract):** SQLite is the only persistence-enabled
+    backing. The DB lands at `<MYAGENTTOOL_STATE_PATH without .json>.sqlite` and
+    requires flag-free `node:sqlite` (Node ≥ 22.13 / 24). An unavailable adapter
+    aborts startup; it never falls back to JSON.
   - **Commit cost:** the commit sink writes only the DELTA (`createIncrementalMirror`)
     — a `shadow` of the last serialized rows diffs the current state and upserts
     only changed/new rows, deletes only removed ones. SQLite disk I/O is
@@ -234,21 +234,19 @@ object as the live materialized **view** (not a full read rewrite):
   path a commit writes SQLite only; boot hydrates from SQLite and skips the JSON
   restore (which now runs only as a one-time JSON→SQLite migration when SQLite is
   empty). JSON becomes an **explicit export** (`exportJsonSnapshot`) written on clean
-  shutdown as a rollback artifact and available on demand — so reverting to
-  `MYAGENTTOOL_STORE=memory` recovers to the last shutdown, and is lossy for anything
-  written since. The scalar meta row (#1040) + the unified `afterFlush` mirror (#1041)
+  shutdown as an import/inspection artifact and available on demand. The scalar
+  meta row (#1040) + the unified `afterFlush` mirror (#1041)
   make this safe (every write is durable in SQLite, and `currentProjectId`/`idCounter`
-  survive). JSON stays the live backing on exactly two paths: `MYAGENTTOOL_STORE=memory`
-  (hermetic tests + opt-out) and the loud Node<22.13 degradation. `pnpm store:parity`
-  (#1039) is the drift gate; the soak runbook is §8.
+  survive). In-memory/JSON composition remains reachable only to isolated tests;
+  the server lifecycle never selects it when persistence is enabled. `pnpm
+  store:parity` (#1039) remains an offline migration diagnostic.
 
-## 8. Soak runbook (before retiring JSON — #1042)
+## 8. Historical soak runbook (completed by #1042)
 
 The SQLite backing is complete: unified flush (#1041, every durable write mirrors,
 not only store commits), scalar meta row (#1040, `currentProjectId`/`idCounter`), and
 the parity checker (#1039). Before retiring the JSON snapshot as the backing (#1042 —
-which removes the per-commit JSON fallback, after which reverting to `memory` is
-lossy), run a real soak on the default backing and confirm zero drift:
+which removed the per-commit JSON mirror), the release soak used this procedure:
 
 1. **Deploy on the default backing** (SQLite; no env change — it is the default). Let
    it run under real load for the soak window.
@@ -267,8 +265,7 @@ lossy), run a real soak on the default backing and confirm zero drift:
 4. **Exit criteria:** the soak window elapses with zero drop warnings, zero sync
    errors, and every parity check a clean PASS. Then #1042 (retirement) is safe: it
    is a single revert-friendly PR that keeps `savePersistentState` as an on-demand
-   JSON export + a final-export-at-cutover rollback artifact, and keeps the JSON
-   backing on the `MYAGENTTOOL_STORE=memory` and Node<22.13 degrade paths.
+   JSON export + a final-export-at-cutover import artifact.
 
 ## 9. Cutover complete + residual risks (#1043)
 
@@ -282,10 +279,11 @@ merged; #1039/#1040/#1041 closed the gates.
 **Reset / dev / export workflow** (see also LOCAL_DEV_ENV.md):
 - Local reset: stop the server, delete `<state dir>/*.sqlite*` (and `*.json` if
   present). Next boot seeds a fresh SQLite from defaults.
-- Export a rollback/backup snapshot: a clean shutdown (SIGINT/SIGTERM) writes the JSON
-  export automatically; `MYAGENTTOOL_STORE=memory` runs entirely on JSON.
-- Import / roll back: run with `MYAGENTTOOL_STORE=memory` against the exported JSON, or
-  delete the `.sqlite` so the next SQLite boot migrates from that JSON.
+- Export an import/inspection snapshot: a clean shutdown (SIGINT/SIGTERM) writes the
+  JSON export automatically.
+- Import / restore: stop the server, preserve the SQLite main/WAL/SHM files, then
+  remove them from the live path so the next SQLite boot imports the JSON. Never
+  point a running server directly at JSON.
 - Drift check: `pnpm store:parity <MYAGENTTOOL_STATE_PATH>` against a stopped instance.
 
 **Residual risks (honest, out of scope for #1000):**
@@ -298,6 +296,9 @@ merged; #1039/#1040/#1041 closed the gates.
    multi-instance needs the Postgres adapter (§3), a separate initiative.
 3. **JSON export can go stale.** It is written on clean shutdown + on demand, not per
    commit — a crash-only exit leaves the export as old as the last shutdown. SQLite
-   (WAL) is the real durable substrate; the export is a rollback convenience.
-4. **Reverting to `memory` is lossy.** After retirement, `MYAGENTTOOL_STORE=memory`
-   recovers to the last JSON export, losing anything written to SQLite since.
+   (WAL) is the real durable substrate; the export is an explicit import convenience.
+4. **Integrity failure is operator-visible.** Open runs `PRAGMA integrity_check`
+   and verifies the schema stamp plus required tables/indexes. An existing zero-byte
+   file is partial state, not a new database. Failure copies the main database plus
+   present WAL/SHM sidecars into a timestamped recovery directory and aborts startup.
+   Recovery is explicit; no empty database or stale JSON snapshot is substituted.

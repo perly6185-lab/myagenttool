@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -112,6 +112,54 @@ test("sqlite: a store schema newer than the binary refuses to open", { skip }, (
   }
 });
 
+test("sqlite: corrupt bytes fail the startup integrity check without replacing the file", { skip }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlite-store-corrupt-"));
+  const path = join(dir, "store.sqlite");
+  const corruptBytes = Buffer.from("not-a-sqlite-database\0partial-write");
+  try {
+    writeFileSync(path, corruptBytes);
+    assert.throws(
+      () => createSqliteStore({ DatabaseSync, path }),
+      (error) => error?.code === "sqlite_integrity_failed" && /integrity check/.test(error.message),
+    );
+    assert.deepEqual(readFileSync(path), corruptBytes);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sqlite: an existing empty file is partial state, not a new database", { skip }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlite-store-empty-"));
+  const path = join(dir, "store.sqlite");
+  try {
+    writeFileSync(path, Buffer.alloc(0));
+    assert.throws(
+      () => createSqliteStore({ DatabaseSync, path }),
+      (error) => error?.code === "sqlite_integrity_failed" && /exists but is empty/.test(error.message),
+    );
+    assert.equal(readFileSync(path).byteLength, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sqlite: a stamped-current but incomplete schema is rejected", { skip }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlite-store-partial-schema-"));
+  const path = join(dir, "store.sqlite");
+  try {
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)");
+    raw.prepare("INSERT INTO meta(key,value) VALUES('schema_version','3')").run();
+    raw.close();
+    assert.throws(
+      () => createSqliteStore({ DatabaseSync, path }),
+      (error) => error?.code === "sqlite_integrity_failed" && /schema integrity check failed/.test(error.message),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("sqlite: ADR 0019 — a history row SURVIVES replaceSnapshot (never mirrored)", { skip }, () => {
   const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
   try {
@@ -142,11 +190,15 @@ test("sqlite: a v1 store migrates through v3 (history and execution-action index
     raw.exec("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)");
     raw.exec("CREATE TABLE records(collection TEXT NOT NULL, id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(collection, id))");
     raw.prepare("INSERT INTO meta(key,value) VALUES('schema_version','1')").run();
+    const legacyInvocation = { id: "inv_before_upgrade", status: "queued", projectId: "proj_legacy" };
+    raw.prepare("INSERT INTO records(collection,id,json) VALUES(?,?,?)")
+      .run("invocations", legacyInvocation.id, JSON.stringify(legacyInvocation));
     raw.close();
     // Opening runs every forward migration; history and the v3 business-key
     // constraint are both immediately usable.
     const store = createSqliteStore({ DatabaseSync, path });
     assert.equal(store.schemaVersion, 3);
+    assert.deepEqual(store.get("invocations", legacyInvocation.id), legacyInvocation, "pre-upgrade state survives forward migration");
     store.appendHistory("refusals", [{ id: "r1", invocationId: "inv_1", at: "t" }]);
     assert.deepEqual(store.queryHistory("refusals", { invocationId: "inv_1" }).rows.map((r) => r.id), ["r1"]);
     store.transaction((tx) => tx.insert("executionActionIdempotencyRecords", {
