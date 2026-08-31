@@ -1018,7 +1018,7 @@ export type WorkItemMetricCheck = {
 };
 export type WorkItemCompletionQualityMetrics = {
   generatedAt: string;
-  scope: { projectId: string | null; trackedWorkItems: number; trackedAutoRuns: number };
+  scope: { projectId: string | null; origin: "all" | "channel" | "task"; trackedWorkItems: number; trackedAutoRuns: number };
   metrics: {
     schemaVersion: 1;
     completion: {
@@ -1041,12 +1041,32 @@ export type WorkItemCompletionQualityMetrics = {
     definitions: Record<string, string>;
   };
 };
+export type WorkItemJourney = {
+  schemaVersion: 1;
+  origin: string;
+  stage: string;
+  status: "pending" | "active" | "waiting" | "attention" | "ready" | "completed" | "cancelled";
+  waitingFor: string | null;
+  requiresUserAction: boolean;
+  reasonCodes: string[];
+  nextAction: { kind: string; target: "task" | "channel" | "approval"; required: boolean };
+  result: {
+    available: boolean;
+    verificationStatus: string;
+    verified: boolean;
+    deliveryStatus: string | null;
+    delivered: boolean;
+  };
+    refs: { workItemId: string | null; threadId: string | null; autoRunId: string | null; deliveryId?: string | null };
+  updatedAt: string | null;
+};
 export type LocalWorkItemObservability = {
   executionChainId?: string;
   nextAction: "answer_ai" | "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
   executionReview?: WorkItemExecutionReview | null;
   planActual?: WorkItemPlanActual | null;
   completionAssessment?: WorkItemCompletionAssessment | null;
+  journey?: WorkItemJourney | null;
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
   outcome?: {

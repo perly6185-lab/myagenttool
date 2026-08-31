@@ -60,7 +60,7 @@ const operateRules = [
   /^\/api\/tools\/[^/]+\/invocations$/,
   /^\/api\/claude-apply\/authorizations\/[^/]+\/rollback$/,
   /^\/api\/channels\/[^/]+\/deliveries\/[^/]+\/retry$/,
-  /^\/api\/channel-tasks\/[^/]+\/(?:route|dismiss|retry|reroute|takeover|wechat-draft-reconciliation)$/,
+  /^\/api\/channel-tasks\/[^/]+\/(?:route|dismiss|retry|reroute|takeover|wechat-draft-reconciliation|commands)$/,
   /^\/api\/automations\/[^/]+\/run$/,
   /^\/api\/report-schedule\/post-now$/,
   /^\/api\/applications\/[^/]+\/orchestrations\/[^/]+\/run$/,

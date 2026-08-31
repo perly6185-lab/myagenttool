@@ -17,6 +17,7 @@ export async function handleChannelRoutes({
   routeChannelTask,
   dismissChannelTask,
   retryChannelTask,
+  executeChannelTaskCommand,
   reconcileWechatDraftChannelTask,
   rerouteChannelTask,
   takeoverChannelTask,
@@ -133,14 +134,25 @@ export async function handleChannelRoutes({
   const deliveryRetry = url.pathname.match(/^\/api\/channels\/([^/]+)\/deliveries\/([^/]+)\/retry$/);
   if (deliveryRetry && req.method === "POST") {
     const body = await readJson(req);
-    const result = retryChannelDelivery(
+    const result = await retryChannelDelivery(
       {
         channelId: decodeURIComponent(deliveryRetry[1]),
         deliveryId: decodeURIComponent(deliveryRetry[2]),
         approvalToken: body?.approvalToken,
+        idempotencyKey: body?.idempotencyKey,
       },
       actor,
     );
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const channelTaskCommand = url.pathname.match(/^\/api\/channel-tasks\/([^/]+)\/commands$/);
+  if (channelTaskCommand && req.method === "POST") {
+    const body = await readJson(req);
+    const result = typeof executeChannelTaskCommand === "function"
+      ? await executeChannelTaskCommand(decodeURIComponent(channelTaskCommand[1]), body, actor)
+      : { status: 501, body: { error: "unavailable" } };
     sendJson(res, result.status, result.body);
     return true;
   }
@@ -166,9 +178,15 @@ export async function handleChannelRoutes({
   const channelTask = url.pathname.match(/^\/api\/channel-tasks\/([^/]+)\/(route|dismiss|retry|reroute|takeover)$/);
   if (channelTask && req.method === "POST") {
     const id = decodeURIComponent(channelTask[1]);
+    const body = channelTask[2] === "retry" ? await readJson(req) : null;
     const actions = { route: routeChannelTask, dismiss: dismissChannelTask, retry: retryChannelTask, reroute: rerouteChannelTask, takeover: takeoverChannelTask };
     const action = actions[channelTask[2]];
-    const result = typeof action === "function" ? await action(id, actor) : { status: 501, body: { error: "unavailable" } };
+    const retryOptions = channelTask[2] === "retry" && body?.idempotencyKey
+      ? { idempotencyKey: body.idempotencyKey }
+      : undefined;
+    const result = typeof action === "function"
+      ? await action(id, actor, retryOptions)
+      : { status: 501, body: { error: "unavailable" } };
     sendJson(res, result.status, result.body);
     return true;
   }

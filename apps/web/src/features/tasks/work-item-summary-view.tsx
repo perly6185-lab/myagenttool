@@ -2308,7 +2308,7 @@ export function WorkItemSummaryView({
       ) : null}
 
       {observability?.completionAssessment ? (
-        <WorkItemCompletionStatus assessment={observability.completionAssessment} language={language} />
+        <WorkItemCompletionStatus assessment={observability.completionAssessment} journey={observability.journey} language={language} />
       ) : null}
 
       {observability?.planActual ? (

@@ -9,7 +9,7 @@ function report(): WorkItemCompletionQualityMetrics {
   const passed = { status: "passed" as const, target: 0.95 };
   return {
     generatedAt: "2026-08-28T00:00:00.000Z",
-    scope: { projectId: null, trackedWorkItems: 10, trackedAutoRuns: 8 },
+    scope: { projectId: null, origin: "all", trackedWorkItems: 10, trackedAutoRuns: 8 },
     metrics: {
       schemaVersion: 1,
       completion: {

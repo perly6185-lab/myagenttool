@@ -53,12 +53,18 @@ let pendingDesktopRoute = desktopRouteFromArgv(process.argv);
 const services = new Map();
 
 app.setName("MyAgentTool");
+const isolatedUserData = String(process.env.MYAGENTTOOL_ELECTRON_USER_DATA ?? "").trim();
+if (isolatedUserData) {
+  // Real desktop journey tests need the full Electron-owned server and Bridge,
+  // but must never read or mutate the installed app's personal ledger.
+  app.setPath("userData", resolve(isolatedUserData));
+}
 if (process.defaultApp && process.argv[1]) {
   app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, [resolve(process.argv[1])]);
 } else {
   app.setAsDefaultProtocolClient(APP_PROTOCOL);
 }
-if (smokeMode) {
+if (smokeMode && !isolatedUserData) {
   app.setPath("userData", join(tmpdir(), "myagenttool-electron-smoke", String(process.pid)));
 }
 

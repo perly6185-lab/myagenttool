@@ -121,6 +121,79 @@ test("dispatches retry, AI repair, verification, and clarification through one c
   assert.equal(calls[3][2].answers, "Use option A.");
 });
 
+test("re-queues a task-linked Channel delivery once and returns the shared durable receipt", async () => {
+  let sequence = 0;
+  let retryCount = 0;
+  const item = {
+    id: "lwi_channel",
+    revision: 3,
+    executionBindings: [{ kind: "auto_run", targetId: "aur_channel" }],
+  };
+  const autoRun = {
+    id: "aur_channel",
+    localIssueId: item.id,
+    status: "done",
+    invocationId: "inv_channel",
+    executionActionReceipts: [],
+  };
+  const delivery = {
+    id: "chdl_result",
+    channelId: "chn_1",
+    status: "failed_terminal",
+    resendCount: 0,
+    taskContext: { workItemId: item.id, autoRunId: autoRun.id },
+  };
+  const state = {
+    workItems: [item],
+    autoRuns: [autoRun],
+    channelDeliveries: [delivery],
+    channelTaskThreads: [],
+    invocations: [],
+    executionActionIdempotencyRecords: [],
+  };
+  const service = createWorkItemReviewCommandService({
+    state,
+    now: () => "2026-08-31T04:00:00.000Z",
+    nextId: (prefix) => `${prefix}_${++sequence}`,
+    store: { transaction: (fn) => fn() },
+    retryChannelDelivery: ({ recoveryRequestId }) => {
+      retryCount += 1;
+      delivery.status = "queued";
+      delivery.resendCount += 1;
+      delivery.lastManualRetryRequestId = recoveryRequestId;
+      return { ok: true, status: 200, body: { deliveryId: delivery.id, status: delivery.status } };
+    },
+  });
+  const command = {
+    kind: "retry_channel_delivery",
+    targetId: delivery.id,
+    request: {
+      channelId: delivery.channelId,
+      idempotencyKey: "retry-channel-result-once",
+      expectedWorkItemRevision: item.revision,
+      expectedTargetStatus: autoRun.status,
+      expectedDeliveryStatus: "failed_terminal",
+      approvalToken: "approved",
+    },
+  };
+
+  const recovered = await service.execute(command, { userId: "usr_1" });
+  assert.equal(recovered.actionReceipt.kind, "retry_channel_delivery");
+  assert.equal(recovered.actionReceipt.status, "succeeded");
+  assert.equal(recovered.actionReceipt.messageCode, "channel_delivery_retry_queued");
+  assert.equal(recovered.actionReceipt.targetId, delivery.id);
+  assert.equal(retryCount, 1);
+  assert.equal(state.executionActionIdempotencyRecords.length, 1);
+  assert.equal(autoRun.executionActionReceipts[0].externalActionAttemptCount, 1);
+
+  const replayed = await service.execute(command, { userId: "usr_1" });
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.actionReceipt.id, recovered.actionReceipt.id);
+  assert.equal(replayed.actionReceipt.replayed, true);
+  assert.equal(retryCount, 1);
+  assert.equal(autoRun.executionActionReceipts[0].externalActionAttemptCount, 1);
+});
+
 test("restarts one failed legacy invocation as an Auto-run and replays the durable recovery receipt", async () => {
   let sequence = 0;
   let restartCount = 0;

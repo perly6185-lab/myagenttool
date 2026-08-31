@@ -72,6 +72,7 @@ test("execution, approval, recovery, and retry writes admit operators", () => {
     ["POST", "/api/capabilities/demo.run/invocations"],
     ["POST", "/api/tools/demo/invocations"],
     ["POST", "/api/channel-tasks/task-1/retry"],
+    ["POST", "/api/channel-tasks/task-1/commands"],
     ["POST", "/api/channel-tasks/task-1/wechat-draft-reconciliation"],
     ["POST", "/api/automations/automation-1/run"],
     ["POST", "/api/report-schedule/post-now"],

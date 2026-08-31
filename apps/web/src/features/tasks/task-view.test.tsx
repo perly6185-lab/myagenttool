@@ -245,7 +245,7 @@ describe("TaskView local work items", () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
     mocks.getWorkItemCompletionMetrics.mockResolvedValue({
       generatedAt: "2026-08-28T00:00:00.000Z",
-      scope: { projectId: null, trackedWorkItems: 0, trackedAutoRuns: 0 },
+      scope: { projectId: null, origin: "all", trackedWorkItems: 0, trackedAutoRuns: 0 },
       metrics: {
         schemaVersion: 1,
         completion: { tracked: 0, settled: 0, completed: 0, falseCompletions: 0, requiringUserAction: 0, completionRate: null, falseCompletionRate: null, check: { status: "insufficient_data", target: 0.95 } },

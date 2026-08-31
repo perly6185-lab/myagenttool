@@ -60,6 +60,7 @@ import { projectWorkItemExecutionReview } from "./work-item-execution-review.mjs
 import { projectWorkItemPlanActual } from "./work-item-plan-actual.mjs";
 import { assessWorkItemCompletion, taskCompletionQualityMetrics } from "./work-item-completion-assessment.mjs";
 import { projectWorkItemContextSummary } from "./work-item-context-summary.mjs";
+import { projectWorkItemJourney } from "./work-item-journey.mjs";
 import { buildWorkItemIntentContract, freezeWorkItemIntentContract } from "./work-item-intent-contract.mjs";
 
 export { evaluateMyTemplateGovernance, matchPublishedMyTemplate } from "./work-item-template-matching.mjs";
@@ -1981,10 +1982,20 @@ export function createWorkItemService({
 
   function getCompletionMetrics(query = {}, actor = null) {
     const projectId = String(query.projectId ?? "").trim();
+    const origin = String(query.origin ?? "all").trim().toLowerCase() || "all";
+    if (!["all", "channel", "task"].includes(origin)) {
+      return { ok: false, status: 400, body: { error: "invalid_completion_metrics_origin" } };
+    }
     if (projectId && !actorCanAccessProject(state, actor, projectId)) return notFound();
+    const channelWorkItemIds = new Set((state.channelTaskThreads ?? []).map((thread) => thread.workItemId).filter(Boolean));
     const items = (state.workItems ?? [])
       .filter((item) => item.ownerTeamId === actorTeam(actor))
       .filter((item) => !projectId || item.projectId === projectId)
+      .filter((item) => {
+        if (origin === "all") return true;
+        const fromChannel = Boolean(item.channelOrigin?.channelId) || channelWorkItemIds.has(item.id);
+        return origin === "channel" ? fromChannel : !fromChannel;
+      })
       .filter((item) => !item.archivedAt)
       .filter((item) => (item.executionBindings ?? []).length > 0
         || item.executionStartRequest
@@ -2014,6 +2025,7 @@ export function createWorkItemService({
         generatedAt: now(),
         scope: {
           projectId: projectId || null,
+          origin,
           trackedWorkItems: assessments.filter(Boolean).length,
           trackedAutoRuns: runIds.size,
         },
@@ -2929,6 +2941,27 @@ export function createWorkItemService({
       planActual,
       completionGate: completionGate(projectedItem),
     });
+    const channelThread = (state.channelTaskThreads ?? []).find((thread) =>
+      thread.workItemId === item.id
+      || (item.channelOrigin?.threadId && thread.id === item.channelOrigin.threadId)) ?? null;
+    const channelDelivery = [...(state.channelDeliveries ?? [])]
+      .filter((delivery) => delivery.taskContext?.workItemId === item.id
+        || (channelThread?.id && delivery.taskContext?.threadId === channelThread.id))
+      .filter((delivery) => !delivery.ownerTeamId || delivery.ownerTeamId === actorTeam(actor))
+      .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "")
+        .localeCompare(String(left.updatedAt ?? left.createdAt ?? "")))[0] ?? null;
+    const journey = projectWorkItemJourney({
+      item: projectedItem,
+      latestRun,
+      invocation: latestExecutionInvocation,
+      thread: channelThread,
+      delivery: channelDelivery,
+      contextSummary: taskContextSummary,
+      completionAssessment,
+      resultVerification: projectedItem.resultVerification ?? null,
+      outcome: taskOutcome,
+      attention,
+    });
     return {
       ok: true,
       status: 200,
@@ -2940,6 +2973,7 @@ export function createWorkItemService({
           executionReview,
           planActual,
           completionAssessment,
+          journey,
           attention,
           latestRun: latestRun ? {
             id: latestRun.id,

@@ -2522,6 +2522,7 @@ export function createServerRuntimeServices({
     beginDelivery: workItemService.beginDelivery,
     failDelivery: workItemService.failDelivery,
     completeDelivery: workItemService.completeDelivery,
+    retryChannelDelivery: (input, actor) => channelDeliveryService?.retryChannelDelivery(input, actor),
   });
   const workItemAutoRunBatchService = createWorkItemAutoRunBatchService({
     state,
@@ -4726,7 +4727,96 @@ export function createServerRuntimeServices({
     if (actor?.teamId != null && (channel?.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId) return null;
     return req;
   };
-  const retryChannelTask = async (id, actor, { sourceDecisionId = null } = {}) => {
+
+  const channelTaskCommandFailure = (error, fallback = "channel_task_command_failed") => ({
+    status: error?.status ?? 409,
+    body: {
+      error: error?.code ?? fallback,
+      ...(error?.message ? { message: error.message } : {}),
+      ...(error?.details ?? {}),
+      ...(error?.actionReceipt ? { actionReceipt: error.actionReceipt } : {}),
+    },
+  });
+
+  const latestTaskDelivery = (req) => {
+    const thread = (state.channelTaskThreads ?? []).find((candidate) => candidate.id === req?.threadId
+      || (req?.workItemId && candidate.workItemId === req.workItemId)) ?? null;
+    return (state.channelDeliveries ?? [])
+      .filter((delivery) => (!delivery.taskContext?.deliveryKind || delivery.taskContext.deliveryKind === "result")
+        && ((req?.invocationId && delivery.invocationId === req.invocationId)
+          || (req?.workItemId && delivery.taskContext?.workItemId === req.workItemId)
+          || (thread?.id && delivery.taskContext?.threadId === thread.id)))
+      .sort((left, right) => String(right.updatedAt ?? right.createdAt ?? "")
+        .localeCompare(String(left.updatedAt ?? left.createdAt ?? "")))[0] ?? null;
+  };
+
+  const executeChannelTaskCommand = async (id, command = {}, actor) => {
+    const req = findOwnChannelTask(id, actor);
+    if (!req || req.status !== "routed") return { status: 404, body: { error: "channel_task_not_found" } };
+    const item = req.workItemId
+      ? (state.workItems ?? []).find((candidate) => candidate.id === req.workItemId) ?? null
+      : null;
+    const autoRun = req.autoRunId
+      ? (state.autoRuns ?? []).find((candidate) => candidate.id === req.autoRunId) ?? null
+      : null;
+    const requestedKind = String(command.kind ?? "").trim();
+    const kind = requestedKind === "retry_delivery" ? "retry_channel_delivery" : requestedKind;
+    if (!["retry_execution", "fix_with_ai", "rerun_verification", "retry_channel_delivery"].includes(kind)) {
+      return { status: 400, body: { error: "channel_task_command_kind_invalid" } };
+    }
+    const delivery = kind === "retry_channel_delivery" ? latestTaskDelivery(req) : null;
+    if (kind === "retry_channel_delivery" && !delivery) {
+      return { status: 404, body: { error: "delivery_not_found" } };
+    }
+    if (kind !== "retry_channel_delivery" && !autoRun) {
+      return { status: 404, body: { error: "channel_task_not_found" } };
+    }
+    const latestReceipt = autoRun?.executionActionReceipts?.[0] ?? null;
+    const request = command.request ?? {};
+    const idempotencyKey = String(request.idempotencyKey ?? command.idempotencyKey ?? "").trim()
+      || ["channel-task", req.id, kind, item?.revision ?? "none", autoRun?.invocationId ?? "none",
+        autoRun?.status ?? "none", delivery?.id ?? "none", delivery?.status ?? "none",
+        delivery?.resendCount ?? 0, latestReceipt?.id ?? "none", latestReceipt?.status ?? "none"].join(":").slice(0, 200);
+    try {
+      const result = await workItemReviewCommandService.execute({
+        kind,
+        targetId: delivery?.id ?? autoRun.id,
+        request: {
+          ...request,
+          idempotencyKey,
+          expectedWorkItemRevision: request.expectedWorkItemRevision ?? item?.revision,
+          expectedTargetStatus: request.expectedTargetStatus ?? autoRun?.status,
+          ...(delivery ? {
+            channelId: delivery.channelId,
+            expectedDeliveryStatus: request.expectedDeliveryStatus ?? delivery.status,
+          } : {}),
+        },
+      }, actor);
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          kind,
+          workItemId: item?.id ?? null,
+          autoRunId: result.autoRun?.id ?? autoRun?.id ?? null,
+          invocationId: result.invocation?.id ?? null,
+          ...(result.verification ? {
+            verification: {
+              status: result.verification.status ?? null,
+              passed: result.verification.passed ?? null,
+            },
+          } : {}),
+          ...(result.delivery ? { delivery: result.delivery } : {}),
+          actionReceipt: result.actionReceipt ?? null,
+          replayed: result.replayed === true,
+        },
+      };
+    } catch (error) {
+      return channelTaskCommandFailure(error);
+    }
+  };
+
+  const retryChannelTask = async (id, actor, { sourceDecisionId = null, idempotencyKey = null } = {}) => {
     const req = findOwnChannelTask(id, actor);
     const item = req?.workItemId
       ? (state.workItems ?? []).find((candidate) => candidate.id === req.workItemId) ?? null
@@ -4777,15 +4867,14 @@ export function createServerRuntimeServices({
         reason: "wechat_draft_retried",
       });
     }
-    const autoRun = req?.autoRunId ? (state.autoRuns ?? []).find((item) => item.id === req.autoRunId) : null;
-    if (!req || req.status !== "routed" || !autoRun) return { status: 404, body: { error: "channel_task_not_found" } };
-    try {
-      const result = await retryAutoRun(autoRun.id, { actor });
+    const result = await executeChannelTaskCommand(id, {
+      kind: "retry_execution",
+      request: { idempotencyKey: idempotencyKey ?? sourceDecisionId },
+    }, actor);
+    if (result.status >= 200 && result.status < 300) {
       channelTaskRunTx(() => { req.lastAction = "retry"; req.lastActionAt = now(); req.lastActionBy = actor?.userId ?? null; });
-      return { status: 200, body: { ok: true, autoRunId: autoRun.id, invocationId: result.invocation.id } };
-    } catch (error) {
-      return { status: 409, body: { error: "channel_task_retry_failed", reason: String(error?.message ?? error) } };
     }
+    return result;
   };
   const reconcileWechatDraftChannelTask = async (id, outcome, actor, { sourceDecisionId = null } = {}) => {
     const req = findOwnChannelTask(id, actor);
@@ -5245,6 +5334,63 @@ export function createServerRuntimeServices({
   channelConversationService.recoverConsultations?.();
   channelConversationService.resumeIntake?.();
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
+
+  const retryChannelDeliveryCommand = async (input = {}, actor) => {
+    const delivery = (state.channelDeliveries ?? []).find((candidate) =>
+      candidate.id === String(input.deliveryId ?? "")
+      && candidate.channelId === String(input.channelId ?? "")) ?? null;
+    const thread = (state.channelTaskThreads ?? []).find((candidate) =>
+      candidate.id === delivery?.taskContext?.threadId
+      || (delivery?.taskContext?.workItemId && candidate.workItemId === delivery.taskContext.workItemId)) ?? null;
+    const workItemId = delivery?.taskContext?.workItemId ?? thread?.workItemId ?? null;
+    const item = workItemId
+      ? (state.workItems ?? []).find((candidate) => candidate.id === workItemId) ?? null
+      : null;
+    const invocation = delivery?.invocationId
+      ? (state.invocations ?? []).find((candidate) => candidate.id === delivery.invocationId) ?? null
+      : null;
+    const autoRunId = delivery?.taskContext?.autoRunId
+      ?? thread?.autoRunId
+      ?? invocation?.options?.metadata?.autoRunId
+      ?? [...(item?.executionBindings ?? [])].reverse().find((binding) => binding.kind === "auto_run")?.targetId
+      ?? null;
+    const autoRun = autoRunId
+      ? (state.autoRuns ?? []).find((candidate) => candidate.id === autoRunId) ?? null
+      : null;
+    // Non-task messages retain the Channel service's existing approval-gated
+    // recovery path. Task result messages use the shared command ledger.
+    if (!delivery || !item || !autoRun) return channelDeliveryService.retryChannelDelivery(input, actor);
+    const latestReceipt = autoRun.executionActionReceipts?.[0] ?? null;
+    const idempotencyKey = String(input.idempotencyKey ?? "").trim()
+      || ["channel-delivery", delivery.id, delivery.status, delivery.resendCount ?? 0,
+        item.revision, latestReceipt?.id ?? "none", latestReceipt?.status ?? "none"].join(":").slice(0, 200);
+    try {
+      const result = await workItemReviewCommandService.execute({
+        kind: "retry_channel_delivery",
+        targetId: delivery.id,
+        request: {
+          channelId: delivery.channelId,
+          approvalToken: input.approvalToken,
+          idempotencyKey,
+          expectedWorkItemRevision: item.revision,
+          expectedTargetStatus: autoRun.status,
+          expectedDeliveryStatus: delivery.status,
+        },
+      }, actor);
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          ...result.delivery,
+          actionReceipt: result.actionReceipt,
+          replayed: result.replayed,
+        },
+      };
+    } catch (error) {
+      const failure = channelTaskCommandFailure(error, "channel_delivery_retry_failed");
+      return { ok: false, ...failure };
+    }
+  };
 
   // Inbound events are durable before dispatch. A crash between those two
   // steps must be recoverable on the next process start, and a replay must not
@@ -7937,6 +8083,7 @@ export function createServerRuntimeServices({
     routeChannelTask,
     dismissChannelTask,
     retryChannelTask,
+    executeChannelTaskCommand,
     reconcileWechatDraftChannelTask,
     rerouteChannelTask,
     takeoverChannelTask,
@@ -7950,7 +8097,7 @@ export function createServerRuntimeServices({
     listChannelNotificationPolicies: channelNotificationService.listPolicies,
     setChannelNotificationPolicy: channelNotificationService.setPolicy,
     recoverChannelTaskThreads: channelConversationService.recoverTaskThreads,
-    retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
+    retryChannelDelivery: retryChannelDeliveryCommand,
     beginIlinkLogin: ilinkRuntime.beginLogin,
     pollIlinkLogin: ilinkRuntime.pollLogin,
     activateIlinkChannel: ilinkRuntime.activate,

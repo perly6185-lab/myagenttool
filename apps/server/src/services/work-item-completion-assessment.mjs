@@ -3,7 +3,9 @@ const TERMINAL_RUN_STATUSES = new Set([
 ]);
 
 const CHECK_PRIORITY = { matched: 0, pending: 1, unknown: 2, mismatch: 3 };
-const RECOVERY_ACTION_KINDS = new Set(["retry_execution", "fix_with_ai", "rerun_verification"]);
+const RECOVERY_ACTION_KINDS = new Set([
+  "retry_execution", "fix_with_ai", "rerun_verification", "retry_channel_delivery",
+]);
 
 function aggregateChecks(checks) {
   if (!checks.length) return "unknown";

@@ -3846,12 +3846,15 @@ test("detail reconciles the frozen plan with material, result, delivery, and ver
   assert.equal(planActual.checks.every((check) => check.status === "matched"), true);
   assert.equal(observability.completionAssessment.status, "ready_to_complete");
   assert.equal(observability.completionAssessment.evidenceComplete, true);
+  assert.equal(observability.journey.stage, "ready_to_complete");
+  assert.equal(observability.journey.nextAction.kind, "review_result");
 
   stored.status = "done";
   stored.state = "closed";
-  const completed = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability.completionAssessment;
-  assert.equal(completed.status, "completed");
-  assert.equal(completed.falseCompletion, false);
+  const completedObservability = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability;
+  assert.equal(completedObservability.completionAssessment.status, "completed");
+  assert.equal(completedObservability.completionAssessment.falseCompletion, false);
+  assert.equal(completedObservability.journey.stage, "completed");
 });
 
 test("completion quality metrics use task truth and durable action receipts without counting normal sign-off", () => {
@@ -3862,6 +3865,7 @@ test("completion quality metrics use task truth and durable action receipts with
   completedRow.status = "done";
   completedRow.state = "closed";
   const waitingRow = state.workItems.find((item) => item.id === waiting.id);
+  waitingRow.channelOrigin = { channelId: "chn_metrics", conversationId: "cnv_metrics", threadId: "cth_metrics" };
   waitingRow.status = "in_progress";
   waitingRow.waitingOn = "me";
   waitingRow.executionBindings = [{ kind: "auto_run", targetId: "aur_metrics", createdAt: "2026-07-24T00:00:00.000Z" }];
@@ -3882,10 +3886,18 @@ test("completion quality metrics use task truth and durable action receipts with
   const result = service.getCompletionMetrics({ projectId: "prj_a" }, ACTOR_A);
   assert.equal(result.status, 200);
   assert.equal(result.body.scope.trackedWorkItems, 2);
+  assert.equal(result.body.scope.origin, "all");
   assert.equal(result.body.metrics.completion.completionRate, 1);
   assert.equal(result.body.metrics.recovery.successRate, 1);
   assert.equal(result.body.metrics.humanIntervention.count, 1);
   assert.equal(result.body.metrics.externalActions.duplicateCount, 0);
+  const channelOnly = service.getCompletionMetrics({ projectId: "prj_a", origin: "channel" }, ACTOR_A);
+  assert.equal(channelOnly.body.scope.origin, "channel");
+  assert.equal(channelOnly.body.scope.trackedWorkItems, 1);
+  assert.equal(channelOnly.body.metrics.humanIntervention.count, 1);
+  const taskOnly = service.getCompletionMetrics({ projectId: "prj_a", origin: "task" }, ACTOR_A);
+  assert.equal(taskOnly.body.scope.trackedWorkItems, 1);
+  assert.equal(service.getCompletionMetrics({ origin: "mail" }, ACTOR_A).status, 400);
   assert.equal(service.getCompletionMetrics({ projectId: "prj_b" }, ACTOR_A).status, 404);
 });
 

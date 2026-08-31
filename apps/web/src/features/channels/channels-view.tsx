@@ -8,13 +8,16 @@ import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
 import { useConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
-import type { ChannelConversation, ChannelDelivery, ChannelDiagnostics, ChannelInteraction, ChannelLifecycleSummary, ChannelNotificationPolicy, ChannelOperations, ChannelTaskRequest, ChannelTaskRevision, ChannelTaskThread, DeviceSnapshot, ProjectSnapshot } from "@/lib/console-state";
+import type { ChannelConversation, ChannelDelivery, ChannelDiagnostics, ChannelInteraction, ChannelLifecycleSummary, ChannelNotificationPolicy, ChannelOperations, ChannelTaskActionReceipt, ChannelTaskRequest, ChannelTaskRevision, ChannelTaskThread, DeviceSnapshot, ProjectSnapshot } from "@/lib/console-state";
+import { ApiError } from "@/lib/api-client";
 import type { Tone } from "@/lib/readable-labels";
 import { installChannelTranslations } from "@/lib/i18n/channel-resources";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useUiStore } from "@/store/ui-store";
 import { ArticleExtractorPluginsPanel } from "./article-extractor-plugins-panel";
 import { channelTaskUserState } from "./channel-task-user-state";
+import { WorkItemCompletionMetricsCard } from "@/features/tasks/work-item-completion-metrics-card";
+import type { WorkItemCompletionQualityMetrics } from "@/features/tasks/task-view-types";
 
 installChannelTranslations();
 
@@ -111,6 +114,67 @@ function readableTaskError(error: string | null, t: Translate): string | null {
   if (error.includes("project_not_found")) return t("channelsPage.taskProjectMissing");
   if (error.includes("approval_required")) return t("channelsPage.setupFailed");
   return t("channelsPage.taskSetupFailed");
+}
+
+type ChannelTaskCommandResponse = {
+  actionReceipt?: ChannelTaskActionReceipt | null;
+  replayed?: boolean;
+};
+
+function receiptMessage(receipt: ChannelTaskActionReceipt): string {
+  const messages: Record<string, string> = {
+    retry_started: "任务已重新开始，AI 正在继续处理。",
+    ai_fix_started: "AI 已按检查结果开始返工。",
+    verification_running: "正在重新运行验证，任务内容和外部结果不会被重复应用。",
+    verification_completed: "重新验证已经完成。",
+    verification_passed: "重新验证已经通过。",
+    verification_failed: "重新验证已经完成，但检查仍未通过。可以按检查结果继续返工。",
+    verification_not_configured: "当前任务没有配置可复现的验证命令，请打开任务补充验证方式。",
+    verification_unavailable: "验证工具暂时不可用，本次没有改变原任务结果。",
+    channel_delivery_retry_starting: "正在准备重新发送结果。",
+    channel_delivery_retry_queued: "结果消息已重新进入发送队列。",
+    approval_required: "重发结果需要新的明确确认。",
+    execution_action_stale: "任务状态已经变化，请刷新后按新的下一步继续。",
+    delivery_retry_cooldown: "微信可能仍在延迟展示上一条结果，请稍后再发送，避免重复消息。",
+    safe_to_retry: "上次操作确认没有产生影响，现在可以安全重试。",
+  };
+  if (receipt.messageCode && messages[receipt.messageCode]) return messages[receipt.messageCode];
+  const errors: Record<string, string> = {
+    execution_action_stale: "任务状态已经变化，请按最新状态继续。",
+    approval_required: "需要重新确认后才能继续。",
+    delivery_retry_cooldown: "暂时不能再次发送，以免产生重复消息。",
+    work_item_delivery_not_ready: "任务结果还没有准备到可发送状态。",
+    auto_run_not_found: "找不到对应的执行记录，请打开任务详情检查。",
+  };
+  if (receipt.errorCode && errors[receipt.errorCode]) return errors[receipt.errorCode];
+  return receipt.errorMessage || "系统已记录本次操作。";
+}
+
+function ChannelTaskReceiptCard({ receipt }: { receipt: ChannelTaskActionReceipt }) {
+  const pending = receipt.status === "accepted" || receipt.status === "running";
+  const failed = receipt.status === "failed" || receipt.status === "unknown";
+  const title = receipt.status === "unknown" ? "操作结果尚未确认"
+    : receipt.status === "safe_to_retry" ? "可以安全重试"
+      : receipt.status === "failed" ? "操作没有完成"
+        : pending ? "正在处理" : "操作已完成";
+  const progress = receipt.nextOwner === "ai" ? "AI 正在继续处理"
+    : receipt.nextOwner === "system" ? "系统正在继续处理"
+      : receipt.nextOwner === "me" ? "需要你确认下一步" : "本次操作已结束";
+  return (
+    <div
+      className={`mt-2 rounded-md border p-2 ${failed ? "border-destructive/30 bg-destructive/5" : pending ? "border-primary/30 bg-primary/5" : "border-success/30 bg-success/5"}`}
+      role="status"
+      data-testid="channel-task-action-receipt"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={failed ? "danger" : pending ? "running" : "success"}>{title}</Badge>
+        {receipt.replayed ? <span className="text-muted-foreground">已复用原操作，未重复执行</span> : null}
+      </div>
+      <p className="mt-1 text-xs text-foreground">{receiptMessage(receipt)}</p>
+      <p className="mt-1 text-xs text-muted-foreground">恢复进度：{progress}</p>
+      {receipt.status === "unknown" ? <p className="mt-1 text-xs text-destructive">请先等待系统核对，不要重复点击。</p> : null}
+    </div>
+  );
 }
 
 function taskDeviceLabel(t: Translate, device: DeviceSnapshot): string {
@@ -257,6 +321,17 @@ export function ChannelsView() {
   const existingWechat = channels.find((channel) => channel.provider === "wechat_ilink");
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupChannelId, setSetupChannelId] = useState<string | null>(null);
+  const [channelCompletionMetrics, setChannelCompletionMetrics] = useState<WorkItemCompletionQualityMetrics | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (api.getWorkItemCompletionMetrics(undefined, "channel") as Promise<WorkItemCompletionQualityMetrics>)
+      .then((report) => {
+        if (!cancelled && report?.scope?.origin === "channel" && report?.metrics?.completion) setChannelCompletionMetrics(report);
+      })
+      .catch(() => { if (!cancelled) setChannelCompletionMetrics(null); });
+    return () => { cancelled = true; };
+  }, []);
 
   function openSetup(channelId: string | null = null) {
     const existingWechat = channels.find((channel) => channel.provider === "wechat_ilink");
@@ -285,6 +360,15 @@ export function ChannelsView() {
           </> : null}
         </details>
       ) : null}
+      {channelCompletionMetrics
+        && (channelCompletionMetrics.scope.trackedWorkItems > 0 || channelCompletionMetrics.metrics.externalActions.attempts > 0) ? (
+          <details className="rounded-md border border-border px-3 py-2" data-testid="channel-completion-metrics">
+            <summary className="cursor-pointer text-xs text-muted-foreground">高级诊断：Channel 任务完成质量</summary>
+            <div className="mt-3">
+              <WorkItemCompletionMetricsCard report={channelCompletionMetrics} language="zh" />
+            </div>
+          </details>
+        ) : null}
       {channels.length > 0 ? <QuickStartGuide /> : null}
       <details className="rounded-lg border border-border px-4 py-3" data-testid="channel-advanced-settings">
         <summary className="cursor-pointer text-sm font-medium">高级设置</summary>
@@ -617,6 +701,8 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
   const [notificationQuiet, setNotificationQuiet] = useState(false);
   const [notificationTimezone, setNotificationTimezone] = useState("local");
   const [humanReplyDrafts, setHumanReplyDrafts] = useState<Record<string, string>>({});
+  const [taskActionReceipts, setTaskActionReceipts] = useState<Record<string, ChannelTaskActionReceipt>>({});
+  const [pendingTaskCommand, setPendingTaskCommand] = useState<{ taskId: string; kind: string } | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const setSection = useUiStore((state) => state.setSection);
   const openWorkItem = useUiStore((state) => state.openWorkItem);
@@ -713,6 +799,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
   const deliveryByThreadId = useMemo(() => {
     const latest = new Map<string, ChannelDelivery>();
     for (const delivery of deliveries) {
+      if (delivery.taskContext?.deliveryKind && delivery.taskContext.deliveryKind !== "result") continue;
       const threadId = delivery.taskContext?.threadId;
       if (!threadId) continue;
       const previous = latest.get(threadId);
@@ -754,9 +841,33 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
     if (window.confirm(t("channelsPage.disconnectConfirm"))) void disconnectIlink();
   }
 
-  async function retry(deliveryId: string) {
-    const grant = await api.issueApprovalGrant("channel.delivery.retry", deliveryId);
-    await execute(() => api.retryChannelDelivery(channel.id, deliveryId, grant.token));
+  function rememberTaskReceipt(taskId: string, receipt: ChannelTaskActionReceipt | null | undefined) {
+    if (!receipt) return;
+    setTaskActionReceipts((current) => ({ ...current, [taskId]: receipt }));
+  }
+
+  function rememberTaskReceiptFromError(taskId: string, caught: unknown) {
+    if (!(caught instanceof ApiError) || !caught.details?.actionReceipt || typeof caught.details.actionReceipt !== "object") return;
+    rememberTaskReceipt(taskId, caught.details.actionReceipt as ChannelTaskActionReceipt);
+  }
+
+  async function retry(deliveryId: string, task?: ChannelTaskRequest | null) {
+    setPendingTaskCommand(task ? { taskId: task.id, kind: "retry_delivery" } : null);
+    await execute(async () => {
+      try {
+        const grant = await api.issueApprovalGrant("channel.delivery.retry", deliveryId);
+        const response = task
+          ? await api.executeChannelTaskCommand(task.id, "retry_delivery", { approvalToken: grant.token }) as ChannelTaskCommandResponse
+          : await api.retryChannelDelivery(channel.id, deliveryId, grant.token) as ChannelTaskCommandResponse;
+        if (task) rememberTaskReceipt(task.id, response.actionReceipt);
+        return response;
+      } catch (caught) {
+        if (task) rememberTaskReceiptFromError(task.id, caught);
+        throw caught;
+      } finally {
+        setPendingTaskCommand(null);
+      }
+    });
   }
 
   async function toggleSelfApprove(next: boolean) {
@@ -789,7 +900,42 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
 
   async function taskAction(task: ChannelTaskRequest, action: "route" | "dismiss" | "retry" | "reroute" | "takeover") {
     const handlers = { route: api.routeChannelTask, dismiss: api.dismissChannelTask, retry: api.retryChannelTask, reroute: api.rerouteChannelTask, takeover: api.takeoverChannelTask };
-    await execute(() => handlers[action](task.id));
+    setPendingTaskCommand(action === "retry" ? { taskId: task.id, kind: "retry_execution" } : null);
+    await execute(async () => {
+      try {
+        const response = await handlers[action](task.id) as ChannelTaskCommandResponse;
+        if (action === "retry") rememberTaskReceipt(task.id, response?.actionReceipt);
+        return response;
+      } catch (caught) {
+        if (action === "retry") rememberTaskReceiptFromError(task.id, caught);
+        throw caught;
+      } finally {
+        setPendingTaskCommand(null);
+      }
+    });
+  }
+
+  async function runTaskCommand(task: ChannelTaskRequest, kind: "fix_with_ai" | "rerun_verification") {
+    const feedback = task.resultVerification?.repair?.suggestedRequest
+      ?? task.resultVerification?.summary
+      ?? "请按本次检查结果修复未通过项，并保留原任务的验收要求。";
+    setPendingTaskCommand({ taskId: task.id, kind });
+    await execute(async () => {
+      try {
+        const response = await api.executeChannelTaskCommand(
+          task.id,
+          kind,
+          kind === "fix_with_ai" ? { feedback } : {},
+        ) as ChannelTaskCommandResponse;
+        rememberTaskReceipt(task.id, response.actionReceipt);
+        return response;
+      } catch (caught) {
+        rememberTaskReceiptFromError(task.id, caught);
+        throw caught;
+      } finally {
+        setPendingTaskCommand(null);
+      }
+    });
   }
 
   async function reconcileWechatDraft(task: ChannelTaskRequest, outcome: "confirmed_saved" | "confirmed_not_saved") {
@@ -1176,9 +1322,16 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                 <div className="flex flex-wrap items-start gap-1.5">
                   {task.status === "pending" ? <><Button size="sm" onClick={() => taskAction(task, "route")} disabled={pending}>{t("channelsPage.route")}</Button><Button variant="ghost" size="sm" onClick={() => taskAction(task, "dismiss")} disabled={pending}>{t("channelsPage.dismiss")}</Button></> : null}
                   {task.actions.retry ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "retry")} disabled={pending}>{t("channelsPage.retry")}</Button> : null}
+                  {task.actions.fixWithAi ? <Button variant="secondary" size="sm" onClick={() => void runTaskCommand(task, "fix_with_ai")} disabled={pending || pendingTaskCommand?.taskId === task.id}>让 AI 按检查返工</Button> : null}
+                  {task.actions.rerunVerification ? <Button variant="ghost" size="sm" onClick={() => void runTaskCommand(task, "rerun_verification")} disabled={pending || pendingTaskCommand?.taskId === task.id}>重新运行验证</Button> : null}
                   {advancedOpen && task.actions.reroute ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "reroute")} disabled={pending}>{t("channelsPage.reroute")}</Button> : null}
                   {task.actions.takeover ? <Button variant="ghost" size="sm" onClick={() => taskAction(task, "takeover")} disabled={pending}>{t("channelsPage.takeover")}</Button> : null}
                 </div>
+                {taskActionReceipts[task.id] ?? task.actionReceipt ? (
+                  <div className="sm:col-span-2">
+                    <ChannelTaskReceiptCard receipt={(taskActionReceipts[task.id] ?? task.actionReceipt)!} />
+                  </div>
+                ) : null}
                 {task.status === "human_takeover" && (!task.threadId || !taskThreadIds.has(task.threadId)) ? <HumanReplyBox
                   value={humanReplyDrafts[task.id] ?? ""}
                   onChange={(value) => setHumanReplyDrafts((current) => ({ ...current, [task.id]: value }))}
@@ -1203,6 +1356,8 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                   const unconfirmedResult = threadDelivery?.status === "sent_unconfirmed"
                     && (threadDelivery.taskContext?.deliveryKind === "result" || ["succeeded", "failed"].includes(thread.status));
                   const userTaskState = channelTaskUserState({ thread, task, delivery: threadDelivery, revision: latestRevision });
+                  const actionReceipt = task ? taskActionReceipts[task.id] ?? task.actionReceipt ?? null : null;
+                  const taskCommandPending = Boolean(task && pendingTaskCommand?.taskId === task.id);
                   return (
                     <>
                 <div className="flex flex-wrap items-center gap-2">
@@ -1226,8 +1381,10 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                         variant="secondary"
                         size="sm"
                         onClick={() => {
-                          if (userTaskState.action === "retry_delivery" && threadDelivery) void retry(threadDelivery.id);
+                          if (userTaskState.action === "retry_delivery" && threadDelivery) void retry(threadDelivery.id, task);
                           else if (userTaskState.action === "retry_task" && task) void taskAction(task, "retry");
+                          else if (userTaskState.action === "fix_with_ai" && task) void runTaskCommand(task, "fix_with_ai");
+                          else if (userTaskState.action === "rerun_verification" && task) void runTaskCommand(task, "rerun_verification");
                           else if (userTaskState.action === "open_approvals") setSection("approvals");
                           else if (userTaskState.action === "open_sessions") setSection("sessions");
                           else if (userTaskState.action === "view_task" && thread.workItemId) {
@@ -1235,13 +1392,20 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                             setSection("task");
                           }
                         }}
-                        disabled={pending}
+                        disabled={pending || taskCommandPending}
                       >
-                        {userTaskState.actionLabel}
+                        {taskCommandPending ? "正在处理…" : userTaskState.actionLabel}
                       </Button>
+                    ) : null}
+                    {task?.journey?.stage === "verification_failed" && task.actions.rerunVerification && userTaskState.action !== "rerun_verification" ? (
+                      <Button variant="ghost" size="sm" onClick={() => void runTaskCommand(task, "rerun_verification")} disabled={pending || taskCommandPending}>重新运行验证</Button>
+                    ) : null}
+                    {task?.journey?.stage === "verification_failed" && task.actions.fixWithAi && userTaskState.action !== "fix_with_ai" ? (
+                      <Button variant="ghost" size="sm" onClick={() => void runTaskCommand(task, "fix_with_ai")} disabled={pending || taskCommandPending}>让 AI 按检查返工</Button>
                     ) : null}
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">{userTaskState.nextStep}</p>
+                  {actionReceipt ? <ChannelTaskReceiptCard receipt={actionReceipt} /> : null}
                   {thread.attentionReason === "wechat_draft_outcome_unknown" && task ? (
                     <div className="mt-2 flex flex-wrap gap-2">
                       {task.actions.reconcileSaved ? <Button size="sm" onClick={() => void reconcileWechatDraft(task, "confirmed_saved")} disabled={pending}>已找到草稿</Button> : null}
@@ -1273,13 +1437,13 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
                     {Date.parse(threadDelivery.nextManualRetryAt ?? "") > Date.now() ? (
                       <span className="text-xs text-muted-foreground">为避免延迟重复，{diagnosticTime(threadDelivery.nextManualRetryAt)} 后才可再次发送。</span>
                     ) : (
-                      <Button variant="secondary" size="sm" onClick={() => void retry(threadDelivery.id)} disabled={pending}>确认未收到，再次发送</Button>
+                      <Button variant="secondary" size="sm" onClick={() => void retry(threadDelivery.id, task)} disabled={pending || taskCommandPending}>确认未收到，再次发送</Button>
                     )}
                   </div>
                 ) : threadDelivery?.status === "failed_terminal" ? (
                   <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-destructive">
                     <span>结果消息未送达：{threadDelivery.lastErrorCode ?? thread.lastDeliveryError ?? "发送失败"}</span>
-                    <Button variant="secondary" size="sm" onClick={() => void retry(threadDelivery.id)} disabled={pending}>重试发送</Button>
+                    <Button variant="secondary" size="sm" onClick={() => void retry(threadDelivery.id, task)} disabled={pending || taskCommandPending}>重试发送</Button>
                   </div>
                 ) : threadDelivery?.status === "retrying" ? (
                   <p className="mt-1 text-amber-600">结果消息发送失败，正在自动重试。</p>

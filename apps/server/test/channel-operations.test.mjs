@@ -194,19 +194,70 @@ test("channelTaskOperations joins Issue, auto-run, Invocation, result, delivery,
   const rows = channelTaskOperations({
     requests: [
       { id: "ctr_pending", channelId: "chn_1", status: "pending", issueNumber: 7, title: "pending" },
-      { id: "ctr_failed", channelId: "chn_1", status: "routed", issueNumber: 8, title: "failed", autoRunId: "run_1" },
+      { id: "ctr_failed", channelId: "chn_1", status: "routed", issueNumber: 8, title: "failed", autoRunId: "run_1", workItemId: "wi_failed", threadId: "cth_failed" },
     ],
     autoRuns: [{ id: "run_1", status: "failed", invocationId: "inv_1", errorCode: "stuck", error: "Agent stopped" }],
     invocations: [{ id: "inv_1", status: "failed", result: { error: "Bridge disconnected" } }],
     deliveries: [{ invocationId: "inv_1", status: "failed_terminal" }],
+    workItems: [{ id: "wi_failed" }],
+    threads: [{ id: "cth_failed", channelId: "chn_1", workItemId: "wi_failed", status: "failed" }],
   });
   assert.equal(rows[0].stage, "awaiting_route");
-  assert.deepEqual(rows[0].actions, { retry: false, reroute: false, takeover: false });
+  assert.deepEqual(rows[0].actions, {
+    retry: false, fixWithAi: false, rerunVerification: false, retryDelivery: false,
+    reroute: false, takeover: false,
+  });
   assert.equal(rows[1].stage, "run_failed");
   assert.equal(rows[1].invocationId, "inv_1");
   assert.equal(rows[1].resultSummary, "Bridge disconnected");
   assert.equal(rows[1].deliveryStatus, "failed_terminal");
-  assert.deepEqual(rows[1].actions, { retry: true, reroute: true, takeover: true });
+  assert.deepEqual(rows[1].actions, {
+    retry: true, fixWithAi: false, rerunVerification: false, retryDelivery: false,
+    reroute: true, takeover: true,
+  });
+  assert.equal(rows[1].journey.stage, "delivery_failed");
+  assert.equal(rows[1].journey.nextAction.kind, "retry_delivery");
+});
+
+test("channelTaskOperations exposes executable verification recovery and its latest receipt", () => {
+  const [row] = channelTaskOperations({
+    requests: [{
+      id: "ctr_repair", channelId: "chn_1", status: "routed", issueNumber: 12,
+      title: "修复报告", autoRunId: "run_repair", workItemId: "wi_repair", threadId: "cth_repair",
+    }],
+    autoRuns: [{
+      id: "run_repair", status: "blocked", invocationId: "inv_repair", worktreeId: "wtr_repair",
+      executionActionReceipts: [{
+        schemaVersion: 1, id: "ear_previous", kind: "rerun_verification", status: "succeeded",
+        messageCode: "verification_completed", impact: "none", nextOwner: "system",
+        requestedAt: "2026-08-31T01:00:00.000Z", updatedAt: "2026-08-31T01:01:00.000Z",
+        completedAt: "2026-08-31T01:01:00.000Z", targetId: null, errorCode: null, errorMessage: null,
+      }],
+    }],
+    invocations: [{ id: "inv_repair", status: "failed" }],
+    workItems: [{
+      id: "wi_repair",
+      resultVerificationContract: { checks: [] },
+      resultVerification: {
+        status: "failed", summary: "报告缺少签字页", checks: [], verificationChecks: [],
+        repair: { required: true, mode: "independent_task", reasons: ["报告缺少签字页"], suggestedRequest: "补齐签字页" },
+      },
+    }],
+    threads: [{
+      id: "cth_repair", channelId: "chn_1", workItemId: "wi_repair", status: "needs_attention",
+      lastDeliveryId: "cdl_repair_status", lastDeliveryStatus: "failed_terminal",
+    }],
+    deliveries: [{
+      id: "cdl_repair_status", channelId: "chn_1", status: "failed_terminal",
+      taskContext: { workItemId: "wi_repair", threadId: "cth_repair", deliveryKind: "status_notification" },
+    }],
+  });
+
+  assert.equal(row.actions.fixWithAi, true);
+  assert.equal(row.actions.rerunVerification, true);
+  assert.equal(row.actionReceipt.id, "ear_previous");
+  assert.equal(row.actionReceipt.status, "succeeded");
+  assert.equal(row.journey.stage, "verification_failed");
 });
 
 test("channelTaskOperations exposes safe WeChat draft reconciliation instead of retry", () => {
@@ -231,10 +282,41 @@ test("channelTaskOperations exposes bounded result verification for ordinary use
       },
       outputAssets: [{ id: "asset_article", path: "outputs/article.md", family: "markdown", size: 10, contentMetrics: { charCount: 1200, sectionCount: 3 } }],
     }],
+    threads: [{ id: "cth_article", channelId: "chn_1", workItemId: "wi_article", status: "succeeded" }],
   });
   assert.equal(row.resultVerification.status, "passed");
   assert.equal(row.resultVerification.checks[0].kind, "article_draft");
   assert.equal(row.resultVerification.checks[0].actual.qualifiedCount, 1);
+  assert.equal(row.journey.stage, "ready_to_complete");
+  assert.equal(row.journey.result.verified, true);
+});
+
+test("channelTaskOperations correlates a result delivery by task context without an invocation id", () => {
+  const [row] = channelTaskOperations({
+    requests: [{
+      id: "ctr_delivered", channelId: "chn_1", status: "completed", issueNumber: 11,
+      title: "交付报告", workItemId: "wi_delivered", threadId: "cth_delivered",
+    }],
+    workItems: [{
+      id: "wi_delivered", status: "done", state: "closed", channelOrigin: { channelId: "chn_1", threadId: "cth_delivered" },
+      artifactContract: { requirements: [{ kind: "report", minCount: 1, extensions: [".pdf"] }] },
+      outputAssets: [{ id: "asset_report", path: "outputs/report.pdf", family: "pdf", size: 10 }],
+    }],
+    threads: [{ id: "cth_delivered", channelId: "chn_1", workItemId: "wi_delivered", status: "succeeded" }],
+    deliveries: [{
+      id: "cdl_delivered", channelId: "chn_1", status: "delivered",
+      taskContext: { workItemId: "wi_delivered", threadId: "cth_delivered", deliveryKind: "result" },
+      updatedAt: "2026-08-31T00:00:00.000Z",
+    }, {
+      id: "cdl_status_failed", channelId: "chn_1", status: "failed_terminal",
+      taskContext: { workItemId: "wi_delivered", threadId: "cth_delivered", deliveryKind: "status_notification" },
+      updatedAt: "2026-08-31T00:01:00.000Z",
+    }],
+  });
+
+  assert.equal(row.deliveryStatus, "delivered");
+  assert.equal(row.journey.stage, "completed");
+  assert.equal(row.journey.result.delivered, true);
 });
 
 function makeRetryHarness() {

@@ -11,6 +11,7 @@ const ACTION_KINDS = new Set([
   "fix_with_ai",
   "rerun_verification",
   "answer_ai",
+  "retry_channel_delivery",
   ...DELIVERY_ACTION_KINDS,
 ]);
 const RECEIPT_STATUSES = new Set(["accepted", "running", "succeeded", "failed", "safe_to_retry", "unknown"]);

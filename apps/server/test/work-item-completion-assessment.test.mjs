@@ -126,6 +126,7 @@ test("quality metrics quantify truthful completion, recovery, intervention, and 
         deliveryRecovery: { requiredAt: "2026-08-28T00:00:00.000Z", recoveredAt: null },
       },
       { id: "ear_retry", kind: "retry_execution", status: "succeeded" },
+      { id: "ear_channel_retry", kind: "retry_channel_delivery", status: "succeeded", externalActionAttemptCount: 1 },
       // The durable copy and recent display copy must not double-count.
       {
         id: "ear_recovered", status: "succeeded", externalActionAttemptCount: 1,
@@ -136,11 +137,11 @@ test("quality metrics quantify truthful completion, recovery, intervention, and 
   });
 
   assert.equal(metrics.completion.completionRate, 0.5);
-  assert.equal(metrics.recovery.required, 3);
-  assert.equal(metrics.recovery.successRate, 2 / 3);
+  assert.equal(metrics.recovery.required, 4);
+  assert.equal(metrics.recovery.successRate, 3 / 4);
   assert.equal(metrics.humanIntervention.count, 1, "normal final sign-off is not an intervention");
   assert.equal(metrics.humanIntervention.rate, 1 / 3);
-  assert.equal(metrics.externalActions.attempts, 3);
+  assert.equal(metrics.externalActions.attempts, 4);
   assert.equal(metrics.externalActions.duplicateCount, 1);
   assert.equal(metrics.externalActions.unresolvedCount, 1);
   assert.equal(metrics.acceptance.status, "attention");
