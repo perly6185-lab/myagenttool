@@ -11,7 +11,7 @@ import { MyHostsView } from "./my-hosts-view";
 
 vi.mock("./host-api", () => ({ MAX_HOST_UPLOAD_BYTES: 10 * 1024 * 1024, MAX_HOST_DOWNLOAD_BYTES: 25 * 1024 * 1024, hostApi: {
   list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), observeFingerprint: vi.fn(), confirmFingerprint: vi.fn(), verify: vi.fn(),
-  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
+  scopes: vi.fn(), scopeSuggestions: vi.fn(), createScope: vi.fn(), updateScope: vi.fn(), entries: vi.fn(), search: vi.fn(), preview: vi.fn(), transfers: vi.fn(), upload: vi.fn(), download: vi.fn(), diagnose: vi.fn(), planDiagnostic: vi.fn(), diagnoseIssue: vi.fn(), tlsProfiles: vi.fn(), createTlsProfile: vi.fn(),
 } }));
 
 const host: SshHost = {
@@ -49,6 +49,18 @@ beforeEach(async () => {
   vi.mocked(hostApi.tlsProfiles).mockResolvedValue({ profiles: [], count: 0 });
   vi.mocked(hostApi.diagnose).mockResolvedValue({ result: { action: "disk_usage", command: "df -h", output: "Filesystem\n/dev/sda1 20G 8G 12G 40% /", summary: { version: 1, severity: "healthy", finding: "disk_capacity_healthy", impact: "no_issue_detected", nextAction: "no_action_needed", facts: [{ key: "disk_used_percent", value: "40%", severity: "healthy" }] } } });
   vi.mocked(hostApi.planDiagnostic).mockResolvedValue({ plan: { action: "disk_usage", command: "df -h", risk: "read_only" } });
+  vi.mocked(hostApi.diagnoseIssue).mockResolvedValue({ run: {
+    version: 1, intent: "performance", risk: "read_only", primaryAction: "disk_usage",
+    summary: { version: 1, severity: "warning", finding: "host_warnings_found", impact: "host_attention_recommended", nextAction: "review_warning_findings", facts: [
+      { key: "diagnostic_completed_count", value: "2", severity: "info" },
+      { key: "diagnostic_issue_count", value: "1", severity: "warning" },
+      { key: "diagnostic_unavailable_count", value: "0", severity: "healthy" },
+    ] },
+    steps: [
+      { action: "disk_usage", status: "completed", summary: { version: 1, severity: "critical", finding: "disk_capacity_critical", impact: "file_operations_may_fail", nextAction: "free_device_space", facts: [{ key: "disk_used_percent", value: "95%", severity: "critical" }] } },
+      { action: "processes", status: "completed", summary: { version: 1, severity: "info", finding: "process_activity_ready", impact: "information_only", nextAction: "review_process_activity", facts: [] } },
+    ],
+  } });
 });
 afterEach(() => cleanup());
 
@@ -79,6 +91,32 @@ it("keeps complete connection metadata and settings available in Professional mo
   expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
   expect(screen.getByText("File ranges")).toBeTruthy();
   expect(screen.getByText("Governed transfers")).toBeTruthy();
+});
+
+it("restores a stored desktop credential and reconnects after restart without asking for it again", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  const unavailableHost: SshHost = {
+    ...host,
+    authMethod: "password_ref",
+    connectionStatus: "error",
+    capabilities: null,
+    lastConnectionError: { code: "ssh_credential_unavailable", at: "2026-08-29T00:00:00.000Z" },
+  };
+  const readyHost: SshHost = { ...host, authMethod: "password_ref" };
+  vi.mocked(hostApi.list).mockResolvedValueOnce({ hosts: [unavailableHost], count: 1 }).mockResolvedValue({ hosts: [readyHost], count: 1 });
+  vi.mocked(hostApi.verify).mockResolvedValue({ host: readyHost, verification: { capabilities: readyHost.capabilities } });
+  const getSshHostCredentialStatus = vi.fn().mockResolvedValue({
+    desktop: true, secureStorage: true, stored: true, ready: true,
+    reference: readyHost.credentialRef, authMethod: "password_ref",
+  });
+  const saveSshHostCredential = vi.fn();
+  window.myagenttoolDesktop = { getSshHostCredentialStatus, saveSshHostCredential };
+  renderView();
+
+  await waitFor(() => expect(getSshHostCredentialStatus).toHaveBeenCalledWith({ hostId: host.id }));
+  await waitFor(() => expect(hostApi.verify).toHaveBeenCalledWith(host.id));
+  await waitFor(() => expect(screen.getByText("Ready to check this device")).toBeTruthy());
+  expect(saveSshHostCredential).not.toHaveBeenCalled();
 });
 
 it("gives an ordinary user one plain recovery action for invalid sign-in details", async () => {
@@ -126,7 +164,7 @@ it("saves repaired credentials, verifies the existing host, and closes without r
   renderView();
 
   fireEvent.click(await screen.findByRole("button", { name: "Update sign-in details" }));
-  expect(getSshHostCredentialStatus).not.toHaveBeenCalled();
+  expect(getSshHostCredentialStatus).toHaveBeenCalledWith({ hostId: host.id });
   fireEvent.change(screen.getByLabelText("Login password"), { target: { value: "replacement-password" } });
   fireEvent.click(screen.getByRole("button", { name: "Save and reconnect" }));
 
@@ -441,6 +479,24 @@ it("lets ordinary owners run a check directly and hides technical evidence", asy
   expect(screen.queryByText("df -h")).toBeNull();
   expect(screen.queryByText(/private-volume/)).toBeNull();
   expect(screen.queryByText(/10\.10\.10\.222/)).toBeNull();
+});
+
+it("turns an ordinary problem description into one combined diagnostic run", async () => {
+  useUiStore.setState({ experienceMode: "ordinary" });
+  renderView();
+
+  fireEvent.change(await screen.findByPlaceholderText("For example: who signed in recently?"), { target: { value: "The machine is very slow" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+  await waitFor(() => expect(hostApi.diagnoseIssue).toHaveBeenCalledWith(host.id, "The machine is very slow"));
+  expect(hostApi.planDiagnostic).not.toHaveBeenCalled();
+  expect(await screen.findByText("Combined check complete · 2/2")).toBeTruthy();
+  expect(screen.getByText("Items needing attention were found")).toBeTruthy();
+  expect(screen.getByText("First lead to review")).toBeTruthy();
+  expect(screen.getByText("Device space is critically low")).toBeTruthy();
+  expect(screen.getByText("Resource-use information is available")).toBeTruthy();
+  expect(screen.queryByText("df -h")).toBeNull();
+  expect(screen.queryByText("/dev/sda1 95% /")).toBeNull();
 });
 
 it("shows recent sign-ins as owner-readable activity instead of raw journal output", async () => {

@@ -1261,6 +1261,7 @@ export function createServerRuntimeServices({
     recordTerminalBridgeEvent,
     recordTerminalEvidence,
     runSshHostDiagnostic,
+    runSshHostDiagnosticRun,
     updateSshTarget,
     verifySshHostConnection,
   } = createTerminalService({
@@ -8042,6 +8043,7 @@ export function createServerRuntimeServices({
     recordTerminalBridgeEvent,
     recordTerminalEvidence,
     runSshHostDiagnostic,
+    runSshHostDiagnosticRun,
     summarizeText,
     appendEvent,
     refuse,

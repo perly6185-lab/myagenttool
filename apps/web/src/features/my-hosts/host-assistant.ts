@@ -108,6 +108,11 @@ const FINDINGS: Record<string, [string, string]> = {
   system_information_ready: ["已读取系统信息", "System information is available"],
   diagnostic_result_empty: ["设备没有返回可判断的结果", "The device returned no result that can be assessed"],
   diagnostic_result_unrecognized: ["暂时无法判断检查结果", "The check result could not be assessed"],
+  host_diagnostic_incomplete: ["暂时无法完成这次检查", "This check could not be completed"],
+  host_critical_findings: ["发现需要尽快处理的问题", "Problems needing prompt attention were found"],
+  host_warnings_found: ["发现需要留意的问题", "Items needing attention were found"],
+  host_diagnostic_partial: ["已完成部分检查", "Some checks were completed"],
+  host_no_obvious_issue: ["暂未发现明显问题", "No obvious problem was found"],
 };
 
 const IMPACTS: Record<string, [string, string]> = {
@@ -122,6 +127,11 @@ const IMPACTS: Record<string, [string, string]> = {
   login_activity_recorded: ["审计日志记录了成功登录；是否符合预期需要由设备所有者核对。", "The audit records successful sign-ins. The device owner should verify whether they were expected."],
   audit_records_read: ["读取到了 SSH 服务日志，但没有识别到成功或失败登录事件。", "SSH service logs were readable, but no successful or failed sign-in events were recognized."],
   result_unknown: ["本次检查没有修改设备，但目前无法确认相关功能是否正常。", "The check did not change the device, but the related function cannot currently be confirmed."],
+  host_state_not_confirmed: ["没有足够结果判断设备状态。", "There were not enough results to assess the device."],
+  host_operation_may_be_affected: ["设备上的部分功能可能已经受到影响。", "Some functions on the device may already be affected."],
+  host_attention_recommended: ["设备仍可使用，但有项目需要进一步确认。", "The device remains usable, but some items need review."],
+  host_state_partially_confirmed: ["已确认部分状态，其他项目因命令或权限限制无法完成。", "Some areas were confirmed; others were limited by command availability or permissions."],
+  host_no_obvious_impact: ["本次组合检查没有发现明显影响。", "The combined checks found no obvious impact."],
 };
 
 const OWNER_IMPACTS: Record<string, [string, string]> = {
@@ -135,6 +145,11 @@ const OWNER_IMPACTS: Record<string, [string, string]> = {
   login_activity_recorded: ["设备有成功登录记录，请确认是否符合你的使用情况。", "The device has successful sign-ins. Check that you recognize them."],
   audit_records_read: ["读取到了服务记录，但没有发现成功或失败登录。", "Service records were available, but no successful or failed sign-ins were found."],
   result_unknown: ["目前还不能确认这一项的状态。", "This area could not be confirmed yet."],
+  host_state_not_confirmed: ["这次还没有得到足够结果。", "This check did not return enough information yet."],
+  host_operation_may_be_affected: ["这台设备有功能可能已经受到影响。", "Some functions on this device may already be affected."],
+  host_attention_recommended: ["设备还能使用，但有项目需要你留意。", "The device is still usable, but some items need attention."],
+  host_state_partially_confirmed: ["有些项目已经看完，另一些暂时无法查看。", "Some areas were checked, while others are not available yet."],
+  host_no_obvious_impact: ["暂时没有看到会影响使用的问题。", "Nothing currently appears to affect normal use."],
 };
 
 const NEXT_ACTIONS: Record<string, [string, string]> = {
@@ -152,6 +167,11 @@ const NEXT_ACTIONS: Record<string, [string, string]> = {
   review_recent_events: ["如问题仍在发生，请展开技术证据查看脱敏事件。", "If the problem continues, open technical evidence to review redacted events."],
   review_if_unexpected: ["如果结果与你的预期不符，请查看技术证据或联系设备管理员。", "If this is unexpected, review technical evidence or contact the device administrator."],
   review_technical_evidence: ["查看技术证据，或改用另一项只读检查；不要据此自动修复。", "Review technical evidence or choose another read-only check. Do not repair automatically from this result."],
+  retry_unavailable_checks: ["确认设备在线且当前账号有读取权限后，再试一次。", "Confirm the device is online and the account can read system status, then try again."],
+  review_critical_findings: ["先查看标记为需要处理的项目，再生成受控修复预案。", "Review items marked as needing attention before creating a governed repair plan."],
+  review_warning_findings: ["逐项查看提醒，确认它们是否与当前问题有关。", "Review each warning and confirm whether it relates to the current problem."],
+  review_unavailable_checks: ["查看未完成项目；如问题仍在，补充更具体的现象。", "Review unavailable checks and describe the symptom more specifically if it continues."],
+  continue_targeted_diagnosis: ["如果问题仍存在，请描述具体表现，助手会继续缩小范围。", "If the problem continues, describe the symptom so the assistant can narrow it down."],
 };
 
 const OWNER_NEXT_ACTIONS: Record<string, [string, string]> = {
@@ -169,6 +189,11 @@ const OWNER_NEXT_ACTIONS: Record<string, [string, string]> = {
   review_recent_events: ["如果问题仍在发生，可以继续告诉我具体表现。", "If the problem is still happening, tell me what you are seeing."],
   review_if_unexpected: ["如果结果不符合预期，可以换一项继续查看。", "If this is unexpected, choose another item to keep checking."],
   review_technical_evidence: ["换一种说法，或者选择其他项目继续查看。", "Try another wording or choose another item to continue."],
+  retry_unavailable_checks: ["确认设备在线后再试一次。", "Confirm the device is online, then try again."],
+  review_critical_findings: ["先处理下面标记为“需要处理”的项目。", "Start with the items marked as needing attention below."],
+  review_warning_findings: ["看看下面哪些提醒与遇到的问题有关。", "Check which warnings below match what you are seeing."],
+  review_unavailable_checks: ["可以告诉我更具体的现象，我会换一种方式继续检查。", "Tell me the specific symptom and I can try a more focused check."],
+  continue_targeted_diagnosis: ["如果仍有问题，直接告诉我具体表现。", "If something is still wrong, tell me exactly what you are seeing."],
 };
 
 const FACTS: Record<string, [string, string]> = {
@@ -192,6 +217,9 @@ const FACTS: Record<string, [string, string]> = {
   network_interface_count: ["网卡数量", "Network interfaces"],
   network_interface_up_count: ["可用网卡", "Available interfaces"],
   log_line_count: ["读取的事件数", "Events inspected"],
+  diagnostic_completed_count: ["完成检查", "Checks completed"],
+  diagnostic_issue_count: ["需要留意", "Items needing attention"],
+  diagnostic_unavailable_count: ["未完成检查", "Unavailable checks"],
 };
 
 export function hostDiagnosticSummaryCopy(summary: HostDiagnosticSummary, zh: boolean, ownerMode = false) {

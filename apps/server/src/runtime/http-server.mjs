@@ -400,6 +400,7 @@ export function createHttpServer({
   recordTerminalEvidence,
   planSshHostDiagnostic,
   runSshHostDiagnostic,
+  runSshHostDiagnosticRun,
   summarizeText,
   appendEvent,
   refuse,
@@ -1606,6 +1607,7 @@ export function createHttpServer({
         recordTerminalEvidence,
         planSshHostDiagnostic,
         runSshHostDiagnostic,
+        runSshHostDiagnosticRun,
         requireBridgeCredential,
         summarizeText,
       })) {

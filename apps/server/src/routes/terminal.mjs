@@ -1,5 +1,5 @@
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
-import { MAX_HOST_UPLOAD_BYTES } from "../services/host-files.mjs";
+import { deduplicateHostFileScopes, MAX_HOST_UPLOAD_BYTES } from "../services/host-files.mjs";
 
 export async function handleTerminalRoutes({
   req,
@@ -34,6 +34,7 @@ export async function handleTerminalRoutes({
   recordTerminalEvidence,
   planSshHostDiagnostic,
   runSshHostDiagnostic,
+  runSshHostDiagnosticRun,
   requireBridgeCredential,
   summarizeText,
 }) {
@@ -140,7 +141,7 @@ export async function handleTerminalRoutes({
       return true;
     }
     const result = await createHostFileScope(target, await readJson(req), actor);
-    sendJson(res, result.ok ? 201 : result.status, result.ok ? { scope: result.scope } : { error: result.error });
+    sendJson(res, result.ok ? (result.reused ? 200 : 201) : result.status, result.ok ? { scope: result.scope, reused: result.reused } : { error: result.error });
     return true;
   }
 
@@ -188,9 +189,9 @@ export async function handleTerminalRoutes({
 
   if (req.method === "GET" && url.pathname === "/api/host-file-scopes") {
     const purpose = String(url.searchParams.get("purpose") ?? "").trim();
-    const scopes = state.hostFileScopes
+    const scopes = deduplicateHostFileScopes(state.hostFileScopes
       .filter((scope) => findVisibleHostFileScope(state, actor, scope.id) === scope)
-      .filter((scope) => !purpose || scope.purpose === purpose)
+      .filter((scope) => !purpose || scope.purpose === purpose))
       .map((scope) => {
         const host = findVisibleSshTarget(state, actor, scope.sshTargetId);
         if (!host || !myHostTarget(host)) return null;
@@ -376,6 +377,23 @@ export async function handleTerminalRoutes({
     const body = await readJson(req);
     const result = planSshHostDiagnostic(body.input);
     sendJson(res, result.ok ? 200 : result.status, result.ok ? { plan: result } : { error: result.error });
+    return true;
+  }
+
+  const hostAssistantRunMatch = url.pathname.match(/^\/api\/hosts\/([^/]+)\/assistant\/diagnose$/);
+  if (req.method === "POST" && hostAssistantRunMatch) {
+    const target = findVisibleSshTarget(state, actor, decodeURIComponent(hostAssistantRunMatch[1]));
+    if (!target) {
+      sendJson(res, 404, { error: "ssh_target_not_found" });
+      return true;
+    }
+    const body = await readJson(req);
+    if (body.confirmed !== true) {
+      sendJson(res, 400, { error: "ssh_diagnostic_confirmation_required" });
+      return true;
+    }
+    const result = await runSshHostDiagnosticRun(target, body.input, actor);
+    sendJson(res, result.ok ? 200 : result.status, result.ok ? { run: result.run } : { error: result.error });
     return true;
   }
 

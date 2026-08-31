@@ -801,8 +801,12 @@ test("My hosts API reuses SSH identity while keeping file-transfer hosts team sc
 
   testState.hostFileScopes.push(
     { id: "hfs_team_b", ownerTeamId: TEAM_B, sshTargetId: hostId, label: "Website files", purpose: "site_publish", rootPath: "/srv/www/example", resolvedRootPath: "/srv/www/example", permissions: ["list", "upload", "download"], status: "ready", revision: 1, lastVerifiedAt: now() },
+    { id: "hfs_team_b_duplicate", ownerTeamId: TEAM_B, sshTargetId: hostId, label: "Historical duplicate", purpose: "site_publish", rootPath: "/srv/www/example", resolvedRootPath: "/srv/www/example", permissions: ["list", "upload", "download"], status: "ready", revision: 1, lastVerifiedAt: now() },
     { id: "hfs_team_a", ownerTeamId: TEAM_A, sshTargetId: "ssh_a", label: "Team A secret site", purpose: "site_publish", rootPath: "/srv/www/secret", resolvedRootPath: "/srv/www/secret", permissions: ["list", "upload", "download"], status: "ready", revision: 1, lastVerifiedAt: now() },
   );
+  const hostScopes = await call(`/api/hosts/${hostId}/file-scopes`, { token: "tok_b" });
+  assert.equal(hostScopes.status, 200);
+  assert.deepEqual(hostScopes.body.scopes.map((scope) => scope.id), ["hfs_team_b"]);
   const publishScopes = await call("/api/host-file-scopes?purpose=site_publish", { token: "tok_b" });
   assert.equal(publishScopes.status, 200);
   assert.deepEqual(publishScopes.body.scopes.map((scope) => scope.id), ["hfs_team_b"]);
