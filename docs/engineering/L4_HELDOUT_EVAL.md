@@ -92,6 +92,13 @@ oracle is never shown to the agent), runs `claude -p` with edit-only tools
 (`Read,Glob,Grep,Edit,Write`, `acceptEdits`, no Bash), and writes the
 adapter-result contract. Env knobs: `MYAGENTTOOL_CLAUDE_CLI`,
 `MYAGENTTOOL_CLAUDE_MODEL`, `MYAGENTTOOL_CLAUDE_TIMEOUT_MS` (default 600000).
+Eval CLI calls load only Claude's user settings and use strict MCP isolation by
+default, so project hooks or connectors cannot consume the per-case timeout.
+`MYAGENTTOOL_CLAUDE_SETTING_SOURCES` can override the setting sources for a
+controlled diagnostic run. The scheduled preflight also reads the CLI's actual
+`modelUsage` metadata and refuses a non-Claude model as provider mismatch; such
+a run is infrastructure evidence, not a capability point comparable with the
+Claude baseline.
 Keep the default 600s for sets containing `large`-tier cases: the baseline
 run's only failure (hr-006) was an adapter timeout at 300s, and per SWE-bench
 convention a timeout counts as unresolved.

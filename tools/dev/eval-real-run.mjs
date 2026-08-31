@@ -23,6 +23,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildRunFeedbackEvents, deriveFloors, floorBreaches, looksLikeInfraFailure, PROVISIONAL_FLOORS, runRegressed } from "../ai/src/evals/eval-signals.mjs";
+import { buildClaudeArgs, inspectClaudeProbeOutput } from "../ai/src/evals/claude-cli.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const trendFile = resolve(repoRoot, ".myagenttool/evals/trend.jsonl");
@@ -37,7 +38,8 @@ const dryRun = args.includes("--dry-run");
 const subcapOnly = args.includes("--subcap-only");
 
 // --- prerequisites (checked in every mode) ---------------------------------
-const claudeVersion = tryRun("claude", ["--version"]);
+const claudeCli = process.env.MYAGENTTOOL_CLAUDE_CLI ?? "claude";
+const claudeVersion = tryRun(claudeCli, ["--version"]);
 if (!claudeVersion.ok) {
   console.error("eval:real requires the claude CLI on PATH (logged-in session).");
   process.exit(1);
@@ -51,10 +53,11 @@ const heldoutDirty = !gitClean.ok || gitClean.stdout.trim().length > 0;
 // parse the OUTPUT, not the exit code. A logged-out run must not burn 15 paid
 // cases producing a misleading 40% (#285).
 const auth = authPreflight();
-console.log(`[eval:real] claude ${claudeVersion.stdout.trim()} · auth ${auth.ok ? "ok" : "FAILED"} · repo ${heldoutDirty ? "DIRTY (held-out eval will be skipped)" : "clean"}`);
+const modelLabel = auth.models?.length ? ` · models ${auth.models.join(",")}` : "";
+console.log(`[eval:real] claude ${claudeVersion.stdout.trim()} · preflight ${auth.ok ? "ok" : "FAILED"}${modelLabel} · repo ${heldoutDirty ? "DIRTY (held-out eval will be skipped)" : "clean"}`);
 
 if (dryRun) {
-  if (!auth.ok) console.error(`[eval:real] auth preflight FAILED: ${auth.detail}`);
+  if (!auth.ok) console.error(`[eval:real] preflight FAILED: ${auth.detail}`);
   console.log(`[eval:real] dry run ${auth.ok ? "OK" : "would fail-fast"} — would run: subcap real${subcapOnly ? "" : " + held-out real"}; trend -> ${trendFile}`);
   process.exit(auth.ok ? 0 : 1);
 }
@@ -65,15 +68,29 @@ if (!auth.ok) {
   // Fail-fast: no paid eval, emit a feedback event, and record an
   // infraFailure trend row so the outage is visible but excluded from the
   // capability line (#285/#286/#250).
-  const record = { startedAt, kind: subcapOnly ? "subcap-only" : "full", authFailure: true, authDetail: auth.detail, infraFailure: true, finishedAt: new Date().toISOString() };
+  const record = {
+    startedAt,
+    kind: subcapOnly ? "subcap-only" : "full",
+    authFailure: auth.kind === "auth",
+    providerMismatch: auth.kind === "provider",
+    preflightDetail: auth.detail,
+    models: auth.models ?? [],
+    infraFailure: true,
+    finishedAt: new Date().toISOString(),
+  };
   appendTrend(record);
   emitFeedbackEvents(record);
-  console.error(`[eval:real] auth preflight failed (${auth.detail}); skipped paid evals. Fix the cron login (see eval-real-cron.sh) — next run recovers.`);
+  console.error(`[eval:real] preflight failed (${auth.detail}); skipped capability evals. Fix the configured Claude model/login before the next run.`);
   process.exit(1);
 }
 
 // --- real runs --------------------------------------------------------------
-const record = { startedAt, claude: claudeVersion.stdout.trim(), kind: subcapOnly ? "subcap-only" : "full" };
+const record = {
+  startedAt,
+  claude: claudeVersion.stdout.trim(),
+  models: auth.models,
+  kind: subcapOnly ? "subcap-only" : "full",
+};
 
 {
   const summary = runEval("subcap", [
@@ -180,16 +197,33 @@ function appendTrend(entry) {
 // Cheap auth probe: a logged-out CLI prints the /login notice and exits 0, so
 // the OUTPUT is the only reliable signal.
 function authPreflight() {
-  const probe = spawnSync("claude", ["-p", "reply with the single word ok"], {
+  const settingSources = process.env.MYAGENTTOOL_CLAUDE_SETTING_SOURCES?.trim() || "user";
+  const probeArgs = buildClaudeArgs(
+    ["-p", "reply with the single word ok", "--output-format", "json"],
+    { model: process.env.MYAGENTTOOL_CLAUDE_MODEL ?? "", settingSources },
+  );
+  const probe = spawnSync(claudeCli, probeArgs, {
     encoding: "utf8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"],
   });
-  if (probe.error?.code === "ETIMEDOUT") return { ok: false, detail: "auth probe timed out" };
+  if (probe.error?.code === "ETIMEDOUT") return { ok: false, kind: "auth", detail: "auth probe timed out" };
   const out = `${probe.stdout ?? ""}${probe.stderr ?? ""}`.toLowerCase();
   if (/not logged in|please run \/login|\/login\b/.test(out)) {
-    return { ok: false, detail: "claude CLI is not logged in (cron session lacks the login)" };
+    return { ok: false, kind: "auth", detail: "claude CLI is not logged in (cron session lacks the login)" };
   }
-  if (probe.status !== 0) return { ok: false, detail: `claude probe exited ${probe.status ?? "unknown"}` };
-  return { ok: true, detail: "" };
+  if (probe.status !== 0) return { ok: false, kind: "auth", detail: `claude probe exited ${probe.status ?? "unknown"}` };
+  const identity = inspectClaudeProbeOutput(probe.stdout);
+  if (!identity.parsed || identity.models.length === 0) {
+    return { ok: false, kind: "provider", detail: "claude probe did not report model identity", models: [] };
+  }
+  if (!identity.claudeModelsOnly) {
+    return {
+      ok: false,
+      kind: "provider",
+      detail: `configured model does not match the Claude held-out baseline (${identity.models.join(", ")})`,
+      models: identity.models,
+    };
+  }
+  return { ok: true, detail: "", models: identity.models };
 }
 
 function tryParse(line) {
@@ -229,6 +263,7 @@ function tryRun(command, commandArgs) {
 
 function trendLine(entry) {
   if (entry.authFailure) return `${entry.startedAt.slice(0, 16)} [infra] auth preflight failed — no capability signal`;
+  if (entry.providerMismatch) return `${entry.startedAt.slice(0, 16)} [infra] provider/model mismatch — no capability signal`;
   const subcap = entry.subcap?.total ? `subcap ${entry.subcap.resolved}/${entry.subcap.total}` : "subcap n/a";
   const heldout = entry.heldout?.total
     ? `heldout ${entry.heldout.resolved}/${entry.heldout.total}`
