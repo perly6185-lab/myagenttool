@@ -713,6 +713,7 @@ for (const fixture of [
     await expect(cancel).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(confirmation).toBeHidden();
+    await expect(start).toBeFocused();
     expect(confirmCalls).toBe(0);
 
     await page.reload({ waitUntil: "domcontentloaded" });
