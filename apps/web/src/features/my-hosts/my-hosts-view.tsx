@@ -289,25 +289,35 @@ function HostAssistant({ host, zh, professional, onRepairCredential }: { host: S
       if (repairNeeded) void queryClient.invalidateQueries({ queryKey: ["my-hosts"] });
     },
   });
-  const remediationEligible = !professional && run?.intent === "website" && ["warning", "critical"].includes(run.summary.severity);
+  const remediationEligible = !professional && run?.intent === "website";
   const remediationProfiles = useQuery({
     queryKey: ["my-host-tls-profiles", host.id],
     queryFn: () => hostApi.tlsProfiles(host.id),
     enabled: Boolean(remediationEligible),
   });
+  const remediationHistory = useQuery({
+    queryKey: ["host-remediation-plans", host.id],
+    queryFn: () => hostApi.remediationPlans(host.id),
+    enabled: !professional && host.connectionStatus === "ready",
+  });
   const remediationPlanMutation = useMutation({
-    mutationFn: (profileId: string) => hostApi.planRemediation(host.id, profileId),
-    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); },
+    mutationFn: (profileId: string) => hostApi.planRemediation(host.id, profileId, run!.id),
+    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-remediation-plans", host.id] }); },
     onError: (error) => { setRemediation(null); setMessage(remediationFailureText(error, zh)); },
   });
   const remediationConfirmMutation = useMutation({
     mutationFn: (next: HostRemediationPlan) => hostApi.confirmRemediation(host.id, next.id, next.revision),
-    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); },
+    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-remediation-plans", host.id] }); },
+    onError: (error) => setMessage(remediationFailureText(error, zh)),
+  });
+  const remediationRecheckMutation = useMutation({
+    mutationFn: (next: HostRemediationPlan) => hostApi.recheckRemediation(host.id, next.id),
+    onSuccess: (response) => { setRemediation(response.plan); setMessage(null); void queryClient.invalidateQueries({ queryKey: ["host-remediation-plans", host.id] }); },
     onError: (error) => setMessage(remediationFailureText(error, zh)),
   });
   useEffect(() => { setInput(""); setPlan(null); setResult(null); setRun(null); setRemediation(null); setMessage(null); setCredentialRepairNeeded(false); }, [host.id]);
   useEffect(() => { if (host.connectionStatus !== "ready") { setPlan(null); setResult(null); setRun(null); setRemediation(null); } }, [host.connectionStatus]);
-  const busy = planMutation.isPending || mutation.isPending || runMutation.isPending || remediationPlanMutation.isPending || remediationConfirmMutation.isPending;
+  const busy = planMutation.isPending || mutation.isPending || runMutation.isPending || remediationPlanMutation.isPending || remediationConfirmMutation.isPending || remediationRecheckMutation.isPending;
   const submit = () => {
     if (!input.trim() || busy) return;
     if (professional) planMutation.mutate();
@@ -331,32 +341,68 @@ function HostAssistant({ host, zh, professional, onRepairCredential }: { host: S
       zh={zh}
       planning={remediationPlanMutation.isPending}
       confirming={remediationConfirmMutation.isPending}
+      rechecking={remediationRecheckMutation.isPending}
       onPlan={(profileId) => remediationPlanMutation.mutate(profileId)}
       onConfirm={(next) => remediationConfirmMutation.mutate(next)}
+      onRecheck={(next) => remediationRecheckMutation.mutate(next)}
     /> : null}
+    {!professional && remediationHistory.data?.plans.length ? <HostRemediationHistory plans={remediationHistory.data.plans} zh={zh} rechecking={remediationRecheckMutation.isPending} onRecheck={(next) => remediationRecheckMutation.mutate(next)} /> : null}
   </div>;
 }
 
-function HostRemediationPanel({ profiles, plan, zh, planning, confirming, onPlan, onConfirm }: { profiles: HostTlsActivationProfile[]; plan: HostRemediationPlan | null; zh: boolean; planning: boolean; confirming: boolean; onPlan: (profileId: string) => void; onConfirm: (plan: HostRemediationPlan) => void }) {
+function HostRemediationPanel({ profiles, plan, zh, planning, confirming, rechecking, onPlan, onConfirm, onRecheck }: { profiles: HostTlsActivationProfile[]; plan: HostRemediationPlan | null; zh: boolean; planning: boolean; confirming: boolean; rechecking: boolean; onPlan: (profileId: string) => void; onConfirm: (plan: HostRemediationPlan) => void; onRecheck: (plan: HostRemediationPlan) => void }) {
   if (!plan) return <div className="mt-4 space-y-3 rounded-lg border border-warning/30 bg-warning/10 p-3" data-testid="host-remediation-offer">
-    <div><p className="text-sm font-medium">{zh ? "可以尝试安全重新加载网站服务" : "A safe website-service reload is available"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "只使用已经验证的网站服务。下一步先展示影响，不会立即修改设备。" : "This uses only a previously verified website service. The next step shows the impact and does not change the device yet."}</p></div>
-    <div className="flex flex-wrap gap-2">{profiles.map((profile) => <Button key={profile.id} size="sm" variant="secondary" disabled={planning} onClick={() => onPlan(profile.id)}>{planning ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{profiles.length === 1 ? (zh ? "查看处理方案" : "Review repair plan") : profile.label}</Button>)}</div>
+    <div><p className="text-sm font-medium">{zh ? "进一步检查网站是否真的可用" : "Check whether the website is actually available"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "下一步只检查真实网页、证书和已发布内容；确认网站确实异常后才会展示处理方案。" : "The next step checks the real page, certificate, and published content. A repair plan is shown only if the website is actually unhealthy."}</p></div>
+    <div className="flex flex-wrap gap-2">{profiles.map((profile) => <Button key={profile.id} size="sm" variant="secondary" disabled={planning} onClick={() => onPlan(profile.id)}>{planning ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{profiles.length === 1 ? (zh ? "检查网站" : "Check website") : profile.label}</Button>)}</div>
   </div>;
 
-  if (["completed", "failed", "outcome_unknown"].includes(plan.status)) {
+  if (["not_needed", "completed", "completed_unresolved", "failed", "outcome_unknown"].includes(plan.status)) {
     const completed = plan.status === "completed";
+    const healthy = plan.status === "not_needed";
+    const unresolved = plan.status === "completed_unresolved";
     const unchanged = plan.status === "failed";
-    return <div className={`mt-4 space-y-2 rounded-lg border p-3 ${completed ? "border-primary/30 bg-primary/[0.06]" : "border-warning/30 bg-warning/10"}`} data-testid="host-remediation-result">
-      <div className="flex items-center gap-2">{completed ? <CheckCircle2 className="size-4 text-primary" /> : <TriangleAlert className="size-4 text-warning" />}<p className="text-sm font-medium">{completed ? (zh ? "网站服务已重新加载并通过复查" : "The website service was reloaded and verified") : unchanged ? (zh ? "检查未通过，设备没有被修改" : "Checks did not pass; the device was not changed") : (zh ? "已尝试处理，但最终状态尚未确认" : "The repair ran, but the final state is not confirmed")}</p></div>
-      <p className="text-xs text-muted-foreground">{completed ? (zh ? "配置、容器状态和重新加载后的状态均已确认。" : "Configuration, container state, and the post-reload state were confirmed.") : unchanged ? (zh ? "系统在变更前安全停止，可以检查服务配置后重新生成方案。" : "The operation stopped safely before the change. Check the service configuration before creating a new plan.") : (zh ? "请先检查网站是否恢复，不要重复点击处理。" : "Check whether the website recovered before attempting anything again.")}</p>
+    const reconciledHealthy = plan.lastRecheckedHealth?.status === "healthy";
+    const reconciledUnhealthy = plan.lastRecheckedHealth?.status === "unhealthy";
+    const success = completed || healthy || reconciledHealthy;
+    const title = reconciledHealthy ? (zh ? "重新检查后，网站现在可以正常访问" : "The website is available after a fresh check")
+      : reconciledUnhealthy ? (zh ? "重新检查后，网站仍未恢复" : "The website is still unavailable after a fresh check")
+        : healthy ? (zh ? "网站目前可以正常访问，无需处理" : "The website is available; no repair is needed")
+      : completed ? (zh ? "网站已经恢复访问" : "The website is available again")
+        : unresolved ? (zh ? "服务已重新加载，但网站仍未恢复" : "The service was reloaded, but the website is still unavailable")
+          : unchanged ? (zh ? "检查未通过，设备没有被修改" : "Checks did not pass; the device was not changed")
+            : (zh ? "已尝试处理，但最终状态尚未确认" : "The repair ran, but the final state is not confirmed");
+    const detail = reconciledHealthy ? (zh ? "这次只重新检查了真实网站，没有再次执行重载。" : "This was a read-only website check; the service was not reloaded again.")
+      : reconciledUnhealthy ? (zh ? "这次只重新检查了真实网站，没有再次修改设备。" : "This was a read-only website check; the device was not changed again.")
+        : healthy ? (zh ? "已核对真实网页、HTTPS 证书和当前发布内容。" : "The real page, HTTPS certificate, and active published content were checked.")
+      : completed ? (zh ? "容器、配置和真实网站均已通过处理后复查。" : "The container, configuration, and real website all passed the post-repair check.")
+        : unresolved ? (zh ? "不要重复处理；请继续检查网络、网站内容或上游服务。" : "Do not repeat the repair. Continue checking the network, website content, or upstream service.")
+          : unchanged ? (zh ? "系统在变更前安全停止，可以检查服务配置后重新诊断。" : "The operation stopped safely before the change. Check the service configuration and diagnose again.")
+            : (zh ? "请先重新检查网站现状，不要重复执行处理。" : "Check the current website state before attempting anything again.");
+    return <div className={`mt-4 space-y-2 rounded-lg border p-3 ${success ? "border-primary/30 bg-primary/[0.06]" : "border-warning/30 bg-warning/10"}`} data-testid="host-remediation-result">
+      <div className="flex items-center gap-2">{success ? <CheckCircle2 className="size-4 text-primary" /> : <TriangleAlert className="size-4 text-warning" />}<p className="text-sm font-medium">{title}</p></div>
+      <p className="text-xs text-muted-foreground">{detail}</p>
+      {["completed_unresolved", "outcome_unknown"].includes(plan.status) ? <Button size="sm" variant="secondary" disabled={rechecking} onClick={() => onRecheck(plan)}>{rechecking ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "重新检查网站" : "Check website again"}</Button> : null}
     </div>;
   }
 
   return <div className="mt-4 space-y-3 rounded-lg border border-primary/25 bg-primary/[0.04] p-3" data-testid="host-remediation-plan">
     <div><p className="text-sm font-medium">{zh ? "重新加载已验证的网站服务" : "Reload the verified website service"}</p><p className="mt-1 text-xs text-muted-foreground">{zh ? "可能让少量正在建立的连接短暂重试；不会修改网站文件，也不会重启设备。" : "A few connections being established may briefly retry. Website files are not changed, and the device is not restarted."}</p></div>
-    <div className="grid gap-2 text-xs sm:grid-cols-2"><div className="rounded-md bg-muted p-3"><span className="text-muted-foreground">{zh ? "执行前" : "Before the change"}</span><strong className="mt-1 block">{zh ? "确认容器运行、配置有效" : "Confirm the container and configuration"}</strong></div><div className="rounded-md bg-muted p-3"><span className="text-muted-foreground">{zh ? "执行后" : "After the change"}</span><strong className="mt-1 block">{zh ? "自动复查容器和配置" : "Recheck the container and configuration"}</strong></div></div>
+    <div className="grid gap-2 text-xs sm:grid-cols-2"><div className="rounded-md bg-muted p-3"><span className="text-muted-foreground">{zh ? "执行前" : "Before the change"}</span><strong className="mt-1 block">{zh ? "再次检查网站、容器和配置" : "Recheck the website, container, and configuration"}</strong></div><div className="rounded-md bg-muted p-3"><span className="text-muted-foreground">{zh ? "执行后" : "After the change"}</span><strong className="mt-1 block">{zh ? "确认真实网站恢复访问" : "Confirm the real website is available"}</strong></div></div>
     <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{zh ? "只确认这一次；方案过期或设备变化后必须重新生成。" : "One confirmation for this operation. Expired or stale plans must be recreated."}</span><Button disabled={confirming} onClick={() => onConfirm(plan)}>{confirming ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{zh ? "确认并处理" : "Confirm and repair"}</Button></div>
   </div>;
+}
+
+function HostRemediationHistory({ plans, zh, rechecking, onRecheck }: { plans: HostRemediationPlan[]; zh: boolean; rechecking: boolean; onRecheck: (plan: HostRemediationPlan) => void }) {
+  const visible = plans.filter((plan) => ["not_needed", "completed", "completed_unresolved", "failed", "outcome_unknown"].includes(plan.status)).slice(0, 3);
+  if (!visible.length) return null;
+  const label = (plan: HostRemediationPlan) => plan.lastRecheckedHealth?.status === "healthy" ? (zh ? "网站现在可用" : "Website now available")
+    : plan.lastRecheckedHealth?.status === "unhealthy" ? (zh ? "网站仍不可用" : "Website still unavailable")
+      : plan.status === "completed" ? (zh ? "网站已恢复" : "Website restored")
+    : plan.status === "not_needed" ? (zh ? "无需处理" : "No repair needed")
+      : plan.status === "completed_unresolved" ? (zh ? "网站仍未恢复" : "Website still unavailable")
+        : plan.status === "failed" ? (zh ? "未修改设备" : "Device unchanged")
+          : (zh ? "结果待确认" : "Result needs review");
+  return <details className="mt-4 rounded-lg border p-3" data-testid="host-remediation-history"><summary className="cursor-pointer text-xs font-medium">{zh ? "最近处理记录" : "Recent repair history"}</summary><div className="mt-3 divide-y">{visible.map((plan) => <div key={plan.id} className="flex flex-wrap items-center justify-between gap-3 py-2 text-xs"><span>{label(plan)}</span><span className="flex items-center gap-2"><time className="text-muted-foreground">{new Date(plan.lastRecheckedAt ?? plan.completedAt ?? plan.createdAt).toLocaleString()}</time>{["completed_unresolved", "outcome_unknown"].includes(plan.status) ? <Button size="sm" variant="ghost" disabled={rechecking} onClick={() => onRecheck(plan)}>{zh ? "重新检查" : "Recheck"}</Button> : null}</span></div>)}</div></details>;
 }
 
 function DiagnosticRunPanel({ run, zh, professional }: { run: HostDiagnosticRun; zh: boolean; professional: boolean }) {
@@ -411,15 +457,17 @@ function diagnosticFailureText(error: unknown, zh: boolean, professional: boolea
 
 function remediationFailureText(error: unknown, zh: boolean) {
   const code = error instanceof ApiError ? error.code : "";
-  if (["host_remediation_plan_expired", "host_remediation_plan_stale", "host_remediation_plan_revision_conflict"].includes(code)) {
-    return zh ? "设备或网站服务已经发生变化，请重新查看处理方案。" : "The device or website service changed. Review a new repair plan.";
+  if (["host_remediation_plan_expired", "host_remediation_plan_stale", "host_remediation_plan_revision_conflict", "host_remediation_diagnostic_stale"].includes(code)) {
+    return zh ? "设备、网站或检查结果已经发生变化，请重新检查网站。" : "The device, website, or diagnostic result changed. Check the website again.";
   }
+  if (["host_remediation_diagnostic_not_found", "host_remediation_diagnostic_not_applicable"].includes(code)) return zh ? "请先描述“网站打不开”并完成网站检查。" : "Describe that the website is unavailable and complete a website check first.";
   if (["ssh_authentication_failed", "ssh_credential_unavailable", "ssh_credential_invalid"].includes(code)) {
     return zh ? "需要重新登录这台设备，尚未执行处理。" : "Sign in to this device again. The repair did not run.";
   }
-  if (["host_remediation_profile_not_ready", "host_remediation_scope_not_ready"].includes(code)) {
-    return zh ? "已登记的网站服务目前不可用，尚未修改设备。" : "The managed website service is unavailable. The device was not changed.";
+  if (["host_remediation_profile_not_ready", "host_remediation_scope_not_ready", "host_remediation_website_binding_not_ready"].includes(code)) {
+    return zh ? "这个服务还没有绑定到已验证的活动网站，尚未修改设备。" : "This service is not bound to a verified active website. The device was not changed.";
   }
+  if (["host_website_staging_ca_unavailable", "host_remediation_health_check_unavailable"].includes(code)) return zh ? "暂时无法安全检查 HTTPS 网站，尚未修改设备。" : "The HTTPS website cannot be checked safely right now. The device was not changed.";
   return zh ? "处理没有开始或未能完成，请先检查网站状态，不要重复操作。" : "The repair did not start or complete. Check the website state before trying anything again.";
 }
 

@@ -6,6 +6,8 @@ import { buildHostDiagnosticSummary } from "./host-diagnostic-summary.mjs";
 import { buildHostDiagnosticRunSummary, hostDiagnosticRunPlanForInput, primaryHostDiagnosticAction } from "./host-diagnostic-run.mjs";
 import { createSshHostConnector, normalizeSshFingerprint, sshDiagnosticPlanForInput, sshDiagnosticCommand, SshHostConnectorError } from "./ssh-host-connector.mjs";
 
+const MAX_HOST_DIAGNOSTIC_RUNS_PER_USER = 50;
+
 // A local managed terminal is the broadest execution surface on the bridge (an
 // interactive shell). Its cwd must stay inside a registered project or worktree
 // root so a session can't be opened at an arbitrary path on the host. (Remote
@@ -86,6 +88,7 @@ export function createTerminalService({
   // #1001 Phase A: durable SSH/terminal/evidence writes commit through the Store's
   // unit of work (falls back to the debounce where no store is injected).
   const runTx = makeRunTx({ store, persistStateSoon });
+  state.hostDiagnosticRuns ??= [];
   function createSshTarget(body = {}) {
     const host = normalizeSshHost(body.host);
     const port = normalizeSshPort(body.port);
@@ -351,8 +354,31 @@ export function createTerminalService({
       steps.push({ action: planned.action, parameters: planned.parameters, status: "unavailable", error: result.error });
     }
     const summary = buildHostDiagnosticRunSummary(steps);
-    const run = { version: 1, intent: plan.intent, risk: "read_only", steps, summary, primaryAction: primaryHostDiagnosticAction(steps) };
+    const timestamp = now();
+    const run = {
+      id: nextId("hdr"),
+      ownerTeamId: target.ownerTeamId,
+      sshTargetId: target.id,
+      targetRevision: sshTargetRevision(target),
+      createdByUserId: actor?.userId ?? "usr_local",
+      version: 1,
+      intent: plan.intent,
+      risk: "read_only",
+      steps,
+      summary,
+      primaryAction: primaryHostDiagnosticAction(steps),
+      createdAt: timestamp,
+    };
     runTx(() => {
+      state.hostDiagnosticRuns.push(run);
+      const owned = state.hostDiagnosticRuns.filter((item) => item.ownerTeamId === run.ownerTeamId
+        && item.sshTargetId === run.sshTargetId
+        && item.createdByUserId === run.createdByUserId)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+      const retired = new Set(owned.slice(MAX_HOST_DIAGNOSTIC_RUNS_PER_USER).map((item) => item.id));
+      for (let index = state.hostDiagnosticRuns.length - 1; index >= 0; index -= 1) {
+        if (retired.has(state.hostDiagnosticRuns[index].id)) state.hostDiagnosticRuns.splice(index, 1);
+      }
       appendEvent({
         invocationId: null,
         type: "ssh.host_diagnostic_run.completed",
@@ -360,6 +386,7 @@ export function createTerminalService({
         message: "A confirmed multi-step read-only SSH host diagnostic completed.",
         data: {
           targetId: target.id,
+          diagnosticRunId: run.id,
           intent: plan.intent,
           requestedBy: actor?.userId ?? "usr_local",
           summary,
