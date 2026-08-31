@@ -246,6 +246,11 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+        # node-pty's bundled macOS 26 ARM64 prebuild loads but cannot fork even
+        # /bin/sleep (posix_spawnp failure). The packaged ARM64 desktop rebuilds
+        # native modules too, so compile it on the hosted macOS contract runner.
+        env:
+          npm_config_build_from_source: ${{ startsWith(matrix.os, 'macos') && 'true' || 'false' }}
 
       - name: Verify hard-kill state and executor-tree recovery
         run: |
