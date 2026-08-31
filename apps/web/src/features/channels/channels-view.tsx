@@ -333,6 +333,15 @@ export function ChannelsView() {
     return () => { cancelled = true; };
   }, []);
 
+  async function refreshCompletionMetrics() {
+    try {
+      const report = await api.getWorkItemCompletionMetrics(undefined, "channel") as WorkItemCompletionQualityMetrics;
+      setChannelCompletionMetrics(report?.scope?.origin === "channel" && report?.metrics?.completion ? report : null);
+    } catch {
+      setChannelCompletionMetrics(null);
+    }
+  }
+
   function openSetup(channelId: string | null = null) {
     const existingWechat = channels.find((channel) => channel.provider === "wechat_ilink");
     setSetupChannelId(channelId ?? existingWechat?.id ?? null);
@@ -399,6 +408,7 @@ export function ChannelsView() {
               notificationPolicies={(state?.channelNotificationPolicies ?? []).filter((policy) => policy.channelId === channel.id)}
               lifecycleSummaries={(state?.channelLifecycleSummaries ?? []).filter((summary) => summary.projectId === channel.taskProjectId)}
               onReconnect={(channelId) => openSetup(channelId)}
+              onTaskMetricsChanged={refreshCompletionMetrics}
             />
           ))}
         </div>
@@ -674,7 +684,7 @@ function IlinkSetupPanel({ channelId = null, existingChannelId = null, onClose }
   );
 }
 
-function ChannelCard({ channel, conversations, devices, deliveries, projects, tasks, threads, revisions, notificationPolicies, lifecycleSummaries, onReconnect }: { channel: ChannelOperations; conversations: ChannelConversation[]; devices: DeviceSnapshot[]; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[]; tasks: ChannelTaskRequest[]; threads: ChannelTaskThread[]; revisions: ChannelTaskRevision[]; notificationPolicies: ChannelNotificationPolicy[]; lifecycleSummaries: ChannelLifecycleSummary[]; onReconnect: (channelId: string) => void }) {
+function ChannelCard({ channel, conversations, devices, deliveries, projects, tasks, threads, revisions, notificationPolicies, lifecycleSummaries, onReconnect, onTaskMetricsChanged }: { channel: ChannelOperations; conversations: ChannelConversation[]; devices: DeviceSnapshot[]; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[]; tasks: ChannelTaskRequest[]; threads: ChannelTaskThread[]; revisions: ChannelTaskRevision[]; notificationPolicies: ChannelNotificationPolicy[]; lifecycleSummaries: ChannelLifecycleSummary[]; onReconnect: (channelId: string) => void; onTaskMetricsChanged: () => Promise<void> }) {
   const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const [taskProject, setTaskProject] = useState(channel.taskProjectId ?? "");
@@ -860,6 +870,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           ? await api.executeChannelTaskCommand(task.id, "retry_delivery", { approvalToken: grant.token }) as ChannelTaskCommandResponse
           : await api.retryChannelDelivery(channel.id, deliveryId, grant.token) as ChannelTaskCommandResponse;
         if (task) rememberTaskReceipt(task.id, response.actionReceipt);
+        await onTaskMetricsChanged();
         return response;
       } catch (caught) {
         if (task) rememberTaskReceiptFromError(task.id, caught);
@@ -905,6 +916,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
       try {
         const response = await handlers[action](task.id) as ChannelTaskCommandResponse;
         if (action === "retry") rememberTaskReceipt(task.id, response?.actionReceipt);
+        await onTaskMetricsChanged();
         return response;
       } catch (caught) {
         if (action === "retry") rememberTaskReceiptFromError(task.id, caught);
@@ -928,6 +940,7 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
           kind === "fix_with_ai" ? { feedback } : {},
         ) as ChannelTaskCommandResponse;
         rememberTaskReceipt(task.id, response.actionReceipt);
+        await onTaskMetricsChanged();
         return response;
       } catch (caught) {
         rememberTaskReceiptFromError(task.id, caught);
@@ -940,7 +953,11 @@ function ChannelCard({ channel, conversations, devices, deliveries, projects, ta
 
   async function reconcileWechatDraft(task: ChannelTaskRequest, outcome: "confirmed_saved" | "confirmed_not_saved") {
     if (outcome === "confirmed_not_saved" && !window.confirm("请确认公众号草稿箱中确实没有该草稿。确认后系统会重新保存，是否继续？")) return;
-    await execute(() => api.reconcileWechatDraftTask(task.id, outcome));
+    await execute(async () => {
+      const result = await api.reconcileWechatDraftTask(task.id, outcome);
+      await onTaskMetricsChanged();
+      return result;
+    });
   }
 
   async function sendHumanReply(targetId: string) {

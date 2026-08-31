@@ -381,6 +381,7 @@ export function beginExecutionAction({
   expectedWorkItemRevision = null,
   expectedTargetStatus = null,
   request = null,
+  initiationSource = null,
   nextOwner = "system",
   now,
   nextId,
@@ -412,6 +413,12 @@ export function beginExecutionAction({
 
   const workItem = boundWorkItem(state, autoRun);
   const requestedAt = now();
+  const systemActor = actor?.role === "system"
+    || actor?.kind === "system"
+    || String(actor?.userId ?? "").startsWith("system_");
+  const normalizedInitiationSource = ["user", "system", "automation"].includes(initiationSource)
+    ? initiationSource
+    : systemActor ? "automation" : "user";
   const receipt = {
     schemaVersion: 1,
     id: nextId("ear"),
@@ -423,7 +430,9 @@ export function beginExecutionAction({
     requestedAt,
     updatedAt: requestedAt,
     completedAt: null,
+    workItemId: workItem?.id ?? null,
     requestedBy: actor?.userId ?? "usr_local",
+    initiationSource: normalizedInitiationSource,
     idempotencyKey: key,
     requestDigest: digest,
     expectedWorkItemRevision: optionalRevision(expectedWorkItemRevision),

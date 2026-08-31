@@ -7,12 +7,15 @@ afterEach(() => cleanup());
 
 function assessment(overrides: Partial<WorkItemCompletionAssessment> = {}): WorkItemCompletionAssessment {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    workItemId: "wi_1",
+    category: "task",
     status: "completed",
     declaredComplete: true,
     evidenceComplete: true,
     falseCompletion: false,
     requiresUserAction: false,
+    exceptionHandlingRequired: false,
     humanInterventionRequired: false,
     reasonCodes: [],
     stages: {},

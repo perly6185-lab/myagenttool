@@ -125,6 +125,7 @@ export const persistedArrayKeys = [
   "worktrees",
   "autoRuns",
   "executionActionIdempotencyRecords",
+  "workItemAcceptanceBatches",
   "deployments",
   "compareRuns",
   "worktreeReviews",
@@ -364,6 +365,7 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   // no `teamId` and are skipped by the scan (no stamp → nothing to cross-check).
   { key: "autoRuns", owner: "teamId" },
   { key: "executionActionIdempotencyRecords", owner: "ownerTeamId" },
+  { key: "workItemAcceptanceBatches", owner: "ownerTeamId" },
   { key: "businessDocumentClassifications", owner: "ownerTeamId" },
   { key: "businessDocumentAnalysisJobs", owner: "ownerTeamId" },
   { key: "workflowIntakeObservations", owner: "ownerTeamId" },

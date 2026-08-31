@@ -42,6 +42,16 @@ try {
   await runVerification(firstWindow);
   await runRedelivery(firstWindow);
   const after = await readEvidence(firstWindow);
+  const acceptanceBatch = await browserJson(firstWindow, "/api/work-items/completion-metrics/batches", {
+    method: "POST",
+    body: {
+      origin: "channel",
+      label: "Channel 桌面端三类恢复动作",
+      cohortKey: "channel-desktop-recovery",
+      idempotencyKey: "channel-desktop-recovery:final",
+    },
+  });
+  await openCompletionMetrics(firstWindow);
   await firstWindow.screenshot({ path: join(evidenceRoot, "after-actions.png"), fullPage: true });
 
   await desktop.close();
@@ -51,10 +61,15 @@ try {
   const restoredWindow = await desktop.firstWindow();
   await openChannel(restoredWindow);
   const restored = await readEvidence(restoredWindow);
+  const restoredBatches = await browserJson(restoredWindow, "/api/work-items/completion-metrics/batches?origin=channel&cohortKey=channel-desktop-recovery");
   assertPersistedReceipts(restored);
+  if (restoredBatches.count !== 1 || restoredBatches.batches[0]?.id !== acceptanceBatch.batch?.id) {
+    throw new Error(`Acceptance batch was not durable after restart: ${JSON.stringify(restoredBatches)}`);
+  }
+  await openCompletionMetrics(restoredWindow);
   await restoredWindow.screenshot({ path: join(evidenceRoot, "after-restart.png"), fullPage: true });
 
-  const report = buildReport({ before, after, restored });
+  const report = buildReport({ before, after, restored, acceptanceBatch: restoredBatches.batches[0] });
   writeFileSync(join(evidenceRoot, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 } finally {
@@ -333,6 +348,15 @@ async function openChannel(page) {
   await page.getByText("任务对话", { exact: true }).waitFor({ state: "visible", timeout: 30_000 });
 }
 
+async function openCompletionMetrics(page) {
+  const details = page.getByTestId("channel-completion-metrics");
+  if (!(await details.evaluate((element) => element.open))) {
+    await details.locator("summary").click();
+  }
+  await details.getByText("被迫人工介入率", { exact: true }).waitFor({ state: "visible" });
+  await details.getByText("Channel", { exact: true }).first().waitFor({ state: "visible" });
+}
+
 function taskCard(page, title) {
   return page.getByTestId("channel-task-threads")
     .locator("div.rounded-md.border.border-border.p-3.text-xs")
@@ -359,15 +383,19 @@ async function runRedelivery(page) {
   await card.getByText("结果消息已重新进入发送队列。", { exact: true }).waitFor({ timeout: 30_000 });
 }
 
-async function browserJson(page, path) {
-  return page.evaluate(async (requestPath) => {
+async function browserJson(page, path, options = {}) {
+  return page.evaluate(async ({ requestPath, requestOptions }) => {
     const server = new URL(window.location.href).searchParams.get("api");
     if (!server) throw new Error("Desktop renderer did not expose its server origin.");
-    const response = await fetch(`${server}${requestPath}`);
+    const response = await fetch(`${server}${requestPath}`, {
+      method: requestOptions.method ?? "GET",
+      headers: requestOptions.body ? { "content-type": "application/json" } : undefined,
+      body: requestOptions.body ? JSON.stringify(requestOptions.body) : undefined,
+    });
     const body = await response.json();
     if (!response.ok) throw new Error(`${requestPath} returned ${response.status}: ${JSON.stringify(body)}`);
     return body;
-  }, path);
+  }, { requestPath: path, requestOptions: options });
 }
 
 async function readEvidence(page) {
@@ -416,12 +444,12 @@ function assertPersistedReceipts(evidence) {
   }
 }
 
-function buildReport({ before, after, restored }) {
+function buildReport({ before, after, restored, acceptanceBatch }) {
   const receipts = Object.values(restored.tasks).map((task) => task?.actionReceipt).filter(Boolean);
   const recoverySucceeded = receipts.filter((receipt) => receipt.status === "succeeded").length;
   const official = restored.metrics;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     executedThrough: "electron_desktop_renderer",
     generatedAt: new Date().toISOString(),
     scenarios: {
@@ -438,6 +466,7 @@ function buildReport({ before, after, restored }) {
       receiptsPersistedAfterRestart: receipts.length === 3,
     },
     officialMetrics: official,
+    acceptanceBatch,
     before,
     after,
     restored,

@@ -2472,6 +2472,18 @@ export const api = {
     if (origin !== "all") params.set("origin", origin);
     return request("GET", `/api/work-items/completion-metrics${params.size ? `?${params}` : ""}`);
   },
+  createWorkItemCompletionMetricsBatch: (payload: {
+    projectId?: string; origin?: "all" | "channel" | "task";
+    workItemIds?: string[]; queueType?: "normal" | "recovery" | "mixed";
+    label: string; cohortKey: string; idempotencyKey: string;
+  }) => request("POST", "/api/work-items/completion-metrics/batches", payload),
+  listWorkItemCompletionMetricsBatches: (query: {
+    projectId?: string; origin?: "all" | "channel" | "task"; cohortKey?: string;
+    queueType?: "normal" | "recovery" | "mixed"; limit?: string;
+  } = {}) => {
+    const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
+    return request("GET", `/api/work-items/completion-metrics/batches${params.size ? `?${params}` : ""}`);
+  },
   listWorkItemAttention: (query: {
     projectId?: string; kind?: string; severity?: string; sla?: string;
     handler?: "mine" | "unclaimed"; includeResolved?: "1";

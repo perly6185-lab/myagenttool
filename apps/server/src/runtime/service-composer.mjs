@@ -7683,6 +7683,8 @@ export function createServerRuntimeServices({
     deleteCanvasScene: canvasSceneService.deleteScene,
     listWorkItems: workItemService.listWorkItems,
     getWorkItemCompletionMetrics: workItemService.getCompletionMetrics,
+    createWorkItemCompletionMetricsBatch: workItemService.createCompletionMetricsBatch,
+    listWorkItemCompletionMetricsBatches: workItemService.listCompletionMetricsBatches,
     getHomeWorkbench: workItemService.getHomeWorkbench,
     listWorkItemAttention: workItemService.listAttention,
     getWorkItem: workItemService.getWorkItem,

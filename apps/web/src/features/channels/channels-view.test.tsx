@@ -30,14 +30,15 @@ const action = vi.hoisted(() => ({
   })),
   completionMetrics: vi.fn(async () => ({
     generatedAt: "2026-08-31T00:00:00.000Z",
-    scope: { projectId: null, origin: "channel", trackedWorkItems: 4, trackedAutoRuns: 3 },
+    scope: { projectId: null, origin: "channel", trackedWorkItems: 4, trackedAutoRuns: 3, workItemIds: ["work_1", "work_2", "work_3", "work_4"] },
     metrics: {
-      schemaVersion: 1,
-      completion: { tracked: 4, settled: 4, completed: 3, falseCompletions: 1, requiringUserAction: 1, completionRate: 0.75, falseCompletionRate: 0.25, check: { status: "attention", target: 0.95 } },
-      recovery: { required: 1, succeeded: 1, pending: 0, successRate: 1, check: { status: "passed", target: 0.95 } },
-      humanIntervention: { count: 1, rate: 0.25, check: { status: "attention", target: 0.1 } },
+      schemaVersion: 2,
+      completion: { tracked: 4, settled: 4, completed: 3, falseCompletions: 1, requiringUserAction: 1, completionRate: 0.75, falseCompletionRate: 0.25, firstAttempt: { settled: 4, completed: 2, rate: 0.5, check: { status: "attention", target: 0.8 } }, final: { settled: 4, completed: 3, rate: 0.75, check: { status: "attention", target: 0.9 } }, check: { status: "attention", target: 0.9 } },
+      recovery: { required: 1, succeeded: 1, pending: 0, successRate: 1, durationMs: { samples: 1, average: 1000, maximum: 1000 }, check: { status: "passed", target: 0.9 } },
+      humanIntervention: { count: 0, rate: 0, exceptionHandlingCount: 1, userInitiatedRecovery: { actions: 1, tasks: 1, rate: 0.25 }, check: { status: "passed", target: 0.15 } },
+      automaticRecovery: { actions: 0, tasks: 0, succeeded: 0, successRate: null },
       externalActions: { attempts: 1, duplicateCount: 0, unresolvedCount: 0, check: { status: "passed", target: 0 } },
-      acceptance: { status: "attention", checks: {} }, definitions: {},
+      acceptance: { status: "attention", checks: {} }, byCategory: { channel: { tracked: 4, settled: 4, completed: 3, finalCompletionRate: 0.75, forcedHumanInterventions: 0, recoveryRequired: 1, recoverySucceeded: 1 } }, definitions: {},
     },
   })),
 }));
@@ -170,6 +171,7 @@ describe("ChannelsView task operations", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新运行验证" }));
     expect(action.command).toHaveBeenCalledWith("ctr_verify", "rerun_verification", {});
     expect((await screen.findByTestId("channel-task-action-receipt")).textContent).toContain("重新验证已经完成");
+    await waitFor(() => expect(action.completionMetrics.mock.calls.length).toBeGreaterThanOrEqual(3));
   });
 
   it("redelivers a task result through the unified command and explains a failed receipt", async () => {

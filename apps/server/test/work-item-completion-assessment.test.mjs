@@ -4,6 +4,7 @@ import {
   assessWorkItemCompletion,
   taskCompletionMetrics,
   taskCompletionQualityMetrics,
+  workItemMetricCategory,
 } from "../src/services/work-item-completion-assessment.mjs";
 
 function check(key, status = "matched", reasonCode = `${key}_${status}`) {
@@ -104,13 +105,13 @@ test("completion metrics separate genuine completion from false lifecycle comple
 
 test("quality metrics quantify truthful completion, recovery, intervention, and duplicate external effects", () => {
   const completed = assessWorkItemCompletion({
-    item: { status: "done", state: "closed" }, latestRun: { status: "done" }, planActual: matchedPlan(),
+    item: { id: "wi_completed", status: "done", state: "closed" }, latestRun: { status: "done" }, planActual: matchedPlan(),
   });
   const unverified = assessWorkItemCompletion({
-    item: { status: "done", state: "closed" }, latestRun: { status: "done" }, planActual: { status: "unverified", checks: [] },
+    item: { id: "wi_unverified", status: "done", state: "closed", waitingOn: "me" }, latestRun: { status: "done" }, planActual: { status: "unverified", checks: [] },
   });
   const readyForNormalSignoff = assessWorkItemCompletion({
-    item: { status: "review", state: "open" }, latestRun: { status: "done" }, planActual: matchedPlan(),
+    item: { id: "wi_signoff", status: "review", state: "open" }, latestRun: { status: "done" }, planActual: matchedPlan(),
   });
   const metrics = taskCompletionQualityMetrics({
     assessments: [completed, unverified, readyForNormalSignoff],
@@ -125,8 +126,8 @@ test("quality metrics quantify truthful completion, recovery, intervention, and 
         deliveryCheckpoint: { operationId: "wdo_2" },
         deliveryRecovery: { requiredAt: "2026-08-28T00:00:00.000Z", recoveredAt: null },
       },
-      { id: "ear_retry", kind: "retry_execution", status: "succeeded" },
-      { id: "ear_channel_retry", kind: "retry_channel_delivery", status: "succeeded", externalActionAttemptCount: 1 },
+      { id: "ear_retry", workItemId: "wi_unverified", kind: "retry_execution", status: "succeeded", initiationSource: "user", requestedBy: "usr_local" },
+      { id: "ear_channel_retry", workItemId: "wi_signoff", kind: "retry_channel_delivery", status: "succeeded", initiationSource: "automation", externalActionAttemptCount: 1 },
       // The durable copy and recent display copy must not double-count.
       {
         id: "ear_recovered", status: "succeeded", externalActionAttemptCount: 1,
@@ -141,8 +142,40 @@ test("quality metrics quantify truthful completion, recovery, intervention, and 
   assert.equal(metrics.recovery.successRate, 3 / 4);
   assert.equal(metrics.humanIntervention.count, 1, "normal final sign-off is not an intervention");
   assert.equal(metrics.humanIntervention.rate, 1 / 3);
+  assert.equal(metrics.humanIntervention.userInitiatedRecovery.actions, 1);
+  assert.equal(metrics.humanIntervention.userInitiatedRecovery.tasks, 1);
+  assert.equal(metrics.automaticRecovery.actions, 1);
+  assert.equal(metrics.automaticRecovery.succeeded, 1);
   assert.equal(metrics.externalActions.attempts, 4);
   assert.equal(metrics.externalActions.duplicateCount, 1);
   assert.equal(metrics.externalActions.unresolvedCount, 1);
   assert.equal(metrics.acceptance.status, "attention");
+});
+
+test("a recoverable exception is separate from forced human intervention", () => {
+  const recoverable = assessWorkItemCompletion({
+    item: { id: "wi_recoverable", status: "done", state: "closed" },
+    latestRun: { status: "done" },
+    planActual: { status: "unverified", checks: [] },
+  });
+  assert.equal(recoverable.exceptionHandlingRequired, true);
+  assert.equal(recoverable.humanInterventionRequired, false);
+  const metrics = taskCompletionQualityMetrics({
+    assessments: [recoverable],
+    receipts: [{
+      id: "ear_user_recovery", workItemId: "wi_recoverable", kind: "rerun_verification",
+      status: "succeeded", initiationSource: "user", requestedBy: "usr_local",
+    }],
+  });
+  assert.equal(metrics.humanIntervention.count, 0);
+  assert.equal(metrics.humanIntervention.exceptionHandlingCount, 1);
+  assert.equal(metrics.humanIntervention.userInitiatedRecovery.tasks, 1);
+});
+
+test("metric categories distinguish development, office, material, and channel work", () => {
+  assert.equal(workItemMetricCategory({ taskKind: "software_implementation" }), "development");
+  assert.equal(workItemMetricCategory({ channelTaskContract: { domain: "office" } }), "office");
+  assert.equal(workItemMetricCategory({ taskKind: "knowledge_analysis" }), "material");
+  assert.equal(workItemMetricCategory({ channelOrigin: { channelId: "chn_1" } }), "channel");
+  assert.equal(workItemMetricCategory({ taskKind: "general" }), "task");
 });

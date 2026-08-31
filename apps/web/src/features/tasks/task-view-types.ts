@@ -1002,12 +1002,15 @@ export type WorkItemPlanActual = {
   digest: string;
 };
 export type WorkItemCompletionAssessment = {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  workItemId: string | null;
+  category: "development" | "office" | "material" | "channel" | "task";
   status: "pending" | "ready_to_complete" | "completed" | "needs_attention" | "unverified" | "stopped";
   declaredComplete: boolean;
   evidenceComplete: boolean;
   falseCompletion: boolean;
   requiresUserAction: boolean;
+  exceptionHandlingRequired: boolean;
   humanInterventionRequired: boolean;
   reasonCodes: string[];
   stages: Record<string, { status: "matched" | "pending" | "unknown" | "mismatch"; reasonCodes: string[] }>;
@@ -1018,19 +1021,27 @@ export type WorkItemMetricCheck = {
 };
 export type WorkItemCompletionQualityMetrics = {
   generatedAt: string;
-  scope: { projectId: string | null; origin: "all" | "channel" | "task"; trackedWorkItems: number; trackedAutoRuns: number };
+  scope: { projectId: string | null; origin: "all" | "channel" | "task"; trackedWorkItems: number; trackedAutoRuns: number; workItemIds: string[] };
   metrics: {
-    schemaVersion: 1;
+    schemaVersion: 2;
     completion: {
       tracked: number; settled: number; completed: number; falseCompletions: number;
       requiringUserAction: number; completionRate: number | null; falseCompletionRate: number | null;
+      firstAttempt: { settled: number; completed: number; rate: number | null; check: WorkItemMetricCheck };
+      final: { settled: number; completed: number; rate: number | null; check: WorkItemMetricCheck };
       check: WorkItemMetricCheck;
     };
     recovery: {
       required: number; succeeded: number; pending: number; successRate: number | null;
+      durationMs: { samples: number; average: number | null; maximum: number | null };
       check: WorkItemMetricCheck;
     };
-    humanIntervention: { count: number; rate: number | null; check: WorkItemMetricCheck };
+    humanIntervention: {
+      count: number; rate: number | null; exceptionHandlingCount: number;
+      userInitiatedRecovery: { actions: number; tasks: number; rate: number | null };
+      check: WorkItemMetricCheck;
+    };
+    automaticRecovery: { actions: number; tasks: number; succeeded: number; successRate: number | null };
     externalActions: {
       attempts: number; duplicateCount: number; unresolvedCount: number; check: WorkItemMetricCheck;
     };
@@ -1038,6 +1049,10 @@ export type WorkItemCompletionQualityMetrics = {
       status: "passed" | "attention" | "insufficient_data";
       checks: Record<string, WorkItemMetricCheck>;
     };
+    byCategory: Partial<Record<"development" | "office" | "material" | "channel" | "task", {
+      tracked: number; settled: number; completed: number; finalCompletionRate: number | null;
+      forcedHumanInterventions: number; recoveryRequired: number; recoverySucceeded: number;
+    }>>;
     definitions: Record<string, string>;
   };
 };
